@@ -85,10 +85,10 @@ class StockAnalysisPreset:
         current_price = valuation.get("current_price", 0)
 
         icons = [
-            ("📊", "기술적 분석", "#2196F3"),
-            ("💰", "펀더멘탈", "#4CAF50"),
-            ("📈", "수급 분석", "#FF9800"),
-            ("🎯", "종합 결론", "#9C27B0"),
+            ("chart-line", "기술적 분석", "#2196F3"),
+            ("wallet", "펀더멘탈", "#4CAF50"),
+            ("candlestick-chart", "수급 분석", "#FF9800"),
+            ("check-circle", "종합 결론", "#9C27B0"),
         ]
 
         return ThumbnailTemplate.create(
@@ -96,7 +96,8 @@ class StockAnalysisPreset:
             title_line2=f"현재가 {format_price(current_price)}원",
             subtitle=f"{sector} | {self.symbol}",
             icons=icons,
-            tech_stack="기술적 분석 • 펀더멘탈 • 수급 분석 • AI 종합 판단",
+            theme="dark",
+            bg_pattern="candlestick",
             accent_color="#4CAF50",
         )
 

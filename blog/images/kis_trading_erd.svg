@@ -1,82 +1,122 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg width="1200" height="600" xmlns="http://www.w3.org/2000/svg">
-    <!-- 배경 -->
+    <defs>
+        <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#666666" />
+        </marker>
+        
+    </defs>
     <rect width="1200" height="600" fill="#ffffff"/>
+    <text x="600" y="40" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="24" font-weight="bold" fill="#1a1a2e" text-anchor="middle">종목별 거래 설정 ERD</text>
+    <rect x="70" y="90" width="300" height="31.428571428571427" fill="#1976D2" rx="4"/>
+    <text x="145.0" y="110.71428571428571" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">users</text>
+    <text x="295.0" y="110.71428571428571" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">details</text>
+    <line x1="70" y1="121.42857142857143" x2="370" y2="121.42857142857143" stroke="#dee2e6" stroke-width="1"/>
+    <text x="145.0" y="142.14285714285714" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">id</text>
+    <text x="295.0" y="142.14285714285714" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">PK</text>
+    <line x1="70" y1="152.85714285714286" x2="370" y2="152.85714285714286" stroke="#dee2e6" stroke-width="1"/>
+    <text x="145.0" y="173.57142857142858" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">username</text>
+    <text x="295.0" y="173.57142857142858" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">text</text>
+    <line x1="70" y1="184.28571428571428" x2="370" y2="184.28571428571428" stroke="#dee2e6" stroke-width="1"/>
+    <text x="145.0" y="205.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">email</text>
+    <text x="295.0" y="205.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">text</text>
+    <line x1="70" y1="215.71428571428572" x2="370" y2="215.71428571428572" stroke="#dee2e6" stroke-width="1"/>
+    <text x="145.0" y="236.42857142857144" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">role</text>
+    <text x="295.0" y="236.42857142857144" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">text</text>
+    <line x1="70" y1="247.14285714285714" x2="370" y2="247.14285714285714" stroke="#dee2e6" stroke-width="1"/>
+    <text x="145.0" y="267.85714285714283" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">is_active</text>
+    <text x="295.0" y="267.85714285714283" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">bool</text>
+    <line x1="70" y1="278.57142857142856" x2="370" y2="278.57142857142856" stroke="#dee2e6" stroke-width="1"/>
+    <text x="145.0" y="299.2857142857143" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">...</text>
+    <text x="295.0" y="299.2857142857143" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle"></text>
+    <rect x="430" y="70" width="380" height="27.272727272727273" fill="#388E3C" rx="4"/>
+    <text x="525.0" y="88.63636363636364" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">symbol_trade_settings</text>
+    <text x="715.0" y="88.63636363636364" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">details</text>
+    <line x1="430" y1="97.27272727272728" x2="810" y2="97.27272727272728" stroke="#dee2e6" stroke-width="1"/>
+    <text x="525.0" y="115.90909090909092" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">id</text>
+    <text x="715.0" y="115.90909090909092" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">PK</text>
+    <line x1="430" y1="124.54545454545455" x2="810" y2="124.54545454545455" stroke="#dee2e6" stroke-width="1"/>
+    <text x="525.0" y="143.1818181818182" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">user_id</text>
+    <text x="715.0" y="143.1818181818182" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">FK → users.id</text>
+    <line x1="430" y1="151.8181818181818" x2="810" y2="151.8181818181818" stroke="#dee2e6" stroke-width="1"/>
+    <text x="525.0" y="170.45454545454544" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">symbol</text>
+    <text x="715.0" y="170.45454545454544" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">text</text>
+    <line x1="430" y1="179.0909090909091" x2="810" y2="179.0909090909091" stroke="#dee2e6" stroke-width="1"/>
+    <text x="525.0" y="197.72727272727272" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">instrument_type</text>
+    <text x="715.0" y="197.72727272727272" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">text</text>
+    <line x1="430" y1="206.36363636363637" x2="810" y2="206.36363636363637" stroke="#dee2e6" stroke-width="1"/>
+    <text x="525.0" y="225.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">buy_quantity_per_order</text>
+    <text x="715.0" y="225.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">핵심</text>
+    <line x1="430" y1="233.63636363636363" x2="810" y2="233.63636363636363" stroke="#dee2e6" stroke-width="1"/>
+    <text x="525.0" y="252.27272727272725" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">buy_price_levels (1~4)</text>
+    <text x="715.0" y="252.27272727272725" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">핵심</text>
+    <line x1="430" y1="260.9090909090909" x2="810" y2="260.9090909090909" stroke="#dee2e6" stroke-width="1"/>
+    <text x="525.0" y="279.5454545454545" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">exchange_code</text>
+    <text x="715.0" y="279.5454545454545" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">text</text>
+    <line x1="430" y1="288.1818181818182" x2="810" y2="288.1818181818182" stroke="#dee2e6" stroke-width="1"/>
+    <text x="525.0" y="306.8181818181818" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">is_active</text>
+    <text x="715.0" y="306.8181818181818" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">bool</text>
+    <line x1="430" y1="315.4545454545455" x2="810" y2="315.4545454545455" stroke="#dee2e6" stroke-width="1"/>
+    <text x="525.0" y="334.0909090909091" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">note</text>
+    <text x="715.0" y="334.0909090909091" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">text</text>
+    <line x1="430" y1="342.72727272727275" x2="810" y2="342.72727272727275" stroke="#dee2e6" stroke-width="1"/>
+    <text x="525.0" y="361.3636363636364" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">created_at, updated_at</text>
+    <text x="715.0" y="361.3636363636364" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">timestamp</text>
+    <rect x="70" y="340" width="300" height="31.428571428571427" fill="#F57C00" rx="4"/>
+    <text x="145.0" y="360.7142857142857" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">user_trade_defaults</text>
+    <text x="295.0" y="360.7142857142857" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">details</text>
+    <line x1="70" y1="371.42857142857144" x2="370" y2="371.42857142857144" stroke="#dee2e6" stroke-width="1"/>
+    <text x="145.0" y="392.14285714285717" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">id</text>
+    <text x="295.0" y="392.14285714285717" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">PK</text>
+    <line x1="70" y1="402.85714285714283" x2="370" y2="402.85714285714283" stroke="#dee2e6" stroke-width="1"/>
+    <text x="145.0" y="423.57142857142856" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">user_id</text>
+    <text x="295.0" y="423.57142857142856" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">FK, UNIQUE</text>
+    <line x1="70" y1="434.2857142857143" x2="370" y2="434.2857142857143" stroke="#dee2e6" stroke-width="1"/>
+    <text x="145.0" y="455.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">crypto_default_buy_amount</text>
+    <text x="295.0" y="455.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">numeric</text>
+    <line x1="70" y1="465.7142857142857" x2="370" y2="465.7142857142857" stroke="#dee2e6" stroke-width="1"/>
+    <text x="145.0" y="486.42857142857144" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">equity_kr_default_buy_qty</text>
+    <text x="295.0" y="486.42857142857144" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">int</text>
+    <line x1="70" y1="497.1428571428571" x2="370" y2="497.1428571428571" stroke="#dee2e6" stroke-width="1"/>
+    <text x="145.0" y="517.8571428571428" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">equity_us_default_buy_qty</text>
+    <text x="295.0" y="517.8571428571428" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">int</text>
+    <line x1="70" y1="528.5714285714286" x2="370" y2="528.5714285714286" stroke="#dee2e6" stroke-width="1"/>
+    <text x="145.0" y="549.2857142857142" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">is_active</text>
+    <text x="295.0" y="549.2857142857142" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">bool</text>
+    <rect x="850" y="140" width="320" height="30.0" fill="#7B1FA2" rx="4"/>
+    <text x="930.0" y="160.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">stock_analysis_results</text>
+    <text x="1090.0" y="160.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">details</text>
+    <line x1="850" y1="170.0" x2="1170" y2="170.0" stroke="#dee2e6" stroke-width="1"/>
+    <text x="930.0" y="190.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">id</text>
+    <text x="1090.0" y="190.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">PK</text>
+    <line x1="850" y1="200.0" x2="1170" y2="200.0" stroke="#dee2e6" stroke-width="1"/>
+    <text x="930.0" y="220.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">stock_info_id</text>
+    <text x="1090.0" y="220.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">FK</text>
+    <line x1="850" y1="230.0" x2="1170" y2="230.0" stroke="#dee2e6" stroke-width="1"/>
+    <text x="930.0" y="250.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">decision</text>
+    <text x="1090.0" y="250.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">buy/hold/sell</text>
+    <line x1="850" y1="260.0" x2="1170" y2="260.0" stroke="#dee2e6" stroke-width="1"/>
+    <text x="930.0" y="280.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">appropriate_buy_min/max</text>
+    <text x="1090.0" y="280.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">매수</text>
+    <line x1="850" y1="290.0" x2="1170" y2="290.0" stroke="#dee2e6" stroke-width="1"/>
+    <text x="930.0" y="310.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">buy_hope_min/max</text>
+    <text x="1090.0" y="310.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">매수</text>
+    <line x1="850" y1="320.0" x2="1170" y2="320.0" stroke="#dee2e6" stroke-width="1"/>
+    <text x="930.0" y="340.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">appropriate_sell_min/max</text>
+    <text x="1090.0" y="340.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">매도</text>
+    <line x1="850" y1="350.0" x2="1170" y2="350.0" stroke="#dee2e6" stroke-width="1"/>
+    <text x="930.0" y="370.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">sell_target_min/max</text>
+    <text x="1090.0" y="370.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">매도</text>
 
-    <!-- 제목 -->
-    <text x="600" y="40" font-family="Arial, sans-serif" font-size="24" font-weight="bold" fill="#1a1a2e" text-anchor="middle">
-        종목별 거래 설정 ERD
-    </text>
+    <line x1="370" y1="175" x2="430" y2="145" stroke="#1976D2" stroke-width="2" marker-end="url(#arrowhead)"/>
+    <text x="400" y="160" {FONT_FAMILY} font-size="11" fill="#1976D2">1:N</text>
+    <line x1="220" y1="310" x2="220" y2="340" stroke="#1976D2" stroke-width="2" marker-end="url(#arrowhead)"/>
+    <text x="235" y="328" {FONT_FAMILY} font-size="11" fill="#1976D2">1:1</text>
+    <line x1="810" y1="220" x2="850" y2="220" stroke="#7B1FA2" stroke-width="2" marker-end="url(#arrowhead)"/>
 
-    <!-- Users 테이블 -->
-    <rect x="100" y="100" width="300" height="200" fill="#E3F2FD" stroke="#1976D2" stroke-width="2" rx="5"/>
-    <rect x="100" y="100" width="300" height="40" fill="#1976D2" rx="5"/>
-    <text x="250" y="128" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#ffffff" text-anchor="middle">users</text>
-
-    <text x="120" y="165" font-family="monospace" font-size="12" fill="#333333">id (PK)</text>
-    <text x="120" y="185" font-family="monospace" font-size="12" fill="#333333">username</text>
-    <text x="120" y="205" font-family="monospace" font-size="12" fill="#333333">email</text>
-    <text x="120" y="225" font-family="monospace" font-size="12" fill="#333333">role</text>
-    <text x="120" y="245" font-family="monospace" font-size="12" fill="#333333">is_active</text>
-    <text x="120" y="265" font-family="monospace" font-size="12" fill="#666666">...</text>
-
-    <!-- SymbolTradeSettings 테이블 -->
-    <rect x="500" y="80" width="350" height="280" fill="#E8F5E9" stroke="#388E3C" stroke-width="2" rx="5"/>
-    <rect x="500" y="80" width="350" height="40" fill="#388E3C" rx="5"/>
-    <text x="675" y="108" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#ffffff" text-anchor="middle">symbol_trade_settings</text>
-
-    <text x="520" y="145" font-family="monospace" font-size="12" fill="#333333">id (PK)</text>
-    <text x="520" y="165" font-family="monospace" font-size="12" fill="#1976D2">user_id (FK) → users.id</text>
-    <text x="520" y="185" font-family="monospace" font-size="12" fill="#333333">symbol</text>
-    <text x="520" y="205" font-family="monospace" font-size="12" fill="#333333">instrument_type</text>
-    <text x="520" y="225" font-family="monospace" font-size="12" fill="#4CAF50" font-weight="bold">buy_quantity_per_order</text>
-    <text x="520" y="245" font-family="monospace" font-size="12" fill="#4CAF50" font-weight="bold">buy_price_levels (1~4)</text>
-    <text x="520" y="265" font-family="monospace" font-size="12" fill="#333333">exchange_code</text>
-    <text x="520" y="285" font-family="monospace" font-size="12" fill="#333333">is_active</text>
-    <text x="520" y="305" font-family="monospace" font-size="12" fill="#333333">note</text>
-    <text x="520" y="325" font-family="monospace" font-size="12" fill="#666666">created_at, updated_at</text>
-
-    <!-- UserTradeDefaults 테이블 -->
-    <rect x="100" y="350" width="300" height="200" fill="#FFF3E0" stroke="#F57C00" stroke-width="2" rx="5"/>
-    <rect x="100" y="350" width="300" height="40" fill="#F57C00" rx="5"/>
-    <text x="250" y="378" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#ffffff" text-anchor="middle">user_trade_defaults</text>
-
-    <text x="120" y="415" font-family="monospace" font-size="12" fill="#333333">id (PK)</text>
-    <text x="120" y="435" font-family="monospace" font-size="12" fill="#1976D2">user_id (FK, UNIQUE)</text>
-    <text x="120" y="455" font-family="monospace" font-size="12" fill="#333333">crypto_default_buy_amount</text>
-    <text x="120" y="475" font-family="monospace" font-size="12" fill="#333333">equity_kr_default_buy_qty</text>
-    <text x="120" y="495" font-family="monospace" font-size="12" fill="#333333">equity_us_default_buy_qty</text>
-    <text x="120" y="515" font-family="monospace" font-size="12" fill="#333333">is_active</text>
-
-    <!-- StockAnalysisResult 테이블 (참조용) -->
-    <rect x="900" y="150" width="280" height="220" fill="#F3E5F5" stroke="#7B1FA2" stroke-width="2" rx="5"/>
-    <rect x="900" y="150" width="280" height="40" fill="#7B1FA2" rx="5"/>
-    <text x="1040" y="178" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#ffffff" text-anchor="middle">stock_analysis_results</text>
-
-    <text x="920" y="215" font-family="monospace" font-size="12" fill="#333333">id (PK)</text>
-    <text x="920" y="235" font-family="monospace" font-size="12" fill="#333333">stock_info_id (FK)</text>
-    <text x="920" y="255" font-family="monospace" font-size="12" fill="#333333">decision (buy/hold/sell)</text>
-    <text x="920" y="275" font-family="monospace" font-size="12" fill="#4CAF50" font-weight="bold">appropriate_buy_min/max</text>
-    <text x="920" y="295" font-family="monospace" font-size="12" fill="#4CAF50" font-weight="bold">buy_hope_min/max</text>
-    <text x="920" y="315" font-family="monospace" font-size="12" fill="#F44336" font-weight="bold">appropriate_sell_min/max</text>
-    <text x="920" y="335" font-family="monospace" font-size="12" fill="#F44336" font-weight="bold">sell_target_min/max</text>
-
-    <!-- 관계선 -->
-    <line x1="400" y1="200" x2="500" y2="165" stroke="#1976D2" stroke-width="2"/>
-    <text x="440" y="175" font-family="Arial, sans-serif" font-size="11" fill="#1976D2">1:N</text>
-
-    <line x1="400" y1="250" x2="400" y2="400" stroke="#1976D2" stroke-width="2"/>
-    <line x1="250" y1="300" x2="250" y2="350" stroke="#1976D2" stroke-width="2"/>
-    <text x="265" y="328" font-family="Arial, sans-serif" font-size="11" fill="#1976D2">1:1</text>
-
-    <!-- 설명 박스 -->
-    <rect x="500" y="420" width="350" height="130" fill="#FFFDE7" stroke="#FBC02D" stroke-width="1" rx="5"/>
-    <text x="675" y="450" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#F57F17" text-anchor="middle">핵심 정책</text>
-    <text x="520" y="480" font-family="Arial, sans-serif" font-size="12" fill="#333333">• 종목 설정(SymbolTradeSettings)이 없으면</text>
-    <text x="530" y="500" font-family="Arial, sans-serif" font-size="12" fill="#333333">해당 종목은 자동 매수하지 않음</text>
-    <text x="520" y="525" font-family="Arial, sans-serif" font-size="12" fill="#333333">• AI 분석 결과의 가격대를 참조하여</text>
-    <text x="530" y="545" font-family="Arial, sans-serif" font-size="12" fill="#333333">분할 매수/매도 주문 실행</text>
-
-    <!-- UNIQUE 제약 표시 -->
-    <text x="675" y="375" font-family="monospace" font-size="11" fill="#FF5722" text-anchor="middle">UNIQUE(user_id, symbol)</text>
+    <rect x="430" y="420" width="420" height="130" fill="#FFFDE7" stroke="#FBC02D" stroke-width="1" rx="5"/>
+    <text x="640" y="450" {FONT_FAMILY} font-size="14" font-weight="bold" fill="#F57F17" text-anchor="middle">핵심 정책</text>
+    <text x="450" y="480" {FONT_FAMILY} font-size="12" fill="#333333">• 종목 설정(SymbolTradeSettings)이 없으면 자동 매수하지 않음</text>
+    <text x="450" y="505" {FONT_FAMILY} font-size="12" fill="#333333">• AI 분석 결과 가격대를 참조하여 분할 매수/매도 주문 실행</text>
+    <text x="640" y="375" font-family="monospace" font-size="11" fill="#FF5722" text-anchor="middle">UNIQUE(user_id, symbol)</text>
 </svg>

@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1400" height="800" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+        <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#666666" />
+        </marker>
+        
+    </defs>
+    <rect width="1400" height="800" fill="#f8f9fa"/>
+    <text x="700" y="45" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="28" font-weight="bold" fill="#1a1a2e" text-anchor="middle">삼성전자 — 기술적 분석</text>
+    <polyline points="60.0,390.90909090909093 101.05263157894737,376.07655502392345 142.10526315789474,361.244019138756 183.15789473684208,346.41148325358853 224.21052631578945,331.57894736842104 265.2631578947368,316.7464114832536 306.31578947368416,301.9138755980861 347.36842105263156,287.08133971291863 388.4210526315789,272.2488038277512 429.4736842105263,257.4162679425838 470.52631578947364,242.58373205741626 511.5789473684211,227.7511961722488 552.6315789473683,212.91866028708137 593.6842105263158,198.08612440191388 634.7368421052631,183.25358851674642 675.7894736842105,168.42105263157893 716.8421052631578,153.5885167464115 757.8947368421053,138.75598086124404 798.9473684210526,123.92344497607655 840.0,109.09090909090907" fill="none" stroke="#2196F3" stroke-width="2"/>
+    <text x="55" y="409.0" font-family="Arial, sans-serif" font-size="10" fill="#666666" text-anchor="end">65,605</text>
+    <text x="55" y="331.5" font-family="Arial, sans-serif" font-size="10" fill="#666666" text-anchor="end">66,127</text>
+    <text x="55" y="254.0" font-family="Arial, sans-serif" font-size="10" fill="#666666" text-anchor="end">66,650</text>
+    <text x="55" y="176.5" font-family="Arial, sans-serif" font-size="10" fill="#666666" text-anchor="end">67,172</text>
+    <text x="55" y="99.0" font-family="Arial, sans-serif" font-size="10" fill="#666666" text-anchor="end">67,695</text>
+    <rect x="880" y="95" width="230" height="165" fill="#ffffff" stroke="#FF9800" stroke-width="1" rx="8"/>
+    <rect x="880" y="95" width="230" height="32" fill="#FF9800" rx="8"/>
+    <rect x="880" y="119" width="230" height="8" fill="#FF9800"/>
+    <text x="995" y="116" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">RSI(14)</text>
+    <text x="995" y="162" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="28" font-weight="bold" fill="#FF9800" text-anchor="middle">57.2</text>
+    <text x="995" y="187" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#666666" text-anchor="middle">중립</text>
+
+    <rect x="1120" y="95" width="230" height="165" fill="#ffffff" stroke="#e74c3c" stroke-width="1" rx="8"/>
+    <rect x="1120" y="95" width="230" height="32" fill="#e74c3c" rx="8"/>
+    <rect x="1120" y="119" width="230" height="8" fill="#e74c3c"/>
+    <text x="1235" y="116" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">MACD</text>
+    <text x="1235" y="162" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="28" font-weight="bold" fill="#e74c3c" text-anchor="middle">-527</text>
+    <text x="1235" y="187" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#666666" text-anchor="middle">매도 신호</text>
+
+    <rect x="880" y="270" width="230" height="165" fill="#ffffff" stroke="#2196F3" stroke-width="1" rx="8"/>
+    <rect x="880" y="270" width="230" height="32" fill="#2196F3" rx="8"/>
+    <rect x="880" y="294" width="230" height="8" fill="#2196F3"/>
+    <text x="995" y="291" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">ADX</text>
+    <text x="995" y="337" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="28" font-weight="bold" fill="#2196F3" text-anchor="middle">16.4</text>
+    <text x="995" y="362" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#666666" text-anchor="middle">약한 추세</text>
+    <text x="895" y="382" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="11" fill="#666666">+DI: 22.5</text>
+    <text x="895" y="400" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="11" fill="#666666">-DI: 18.3</text>
+
+    <rect x="1120" y="270" width="230" height="165" fill="#ffffff" stroke="#FF9800" stroke-width="1" rx="8"/>
+    <rect x="1120" y="270" width="230" height="32" fill="#FF9800" rx="8"/>
+    <rect x="1120" y="294" width="230" height="8" fill="#FF9800"/>
+    <text x="1235" y="291" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">StochRSI</text>
+    <text x="1235" y="337" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="28" font-weight="bold" fill="#FF9800" text-anchor="middle">0.78</text>
+    <text x="1235" y="362" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#666666" text-anchor="middle">중립</text>
+    <text x="1135" y="382" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="11" fill="#666666">K: 0.78</text>
+    <text x="1135" y="400" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="11" fill="#666666">D: 0.65</text>
+    <text x="385" y="500" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#4CAF50" text-anchor="middle">지지선 (Support)</text>
+    <text x="1035" y="500" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#e74c3c" text-anchor="middle">저항선 (Resistance)</text>
+    <rect x="80" y="520" width="574.7720364741641" height="20" fill="#4CAF50" opacity="0.2" rx="4"/>
+    <line x1="80" y1="530" x2="690" y2="530" stroke="#4CAF50" stroke-width="1" stroke-dasharray="4,2"/>
+    <text x="385" y="534" font-family="Arial, sans-serif" font-size="12" fill="#4CAF50" text-anchor="middle">62,000</text>
+    <rect x="80" y="560" width="537.6899696048632" height="20" fill="#4CAF50" opacity="0.2" rx="4"/>
+    <line x1="80" y1="570" x2="690" y2="570" stroke="#4CAF50" stroke-width="1" stroke-dasharray="4,2"/>
+    <text x="385" y="574" font-family="Arial, sans-serif" font-size="12" fill="#4CAF50" text-anchor="middle">58,000</text>
+    <rect x="80" y="600" width="509.87841945288756" height="20" fill="#4CAF50" opacity="0.2" rx="4"/>
+    <line x1="80" y1="610" x2="690" y2="610" stroke="#4CAF50" stroke-width="1" stroke-dasharray="4,2"/>
+    <text x="385" y="614" font-family="Arial, sans-serif" font-size="12" fill="#4CAF50" text-anchor="middle">55,000</text>
+    <rect x="730" y="520" width="589.6048632218844" height="20" fill="#e74c3c" opacity="0.2" rx="4"/>
+    <line x1="730" y1="530" x2="1340" y2="530" stroke="#e74c3c" stroke-width="1" stroke-dasharray="4,2"/>
+    <text x="1035" y="534" font-family="Arial, sans-serif" font-size="12" fill="#e74c3c" text-anchor="middle">68,000</text>
+    <rect x="730" y="560" width="552.5227963525836" height="20" fill="#e74c3c" opacity="0.2" rx="4"/>
+    <line x1="730" y1="570" x2="1340" y2="570" stroke="#e74c3c" stroke-width="1" stroke-dasharray="4,2"/>
+    <text x="1035" y="574" font-family="Arial, sans-serif" font-size="12" fill="#e74c3c" text-anchor="middle">72,000</text>
+    <rect x="730" y="600" width="524.7112462006079" height="20" fill="#e74c3c" opacity="0.2" rx="4"/>
+    <line x1="730" y1="610" x2="1340" y2="610" stroke="#e74c3c" stroke-width="1" stroke-dasharray="4,2"/>
+    <text x="1035" y="614" font-family="Arial, sans-serif" font-size="12" fill="#e74c3c" text-anchor="middle">75,000</text>
+    <text x="710" y="740" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#333333" text-anchor="middle">현재가: 65,800</text>
+</svg>

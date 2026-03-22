@@ -5,7 +5,7 @@ Header/row table with optional row highlighting.
 
 from __future__ import annotations
 
-from blog.tools.components.base import escape_xml
+from blog.tools.components.base import FONT_FAMILY, escape_xml
 
 
 class ComparisonTable:
@@ -48,7 +48,7 @@ class ComparisonTable:
             safe_title = escape_xml(table_title)
             parts.append(
                 f'    <text x="{x + width // 2}" y="{y + 20}" '
-                f'font-family="Arial, sans-serif" font-size="16" '
+                f'font-family="{FONT_FAMILY}" font-size="16" '
                 f'font-weight="bold" fill="#333333" text-anchor="middle">'
                 f"{safe_title}</text>"
             )
@@ -75,7 +75,7 @@ class ComparisonTable:
             parts.append(
                 f'    <text x="{x + i * col_width + col_width / 2}" '
                 f'y="{table_y + row_height / 2 + 5}" '
-                f'font-family="Arial, sans-serif" font-size="14" '
+                f'font-family="{FONT_FAMILY}" font-size="14" '
                 f'font-weight="bold" fill="#ffffff" text-anchor="middle">'
                 f"{safe_header}</text>"
             )
@@ -104,7 +104,7 @@ class ComparisonTable:
                     parts.append(
                         f'    <text x="{x + col_idx * col_width + col_width / 2}" '
                         f'y="{row_y + row_height / 2 + 5}" '
-                        f'font-family="Arial, sans-serif" font-size="12" '
+                        f'font-family="{FONT_FAMILY}" font-size="12" '
                         f'fill="#333333" text-anchor="middle">'
                         f"{safe_cell}</text>"
                     )

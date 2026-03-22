@@ -16,7 +16,7 @@ Layout:
 
 from __future__ import annotations
 
-from blog.tools.components.base import escape_xml
+from blog.tools.components.base import FONT_FAMILY, escape_xml
 
 
 class InfoCard:
@@ -80,7 +80,7 @@ class InfoCard:
         # Title text (centered in header)
         parts.append(
             f'    <text x="{x + width // 2}" y="{y + header_h // 2 + 5}" '
-            f'font-family="Arial, sans-serif" font-size="14" font-weight="bold" '
+            f'font-family="{FONT_FAMILY}" font-size="14" font-weight="bold" '
             f'fill="#ffffff" text-anchor="middle">{safe_title}</text>'
         )
 
@@ -88,7 +88,7 @@ class InfoCard:
         value_y = y + header_h + 35
         parts.append(
             f'    <text x="{x + width // 2}" y="{value_y}" '
-            f'font-family="Arial, sans-serif" font-size="28" font-weight="bold" '
+            f'font-family="{FONT_FAMILY}" font-size="28" font-weight="bold" '
             f'fill="{color}" text-anchor="middle">{safe_value}</text>'
         )
 
@@ -98,7 +98,7 @@ class InfoCard:
             safe_desc = escape_xml(description)
             parts.append(
                 f'    <text x="{x + width // 2}" y="{current_y}" '
-                f'font-family="Arial, sans-serif" font-size="12" '
+                f'font-family="{FONT_FAMILY}" font-size="12" '
                 f'fill="#666666" text-anchor="middle">{safe_desc}</text>'
             )
             current_y += 20
@@ -110,7 +110,7 @@ class InfoCard:
                 safe_val = escape_xml(val)
                 parts.append(
                     f'    <text x="{x + 15}" y="{current_y}" '
-                    f'font-family="Arial, sans-serif" font-size="11" '
+                    f'font-family="{FONT_FAMILY}" font-size="11" '
                     f'fill="#666666">{safe_label}: {safe_val}</text>'
                 )
                 current_y += 18

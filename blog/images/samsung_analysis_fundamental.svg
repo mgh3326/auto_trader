@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1400" height="800" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+        <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#666666" />
+        </marker>
+        
+    </defs>
+    <rect width="1400" height="800" fill="#f8f9fa"/>
+    <text x="700" y="45" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="28" font-weight="bold" fill="#1a1a2e" text-anchor="middle">삼성전자 — 펀더멘탈 분석</text>
+    <rect x="60" y="95" width="317" height="160" fill="#ffffff" stroke="#e74c3c" stroke-width="1" rx="8"/>
+    <rect x="60" y="95" width="317" height="32" fill="#e74c3c" rx="8"/>
+    <rect x="60" y="119" width="317" height="8" fill="#e74c3c"/>
+    <text x="218" y="116" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">PER</text>
+    <text x="218" y="162" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="28" font-weight="bold" fill="#e74c3c" text-anchor="middle">30.38</text>
+
+    <rect x="387" y="95" width="317" height="160" fill="#ffffff" stroke="#FF9800" stroke-width="1" rx="8"/>
+    <rect x="387" y="95" width="317" height="32" fill="#FF9800" rx="8"/>
+    <rect x="387" y="119" width="317" height="8" fill="#FF9800"/>
+    <text x="545" y="116" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">PBR</text>
+    <text x="545" y="162" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="28" font-weight="bold" fill="#FF9800" text-anchor="middle">1.82</text>
+
+    <rect x="714" y="95" width="317" height="160" fill="#ffffff" stroke="#FF9800" stroke-width="1" rx="8"/>
+    <rect x="714" y="95" width="317" height="32" fill="#FF9800" rx="8"/>
+    <rect x="714" y="119" width="317" height="8" fill="#FF9800"/>
+    <text x="872" y="116" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">ROE</text>
+    <text x="872" y="162" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="28" font-weight="bold" fill="#FF9800" text-anchor="middle">6.01%</text>
+
+    <rect x="1041" y="95" width="317" height="160" fill="#ffffff" stroke="#4CAF50" stroke-width="1" rx="8"/>
+    <rect x="1041" y="95" width="317" height="32" fill="#4CAF50" rx="8"/>
+    <rect x="1041" y="119" width="317" height="8" fill="#4CAF50"/>
+    <text x="1199" y="116" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">컨센서스 목표가</text>
+    <text x="1199" y="162" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="28" font-weight="bold" fill="#4CAF50" text-anchor="middle">85,000</text>
+    <text x="1199" y="187" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#666666" text-anchor="middle">+29.2%</text>
+    <text x="710" y="330" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#333333" text-anchor="middle">연간 영업이익 및 분기 영업이익률</text>
+    <rect x="124.75" y="350.0" width="118.0" height="70.0" fill="#4CAF50" rx="2"/>
+    <text x="183.75" y="440" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#666666" text-anchor="middle">2021</text>
+    <rect x="272.25" y="361.1941975093448" width="118.0" height="58.805802490655196" fill="#4CAF50" rx="2"/>
+    <text x="331.25" y="440" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#666666" text-anchor="middle">2022</text>
+    <rect x="419.75" y="411.09697286619024" width="118.0" height="8.903027133809772" fill="#4CAF50" rx="2"/>
+    <text x="478.75" y="440" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#666666" text-anchor="middle">2023</text>
+    <rect x="567.25" y="375.6678868165708" width="118.0" height="44.3321131834292" fill="#4CAF50" rx="2"/>
+    <text x="626.25" y="440" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#666666" text-anchor="middle">2024E</text>
+
+    <text x="110" y="480" font-family="Arial, sans-serif" font-size="11" fill="#666666">단위: 조원</text>
+    <text x="1035" y="370" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="16" font-weight="bold" fill="#333333" text-anchor="middle">분기 영업이익률</text>
+    <rect x="730" y="382.0" width="170.0" height="16.0" fill="#e74c3c" rx="2"/>
+    <text x="730" y="394.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#666666" text-anchor="start">Q1</text>
+    <rect x="730" y="402.0" width="272.0" height="16.0" fill="#FF9800" rx="2"/>
+    <text x="730" y="414.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#666666" text-anchor="start">Q2</text>
+    <rect x="730" y="422.0" width="408.0" height="16.0" fill="#4CAF50" rx="2"/>
+    <text x="730" y="434.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#666666" text-anchor="start">Q3</text>
+    <rect x="730" y="442.0" width="510.0" height="16.0" fill="#4CAF50" rx="2"/>
+    <text x="730" y="454.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#666666" text-anchor="start">Q4E</text>
+</svg>

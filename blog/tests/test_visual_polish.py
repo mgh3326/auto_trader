@@ -123,26 +123,61 @@ class TestThemeSystem:
         from blog.tools.components.base import THEMES
 
         assert THEMES["dark"].bg_fill == "#1b263b"
+        assert THEMES["dark"].text_primary == "#e0e1dd"
+        assert THEMES["dark"].text_secondary == "#778da9"
+        assert THEMES["dark"].text_muted == "#415a77"
+        assert THEMES["dark"].accent == "#00b4d8"
+        assert THEMES["dark"].card_bg == "#0d1b2a"
+        assert THEMES["dark"].header_bg == "#1b263b"
 
     def test_theme_light_exists(self) -> None:
         from blog.tools.components.base import THEMES
 
         assert THEMES["light"].bg_fill == "#f8f9fa"
+        assert THEMES["light"].bg_gradient == ("#ffffff", "#f1f5f9", "#e2e8f0")
+        assert THEMES["light"].text_primary == "#1e293b"
+        assert THEMES["light"].text_secondary == "#475569"
+        assert THEMES["light"].text_muted == "#94a3b8"
+        assert THEMES["light"].accent == "#3b82f6"
+        assert THEMES["light"].header_bg == "#f1f5f9"
 
     def test_theme_terminal_exists(self) -> None:
         from blog.tools.components.base import THEMES
 
-        assert THEMES["terminal"].bg_fill == "#0d1117"
+        assert THEMES["terminal"].bg_gradient == ("#0c0c0c", "#111111", "#1a1a1a")
+        assert THEMES["terminal"].bg_fill == "#0c0c0c"
+        assert THEMES["terminal"].text_primary == "#00ff00"
+        assert THEMES["terminal"].text_secondary == "#00cc00"
+        assert THEMES["terminal"].text_muted == "#006600"
+        assert THEMES["terminal"].accent == "#00ff00"
+        assert THEMES["terminal"].card_bg == "#111111"
+        assert THEMES["terminal"].header_bg == "#1a1a1a"
 
     def test_theme_crisis_exists(self) -> None:
         from blog.tools.components.base import THEMES
 
-        assert "#1a0000" in THEMES["crisis"].bg_fill or "#2d0000" in THEMES["crisis"].bg_fill
+        assert THEMES["crisis"].bg_gradient == ("#1a0000", "#2d0000", "#450a0a")
+        assert THEMES["crisis"].bg_fill == "#1a0000"
+        assert THEMES["crisis"].text_primary == "#fecaca"
+        assert THEMES["crisis"].text_secondary == "#f87171"
+        assert THEMES["crisis"].text_muted == "#991b1b"
+        assert THEMES["crisis"].accent == "#ef4444"
+        assert THEMES["crisis"].card_bg == "#2d0000"
+        assert THEMES["crisis"].card_border == "#991b1b"
+        assert THEMES["crisis"].header_bg == "#450a0a"
 
     def test_theme_data_exists(self) -> None:
         from blog.tools.components.base import THEMES
 
         assert THEMES["data"].bg_fill == "#f0fdf4"
+        assert THEMES["data"].bg_gradient == ("#f0fdf4", "#ecfdf5", "#d1fae5")
+        assert THEMES["data"].text_primary == "#166534"
+        assert THEMES["data"].text_secondary == "#15803d"
+        assert THEMES["data"].text_muted == "#86efac"
+        assert THEMES["data"].accent == "#22c55e"
+        assert THEMES["data"].card_bg == "#ffffff"
+        assert THEMES["data"].card_border == "#bbf7d0"
+        assert THEMES["data"].header_bg == "#ecfdf5"
 
 
 class TestThumbnailWithThemes:

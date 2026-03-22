@@ -1,50 +1,40 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg width="1200" height="400" xmlns="http://www.w3.org/2000/svg">
-    <!-- 배경 -->
+    <defs>
+        <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#666666" />
+        </marker>
+        
+    </defs>
     <rect width="1200" height="400" fill="#f8f9fa"/>
+    <text x="600" y="40" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="24" font-weight="bold" fill="#1a1a2e" text-anchor="middle">실시간 진행 상황 표시 UI</text>
 
-    <!-- 제목 -->
-    <text x="600" y="40" font-family="Arial, sans-serif" font-size="24" font-weight="bold" fill="#1a1a2e" text-anchor="middle">
-        실시간 진행 상황 표시 UI
-    </text>
-
-    <!-- 분석 진행 카드 -->
     <rect x="50" y="70" width="350" height="150" fill="#ffffff" stroke="#2196F3" stroke-width="2" rx="8"/>
-    <text x="70" y="100" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#1976D2">🔍 전체 종목 AI 분석</text>
-
+    <text x="70" y="100" 'Noto Sans KR', 'Inter', 'Arial', sans-serif font-size="16" font-weight="bold" fill="#1976D2">🔍 전체 종목 AI 분석</text>
     <rect x="70" y="115" width="310" height="25" fill="#E3F2FD" rx="5"/>
     <rect x="70" y="115" width="217" height="25" fill="#2196F3" rx="5"/>
-    <text x="225" y="133" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#ffffff" text-anchor="middle">70%</text>
+    <text x="178" y="133" 'Noto Sans KR', 'Inter', 'Arial', sans-serif font-size="12" font-weight="bold" fill="#ffffff" text-anchor="middle">70%</text>
+    <text x="70" y="165" 'Noto Sans KR', 'Inter', 'Arial', sans-serif font-size="13" fill="#666666">삼성전자 분석 중... (7/10)</text>
+    <text x="70" y="190" 'Noto Sans KR', 'Inter', 'Arial', sans-serif font-size="11" fill="#999999">예상 남은 시간: 약 2분</text>
 
-    <text x="70" y="165" font-family="Arial, sans-serif" font-size="13" fill="#666666">삼성전자 분석 중... (7/10)</text>
-    <text x="70" y="190" font-family="Arial, sans-serif" font-size="11" fill="#999999">예상 남은 시간: 약 2분</text>
-
-    <!-- 매수 진행 카드 -->
     <rect x="425" y="70" width="350" height="150" fill="#ffffff" stroke="#4CAF50" stroke-width="2" rx="8"/>
-    <text x="445" y="100" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#2E7D32">🛒 자동 매수 주문</text>
-
+    <text x="445" y="100" 'Noto Sans KR', 'Inter', 'Arial', sans-serif font-size="16" font-weight="bold" fill="#2E7D32">🛒 자동 매수 주문</text>
     <rect x="445" y="115" width="310" height="25" fill="#E8F5E9" rx="5"/>
     <rect x="445" y="115" width="124" height="25" fill="#4CAF50" rx="5"/>
-    <text x="507" y="133" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#ffffff" text-anchor="middle">40%</text>
+    <text x="507" y="133" 'Noto Sans KR', 'Inter', 'Arial', sans-serif font-size="12" font-weight="bold" fill="#ffffff" text-anchor="middle">40%</text>
+    <text x="445" y="165" 'Noto Sans KR', 'Inter', 'Arial', sans-serif font-size="13" fill="#666666">SK하이닉스 매수 주문 처리 중...</text>
+    <text x="445" y="190" 'Noto Sans KR', 'Inter', 'Arial', sans-serif font-size="11" fill="#4CAF50">✓ 삼성전자: 2건 주문 완료</text>
 
-    <text x="445" y="165" font-family="Arial, sans-serif" font-size="13" fill="#666666">SK하이닉스 매수 주문 처리 중...</text>
-    <text x="445" y="190" font-family="Arial, sans-serif" font-size="11" fill="#4CAF50">✓ 삼성전자: 2건 주문 완료</text>
-
-    <!-- 종목별 자동실행 카드 -->
     <rect x="800" y="70" width="350" height="150" fill="#ffffff" stroke="#FF9800" stroke-width="2" rx="8"/>
-    <text x="820" y="100" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#EF6C00">⚡ 종목별 분석→매수→매도</text>
-
+    <text x="820" y="100" 'Noto Sans KR', 'Inter', 'Arial', sans-serif font-size="16" font-weight="bold" fill="#EF6C00">⚡ 종목별 분석→매수→매도</text>
     <rect x="820" y="115" width="310" height="25" fill="#FFF3E0" rx="5"/>
     <rect x="820" y="115" width="155" height="25" fill="#FF9800" rx="5"/>
-    <text x="897" y="133" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#ffffff" text-anchor="middle">50%</text>
+    <text x="897" y="133" 'Noto Sans KR', 'Inter', 'Arial', sans-serif font-size="12" font-weight="bold" fill="#ffffff" text-anchor="middle">50%</text>
+    <text x="820" y="165" 'Noto Sans KR', 'Inter', 'Arial', sans-serif font-size="13" fill="#666666">NAVER 매수 주문 중...</text>
+    <text x="820" y="190" 'Noto Sans KR', 'Inter', 'Arial', sans-serif font-size="11" fill="#FF9800">현재 단계: 분석 → 매수 → 매도</text>
 
-    <text x="820" y="165" font-family="Arial, sans-serif" font-size="13" fill="#666666">NAVER 매수 주문 중...</text>
-    <text x="820" y="190" font-family="Arial, sans-serif" font-size="11" fill="#FF9800">현재 단계: 분석 → 매수 → 매도</text>
-
-    <!-- 상세 로그 영역 -->
     <rect x="50" y="240" width="1100" height="140" fill="#ffffff" stroke="#e0e0e0" stroke-width="1" rx="8"/>
-    <text x="70" y="270" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#333333">📋 실행 로그</text>
-
+    <text x="70" y="270" {FONT_FAMILY} font-size="14" font-weight="bold" fill="#333333">📋 실행 로그</text>
     <rect x="70" y="285" width="1060" height="80" fill="#f5f5f5" rx="5"/>
     <text x="85" y="305" font-family="monospace" font-size="11" fill="#666666">[10:32:15] ✓ 삼성전자 분석 완료 (decision: BUY, confidence: 75%)</text>
     <text x="85" y="322" font-family="monospace" font-size="11" fill="#666666">[10:32:16] ✓ 삼성전자 매수 주문 2건 접수 (68,000원 x 5주, 70,000원 x 5주)</text>

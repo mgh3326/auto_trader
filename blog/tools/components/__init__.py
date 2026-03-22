@@ -6,8 +6,11 @@ Compose fragments with SVGComponent.header() / .footer() for complete documents.
 
 from blog.tools.components.bar_chart import BarChart
 from blog.tools.components.base import (
+    FONT_FAMILY,
     Colors,
     SVGComponent,
+    Theme,
+    THEMES,
     escape_xml,
     format_large,
     format_pct,
@@ -27,8 +30,11 @@ __all__ = [
     "ComparisonTable",
     "EventTimeline",
     "FlowDiagram",
+    "FONT_FAMILY",
     "InfoCard",
     "SVGComponent",
+    "Theme",
+    "THEMES",
     "ThumbnailTemplate",
     "escape_xml",
     "format_large",

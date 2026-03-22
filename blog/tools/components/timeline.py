@@ -5,7 +5,7 @@ Horizontal timeline with event markers positioned above/below the axis.
 
 from __future__ import annotations
 
-from blog.tools.components.base import escape_xml
+from blog.tools.components.base import FONT_FAMILY, escape_xml
 
 
 class EventTimeline:
@@ -86,7 +86,7 @@ class EventTimeline:
             safe_date = escape_xml(date)
             parts.append(
                 f'    <text x="{event_x}" y="{date_y}" '
-                f'font-family="Arial, sans-serif" font-size="11" '
+                f'font-family="{FONT_FAMILY}" font-size="11" '
                 f'font-weight="bold" fill="{color}" text-anchor="middle">'
                 f"{safe_date}</text>"
             )
@@ -95,7 +95,7 @@ class EventTimeline:
             safe_label = escape_xml(label)
             parts.append(
                 f'    <text x="{event_x}" y="{label_y}" '
-                f'font-family="Arial, sans-serif" font-size="10" '
+                f'font-family="{FONT_FAMILY}" font-size="10" '
                 f'fill="#333333" text-anchor="middle">'
                 f"{safe_label}</text>"
             )
@@ -104,7 +104,7 @@ class EventTimeline:
             safe_value = escape_xml(value)
             parts.append(
                 f'    <text x="{event_x}" y="{value_y}" '
-                f'font-family="Arial, sans-serif" font-size="10" '
+                f'font-family="{FONT_FAMILY}" font-size="10" '
                 f'fill="#666666" text-anchor="middle">'
                 f"{safe_value}</text>"
             )

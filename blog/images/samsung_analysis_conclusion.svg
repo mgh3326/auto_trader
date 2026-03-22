@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1400" height="800" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+        <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#666666" />
+        </marker>
+        
+    </defs>
+    <rect width="1400" height="800" fill="#f8f9fa"/>
+    <text x="700" y="45" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="28" font-weight="bold" fill="#1a1a2e" text-anchor="middle">삼성전자 — 종합 분석 결론</text>
+    <rect x="60" y="95" width="635" height="305" fill="#ffffff" stroke="#2196F3" stroke-width="1" rx="8"/>
+    <rect x="60" y="95" width="635" height="32" fill="#2196F3" rx="8"/>
+    <rect x="60" y="119" width="635" height="8" fill="#2196F3"/>
+    <text x="377" y="116" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">기술적 분석</text>
+    <text x="377" y="162" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="28" font-weight="bold" fill="#2196F3" text-anchor="middle">중립</text>
+    <text x="377" y="187" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#666666" text-anchor="middle">RSI: 57.2, MACD: -527</text>
+
+    <rect x="705" y="95" width="635" height="305" fill="#ffffff" stroke="#4CAF50" stroke-width="1" rx="8"/>
+    <rect x="705" y="95" width="635" height="32" fill="#4CAF50" rx="8"/>
+    <rect x="705" y="119" width="635" height="8" fill="#4CAF50"/>
+    <text x="1022" y="116" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">펀더멘탈 분석</text>
+    <text x="1022" y="162" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="28" font-weight="bold" fill="#4CAF50" text-anchor="middle">중립</text>
+    <text x="1022" y="187" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#666666" text-anchor="middle">PER: 30.38, ROE: 6.01%</text>
+
+    <rect x="60" y="410" width="635" height="305" fill="#ffffff" stroke="#FF9800" stroke-width="1" rx="8"/>
+    <rect x="60" y="410" width="635" height="32" fill="#FF9800" rx="8"/>
+    <rect x="60" y="434" width="635" height="8" fill="#FF9800"/>
+    <text x="377" y="431" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">수급 분석</text>
+    <text x="377" y="477" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="28" font-weight="bold" fill="#FF9800" text-anchor="middle">매도</text>
+    <text x="377" y="502" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#666666" text-anchor="middle">외국인 5일 연속 순매도</text>
+
+    <rect x="705" y="410" width="635" height="305" fill="#ffffff" stroke="#9C27B0" stroke-width="3" rx="8"/>
+    <rect x="705" y="410" width="635" height="32" fill="#9C27B0" rx="8"/>
+    <rect x="705" y="434" width="635" height="8" fill="#9C27B0"/>
+    <text x="1022" y="431" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">종합 판단</text>
+    <text x="1022" y="477" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="28" font-weight="bold" fill="#9C27B0" text-anchor="middle">중립</text>
+    <text x="1022" y="502" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#666666" text-anchor="middle">삼성전자 종합 분석 결과</text>
+</svg>

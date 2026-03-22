@@ -6,7 +6,7 @@ Supports positive/negative values with automatic scaling.
 
 from __future__ import annotations
 
-from blog.tools.components.base import escape_xml
+from blog.tools.components.base import FONT_FAMILY, escape_xml
 
 
 class BarChart:
@@ -52,7 +52,7 @@ class BarChart:
             safe_title = escape_xml(chart_title)
             parts.append(
                 f'    <text x="{x + width // 2}" y="{y + 20}" '
-                f'font-family="Arial, sans-serif" font-size="16" '
+                f'font-family="{FONT_FAMILY}" font-size="16" '
                 f'font-weight="bold" fill="#333333" text-anchor="middle">'
                 f"{safe_title}</text>"
             )
@@ -91,7 +91,7 @@ class BarChart:
                     parts.append(
                         f'    <text x="{bar_x + bar_width / 2}" '
                         f'y="{chart_y + chart_height - 20}" '
-                        f'font-family="Arial, sans-serif" font-size="12" '
+                        f'font-family="{FONT_FAMILY}" font-size="12" '
                         f'fill="#666666" text-anchor="middle">{safe_label}</text>'
                     )
         else:
@@ -129,7 +129,7 @@ class BarChart:
                     safe_label = escape_xml(str(label))
                     parts.append(
                         f'    <text x="{x}" y="{bar_y + bar_height / 2 + 4}" '
-                        f'font-family="Arial, sans-serif" font-size="12" '
+                        f'font-family="{FONT_FAMILY}" font-size="12" '
                         f'fill="#666666" text-anchor="start">{safe_label}</text>'
                     )
 
