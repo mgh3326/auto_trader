@@ -103,11 +103,11 @@ Signal(
 
 ## Data Splits
 
-The backtest uses fixed date splits (based on available data):
+The backtest uses fixed date splits (revised 2026-03-22 for balanced RSI signal coverage):
 
-- **Train**: 2025-03-22 to 2025-06-30
-- **Validation**: 2025-07-01 to 2025-09-30 (default for `backtest.py`)
-- **Test**: 2025-10-01 to 2026-03-22
+- **Train**: 2024-04-01 to 2025-06-30 (451 days, RSI<30=12, bull+bear mix)
+- **Validation**: 2025-07-01 to 2026-01-31 (214 days, RSI<30=16, default for `backtest.py`)
+- **Test**: 2026-02-01 to 2026-03-22 (50 days, RSI<30=7, recent holdout)
 
 ## Metrics
 
@@ -171,15 +171,61 @@ Do not add external dependencies without updating pyproject.toml.
 
 ## Baseline Scores
 
-*Scores recorded on 2026-03-22 using BTC, ETH, SOL data*
+*Recorded 2026-03-22, val split, BTC/ETH/SOL/XRP*
 
 | Strategy | Score | Return % | Sharpe | Max DD % | Trades |
 |----------|-------|----------|--------|----------|--------|
-| RSI (val split) | TBD | TBD | TBD | TBD | TBD |
-| Buy & Hold | TBD | TBD | TBD | TBD | TBD |
-| Random | TBD | TBD | TBD | TBD | TBD |
+| RSI | -0.66 | -4.0% | -0.66 | 18.4% | 18 |
+| Buy & Hold | ~-5.73 | -36.3% | -2.35 | 43.7% | 3 |
+| Random | ~-1.77 | -13.7% | -1.77 | 19.6% | 19 |
 
-Run `uv run backtest/backtest.py` with each strategy to populate baseline scores.
+**Your goal: beat RSI score of -0.66.**
+
+## Autoresearch Loop (Phase 2)
+
+### Setup
+```bash
+git checkout -b autotrader/<tag> main
+echo -e "commit\tscore\tsharpe\tmax_dd\tstatus\tdescription" > results.tsv
+```
+
+### The Loop
+```
+LOOP FOREVER:
+1. Read current strategy.py and previous scores
+2. Propose a modification to strategy.py
+3. git commit -m "exp<N>: description"
+4. uv run backtest/backtest.py > run.log 2>&1
+5. grep "^score:" run.log
+6. If score IMPROVED (higher than best): keep
+7. If score equal or worse: git reset --hard HEAD~1
+8. Record in results.tsv
+```
+
+### Rules
+- **Only edit strategy.py** — prepare.py, backtest.py, fetch_data.py are fixed
+- **No new dependencies** — numpy, pandas, and stdlib only
+- **Time budget** — 30 seconds per backtest max (RPi5 safe)
+
+### Research Directions (Tier 1 — most likely to improve)
+- RSI threshold tuning (30→35? 25?)
+- Holding period optimization (7→14 days?)
+- Position sizing (15%→20%? dynamic based on RSI depth?)
+- Multi-timeframe RSI (7-day + 14-day agreement)
+- Stop-loss addition (e.g., -10% from entry → forced sell)
+
+### Research Directions (Tier 2 — medium risk)
+- MACD crossover as confirmation signal
+- Bollinger Band squeeze detection
+- EMA trend filter (only buy when price > EMA50)
+- Volume spike confirmation
+- Correlation-aware position limits
+
+### Research Directions (Tier 3 — exploratory)
+- Multi-signal voting (MIN_VOTES like nunchi)
+- Dynamic position sizing based on volatility
+- Mean reversion with z-score
+- Regime detection (trending vs ranging)
 
 ## Testing
 
