@@ -706,3 +706,149 @@ class TestStrategyWithHistory:
 
         # No signals due to insufficient history
         assert len(signals) == 0
+
+
+class TestVoteThresholdBoundaries:
+    """Tests for explicit vote threshold boundaries in on_bar()."""
+
+    def test_no_buy_when_bull_votes_below_threshold(self, monkeypatch):
+        """Test that buy is not triggered when bull votes are below MIN_VOTES."""
+        strat = strategy.Strategy()
+
+        # Mock _evaluate_signals to return controlled values
+        def mock_evaluate(bar):
+            return {
+                "rsi_fast": 25.0,
+                "rsi_slow": 25.0,
+                "bull_votes": strategy.MIN_VOTES - 1,
+                "bear_votes": 0,
+                "bull_flags": {"dual_rsi_oversold": True},
+                "bear_flags": {},
+            }
+
+        monkeypatch.setattr(strat, "_evaluate_signals", mock_evaluate)
+
+        history = _make_history([100.0] * 40)
+        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-01", 100.0, history)}
+        portfolio = prepare.PortfolioState(
+            cash=100000.0,
+            positions={},
+            avg_prices={},
+            position_dates={},
+            trade_log=[],
+            equity=100000.0,
+            date="2025-04-01",
+        )
+
+        signals = strat.on_bar(bar_data, portfolio)
+
+        # No buy when below threshold
+        buy_signals = [s for s in signals if s.action == "buy"]
+        assert len(buy_signals) == 0
+
+    def test_buy_triggered_at_bull_vote_threshold(self, monkeypatch):
+        """Test that buy is triggered when bull votes equal MIN_VOTES."""
+        strat = strategy.Strategy()
+
+        def mock_evaluate(bar):
+            return {
+                "rsi_fast": 25.0,
+                "rsi_slow": 25.0,
+                "bull_votes": strategy.MIN_VOTES,
+                "bear_votes": 0,
+                "bull_flags": {"dual_rsi_oversold": True},
+                "bear_flags": {},
+            }
+
+        monkeypatch.setattr(strat, "_evaluate_signals", mock_evaluate)
+
+        history = _make_history([100.0] * 40)
+        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-01", 100.0, history)}
+        portfolio = prepare.PortfolioState(
+            cash=100000.0,
+            positions={},
+            avg_prices={},
+            position_dates={},
+            trade_log=[],
+            equity=100000.0,
+            date="2025-04-01",
+        )
+
+        signals = strat.on_bar(bar_data, portfolio)
+
+        # Buy triggered at threshold
+        buy_signals = [s for s in signals if s.action == "buy"]
+        assert len(buy_signals) == 1
+        assert buy_signals[0].weight == strategy.POSITION_SIZE
+
+    def test_no_bear_sell_when_votes_below_threshold(self, monkeypatch):
+        """Test that bear-vote sell is not triggered when below MIN_SELL_VOTES."""
+        strat = strategy.Strategy()
+
+        def mock_evaluate(bar):
+            return {
+                "rsi_fast": 50.0,
+                "rsi_slow": 45.0,
+                "bull_votes": 0,
+                "bear_votes": strategy.MIN_SELL_VOTES - 1,
+                "bull_flags": {},
+                "bear_flags": {"rsi_slow_high": True},
+            }
+
+        monkeypatch.setattr(strat, "_evaluate_signals", mock_evaluate)
+
+        history = _make_history([100.0] * 40)
+        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-01", 110.0, history)}
+        # Position is held, but no stop-loss (price higher than avg),
+        # no RSI recovery (rsi_slow < RSI_EXIT), no max holding
+        portfolio = prepare.PortfolioState(
+            cash=50000.0,
+            positions={"BTC": 1.0},
+            avg_prices={"BTC": 100.0},
+            position_dates={"BTC": "2025-03-25"},  # Recent entry
+            trade_log=[],
+            equity=150000.0,
+            date="2025-04-01",
+        )
+
+        signals = strat.on_bar(bar_data, portfolio)
+
+        # No bear-vote sell when below threshold
+        sell_signals = [s for s in signals if s.action == "sell"]
+        assert len(sell_signals) == 0
+
+    def test_bear_sell_triggered_at_threshold(self, monkeypatch):
+        """Test that bear-vote sell is triggered at MIN_SELL_VOTES."""
+        strat = strategy.Strategy()
+
+        def mock_evaluate(bar):
+            return {
+                "rsi_fast": 50.0,
+                "rsi_slow": 45.0,
+                "bull_votes": 0,
+                "bear_votes": strategy.MIN_SELL_VOTES,
+                "bull_flags": {},
+                "bear_flags": {"rsi_slow_high": True},
+            }
+
+        monkeypatch.setattr(strat, "_evaluate_signals", mock_evaluate)
+
+        history = _make_history([100.0] * 40)
+        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-01", 110.0, history)}
+        # Held position, no hard exits triggered
+        portfolio = prepare.PortfolioState(
+            cash=50000.0,
+            positions={"BTC": 1.0},
+            avg_prices={"BTC": 100.0},
+            position_dates={"BTC": "2025-03-25"},
+            trade_log=[],
+            equity=150000.0,
+            date="2025-04-01",
+        )
+
+        signals = strat.on_bar(bar_data, portfolio)
+
+        # Bear-vote sell triggered at threshold
+        sell_signals = [s for s in signals if s.action == "sell"]
+        assert len(sell_signals) == 1
+        assert sell_signals[0].reason.startswith("Bear votes")
