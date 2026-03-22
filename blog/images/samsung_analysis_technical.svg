@@ -8,12 +8,82 @@
     </defs>
     <rect width="1400" height="800" fill="#f8f9fa"/>
     <text x="700" y="45" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="28" font-weight="bold" fill="#1a1a2e" text-anchor="middle">삼성전자 — 기술적 분석</text>
-    <polyline points="60.0,390.90909090909093 101.05263157894737,376.07655502392345 142.10526315789474,361.244019138756 183.15789473684208,346.41148325358853 224.21052631578945,331.57894736842104 265.2631578947368,316.7464114832536 306.31578947368416,301.9138755980861 347.36842105263156,287.08133971291863 388.4210526315789,272.2488038277512 429.4736842105263,257.4162679425838 470.52631578947364,242.58373205741626 511.5789473684211,227.7511961722488 552.6315789473683,212.91866028708137 593.6842105263158,198.08612440191388 634.7368421052631,183.25358851674642 675.7894736842105,168.42105263157893 716.8421052631578,153.5885167464115 757.8947368421053,138.75598086124404 798.9473684210526,123.92344497607655 840.0,109.09090909090907" fill="none" stroke="#2196F3" stroke-width="2"/>
-    <text x="55" y="409.0" font-family="Arial, sans-serif" font-size="10" fill="#666666" text-anchor="end">65,605</text>
-    <text x="55" y="331.5" font-family="Arial, sans-serif" font-size="10" fill="#666666" text-anchor="end">66,127</text>
-    <text x="55" y="254.0" font-family="Arial, sans-serif" font-size="10" fill="#666666" text-anchor="end">66,650</text>
-    <text x="55" y="176.5" font-family="Arial, sans-serif" font-size="10" fill="#666666" text-anchor="end">67,172</text>
-    <text x="55" y="99.0" font-family="Arial, sans-serif" font-size="10" fill="#666666" text-anchor="end">67,695</text>
+    <line x1="60" y1="338.0" x2="840" y2="338.0" stroke="#e0e0e0" stroke-width="1"/>
+    <text x="55" y="342.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="10" fill="#666666" text-anchor="end">64,005</text>
+    <line x1="60" y1="277.25" x2="840" y2="277.25" stroke="#e0e0e0" stroke-width="1"/>
+    <text x="55" y="281.25" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="10" fill="#666666" text-anchor="end">65,077</text>
+    <line x1="60" y1="216.5" x2="840" y2="216.5" stroke="#e0e0e0" stroke-width="1"/>
+    <text x="55" y="220.5" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="10" fill="#666666" text-anchor="end">66,150</text>
+    <line x1="60" y1="155.75" x2="840" y2="155.75" stroke="#e0e0e0" stroke-width="1"/>
+    <text x="55" y="159.75" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="10" fill="#666666" text-anchor="end">67,222</text>
+    <line x1="60" y1="95.0" x2="840" y2="95.0" stroke="#e0e0e0" stroke-width="1"/>
+    <text x="55" y="99.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="10" fill="#666666" text-anchor="end">68,295</text>
+    <line x1="60" y1="368.0" x2="840" y2="368.0" stroke="#e0e0e0" stroke-width="1"/>
+    <line x1="79.5" y1="213.66783216783216" x2="79.5" y2="326.95454545454544" stroke="#ef5350" stroke-width="1"/>
+    <rect x="65.85" y="385.9917355371901" width="27.299999999999997" height="59.00826446280991" fill="#ef5350" opacity="0.4"/>
+    <line x1="118.5" y1="208.0034965034965" x2="118.5" y2="321.2902097902098" stroke="#ef5350" stroke-width="1"/>
+    <rect x="104.85" y="385.41322314049586" width="27.299999999999997" height="59.586776859504134" fill="#ef5350" opacity="0.4"/>
+    <line x1="157.5" y1="202.33916083916083" x2="157.5" y2="315.62587412587413" stroke="#ef5350" stroke-width="1"/>
+    <rect x="143.85" y="384.8347107438017" width="27.299999999999997" height="60.16528925619835" fill="#ef5350" opacity="0.4"/>
+    <line x1="196.5" y1="196.67482517482517" x2="196.5" y2="309.96153846153845" stroke="#ef5350" stroke-width="1"/>
+    <rect x="182.85" y="384.25619834710744" width="27.299999999999997" height="60.743801652892564" fill="#ef5350" opacity="0.4"/>
+    <line x1="235.5" y1="191.01048951048952" x2="235.5" y2="304.2972027972028" stroke="#ef5350" stroke-width="1"/>
+    <rect x="221.85" y="383.6776859504132" width="27.299999999999997" height="61.32231404958677" fill="#ef5350" opacity="0.4"/>
+    <line x1="274.5" y1="185.34615384615384" x2="274.5" y2="298.63286713286715" stroke="#ef5350" stroke-width="1"/>
+    <rect x="260.85" y="383.099173553719" width="27.299999999999997" height="61.900826446280995" fill="#ef5350" opacity="0.4"/>
+    <line x1="313.5" y1="179.6818181818182" x2="313.5" y2="292.96853146853147" stroke="#ef5350" stroke-width="1"/>
+    <rect x="299.85" y="382.5206611570248" width="27.299999999999997" height="62.47933884297521" fill="#ef5350" opacity="0.4"/>
+    <line x1="352.5" y1="174.01748251748253" x2="352.5" y2="287.3041958041958" stroke="#ef5350" stroke-width="1"/>
+    <rect x="338.85" y="381.9421487603306" width="27.299999999999997" height="63.05785123966942" fill="#ef5350" opacity="0.4"/>
+    <line x1="391.5" y1="168.35314685314685" x2="391.5" y2="281.63986013986016" stroke="#ef5350" stroke-width="1"/>
+    <rect x="377.85" y="381.3636363636364" width="27.299999999999997" height="63.63636363636363" fill="#ef5350" opacity="0.4"/>
+    <line x1="430.5" y1="162.68881118881117" x2="430.5" y2="275.9755244755245" stroke="#ef5350" stroke-width="1"/>
+    <rect x="416.85" y="380.78512396694214" width="27.299999999999997" height="64.21487603305785" fill="#ef5350" opacity="0.4"/>
+    <line x1="469.5" y1="157.02447552447552" x2="469.5" y2="270.3111888111888" stroke="#ef5350" stroke-width="1"/>
+    <rect x="455.85" y="380.2066115702479" width="27.299999999999997" height="64.79338842975207" fill="#ef5350" opacity="0.4"/>
+    <line x1="508.5" y1="151.36013986013987" x2="508.5" y2="264.6468531468531" stroke="#ef5350" stroke-width="1"/>
+    <rect x="494.85" y="379.6280991735537" width="27.299999999999997" height="65.37190082644628" fill="#ef5350" opacity="0.4"/>
+    <line x1="547.5" y1="145.6958041958042" x2="547.5" y2="258.9825174825175" stroke="#ef5350" stroke-width="1"/>
+    <rect x="533.85" y="379.04958677685954" width="27.299999999999997" height="65.95041322314049" fill="#ef5350" opacity="0.4"/>
+    <line x1="586.5" y1="140.03146853146853" x2="586.5" y2="253.3181818181818" stroke="#ef5350" stroke-width="1"/>
+    <rect x="572.85" y="378.4710743801653" width="27.299999999999997" height="66.52892561983471" fill="#ef5350" opacity="0.4"/>
+    <line x1="625.5" y1="134.36713286713288" x2="625.5" y2="247.65384615384613" stroke="#ef5350" stroke-width="1"/>
+    <rect x="611.85" y="377.89256198347107" width="27.299999999999997" height="67.10743801652893" fill="#ef5350" opacity="0.4"/>
+    <line x1="664.5" y1="128.7027972027972" x2="664.5" y2="241.9895104895105" stroke="#ef5350" stroke-width="1"/>
+    <rect x="650.85" y="377.31404958677683" width="27.299999999999997" height="67.68595041322314" fill="#ef5350" opacity="0.4"/>
+    <line x1="703.5" y1="123.03846153846155" x2="703.5" y2="236.32517482517483" stroke="#ef5350" stroke-width="1"/>
+    <rect x="689.85" y="376.73553719008265" width="27.299999999999997" height="68.26446280991735" fill="#ef5350" opacity="0.4"/>
+    <line x1="742.5" y1="117.3741258741259" x2="742.5" y2="230.66083916083915" stroke="#ef5350" stroke-width="1"/>
+    <rect x="728.85" y="376.1570247933884" width="27.299999999999997" height="68.84297520661157" fill="#ef5350" opacity="0.4"/>
+    <line x1="781.5" y1="111.70979020979019" x2="781.5" y2="224.9965034965035" stroke="#ef5350" stroke-width="1"/>
+    <rect x="767.85" y="375.57851239669424" width="27.299999999999997" height="69.42148760330579" fill="#ef5350" opacity="0.4"/>
+    <line x1="820.5" y1="106.04545454545453" x2="820.5" y2="219.33216783216784" stroke="#ef5350" stroke-width="1"/>
+    <rect x="806.85" y="375.0" width="27.299999999999997" height="70.0" fill="#ef5350" opacity="0.4"/>
+    <rect x="65.85" y="241.9895104895105" width="27.299999999999997" height="28.32167832167829" fill="#ef5350"/>
+    <rect x="104.85" y="236.32517482517483" width="27.299999999999997" height="28.32167832167829" fill="#ef5350"/>
+    <rect x="143.85" y="230.66083916083915" width="27.299999999999997" height="28.32167832167835" fill="#ef5350"/>
+    <rect x="182.85" y="224.9965034965035" width="27.299999999999997" height="28.32167832167832" fill="#ef5350"/>
+    <rect x="221.85" y="219.33216783216784" width="27.299999999999997" height="28.32167832167829" fill="#ef5350"/>
+    <rect x="260.85" y="213.66783216783216" width="27.299999999999997" height="28.32167832167835" fill="#ef5350"/>
+    <rect x="299.85" y="208.0034965034965" width="27.299999999999997" height="28.32167832167832" fill="#ef5350"/>
+    <rect x="338.85" y="202.33916083916083" width="27.299999999999997" height="28.32167832167832" fill="#ef5350"/>
+    <rect x="377.85" y="196.67482517482517" width="27.299999999999997" height="28.32167832167832" fill="#ef5350"/>
+    <rect x="416.85" y="191.01048951048952" width="27.299999999999997" height="28.32167832167832" fill="#ef5350"/>
+    <rect x="455.85" y="185.34615384615384" width="27.299999999999997" height="28.32167832167832" fill="#ef5350"/>
+    <rect x="494.85" y="179.6818181818182" width="27.299999999999997" height="28.32167832167832" fill="#ef5350"/>
+    <rect x="533.85" y="174.01748251748253" width="27.299999999999997" height="28.32167832167829" fill="#ef5350"/>
+    <rect x="572.85" y="168.35314685314685" width="27.299999999999997" height="28.32167832167832" fill="#ef5350"/>
+    <rect x="611.85" y="162.68881118881117" width="27.299999999999997" height="28.32167832167835" fill="#ef5350"/>
+    <rect x="650.85" y="157.02447552447552" width="27.299999999999997" height="28.32167832167832" fill="#ef5350"/>
+    <rect x="689.85" y="151.36013986013987" width="27.299999999999997" height="28.32167832167832" fill="#ef5350"/>
+    <rect x="728.85" y="145.6958041958042" width="27.299999999999997" height="28.32167832167835" fill="#ef5350"/>
+    <rect x="767.85" y="140.03146853146853" width="27.299999999999997" height="28.32167832167832" fill="#ef5350"/>
+    <rect x="806.85" y="134.36713286713288" width="27.299999999999997" height="28.32167832167829" fill="#ef5350"/>
+    <text x="79.5" y="363.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="9" fill="#666666" text-anchor="middle">01-02</text>
+    <text x="235.5" y="363.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="9" fill="#666666" text-anchor="middle">01-06</text>
+    <text x="391.5" y="363.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="9" fill="#666666" text-anchor="middle">01-10</text>
+    <text x="547.5" y="363.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="9" fill="#666666" text-anchor="middle">01-14</text>
+    <text x="703.5" y="363.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="9" fill="#666666" text-anchor="middle">01-18</text>
     <rect x="880" y="95" width="230" height="165" fill="#ffffff" stroke="#FF9800" stroke-width="1" rx="8"/>
     <rect x="880" y="95" width="230" height="32" fill="#FF9800" rx="8"/>
     <rect x="880" y="119" width="230" height="8" fill="#FF9800"/>
