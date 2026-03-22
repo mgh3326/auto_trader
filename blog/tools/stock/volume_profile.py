@@ -42,7 +42,7 @@ class VolumeProfile:
         rows = [row for row in ohlcv if required_keys <= row.keys()]
 
         if not rows:
-            return f'    <!-- No valid OHLCV data for volume profile -->\n'
+            return '    <!-- No valid OHLCV data for volume profile -->\n'
 
         # Calculate price range from all rows
         global_min = min(row["low"] for row in rows)

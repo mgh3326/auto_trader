@@ -85,11 +85,9 @@ class CandlestickChart:
         if volume and volume_max > 0:
             price_height = height * 0.78
             volume_height = height * 0.20
-            separator_height = height * 0.02
         else:
             price_height = height
             volume_height = 0
-            separator_height = 0
 
         # Chart area for price (leave room for labels)
         chart_h = int(price_height - 30)
@@ -181,7 +179,6 @@ class CandlestickChart:
             vol = row.get("volume", 0)
 
             is_bullish = close_p > open_p
-            is_bearish = close_p < open_p
 
             color = KOREAN_BULLISH if is_bullish else KOREAN_BEARISH
 
