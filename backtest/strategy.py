@@ -12,7 +12,7 @@ MAX_POSITIONS = 5
 POSITION_SIZE = 0.10
 HOLDING_DAYS = 21
 STOP_LOSS_PCT = 0.05
-COOLDOWN_DAYS = 5  # Days to wait after stop-loss before re-entry
+COOLDOWN_DAYS = 7  # Days to wait after stop-loss before re-entry
 
 
 def _calc_rsi(closes: np.ndarray, period: int) -> float | None:
