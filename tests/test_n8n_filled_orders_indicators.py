@@ -336,10 +336,11 @@ class TestEnrichWithIndicators:
 
     @pytest.mark.asyncio
     async def test_crypto_orders_keep_quote_market_separate_in_indicator_cache(self):
+        from unittest.mock import call
+
         from app.services.n8n_filled_orders_indicators import (
             _enrich_with_indicators,
         )
-        from unittest.mock import call
 
         orders = [
             {"symbol": "BTC", "raw_symbol": "KRW-BTC", "instrument_type": "crypto"},
