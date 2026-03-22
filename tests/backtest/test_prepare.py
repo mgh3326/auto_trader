@@ -13,6 +13,165 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "backtest
 import prepare
 
 
+class TestContractConstants:
+    """Tests for approved contract constants."""
+
+    def test_initial_capital_constant(self):
+        """Test that INITIAL_CAPITAL matches approved value."""
+        assert prepare.INITIAL_CAPITAL == 10_000_000
+
+    def test_slippage_bps_constant(self):
+        """Test that SLIPPAGE_BPS matches approved value."""
+        assert prepare.SLIPPAGE_BPS == 2.0
+
+    def test_lookback_bars_constant(self):
+        """Test that LOOKBACK_BARS matches approved value."""
+        assert prepare.LOOKBACK_BARS == 200
+
+    def test_default_symbols_constant(self):
+        """Test that DEFAULT_SYMBOLS matches approved universe."""
+        expected = ["BTC", "ETH", "SOL", "XRP", "LINK", "ADA", "DOT", "AVAX"]
+        assert prepare.DEFAULT_SYMBOLS == expected
+
+
+class TestContractDataclasses:
+    """Tests for approved dataclass shapes."""
+
+    def test_bar_data_has_symbol_and_history(self):
+        """Test that BarData includes symbol and history fields."""
+        import pandas as pd
+        history = pd.DataFrame({"close": [100.0, 101.0, 102.0]})
+        bar = prepare.BarData(
+            symbol="BTC",
+            date="2025-04-01",
+            open=100.0,
+            high=110.0,
+            low=90.0,
+            close=105.0,
+            volume=1000,
+            value=100000,
+            history=history,
+        )
+        assert bar.symbol == "BTC"
+        assert bar.history is not None
+
+    def test_signal_uses_weight_and_reason(self):
+        """Test that Signal uses weight and reason fields."""
+        signal = prepare.Signal(
+            symbol="BTC",
+            action="buy",
+            weight=0.5,
+            reason="RSI oversold",
+        )
+        assert signal.weight == 0.5
+        assert signal.reason == "RSI oversold"
+
+    def test_portfolio_state_has_equity_and_date(self):
+        """Test that PortfolioState includes equity and date fields."""
+        state = prepare.PortfolioState(
+            cash=100000.0,
+            positions={"BTC": 1.0},
+            avg_prices={"BTC": 90.0},
+            position_dates={"BTC": "2025-03-25"},
+            equity=150000.0,
+            date="2025-04-01",
+            trade_log=[],
+        )
+        assert state.equity == 150000.0
+        assert state.date == "2025-04-01"
+
+    def test_backtest_result_has_win_rate_pct_and_backtest_seconds(self):
+        """Test that BacktestResult includes win_rate_pct and backtest_seconds."""
+        result = prepare.BacktestResult(
+            total_return_pct=15.0,
+            sharpe=1.5,
+            max_drawdown_pct=-10.0,
+            num_trades=20,
+            win_rate_pct=0.6,
+            profit_factor=1.5,
+            avg_holding_days=5.0,
+            backtest_seconds=1.23,
+            trade_log=[],
+            equity_curve=[100000.0, 105000.0],
+        )
+        assert result.win_rate_pct == 0.6
+        assert result.backtest_seconds == 1.23
+
+
+class TestContractStrategySignature:
+    """Tests for approved strategy interface."""
+
+    def test_strategy_on_bar_signature(self):
+        """Test that strategy uses two-argument on_bar signature."""
+        class TestStrategy:
+            def on_bar(self, bar_data, portfolio):
+                return []
+
+        strategy = TestStrategy()
+        bar_data = {}
+        portfolio = prepare.PortfolioState(
+            cash=100000.0,
+            positions={},
+            avg_prices={},
+            position_dates={},
+            trade_log=[],
+        )
+
+        # Should work with just two arguments
+        signals = strategy.on_bar(bar_data, portfolio)
+        assert signals == []
+
+
+class TestContractScoreFormula:
+    """Tests for approved score formula."""
+
+    def test_score_formula_matches_approval(self):
+        """Test that compute_score uses approved formula."""
+        # Create result with specific metrics
+        result = prepare.BacktestResult(
+            total_return_pct=15.0,
+            sharpe=1.5,
+            max_drawdown_pct=25.0,  # > 20, should trigger penalty
+            num_trades=5,  # < 10, should trigger penalty
+            win_rate_pct=0.5,
+            profit_factor=1.5,
+            avg_holding_days=3.0,
+            backtest_seconds=0.0,
+            trade_log=[],
+            equity_curve=[100000.0, 115000.0],
+        )
+
+        score = prepare.compute_score(result)
+
+        # Expected calculation:
+        # score = sharpe = 1.5
+        # max_drawdown_penalty = (25 - 20) * 0.1 = 0.5
+        # num_trades_penalty = 1.0 (since < 10)
+        # final_score = 1.5 - 0.5 - 1.0 = 0.0
+        expected_score = 1.5 - (25.0 - 20.0) * 0.1 - 1.0
+        assert score == pytest.approx(expected_score, abs=0.01)
+
+    def test_score_formula_no_penalty_when_drawdown_low(self):
+        """Test that score has no drawdown penalty when <= 20%."""
+        result = prepare.BacktestResult(
+            total_return_pct=15.0,
+            sharpe=1.5,
+            max_drawdown_pct=15.0,  # <= 20, no penalty
+            num_trades=15,  # >= 10, no penalty
+            win_rate_pct=0.5,
+            profit_factor=1.5,
+            avg_holding_days=3.0,
+            backtest_seconds=0.0,
+            trade_log=[],
+            equity_curve=[100000.0, 115000.0],
+        )
+
+        score = prepare.compute_score(result)
+
+        # Expected: just sharpe = 1.5 (no penalties)
+        assert score == pytest.approx(1.5, abs=0.01)
+
+
 class TestLoadData:
     """Tests for load_data function."""
 
