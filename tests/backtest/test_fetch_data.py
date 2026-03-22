@@ -55,6 +55,66 @@ class TestMarketSelection:
 
         assert result == ["KRW-BTC", "KRW-ETH", "KRW-SOL"]
 
+    def test_main_ranks_full_candidate_set(self, monkeypatch):
+        """Test that main ranks the full candidate set before slicing top-N."""
+        markets = [
+            {"market": "KRW-A", "acc_trade_price_24h": 10},
+            {"market": "KRW-B", "acc_trade_price_24h": 20},
+            {"market": "KRW-C", "acc_trade_price_24h": 30},
+            {"market": "KRW-D", "acc_trade_price_24h": 40},
+            {"market": "KRW-E", "acc_trade_price_24h": 50},
+            {"market": "KRW-F", "acc_trade_price_24h": 60},
+            {"market": "KRW-G", "acc_trade_price_24h": 1_000},
+        ]
+        ticker_values = {market["market"]: market["acc_trade_price_24h"] for market in markets}
+        fetched_markets: list[str] = []
+
+        class FakeResponse:
+            def __init__(self, payload):
+                self._payload = payload
+                self.status_code = 200
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return self._payload
+
+        class FakeClient:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def get(self, url, params=None):
+                market = params["markets"]
+                return FakeResponse([
+                    {"acc_trade_price_24h": ticker_values[market]},
+                ])
+
+        def fake_fetch_markets():
+            return markets
+
+        def fake_fetch_candles(market, days):
+            fetched_markets.append(market)
+            return []
+
+        monkeypatch.setattr(fetch_data, "fetch_markets", fake_fetch_markets)
+        monkeypatch.setattr(fetch_data.httpx, "Client", FakeClient)
+        monkeypatch.setattr(fetch_data, "fetch_candles", fake_fetch_candles)
+        monkeypatch.setattr(fetch_data.time, "sleep", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["fetch_data.py", "--top-n", "3", "--days", "1"],
+        )
+
+        fetch_data.main()
+
+        assert len(fetched_markets) == 3
+        assert "KRW-G" in fetched_markets
+
 
 class TestCandleNormalization:
     """Tests for candle data normalization."""
@@ -182,6 +242,84 @@ class TestMergeDedupe:
         result = fetch_data._merge_with_existing(new_df, parquet_path)
 
         assert result["date"].tolist() == ["2026-03-19", "2026-03-20", "2026-03-21", "2026-03-22"]
+
+
+class TestIncrementalRefresh:
+    """Tests for overlap-window incremental refresh behavior."""
+
+    def test_determine_refresh_days_uses_overlap_window(self):
+        """Test that existing data triggers overlap-window refresh."""
+        existing_df = pd.DataFrame({
+            "date": ["2026-03-18", "2026-03-19", "2026-03-20", "2026-03-21"],
+            "open": [1.0, 1.0, 1.0, 1.0],
+            "high": [1.0, 1.0, 1.0, 1.0],
+            "low": [1.0, 1.0, 1.0, 1.0],
+            "close": [1.0, 1.0, 1.0, 1.0],
+            "volume": [1.0, 1.0, 1.0, 1.0],
+            "value": [1.0, 1.0, 1.0, 1.0],
+        })
+
+        assert fetch_data._determine_refresh_days(existing_df, requested_days=365) == 7
+
+    def test_main_uses_overlap_window_for_existing_parquet(self, tmp_path, monkeypatch):
+        """Test that reruns fetch only the overlap window when parquet exists."""
+        existing_df = pd.DataFrame({
+            "date": ["2026-03-18", "2026-03-19", "2026-03-20", "2026-03-21"],
+            "open": [1.0, 1.0, 1.0, 1.0],
+            "high": [1.0, 1.0, 1.0, 1.0],
+            "low": [1.0, 1.0, 1.0, 1.0],
+            "close": [1.0, 1.0, 1.0, 1.0],
+            "volume": [1.0, 1.0, 1.0, 1.0],
+            "value": [1.0, 1.0, 1.0, 1.0],
+        })
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        existing_df.to_parquet(data_dir / "KRW-BTC.parquet", index=False)
+
+        seen_days: list[int] = []
+
+        def fake_fetch_candles(market, days):
+            seen_days.append(days)
+            return []
+
+        def fake_fetch_markets():
+            return [{"market": "KRW-BTC", "acc_trade_price_24h": 1_000}]
+
+        class FakeResponse:
+            def __init__(self, payload):
+                self._payload = payload
+                self.status_code = 200
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return self._payload
+
+        class FakeClient:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def get(self, url, params=None):
+                return FakeResponse([{"acc_trade_price_24h": 1_000}])
+
+        monkeypatch.setattr(fetch_data, "DATA_DIR", data_dir)
+        monkeypatch.setattr(fetch_data, "fetch_markets", fake_fetch_markets)
+        monkeypatch.setattr(fetch_data.httpx, "Client", FakeClient)
+        monkeypatch.setattr(fetch_data, "fetch_candles", fake_fetch_candles)
+        monkeypatch.setattr(fetch_data.time, "sleep", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["fetch_data.py", "--symbols", "BTC", "--days", "365"],
+        )
+
+        fetch_data.main()
+
+        assert seen_days == [7]
 
 
 class TestCLIOptions:

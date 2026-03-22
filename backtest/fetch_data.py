@@ -43,6 +43,21 @@ def _normalize_symbols(symbols: list[str]) -> list[str]:
     return [f"KRW-{s.upper()}" for s in symbols]
 
 
+def _determine_refresh_days(
+    existing_df: pd.DataFrame | None,
+    requested_days: int,
+    overlap_days: int = 7,
+) -> int:
+    """Return the number of days to fetch for an incremental refresh.
+
+    If we already have local data, we only need a recent overlap window so the
+    rerun can refresh the tail without re-downloading the entire range.
+    """
+    if existing_df is None or existing_df.empty:
+        return max(1, int(requested_days))
+    return max(1, min(int(requested_days), int(overlap_days)))
+
+
 def fetch_markets() -> list[dict]:
     """Fetch all available markets from Upbit."""
     url = f"{UPBIT_API_URL}/market/all"
@@ -183,7 +198,7 @@ def main() -> None:
 
         # Fetch trade prices to sort by volume
         markets_with_price = []
-        for market in krw_markets[:args.top_n * 2]:  # Fetch extra for safety
+        for market in krw_markets:
             try:
                 with httpx.Client() as client:
                     response = client.get(f"{UPBIT_API_URL}/ticker", params={"markets": market["market"]})
@@ -203,8 +218,12 @@ def main() -> None:
 
     for market in markets:
         try:
+            parquet_path = DATA_DIR / f"{market}.parquet"
+            existing_df = pd.read_parquet(parquet_path) if parquet_path.exists() else None
+            refresh_days = _determine_refresh_days(existing_df, args.days)
+
             print(f"  Fetching {market}...", end=" ")
-            candles = fetch_candles(market, args.days)
+            candles = fetch_candles(market, refresh_days)
             if candles:
                 df = _normalize_candles(candles)
                 save_candles(market, df)
