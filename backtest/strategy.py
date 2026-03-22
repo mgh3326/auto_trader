@@ -17,6 +17,9 @@ COOLDOWN_DAYS = 8
 # Multi-Signal Voting Parameters
 MIN_VOTES = 3
 MIN_SELL_VOTES = 2
+TOTAL_BULL_SIGNALS = 6  # Total number of possible bull signals for vote ratio
+
+# Indicator Periods
 MACD_FAST = 12
 MACD_SLOW = 26
 MACD_SIGNAL = 9
@@ -290,7 +293,7 @@ class Strategy:
                 if bull_votes >= MIN_VOTES:
                     # Build list of triggered bull signals for reason string
                     bull_signals = [k.replace("_", " ") for k, v in bull_flags.items() if v]
-                    reason = f"Bull votes {bull_votes}/6: {', '.join(bull_signals[:4])}"
+                    reason = f"Bull votes {bull_votes}/{TOTAL_BULL_SIGNALS}: {', '.join(bull_signals[:4])}"
                     signals.append(prepare.Signal(
                         symbol=symbol, action="buy", weight=POSITION_SIZE,
                         reason=reason,
