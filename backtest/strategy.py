@@ -1,7 +1,14 @@
 """Backtest strategy implementation."""
 
+from typing import TYPE_CHECKING
+
 import numpy as np
+import pandas as pd
+
 import prepare
+
+if TYPE_CHECKING:
+    from pandas import Series
 
 # Strategy Constants
 RSI_PERIOD_FAST = 7
@@ -13,6 +20,23 @@ POSITION_SIZE = 0.10
 HOLDING_DAYS = 21
 STOP_LOSS_PCT = 0.045
 COOLDOWN_DAYS = 8
+
+# Multi-Signal Voting Parameters
+MIN_VOTES = 3
+MIN_SELL_VOTES = 2
+TOTAL_BULL_SIGNALS = 6  # Total number of possible bull signals for vote ratio
+
+# Indicator Periods
+MACD_FAST = 12
+MACD_SLOW = 26
+MACD_SIGNAL = 9
+BB_PERIOD = 20
+BB_STD = 2.0
+EMA_FAST = 10
+EMA_SLOW = 30
+MOMENTUM_PERIOD = 10
+VOLUME_LOOKBACK = 20
+VOLUME_THRESHOLD = 1.5
 
 
 def _calc_rsi(closes: np.ndarray, period: int) -> float | None:
@@ -39,17 +63,94 @@ def _calc_rsi(closes: np.ndarray, period: int) -> float | None:
     return float(rsi)
 
 
+def _calc_ema(closes: np.ndarray, span: int) -> np.ndarray | None:
+    """Calculate EMA using exponential smoothing.
+
+    Returns None if insufficient history (need at least span data points).
+    Returns full EMA array; caller should use [-1] for latest value.
+    """
+    if len(closes) < span:
+        return None
+    return pd.Series(closes).ewm(span=span, adjust=False).mean().values
+
+
+def _calc_macd(
+    closes: np.ndarray, fast: int, slow: int, signal: int
+) -> tuple[float, float, float] | None:
+    """Calculate MACD line, signal line, and histogram.
+
+    Returns (macd_line, signal_line, histogram) or None if insufficient history.
+    """
+    if len(closes) < slow + signal:
+        return None
+    ema_fast = pd.Series(closes).ewm(span=fast, adjust=False).mean()
+    ema_slow = pd.Series(closes).ewm(span=slow, adjust=False).mean()
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    histogram = macd_line - signal_line
+    return float(macd_line.iloc[-1]), float(signal_line.iloc[-1]), float(histogram.iloc[-1])
+
+
+def _calc_bollinger(
+    closes: np.ndarray, period: int, std_mult: float
+) -> tuple[float, float, float] | None:
+    """Calculate Bollinger Bands (upper, middle, lower).
+
+    Returns (upper, middle, lower) or None if insufficient history.
+    """
+    if len(closes) < period:
+        return None
+    middle = np.mean(closes[-period:])
+    std = np.std(closes[-period:])
+    upper = middle + std_mult * std
+    lower = middle - std_mult * std
+    return float(upper), float(middle), float(lower)
+
+
+def _calc_momentum(closes: np.ndarray, period: int) -> float | None:
+    """Calculate price momentum: (current - period_ago) / period_ago * 100.
+
+    Returns momentum value or None if insufficient history.
+    """
+    if len(closes) < period + 1:
+        return None
+    current = closes[-1]
+    past = closes[-(period + 1)]
+    return float((current - past) / past * 100)
+
+
+def _calc_average_volume(volumes: np.ndarray, lookback: int) -> float | None:
+    """Calculate average volume over lookback period.
+
+    Returns average volume or None if insufficient history.
+    """
+    if len(volumes) < lookback:
+        return None
+    return float(np.mean(volumes[-lookback:]))
+
+
+def _format_vote_reason(prefix: str, votes: int, flags: dict[str, bool], limit: int) -> str:
+    """Format vote reason string with triggered signal names.
+
+    Args:
+        prefix: 'Bull' or 'Bear' prefix
+        votes: Number of votes
+        flags: Dict of signal names to triggered status
+        limit: Max number of signal names to include
+
+    Returns:
+        Formatted reason string like 'Bull votes 3/6: signal1, signal2'
+    """
+    total_signals = len(flags)
+    triggered = [k.replace("_", " ") for k, v in flags.items() if v]
+    return f"{prefix} votes {votes}/{total_signals}: {', '.join(triggered[:limit])}"
+
+
 class Strategy:
     """Dual RSI mean-reversion with cooldown after stop-loss."""
 
     def __init__(self) -> None:
         self._stop_loss_dates: dict[str, str] = {}  # symbol -> date of stop-loss
-
-    def _get_rsi(self, bar: prepare.BarData, period: int) -> float | None:
-        if len(bar.history) < period + 1:
-            return None
-        closes = bar.history["close"].values
-        return _calc_rsi(closes, period)
 
     def _days_between(self, date1: str, date2: str) -> int:
         from datetime import datetime
@@ -60,6 +161,71 @@ class Strategy:
         except (ValueError, TypeError):
             return 999
 
+    def _evaluate_signals(self, bar: prepare.BarData) -> dict[str, object] | None:
+        """Evaluate all technical signals and return vote counts.
+
+        Returns a dict with:
+        - rsi_fast, rsi_slow: RSI values
+        - bull_votes: count of bullish signals
+        - bear_votes: count of bearish signals
+        - bull_flags: dict of which bull signals triggered
+        - bear_flags: dict of which bear signals triggered
+        Returns None if insufficient history.
+        """
+        if len(bar.history) < max(RSI_PERIOD_SLOW, BB_PERIOD, EMA_SLOW, MACD_SLOW + MACD_SIGNAL) + 1:
+            return None
+
+        closes = bar.history["close"].values
+        volumes = bar.history["volume"].values
+
+        # Calculate indicators
+        rsi_fast = _calc_rsi(closes, RSI_PERIOD_FAST)
+        rsi_slow = _calc_rsi(closes, RSI_PERIOD_SLOW)
+        macd_result = _calc_macd(closes, MACD_FAST, MACD_SLOW, MACD_SIGNAL)
+        bb_result = _calc_bollinger(closes, BB_PERIOD, BB_STD)
+        ema_fast_result = _calc_ema(closes, EMA_FAST)
+        ema_slow_result = _calc_ema(closes, EMA_SLOW)
+        momentum = _calc_momentum(closes, MOMENTUM_PERIOD)
+        avg_volume = _calc_average_volume(volumes, VOLUME_LOOKBACK)
+
+        if rsi_slow is None:
+            return None
+
+        current_close = closes[-1]
+        current_volume = volumes[-1]
+
+        # Bull votes
+        bull_flags = {
+            "dual_rsi_oversold": rsi_slow <= RSI_OVERSOLD and (rsi_fast is not None and rsi_fast <= RSI_OVERSOLD),
+            "macd_histogram_positive": macd_result is not None and macd_result[2] > 0,  # histogram > 0
+            "close_below_bb_lower": bb_result is not None and current_close < bb_result[2],  # close < lower
+            "ema_fast_above_slow": ema_fast_result is not None and ema_slow_result is not None and ema_fast_result[-1] > ema_slow_result[-1],
+            "momentum_positive": momentum is not None and momentum > 0,
+            "volume_above_avg": avg_volume is not None and current_volume > avg_volume * VOLUME_THRESHOLD,
+        }
+        bull_votes = sum(1 for v in bull_flags.values() if v)
+
+        # Bear votes
+        bear_flags = {
+            "macd_histogram_negative": macd_result is not None and macd_result[2] < 0,  # histogram < 0
+            "close_above_bb_upper": bb_result is not None and current_close > bb_result[0],  # close > upper
+            "ema_fast_below_slow": ema_fast_result is not None and ema_slow_result is not None and ema_fast_result[-1] < ema_slow_result[-1],
+            "momentum_negative": momentum is not None and momentum < 0,
+            "rsi_slow_high": rsi_slow > RSI_EXIT,  # Slow RSI above exit threshold
+        }
+        bear_votes = sum(1 for v in bear_flags.values() if v)
+
+        return {
+            "rsi_fast": rsi_fast,
+            "rsi_slow": rsi_slow,
+            "bull_votes": bull_votes,
+            "bear_votes": bear_votes,
+            "bull_flags": bull_flags,
+            "bear_flags": bear_flags,
+            "macd": macd_result,
+            "bb": bb_result,
+        }
+
     def on_bar(
         self,
         bar_data: dict[str, prepare.BarData],
@@ -69,18 +235,23 @@ class Strategy:
         current_positions = set(portfolio.positions.keys())
 
         for symbol, bar in bar_data.items():
-            rsi_fast = self._get_rsi(bar, RSI_PERIOD_FAST)
-            rsi_slow = self._get_rsi(bar, RSI_PERIOD_SLOW)
-            if rsi_slow is None:
+            # Evaluate all signals and votes
+            signal_data = self._evaluate_signals(bar)
+            if signal_data is None:
                 continue
 
+            rsi_fast = signal_data["rsi_fast"]
+            rsi_slow = signal_data["rsi_slow"]
+            bull_votes = signal_data["bull_votes"]
+            bear_votes = signal_data["bear_votes"]
+            bull_flags = signal_data["bull_flags"]
             is_held = symbol in current_positions
 
-            # Sell logic
+            # Sell logic - hard exits in priority order
             if is_held:
                 avg_price = portfolio.avg_prices.get(symbol, 0)
 
-                # Stop-loss
+                # 1. Stop-loss (highest priority)
                 if avg_price > 0 and bar.close < avg_price * (1 - STOP_LOSS_PCT):
                     signals.append(prepare.Signal(
                         symbol=symbol, action="sell", weight=1.0,
@@ -90,7 +261,7 @@ class Strategy:
                     self._stop_loss_dates[symbol] = portfolio.date
                     continue
 
-                # Exit when RSI recovers (mean-reversion exit)
+                # 2. RSI recovery exit (when profitable)
                 if rsi_slow >= RSI_EXIT and bar.close > avg_price:
                     signals.append(prepare.Signal(
                         symbol=symbol, action="sell", weight=1.0,
@@ -99,7 +270,7 @@ class Strategy:
                     current_positions.discard(symbol)
                     continue
 
-                # Sell on holding period exceeded
+                # 3. Max holding period exit
                 entry_date = portfolio.position_dates.get(symbol)
                 if entry_date:
                     holding_days = self._days_between(entry_date, portfolio.date)
@@ -111,7 +282,19 @@ class Strategy:
                         current_positions.discard(symbol)
                         continue
 
-            # Buy logic
+                # 4. Bear-vote exit (optional, only if no hard exit triggered)
+                if bear_votes >= MIN_SELL_VOTES:
+                    reason = _format_vote_reason(
+                        "Bear", bear_votes, signal_data["bear_flags"], 3
+                    )
+                    signals.append(prepare.Signal(
+                        symbol=symbol, action="sell", weight=1.0,
+                        reason=reason,
+                    ))
+                    current_positions.discard(symbol)
+                    continue
+
+            # Buy logic - vote threshold based
             if not is_held and len(current_positions) < MAX_POSITIONS:
                 # Check cooldown after stop-loss
                 if symbol in self._stop_loss_dates:
@@ -121,11 +304,14 @@ class Strategy:
                     else:
                         del self._stop_loss_dates[symbol]
 
-                both_oversold = rsi_slow <= RSI_OVERSOLD and (rsi_fast is not None and rsi_fast <= RSI_OVERSOLD)
-                if both_oversold:
+                # Buy on sufficient bull votes
+                if bull_votes >= MIN_VOTES:
+                    reason = _format_vote_reason(
+                        "Bull", bull_votes, bull_flags, 4
+                    )
                     signals.append(prepare.Signal(
                         symbol=symbol, action="buy", weight=POSITION_SIZE,
-                        reason=f"Dual RSI oversold (f={rsi_fast:.0f}, s={rsi_slow:.0f})",
+                        reason=reason,
                     ))
                     current_positions.add(symbol)
 
