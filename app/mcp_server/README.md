@@ -148,6 +148,11 @@ Derived fields:
 - `quantity=None` (full sell) defaults to the orderable balance.
 - If `quantity > orderable balance`, the tool returns `success: false` with an error containing `requested`, `orderable`, and `locked` values instead of forwarding to Upbit.
 
+### Crypto stop-loss cooldown (Phase 2 strategy)
+- `place_order(..., side="buy", market="crypto")` may reject buys while a stop-loss cooldown is active; returns `success: false` with cooldown message
+- `place_order(..., side="sell", market="crypto")` automatically records an 8-day stop-loss cooldown after a non-dry-run sell when `current_price <= avg_buy_price * (1 - 0.045)` (4.5% stop-loss)
+- Dry-run sells do not record cooldown; profitable sells (above stop-loss threshold) do not record cooldown
+
 ### KR order routing
 - Domestic order tools (`place_order`, `modify_order`, `cancel_order` with `market="kr"`) use the new KIS TR IDs (`TTTC0012U/TTTC0011U/TTTC0013U`, mock: `VTTC0012U/VTTC0011U/VTTC0013U`).
 - Domestic order requests (`order-cash`, `order-rvsecncl`) route with `EXCG_ID_DVSN_CD="SOR"`.
