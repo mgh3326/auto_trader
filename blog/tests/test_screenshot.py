@@ -248,6 +248,33 @@ class TestScreenshotCaptureUnit:
             assert capture._browser_instance == "cached-id"
             assert mock_call.call_count == 1  # No additional calls
 
+    def test_ensure_browser_passes_required_spawn_options(self, monkeypatch) -> None:
+        """_ensure_browser should pass spawn options required by this phase."""
+        from blog.tools.screenshot_capture import ScreenshotCapture
+
+        calls = []
+
+        def fake_call(self, selector, params=None):
+            calls.append((selector, params))
+            return {"instance_id": "browser-1"}
+
+        monkeypatch.setattr(ScreenshotCapture, "_mcporter_call", fake_call)
+        capture = ScreenshotCapture()
+
+        instance_id = capture._ensure_browser()
+
+        assert instance_id == "browser-1"
+        assert calls == [
+            (
+                "playwright.browser_navigate",
+                {
+                    "headless": False,
+                    "viewport_width": 1400,
+                    "viewport_height": 900,
+                },
+            )
+        ]
+
     def test_close_calls_close_method_once(self) -> None:
         """close() should call the close method once and clear cached ID."""
         from blog.tools.screenshot_capture import ScreenshotCapture
