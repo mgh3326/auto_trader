@@ -1,7 +1,14 @@
 """Backtest strategy implementation."""
 
+from typing import TYPE_CHECKING
+
 import numpy as np
+import pandas as pd
+
 import prepare
+
+if TYPE_CHECKING:
+    from pandas import Series
 
 # Strategy Constants
 RSI_PERIOD_FAST = 7
@@ -64,8 +71,6 @@ def _calc_ema(closes: np.ndarray, span: int) -> np.ndarray | None:
     """
     if len(closes) < span:
         return None
-    # Use pandas ewm for accurate EMA calculation
-    import pandas as pd
     return pd.Series(closes).ewm(span=span, adjust=False).mean().values
 
 
@@ -78,7 +83,6 @@ def _calc_macd(
     """
     if len(closes) < slow + signal:
         return None
-    import pandas as pd
     ema_fast = pd.Series(closes).ewm(span=fast, adjust=False).mean()
     ema_slow = pd.Series(closes).ewm(span=slow, adjust=False).mean()
     macd_line = ema_fast - ema_slow
@@ -125,17 +129,28 @@ def _calc_average_volume(volumes: np.ndarray, lookback: int) -> float | None:
     return float(np.mean(volumes[-lookback:]))
 
 
+def _format_vote_reason(prefix: str, votes: int, flags: dict[str, bool], limit: int) -> str:
+    """Format vote reason string with triggered signal names.
+
+    Args:
+        prefix: 'Bull' or 'Bear' prefix
+        votes: Number of votes
+        flags: Dict of signal names to triggered status
+        limit: Max number of signal names to include
+
+    Returns:
+        Formatted reason string like 'Bull votes 3/6: signal1, signal2'
+    """
+    total_signals = len(flags)
+    triggered = [k.replace("_", " ") for k, v in flags.items() if v]
+    return f"{prefix} votes {votes}/{total_signals}: {', '.join(triggered[:limit])}"
+
+
 class Strategy:
     """Dual RSI mean-reversion with cooldown after stop-loss."""
 
     def __init__(self) -> None:
         self._stop_loss_dates: dict[str, str] = {}  # symbol -> date of stop-loss
-
-    def _get_rsi(self, bar: prepare.BarData, period: int) -> float | None:
-        if len(bar.history) < period + 1:
-            return None
-        closes = bar.history["close"].values
-        return _calc_rsi(closes, period)
 
     def _days_between(self, date1: str, date2: str) -> int:
         from datetime import datetime
@@ -146,7 +161,7 @@ class Strategy:
         except (ValueError, TypeError):
             return 999
 
-    def _evaluate_signals(self, bar: prepare.BarData) -> dict | None:
+    def _evaluate_signals(self, bar: prepare.BarData) -> dict[str, object] | None:
         """Evaluate all technical signals and return vote counts.
 
         Returns a dict with:
@@ -269,9 +284,9 @@ class Strategy:
 
                 # 4. Bear-vote exit (optional, only if no hard exit triggered)
                 if bear_votes >= MIN_SELL_VOTES:
-                    # Build list of triggered bear signals for reason string
-                    bear_signals = [k.replace("_", " ") for k, v in signal_data["bear_flags"].items() if v]
-                    reason = f"Bear votes {bear_votes}: {', '.join(bear_signals[:3])}"
+                    reason = _format_vote_reason(
+                        "Bear", bear_votes, signal_data["bear_flags"], 3
+                    )
                     signals.append(prepare.Signal(
                         symbol=symbol, action="sell", weight=1.0,
                         reason=reason,
@@ -291,9 +306,9 @@ class Strategy:
 
                 # Buy on sufficient bull votes
                 if bull_votes >= MIN_VOTES:
-                    # Build list of triggered bull signals for reason string
-                    bull_signals = [k.replace("_", " ") for k, v in bull_flags.items() if v]
-                    reason = f"Bull votes {bull_votes}/{TOTAL_BULL_SIGNALS}: {', '.join(bull_signals[:4])}"
+                    reason = _format_vote_reason(
+                        "Bull", bull_votes, bull_flags, 4
+                    )
                     signals.append(prepare.Signal(
                         symbol=symbol, action="buy", weight=POSITION_SIZE,
                         reason=reason,
