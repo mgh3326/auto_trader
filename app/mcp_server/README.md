@@ -30,6 +30,7 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - US quote response keeps `source: "yahoo"` and includes `previous_close/open/high/low/volume` from Yahoo `fast_info`
   - US equity Yahoo lookup failures are propagated as tool-level errors (exceptions), not returned as in-band error payload dicts
 - `get_holdings(account=None, market=None, include_current_price=True, minimum_value=None)`
+  - Crypto positions may include optional `strategy_signal` field when Phase 2 exit logic triggers (4.5% stop-loss or RSI > 46 mean-reversion on profitable positions)
 - `get_position(symbol, market=None)`
 - `get_ohlcv(symbol, count=100, period="day", end_date=None, market=None, include_indicators=False)`
   - period: `day`, `week`, `month`, `1m`, `5m`, `15m`, `30m`, `4h`, `1h`

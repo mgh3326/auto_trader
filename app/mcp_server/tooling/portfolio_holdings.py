@@ -108,6 +108,51 @@ PORTFOLIO_TOOL_NAMES: set[str] = {
     "update_manual_holdings",
 }
 
+# Phase 2 strategy constants for crypto exit signals
+CRYPTO_STOP_LOSS_PCT = -4.5
+CRYPTO_MEAN_REVERSION_RSI_EXIT = 46.0
+
+
+def _build_crypto_strategy_signal(
+    position: dict[str, Any],
+    *,
+    rsi_14: float | None,
+) -> dict[str, Any] | None:
+    """Build strategy signal for crypto positions based on Phase 2 rules.
+
+    Priority:
+    1. Stop-loss when profit_rate <= -4.5%
+    2. Mean-reversion exit when profit_rate > 0 and RSI 14 > 46
+
+    Args:
+        position: Position dict with profit_rate
+        rsi_14: Real-time RSI 14 value (optional)
+
+    Returns:
+        Strategy signal dict or None if no signal
+    """
+    profit_rate = _to_optional_float(position.get("profit_rate"))
+    if profit_rate is None:
+        return None
+
+    # Stop-loss takes priority
+    if profit_rate <= CRYPTO_STOP_LOSS_PCT:
+        return {
+            "action": "sell",
+            "reason": "stop_loss",
+            "threshold_pct": CRYPTO_STOP_LOSS_PCT,
+        }
+
+    # Mean-reversion exit when profitable and RSI > 46
+    if profit_rate > 0 and rsi_14 is not None and rsi_14 > CRYPTO_MEAN_REVERSION_RSI_EXIT:
+        return {
+            "action": "sell",
+            "reason": "mean_reversion_exit",
+            "rsi_14": rsi_14,
+        }
+
+    return None
+
 
 async def _collect_kis_positions(
     market_filter: str | None,
@@ -711,6 +756,32 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
             filter_reason = "minimum_value filter skipped (include_current_price=False)"
         else:
             filter_reason = "minimum_value filter disabled"
+
+        # Compute Phase 2 strategy signals for crypto positions
+        if include_current_price:
+            crypto_positions = [
+                p for p in positions
+                if p.get("instrument_type") == "crypto" and p.get("current_price") is not None
+            ]
+            if crypto_positions:
+                # Fetch RSI for crypto positions
+                rsi_tasks = []
+                for position in crypto_positions:
+                    symbol = position.get("symbol", "")
+                    rsi_tasks.append(
+                        _get_indicators_impl(symbol, ["rsi"], market="crypto")
+                    )
+                try:
+                    rsi_results = await asyncio.gather(*rsi_tasks, return_exceptions=True)
+                    for position, rsi_result in zip(crypto_positions, rsi_results):
+                        if isinstance(rsi_result, Exception):
+                            continue
+                        rsi_14 = rsi_result.get("indicators", {}).get("rsi", {}).get("14")
+                        signal = _build_crypto_strategy_signal(position, rsi_14=rsi_14)
+                        if signal:
+                            position["strategy_signal"] = signal
+                except Exception as exc:
+                    logger.debug("Failed to compute crypto strategy signals: %s", exc)
 
         grouped_accounts: dict[str, dict[str, Any]] = {}
         for position in positions:
