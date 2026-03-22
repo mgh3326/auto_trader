@@ -307,6 +307,73 @@ class TestEnrichWithIndicators:
         assert result[1]["indicators"].get("fear_greed") is None
         assert result[2]["indicators"].get("fear_greed") is None
 
+    @pytest.mark.asyncio
+    async def test_crypto_orders_use_raw_symbol_for_indicator_lookup(self):
+        from app.services.n8n_filled_orders_indicators import (
+            _enrich_with_indicators,
+        )
+
+        orders = [
+            {"symbol": "APT", "raw_symbol": "KRW-APT", "instrument_type": "crypto"},
+        ]
+
+        mock_compute = AsyncMock(return_value={"rsi_14": 42.0})
+
+        with (
+            patch(
+                "app.services.n8n_filled_orders_indicators._compute_review_indicators",
+                mock_compute,
+            ),
+            patch(
+                "app.services.n8n_filled_orders_indicators.fetch_fear_greed",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            await _enrich_with_indicators(orders)
+
+        mock_compute.assert_awaited_once_with("KRW-APT", "crypto")
+
+    @pytest.mark.asyncio
+    async def test_crypto_orders_keep_quote_market_separate_in_indicator_cache(self):
+        from unittest.mock import call
+
+        from app.services.n8n_filled_orders_indicators import (
+            _enrich_with_indicators,
+        )
+
+        orders = [
+            {"symbol": "BTC", "raw_symbol": "KRW-BTC", "instrument_type": "crypto"},
+            {"symbol": "BTC", "raw_symbol": "USDT-BTC", "instrument_type": "crypto"},
+        ]
+
+        mock_compute = AsyncMock(
+            side_effect=[
+                {"rsi_14": 10.0},
+                {"rsi_14": 20.0},
+            ]
+        )
+
+        with (
+            patch(
+                "app.services.n8n_filled_orders_indicators._compute_review_indicators",
+                mock_compute,
+            ),
+            patch(
+                "app.services.n8n_filled_orders_indicators.fetch_fear_greed",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            result = await _enrich_with_indicators(orders)
+
+        assert mock_compute.await_args_list == [
+            call("KRW-BTC", "crypto"),
+            call("USDT-BTC", "crypto"),
+        ]
+        assert result[0]["indicators"]["rsi_14"] == 10.0
+        assert result[1]["indicators"]["rsi_14"] == 20.0
+
 
 @pytest.mark.unit
 class TestFilledOrderSchema:
@@ -401,16 +468,17 @@ class TestFetchFilledOrdersWithIndicators:
 
     @pytest.mark.asyncio
     async def test_include_indicators_true_calls_enrichment(self):
+        """Verify service passes orders with both stripped symbol and raw_symbol."""
         from app.services.n8n_filled_orders_service import fetch_filled_orders
 
         mock_orders = [
             {
-                "symbol": "BTC",
-                "raw_symbol": "KRW-BTC",
+                "symbol": "APT",
+                "raw_symbol": "KRW-APT",
                 "instrument_type": "crypto",
                 "side": "buy",
-                "price": 100_000_000,
-                "total_amount": 1_000_000,
+                "price": 100_000,
+                "total_amount": 100_000,
                 "filled_at": "2026-03-22T10:00:00+09:00",
             },
         ]
@@ -442,9 +510,12 @@ class TestFetchFilledOrdersWithIndicators:
                 side_effect=lambda o: o,
             ) as mock_enrich,
         ):
-            await fetch_filled_orders(days=1, include_indicators=True)
+            result = await fetch_filled_orders(days=1, include_indicators=True)
 
         mock_enrich.assert_called_once()
+        # Verify order shape includes both stripped symbol and raw_symbol for lookup
+        assert result["orders"][0]["raw_symbol"] == "KRW-APT"
+        assert result["orders"][0]["symbol"] == "APT"
 
 
 @pytest.mark.unit

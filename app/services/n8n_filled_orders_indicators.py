@@ -31,9 +31,13 @@ async def _compute_review_indicators(
 
     Returns dict with rsi_14, rsi_7, ema_20, ema_200, macd, macd_signal,
     adx, stoch_rsi_k, volume_ratio. Returns None on failure.
+
+    Note: For crypto, caller must pass raw_symbol (e.g., 'KRW-BTC', 'USDT-BTC')
+    to ensure correct OHLCV lookup. This function does not reconstruct market prefix.
     """
     try:
         market_type = instrument_type  # crypto / equity_kr / equity_us
+        # crypto caller passes raw_symbol (e.g., KRW-BTC) for correct OHLCV lookup
         df = await _fetch_ohlcv_for_indicators(symbol, market_type, count=250)
 
         if df.empty or len(df) < _MIN_OHLCV_ROWS:
@@ -87,12 +91,24 @@ def _calc_volume_ratio(volume: pd.Series) -> float | None:
 _INDICATOR_CONCURRENCY = 5
 
 
+def _indicator_lookup_key(order: dict[str, Any]) -> tuple[str, str]:
+    """Return (lookup_symbol, instrument_type) for indicator fetch.
+
+    - Crypto uses raw_symbol (e.g., 'KRW-APT') to preserve market prefix.
+    - Equity uses symbol as-is.
+    """
+    instrument_type = str(order["instrument_type"])
+    if instrument_type == "crypto":
+        return str(order.get("raw_symbol") or order["symbol"]), instrument_type
+    return str(order["symbol"]), instrument_type
+
+
 async def _enrich_with_indicators(
     orders: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Enrich filled orders with technical indicators per unique symbol.
 
-    - Deduplicates symbols (same symbol fetched once).
+    - Deduplicates by lookup key (respects raw_symbol for crypto).
     - Fetches Fear & Greed Index once (crypto orders only).
     - Concurrency-limited to _INDICATOR_CONCURRENCY parallel fetches.
     - Best-effort: failures yield indicators=None for that order.
@@ -100,19 +116,18 @@ async def _enrich_with_indicators(
     if not orders:
         return orders
 
-    # Deduplicate: (symbol, instrument_type) -> indicators
+    # Deduplicate: (lookup_symbol, instrument_type) -> indicators
     unique_symbols: dict[tuple[str, str], None] = {}
     for order in orders:
-        key = (order["symbol"], order["instrument_type"])
-        unique_symbols[key] = None
+        unique_symbols[_indicator_lookup_key(order)] = None
 
     sem = asyncio.Semaphore(_INDICATOR_CONCURRENCY)
-    indicators_map: dict[str, dict[str, Any] | None] = {}
+    indicators_map: dict[tuple[str, str], dict[str, Any] | None] = {}
 
-    async def _fetch_one(symbol: str, instrument_type: str) -> None:
+    async def _fetch_one(lookup_symbol: str, instrument_type: str) -> None:
         async with sem:
-            result = await _compute_review_indicators(symbol, instrument_type)
-            indicators_map[symbol] = result
+            result = await _compute_review_indicators(lookup_symbol, instrument_type)
+            indicators_map[(lookup_symbol, instrument_type)] = result
 
     await asyncio.gather(
         *[_fetch_one(sym, itype) for sym, itype in unique_symbols],
@@ -133,7 +148,8 @@ async def _enrich_with_indicators(
 
     # Map indicators to orders
     for order in orders:
-        base = indicators_map.get(order["symbol"])
+        lookup_key = _indicator_lookup_key(order)
+        base = indicators_map.get(lookup_key)
         if base is None:
             order["indicators"] = None
             continue
