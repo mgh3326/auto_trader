@@ -1,0 +1,1 @@
+"""Buy and hold benchmark strategy."""
