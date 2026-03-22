@@ -259,6 +259,188 @@ class TestLoadData:
         assert dates == sorted(dates)
 
 
+class TestWarmupHistory:
+    """Tests for preserving pre-split warmup history."""
+
+    def test_run_backtest_includes_presplit_rows_in_history(self, tmp_path, monkeypatch):
+        """Test that BarData.history includes pre-split rows for the first split bar."""
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+
+        dates = pd.date_range("2025-06-20", "2025-07-05", freq="D").strftime("%Y-%m-%d")
+        btc_df = pd.DataFrame(
+            {
+                "date": list(dates),
+                "open": np.arange(len(dates), dtype=float) + 100.0,
+                "high": np.arange(len(dates), dtype=float) + 101.0,
+                "low": np.arange(len(dates), dtype=float) + 99.0,
+                "close": np.arange(len(dates), dtype=float) + 100.0,
+                "volume": np.arange(len(dates), dtype=float) + 1000.0,
+                "value": np.arange(len(dates), dtype=float) + 10000.0,
+            }
+        )
+        btc_df.to_parquet(data_dir / "KRW-BTC.parquet", index=False)
+
+        monkeypatch.setattr(prepare, "DATA_DIR", data_dir)
+        monkeypatch.setattr(prepare, "DEFAULT_SYMBOLS", ["BTC"])
+        monkeypatch.setattr(
+            prepare,
+            "SPLITS",
+            {"val": {"start": "2025-07-01", "end": "2025-07-05"}},
+        )
+
+        captured_lengths: list[int] = []
+
+        class CaptureHistoryStrategy:
+            def on_bar(self, bar_data, portfolio):
+                if not captured_lengths:
+                    captured_lengths.extend(
+                        len(bar.history) for bar in bar_data.values()
+                    )
+                return []
+
+        result = prepare.run_backtest(prepare.load_data("val"), CaptureHistoryStrategy())
+
+        assert result.num_trades == 0
+        assert result.equity_curve
+        assert result.equity_curve[0] == pytest.approx(prepare.INITIAL_CAPITAL)
+        assert captured_lengths
+        assert captured_lengths[0] > 1
+
+    def test_first_split_bar_has_warmup_history(self, tmp_path, monkeypatch):
+        """Test that the first split bar sees pre-split history when it exists."""
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+
+        dates = pd.date_range("2025-06-20", "2025-07-05", freq="D").strftime("%Y-%m-%d")
+        btc_df = pd.DataFrame(
+            {
+                "date": list(dates),
+                "open": np.arange(len(dates), dtype=float) + 100.0,
+                "high": np.arange(len(dates), dtype=float) + 101.0,
+                "low": np.arange(len(dates), dtype=float) + 99.0,
+                "close": np.arange(len(dates), dtype=float) + 100.0,
+                "volume": np.arange(len(dates), dtype=float) + 1000.0,
+                "value": np.arange(len(dates), dtype=float) + 10000.0,
+            }
+        )
+        btc_df.to_parquet(data_dir / "KRW-BTC.parquet", index=False)
+
+        monkeypatch.setattr(prepare, "DATA_DIR", data_dir)
+        monkeypatch.setattr(prepare, "DEFAULT_SYMBOLS", ["BTC"])
+        monkeypatch.setattr(
+            prepare,
+            "SPLITS",
+            {"val": {"start": "2025-07-01", "end": "2025-07-05"}},
+        )
+
+        captured_lengths: list[int] = []
+
+        class CaptureHistoryStrategy:
+            def on_bar(self, bar_data, portfolio):
+                if not captured_lengths:
+                    captured_lengths.extend(
+                        len(bar.history) for bar in bar_data.values()
+                    )
+                return []
+
+        prepare.run_backtest(prepare.load_data("val"), CaptureHistoryStrategy())
+
+        assert captured_lengths
+        assert captured_lengths[0] > 1
+
+
+class TestFeeAwarePnL:
+    """Tests for fee-aware realized PnL and trade metrics."""
+
+    def test_realized_pnl_counts_buy_and_sell_fees(self, tmp_path, monkeypatch):
+        """Test that a tiny gross gain becomes a net loss after fees on both legs."""
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+
+        btc_df = pd.DataFrame(
+            {
+                "date": ["2025-07-01", "2025-07-02"],
+                "open": [100.0, 100.06],
+                "high": [100.0, 100.06],
+                "low": [100.0, 100.06],
+                "close": [100.0, 100.06],
+                "volume": [1000.0, 1000.0],
+                "value": [100000.0, 100060.0],
+            }
+        )
+        btc_df.to_parquet(data_dir / "KRW-BTC.parquet", index=False)
+
+        monkeypatch.setattr(prepare, "DATA_DIR", data_dir)
+        monkeypatch.setattr(prepare, "DEFAULT_SYMBOLS", ["BTC"])
+        monkeypatch.setattr(
+            prepare,
+            "SPLITS",
+            {"val": {"start": "2025-07-01", "end": "2025-07-02"}},
+        )
+
+        class RoundTripStrategy:
+            def on_bar(self, bar_data, portfolio):
+                if portfolio.date == "2025-07-01" and "BTC" not in portfolio.positions:
+                    return [prepare.Signal(symbol="BTC", action="buy", weight=1.0)]
+                if portfolio.date == "2025-07-02" and "BTC" in portfolio.positions:
+                    return [prepare.Signal(symbol="BTC", action="sell", weight=1.0)]
+                return []
+
+        result = prepare.run_backtest(
+            prepare.load_data("val"),
+            RoundTripStrategy(),
+            initial_capital=1_000_000.0,
+        )
+
+        assert result.num_trades == 2
+        assert result.trade_log[1]["realized_pnl"] < 0
+        assert result.win_rate_pct == 0.0
+        assert result.profit_factor == 0.0
+
+    def test_buy_fee_affects_cost_basis(self, tmp_path, monkeypatch):
+        """Test that buy-side fees affect the eventual realized PnL."""
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+
+        btc_df = pd.DataFrame(
+            {
+                "date": ["2025-07-01", "2025-07-02"],
+                "open": [100.0, 100.06],
+                "high": [100.0, 100.06],
+                "low": [100.0, 100.06],
+                "close": [100.0, 100.06],
+                "volume": [1000.0, 1000.0],
+                "value": [100000.0, 100060.0],
+            }
+        )
+        btc_df.to_parquet(data_dir / "KRW-BTC.parquet", index=False)
+
+        monkeypatch.setattr(prepare, "DATA_DIR", data_dir)
+        monkeypatch.setattr(prepare, "DEFAULT_SYMBOLS", ["BTC"])
+        monkeypatch.setattr(
+            prepare,
+            "SPLITS",
+            {"val": {"start": "2025-07-01", "end": "2025-07-02"}},
+        )
+
+        class RoundTripStrategy:
+            def on_bar(self, bar_data, portfolio):
+                if portfolio.date == "2025-07-01" and "BTC" not in portfolio.positions:
+                    return [prepare.Signal(symbol="BTC", action="buy", weight=1.0)]
+                if portfolio.date == "2025-07-02" and "BTC" in portfolio.positions:
+                    return [prepare.Signal(symbol="BTC", action="sell", weight=1.0)]
+                return []
+
+        result = prepare.run_backtest(
+            prepare.load_data("val"),
+            RoundTripStrategy(),
+            initial_capital=1_000_000.0,
+        )
+
+        assert result.trade_log[1]["realized_pnl"] < 0
+
+
 class TestExecutionCosts:
     """Tests for execution with slippage and fees."""
 

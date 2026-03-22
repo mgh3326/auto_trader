@@ -236,9 +236,10 @@ def _calc_realized_pnl(
     qty: float,
     avg_price: float,
     sell_price: float,
+    sell_fee: float,
 ) -> float:
     """Calculate realized PnL for a sell."""
-    return (sell_price - avg_price) * qty
+    return (sell_price * qty - sell_fee) - (avg_price * qty)
 
 
 def _execute_signal(
@@ -269,11 +270,12 @@ def _execute_signal(
                 # Update position
                 current_qty = state.positions.get(signal.symbol, 0)
                 current_avg = state.avg_prices.get(signal.symbol, 0)
+                effective_buy_price = total_cost / quantity
 
                 new_state.cash = state.cash - total_cost
                 new_state.positions[signal.symbol] = current_qty + quantity
                 new_state.avg_prices[signal.symbol] = _update_avg_price(
-                    current_qty, current_avg, quantity, price
+                    current_qty, current_avg, quantity, effective_buy_price
                 )
                 new_state.position_dates[signal.symbol] = bar.date
 
@@ -301,7 +303,7 @@ def _execute_signal(
                 fee = _calc_fee(proceeds)
                 net_proceeds = proceeds - fee
                 avg_price = state.avg_prices.get(signal.symbol, 0)
-                realized_pnl = _calc_realized_pnl(quantity, avg_price, price)
+                realized_pnl = _calc_realized_pnl(quantity, avg_price, price, fee)
 
                 # Update position
                 new_state.cash = state.cash + net_proceeds
@@ -346,7 +348,7 @@ def run_backtest(
     import time
     start_time = time.time()
 
-    # Build unified date sequence
+    # Build unified date sequence from the split window only.
     all_dates = set()
     for df in data.values():
         all_dates.update(df["date"].tolist())
@@ -366,10 +368,14 @@ def run_backtest(
             equity_curve=[initial_capital],
         )
 
-    # Pre-index data by symbol for efficient lookup
+    # Pre-index data by symbol for efficient lookup.
+    # Prefer the on-disk source when available so history can include
+    # pre-split warmup bars even if `load_data()` filtered them out.
     indexed_data: dict[str, pd.DataFrame] = {}
     for symbol, df in data.items():
-        indexed_data[symbol] = df.set_index("date").sort_index()
+        full_path = DATA_DIR / f"KRW-{symbol}.parquet"
+        source_df = pd.read_parquet(full_path) if full_path.exists() else df
+        indexed_data[symbol] = source_df.set_index("date").sort_index()
 
     # Initialize state
     state = PortfolioState(
