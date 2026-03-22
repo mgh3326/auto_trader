@@ -111,6 +111,13 @@ class TestPriceChart:
         )
         assert isinstance(svg, str)
 
+    def test_line_chart_no_new_args(self) -> None:
+        """Ensure legacy line chart works without chart_type arg."""
+        from blog.tools.stock.price_chart import PriceChart
+
+        svg = PriceChart.create(x=60, y=95, width=800, height=350, ohlcv=SAMPLE_OHLCV)
+        assert "<polyline" in svg
+
 
 class TestSupportResistance:
     def test_basic_levels(self) -> None:

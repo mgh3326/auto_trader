@@ -74,6 +74,16 @@ SAMPLE_DATA = {
         }
         for d in range(2, 22)
     ],
+    # Lightweight deterministic overlay values for full renderer coverage
+    "ema_values": {
+        "EMA20": [65200 + d * 100 for d in range(20)],
+        "EMA60": [65100 + d * 100 for d in range(20)],
+    },
+    "bollinger": {
+        "upper": [66500 + d * 100 for d in range(20)],
+        "lower": [63500 + d * 100 for d in range(20)],
+        "middle": [65000 + d * 100 for d in range(20)],
+    },
 }
 
 
@@ -135,6 +145,11 @@ class TestStockAnalysisPreset:
             content = tech.read_text()
             assert "RSI" in content
             assert "MACD" in content
+            # Candlestick chart elements
+            assert "<rect" in content  # Candle bodies and volume bars
+            assert "opacity=" in content  # Volume bars use opacity
+            # Bollinger and EMA overlays
+            assert "<polygon" in content  # Bollinger fill area
 
     def test_stock_thumbnail_uses_theme_and_icons(self) -> None:
         from blog.tools.presets.stock_analysis import StockAnalysisPreset

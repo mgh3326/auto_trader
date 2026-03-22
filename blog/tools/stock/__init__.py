@@ -4,6 +4,7 @@ These components consume MCP API response dicts and produce
 SVG fragments for stock analysis images.
 """
 
+from blog.tools.stock.candlestick_chart import CandlestickChart
 from blog.tools.stock.conclusion_card import ConclusionCard
 from blog.tools.stock.earnings_chart import EarningsChart
 from blog.tools.stock.indicator_dashboard import IndicatorDashboard
@@ -12,8 +13,10 @@ from blog.tools.stock.opinion_table import OpinionTable
 from blog.tools.stock.price_chart import PriceChart
 from blog.tools.stock.support_resistance import SupportResistance
 from blog.tools.stock.valuation_cards import ValuationCards
+from blog.tools.stock.volume_profile import VolumeProfile
 
 __all__ = [
+    "CandlestickChart",
     "ConclusionCard",
     "EarningsChart",
     "IndicatorDashboard",
@@ -22,4 +25,5 @@ __all__ = [
     "PriceChart",
     "SupportResistance",
     "ValuationCards",
+    "VolumeProfile",
 ]
