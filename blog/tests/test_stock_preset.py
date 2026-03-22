@@ -136,6 +136,21 @@ class TestStockAnalysisPreset:
             assert "RSI" in content
             assert "MACD" in content
 
+    def test_stock_thumbnail_uses_theme_and_icons(self) -> None:
+        from blog.tools.presets.stock_analysis import StockAnalysisPreset
+
+        preset = StockAnalysisPreset("005930", SAMPLE_DATA)
+        svg = preset._create_thumbnail()
+        assert "<path" in svg
+
+    def test_stock_preset_thumbnail_uses_font_family(self) -> None:
+        from blog.tools.components.base import FONT_FAMILY
+        from blog.tools.presets.stock_analysis import StockAnalysisPreset
+
+        preset = StockAnalysisPreset("005930", SAMPLE_DATA)
+        svg = preset._create_thumbnail()
+        assert FONT_FAMILY in svg
+
 
 class TestSamsungAnalysisImages:
     def test_import_and_instantiate(self) -> None:
