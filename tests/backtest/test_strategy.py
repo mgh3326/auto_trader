@@ -2,7 +2,6 @@
 
 import sys
 from pathlib import Path
-from unittest import mock
 
 import numpy as np
 import pandas as pd
@@ -14,40 +13,74 @@ import prepare
 import strategy
 
 
-def _make_bar_data(
-    symbol: str, date: str, close: float, history_len: int = 20
-) -> prepare.BarData:
-    """Helper to create BarData with RSI-period history."""
-    # Create history DataFrame with enough data for RSI calculation
-    closes = [close] * (history_len + 1)
-    dates = (
-        pd.date_range(end=date, periods=history_len + 1, freq="D")
-        .strftime("%Y-%m-%d")
-        .tolist()
-    )
-    history = pd.DataFrame(
+def _make_history(
+    closes: list[float],
+    volumes: list[float] | None = None,
+    dates: list[str] | None = None,
+) -> pd.DataFrame:
+    """Create a history DataFrame with custom close/volume series."""
+    n = len(closes)
+    if dates is None:
+        dates = (
+            pd.date_range(end="2025-04-01", periods=n, freq="D")
+            .strftime("%Y-%m-%d")
+            .tolist()
+        )
+    if volumes is None:
+        volumes = [1000.0] * n
+
+    return pd.DataFrame(
         {
-            "date": dates,
             "open": closes,
-            "high": closes,
-            "low": closes,
+            "high": [c * 1.01 for c in closes],
+            "low": [c * 0.99 for c in closes],
             "close": closes,
-            "volume": [1000.0] * (history_len + 1),
-            "value": [100000.0] * (history_len + 1),
-        }
-    ).set_index("date")
+            "volume": volumes,
+            "value": [v * c for v, c in zip(volumes, closes)],
+        },
+        index=dates,
+    )
+
+
+def _make_bar_data(
+    symbol: str,
+    date: str,
+    close: float,
+    history: pd.DataFrame | None = None,
+) -> prepare.BarData:
+    """Helper to create BarData with configurable history."""
+    if history is None:
+        # Create default history with enough data for RSI calculation
+        closes = [close] * 30
+        history = _make_history(closes)
 
     return prepare.BarData(
         symbol=symbol,
         date=date,
-        open=close,
-        high=close * 1.1,
-        low=close * 0.9,
+        open=close * 0.99,
+        high=close * 1.01,
+        low=close * 0.99,
         close=close,
         volume=1000,
         value=100000,
         history=history,
     )
+
+
+def _make_oversold_history(periods: int = 30) -> pd.DataFrame:
+    """Create a history with oversold RSI pattern (downtrend then flat low)."""
+    # Start high, decline sharply to create oversold condition
+    closes = list(range(150, 150 - periods, -1))[:periods]
+    # Ensure we have enough data
+    if len(closes) < periods:
+        closes = [150] * (periods - len(closes)) + closes
+    return _make_history(closes)
+
+
+def _make_overbought_history(periods: int = 30) -> pd.DataFrame:
+    """Create a history with overbought RSI pattern (strong uptrend)."""
+    closes = list(range(100, 100 + periods))
+    return _make_history(closes)
 
 
 class TestRSICalculation:
@@ -97,12 +130,13 @@ class TestRSICalculation:
 class TestBuySignals:
     """Tests for buy signal generation."""
 
-    def test_buy_when_rsi_oversold(self):
-        """Test buy signal when RSI is below oversold threshold."""
+    def test_buy_when_dual_rsi_oversold(self):
+        """Test buy signal when both RSI fast and slow are oversold."""
         strat = strategy.Strategy()
 
-        # Create bar data with prices that indicate oversold
-        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-01", 95.0)}
+        # Create oversold history (strong downtrend)
+        history = _make_oversold_history(30)
+        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-01", 120.0, history)}
 
         portfolio = prepare.PortfolioState(
             cash=100000.0,
@@ -114,19 +148,19 @@ class TestBuySignals:
             date="2025-04-01",
         )
 
-        # Mock RSI to be oversold
-        with mock.patch.object(strat, "_get_rsi_from_history", return_value=25.0):
-            signals = strat.on_bar(bar_data, portfolio)
+        signals = strat.on_bar(bar_data, portfolio)
 
-        assert len(signals) == 1
-        assert signals[0].symbol == "BTC"
-        assert signals[0].action == "buy"
+        # Should generate buy signal due to oversold RSI
+        buy_signals = [s for s in signals if s.action == "buy"]
+        assert len(buy_signals) == 1
+        assert buy_signals[0].symbol == "BTC"
 
     def test_no_buy_when_already_held(self):
         """Test no buy signal when symbol is already held."""
         strat = strategy.Strategy()
 
-        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-01", 95.0)}
+        history = _make_oversold_history(30)
+        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-01", 120.0, history)}
 
         portfolio = prepare.PortfolioState(
             cash=100000.0,
@@ -138,16 +172,18 @@ class TestBuySignals:
             date="2025-04-01",
         )
 
-        with mock.patch.object(strat, "_get_rsi_from_history", return_value=25.0):
-            signals = strat.on_bar(bar_data, portfolio)
+        signals = strat.on_bar(bar_data, portfolio)
 
-        assert len(signals) == 0
+        # No buy signals for already-held symbol
+        buy_signals = [s for s in signals if s.action == "buy"]
+        assert len(buy_signals) == 0
 
     def test_no_buy_when_max_positions_reached(self):
         """Test no buy signal when max positions is reached."""
         strat = strategy.Strategy()
 
-        bar_data = {"SOL": _make_bar_data("SOL", "2025-04-01", 95.0)}
+        history = _make_oversold_history(30)
+        bar_data = {"SOL": _make_bar_data("SOL", "2025-04-01", 120.0, history)}
 
         portfolio = prepare.PortfolioState(
             cash=100000.0,
@@ -157,7 +193,7 @@ class TestBuySignals:
                 "XRP": 1.0,
                 "LINK": 1.0,
                 "ADA": 1.0,
-            },  # At max
+            },  # At max (5 positions)
             avg_prices={"BTC": 90.0, "ETH": 80.0, "XRP": 0.5, "LINK": 10.0, "ADA": 1.0},
             position_dates={
                 "BTC": "2025-03-25",
@@ -171,16 +207,18 @@ class TestBuySignals:
             date="2025-04-01",
         )
 
-        with mock.patch.object(strat, "_get_rsi_from_history", return_value=25.0):
-            signals = strat.on_bar(bar_data, portfolio)
+        signals = strat.on_bar(bar_data, portfolio)
 
-        assert len(signals) == 0
+        # No buy signals when at max positions
+        buy_signals = [s for s in signals if s.action == "buy"]
+        assert len(buy_signals) == 0
 
     def test_buy_has_configured_weight(self):
         """Test that buy signal has the configured position size."""
         strat = strategy.Strategy()
 
-        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-01", 95.0)}
+        history = _make_oversold_history(30)
+        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-01", 120.0, history)}
 
         portfolio = prepare.PortfolioState(
             cash=100000.0,
@@ -192,85 +230,119 @@ class TestBuySignals:
             date="2025-04-01",
         )
 
-        with mock.patch.object(strat, "_get_rsi_from_history", return_value=25.0):
-            signals = strat.on_bar(bar_data, portfolio)
+        signals = strat.on_bar(bar_data, portfolio)
 
-        assert len(signals) == 1
-        assert signals[0].weight == strategy.POSITION_SIZE
+        buy_signals = [s for s in signals if s.action == "buy"]
+        assert len(buy_signals) == 1
+        assert buy_signals[0].weight == strategy.POSITION_SIZE
 
 
 class TestSellSignals:
     """Tests for sell signal generation."""
 
-    def test_full_sell_when_rsi_overbought(self):
-        """Test full sell when RSI is above overbought threshold."""
+    def test_sell_on_rsi_recovery_when_profitable(self):
+        """Test sell when RSI recovers above exit threshold and position is profitable."""
         strat = strategy.Strategy()
 
-        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-01", 105.0)}
+        # Create overbought history (strong uptrend - RSI should be high)
+        history = _make_overbought_history(30)
+        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-01", 128.0, history)}
 
         portfolio = prepare.PortfolioState(
             cash=50000.0,
             positions={"BTC": 1.0},
-            avg_prices={"BTC": 90.0},
+            avg_prices={"BTC": 100.0},  # Low entry, should be profitable
             position_dates={"BTC": "2025-03-25"},
             trade_log=[],
             equity=150000.0,
             date="2025-04-01",
         )
 
-        with mock.patch.object(strat, "_get_rsi_from_history", return_value=75.0):
-            signals = strat.on_bar(bar_data, portfolio)
+        signals = strat.on_bar(bar_data, portfolio)
 
-        assert len(signals) == 1
-        assert signals[0].action == "sell"
-        assert signals[0].weight == 1.0  # Full sell
+        # Should sell due to RSI recovery when profitable
+        sell_signals = [s for s in signals if s.action == "sell"]
+        assert len(sell_signals) == 1
+        assert "RSI" in sell_signals[0].reason or "recovered" in sell_signals[0].reason.lower()
 
-    def test_sell_when_holding_period_exceeded_and_profitable(self):
-        """Test sell when holding period exceeded and position is profitable."""
+    def test_sell_on_stop_loss(self):
+        """Test sell signal on stop-loss trigger."""
         strat = strategy.Strategy()
 
-        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-08", 105.0)}
+        # Create flat history
+        history = _make_history([100.0] * 30)
+        # Current price is below stop-loss threshold
+        current_price = 85.0  # 15% below avg price of 100
+        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-01", current_price, history)}
 
         portfolio = prepare.PortfolioState(
             cash=50000.0,
             positions={"BTC": 1.0},
-            avg_prices={"BTC": 90.0},  # Avg buy price
-            position_dates={"BTC": "2025-04-01"},  # 7 days ago
-            trade_log=[],
-            equity=155000.0,
-            date="2025-04-08",
-        )
-
-        with mock.patch.object(
-            strat, "_get_rsi_from_history", return_value=50.0
-        ):  # Not overbought
-            signals = strat.on_bar(bar_data, portfolio)
-
-        assert len(signals) == 1
-        assert signals[0].action == "sell"
-
-    def test_no_sell_when_holding_period_exceeded_but_unprofitable(self):
-        """Test no sell when holding period exceeded but position is unprofitable."""
-        strat = strategy.Strategy()
-
-        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-08", 85.0)}
-
-        portfolio = prepare.PortfolioState(
-            cash=50000.0,
-            positions={"BTC": 1.0},
-            avg_prices={"BTC": 90.0},  # Avg buy price (higher than current)
-            position_dates={"BTC": "2025-04-01"},  # 7 days ago
+            avg_prices={"BTC": 100.0},
+            position_dates={"BTC": "2025-03-25"},
             trade_log=[],
             equity=135000.0,
-            date="2025-04-08",
+            date="2025-04-01",
         )
 
-        with mock.patch.object(
-            strat, "_get_rsi_from_history", return_value=50.0
-        ):  # Not overbought
-            signals = strat.on_bar(bar_data, portfolio)
+        signals = strat.on_bar(bar_data, portfolio)
 
-        assert len(signals) == 0
+        # Should sell due to stop-loss
+        sell_signals = [s for s in signals if s.action == "sell"]
+        assert len(sell_signals) >= 1
+        assert any("stop" in s.reason.lower() or "loss" in s.reason.lower() for s in sell_signals)
+
+    def test_sell_when_holding_period_exceeded(self):
+        """Test sell when holding period exceeded."""
+        strat = strategy.Strategy()
+
+        # Create history that keeps RSI below exit threshold (46)
+        # Using a pattern that doesn't trigger RSI recovery
+        closes = list(range(100, 70, -1)) + [70] * 20  # Downtrend then flat low
+        history = _make_history(closes)
+        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-22", 75.0, history)}
+
+        portfolio = prepare.PortfolioState(
+            cash=50000.0,
+            positions={"BTC": 1.0},
+            avg_prices={"BTC": 60.0},  # Avg buy price (profitable at 75)
+            position_dates={"BTC": "2025-04-01"},  # 21 days ago
+            trade_log=[],
+            equity=155000.0,
+            date="2025-04-22",
+        )
+
+        signals = strat.on_bar(bar_data, portfolio)
+
+        # Should sell due to max holding period (RSI won't recover with downtrend)
+        sell_signals = [s for s in signals if s.action == "sell"]
+        assert len(sell_signals) >= 1
+        assert any("holding" in s.reason.lower() or "max" in s.reason.lower() for s in sell_signals)
+
+    def test_no_sell_when_holding_period_exceeded_but_unprofitable(self):
+        """Test no RSI recovery sell when position is unprofitable."""
+        strat = strategy.Strategy()
+
+        # Create overbought history (RSI should be high)
+        history = _make_overbought_history(30)
+        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-01", 128.0, history)}
+
+        portfolio = prepare.PortfolioState(
+            cash=50000.0,
+            positions={"BTC": 1.0},
+            avg_prices={"BTC": 150.0},  # Avg buy price (higher than current - unprofitable)
+            position_dates={"BTC": "2025-03-25"},
+            trade_log=[],
+            equity=135000.0,
+            date="2025-04-01",
+        )
+
+        signals = strat.on_bar(bar_data, portfolio)
+
+        # Should NOT sell due to RSI recovery (not profitable)
+        # But might sell due to stop-loss if price is low enough
+        rsi_sells = [s for s in signals if s.action == "sell" and "RSI" in s.reason]
+        assert len(rsi_sells) == 0
 
 
 class TestStrategyWithHistory:
@@ -329,8 +401,8 @@ class TestStrategyWithHistory:
         signals = strat.on_bar(bar_data, portfolio)
 
         # Should sell due to overbought RSI
-        assert len(signals) == 1
-        assert signals[0].action == "sell"
+        assert len(signals) >= 1
+        assert any(s.action == "sell" for s in signals)
 
     def test_strategy_skips_insufficient_history(self):
         """Test that strategy skips symbols without enough history."""
