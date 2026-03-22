@@ -10,7 +10,7 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 
-from blog.tools.components.base import FONT_FAMILY, SVGComponent
+from blog.tools.components.base import SVGComponent
 
 
 class ImageComposer:

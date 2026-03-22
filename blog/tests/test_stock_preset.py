@@ -260,6 +260,55 @@ class TestStockAnalysisPreset:
         assert FONT_FAMILY in svg
 
 
+class TestStockAnalysisPresetBackwardsCompatibility:
+    """Regression tests for backwards compatibility."""
+
+    def test_can_instantiate_without_screenshot_path(self) -> None:
+        """Existing users can still instantiate StockAnalysisPreset(symbol, data)."""
+        from blog.tools.presets.stock_analysis import StockAnalysisPreset
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Old-style instantiation (no screenshot_path)
+            preset = StockAnalysisPreset("005930", SAMPLE_DATA, output_dir=Path(tmpdir))
+            paths = preset.generate_svgs()
+
+            # Should still produce 5 files
+            assert len(paths) == 5
+
+    def test_output_remains_five_files(self) -> None:
+        """Output should remain 5 files (thumbnail, technical, fundamental, supply_demand, conclusion)."""
+        from blog.tools.presets.stock_analysis import StockAnalysisPreset
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            preset = StockAnalysisPreset("005930", SAMPLE_DATA, output_dir=Path(tmpdir))
+            paths = preset.generate_svgs()
+
+            names = {p.stem for p in paths}
+            expected = {
+                "005930_thumbnail",
+                "005930_technical",
+                "005930_fundamental",
+                "005930_supply_demand",
+                "005930_conclusion",
+            }
+            assert names == expected
+
+    def test_technical_contains_vector_elements_without_screenshot(self) -> None:
+        """Technical SVG should contain vector chart elements when no screenshot is passed."""
+        from blog.tools.presets.stock_analysis import StockAnalysisPreset
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            preset = StockAnalysisPreset("005930", SAMPLE_DATA, output_dir=Path(tmpdir))
+            paths = preset.generate_svgs()
+            tech = next(p for p in paths if "technical" in p.stem)
+            content = tech.read_text()
+
+            # Should contain vector candlestick elements
+            assert "<rect" in content
+            # Should not contain embedded PNG data
+            assert "data:image/png;base64," not in content
+
+
 class TestSamsungAnalysisImages:
     def test_import_and_instantiate(self) -> None:
         from blog.images.samsung_analysis_images import SamsungAnalysisImages

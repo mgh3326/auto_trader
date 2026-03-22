@@ -207,7 +207,7 @@ class TestScreenshotCaptureUnit:
         """capture_tradingview should build the expected TradingView embed URL."""
         from blog.tools.screenshot_capture import ScreenshotCapture
 
-        with patch.object(ScreenshotCapture, "_ensure_browser") as mock_ensure, \
+        with patch.object(ScreenshotCapture, "_ensure_browser"), \
              patch.object(ScreenshotCapture, "_navigate") as mock_nav, \
              patch.object(ScreenshotCapture, "_take_screenshot") as mock_screenshot:
 
@@ -217,7 +217,7 @@ class TestScreenshotCaptureUnit:
 
             with patch.object(Path, "write_bytes") as mock_write:
                 mock_write.return_value = None
-                path = capture.capture_tradingview("BINANCE:BTCUSDT", interval="D", theme="dark")
+                capture.capture_tradingview("BINANCE:BTCUSDT", interval="D", theme="dark")
 
             # Should navigate to TradingView embed URL
             mock_nav.assert_called_once()
