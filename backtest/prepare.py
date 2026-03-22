@@ -17,12 +17,14 @@ BAR_INTERVAL = "1d"
 # Default universe (fixed)
 DEFAULT_SYMBOLS = ["BTC", "ETH", "SOL", "XRP", "LINK", "ADA", "DOT", "AVAX"]
 
-# Split dates - revised after live-data validation
-# Based on actual fetched data range (2025-03-22 to 2026-03-22)
+# Split dates - revised to ensure each split has RSI<30 trading signals.
+# Proposal A: train has bull+bear mix, val includes Nov 2025 bear,
+# test is the most recent holdout period.
+# BTC RSI<30 days: train=12, val=16, test=7
 SPLITS = {
-    "train": {"start": "2025-03-22", "end": "2025-06-30"},
-    "val": {"start": "2025-07-01", "end": "2025-09-30"},
-    "test": {"start": "2025-10-01", "end": "2026-03-22"},
+    "train": {"start": "2024-04-01", "end": "2025-06-30"},
+    "val": {"start": "2025-07-01", "end": "2026-01-31"},
+    "test": {"start": "2026-02-01", "end": "2026-03-22"},
 }
 
 # Data directory
