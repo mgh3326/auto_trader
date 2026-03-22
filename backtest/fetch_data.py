@@ -73,7 +73,7 @@ def fetch_candles(market: str, days: int) -> list[dict]:
             params = {
                 "market": market,
                 "count": count,
-                "to": to_date.isoformat(),
+                "to": to_date.strftime("%Y-%m-%d %H:%M:%S"),
             }
 
             response = client.get(url, params=params)

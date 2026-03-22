@@ -150,13 +150,16 @@ Do not add external dependencies without updating pyproject.toml.
 
 ## Baseline Scores
 
-*Note: Update this section after running initial baselines*
+*Initial scores recorded on 2026-03-22 using BTC, ETH, SOL data from 2025-03-22 to 2026-03-22*
 
 | Strategy | Score | Return % | Sharpe | Max DD % | Trades |
 |----------|-------|----------|--------|----------|--------|
-| RSI (initial) | TBD | TBD | TBD | TBD | TBD |
+| RSI (initial) | -1.08 | 0.92% | 0.17 | 7.51% | 16 |
 | Buy & Hold | TBD | TBD | TBD | TBD | TBD |
 | Random | TBD | TBD | TBD | TBD | TBD |
+
+**Strategy Summary:** RSI-based mean reversion with 14-period RSI, buying when RSI <= 30,
+selling when RSI >= 70 or holding period >= 7 days with profit. Max 5 positions at 15% each.
 
 ## Testing
 
