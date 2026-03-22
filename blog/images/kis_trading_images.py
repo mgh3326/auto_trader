@@ -12,6 +12,7 @@ from pathlib import Path
 # 모듈 경로 추가
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+from blog.tools.components.base import FONT_FAMILY
 from blog.tools.components.thumbnail import ThumbnailTemplate
 from blog.tools.image_generator import BlogImageGenerator
 
@@ -37,13 +38,13 @@ class KISTradingImages(BlogImageGenerator):
             title_line2="자동 매매 시스템",
             subtitle="Celery + AI 분석 기반 스마트 트레이딩",
             icons=[
-                ("🤖", "AI 분석", "#2196F3"),
-                ("⚡", "Celery", "#8BC34A"),
-                ("📈", "자동 매매", "#FF9800"),
-                ("📱", "Telegram", "#9C27B0"),
+                ("bot", "AI 분석", "#2196F3"),
+                ("zap", "Celery", "#8BC34A"),
+                ("trending-up", "자동 매매", "#FF9800"),
+                ("send", "Telegram", "#9C27B0"),
             ],
-            tech_stack="FastAPI • Celery • Redis • PostgreSQL • KIS API • Google Gemini",
-            bg_gradient=("#0d1b2a", "#1b263b", "#415a77"),
+            theme="dark",
+            bg_pattern="candlestick",
             accent_color="#f4d03f",
         )
 
@@ -82,7 +83,7 @@ class KISTradingImages(BlogImageGenerator):
         )
         svg += """
     <ellipse cx="700" cy="100" rx="70" ry="35" fill="#E0E0E0" stroke="#666666" stroke-width="2"/>
-    <text x="700" y="108" font-family="Arial, sans-serif" font-size="18" font-weight="bold" fill="#333333" text-anchor="middle">사용자</text>
+    <text x="700" y="108" {FONT_FAMILY} font-size="18" font-weight="bold" fill="#333333" text-anchor="middle">사용자</text>
     <line x1="700" y1="135" x2="700" y2="165" stroke="#666666" stroke-width="2" marker-end="url(#arrowhead)"/>
 
     <rect x="200" y="440" width="1000" height="45" fill="#EF6C00" opacity="0.25" rx="8"/>
@@ -96,31 +97,31 @@ class KISTradingImages(BlogImageGenerator):
             center = x + (width // 2)
             svg += f"""
     <rect x="{x}" y="490" width="{width}" height="90" fill="#FFB74D" stroke="#EF6C00" stroke-width="1" rx="5"/>
-    <text x="{center}" y="515" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="#333333" text-anchor="middle">{title}</text>
-    <text x="{center}" y="535" font-family="Arial, sans-serif" font-size="11" fill="#666666" text-anchor="middle">{task_name}</text>
-    <text x="{center}" y="555" font-family="Arial, sans-serif" font-size="10" fill="#888888" text-anchor="middle">{note}</text>
+    <text x="{center}" y="515" {FONT_FAMILY} font-size="13" font-weight="bold" fill="#333333" text-anchor="middle">{title}</text>
+    <text x="{center}" y="535" {FONT_FAMILY} font-size="11" fill="#666666" text-anchor="middle">{task_name}</text>
+    <text x="{center}" y="555" {FONT_FAMILY} font-size="10" fill="#888888" text-anchor="middle">{note}</text>
 """
 
         svg += """
-    <text x="700" y="225" font-family="Arial, sans-serif" font-size="14" fill="#E3F2FD" text-anchor="middle">/kis-domestic-trading/ • /kis-overseas-trading/</text>
-    <text x="540" y="345" font-family="Arial, sans-serif" font-size="12" fill="#E8F5E9" text-anchor="middle">보유주식 조회</text>
-    <text x="640" y="345" font-family="Arial, sans-serif" font-size="12" fill="#E8F5E9" text-anchor="middle">AI 분석</text>
-    <text x="740" y="345" font-family="Arial, sans-serif" font-size="12" fill="#E8F5E9" text-anchor="middle">매수/매도</text>
-    <text x="840" y="345" font-family="Arial, sans-serif" font-size="12" fill="#E8F5E9" text-anchor="middle">종목설정</text>
-    <text x="700" y="385" font-family="Arial, sans-serif" font-size="11" fill="#C8E6C9" text-anchor="middle">kis_domestic_trading.py • kis_overseas_trading.py • symbol_settings.py</text>
-    <text x="300" y="720" font-family="Arial, sans-serif" font-size="12" fill="#E1BEE7" text-anchor="middle">KISClient</text>
-    <text x="400" y="720" font-family="Arial, sans-serif" font-size="12" fill="#E1BEE7" text-anchor="middle">KISAnalyzer</text>
-    <text x="500" y="720" font-family="Arial, sans-serif" font-size="12" fill="#E1BEE7" text-anchor="middle">YahooAnalyzer</text>
-    <text x="400" y="745" font-family="Arial, sans-serif" font-size="11" fill="#CE93D8" text-anchor="middle">한국투자증권 API • Google Gemini</text>
-    <text x="900" y="720" font-family="Arial, sans-serif" font-size="12" fill="#CFD8DC" text-anchor="middle">StockAnalysisResult</text>
-    <text x="1100" y="720" font-family="Arial, sans-serif" font-size="12" fill="#CFD8DC" text-anchor="middle">SymbolTradeSettings</text>
-    <text x="1000" y="745" font-family="Arial, sans-serif" font-size="11" fill="#B0BEC5" text-anchor="middle">분석 결과 • 종목별 설정 • 태스크 큐</text>
-    <text x="1200" y="500" font-family="Arial, sans-serif" font-size="30" fill="#ffffff" text-anchor="middle">📱</text>
-    <text x="1200" y="530" font-family="Arial, sans-serif" font-size="10" fill="#E1F5FE" text-anchor="middle">분석 완료</text>
-    <text x="1200" y="545" font-family="Arial, sans-serif" font-size="10" fill="#E1F5FE" text-anchor="middle">주문 접수</text>
-    <text x="1200" y="560" font-family="Arial, sans-serif" font-size="10" fill="#E1F5FE" text-anchor="middle">에러 알림</text>
-    <text x="700" y="830" font-family="Arial, sans-serif" font-size="14" fill="#666666" text-anchor="middle">웹 요청 → FastAPI → Celery 태스크 → KIS API/AI 분석 → DB 저장 → Telegram 알림</text>
-    <text x="700" y="855" font-family="Arial, sans-serif" font-size="12" fill="#999999" text-anchor="middle">비동기 처리로 오래 걸리는 작업도 즉시 응답, 진행 상황 실시간 폴링</text>
+    <text x="700" y="225" {FONT_FAMILY} font-size="14" fill="#E3F2FD" text-anchor="middle">/kis-domestic-trading/ • /kis-overseas-trading/</text>
+    <text x="540" y="345" {FONT_FAMILY} font-size="12" fill="#E8F5E9" text-anchor="middle">보유주식 조회</text>
+    <text x="640" y="345" {FONT_FAMILY} font-size="12" fill="#E8F5E9" text-anchor="middle">AI 분석</text>
+    <text x="740" y="345" {FONT_FAMILY} font-size="12" fill="#E8F5E9" text-anchor="middle">매수/매도</text>
+    <text x="840" y="345" {FONT_FAMILY} font-size="12" fill="#E8F5E9" text-anchor="middle">종목설정</text>
+    <text x="700" y="385" {FONT_FAMILY} font-size="11" fill="#C8E6C9" text-anchor="middle">kis_domestic_trading.py • kis_overseas_trading.py • symbol_settings.py</text>
+    <text x="300" y="720" {FONT_FAMILY} font-size="12" fill="#E1BEE7" text-anchor="middle">KISClient</text>
+    <text x="400" y="720" {FONT_FAMILY} font-size="12" fill="#E1BEE7" text-anchor="middle">KISAnalyzer</text>
+    <text x="500" y="720" {FONT_FAMILY} font-size="12" fill="#E1BEE7" text-anchor="middle">YahooAnalyzer</text>
+    <text x="400" y="745" {FONT_FAMILY} font-size="11" fill="#CE93D8" text-anchor="middle">한국투자증권 API • Google Gemini</text>
+    <text x="900" y="720" {FONT_FAMILY} font-size="12" fill="#CFD8DC" text-anchor="middle">StockAnalysisResult</text>
+    <text x="1100" y="720" {FONT_FAMILY} font-size="12" fill="#CFD8DC" text-anchor="middle">SymbolTradeSettings</text>
+    <text x="1000" y="745" {FONT_FAMILY} font-size="11" fill="#B0BEC5" text-anchor="middle">분석 결과 • 종목별 설정 • 태스크 큐</text>
+    <text x="1200" y="500" {FONT_FAMILY} font-size="30" fill="#ffffff" text-anchor="middle">📱</text>
+    <text x="1200" y="530" {FONT_FAMILY} font-size="10" fill="#E1F5FE" text-anchor="middle">분석 완료</text>
+    <text x="1200" y="545" {FONT_FAMILY} font-size="10" fill="#E1F5FE" text-anchor="middle">주문 접수</text>
+    <text x="1200" y="560" {FONT_FAMILY} font-size="10" fill="#E1F5FE" text-anchor="middle">에러 알림</text>
+    <text x="700" y="830" {FONT_FAMILY} font-size="14" fill="#666666" text-anchor="middle">웹 요청 → FastAPI → Celery 태스크 → KIS API/AI 분석 → DB 저장 → Telegram 알림</text>
+    <text x="700" y="855" {FONT_FAMILY} font-size="12" fill="#999999" text-anchor="middle">비동기 처리로 오래 걸리는 작업도 즉시 응답, 진행 상황 실시간 폴링</text>
 """
         svg += SVGComponent.footer()
         return svg
@@ -196,11 +197,11 @@ class KISTradingImages(BlogImageGenerator):
         svg += FlowDiagram.create(nodes=nodes, edges=edges)
         svg += """
     <rect x="200" y="220" width="900" height="180" fill="#F5F5F5" stroke="#9E9E9E" stroke-width="1" rx="5"/>
-    <text x="650" y="250" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#333333" text-anchor="middle">AI 분석 결과 가격대 (낮은 순서)</text>
-    <text x="210" y="175" font-family="Arial, sans-serif" font-size="10" fill="#F44336">NO → 매수 건너뜀</text>
-    <text x="790" y="175" font-family="Arial, sans-serif" font-size="10" fill="#F44336">설정 없음 → 건너뜀</text>
-    <text x="650" y="510" font-family="Arial, sans-serif" font-size="11" fill="#666666" text-anchor="middle">가격 &lt; 평균매수가 × 0.99 AND 가격 &lt; 현재가</text>
-    <text x="650" y="645" font-family="Arial, sans-serif" font-size="13" fill="#E8F5E9" text-anchor="middle">조건 충족 가격대마다 buy_quantity_per_order 수량으로 지정가 주문</text>
+    <text x="650" y="250" {FONT_FAMILY} font-size="16" font-weight="bold" fill="#333333" text-anchor="middle">AI 분석 결과 가격대 (낮은 순서)</text>
+    <text x="210" y="175" {FONT_FAMILY} font-size="10" fill="#F44336">NO → 매수 건너뜀</text>
+    <text x="790" y="175" {FONT_FAMILY} font-size="10" fill="#F44336">설정 없음 → 건너뜀</text>
+    <text x="650" y="510" {FONT_FAMILY} font-size="11" fill="#666666" text-anchor="middle">가격 &lt; 평균매수가 × 0.99 AND 가격 &lt; 현재가</text>
+    <text x="650" y="645" {FONT_FAMILY} font-size="13" fill="#E8F5E9" text-anchor="middle">조건 충족 가격대마다 buy_quantity_per_order 수량으로 지정가 주문</text>
 """
 
         for (
@@ -215,10 +216,10 @@ class KISTradingImages(BlogImageGenerator):
         ) in price_levels:
             svg += f"""
     <rect x="{x}" y="270" width="200" height="110" fill="{fill}" stroke="{stroke}" stroke-width="2" rx="5"/>
-    <text x="{x + 100}" y="300" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="{text_fill}" text-anchor="middle">{title}</text>
-    <text x="{x + 100}" y="325" font-family="Arial, sans-serif" font-size="12" fill="#666666" text-anchor="middle">{field_name}</text>
-    <text x="{x + 100}" y="350" font-family="Arial, sans-serif" font-size="11" fill="#666666" text-anchor="middle">{priority}</text>
-    <text x="{x + 100}" y="370" font-family="Arial, sans-serif" font-size="18" fill="{text_fill}" text-anchor="middle">{amount}</text>
+    <text x="{x + 100}" y="300" {FONT_FAMILY} font-size="14" font-weight="bold" fill="{text_fill}" text-anchor="middle">{title}</text>
+    <text x="{x + 100}" y="325" {FONT_FAMILY} font-size="12" fill="#666666" text-anchor="middle">{field_name}</text>
+    <text x="{x + 100}" y="350" {FONT_FAMILY} font-size="11" fill="#666666" text-anchor="middle">{priority}</text>
+    <text x="{x + 100}" y="370" {FONT_FAMILY} font-size="18" fill="{text_fill}" text-anchor="middle">{amount}</text>
 """
 
         svg += SVGComponent.footer()
@@ -305,15 +306,15 @@ class KISTradingImages(BlogImageGenerator):
 
         svg += """
     <line x1="370" y1="175" x2="430" y2="145" stroke="#1976D2" stroke-width="2" marker-end="url(#arrowhead)"/>
-    <text x="400" y="160" font-family="Arial, sans-serif" font-size="11" fill="#1976D2">1:N</text>
+    <text x="400" y="160" {FONT_FAMILY} font-size="11" fill="#1976D2">1:N</text>
     <line x1="220" y1="310" x2="220" y2="340" stroke="#1976D2" stroke-width="2" marker-end="url(#arrowhead)"/>
-    <text x="235" y="328" font-family="Arial, sans-serif" font-size="11" fill="#1976D2">1:1</text>
+    <text x="235" y="328" {FONT_FAMILY} font-size="11" fill="#1976D2">1:1</text>
     <line x1="810" y1="220" x2="850" y2="220" stroke="#7B1FA2" stroke-width="2" marker-end="url(#arrowhead)"/>
 
     <rect x="430" y="420" width="420" height="130" fill="#FFFDE7" stroke="#FBC02D" stroke-width="1" rx="5"/>
-    <text x="640" y="450" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#F57F17" text-anchor="middle">핵심 정책</text>
-    <text x="450" y="480" font-family="Arial, sans-serif" font-size="12" fill="#333333">• 종목 설정(SymbolTradeSettings)이 없으면 자동 매수하지 않음</text>
-    <text x="450" y="505" font-family="Arial, sans-serif" font-size="12" fill="#333333">• AI 분석 결과 가격대를 참조하여 분할 매수/매도 주문 실행</text>
+    <text x="640" y="450" {FONT_FAMILY} font-size="14" font-weight="bold" fill="#F57F17" text-anchor="middle">핵심 정책</text>
+    <text x="450" y="480" {FONT_FAMILY} font-size="12" fill="#333333">• 종목 설정(SymbolTradeSettings)이 없으면 자동 매수하지 않음</text>
+    <text x="450" y="505" {FONT_FAMILY} font-size="12" fill="#333333">• AI 분석 결과 가격대를 참조하여 분할 매수/매도 주문 실행</text>
     <text x="640" y="375" font-family="monospace" font-size="11" fill="#FF5722" text-anchor="middle">UNIQUE(user_id, symbol)</text>
 """
         svg += SVGComponent.footer()
@@ -385,47 +386,47 @@ class KISTradingImages(BlogImageGenerator):
     <circle cx="50" cy="30" r="8" fill="#ffbd2e"/>
     <circle cx="75" cy="30" r="8" fill="#27ca40"/>
     <rect x="120" y="15" width="700" height="30" rx="15" fill="#444444"/>
-    <text x="140" y="37" font-family="Arial, sans-serif" font-size="14" fill="#ffffff">https://your-domain.com/kis-domestic-trading/</text>
+    <text x="140" y="37" {FONT_FAMILY} font-size="14" fill="#ffffff">https://your-domain.com/kis-domestic-trading/</text>
 
     <rect x="20" y="80" width="1360" height="700" fill="#f8f9fa"/>
     <rect x="20" y="80" width="1360" height="50" fill="#1a1a2e"/>
-    <text x="50" y="112" font-family="Arial, sans-serif" font-size="18" font-weight="bold" fill="#ffffff">Auto Trader</text>
-    <text x="300" y="112" font-family="Arial, sans-serif" font-size="14" fill="#a0a0a0">암호화폐</text>
-    <text x="420" y="112" font-family="Arial, sans-serif" font-size="14" fill="#ffffff" font-weight="bold">국내주식</text>
-    <text x="540" y="112" font-family="Arial, sans-serif" font-size="14" fill="#a0a0a0">해외주식</text>
+    <text x="50" y="112" {FONT_FAMILY} font-size="18" font-weight="bold" fill="#ffffff">Auto Trader</text>
+    <text x="300" y="112" {FONT_FAMILY} font-size="14" fill="#a0a0a0">암호화폐</text>
+    <text x="420" y="112" {FONT_FAMILY} font-size="14" fill="#ffffff" font-weight="bold">국내주식</text>
+    <text x="540" y="112" {FONT_FAMILY} font-size="14" fill="#a0a0a0">해외주식</text>
 
-    <text x="50" y="180" font-family="Arial, sans-serif" font-size="28" font-weight="bold" fill="#1a1a2e">📈 KIS 국내주식 자동 매매</text>
+    <text x="50" y="180" {FONT_FAMILY} font-size="28" font-weight="bold" fill="#1a1a2e">📈 KIS 국내주식 자동 매매</text>
     <rect x="40" y="200" width="1320" height="100" fill="#ffffff" stroke="#e0e0e0" stroke-width="1" rx="8"/>
 """
         for x, label, value, color in summary_items:
             svg += f"""
-    <text x="{x}" y="235" font-family="Arial, sans-serif" font-size="14" fill="#666666" text-anchor="middle">{label}</text>
-    <text x="{x}" y="270" font-family="Arial, sans-serif" font-size="24" font-weight="bold" fill="{color}" text-anchor="middle">{value}</text>
+    <text x="{x}" y="235" {FONT_FAMILY} font-size="14" fill="#666666" text-anchor="middle">{label}</text>
+    <text x="{x}" y="270" {FONT_FAMILY} font-size="24" font-weight="bold" fill="{color}" text-anchor="middle">{value}</text>
 """
 
         svg += """
     <rect x="40" y="320" width="1320" height="130" fill="#ffffff" stroke="#e0e0e0" stroke-width="1" rx="8"/>
-    <text x="60" y="355" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#333333">🤖 자동 매매 제어</text>
+    <text x="60" y="355" {FONT_FAMILY} font-size="16" font-weight="bold" fill="#333333">🤖 자동 매매 제어</text>
 """
         for x, width, color, label in control_buttons:
             center = x + width // 2
             svg += f"""
     <rect x="{x}" y="375" width="{width}" height="55" fill="{color}" rx="5"/>
-    <text x="{center}" y="410" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">{label}</text>
+    <text x="{center}" y="410" {FONT_FAMILY} font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">{label}</text>
 """
 
         svg += """
     <rect x="40" y="470" width="1320" height="290" fill="#ffffff" stroke="#e0e0e0" stroke-width="1" rx="8"/>
-    <text x="60" y="505" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#333333">📋 보유 종목</text>
+    <text x="60" y="505" {FONT_FAMILY} font-size="16" font-weight="bold" fill="#333333">📋 보유 종목</text>
     <rect x="60" y="520" width="1280" height="35" fill="#f0f0f0"/>
-    <text x="130" y="545" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#333333" text-anchor="middle">종목명</text>
-    <text x="270" y="545" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#333333" text-anchor="middle">수량</text>
-    <text x="380" y="545" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#333333" text-anchor="middle">현재가</text>
-    <text x="500" y="545" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#333333" text-anchor="middle">평균매수가</text>
-    <text x="620" y="545" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#333333" text-anchor="middle">수익률</text>
-    <text x="750" y="545" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#333333" text-anchor="middle">AI 분석</text>
-    <text x="890" y="545" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#333333" text-anchor="middle">설정</text>
-    <text x="1100" y="545" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#333333" text-anchor="middle">개별 액션</text>
+    <text x="130" y="545" {FONT_FAMILY} font-size="12" font-weight="bold" fill="#333333" text-anchor="middle">종목명</text>
+    <text x="270" y="545" {FONT_FAMILY} font-size="12" font-weight="bold" fill="#333333" text-anchor="middle">수량</text>
+    <text x="380" y="545" {FONT_FAMILY} font-size="12" font-weight="bold" fill="#333333" text-anchor="middle">현재가</text>
+    <text x="500" y="545" {FONT_FAMILY} font-size="12" font-weight="bold" fill="#333333" text-anchor="middle">평균매수가</text>
+    <text x="620" y="545" {FONT_FAMILY} font-size="12" font-weight="bold" fill="#333333" text-anchor="middle">수익률</text>
+    <text x="750" y="545" {FONT_FAMILY} font-size="12" font-weight="bold" fill="#333333" text-anchor="middle">AI 분석</text>
+    <text x="890" y="545" {FONT_FAMILY} font-size="12" font-weight="bold" fill="#333333" text-anchor="middle">설정</text>
+    <text x="1100" y="545" {FONT_FAMILY} font-size="12" font-weight="bold" fill="#333333" text-anchor="middle">개별 액션</text>
 """
 
         row_y = 555
@@ -445,26 +446,26 @@ class KISTradingImages(BlogImageGenerator):
             y = row_y + 30
             svg += f"""
     <line x1="60" y1="{row_y}" x2="1340" y2="{row_y}" stroke="#e0e0e0"/>
-    <text x="130" y="{y}" font-family="Arial, sans-serif" font-size="13" fill="#333333" text-anchor="middle">{name}</text>
-    <text x="270" y="{y}" font-family="Arial, sans-serif" font-size="13" fill="#333333" text-anchor="middle">{qty}</text>
-    <text x="380" y="{y}" font-family="Arial, sans-serif" font-size="13" fill="#333333" text-anchor="middle">{price}</text>
-    <text x="500" y="{y}" font-family="Arial, sans-serif" font-size="13" fill="#333333" text-anchor="middle">{avg}</text>
-    <text x="620" y="{y}" font-family="Arial, sans-serif" font-size="13" fill="{pnl_color}" text-anchor="middle">{pnl}</text>
+    <text x="130" y="{y}" {FONT_FAMILY} font-size="13" fill="#333333" text-anchor="middle">{name}</text>
+    <text x="270" y="{y}" {FONT_FAMILY} font-size="13" fill="#333333" text-anchor="middle">{qty}</text>
+    <text x="380" y="{y}" {FONT_FAMILY} font-size="13" fill="#333333" text-anchor="middle">{price}</text>
+    <text x="500" y="{y}" {FONT_FAMILY} font-size="13" fill="#333333" text-anchor="middle">{avg}</text>
+    <text x="620" y="{y}" {FONT_FAMILY} font-size="13" fill="{pnl_color}" text-anchor="middle">{pnl}</text>
     <rect x="710" y="{row_y + 15}" width="80" height="25" fill="{ai_bg}" rx="3"/>
-    <text x="750" y="{row_y + 33}" font-family="Arial, sans-serif" font-size="11" fill="#333333" text-anchor="middle">{ai}</text>
+    <text x="750" y="{row_y + 33}" {FONT_FAMILY} font-size="11" fill="#333333" text-anchor="middle">{ai}</text>
     <rect x="850" y="{row_y + 15}" width="80" height="25" fill="{setting_bg}" rx="3"/>
-    <text x="890" y="{row_y + 33}" font-family="Arial, sans-serif" font-size="11" fill="#ffffff" text-anchor="middle">{setting}</text>
+    <text x="890" y="{row_y + 33}" {FONT_FAMILY} font-size="11" fill="#ffffff" text-anchor="middle">{setting}</text>
     <rect x="980" y="{row_y + 12}" width="60" height="28" fill="#2196F3" rx="3"/>
     <rect x="1050" y="{row_y + 12}" width="60" height="28" fill="{buy_btn}" rx="3"/>
     <rect x="1120" y="{row_y + 12}" width="60" height="28" fill="#F44336" rx="3"/>
-    <text x="1010" y="{row_y + 31}" font-family="Arial, sans-serif" font-size="10" fill="#ffffff" text-anchor="middle">분석</text>
-    <text x="1080" y="{row_y + 31}" font-family="Arial, sans-serif" font-size="10" fill="#ffffff" text-anchor="middle">매수</text>
-    <text x="1150" y="{row_y + 31}" font-family="Arial, sans-serif" font-size="10" fill="#ffffff" text-anchor="middle">매도</text>
+    <text x="1010" y="{row_y + 31}" {FONT_FAMILY} font-size="10" fill="#ffffff" text-anchor="middle">분석</text>
+    <text x="1080" y="{row_y + 31}" {FONT_FAMILY} font-size="10" fill="#ffffff" text-anchor="middle">매수</text>
+    <text x="1150" y="{row_y + 31}" {FONT_FAMILY} font-size="10" fill="#ffffff" text-anchor="middle">매도</text>
 """
             row_y += 45
 
         svg += """
-    <text x="700" y="730" font-family="Arial, sans-serif" font-size="14" fill="#666666" text-anchor="middle">... 5개 종목 더 있음</text>
+    <text x="700" y="730" {FONT_FAMILY} font-size="14" fill="#666666" text-anchor="middle">... 5개 종목 더 있음</text>
 """
         svg += SVGComponent.footer()
         return svg
@@ -542,17 +543,17 @@ class KISTradingImages(BlogImageGenerator):
         ) in cards:
             svg += f"""
     <rect x="{x}" y="70" width="350" height="150" fill="#ffffff" stroke="{color}" stroke-width="2" rx="8"/>
-    <text x="{x + 20}" y="100" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="{title_color}">{title}</text>
+    <text x="{x + 20}" y="100" {FONT_FAMILY} font-size="16" font-weight="bold" fill="{title_color}">{title}</text>
     <rect x="{x + 20}" y="115" width="310" height="25" fill="{bar_bg}" rx="5"/>
     <rect x="{x + 20}" y="115" width="{bar_width}" height="25" fill="{color}" rx="5"/>
-    <text x="{x + 20 + bar_width // 2}" y="133" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#ffffff" text-anchor="middle">{percent}</text>
-    <text x="{x + 20}" y="165" font-family="Arial, sans-serif" font-size="13" fill="#666666">{status}</text>
-    <text x="{x + 20}" y="190" font-family="Arial, sans-serif" font-size="11" fill="{detail_color}">{detail}</text>
+    <text x="{x + 20 + bar_width // 2}" y="133" {FONT_FAMILY} font-size="12" font-weight="bold" fill="#ffffff" text-anchor="middle">{percent}</text>
+    <text x="{x + 20}" y="165" {FONT_FAMILY} font-size="13" fill="#666666">{status}</text>
+    <text x="{x + 20}" y="190" {FONT_FAMILY} font-size="11" fill="{detail_color}">{detail}</text>
 """
 
         svg += """
     <rect x="50" y="240" width="1100" height="140" fill="#ffffff" stroke="#e0e0e0" stroke-width="1" rx="8"/>
-    <text x="70" y="270" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#333333">📋 실행 로그</text>
+    <text x="70" y="270" {FONT_FAMILY} font-size="14" font-weight="bold" fill="#333333">📋 실행 로그</text>
     <rect x="70" y="285" width="1060" height="80" fill="#f5f5f5" rx="5"/>
 """
         for idx, (line, color) in enumerate(logs):
@@ -614,32 +615,32 @@ class KISTradingImages(BlogImageGenerator):
     <circle cx="42" cy="25" r="7" fill="#ffbd2e"/>
     <circle cx="64" cy="25" r="7" fill="#27ca40"/>
     <rect x="100" y="12" width="500" height="26" rx="13" fill="#444444"/>
-    <text x="120" y="31" font-family="Arial, sans-serif" font-size="12" fill="#ffffff">http://localhost:5555/</text>
+    <text x="120" y="31" {FONT_FAMILY} font-size="12" fill="#ffffff">http://localhost:5555/</text>
     <rect x="0" y="50" width="1200" height="60" fill="#1a1a2e"/>
-    <text x="30" y="88" font-family="Arial, sans-serif" font-size="24" font-weight="bold" fill="#ffffff">🌸 Flower</text>
-    <text x="140" y="88" font-family="Arial, sans-serif" font-size="14" fill="#a0a0a0">Celery monitoring</text>
+    <text x="30" y="88" {FONT_FAMILY} font-size="24" font-weight="bold" fill="#ffffff">🌸 Flower</text>
+    <text x="140" y="88" {FONT_FAMILY} font-size="14" fill="#a0a0a0">Celery monitoring</text>
     <rect x="400" y="70" width="100" height="30" fill="#333355"/>
-    <text x="450" y="92" font-family="Arial, sans-serif" font-size="13" fill="#ffffff" text-anchor="middle">Dashboard</text>
-    <text x="550" y="92" font-family="Arial, sans-serif" font-size="13" fill="#a0a0a0" text-anchor="middle">Tasks</text>
-    <text x="640" y="92" font-family="Arial, sans-serif" font-size="13" fill="#a0a0a0" text-anchor="middle">Workers</text>
+    <text x="450" y="92" {FONT_FAMILY} font-size="13" fill="#ffffff" text-anchor="middle">Dashboard</text>
+    <text x="550" y="92" {FONT_FAMILY} font-size="13" fill="#a0a0a0" text-anchor="middle">Tasks</text>
+    <text x="640" y="92" {FONT_FAMILY} font-size="13" fill="#a0a0a0" text-anchor="middle">Workers</text>
     <rect x="0" y="110" width="1200" height="490" fill="#ffffff"/>
 """
 
         for x, fill, stroke, label, value, value_color in stats:
             svg += f"""
     <rect x="{x}" y="130" width="180" height="100" fill="{fill}" stroke="{stroke}" stroke-width="1" rx="8"/>
-    <text x="{x + 90}" y="165" font-family="Arial, sans-serif" font-size="14" fill="{stroke}" text-anchor="middle">{label}</text>
-    <text x="{x + 90}" y="205" font-family="Arial, sans-serif" font-size="36" font-weight="bold" fill="{value_color}" text-anchor="middle">{value}</text>
+    <text x="{x + 90}" y="165" {FONT_FAMILY} font-size="14" fill="{stroke}" text-anchor="middle">{label}</text>
+    <text x="{x + 90}" y="205" {FONT_FAMILY} font-size="36" font-weight="bold" fill="{value_color}" text-anchor="middle">{value}</text>
 """
 
         svg += """
     <rect x="30" y="250" width="780" height="320" fill="#ffffff" stroke="#e0e0e0" stroke-width="1" rx="8"/>
-    <text x="50" y="280" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#333333">Recent Tasks</text>
+    <text x="50" y="280" {FONT_FAMILY} font-size="16" font-weight="bold" fill="#333333">Recent Tasks</text>
     <rect x="45" y="295" width="750" height="30" fill="#f5f5f5"/>
-    <text x="65" y="315" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#666666">Name</text>
-    <text x="350" y="315" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#666666">State</text>
-    <text x="480" y="315" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#666666">Received</text>
-    <text x="650" y="315" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#666666">Runtime</text>
+    <text x="65" y="315" {FONT_FAMILY} font-size="12" font-weight="bold" fill="#666666">Name</text>
+    <text x="350" y="315" {FONT_FAMILY} font-size="12" font-weight="bold" fill="#666666">State</text>
+    <text x="480" y="315" {FONT_FAMILY} font-size="12" font-weight="bold" fill="#666666">Received</text>
+    <text x="650" y="315" {FONT_FAMILY} font-size="12" font-weight="bold" fill="#666666">Runtime</text>
 """
 
         row_line = 325
@@ -649,20 +650,20 @@ class KISTradingImages(BlogImageGenerator):
     <line x1="45" y1="{row_line}" x2="795" y2="{row_line}" stroke="#e0e0e0"/>
     <text x="65" y="{y}" font-family="monospace" font-size="11" fill="#333333">{name}</text>
     <rect x="340" y="{row_line + 12}" width="70" height="20" fill="{bg}" rx="3"/>
-    <text x="375" y="{row_line + 27}" font-family="Arial, sans-serif" font-size="10" fill="{fg}" text-anchor="middle">{state}</text>
-    <text x="480" y="{y}" font-family="Arial, sans-serif" font-size="11" fill="#666666">{received}</text>
-    <text x="650" y="{y}" font-family="Arial, sans-serif" font-size="11" fill="#666666">{runtime}</text>
+    <text x="375" y="{row_line + 27}" {FONT_FAMILY} font-size="10" fill="{fg}" text-anchor="middle">{state}</text>
+    <text x="480" y="{y}" {FONT_FAMILY} font-size="11" fill="#666666">{received}</text>
+    <text x="650" y="{y}" {FONT_FAMILY} font-size="11" fill="#666666">{runtime}</text>
 """
             row_line += 40
 
         svg += """
     <rect x="830" y="250" width="340" height="150" fill="#ffffff" stroke="#e0e0e0" stroke-width="1" rx="8"/>
-    <text x="850" y="280" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#333333">Worker Status</text>
+    <text x="850" y="280" {FONT_FAMILY} font-size="16" font-weight="bold" fill="#333333">Worker Status</text>
     <circle cx="865" cy="315" r="8" fill="#4CAF50"/>
-    <text x="885" y="320" font-family="Arial, sans-serif" font-size="14" fill="#333333">celery@raspberrypi</text>
-    <text x="865" y="350" font-family="Arial, sans-serif" font-size="12" fill="#666666">Concurrency: 4</text>
-    <text x="865" y="370" font-family="Arial, sans-serif" font-size="12" fill="#666666">Active: 3 | Processed: 52</text>
-    <text x="865" y="390" font-family="Arial, sans-serif" font-size="12" fill="#666666">Pool: prefork</text>
+    <text x="885" y="320" {FONT_FAMILY} font-size="14" fill="#333333">celery@raspberrypi</text>
+    <text x="865" y="350" {FONT_FAMILY} font-size="12" fill="#666666">Concurrency: 4</text>
+    <text x="865" y="370" {FONT_FAMILY} font-size="12" fill="#666666">Active: 3 | Processed: 52</text>
+    <text x="865" y="390" {FONT_FAMILY} font-size="12" fill="#666666">Pool: prefork</text>
 """
         svg += SVGComponent.footer()
         return svg

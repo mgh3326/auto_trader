@@ -12,7 +12,7 @@ from typing import override
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from blog.tools.components.base import SVGComponent
+from blog.tools.components.base import FONT_FAMILY, SVGComponent
 from blog.tools.components.thumbnail import ThumbnailTemplate
 from blog.tools.image_generator import BlogImageGenerator
 
@@ -35,13 +35,12 @@ class MCPServerImages(BlogImageGenerator):
             title_line2="도구 만들기",
             subtitle="Claude가 직접 주식을 분석하고 매매하는 시스템",
             icons=[
-                ("🤖", "Claude", "#5436DA"),
-                ("📊", "35 Tools", "#2196F3"),
-                ("📈", "Trading", "#4CAF50"),
-                ("🔗", "7 APIs", "#FF9800"),
+                ("server", "MCP", "#2196F3"),
+                ("code", "API", "#4CAF50"),
+                ("database", "DB", "#FF9800"),
             ],
-            tech_stack="FastMCP • KIS • Upbit • Yahoo • Naver • Finnhub • CoinGecko",
-            bg_gradient=("#0a0e27", "#1a1f4e", "#2d3a8c"),
+            theme="terminal",
+            bg_pattern="grid",
             accent_color="#00d4aa",
         )
 
@@ -88,28 +87,28 @@ class MCPServerImages(BlogImageGenerator):
         svg += """
     <rect x="90" y="190" width="1220" height="280" fill="#ffffff" stroke="#2196F3" stroke-width="2" rx="10"/>
     <rect x="90" y="190" width="1220" height="40" fill="#2196F3" rx="10"/>
-    <text x="700" y="216" font-family="Arial, sans-serif" font-size="18" font-weight="bold" fill="#ffffff" text-anchor="middle">auto_trader-mcp (FastMCP Server)</text>
+    <text x="700" y="216" {FONT_FAMILY} font-size="18" font-weight="bold" fill="#ffffff" text-anchor="middle">auto_trader-mcp (FastMCP Server)</text>
 
     <rect x="120" y="500" width="1160" height="110" fill="#ffffff" stroke="#D0D7DE" stroke-width="1" rx="8"/>
-    <text x="700" y="492" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#666666" text-anchor="middle">External Data Sources</text>
+    <text x="700" y="492" {FONT_FAMILY} font-size="14" font-weight="bold" fill="#666666" text-anchor="middle">External Data Sources</text>
 
     <rect x="220" y="675" width="980" height="115" fill="#ffffff" stroke="#D0D7DE" stroke-width="1" rx="8"/>
-    <text x="710" y="668" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="#666666" text-anchor="middle">State Stores</text>
+    <text x="710" y="668" {FONT_FAMILY} font-size="13" font-weight="bold" fill="#666666" text-anchor="middle">State Stores</text>
 """
         svg += FlowDiagram.create(nodes=nodes, edges=edges)
         svg += """
-    <text x="700" y="118" font-family="Arial, sans-serif" font-size="13" fill="#c4b8ff" text-anchor="middle">MCP 클라이언트</text>
-    <text x="700" y="325" font-family="Arial, sans-serif" font-size="11" fill="#CFD8DC" text-anchor="middle">_resolve_market_type() · market aliases · validation</text>
+    <text x="700" y="118" {FONT_FAMILY} font-size="13" fill="#c4b8ff" text-anchor="middle">MCP 클라이언트</text>
+    <text x="700" y="325" {FONT_FAMILY} font-size="11" fill="#CFD8DC" text-anchor="middle">_resolve_market_type() · market aliases · validation</text>
 
-    <text x="235" y="545" font-family="Arial, sans-serif" font-size="11" fill="#FFE0B2" text-anchor="middle">국내/해외 주식 시세 · 보유 · 주문</text>
-    <text x="700" y="545" font-family="Arial, sans-serif" font-size="11" fill="#D1B3FF" text-anchor="middle">해외/국내 펀더멘털 · 뉴스 · 실적 · 밸류에이션</text>
-    <text x="1090" y="545" font-family="Arial, sans-serif" font-size="11" fill="#B3C7E6" text-anchor="middle">암호화폐 시세/주문 + 김치프리미엄 분석</text>
+    <text x="235" y="545" {FONT_FAMILY} font-size="11" fill="#FFE0B2" text-anchor="middle">국내/해외 주식 시세 · 보유 · 주문</text>
+    <text x="700" y="545" {FONT_FAMILY} font-size="11" fill="#D1B3FF" text-anchor="middle">해외/국내 펀더멘털 · 뉴스 · 실적 · 밸류에이션</text>
+    <text x="1090" y="545" {FONT_FAMILY} font-size="11" fill="#B3C7E6" text-anchor="middle">암호화폐 시세/주문 + 김치프리미엄 분석</text>
 
-    <text x="440" y="735" font-family="Arial, sans-serif" font-size="12" fill="#CFD8DC" text-anchor="middle">manual_holdings · broker_accounts · stock_aliases</text>
-    <text x="940" y="735" font-family="Arial, sans-serif" font-size="12" fill="#FFCDD2" text-anchor="middle">daily_order_count · model_rate_limit</text>
+    <text x="440" y="735" {FONT_FAMILY} font-size="12" fill="#CFD8DC" text-anchor="middle">manual_holdings · broker_accounts · stock_aliases</text>
+    <text x="940" y="735" {FONT_FAMILY} font-size="12" fill="#FFCDD2" text-anchor="middle">daily_order_count · model_rate_limit</text>
 
-    <text x="700" y="838" font-family="Arial, sans-serif" font-size="14" fill="#666666" text-anchor="middle">Claude → MCP Protocol → FastMCP Server → external APIs + DB/Redis</text>
-    <text x="700" y="862" font-family="Arial, sans-serif" font-size="12" fill="#999999" text-anchor="middle">심볼 포맷 자동 라우팅 · dry_run 기본 안전 모드 · 비동기 병렬 처리</text>
+    <text x="700" y="838" {FONT_FAMILY} font-size="14" fill="#666666" text-anchor="middle">Claude → MCP Protocol → FastMCP Server → external APIs + DB/Redis</text>
+    <text x="700" y="862" {FONT_FAMILY} font-size="12" fill="#999999" text-anchor="middle">심볼 포맷 자동 라우팅 · dry_run 기본 안전 모드 · 비동기 병렬 처리</text>
 """
         svg += SVGComponent.footer()
         return svg
@@ -142,27 +141,27 @@ class MCPServerImages(BlogImageGenerator):
         svg += SVGComponent.background(1200, 700, fill="#ffffff")
         svg += SVGComponent.title(1200, "지능형 심볼 라우팅 시스템", y=40, font_size=26)
         svg += """
-    <text x="600" y="65" font-family="Arial, sans-serif" font-size="14" fill="#888888" text-anchor="middle">심볼 포맷에 따라 자동으로 시장과 데이터 소스를 결정</text>
+    <text x="600" y="65" {FONT_FAMILY} font-size="14" fill="#888888" text-anchor="middle">심볼 포맷에 따라 자동으로 시장과 데이터 소스를 결정</text>
     <rect x="100" y="620" width="1000" height="55" fill="#F5F5F5" stroke="#E0E0E0" stroke-width="1" rx="6"/>
 """
         svg += FlowDiagram.create(nodes=nodes, edges=edges)
         svg += """
-    <text x="600" y="136" font-family="Arial, sans-serif" font-size="12" fill="#c4b8ff" text-anchor="middle">Claude가 호출하는 MCP 도구</text>
-    <text x="600" y="240" font-family="Arial, sans-serif" font-size="12" fill="#CFD8DC" text-anchor="middle">market 명시 → 검증 | market 생략 → 자동 감지</text>
+    <text x="600" y="136" {FONT_FAMILY} font-size="12" fill="#c4b8ff" text-anchor="middle">Claude가 호출하는 MCP 도구</text>
+    <text x="600" y="240" {FONT_FAMILY} font-size="12" fill="#CFD8DC" text-anchor="middle">market 명시 → 검증 | market 생략 → 자동 감지</text>
 
     <text x="210" y="372" font-family="monospace" font-size="12" fill="#BBDEFB" text-anchor="middle">005930 / 0123G0</text>
     <text x="600" y="372" font-family="monospace" font-size="12" fill="#C8E6C9" text-anchor="middle">AAPL / BRK.B</text>
     <text x="990" y="372" font-family="monospace" font-size="12" fill="#FFE0B2" text-anchor="middle">KRW-BTC / USDT-ETH</text>
 
-    <text x="210" y="555" font-family="Arial, sans-serif" font-size="11" fill="#FFE0B2" text-anchor="middle">한국투자증권 + 펀더멘털</text>
-    <text x="600" y="555" font-family="Arial, sans-serif" font-size="11" fill="#D1B3FF" text-anchor="middle">yfinance + 뉴스/실적/내부자거래</text>
-    <text x="1000" y="555" font-family="Arial, sans-serif" font-size="11" fill="#B3C7E6" text-anchor="middle">업비트 + 글로벌 온체인/거래소 데이터</text>
+    <text x="210" y="555" {FONT_FAMILY} font-size="11" fill="#FFE0B2" text-anchor="middle">한국투자증권 + 펀더멘털</text>
+    <text x="600" y="555" {FONT_FAMILY} font-size="11" fill="#D1B3FF" text-anchor="middle">yfinance + 뉴스/실적/내부자거래</text>
+    <text x="1000" y="555" {FONT_FAMILY} font-size="11" fill="#B3C7E6" text-anchor="middle">업비트 + 글로벌 온체인/거래소 데이터</text>
 
-    <text x="120" y="645" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#333333">market aliases:</text>
+    <text x="120" y="645" {FONT_FAMILY} font-size="12" font-weight="bold" fill="#333333">market aliases:</text>
     <text x="230" y="645" font-family="monospace" font-size="11" fill="#1565C0">kr, krx, kospi, kosdaq → equity_kr</text>
     <text x="555" y="645" font-family="monospace" font-size="11" fill="#2E7D32">us, nasdaq, nyse, yahoo → equity_us</text>
     <text x="870" y="645" font-family="monospace" font-size="11" fill="#EF6C00">crypto, upbit, krw → crypto</text>
-    <text x="600" y="665" font-family="Arial, sans-serif" font-size="11" fill="#999999" text-anchor="middle">market 파라미터를 명시하면 심볼 형식을 해당 시장 규칙으로 검증</text>
+    <text x="600" y="665" {FONT_FAMILY} font-size="11" fill="#999999" text-anchor="middle">market 파라미터를 명시하면 심볼 형식을 해당 시장 규칙으로 검증</text>
 """
         svg += SVGComponent.footer()
         return svg
