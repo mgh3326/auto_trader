@@ -884,3 +884,125 @@ class TestVoteThresholdBoundaries:
         sell_signals = [s for s in signals if s.action == "sell"]
         assert len(sell_signals) == 1
         assert sell_signals[0].reason.startswith("Bear votes")
+
+
+class TestHardExitPriority:
+    """Tests that hard exits take priority over bear-vote exits."""
+
+    def test_stop_loss_priority_over_bear_votes(self, monkeypatch):
+        """Test that stop-loss exit takes priority over bear-vote exit."""
+        strat = strategy.Strategy()
+
+        # Mock _evaluate_signals to also return sufficient bear votes
+        def mock_evaluate(bar):
+            return {
+                "rsi_fast": 50.0,
+                "rsi_slow": 45.0,
+                "bull_votes": 0,
+                "bear_votes": strategy.MIN_SELL_VOTES + 1,  # Would trigger bear sell
+                "bull_flags": {},
+                "bear_flags": {"rsi_slow_high": True},
+            }
+
+        monkeypatch.setattr(strat, "_evaluate_signals", mock_evaluate)
+
+        history = _make_history([100.0] * 40)
+        # Current price below stop-loss threshold (4.5% below avg price of 100)
+        current_price = 100.0 * (1 - strategy.STOP_LOSS_PCT - 0.01)
+        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-01", current_price, history)}
+
+        portfolio = prepare.PortfolioState(
+            cash=50000.0,
+            positions={"BTC": 1.0},
+            avg_prices={"BTC": 100.0},
+            position_dates={"BTC": "2025-03-25"},
+            trade_log=[],
+            equity=140000.0,
+            date="2025-04-01",
+        )
+
+        signals = strat.on_bar(bar_data, portfolio)
+
+        # Stop-loss should trigger, not bear-vote sell
+        sell_signals = [s for s in signals if s.action == "sell"]
+        assert len(sell_signals) == 1
+        assert "Stop-loss" in sell_signals[0].reason
+
+    def test_rsi_recovery_priority_over_bear_votes(self, monkeypatch):
+        """Test that RSI recovery exit takes priority over bear-vote exit."""
+        strat = strategy.Strategy()
+
+        # Mock _evaluate_signals with RSI above exit and bear votes
+        def mock_evaluate(bar):
+            return {
+                "rsi_fast": 50.0,
+                "rsi_slow": strategy.RSI_EXIT + 5,  # Above exit threshold
+                "bull_votes": 0,
+                "bear_votes": strategy.MIN_SELL_VOTES + 1,
+                "bull_flags": {},
+                "bear_flags": {"rsi_slow_high": True},
+            }
+
+        monkeypatch.setattr(strat, "_evaluate_signals", mock_evaluate)
+
+        history = _make_history([100.0] * 40)
+        # Profitable position (current > avg price)
+        current_price = 110.0
+        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-01", current_price, history)}
+
+        portfolio = prepare.PortfolioState(
+            cash=50000.0,
+            positions={"BTC": 1.0},
+            avg_prices={"BTC": 100.0},
+            position_dates={"BTC": "2025-03-25"},
+            trade_log=[],
+            equity=160000.0,
+            date="2025-04-01",
+        )
+
+        signals = strat.on_bar(bar_data, portfolio)
+
+        # RSI recovery should trigger, not bear-vote sell
+        sell_signals = [s for s in signals if s.action == "sell"]
+        assert len(sell_signals) == 1
+        assert "RSI recovered" in sell_signals[0].reason
+
+    def test_max_holding_priority_over_bear_votes(self, monkeypatch):
+        """Test that max holding exit takes priority over bear-vote exit."""
+        strat = strategy.Strategy()
+
+        # Mock _evaluate_signals with bear votes but no RSI recovery
+        def mock_evaluate(bar):
+            return {
+                "rsi_fast": 40.0,
+                "rsi_slow": 40.0,  # Below exit threshold, so no RSI recovery
+                "bull_votes": 0,
+                "bear_votes": strategy.MIN_SELL_VOTES + 1,
+                "bull_flags": {},
+                "bear_flags": {"rsi_slow_high": False},
+            }
+
+        monkeypatch.setattr(strat, "_evaluate_signals", mock_evaluate)
+
+        history = _make_history([100.0] * 40)
+        # Not at stop-loss, profitable
+        current_price = 110.0
+        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-15", current_price, history)}
+
+        portfolio = prepare.PortfolioState(
+            cash=50000.0,
+            positions={"BTC": 1.0},
+            avg_prices={"BTC": 100.0},
+            # Entry 25 days ago, exceeds HOLDING_DAYS (21)
+            position_dates={"BTC": "2025-03-21"},
+            trade_log=[],
+            equity=160000.0,
+            date="2025-04-15",
+        )
+
+        signals = strat.on_bar(bar_data, portfolio)
+
+        # Max holding should trigger, not bear-vote sell
+        sell_signals = [s for s in signals if s.action == "sell"]
+        assert len(sell_signals) == 1
+        assert "holding" in sell_signals[0].reason.lower()
