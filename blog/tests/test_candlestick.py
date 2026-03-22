@@ -5,6 +5,20 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+def make_large_ohlcv(count: int = 80) -> list[dict[str, int | str]]:
+    return [
+        {
+            "date": f"2026-03-{(i % 28) + 1:02d}",
+            "open": 50000 + i * 10,
+            "high": 50150 + i * 10,
+            "low": 49900 + i * 10,
+            "close": 50080 + i * 10,
+            "volume": 1_000_000 + i * 1000,
+        }
+        for i in range(count)
+    ]
+
+
 # Sample OHLCV data with varied bullish, bearish, and doji-like candles
 SAMPLE_OHLCV = [
     {"date": "2026-03-01", "open": 50000, "high": 52000, "low": 49000, "close": 51500, "volume": 1_000_000},
@@ -107,6 +121,60 @@ class TestCandlestickChart:
             x=0, y=0, width=800, height=400, ohlcv=SAMPLE_OHLCV, bollinger=bollinger
         )
         assert "<polygon" in svg
+
+    def test_truncated_chart_keeps_overlay_lines(self) -> None:
+        from blog.tools.stock.candlestick_chart import CandlestickChart
+
+        large_ohlcv = make_large_ohlcv(80)
+        ema_values = {"EMA20": [row["close"] for row in large_ohlcv]}
+        bollinger = {
+            "upper": [row["high"] for row in large_ohlcv],
+            "lower": [row["low"] for row in large_ohlcv],
+            "middle": [row["close"] for row in large_ohlcv],
+        }
+
+        svg = CandlestickChart.create(
+            x=0,
+            y=0,
+            width=800,
+            height=400,
+            ohlcv=large_ohlcv,
+            max_candles=60,
+            ema_values=ema_values,
+            bollinger=bollinger,
+        )
+
+        assert 'stroke-dasharray="5,3"' in svg
+        assert 'stroke-dasharray="3,3"' in svg
+
+    def test_dark_theme_uses_dark_candle_palette(self) -> None:
+        from blog.tools.stock.candlestick_chart import CandlestickChart
+
+        svg = CandlestickChart.create(
+            x=0,
+            y=0,
+            width=800,
+            height=400,
+            ohlcv=SAMPLE_OHLCV,
+            theme="dark",
+        )
+
+        assert "#00c853" in svg
+        assert "#ff1744" in svg
+
+    def test_default_max_candles_is_sixty(self) -> None:
+        from blog.tools.stock.candlestick_chart import CandlestickChart
+
+        svg = CandlestickChart.create(
+            x=0,
+            y=0,
+            width=800,
+            height=400,
+            ohlcv=make_large_ohlcv(80),
+            volume=False,
+        )
+
+        assert svg.count("<rect") == 60
 
 
 class TestPriceChartCandlestickMode:
