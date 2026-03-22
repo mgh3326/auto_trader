@@ -11,7 +11,7 @@ RSI_EXIT = 50  # Exit when RSI recovers to neutral
 MAX_POSITIONS = 5
 POSITION_SIZE = 0.10
 HOLDING_DAYS = 21
-STOP_LOSS_PCT = 0.08
+STOP_LOSS_PCT = 0.06
 
 
 def _calc_rsi(closes: np.ndarray, period: int) -> float | None:
