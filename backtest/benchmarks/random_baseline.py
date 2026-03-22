@@ -27,10 +27,8 @@ class RandomBaseline:
 
     def on_bar(
         self,
-        date: str,
         bar_data: dict[str, prepare.BarData],
         portfolio: prepare.PortfolioState,
-        bar_index: int,
     ) -> list[prepare.Signal]:
         """Generate random trading signals."""
         signals: list[prepare.Signal] = []
@@ -62,7 +60,8 @@ class RandomBaseline:
             signals.append(prepare.Signal(
                 symbol=symbol,
                 action="buy",
-                target_weight=0.15,  # Fixed position size
+                weight=0.15,  # Fixed position size
+                reason="Random buy signal",
             ))
         elif can_sell:
             # Sell a random held symbol
@@ -70,7 +69,8 @@ class RandomBaseline:
             signals.append(prepare.Signal(
                 symbol=symbol,
                 action="sell",
-                target_weight=0.0,  # Full sell
+                weight=1.0,  # Full sell
+                reason="Random sell signal",
             ))
 
         return signals

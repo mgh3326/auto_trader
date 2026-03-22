@@ -17,10 +17,8 @@ class BuyAndHold:
 
     def on_bar(
         self,
-        date: str,
         bar_data: dict[str, prepare.BarData],
         portfolio: prepare.PortfolioState,
-        bar_index: int,
     ) -> list[prepare.Signal]:
         """Generate trading signals.
 
@@ -28,10 +26,13 @@ class BuyAndHold:
         """
         signals: list[prepare.Signal] = []
 
-        if self._has_bought or bar_index > 0:
+        if self._has_bought:
             return signals
 
-        # Only buy on first day
+        # Only buy when portfolio is empty (first actionable bar)
+        if portfolio.positions:
+            return signals
+
         symbols = list(bar_data.keys())
         if not symbols:
             return signals
@@ -43,7 +44,8 @@ class BuyAndHold:
             signals.append(prepare.Signal(
                 symbol=symbol,
                 action="buy",
-                target_weight=weight,
+                weight=weight,
+                reason="Buy and hold initial allocation",
             ))
 
         self._has_bought = True

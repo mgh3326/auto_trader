@@ -3,12 +3,30 @@
 import sys
 from pathlib import Path
 
+import pandas as pd
+
 # Add backtest directory to path for imports
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "backtest"))
 
 import prepare
 from benchmarks.buy_and_hold import BuyAndHold
 from benchmarks.random_baseline import RandomBaseline
+
+
+def _make_bar_data(symbol: str, date: str, close: float) -> prepare.BarData:
+    """Helper to create BarData with required fields."""
+    history = pd.DataFrame({"close": [close]})
+    return prepare.BarData(
+        symbol=symbol,
+        date=date,
+        open=close,
+        high=close * 1.1,
+        low=close * 0.9,
+        close=close,
+        volume=1000,
+        value=100000,
+        history=history,
+    )
 
 
 class TestBuyAndHold:
@@ -25,24 +43,8 @@ class TestBuyAndHold:
         strategy = BuyAndHold()
 
         bar_data = {
-            "BTC": prepare.BarData(
-                date="2025-04-01",
-                open=100.0,
-                high=110.0,
-                low=90.0,
-                close=100.0,
-                volume=1000,
-                value=100000,
-            ),
-            "ETH": prepare.BarData(
-                date="2025-04-01",
-                open=50.0,
-                high=55.0,
-                low=45.0,
-                close=50.0,
-                volume=2000,
-                value=200000,
-            ),
+            "BTC": _make_bar_data("BTC", "2025-04-01", 100.0),
+            "ETH": _make_bar_data("ETH", "2025-04-01", 50.0),
         }
 
         portfolio = prepare.PortfolioState(
@@ -54,27 +56,19 @@ class TestBuyAndHold:
         )
 
         # First day should generate buy signals
-        signals = strategy.on_bar("2025-04-01", bar_data, portfolio, 0)
+        signals = strategy.on_bar(bar_data, portfolio)
 
         assert len(signals) == 2
         assert all(s.action == "buy" for s in signals)
         # Equal weight: 1.0 / 2 = 0.5
-        assert all(s.target_weight == 0.5 for s in signals)
+        assert all(s.weight == 0.5 for s in signals)
 
     def test_no_buys_after_first_day(self):
         """Test that strategy doesn't buy after first day."""
         strategy = BuyAndHold()
 
         bar_data = {
-            "BTC": prepare.BarData(
-                date="2025-04-02",
-                open=105.0,
-                high=115.0,
-                low=95.0,
-                close=105.0,
-                volume=1000,
-                value=100000,
-            ),
+            "BTC": _make_bar_data("BTC", "2025-04-02", 105.0),
         }
 
         portfolio = prepare.PortfolioState(
@@ -85,8 +79,8 @@ class TestBuyAndHold:
             trade_log=[],
         )
 
-        # Second day should not generate signals
-        signals = strategy.on_bar("2025-04-02", bar_data, portfolio, 1)
+        # Second day should not generate signals (already bought)
+        signals = strategy.on_bar(bar_data, portfolio)
 
         assert len(signals) == 0
 
@@ -106,24 +100,8 @@ class TestRandomBaseline:
         strategy2 = RandomBaseline(seed=42)
 
         bar_data = {
-            "BTC": prepare.BarData(
-                date="2025-04-01",
-                open=100.0,
-                high=110.0,
-                low=90.0,
-                close=100.0,
-                volume=1000,
-                value=100000,
-            ),
-            "ETH": prepare.BarData(
-                date="2025-04-01",
-                open=50.0,
-                high=55.0,
-                low=45.0,
-                close=50.0,
-                volume=2000,
-                value=200000,
-            ),
+            "BTC": _make_bar_data("BTC", "2025-04-01", 100.0),
+            "ETH": _make_bar_data("ETH", "2025-04-01", 50.0),
         }
 
         portfolio = prepare.PortfolioState(
@@ -134,8 +112,8 @@ class TestRandomBaseline:
             trade_log=[],
         )
 
-        signals1 = strategy1.on_bar("2025-04-01", bar_data, portfolio, 0)
-        signals2 = strategy2.on_bar("2025-04-01", bar_data, portfolio, 0)
+        signals1 = strategy1.on_bar(bar_data, portfolio)
+        signals2 = strategy2.on_bar(bar_data, portfolio)
 
         # Both should generate same signals (or both empty)
         assert len(signals1) == len(signals2)
@@ -148,15 +126,7 @@ class TestRandomBaseline:
         strategy = RandomBaseline(seed=42, action_probability=1.0)
 
         bar_data = {
-            "BTC": prepare.BarData(
-                date="2025-04-01",
-                open=100.0,
-                high=110.0,
-                low=90.0,
-                close=100.0,
-                volume=1000,
-                value=100000,
-            ),
+            "BTC": _make_bar_data("BTC", "2025-04-01", 100.0),
         }
 
         portfolio = prepare.PortfolioState(
@@ -168,8 +138,8 @@ class TestRandomBaseline:
         )
 
         # Generate many signals to check for invalid sells
-        for i in range(100):
-            signals = strategy.on_bar("2025-04-01", bar_data, portfolio, i)
+        for _ in range(100):
+            signals = strategy.on_bar(bar_data, portfolio)
             for signal in signals:
                 if signal.action == "sell":
                     assert signal.symbol in portfolio.positions, \
@@ -180,24 +150,8 @@ class TestRandomBaseline:
         strategy = RandomBaseline(seed=123, action_probability=1.0)
 
         bar_data = {
-            "BTC": prepare.BarData(
-                date="2025-04-01",
-                open=100.0,
-                high=110.0,
-                low=90.0,
-                close=100.0,
-                volume=1000,
-                value=100000,
-            ),
-            "ETH": prepare.BarData(
-                date="2025-04-01",
-                open=50.0,
-                high=55.0,
-                low=45.0,
-                close=50.0,
-                volume=2000,
-                value=200000,
-            ),
+            "BTC": _make_bar_data("BTC", "2025-04-01", 100.0),
+            "ETH": _make_bar_data("ETH", "2025-04-01", 50.0),
         }
 
         # Start with BTC held
@@ -210,8 +164,8 @@ class TestRandomBaseline:
         )
 
         # Generate signals multiple times
-        for i in range(50):
-            signals = strategy.on_bar("2025-04-01", bar_data, portfolio, i)
+        for _ in range(50):
+            signals = strategy.on_bar(bar_data, portfolio)
             for signal in signals:
                 if signal.action == "buy":
                     # Can only buy if not already held
@@ -226,15 +180,7 @@ class TestRandomBaseline:
         strategy = RandomBaseline(seed=42, action_probability=1.0)
 
         bar_data = {
-            "BTC": prepare.BarData(
-                date="2025-04-01",
-                open=100.0,
-                high=110.0,
-                low=90.0,
-                close=100.0,
-                volume=1000,
-                value=100000,
-            ),
+            "BTC": _make_bar_data("BTC", "2025-04-01", 100.0),
         }
 
         portfolio = prepare.PortfolioState(
@@ -246,9 +192,9 @@ class TestRandomBaseline:
         )
 
         # Generate many signals to verify no shorting
-        for i in range(100):
-            signals = strategy.on_bar("2025-04-01", bar_data, portfolio, i)
+        for _ in range(100):
+            signals = strategy.on_bar(bar_data, portfolio)
             for signal in signals:
                 # Never short - only positive quantities
                 if signal.action == "buy":
-                    assert signal.target_weight > 0
+                    assert signal.weight > 0
