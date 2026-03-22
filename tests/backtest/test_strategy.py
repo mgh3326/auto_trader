@@ -67,18 +67,48 @@ def _make_bar_data(
     )
 
 
-def _make_oversold_history(periods: int = 30) -> pd.DataFrame:
+def _make_strong_bullish_setup(periods: int = 50) -> tuple[pd.DataFrame, float]:
+    """Create a history with strong bullish setup (multiple bull signals).
+
+    Returns (history, current_price) tuple.
+    Creates conditions for: RSI oversold, below BB lower, high volume.
+    """
+    if periods < 40:
+        periods = 50
+
+    # Strong downtrend for oversold RSI, then flat at bottom
+    # This creates: dual RSI oversold, close below BB lower, momentum flattening
+    downtrend = list(range(200, 120, -2))
+    flat_bottom = [100] * (periods - len(downtrend))
+    closes = downtrend + flat_bottom
+    closes = closes[:periods]
+
+    # Volume: higher in recent bars to trigger volume_above_avg
+    base_volume = 1000.0
+    volumes = [base_volume] * (periods - 5) + [base_volume * 2.5] * 5
+
+    history = _make_history(closes, volumes)
+    return history, closes[-1]
+
+
+def _make_oversold_history(periods: int = 40) -> pd.DataFrame:
     """Create a history with oversold RSI pattern (downtrend then flat low)."""
     # Start high, decline sharply to create oversold condition
-    closes = list(range(150, 150 - periods, -1))[:periods]
+    # Ensure at least 36 bars for all indicators
+    if periods < 36:
+        periods = 40
+    closes = list(range(200, 200 - periods * 2, -2))[:periods]
     # Ensure we have enough data
     if len(closes) < periods:
-        closes = [150] * (periods - len(closes)) + closes
+        closes = [200] * (periods - len(closes)) + closes
     return _make_history(closes)
 
 
-def _make_overbought_history(periods: int = 30) -> pd.DataFrame:
+def _make_overbought_history(periods: int = 40) -> pd.DataFrame:
     """Create a history with overbought RSI pattern (strong uptrend)."""
+    # Ensure at least 36 bars for all indicators
+    if periods < 36:
+        periods = 40
     closes = list(range(100, 100 + periods))
     return _make_history(closes)
 
@@ -346,9 +376,9 @@ class TestBuySignals:
         """Test buy signal when both RSI fast and slow are oversold."""
         strat = strategy.Strategy()
 
-        # Create oversold history (strong downtrend)
-        history = _make_oversold_history(30)
-        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-01", 120.0, history)}
+        # Create oversold history with strong bullish setup
+        history, current_price = _make_strong_bullish_setup(50)
+        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-01", current_price, history)}
 
         portfolio = prepare.PortfolioState(
             cash=100000.0,
@@ -429,8 +459,9 @@ class TestBuySignals:
         """Test that buy signal has the configured position size."""
         strat = strategy.Strategy()
 
-        history = _make_oversold_history(30)
-        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-01", 120.0, history)}
+        # Use strong bullish setup for buy signal
+        history, current_price = _make_strong_bullish_setup(50)
+        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-01", current_price, history)}
 
         portfolio = prepare.PortfolioState(
             cash=100000.0,
@@ -481,8 +512,8 @@ class TestSellSignals:
         """Test sell signal on stop-loss trigger."""
         strat = strategy.Strategy()
 
-        # Create flat history
-        history = _make_history([100.0] * 30)
+        # Create flat history (need at least 36 bars)
+        history = _make_history([100.0] * 40)
         # Current price is below stop-loss threshold
         current_price = 85.0  # 15% below avg price of 100
         bar_data = {"BTC": _make_bar_data("BTC", "2025-04-01", current_price, history)}
@@ -565,8 +596,9 @@ class TestStrategyWithHistory:
         strat = strategy.Strategy()
 
         # Create bar with rising price history (RSI > 50)
+        # Need at least 36 bars for all indicators
         dates = (
-            pd.date_range("2025-03-01", "2025-04-01", freq="D")
+            pd.date_range("2025-02-20", "2025-04-01", freq="D")
             .strftime("%Y-%m-%d")
             .tolist()
         )

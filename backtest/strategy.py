@@ -217,18 +217,23 @@ class Strategy:
         current_positions = set(portfolio.positions.keys())
 
         for symbol, bar in bar_data.items():
-            rsi_fast = self._get_rsi(bar, RSI_PERIOD_FAST)
-            rsi_slow = self._get_rsi(bar, RSI_PERIOD_SLOW)
-            if rsi_slow is None:
+            # Evaluate all signals and votes
+            signal_data = self._evaluate_signals(bar)
+            if signal_data is None:
                 continue
 
+            rsi_fast = signal_data["rsi_fast"]
+            rsi_slow = signal_data["rsi_slow"]
+            bull_votes = signal_data["bull_votes"]
+            bear_votes = signal_data["bear_votes"]
+            bull_flags = signal_data["bull_flags"]
             is_held = symbol in current_positions
 
-            # Sell logic
+            # Sell logic - hard exits in priority order
             if is_held:
                 avg_price = portfolio.avg_prices.get(symbol, 0)
 
-                # Stop-loss
+                # 1. Stop-loss (highest priority)
                 if avg_price > 0 and bar.close < avg_price * (1 - STOP_LOSS_PCT):
                     signals.append(prepare.Signal(
                         symbol=symbol, action="sell", weight=1.0,
@@ -238,7 +243,7 @@ class Strategy:
                     self._stop_loss_dates[symbol] = portfolio.date
                     continue
 
-                # Exit when RSI recovers (mean-reversion exit)
+                # 2. RSI recovery exit (when profitable)
                 if rsi_slow >= RSI_EXIT and bar.close > avg_price:
                     signals.append(prepare.Signal(
                         symbol=symbol, action="sell", weight=1.0,
@@ -247,7 +252,7 @@ class Strategy:
                     current_positions.discard(symbol)
                     continue
 
-                # Sell on holding period exceeded
+                # 3. Max holding period exit
                 entry_date = portfolio.position_dates.get(symbol)
                 if entry_date:
                     holding_days = self._days_between(entry_date, portfolio.date)
@@ -259,7 +264,19 @@ class Strategy:
                         current_positions.discard(symbol)
                         continue
 
-            # Buy logic
+                # 4. Bear-vote exit (optional, only if no hard exit triggered)
+                if bear_votes >= MIN_SELL_VOTES:
+                    # Build list of triggered bear signals for reason string
+                    bear_signals = [k.replace("_", " ") for k, v in signal_data["bear_flags"].items() if v]
+                    reason = f"Bear votes {bear_votes}: {', '.join(bear_signals[:3])}"
+                    signals.append(prepare.Signal(
+                        symbol=symbol, action="sell", weight=1.0,
+                        reason=reason,
+                    ))
+                    current_positions.discard(symbol)
+                    continue
+
+            # Buy logic - vote threshold based
             if not is_held and len(current_positions) < MAX_POSITIONS:
                 # Check cooldown after stop-loss
                 if symbol in self._stop_loss_dates:
@@ -269,11 +286,14 @@ class Strategy:
                     else:
                         del self._stop_loss_dates[symbol]
 
-                both_oversold = rsi_slow <= RSI_OVERSOLD and (rsi_fast is not None and rsi_fast <= RSI_OVERSOLD)
-                if both_oversold:
+                # Buy on sufficient bull votes
+                if bull_votes >= MIN_VOTES:
+                    # Build list of triggered bull signals for reason string
+                    bull_signals = [k.replace("_", " ") for k, v in bull_flags.items() if v]
+                    reason = f"Bull votes {bull_votes}/6: {', '.join(bull_signals[:4])}"
                     signals.append(prepare.Signal(
                         symbol=symbol, action="buy", weight=POSITION_SIZE,
-                        reason=f"Dual RSI oversold (f={rsi_fast:.0f}, s={rsi_slow:.0f})",
+                        reason=reason,
                     ))
                     current_positions.add(symbol)
 
