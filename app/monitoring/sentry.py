@@ -107,6 +107,16 @@ _EXPECTED_MCP_ARGUMENT_NOISE_RULES = (
         "message_snippet": "Short selling data is only available for Korean stocks",
         "log_prefix": "Error calling tool 'get_short_interest'",
     },
+    {
+        "tool_name": "get_company_profile",
+        "message_snippet": "Company profile is not available for cryptocurrencies",
+        "log_prefix": "Error calling tool 'get_company_profile'",
+    },
+    {
+        "tool_name": "get_valuation",
+        "message_snippet": "Valuation metrics are not available for cryptocurrencies",
+        "log_prefix": "Error calling tool 'get_valuation'",
+    },
 )
 
 
