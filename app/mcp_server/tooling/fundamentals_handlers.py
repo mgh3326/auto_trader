@@ -285,8 +285,8 @@ def _register_fundamentals_tools_impl(mcp: FastMCP) -> None:
     @mcp.tool(
         name="get_company_profile",
         description=(
-            "Get company profile for a US or Korean stock. Returns name, sector, "
-            "industry, market cap, and financial ratios."
+            "Get company profile for a US or Korean stock. Crypto symbols like "
+            "KRW-BTC are not supported; use get_crypto_profile for cryptocurrencies."
         ),
     )
     async def get_company_profile(
@@ -613,9 +613,9 @@ def _register_fundamentals_tools_impl(mcp: FastMCP) -> None:
     @mcp.tool(
         name="get_valuation",
         description=(
-            "Get valuation metrics for a US or Korean stock. Returns PER, PBR, ROE, "
-            "dividend yield, 52-week high/low, current price, and position within "
-            "52-week range."
+            "Get valuation metrics for a US or Korean stock. Crypto symbols are not "
+            "supported. Returns PER, PBR, ROE, dividend yield, 52-week high/low, "
+            "current price, and position within 52-week range."
         ),
     )
     async def get_valuation(
