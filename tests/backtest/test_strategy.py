@@ -352,16 +352,13 @@ class TestVoteAssembly:
         assert result["bear_votes"] >= strategy.MIN_SELL_VOTES
         assert result["bear_flags"]["rsi_slow_high"]
 
-    def test_reason_string_includes_vote_count(self):
-        """Test that signal reason strings include vote count information."""
+    def test_buy_reason_string_includes_vote_count(self):
+        """Test that buy signal reason strings include vote count and flags."""
         strat = strategy.Strategy()
 
-        # Create oversold condition that will trigger buy
-        # Need at least 36 bars
-        closes = list(range(270, 100, -5))  # 35 bars
-        volumes = [3000.0] * len(closes)
-        history = _make_history(closes, volumes)
-        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-01", 105.0, history)}
+        # Use strong bullish setup that triggers buy
+        history, current_price = _make_strong_bullish_setup(50)
+        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-01", current_price, history)}
 
         portfolio = prepare.PortfolioState(
             cash=100000.0,
@@ -375,11 +372,46 @@ class TestVoteAssembly:
 
         signals = strat.on_bar(bar_data, portfolio)
 
-        # Check that buy signal includes vote information in reason
+        # Verify buy signal with proper reason formatting
         buy_signals = [s for s in signals if s.action == "buy"]
-        if buy_signals:
-            # This will be updated once on_bar uses voting
-            assert "rsi" in buy_signals[0].reason.lower() or "vote" in buy_signals[0].reason.lower()
+        assert len(buy_signals) == 1
+        assert buy_signals[0].reason.startswith("Bull votes")
+
+    def test_bear_sell_reason_string_format(self, monkeypatch):
+        """Test that bear-vote sell reason strings include vote count and flags."""
+        strat = strategy.Strategy()
+
+        # Mock _evaluate_signals to return controlled bear votes
+        def mock_evaluate(bar):
+            return {
+                "rsi_fast": 50.0,
+                "rsi_slow": 45.0,
+                "bull_votes": 0,
+                "bear_votes": strategy.MIN_SELL_VOTES,
+                "bull_flags": {},
+                "bear_flags": {"rsi_slow_high": True, "momentum_negative": True},
+            }
+
+        monkeypatch.setattr(strat, "_evaluate_signals", mock_evaluate)
+
+        history = _make_history([100.0] * 40)
+        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-01", 110.0, history)}
+        portfolio = prepare.PortfolioState(
+            cash=50000.0,
+            positions={"BTC": 1.0},
+            avg_prices={"BTC": 100.0},
+            position_dates={"BTC": "2025-03-25"},
+            trade_log=[],
+            equity=150000.0,
+            date="2025-04-01",
+        )
+
+        signals = strat.on_bar(bar_data, portfolio)
+
+        # Verify bear-vote sell reason formatting
+        sell_signals = [s for s in signals if s.action == "sell"]
+        assert len(sell_signals) == 1
+        assert sell_signals[0].reason.startswith("Bear votes")
 
 
 class TestBuySignals:
