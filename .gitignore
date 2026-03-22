@@ -262,3 +262,6 @@ logs/security/
 # n8n
 n8n/data/*
 !n8n/data/.gitkeep
+backtest/data/
+backtest/results.tsv
+backtest/run.log
