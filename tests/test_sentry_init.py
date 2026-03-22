@@ -904,3 +904,102 @@ class TestGetShortInterestSentryNoiseFilter:
             }
         }
         assert sentry_module._before_send(event, {}) is not None
+
+
+@pytest.mark.unit
+class TestStockOnlyFundamentalsSentryNoiseFilter:
+    """Stock-only fundamentals tools should drop crypto validation noise in Sentry."""
+
+    @pytest.mark.parametrize(
+        ("tool_name", "message"),
+        [
+            (
+                "get_company_profile",
+                "Company profile is not available for cryptocurrencies",
+            ),
+            (
+                "get_valuation",
+                "Valuation metrics are not available for cryptocurrencies",
+            ),
+        ],
+    )
+    def test_fastmcp_stock_only_crypto_validation_log_dropped(self, tool_name, message):
+        """AUTO_TRADER-45/47: log path noise dropped."""
+        event: Event = {
+            "logger": "fastmcp.server.server",
+            "logentry": {
+                "message": f"Error calling tool '{tool_name}': {message}",
+                "formatted": f"Error calling tool '{tool_name}': {message}",
+            },
+        }
+        assert sentry_module._before_send(event, {}) is None
+
+    @pytest.mark.parametrize(
+        ("tool_name", "message"),
+        [
+            (
+                "get_company_profile",
+                "Company profile is not available for cryptocurrencies",
+            ),
+            (
+                "get_valuation",
+                "Valuation metrics are not available for cryptocurrencies",
+            ),
+        ],
+    )
+    def test_fastmcp_stock_only_crypto_validation_toolerror_dropped(
+        self, tool_name, message
+    ):
+        """AUTO_TRADER-46/48: ToolError exception path noise dropped."""
+        event: Event = {
+            "exception": {
+                "values": [
+                    {
+                        "type": "ToolError",
+                        "value": f"Error calling tool '{tool_name}': {message}",
+                    }
+                ]
+            }
+        }
+        assert sentry_module._before_send(event, {}) is None
+
+    @pytest.mark.parametrize(
+        ("tool_name", "message"),
+        [
+            (
+                "get_company_profile",
+                "Company profile is not available for cryptocurrencies",
+            ),
+            (
+                "get_valuation",
+                "Valuation metrics are not available for cryptocurrencies",
+            ),
+        ],
+    )
+    def test_stock_only_crypto_validation_valueerror_dropped(self, tool_name, message):
+        """Direct ValueError path (implementation throw) also dropped."""
+        event: Event = {
+            "contexts": {
+                "mcp_tool_call": {
+                    "tool_name": tool_name,
+                    "arguments": {"symbol": "KRW-BTC"},
+                }
+            },
+            "exception": {"values": [{"type": "ValueError", "value": message}]},
+        }
+        assert sentry_module._before_send(event, {}) is None
+
+    @pytest.mark.parametrize("tool_name", ["get_company_profile", "get_valuation"])
+    def test_stock_only_runtime_errors_kept(self, tool_name):
+        """Runtime errors (upstream timeout) should NOT be dropped."""
+        event: Event = {
+            "exception": {
+                "values": [
+                    {
+                        "type": "ToolError",
+                        "value": f"Error calling tool '{tool_name}': upstream timeout",
+                    }
+                ]
+            }
+        }
+        assert sentry_module._before_send(event, {}) is not None
