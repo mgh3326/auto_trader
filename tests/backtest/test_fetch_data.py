@@ -5,7 +5,6 @@ from pathlib import Path
 from unittest import mock
 
 import pandas as pd
-import pytest
 
 # Add backtest directory to path for imports
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "backtest"))
