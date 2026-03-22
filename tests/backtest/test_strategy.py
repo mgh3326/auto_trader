@@ -2,9 +2,9 @@
 
 import sys
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
-import pytest
 
 # Add backtest directory to path for imports
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "backtest"))
@@ -63,8 +63,11 @@ class TestBuySignals:
             trade_log=[],
         )
 
+        # Pre-populate history with enough bars
+        strat._history["BTC"] = [100.0] * 15
+
         # Mock RSI to be oversold
-        with pytest.mock.patch.object(strat, "_calc_rsi", return_value=25.0):
+        with mock.patch.object(strat, "_get_rsi", return_value=25.0):
             signals = strat.on_bar("2025-04-01", bar_data, portfolio, 20)
 
         assert len(signals) == 1
@@ -90,12 +93,15 @@ class TestBuySignals:
         portfolio = prepare.PortfolioState(
             cash=100000.0,
             positions={"BTC": 1.0},  # Already holding BTC
-            avg_prices={"BTC": 90.0},
-            position_dates={"BTC": "2025-03-25"},
+            avg_prices={"BTC": 100.0},  # Higher than close to prevent holding period exit
+            position_dates={"BTC": "2025-04-01"},  # Same as bar date
             trade_log=[],
         )
 
-        with pytest.mock.patch.object(strat, "_calc_rsi", return_value=25.0):
+        # Pre-populate history
+        strat._history["BTC"] = [100.0] * 15
+
+        with mock.patch.object(strat, "_get_rsi", return_value=25.0):
             signals = strat.on_bar("2025-04-01", bar_data, portfolio, 20)
 
         assert len(signals) == 0
@@ -124,7 +130,7 @@ class TestBuySignals:
             trade_log=[],
         )
 
-        with pytest.mock.patch.object(strat, "_calc_rsi", return_value=25.0):
+        with mock.patch.object(strat, "_get_rsi", return_value=25.0):
             signals = strat.on_bar("2025-04-01", bar_data, portfolio, 20)
 
         assert len(signals) == 0
@@ -153,7 +159,10 @@ class TestBuySignals:
             trade_log=[],
         )
 
-        with pytest.mock.patch.object(strat, "_calc_rsi", return_value=25.0):
+        # Pre-populate history
+        strat._history["BTC"] = [100.0] * 15
+
+        with mock.patch.object(strat, "_get_rsi", return_value=25.0):
             signals = strat.on_bar("2025-04-01", bar_data, portfolio, 20)
 
         assert len(signals) == 1
@@ -187,7 +196,10 @@ class TestSellSignals:
             trade_log=[],
         )
 
-        with pytest.mock.patch.object(strat, "_calc_rsi", return_value=75.0):
+        # Pre-populate history
+        strat._history["BTC"] = [100.0] * 15
+
+        with mock.patch.object(strat, "_get_rsi", return_value=75.0):
             signals = strat.on_bar("2025-04-01", bar_data, portfolio, 20)
 
         assert len(signals) == 1
@@ -218,7 +230,10 @@ class TestSellSignals:
             trade_log=[],
         )
 
-        with pytest.mock.patch.object(strat, "_calc_rsi", return_value=50.0):  # Not overbought
+        # Pre-populate history
+        strat._history["BTC"] = [100.0] * 15
+
+        with mock.patch.object(strat, "_get_rsi", return_value=50.0):  # Not overbought
             signals = strat.on_bar("2025-04-08", bar_data, portfolio, 20)
 
         assert len(signals) == 1
@@ -248,7 +263,10 @@ class TestSellSignals:
             trade_log=[],
         )
 
-        with pytest.mock.patch.object(strat, "_calc_rsi", return_value=50.0):  # Not overbought
+        # Pre-populate history
+        strat._history["BTC"] = [100.0] * 15
+
+        with mock.patch.object(strat, "_get_rsi", return_value=50.0):  # Not overbought
             signals = strat.on_bar("2025-04-08", bar_data, portfolio, 20)
 
         assert len(signals) == 0
@@ -314,4 +332,5 @@ class TestStrategyHistoryTracking:
 
         strat.on_bar("2025-04-01", bar_data, portfolio, 0)
 
-        assert len(strat._history["BTC"]) <= strategy.LOOKBACK_BARS + 1
+        # Max history is RSI_PERIOD + LOOKBACK_BARS
+        assert len(strat._history["BTC"]) <= strategy.RSI_PERIOD + strategy.LOOKBACK_BARS
