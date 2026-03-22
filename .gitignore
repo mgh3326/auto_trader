@@ -266,3 +266,7 @@ n8n/data/*
 backtest/data/
 backtest/results.tsv
 backtest/run.log
+
+# Generated chart screenshots
+screenshot_*.png
+blog/images/screenshot_*.png

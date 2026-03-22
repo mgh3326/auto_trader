@@ -15,6 +15,7 @@ from typing import Any
 
 from blog.tools.components import SVGComponent, ThumbnailTemplate
 from blog.tools.components.base import format_price
+from blog.tools.image_composer import ImageComposer
 from blog.tools.stock import (
     ConclusionCard,
     EarningsChart,
@@ -35,11 +36,13 @@ class StockAnalysisPreset:
         symbol: str,
         data: dict[str, Any],
         output_dir: Path | None = None,
+        screenshot_path: Path | None = None,
     ) -> None:
         self.symbol = symbol
         self.data = data
         self.output_dir = output_dir or Path(__file__).parent.parent.parent / "images"
         self.output_dir.mkdir(exist_ok=True)
+        self.screenshot_path = screenshot_path
 
         self.company_name = data.get("company_profile", {}).get("name", symbol)
 
@@ -75,7 +78,18 @@ class StockAnalysisPreset:
             width = 1200 if "thumbnail" in svg_path.stem else 1400
             files.append((svg_path.name, png_name, width))
 
-        return await converter.convert_all(files)
+        png_paths = await converter.convert_all(files)
+
+        # Cleanup: remove hybrid technical SVG only after successful PNG conversion
+        # (hybrid SVGs with embedded base64 PNGs can be very large)
+        # Only delete if the technical PNG was actually produced
+        if self.screenshot_path and self.screenshot_path.exists():
+            technical_png = self.output_dir / f"{self.symbol}_technical.png"
+            technical_svg = self.output_dir / f"{self.symbol}_technical.svg"
+            if technical_png.exists() and technical_svg.exists():
+                technical_svg.unlink()
+
+        return png_paths
 
     def _create_thumbnail(self) -> str:
         profile = self.data.get("company_profile", {})
@@ -102,6 +116,11 @@ class StockAnalysisPreset:
         )
 
     def _create_technical(self) -> str:
+        # Use hybrid mode if screenshot is provided and exists
+        if self.screenshot_path and self.screenshot_path.exists():
+            return self._create_technical_hybrid()
+
+        # SVG-only mode (default)
         svg = SVGComponent.header(1400, 800)
         svg += SVGComponent.background(1400, 800)
         svg += SVGComponent.title(1400, f"{self.company_name} — 기술적 분석")
@@ -134,6 +153,33 @@ class StockAnalysisPreset:
 
         svg += SVGComponent.footer()
         return svg
+
+    def _create_technical_hybrid(self) -> str:
+        """Create hybrid technical SVG with embedded screenshot."""
+        assert self.screenshot_path is not None  # For type checker
+
+        # Build indicator fragment (right panel)
+        indicators = self.data.get("indicators", {})
+        indicator_fragment = IndicatorDashboard.create(
+            x=880, y=95, width=480, height=350, indicators=indicators
+        )
+
+        # Build support/resistance fragment (bottom)
+        sr = self.data.get("support_resistance", {})
+        support_resistance_fragment = ""
+        if sr:
+            support_resistance_fragment = SupportResistance.create(
+                x=60, y=480, width=1300, height=280, **sr
+            )
+
+        return ImageComposer.create_hybrid_technical(
+            screenshot_path=self.screenshot_path,
+            indicator_fragment=indicator_fragment,
+            support_resistance_fragment=support_resistance_fragment,
+            company_name=self.company_name,
+            width=1400,
+            height=800,
+        )
 
     def _create_fundamental(self) -> str:
         svg = SVGComponent.header(1400, 800)
