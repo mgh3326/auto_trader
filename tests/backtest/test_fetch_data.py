@@ -1,0 +1,387 @@
+"""Tests for backtest fetch_data module."""
+
+import sys
+from datetime import datetime, timedelta
+from pathlib import Path
+from unittest import mock
+
+import pandas as pd
+
+# Add backtest directory to path for imports
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "backtest"))
+
+import fetch_data
+
+
+class TestMarketSelection:
+    """Tests for market/symbol selection."""
+
+    def test_krw_only_filtering(self):
+        """Test that only KRW markets are selected."""
+        markets = [
+            {"market": "KRW-BTC", "korean_name": "비트코인", "english_name": "Bitcoin"},
+            {"market": "KRW-ETH", "korean_name": "이더리움", "english_name": "Ethereum"},
+            {"market": "BTC-ETH", "korean_name": "이더리움", "english_name": "Ethereum"},  # Should be filtered
+            {"market": "USDT-BTC", "korean_name": "비트코인", "english_name": "Bitcoin"},  # Should be filtered
+        ]
+
+        result = fetch_data._filter_krw_markets(markets)
+
+        assert len(result) == 2
+        assert all(m["market"].startswith("KRW-") for m in result)
+
+    def test_top_n_slicing(self):
+        """Test top-N market slicing by 24h traded value."""
+        markets = [
+            {"market": "KRW-BTC", "acc_trade_price_24h": 1000000000000},
+            {"market": "KRW-ETH", "acc_trade_price_24h": 500000000000},
+            {"market": "KRW-XRP", "acc_trade_price_24h": 1000000000},
+            {"market": "KRW-DOGE", "acc_trade_price_24h": 500000000},
+            {"market": "KRW-SOL", "acc_trade_price_24h": 200000000000},
+        ]
+
+        result = fetch_data._select_top_n(markets, top_n=3)
+
+        assert len(result) == 3
+        # Should be sorted by acc_trade_price_24h descending
+        assert result[0] == "KRW-BTC"
+        assert result[1] == "KRW-ETH"
+        assert result[2] == "KRW-SOL"
+
+    def test_symbols_normalization(self):
+        """Test --symbols argument normalization."""
+        symbols = ["BTC", "ETH", "SOL"]
+
+        result = fetch_data._normalize_symbols(symbols)
+
+        assert result == ["KRW-BTC", "KRW-ETH", "KRW-SOL"]
+
+    def test_main_ranks_full_candidate_set(self, monkeypatch):
+        """Test that main ranks the full candidate set before slicing top-N."""
+        markets = [
+            {"market": "KRW-A", "acc_trade_price_24h": 10},
+            {"market": "KRW-B", "acc_trade_price_24h": 20},
+            {"market": "KRW-C", "acc_trade_price_24h": 30},
+            {"market": "KRW-D", "acc_trade_price_24h": 40},
+            {"market": "KRW-E", "acc_trade_price_24h": 50},
+            {"market": "KRW-F", "acc_trade_price_24h": 60},
+            {"market": "KRW-G", "acc_trade_price_24h": 1_000},
+        ]
+        ticker_values = {market["market"]: market["acc_trade_price_24h"] for market in markets}
+        fetched_markets: list[str] = []
+
+        class FakeResponse:
+            def __init__(self, payload):
+                self._payload = payload
+                self.status_code = 200
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return self._payload
+
+        class FakeClient:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def get(self, url, params=None):
+                market = params["markets"]
+                return FakeResponse([
+                    {"acc_trade_price_24h": ticker_values[market]},
+                ])
+
+        def fake_fetch_markets():
+            return markets
+
+        def fake_fetch_candles(market, days):
+            fetched_markets.append(market)
+            return []
+
+        monkeypatch.setattr(fetch_data, "fetch_markets", fake_fetch_markets)
+        monkeypatch.setattr(fetch_data.httpx, "Client", FakeClient)
+        monkeypatch.setattr(fetch_data, "fetch_candles", fake_fetch_candles)
+        monkeypatch.setattr(fetch_data.time, "sleep", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["fetch_data.py", "--top-n", "3", "--days", "1"],
+        )
+
+        fetch_data.main()
+
+        assert len(fetched_markets) == 3
+        assert "KRW-G" in fetched_markets
+
+
+class TestCandleNormalization:
+    """Tests for candle data normalization."""
+
+    def test_candle_normalization(self):
+        """Test conversion from Upbit API rows to target schema."""
+        api_rows = [
+            {
+                "candle_date_time_utc": "2026-03-20T00:00:00",
+                "opening_price": 50000.0,
+                "high_price": 51000.0,
+                "low_price": 49000.0,
+                "trade_price": 50500.0,
+                "candle_acc_trade_volume": 100.5,
+                "candle_acc_trade_price": 5000000.0,
+            },
+            {
+                "candle_date_time_utc": "2026-03-21T00:00:00",
+                "opening_price": 50500.0,
+                "high_price": 51500.0,
+                "low_price": 50000.0,
+                "trade_price": 51200.0,
+                "candle_acc_trade_volume": 120.0,
+                "candle_acc_trade_price": 6000000.0,
+            },
+        ]
+
+        df = fetch_data._normalize_candles(api_rows)
+
+        assert df.columns.tolist() == ["date", "open", "high", "low", "close", "volume", "value"]
+        assert df["date"].tolist() == ["2026-03-20", "2026-03-21"]
+        assert df["close"].tolist() == [50500.0, 51200.0]
+
+
+class TestMergeDedupe:
+    """Tests for merge and dedupe functionality."""
+
+    def test_merge_with_existing_data(self, tmp_path):
+        """Test incremental merge behavior."""
+        # Create existing parquet
+        existing_df = pd.DataFrame({
+            "date": ["2026-03-18", "2026-03-19", "2026-03-20"],
+            "open": [48000.0, 49000.0, 50000.0],
+            "high": [49000.0, 50000.0, 51000.0],
+            "low": [47000.0, 48000.0, 49000.0],
+            "close": [49000.0, 50000.0, 50500.0],
+            "volume": [80.0, 90.0, 100.0],
+            "value": [4000000.0, 4500000.0, 5000000.0],
+        })
+        parquet_path = tmp_path / "test.parquet"
+        existing_df.to_parquet(parquet_path, index=False)
+
+        # New fetched data (overlapping)
+        new_df = pd.DataFrame({
+            "date": ["2026-03-19", "2026-03-20", "2026-03-21"],  # 03-19 and 03-20 overlap
+            "open": [49500.0, 50500.0, 51500.0],  # Different prices
+            "high": [50500.0, 51500.0, 52500.0],
+            "low": [48500.0, 49500.0, 50500.0],
+            "close": [50000.0, 51000.0, 52000.0],
+            "volume": [95.0, 105.0, 115.0],
+            "value": [4750000.0, 5250000.0, 5750000.0],
+        })
+
+        result = fetch_data._merge_with_existing(new_df, parquet_path)
+
+        # Should have 4 unique dates
+        assert len(result) == 4
+        assert result["date"].tolist() == ["2026-03-18", "2026-03-19", "2026-03-20", "2026-03-21"]
+        # Newer data should replace old for overlapping dates
+        assert result[result["date"] == "2026-03-20"]["close"].iloc[0] == 51000.0
+
+    def test_merge_new_data_only(self, tmp_path):
+        """Test merge with no overlapping dates."""
+        existing_df = pd.DataFrame({
+            "date": ["2026-03-18", "2026-03-19"],
+            "open": [48000.0, 49000.0],
+            "high": [49000.0, 50000.0],
+            "low": [47000.0, 48000.0],
+            "close": [49000.0, 50000.0],
+            "volume": [80.0, 90.0],
+            "value": [4000000.0, 4500000.0],
+        })
+        parquet_path = tmp_path / "test.parquet"
+        existing_df.to_parquet(parquet_path, index=False)
+
+        new_df = pd.DataFrame({
+            "date": ["2026-03-20", "2026-03-21"],
+            "open": [50000.0, 51000.0],
+            "high": [51000.0, 52000.0],
+            "low": [49000.0, 50000.0],
+            "close": [50500.0, 51500.0],
+            "volume": [100.0, 110.0],
+            "value": [5000000.0, 5500000.0],
+        })
+
+        result = fetch_data._merge_with_existing(new_df, parquet_path)
+
+        assert len(result) == 4
+        assert result["date"].tolist() == ["2026-03-18", "2026-03-19", "2026-03-20", "2026-03-21"]
+
+    def test_result_sorted_ascending(self, tmp_path):
+        """Test that merged result is sorted ascending by date."""
+        existing_df = pd.DataFrame({
+            "date": ["2026-03-21", "2026-03-22"],
+            "open": [1.0, 2.0],
+            "high": [1.0, 2.0],
+            "low": [1.0, 2.0],
+            "close": [1.0, 2.0],
+            "volume": [1.0, 2.0],
+            "value": [1.0, 2.0],
+        })
+        parquet_path = tmp_path / "test.parquet"
+        existing_df.to_parquet(parquet_path, index=False)
+
+        new_df = pd.DataFrame({
+            "date": ["2026-03-19", "2026-03-20"],
+            "open": [1.0, 2.0],
+            "high": [1.0, 2.0],
+            "low": [1.0, 2.0],
+            "close": [1.0, 2.0],
+            "volume": [1.0, 2.0],
+            "value": [1.0, 2.0],
+        })
+
+        result = fetch_data._merge_with_existing(new_df, parquet_path)
+
+        assert result["date"].tolist() == ["2026-03-19", "2026-03-20", "2026-03-21", "2026-03-22"]
+
+
+class TestIncrementalRefresh:
+    """Tests for overlap-window incremental refresh behavior."""
+
+    def test_determine_refresh_days_uses_overlap_window(self):
+        """Test that existing data triggers overlap-window refresh."""
+        existing_df = pd.DataFrame({
+            "date": ["2026-03-19", "2026-03-20", "2026-03-21", "2026-03-22"],
+            "open": [1.0, 1.0, 1.0, 1.0],
+            "high": [1.0, 1.0, 1.0, 1.0],
+            "low": [1.0, 1.0, 1.0, 1.0],
+            "close": [1.0, 1.0, 1.0, 1.0],
+            "volume": [1.0, 1.0, 1.0, 1.0],
+            "value": [1.0, 1.0, 1.0, 1.0],
+        })
+
+        assert (
+            fetch_data._determine_refresh_days(
+                existing_df,
+                requested_days=365,
+                today=datetime(2026, 3, 22),
+            )
+            == 7
+        )
+
+    def test_determine_refresh_days_covers_gap_since_last_stored_date(self):
+        """Test that refresh window covers the stale gap plus overlap days."""
+        existing_df = pd.DataFrame({
+            "date": ["2026-03-01"],
+            "open": [1.0],
+            "high": [1.0],
+            "low": [1.0],
+            "close": [1.0],
+            "volume": [1.0],
+            "value": [1.0],
+        })
+
+        refresh_days = fetch_data._determine_refresh_days(
+            existing_df,
+            requested_days=365,
+            overlap_days=7,
+            today=datetime(2026, 3, 22),
+        )
+
+        assert refresh_days == 28
+
+    def test_main_uses_overlap_window_for_existing_parquet(self, tmp_path, monkeypatch):
+        """Test that reruns fetch only the overlap window when parquet exists."""
+        today = datetime.now().date()
+        existing_df = pd.DataFrame({
+            "date": [
+                (today - timedelta(days=3)).strftime("%Y-%m-%d"),
+                (today - timedelta(days=2)).strftime("%Y-%m-%d"),
+                (today - timedelta(days=1)).strftime("%Y-%m-%d"),
+                today.strftime("%Y-%m-%d"),
+            ],
+            "open": [1.0, 1.0, 1.0, 1.0],
+            "high": [1.0, 1.0, 1.0, 1.0],
+            "low": [1.0, 1.0, 1.0, 1.0],
+            "close": [1.0, 1.0, 1.0, 1.0],
+            "volume": [1.0, 1.0, 1.0, 1.0],
+            "value": [1.0, 1.0, 1.0, 1.0],
+        })
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        existing_df.to_parquet(data_dir / "KRW-BTC.parquet", index=False)
+
+        seen_days: list[int] = []
+
+        def fake_fetch_candles(market, days):
+            seen_days.append(days)
+            return []
+
+        def fake_fetch_markets():
+            return [{"market": "KRW-BTC", "acc_trade_price_24h": 1_000}]
+
+        class FakeResponse:
+            def __init__(self, payload):
+                self._payload = payload
+                self.status_code = 200
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return self._payload
+
+        class FakeClient:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def get(self, url, params=None):
+                return FakeResponse([{"acc_trade_price_24h": 1_000}])
+
+        monkeypatch.setattr(fetch_data, "DATA_DIR", data_dir)
+        monkeypatch.setattr(fetch_data, "fetch_markets", fake_fetch_markets)
+        monkeypatch.setattr(fetch_data.httpx, "Client", FakeClient)
+        monkeypatch.setattr(fetch_data, "fetch_candles", fake_fetch_candles)
+        monkeypatch.setattr(fetch_data.time, "sleep", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["fetch_data.py", "--symbols", "BTC", "--days", "365"],
+        )
+
+        fetch_data.main()
+
+        assert seen_days == [7]
+
+
+class TestCLIOptions:
+    """Tests for CLI argument parsing."""
+
+    def test_no_args_parses(self):
+        """Test that no arguments parses correctly."""
+        with mock.patch("sys.argv", ["fetch_data.py"]):
+            args = fetch_data._parse_args()
+            assert args.symbols is None
+            assert args.days == 730
+            assert args.top_n == 100
+
+    def test_symbols_arg(self):
+        """Test --symbols argument."""
+        with mock.patch("sys.argv", ["fetch_data.py", "--symbols", "BTC", "ETH", "SOL"]):
+            args = fetch_data._parse_args()
+            assert args.symbols == ["BTC", "ETH", "SOL"]
+
+    def test_days_arg(self):
+        """Test --days argument."""
+        with mock.patch("sys.argv", ["fetch_data.py", "--days", "365"]):
+            args = fetch_data._parse_args()
+            assert args.days == 365
+
+    def test_top_n_arg(self):
+        """Test --top-n argument."""
+        with mock.patch("sys.argv", ["fetch_data.py", "--top-n", "50"]):
+            args = fetch_data._parse_args()
+            assert args.top_n == 50
