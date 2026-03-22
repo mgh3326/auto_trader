@@ -48,6 +48,10 @@ This will:
 - Run your strategy from `strategy.py`
 - Print performance metrics and score
 
+Warmup note:
+- Trades are evaluated only on the selected split dates.
+- `BarData.history` may include pre-split rows so indicators can warm up before the first validation/test bar.
+
 ### 3. Iterate on Strategy
 
 Edit `backtest/strategy.py` to modify the trading logic. The fixed runner ensures fair comparison between iterations.
@@ -192,3 +196,4 @@ uv run pytest tests/backtest -v
 - Keep the universe fixed for fair comparison
 - The validation split is used for development; test split for final evaluation
 - Universe selection uses 24h accumulated trade price (acc_trade_price_24h) for ranking
+- Incremental refresh re-downloads only the stale gap plus an overlap window, then merges and deduplicates by `date`

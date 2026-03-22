@@ -1,6 +1,7 @@
 """Tests for backtest fetch_data module."""
 
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -250,7 +251,7 @@ class TestIncrementalRefresh:
     def test_determine_refresh_days_uses_overlap_window(self):
         """Test that existing data triggers overlap-window refresh."""
         existing_df = pd.DataFrame({
-            "date": ["2026-03-18", "2026-03-19", "2026-03-20", "2026-03-21"],
+            "date": ["2026-03-19", "2026-03-20", "2026-03-21", "2026-03-22"],
             "open": [1.0, 1.0, 1.0, 1.0],
             "high": [1.0, 1.0, 1.0, 1.0],
             "low": [1.0, 1.0, 1.0, 1.0],
@@ -259,12 +260,46 @@ class TestIncrementalRefresh:
             "value": [1.0, 1.0, 1.0, 1.0],
         })
 
-        assert fetch_data._determine_refresh_days(existing_df, requested_days=365) == 7
+        assert (
+            fetch_data._determine_refresh_days(
+                existing_df,
+                requested_days=365,
+                today=datetime(2026, 3, 22),
+            )
+            == 7
+        )
+
+    def test_determine_refresh_days_covers_gap_since_last_stored_date(self):
+        """Test that refresh window covers the stale gap plus overlap days."""
+        existing_df = pd.DataFrame({
+            "date": ["2026-03-01"],
+            "open": [1.0],
+            "high": [1.0],
+            "low": [1.0],
+            "close": [1.0],
+            "volume": [1.0],
+            "value": [1.0],
+        })
+
+        refresh_days = fetch_data._determine_refresh_days(
+            existing_df,
+            requested_days=365,
+            overlap_days=7,
+            today=datetime(2026, 3, 22),
+        )
+
+        assert refresh_days == 28
 
     def test_main_uses_overlap_window_for_existing_parquet(self, tmp_path, monkeypatch):
         """Test that reruns fetch only the overlap window when parquet exists."""
+        today = datetime.now().date()
         existing_df = pd.DataFrame({
-            "date": ["2026-03-18", "2026-03-19", "2026-03-20", "2026-03-21"],
+            "date": [
+                (today - timedelta(days=3)).strftime("%Y-%m-%d"),
+                (today - timedelta(days=2)).strftime("%Y-%m-%d"),
+                (today - timedelta(days=1)).strftime("%Y-%m-%d"),
+                today.strftime("%Y-%m-%d"),
+            ],
             "open": [1.0, 1.0, 1.0, 1.0],
             "high": [1.0, 1.0, 1.0, 1.0],
             "low": [1.0, 1.0, 1.0, 1.0],

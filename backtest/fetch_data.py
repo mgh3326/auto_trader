@@ -47,6 +47,7 @@ def _determine_refresh_days(
     existing_df: pd.DataFrame | None,
     requested_days: int,
     overlap_days: int = 7,
+    today: datetime | None = None,
 ) -> int:
     """Return the number of days to fetch for an incremental refresh.
 
@@ -55,7 +56,17 @@ def _determine_refresh_days(
     """
     if existing_df is None or existing_df.empty:
         return max(1, int(requested_days))
-    return max(1, min(int(requested_days), int(overlap_days)))
+    if "date" not in existing_df.columns:
+        return max(1, min(int(requested_days), int(overlap_days)))
+
+    reference = today or datetime.now()
+    last_stored = pd.to_datetime(existing_df["date"], errors="coerce").max()
+    if pd.isna(last_stored):
+        return max(1, min(int(requested_days), int(overlap_days)))
+
+    stale_days = max(0, (reference.date() - last_stored.date()).days)
+    refresh_days = stale_days + int(overlap_days)
+    return max(1, min(int(requested_days), refresh_days))
 
 
 def fetch_markets() -> list[dict]:
