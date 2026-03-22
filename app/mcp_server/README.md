@@ -364,6 +364,7 @@ Market-specific behavior:
   - Result symbols are normalized back to Upbit format such as `KRW-BTC`
   - Successful tvscreener responses still restore legacy public crypto fields including `rsi_bucket`, `market_cap_rank`, `market_warning`, `volume_ratio`, `candle_type`, `plus_di`, and `minus_di`
   - Warning/crash metadata (`filtered_by_warning`, `filtered_by_crash`) and CoinGecko cache metadata are preserved on the tvscreener success path
+  - Stop-loss cooldown filter: symbols in an 8-day stop-loss cooldown window (after a stop-loss sell) are excluded from results; count available in `meta.filtered_by_stop_loss_cooldown`
   - `sort_by="volume"` is not supported for crypto and returns an error
   - Crypto response payload does not include `volume`; use `trade_amount_24h`
   - `market_cap` sorting is supported; public `market_cap` prefers CoinGecko cache values and falls back to TradingView `MARKET_CAP`, and final ordering uses that public value without silently falling back to `trade_amount_24h`

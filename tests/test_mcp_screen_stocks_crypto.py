@@ -1968,3 +1968,200 @@ class TestScreenStocksCrypto:
 
         assert result["results"][0]["market_cap"] == 1_900_000_000_000_000
         assert any("stale cache was used" in w for w in result["warnings"])
+
+
+# ------------------------------------------------------------------------------
+# Stop-loss cooldown filter tests
+# ------------------------------------------------------------------------------
+
+
+class FakeCooldownService:
+    """Fake cooldown service for testing."""
+
+    def __init__(self, blocked: set[str] | None = None, in_cooldown: bool = False):
+        self._blocked = blocked or set()
+        self._in_cooldown = in_cooldown
+
+    async def is_in_cooldown(self, symbol: str) -> bool:
+        if self._in_cooldown:
+            return True
+        return symbol.upper() in self._blocked
+
+    async def record_stop_loss(self, symbol: str) -> None:
+        pass
+
+    async def get_remaining_ttl_seconds(self, symbol: str) -> int | None:
+        if symbol.upper() in self._blocked:
+            return 86400
+        return None
+
+
+@pytest.mark.asyncio
+async def test_screen_stocks_crypto_filters_stop_loss_cooldown_symbols(
+    fake_crypto_tvscreener_module, monkeypatch
+):
+    """Test that cooled-down symbols are filtered from crypto screening results."""
+    tv_service = AsyncMock()
+    tv_service.query_crypto_screener.return_value = pd.DataFrame(
+        {
+            "symbol": ["UPBIT:BTCKRW", "UPBIT:ETHKRW", "UPBIT:XRPKRW"],
+            "name": ["BTCKRW", "ETHKRW", "XRPKRW"],
+            "description": ["Bitcoin TV", "Ethereum TV", "Ripple TV"],
+            "price": [150_000_000.0, 5_000_000.0, 3_000.0],
+            "change_percent": [-0.01, -0.02, -0.015],  # Similar drops to avoid crash filter
+            "relative_strength_index_14": [45.5, 32.1, 28.2],
+            "average_directional_index_14": [25.3, 18.7, 42.1],
+            "volume_24h_in_usd": [156_000_000.0, 95_000_000.0, 44_000_000.0],
+            "value_traded": [900_000_000_000.0, 1_200_000_000.0, 700_000_000.0],
+            "market_cap": [
+                2_500_000_000_000_000.0,
+                500_000_000_000_000.0,
+                50_000_000_000_000.0,
+            ],
+            "exchange": ["UPBIT", "UPBIT", "UPBIT"],
+        }
+    )
+
+    async def mock_fetch_multiple_tickers(
+        market_codes: list[str],
+    ) -> list[dict[str, object]]:
+        return [
+            {"market": "KRW-BTC", "acc_trade_volume_24h": 12_345.0},
+            {"market": "KRW-ETH", "acc_trade_volume_24h": 54_321.0},
+            {"market": "KRW-XRP", "acc_trade_volume_24h": 99_999.0},
+        ]
+
+    async def mock_warning_markets(db=None, *, quote_currency: str) -> set[str]:
+        return set()
+
+    mock_session = MagicMock()
+    mock_session.close = AsyncMock()
+
+    monkeypatch.setattr(
+        screening_crypto,
+        "_import_tvscreener",
+        lambda: fake_crypto_tvscreener_module,
+    )
+    monkeypatch.setattr(
+        screening_crypto,
+        "TvScreenerService",
+        lambda timeout=30.0: tv_service,
+    )
+    monkeypatch.setattr(
+        upbit_service,
+        "fetch_multiple_tickers",
+        mock_fetch_multiple_tickers,
+    )
+    monkeypatch.setattr(
+        screening_crypto,
+        "get_upbit_warning_markets",
+        mock_warning_markets,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        screening_crypto,
+        "AsyncSessionLocal",
+        lambda: mock_session,
+    )
+    # Inject fake cooldown service that blocks KRW-BTC
+    monkeypatch.setattr(
+        screening_crypto,
+        "_get_crypto_trade_cooldown_service",
+        lambda: FakeCooldownService(blocked={"KRW-BTC"}),
+    )
+
+    tools = build_tools()
+    result = await tools["screen_stocks"](
+        market="crypto",
+        limit=5,
+    )
+
+    symbols = [item["symbol"] for item in result["results"]]
+    assert "KRW-BTC" not in symbols
+    assert "KRW-ETH" in symbols
+    assert "KRW-XRP" in symbols
+    assert result["meta"]["filtered_by_stop_loss_cooldown"] == 1
+
+
+@pytest.mark.asyncio
+async def test_screen_stocks_crypto_cooldown_filter_degrades_safely(
+    fake_crypto_tvscreener_module, monkeypatch
+):
+    """Test that screening degrades safely when cooldown lookup fails."""
+    tv_service = AsyncMock()
+    tv_service.query_crypto_screener.return_value = pd.DataFrame(
+        {
+            "symbol": ["UPBIT:BTCKRW"],
+            "name": ["BTCKRW"],
+            "description": ["Bitcoin TV"],
+            "price": [150_000_000.0],
+            "change_percent": [-0.01],
+            "relative_strength_index_14": [45.5],
+            "average_directional_index_14": [25.3],
+            "volume_24h_in_usd": [156_000_000.0],
+            "value_traded": [900_000_000_000.0],
+            "market_cap": [2_500_000_000_000_000.0],
+            "exchange": ["UPBIT"],
+        }
+    )
+
+    async def mock_fetch_multiple_tickers(
+        market_codes: list[str],
+    ) -> list[dict[str, object]]:
+        return [{"market": "KRW-BTC", "acc_trade_volume_24h": 12_345.0}]
+
+    async def mock_warning_markets(db=None, *, quote_currency: str) -> set[str]:
+        return set()
+
+    mock_session = MagicMock()
+    mock_session.close = AsyncMock()
+
+    class FailingCooldownService:
+        async def is_in_cooldown(self, symbol: str) -> bool:
+            raise Exception("Redis connection failed")
+
+        async def record_stop_loss(self, symbol: str) -> None:
+            pass
+
+    monkeypatch.setattr(
+        screening_crypto,
+        "_import_tvscreener",
+        lambda: fake_crypto_tvscreener_module,
+    )
+    monkeypatch.setattr(
+        screening_crypto,
+        "TvScreenerService",
+        lambda timeout=30.0: tv_service,
+    )
+    monkeypatch.setattr(
+        upbit_service,
+        "fetch_multiple_tickers",
+        mock_fetch_multiple_tickers,
+    )
+    monkeypatch.setattr(
+        screening_crypto,
+        "get_upbit_warning_markets",
+        mock_warning_markets,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        screening_crypto,
+        "AsyncSessionLocal",
+        lambda: mock_session,
+    )
+    monkeypatch.setattr(
+        screening_crypto,
+        "_get_crypto_trade_cooldown_service",
+        lambda: FailingCooldownService(),
+    )
+
+    tools = build_tools()
+    # Should not raise even when cooldown lookup fails
+    result = await tools["screen_stocks"](
+        market="crypto",
+        limit=5,
+    )
+
+    # Results should still be returned
+    assert len(result["results"]) >= 1
+    assert "KRW-BTC" in [item["symbol"] for item in result["results"]]

@@ -10,6 +10,7 @@ import sentry_sdk
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import app.services.brokers.upbit.client as upbit_service
+from app.services.crypto_trade_cooldown_service import CryptoTradeCooldownService
 from app.core.async_rate_limiter import RateLimitExceededError
 from app.core.db import AsyncSessionLocal
 from app.mcp_server.tooling.analysis_crypto_score import (
@@ -58,6 +59,17 @@ from app.utils.symbol_mapping import (
 logger = logging.getLogger(__name__)
 
 _CRYPTO_MARKET_CAP_CACHE = MarketCapCache(ttl=600)
+
+# Crypto trade cooldown service singleton
+_cooldown_service: CryptoTradeCooldownService | None = None
+
+
+def _get_crypto_trade_cooldown_service() -> CryptoTradeCooldownService:
+    """Get or create the crypto trade cooldown service."""
+    global _cooldown_service
+    if _cooldown_service is None:
+        _cooldown_service = CryptoTradeCooldownService()
+    return _cooldown_service
 
 
 async def _run_crypto_indicator_enrichment(
@@ -605,6 +617,23 @@ async def _screen_crypto(
     if min_dividend_yield_normalized is not None:
         filters_applied["min_dividend_yield_normalized"] = min_dividend_yield_normalized
 
+    # Filter out symbols in stop-loss cooldown
+    filtered_by_cooldown = 0
+    try:
+        cooldown_service = _get_crypto_trade_cooldown_service()
+        candidates_not_cooldown: list[dict[str, Any]] = []
+        for item in candidates:
+            symbol = str(item.get("symbol") or "").strip().upper()
+            if await cooldown_service.is_in_cooldown(symbol):
+                filtered_by_cooldown += 1
+                continue
+            candidates_not_cooldown.append(item)
+        candidates = candidates_not_cooldown
+    except Exception as exc:
+        warnings.append(
+            f"Stop-loss cooldown filter failed; showing all candidates ({type(exc).__name__}: {exc})"
+        )
+
     return await finalize_crypto_screen(
         candidates=candidates,
         filters_applied=filters_applied,
@@ -618,6 +647,7 @@ async def _screen_crypto(
         top_by_volume=top_by_volume,
         filtered_by_warning=filtered_by_warning,
         filtered_by_crash=filtered_by_crash,
+        filtered_by_stop_loss_cooldown=filtered_by_cooldown,
     )
 
 
@@ -871,6 +901,23 @@ async def _screen_crypto_via_tvscreener(
     metric_diagnostics = enrichment_task.result()
     coingecko_payload = coingecko_fetch_task.result()
 
+    # Filter out symbols in stop-loss cooldown
+    filtered_by_cooldown = 0
+    try:
+        cooldown_service = _get_crypto_trade_cooldown_service()
+        candidates_not_cooldown: list[dict[str, Any]] = []
+        for item in candidates:
+            symbol = str(item.get("symbol") or "").strip().upper()
+            if await cooldown_service.is_in_cooldown(symbol):
+                filtered_by_cooldown += 1
+                continue
+            candidates_not_cooldown.append(item)
+        candidates = candidates_not_cooldown
+    except Exception as exc:
+        warnings.append(
+            f"Stop-loss cooldown filter failed; showing all candidates ({type(exc).__name__}: {exc})"
+        )
+
     return await finalize_crypto_screen(
         candidates=candidates,
         filters_applied=filters_applied,
@@ -884,6 +931,7 @@ async def _screen_crypto_via_tvscreener(
         top_by_volume=len(raw_results),
         filtered_by_warning=filtered_by_warning,
         filtered_by_crash=filtered_by_crash,
+        filtered_by_stop_loss_cooldown=filtered_by_cooldown,
         source="tvscreener",
     )
 
