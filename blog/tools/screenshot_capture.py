@@ -1,14 +1,14 @@
-"""Screenshot capture utility using stealth_browser MCP service.
+"""Screenshot capture utility backed by the configured Playwright MCP server.
 
-This module provides ScreenshotCapture class for capturing chart screenshots
-via an external stealth_browser service accessed through mcporter.
+This module captures real chart screenshots through `mcporter` by driving the
+configured `playwright` MCP server. The MCP surface is page-oriented rather than
+instance-oriented, so this adapter manages a single logical session and always
+persists screenshots to disk before reading them back.
 
-Repro commands for mcporter CLI contract:
+Repro commands for the mcporter CLI contract:
     mcporter call --help
     mcporter list
-    mcporter list <server-name> --schema
-
-Note: mcporter uses `--args <json>` for JSON payloads, not `--params`.
+    mcporter list playwright --schema
 """
 
 from __future__ import annotations
@@ -20,15 +20,13 @@ from typing import Any
 
 
 class ScreenshotCapture:
-    """Captures chart screenshots using stealth_browser via mcporter.
-
-    Uses subprocess calls to mcporter CLI for browser automation.
-    Manages browser lifecycle and ensures proper cleanup.
-    """
+    """Capture chart screenshots through the Playwright MCP server."""
 
     DEFAULT_SERVER = "playwright"
     DEFAULT_VIEWPORT_WIDTH = 1400
     DEFAULT_VIEWPORT_HEIGHT = 900
+    DEFAULT_WAIT_SECONDS = 5
+    PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
     def __init__(
         self,
@@ -36,35 +34,15 @@ class ScreenshotCapture:
         timeout: int = 30,
         server_name: str | None = None,
     ) -> None:
-        """Initialize screenshot capture.
-
-        Args:
-            output_dir: Directory to save screenshots (default: blog/images)
-            timeout: Default timeout for mcporter calls in seconds
-            server_name: MCP server name (default: "playwright")
-        """
         self.output_dir = output_dir or Path(__file__).parent.parent / "images"
         self.output_dir.mkdir(exist_ok=True)
         self.timeout = timeout
         self._server_name = server_name or self.DEFAULT_SERVER
-        self._browser_instance: str | None = None
+        self._browser_ready = False
 
-    def _mcporter_call(self, tool: str, params: dict[str, Any] | None = None) -> Any:
-        """Call mcporter CLI and return parsed JSON result.
-
-        Uses `--args <json>` for JSON payloads per mcporter contract.
-
-        Args:
-            tool: Tool name (e.g., "playwright.browser_navigate")
-            params: Optional parameters for the tool
-
-        Returns:
-            Parsed JSON response from mcporter
-
-        Raises:
-            RuntimeError: If mcporter call fails or server is unavailable
-        """
-        cmd = ["mcporter", "call", tool]
+    def _mcporter_call(self, tool: str, params: dict[str, Any] | None = None) -> str:
+        """Call mcporter and return the raw stdout payload."""
+        cmd = ["mcporter", "call", tool, "--output", "raw"]
         if params:
             cmd.extend(["--args", json.dumps(params)])
 
@@ -77,163 +55,83 @@ class ScreenshotCapture:
 
         if result.returncode != 0:
             error_msg = result.stderr.strip() or "Unknown error"
-            # Provide clear error when MCP server is unavailable
             if "unknown server" in error_msg.lower():
                 raise RuntimeError(
                     f"MCP server unavailable for selector '{tool}': {error_msg}"
                 )
             raise RuntimeError(f"mcporter call failed for '{tool}': {error_msg}")
 
-        # mcporter outputs the result to stdout
-        # It may have multiple lines, so we look for JSON
         output = result.stdout.strip()
+        if "### Error" in output or "isError: true" in output:
+            raise RuntimeError(f"mcporter call reported error for '{tool}': {output}")
 
-        # Try to extract JSON from the output
-        # mcporter typically outputs: "Result: {...}" or just the JSON
-        if "Result:" in output:
-            json_part = output.split("Result:", 1)[1].strip()
-        else:
-            json_part = output
+        return output
 
-        try:
-            return json.loads(json_part)
-        except json.JSONDecodeError:
-            # If it's not JSON, return the raw output
-            return output
+    def _ensure_browser(self) -> None:
+        """Mark the page-backed session as ready once."""
+        if not self._browser_ready:
+            self._browser_ready = True
 
-    def _ensure_browser(self) -> str:
-        """Ensure browser is spawned and return instance ID.
-
-        Passes required spawn options: headless=False, viewport size.
-
-        Returns:
-            Browser instance ID
-        """
-        if self._browser_instance is not None:
-            return self._browser_instance
-
-        # Use browser_navigate with required spawn options for this phase
-        spawn_params = {
-            "headless": False,
-            "viewport_width": self.DEFAULT_VIEWPORT_WIDTH,
-            "viewport_height": self.DEFAULT_VIEWPORT_HEIGHT,
-        }
-        result = self._mcporter_call(
-            f"{self._server_name}.browser_navigate", spawn_params
+    def _resize_browser(self, width: int, height: int) -> None:
+        """Resize the active Playwright viewport."""
+        self._ensure_browser()
+        self._mcporter_call(
+            f"{self._server_name}.browser_resize",
+            {"width": width, "height": height},
         )
-        # Result may be a dict with instance_id or the ID directly
-        if isinstance(result, dict):
-            self._browser_instance = result.get("instance_id") or result.get("id")
-        else:
-            self._browser_instance = str(result)
-
-        if not self._browser_instance:
-            raise RuntimeError("Failed to spawn browser: no instance ID returned")
-
-        return self._browser_instance
 
     def _navigate(self, url: str, wait_for: str | None = None) -> None:
-        """Navigate browser to URL.
-
-        Args:
-            url: URL to navigate to
-            wait_for: Optional selector to wait for before returning
-        """
-        instance_id = self._ensure_browser()
-        params: dict[str, Any] = {"instance_id": instance_id, "url": url}
+        """Navigate to a chart URL and optionally wait for text."""
+        self._ensure_browser()
+        self._mcporter_call(f"{self._server_name}.browser_navigate", {"url": url})
         if wait_for:
-            params["wait_for"] = wait_for
-
-        self._mcporter_call(f"{self._server_name}.browser_navigate", params)
+            self._mcporter_call(
+                f"{self._server_name}.browser_wait_for",
+                {"text": wait_for},
+            )
 
     def _wait_for_chart_ready(
-        self, selector: str | None = None, timeout: int = 10
+        self,
+        selector: str | None = None,
+        timeout: int = DEFAULT_WAIT_SECONDS,
     ) -> None:
-        """Wait for chart to be ready using polling.
+        """Wait for the chart page to stabilize.
 
-        Args:
-            selector: Optional CSS selector to wait for
-            timeout: Maximum time to wait in seconds
+        The Playwright MCP surface available through mcporter supports waiting by
+        text or elapsed time, but not CSS selectors. For embedded third-party
+        chart pages we therefore use a bounded time wait.
         """
-        import time
-
-        # Simple bounded polling approach
-        # In production, stealth_browser may have a proper wait primitive
-        start_time = time.time()
-        poll_interval = 0.5
-
-        while time.time() - start_time < timeout:
-            try:
-                # Try to check if page is ready
-                instance_id = self._ensure_browser()
-                result = self._mcporter_call(
-                    f"{self._server_name}.browser_evaluate",
-                    {
-                        "instance_id": instance_id,
-                        "script": "document.readyState",
-                    },
-                )
-                if result == "complete" or (
-                    isinstance(result, dict) and result.get("result") == "complete"
-                ):
-                    # Additional wait for any chart rendering
-                    time.sleep(1)
-                    return
-            except Exception:
-                pass
-
-            time.sleep(poll_interval)
-
-        # If we reach here, just do a bounded sleep as fallback
-        time.sleep(2)
-
-    def _take_screenshot(
-        self, selector: str | None = None, full_page: bool = False
-    ) -> bytes:
-        """Take a screenshot and return PNG bytes.
-
-        Args:
-            selector: Optional CSS selector to screenshot specific element
-            full_page: Whether to capture full page
-
-        Returns:
-            PNG image data as bytes
-        """
-        instance_id = self._ensure_browser()
-        params: dict[str, Any] = {
-            "instance_id": instance_id,
-            "full_page": full_page,
-        }
+        self._ensure_browser()
         if selector:
-            params["selector"] = selector
+            self._mcporter_call(
+                f"{self._server_name}.browser_wait_for",
+                {"text": selector},
+            )
+            return
 
-        result = self._mcporter_call(
-            f"{self._server_name}.browser_take_screenshot", params
+        wait_seconds = max(1, min(timeout, self.DEFAULT_WAIT_SECONDS))
+        self._mcporter_call(
+            f"{self._server_name}.browser_wait_for",
+            {"time": wait_seconds},
         )
 
-        # Result should contain base64-encoded PNG
-        if isinstance(result, dict):
-            # Try various possible response formats
-            if "data" in result:
-                import base64
+    def _take_screenshot(self, output_path: Path, full_page: bool = False) -> bytes:
+        """Save a screenshot to disk and return its PNG bytes."""
+        self._ensure_browser()
+        self._mcporter_call(
+            f"{self._server_name}.browser_take_screenshot",
+            {
+                "type": "png",
+                "filename": str(output_path),
+                "fullPage": full_page,
+            },
+        )
 
-                return base64.b64decode(result["data"])
-            elif "image" in result:
-                import base64
+        png_data = output_path.read_bytes()
+        if not png_data.startswith(self.PNG_SIGNATURE):
+            raise RuntimeError(f"Screenshot output is not a valid PNG: {output_path}")
 
-                return base64.b64decode(result["image"])
-            elif "bytes" in result:
-                return result["bytes"]
-            else:
-                # Return the dict as JSON bytes for debugging
-                return json.dumps(result).encode()
-        elif isinstance(result, str):
-            # Assume base64 string
-            import base64
-
-            return base64.b64decode(result)
-        else:
-            return bytes(result)
+        return png_data
 
     def capture_tradingview(
         self,
@@ -243,41 +141,26 @@ class ScreenshotCapture:
         width: int = 800,
         height: int = 400,
     ) -> Path:
-        """Capture TradingView chart screenshot.
-
-        Uses TradingView embed/widget URL for reliable chart capture.
-
-        Args:
-            symbol: TradingView symbol (e.g., "BINANCE:BTCUSDT")
-            interval: Chart interval (D, 240, 60, 15, 5, 1)
-            theme: Chart theme (dark, light)
-            width: Chart width
-            height: Chart height
-
-        Returns:
-            Path to the saved PNG file
-        """
-        # Build TradingView embed URL (widget format for reliable capture)
+        """Capture a TradingView widget screenshot."""
         url = (
             f"https://www.tradingview.com/widgetembed/?symbol={symbol}"
             f"&interval={interval}&theme={theme}"
             f"&width={width}&height={height}"
         )
-
         output_path = (
             self.output_dir / f"screenshot_{symbol.replace(':', '_')}_{interval}.png"
         )
 
         try:
             self._navigate(url)
+            self._resize_browser(
+                self.DEFAULT_VIEWPORT_WIDTH,
+                self.DEFAULT_VIEWPORT_HEIGHT,
+            )
             self._wait_for_chart_ready()
-
-            png_data = self._take_screenshot()
-            output_path.write_bytes(png_data)
-
+            self._take_screenshot(output_path)
             return output_path
         except Exception:
-            # Clean up if we created an empty file
             if output_path.exists() and output_path.stat().st_size == 0:
                 output_path.unlink()
             raise
@@ -288,30 +171,23 @@ class ScreenshotCapture:
         interval: str = "240",
         theme: str = "dark",
     ) -> Path:
-        """Capture Upbit chart screenshot.
+        """Capture an Upbit chart screenshot."""
+        del theme  # Current Playwright capture path does not theme Upbit pages directly.
 
-        Args:
-            market: Upbit market code (e.g., "KRW-BTC")
-            interval: Chart interval (240, 60, 15, 5, 1)
-            theme: Chart theme (dark, light)
-
-        Returns:
-            Path to the saved PNG file
-        """
-        # Build Upbit chart URL
         url = f"https://upbit.com/exchange?code=CRIX.UPBIT.{market}"
-
         output_path = (
-            self.output_dir / f"screenshot_upbit_{market.replace('-', '_')}_{interval}.png"
+            self.output_dir
+            / f"screenshot_upbit_{market.replace('-', '_')}_{interval}.png"
         )
 
         try:
             self._navigate(url)
+            self._resize_browser(
+                self.DEFAULT_VIEWPORT_WIDTH,
+                self.DEFAULT_VIEWPORT_HEIGHT,
+            )
             self._wait_for_chart_ready()
-
-            png_data = self._take_screenshot()
-            output_path.write_bytes(png_data)
-
+            self._take_screenshot(output_path)
             return output_path
         except Exception:
             if output_path.exists() and output_path.stat().st_size == 0:
@@ -319,25 +195,19 @@ class ScreenshotCapture:
             raise
 
     def close(self) -> None:
-        """Close browser instance and cleanup resources."""
-        if self._browser_instance is None:
+        """Close the active Playwright page when one was prepared."""
+        if not self._browser_ready:
             return
 
         try:
-            self._mcporter_call(
-                f"{self._server_name}.browser_close",
-                {"instance_id": self._browser_instance},
-            )
+            self._mcporter_call(f"{self._server_name}.browser_close")
         except Exception:
-            # Ignore errors during cleanup
             pass
         finally:
-            self._browser_instance = None
+            self._browser_ready = False
 
     def __enter__(self) -> ScreenshotCapture:
-        """Context manager entry."""
         return self
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        """Context manager exit - ensure browser is closed."""
         self.close()

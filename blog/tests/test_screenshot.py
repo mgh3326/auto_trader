@@ -147,7 +147,7 @@ class TestScreenshotCaptureUnit:
     """Unit tests for ScreenshotCapture using mocks."""
 
     def test_mcporter_call_invokes_subprocess(self) -> None:
-        """_mcporter_call should invoke subprocess.run with correct arguments."""
+        """_mcporter_call should invoke subprocess.run and return raw stdout."""
         from blog.tools.screenshot_capture import ScreenshotCapture
 
         with patch("subprocess.run") as mock_run:
@@ -164,7 +164,9 @@ class TestScreenshotCaptureUnit:
             assert "mcporter" in str(call_args[0][0])
             assert "call" in str(call_args[0][0])
             assert "stealth_browser.spawn_browser" in str(call_args[0][0])
-            assert result == {"instance_id": "test-123"}
+            assert "--output" in call_args[0][0]
+            assert "raw" in call_args[0][0]
+            assert result == '{"instance_id": "test-123"}'
 
     def test_mcporter_call_uses_current_cli_contract_with_params(self) -> None:
         """_mcporter_call should use --args <json> when params exist (mcporter contract)."""
@@ -185,6 +187,8 @@ class TestScreenshotCaptureUnit:
             assert cmd[0] == "mcporter"
             assert cmd[1] == "call"
             assert cmd[2] == "playwright.browser_navigate"
+            assert "--output" in cmd
+            assert "raw" in cmd
             assert "--args" in cmd
             # Find --args index and verify JSON follows
             args_idx = cmd.index("--args")
@@ -207,8 +211,14 @@ class TestScreenshotCaptureUnit:
 
             mock_run.assert_called_once()
             cmd = mock_run.call_args[0][0]
-            # Should use: mcporter call <selector> (no --args)
-            assert cmd == ["mcporter", "call", "playwright.browser_navigate"]
+            # Should use: mcporter call <selector> --output raw (no --args)
+            assert cmd == [
+                "mcporter",
+                "call",
+                "playwright.browser_navigate",
+                "--output",
+                "raw",
+            ]
             assert "--args" not in cmd
 
     def test_mcporter_call_raises_on_unknown_server(self) -> None:
@@ -229,100 +239,111 @@ class TestScreenshotCaptureUnit:
             assert "stealth_browser.spawn_browser" in str(exc_info.value)
             assert "unknown server" in str(exc_info.value).lower() or "unavailable" in str(exc_info.value).lower()
 
-    def test_ensure_browser_caches_instance_id(self) -> None:
-        """_ensure_browser should cache the browser instance ID."""
+    def test_ensure_browser_marks_session_ready_once(self) -> None:
+        """_ensure_browser should only initialize the session once."""
         from blog.tools.screenshot_capture import ScreenshotCapture
 
-        with patch.object(ScreenshotCapture, "_mcporter_call") as mock_call:
-            mock_call.return_value = {"instance_id": "cached-id"}
-
-            capture = ScreenshotCapture()
-
-            # First call should spawn browser
-            capture._ensure_browser()
-            assert capture._browser_instance == "cached-id"
-            assert mock_call.call_count == 1
-
-            # Second call should use cached ID
-            capture._ensure_browser()
-            assert capture._browser_instance == "cached-id"
-            assert mock_call.call_count == 1  # No additional calls
-
-    def test_ensure_browser_passes_required_spawn_options(self, monkeypatch) -> None:
-        """_ensure_browser should pass spawn options required by this phase."""
-        from blog.tools.screenshot_capture import ScreenshotCapture
-
-        calls = []
-
-        def fake_call(self, selector, params=None):
-            calls.append((selector, params))
-            return {"instance_id": "browser-1"}
-
-        monkeypatch.setattr(ScreenshotCapture, "_mcporter_call", fake_call)
         capture = ScreenshotCapture()
 
-        instance_id = capture._ensure_browser()
+        capture._ensure_browser()
+        assert capture._browser_ready is True
 
-        assert instance_id == "browser-1"
-        assert calls == [
-            (
-                "playwright.browser_navigate",
-                {
-                    "headless": False,
-                    "viewport_width": 1400,
-                    "viewport_height": 900,
-                },
-            )
-        ]
+        capture._ensure_browser()
+        assert capture._browser_ready is True
 
     def test_close_calls_close_method_once(self) -> None:
-        """close() should call the close method once and clear cached ID."""
+        """close() should call browser_close once and clear ready state."""
         from blog.tools.screenshot_capture import ScreenshotCapture
 
         with patch.object(ScreenshotCapture, "_mcporter_call") as mock_call:
-            mock_call.return_value = {"status": "closed"}
+            mock_call.return_value = "ok"
 
             capture = ScreenshotCapture()
-            capture._browser_instance = "test-id"
+            capture._browser_ready = True
 
             capture.close()
 
-            mock_call.assert_called_once()
-            assert capture._browser_instance is None
+            mock_call.assert_called_once_with("playwright.browser_close")
+            assert capture._browser_ready is False
 
     def test_close_is_idempotent(self) -> None:
         """close() should be safe to call multiple times."""
         from blog.tools.screenshot_capture import ScreenshotCapture
 
         capture = ScreenshotCapture()
-        capture._browser_instance = None
+        capture._browser_ready = False
 
         # Should not raise
         capture.close()
         capture.close()
 
-    def test_capture_tradingview_builds_correct_url(self) -> None:
-        """capture_tradingview should build the expected TradingView embed URL."""
+    def test_take_screenshot_reads_written_png_file(self, tmp_path: Path) -> None:
+        """_take_screenshot should read back the file written by Playwright."""
         from blog.tools.screenshot_capture import ScreenshotCapture
 
-        with patch.object(ScreenshotCapture, "_ensure_browser"), \
-             patch.object(ScreenshotCapture, "_navigate") as mock_nav, \
-             patch.object(ScreenshotCapture, "_take_screenshot") as mock_screenshot:
+        capture = ScreenshotCapture(output_dir=tmp_path)
+        capture._browser_ready = True
 
-            mock_screenshot.return_value = b"fake_png_data"
+        png_data = (
+            b"\x89PNG\r\n\x1a\n"
+            b"\x00\x00\x00\rIHDR"
+            b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00"
+            b"\x90wS\xde"
+        )
 
-            capture = ScreenshotCapture(output_dir=Path("/tmp"))
+        def fake_call(selector, params=None):
+            assert selector == "playwright.browser_take_screenshot"
+            assert params is not None
+            Path(params["filename"]).write_bytes(png_data)
+            return "ok"
 
-            with patch.object(Path, "write_bytes") as mock_write:
-                mock_write.return_value = None
-                capture.capture_tradingview("BINANCE:BTCUSDT", interval="D", theme="dark")
+        with patch.object(capture, "_mcporter_call", side_effect=fake_call):
+            result = capture._take_screenshot(tmp_path / "capture.png")
 
-            # Should navigate to TradingView embed URL
-            mock_nav.assert_called_once()
-            url_arg = mock_nav.call_args[0][0]
-            assert "tradingview.com" in url_arg
-            assert "BINANCE:BTCUSDT" in url_arg
-            assert "interval=D" in url_arg or "D" in url_arg
+        assert result == png_data
+
+    def test_capture_tradingview_uses_playwright_schema_calls(self, tmp_path: Path) -> None:
+        """capture_tradingview should use browser_navigate/resize/wait/take_screenshot."""
+        from blog.tools.screenshot_capture import ScreenshotCapture
+
+        capture = ScreenshotCapture(output_dir=tmp_path)
+        calls = []
+        png_data = b"\x89PNG\r\n\x1a\nfake"
+
+        def fake_call(selector, params=None):
+            calls.append((selector, params))
+            if selector == "playwright.browser_take_screenshot":
+                Path(params["filename"]).write_bytes(png_data)
+            return "ok"
+
+        with patch.object(capture, "_mcporter_call", side_effect=fake_call):
+            path = capture.capture_tradingview(
+                "BINANCE:BTCUSDT",
+                interval="D",
+                theme="dark",
+                width=1200,
+                height=600,
+            )
+
+        assert path.exists()
+        assert path.read_bytes() == png_data
+        assert calls[0] == (
+            "playwright.browser_navigate",
+            {
+                "url": "https://www.tradingview.com/widgetembed/?symbol=BINANCE:BTCUSDT&interval=D&theme=dark&width=1200&height=600",
+            },
+        )
+        assert calls[1] == (
+            "playwright.browser_resize",
+            {"width": 1400, "height": 900},
+        )
+        assert calls[2] == (
+            "playwright.browser_wait_for",
+            {"time": 5},
+        )
+        assert calls[3][0] == "playwright.browser_take_screenshot"
+        assert calls[3][1]["type"] == "png"
+        assert calls[3][1]["fullPage"] is False
 
 
 @pytest.mark.skipif(
