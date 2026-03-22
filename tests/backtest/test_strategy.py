@@ -36,7 +36,7 @@ def _make_history(
             "low": [c * 0.99 for c in closes],
             "close": closes,
             "volume": volumes,
-            "value": [v * c for v, c in zip(volumes, closes)],
+            "value": [v * c for v, c in zip(volumes, closes, strict=True)],
         },
         index=dates,
     )
@@ -551,7 +551,10 @@ class TestSellSignals:
         # Should sell due to RSI recovery when profitable
         sell_signals = [s for s in signals if s.action == "sell"]
         assert len(sell_signals) == 1
-        assert "RSI" in sell_signals[0].reason or "recovered" in sell_signals[0].reason.lower()
+        assert (
+            "RSI" in sell_signals[0].reason
+            or "recovered" in sell_signals[0].reason.lower()
+        )
 
     def test_sell_on_stop_loss(self):
         """Test sell signal on stop-loss trigger."""
@@ -578,7 +581,10 @@ class TestSellSignals:
         # Should sell due to stop-loss
         sell_signals = [s for s in signals if s.action == "sell"]
         assert len(sell_signals) >= 1
-        assert any("stop" in s.reason.lower() or "loss" in s.reason.lower() for s in sell_signals)
+        assert any(
+            "stop" in s.reason.lower() or "loss" in s.reason.lower()
+            for s in sell_signals
+        )
 
     def test_sell_when_holding_period_exceeded(self):
         """Test sell when holding period exceeded."""
@@ -605,7 +611,10 @@ class TestSellSignals:
         # Should sell due to max holding period (RSI won't recover with downtrend)
         sell_signals = [s for s in signals if s.action == "sell"]
         assert len(sell_signals) >= 1
-        assert any("holding" in s.reason.lower() or "max" in s.reason.lower() for s in sell_signals)
+        assert any(
+            "holding" in s.reason.lower() or "max" in s.reason.lower()
+            for s in sell_signals
+        )
 
     def test_no_sell_when_holding_period_exceeded_but_unprofitable(self):
         """Test no RSI recovery sell when position is unprofitable."""
@@ -618,7 +627,9 @@ class TestSellSignals:
         portfolio = prepare.PortfolioState(
             cash=50000.0,
             positions={"BTC": 1.0},
-            avg_prices={"BTC": 150.0},  # Avg buy price (higher than current - unprofitable)
+            avg_prices={
+                "BTC": 150.0
+            },  # Avg buy price (higher than current - unprofitable)
             position_dates={"BTC": "2025-03-25"},
             trade_log=[],
             equity=135000.0,
