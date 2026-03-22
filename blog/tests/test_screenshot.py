@@ -1,4 +1,12 @@
-"""Tests for screenshot capture and image composition utilities."""
+"""Tests for screenshot capture and image composition utilities.
+
+Repro commands for mcporter CLI contract:
+    mcporter call --help
+    mcporter list
+    mcporter list <server-name> --schema
+
+Note: mcporter uses `--args <json>` for JSON payloads, not `--params`.
+"""
 
 from __future__ import annotations
 
@@ -157,6 +165,69 @@ class TestScreenshotCaptureUnit:
             assert "call" in str(call_args[0][0])
             assert "stealth_browser.spawn_browser" in str(call_args[0][0])
             assert result == {"instance_id": "test-123"}
+
+    def test_mcporter_call_uses_current_cli_contract_with_params(self) -> None:
+        """_mcporter_call should use --args <json> when params exist (mcporter contract)."""
+        from blog.tools.screenshot_capture import ScreenshotCapture
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                stdout='{"result": "ok"}',
+                returncode=0,
+            )
+
+            capture = ScreenshotCapture()
+            capture._mcporter_call("playwright.browser_navigate", {"url": "https://example.com"})
+
+            mock_run.assert_called_once()
+            cmd = mock_run.call_args[0][0]
+            # Should use: mcporter call <selector> --args <json>
+            assert cmd[0] == "mcporter"
+            assert cmd[1] == "call"
+            assert cmd[2] == "playwright.browser_navigate"
+            assert "--args" in cmd
+            # Find --args index and verify JSON follows
+            args_idx = cmd.index("--args")
+            import json
+            params = json.loads(cmd[args_idx + 1])
+            assert params["url"] == "https://example.com"
+
+    def test_mcporter_call_uses_bare_selector_without_params(self) -> None:
+        """_mcporter_call should use bare selector with no extra args when params are absent."""
+        from blog.tools.screenshot_capture import ScreenshotCapture
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                stdout='{"instance_id": "browser-1"}',
+                returncode=0,
+            )
+
+            capture = ScreenshotCapture()
+            capture._mcporter_call("playwright.browser_navigate")
+
+            mock_run.assert_called_once()
+            cmd = mock_run.call_args[0][0]
+            # Should use: mcporter call <selector> (no --args)
+            assert cmd == ["mcporter", "call", "playwright.browser_navigate"]
+            assert "--args" not in cmd
+
+    def test_mcporter_call_raises_on_unknown_server(self) -> None:
+        """Missing/unknown server errors should raise RuntimeError with stderr attached."""
+        from blog.tools.screenshot_capture import ScreenshotCapture
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                stdout="",
+                stderr="Error: unknown server: stealth_browser",
+                returncode=1,
+            )
+
+            capture = ScreenshotCapture()
+            with pytest.raises(RuntimeError) as exc_info:
+                capture._mcporter_call("stealth_browser.spawn_browser")
+
+            assert "stealth_browser.spawn_browser" in str(exc_info.value)
+            assert "unknown server" in str(exc_info.value).lower() or "unavailable" in str(exc_info.value).lower()
 
     def test_ensure_browser_caches_instance_id(self) -> None:
         """_ensure_browser should cache the browser instance ID."""
