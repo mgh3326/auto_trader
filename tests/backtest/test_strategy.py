@@ -643,6 +643,67 @@ class TestSellSignals:
         rsi_sells = [s for s in signals if s.action == "sell" and "RSI" in s.reason]
         assert len(rsi_sells) == 0
 
+    def test_stop_loss_records_cooldown_and_blocks_rebuy(self, monkeypatch):
+        """Test stop-loss exits and the cooldown prevents immediate re-entry."""
+        strat = strategy.Strategy()
+
+        stop_loss_history = _make_history([84.0] * 40)
+        stop_loss_bar = {
+            "BTC": _make_bar_data("BTC", "2025-04-08", 84.0, stop_loss_history)
+        }
+        held_portfolio = prepare.PortfolioState(
+            cash=50000.0,
+            positions={"BTC": 1.0},
+            avg_prices={"BTC": 100.0},
+            position_dates={"BTC": "2025-04-01"},
+            trade_log=[],
+            equity=134000.0,
+            date="2025-04-08",
+        )
+
+        def mock_evaluate(bar: prepare.BarData) -> dict[str, object]:
+            if bar.date == "2025-04-08":
+                return {
+                    "rsi_fast": 45.0,
+                    "rsi_slow": 40.0,
+                    "bull_votes": 0,
+                    "bear_votes": 0,
+                    "bull_flags": {},
+                    "bear_flags": {},
+                }
+            return {
+                "rsi_fast": 20.0,
+                "rsi_slow": 25.0,
+                "bull_votes": strategy.MIN_VOTES,
+                "bear_votes": 0,
+                "bull_flags": {"dual_rsi_oversold": True},
+                "bear_flags": {},
+            }
+
+        monkeypatch.setattr(strat, "_evaluate_signals", mock_evaluate)
+
+        exit_signals = strat.on_bar(stop_loss_bar, held_portfolio)
+
+        assert len(exit_signals) == 1
+        assert exit_signals[0].action == "sell"
+        assert "Stop-loss" in exit_signals[0].reason
+
+        rebuy_history = _make_history([80.0] * 40)
+        rebuy_bar = {"BTC": _make_bar_data("BTC", "2025-04-12", 80.0, rebuy_history)}
+        empty_portfolio = prepare.PortfolioState(
+            cash=100000.0,
+            positions={},
+            avg_prices={},
+            position_dates={},
+            trade_log=[],
+            equity=100000.0,
+            date="2025-04-12",
+        )
+
+        rebuy_signals = strat.on_bar(rebuy_bar, empty_portfolio)
+
+        assert rebuy_signals == []
+
 
 class TestStrategyWithHistory:
     """Tests for strategy using engine-provided history."""

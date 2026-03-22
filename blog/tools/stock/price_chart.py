@@ -1,11 +1,13 @@
 """PriceChart SVG component.
 
-OHLCV line chart with optional Bollinger bands and EMA overlays.
+OHLCV line or candlestick chart with optional Bollinger bands and EMA overlays.
 """
 
 from __future__ import annotations
 
 from typing import Any
+
+from blog.tools.components.base import FONT_FAMILY
 
 
 class PriceChart:
@@ -20,6 +22,8 @@ class PriceChart:
         ohlcv: list[dict[str, Any]],
         bollinger: dict[str, list[float]] | None = None,
         ema_values: dict[str, list[float]] | None = None,
+        chart_type: str = "line",
+        volume: bool = False,
     ) -> str:
         """Render a price chart as an SVG fragment.
 
@@ -31,10 +35,27 @@ class PriceChart:
             ohlcv: List of OHLCV dicts with 'date' and 'close' keys.
             bollinger: Optional dict with 'upper' and 'lower' band values.
             ema_values: Optional dict of EMA name -> value list.
+            chart_type: 'line' or 'candlestick'.
+            volume: Whether to show volume bars (candlestick mode only).
 
         Returns:
             SVG fragment string (no <svg> wrapper).
         """
+        # Delegate to CandlestickChart for candlestick mode
+        if chart_type == "candlestick":
+            from blog.tools.stock.candlestick_chart import CandlestickChart
+
+            return CandlestickChart.create(
+                x=x,
+                y=y,
+                width=width,
+                height=height,
+                ohlcv=ohlcv,
+                volume=volume,
+                ema_values=ema_values,
+                bollinger=bollinger,
+            )
+
         if not ohlcv:
             return f"    <!-- Empty price chart at ({x}, {y}) -->\n"
 
@@ -115,7 +136,7 @@ class PriceChart:
             label_y = price_to_y(price)
             parts.append(
                 f'    <text x="{x - 5}" y="{label_y + 4}" '
-                f'font-family="Arial, sans-serif" font-size="10" '
+                f'font-family="{FONT_FAMILY}" font-size="10" '
                 f'fill="#666666" text-anchor="end">{int(price):,}</text>'
             )
 
