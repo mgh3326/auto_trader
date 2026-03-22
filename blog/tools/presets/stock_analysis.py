@@ -80,11 +80,13 @@ class StockAnalysisPreset:
 
         png_paths = await converter.convert_all(files)
 
-        # Cleanup: remove hybrid technical SVG after successful PNG conversion
+        # Cleanup: remove hybrid technical SVG only after successful PNG conversion
         # (hybrid SVGs with embedded base64 PNGs can be very large)
+        # Only delete if the technical PNG was actually produced
         if self.screenshot_path and self.screenshot_path.exists():
+            technical_png = self.output_dir / f"{self.symbol}_technical.png"
             technical_svg = self.output_dir / f"{self.symbol}_technical.svg"
-            if technical_svg.exists():
+            if technical_png.exists() and technical_svg.exists():
                 technical_svg.unlink()
 
         return png_paths
