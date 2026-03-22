@@ -11,7 +11,7 @@ RSI_EXIT = 46
 MAX_POSITIONS = 5
 POSITION_SIZE = 0.10
 HOLDING_DAYS = 21
-STOP_LOSS_PCT = 0.05
+STOP_LOSS_PCT = 0.045
 COOLDOWN_DAYS = 7  # Days to wait after stop-loss before re-entry
 
 
