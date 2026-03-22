@@ -275,9 +275,13 @@ class TestVoteAssembly:
         result = strat._evaluate_signals(bar)
 
         assert result is not None
-        assert result["bull_votes"] >= strategy.MIN_VOTES
-        assert result["bull_flags"]["dual_rsi_oversold"]
-        assert result["bull_flags"]["volume_above_avg"]
+        assert result["bull_votes"] == 3
+        assert bool(result["bull_flags"]["dual_rsi_oversold"]) is True
+        assert bool(result["bull_flags"]["macd_histogram_positive"]) is True
+        assert bool(result["bull_flags"]["volume_above_avg"]) is True
+        assert bool(result["bull_flags"]["close_below_bb_lower"]) is False
+        assert bool(result["bull_flags"]["ema_fast_above_slow"]) is False
+        assert bool(result["bull_flags"]["momentum_positive"]) is False
 
     def test_bear_votes_counted_correctly_in_overbought_downtrend(self):
         """Test that bear votes are counted correctly for overbought downtrend conditions."""
@@ -305,8 +309,8 @@ class TestVoteAssembly:
 
         assert result is None
 
-    def test_bull_vote_threshold_produces_buy_eligible_setup(self):
-        """Test that sufficient bull votes produces buy-eligible setup."""
+    def test_strong_bullish_setup_stays_below_buy_threshold_after_tuning(self):
+        """Test that the tuned bullish fixture stays one vote below entry threshold."""
         strat = strategy.Strategy()
 
         # Use strong bullish setup helper
@@ -316,10 +320,10 @@ class TestVoteAssembly:
         result = strat._evaluate_signals(bar)
 
         assert result is not None
-        # In strong oversold conditions with volume, should have multiple bull votes
-        assert result["bull_votes"] >= strategy.MIN_VOTES
-        assert result["bull_flags"]["dual_rsi_oversold"]
-        assert result["bull_flags"]["volume_above_avg"]
+        assert result["bull_votes"] == 3
+        assert result["bull_votes"] < strategy.MIN_VOTES
+        assert bool(result["bull_flags"]["dual_rsi_oversold"]) is True
+        assert bool(result["bull_flags"]["volume_above_avg"]) is True
 
     def test_low_bull_votes_does_not_produce_buy(self):
         """Test that insufficient bull votes does not produce buy signal."""
@@ -352,13 +356,28 @@ class TestVoteAssembly:
         assert result["bear_votes"] >= strategy.MIN_SELL_VOTES
         assert result["bear_flags"]["rsi_slow_high"]
 
-    def test_buy_reason_string_includes_vote_count(self):
+    def test_buy_reason_string_includes_vote_count(self, monkeypatch):
         """Test that buy signal reason strings include vote count and flags."""
         strat = strategy.Strategy()
 
-        # Use strong bullish setup that triggers buy
-        history, current_price = _make_strong_bullish_setup(50)
-        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-01", current_price, history)}
+        def mock_evaluate(bar):
+            return {
+                "rsi_fast": 25.0,
+                "rsi_slow": 25.0,
+                "bull_votes": strategy.MIN_VOTES,
+                "bear_votes": 0,
+                "bull_flags": {
+                    "dual_rsi_oversold": True,
+                    "macd_histogram_positive": True,
+                    "volume_above_avg": True,
+                },
+                "bear_flags": {},
+            }
+
+        monkeypatch.setattr(strat, "_evaluate_signals", mock_evaluate)
+
+        history = _make_history([100.0] * 40)
+        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-01", 100.0, history)}
 
         portfolio = prepare.PortfolioState(
             cash=100000.0,
@@ -375,7 +394,8 @@ class TestVoteAssembly:
         # Verify buy signal with proper reason formatting
         buy_signals = [s for s in signals if s.action == "buy"]
         assert len(buy_signals) == 1
-        assert buy_signals[0].reason.startswith("Bull votes")
+        assert buy_signals[0].reason.startswith("Bull votes ")
+        assert "dual rsi oversold" in buy_signals[0].reason
 
     def test_bear_sell_reason_string_format(self, monkeypatch):
         """Test that bear-vote sell reason strings include vote count and flags."""
@@ -417,13 +437,24 @@ class TestVoteAssembly:
 class TestBuySignals:
     """Tests for buy signal generation."""
 
-    def test_buy_when_dual_rsi_oversold(self):
-        """Test buy signal when both RSI fast and slow are oversold."""
+    def test_buy_when_dual_rsi_oversold_and_vote_threshold_met(self, monkeypatch):
+        """Test buy signal when oversold setup reaches the configured vote threshold."""
         strat = strategy.Strategy()
 
-        # Create oversold history with strong bullish setup
-        history, current_price = _make_strong_bullish_setup(50)
-        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-01", current_price, history)}
+        def mock_evaluate(bar):
+            return {
+                "rsi_fast": 25.0,
+                "rsi_slow": 25.0,
+                "bull_votes": strategy.MIN_VOTES,
+                "bear_votes": 0,
+                "bull_flags": {"dual_rsi_oversold": True},
+                "bear_flags": {},
+            }
+
+        monkeypatch.setattr(strat, "_evaluate_signals", mock_evaluate)
+
+        history = _make_history([100.0] * 40)
+        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-01", 100.0, history)}
 
         portfolio = prepare.PortfolioState(
             cash=100000.0,
@@ -500,13 +531,24 @@ class TestBuySignals:
         buy_signals = [s for s in signals if s.action == "buy"]
         assert len(buy_signals) == 0
 
-    def test_buy_has_configured_weight(self):
+    def test_buy_has_configured_weight(self, monkeypatch):
         """Test that buy signal has the configured position size."""
         strat = strategy.Strategy()
 
-        # Use strong bullish setup for buy signal
-        history, current_price = _make_strong_bullish_setup(50)
-        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-01", current_price, history)}
+        def mock_evaluate(bar):
+            return {
+                "rsi_fast": 25.0,
+                "rsi_slow": 25.0,
+                "bull_votes": strategy.MIN_VOTES,
+                "bear_votes": 0,
+                "bull_flags": {"dual_rsi_oversold": True},
+                "bear_flags": {},
+            }
+
+        monkeypatch.setattr(strat, "_evaluate_signals", mock_evaluate)
+
+        history = _make_history([100.0] * 40)
+        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-01", 100.0, history)}
 
         portfolio = prepare.PortfolioState(
             cash=100000.0,
