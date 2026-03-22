@@ -3,6 +3,7 @@ Tests for MCP fundamentals/analysis tools.
 
 This module contains tests for:
 - analyze_stock tool
+- get_company_profile tool
 - get_valuation tool
 - get_short_interest tool
 - get_kimchi_premium tool
@@ -700,6 +701,23 @@ async def test_get_correlation_tool_uses_analysis_screening_correlation_alias(
 
 
 # ---------------------------------------------------------------------------
+# get_company_profile Tool
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestGetCompanyProfile:
+    """Test get_company_profile tool."""
+
+    async def test_rejects_crypto(self):
+        """Test that crypto symbol raises ValueError."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="cryptocurrencies"):
+            await tools["get_company_profile"]("KRW-BTC")
+
+
+# ---------------------------------------------------------------------------
 # get_valuation Tool
 # ---------------------------------------------------------------------------
 
@@ -812,7 +830,7 @@ class TestGetValuation:
         assert result["instrument_type"] == "equity_us"
         assert result["roe"] == 85.0
 
-    async def test_rejects_crypto(self):
+    async def test_rejects_crypto_symbol(self):
         """Test that crypto symbol raises ValueError."""
         tools = build_tools()
 
