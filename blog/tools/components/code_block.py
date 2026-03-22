@@ -5,7 +5,7 @@ Dark-themed code snippet display with optional language label.
 
 from __future__ import annotations
 
-from blog.tools.components.base import escape_xml
+from blog.tools.components.base import FONT_FAMILY, escape_xml
 
 
 class CodeBlock:
@@ -48,7 +48,7 @@ class CodeBlock:
             safe_lang = escape_xml(language)
             parts.append(
                 f'    <text x="{x + width - 10}" y="{y + 20}" '
-                f'font-family="Arial, sans-serif" font-size="11" '
+                f'font-family="{FONT_FAMILY}" font-size="11" '
                 f'fill="#666666" text-anchor="end">{safe_lang}</text>'
             )
 

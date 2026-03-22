@@ -7,6 +7,88 @@ that can be composed into complete SVG documents using SVGComponent.header/foote
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+FONT_FAMILY = "'Noto Sans KR', 'Inter', 'Arial', sans-serif"
+
+
+@dataclass(frozen=True)
+class Theme:
+    name: str
+    bg_gradient: tuple[str, str, str]
+    bg_fill: str
+    text_primary: str
+    text_secondary: str
+    text_muted: str
+    accent: str
+    card_bg: str
+    card_border: str
+    header_bg: str
+
+
+THEMES: dict[str, Theme] = {
+    "dark": Theme(
+        name="dark",
+        bg_gradient=("#0d1b2a", "#1b263b", "#415a77"),
+        bg_fill="#1b263b",
+        text_primary="#e0e1dd",
+        text_secondary="#778da9",
+        text_muted="#415a77",
+        accent="#00b4d8",
+        card_bg="#0d1b2a",
+        card_border="#415a77",
+        header_bg="#1b263b",
+    ),
+    "light": Theme(
+        name="light",
+        bg_gradient=("#ffffff", "#f1f5f9", "#e2e8f0"),
+        bg_fill="#f8f9fa",
+        text_primary="#1e293b",
+        text_secondary="#475569",
+        text_muted="#94a3b8",
+        accent="#3b82f6",
+        card_bg="#ffffff",
+        card_border="#dee2e6",
+        header_bg="#f1f5f9",
+    ),
+    "terminal": Theme(
+        name="terminal",
+        bg_gradient=("#0c0c0c", "#111111", "#1a1a1a"),
+        bg_fill="#0c0c0c",
+        text_primary="#00ff00",
+        text_secondary="#00cc00",
+        text_muted="#006600",
+        accent="#00ff00",
+        card_bg="#111111",
+        card_border="#30363d",
+        header_bg="#1a1a1a",
+    ),
+    "crisis": Theme(
+        name="crisis",
+        bg_gradient=("#1a0000", "#2d0000", "#450a0a"),
+        bg_fill="#1a0000",
+        text_primary="#fecaca",
+        text_secondary="#f87171",
+        text_muted="#991b1b",
+        accent="#ef4444",
+        card_bg="#2d0000",
+        card_border="#991b1b",
+        header_bg="#450a0a",
+    ),
+    "data": Theme(
+        name="data",
+        bg_gradient=("#f0fdf4", "#ecfdf5", "#d1fae5"),
+        bg_fill="#f0fdf4",
+        text_primary="#166534",
+        text_secondary="#15803d",
+        text_muted="#86efac",
+        accent="#22c55e",
+        card_bg="#ffffff",
+        card_border="#bbf7d0",
+        header_bg="#ecfdf5",
+    ),
+}
+
 
 def escape_xml(text: str) -> str:
     """Escape XML special characters for safe SVG embedding."""
@@ -124,8 +206,15 @@ class SVGComponent:
         return "</svg>"
 
     @staticmethod
-    def background(width: int, height: int, fill: str = "#f8f9fa") -> str:
+    def background(
+        width: int,
+        height: int,
+        fill: str = "#f8f9fa",
+        theme: str | None = None,
+    ) -> str:
         """Full-canvas background rectangle."""
+        if theme and theme in THEMES:
+            fill = THEMES[theme].bg_fill
         return f'    <rect width="{width}" height="{height}" fill="{fill}"/>\n'
 
     @staticmethod
@@ -139,7 +228,7 @@ class SVGComponent:
         """Centered title text."""
         return (
             f'    <text x="{canvas_width // 2}" y="{y}" '
-            f'font-family="Arial, sans-serif" font-size="{font_size}" '
+            f'font-family="{FONT_FAMILY}" font-size="{font_size}" '
             f'font-weight="bold" fill="{fill}" text-anchor="middle">'
             f"{escape_xml(text)}</text>\n"
         )

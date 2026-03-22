@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1200" height="630" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+        <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" style="stop-color:#0d1b2a;stop-opacity:1" />
+            <stop offset="50%" style="stop-color:#1b263b;stop-opacity:1" />
+            <stop offset="100%" style="stop-color:#415a77;stop-opacity:1" />
+        </linearGradient>
+    </defs>
+
+    <!-- 배경 -->
+    <rect width="1200" height="630" fill="url(#bgGradient)"/>
+    <!-- Background pattern: candlesticks -->
+    <rect x="100" y="50" width="30" height="80" fill="#ff5252" opacity="0.05" rx="2"/>
+    <rect x="200" y="100" width="25" height="60" fill="#4CAF50" opacity="0.05" rx="2"/>
+    <rect x="300" y="80" width="35" height="70" fill="#ff5252" opacity="0.05" rx="2"/>
+    <rect x="400" y="120" width="20" height="50" fill="#4CAF50" opacity="0.05" rx="2"/>
+    <rect x="500" y="60" width="30" height="90" fill="#ff5252" opacity="0.05" rx="2"/>
+    <rect x="600" y="90" width="25" height="55" fill="#4CAF50" opacity="0.05" rx="2"/>
+    <rect x="700" y="70" width="30" height="75" fill="#ff5252" opacity="0.05" rx="2"/>
+    <rect x="800" y="110" width="20" height="45" fill="#4CAF50" opacity="0.05" rx="2"/>
+    <rect x="900" y="55" width="35" height="85" fill="#ff5252" opacity="0.05" rx="2"/>
+    <rect x="1000" y="95" width="25" height="50" fill="#4CAF50" opacity="0.05" rx="2"/>
+    <rect x="1100" y="75" width="30" height="70" fill="#4CAF50" opacity="0.05" rx="2"/>
+
+    <!-- 제목 -->
+    <text x="600" y="140" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="52" font-weight="bold" fill="#ffffff" text-anchor="middle">
+        삼성전자 종합 분석
+    </text>
+    <text x="600" y="210" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="52" font-weight="bold" fill="#00b4d8" text-anchor="middle">
+        현재가 65,800원
+    </text>
+    <!-- 부제목 -->
+    <text x="600" y="290" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="30" fill="#778da9" text-anchor="middle">
+        반도체 | 005930
+    </text>
+
+    <!-- 아이콘들 -->
+    <g transform="translate(390, 380)">
+        <rect x="0" y="0" width="100" height="100" rx="10" fill="#2196F3" opacity="0.9"/>
+        <g transform="translate(26, 26) scale(2.0)"><path d="M3 3v16a2 2 0 0 0 2 2h16" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="m19 9-5 5-4-4-3 3" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></g>
+        <text x="50" y="85" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="14" fill="#ffffff" text-anchor="middle">기술적 분석</text>
+        <rect x="130" y="0" width="100" height="100" rx="10" fill="#4CAF50" opacity="0.9"/>
+        <g transform="translate(156, 26) scale(2.0)"><path d="M21 12V7H5a2 2 0 0 1-2-2 2 2 0 0 1 2-2h14v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></g>
+        <text x="180" y="85" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="14" fill="#ffffff" text-anchor="middle">펀더멘탈</text>
+        <rect x="260" y="0" width="100" height="100" rx="10" fill="#FF9800" opacity="0.9"/>
+        <g transform="translate(286, 26) scale(2.0)"><path d="M9 5v14" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M15 5v14" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M5 9h14" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M5 15h14" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M9 2v3" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M9 19v3" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M15 2v3" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M15 19v3" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></g>
+        <text x="310" y="85" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="14" fill="#ffffff" text-anchor="middle">수급 분석</text>
+        <rect x="390" y="0" width="100" height="100" rx="10" fill="#9C27B0" opacity="0.9"/>
+        <g transform="translate(416, 26) scale(2.0)"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M22 4 12 14.01l-3-3" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></g>
+        <text x="440" y="85" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="14" fill="#ffffff" text-anchor="middle">종합 결론</text>
+    </g>
+</svg>

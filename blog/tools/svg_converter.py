@@ -25,6 +25,8 @@ Playwright를 사용하여 SVG를 고품질 PNG로 변환합니다.
 import asyncio
 from pathlib import Path
 
+from blog.tools.components.base import FONT_FAMILY
+
 
 class SVGConverter:
     """SVG to PNG 변환기"""
@@ -93,15 +95,15 @@ class SVGConverter:
                     align-items: center;
                     min-height: 100vh;
                     background: white;
-                    font-family: 'Noto Sans KR', 'Arial', sans-serif;
+                    font-family: {FONT_FAMILY};
                 }}
                 svg {{
                     max-width: 100%;
                     height: auto;
-                    font-family: 'Noto Sans KR', 'Arial', sans-serif !important;
+                    font-family: {FONT_FAMILY} !important;
                 }}
                 svg text {{
-                    font-family: 'Noto Sans KR', 'Arial', sans-serif !important;
+                    font-family: {FONT_FAMILY} !important;
                 }}
             </style>
         </head>
@@ -118,8 +120,9 @@ class SVGConverter:
             # HTML 설정
             await page.set_content(html_content)
 
-            # 폰트 로딩 대기
-            await page.wait_for_timeout(1000)
+            # 폰트 로딩 대기 (document.fonts.ready 기반)
+            await page.wait_for_function("document.fonts.ready.then(() => true)")
+            await page.wait_for_timeout(300)
 
             # SVG 요소 찾기
             svg_element = await page.query_selector("svg")

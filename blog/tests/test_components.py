@@ -134,6 +134,12 @@ class TestSVGComponent:
         assert escape_xml('say "hello"') == "say &quot;hello&quot;"
         assert escape_xml("normal text") == "normal text"
 
+    def test_background_supports_theme(self) -> None:
+        from blog.tools.components.base import SVGComponent
+
+        result = SVGComponent.background(1400, 800, theme="dark")
+        assert 'fill="#1b263b"' in result
+
 
 class TestThumbnailTemplate:
     """Tests for ThumbnailTemplate component."""

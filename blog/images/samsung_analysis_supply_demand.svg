@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1400" height="800" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+        <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#666666" />
+        </marker>
+        
+    </defs>
+    <rect width="1400" height="800" fill="#f8f9fa"/>
+    <text x="700" y="45" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="28" font-weight="bold" fill="#1a1a2e" text-anchor="middle">삼성전자 — 수급 분석</text>
+    <text x="710" y="120" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#333333" text-anchor="middle">투자자별 순매매동향 (단위: 백만원)</text>
+    <text x="710" y="140" font-family="Arial, sans-serif" font-size="12" fill="#e74c3c" text-anchor="middle">⚠️ 외국인 5일 연속 순매도</text>
+    <rect x="-360.0" y="160.66666666666666" width="1100.0" height="45.333333333333336" fill="#e74c3c" rx="2"/>
+    <text x="140" y="187.33333333333331" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#666666" text-anchor="start">외국인</text>
+    <rect x="740.0" y="217.33333333333334" width="629.7164237888933" height="45.333333333333336" fill="#4CAF50" rx="2"/>
+    <text x="140" y="244.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#666666" text-anchor="start">기관</text>
+    <rect x="740.0" y="274.00000000000006" width="470.2835762111067" height="45.333333333333336" fill="#2196F3" rx="2"/>
+    <text x="140" y="300.66666666666674" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#666666" text-anchor="start">개인</text>
+    <text x="710" y="400" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#333333" text-anchor="middle">투자의견 및 목표가</text>
+    <rect x="60" y="420" width="1300" height="66.0" fill="#2196F3" rx="4"/>
+    <text x="276.66666666666663" y="458.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">증권사</text>
+    <text x="710.0" y="458.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">의견</text>
+    <text x="1143.3333333333333" y="458.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">목표가</text>
+    <line x1="60" y1="486.0" x2="1360" y2="486.0" stroke="#dee2e6" stroke-width="1"/>
+    <text x="276.66666666666663" y="524.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">삼성증권</text>
+    <text x="710.0" y="524.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">매수</text>
+    <text x="1143.3333333333333" y="524.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">90,000</text>
+    <line x1="60" y1="552.0" x2="1360" y2="552.0" stroke="#dee2e6" stroke-width="1"/>
+    <text x="276.66666666666663" y="590.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">NH투자</text>
+    <text x="710.0" y="590.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">매수</text>
+    <text x="1143.3333333333333" y="590.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">85,000</text>
+    <line x1="60" y1="618.0" x2="1360" y2="618.0" stroke="#dee2e6" stroke-width="1"/>
+    <text x="276.66666666666663" y="656.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">미래에셋</text>
+    <text x="710.0" y="656.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">중립</text>
+    <text x="1143.3333333333333" y="656.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">70,000</text>
+    <rect x="60" y="684.0" width="1300" height="66.0" fill="#e3f2fd" rx="4"/>
+    <line x1="60" y1="684.0" x2="1360" y2="684.0" stroke="#dee2e6" stroke-width="1"/>
+    <text x="276.66666666666663" y="722.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">컨센서스</text>
+    <text x="710.0" y="722.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">매수</text>
+    <text x="1143.3333333333333" y="722.0" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="12" fill="#333333" text-anchor="middle">82,000</text>
+</svg>

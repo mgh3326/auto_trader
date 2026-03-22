@@ -5,7 +5,7 @@ Nodes connected by labeled arrows for architecture diagrams.
 
 from __future__ import annotations
 
-from blog.tools.components.base import escape_xml
+from blog.tools.components.base import FONT_FAMILY, escape_xml
 
 
 class FlowDiagram:
@@ -64,14 +64,14 @@ class FlowDiagram:
                     safe_label = escape_xml(label)
                     parts.append(
                         f'    <text x="{mx}" y="{my - 5}" '
-                        f'font-family="Arial, sans-serif" font-size="11" '
+                        f'font-family="{FONT_FAMILY}" font-size="11" '
                         f'fill="#666666" text-anchor="middle" '
                         f'fill="#ffffff" stroke="#ffffff" stroke-width="3" '
                         f'paint-order="stroke">{safe_label}</text>'
                     )
                     parts.append(
                         f'    <text x="{mx}" y="{my - 5}" '
-                        f'font-family="Arial, sans-serif" font-size="11" '
+                        f'font-family="{FONT_FAMILY}" font-size="11" '
                         f'fill="#666666" text-anchor="middle">{safe_label}</text>'
                     )
 
@@ -87,7 +87,7 @@ class FlowDiagram:
             safe_label = escape_xml(label)
             parts.append(
                 f'    <text x="{x + w // 2}" y="{y + h // 2 + 5}" '
-                f'font-family="Arial, sans-serif" font-size="14" '
+                f'font-family="{FONT_FAMILY}" font-size="14" '
                 f'font-weight="bold" fill="#ffffff" text-anchor="middle">'
                 f"{safe_label}</text>"
             )

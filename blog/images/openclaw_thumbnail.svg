@@ -2,44 +2,175 @@
 <svg width="1200" height="630" xmlns="http://www.w3.org/2000/svg">
     <defs>
         <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" style="stop-color:#1a1a2e;stop-opacity:1" />
-            <stop offset="50%" style="stop-color:#16213e;stop-opacity:1" />
-            <stop offset="100%" style="stop-color:#0f3460;stop-opacity:1" />
+            <stop offset="0%" style="stop-color:#0d1b2a;stop-opacity:1" />
+            <stop offset="50%" style="stop-color:#1b263b;stop-opacity:1" />
+            <stop offset="100%" style="stop-color:#415a77;stop-opacity:1" />
         </linearGradient>
     </defs>
 
     <!-- 배경 -->
     <rect width="1200" height="630" fill="url(#bgGradient)"/>
+    <!-- Background pattern: dots -->
+    <circle cx="50" cy="50" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="50" cy="130" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="50" cy="210" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="50" cy="290" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="50" cy="370" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="50" cy="450" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="50" cy="530" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="50" cy="610" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="130" cy="50" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="130" cy="130" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="130" cy="210" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="130" cy="290" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="130" cy="370" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="130" cy="450" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="130" cy="530" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="130" cy="610" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="210" cy="50" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="210" cy="130" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="210" cy="210" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="210" cy="290" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="210" cy="370" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="210" cy="450" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="210" cy="530" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="210" cy="610" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="290" cy="50" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="290" cy="130" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="290" cy="210" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="290" cy="290" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="290" cy="370" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="290" cy="450" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="290" cy="530" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="290" cy="610" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="370" cy="50" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="370" cy="130" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="370" cy="210" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="370" cy="290" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="370" cy="370" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="370" cy="450" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="370" cy="530" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="370" cy="610" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="450" cy="50" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="450" cy="130" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="450" cy="210" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="450" cy="290" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="450" cy="370" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="450" cy="450" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="450" cy="530" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="450" cy="610" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="530" cy="50" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="530" cy="130" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="530" cy="210" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="530" cy="290" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="530" cy="370" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="530" cy="450" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="530" cy="530" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="530" cy="610" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="610" cy="50" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="610" cy="130" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="610" cy="210" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="610" cy="290" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="610" cy="370" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="610" cy="450" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="610" cy="530" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="610" cy="610" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="690" cy="50" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="690" cy="130" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="690" cy="210" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="690" cy="290" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="690" cy="370" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="690" cy="450" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="690" cy="530" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="690" cy="610" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="770" cy="50" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="770" cy="130" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="770" cy="210" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="770" cy="290" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="770" cy="370" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="770" cy="450" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="770" cy="530" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="770" cy="610" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="850" cy="50" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="850" cy="130" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="850" cy="210" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="850" cy="290" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="850" cy="370" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="850" cy="450" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="850" cy="530" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="850" cy="610" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="930" cy="50" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="930" cy="130" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="930" cy="210" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="930" cy="290" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="930" cy="370" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="930" cy="450" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="930" cy="530" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="930" cy="610" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="1010" cy="50" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="1010" cy="130" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="1010" cy="210" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="1010" cy="290" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="1010" cy="370" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="1010" cy="450" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="1010" cy="530" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="1010" cy="610" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="1090" cy="50" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="1090" cy="130" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="1090" cy="210" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="1090" cy="290" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="1090" cy="370" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="1090" cy="450" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="1090" cy="530" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="1090" cy="610" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="1170" cy="50" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="1170" cy="130" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="1170" cy="210" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="1170" cy="290" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="1170" cy="370" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="1170" cy="450" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="1170" cy="530" r="2" fill="#ffffff" opacity="0.08"/>
+    <circle cx="1170" cy="610" r="2" fill="#ffffff" opacity="0.08"/>
 
     <!-- 제목 -->
-    <text x="600" y="140" font-family="Arial, sans-serif" font-size="52" font-weight="bold" fill="#ffffff" text-anchor="middle">
+    <text x="600" y="140" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="52" font-weight="bold" fill="#ffffff" text-anchor="middle">
         OpenClaw + FastAPI
     </text>
-    <text x="600" y="210" font-family="Arial, sans-serif" font-size="52" font-weight="bold" fill="#e94560" text-anchor="middle">
+    <text x="600" y="210" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="52" font-weight="bold" fill="#e94560" text-anchor="middle">
         비동기 LLM 파이프라인
     </text>
     <!-- 부제목 -->
-    <text x="600" y="290" font-family="Arial, sans-serif" font-size="30" fill="#778da9" text-anchor="middle">
+    <text x="600" y="290" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="30" fill="#778da9" text-anchor="middle">
         Raspberry Pi에서 GPT 분석, 웹훅/콜백으로 결과 적재
     </text>
 
     <!-- 아이콘들 -->
     <g transform="translate(390, 380)">
         <rect x="0" y="0" width="100" height="100" rx="10" fill="#9C27B0" opacity="0.9"/>
-        <text x="50" y="55" font-family="Arial, sans-serif" font-size="40" fill="#ffffff" text-anchor="middle">🤖</text>
-        <text x="50" y="85" font-family="Arial, sans-serif" font-size="14" fill="#ffffff" text-anchor="middle">OpenClaw</text>
+        <g transform="translate(26, 26) scale(2.0)"><path d="M12 8V4H8" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M12 4h4v4h-4z" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M8 8v8h8V8" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M2 14h4" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M20 14h2" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M12 16v4" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M8 20h8" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></g>
+        <text x="50" y="85" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="14" fill="#ffffff" text-anchor="middle">OpenClaw</text>
         <rect x="130" y="0" width="100" height="100" rx="10" fill="#2196F3" opacity="0.9"/>
-        <text x="180" y="55" font-family="Arial, sans-serif" font-size="40" fill="#ffffff" text-anchor="middle">🔗</text>
-        <text x="180" y="85" font-family="Arial, sans-serif" font-size="14" fill="#ffffff" text-anchor="middle">Webhook</text>
+        <g transform="translate(156, 26) scale(2.0)"><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M2 12h20" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></g>
+        <text x="180" y="85" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="14" fill="#ffffff" text-anchor="middle">Webhook</text>
         <rect x="260" y="0" width="100" height="100" rx="10" fill="#4CAF50" opacity="0.9"/>
-        <text x="310" y="55" font-family="Arial, sans-serif" font-size="40" fill="#ffffff" text-anchor="middle">📊</text>
-        <text x="310" y="85" font-family="Arial, sans-serif" font-size="14" fill="#ffffff" text-anchor="middle">Callback</text>
+        <g transform="translate(286, 26) scale(2.0)"><path d="M3 3v16a2 2 0 0 0 2 2h16" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M18 17V9" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M13 17V5" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M8 17v-3" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></g>
+        <text x="310" y="85" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="14" fill="#ffffff" text-anchor="middle">Callback</text>
         <rect x="390" y="0" width="100" height="100" rx="10" fill="#FF9800" opacity="0.9"/>
-        <text x="440" y="55" font-family="Arial, sans-serif" font-size="40" fill="#ffffff" text-anchor="middle">🗄️</text>
-        <text x="440" y="85" font-family="Arial, sans-serif" font-size="14" fill="#ffffff" text-anchor="middle">DB</text>
+        <g transform="translate(416, 26) scale(2.0)"><path d="M12 8c4.97 0 9-1.79 9-4s-4.03-4-9-4-9 1.79-9 4 4.03 4 9 4" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M12 8v12" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M12 20c-4.97 0-9-1.79-9-4" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M12 20c4.97 0 9-1.79 9-4" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></g>
+        <text x="440" y="85" font-family="'Noto Sans KR', 'Inter', 'Arial', sans-serif" font-size="14" fill="#ffffff" text-anchor="middle">DB</text>
     </g>
-    <!-- 하단 기술 스택 -->
-    <text x="600" y="590" font-family="Arial, sans-serif" font-size="20" fill="#778da9" text-anchor="middle">
-        FastAPI • Raspberry Pi • SSH Tunnel • PostgreSQL
-    </text>
 </svg>
