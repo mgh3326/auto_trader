@@ -144,7 +144,7 @@ class TestScreenshotCaptureUnit:
 
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
-                stdout='{"result": {"instance_id": "test-123"}}',
+                stdout='{"instance_id": "test-123"}',
                 returncode=0,
             )
 
