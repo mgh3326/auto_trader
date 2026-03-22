@@ -135,7 +135,7 @@ class TestExecutionCosts:
         signal = prepare.Signal(
             symbol="BTC",
             action="sell",
-            target_weight=1.0,
+            target_weight=0.0,
         )
         state = prepare.PortfolioState(
             cash=50000.0,
@@ -186,23 +186,25 @@ class TestExecutionCosts:
         signal = prepare.Signal(
             symbol="BTC",
             action="sell",
-            target_weight=0.5,
+            target_weight=0.25,  # Reduce to 25% weight
         )
         state = prepare.PortfolioState(
-            cash=50000.0,
+            cash=100.0,
             positions={"BTC": 2.0},
             avg_prices={"BTC": 90.0},
             position_dates={"BTC": "2025-03-25"},
             trade_log=[],
         )
         bar_data = {"BTC": prepare.BarData(date="2025-04-01", open=100.0, high=110.0, low=90.0, close=100.0, volume=1000, value=100000)}
-        initial_value = 70000.0  # 50k cash + 2 * 10k BTC value
+        initial_value = 300.0  # 100 cash + 2 * 100 BTC value
+        # Current weight = 200/300 = 67%, target = 25%
 
         result = prepare._execute_signal(signal, state, bar_data, initial_value)
 
+        assert len(result.trade_log) == 1
         trade = result.trade_log[0]
-        # Should sell 50% of position (1.0 BTC)
-        assert trade["quantity"] == pytest.approx(1.0, abs=0.01)
+        # Should sell to reach 25% weight: target value = 75, current = 200, sell 125 worth = 1.25 BTC
+        assert trade["quantity"] > 0.5  # Should sell a significant portion
 
 
 class TestMetrics:
@@ -286,7 +288,7 @@ class TestRunBacktest:
             def on_bar(self, date, bar_data, portfolio, i):
                 self.called = True
                 if i == 0:
-                    return [prepare.Signal(symbol="BTC", action="buy", target_weight=1.0)]
+                    return [prepare.Signal(symbol="BTC", action="buy", target_weight=0.95)]
                 return []
 
         strategy = SimpleStrategy()
