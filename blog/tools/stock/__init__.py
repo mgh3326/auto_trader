@@ -13,6 +13,7 @@ from blog.tools.stock.opinion_table import OpinionTable
 from blog.tools.stock.price_chart import PriceChart
 from blog.tools.stock.support_resistance import SupportResistance
 from blog.tools.stock.valuation_cards import ValuationCards
+from blog.tools.stock.volume_profile import VolumeProfile
 
 __all__ = [
     "CandlestickChart",
@@ -24,4 +25,5 @@ __all__ = [
     "PriceChart",
     "SupportResistance",
     "ValuationCards",
+    "VolumeProfile",
 ]
