@@ -22,7 +22,7 @@ STOP_LOSS_PCT = 0.045
 COOLDOWN_DAYS = 8
 
 # Multi-Signal Voting Parameters
-MIN_VOTES = 3
+MIN_VOTES = 4
 MIN_SELL_VOTES = 2
 TOTAL_BULL_SIGNALS = 6  # Total number of possible bull signals for vote ratio
 
