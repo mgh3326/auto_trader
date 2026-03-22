@@ -30,18 +30,22 @@ class TestMarketSelection:
         assert all(m["market"].startswith("KRW-") for m in result)
 
     def test_top_n_slicing(self):
-        """Test top-N market slicing."""
+        """Test top-N market slicing by 24h traded value."""
         markets = [
-            {"market": "KRW-BTC", "trade_price": 50000},
-            {"market": "KRW-ETH", "trade_price": 3000},
-            {"market": "KRW-XRP", "trade_price": 0.5},
-            {"market": "KRW-DOGE", "trade_price": 0.1},
-            {"market": "KRW-SOL", "trade_price": 100},
+            {"market": "KRW-BTC", "acc_trade_price_24h": 1000000000000},
+            {"market": "KRW-ETH", "acc_trade_price_24h": 500000000000},
+            {"market": "KRW-XRP", "acc_trade_price_24h": 1000000000},
+            {"market": "KRW-DOGE", "acc_trade_price_24h": 500000000},
+            {"market": "KRW-SOL", "acc_trade_price_24h": 200000000000},
         ]
 
         result = fetch_data._select_top_n(markets, top_n=3)
 
         assert len(result) == 3
+        # Should be sorted by acc_trade_price_24h descending
+        assert result[0] == "KRW-BTC"
+        assert result[1] == "KRW-ETH"
+        assert result[2] == "KRW-SOL"
 
     def test_symbols_normalization(self):
         """Test --symbols argument normalization."""

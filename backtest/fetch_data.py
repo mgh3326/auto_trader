@@ -30,9 +30,11 @@ def _filter_krw_markets(markets: list[dict]) -> list[dict]:
 
 
 def _select_top_n(markets: list[dict], top_n: int) -> list[str]:
-    """Select top N markets by trade price/volume."""
-    # Sort by trade_price (proxy for volume/liquidity) descending
-    sorted_markets = sorted(markets, key=lambda x: x.get("trade_price", 0), reverse=True)
+    """Select top N markets by 24h traded value (acc_trade_price_24h)."""
+    # Sort by acc_trade_price_24h (24h accumulated trade price) descending
+    sorted_markets = sorted(
+        markets, key=lambda x: x.get("acc_trade_price_24h", 0), reverse=True
+    )
     return [m["market"] for m in sorted_markets[:top_n]]
 
 
@@ -187,7 +189,9 @@ def main() -> None:
                     response = client.get(f"{UPBIT_API_URL}/ticker", params={"markets": market["market"]})
                     if response.status_code == 200:
                         ticker = response.json()[0]
-                        market["trade_price"] = ticker.get("trade_price", 0)
+                        market["acc_trade_price_24h"] = ticker.get(
+                            "acc_trade_price_24h", 0
+                        )
                         markets_with_price.append(market)
                 time.sleep(0.05)
             except Exception:
