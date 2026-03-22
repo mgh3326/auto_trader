@@ -8,20 +8,21 @@ import numpy as np
 import pandas as pd
 
 # Constants
-INITIAL_CAPITAL = 100_000.0
+INITIAL_CAPITAL = 10_000_000
 TRADING_FEE = 0.0005  # 0.05%
-SLIPPAGE_BPS = 10  # 10 basis points (0.1%)
-LOOKBACK_BARS = 20
+SLIPPAGE_BPS = 2.0  # 2 basis points
+LOOKBACK_BARS = 200
 BAR_INTERVAL = "1d"
 
 # Default universe (fixed)
-DEFAULT_SYMBOLS = ["BTC", "ETH", "SOL", "XRP", "DOGE"]
+DEFAULT_SYMBOLS = ["BTC", "ETH", "SOL", "XRP", "LINK", "ADA", "DOT", "AVAX"]
 
-# Split dates
+# Split dates - revised after live-data validation
+# Data available from Upbit typically spans ~2 years
 SPLITS = {
-    "train": {"start": "2023-01-01", "end": "2024-06-30"},
-    "val": {"start": "2024-07-01", "end": "2024-12-31"},
-    "test": {"start": "2025-01-01", "end": "2025-12-31"},
+    "train": {"start": "2023-04-01", "end": "2024-03-31"},
+    "val": {"start": "2024-04-01", "end": "2024-09-30"},
+    "test": {"start": "2024-10-01", "end": "2025-03-31"},
 }
 
 # Data directory
@@ -30,7 +31,8 @@ DATA_DIR = Path(__file__).resolve().parent / "data"
 
 @dataclass(frozen=True)
 class BarData:
-    """Single bar/candle data."""
+    """Single bar/candle data with symbol and history."""
+    symbol: str
     date: str
     open: float
     high: float
@@ -38,6 +40,7 @@ class BarData:
     close: float
     volume: float
     value: float
+    history: pd.DataFrame = field(repr=False)  # LOOKBACK_BARS of history including current bar
 
 
 @dataclass
@@ -45,7 +48,8 @@ class Signal:
     """Trading signal from strategy."""
     symbol: str
     action: str  # "buy" or "sell"
-    target_weight: float  # Target portfolio weight (0-1)
+    weight: float  # Target portfolio weight (0-1) for buy, fraction to sell (0-1) for sell
+    reason: str = ""  # Reason for the signal
 
 
 @dataclass
@@ -55,6 +59,8 @@ class PortfolioState:
     positions: dict[str, float]  # symbol -> quantity
     avg_prices: dict[str, float]  # symbol -> avg entry price
     position_dates: dict[str, str]  # symbol -> entry date
+    equity: float = 0.0  # Current portfolio equity
+    date: str = ""  # Current date
     trade_log: list[dict[str, Any]] = field(default_factory=list)
 
     def copy(self) -> "PortfolioState":
@@ -64,6 +70,8 @@ class PortfolioState:
             positions=self.positions.copy(),
             avg_prices=self.avg_prices.copy(),
             position_dates=self.position_dates.copy(),
+            equity=self.equity,
+            date=self.date,
             trade_log=self.trade_log.copy(),
         )
 
@@ -75,11 +83,12 @@ class BacktestResult:
     sharpe: float
     max_drawdown_pct: float
     num_trades: int
-    win_rate: float
+    win_rate_pct: float  # Changed from win_rate for clarity
     profit_factor: float
     avg_holding_days: float
-    trade_log: list[dict[str, Any]]
-    equity_curve: list[float]
+    backtest_seconds: float = 0.0  # Runtime measurement
+    trade_log: list[dict[str, Any]] = field(default_factory=list)
+    equity_curve: list[float] = field(default_factory=list)
 
 
 class Strategy(Protocol):
@@ -87,12 +96,18 @@ class Strategy(Protocol):
 
     def on_bar(
         self,
-        date: str,
         bar_data: dict[str, BarData],
         portfolio: PortfolioState,
-        bar_index: int,
     ) -> list[Signal]:
-        """Called for each bar to generate signals."""
+        """Called for each bar to generate signals.
+
+        Args:
+            bar_data: Dictionary mapping symbol to BarData with history
+            portfolio: Current portfolio state with equity and date
+
+        Returns:
+            List of signals to execute
+        """
         ...
 
 
