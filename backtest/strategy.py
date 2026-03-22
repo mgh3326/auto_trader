@@ -1,7 +1,5 @@
 """Backtest strategy implementation."""
 
-from datetime import datetime
-
 import numpy as np
 import prepare
 
@@ -12,7 +10,6 @@ RSI_OVERBOUGHT = 70
 MAX_POSITIONS = 5
 POSITION_SIZE = 0.15
 HOLDING_DAYS = 7
-LOOKBACK_BARS = 20
 
 
 def _calc_rsi(closes: np.ndarray, period: int = RSI_PERIOD) -> float | None:
@@ -67,29 +64,19 @@ class Strategy:
     """
 
     def __init__(self) -> None:
-        """Initialize strategy with empty history."""
-        self._history: dict[str, list[float]] = {}
+        """Initialize strategy."""
+        pass
 
-    def _update_history(self, bar_data: dict[str, prepare.BarData]) -> None:
-        """Update price history for RSI calculation."""
-        for symbol, bar in bar_data.items():
-            if symbol not in self._history:
-                self._history[symbol] = []
-            self._history[symbol].append(bar.close)
-
-            # Keep only necessary history (period + some buffer)
-            max_history = RSI_PERIOD + LOOKBACK_BARS
-            if len(self._history[symbol]) > max_history:
-                self._history[symbol] = self._history[symbol][-max_history:]
-
-    def _get_rsi(self, symbol: str) -> float | None:
-        """Get RSI for a symbol."""
-        if symbol not in self._history or len(self._history[symbol]) < RSI_PERIOD + 1:
+    def _get_rsi_from_history(self, bar: prepare.BarData) -> float | None:
+        """Get RSI from bar's history."""
+        if len(bar.history) < RSI_PERIOD + 1:
             return None
-        return _calc_rsi(np.array(self._history[symbol]), RSI_PERIOD)
+        closes = bar.history["close"].values
+        return _calc_rsi(closes, RSI_PERIOD)
 
     def _count_holding_days(self, entry_date: str, current_date: str) -> int:
         """Calculate holding period in days."""
+        from datetime import datetime
         try:
             entry = datetime.strptime(entry_date, "%Y-%m-%d")
             current = datetime.strptime(current_date, "%Y-%m-%d")
@@ -99,39 +86,24 @@ class Strategy:
 
     def on_bar(
         self,
-        date: str,
         bar_data: dict[str, prepare.BarData],
         portfolio: prepare.PortfolioState,
-        bar_index: int,
     ) -> list[prepare.Signal]:
         """Generate trading signals for the current bar.
 
         Args:
-            date: Current date string (YYYY-MM-DD)
-            bar_data: Dictionary of symbol -> BarData for current date
-            portfolio: Current portfolio state
-            bar_index: Index of current bar (for skipping initial lookback)
+            bar_data: Dictionary of symbol -> BarData with history
+            portfolio: Current portfolio state with equity and date
 
         Returns:
             List of Signal objects to execute
         """
         signals: list[prepare.Signal] = []
-
-        # Update price history
-        self._update_history(bar_data)
-
-        # Skip if not enough history
-        if bar_index < RSI_PERIOD:
-            return signals
-
         current_positions = set(portfolio.positions.keys())
 
         for symbol, bar in bar_data.items():
-            # Skip symbols without enough history
-            if symbol not in self._history or len(self._history[symbol]) < RSI_PERIOD + 1:
-                continue
-
-            rsi = self._get_rsi(symbol)
+            # Get RSI from engine-provided history
+            rsi = self._get_rsi_from_history(bar)
             if rsi is None:
                 continue
 
@@ -144,7 +116,8 @@ class Strategy:
                     signals.append(prepare.Signal(
                         symbol=symbol,
                         action="sell",
-                        target_weight=0.0,
+                        weight=1.0,  # Full sell
+                        reason=f"RSI overbought ({rsi:.1f})",
                     ))
                     continue
 
@@ -152,12 +125,13 @@ class Strategy:
                 entry_date = portfolio.position_dates.get(symbol)
                 avg_price = portfolio.avg_prices.get(symbol, 0)
                 if entry_date and bar.close > avg_price:
-                    holding_days = self._count_holding_days(entry_date, date)
+                    holding_days = self._count_holding_days(entry_date, portfolio.date)
                     if holding_days >= HOLDING_DAYS:
                         signals.append(prepare.Signal(
                             symbol=symbol,
                             action="sell",
-                            target_weight=0.0,
+                            weight=1.0,  # Full sell
+                            reason=f"Holding period exceeded ({holding_days} days)",
                         ))
                         continue
 
@@ -168,7 +142,8 @@ class Strategy:
                     signals.append(prepare.Signal(
                         symbol=symbol,
                         action="buy",
-                        target_weight=POSITION_SIZE,
+                        weight=POSITION_SIZE,
+                        reason=f"RSI oversold ({rsi:.1f})",
                     ))
                     current_positions.add(symbol)
 

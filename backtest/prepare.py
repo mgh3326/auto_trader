@@ -18,11 +18,11 @@ BAR_INTERVAL = "1d"
 DEFAULT_SYMBOLS = ["BTC", "ETH", "SOL", "XRP", "LINK", "ADA", "DOT", "AVAX"]
 
 # Split dates - revised after live-data validation
-# Data available from Upbit typically spans ~2 years
+# Based on actual fetched data range (2025-03-22 to 2026-03-22)
 SPLITS = {
-    "train": {"start": "2023-04-01", "end": "2024-03-31"},
-    "val": {"start": "2024-04-01", "end": "2024-09-30"},
-    "test": {"start": "2024-10-01", "end": "2025-03-31"},
+    "train": {"start": "2025-03-22", "end": "2025-06-30"},
+    "val": {"start": "2025-07-01", "end": "2025-09-30"},
+    "test": {"start": "2025-10-01", "end": "2026-03-22"},
 }
 
 # Data directory
