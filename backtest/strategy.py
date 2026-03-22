@@ -3,17 +3,18 @@
 import numpy as np
 import prepare
 
-# RSI Strategy Constants
-RSI_PERIOD = 14
+# Strategy Constants
+RSI_PERIOD_FAST = 7
+RSI_PERIOD_SLOW = 14
 RSI_OVERSOLD = 30
 RSI_OVERBOUGHT = 70
 MAX_POSITIONS = 5
 POSITION_SIZE = 0.15
 HOLDING_DAYS = 14
-STOP_LOSS_PCT = 0.12  # 12% stop-loss
+STOP_LOSS_PCT = 0.12
 
 
-def _calc_rsi(closes: np.ndarray, period: int = RSI_PERIOD) -> float | None:
+def _calc_rsi(closes: np.ndarray, period: int) -> float | None:
     """Calculate RSI using Wilder's smoothing method."""
     if len(closes) < period + 1:
         return None
@@ -38,16 +39,16 @@ def _calc_rsi(closes: np.ndarray, period: int = RSI_PERIOD) -> float | None:
 
 
 class Strategy:
-    """RSI strategy with stop-loss and longer holding period."""
+    """Dual RSI (7+14) with stop-loss."""
 
     def __init__(self) -> None:
         pass
 
-    def _get_rsi_from_history(self, bar: prepare.BarData) -> float | None:
-        if len(bar.history) < RSI_PERIOD + 1:
+    def _get_rsi(self, bar: prepare.BarData, period: int) -> float | None:
+        if len(bar.history) < period + 1:
             return None
         closes = bar.history["close"].values
-        return _calc_rsi(closes, RSI_PERIOD)
+        return _calc_rsi(closes, period)
 
     def _count_holding_days(self, entry_date: str, current_date: str) -> int:
         from datetime import datetime
@@ -67,8 +68,9 @@ class Strategy:
         current_positions = set(portfolio.positions.keys())
 
         for symbol, bar in bar_data.items():
-            rsi = self._get_rsi_from_history(bar)
-            if rsi is None:
+            rsi_fast = self._get_rsi(bar, RSI_PERIOD_FAST)
+            rsi_slow = self._get_rsi(bar, RSI_PERIOD_SLOW)
+            if rsi_slow is None:
                 continue
 
             is_held = symbol in current_positions
@@ -86,11 +88,11 @@ class Strategy:
                     current_positions.discard(symbol)
                     continue
 
-                # Sell on overbought
-                if rsi >= RSI_OVERBOUGHT:
+                # Sell on overbought (either RSI)
+                if rsi_slow >= RSI_OVERBOUGHT or (rsi_fast is not None and rsi_fast >= RSI_OVERBOUGHT):
                     signals.append(prepare.Signal(
                         symbol=symbol, action="sell", weight=1.0,
-                        reason=f"RSI overbought ({rsi:.1f})",
+                        reason=f"RSI overbought (f={rsi_fast:.0f}, s={rsi_slow:.0f})",
                     ))
                     current_positions.discard(symbol)
                     continue
@@ -107,12 +109,13 @@ class Strategy:
                         current_positions.discard(symbol)
                         continue
 
-            # Buy logic
+            # Buy logic: both RSIs must be oversold
             if not is_held and len(current_positions) < MAX_POSITIONS:
-                if rsi <= RSI_OVERSOLD:
+                both_oversold = rsi_slow <= RSI_OVERSOLD and (rsi_fast is not None and rsi_fast <= RSI_OVERSOLD)
+                if both_oversold:
                     signals.append(prepare.Signal(
                         symbol=symbol, action="buy", weight=POSITION_SIZE,
-                        reason=f"RSI oversold ({rsi:.1f})",
+                        reason=f"Dual RSI oversold (f={rsi_fast:.0f}, s={rsi_slow:.0f})",
                     ))
                     current_positions.add(symbol)
 
