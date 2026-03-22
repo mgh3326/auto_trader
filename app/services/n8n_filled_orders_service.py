@@ -11,6 +11,7 @@ import app.services.brokers.upbit.client as upbit_service
 from app.core.timezone import KST, now_kst
 from app.services.brokers.kis.client import KISClient
 from app.services.market_data import get_quote
+from app.services.n8n_filled_orders_indicators import _enrich_with_indicators
 
 logger = logging.getLogger(__name__)
 
@@ -294,6 +295,7 @@ async def fetch_filled_orders(
     days: int = 1,
     markets: str = "crypto,kr,us",
     min_amount: float = 0,
+    include_indicators: bool = False,
 ) -> dict[str, Any]:
     market_set = {m.strip().lower() for m in markets.split(",") if m.strip()}
     all_orders: list[dict[str, Any]] = []
@@ -321,6 +323,9 @@ async def fetch_filled_orders(
 
     if all_orders:
         all_orders = await _enrich_with_current_prices(all_orders)
+
+    if all_orders and include_indicators:
+        all_orders = await _enrich_with_indicators(all_orders)
 
     all_orders.sort(key=lambda o: o.get("filled_at", ""), reverse=True)
 

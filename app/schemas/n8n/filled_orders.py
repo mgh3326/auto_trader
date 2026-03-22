@@ -7,6 +7,8 @@ from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.n8n.trade_review import N8nTradeReviewIndicators
+
 __all__ = ["N8nFilledOrderItem", "N8nFilledOrdersResponse"]
 
 
@@ -30,6 +32,9 @@ class N8nFilledOrderItem(BaseModel):
     current_price: float | None = Field(None, description="Current market price")
     pnl_pct: float | None = Field(None, description="Unrealized P&L percentage")
     pnl_pct_fmt: str | None = Field(None, description="Formatted P&L, e.g. +3.27%")
+    indicators: N8nTradeReviewIndicators | None = Field(
+        None, description="Technical indicators at review time"
+    )
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
         json_schema_extra={

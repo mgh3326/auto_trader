@@ -248,11 +248,17 @@ async def get_filled_orders(
     days: int = Query(1, ge=1, le=90, description="Lookback period in days"),
     markets: str = Query("crypto,kr,us", description="Comma-separated markets"),
     min_amount: float = Query(0, ge=0, description="Minimum filled amount"),
+    include_indicators: bool = Query(
+        False, description="Include technical indicators per order"
+    ),
 ) -> N8nFilledOrdersResponse | JSONResponse:
     as_of = now_kst().replace(microsecond=0).isoformat()
     try:
         result = await fetch_filled_orders(
-            days=days, markets=markets, min_amount=min_amount
+            days=days,
+            markets=markets,
+            min_amount=min_amount,
+            include_indicators=include_indicators,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to fetch filled orders")
