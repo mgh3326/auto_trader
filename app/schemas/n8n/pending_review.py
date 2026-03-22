@@ -32,6 +32,9 @@ class N8nPendingReviewItem(BaseModel):
     days_pending: int = Field(..., description="Days since order creation")
     fill_probability: str = Field(..., description="high, medium, low, or stale")
     suggestion: str | None = Field(None, description="Action suggestion in Korean")
+    action_context: dict[str, dict[str, object]] | None = Field(
+        None, description="Action metadata for Discord buttons"
+    )
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
         json_schema_extra={

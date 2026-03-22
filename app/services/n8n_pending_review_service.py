@@ -53,26 +53,50 @@ async def fetch_pending_review(
         days_pending = order.get("age_days", 0)
         probability = compute_fill_probability(gap_pct, days_pending)
 
+        order_id = order.get("order_id", "")
+        symbol = order.get("symbol", "")
+        market = order.get("market", "")
+        current_price = order.get("current_price")
+        order_price = order.get("order_price", 0)
+        remaining_qty = order.get("remaining_qty", 0)
+
+        action_context = {
+            "cancel": {
+                "order_id": order_id,
+                "market": market,
+                "symbol": symbol,
+            },
+            "modify": {
+                "order_id": order_id,
+                "market": market,
+                "symbol": symbol,
+                "current_price": current_price,
+                "order_price": order_price,
+                "remaining_qty": remaining_qty,
+            },
+        }
+
         enriched_orders.append(
             {
-                "order_id": order.get("order_id", ""),
-                "symbol": order.get("symbol", ""),
+                "order_id": order_id,
+                "symbol": symbol,
                 "raw_symbol": order.get("raw_symbol", ""),
-                "market": order.get("market", ""),
+                "market": market,
                 "side": order.get("side", ""),
-                "order_price": order.get("order_price", 0),
-                "current_price": order.get("current_price"),
+                "order_price": order_price,
+                "current_price": current_price,
                 "gap_pct": gap_pct,
                 "gap_pct_fmt": order.get("gap_pct_fmt"),
                 "amount_krw": order.get("amount_krw"),
                 "quantity": order.get("quantity", 0),
-                "remaining_qty": order.get("remaining_qty", 0),
+                "remaining_qty": remaining_qty,
                 "created_at": order.get("created_at", ""),
                 "age_days": days_pending,
                 "currency": order.get("currency", "KRW"),
                 "days_pending": days_pending,
                 "fill_probability": probability,
                 "suggestion": _SUGGESTIONS.get(probability),
+                "action_context": action_context,
             }
         )
 

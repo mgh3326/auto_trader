@@ -330,6 +330,50 @@ class TestPendingReviewService:
 
         assert compute_fill_probability(gap_pct=4.0, days_pending=6) == "stale"
 
+    @pytest.mark.asyncio
+    async def test_fetch_pending_review_exposes_button_action_context(self, monkeypatch):
+        from app.services.n8n_pending_review_service import fetch_pending_review
+
+        monkeypatch.setattr(
+            "app.services.n8n_pending_review_service.fetch_pending_orders",
+            AsyncMock(
+                return_value={
+                    "orders": [
+                        {
+                            "order_id": "US-1",
+                            "symbol": "AAPL",
+                            "market": "us",
+                            "raw_symbol": "AAPL",
+                            "side": "sell",
+                            "order_price": 210.0,
+                            "current_price": 198.0,
+                            "gap_pct": 6.1,
+                            "gap_pct_fmt": "+6.1%",
+                            "amount_krw": 300000,
+                            "quantity": 2,
+                            "remaining_qty": 2,
+                            "created_at": "2026-03-22T00:30:00+09:00",
+                            "age_days": 2,
+                            "currency": "USD",
+                        }
+                    ],
+                    "errors": [],
+                }
+            ),
+        )
+
+        result = await fetch_pending_review(market="us")
+        order = result["orders"][0]
+
+        assert order["action_context"]["cancel"] == {
+            "order_id": "US-1",
+            "market": "us",
+            "symbol": "AAPL",
+        }
+        assert order["action_context"]["modify"]["order_id"] == "US-1"
+        assert order["action_context"]["modify"]["market"] == "us"
+        assert order["action_context"]["modify"]["symbol"] == "AAPL"
+
 
 @pytest.mark.unit
 class TestPendingSnapshotService:

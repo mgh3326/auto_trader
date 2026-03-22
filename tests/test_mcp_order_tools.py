@@ -1753,3 +1753,94 @@ async def test_modify_order_kr_uppercase_fields(monkeypatch):
     assert result["order_id"] == "KR-OD-UPPER"
     assert result["status"] == "modified"
     assert received_orgnos == ["06010"]
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_button_flow_requires_only_order_id_and_market(monkeypatch):
+    """Test Discord button flow: cancel_order works with just order_id and market."""
+    tools = build_tools()
+
+    class FakeKIS:
+        async def inquire_overseas_orders(self, exchange_code="NASD", is_mock=False):
+            if exchange_code == "NASD":
+                return [
+                    {
+                        "odno": "US-BTN-1",
+                        "pdno": "TSLA",
+                        "ft_ord_qty": "10",
+                        "ft_ccld_qty": "0",
+                        "nccs_qty": "10",
+                    }
+                ]
+            return []
+
+        async def cancel_overseas_order(
+            self, order_number, symbol, exchange_code, quantity
+        ):
+            return {"ord_tmd": "143000"}
+
+    _patch_kis_client(monkeypatch, lambda: FakeKIS())
+
+    result = await tools["cancel_order"](order_id="US-BTN-1", market="us")
+
+    assert result["success"] is True
+    assert result["order_id"] == "US-BTN-1"
+
+
+@pytest.mark.asyncio
+async def test_modify_order_button_flow_uses_kr_path_and_executes_modify(monkeypatch):
+    """Test Discord button flow: KR modify uses the real Korea-order path."""
+    tools = build_tools()
+    received = {}
+
+    class FakeKIS:
+        async def inquire_korea_orders(self):
+            return [
+                {
+                    "odno": "KR-BTN-1",
+                    "pdno": "005930",
+                    "ord_qty": "10",
+                    "ord_unpr": "60000",
+                    "sll_buy_dvsn_cd": "02",
+                    "ord_gno_brno": "06010",
+                }
+            ]
+
+        async def inquire_overseas_orders(self, exchange_code="NASD", is_mock=False):
+            return []
+
+        async def modify_korea_order(
+            self, order_id, symbol, quantity, price, krx_fwdg_ord_orgno=None
+        ):
+            received.update(
+                {
+                    "order_id": order_id,
+                    "symbol": symbol,
+                    "quantity": quantity,
+                    "price": price,
+                    "orgno": krx_fwdg_ord_orgno,
+                }
+            )
+            return {"odno": "KR-BTN-2"}
+
+    _patch_kis_client(monkeypatch, lambda: FakeKIS())
+
+    result = await tools["modify_order"](
+        order_id="KR-BTN-1",
+        symbol="005930",
+        market="kr",
+        new_price=61000,
+        dry_run=False,
+    )
+
+    assert result["success"] is True
+    assert result["status"] == "modified"
+    assert result["new_order_id"] == "KR-BTN-2"
+    assert result["changes"]["price"]["to"] == 61000
+    assert received == {
+        "order_id": "KR-BTN-1",
+        "symbol": "005930",
+        "quantity": 10,
+        "price": 61000,
+        "orgno": "06010",
+    }
