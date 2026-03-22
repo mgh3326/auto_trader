@@ -7,11 +7,11 @@ import prepare
 RSI_PERIOD_FAST = 7
 RSI_PERIOD_SLOW = 14
 RSI_OVERSOLD = 30
-RSI_OVERBOUGHT = 70
+RSI_EXIT = 50  # Exit when RSI recovers to neutral
 MAX_POSITIONS = 5
 POSITION_SIZE = 0.15
 HOLDING_DAYS = 14
-STOP_LOSS_PCT = 0.12
+STOP_LOSS_PCT = 0.08  # Tighter stop-loss
 
 
 def _calc_rsi(closes: np.ndarray, period: int) -> float | None:
@@ -39,7 +39,7 @@ def _calc_rsi(closes: np.ndarray, period: int) -> float | None:
 
 
 class Strategy:
-    """Dual RSI (7+14) with stop-loss."""
+    """Dual RSI mean-reversion: buy oversold, exit at RSI neutral."""
 
     def __init__(self) -> None:
         pass
@@ -88,23 +88,23 @@ class Strategy:
                     current_positions.discard(symbol)
                     continue
 
-                # Sell on overbought (either RSI)
-                if rsi_slow >= RSI_OVERBOUGHT or (rsi_fast is not None and rsi_fast >= RSI_OVERBOUGHT):
+                # Exit when RSI recovers to neutral (mean-reversion exit)
+                if rsi_slow >= RSI_EXIT and bar.close > avg_price:
                     signals.append(prepare.Signal(
                         symbol=symbol, action="sell", weight=1.0,
-                        reason=f"RSI overbought (f={rsi_fast:.0f}, s={rsi_slow:.0f})",
+                        reason=f"RSI recovered to {rsi_slow:.0f}, profitable",
                     ))
                     current_positions.discard(symbol)
                     continue
 
-                # Sell on holding period exceeded (if profitable)
+                # Sell on holding period exceeded (regardless of profit)
                 entry_date = portfolio.position_dates.get(symbol)
-                if entry_date and bar.close > avg_price:
+                if entry_date:
                     holding_days = self._count_holding_days(entry_date, portfolio.date)
                     if holding_days >= HOLDING_DAYS:
                         signals.append(prepare.Signal(
                             symbol=symbol, action="sell", weight=1.0,
-                            reason=f"Holding {holding_days}d, profitable",
+                            reason=f"Max holding {holding_days}d",
                         ))
                         current_positions.discard(symbol)
                         continue
