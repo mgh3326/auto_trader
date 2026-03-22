@@ -331,7 +331,9 @@ class TestPendingReviewService:
         assert compute_fill_probability(gap_pct=4.0, days_pending=6) == "stale"
 
     @pytest.mark.asyncio
-    async def test_fetch_pending_review_exposes_button_action_context(self, monkeypatch):
+    async def test_fetch_pending_review_exposes_button_action_context(
+        self, monkeypatch
+    ):
         from app.services.n8n_pending_review_service import fetch_pending_review
 
         monkeypatch.setattr(
