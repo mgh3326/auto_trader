@@ -109,7 +109,17 @@ class StockAnalysisPreset:
         # Price chart (left, ~60% width)
         ohlcv = self.data.get("ohlcv", [])
         if ohlcv:
-            svg += PriceChart.create(x=60, y=95, width=780, height=350, ohlcv=ohlcv)
+            svg += PriceChart.create(
+                x=60,
+                y=95,
+                width=780,
+                height=350,
+                ohlcv=ohlcv,
+                chart_type="candlestick",
+                volume=True,
+                ema_values=self.data.get("ema_values"),
+                bollinger=self.data.get("bollinger"),
+            )
 
         # Indicator dashboard (right, ~35% width)
         indicators = self.data.get("indicators", {})
