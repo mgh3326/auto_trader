@@ -176,38 +176,47 @@ def _calc_fee(amount: float, fee_rate: float = TRADING_FEE) -> float:
 
 def _calc_buy_quantity(
     cash: float,
-    target_weight: float,
+    weight: float,
     portfolio_value: float,
     price: float,
 ) -> float:
-    """Calculate quantity to buy for target weight."""
-    target_value = portfolio_value * target_weight
-    max_affordable = cash / price
-    quantity = min(target_value / price, max_affordable)
+    """Calculate quantity to buy for target weight, accounting for fees.
+
+    Args:
+        cash: Available cash
+        weight: Target portfolio weight (0-1)
+        portfolio_value: Total portfolio value
+        price: Execution price including slippage
+
+    Returns:
+        Quantity to buy that is affordable after fees
+    """
+    target_value = portfolio_value * weight
+    target_qty = target_value / price
+    # Calculate max affordable accounting for fees: cost + fee = cost * (1 + fee_rate)
+    max_affordable_qty = cash / (price * (1 + TRADING_FEE))
+    quantity = min(target_qty, max_affordable_qty)
     return max(0.0, quantity)
 
 
 def _calc_sell_quantity(
     current_qty: float,
-    target_weight: float,
-    portfolio_value: float,
-    price: float,
+    weight: float,
 ) -> float:
-    """Calculate quantity to sell for target weight."""
-    current_value = current_qty * price
-    current_weight = current_value / portfolio_value if portfolio_value > 0 else 0
+    """Calculate quantity to sell as fraction of currently held quantity.
 
-    # If selling all
-    if target_weight <= 0:
-        return current_qty
+    Args:
+        current_qty: Current position quantity
+        weight: Fraction of position to sell (0-1), where 1.0 means full liquidation
 
-    # If reducing position
-    if target_weight < current_weight:
-        target_value = portfolio_value * target_weight
-        target_qty = target_value / price
-        return max(0.0, current_qty - target_qty)
-
-    return 0.0
+    Returns:
+        Quantity to sell
+    """
+    # weight is the fraction of current position to sell
+    # weight=1.0 means sell all, weight=0.25 means sell 25%
+    if weight <= 0:
+        return 0.0
+    return current_qty * min(weight, 1.0)
 
 
 def _update_avg_price(
@@ -248,7 +257,7 @@ def _execute_signal(
     if signal.action == "buy":
         price = _calc_execution_price(bar, "buy")
         quantity = _calc_buy_quantity(
-            state.cash, signal.target_weight, portfolio_value, price
+            state.cash, signal.weight, portfolio_value, price
         )
 
         if quantity > 0:
@@ -276,6 +285,7 @@ def _execute_signal(
                     "quantity": quantity,
                     "price": price,
                     "fee": fee,
+                    "reason": signal.reason,
                 })
 
     elif signal.action == "sell":
@@ -283,7 +293,7 @@ def _execute_signal(
         if current_qty > 0:
             price = _calc_execution_price(bar, "sell")
             quantity = _calc_sell_quantity(
-                current_qty, signal.target_weight, portfolio_value, price
+                current_qty, signal.weight
             )
 
             if quantity > 0:
@@ -312,6 +322,7 @@ def _execute_signal(
                     "price": price,
                     "fee": fee,
                     "realized_pnl": realized_pnl,
+                    "reason": signal.reason,
                 })
 
     return new_state
@@ -332,6 +343,9 @@ def run_backtest(
     Returns:
         BacktestResult with metrics and trade log
     """
+    import time
+    start_time = time.time()
+
     # Build unified date sequence
     all_dates = set()
     for df in data.values():
@@ -344,12 +358,18 @@ def run_backtest(
             sharpe=0.0,
             max_drawdown_pct=0.0,
             num_trades=0,
-            win_rate=0.0,
+            win_rate_pct=0.0,
             profit_factor=0.0,
             avg_holding_days=0.0,
+            backtest_seconds=0.0,
             trade_log=[],
             equity_curve=[initial_capital],
         )
+
+    # Pre-index data by symbol for efficient lookup
+    indexed_data: dict[str, pd.DataFrame] = {}
+    for symbol, df in data.items():
+        indexed_data[symbol] = df.set_index("date").sort_index()
 
     # Initialize state
     state = PortfolioState(
@@ -363,20 +383,27 @@ def run_backtest(
     equity_curve = [initial_capital]
 
     # Iterate through dates
-    for i, date in enumerate(dates):
-        # Build bar_data for this date
+    for date in dates:
+        # Build bar_data for this date with history
         bar_data: dict[str, BarData] = {}
-        for symbol, df in data.items():
-            row = df[df["date"] == date]
-            if not row.empty:
+        for symbol, df in indexed_data.items():
+            if date in df.index:
+                row = df.loc[date]
+                # Get history up to and including current date (LOOKBACK_BARS rows)
+                idx = df.index.get_loc(date)
+                start_idx = max(0, idx - LOOKBACK_BARS + 1)
+                history = df.iloc[start_idx:idx + 1].copy()
+
                 bar_data[symbol] = BarData(
+                    symbol=symbol,
                     date=date,
-                    open=row["open"].iloc[0],
-                    high=row["high"].iloc[0],
-                    low=row["low"].iloc[0],
-                    close=row["close"].iloc[0],
-                    volume=row["volume"].iloc[0],
-                    value=row["value"].iloc[0],
+                    open=row["open"],
+                    high=row["high"],
+                    low=row["low"],
+                    close=row["close"],
+                    volume=row["volume"],
+                    value=row["value"],
+                    history=history,
                 )
 
         # Calculate current portfolio value
@@ -385,8 +412,12 @@ def run_backtest(
             if symbol in bar_data:
                 portfolio_value += qty * bar_data[symbol].close
 
-        # Get signals from strategy
-        signals = strategy.on_bar(date, bar_data, state, i)
+        # Populate portfolio state with equity and date
+        state.equity = portfolio_value
+        state.date = date
+
+        # Get signals from strategy (new two-argument interface)
+        signals = strategy.on_bar(bar_data, state)
 
         # Execute signals
         for signal in signals:
@@ -400,10 +431,13 @@ def run_backtest(
         equity_curve.append(equity)
 
     # Calculate metrics
-    return _build_result(state, equity_curve)
+    elapsed = time.time() - start_time
+    return _build_result(state, equity_curve, elapsed)
 
 
-def _build_result(state: PortfolioState, equity_curve: list[float]) -> BacktestResult:
+def _build_result(
+    state: PortfolioState, equity_curve: list[float], backtest_seconds: float = 0.0
+) -> BacktestResult:
     """Build BacktestResult from final state."""
     total_return_pct = _calc_total_return(equity_curve)
     max_drawdown_pct = _calc_max_drawdown(equity_curve)
@@ -419,16 +453,17 @@ def _build_result(state: PortfolioState, equity_curve: list[float]) -> BacktestR
         sharpe = 0.0
 
     num_trades = len(state.trade_log)
-    win_rate, profit_factor, avg_holding_days = _calc_trade_metrics(state.trade_log)
+    win_rate_pct, profit_factor, avg_holding_days = _calc_trade_metrics(state.trade_log)
 
     return BacktestResult(
         total_return_pct=total_return_pct,
         sharpe=sharpe,
         max_drawdown_pct=max_drawdown_pct,
         num_trades=num_trades,
-        win_rate=win_rate,
+        win_rate_pct=win_rate_pct,
         profit_factor=profit_factor,
         avg_holding_days=avg_holding_days,
+        backtest_seconds=backtest_seconds,
         trade_log=state.trade_log,
         equity_curve=equity_curve,
     )
@@ -476,7 +511,7 @@ def _calc_max_drawdown(equity_curve: list[float]) -> float:
 
 
 def _calc_trade_metrics(trade_log: list[dict[str, Any]]) -> tuple[float, float, float]:
-    """Calculate trade metrics: win_rate, profit_factor, avg_holding_days."""
+    """Calculate trade metrics: win_rate_pct, profit_factor, avg_holding_days."""
     if not trade_log:
         return 0.0, 0.0, 0.0
 
@@ -539,24 +574,21 @@ def _calc_trade_metrics(trade_log: list[dict[str, Any]]) -> tuple[float, float, 
 
 
 def compute_score(result: BacktestResult) -> float:
-    """Compute composite score with penalty for low trade count.
+    """Compute composite score using approved formula.
 
-    Formula prioritizes return and risk-adjusted metrics while
-    penalizing strategies with insufficient trading activity.
+    Formula: sharpe - drawdown_penalty - trade_count_penalty
+    where drawdown_penalty applies when max_drawdown_pct > 20
+    and trade_count_penalty applies when num_trades < 10
     """
-    # Base score components
-    return_component = max(0, result.total_return_pct)
-    risk_adjusted = max(0, result.sharpe * 10)  # Scale sharpe to similar magnitude
+    # Base score is sharpe ratio
+    score = result.sharpe
 
-    # Drawdown penalty (less negative = better)
-    dd_penalty = max(0, abs(result.max_drawdown_pct))
+    # Drawdown penalty: applied when drawdown exceeds 20%
+    if result.max_drawdown_pct > 20:
+        score -= (result.max_drawdown_pct - 20) * 0.1
 
-    # Base score
-    score = return_component + risk_adjusted - (dd_penalty * 0.5)
-
-    # Penalty for low trade count (insufficient evidence)
+    # Trade count penalty: flat penalty when too few trades
     if result.num_trades < 10:
-        penalty_factor = result.num_trades / 10
-        score = score * penalty_factor
+        score -= 1.0
 
     return score

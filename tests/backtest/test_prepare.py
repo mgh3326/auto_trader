@@ -267,7 +267,8 @@ class TestExecutionCosts:
         signal = prepare.Signal(
             symbol="BTC",
             action="buy",
-            target_weight=0.5,
+            weight=0.5,
+            reason="Test",
         )
         state = prepare.PortfolioState(
             cash=100000.0,
@@ -276,7 +277,9 @@ class TestExecutionCosts:
             position_dates={},
             trade_log=[],
         )
-        bar_data = {"BTC": prepare.BarData(date="2025-04-01", open=100.0, high=110.0, low=90.0, close=100.0, volume=1000, value=100000)}
+        import pandas as pd
+        history = pd.DataFrame({"close": [100.0]})
+        bar_data = {"BTC": prepare.BarData(symbol="BTC", date="2025-04-01", open=100.0, high=110.0, low=90.0, close=100.0, volume=1000, value=100000, history=history)}
 
         result = prepare._execute_signal(signal, state, bar_data, 100000.0)
 
@@ -294,7 +297,8 @@ class TestExecutionCosts:
         signal = prepare.Signal(
             symbol="BTC",
             action="sell",
-            target_weight=0.0,
+            weight=1.0,  # Full sell
+            reason="Test",
         )
         state = prepare.PortfolioState(
             cash=50000.0,
@@ -303,7 +307,9 @@ class TestExecutionCosts:
             position_dates={"BTC": "2025-03-25"},
             trade_log=[],
         )
-        bar_data = {"BTC": prepare.BarData(date="2025-04-01", open=100.0, high=110.0, low=90.0, close=100.0, volume=1000, value=100000)}
+        import pandas as pd
+        history = pd.DataFrame({"close": [100.0]})
+        bar_data = {"BTC": prepare.BarData(symbol="BTC", date="2025-04-01", open=100.0, high=110.0, low=90.0, close=100.0, volume=1000, value=100000, history=history)}
 
         result = prepare._execute_signal(signal, state, bar_data, 100000.0)
 
@@ -315,12 +321,13 @@ class TestExecutionCosts:
         # Price should include slippage (sell at lower price)
         assert trade["price"] < 100.0
 
-    def test_target_weight_buy_sizing(self):
+    def test_weight_buy_sizing(self):
         """Test that buy orders respect target weight."""
         signal = prepare.Signal(
             symbol="BTC",
             action="buy",
-            target_weight=0.5,
+            weight=0.5,
+            reason="Test",
         )
         state = prepare.PortfolioState(
             cash=100000.0,
@@ -329,7 +336,9 @@ class TestExecutionCosts:
             position_dates={},
             trade_log=[],
         )
-        bar_data = {"BTC": prepare.BarData(date="2025-04-01", open=100.0, high=110.0, low=90.0, close=100.0, volume=1000, value=100000)}
+        import pandas as pd
+        history = pd.DataFrame({"close": [100.0]})
+        bar_data = {"BTC": prepare.BarData(symbol="BTC", date="2025-04-01", open=100.0, high=110.0, low=90.0, close=100.0, volume=1000, value=100000, history=history)}
         initial_value = 100000.0
 
         result = prepare._execute_signal(signal, state, bar_data, initial_value)
@@ -341,11 +350,12 @@ class TestExecutionCosts:
         assert pytest.approx(weight, abs=0.05) == 0.5
 
     def test_partial_sell_sizing(self):
-        """Test partial sell sizing."""
+        """Test partial sell sizing using weight as fraction of position."""
         signal = prepare.Signal(
             symbol="BTC",
             action="sell",
-            target_weight=0.25,  # Reduce to 25% weight
+            weight=0.25,  # Sell 25% of current position
+            reason="Test",
         )
         state = prepare.PortfolioState(
             cash=100.0,
@@ -354,16 +364,16 @@ class TestExecutionCosts:
             position_dates={"BTC": "2025-03-25"},
             trade_log=[],
         )
-        bar_data = {"BTC": prepare.BarData(date="2025-04-01", open=100.0, high=110.0, low=90.0, close=100.0, volume=1000, value=100000)}
-        initial_value = 300.0  # 100 cash + 2 * 100 BTC value
-        # Current weight = 200/300 = 67%, target = 25%
+        import pandas as pd
+        history = pd.DataFrame({"close": [100.0]})
+        bar_data = {"BTC": prepare.BarData(symbol="BTC", date="2025-04-01", open=100.0, high=110.0, low=90.0, close=100.0, volume=1000, value=100000, history=history)}
 
-        result = prepare._execute_signal(signal, state, bar_data, initial_value)
+        result = prepare._execute_signal(signal, state, bar_data, 300.0)
 
         assert len(result.trade_log) == 1
         trade = result.trade_log[0]
-        # Should sell to reach 25% weight: target value = 75, current = 200, sell 125 worth = 1.25 BTC
-        assert trade["quantity"] > 0.5  # Should sell a significant portion
+        # Should sell 25% of 2.0 = 0.5 BTC
+        assert trade["quantity"] == pytest.approx(0.5, abs=0.01)
 
 
 class TestMetrics:
@@ -407,9 +417,10 @@ class TestMetrics:
             sharpe=1.5,
             max_drawdown_pct=-10.0,
             num_trades=5,
-            win_rate=0.5,
+            win_rate_pct=0.5,
             profit_factor=1.5,
             avg_holding_days=3.0,
+            backtest_seconds=0.0,
             trade_log=[],
             equity_curve=[100000.0, 105000.0, 110000.0, 108000.0, 115000.0],
         )
@@ -417,8 +428,9 @@ class TestMetrics:
         score = prepare.compute_score(result)
 
         # Score should be penalized for low trade count
-        # The formula likely reduces score significantly for < 10 trades
-        assert score < 15.0  # Raw return is 15%, but score should be lower due to penalty
+        # Formula: sharpe - 1.0 penalty when num_trades < 10
+        # 1.5 - 1.0 = 0.5
+        assert score == pytest.approx(0.5, abs=0.01)
 
 
 class TestRunBacktest:
@@ -444,10 +456,11 @@ class TestRunBacktest:
             def __init__(self):
                 self.called = False
 
-            def on_bar(self, date, bar_data, portfolio, i):
+            def on_bar(self, bar_data, portfolio):
                 self.called = True
-                if i == 0:
-                    return [prepare.Signal(symbol="BTC", action="buy", target_weight=0.95)]
+                # Check if BTC is in bar_data and not already held
+                if "BTC" in bar_data and "BTC" not in portfolio.positions:
+                    return [prepare.Signal(symbol="BTC", action="buy", weight=0.95, reason="Test buy")]
                 return []
 
         strategy = SimpleStrategy()
@@ -472,14 +485,14 @@ class TestRunBacktest:
         }
 
         class NoOpStrategy:
-            def on_bar(self, date, bar_data, portfolio, i):
+            def on_bar(self, bar_data, portfolio):
                 return []
 
         strategy = NoOpStrategy()
         result = prepare.run_backtest(data, strategy)
 
         assert len(result.equity_curve) == 4  # Initial + 3 days
-        assert result.equity_curve[0] == 100000.0  # Initial capital
+        assert result.equity_curve[0] == 10_000_000.0  # Initial capital
 
     def test_run_backtest_handles_missing_symbol_dates(self):
         """Test that missing symbol dates are handled gracefully."""
@@ -505,7 +518,7 @@ class TestRunBacktest:
         }
 
         class NoOpStrategy:
-            def on_bar(self, date, bar_data, portfolio, i):
+            def on_bar(self, bar_data, portfolio):
                 return []
 
         strategy = NoOpStrategy()
