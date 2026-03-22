@@ -10,7 +10,6 @@ import sentry_sdk
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import app.services.brokers.upbit.client as upbit_service
-from app.services.crypto_trade_cooldown_service import CryptoTradeCooldownService
 from app.core.async_rate_limiter import RateLimitExceededError
 from app.core.db import AsyncSessionLocal
 from app.mcp_server.tooling.analysis_crypto_score import (
@@ -39,6 +38,7 @@ from app.mcp_server.tooling.screening.enrichment import (
     _resolve_crypto_display_name,
     _tradingview_symbol_name,
 )
+from app.services.crypto_trade_cooldown_service import CryptoTradeCooldownService
 from app.services.tvscreener_service import (
     TvScreenerError,
     TvScreenerRateLimitError,

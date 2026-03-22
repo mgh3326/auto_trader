@@ -1055,6 +1055,11 @@ async def test_get_holdings_crypto_prices_batch_fetch(monkeypatch):
         "fetch_multiple_current_prices",
         quote_mock,
     )
+    _patch_runtime_attr(
+        monkeypatch,
+        "_get_indicators_impl",
+        AsyncMock(return_value={"symbol": "KRW-BTC", "indicators": {"rsi": {"14": 40.0}}}),
+    )
 
     result = await tools["get_holdings"](account="upbit", market="crypto")
 
@@ -1129,6 +1134,11 @@ async def test_get_holdings_includes_crypto_price_errors(monkeypatch):
         upbit_service,
         "fetch_multiple_current_prices",
         quote_mock,
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "_get_indicators_impl",
+        AsyncMock(return_value={"symbol": "KRW-BTC", "indicators": {"rsi": {"14": 40.0}}}),
     )
 
     result = await tools["get_holdings"](account="upbit", market="crypto")
@@ -1238,6 +1248,11 @@ async def test_get_holdings_applies_minimum_value_filter(monkeypatch):
         "fetch_multiple_current_prices",
         quote_mock,
     )
+    _patch_runtime_attr(
+        monkeypatch,
+        "_get_indicators_impl",
+        AsyncMock(return_value={"symbol": "KRW-BTC", "indicators": {"rsi": {"14": 40.0}}}),
+    )
 
     result = await tools["get_holdings"](account="upbit", market="crypto")
 
@@ -1319,6 +1334,11 @@ async def test_get_holdings_filters_delisted_markets_before_batch_fetch(monkeypa
         upbit_service,
         "fetch_multiple_current_prices",
         quote_mock,
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "_get_indicators_impl",
+        AsyncMock(return_value={"symbol": "KRW-BTC", "indicators": {"rsi": {"14": 40.0}}}),
     )
 
     result = await tools["get_holdings"](account="upbit", market="crypto")

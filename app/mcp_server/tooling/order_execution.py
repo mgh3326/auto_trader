@@ -8,23 +8,6 @@ from typing import Any, Literal
 
 import app.services.brokers.upbit.client as upbit_service
 from app.core.config import settings
-from app.services.crypto_trade_cooldown_service import (
-    CryptoTradeCooldownService,
-)
-
-# Phase 2 strategy constants
-CRYPTO_STOP_LOSS_PCT = 0.045
-
-# Crypto trade cooldown service singleton
-_order_cooldown_service: CryptoTradeCooldownService | None = None
-
-
-def _get_crypto_trade_cooldown_service() -> CryptoTradeCooldownService:
-    """Get or create the crypto trade cooldown service."""
-    global _order_cooldown_service
-    if _order_cooldown_service is None:
-        _order_cooldown_service = CryptoTradeCooldownService()
-    return _order_cooldown_service
 from app.mcp_server.tick_size import adjust_tick_size_kr, get_tick_size_kr
 from app.mcp_server.tooling.market_data_quotes import (
     _fetch_quote_equity_kr,
@@ -50,7 +33,24 @@ from app.services.brokers.kis import (
 from app.services.brokers.upbit.client import (
     parse_upbit_account_row as _parse_upbit_account_row,
 )
+from app.services.crypto_trade_cooldown_service import (
+    CryptoTradeCooldownService,
+)
 from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
+
+# Phase 2 strategy constants
+CRYPTO_STOP_LOSS_PCT = 0.045
+
+# Crypto trade cooldown service singleton
+_order_cooldown_service: CryptoTradeCooldownService | None = None
+
+
+def _get_crypto_trade_cooldown_service() -> CryptoTradeCooldownService:
+    """Get or create the crypto trade cooldown service."""
+    global _order_cooldown_service
+    if _order_cooldown_service is None:
+        _order_cooldown_service = CryptoTradeCooldownService()
+    return _order_cooldown_service
 
 
 def _calculate_date_range(days: int) -> tuple[str, str]:

@@ -773,7 +773,7 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
                     )
                 try:
                     rsi_results = await asyncio.gather(*rsi_tasks, return_exceptions=True)
-                    for position, rsi_result in zip(crypto_positions, rsi_results):
+                    for position, rsi_result in zip(crypto_positions, rsi_results, strict=False):
                         if isinstance(rsi_result, Exception):
                             continue
                         rsi_14 = rsi_result.get("indicators", {}).get("rsi", {}).get("14")
