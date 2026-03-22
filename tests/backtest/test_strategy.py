@@ -127,6 +127,87 @@ class TestRSICalculation:
         assert rsi is None
 
 
+class TestIndicatorHelpers:
+    """Tests for indicator helper functions."""
+
+    def test_calc_ema_tracks_uptrend(self):
+        """Test EMA calculation on an uptrend."""
+        closes = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0])
+        ema = strategy._calc_ema(closes, span=3)
+        assert ema is not None
+        assert ema[-1] > ema[0]  # EMA should increase in uptrend
+
+    def test_calc_ema_insufficient_history_returns_none(self):
+        """Test EMA returns None with insufficient history."""
+        closes = np.array([1.0, 2.0])  # Only 2 bars, need at least span=5
+        ema = strategy._calc_ema(closes, span=5)
+        assert ema is None
+
+    def test_calc_macd_returns_values_with_enough_history(self):
+        """Test MACD calculation with sufficient history."""
+        # Create enough data points: slow (26) + signal (9) = 35 minimum
+        closes = np.array([100.0 + i * 0.5 for i in range(40)])
+        macd_result = strategy._calc_macd(closes, fast=12, slow=26, signal=9)
+        assert macd_result is not None
+        macd_line, signal_line, histogram = macd_result
+        assert isinstance(macd_line, float)
+        assert isinstance(signal_line, float)
+        assert isinstance(histogram, float)
+
+    def test_calc_macd_insufficient_history_returns_none(self):
+        """Test MACD returns None with insufficient history."""
+        closes = np.array([100.0] * 10)  # Not enough for slow + signal
+        macd_result = strategy._calc_macd(closes, fast=12, slow=26, signal=9)
+        assert macd_result is None
+
+    def test_calc_bollinger_returns_bands_with_enough_history(self):
+        """Test Bollinger Bands calculation."""
+        closes = np.array([100.0] * 20 + [110.0])  # 21 points, period=20
+        bands = strategy._calc_bollinger(closes, period=20, std_mult=2.0)
+        assert bands is not None
+        upper, middle, lower = bands
+        assert upper > middle > lower
+
+    def test_calc_bollinger_insufficient_history_returns_none(self):
+        """Test Bollinger returns None with insufficient history."""
+        closes = np.array([100.0] * 10)
+        bands = strategy._calc_bollinger(closes, period=20, std_mult=2.0)
+        assert bands is None
+
+    def test_calc_momentum_positive_in_uptrend(self):
+        """Test momentum is positive in uptrend."""
+        closes = np.array([100.0, 101.0, 102.0, 103.0, 104.0, 105.0])
+        momentum = strategy._calc_momentum(closes, period=5)
+        assert momentum is not None
+        assert momentum > 0  # Price increased from 100 to 105
+
+    def test_calc_momentum_negative_in_downtrend(self):
+        """Test momentum is negative in downtrend."""
+        closes = np.array([100.0, 99.0, 98.0, 97.0, 96.0, 95.0])
+        momentum = strategy._calc_momentum(closes, period=5)
+        assert momentum is not None
+        assert momentum < 0  # Price decreased from 100 to 95
+
+    def test_calc_momentum_insufficient_history_returns_none(self):
+        """Test momentum returns None with insufficient history."""
+        closes = np.array([100.0, 101.0])
+        momentum = strategy._calc_momentum(closes, period=5)
+        assert momentum is None
+
+    def test_calc_average_volume_with_enough_data(self):
+        """Test average volume calculation."""
+        volumes = np.array([1000.0] * 20 + [2000.0])
+        avg_vol = strategy._calc_average_volume(volumes, lookback=20)
+        assert avg_vol is not None
+        assert avg_vol == 1050.0  # Average of 20 1000s and 1 2000
+
+    def test_calc_average_volume_insufficient_history_returns_none(self):
+        """Test average volume returns None with insufficient history."""
+        volumes = np.array([1000.0] * 10)
+        avg_vol = strategy._calc_average_volume(volumes, lookback=20)
+        assert avg_vol is None
+
+
 class TestBuySignals:
     """Tests for buy signal generation."""
 
