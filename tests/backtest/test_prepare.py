@@ -824,7 +824,9 @@ class TestCVFolds:
     def test_cv_folds_train_expands(self):
         """Each fold's train period should end at or after the previous fold's."""
         for i in range(len(prepare.CV_FOLDS) - 1):
-            assert prepare.CV_FOLDS[i]["train_end"] <= prepare.CV_FOLDS[i + 1]["train_end"]
+            assert (
+                prepare.CV_FOLDS[i]["train_end"] <= prepare.CV_FOLDS[i + 1]["train_end"]
+            )
 
 
 class TestLoadDataRange:
@@ -837,15 +839,17 @@ class TestLoadDataRange:
     def test_load_data_range_filters_dates(self, tmp_path, monkeypatch):
         """Data should be filtered to requested range."""
         # Create synthetic parquet with known dates
-        df = pd.DataFrame({
-            "date": ["2025-05-15", "2025-06-10", "2025-06-20", "2025-07-05"],
-            "open": [100.0] * 4,
-            "high": [110.0] * 4,
-            "low": [90.0] * 4,
-            "close": [105.0] * 4,
-            "volume": [1000.0] * 4,
-            "value": [100000.0] * 4,
-        })
+        df = pd.DataFrame(
+            {
+                "date": ["2025-05-15", "2025-06-10", "2025-06-20", "2025-07-05"],
+                "open": [100.0] * 4,
+                "high": [110.0] * 4,
+                "low": [90.0] * 4,
+                "close": [105.0] * 4,
+                "volume": [1000.0] * 4,
+                "value": [100000.0] * 4,
+            }
+        )
         df.to_parquet(tmp_path / "KRW-BTC.parquet")
         monkeypatch.setattr(prepare, "DATA_DIR", tmp_path)
         monkeypatch.setattr(prepare, "DEFAULT_SYMBOLS", ["BTC"])
@@ -858,11 +862,17 @@ class TestLoadDataRange:
 
     def test_load_data_range_empty_range(self, tmp_path, monkeypatch):
         """Range with no data should return empty dict."""
-        df = pd.DataFrame({
-            "date": ["2025-06-10"],
-            "open": [100.0], "high": [110.0], "low": [90.0],
-            "close": [105.0], "volume": [1000.0], "value": [100000.0],
-        })
+        df = pd.DataFrame(
+            {
+                "date": ["2025-06-10"],
+                "open": [100.0],
+                "high": [110.0],
+                "low": [90.0],
+                "close": [105.0],
+                "volume": [1000.0],
+                "value": [100000.0],
+            }
+        )
         df.to_parquet(tmp_path / "KRW-BTC.parquet")
         monkeypatch.setattr(prepare, "DATA_DIR", tmp_path)
         monkeypatch.setattr(prepare, "DEFAULT_SYMBOLS", ["BTC"])
@@ -872,11 +882,17 @@ class TestLoadDataRange:
 
     def test_load_data_delegates_from_load_data(self, tmp_path, monkeypatch):
         """load_data should produce the same result as load_data_range with split dates."""
-        df = pd.DataFrame({
-            "date": ["2025-07-10", "2025-07-20", "2025-08-15"],
-            "open": [100.0] * 3, "high": [110.0] * 3, "low": [90.0] * 3,
-            "close": [105.0] * 3, "volume": [1000.0] * 3, "value": [100000.0] * 3,
-        })
+        df = pd.DataFrame(
+            {
+                "date": ["2025-07-10", "2025-07-20", "2025-08-15"],
+                "open": [100.0] * 3,
+                "high": [110.0] * 3,
+                "low": [90.0] * 3,
+                "close": [105.0] * 3,
+                "volume": [1000.0] * 3,
+                "value": [100000.0] * 3,
+            }
+        )
         df.to_parquet(tmp_path / "KRW-BTC.parquet")
         monkeypatch.setattr(prepare, "DATA_DIR", tmp_path)
         monkeypatch.setattr(prepare, "DEFAULT_SYMBOLS", ["BTC"])
@@ -954,8 +970,12 @@ class TestCrossValidate:
     def test_cross_validate_empty_folds(self, tmp_path, monkeypatch):
         """cross_validate with empty date ranges should return sentinel."""
         empty_folds = [
-            {"train_start": "1990-01-01", "train_end": "1990-06-30",
-             "val_start": "1990-07-01", "val_end": "1990-09-30"},
+            {
+                "train_start": "1990-01-01",
+                "train_end": "1990-06-30",
+                "val_start": "1990-07-01",
+                "val_end": "1990-09-30",
+            },
         ]
 
         class DummyStrategy:
@@ -971,15 +991,17 @@ class TestCrossValidate:
         """cross_validate should return valid CVResult with real fold execution."""
         # Create 2 years of synthetic daily data
         dates = pd.date_range("2024-04-01", "2026-03-22", freq="D")
-        df = pd.DataFrame({
-            "date": [d.strftime("%Y-%m-%d") for d in dates],
-            "open": [100.0] * len(dates),
-            "high": [110.0] * len(dates),
-            "low": [90.0] * len(dates),
-            "close": [105.0] * len(dates),
-            "volume": [1000.0] * len(dates),
-            "value": [100000.0] * len(dates),
-        })
+        df = pd.DataFrame(
+            {
+                "date": [d.strftime("%Y-%m-%d") for d in dates],
+                "open": [100.0] * len(dates),
+                "high": [110.0] * len(dates),
+                "low": [90.0] * len(dates),
+                "close": [105.0] * len(dates),
+                "volume": [1000.0] * len(dates),
+                "value": [100000.0] * len(dates),
+            }
+        )
         df.to_parquet(tmp_path / "KRW-BTC.parquet")
         monkeypatch.setattr(prepare, "DATA_DIR", tmp_path)
         monkeypatch.setattr(prepare, "DEFAULT_SYMBOLS", ["BTC"])
