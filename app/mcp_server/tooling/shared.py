@@ -137,6 +137,14 @@ def normalize_market(market: str | None) -> str | None:
     return mapping.get(normalized)
 
 
+def _strip_kr_a_prefix(symbol: str) -> str:
+    """Strip 'A' prefix from Korean equity codes (e.g., A196170 → 196170)."""
+    s = symbol.strip().upper()
+    if len(s) == 7 and s[0] == "A" and s[1:].isdigit():
+        return s[1:]
+    return symbol
+
+
 def resolve_market_type(symbol: str, market: str | None) -> tuple[str, str]:
     market_type = normalize_market(market)
 
@@ -147,6 +155,7 @@ def resolve_market_type(symbol: str, market: str | None) -> tuple[str, str]:
         return "crypto", symbol
 
     if market_type == "equity_kr":
+        symbol = _strip_kr_a_prefix(symbol)
         if not is_korean_equity_code(symbol):
             raise ValueError("korean equity symbols must be 6 alphanumeric characters")
         return "equity_kr", symbol
@@ -161,6 +170,11 @@ def resolve_market_type(symbol: str, market: str | None) -> tuple[str, str]:
 
     if is_crypto_market(symbol):
         return "crypto", symbol.upper()
+
+    # Auto-detect: try A-prefix strip before Korean check
+    stripped = _strip_kr_a_prefix(symbol)
+    if stripped != symbol and is_korean_equity_code(stripped):
+        return "equity_kr", stripped
 
     if is_korean_equity_code(symbol):
         return "equity_kr", symbol

@@ -229,6 +229,24 @@ class TestResolveMarketType:
         assert shared.resolve_market_type("005930", "kospi")[0] == "equity_kr"
         assert shared.resolve_market_type("AAPL", "nasdaq")[0] == "equity_us"
 
+    def test_resolve_a_prefixed_kr_symbol_auto(self):
+        """A-prefixed KR symbols auto-detected and normalized."""
+        market_type, symbol = shared.resolve_market_type("A196170", None)
+        assert market_type == "equity_kr"
+        assert symbol == "196170"  # A prefix stripped
+
+    def test_resolve_a_prefixed_kr_symbol_explicit_market(self):
+        """A-prefixed KR symbols normalized when market is explicit."""
+        market_type, symbol = shared.resolve_market_type("A005930", "kr")
+        assert market_type == "equity_kr"
+        assert symbol == "005930"  # A prefix stripped
+
+    def test_resolve_a_prefixed_kr_symbol_whitespace(self):
+        """Whitespace around A-prefixed symbol handled."""
+        market_type, symbol = shared.resolve_market_type("  A196170  ", None)
+        assert market_type == "equity_kr"
+        assert symbol == "196170"
+
 
 # ---------------------------------------------------------------------------
 # Error Payload Tests
