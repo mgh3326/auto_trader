@@ -662,9 +662,13 @@
     }
 
     // Data fetching
+    let initialLoad = true;
     async function fetchOrders() {
         try {
-            ordersTbody.innerHTML = '<tr><td colspan="9" class="loading">데이터를 불러오는 중...</td></tr>';
+            // Show loading only on initial load; keep existing data during refresh
+            if (initialLoad) {
+                ordersTbody.innerHTML = '<tr><td colspan="9" class="loading">데이터를 불러오는 중...</td></tr>';
+            }
             
             const response = await fetch(`/api/pending/orders?market=${state.currentMarket}`);
             if (!response.ok) {
@@ -678,9 +682,13 @@
             renderCards(data.orders || []);
             
             lastUpdatedEl.textContent = `업데이트: ${new Date().toLocaleTimeString('ko-KR')}`;
+            initialLoad = false;
         } catch (error) {
             console.error('Failed to fetch orders:', error);
-            ordersTbody.innerHTML = `<tr><td colspan="9" class="loading" style="color: var(--error);">데이터 로드 실패: ${error.message}</td></tr>`;
+            // Only show error on initial load; silently fail during refresh
+            if (initialLoad) {
+                ordersTbody.innerHTML = `<tr><td colspan="9" class="loading" style="color: var(--error);">데이터 로드 실패: ${error.message}</td></tr>`;
+            }
         }
     }
 
@@ -710,6 +718,7 @@
     // Market tabs
     function setMarket(market) {
         state.currentMarket = market;
+        initialLoad = true;  // Show loading when switching markets
         marketTabs.forEach(tab => {
             tab.classList.toggle('active', tab.dataset.market === market);
         });
