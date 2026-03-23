@@ -53,8 +53,25 @@ async def legacy_page_placeholder():
     return HTMLResponse("Deprecated page", status_code=410)
 
 
+@app.get("/dashboard/", response_class=HTMLResponse)
+async def legacy_dashboard_placeholder():
+    return HTMLResponse("Deprecated dashboard", status_code=410)
+
+
 @app.get("/upbit-trading/api/my-coins")
 async def legacy_api_placeholder():
+    return JSONResponse(
+        status_code=410,
+        content={
+            "detail": "deprecated",
+            "replacement_url": "/portfolio/",
+            "deprecated_at": "2026-02-20T00:00:00+09:00",
+        },
+    )
+
+
+@app.get("/dashboard/api/analysis")
+async def legacy_dashboard_api_placeholder():
     return JSONResponse(
         status_code=410,
         content={
@@ -161,9 +178,28 @@ def test_legacy_deprecated_page_path_bypasses_auth_redirect(client, mock_session
     assert response.text == "Deprecated page"
 
 
+def test_dashboard_deprecated_page_path_bypasses_auth_redirect(
+    client, mock_session_local
+):
+    response = client.get("/dashboard/", follow_redirects=False)
+    assert response.status_code == 410
+    assert response.text == "Deprecated dashboard"
+
+
 def test_legacy_deprecated_api_path_bypasses_auth_401(client, mock_session_local):
     response = client.get(
         "/upbit-trading/api/my-coins",
+        headers={"Accept": "application/json"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 410
+    payload = response.json()
+    assert payload["replacement_url"] == "/portfolio/"
+
+
+def test_dashboard_deprecated_api_path_bypasses_auth_401(client, mock_session_local):
+    response = client.get(
+        "/dashboard/api/analysis",
         headers={"Accept": "application/json"},
         follow_redirects=False,
     )

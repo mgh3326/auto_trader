@@ -12,6 +12,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from app.auth.web_router import get_current_user_from_session
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
+from app.routers.deprecated_pages import LEGACY_PREFIXES
 
 
 class AuthMiddleware:
@@ -48,12 +49,7 @@ class AuthMiddleware:
         "/api/v1/openclaw/callback",
         "/api/screener/callback",
     ]
-    LEGACY_DEPRECATED_PREFIXES: ClassVar[list[str]] = [
-        "/manual-holdings",
-        "/kis-domestic-trading",
-        "/kis-overseas-trading",
-        "/upbit-trading",
-    ]
+    LEGACY_DEPRECATED_PREFIXES: ClassVar[tuple[str, ...]] = LEGACY_PREFIXES
 
     def __init__(self, app: ASGIApp):
         """Initialize middleware with dynamic public paths."""
