@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -174,7 +174,9 @@ def _calc_rsi(closes: np.ndarray, period: int) -> float | None:
 def _calc_ema(closes: np.ndarray, span: int) -> np.ndarray | None:
     if len(closes) < span:
         return None
-    return pd.Series(closes).ewm(span=span, adjust=False).mean().values
+    return cast(
+        np.ndarray, pd.Series(closes).ewm(span=span, adjust=False).mean().to_numpy()
+    )
 
 
 def _calc_macd(
