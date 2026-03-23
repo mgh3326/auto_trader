@@ -766,7 +766,7 @@ async def test_notify_openclaw_message_fill_uses_market_specific_webhook(
 async def test_notify_openclaw_message_skip_discord_only_tries_telegram(
     trade_notifier,
 ):
-    """skip_discord=True이면 Discord를 건전뛰고 Telegram만 시도한다."""
+    """skip_discord=True이면 Discord를 건너뛰고 Telegram만 시도한다."""
     trade_notifier.configure(
         bot_token="test_token",
         chat_ids=["123456"],
