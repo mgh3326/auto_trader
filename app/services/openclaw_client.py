@@ -125,14 +125,17 @@ class OpenClawClient:
         *,
         correlation_id: str | None = None,
         market_type: str | None = None,
+        skip_discord: bool = False,
     ) -> None:
         try:
             notifier = get_trade_notifier()
-            notifier_kwargs: dict[str, str] = {}
+            notifier_kwargs: dict[str, Any] = {}
             if correlation_id is not None:
                 notifier_kwargs["correlation_id"] = correlation_id
             if market_type is not None:
                 notifier_kwargs["market_type"] = market_type
+            if skip_discord:
+                notifier_kwargs["skip_discord"] = True
 
             if not notifier_kwargs:
                 sent = await notifier.notify_openclaw_message(message)
@@ -354,6 +357,7 @@ class OpenClawClient:
                     alert_type="fill",
                     correlation_id=correlation_id,
                     market_type=normalized_order.market_type,
+                    skip_discord=True,
                 )
 
         return result
