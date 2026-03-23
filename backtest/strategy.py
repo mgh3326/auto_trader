@@ -36,7 +36,7 @@ EMA_FAST = 8
 EMA_SLOW = 24
 MOMENTUM_PERIOD = 5
 VOLUME_LOOKBACK = 20
-VOLUME_THRESHOLD = 1.5
+VOLUME_THRESHOLD = 1.2
 
 
 def _calc_rsi(closes: np.ndarray, period: int) -> float | None:
