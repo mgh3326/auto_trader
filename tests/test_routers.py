@@ -26,20 +26,18 @@ class TestHealthRouter:
         assert data["status"] == "ok"
 
 
-class TestDashboardRouter:
-    """Test dashboard endpoints."""
+class TestActiveSurfaceRouter:
+    """Test active surface endpoints."""
 
-    def test_get_dashboard_data(self, client):
-        """Test dashboard data endpoint."""
-        response = client.get("/dashboard/")
+    def test_get_screener(self, client):
+        """Test screener page endpoint."""
+        response = client.get("/screener")
         assert response.status_code == 200
-        # Add more specific assertions based on your actual endpoint
 
-    def test_get_analysis_list(self, client):
-        """Test analysis list endpoint."""
-        response = client.get("/dashboard/analysis")
+    def test_get_portfolio(self, client):
+        """Test portfolio page endpoint."""
+        response = client.get("/portfolio/")
         assert response.status_code == 200
-        # Add more specific assertions based on your actual endpoint
 
 
 class TestRouterIntegration:
@@ -53,6 +51,6 @@ class TestRouterIntegration:
 
         # Check that expected routes exist
         assert any("/healthz" in route for route in routes)
-        assert any("/dashboard" in route for route in routes)
-        assert any("/analysis" in route for route in routes)
         assert any("/screener" in route for route in routes)
+        assert any("/portfolio" in route for route in routes)
+        assert not any("/dashboard" in route for route in routes)

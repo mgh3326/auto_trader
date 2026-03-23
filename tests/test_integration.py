@@ -32,15 +32,18 @@ class TestApplicationIntegration:
         response = client.get("/healthz")
         assert response.status_code == 200
 
-    def test_dashboard_integration(self, client):
-        """Test dashboard integration."""
-        response = client.get("/dashboard/")
+    def test_active_surface_integration(self, client):
+        """Test active surface pages integration."""
+        response = client.get("/screener")
         assert response.status_code == 200
 
-    def test_analysis_integration(self, client):
-        """Test analysis endpoint integration."""
-        response = client.get("/dashboard/analysis")
+        response = client.get("/portfolio/")
         assert response.status_code == 200
+
+    def test_deprecated_dashboard_returns_410(self, client):
+        """Test deprecated dashboard returns 410 Gone."""
+        response = client.get("/dashboard/")
+        assert response.status_code == 410
 
     def test_application_structure(self, client):
         """Test application structure and configuration."""

@@ -10,6 +10,10 @@ _LEGACY_PREFIXES = (
     "/kis-domestic-trading",
     "/kis-overseas-trading",
     "/upbit-trading",
+    "/dashboard",
+    "/stock-latest",
+    "/analysis-json",
+    "/orderbook",
 )
 _DEPRECATED_AT = "2026-02-20T00:00:00+09:00"
 _METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]

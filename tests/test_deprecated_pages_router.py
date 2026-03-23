@@ -21,6 +21,10 @@ def client() -> TestClient:
         "/kis-domestic-trading/",
         "/kis-overseas-trading/",
         "/upbit-trading/",
+        "/dashboard/",
+        "/stock-latest/",
+        "/analysis-json/",
+        "/orderbook/",
     ],
 )
 def test_legacy_page_prefixes_return_410_html(client: TestClient, path: str) -> None:
@@ -39,6 +43,10 @@ def test_legacy_page_prefixes_return_410_html(client: TestClient, path: str) -> 
         "/kis-domestic-trading/api/my-stocks",
         "/kis-overseas-trading/api/my-stocks",
         "/upbit-trading/api/my-coins",
+        "/dashboard/api/analysis",
+        "/stock-latest/api/filters",
+        "/analysis-json/api/filters",
+        "/orderbook/api/markets",
     ],
 )
 def test_legacy_api_prefixes_return_410_json(client: TestClient, path: str) -> None:
