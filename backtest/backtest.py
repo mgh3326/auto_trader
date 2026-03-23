@@ -67,7 +67,7 @@ def _run_cv() -> None:
     print("=" * 50)
 
     for j, (score, fold_result) in enumerate(
-        zip(cv_result.fold_scores, cv_result.fold_results)
+        zip(cv_result.fold_scores, cv_result.fold_results, strict=True)
     ):
         # Use fold_indices to get the correct fold metadata
         fold_idx = cv_result.fold_indices[j]
