@@ -1727,6 +1727,7 @@ class TradeNotifier:
         *,
         correlation_id: str | None = None,
         market_type: str | None = None,
+        skip_discord: bool = False,
     ) -> bool:
         """
         Forward an OpenClaw outbound message to Discord or Telegram.
@@ -1757,7 +1758,9 @@ class TradeNotifier:
                 return False
 
             webhook_url: str | None = None
-            if market_type is not None:
+            if skip_discord:
+                discord_result = "skipped(skip_discord)"
+            elif market_type is not None:
                 webhook_url = self._get_webhook_for_market_type(market_type)
                 if webhook_url is None:
                     discord_result = "skipped(no_market_webhook)"

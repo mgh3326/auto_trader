@@ -438,6 +438,7 @@ async def test_send_fill_notification_always_calls_telegram_fallback(
         plain_fill_message,
         correlation_id="corr-fallback",
         market_type="crypto",
+        skip_discord=True,
     )
 
 
