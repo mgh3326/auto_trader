@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import re
+
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 router = APIRouter(tags=["Deprecated Pages"])
 
-_LEGACY_PREFIXES = (
+LEGACY_PREFIXES = (
     "/manual-holdings",
     "/kis-domestic-trading",
     "/kis-overseas-trading",
@@ -17,6 +19,12 @@ _LEGACY_PREFIXES = (
 )
 _DEPRECATED_AT = "2026-02-20T00:00:00+09:00"
 _METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]
+
+
+def legacy_exempt_url_patterns() -> tuple[re.Pattern[str], ...]:
+    return tuple(
+        re.compile(rf"^{re.escape(prefix)}(?:/|$)") for prefix in LEGACY_PREFIXES
+    )
 
 
 def _is_api_request(request: Request) -> bool:
@@ -100,5 +108,5 @@ def _register_prefix(prefix: str) -> None:
     )
 
 
-for _prefix in _LEGACY_PREFIXES:
+for _prefix in LEGACY_PREFIXES:
     _register_prefix(_prefix)

@@ -53,4 +53,4 @@ class TestRouterIntegration:
         assert any("/healthz" in route for route in routes)
         assert any("/screener" in route for route in routes)
         assert any("/portfolio" in route for route in routes)
-        assert not any("/dashboard" in route for route in routes)
+        assert any(route == "/dashboard" for route in routes)

@@ -177,7 +177,7 @@ def create_app() -> FastAPI:
             re.compile(r"^/symbol/"),
             re.compile(r"^/trading/"),
             re.compile(r"^/kospi200/"),
-            re.compile(r"^/manual-holdings/"),
+            *deprecated_pages.legacy_exempt_url_patterns(),
         ],
     )
 
