@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from pandas import Series
 
 # Strategy Constants
-RSI_PERIOD_FAST = 7
+RSI_PERIOD_FAST = 5
 RSI_PERIOD_SLOW = 14
 RSI_OVERSOLD = 40
 RSI_EXIT = 55
