@@ -2015,7 +2015,11 @@ async def test_screen_stocks_crypto_filters_stop_loss_cooldown_symbols(
             "name": ["BTCKRW", "ETHKRW", "XRPKRW"],
             "description": ["Bitcoin TV", "Ethereum TV", "Ripple TV"],
             "price": [150_000_000.0, 5_000_000.0, 3_000.0],
-            "change_percent": [-0.01, -0.02, -0.015],  # Similar drops to avoid crash filter
+            "change_percent": [
+                -0.01,
+                -0.02,
+                -0.015,
+            ],  # Similar drops to avoid crash filter
             "relative_strength_index_14": [45.5, 32.1, 28.2],
             "average_directional_index_14": [25.3, 18.7, 42.1],
             "volume_24h_in_usd": [156_000_000.0, 95_000_000.0, 44_000_000.0],

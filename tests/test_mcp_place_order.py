@@ -1562,10 +1562,17 @@ async def test_place_order_crypto_sell_records_stop_loss_cooldown(monkeypatch):
             return {"KRW-BTC": 45000000.0}  # 10% below avg buy price
 
         async def fetch_my_coins(self):
-            return [{"currency": "BTC", "balance": "0.5", "avg_buy_price": "50000000.0"}]
+            return [
+                {"currency": "BTC", "balance": "0.5", "avg_buy_price": "50000000.0"}
+            ]
 
         async def place_market_sell_order(self, symbol, volume):
-            return {"uuid": "test-uuid", "side": "ask", "market": symbol, "volume": volume}
+            return {
+                "uuid": "test-uuid",
+                "side": "ask",
+                "market": symbol,
+                "volume": volume,
+            }
 
     _patch_runtime_attr(monkeypatch, "upbit_service", DummyUpbit())
 
@@ -1582,7 +1589,9 @@ async def test_place_order_crypto_sell_records_stop_loss_cooldown(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_place_order_crypto_dry_run_stop_loss_does_not_record_cooldown(monkeypatch):
+async def test_place_order_crypto_dry_run_stop_loss_does_not_record_cooldown(
+    monkeypatch,
+):
     """Test that dry-run stop-loss sells do not record cooldown."""
     tools = build_tools()
 
@@ -1599,7 +1608,9 @@ async def test_place_order_crypto_dry_run_stop_loss_does_not_record_cooldown(mon
             return {"KRW-BTC": 45000000.0}
 
         async def fetch_my_coins(self):
-            return [{"currency": "BTC", "balance": "0.5", "avg_buy_price": "50000000.0"}]
+            return [
+                {"currency": "BTC", "balance": "0.5", "avg_buy_price": "50000000.0"}
+            ]
 
     _patch_runtime_attr(monkeypatch, "upbit_service", DummyUpbit())
     _patch_runtime_attr(
@@ -1651,10 +1662,17 @@ async def test_place_order_crypto_profitable_sell_does_not_record_cooldown(monke
             return {"KRW-BTC": 55000000.0}  # 10% above avg buy price
 
         async def fetch_my_coins(self):
-            return [{"currency": "BTC", "balance": "0.5", "avg_buy_price": "50000000.0"}]
+            return [
+                {"currency": "BTC", "balance": "0.5", "avg_buy_price": "50000000.0"}
+            ]
 
         async def place_market_sell_order(self, symbol, volume):
-            return {"uuid": "test-uuid", "side": "ask", "market": symbol, "volume": volume}
+            return {
+                "uuid": "test-uuid",
+                "side": "ask",
+                "market": symbol,
+                "volume": volume,
+            }
 
     _patch_runtime_attr(monkeypatch, "upbit_service", DummyUpbit())
 

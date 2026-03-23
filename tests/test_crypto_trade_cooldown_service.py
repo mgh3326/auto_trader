@@ -92,9 +92,7 @@ async def test_is_in_cooldown_returns_false_when_key_absent(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_is_in_cooldown_degrades_safely_on_read_failure(
-    monkeypatch, caplog
-):
+async def test_is_in_cooldown_degrades_safely_on_read_failure(monkeypatch, caplog):
     """Test that is_in_cooldown returns False and logs warning on Redis failure."""
     fake_redis = MagicMock()
     fake_redis.get = AsyncMock(side_effect=Exception("Redis connection failed"))
@@ -114,9 +112,7 @@ async def test_is_in_cooldown_degrades_safely_on_read_failure(
 
 
 @pytest.mark.asyncio
-async def test_record_stop_loss_degrades_safely_on_write_failure(
-    monkeypatch, caplog
-):
+async def test_record_stop_loss_degrades_safely_on_write_failure(monkeypatch, caplog):
     """Test that record_stop_loss does not raise on Redis failure."""
     fake_redis = MagicMock()
     fake_redis.set = AsyncMock(side_effect=Exception("Redis connection failed"))

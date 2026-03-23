@@ -144,7 +144,11 @@ def _build_crypto_strategy_signal(
         }
 
     # Mean-reversion exit when profitable and RSI > 46
-    if profit_rate > 0 and rsi_14 is not None and rsi_14 > CRYPTO_MEAN_REVERSION_RSI_EXIT:
+    if (
+        profit_rate > 0
+        and rsi_14 is not None
+        and rsi_14 > CRYPTO_MEAN_REVERSION_RSI_EXIT
+    ):
         return {
             "action": "sell",
             "reason": "mean_reversion_exit",
@@ -778,8 +782,10 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
         # Compute Phase 2 strategy signals for crypto positions
         if include_current_price:
             crypto_positions = [
-                p for p in positions
-                if p.get("instrument_type") == "crypto" and p.get("current_price") is not None
+                p
+                for p in positions
+                if p.get("instrument_type") == "crypto"
+                and p.get("current_price") is not None
             ]
             if crypto_positions:
                 try:
@@ -793,7 +799,9 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
                     for position, rsi_result in zip(
                         crypto_positions, rsi_results, strict=False
                     ):
-                        rsi_14 = None if isinstance(rsi_result, Exception) else rsi_result
+                        rsi_14 = (
+                            None if isinstance(rsi_result, Exception) else rsi_result
+                        )
                         signal = _build_crypto_strategy_signal(position, rsi_14=rsi_14)
                         if signal:
                             position["strategy_signal"] = signal

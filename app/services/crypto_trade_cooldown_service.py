@@ -101,9 +101,7 @@ class CryptoTradeCooldownService:
                 return ttl
             return None
         except Exception:
-            logger.warning(
-                "crypto stop-loss cooldown TTL read failed", exc_info=True
-            )
+            logger.warning("crypto stop-loss cooldown TTL read failed", exc_info=True)
             return None
 
     async def filter_symbols_in_cooldown(self, symbols: Iterable[str]) -> set[str]:
@@ -121,7 +119,5 @@ class CryptoTradeCooldownService:
                 if value
             }
         except Exception:
-            logger.warning(
-                "crypto stop-loss cooldown batch read failed", exc_info=True
-            )
+            logger.warning("crypto stop-loss cooldown batch read failed", exc_info=True)
             return set()
