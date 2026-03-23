@@ -17,3 +17,6 @@ def test_nav_removes_deprecated_legacy_links() -> None:
     assert 'href="/kis-domestic-trading/"' not in nav_html
     assert 'href="/kis-overseas-trading/"' not in nav_html
     assert 'href="/upbit-trading/"' not in nav_html
+    assert 'href="/analysis-json/"' not in nav_html
+    assert 'href="/stock-latest/"' not in nav_html
+    assert 'href="/orderbook/"' not in nav_html

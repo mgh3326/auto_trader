@@ -21,8 +21,6 @@ from app.middleware.csrf import TemplateFormCSRFMiddleware
 from app.monitoring.sentry import capture_exception, init_sentry
 from app.monitoring.trade_notifier import get_trade_notifier
 from app.routers import (
-    analysis_json,
-    dashboard,
     deprecated_pages,
     health,
     kospi200,
@@ -30,10 +28,8 @@ from app.routers import (
     n8n_scan,
     news_analysis,
     openclaw_callback,
-    orderbook,
     portfolio,
     screener,
-    stock_latest,
     symbol_settings,
     test,
     trading,
@@ -142,17 +138,13 @@ def create_app() -> FastAPI:
     app.include_router(auth_router)
     app.include_router(web_auth_router)
     app.include_router(admin_router)
-    app.include_router(dashboard.router)
     app.include_router(screener.router)
     app.include_router(health.router)
-    app.include_router(analysis_json.router)
     app.include_router(news_analysis.router)
     app.include_router(n8n.router)
     app.include_router(n8n_scan.router)
     app.include_router(openclaw_callback.router)
-    app.include_router(stock_latest.router)
     app.include_router(symbol_settings.router)
-    app.include_router(orderbook.router)
     app.include_router(portfolio.router)
     app.include_router(deprecated_pages.router)
     app.include_router(trading.router)
@@ -183,10 +175,9 @@ def create_app() -> FastAPI:
             re.compile(r"^/news/"),
             re.compile(r"^/stock/"),
             re.compile(r"^/symbol/"),
-            re.compile(r"^/orderbook/"),
             re.compile(r"^/trading/"),
             re.compile(r"^/kospi200/"),
-            re.compile(r"^/manual-holdings/"),
+            *deprecated_pages.legacy_exempt_url_patterns(),
         ],
     )
 
