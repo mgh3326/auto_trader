@@ -7,6 +7,7 @@ holdings management, position tracking, and average cost simulation.
 
 from unittest.mock import AsyncMock
 
+import pandas as pd
 import pytest
 
 import app.services.brokers.upbit.client as upbit_service
@@ -1055,6 +1056,11 @@ async def test_get_holdings_crypto_prices_batch_fetch(monkeypatch):
         "fetch_multiple_current_prices",
         quote_mock,
     )
+    _patch_runtime_attr(
+        monkeypatch,
+        "_get_indicators_impl",
+        AsyncMock(return_value={"symbol": "KRW-BTC", "indicators": {"rsi": {"14": 40.0}}}),
+    )
 
     result = await tools["get_holdings"](account="upbit", market="crypto")
 
@@ -1129,6 +1135,11 @@ async def test_get_holdings_includes_crypto_price_errors(monkeypatch):
         upbit_service,
         "fetch_multiple_current_prices",
         quote_mock,
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "_get_indicators_impl",
+        AsyncMock(return_value={"symbol": "KRW-BTC", "indicators": {"rsi": {"14": 40.0}}}),
     )
 
     result = await tools["get_holdings"](account="upbit", market="crypto")
@@ -1238,6 +1249,11 @@ async def test_get_holdings_applies_minimum_value_filter(monkeypatch):
         "fetch_multiple_current_prices",
         quote_mock,
     )
+    _patch_runtime_attr(
+        monkeypatch,
+        "_get_indicators_impl",
+        AsyncMock(return_value={"symbol": "KRW-BTC", "indicators": {"rsi": {"14": 40.0}}}),
+    )
 
     result = await tools["get_holdings"](account="upbit", market="crypto")
 
@@ -1319,6 +1335,11 @@ async def test_get_holdings_filters_delisted_markets_before_batch_fetch(monkeypa
         upbit_service,
         "fetch_multiple_current_prices",
         quote_mock,
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "_get_indicators_impl",
+        AsyncMock(return_value={"symbol": "KRW-BTC", "indicators": {"rsi": {"14": 40.0}}}),
     )
 
     result = await tools["get_holdings"](account="upbit", market="crypto")
@@ -2468,3 +2489,250 @@ async def test_get_position_crypto_accepts_symbol_without_prefix(monkeypatch):
     assert result["has_position"] is True
     assert result["position_count"] == 1
     assert result["positions"][0]["symbol"] == "KRW-BTC"
+
+
+# ------------------------------------------------------------------------------
+# Crypto Phase 2 exit signal tests
+# ------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_holdings_crypto_stop_loss_signal(monkeypatch):
+    """Test that crypto holdings include stop-loss signal when profit_rate <= -4.5%."""
+    tools = build_tools()
+
+    mocked_positions = [
+        {
+            "symbol": "KRW-BTC",
+            "name": "Bitcoin",
+            "instrument_type": "crypto",
+            "market": "crypto",
+            "account": "upbit",
+            "broker": "upbit",
+            "account_name": "Upbit Main",
+            "quantity": 0.1,
+            "avg_buy_price": 50000000.0,
+            "current_price": 47000000.0,  # -6% from avg
+            "evaluation_amount": 4700000.0,
+            "profit_loss": -300000.0,
+            "profit_rate": -6.0,
+        }
+    ]
+
+    _patch_runtime_attr(
+        monkeypatch,
+        "_collect_portfolio_positions",
+        AsyncMock(return_value=(mocked_positions, [], "crypto", None)),
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "_get_indicators_impl",
+        AsyncMock(return_value={"symbol": "KRW-BTC", "indicators": {"rsi": {"14": 35.0}}}),
+    )
+
+    result = await tools["get_holdings"](account="upbit", market="crypto")
+    btc_position = result["accounts"][0]["positions"][0]
+
+    assert btc_position.get("strategy_signal") is not None
+    assert btc_position["strategy_signal"]["action"] == "sell"
+    assert btc_position["strategy_signal"]["reason"] == "stop_loss"
+    assert btc_position["strategy_signal"]["threshold_pct"] == -4.5
+
+
+@pytest.mark.asyncio
+async def test_get_holdings_crypto_mean_reversion_signal(monkeypatch):
+    """Test that crypto holdings include mean-reversion signal when profit > 0 and RSI > 46."""
+    tools = build_tools()
+
+    mocked_positions = [
+        {
+            "symbol": "KRW-BTC",
+            "name": "Bitcoin",
+            "instrument_type": "crypto",
+            "market": "crypto",
+            "account": "upbit",
+            "broker": "upbit",
+            "account_name": "Upbit Main",
+            "quantity": 0.1,
+            "avg_buy_price": 50000000.0,
+            "current_price": 55000000.0,  # +10% from avg
+            "evaluation_amount": 5500000.0,
+            "profit_loss": 500000.0,
+            "profit_rate": 10.0,
+        }
+    ]
+
+    _patch_runtime_attr(
+        monkeypatch,
+        "_collect_portfolio_positions",
+        AsyncMock(return_value=(mocked_positions, [], "crypto", None)),
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "_compute_crypto_rsi_for_position",
+        AsyncMock(return_value=50.0),
+    )
+
+    result = await tools["get_holdings"](account="upbit", market="crypto")
+    btc_position = result["accounts"][0]["positions"][0]
+
+    assert btc_position.get("strategy_signal") is not None
+    assert btc_position["strategy_signal"]["action"] == "sell"
+    assert btc_position["strategy_signal"]["reason"] == "mean_reversion_exit"
+    assert btc_position["strategy_signal"]["rsi_14"] == 50.0
+
+
+@pytest.mark.asyncio
+async def test_get_holdings_crypto_no_signal_profitable_low_rsi(monkeypatch):
+    """Test that profitable positions with low RSI don't emit mean-reversion signal."""
+    tools = build_tools()
+
+    mocked_positions = [
+        {
+            "symbol": "KRW-BTC",
+            "name": "Bitcoin",
+            "instrument_type": "crypto",
+            "market": "crypto",
+            "account": "upbit",
+            "broker": "upbit",
+            "account_name": "Upbit Main",
+            "quantity": 0.1,
+            "avg_buy_price": 50000000.0,
+            "current_price": 55000000.0,  # +10% from avg
+            "evaluation_amount": 5500000.0,
+            "profit_loss": 500000.0,
+            "profit_rate": 10.0,
+        }
+    ]
+
+    _patch_runtime_attr(
+        monkeypatch,
+        "_collect_portfolio_positions",
+        AsyncMock(return_value=(mocked_positions, [], "crypto", None)),
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "_compute_crypto_rsi_for_position",
+        AsyncMock(return_value=40.0),
+    )
+
+    result = await tools["get_holdings"](account="upbit", market="crypto")
+    btc_position = result["accounts"][0]["positions"][0]
+
+    assert btc_position.get("strategy_signal") is None
+
+
+@pytest.mark.asyncio
+async def test_get_holdings_non_crypto_no_signal(monkeypatch):
+    """Test that non-crypto positions don't include strategy signals."""
+    tools = build_tools()
+
+    mocked_positions = [
+        {
+            "symbol": "005930",
+            "name": "Samsung",
+            "instrument_type": "equity_kr",
+            "market": "kr",
+            "account": "kis",
+            "broker": "kis",
+            "account_name": "KIS Domestic",
+            "quantity": 10,
+            "avg_buy_price": 70000.0,
+            "current_price": 65000.0,
+            "evaluation_amount": 650000.0,
+            "profit_loss": -50000.0,
+            "profit_rate": -7.14,
+        }
+    ]
+
+    _patch_runtime_attr(
+        monkeypatch,
+        "_collect_portfolio_positions",
+        AsyncMock(return_value=(mocked_positions, [], "kr", None)),
+    )
+
+    result = await tools["get_holdings"](account="kis", market="kr")
+    position = result["accounts"][0]["positions"][0]
+
+    assert position.get("strategy_signal") is None
+
+
+@pytest.mark.asyncio
+async def test_get_holdings_strategy_signal_reuses_portfolio_snapshot_price(
+    monkeypatch,
+):
+    """Strategy signal path should not trigger a second live price fetch."""
+    tools = build_tools()
+    price_fetch_count = 0
+
+    class DummyKISClient:
+        async def fetch_my_stocks(self):
+            return []
+
+        async def fetch_my_us_stocks(self):
+            return []
+
+    async def mock_fetch_prices(markets: list[str]) -> dict[str, float]:
+        nonlocal price_fetch_count
+        price_fetch_count += 1
+        assert markets == ["KRW-BTC"]
+        return {"KRW-BTC": 47_000_000.0}
+
+    df = pd.DataFrame(
+        {
+            "open": [50_000_000.0 + i * 100_000.0 for i in range(250)],
+            "high": [50_100_000.0 + i * 100_000.0 for i in range(250)],
+            "low": [49_900_000.0 + i * 100_000.0 for i in range(250)],
+            "close": [50_000_000.0 + i * 100_000.0 for i in range(250)],
+            "volume": [1_000.0] * 250,
+        }
+    )
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    monkeypatch.setattr(
+        upbit_service,
+        "fetch_my_coins",
+        AsyncMock(
+            return_value=[
+                {
+                    "currency": "BTC",
+                    "unit_currency": "KRW",
+                    "balance": "0.1",
+                    "locked": "0",
+                    "avg_buy_price": "50000000",
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        upbit_service,
+        "fetch_multiple_current_prices",
+        AsyncMock(side_effect=mock_fetch_prices),
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "get_upbit_korean_name_by_coin",
+        _upbit_name_lookup_mock({"BTC": "비트코인"}),
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "_collect_manual_positions",
+        AsyncMock(return_value=([], [])),
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "get_active_upbit_markets",
+        AsyncMock(return_value={"KRW-BTC"}),
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "_fetch_ohlcv_for_indicators",
+        AsyncMock(return_value=df),
+    )
+
+    result = await tools["get_holdings"](account="upbit", market="crypto")
+    btc_position = result["accounts"][0]["positions"][0]
+
+    assert price_fetch_count == 1
+    assert btc_position["current_price"] == 47_000_000.0
+    assert btc_position["strategy_signal"]["reason"] == "stop_loss"

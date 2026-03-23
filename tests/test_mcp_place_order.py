@@ -1494,3 +1494,177 @@ async def test_place_order_crypto_sell_locked_zero_still_works(monkeypatch):
 
     assert result["success"] is True
     assert result["quantity"] == 0.5
+
+
+# ------------------------------------------------------------------------------
+# Crypto stop-loss cooldown order execution tests
+# ------------------------------------------------------------------------------
+
+
+class FakeCooldownService:
+    """Fake cooldown service for testing."""
+
+    def __init__(self, in_cooldown: bool = False):
+        self._in_cooldown = in_cooldown
+        self.recorded_symbols: list[str] = []
+
+    async def is_in_cooldown(self, symbol: str) -> bool:
+        return self._in_cooldown
+
+    async def record_stop_loss(self, symbol: str) -> None:
+        self.recorded_symbols.append(symbol)
+
+    async def get_remaining_ttl_seconds(self, symbol: str) -> int | None:
+        return 86400 if self._in_cooldown else None
+
+
+@pytest.mark.asyncio
+async def test_place_order_crypto_buy_blocked_by_stop_loss_cooldown(monkeypatch):
+    """Test that crypto buy orders are blocked when symbol is in cooldown."""
+    tools = build_tools()
+
+    _patch_runtime_attr(
+        monkeypatch,
+        "_get_crypto_trade_cooldown_service",
+        lambda: FakeCooldownService(in_cooldown=True),
+    )
+
+    result = await tools["place_order"](
+        symbol="KRW-BTC",
+        side="buy",
+        order_type="market",
+        amount=100000.0,
+        dry_run=True,
+    )
+
+    assert result["success"] is False
+    assert "cooldown" in result.get("error", "").lower()
+
+
+@pytest.mark.asyncio
+async def test_place_order_crypto_sell_records_stop_loss_cooldown(monkeypatch):
+    """Test that stop-loss sells record cooldown after successful execution."""
+    tools = build_tools()
+
+    fake_cooldown_service = FakeCooldownService(in_cooldown=False)
+
+    _patch_runtime_attr(
+        monkeypatch,
+        "_get_crypto_trade_cooldown_service",
+        lambda: fake_cooldown_service,
+    )
+
+    # Simulate holding with avg_buy_price that indicates stop-loss
+    # Current price 45000000 < avg_price 50000000 * (1 - 0.045) = 47750000
+    # So current price is below stop-loss threshold
+    class DummyUpbit:
+        async def fetch_multiple_current_prices(self, symbols, use_cache=True):
+            return {"KRW-BTC": 45000000.0}  # 10% below avg buy price
+
+        async def fetch_my_coins(self):
+            return [{"currency": "BTC", "balance": "0.5", "avg_buy_price": "50000000.0"}]
+
+        async def place_market_sell_order(self, symbol, volume):
+            return {"uuid": "test-uuid", "side": "ask", "market": symbol, "volume": volume}
+
+    _patch_runtime_attr(monkeypatch, "upbit_service", DummyUpbit())
+
+    result = await tools["place_order"](
+        symbol="KRW-BTC",
+        side="sell",
+        order_type="market",
+        quantity=0.5,
+        dry_run=False,
+    )
+
+    assert result["success"] is True
+    assert "KRW-BTC" in fake_cooldown_service.recorded_symbols
+
+
+@pytest.mark.asyncio
+async def test_place_order_crypto_dry_run_stop_loss_does_not_record_cooldown(monkeypatch):
+    """Test that dry-run stop-loss sells do not record cooldown."""
+    tools = build_tools()
+
+    fake_cooldown_service = FakeCooldownService(in_cooldown=False)
+
+    _patch_runtime_attr(
+        monkeypatch,
+        "_get_crypto_trade_cooldown_service",
+        lambda: fake_cooldown_service,
+    )
+
+    class DummyUpbit:
+        async def fetch_multiple_current_prices(self, symbols, use_cache=True):
+            return {"KRW-BTC": 45000000.0}
+
+        async def fetch_my_coins(self):
+            return [{"currency": "BTC", "balance": "0.5", "avg_buy_price": "50000000.0"}]
+
+    _patch_runtime_attr(monkeypatch, "upbit_service", DummyUpbit())
+    _patch_runtime_attr(
+        monkeypatch,
+        "_preview_order",
+        AsyncMock(
+            return_value={
+                "symbol": "KRW-BTC",
+                "side": "sell",
+                "order_type": "market",
+                "price": 45000000.0,
+                "quantity": 0.5,
+                "estimated_value": 22500000.0,
+                "fee": 11250.0,
+                "avg_buy_price": 50000000.0,
+            }
+        ),
+    )
+
+    result = await tools["place_order"](
+        symbol="KRW-BTC",
+        side="sell",
+        order_type="market",
+        quantity=0.5,
+        dry_run=True,
+    )
+
+    assert result["success"] is True
+    assert len(fake_cooldown_service.recorded_symbols) == 0
+
+
+@pytest.mark.asyncio
+async def test_place_order_crypto_profitable_sell_does_not_record_cooldown(monkeypatch):
+    """Test that profitable sells above stop-loss threshold do not record cooldown."""
+    tools = build_tools()
+
+    fake_cooldown_service = FakeCooldownService(in_cooldown=False)
+
+    _patch_runtime_attr(
+        monkeypatch,
+        "_get_crypto_trade_cooldown_service",
+        lambda: fake_cooldown_service,
+    )
+
+    # Simulate holding with profit
+    # Current price 55000000 > avg_price 50000000 (profit)
+    class DummyUpbit:
+        async def fetch_multiple_current_prices(self, symbols, use_cache=True):
+            return {"KRW-BTC": 55000000.0}  # 10% above avg buy price
+
+        async def fetch_my_coins(self):
+            return [{"currency": "BTC", "balance": "0.5", "avg_buy_price": "50000000.0"}]
+
+        async def place_market_sell_order(self, symbol, volume):
+            return {"uuid": "test-uuid", "side": "ask", "market": symbol, "volume": volume}
+
+    _patch_runtime_attr(monkeypatch, "upbit_service", DummyUpbit())
+
+    result = await tools["place_order"](
+        symbol="KRW-BTC",
+        side="sell",
+        order_type="market",
+        quantity=0.5,
+        dry_run=False,
+    )
+
+    assert result["success"] is True
+    assert len(fake_cooldown_service.recorded_symbols) == 0

@@ -33,7 +33,24 @@ from app.services.brokers.kis import (
 from app.services.brokers.upbit.client import (
     parse_upbit_account_row as _parse_upbit_account_row,
 )
+from app.services.crypto_trade_cooldown_service import (
+    CryptoTradeCooldownService,
+)
 from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
+
+# Phase 2 strategy constants
+CRYPTO_STOP_LOSS_PCT = 0.045
+
+# Crypto trade cooldown service singleton
+_order_cooldown_service: CryptoTradeCooldownService | None = None
+
+
+def _get_crypto_trade_cooldown_service() -> CryptoTradeCooldownService:
+    """Get or create the crypto trade cooldown service."""
+    global _order_cooldown_service
+    if _order_cooldown_service is None:
+        _order_cooldown_service = CryptoTradeCooldownService()
+    return _order_cooldown_service
 
 
 def _calculate_date_range(days: int) -> tuple[str, str]:
@@ -461,6 +478,14 @@ async def _place_order_impl(
             "instrument_type": market_type,
         }
 
+    # Check stop-loss cooldown for crypto buys
+    if side_lower == "buy" and market_type == "crypto":
+        cooldown_service = _get_crypto_trade_cooldown_service()
+        if await cooldown_service.is_in_cooldown(normalized_symbol):
+            return _order_error(
+                "Symbol is in stop-loss cooldown until re-entry window expires"
+            )
+
     try:
         try:
             current_price = await _get_current_price_for_order(
@@ -506,6 +531,7 @@ async def _place_order_impl(
         if order_type_lower == "limit" and order_quantity is None:
             raise ValueError("quantity is required for limit orders")
 
+        avg_price = 0.0
         if side_lower == "sell":
             holdings = await _get_holdings_for_order(normalized_symbol, market_type)
             if not holdings:
@@ -521,9 +547,9 @@ async def _place_order_impl(
                 )
 
             order_quantity = available_quantity if quantity is None else quantity
+            avg_price = _to_float(holdings.get("avg_price"), default=0.0)
 
             if order_type_lower == "limit" and price is not None:
-                avg_price = _to_float(holdings.get("avg_price"), default=0.0)
                 min_sell_price = avg_price * 1.01
                 if price < min_sell_price:
                     return _order_error(
@@ -652,6 +678,22 @@ async def _place_order_impl(
             dry_run=False,
         )
 
+        # Record stop-loss cooldown for crypto sells below threshold
+        if (
+            market_type == "crypto"
+            and side_lower == "sell"
+            and avg_price > 0
+            and current_price <= avg_price * (1 - CRYPTO_STOP_LOSS_PCT)
+        ):
+            try:
+                cooldown_service = _get_crypto_trade_cooldown_service()
+                await cooldown_service.record_stop_loss(normalized_symbol)
+            except Exception as cooldown_exc:
+                logger.warning(
+                    "Failed to record stop-loss cooldown: %s",
+                    cooldown_exc,
+                )
+
         return {
             "success": True,
             "dry_run": False,
@@ -685,4 +727,6 @@ __all__ = [
     "_preview_order",
     "_execute_order",
     "_place_order_impl",
+    "_get_crypto_trade_cooldown_service",
+    "CRYPTO_STOP_LOSS_PCT",
 ]

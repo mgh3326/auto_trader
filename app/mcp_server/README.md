@@ -30,6 +30,7 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - US quote response keeps `source: "yahoo"` and includes `previous_close/open/high/low/volume` from Yahoo `fast_info`
   - US equity Yahoo lookup failures are propagated as tool-level errors (exceptions), not returned as in-band error payload dicts
 - `get_holdings(account=None, market=None, include_current_price=True, minimum_value=None)`
+  - Crypto positions may include optional `strategy_signal` field when Phase 2 exit logic triggers (4.5% stop-loss or RSI > 46 mean-reversion on profitable positions)
 - `get_position(symbol, market=None)`
 - `get_ohlcv(symbol, count=100, period="day", end_date=None, market=None, include_indicators=False)`
   - period: `day`, `week`, `month`, `1m`, `5m`, `15m`, `30m`, `4h`, `1h`
@@ -147,6 +148,11 @@ Derived fields:
 - `locked` coins are already committed to pending orders and cannot be sold.
 - `quantity=None` (full sell) defaults to the orderable balance.
 - If `quantity > orderable balance`, the tool returns `success: false` with an error containing `requested`, `orderable`, and `locked` values instead of forwarding to Upbit.
+
+### Crypto stop-loss cooldown (Phase 2 strategy)
+- `place_order(..., side="buy", market="crypto")` may reject buys while a stop-loss cooldown is active; returns `success: false` with cooldown message
+- `place_order(..., side="sell", market="crypto")` automatically records an 8-day stop-loss cooldown after a non-dry-run sell when `current_price <= avg_buy_price * (1 - 0.045)` (4.5% stop-loss)
+- Dry-run sells do not record cooldown; profitable sells (above stop-loss threshold) do not record cooldown
 
 ### KR order routing
 - Domestic order tools (`place_order`, `modify_order`, `cancel_order` with `market="kr"`) use the new KIS TR IDs (`TTTC0012U/TTTC0011U/TTTC0013U`, mock: `VTTC0012U/VTTC0011U/VTTC0013U`).
@@ -364,6 +370,7 @@ Market-specific behavior:
   - Result symbols are normalized back to Upbit format such as `KRW-BTC`
   - Successful tvscreener responses still restore legacy public crypto fields including `rsi_bucket`, `market_cap_rank`, `market_warning`, `volume_ratio`, `candle_type`, `plus_di`, and `minus_di`
   - Warning/crash metadata (`filtered_by_warning`, `filtered_by_crash`) and CoinGecko cache metadata are preserved on the tvscreener success path
+  - Stop-loss cooldown filter: symbols in an 8-day stop-loss cooldown window (after a stop-loss sell) are excluded from results; count available in `meta.filtered_by_stop_loss_cooldown`
   - `sort_by="volume"` is not supported for crypto and returns an error
   - Crypto response payload does not include `volume`; use `trade_amount_24h`
   - `market_cap` sorting is supported; public `market_cap` prefers CoinGecko cache values and falls back to TradingView `MARKET_CAP`, and final ordering uses that public value without silently falling back to `trade_amount_24h`

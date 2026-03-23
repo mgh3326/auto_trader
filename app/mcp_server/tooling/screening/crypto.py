@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from typing import Any, cast
 
@@ -38,6 +39,7 @@ from app.mcp_server.tooling.screening.enrichment import (
     _resolve_crypto_display_name,
     _tradingview_symbol_name,
 )
+from app.services.crypto_trade_cooldown_service import CryptoTradeCooldownService
 from app.services.tvscreener_service import (
     TvScreenerError,
     TvScreenerRateLimitError,
@@ -58,6 +60,17 @@ from app.utils.symbol_mapping import (
 logger = logging.getLogger(__name__)
 
 _CRYPTO_MARKET_CAP_CACHE = MarketCapCache(ttl=600)
+
+# Crypto trade cooldown service singleton
+_cooldown_service: CryptoTradeCooldownService | None = None
+
+
+def _get_crypto_trade_cooldown_service() -> CryptoTradeCooldownService:
+    """Get or create the crypto trade cooldown service."""
+    global _cooldown_service
+    if _cooldown_service is None:
+        _cooldown_service = CryptoTradeCooldownService()
+    return _cooldown_service
 
 
 async def _run_crypto_indicator_enrichment(
@@ -544,6 +557,25 @@ async def _screen_crypto(
             "min_market_cap filter is not supported for crypto market; ignored"
         )
 
+    # Filter out symbols in stop-loss cooldown
+    filtered_by_cooldown = 0
+    try:
+        cooldown_service = _get_crypto_trade_cooldown_service()
+        blocked_symbols = await cooldown_service.filter_symbols_in_cooldown(
+            str(item.get("symbol") or "") for item in candidates
+        )
+        if blocked_symbols:
+            candidates = [
+                item
+                for item in candidates
+                if str(item.get("symbol") or "").strip().upper() not in blocked_symbols
+            ]
+            filtered_by_cooldown = len(blocked_symbols)
+    except Exception as exc:
+        warnings.append(
+            f"Stop-loss cooldown filter failed; showing all candidates ({type(exc).__name__}: {exc})"
+        )
+
     async def _run_rsi_enrichment() -> dict[str, Any]:
         if not enrich_rsi or not candidates:
             return _empty_rsi_enrichment_diagnostics()
@@ -618,6 +650,7 @@ async def _screen_crypto(
         top_by_volume=top_by_volume,
         filtered_by_warning=filtered_by_warning,
         filtered_by_crash=filtered_by_crash,
+        filtered_by_stop_loss_cooldown=filtered_by_cooldown,
     )
 
 
@@ -857,19 +890,50 @@ async def _screen_crypto_via_tvscreener(
     else:
         filtered = candidates
 
-    enrichment_items = filtered[:limit]
-    async with asyncio.TaskGroup() as tg:
-        enrichment_task = tg.create_task(
-            _run_crypto_indicator_enrichment(
-                enrichment_items,
-                candidates,
-                filtered,
-                limit,
+    coingecko_fetch_task = asyncio.create_task(_run_crypto_coingecko_fetch())
+    try:
+        # Filter out symbols in stop-loss cooldown
+        filtered_by_cooldown = 0
+        try:
+            cooldown_service = _get_crypto_trade_cooldown_service()
+            blocked_symbols = await cooldown_service.filter_symbols_in_cooldown(
+                str(item.get("symbol") or "") for item in candidates
             )
+            if blocked_symbols:
+                candidates = [
+                    item
+                    for item in candidates
+                    if str(item.get("symbol") or "").strip().upper()
+                    not in blocked_symbols
+                ]
+                filtered_by_cooldown = len(blocked_symbols)
+        except Exception as exc:
+            warnings.append(
+                f"Stop-loss cooldown filter failed; showing all candidates ({type(exc).__name__}: {exc})"
+            )
+
+        if max_rsi is not None:
+            filtered = [
+                item
+                for item in candidates
+                if item.get("rsi") is not None and float(item["rsi"]) <= max_rsi
+            ]
+        else:
+            filtered = candidates
+
+        enrichment_items = filtered[:limit]
+        metric_diagnostics = await _run_crypto_indicator_enrichment(
+            enrichment_items,
+            candidates,
+            filtered,
+            limit,
         )
-        coingecko_fetch_task = tg.create_task(_run_crypto_coingecko_fetch())
-    metric_diagnostics = enrichment_task.result()
-    coingecko_payload = coingecko_fetch_task.result()
+        coingecko_payload = await coingecko_fetch_task
+    finally:
+        if not coingecko_fetch_task.done():
+            coingecko_fetch_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await coingecko_fetch_task
 
     return await finalize_crypto_screen(
         candidates=candidates,
@@ -884,6 +948,7 @@ async def _screen_crypto_via_tvscreener(
         top_by_volume=len(raw_results),
         filtered_by_warning=filtered_by_warning,
         filtered_by_crash=filtered_by_crash,
+        filtered_by_stop_loss_cooldown=filtered_by_cooldown,
         source="tvscreener",
     )
 

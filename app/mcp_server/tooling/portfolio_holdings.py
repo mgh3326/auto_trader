@@ -108,6 +108,69 @@ PORTFOLIO_TOOL_NAMES: set[str] = {
     "update_manual_holdings",
 }
 
+# Phase 2 strategy constants for crypto exit signals
+CRYPTO_STOP_LOSS_PCT = -4.5
+CRYPTO_MEAN_REVERSION_RSI_EXIT = 46.0
+
+
+def _build_crypto_strategy_signal(
+    position: dict[str, Any],
+    *,
+    rsi_14: float | None,
+) -> dict[str, Any] | None:
+    """Build strategy signal for crypto positions based on Phase 2 rules.
+
+    Priority:
+    1. Stop-loss when profit_rate <= -4.5%
+    2. Mean-reversion exit when profit_rate > 0 and RSI 14 > 46
+
+    Args:
+        position: Position dict with profit_rate
+        rsi_14: Real-time RSI 14 value (optional)
+
+    Returns:
+        Strategy signal dict or None if no signal
+    """
+    profit_rate = _to_optional_float(position.get("profit_rate"))
+    if profit_rate is None:
+        return None
+
+    # Stop-loss takes priority
+    if profit_rate <= CRYPTO_STOP_LOSS_PCT:
+        return {
+            "action": "sell",
+            "reason": "stop_loss",
+            "threshold_pct": CRYPTO_STOP_LOSS_PCT,
+        }
+
+    # Mean-reversion exit when profitable and RSI > 46
+    if profit_rate > 0 and rsi_14 is not None and rsi_14 > CRYPTO_MEAN_REVERSION_RSI_EXIT:
+        return {
+            "action": "sell",
+            "reason": "mean_reversion_exit",
+            "rsi_14": rsi_14,
+        }
+
+    return None
+
+
+async def _compute_crypto_rsi_for_position(position: dict[str, Any]) -> float | None:
+    """Compute crypto RSI using the already-computed position snapshot price."""
+    symbol = str(position.get("symbol") or "").strip()
+    current_price = _to_optional_float(position.get("current_price"))
+    if not symbol or current_price is None or current_price <= 0:
+        return None
+
+    try:
+        df = await _fetch_ohlcv_for_indicators(symbol, "crypto", count=250)
+    except Exception:
+        return None
+
+    if df.empty:
+        return None
+
+    return _compute_crypto_realtime_rsi_from_frame(df, current_price)
+
 
 async def _collect_kis_positions(
     market_filter: str | None,
@@ -711,6 +774,31 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
             filter_reason = "minimum_value filter skipped (include_current_price=False)"
         else:
             filter_reason = "minimum_value filter disabled"
+
+        # Compute Phase 2 strategy signals for crypto positions
+        if include_current_price:
+            crypto_positions = [
+                p for p in positions
+                if p.get("instrument_type") == "crypto" and p.get("current_price") is not None
+            ]
+            if crypto_positions:
+                try:
+                    rsi_results = await asyncio.gather(
+                        *[
+                            _compute_crypto_rsi_for_position(position)
+                            for position in crypto_positions
+                        ],
+                        return_exceptions=True,
+                    )
+                    for position, rsi_result in zip(
+                        crypto_positions, rsi_results, strict=False
+                    ):
+                        rsi_14 = None if isinstance(rsi_result, Exception) else rsi_result
+                        signal = _build_crypto_strategy_signal(position, rsi_14=rsi_14)
+                        if signal:
+                            position["strategy_signal"] = signal
+                except Exception as exc:
+                    logger.debug("Failed to compute crypto strategy signals: %s", exc)
 
         grouped_accounts: dict[str, dict[str, Any]] = {}
         for position in positions:

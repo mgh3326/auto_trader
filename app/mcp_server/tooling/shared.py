@@ -408,6 +408,8 @@ def position_to_output(position: dict[str, Any]) -> dict[str, Any]:
     }
     if "price_error" in position:
         output["price_error"] = position["price_error"]
+    if "strategy_signal" in position:
+        output["strategy_signal"] = position["strategy_signal"]
     return output
 
 
