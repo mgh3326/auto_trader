@@ -299,6 +299,8 @@ def _before_send_log(sentry_log: Log, hint: Hint) -> Log | None:
     logger_name, message = _extract_sentry_log_context(sentry_log, hint)
     if _is_healthcheck_access_log(logger_name, message):
         return None
+    if _is_yfinance_crumb_error(logger_name, message):
+        return None
     if _is_yfinance_noise_log(logger_name, message):
         return None
     if _is_fastmcp_tool_validation_error(logger_name, message):

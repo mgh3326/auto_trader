@@ -658,6 +658,22 @@ class TestYfinanceNoiseFilter:
         }
         assert sentry_module._before_send_log(sentry_log, {}) is not None
 
+    def test_before_send_log_drops_yfinance_crumb_error(self):
+        """yfinance crumb/auth errors are dropped from structured logs too."""
+        sentry_log: Log = {
+            "severity_text": "error",
+            "severity_number": 17,
+            "body": (
+                'HTTP Error 401: {"finance":{"result":null,"error":'
+                '{"code":"Unauthorized","description":"Invalid Crumb"}}}'
+            ),
+            "attributes": {"logger.name": "yfinance"},
+            "time_unix_nano": 1,
+            "trace_id": None,
+            "span_id": None,
+        }
+        assert sentry_module._before_send_log(sentry_log, {}) is None
+
 
 @pytest.mark.unit
 class TestFastmcpToolValidationFilter:
