@@ -181,12 +181,12 @@ Do not add external dependencies without updating pyproject.toml.
 
 **Your goal: beat RSI score of -0.66.**
 
-## Autoresearch Loop (Phase 2)
+## Autoresearch Loop (Phase 2) — CV Mode
 
 ### Setup
 ```bash
 git checkout -b autotrader/<tag> main
-echo -e "commit\tscore\tsharpe\tmax_dd\tstatus\tdescription" > results.tsv
+echo -e "commit\tcv_score\tmean\tstd\tmin_fold\tstatus\tdescription" > results.tsv
 ```
 
 ### The Loop
@@ -195,17 +195,43 @@ LOOP FOREVER:
 1. Read current strategy.py and previous scores
 2. Propose a modification to strategy.py
 3. git commit -m "exp<N>: description"
-4. uv run backtest/backtest.py > run.log 2>&1
-5. grep "^score:" run.log
-6. If score IMPROVED (higher than best): keep
-7. If score equal or worse: git reset --hard HEAD~1
+4. uv run backtest/backtest.py --mode cv > run.log 2>&1
+5. grep "^cv_score:" run.log
+6. If cv_score IMPROVED (higher than best): keep
+7. If cv_score equal or worse: git reset --hard HEAD~1
 8. Record in results.tsv
+```
+
+### CV Folds
+```
+Fold 1: Train [2024-04-01 ~ 2025-03-31]  Val [2025-04-01 ~ 2025-06-30]
+Fold 2: Train [2024-04-01 ~ 2025-06-30]  Val [2025-07-01 ~ 2025-09-30]
+Fold 3: Train [2024-04-01 ~ 2025-09-30]  Val [2025-10-01 ~ 2025-12-31]
+Fold 4: Train [2024-04-01 ~ 2025-12-31]  Val [2026-01-01 ~ 2026-03-22]
+```
+
+### CV Score Formula
+```
+cv_score = mean(fold_scores) - 0.5 * std(fold_scores) - catastrophic_penalty
+```
+- `catastrophic_penalty`: +1.0 for each fold scoring below -2.0
+- This penalizes strategies that only work in one market regime
+
+### Key Difference from Single-Split
+- **Old:** Optimize score on val split only → overfitting risk
+- **New:** Optimize cv_score across 4 folds → must generalize across time periods
+
+### Single-Split Mode (still available)
+```bash
+uv run backtest/backtest.py                # val split (default)
+uv run backtest/backtest.py --split test   # test split (final eval only)
+uv run backtest/backtest.py --split train  # train split
 ```
 
 ### Rules
 - **Only edit strategy.py** — prepare.py, backtest.py, fetch_data.py are fixed
 - **No new dependencies** — numpy, pandas, and stdlib only
-- **Time budget** — 30 seconds per backtest max (RPi5 safe)
+- **Time budget** — 30 seconds per fold, ~120 seconds for full CV run (RPi5 safe)
 
 ### Research Directions (Tier 1 — most likely to improve)
 - RSI threshold tuning (30→35? 25?)

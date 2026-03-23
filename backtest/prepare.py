@@ -30,6 +30,17 @@ SPLITS = {
 # Data directory
 DATA_DIR = Path(__file__).resolve().parent / "data"
 
+# Walk-forward cross-validation folds
+# Each fold: train period expands, val is next 3 months
+# train_start/train_end are documented for context (warmup window);
+# cross_validate() evaluates only on the val window.
+CV_FOLDS = [
+    {"train_start": "2024-04-01", "train_end": "2025-03-31", "val_start": "2025-04-01", "val_end": "2025-06-30"},
+    {"train_start": "2024-04-01", "train_end": "2025-06-30", "val_start": "2025-07-01", "val_end": "2025-09-30"},
+    {"train_start": "2024-04-01", "train_end": "2025-09-30", "val_start": "2025-10-01", "val_end": "2025-12-31"},
+    {"train_start": "2024-04-01", "train_end": "2025-12-31", "val_start": "2026-01-01", "val_end": "2026-03-22"},
+]
+
 
 @dataclass(frozen=True)
 class BarData:
@@ -93,6 +104,19 @@ class BacktestResult:
     equity_curve: list[float] = field(default_factory=list)
 
 
+@dataclass
+class CVResult:
+    """Cross-validation result."""
+
+    fold_scores: list[float]
+    fold_results: list[BacktestResult]
+    fold_indices: list[int]  # Which CV_FOLDS indices were actually evaluated
+    mean_score: float
+    std_score: float
+    min_score: float
+    cv_score: float  # Final score with penalties
+
+
 class Strategy(Protocol):
     """Protocol for strategy implementations."""
 
@@ -120,6 +144,33 @@ def _resolve_split_dates(split: str) -> tuple[str, str]:
     return SPLITS[split]["start"], SPLITS[split]["end"]
 
 
+def load_data_range(start: str, end: str) -> dict[str, pd.DataFrame]:
+    """Load backtest data for an arbitrary date range.
+
+    Args:
+        start: Start date (YYYY-MM-DD)
+        end: End date (YYYY-MM-DD)
+
+    Returns:
+        Dictionary mapping symbol to DataFrame with OHLCV data
+    """
+    data: dict[str, pd.DataFrame] = {}
+    for symbol in DEFAULT_SYMBOLS:
+        path = DATA_DIR / f"KRW-{symbol}.parquet"
+        if not path.exists():
+            continue
+        df = pd.read_parquet(path)
+        required = ["date", "open", "high", "low", "close", "volume", "value"]
+        missing = [col for col in required if col not in df.columns]
+        if missing:
+            raise ValueError(f"Missing columns in {path}: {missing}")
+        df = df[(df["date"] >= start) & (df["date"] <= end)]
+        df = df.sort_values("date").reset_index(drop=True)
+        if len(df) > 0:
+            data[symbol] = df
+    return data
+
+
 def load_data(split: str = "val") -> dict[str, pd.DataFrame]:
     """Load backtest data for the given split.
 
@@ -130,32 +181,7 @@ def load_data(split: str = "val") -> dict[str, pd.DataFrame]:
         Dictionary mapping symbol to DataFrame with OHLCV data
     """
     start, end = _resolve_split_dates(split)
-    data: dict[str, pd.DataFrame] = {}
-
-    for symbol in DEFAULT_SYMBOLS:
-        path = DATA_DIR / f"KRW-{symbol}.parquet"
-        if not path.exists():
-            continue
-
-        df = pd.read_parquet(path)
-
-        # Validate required columns
-        required = ["date", "open", "high", "low", "close", "volume", "value"]
-        missing = [col for col in required if col not in df.columns]
-        if missing:
-            raise ValueError(f"Missing columns in {path}: {missing}")
-
-        # Filter by date range
-        df = df[(df["date"] >= start) & (df["date"] <= end)]
-
-        # Sort by date ascending
-        df = df.sort_values("date").reset_index(drop=True)
-
-        # Only keep non-empty frames
-        if len(df) > 0:
-            data[symbol] = df
-
-    return data
+    return load_data_range(start, end)
 
 
 def _calc_execution_price(bar: BarData, action: str, slippage_bps: int = SLIPPAGE_BPS) -> float:
@@ -600,3 +626,74 @@ def compute_score(result: BacktestResult) -> float:
         score -= 1.0
 
     return score
+
+
+def cross_validate(
+    strategy_class: type,
+    folds: list[dict[str, str]] | None = None,
+    initial_capital: float = INITIAL_CAPITAL,
+) -> CVResult:
+    """Run walk-forward cross-validation.
+
+    Each fold gets a fresh strategy instance to prevent state leakage.
+    Folds with no data are skipped (fold_indices tracks which were evaluated).
+
+    Args:
+        strategy_class: Strategy class (not instance — instantiated per fold).
+                        Must be constructible with no arguments.
+        folds: List of fold dicts with train_start/train_end/val_start/val_end.
+               Defaults to CV_FOLDS.
+        initial_capital: Starting capital per fold
+
+    Returns:
+        CVResult with per-fold and aggregate scores
+    """
+    if folds is None:
+        folds = CV_FOLDS
+
+    fold_scores: list[float] = []
+    fold_results: list[BacktestResult] = []
+    fold_indices: list[int] = []
+
+    for i, fold in enumerate(folds):
+        val_data = load_data_range(fold["val_start"], fold["val_end"])
+        if not val_data:
+            continue
+
+        strat = strategy_class()
+        result = run_backtest(val_data, strat, initial_capital)
+        score = compute_score(result)
+
+        fold_scores.append(score)
+        fold_results.append(result)
+        fold_indices.append(i)
+
+    if not fold_scores:
+        return CVResult(
+            fold_scores=[],
+            fold_results=[],
+            fold_indices=[],
+            mean_score=-999.0,
+            std_score=0.0,
+            min_score=-999.0,
+            cv_score=-999.0,
+        )
+
+    mean_score = float(np.mean(fold_scores))
+    std_score = float(np.std(fold_scores))
+    min_score = float(np.min(fold_scores))
+
+    # CV score: mean - std penalty - catastrophic fold penalty
+    cv_score = mean_score - 0.5 * std_score
+    catastrophic_folds = sum(1 for s in fold_scores if s < -2.0)
+    cv_score -= catastrophic_folds * 1.0
+
+    return CVResult(
+        fold_scores=fold_scores,
+        fold_results=fold_results,
+        fold_indices=fold_indices,
+        mean_score=mean_score,
+        std_score=std_score,
+        min_score=min_score,
+        cv_score=cv_score,
+    )

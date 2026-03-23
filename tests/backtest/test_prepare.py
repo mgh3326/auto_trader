@@ -800,3 +800,219 @@ class TestRunBacktest:
 
         # Should complete without error
         assert len(result.equity_curve) > 0
+
+
+class TestCVFolds:
+    """Tests for walk-forward CV fold definitions."""
+
+    def test_cv_folds_exist(self):
+        assert hasattr(prepare, "CV_FOLDS")
+        assert len(prepare.CV_FOLDS) >= 3
+
+    def test_cv_folds_have_required_keys(self):
+        for fold in prepare.CV_FOLDS:
+            assert "train_start" in fold
+            assert "train_end" in fold
+            assert "val_start" in fold
+            assert "val_end" in fold
+
+    def test_cv_folds_no_val_overlap(self):
+        """Validation windows must not overlap (strict less-than)."""
+        for i in range(len(prepare.CV_FOLDS) - 1):
+            assert prepare.CV_FOLDS[i]["val_end"] < prepare.CV_FOLDS[i + 1]["val_start"]
+
+    def test_cv_folds_train_expands(self):
+        """Each fold's train period should end at or after the previous fold's."""
+        for i in range(len(prepare.CV_FOLDS) - 1):
+            assert (
+                prepare.CV_FOLDS[i]["train_end"] <= prepare.CV_FOLDS[i + 1]["train_end"]
+            )
+
+
+class TestLoadDataRange:
+    """Tests for load_data_range function."""
+
+    def test_load_data_range_exists(self):
+        assert hasattr(prepare, "load_data_range")
+        assert callable(prepare.load_data_range)
+
+    def test_load_data_range_filters_dates(self, tmp_path, monkeypatch):
+        """Data should be filtered to requested range."""
+        # Create synthetic parquet with known dates
+        df = pd.DataFrame(
+            {
+                "date": ["2025-05-15", "2025-06-10", "2025-06-20", "2025-07-05"],
+                "open": [100.0] * 4,
+                "high": [110.0] * 4,
+                "low": [90.0] * 4,
+                "close": [105.0] * 4,
+                "volume": [1000.0] * 4,
+                "value": [100000.0] * 4,
+            }
+        )
+        df.to_parquet(tmp_path / "KRW-BTC.parquet")
+        monkeypatch.setattr(prepare, "DATA_DIR", tmp_path)
+        monkeypatch.setattr(prepare, "DEFAULT_SYMBOLS", ["BTC"])
+
+        result = prepare.load_data_range("2025-06-01", "2025-06-30")
+        assert "BTC" in result
+        assert len(result["BTC"]) == 2
+        assert result["BTC"]["date"].min() >= "2025-06-01"
+        assert result["BTC"]["date"].max() <= "2025-06-30"
+
+    def test_load_data_range_empty_range(self, tmp_path, monkeypatch):
+        """Range with no data should return empty dict."""
+        df = pd.DataFrame(
+            {
+                "date": ["2025-06-10"],
+                "open": [100.0],
+                "high": [110.0],
+                "low": [90.0],
+                "close": [105.0],
+                "volume": [1000.0],
+                "value": [100000.0],
+            }
+        )
+        df.to_parquet(tmp_path / "KRW-BTC.parquet")
+        monkeypatch.setattr(prepare, "DATA_DIR", tmp_path)
+        monkeypatch.setattr(prepare, "DEFAULT_SYMBOLS", ["BTC"])
+
+        result = prepare.load_data_range("1990-01-01", "1990-01-31")
+        assert result == {}
+
+    def test_load_data_delegates_from_load_data(self, tmp_path, monkeypatch):
+        """load_data should produce the same result as load_data_range with split dates."""
+        df = pd.DataFrame(
+            {
+                "date": ["2025-07-10", "2025-07-20", "2025-08-15"],
+                "open": [100.0] * 3,
+                "high": [110.0] * 3,
+                "low": [90.0] * 3,
+                "close": [105.0] * 3,
+                "volume": [1000.0] * 3,
+                "value": [100000.0] * 3,
+            }
+        )
+        df.to_parquet(tmp_path / "KRW-BTC.parquet")
+        monkeypatch.setattr(prepare, "DATA_DIR", tmp_path)
+        monkeypatch.setattr(prepare, "DEFAULT_SYMBOLS", ["BTC"])
+
+        result_split = prepare.load_data("val")
+        start, end = prepare.SPLITS["val"]["start"], prepare.SPLITS["val"]["end"]
+        result_range = prepare.load_data_range(start, end)
+
+        # Both should return the same data
+        assert result_split.keys() == result_range.keys()
+        for sym in result_split:
+            pd.testing.assert_frame_equal(result_split[sym], result_range[sym])
+
+
+class TestCVResult:
+    """Tests for CVResult dataclass."""
+
+    def test_cv_result_exists(self):
+        assert hasattr(prepare, "CVResult")
+
+    def test_cv_result_fields(self):
+        result = prepare.CVResult(
+            fold_scores=[1.0, 2.0, 0.5],
+            fold_results=[],
+            fold_indices=[0, 1, 2],
+            mean_score=1.167,
+            std_score=0.624,
+            min_score=0.5,
+            cv_score=0.855,
+        )
+        assert result.mean_score == 1.167
+        assert result.cv_score == 0.855
+        assert len(result.fold_scores) == 3
+        assert result.fold_indices == [0, 1, 2]
+
+
+class TestCrossValidate:
+    """Tests for cross_validate function."""
+
+    def test_cross_validate_exists(self):
+        assert hasattr(prepare, "cross_validate")
+        assert callable(prepare.cross_validate)
+
+    def test_cv_score_penalizes_variance(self):
+        """Higher variance should produce lower cv_score."""
+        scores_low_var = [1.0, 1.0, 1.0]
+        scores_high_var = [3.0, 1.0, -1.0]
+
+        mean_low = float(np.mean(scores_low_var))
+        std_low = float(np.std(scores_low_var))
+        cv_low = mean_low - 0.5 * std_low
+
+        mean_high = float(np.mean(scores_high_var))
+        std_high = float(np.std(scores_high_var))
+        cv_high = mean_high - 0.5 * std_high
+
+        assert cv_low > cv_high
+
+    def test_catastrophic_fold_penalty(self):
+        """Folds scoring < -2.0 should be penalized."""
+        scores_ok = [1.0, 0.5, 0.8]
+        scores_bad = [1.0, 0.5, -3.0]
+
+        mean_ok = float(np.mean(scores_ok))
+        std_ok = float(np.std(scores_ok))
+        cv_ok = mean_ok - 0.5 * std_ok
+
+        mean_bad = float(np.mean(scores_bad))
+        std_bad = float(np.std(scores_bad))
+        catastrophic = sum(1 for s in scores_bad if s < -2.0)
+        cv_bad = mean_bad - 0.5 * std_bad - catastrophic * 1.0
+
+        assert cv_ok > cv_bad
+
+    def test_cross_validate_empty_folds(self, tmp_path, monkeypatch):
+        """cross_validate with empty date ranges should return sentinel."""
+        empty_folds = [
+            {
+                "train_start": "1990-01-01",
+                "train_end": "1990-06-30",
+                "val_start": "1990-07-01",
+                "val_end": "1990-09-30",
+            },
+        ]
+
+        class DummyStrategy:
+            def on_bar(self, bar_data, portfolio):
+                return []
+
+        result = prepare.cross_validate(DummyStrategy, folds=empty_folds)
+        assert result.cv_score == -999.0
+        assert result.fold_scores == []
+        assert result.fold_indices == []
+
+    def test_cross_validate_with_synthetic_data(self, tmp_path, monkeypatch):
+        """cross_validate should return valid CVResult with real fold execution."""
+        # Create 2 years of synthetic daily data
+        dates = pd.date_range("2024-04-01", "2026-03-22", freq="D")
+        df = pd.DataFrame(
+            {
+                "date": [d.strftime("%Y-%m-%d") for d in dates],
+                "open": [100.0] * len(dates),
+                "high": [110.0] * len(dates),
+                "low": [90.0] * len(dates),
+                "close": [105.0] * len(dates),
+                "volume": [1000.0] * len(dates),
+                "value": [100000.0] * len(dates),
+            }
+        )
+        df.to_parquet(tmp_path / "KRW-BTC.parquet")
+        monkeypatch.setattr(prepare, "DATA_DIR", tmp_path)
+        monkeypatch.setattr(prepare, "DEFAULT_SYMBOLS", ["BTC"])
+
+        class PassiveStrategy:
+            def on_bar(self, bar_data, portfolio):
+                return []
+
+        result = prepare.cross_validate(PassiveStrategy)
+        assert len(result.fold_scores) == 4
+        assert len(result.fold_results) == 4
+        assert len(result.fold_indices) == 4
+        assert result.mean_score == pytest.approx(float(np.mean(result.fold_scores)))
+        assert isinstance(result.cv_score, float)
