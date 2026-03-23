@@ -81,7 +81,7 @@ class TestSymbolDetection:
         assert shared.is_korean_equity_code("  A196170  ") is True  # whitespace
         # A-prefix with non-digit suffix -> NOT Korean
         assert shared.is_korean_equity_code("AAPLXYZ") is False  # not A + 6 digits
-        assert shared.is_korean_equity_code("A12345") is False   # only 5 digits after A
+        assert shared.is_korean_equity_code("A12345") is False  # only 5 digits after A
         assert shared.is_korean_equity_code("A1234567") is False  # 7 digits after A
         # Invalid codes
         assert shared.is_korean_equity_code("00593") is False  # 5 chars
