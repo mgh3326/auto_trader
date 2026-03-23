@@ -154,6 +154,24 @@ def _build_crypto_strategy_signal(
     return None
 
 
+async def _compute_crypto_rsi_for_position(position: dict[str, Any]) -> float | None:
+    """Compute crypto RSI using the already-computed position snapshot price."""
+    symbol = str(position.get("symbol") or "").strip()
+    current_price = _to_optional_float(position.get("current_price"))
+    if not symbol or current_price is None or current_price <= 0:
+        return None
+
+    try:
+        df = await _fetch_ohlcv_for_indicators(symbol, "crypto", count=250)
+    except Exception:
+        return None
+
+    if df.empty:
+        return None
+
+    return _compute_crypto_realtime_rsi_from_frame(df, current_price)
+
+
 async def _collect_kis_positions(
     market_filter: str | None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -764,19 +782,18 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
                 if p.get("instrument_type") == "crypto" and p.get("current_price") is not None
             ]
             if crypto_positions:
-                # Fetch RSI for crypto positions
-                rsi_tasks = []
-                for position in crypto_positions:
-                    symbol = position.get("symbol", "")
-                    rsi_tasks.append(
-                        _get_indicators_impl(symbol, ["rsi"], market="crypto")
-                    )
                 try:
-                    rsi_results = await asyncio.gather(*rsi_tasks, return_exceptions=True)
-                    for position, rsi_result in zip(crypto_positions, rsi_results, strict=False):
-                        if isinstance(rsi_result, Exception):
-                            continue
-                        rsi_14 = rsi_result.get("indicators", {}).get("rsi", {}).get("14")
+                    rsi_results = await asyncio.gather(
+                        *[
+                            _compute_crypto_rsi_for_position(position)
+                            for position in crypto_positions
+                        ],
+                        return_exceptions=True,
+                    )
+                    for position, rsi_result in zip(
+                        crypto_positions, rsi_results, strict=False
+                    ):
+                        rsi_14 = None if isinstance(rsi_result, Exception) else rsi_result
                         signal = _build_crypto_strategy_signal(position, rsi_14=rsi_14)
                         if signal:
                             position["strategy_signal"] = signal

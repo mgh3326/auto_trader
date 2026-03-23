@@ -1987,6 +1987,13 @@ class FakeCooldownService:
             return True
         return symbol.upper() in self._blocked
 
+    async def filter_symbols_in_cooldown(self, symbols: list[str]) -> set[str]:
+        return {
+            symbol.upper().strip()
+            for symbol in symbols
+            if symbol and (self._in_cooldown or symbol.upper().strip() in self._blocked)
+        }
+
     async def record_stop_loss(self, symbol: str) -> None:
         pass
 
@@ -2165,3 +2172,91 @@ async def test_screen_stocks_crypto_cooldown_filter_degrades_safely(
     # Results should still be returned
     assert len(result["results"]) >= 1
     assert "KRW-BTC" in [item["symbol"] for item in result["results"]]
+
+
+@pytest.mark.asyncio
+async def test_screen_stocks_crypto_filters_cooldown_before_enrichment(monkeypatch):
+    """Cooldown-blocked symbols should not enter legacy enrichment work."""
+    candidates_seen_by_enrichment: list[str] = []
+
+    async def mock_fetch_top_traded_coins(*, fiat: str):
+        assert fiat == "KRW"
+        return [
+            {
+                "market": "KRW-BTC",
+                "korean_name": "비트코인",
+                "signed_change_rate": -0.01,
+                "acc_trade_volume_24h": 1000.0,
+                "acc_trade_price_24h": 1_000_000_000.0,
+            },
+            {
+                "market": "KRW-ETH",
+                "korean_name": "이더리움",
+                "signed_change_rate": -0.01,
+                "acc_trade_volume_24h": 900.0,
+                "acc_trade_price_24h": 800_000_000.0,
+            },
+        ]
+
+    async def mock_warning_markets(*, quote_currency: str):
+        assert quote_currency == "KRW"
+        return set()
+
+    async def mock_enrich_crypto_indicators(candidates: list[dict[str, object]]):
+        candidates_seen_by_enrichment.extend(
+            str(item.get("symbol") or "") for item in candidates
+        )
+        return {"attempted": len(candidates), "succeeded": len(candidates)}
+
+    async def mock_market_cap_cache_get():
+        return {
+            "data": {},
+            "cached": True,
+            "age_seconds": 1.0,
+            "stale": False,
+            "error": None,
+        }
+
+    monkeypatch.setattr(
+        upbit_service,
+        "fetch_top_traded_coins",
+        mock_fetch_top_traded_coins,
+    )
+    monkeypatch.setattr(
+        screening_crypto,
+        "get_upbit_warning_markets",
+        mock_warning_markets,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        screening_crypto,
+        "_enrich_crypto_indicators",
+        mock_enrich_crypto_indicators,
+    )
+    monkeypatch.setattr(
+        screening_crypto._CRYPTO_MARKET_CAP_CACHE,
+        "get",
+        mock_market_cap_cache_get,
+    )
+    monkeypatch.setattr(
+        screening_crypto,
+        "_get_crypto_trade_cooldown_service",
+        lambda: FakeCooldownService(blocked={"KRW-BTC"}),
+    )
+
+    result = await screening_crypto._screen_crypto(
+        market="crypto",
+        asset_type=None,
+        category=None,
+        min_market_cap=None,
+        max_per=None,
+        min_dividend_yield=None,
+        max_rsi=None,
+        sort_by="rsi",
+        sort_order="asc",
+        limit=10,
+        enrich_rsi=True,
+    )
+
+    assert candidates_seen_by_enrichment == ["KRW-ETH"]
+    assert result["meta"]["filtered_by_stop_loss_cooldown"] == 1

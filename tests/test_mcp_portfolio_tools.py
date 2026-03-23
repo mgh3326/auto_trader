@@ -7,6 +7,7 @@ holdings management, position tracking, and average cost simulation.
 
 from unittest.mock import AsyncMock
 
+import pandas as pd
 import pytest
 
 import app.services.brokers.upbit.client as upbit_service
@@ -2568,8 +2569,8 @@ async def test_get_holdings_crypto_mean_reversion_signal(monkeypatch):
     )
     _patch_runtime_attr(
         monkeypatch,
-        "_get_indicators_impl",
-        AsyncMock(return_value={"symbol": "KRW-BTC", "indicators": {"rsi": {"14": 50.0}}}),
+        "_compute_crypto_rsi_for_position",
+        AsyncMock(return_value=50.0),
     )
 
     result = await tools["get_holdings"](account="upbit", market="crypto")
@@ -2611,8 +2612,8 @@ async def test_get_holdings_crypto_no_signal_profitable_low_rsi(monkeypatch):
     )
     _patch_runtime_attr(
         monkeypatch,
-        "_get_indicators_impl",
-        AsyncMock(return_value={"symbol": "KRW-BTC", "indicators": {"rsi": {"14": 40.0}}}),
+        "_compute_crypto_rsi_for_position",
+        AsyncMock(return_value=40.0),
     )
 
     result = await tools["get_holdings"](account="upbit", market="crypto")
@@ -2654,3 +2655,84 @@ async def test_get_holdings_non_crypto_no_signal(monkeypatch):
     position = result["accounts"][0]["positions"][0]
 
     assert position.get("strategy_signal") is None
+
+
+@pytest.mark.asyncio
+async def test_get_holdings_strategy_signal_reuses_portfolio_snapshot_price(
+    monkeypatch,
+):
+    """Strategy signal path should not trigger a second live price fetch."""
+    tools = build_tools()
+    price_fetch_count = 0
+
+    class DummyKISClient:
+        async def fetch_my_stocks(self):
+            return []
+
+        async def fetch_my_us_stocks(self):
+            return []
+
+    async def mock_fetch_prices(markets: list[str]) -> dict[str, float]:
+        nonlocal price_fetch_count
+        price_fetch_count += 1
+        assert markets == ["KRW-BTC"]
+        return {"KRW-BTC": 47_000_000.0}
+
+    df = pd.DataFrame(
+        {
+            "open": [50_000_000.0 + i * 100_000.0 for i in range(250)],
+            "high": [50_100_000.0 + i * 100_000.0 for i in range(250)],
+            "low": [49_900_000.0 + i * 100_000.0 for i in range(250)],
+            "close": [50_000_000.0 + i * 100_000.0 for i in range(250)],
+            "volume": [1_000.0] * 250,
+        }
+    )
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    monkeypatch.setattr(
+        upbit_service,
+        "fetch_my_coins",
+        AsyncMock(
+            return_value=[
+                {
+                    "currency": "BTC",
+                    "unit_currency": "KRW",
+                    "balance": "0.1",
+                    "locked": "0",
+                    "avg_buy_price": "50000000",
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        upbit_service,
+        "fetch_multiple_current_prices",
+        AsyncMock(side_effect=mock_fetch_prices),
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "get_upbit_korean_name_by_coin",
+        _upbit_name_lookup_mock({"BTC": "비트코인"}),
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "_collect_manual_positions",
+        AsyncMock(return_value=([], [])),
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "get_active_upbit_markets",
+        AsyncMock(return_value={"KRW-BTC"}),
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "_fetch_ohlcv_for_indicators",
+        AsyncMock(return_value=df),
+    )
+
+    result = await tools["get_holdings"](account="upbit", market="crypto")
+    btc_position = result["accounts"][0]["positions"][0]
+
+    assert price_fetch_count == 1
+    assert btc_position["current_price"] == 47_000_000.0
+    assert btc_position["strategy_signal"]["reason"] == "stop_loss"

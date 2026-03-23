@@ -18,6 +18,7 @@ class FakeRedisClient:
         self._data = {}
         self.set = AsyncMock(side_effect=self._set)
         self.get = AsyncMock(side_effect=self._get)
+        self.mget = AsyncMock(side_effect=self._mget)
         self.ttl = AsyncMock(side_effect=self._ttl)
 
     async def _set(self, key: str, value: str, ex: int = None):
@@ -26,6 +27,9 @@ class FakeRedisClient:
     async def _get(self, key: str):
         entry = self._data.get(key)
         return entry["value"] if entry else None
+
+    async def _mget(self, keys: list[str]):
+        return [self._data.get(key, {}).get("value") for key in keys]
 
     async def _ttl(self, key: str):
         entry = self._data.get(key)
@@ -184,3 +188,44 @@ async def test_symbol_normalization_to_uppercase(monkeypatch):
         "1",
         ex=8 * 24 * 60 * 60,
     )
+
+
+@pytest.mark.asyncio
+async def test_filter_symbols_in_cooldown_returns_blocked_subset(monkeypatch):
+    """Batch lookup returns only symbols currently blocked by cooldown."""
+    fake_redis = FakeRedisClient()
+    await fake_redis._set("crypto:stop_loss_cooldown:KRW-BTC", "1", ex=100)
+    await fake_redis._set("crypto:stop_loss_cooldown:KRW-XRP", "1", ex=100)
+
+    monkeypatch.setattr(
+        redis,
+        "from_url",
+        AsyncMock(return_value=fake_redis),
+    )
+
+    service = cooldown_service.CryptoTradeCooldownService()
+    blocked = await service.filter_symbols_in_cooldown(
+        ["krw-btc", "KRW-ETH", "KRW-XRP"]
+    )
+
+    assert blocked == {"KRW-BTC", "KRW-XRP"}
+
+
+@pytest.mark.asyncio
+async def test_filter_symbols_in_cooldown_degrades_safely(monkeypatch, caplog):
+    """Batch lookup returns empty set when Redis read fails."""
+    fake_redis = MagicMock()
+    fake_redis.mget = AsyncMock(side_effect=Exception("Redis connection failed"))
+
+    monkeypatch.setattr(
+        redis,
+        "from_url",
+        AsyncMock(return_value=fake_redis),
+    )
+
+    service = cooldown_service.CryptoTradeCooldownService()
+    with caplog.at_level(logging.WARNING):
+        blocked = await service.filter_symbols_in_cooldown(["KRW-BTC", "KRW-ETH"])
+
+    assert blocked == set()
+    assert "crypto stop-loss cooldown batch read failed" in caplog.text

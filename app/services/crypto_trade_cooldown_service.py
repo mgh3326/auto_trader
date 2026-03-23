@@ -6,6 +6,7 @@ Manages stop-loss cooldown state for crypto symbols using Redis.
 """
 
 import logging
+from collections.abc import Iterable
 
 import redis.asyncio as redis
 
@@ -104,3 +105,23 @@ class CryptoTradeCooldownService:
                 "crypto stop-loss cooldown TTL read failed", exc_info=True
             )
             return None
+
+    async def filter_symbols_in_cooldown(self, symbols: Iterable[str]) -> set[str]:
+        """Return the subset of symbols that are currently in cooldown."""
+        normalized = [symbol.upper().strip() for symbol in symbols if symbol]
+        if not normalized:
+            return set()
+
+        try:
+            redis_client = await self._get_redis()
+            values = await redis_client.mget([_key(symbol) for symbol in normalized])
+            return {
+                symbol
+                for symbol, value in zip(normalized, values, strict=False)
+                if value
+            }
+        except Exception:
+            logger.warning(
+                "crypto stop-loss cooldown batch read failed", exc_info=True
+            )
+            return set()
