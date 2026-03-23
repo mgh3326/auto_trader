@@ -800,3 +800,92 @@ class TestRunBacktest:
 
         # Should complete without error
         assert len(result.equity_curve) > 0
+
+
+class TestCVFolds:
+    """Tests for walk-forward CV fold definitions."""
+
+    def test_cv_folds_exist(self):
+        assert hasattr(prepare, "CV_FOLDS")
+        assert len(prepare.CV_FOLDS) >= 3
+
+    def test_cv_folds_have_required_keys(self):
+        for fold in prepare.CV_FOLDS:
+            assert "train_start" in fold
+            assert "train_end" in fold
+            assert "val_start" in fold
+            assert "val_end" in fold
+
+    def test_cv_folds_no_val_overlap(self):
+        """Validation windows must not overlap (strict less-than)."""
+        for i in range(len(prepare.CV_FOLDS) - 1):
+            assert prepare.CV_FOLDS[i]["val_end"] < prepare.CV_FOLDS[i + 1]["val_start"]
+
+    def test_cv_folds_train_expands(self):
+        """Each fold's train period should end at or after the previous fold's."""
+        for i in range(len(prepare.CV_FOLDS) - 1):
+            assert prepare.CV_FOLDS[i]["train_end"] <= prepare.CV_FOLDS[i + 1]["train_end"]
+
+
+class TestLoadDataRange:
+    """Tests for load_data_range function."""
+
+    def test_load_data_range_exists(self):
+        assert hasattr(prepare, "load_data_range")
+        assert callable(prepare.load_data_range)
+
+    def test_load_data_range_filters_dates(self, tmp_path, monkeypatch):
+        """Data should be filtered to requested range."""
+        # Create synthetic parquet with known dates
+        df = pd.DataFrame({
+            "date": ["2025-05-15", "2025-06-10", "2025-06-20", "2025-07-05"],
+            "open": [100.0] * 4,
+            "high": [110.0] * 4,
+            "low": [90.0] * 4,
+            "close": [105.0] * 4,
+            "volume": [1000.0] * 4,
+            "value": [100000.0] * 4,
+        })
+        df.to_parquet(tmp_path / "KRW-BTC.parquet")
+        monkeypatch.setattr(prepare, "DATA_DIR", tmp_path)
+        monkeypatch.setattr(prepare, "DEFAULT_SYMBOLS", ["BTC"])
+
+        result = prepare.load_data_range("2025-06-01", "2025-06-30")
+        assert "BTC" in result
+        assert len(result["BTC"]) == 2
+        assert result["BTC"]["date"].min() >= "2025-06-01"
+        assert result["BTC"]["date"].max() <= "2025-06-30"
+
+    def test_load_data_range_empty_range(self, tmp_path, monkeypatch):
+        """Range with no data should return empty dict."""
+        df = pd.DataFrame({
+            "date": ["2025-06-10"],
+            "open": [100.0], "high": [110.0], "low": [90.0],
+            "close": [105.0], "volume": [1000.0], "value": [100000.0],
+        })
+        df.to_parquet(tmp_path / "KRW-BTC.parquet")
+        monkeypatch.setattr(prepare, "DATA_DIR", tmp_path)
+        monkeypatch.setattr(prepare, "DEFAULT_SYMBOLS", ["BTC"])
+
+        result = prepare.load_data_range("1990-01-01", "1990-01-31")
+        assert result == {}
+
+    def test_load_data_delegates_from_load_data(self, tmp_path, monkeypatch):
+        """load_data should produce the same result as load_data_range with split dates."""
+        df = pd.DataFrame({
+            "date": ["2025-07-10", "2025-07-20", "2025-08-15"],
+            "open": [100.0] * 3, "high": [110.0] * 3, "low": [90.0] * 3,
+            "close": [105.0] * 3, "volume": [1000.0] * 3, "value": [100000.0] * 3,
+        })
+        df.to_parquet(tmp_path / "KRW-BTC.parquet")
+        monkeypatch.setattr(prepare, "DATA_DIR", tmp_path)
+        monkeypatch.setattr(prepare, "DEFAULT_SYMBOLS", ["BTC"])
+
+        result_split = prepare.load_data("val")
+        start, end = prepare.SPLITS["val"]["start"], prepare.SPLITS["val"]["end"]
+        result_range = prepare.load_data_range(start, end)
+
+        # Both should return the same data
+        assert result_split.keys() == result_range.keys()
+        for sym in result_split:
+            pd.testing.assert_frame_equal(result_split[sym], result_range[sym])

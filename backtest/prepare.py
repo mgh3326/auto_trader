@@ -30,6 +30,17 @@ SPLITS = {
 # Data directory
 DATA_DIR = Path(__file__).resolve().parent / "data"
 
+# Walk-forward cross-validation folds
+# Each fold: train period expands, val is next 3 months
+# train_start/train_end are documented for context (warmup window);
+# cross_validate() evaluates only on the val window.
+CV_FOLDS = [
+    {"train_start": "2024-04-01", "train_end": "2025-03-31", "val_start": "2025-04-01", "val_end": "2025-06-30"},
+    {"train_start": "2024-04-01", "train_end": "2025-06-30", "val_start": "2025-07-01", "val_end": "2025-09-30"},
+    {"train_start": "2024-04-01", "train_end": "2025-09-30", "val_start": "2025-10-01", "val_end": "2025-12-31"},
+    {"train_start": "2024-04-01", "train_end": "2025-12-31", "val_start": "2026-01-01", "val_end": "2026-03-22"},
+]
+
 
 @dataclass(frozen=True)
 class BarData:
@@ -120,6 +131,33 @@ def _resolve_split_dates(split: str) -> tuple[str, str]:
     return SPLITS[split]["start"], SPLITS[split]["end"]
 
 
+def load_data_range(start: str, end: str) -> dict[str, pd.DataFrame]:
+    """Load backtest data for an arbitrary date range.
+
+    Args:
+        start: Start date (YYYY-MM-DD)
+        end: End date (YYYY-MM-DD)
+
+    Returns:
+        Dictionary mapping symbol to DataFrame with OHLCV data
+    """
+    data: dict[str, pd.DataFrame] = {}
+    for symbol in DEFAULT_SYMBOLS:
+        path = DATA_DIR / f"KRW-{symbol}.parquet"
+        if not path.exists():
+            continue
+        df = pd.read_parquet(path)
+        required = ["date", "open", "high", "low", "close", "volume", "value"]
+        missing = [col for col in required if col not in df.columns]
+        if missing:
+            raise ValueError(f"Missing columns in {path}: {missing}")
+        df = df[(df["date"] >= start) & (df["date"] <= end)]
+        df = df.sort_values("date").reset_index(drop=True)
+        if len(df) > 0:
+            data[symbol] = df
+    return data
+
+
 def load_data(split: str = "val") -> dict[str, pd.DataFrame]:
     """Load backtest data for the given split.
 
@@ -130,32 +168,7 @@ def load_data(split: str = "val") -> dict[str, pd.DataFrame]:
         Dictionary mapping symbol to DataFrame with OHLCV data
     """
     start, end = _resolve_split_dates(split)
-    data: dict[str, pd.DataFrame] = {}
-
-    for symbol in DEFAULT_SYMBOLS:
-        path = DATA_DIR / f"KRW-{symbol}.parquet"
-        if not path.exists():
-            continue
-
-        df = pd.read_parquet(path)
-
-        # Validate required columns
-        required = ["date", "open", "high", "low", "close", "volume", "value"]
-        missing = [col for col in required if col not in df.columns]
-        if missing:
-            raise ValueError(f"Missing columns in {path}: {missing}")
-
-        # Filter by date range
-        df = df[(df["date"] >= start) & (df["date"] <= end)]
-
-        # Sort by date ascending
-        df = df.sort_values("date").reset_index(drop=True)
-
-        # Only keep non-empty frames
-        if len(df) > 0:
-            data[symbol] = df
-
-    return data
+    return load_data_range(start, end)
 
 
 def _calc_execution_price(bar: BarData, action: str, slippage_bps: int = SLIPPAGE_BPS) -> float:
