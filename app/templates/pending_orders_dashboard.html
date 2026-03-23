@@ -1,0 +1,739 @@
+{% extends "screener/_layout.html" %}
+
+{% block title %}Pending Orders{% endblock %}
+
+{% block page_styles %}
+<style>
+    :root {
+        --bg-page: #f5f3ef;
+        --bg-dark: #1a1a1a;
+        --accent: #c05a3c;
+        --success: #4a7c59;
+        --error: #b54a4a;
+        --warn: #8d6e2f;
+        --border-light: #d1ccc4;
+        --text-primary: #242220;
+        --text-secondary: #4f4a44;
+    }
+
+    body {
+        background: radial-gradient(circle at top right, #f9f7f3 0%, var(--bg-page) 45%, #ece8df 100%);
+        color: var(--text-primary);
+        min-height: 100vh;
+    }
+
+    .shell {
+        max-width: 1480px;
+        margin: 1.6rem auto;
+        border: 1px solid var(--border-light);
+        background: #fff;
+        border-radius: 1rem;
+        box-shadow: 0 18px 40px rgba(24, 19, 16, 0.08);
+        overflow: hidden;
+    }
+
+    .header {
+        background: linear-gradient(120deg, var(--bg-dark) 0%, #2f2b28 50%, #45352e 100%);
+        color: #f3ede5;
+        padding: 1.2rem 1.4rem;
+    }
+
+    .header h1 {
+        font-size: 1.25rem;
+        margin: 0;
+        letter-spacing: 0.02em;
+    }
+
+    .header p {
+        color: #d9cec1;
+        margin: 0.35rem 0 0;
+        font-size: 0.9rem;
+    }
+
+    .content {
+        padding: 1rem;
+    }
+
+    /* Summary Cards */
+    .summary-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 1rem;
+        margin-bottom: 1rem;
+    }
+
+    .summary-card {
+        border: 1px solid var(--border-light);
+        border-radius: 0.75rem;
+        background: #fcfbf8;
+        padding: 1rem;
+        text-align: center;
+    }
+
+    .summary-card h3 {
+        font-size: 0.85rem;
+        margin: 0 0 0.5rem;
+        color: var(--text-secondary);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+
+    .summary-card .value {
+        font-size: 1.5rem;
+        font-weight: 600;
+        margin: 0;
+    }
+
+    /* Controls */
+    .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1rem;
+        align-items: center;
+        margin-bottom: 1rem;
+        padding: 0.75rem;
+        background: #f4f2ec;
+        border-radius: 0.5rem;
+    }
+
+    /* Market Tabs */
+    .market-tabs {
+        display: flex;
+        gap: 0.25rem;
+    }
+
+    .market-tab {
+        padding: 0.5rem 1rem;
+        border: 1px solid var(--border-light);
+        background: #fff;
+        border-radius: 0.375rem;
+        cursor: pointer;
+        font-size: 0.85rem;
+        transition: all 0.15s ease;
+    }
+
+    .market-tab:hover {
+        background: #f0eeea;
+    }
+
+    .market-tab.active {
+        background: var(--bg-dark);
+        color: #fff;
+        border-color: var(--bg-dark);
+    }
+
+    /* Auto-refresh Toggle */
+    .refresh-control {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-left: auto;
+    }
+
+    .toggle-switch {
+        position: relative;
+        width: 48px;
+        height: 24px;
+        background: var(--border-light);
+        border-radius: 12px;
+        cursor: pointer;
+        transition: background 0.2s;
+    }
+
+    .toggle-switch.active {
+        background: var(--success);
+    }
+
+    .toggle-switch::after {
+        content: '';
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 20px;
+        height: 20px;
+        background: #fff;
+        border-radius: 50%;
+        transition: transform 0.2s;
+    }
+
+    .toggle-switch.active::after {
+        transform: translateX(24px);
+    }
+
+    /* Table Styles */
+    .table-container {
+        overflow-x: auto;
+        border: 1px solid var(--border-light);
+        border-radius: 0.6rem;
+        background: #fff;
+    }
+
+    .orders-table {
+        width: 100%;
+        font-size: 0.85rem;
+        margin: 0;
+    }
+
+    .orders-table th {
+        background: #f4f2ec;
+        padding: 0.75rem;
+        font-weight: 600;
+        text-align: left;
+        white-space: nowrap;
+        position: sticky;
+        top: 0;
+        z-index: 1;
+    }
+
+    .orders-table td {
+        padding: 0.75rem;
+        border-top: 1px solid var(--border-light);
+        vertical-align: middle;
+    }
+
+    .orders-table tr:hover {
+        background: #faf9f7;
+    }
+
+    /* Side Badges */
+    .side-badge {
+        display: inline-block;
+        padding: 0.25rem 0.5rem;
+        border-radius: 0.25rem;
+        font-size: 0.75rem;
+        font-weight: 600;
+        text-transform: uppercase;
+    }
+
+    .side-badge.buy {
+        background: #fee2e2;
+        color: #dc2626;
+    }
+
+    .side-badge.sell {
+        background: #dbeafe;
+        color: #2563eb;
+    }
+
+    /* Gap Visualization */
+    .gap-indicator {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+
+    .gap-bar {
+        width: 60px;
+        height: 6px;
+        background: var(--border-light);
+        border-radius: 3px;
+        overflow: hidden;
+    }
+
+    .gap-bar-fill {
+        height: 100%;
+        border-radius: 3px;
+        transition: width 0.3s ease;
+    }
+
+    .gap-bar-fill.near {
+        background: var(--success);
+    }
+
+    .gap-bar-fill.medium {
+        background: var(--warn);
+    }
+
+    .gap-bar-fill.far {
+        background: var(--error);
+    }
+
+    .gap-value {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 0.8rem;
+        font-weight: 600;
+    }
+
+    .gap-value.near {
+        color: var(--success);
+    }
+
+    .gap-value.medium {
+        color: var(--warn);
+    }
+
+    .gap-value.far {
+        color: var(--error);
+    }
+
+    /* Indicators */
+    .indicators {
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+    }
+
+    .indicator-badge {
+        font-size: 0.7rem;
+        padding: 0.15rem 0.35rem;
+        background: #f0eeea;
+        border-radius: 0.25rem;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    /* Empty State */
+    .empty-state {
+        text-align: center;
+        padding: 3rem;
+        color: var(--text-secondary);
+    }
+
+    /* Mobile Cards */
+    .orders-cards {
+        display: none;
+        gap: 0.75rem;
+    }
+
+    .order-card {
+        border: 1px solid var(--border-light);
+        border-radius: 0.6rem;
+        background: #fff;
+        padding: 1rem;
+    }
+
+    .order-card-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 0.75rem;
+    }
+
+    .order-card-title {
+        font-weight: 600;
+        font-size: 0.95rem;
+    }
+
+    .order-card-grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 0.5rem 1rem;
+        font-size: 0.85rem;
+    }
+
+    .order-card-grid dt {
+        color: var(--text-secondary);
+        margin: 0;
+    }
+
+    .order-card-grid dd {
+        margin: 0;
+        font-weight: 500;
+        text-align: right;
+    }
+
+    /* Loading State */
+    .loading {
+        text-align: center;
+        padding: 2rem;
+        color: var(--text-secondary);
+    }
+
+    .last-updated {
+        font-size: 0.8rem;
+        color: var(--text-secondary);
+        margin-left: auto;
+    }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+        .shell {
+            margin: 0;
+            border-radius: 0;
+            min-height: 100vh;
+        }
+
+        .table-container {
+            display: none;
+        }
+
+        .orders-cards {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .summary-grid {
+            grid-template-columns: repeat(2, 1fr);
+        }
+
+        .controls {
+            flex-direction: column;
+            align-items: stretch;
+        }
+
+        .refresh-control {
+            margin-left: 0;
+            justify-content: space-between;
+        }
+    }
+</style>
+{% endblock %}
+
+{% block page_content %}
+<main class="shell" id="pending-orders-page">
+    <header class="header">
+        <h1><i class="bi bi-clock-history"></i> 미체결 주문 현황</h1>
+        <p>전체 시장의 미체결 주문을 실시간으로 확인하세요.</p>
+    </header>
+
+    <div class="content">
+        <!-- Summary Cards -->
+        <div class="summary-grid" id="summary-grid">
+            <div class="summary-card">
+                <h3>총 주문 수</h3>
+                <p class="value" id="total-count">-</p>
+            </div>
+            <div class="summary-card">
+                <h3>매수 주문</h3>
+                <p class="value" id="buy-count" style="color: var(--error);">-</p>
+            </div>
+            <div class="summary-card">
+                <h3>매도 주문</h3>
+                <p class="value" id="sell-count" style="color: #2563eb;">-</p>
+            </div>
+            <div class="summary-card">
+                <h3>총 예상 금액</h3>
+                <p class="value" id="total-amount">-</p>
+            </div>
+        </div>
+
+        <!-- Controls -->
+        <div class="controls">
+            <div class="market-tabs">
+                <button class="market-tab active" data-market="all">전체</button>
+                <button class="market-tab" data-market="kr">KIS국내</button>
+                <button class="market-tab" data-market="us">KIS해외</button>
+                <button class="market-tab" data-market="crypto">Upbit</button>
+            </div>
+
+            <div class="refresh-control">
+                <span>자동 새로고침 (30초)</span>
+                <div class="toggle-switch active" id="auto-refresh-toggle"></div>
+            </div>
+
+            <span class="last-updated" id="last-updated">업데이트: -</span>
+        </div>
+
+        <!-- Table View (Desktop) -->
+        <div class="table-container">
+            <table class="orders-table" id="orders-table">
+                <thead>
+                    <tr>
+                        <th>종목</th>
+                        <th>구분</th>
+                        <th>주문가</th>
+                        <th>현재가</th>
+                        <th>괴리율</th>
+                        <th>미체결수량</th>
+                        <th>예상금액</th>
+                        <th>주문시간</th>
+                        <th>지표</th>
+                    </tr>
+                </thead>
+                <tbody id="orders-tbody">
+                    <tr>
+                        <td colspan="9" class="loading">데이터를 불러오는 중...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Card View (Mobile) -->
+        <div class="orders-cards" id="orders-cards">
+            <!-- Cards rendered by JS -->
+        </div>
+
+        <!-- Empty State -->
+        <div class="empty-state" id="empty-state" style="display: none;">
+            <i class="bi bi-check-circle" style="font-size: 3rem; color: var(--success);"></i>
+            <p class="mt-3">미체결 주문이 없습니다.</p>
+        </div>
+    </div>
+</main>
+{% endblock %}
+
+{% block page_scripts %}
+<script>
+    // State
+    const state = {
+        currentMarket: 'all',
+        autoRefresh: true,
+        refreshInterval: null,
+        refreshIntervalMs: 30000,
+    };
+
+    // DOM Elements
+    const marketTabs = document.querySelectorAll('.market-tab');
+    const autoRefreshToggle = document.getElementById('auto-refresh-toggle');
+    const ordersTbody = document.getElementById('orders-tbody');
+    const ordersCards = document.getElementById('orders-cards');
+    const emptyState = document.getElementById('empty-state');
+    const totalCountEl = document.getElementById('total-count');
+    const buyCountEl = document.getElementById('buy-count');
+    const sellCountEl = document.getElementById('sell-count');
+    const totalAmountEl = document.getElementById('total-amount');
+    const lastUpdatedEl = document.getElementById('last-updated');
+
+    // Format helpers
+    function formatNumber(value, digits = 0) {
+        if (value === null || value === undefined || value === '') return '-';
+        const num = Number(value);
+        if (isNaN(num)) return '-';
+        return num.toLocaleString('ko-KR', {
+            minimumFractionDigits: digits,
+            maximumFractionDigits: digits,
+        });
+    }
+
+    function formatCurrency(value) {
+        if (value === null || value === undefined) return '-';
+        const num = Number(value);
+        if (isNaN(num)) return '-';
+        if (num >= 100000000) {
+            return (num / 100000000).toFixed(1) + '억';
+        }
+        if (num >= 10000) {
+            return (num / 10000).toFixed(0) + '만';
+        }
+        return formatNumber(num);
+    }
+
+    function formatDateTime(isoString) {
+        if (!isoString) return '-';
+        const date = new Date(isoString);
+        return date.toLocaleString('ko-KR', {
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+        });
+    }
+
+    function getElapsedTime(isoString) {
+        if (!isoString) return '-';
+        const created = new Date(isoString);
+        const now = new Date();
+        const hours = Math.floor((now - created) / (1000 * 60 * 60));
+        const days = Math.floor(hours / 24);
+        if (days > 0) return `${days}일 ${hours % 24}시간`;
+        if (hours > 0) return `${hours}시간`;
+        return '방금';
+    }
+
+    function getGapClass(gapPct) {
+        const absGap = Math.abs(gapPct);
+        if (absGap <= 1) return 'near';
+        if (absGap <= 3) return 'medium';
+        return 'far';
+    }
+
+    function getGapBarWidth(gapPct) {
+        const absGap = Math.min(Math.abs(gapPct), 10);
+        return `${(absGap / 10) * 100}%`;
+    }
+
+    // Render functions
+    function renderSummary(summary) {
+        totalCountEl.textContent = formatNumber(summary.total);
+        buyCountEl.textContent = formatNumber(summary.buy_count);
+        sellCountEl.textContent = formatNumber(summary.sell_count);
+        const totalEst = (summary.total_buy_krw || 0) + (summary.total_sell_krw || 0);
+        totalAmountEl.textContent = formatCurrency(totalEst) + '원';
+    }
+
+    function renderTable(orders) {
+        if (orders.length === 0) {
+            ordersTbody.innerHTML = '';
+            emptyState.style.display = 'block';
+            return;
+        }
+
+        emptyState.style.display = 'none';
+        ordersTbody.innerHTML = orders.map(order => {
+            const gapClass = order.gap_pct !== null ? getGapClass(order.gap_pct) : '';
+            const gapBarWidth = order.gap_pct !== null ? getGapBarWidth(order.gap_pct) : '0%';
+            const sideClass = order.side === 'buy' ? 'buy' : 'sell';
+            const sideText = order.side === 'buy' ? '매수' : '매도';
+            
+            const indicators = [];
+            if (order.indicators) {
+                if (order.indicators.rsi_14 !== undefined && order.indicators.rsi_14 !== null) {
+                    indicators.push(`RSI:${order.indicators.rsi_14.toFixed(1)}`);
+                }
+                if (order.indicators.stoch_rsi_k !== undefined && order.indicators.stoch_rsi_k !== null) {
+                    indicators.push(`Stoch:${order.indicators.stoch_rsi_k.toFixed(1)}`);
+                }
+            }
+
+            return `
+                <tr>
+                    <td>
+                        <div style="font-weight: 600;">${order.name || order.symbol}</div>
+                        <div style="font-size: 0.75rem; color: var(--text-secondary);">${order.symbol}</div>
+                    </td>
+                    <td><span class="side-badge ${sideClass}">${sideText}</span></td>
+                    <td class="mono">${formatNumber(order.order_price, order.market === 'us' ? 2 : 0)}</td>
+                    <td class="mono">${formatNumber(order.current_price, order.market === 'us' ? 2 : 0)}</td>
+                    <td>
+                        <div class="gap-indicator">
+                            <div class="gap-bar">
+                                <div class="gap-bar-fill ${gapClass}" style="width: ${gapBarWidth}"></div>
+                            </div>
+                            <span class="gap-value ${gapClass}">${order.gap_pct !== null ? order.gap_pct.toFixed(2) + '%' : '-'}</span>
+                        </div>
+                    </td>
+                    <td class="mono">${formatNumber(order.remaining_qty)}</td>
+                    <td class="mono">${formatCurrency(order.amount_krw)}</td>
+                    <td>
+                        <div>${formatDateTime(order.created_at)}</div>
+                        <div style="font-size: 0.75rem; color: var(--text-secondary);">${getElapsedTime(order.created_at)}</div>
+                    </td>
+                    <td>
+                        <div class="indicators">
+                            ${indicators.map(i => `<span class="indicator-badge">${i}</span>`).join('')}
+                        </div>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    function renderCards(orders) {
+        if (orders.length === 0) {
+            ordersCards.innerHTML = '';
+            return;
+        }
+
+        ordersCards.innerHTML = orders.map(order => {
+            const sideClass = order.side === 'buy' ? 'buy' : 'sell';
+            const sideText = order.side === 'buy' ? '매수' : '매도';
+            const gapClass = order.gap_pct !== null ? getGapClass(order.gap_pct) : '';
+            
+            const indicators = [];
+            if (order.indicators) {
+                if (order.indicators.rsi_14 !== undefined && order.indicators.rsi_14 !== null) {
+                    indicators.push(`RSI:${order.indicators.rsi_14.toFixed(1)}`);
+                }
+                if (order.indicators.stoch_rsi_k !== undefined && order.indicators.stoch_rsi_k !== null) {
+                    indicators.push(`Stoch:${order.indicators.stoch_rsi_k.toFixed(1)}`);
+                }
+            }
+
+            return `
+                <article class="order-card">
+                    <div class="order-card-header">
+                        <div>
+                            <div class="order-card-title">${order.name || order.symbol}</div>
+                            <div style="font-size: 0.8rem; color: var(--text-secondary);">${order.symbol}</div>
+                        </div>
+                        <span class="side-badge ${sideClass}">${sideText}</span>
+                    </div>
+                    <dl class="order-card-grid">
+                        <dt>주문가</dt>
+                        <dd>${formatNumber(order.order_price, order.market === 'us' ? 2 : 0)}</dd>
+                        <dt>현재가</dt>
+                        <dd>${formatNumber(order.current_price, order.market === 'us' ? 2 : 0)}</dd>
+                        <dt>괴리율</dt>
+                        <dd class="gap-value ${gapClass}">${order.gap_pct !== null ? order.gap_pct.toFixed(2) + '%' : '-'}</dd>
+                        <dt>미체결</dt>
+                        <dd>${formatNumber(order.remaining_qty)}</dd>
+                        <dt>예상금액</dt>
+                        <dd>${formatCurrency(order.amount_krw)}</dd>
+                        <dt>주문시간</dt>
+                        <dd>${formatDateTime(order.created_at)}</dd>
+                    </dl>
+                    ${indicators.length > 0 ? `
+                        <div class="indicators" style="margin-top: 0.5rem;">
+                            ${indicators.map(i => `<span class="indicator-badge">${i}</span>`).join('')}
+                        </div>
+                    ` : ''}
+                </article>
+            `;
+        }).join('');
+    }
+
+    // Data fetching
+    async function fetchOrders() {
+        try {
+            ordersTbody.innerHTML = '<tr><td colspan="9" class="loading">데이터를 불러오는 중...</td></tr>';
+            
+            const response = await fetch(`/api/pending/orders?market=${state.currentMarket}`);
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            
+            const data = await response.json();
+            
+            renderSummary(data.summary || {});
+            renderTable(data.orders || []);
+            renderCards(data.orders || []);
+            
+            lastUpdatedEl.textContent = `업데이트: ${new Date().toLocaleTimeString('ko-KR')}`;
+        } catch (error) {
+            console.error('Failed to fetch orders:', error);
+            ordersTbody.innerHTML = `<tr><td colspan="9" class="loading" style="color: var(--error);">데이터 로드 실패: ${error.message}</td></tr>`;
+        }
+    }
+
+    // Auto-refresh
+    function startAutoRefresh() {
+        if (state.refreshInterval) return;
+        state.refreshInterval = setInterval(fetchOrders, state.refreshIntervalMs);
+    }
+
+    function stopAutoRefresh() {
+        if (state.refreshInterval) {
+            clearInterval(state.refreshInterval);
+            state.refreshInterval = null;
+        }
+    }
+
+    function toggleAutoRefresh() {
+        state.autoRefresh = !state.autoRefresh;
+        autoRefreshToggle.classList.toggle('active', state.autoRefresh);
+        if (state.autoRefresh) {
+            startAutoRefresh();
+        } else {
+            stopAutoRefresh();
+        }
+    }
+
+    // Market tabs
+    function setMarket(market) {
+        state.currentMarket = market;
+        marketTabs.forEach(tab => {
+            tab.classList.toggle('active', tab.dataset.market === market);
+        });
+        fetchOrders();
+    }
+
+    // Event listeners
+    marketTabs.forEach(tab => {
+        tab.addEventListener('click', () => setMarket(tab.dataset.market));
+    });
+
+    autoRefreshToggle.addEventListener('click', toggleAutoRefresh);
+
+    // Initialize
+    document.addEventListener('DOMContentLoaded', () => {
+        fetchOrders();
+        if (state.autoRefresh) {
+            startAutoRefresh();
+        }
+    });
+
+    // Cleanup on page unload
+    window.addEventListener('beforeunload', () => {
+        stopAutoRefresh();
+    });
+</script>
+{% endblock %}

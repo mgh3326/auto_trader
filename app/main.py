@@ -28,6 +28,7 @@ from app.routers import (
     n8n_scan,
     news_analysis,
     openclaw_callback,
+    pending_orders,
     portfolio,
     screener,
     symbol_settings,
@@ -139,6 +140,7 @@ def create_app() -> FastAPI:
     app.include_router(web_auth_router)
     app.include_router(admin_router)
     app.include_router(screener.router)
+    app.include_router(pending_orders.router)
     app.include_router(health.router)
     app.include_router(news_analysis.router)
     app.include_router(n8n.router)
