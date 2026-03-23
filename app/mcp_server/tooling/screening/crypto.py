@@ -40,6 +40,7 @@ from app.mcp_server.tooling.screening.enrichment import (
     _tradingview_symbol_name,
 )
 from app.services.crypto_trade_cooldown_service import CryptoTradeCooldownService
+from app.services.crypto_voting_signals import CryptoVotingSignals
 from app.services.tvscreener_service import (
     TvScreenerError,
     TvScreenerRateLimitError,
@@ -64,6 +65,9 @@ _CRYPTO_MARKET_CAP_CACHE = MarketCapCache(ttl=600)
 # Crypto trade cooldown service singleton
 _cooldown_service: CryptoTradeCooldownService | None = None
 
+# Crypto voting signals evaluator singleton
+_voting_evaluator: CryptoVotingSignals | None = None
+
 
 def _get_crypto_trade_cooldown_service() -> CryptoTradeCooldownService:
     """Get or create the crypto trade cooldown service."""
@@ -71,6 +75,14 @@ def _get_crypto_trade_cooldown_service() -> CryptoTradeCooldownService:
     if _cooldown_service is None:
         _cooldown_service = CryptoTradeCooldownService()
     return _cooldown_service
+
+
+def _get_voting_evaluator() -> CryptoVotingSignals:
+    """Get or create the crypto voting signals evaluator."""
+    global _voting_evaluator
+    if _voting_evaluator is None:
+        _voting_evaluator = CryptoVotingSignals()
+    return _voting_evaluator
 
 
 async def _run_crypto_indicator_enrichment(
@@ -119,6 +131,21 @@ async def _run_crypto_indicator_enrichment(
             if item.get("rsi") is None:
                 item["rsi"] = metrics.get("rsi")
                 item["rsi_bucket"] = _compute_rsi_bucket(item.get("rsi"))
+
+            # NEW: Voting signal enrichment
+            voting_result = _get_voting_evaluator().evaluate(df)
+            if voting_result is not None:
+                item["bull_votes"] = voting_result.bull_votes
+                item["bear_votes"] = voting_result.bear_votes
+                item["buy_signal"] = voting_result.buy_signal
+                item["sell_signal"] = voting_result.sell_signal
+                item["bull_flags"] = voting_result.bull_flags
+            else:
+                item["bull_votes"] = None
+                item["bear_votes"] = None
+                item["buy_signal"] = None
+                item["sell_signal"] = None
+                item["bull_flags"] = None
 
     with sentry_sdk.start_span(
         op="crypto.screen.enrichment",

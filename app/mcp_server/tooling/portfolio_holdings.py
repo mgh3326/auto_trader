@@ -87,6 +87,7 @@ from app.mcp_server.tooling.shared import (
     value_for_minimum_filter as _value_for_minimum_filter,
 )
 from app.services.brokers.kis.client import KISClient
+from app.services.crypto_voting_signals import CryptoVotingSignals, VotingResult
 from app.services.manual_holdings_service import ManualHoldingsService
 from app.services.screenshot_holdings_service import ScreenshotHoldingsService
 from app.services.upbit_symbol_universe_service import (
@@ -117,16 +118,19 @@ def _build_crypto_strategy_signal(
     position: dict[str, Any],
     *,
     rsi_14: float | None,
+    voting_result: VotingResult | None = None,
 ) -> dict[str, Any] | None:
     """Build strategy signal for crypto positions based on Phase 2 rules.
 
     Priority:
     1. Stop-loss when profit_rate <= -4.5%
     2. Mean-reversion exit when profit_rate > 0 and RSI 14 > 46
+    3. Bear vote exit when >=2 bear signals and in loss
 
     Args:
         position: Position dict with profit_rate
         rsi_14: Real-time RSI 14 value (optional)
+        voting_result: Voting signals result (optional)
 
     Returns:
         Strategy signal dict or None if no signal
@@ -137,11 +141,14 @@ def _build_crypto_strategy_signal(
 
     # Stop-loss takes priority
     if profit_rate <= CRYPTO_STOP_LOSS_PCT:
-        return {
+        signal = {
             "action": "sell",
             "reason": "stop_loss",
             "threshold_pct": CRYPTO_STOP_LOSS_PCT,
         }
+        if voting_result:
+            signal["bear_votes"] = voting_result.bear_votes
+        return signal
 
     # Mean-reversion exit when profitable and RSI > 46
     if (
@@ -149,31 +156,70 @@ def _build_crypto_strategy_signal(
         and rsi_14 is not None
         and rsi_14 > CRYPTO_MEAN_REVERSION_RSI_EXIT
     ):
-        return {
+        signal = {
             "action": "sell",
             "reason": "mean_reversion_exit",
             "rsi_14": rsi_14,
+        }
+        if voting_result:
+            signal["bear_votes"] = voting_result.bear_votes
+        return signal
+
+    # Bear vote exit (when >=2 bear signals and in loss)
+    if voting_result and voting_result.sell_signal and profit_rate < 0:
+        return {
+            "action": "sell",
+            "reason": "bear_vote_exit",
+            "bear_votes": voting_result.bear_votes,
+            "bear_flags": voting_result.bear_flags,
+        }
+
+    # No sell signal — return voting context for informational purposes
+    if voting_result:
+        return {
+            "action": "hold",
+            "reason": "voting_status",
+            "bull_votes": voting_result.bull_votes,
+            "bear_votes": voting_result.bear_votes,
+            "buy_signal": voting_result.buy_signal,
+            "sell_signal": voting_result.sell_signal,
         }
 
     return None
 
 
-async def _compute_crypto_rsi_for_position(position: dict[str, Any]) -> float | None:
-    """Compute crypto RSI using the already-computed position snapshot price."""
+async def _compute_crypto_signals_for_position(
+    position: dict[str, Any],
+) -> tuple[float | None, VotingResult | None]:
+    """Compute crypto RSI and voting signals for a position.
+
+    Args:
+        position: Position dict with symbol and current_price
+
+    Returns:
+        Tuple of (rsi_14, voting_result) or (None, None) if computation fails
+    """
     symbol = str(position.get("symbol") or "").strip()
     current_price = _to_optional_float(position.get("current_price"))
     if not symbol or current_price is None or current_price <= 0:
-        return None
+        return None, None
 
     try:
-        df = await _fetch_ohlcv_for_indicators(symbol, "crypto", count=250)
+        df = await _fetch_ohlcv_for_indicators(symbol, "crypto", count=50)
     except Exception:
-        return None
+        return None, None
 
     if df.empty:
-        return None
+        return None, None
 
-    return _compute_crypto_realtime_rsi_from_frame(df, current_price)
+    # Compute RSI
+    rsi = _compute_crypto_realtime_rsi_from_frame(df, current_price)
+
+    # Compute voting signals
+    voting_evaluator = CryptoVotingSignals()
+    voting = voting_evaluator.evaluate(df)
+
+    return rsi, voting
 
 
 async def _collect_kis_positions(
@@ -789,20 +835,24 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
             ]
             if crypto_positions:
                 try:
-                    rsi_results = await asyncio.gather(
+                    signal_results = await asyncio.gather(
                         *[
-                            _compute_crypto_rsi_for_position(position)
+                            _compute_crypto_signals_for_position(position)
                             for position in crypto_positions
                         ],
                         return_exceptions=True,
                     )
-                    for position, rsi_result in zip(
-                        crypto_positions, rsi_results, strict=False
+                    for position, signal_result in zip(
+                        crypto_positions, signal_results, strict=False
                     ):
-                        rsi_14 = (
-                            None if isinstance(rsi_result, Exception) else rsi_result
+                        if isinstance(signal_result, Exception):
+                            rsi_14 = None
+                            voting_result = None
+                        else:
+                            rsi_14, voting_result = signal_result
+                        signal = _build_crypto_strategy_signal(
+                            position, rsi_14=rsi_14, voting_result=voting_result
                         )
-                        signal = _build_crypto_strategy_signal(position, rsi_14=rsi_14)
                         if signal:
                             position["strategy_signal"] = signal
                 except Exception as exc:

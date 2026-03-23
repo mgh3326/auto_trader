@@ -2264,3 +2264,134 @@ async def test_screen_stocks_crypto_filters_cooldown_before_enrichment(monkeypat
 
     assert candidates_seen_by_enrichment == ["KRW-ETH"]
     assert result["meta"]["filtered_by_stop_loss_cooldown"] == 1
+
+
+@pytest.mark.asyncio
+async def test_screen_crypto_includes_voting_signals(
+    fake_crypto_tvscreener_module, monkeypatch
+):
+    """Screen results should include bull_votes, bear_votes, buy_signal."""
+    tv_service = AsyncMock()
+    tv_service.query_crypto_screener.return_value = pd.DataFrame(
+        {
+            "symbol": ["UPBIT:BTCKRW"],
+            "name": ["BTCKRW"],
+            "description": ["Bitcoin TV"],
+            "price": [150_000_000.0],
+            "change_percent": [-0.01],
+            "relative_strength_index_14": [45.5],
+            "average_directional_index_14": [25.3],
+            "volume_24h_in_usd": [156_000_000.0],
+            "value_traded": [900_000_000_000.0],
+            "market_cap": [2_500_000_000_000_000.0],
+            "exchange": ["UPBIT"],
+        }
+    )
+
+    async def mock_fetch_multiple_tickers(
+        market_codes: list[str],
+    ) -> list[dict[str, object]]:
+        return [
+            {"market": "KRW-BTC", "acc_trade_volume_24h": 12_345.0},
+        ]
+
+    async def mock_warning_markets(db=None, *, quote_currency: str) -> set[str]:
+        return set()
+
+    async def mock_market_cap_cache_get() -> dict[str, object]:
+        return {
+            "data": {
+                "BTC": {"market_cap": 3_000_000_000_000_000, "market_cap_rank": 1}
+            },
+            "cached": True,
+            "age_seconds": 1.5,
+            "stale": False,
+            "error": None,
+        }
+
+    async def mock_fetch_ohlcv(
+        symbol: str, market_type: str, count: int
+    ) -> pd.DataFrame:
+        import numpy as np
+
+        assert market_type == "crypto"
+        assert count == 50
+        # Create data that will produce some voting signals
+        close = list(np.linspace(100, 200, 50))
+        volume = [1_000.0] * 30 + [5_000.0] * 20  # volume spike at end
+        return pd.DataFrame(
+            {
+                "open": close,
+                "high": [c + 10.0 for c in close],
+                "low": [c - 10.0 for c in close],
+                "close": close,
+                "volume": volume,
+            }
+        )
+
+    monkeypatch.setattr(
+        screening_crypto,
+        "_import_tvscreener",
+        lambda: fake_crypto_tvscreener_module,
+    )
+    monkeypatch.setattr(
+        screening_crypto,
+        "TvScreenerService",
+        lambda timeout=30.0: tv_service,
+    )
+    monkeypatch.setattr(
+        upbit_service,
+        "fetch_multiple_tickers",
+        mock_fetch_multiple_tickers,
+    )
+    monkeypatch.setattr(
+        screening_crypto,
+        "get_upbit_warning_markets",
+        mock_warning_markets,
+    )
+    monkeypatch.setattr(
+        screening_crypto._CRYPTO_MARKET_CAP_CACHE,
+        "get",
+        mock_market_cap_cache_get,
+    )
+    monkeypatch.setattr(
+        screening_crypto,
+        "_fetch_ohlcv_for_indicators",
+        mock_fetch_ohlcv,
+    )
+    monkeypatch.setattr(
+        screening_crypto,
+        "get_upbit_market_display_names",
+        AsyncMock(
+            return_value={
+                "KRW-BTC": {
+                    "korean_name": "비트코인",
+                    "english_name": "Bitcoin",
+                },
+            }
+        ),
+        raising=False,
+    )
+
+    tools = build_tools()
+    result = await tools["screen_stocks"](
+        market="crypto",
+        asset_type=None,
+        category=None,
+        min_market_cap=None,
+        max_per=None,
+        min_dividend_yield=None,
+        max_rsi=None,
+        sort_order="desc",
+        limit=1,
+    )
+
+    items = result.get("results", [])
+    assert len(items) > 0
+    for item in items:
+        # Voting fields should be present (may be None if enrichment failed)
+        assert "bull_votes" in item
+        assert "bear_votes" in item
+        assert "buy_signal" in item
+        assert "sell_signal" in item
+        assert "bull_flags" in item

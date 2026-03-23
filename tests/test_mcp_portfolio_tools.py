@@ -2579,8 +2579,8 @@ async def test_get_holdings_crypto_mean_reversion_signal(monkeypatch):
     )
     _patch_runtime_attr(
         monkeypatch,
-        "_compute_crypto_rsi_for_position",
-        AsyncMock(return_value=50.0),
+        "_compute_crypto_signals_for_position",
+        AsyncMock(return_value=(50.0, None)),
     )
 
     result = await tools["get_holdings"](account="upbit", market="crypto")
@@ -2622,8 +2622,8 @@ async def test_get_holdings_crypto_no_signal_profitable_low_rsi(monkeypatch):
     )
     _patch_runtime_attr(
         monkeypatch,
-        "_compute_crypto_rsi_for_position",
-        AsyncMock(return_value=40.0),
+        "_compute_crypto_signals_for_position",
+        AsyncMock(return_value=(40.0, None)),
     )
 
     result = await tools["get_holdings"](account="upbit", market="crypto")
@@ -2746,3 +2746,70 @@ async def test_get_holdings_strategy_signal_reuses_portfolio_snapshot_price(
     assert price_fetch_count == 1
     assert btc_position["current_price"] == 47_000_000.0
     assert btc_position["strategy_signal"]["reason"] == "stop_loss"
+
+
+@pytest.mark.asyncio
+async def test_get_holdings_crypto_strategy_signal_includes_voting(monkeypatch):
+    """Holdings with strategy_signals=True should include voting data."""
+    tools = build_tools()
+
+    mocked_positions = [
+        {
+            "symbol": "KRW-BTC",
+            "name": "Bitcoin",
+            "instrument_type": "crypto",
+            "market": "crypto",
+            "account": "upbit",
+            "broker": "upbit",
+            "account_name": "Upbit Main",
+            "quantity": 0.1,
+            "avg_buy_price": 50000000.0,
+            "current_price": 47000000.0,  # -6% from avg - stop loss
+            "evaluation_amount": 4700000.0,
+            "profit_loss": -300000.0,
+            "profit_rate": -6.0,
+        }
+    ]
+
+    _patch_runtime_attr(
+        monkeypatch,
+        "_collect_portfolio_positions",
+        AsyncMock(return_value=(mocked_positions, [], "crypto", None)),
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "_get_indicators_impl",
+        AsyncMock(
+            return_value={"symbol": "KRW-BTC", "indicators": {"rsi": {"14": 35.0}}}
+        ),
+    )
+
+    # Mock OHLCV data that will produce voting results
+    import numpy as np
+
+    closes = list(np.linspace(200, 100, 50))
+    df = pd.DataFrame(
+        {
+            "open": closes,
+            "high": [c * 1.01 for c in closes],
+            "low": [c * 0.99 for c in closes],
+            "close": closes,
+            "volume": [1000.0] * 30 + [5000.0] * 20,  # volume spike
+        }
+    )
+
+    _patch_runtime_attr(
+        monkeypatch,
+        "_fetch_ohlcv_for_indicators",
+        AsyncMock(return_value=df),
+    )
+
+    result = await tools["get_holdings"](account="upbit", market="crypto")
+    btc_position = result["accounts"][0]["positions"][0]
+
+    # Strategy signal should exist with voting data
+    signal = btc_position.get("strategy_signal")
+    assert signal is not None
+    # Either it's a stop_loss (with bear_votes) or some other signal
+    if signal.get("reason") in ("stop_loss", "mean_reversion_exit", "bear_vote_exit"):
+        assert "bear_votes" in signal
