@@ -74,6 +74,15 @@ class TestSymbolDetection:
         assert shared.is_korean_equity_code("0117V0") is True  # ETF
         assert shared.is_korean_equity_code("12345A") is True  # alphanumeric
         assert shared.is_korean_equity_code("0123g0") is True  # lowercase
+        # A-prefixed Korean symbols (7 chars: 'A' + 6 digits)
+        assert shared.is_korean_equity_code("A196170") is True
+        assert shared.is_korean_equity_code("A005930") is True
+        assert shared.is_korean_equity_code("A000660") is True
+        assert shared.is_korean_equity_code("  A196170  ") is True  # whitespace
+        # A-prefix with non-digit suffix -> NOT Korean
+        assert shared.is_korean_equity_code("AAPLXYZ") is False  # not A + 6 digits
+        assert shared.is_korean_equity_code("A12345") is False   # only 5 digits after A
+        assert shared.is_korean_equity_code("A1234567") is False  # 7 digits after A
         # Invalid codes
         assert shared.is_korean_equity_code("00593") is False  # 5 chars
         assert shared.is_korean_equity_code("0059300") is False  # 7 chars

@@ -53,7 +53,16 @@ _US_EQUITY_PATTERN = re.compile(r"^[A-Z][A-Z0-9.]{0,19}$")
 
 def is_korean_equity_code(symbol: str) -> bool:
     s = symbol.strip().upper()
-    return len(s) == 6 and s.isalnum()
+    # A-prefixed Korean symbols: 'A' + 6 digits (e.g., A196170)
+    if len(s) == 7 and s[0] == "A" and s[1:].isdigit():
+        return True
+    # Standard 6-char Korean codes (alphanumeric but not A-prefixed pattern)
+    if len(s) == 6 and s.isalnum():
+        # Reject A-prefixed patterns with wrong digit count (e.g., A12345)
+        if s[0] == "A" and s[1:].isdigit():
+            return False
+        return True
+    return False
 
 
 def is_crypto_market(symbol: str) -> bool:
