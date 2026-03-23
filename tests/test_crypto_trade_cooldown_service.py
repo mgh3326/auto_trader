@@ -3,7 +3,7 @@ Tests for crypto_trade_cooldown_service module.
 """
 
 import logging
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import redis.asyncio as redis
