@@ -78,6 +78,7 @@ _YFINANCE_NOISE_PATTERNS = (
     "No data found",
     "no price data found",
     "symbol may be delisted",
+    "Quote not found",
 )
 
 

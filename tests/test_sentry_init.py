@@ -606,6 +606,18 @@ class TestYfinanceNoiseFilter:
         }
         assert sentry_module._before_send(event, {}) is None
 
+    def test_before_send_drops_yfinance_quote_not_found(self):
+        """yfinance 'Quote not found' errors are expected noise when
+        symbols are not on Yahoo Finance."""
+        event: Event = {
+            "logger": "yfinance",
+            "message": (
+                'HTTP Error 404: {"quoteSummary":{"result":null,"error":'
+                '{"code":"Not Found","description":"Quote not found for symbol: A196170"}}}'
+            ),
+        }
+        assert sentry_module._before_send(event, {}) is None
+
     def test_before_send_log_drops_yfinance_noise(self):
         sentry_log: Log = {
             "severity_text": "error",
