@@ -14,12 +14,12 @@ if TYPE_CHECKING:
 RSI_PERIOD_FAST = 7
 RSI_PERIOD_SLOW = 14
 RSI_OVERSOLD = 30
-RSI_EXIT = 46
+RSI_EXIT = 55
 MAX_POSITIONS = 5
 POSITION_SIZE = 0.10
 HOLDING_DAYS = 21
-STOP_LOSS_PCT = 0.04
-COOLDOWN_DAYS = 12
+STOP_LOSS_PCT = 0.02
+COOLDOWN_DAYS = 15
 
 # Multi-Signal Voting Parameters
 MIN_VOTES = 4
@@ -31,7 +31,7 @@ MACD_FAST = 12
 MACD_SLOW = 26
 MACD_SIGNAL = 9
 BB_PERIOD = 15
-BB_STD = 2.0
+BB_STD = 1.5
 EMA_FAST = 8
 EMA_SLOW = 24
 MOMENTUM_PERIOD = 5
@@ -262,7 +262,7 @@ class Strategy:
                     continue
 
                 # 2. RSI recovery exit (when profitable)
-                if rsi_slow >= RSI_EXIT and bar.close > avg_price:
+                if rsi_slow >= RSI_EXIT:
                     signals.append(prepare.Signal(
                         symbol=symbol, action="sell", weight=1.0,
                         reason=f"RSI recovered to {rsi_slow:.0f}",
