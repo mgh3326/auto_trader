@@ -1,0 +1,102 @@
+experiment	cv_score	mean	std	min_fold	test_score	status	description
+baseline	0.844342	1.368713	1.048742	-0.347439	-2.175146	kept	HEAD baseline before autoresearch
+exp01	-1.000000	-1.000000	0.000000	-1.000000	-1.000000	reverted	overly strict regime gating disabled trading
+exp02	-2.683606	-0.872875	1.621462	-3.031785	-3.585194	reverted	lighter regime rewrite still starved trades and failed CV
+exp03	0.172630	0.665285	0.985310	-1.000000	-0.312326	reverted	overbought filter helped test, but bear gating killed fold1 and CV
+exp04	0.172630	0.665285	0.985310	-1.000000	-0.312326	reverted	overbought filter alone still eliminated fold1 trading
+exp05	0.358162	1.397795	2.079266	-1.923687	-1.370817	reverted	sells-first and stop-loss-day buy pause improved test but fold4 still too weak
+exp06	0.437977	1.480037	2.084121	-1.923687	-1.370817	reverted	parameterized sells-first default config still under CV floor
+exp07	0.437977	1.480037	2.084121	-1.923687	-1.370817	reverted	stop_pause=True, sell_pause=True, level=50.0, change=0.0
+exp08	0.437977	1.480037	2.084121	-1.923687	-1.370817	reverted	stop_pause=True, sell_pause=True, level=50.0, change=-1.0
+exp09	0.437977	1.480037	2.084121	-1.923687	-1.370817	reverted	stop_pause=True, sell_pause=True, level=55.0, change=0.0
+exp10	0.437977	1.480037	2.084121	-1.923687	-1.370817	reverted	stop_pause=True, sell_pause=True, level=55.0, change=-1.0
+exp11	0.289023	1.330305	2.082565	-1.923687	-1.370817	reverted	stop_pause=True, sell_pause=True, level=60.0, change=0.0
+exp12	0.289023	1.330305	2.082565	-1.923687	-1.370817	reverted	stop_pause=True, sell_pause=True, level=60.0, change=-1.0
+exp13	0.358162	1.397795	2.079266	-1.923687	-1.370817	reverted	stop_pause=True, sell_pause=False, level=50.0, change=0.0
+exp14	0.358162	1.397795	2.079266	-1.923687	-1.370817	reverted	stop_pause=True, sell_pause=False, level=50.0, change=-1.0
+exp15	0.358162	1.397795	2.079266	-1.923687	-1.370817	reverted	stop_pause=True, sell_pause=False, level=55.0, change=0.0
+exp16	0.358162	1.397795	2.079266	-1.923687	-1.370817	reverted	stop_pause=True, sell_pause=False, level=55.0, change=-1.0
+exp17	0.358162	1.397795	2.079266	-1.923687	-1.370817	reverted	stop_pause=True, sell_pause=False, level=60.0, change=0.0
+exp18	0.358162	1.397795	2.079266	-1.923687	-1.370817	reverted	stop_pause=True, sell_pause=False, level=60.0, change=-1.0
+exp19	0.437977	1.480037	2.084121	-1.923687	-1.370817	reverted	stop_pause=False, sell_pause=True, level=50.0, change=0.0
+exp20	-0.603836	1.457031	2.121735	-2.015711	-1.370817	reverted	stop_pause=False, sell_pause=True, level=50.0, change=-1.0
+exp21	0.437977	1.480037	2.084121	-1.923687	-1.370817	reverted	stop_pause=False, sell_pause=True, level=55.0, change=0.0
+exp22	-0.603836	1.457031	2.121735	-2.015711	-1.370817	reverted	stop_pause=False, sell_pause=True, level=55.0, change=-1.0
+exp23	0.289023	1.330305	2.082565	-1.923687	-1.370817	reverted	stop_pause=False, sell_pause=True, level=60.0, change=0.0
+exp24	-0.751992	1.307299	2.118582	-2.015711	-1.370817	reverted	stop_pause=False, sell_pause=True, level=60.0, change=-1.0
+exp25	-0.812324	1.278189	2.181025	-2.261358	-2.175146	reverted	stop_pause=False, sell_pause=False, level=50.0, change=0.0
+exp26	-0.812324	1.278189	2.181025	-2.261358	-2.175146	reverted	stop_pause=False, sell_pause=False, level=50.0, change=-1.0
+exp27	-0.812324	1.278189	2.181025	-2.261358	-2.175146	reverted	stop_pause=False, sell_pause=False, level=55.0, change=0.0
+exp28	-0.812324	1.278189	2.181025	-2.261358	-2.175146	reverted	stop_pause=False, sell_pause=False, level=55.0, change=-1.0
+exp29	-0.812324	1.278189	2.181025	-2.261358	-2.175146	reverted	stop_pause=False, sell_pause=False, level=60.0, change=0.0
+exp30	-0.812324	1.278189	2.181025	-2.261358	-2.175146	reverted	stop_pause=False, sell_pause=False, level=60.0, change=-1.0
+exp31	-1.874163	0.182122	2.112569	-2.485798	1.444874	reverted	min_votes=3, min_sell=1, cooldown=10
+exp32	-0.673684	0.206161	1.759689	-1.914875	1.431891	reverted	min_votes=3, min_sell=1, cooldown=15
+exp33	-1.929579	0.222240	2.303638	-2.581702	1.123068	reverted	min_votes=3, min_sell=2, cooldown=10
+exp34	-0.564048	0.438377	2.004850	-1.690055	1.222276	reverted	min_votes=3, min_sell=2, cooldown=15
+exp35	-1.588767	0.479760	2.137053	-2.017483	2.022393	reverted	min_votes=3, min_sell=3, cooldown=10
+exp36	-0.323639	0.612260	1.871797	-1.994165	1.848562	reverted	min_votes=3, min_sell=3, cooldown=15
+exp37	0.394857	1.121344	1.452974	-1.321390	-2.175146	reverted	min_votes=4, min_sell=1, cooldown=10
+exp38	0.398341	1.125225	1.453769	-1.321390	-2.175146	reverted	min_votes=4, min_sell=1, cooldown=15
+exp39	0.840561	1.364832	1.048543	-0.347439	-2.175146	kept	min_votes=4, min_sell=2, cooldown=10
+exp40	0.844342	1.368713	1.048742	-0.347439	-2.175146	kept	min_votes=4, min_sell=2, cooldown=15
+exp41	0.840561	1.364832	1.048543	-0.347439	-2.175146	kept	min_votes=4, min_sell=3, cooldown=10
+exp42	0.844342	1.368713	1.048742	-0.347439	-2.175146	kept	min_votes=4, min_sell=3, cooldown=15
+exp43	-1.000000	-1.000000	0.000000	-1.000000	-1.000000	reverted	min_votes=5, min_sell=1, cooldown=10
+exp44	-1.000000	-1.000000	0.000000	-1.000000	-1.000000	reverted	min_votes=5, min_sell=1, cooldown=15
+exp45	-1.000000	-1.000000	0.000000	-1.000000	-1.000000	reverted	min_votes=5, min_sell=2, cooldown=10
+exp46	-1.000000	-1.000000	0.000000	-1.000000	-1.000000	reverted	min_votes=5, min_sell=2, cooldown=15
+exp47	-1.000000	-1.000000	0.000000	-1.000000	-1.000000	reverted	min_votes=5, min_sell=3, cooldown=10
+exp48	-1.000000	-1.000000	0.000000	-1.000000	-1.000000	reverted	min_votes=5, min_sell=3, cooldown=15
+exp49	-0.837657	0.084930	1.845173	-1.953513	1.264142	reverted	min_votes=3, weighted=3, min_sell=2, block_high=True
+exp50	-0.564048	0.438377	2.004850	-1.690055	1.222276	reverted	min_votes=3, weighted=3, min_sell=2, block_high=False
+exp51	-0.488799	0.335321	1.648240	-1.388318	1.820774	reverted	min_votes=3, weighted=3, min_sell=3, block_high=True
+exp52	-0.323639	0.612260	1.871797	-1.994165	1.848562	reverted	min_votes=3, weighted=3, min_sell=3, block_high=False
+exp53	0.612943	1.192480	1.159075	-0.747937	2.384390	kept	min_votes=3, weighted=4, min_sell=2, block_high=True
+exp54	0.777489	1.507244	1.459510	-0.707143	2.202675	kept	min_votes=3, weighted=4, min_sell=2, block_high=False
+exp55	0.532991	1.023723	0.981465	-0.253625	3.148981	kept	min_votes=3, weighted=4, min_sell=3, block_high=True
+exp56	0.651851	1.300498	1.297295	-0.031796	2.961929	kept	min_votes=3, weighted=4, min_sell=3, block_high=False
+exp57	-1.000000	-1.000000	0.000000	-1.000000	-1.000000	reverted	min_votes=3, weighted=5, min_sell=2, block_high=True
+exp58	-1.000000	-1.000000	0.000000	-1.000000	-1.000000	reverted	min_votes=3, weighted=5, min_sell=2, block_high=False
+exp59	-1.000000	-1.000000	0.000000	-1.000000	-1.000000	reverted	min_votes=3, weighted=5, min_sell=3, block_high=True
+exp60	-1.000000	-1.000000	0.000000	-1.000000	-1.000000	reverted	min_votes=3, weighted=5, min_sell=3, block_high=False
+exp61	-2.748246	-0.912463	1.671564	-3.185632	-3.782509	reverted	min_votes=4, weighted=3, min_sell=2, block_high=True
+exp62	0.844342	1.368713	1.048742	-0.347439	-2.175146	kept	min_votes=4, weighted=3, min_sell=2, block_high=False
+exp63	-2.748246	-0.912463	1.671564	-3.185632	-3.782509	reverted	min_votes=4, weighted=3, min_sell=3, block_high=True
+exp64	0.844342	1.368713	1.048742	-0.347439	-2.175146	kept	min_votes=4, weighted=3, min_sell=3, block_high=False
+exp65	-2.748246	-0.912463	1.671564	-3.185632	-3.782509	reverted	min_votes=4, weighted=4, min_sell=2, block_high=True
+exp66	0.844342	1.368713	1.048742	-0.347439	-2.175146	kept	min_votes=4, weighted=4, min_sell=2, block_high=False
+exp67	-2.748246	-0.912463	1.671564	-3.185632	-3.782509	reverted	min_votes=4, weighted=4, min_sell=3, block_high=True
+exp68	0.844342	1.368713	1.048742	-0.347439	-2.175146	kept	min_votes=4, weighted=4, min_sell=3, block_high=False
+exp69	-1.000000	-1.000000	0.000000	-1.000000	-1.000000	reverted	min_votes=4, weighted=5, min_sell=2, block_high=True
+exp70	-1.000000	-1.000000	0.000000	-1.000000	-1.000000	reverted	min_votes=4, weighted=5, min_sell=2, block_high=False
+exp71	-1.000000	-1.000000	0.000000	-1.000000	-1.000000	reverted	min_votes=4, weighted=5, min_sell=3, block_high=True
+exp72	-1.000000	-1.000000	0.000000	-1.000000	-1.000000	reverted	min_votes=4, weighted=5, min_sell=3, block_high=False
+exp73	0.612943	1.192480	1.159075	-0.747937	2.384390	kept	min_votes=3, weighted=4, min_sell=2, block_high=True, fall_block=False, level=55.0, change=0.0
+exp74	0.533564	1.080503	1.093877	-0.622058	2.473599	kept	min_votes=3, weighted=4, min_sell=2, block_high=True, fall_block=True, level=50.0, change=0.0
+exp75	0.533564	1.080503	1.093877	-0.622058	2.473599	kept	min_votes=3, weighted=4, min_sell=2, block_high=True, fall_block=True, level=50.0, change=-1.0
+exp76	0.477479	1.049033	1.143108	-0.747937	2.384390	reverted	min_votes=3, weighted=4, min_sell=2, block_high=True, fall_block=True, level=55.0, change=0.0
+exp77	0.477479	1.049033	1.143108	-0.747937	2.384390	reverted	min_votes=3, weighted=4, min_sell=2, block_high=True, fall_block=True, level=55.0, change=-1.0
+exp78	0.477479	1.049033	1.143108	-0.747937	2.384390	reverted	min_votes=3, weighted=4, min_sell=2, block_high=True, fall_block=True, level=60.0, change=0.0
+exp79	0.477479	1.049033	1.143108	-0.747937	2.384390	reverted	min_votes=3, weighted=4, min_sell=2, block_high=True, fall_block=True, level=60.0, change=-1.0
+exp80	0.777489	1.507244	1.459510	-0.707143	2.202675	kept	min_votes=3, weighted=4, min_sell=2, block_high=False, fall_block=False, level=55.0, change=0.0
+exp81	0.678751	1.478689	1.599877	-0.869120	2.307249	kept	min_votes=3, weighted=4, min_sell=2, block_high=False, fall_block=True, level=50.0, change=0.0
+exp82	0.852963	1.624753	1.543581	-0.706359	2.307249	kept	min_votes=3, weighted=4, min_sell=2, block_high=False, fall_block=True, level=50.0, change=-1.0
+exp83	0.767651	1.548717	1.562132	-0.745476	2.307249	kept	min_votes=3, weighted=4, min_sell=2, block_high=False, fall_block=True, level=55.0, change=0.0
+exp84	0.872552	1.654091	1.563078	-0.745476	2.307249	kept	min_votes=3, weighted=4, min_sell=2, block_high=False, fall_block=True, level=55.0, change=-1.0
+exp85	0.738228	1.506712	1.536968	-0.537077	2.307249	kept	min_votes=3, weighted=4, min_sell=2, block_high=False, fall_block=True, level=60.0, change=0.0
+exp86	0.724719	1.498606	1.547773	-0.569501	2.307249	kept	min_votes=3, weighted=4, min_sell=2, block_high=False, fall_block=True, level=60.0, change=-1.0
+exp87	0.532991	1.023723	0.981465	-0.253625	3.148981	kept	min_votes=3, weighted=4, min_sell=3, block_high=True, fall_block=False, level=55.0, change=0.0
+exp88	0.444202	0.907659	0.926915	-0.253625	3.235720	reverted	min_votes=3, weighted=4, min_sell=3, block_high=True, fall_block=True, level=50.0, change=0.0
+exp89	0.444202	0.907659	0.926915	-0.253625	3.235720	reverted	min_votes=3, weighted=4, min_sell=3, block_high=True, fall_block=True, level=50.0, change=-1.0
+exp90	0.411741	0.880276	0.937070	-0.253625	3.148981	reverted	min_votes=3, weighted=4, min_sell=3, block_high=True, fall_block=True, level=55.0, change=0.0
+exp91	0.411741	0.880276	0.937070	-0.253625	3.148981	reverted	min_votes=3, weighted=4, min_sell=3, block_high=True, fall_block=True, level=55.0, change=-1.0
+exp92	0.411741	0.880276	0.937070	-0.253625	3.148981	reverted	min_votes=3, weighted=4, min_sell=3, block_high=True, fall_block=True, level=60.0, change=0.0
+exp93	0.411741	0.880276	0.937070	-0.253625	3.148981	reverted	min_votes=3, weighted=4, min_sell=3, block_high=True, fall_block=True, level=60.0, change=-1.0
+exp94	0.651851	1.300498	1.297295	-0.031796	2.961929	kept	min_votes=3, weighted=4, min_sell=3, block_high=False, fall_block=False, level=55.0, change=0.0
+exp95	0.564576	1.297918	1.466684	-0.192469	3.063491	kept	min_votes=3, weighted=4, min_sell=3, block_high=False, fall_block=True, level=50.0, change=0.0
+exp96	0.706349	1.437462	1.462225	-0.192469	3.063491	kept	min_votes=3, weighted=4, min_sell=3, block_high=False, fall_block=True, level=50.0, change=-1.0
+exp97	0.644080	1.353863	1.419566	-0.071501	3.063491	kept	min_votes=3, weighted=4, min_sell=3, block_high=False, fall_block=True, level=55.0, change=0.0
+exp98	0.741743	1.459236	1.434986	-0.071501	3.063491	kept	min_votes=3, weighted=4, min_sell=3, block_high=False, fall_block=True, level=55.0, change=-1.0
+exp99	0.584327	1.294989	1.421323	-0.031796	3.063491	kept	min_votes=3, weighted=4, min_sell=3, block_high=False, fall_block=True, level=60.0, change=0.0
+exp100	0.575496	1.287910	1.424828	-0.031796	3.063491	kept	min_votes=3, weighted=4, min_sell=3, block_high=False, fall_block=True, level=60.0, change=-1.0
