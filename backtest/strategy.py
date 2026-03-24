@@ -262,7 +262,7 @@ class Strategy:
                     continue
 
                 # 2. RSI recovery exit (when profitable)
-                if rsi_slow >= RSI_EXIT and bar.close > avg_price:
+                if rsi_slow >= RSI_EXIT:
                     signals.append(prepare.Signal(
                         symbol=symbol, action="sell", weight=1.0,
                         reason=f"RSI recovered to {rsi_slow:.0f}",
