@@ -23,8 +23,13 @@ COOLDOWN_DAYS = 15
 
 # Multi-Signal Voting Parameters
 MIN_VOTES = 4
+MIN_WEIGHTED_BUY_VOTES = 4
 MIN_SELL_VOTES = 2
+BLOCK_HIGH_RSI_BUYS = False
 TOTAL_BULL_SIGNALS = 6  # Total number of possible bull signals for vote ratio
+FALLING_MARKET_BLOCK_BUYS = True
+FALLING_MARKET_RSI_LEVEL = 55.0
+FALLING_MARKET_CHANGE = -1.0
 
 # Indicator Periods
 MACD_FAST = 12
@@ -161,6 +166,31 @@ class Strategy:
         except (ValueError, TypeError):
             return 999
 
+    def _market_state(
+        self,
+        bar_data: dict[str, prepare.BarData],
+    ) -> dict[str, float]:
+        current_rsis: list[float] = []
+        previous_rsis: list[float] = []
+
+        for bar in bar_data.values():
+            closes = bar.history["close"].values
+            current_rsi = _calc_rsi(closes, RSI_PERIOD_SLOW)
+            if current_rsi is None:
+                continue
+            current_rsis.append(current_rsi)
+            if len(closes) >= RSI_PERIOD_SLOW + 2:
+                previous_rsi = _calc_rsi(closes[:-1], RSI_PERIOD_SLOW)
+                if previous_rsi is not None:
+                    previous_rsis.append(previous_rsi)
+
+        if not current_rsis:
+            return {"avg_rsi": 50.0, "avg_rsi_change": 0.0}
+
+        avg_rsi = float(np.mean(current_rsis))
+        avg_prev_rsi = float(np.mean(previous_rsis)) if previous_rsis else avg_rsi
+        return {"avg_rsi": avg_rsi, "avg_rsi_change": avg_rsi - avg_prev_rsi}
+
     def _evaluate_signals(self, bar: prepare.BarData) -> dict[str, object] | None:
         """Evaluate all technical signals and return vote counts.
 
@@ -220,6 +250,7 @@ class Strategy:
             "rsi_slow": rsi_slow,
             "bull_votes": bull_votes,
             "bear_votes": bear_votes,
+            "weighted_bull_votes": bull_votes + int(bull_flags["dual_rsi_oversold"]),
             "bull_flags": bull_flags,
             "bear_flags": bear_flags,
             "macd": macd_result,
@@ -233,6 +264,7 @@ class Strategy:
     ) -> list[prepare.Signal]:
         signals: list[prepare.Signal] = []
         current_positions = set(portfolio.positions.keys())
+        market_state = self._market_state(bar_data)
 
         for symbol, bar in bar_data.items():
             # Evaluate all signals and votes
@@ -244,6 +276,7 @@ class Strategy:
             rsi_slow = signal_data["rsi_slow"]
             bull_votes = signal_data["bull_votes"]
             bear_votes = signal_data["bear_votes"]
+            weighted_bull_votes = signal_data.get("weighted_bull_votes", bull_votes)
             bull_flags = signal_data["bull_flags"]
             is_held = symbol in current_positions
 
@@ -304,8 +337,31 @@ class Strategy:
                     else:
                         del self._stop_loss_dates[symbol]
 
+                special_reversion_buy = (
+                    bull_votes == MIN_VOTES - 1
+                    and bull_flags.get("dual_rsi_oversold", False)
+                    and bull_flags.get("close_below_bb_lower", False)
+                    and weighted_bull_votes >= MIN_WEIGHTED_BUY_VOTES
+                )
+
                 # Buy on sufficient bull votes
-                if bull_votes >= MIN_VOTES:
+                allow_high_rsi_buy = (
+                    not BLOCK_HIGH_RSI_BUYS
+                    or not signal_data["bear_flags"]["rsi_slow_high"]
+                    or bull_flags["dual_rsi_oversold"]
+                )
+                allow_falling_market_buy = (
+                    not FALLING_MARKET_BLOCK_BUYS
+                    or market_state["avg_rsi"] < FALLING_MARKET_RSI_LEVEL
+                    or market_state["avg_rsi_change"] > FALLING_MARKET_CHANGE
+                    or bull_flags["dual_rsi_oversold"]
+                )
+                if (
+                    (bull_votes >= MIN_VOTES or special_reversion_buy)
+                    and weighted_bull_votes >= MIN_WEIGHTED_BUY_VOTES
+                    and allow_high_rsi_buy
+                    and allow_falling_market_buy
+                ):
                     reason = _format_vote_reason(
                         "Bull", bull_votes, bull_flags, 4
                     )
