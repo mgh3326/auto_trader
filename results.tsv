@@ -135,3 +135,8 @@ exp133	3.182016	3.714978	1.065924	2.021730	NA	reverted	block trend buys on low-b
 exp134	3.249732	3.746813	0.994161	2.204244	NA	reverted	downsize low-breadth pure trend entries
 exp135	3.222232	3.698267	0.952070	2.200668	NA	reverted	require stronger symbol RSI in low-breadth trends
 exp136	3.258389	3.672600	0.828421	2.339900	NA	reverted	extend trend acceleration gate down to 58 RSI
+exp137	3.552981	3.952017	0.798071	2.799790	NA	kept	block BTC pure reversion entries
+exp138	3.447561	3.820099	0.745075	2.727938	NA	reverted	block BTC pure trend entries
+exp139	3.626812	3.995232	0.736839	2.972650	NA	kept	block ETH strong reversion entries
+exp140	3.606834	3.983890	0.754113	2.944117	NA	reverted	downsize BTC pure trend entries
+exp141	3.639003	4.008505	0.739003	2.996724	2.911437	kept	downsize AVAX pure trend entries
