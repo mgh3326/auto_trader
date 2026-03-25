@@ -127,7 +127,7 @@ class TestKISWebSocketApprovalKey:
         mock_client_instance = AsyncMock()
         mock_client_instance.post = AsyncMock(return_value=mock_response)
 
-        with patch("app.services.kis_websocket.httpx.AsyncClient") as mock_client:
+        with patch("app.services.kis_websocket_internal.approval_keys.httpx.AsyncClient") as mock_client:
             mock_client.return_value.__aenter__ = AsyncMock(
                 return_value=mock_client_instance
             )
@@ -155,7 +155,7 @@ class TestKISWebSocketApprovalKey:
         mock_client_instance = AsyncMock()
         mock_client_instance.post = AsyncMock(return_value=mock_response)
 
-        with patch("app.services.kis_websocket.httpx.AsyncClient") as mock_client:
+        with patch("app.services.kis_websocket_internal.approval_keys.httpx.AsyncClient") as mock_client:
             mock_client.return_value.__aenter__ = AsyncMock(
                 return_value=mock_client_instance
             )
@@ -237,7 +237,7 @@ class TestKISWebSocketClient:
 
         with (
             patch(
-                "websockets.connect", new=AsyncMock(return_value=mock_websocket)
+                "app.services.kis_websocket_internal.client.websockets.connect", new=AsyncMock(return_value=mock_websocket)
             ) as mock_connect,
             patch.object(client, "_subscribe_execution_tr", new=AsyncMock()),
         ):
@@ -1590,7 +1590,7 @@ class TestApprovalKeyRedisCache:
 
         cache_spy = AsyncMock()
 
-        with patch("app.services.kis_websocket.httpx.AsyncClient") as mock_client:
+        with patch("app.services.kis_websocket_internal.approval_keys.httpx.AsyncClient") as mock_client:
             mock_client.return_value.__aenter__ = AsyncMock(
                 return_value=mock_client_instance
             )
@@ -1658,7 +1658,7 @@ class TestApprovalKeyEmptyCacheMiss:
 
         cache_spy = AsyncMock()
 
-        with patch("app.services.kis_websocket.httpx.AsyncClient") as mock_client:
+        with patch("app.services.kis_websocket_internal.approval_keys.httpx.AsyncClient") as mock_client:
             mock_client.return_value.__aenter__ = AsyncMock(
                 return_value=mock_client_instance
             )
@@ -1689,7 +1689,7 @@ class TestApprovalKeyEmptyCacheMiss:
 
         cache_spy = AsyncMock()
 
-        with patch("app.services.kis_websocket.httpx.AsyncClient") as mock_client:
+        with patch("app.services.kis_websocket_internal.approval_keys.httpx.AsyncClient") as mock_client:
             mock_client.return_value.__aenter__ = AsyncMock(
                 return_value=mock_client_instance
             )
