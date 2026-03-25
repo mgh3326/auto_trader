@@ -17,6 +17,7 @@ RSI_OVERSOLD = 30
 RSI_EXIT = 55
 MAX_POSITIONS = 5
 POSITION_SIZE = 0.10
+STRONG_REVERSION_POSITION_SIZE = 0.15
 HOLDING_DAYS = 21
 STOP_LOSS_PCT = 0.02
 COOLDOWN_DAYS = 15
@@ -409,8 +410,15 @@ class Strategy:
                     reason = _format_vote_reason(
                         "Bull", bull_votes, bull_flags, 4
                     )
+                    buy_weight = (
+                        STRONG_REVERSION_POSITION_SIZE
+                        if bull_flags["dual_rsi_oversold"]
+                        and bull_flags["close_below_bb_lower"]
+                        and bull_flags["macd_histogram_positive"]
+                        else POSITION_SIZE
+                    )
                     signals.append(prepare.Signal(
-                        symbol=symbol, action="buy", weight=POSITION_SIZE,
+                        symbol=symbol, action="buy", weight=buy_weight,
                         reason=reason,
                     ))
                     current_positions.add(symbol)
