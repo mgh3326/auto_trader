@@ -17,20 +17,24 @@ from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from app.core.config import settings
-from app.services.kis_websocket import (
+from app.services.kis_websocket_internal.constants import (
     APPROVAL_KEY_CACHE_KEY,
     APPROVAL_KEY_TTL_SECONDS,
+)
+from app.services.kis_websocket_internal.approval_keys import (
+    _cache_approval_key,
+    _get_cached_approval_key,
+    _is_valid_approval_key,
+    close_approval_key_redis,
+    get_approval_key,
+)
+from app.services.kis_websocket import (
     DOMESTIC_EXECUTION_TR_MOCK,
     DOMESTIC_EXECUTION_TR_REAL,
     OVERSEAS_EXECUTION_TR_MOCK,
     OVERSEAS_EXECUTION_TR_REAL,
     KISExecutionWebSocket,
     KISSubscriptionAckError,
-    _cache_approval_key,
-    _get_cached_approval_key,
-    _is_valid_approval_key,
-    close_approval_key_redis,
-    get_approval_key,
 )
 
 
@@ -130,11 +134,11 @@ class TestKISWebSocketApprovalKey:
             mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
 
             with patch(
-                "app.services.kis_websocket._get_cached_approval_key",
+                "app.services.kis_websocket_internal.approval_keys._get_cached_approval_key",
                 return_value=None,
             ):
                 with patch(
-                    "app.services.kis_websocket._cache_approval_key",
+                    "app.services.kis_websocket_internal.approval_keys._cache_approval_key",
                     return_value=None,
                 ):
                     approval_key = await get_approval_key()
@@ -158,11 +162,11 @@ class TestKISWebSocketApprovalKey:
             mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
 
             with patch(
-                "app.services.kis_websocket._get_cached_approval_key",
+                "app.services.kis_websocket_internal.approval_keys._get_cached_approval_key",
                 return_value=None,
             ):
                 with patch(
-                    "app.services.kis_websocket._cache_approval_key",
+                    "app.services.kis_websocket_internal.approval_keys._cache_approval_key",
                     return_value=None,
                 ):
                     with pytest.raises(Exception, match="Approval Key not found"):
@@ -371,8 +375,8 @@ class TestKISWebSocketClient:
                 new=AsyncMock(side_effect=connect_fail_then_success),
             ),
             patch.object(client, "_close_websocket_best_effort", close_mock),
-            patch("app.services.kis_websocket._issue_approval_key", reissue_mock),
-            patch("app.services.kis_websocket._cache_approval_key", cache_mock),
+            patch("app.services.kis_websocket_internal.approval_keys._issue_approval_key", reissue_mock),
+            patch("app.services.kis_websocket_internal.approval_keys._cache_approval_key", cache_mock),
         ):
             await client.connect_and_subscribe()
 
@@ -428,8 +432,8 @@ class TestKISWebSocketClient:
                 new=AsyncMock(side_effect=connect_fail_then_success),
             ),
             patch.object(client, "_close_websocket_best_effort", close_mock),
-            patch("app.services.kis_websocket._issue_approval_key", reissue_mock),
-            patch("app.services.kis_websocket._cache_approval_key", cache_mock),
+            patch("app.services.kis_websocket_internal.approval_keys._issue_approval_key", reissue_mock),
+            patch("app.services.kis_websocket_internal.approval_keys._cache_approval_key", cache_mock),
         ):
             await client.connect_and_subscribe()
 
@@ -474,8 +478,8 @@ class TestKISWebSocketClient:
             ),
             patch.object(client, "_connect_and_subscribe_internal", connect_mock),
             patch.object(client, "_close_websocket_best_effort", close_mock),
-            patch("app.services.kis_websocket._issue_approval_key", new=AsyncMock()),
-            patch("app.services.kis_websocket._cache_approval_key", new=AsyncMock()),
+            patch("app.services.kis_websocket_internal.approval_keys._issue_approval_key", new=AsyncMock()),
+            patch("app.services.kis_websocket_internal.approval_keys._cache_approval_key", new=AsyncMock()),
         ):
             with pytest.raises(
                 RuntimeError, match="KIS WebSocket connection not established"
@@ -1066,7 +1070,7 @@ class TestKISWebSocketClient:
 
         close_redis_mock = AsyncMock()
         with patch(
-            "app.services.kis_websocket.close_approval_key_redis",
+            "app.services.kis_websocket_internal.approval_keys.close_approval_key_redis",
             close_redis_mock,
         ):
             await client.stop()
@@ -1087,7 +1091,7 @@ class TestKISWebSocketClient:
         ws_mock = client.websocket
         close_redis_mock = AsyncMock()
         with patch(
-            "app.services.kis_websocket.close_approval_key_redis",
+            "app.services.kis_websocket_internal.approval_keys.close_approval_key_redis",
             close_redis_mock,
         ):
             await client.stop()
@@ -1278,7 +1282,7 @@ class TestKISWebSocketClient:
 
         close_redis_mock = AsyncMock()
         with patch(
-            "app.services.kis_websocket.close_approval_key_redis",
+            "app.services.kis_websocket_internal.approval_keys.close_approval_key_redis",
             close_redis_mock,
         ):
             await client.stop()
@@ -1492,7 +1496,7 @@ class TestApprovalKeyRedisCache:
         mock_redis.get = AsyncMock(return_value="cached_approval_key_123")
 
         with patch(
-            "app.services.kis_websocket._get_redis_client",
+            "app.services.kis_websocket_internal.approval_keys._get_redis_client",
             return_value=mock_redis,
         ):
             result = await _get_cached_approval_key()
@@ -1507,7 +1511,7 @@ class TestApprovalKeyRedisCache:
         mock_redis.get = AsyncMock(return_value=None)
 
         with patch(
-            "app.services.kis_websocket._get_redis_client",
+            "app.services.kis_websocket_internal.approval_keys._get_redis_client",
             return_value=mock_redis,
         ):
             result = await _get_cached_approval_key()
@@ -1524,7 +1528,7 @@ class TestApprovalKeyRedisCache:
         mock_redis.get = AsyncMock(side_effect=RedisError("Connection refused"))
 
         with patch(
-            "app.services.kis_websocket._get_redis_client",
+            "app.services.kis_websocket_internal.approval_keys._get_redis_client",
             return_value=mock_redis,
         ):
             with pytest.raises(RedisError, match="Connection refused"):
@@ -1537,7 +1541,7 @@ class TestApprovalKeyRedisCache:
         mock_redis.set = AsyncMock(return_value=True)
 
         with patch(
-            "app.services.kis_websocket._get_redis_client",
+            "app.services.kis_websocket_internal.approval_keys._get_redis_client",
             return_value=mock_redis,
         ):
             await _cache_approval_key("new_approval_key_456")
@@ -1557,7 +1561,7 @@ class TestApprovalKeyRedisCache:
         mock_redis.set = AsyncMock(side_effect=RedisError("Write failed"))
 
         with patch(
-            "app.services.kis_websocket._get_redis_client",
+            "app.services.kis_websocket_internal.approval_keys._get_redis_client",
             return_value=mock_redis,
         ):
             with pytest.raises(RedisError, match="Write failed"):
@@ -1567,7 +1571,7 @@ class TestApprovalKeyRedisCache:
     async def test_get_approval_key_uses_cached_value(self):
         """캐시 히트 시 재발급 없이 캐시 값 반환"""
         with patch(
-            "app.services.kis_websocket._get_cached_approval_key",
+            "app.services.kis_websocket_internal.approval_keys._get_cached_approval_key",
             return_value="cached_key_789",
         ):
             result = await get_approval_key()
@@ -1593,11 +1597,11 @@ class TestApprovalKeyRedisCache:
             mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
 
             with patch(
-                "app.services.kis_websocket._get_cached_approval_key",
+                "app.services.kis_websocket_internal.approval_keys._get_cached_approval_key",
                 return_value=None,
             ):
                 with patch(
-                    "app.services.kis_websocket._cache_approval_key",
+                    "app.services.kis_websocket_internal.approval_keys._cache_approval_key",
                     cache_spy,
                 ):
                     result = await get_approval_key()
@@ -1661,11 +1665,11 @@ class TestApprovalKeyEmptyCacheMiss:
             mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
 
             with patch(
-                "app.services.kis_websocket._get_cached_approval_key",
+                "app.services.kis_websocket_internal.approval_keys._get_cached_approval_key",
                 return_value="",  # Empty string from cache
             ):
                 with patch(
-                    "app.services.kis_websocket._cache_approval_key",
+                    "app.services.kis_websocket_internal.approval_keys._cache_approval_key",
                     cache_spy,
                 ):
                     result = await get_approval_key()
@@ -1692,11 +1696,11 @@ class TestApprovalKeyEmptyCacheMiss:
             mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
 
             with patch(
-                "app.services.kis_websocket._get_cached_approval_key",
+                "app.services.kis_websocket_internal.approval_keys._get_cached_approval_key",
                 return_value="   ",  # Whitespace from cache
             ):
                 with patch(
-                    "app.services.kis_websocket._cache_approval_key",
+                    "app.services.kis_websocket_internal.approval_keys._cache_approval_key",
                     cache_spy,
                 ):
                     result = await get_approval_key()
@@ -1716,15 +1720,15 @@ class TestApprovalKeyCacheHitNoReissue:
         cache_spy = AsyncMock()
 
         with patch(
-            "app.services.kis_websocket._get_cached_approval_key",
+            "app.services.kis_websocket_internal.approval_keys._get_cached_approval_key",
             return_value="cached_valid_key",
         ):
             with patch(
-                "app.services.kis_websocket._issue_approval_key",
+                "app.services.kis_websocket_internal.approval_keys._issue_approval_key",
                 issue_spy,
             ):
                 with patch(
-                    "app.services.kis_websocket._cache_approval_key",
+                    "app.services.kis_websocket_internal.approval_keys._cache_approval_key",
                     cache_spy,
                 ):
                     result = await get_approval_key()
@@ -1741,7 +1745,7 @@ class TestCloseApprovalKeyRedis:
     @pytest.mark.asyncio
     async def test_close_existing_client(self):
         """기존 클라이언트 존재 시 close 호출"""
-        import app.services.kis_websocket as mod
+        import app.services.kis_websocket_internal.approval_keys as mod
 
         mock_redis = AsyncMock()
         mock_redis.close = AsyncMock()
@@ -1755,7 +1759,7 @@ class TestCloseApprovalKeyRedis:
     @pytest.mark.asyncio
     async def test_close_no_client_is_idempotent(self):
         """클라이언트 없을 때 호출해도 예외 없음 (idempotent)"""
-        import app.services.kis_websocket as mod
+        import app.services.kis_websocket_internal.approval_keys as mod
 
         mod._redis_client = None
 
@@ -1767,7 +1771,7 @@ class TestCloseApprovalKeyRedis:
     @pytest.mark.asyncio
     async def test_close_multiple_times_is_idempotent(self):
         """여러 번 호출해도 안전 (idempotent)"""
-        import app.services.kis_websocket as mod
+        import app.services.kis_websocket_internal.approval_keys as mod
 
         mock_redis = AsyncMock()
         mock_redis.close = AsyncMock()
