@@ -19,6 +19,7 @@ MAX_POSITIONS = 5
 POSITION_SIZE = 0.10
 STRONG_REVERSION_POSITION_SIZE = 0.15
 AVAX_TREND_POSITION_SIZE = 0.08
+XRP_TREND_POSITION_SIZE = 0.08
 HOLDING_DAYS = 21
 STOP_LOSS_PCT = 0.02
 COOLDOWN_DAYS = 15
@@ -406,6 +407,7 @@ class Strategy:
                     and not dual_rsi_oversold
                 )
                 avax_pure_trend_buy = pure_trend_buy and symbol == "AVAX"
+                xrp_pure_trend_buy = pure_trend_buy and symbol == "XRP"
                 allow_reversion_regime_buy = (
                     not pure_reversion_buy
                     or market_state["avg_rsi_change"] < REVERSION_MARKET_CHANGE_CEILING
@@ -448,6 +450,8 @@ class Strategy:
                         buy_weight = STRONG_REVERSION_POSITION_SIZE
                     elif avax_pure_trend_buy:
                         buy_weight = AVAX_TREND_POSITION_SIZE
+                    elif xrp_pure_trend_buy:
+                        buy_weight = XRP_TREND_POSITION_SIZE
                     else:
                         buy_weight = POSITION_SIZE
                     signals.append(prepare.Signal(
