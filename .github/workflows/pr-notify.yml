@@ -69,27 +69,46 @@ jobs:
               ;;
           esac
 
-          REVIEW_LINE=""
+          REVIEWER_LABEL=""
+          REVIEWER_VALUE=""
           if [ "$PR_ACTION" = "review_requested" ]; then
             if [ -n "$REQUESTED_REVIEWER" ]; then
-              REVIEW_LINE=$(printf '\n**Reviewer:** @%s' "$REQUESTED_REVIEWER")
+              REVIEWER_LABEL="Reviewer"
+              REVIEWER_VALUE="@$REQUESTED_REVIEWER"
             elif [ -n "$REQUESTED_TEAM" ]; then
-              REVIEW_LINE=$(printf '\n**Reviewer Team:** %s' "$REQUESTED_TEAM")
+              REVIEWER_LABEL="Reviewer Team"
+              REVIEWER_VALUE="$REQUESTED_TEAM"
             fi
           fi
-
-          DESCRIPTION=$(printf '%s\n%s\n%s%s' \
-            "**Author:** $PR_AUTHOR" \
-            "**Branch:** \`$PR_HEAD\` → \`$PR_BASE\`" \
-            "**Changed files:** $PR_FILES  |  +$PR_ADDITIONS / -$PR_DELETIONS" \
-            "$REVIEW_LINE")
 
           jq -n \
             --arg title "$TITLE: #$PR_NUMBER $PR_TITLE" \
             --arg url "$PR_URL" \
-            --arg description "$DESCRIPTION" \
+            --arg author "$PR_AUTHOR" \
+            --arg branch "\`$PR_HEAD\` → \`$PR_BASE\`" \
+            --arg changes "$PR_FILES files  |  +$PR_ADDITIONS / -$PR_DELETIONS" \
+            --arg reviewerLabel "$REVIEWER_LABEL" \
+            --arg reviewerValue "$REVIEWER_VALUE" \
             --arg footer "$REPO" \
             --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --argjson color "$COLOR" \
-            '{embeds:[{title:$title,url:$url,description:$description,color:$color,footer:{text:$footer},timestamp:$timestamp}]}' \
+            '{
+              embeds: [
+                {
+                  title: $title,
+                  url: $url,
+                  color: $color,
+                  fields: (
+                    [
+                      {name: "Author", value: $author, inline: true},
+                      {name: "Branch", value: $branch, inline: true},
+                      {name: "Changes", value: $changes, inline: false}
+                    ]
+                    + (if $reviewerLabel != "" then [{name: $reviewerLabel, value: $reviewerValue, inline: false}] else [] end)
+                  ),
+                  footer: {text: $footer},
+                  timestamp: $timestamp
+                }
+              ]
+            }' \
           | curl -s -H "Content-Type: application/json" -d @- "$WEBHOOK_URL"
