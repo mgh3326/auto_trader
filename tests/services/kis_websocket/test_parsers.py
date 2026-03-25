@@ -1,0 +1,79 @@
+import pytest
+from app.services.kis_websocket import KISExecutionWebSocket
+from tests.services.kis_websocket import (
+    build_domestic_message,
+    build_official_h0gscni0_message,
+)
+
+@pytest.fixture
+def client():
+    return KISExecutionWebSocket(on_execution=lambda x: x, mock_mode=True)
+
+def test_parse_domestic_execution(client):
+    """Pin parsing of a domestic execution message"""
+    message = build_domestic_message(
+        symbol="005930",
+        filled_qty="10",
+        filled_price="70000",
+        ord_tmd="093001"
+    )
+    result = client._parse_message(message)
+    
+    assert result is not None
+    assert result["symbol"] == "005930"
+    assert result["filled_qty"] == 10
+    assert result["filled_price"] == 70000
+    assert result["market"] == "kr"
+
+def test_parse_overseas_execution(client):
+    """Pin parsing of an overseas execution message"""
+    message = build_official_h0gscni0_message(
+        symbol="AAPL",
+        filled_qty="5",
+        filled_price="150.25",
+        ord_tmd="153045"
+    )
+    result = client._parse_message(message)
+    
+    assert result is not None
+    assert result["symbol"] == "AAPL"
+    assert result["filled_qty"] == 5.0
+    assert result["filled_price"] == 150.25
+    assert result["market"] == "us"
+
+def test_parse_pingpong(client):
+    """Pin parsing of pingpong message"""
+    assert client._parse_message("0|pingpong") == {"system": "pingpong"}
+    assert client._parse_message('{"header": {"tr_id": "PINGPONG"}}') == {"system": "pingpong"}
+
+def test_is_execution_event_domestic(client):
+    """Pin _is_execution_event for domestic data"""
+    # fill_yn="2" is filled
+    assert client._is_execution_event({"tr_code": "H0STCNI0", "fill_yn": "2"}) is True
+    assert client._is_execution_event({"tr_code": "H0STCNI0", "fill_yn": "1"}) is False
+    assert client._is_execution_event({"tr_code": "H0STCNI0", "fill_yn": ""}) is False
+
+def test_is_execution_event_overseas(client):
+    """Pin _is_execution_event for overseas data"""
+    # execution_status="filled" or "partial"
+    assert client._is_execution_event({"tr_code": "H0GSCNI0", "execution_status": "filled"}) is True
+    assert client._is_execution_event({"tr_code": "H0GSCNI0", "execution_status": "partial"}) is True
+    assert client._is_execution_event({"tr_code": "H0GSCNI0", "execution_status": "rejected"}) is False
+
+def test_extract_envelope_domestic_unencrypted(client):
+    """Pin _extract_envelope for unencrypted domestic TR"""
+    parts = ["0", "H0STCNI0", "1", "payload^fields"]
+    envelope = client._extract_envelope(parts)
+    assert envelope["tr_code"] == "H0STCNI0"
+    assert envelope["execution_type"] == 1
+    assert envelope["encrypted"] is False
+    assert envelope["payload_source"] == "payload^fields"
+
+def test_extract_envelope_overseas_unencrypted(client):
+    """Pin _extract_envelope for unencrypted overseas TR"""
+    parts = ["0", "H0GSCNI0", "1", "payload^fields"]
+    envelope = client._extract_envelope(parts)
+    assert envelope["tr_code"] == "H0GSCNI0"
+    assert envelope["execution_type"] == 1
+    assert envelope["encrypted"] is False
+    assert envelope["payload_source"] == "payload^fields"
