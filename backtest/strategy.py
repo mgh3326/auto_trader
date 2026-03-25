@@ -384,9 +384,18 @@ class Strategy:
                     and volume_above_avg
                     and not macd_histogram_positive
                 )
+                strong_reversion_buy = (
+                    dual_rsi_oversold
+                    and close_below_bb_lower
+                    and macd_histogram_positive
+                )
                 allow_btc_pure_reversion_buy = (
                     not pure_reversion_buy
                     or symbol != "BTC"
+                )
+                allow_eth_strong_reversion_buy = (
+                    not strong_reversion_buy
+                    or symbol != "ETH"
                 )
                 pure_trend_buy = (
                     macd_histogram_positive
@@ -424,6 +433,7 @@ class Strategy:
                     and allow_falling_market_buy
                     and allow_extreme_fall_buy
                     and allow_btc_pure_reversion_buy
+                    and allow_eth_strong_reversion_buy
                     and allow_reversion_regime_buy
                     and allow_trend_regime_buy
                     and allow_trend_trap_buy
@@ -434,9 +444,7 @@ class Strategy:
                     )
                     buy_weight = (
                         STRONG_REVERSION_POSITION_SIZE
-                        if dual_rsi_oversold
-                        and close_below_bb_lower
-                        and macd_histogram_positive
+                        if strong_reversion_buy
                         else POSITION_SIZE
                     )
                     signals.append(prepare.Signal(
