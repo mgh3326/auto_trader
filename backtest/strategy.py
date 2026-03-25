@@ -32,6 +32,7 @@ FALLING_MARKET_RSI_LEVEL = 55.0
 FALLING_MARKET_CHANGE = -1.0
 EXTREME_FALLING_MARKET_CHANGE = -6.0
 REVERSION_MARKET_CHANGE_CEILING = -2.0
+OVERHEATED_MARKET_RSI_LEVEL = 75.0
 
 # Indicator Periods
 MACD_FAST = 12
@@ -369,9 +370,20 @@ class Strategy:
                     and bull_flags["volume_above_avg"]
                     and not bull_flags["macd_histogram_positive"]
                 )
+                pure_trend_buy = (
+                    bull_flags["macd_histogram_positive"]
+                    and bull_flags["ema_fast_above_slow"]
+                    and bull_flags["momentum_positive"]
+                    and bull_flags["volume_above_avg"]
+                    and not bull_flags["dual_rsi_oversold"]
+                )
                 allow_reversion_regime_buy = (
                     not pure_reversion_buy
                     or market_state["avg_rsi_change"] < REVERSION_MARKET_CHANGE_CEILING
+                )
+                allow_trend_regime_buy = (
+                    not pure_trend_buy
+                    or market_state["avg_rsi"] < OVERHEATED_MARKET_RSI_LEVEL
                 )
                 if (
                     (bull_votes >= MIN_VOTES or special_reversion_buy)
@@ -380,6 +392,7 @@ class Strategy:
                     and allow_falling_market_buy
                     and allow_extreme_fall_buy
                     and allow_reversion_regime_buy
+                    and allow_trend_regime_buy
                 ):
                     reason = _format_vote_reason(
                         "Bull", bull_votes, bull_flags, 4
