@@ -55,7 +55,7 @@ services:
     restart: unless-stopped
     network_mode: host # Host 네트워크 사용으로 localhost DB/Redis 접근
     command: >
-      /app/.venv/bin/taskiq worker app.core.taskiq_broker:broker app.tasks
+      /app/.venv/bin/taskiq worker app.core.taskiq_broker:broker app.tasks --workers 1
     deploy:
       resources:
         limits:
