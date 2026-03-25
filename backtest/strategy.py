@@ -20,6 +20,7 @@ POSITION_SIZE = 0.10
 STRONG_REVERSION_POSITION_SIZE = 0.15
 AVAX_TREND_POSITION_SIZE = 0.08
 XRP_TREND_POSITION_SIZE = 0.08
+ETH_PURE_REVERSION_POSITION_SIZE = 0.08
 HOLDING_DAYS = 21
 STOP_LOSS_PCT = 0.02
 COOLDOWN_DAYS = 15
@@ -399,6 +400,7 @@ class Strategy:
                     not strong_reversion_buy
                     or symbol != "ETH"
                 )
+                eth_pure_reversion_buy = pure_reversion_buy and symbol == "ETH"
                 pure_trend_buy = (
                     macd_histogram_positive
                     and ema_fast_above_slow
@@ -448,6 +450,8 @@ class Strategy:
                     )
                     if strong_reversion_buy:
                         buy_weight = STRONG_REVERSION_POSITION_SIZE
+                    elif eth_pure_reversion_buy:
+                        buy_weight = ETH_PURE_REVERSION_POSITION_SIZE
                     elif avax_pure_trend_buy:
                         buy_weight = AVAX_TREND_POSITION_SIZE
                     elif xrp_pure_trend_buy:
