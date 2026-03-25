@@ -130,3 +130,8 @@ exp127	2.973978	3.583749	1.219541	1.756952	NA	reverted	reduce pure trend positio
 exp128	3.128666	3.784614	1.311896	1.775475	NA	kept	block trend buys in hot mid-acceleration breadth
 exp129	3.095133	3.706047	1.221828	1.775475	NA	reverted	skip RSI exits when loss is still within 1 percent
 exp130	3.334262	3.820843	0.973163	2.339900	2.056769	kept	lower hot breadth threshold to 64 RSI
+exp132	3.334262	3.820843	0.973163	2.339900	NA	reverted	lower hot breadth threshold to 63 RSI
+exp133	3.182016	3.714978	1.065924	2.021730	NA	reverted	block trend buys on low-breadth rebound spikes
+exp134	3.249732	3.746813	0.994161	2.204244	NA	reverted	downsize low-breadth pure trend entries
+exp135	3.222232	3.698267	0.952070	2.200668	NA	reverted	require stronger symbol RSI in low-breadth trends
+exp136	3.258389	3.672600	0.828421	2.339900	NA	reverted	extend trend acceleration gate down to 58 RSI
