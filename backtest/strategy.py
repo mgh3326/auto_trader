@@ -30,6 +30,7 @@ TOTAL_BULL_SIGNALS = 6  # Total number of possible bull signals for vote ratio
 FALLING_MARKET_BLOCK_BUYS = True
 FALLING_MARKET_RSI_LEVEL = 55.0
 FALLING_MARKET_CHANGE = -1.0
+EXTREME_FALLING_MARKET_CHANGE = -6.0
 
 # Indicator Periods
 MACD_FAST = 12
@@ -356,11 +357,17 @@ class Strategy:
                     or market_state["avg_rsi_change"] > FALLING_MARKET_CHANGE
                     or bull_flags["dual_rsi_oversold"]
                 )
+                allow_extreme_fall_buy = (
+                    not bull_flags["dual_rsi_oversold"]
+                    or market_state["avg_rsi_change"] >= EXTREME_FALLING_MARKET_CHANGE
+                    or bull_flags["macd_histogram_positive"]
+                )
                 if (
                     (bull_votes >= MIN_VOTES or special_reversion_buy)
                     and weighted_bull_votes >= MIN_WEIGHTED_BUY_VOTES
                     and allow_high_rsi_buy
                     and allow_falling_market_buy
+                    and allow_extreme_fall_buy
                 ):
                     reason = _format_vote_reason(
                         "Bull", bull_votes, bull_flags, 4
