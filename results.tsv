@@ -100,3 +100,33 @@ exp97	0.644080	1.353863	1.419566	-0.071501	3.063491	kept	min_votes=3, weighted=4
 exp98	0.741743	1.459236	1.434986	-0.071501	3.063491	kept	min_votes=3, weighted=4, min_sell=3, block_high=False, fall_block=True, level=55.0, change=-1.0
 exp99	0.584327	1.294989	1.421323	-0.031796	3.063491	kept	min_votes=3, weighted=4, min_sell=3, block_high=False, fall_block=True, level=60.0, change=0.0
 exp100	0.575496	1.287910	1.424828	-0.031796	3.063491	kept	min_votes=3, weighted=4, min_sell=3, block_high=False, fall_block=True, level=60.0, change=-1.0
+exp101	0.498235	1.380515	1.764562	-1.306594	NA	reverted	require MACD line above zero for bullish vote
+exp102	1.161215	2.065213	1.807995	-0.796349	NA	kept	block oversold buys during breadth collapse without MACD confirmation
+exp103	1.107316	1.975092	1.735553	-0.917508	NA	reverted	raise RSI exit threshold for trend entries
+exp104	1.964712	2.596085	1.262747	0.923072	NA	kept	require breadth capitulation for pure volume reversion buys
+exp105	2.446698	3.065798	1.238200	0.923072	NA	kept	block pure trend buys in overheated market breadth
+exp106	2.979612	3.614729	1.270234	1.638914	NA	kept	require breadth acceleration for mid-band trend buys
+exp107	2.779041	3.503296	1.448510	1.479582	NA	reverted	raise RSI exit for filtered trend entries
+exp108	2.987947	3.601571	1.227249	1.743036	NA	kept	upsize MACD-confirmed reversion entries
+exp109	2.979783	3.593367	1.227168	1.743036	NA	reverted	upsize capitulation-only volume reversion entries
+exp110	2.987947	3.601571	1.227249	1.743036	NA	reverted	use 8-period fast RSI for entry timing
+exp111	2.827301	3.510757	1.366911	1.379777	NA	reverted	widen stop-loss for filtered trend entries
+exp112	2.982822	3.609069	1.252493	1.680211	NA	reverted	delay bear-vote exit for MACD-confirmed reversion
+exp113	3.002188	3.609681	1.214986	1.775475	NA	kept	use 6-period fast RSI for entry timing
+exp114	3.002188	3.609681	1.214986	1.775475	NA	reverted	add RSI divergence as reversion tie-breaker
+exp115	2.867268	3.422955	1.111374	1.775475	NA	reverted	use 4-day momentum for breakout confirmation
+exp116	2.972319	3.525537	1.106435	1.775475	NA	reverted	use 6-day momentum for breakout confirmation
+exp117	2.656022	3.493788	1.675533	0.974230	NA	reverted	loosen volume spike threshold to 1.4x average
+exp118	2.717586	3.570640	1.706109	1.193025	NA	reverted	tighten volume spike threshold to 1.6x average
+exp119	2.992326	3.598546	1.212440	1.775475	NA	reverted	widen Bollinger bands to 1.7 std
+exp120	2.990751	3.598248	1.214994	1.775475	NA	reverted	narrow Bollinger bands to 1.4 std
+exp121	2.723741	3.446328	1.445173	1.155300	NA	reverted	use 10-span fast EMA for trend confirmation
+exp122	2.907840	3.556143	1.296607	1.561323	NA	reverted	use 6-span fast EMA for trend confirmation
+exp123	2.885936	3.543774	1.315675	1.511845	NA	reverted	use 20-span slow EMA for trend confirmation
+exp124	2.723741	3.446328	1.445173	1.155300	NA	reverted	use 28-span slow EMA for trend confirmation
+exp125	3.002188	3.609681	1.214986	1.775475	NA	reverted	widen stop-loss to 2.5 percent
+exp126	2.623453	3.381539	1.516173	0.943290	NA	reverted	require positive MACD line for pure trend buys
+exp127	2.973978	3.583749	1.219541	1.756952	NA	reverted	reduce pure trend position size to 8 percent
+exp128	3.128666	3.784614	1.311896	1.775475	NA	kept	block trend buys in hot mid-acceleration breadth
+exp129	3.095133	3.706047	1.221828	1.775475	NA	reverted	skip RSI exits when loss is still within 1 percent
+exp130	3.334262	3.820843	0.973163	2.339900	2.056769	kept	lower hot breadth threshold to 64 RSI
