@@ -37,6 +37,9 @@ OVERHEATED_MARKET_RSI_LEVEL = 75.0
 TREND_MID_RSI_LOW = 60.0
 TREND_MID_RSI_HIGH = 65.0
 TREND_MID_RSI_MIN_CHANGE = 5.0
+TREND_HOT_RSI_LEVEL = 65.0
+TREND_TRAP_CHANGE_LOW = 3.0
+TREND_TRAP_CHANGE_HIGH = 9.0
 
 # Indicator Periods
 MACD_FAST = 12
@@ -389,6 +392,12 @@ class Strategy:
                     not pure_trend_buy
                     or market_state["avg_rsi"] < OVERHEATED_MARKET_RSI_LEVEL
                 )
+                allow_trend_trap_buy = (
+                    not pure_trend_buy
+                    or market_state["avg_rsi"] < TREND_HOT_RSI_LEVEL
+                    or market_state["avg_rsi_change"] <= TREND_TRAP_CHANGE_LOW
+                    or market_state["avg_rsi_change"] > TREND_TRAP_CHANGE_HIGH
+                )
                 require_trend_acceleration = (
                     pure_trend_buy
                     and TREND_MID_RSI_LOW <= market_state["avg_rsi"] < TREND_MID_RSI_HIGH
@@ -405,6 +414,7 @@ class Strategy:
                     and allow_extreme_fall_buy
                     and allow_reversion_regime_buy
                     and allow_trend_regime_buy
+                    and allow_trend_trap_buy
                     and allow_trend_acceleration_buy
                 ):
                     reason = _format_vote_reason(
