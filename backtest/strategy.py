@@ -288,6 +288,13 @@ class Strategy:
             bear_votes = signal_data["bear_votes"]
             weighted_bull_votes = signal_data.get("weighted_bull_votes", bull_votes)
             bull_flags = signal_data["bull_flags"]
+            bear_flags = signal_data["bear_flags"]
+            dual_rsi_oversold = bull_flags.get("dual_rsi_oversold", False)
+            macd_histogram_positive = bull_flags.get("macd_histogram_positive", False)
+            close_below_bb_lower = bull_flags.get("close_below_bb_lower", False)
+            ema_fast_above_slow = bull_flags.get("ema_fast_above_slow", False)
+            momentum_positive = bull_flags.get("momentum_positive", False)
+            volume_above_avg = bull_flags.get("volume_above_avg", False)
             is_held = symbol in current_positions
 
             # Sell logic - hard exits in priority order
@@ -349,40 +356,40 @@ class Strategy:
 
                 special_reversion_buy = (
                     bull_votes == MIN_VOTES - 1
-                    and bull_flags.get("dual_rsi_oversold", False)
-                    and bull_flags.get("close_below_bb_lower", False)
+                    and dual_rsi_oversold
+                    and close_below_bb_lower
                     and weighted_bull_votes >= MIN_WEIGHTED_BUY_VOTES
                 )
 
                 # Buy on sufficient bull votes
                 allow_high_rsi_buy = (
                     not BLOCK_HIGH_RSI_BUYS
-                    or not signal_data["bear_flags"]["rsi_slow_high"]
-                    or bull_flags["dual_rsi_oversold"]
+                    or not bear_flags.get("rsi_slow_high", False)
+                    or dual_rsi_oversold
                 )
                 allow_falling_market_buy = (
                     not FALLING_MARKET_BLOCK_BUYS
                     or market_state["avg_rsi"] < FALLING_MARKET_RSI_LEVEL
                     or market_state["avg_rsi_change"] > FALLING_MARKET_CHANGE
-                    or bull_flags["dual_rsi_oversold"]
+                    or dual_rsi_oversold
                 )
                 allow_extreme_fall_buy = (
-                    not bull_flags["dual_rsi_oversold"]
+                    not dual_rsi_oversold
                     or market_state["avg_rsi_change"] >= EXTREME_FALLING_MARKET_CHANGE
-                    or bull_flags["macd_histogram_positive"]
+                    or macd_histogram_positive
                 )
                 pure_reversion_buy = (
-                    bull_flags["dual_rsi_oversold"]
-                    and bull_flags["close_below_bb_lower"]
-                    and bull_flags["volume_above_avg"]
-                    and not bull_flags["macd_histogram_positive"]
+                    dual_rsi_oversold
+                    and close_below_bb_lower
+                    and volume_above_avg
+                    and not macd_histogram_positive
                 )
                 pure_trend_buy = (
-                    bull_flags["macd_histogram_positive"]
-                    and bull_flags["ema_fast_above_slow"]
-                    and bull_flags["momentum_positive"]
-                    and bull_flags["volume_above_avg"]
-                    and not bull_flags["dual_rsi_oversold"]
+                    macd_histogram_positive
+                    and ema_fast_above_slow
+                    and momentum_positive
+                    and volume_above_avg
+                    and not dual_rsi_oversold
                 )
                 allow_reversion_regime_buy = (
                     not pure_reversion_buy
@@ -422,9 +429,9 @@ class Strategy:
                     )
                     buy_weight = (
                         STRONG_REVERSION_POSITION_SIZE
-                        if bull_flags["dual_rsi_oversold"]
-                        and bull_flags["close_below_bb_lower"]
-                        and bull_flags["macd_histogram_positive"]
+                        if dual_rsi_oversold
+                        and close_below_bb_lower
+                        and macd_histogram_positive
                         else POSITION_SIZE
                     )
                     signals.append(prepare.Signal(
