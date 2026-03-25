@@ -72,16 +72,22 @@ jobs:
           REVIEW_LINE=""
           if [ "$PR_ACTION" = "review_requested" ]; then
             if [ -n "$REQUESTED_REVIEWER" ]; then
-              REVIEW_LINE="\\n**Reviewer:** @$REQUESTED_REVIEWER"
+              REVIEW_LINE=$(printf '\n**Reviewer:** @%s' "$REQUESTED_REVIEWER")
             elif [ -n "$REQUESTED_TEAM" ]; then
-              REVIEW_LINE="\\n**Reviewer Team:** $REQUESTED_TEAM"
+              REVIEW_LINE=$(printf '\n**Reviewer Team:** %s' "$REQUESTED_TEAM")
             fi
           fi
+
+          DESCRIPTION=$(printf '%s\n%s\n%s%s' \
+            "**Author:** $PR_AUTHOR" \
+            "**Branch:** \`$PR_HEAD\` → \`$PR_BASE\`" \
+            "**Changed files:** $PR_FILES  |  +$PR_ADDITIONS / -$PR_DELETIONS" \
+            "$REVIEW_LINE")
 
           jq -n \
             --arg title "$TITLE: #$PR_NUMBER $PR_TITLE" \
             --arg url "$PR_URL" \
-            --arg description "**Author:** $PR_AUTHOR\n**Branch:** \`$PR_HEAD\` → \`$PR_BASE\`\n**Changed files:** $PR_FILES  |  +$PR_ADDITIONS / -$PR_DELETIONS$REVIEW_LINE" \
+            --arg description "$DESCRIPTION" \
             --arg footer "$REPO" \
             --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --argjson color "$COLOR" \
