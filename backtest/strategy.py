@@ -384,6 +384,10 @@ class Strategy:
                     and volume_above_avg
                     and not macd_histogram_positive
                 )
+                allow_btc_pure_reversion_buy = (
+                    not pure_reversion_buy
+                    or symbol != "BTC"
+                )
                 pure_trend_buy = (
                     macd_histogram_positive
                     and ema_fast_above_slow
@@ -419,6 +423,7 @@ class Strategy:
                     and allow_high_rsi_buy
                     and allow_falling_market_buy
                     and allow_extreme_fall_buy
+                    and allow_btc_pure_reversion_buy
                     and allow_reversion_regime_buy
                     and allow_trend_regime_buy
                     and allow_trend_trap_buy
