@@ -31,6 +31,7 @@ FALLING_MARKET_BLOCK_BUYS = True
 FALLING_MARKET_RSI_LEVEL = 55.0
 FALLING_MARKET_CHANGE = -1.0
 EXTREME_FALLING_MARKET_CHANGE = -6.0
+REVERSION_MARKET_CHANGE_CEILING = -2.0
 
 # Indicator Periods
 MACD_FAST = 12
@@ -362,12 +363,23 @@ class Strategy:
                     or market_state["avg_rsi_change"] >= EXTREME_FALLING_MARKET_CHANGE
                     or bull_flags["macd_histogram_positive"]
                 )
+                pure_reversion_buy = (
+                    bull_flags["dual_rsi_oversold"]
+                    and bull_flags["close_below_bb_lower"]
+                    and bull_flags["volume_above_avg"]
+                    and not bull_flags["macd_histogram_positive"]
+                )
+                allow_reversion_regime_buy = (
+                    not pure_reversion_buy
+                    or market_state["avg_rsi_change"] < REVERSION_MARKET_CHANGE_CEILING
+                )
                 if (
                     (bull_votes >= MIN_VOTES or special_reversion_buy)
                     and weighted_bull_votes >= MIN_WEIGHTED_BUY_VOTES
                     and allow_high_rsi_buy
                     and allow_falling_market_buy
                     and allow_extreme_fall_buy
+                    and allow_reversion_regime_buy
                 ):
                     reason = _format_vote_reason(
                         "Bull", bull_votes, bull_flags, 4
