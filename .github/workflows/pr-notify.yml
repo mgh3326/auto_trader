@@ -1,0 +1,114 @@
+name: PR Discord Notification
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, review_requested, closed]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Discord PR notification
+        env:
+          DISCORD_PR_WEBHOOK_URL: ${{ secrets.DISCORD_PR_WEBHOOK_URL }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          PR_ACTION: ${{ github.event.action }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_HEAD: ${{ github.event.pull_request.head.ref }}
+          PR_BASE: ${{ github.event.pull_request.base.ref }}
+          PR_FILES: ${{ github.event.pull_request.changed_files }}
+          PR_ADDITIONS: ${{ github.event.pull_request.additions }}
+          PR_DELETIONS: ${{ github.event.pull_request.deletions }}
+          PR_DRAFT: ${{ github.event.pull_request.draft }}
+          PR_MERGED: ${{ github.event.pull_request.merged }}
+          REQUESTED_REVIEWER: ${{ github.event.requested_reviewer.login }}
+          REQUESTED_TEAM: ${{ github.event.requested_team.name }}
+          REPO: ${{ github.repository }}
+        run: |
+          WEBHOOK_URL="${DISCORD_PR_WEBHOOK_URL:-$DISCORD_WEBHOOK_URL}"
+          if [ -z "$WEBHOOK_URL" ]; then
+            echo "No Discord webhook configured"
+            exit 1
+          fi
+
+          # draft PR opened/reopened는 제외, ready_for_review 때 알림
+          if [ "$PR_DRAFT" = "true" ] && { [ "$PR_ACTION" = "opened" ] || [ "$PR_ACTION" = "reopened" ]; }; then
+            echo "Skip draft PR notification for action=$PR_ACTION"
+            exit 0
+          fi
+
+          COLOR=3447003
+          case "$PR_ACTION" in
+            opened)
+              TITLE="🆕 새 PR"
+              ;;
+            reopened)
+              TITLE="🔄 PR 재오픈"
+              ;;
+            ready_for_review)
+              TITLE="👀 PR 리뷰 준비 완료"
+              ;;
+            review_requested)
+              TITLE="🙋 리뷰 요청"
+              COLOR=15844367
+              ;;
+            closed)
+              if [ "$PR_MERGED" = "true" ]; then
+                TITLE="✅ PR 머지 완료"
+                COLOR=5763719
+              else
+                TITLE="🗑️ PR 종료"
+                COLOR=9807270
+              fi
+              ;;
+            *)
+              TITLE="📋 PR 업데이트"
+              ;;
+          esac
+
+          REVIEWER_LABEL=""
+          REVIEWER_VALUE=""
+          if [ "$PR_ACTION" = "review_requested" ]; then
+            if [ -n "$REQUESTED_REVIEWER" ]; then
+              REVIEWER_LABEL="Reviewer"
+              REVIEWER_VALUE="@$REQUESTED_REVIEWER"
+            elif [ -n "$REQUESTED_TEAM" ]; then
+              REVIEWER_LABEL="Reviewer Team"
+              REVIEWER_VALUE="$REQUESTED_TEAM"
+            fi
+          fi
+
+          jq -n \
+            --arg title "$TITLE: #$PR_NUMBER $PR_TITLE" \
+            --arg url "$PR_URL" \
+            --arg author "$PR_AUTHOR" \
+            --arg branch "\`$PR_HEAD\` → \`$PR_BASE\`" \
+            --arg changes "$PR_FILES files  |  +$PR_ADDITIONS / -$PR_DELETIONS" \
+            --arg reviewerLabel "$REVIEWER_LABEL" \
+            --arg reviewerValue "$REVIEWER_VALUE" \
+            --arg footer "$REPO" \
+            --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --argjson color "$COLOR" \
+            '{
+              embeds: [
+                {
+                  title: $title,
+                  url: $url,
+                  color: $color,
+                  fields: (
+                    [
+                      {name: "Author", value: $author, inline: true},
+                      {name: "Branch", value: $branch, inline: true},
+                      {name: "Changes", value: $changes, inline: false}
+                    ]
+                    + (if $reviewerLabel != "" then [{name: $reviewerLabel, value: $reviewerValue, inline: false}] else [] end)
+                  ),
+                  footer: {text: $footer},
+                  timestamp: $timestamp
+                }
+              ]
+            }' \
+          | curl -s -H "Content-Type: application/json" -d @- "$WEBHOOK_URL"
