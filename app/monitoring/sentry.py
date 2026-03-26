@@ -88,6 +88,17 @@ def _is_yfinance_noise_log(logger_name: str | None, message: str | None) -> bool
     return any(pattern in message for pattern in _YFINANCE_NOISE_PATTERNS)
 
 
+def _is_yfinance_html_500_noise(logger_name: str | None, message: str | None) -> bool:
+    """yfinance 'HTTP Error 500' unknown host error is expected Yahoo outage noise."""
+    if logger_name != "yfinance" or not message:
+        return False
+    return (
+        "HTTP Error 500" in message
+        and ("Unknown Host" in message or "Will be right back" in message)
+        and ("quoteSummary/" in message or "<!DOCTYPE html>" in message)
+    )
+
+
 def _is_fastmcp_tool_validation_error(
     logger_name: str | None, message: str | None
 ) -> bool:
@@ -278,6 +289,8 @@ def _before_send(event: Event, hint: Hint) -> Event | None:
         return None
     if _is_yfinance_noise_log(logger_name, message):
         return None
+    if _is_yfinance_html_500_noise(logger_name, message):
+        return None
     if _is_fastmcp_tool_validation_error(logger_name, message):
         return None
     if _is_expected_mcp_argument_noise(logger_name, message, event):
@@ -302,6 +315,8 @@ def _before_send_log(sentry_log: Log, hint: Hint) -> Log | None:
     if _is_yfinance_crumb_error(logger_name, message):
         return None
     if _is_yfinance_noise_log(logger_name, message):
+        return None
+    if _is_yfinance_html_500_noise(logger_name, message):
         return None
     if _is_fastmcp_tool_validation_error(logger_name, message):
         return None
