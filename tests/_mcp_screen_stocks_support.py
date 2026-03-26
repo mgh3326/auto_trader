@@ -3921,9 +3921,9 @@ class TestScreenStocksFilters:
         assert result is not None
         assert result["filters_applied"]["min_market_cap"] == 100000
         # Verify Naver Finance was NOT called (uses KRX batch valuation instead)
-        assert (
-            not naver_finance_called
-        ), "Naver Finance should not be called for min_market_cap only"
+        assert not naver_finance_called, (
+            "Naver Finance should not be called for min_market_cap only"
+        )
 
 
 class TestScreenStocksSorting:
@@ -4309,9 +4309,9 @@ class TestScreenStocksPhase2Spec:
         assert len(result["results"]) > 0, "Should have ETF results"
 
         for item in result["results"]:
-            assert (
-                item.get("asset_type") == "etf"
-            ), "All ETFs should have asset_type='etf'"
+            assert item.get("asset_type") == "etf", (
+                "All ETFs should have asset_type='etf'"
+            )
             assert "category" in item, "All ETFs should have category field"
             assert isinstance(item["category"], str), "Category should be a string"
 
