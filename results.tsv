@@ -149,3 +149,8 @@ exp147	3.772435	4.079933	0.614995	3.333205	NA	kept	lower ETH pure reversion size
 exp148	3.783684	4.078544	0.589719	3.372130	NA	kept	lower XRP pure trend size to 4 percent
 exp149	3.835558	4.110842	0.550568	3.509707	NA	kept	lower ETH pure reversion size to 4 percent
 exp150	3.884371	4.141245	0.513747	3.651387	3.486604	kept	lower ETH pure reversion size to 2 percent
+exp151	3.907102	4.155538	0.496871	3.672345	NA	kept	lower ETH pure reversion size to 1 percent
+exp152	3.928381	4.169110	0.481457	3.669069	NA	kept	lower ETH pure reversion size to zero
+exp153	3.937055	4.165204	0.456297	3.669069	NA	kept	lower XRP pure trend size to 2 percent
+exp154	3.970361	4.274195	0.607669	3.669069	NA	kept	lower XRP pure trend size to zero
+exp155	3.976030	4.285425	0.618791	3.669069	3.734468	kept	lower AVAX pure trend size to 6 percent
