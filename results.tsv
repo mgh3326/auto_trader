@@ -154,3 +154,8 @@ exp152	3.928381	4.169110	0.481457	3.669069	NA	kept	lower ETH pure reversion size
 exp153	3.937055	4.165204	0.456297	3.669069	NA	kept	lower XRP pure trend size to 2 percent
 exp154	3.970361	4.274195	0.607669	3.669069	NA	kept	lower XRP pure trend size to zero
 exp155	3.976030	4.285425	0.618791	3.669069	3.734468	kept	lower AVAX pure trend size to 6 percent
+exp156	3.977076	4.292568	0.630985	3.669069	3.820493	kept	lower AVAX pure trend size to 4 percent
+exp157	3.973064	4.295396	0.644665	3.669069	NA	reverted	lower AVAX pure trend size to 2 percent
+exp158	3.952674	4.276116	0.646884	3.644165	NA	reverted	lower BTC pure trend size to 8 percent
+exp159	3.973153	4.278632	0.610958	3.669069	NA	reverted	lower DOT pure trend size to 8 percent
+exp160	3.889912	3.998989	0.218154	3.669069	NA	reverted	skip zero-weight buy signals entirely
