@@ -20,6 +20,7 @@ POSITION_SIZE = 0.10
 STRONG_REVERSION_POSITION_SIZE = 0.15
 BTC_HOT_STALL_TREND_POSITION_SIZE = 0.05
 ADA_STALLED_WASHOUT_REVERSION_POSITION_SIZE = 0.05
+DOT_MILD_REVERSION_POSITION_SIZE = 0.05
 SOL_LOW_BREADTH_TREND_POSITION_SIZE = 0.05
 AVAX_TREND_POSITION_SIZE = 0.04
 XRP_TREND_POSITION_SIZE = 0.00
@@ -45,6 +46,7 @@ BTC_TREND_HOT_RSI_LEVEL = 70.0
 BTC_TREND_STALL_CHANGE = 2.0
 ADA_STALLED_WASHOUT_RSI = 26.0
 ADA_STALLED_WASHOUT_CHANGE = -2.5
+DOT_MILD_REVERSION_RSI = 33.0
 SOL_LOW_BREADTH_RSI = 49.0
 SOL_LOW_BREADTH_CHANGE = -5.0
 LINK_TREND_RSI_LOW = 58.0
@@ -408,6 +410,11 @@ class Strategy:
                     and market_state["avg_rsi"] < ADA_STALLED_WASHOUT_RSI
                     and market_state["avg_rsi_change"] > ADA_STALLED_WASHOUT_CHANGE
                 )
+                dot_mild_reversion_buy = (
+                    pure_reversion_buy
+                    and symbol == "DOT"
+                    and market_state["avg_rsi"] > DOT_MILD_REVERSION_RSI
+                )
                 strong_reversion_buy = (
                     dual_rsi_oversold
                     and close_below_bb_lower
@@ -516,6 +523,8 @@ class Strategy:
                         buy_weight = SOL_LOW_BREADTH_TREND_POSITION_SIZE
                     elif ada_stalled_washout_buy:
                         buy_weight = ADA_STALLED_WASHOUT_REVERSION_POSITION_SIZE
+                    elif dot_mild_reversion_buy:
+                        buy_weight = DOT_MILD_REVERSION_POSITION_SIZE
                     elif eth_pure_reversion_buy:
                         buy_weight = ETH_PURE_REVERSION_POSITION_SIZE
                     elif avax_pure_trend_buy:
