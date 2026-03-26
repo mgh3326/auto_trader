@@ -19,6 +19,7 @@ MAX_POSITIONS = 5
 POSITION_SIZE = 0.10
 STRONG_REVERSION_POSITION_SIZE = 0.15
 BTC_HOT_STALL_TREND_POSITION_SIZE = 0.05
+ADA_STALLED_WASHOUT_REVERSION_POSITION_SIZE = 0.05
 AVAX_TREND_POSITION_SIZE = 0.04
 XRP_TREND_POSITION_SIZE = 0.00
 ETH_PURE_REVERSION_POSITION_SIZE = 0.00
@@ -41,6 +42,8 @@ AVAX_STRONG_REVERSION_MAX_MARKET_RSI = 35.0
 AVAX_TREND_MIN_MARKET_RSI = 60.0
 BTC_TREND_HOT_RSI_LEVEL = 70.0
 BTC_TREND_STALL_CHANGE = 2.0
+ADA_STALLED_WASHOUT_RSI = 26.0
+ADA_STALLED_WASHOUT_CHANGE = -2.5
 LINK_TREND_RSI_LOW = 58.0
 LINK_TREND_RSI_HIGH = 60.0
 LINK_TREND_MAX_ACCELERATION = 6.0
@@ -396,6 +399,12 @@ class Strategy:
                     and volume_above_avg
                     and not macd_histogram_positive
                 )
+                ada_stalled_washout_buy = (
+                    pure_reversion_buy
+                    and symbol == "ADA"
+                    and market_state["avg_rsi"] < ADA_STALLED_WASHOUT_RSI
+                    and market_state["avg_rsi_change"] > ADA_STALLED_WASHOUT_CHANGE
+                )
                 strong_reversion_buy = (
                     dual_rsi_oversold
                     and close_below_bb_lower
@@ -494,6 +503,8 @@ class Strategy:
                         buy_weight = STRONG_REVERSION_POSITION_SIZE
                     elif btc_hot_stall_trend_buy:
                         buy_weight = BTC_HOT_STALL_TREND_POSITION_SIZE
+                    elif ada_stalled_washout_buy:
+                        buy_weight = ADA_STALLED_WASHOUT_REVERSION_POSITION_SIZE
                     elif eth_pure_reversion_buy:
                         buy_weight = ETH_PURE_REVERSION_POSITION_SIZE
                     elif avax_pure_trend_buy:
