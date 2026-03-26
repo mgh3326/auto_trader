@@ -35,7 +35,6 @@ async def screen_stocks_unified(
     sector: str | None = None,
     min_dividend: float | None = None,
     min_analyst_buy: float | None = None,
-    enrich_rsi: bool = True,
 ) -> dict[str, Any]:
     """Unified stock screening entry point with automatic data source selection.
 
@@ -56,7 +55,6 @@ async def screen_stocks_unified(
         sort_by: Sort field ("volume", "trade_amount", "market_cap", etc.)
         sort_order: Sort order ("asc" or "desc")
         limit: Maximum results to return
-        enrich_rsi: Whether to enrich with RSI data
 
     Returns:
         Standardized screening response dict with results, filters_applied,
@@ -119,7 +117,6 @@ async def screen_stocks_unified(
             sort_by=normalized_sort_by,
             sort_order=normalized_sort_order,
             limit=query_limit,
-            enrich_rsi=enrich_rsi,
         )
     elif normalized_market == "us":
         response = await _screen_us_with_fallback(
@@ -133,7 +130,6 @@ async def screen_stocks_unified(
             sort_by=normalized_sort_by,
             sort_order=normalized_sort_order,
             limit=query_limit,
-            enrich_rsi=enrich_rsi,
         )
     elif normalized_market == "crypto":
         response = await _screen_crypto_with_fallback(
