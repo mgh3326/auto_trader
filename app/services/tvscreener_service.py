@@ -67,6 +67,80 @@ def _normalize_result_frame(result: pd.DataFrame) -> pd.DataFrame:
     return result.rename(columns=renamed)
 
 
+def _apply_client_side_sort(
+    df: pd.DataFrame,
+    sort_field: Any,
+    ascending: bool = True,
+) -> pd.DataFrame:
+    """Apply client-side sorting when tvscreener sort_by() fails.
+
+    Maps CryptoField/StockField enum to normalized column name for sorting.
+    Falls back to original DataFrame if mapping fails.
+
+    Args:
+        df: DataFrame to sort
+        sort_field: Field enum used for sorting (e.g., CryptoField.VALUE_TRADED)
+        ascending: Sort direction
+
+    Returns:
+        Sorted DataFrame
+    """
+    if df.empty:
+        return df
+
+    # Extract field identifier from enum (e.g., "VALUE_TRADED" from <CryptoField.VALUE_TRADED: ...>)
+    field_name = None
+    if hasattr(sort_field, "name"):
+        field_name = sort_field.name
+    elif hasattr(sort_field, "_name_"):  # Enum alternative
+        field_name = sort_field._name_
+    elif hasattr(sort_field, "__str__"):
+        # Parse from string representation
+        str_repr = str(sort_field)
+        if "." in str_repr:
+            field_name = str_repr.split(".")[-1].rstrip(">)")
+
+    if not field_name:
+        logger.warning(
+            "Could not determine field name for client-side sort, returning unsorted"
+        )
+        return df
+
+    # Map field name to normalized column name
+    column_map = {
+        "VALUE_TRADED": "value_traded",
+        "VOLUME": "volume",
+        "VOLUME_24H_IN_USD": "volume_24h_in_usd",
+        "MARKET_CAP": "market_capitalization",
+        "MARKET_CAP_BASIC": "market_capitalization",
+        "PRICE": "price",
+        "CHANGE_PERCENT": "change_percent",
+        "CHANGE": "change",
+        "RELATIVE_STRENGTH_INDEX_14": "relative_strength_index_14",
+        "AVERAGE_DIRECTIONAL_INDEX_14": "average_directional_index_14",
+        "NAME": "name",
+        "DESCRIPTION": "description",
+        "SYMBOL": "symbol",
+    }
+
+    column = column_map.get(field_name)
+
+    if column and column in df.columns:
+        try:
+            return df.sort_values(by=column, ascending=ascending)
+        except Exception as exc:
+            logger.warning("Client-side sort failed: %s", exc)
+            return df
+    else:
+        logger.warning(
+            "Cannot sort by %s: column not found in result (available: %s). "
+            "Returning unsorted.",
+            field_name,
+            list(df.columns),
+        )
+        return df
+
+
 def _normalize_where_clauses(where_clause: Any | None) -> list[Any]:
     if where_clause is None:
         return []
@@ -865,18 +939,35 @@ class TvScreenerService:
                             f".where({condition!r})"
                         )
 
+                # Defensive: Handle sort_by() returning None (AUTO_TRADER-3P)
+                sort_fallback_needed = False
                 if sort_by:
-                    query = query.sort_by(sort_by, ascending=ascending)
-                    if query is None:
-                        raise TvScreenerError(
-                            "CryptoScreener query returned None after chaining "
-                            f".sort_by({sort_by!r}, ascending={ascending})"
+                    sorted_query = query.sort_by(sort_by, ascending=ascending)
+                    if sorted_query is None:
+                        # Fallback: sort_by failed, proceed without sorting and sort later in Python
+                        logger.warning(
+                            "CryptoScreener.sort_by() returned None for field=%s ascending=%s. "
+                            "Falling back to client-side sorting.",
+                            sort_by,
+                            ascending,
                         )
+                        sort_fallback_needed = True
+                    else:
+                        query = sorted_query
 
-                if limit:
+                if limit and not sort_fallback_needed:
+                    # If we need fallback sort, we must get all rows and limit after sorting
                     query = query.set_range(0, limit)
 
-                return query.get()
+                result = query.get()
+
+                # Fallback sorting: if sort_by failed, sort in Python
+                if sort_fallback_needed and sort_by is not None:
+                    result = _apply_client_side_sort(result, sort_by, ascending)
+                    if limit:
+                        result = result.head(limit)
+
+                return result
 
             result = await self.fetch_with_retry(
                 _execute_query,
