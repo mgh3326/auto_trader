@@ -140,3 +140,12 @@ exp138	3.447561	3.820099	0.745075	2.727938	NA	reverted	block BTC pure trend entr
 exp139	3.626812	3.995232	0.736839	2.972650	NA	kept	block ETH strong reversion entries
 exp140	3.606834	3.983890	0.754113	2.944117	NA	reverted	downsize BTC pure trend entries
 exp141	3.639003	4.008505	0.739003	2.996724	2.911437	kept	downsize AVAX pure trend entries
+exp142	3.652705	4.011862	0.718314	3.036198	NA	kept	downsize XRP pure trend entries
+exp143	3.644546	3.998759	0.708427	3.030262	NA	reverted	downsize DOT pure trend entries
+exp144	3.706407	4.045514	0.678214	3.161855	NA	kept	downsize ETH pure reversion entries
+exp145	3.502643	3.989990	0.974694	3.019701	NA	reverted	delay pure trend RSI exits to 60
+exp146	3.719019	4.046675	0.655312	3.201203	NA	kept	lower XRP pure trend size to 6 percent
+exp147	3.772435	4.079933	0.614995	3.333205	NA	kept	lower ETH pure reversion size to 6 percent
+exp148	3.783684	4.078544	0.589719	3.372130	NA	kept	lower XRP pure trend size to 4 percent
+exp149	3.835558	4.110842	0.550568	3.509707	NA	kept	lower ETH pure reversion size to 4 percent
+exp150	3.884371	4.141245	0.513747	3.651387	3.486604	kept	lower ETH pure reversion size to 2 percent
