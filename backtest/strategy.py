@@ -41,6 +41,7 @@ AVAX_TREND_MIN_MARKET_RSI = 60.0
 LINK_TREND_RSI_LOW = 58.0
 LINK_TREND_RSI_HIGH = 60.0
 LINK_TREND_MAX_ACCELERATION = 6.0
+DOT_TREND_MID_RSI_MIN_CHANGE = 12.0
 OVERHEATED_MARKET_RSI_LEVEL = 75.0
 TREND_MID_RSI_LOW = 60.0
 TREND_MID_RSI_HIGH = 65.0
@@ -419,6 +420,7 @@ class Strategy:
                     and not dual_rsi_oversold
                 )
                 avax_pure_trend_buy = pure_trend_buy and symbol == "AVAX"
+                dot_pure_trend_buy = pure_trend_buy and symbol == "DOT"
                 link_pure_trend_buy = pure_trend_buy and symbol == "LINK"
                 xrp_pure_trend_buy = pure_trend_buy and symbol == "XRP"
                 allow_link_trend_buy = (
@@ -453,6 +455,12 @@ class Strategy:
                     not require_trend_acceleration
                     or market_state["avg_rsi_change"] > TREND_MID_RSI_MIN_CHANGE
                 )
+                allow_dot_trend_acceleration_buy = (
+                    not dot_pure_trend_buy
+                    or market_state["avg_rsi"] < TREND_MID_RSI_LOW
+                    or market_state["avg_rsi"] >= TREND_MID_RSI_HIGH
+                    or market_state["avg_rsi_change"] > DOT_TREND_MID_RSI_MIN_CHANGE
+                )
                 if (
                     (bull_votes >= MIN_VOTES or special_reversion_buy)
                     and weighted_bull_votes >= MIN_WEIGHTED_BUY_VOTES
@@ -468,6 +476,7 @@ class Strategy:
                     and allow_trend_regime_buy
                     and allow_trend_trap_buy
                     and allow_trend_acceleration_buy
+                    and allow_dot_trend_acceleration_buy
                 ):
                     reason = _format_vote_reason(
                         "Bull", bull_votes, bull_flags, 4
