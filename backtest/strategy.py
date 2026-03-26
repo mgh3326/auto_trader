@@ -19,6 +19,7 @@ MAX_POSITIONS = 5
 POSITION_SIZE = 0.10
 STRONG_REVERSION_POSITION_SIZE = 0.15
 BTC_HOT_STALL_TREND_POSITION_SIZE = 0.05
+BTC_MID_HOT_ACCEL_TREND_POSITION_SIZE = 0.05
 ADA_STALLED_WASHOUT_REVERSION_POSITION_SIZE = 0.05
 DOT_MILD_REVERSION_POSITION_SIZE = 0.05
 SOL_LOW_BREADTH_TREND_POSITION_SIZE = 0.05
@@ -44,6 +45,9 @@ AVAX_STRONG_REVERSION_MAX_MARKET_RSI = 35.0
 AVAX_TREND_MIN_MARKET_RSI = 60.0
 BTC_TREND_HOT_RSI_LEVEL = 70.0
 BTC_TREND_STALL_CHANGE = 2.0
+BTC_MID_HOT_RSI_LOW = 60.0
+BTC_MID_HOT_RSI_HIGH = 65.0
+BTC_EXTREME_ACCEL_CHANGE = 15.0
 ADA_STALLED_WASHOUT_RSI = 26.0
 ADA_STALLED_WASHOUT_CHANGE = -2.5
 DOT_MILD_REVERSION_RSI = 33.0
@@ -447,6 +451,12 @@ class Strategy:
                     and market_state["avg_rsi"] >= BTC_TREND_HOT_RSI_LEVEL
                     and market_state["avg_rsi_change"] < BTC_TREND_STALL_CHANGE
                 )
+                btc_mid_hot_accel_buy = (
+                    pure_trend_buy
+                    and symbol == "BTC"
+                    and BTC_MID_HOT_RSI_LOW <= market_state["avg_rsi"] < BTC_MID_HOT_RSI_HIGH
+                    and market_state["avg_rsi_change"] >= BTC_EXTREME_ACCEL_CHANGE
+                )
                 sol_low_breadth_trend_buy = (
                     pure_trend_buy
                     and symbol == "SOL"
@@ -519,6 +529,8 @@ class Strategy:
                         buy_weight = STRONG_REVERSION_POSITION_SIZE
                     elif btc_hot_stall_trend_buy:
                         buy_weight = BTC_HOT_STALL_TREND_POSITION_SIZE
+                    elif btc_mid_hot_accel_buy:
+                        buy_weight = BTC_MID_HOT_ACCEL_TREND_POSITION_SIZE
                     elif sol_low_breadth_trend_buy:
                         buy_weight = SOL_LOW_BREADTH_TREND_POSITION_SIZE
                     elif ada_stalled_washout_buy:
