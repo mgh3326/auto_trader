@@ -179,3 +179,27 @@ exp177	4.183074	4.552651	0.739153	3.800419	NA	kept	downsize SOL low breadth tren
 exp178	4.184341	4.560020	0.751359	3.800419	NA	kept	downsize hot stalled BTC trend entries to 2 percent
 exp179	4.195594	4.567520	0.743852	3.830418	NA	kept	downsize ADA stalled washout reversion to 2 percent
 exp180	4.196037	4.567917	0.743760	3.830418	3.985036	kept	downsize BTC mid hot acceleration trend to 2 percent
+exp181	4.200838	4.572239	0.742802	3.830418	NA	kept	downsize DOT mild reversion entries to 1 percent
+exp182	4.201667	4.577128	0.750922	3.830418	NA	kept	downsize SOL low breadth trend entries to 1 percent
+exp183	4.202042	4.579348	0.754612	3.830418	NA	kept	downsize hot stalled BTC trend entries to 1 percent
+exp184	4.205721	4.581809	0.752177	3.840264	NA	kept	downsize ADA stalled washout reversion to 1 percent
+exp185	4.205854	4.581929	0.752150	3.840264	NA	kept	downsize BTC mid hot acceleration trend to 1 percent
+exp186	4.106726	4.498652	0.783851	3.840264	NA	reverted	zero DOT mild reversion entries
+exp187	4.206655	4.586714	0.760118	3.840264	NA	kept	zero SOL low breadth trend entries
+exp188	4.203662	4.568942	0.730562	3.840264	NA	reverted	zero hot stalled BTC trend entries
+exp189	4.210292	4.589155	0.757728	3.850031	NA	kept	zero ADA stalled washout reversion
+exp190	4.210420	4.589271	0.757701	3.850031	NA	kept	zero BTC mid hot acceleration trend
+exp191	4.211408	4.595237	0.767658	3.850031	NA	kept	downsize SOL hot stalled trend entries
+exp192	4.211854	4.597934	0.772160	3.850031	NA	kept	downsize LINK hot stalled trend entries
+exp193	4.217056	4.601444	0.768776	3.864074	NA	kept	zero XRP stalled washout reversion
+exp194	4.222427	4.605080	0.765307	3.878618	NA	kept	zero SOL mild reversion entries
+exp195	4.222860	4.607753	0.769787	3.878618	NA	kept	zero LINK hot stalled trend entries
+exp196	4.223778	4.613446	0.779336	3.878618	NA	kept	zero SOL hot stalled trend entries
+exp197	4.226179	4.615579	0.778801	3.878618	NA	kept	downsize DOT mild reversion entries to half percent
+exp198	4.226349	4.616631	0.780565	3.878618	NA	kept	downsize hot stalled BTC trend entries to half percent
+exp199	4.227539	4.617692	0.780305	3.878618	NA	kept	downsize DOT mild reversion entries to quarter percent
+exp200	4.227623	4.618207	0.781168	3.878618	NA	kept	downsize hot stalled BTC trend entries to quarter percent
+exp201	4.228216	4.618736	0.781040	3.878618	NA	kept	downsize DOT mild reversion entries to eighth percent
+exp202	4.228511	4.619000	0.780976	3.878618	NA	kept	downsize DOT mild reversion entries to sixteenth percent
+exp203	4.228659	4.619131	0.780944	3.878618	NA	kept	downsize DOT mild reversion entries to thirty-second percent
+exp204	4.228733	4.619197	0.780929	3.878618	3.985036	kept	downsize DOT mild reversion entries to sixty-fourth percent
