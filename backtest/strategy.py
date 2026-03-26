@@ -36,6 +36,7 @@ FALLING_MARKET_RSI_LEVEL = 55.0
 FALLING_MARKET_CHANGE = -1.0
 EXTREME_FALLING_MARKET_CHANGE = -6.0
 REVERSION_MARKET_CHANGE_CEILING = -2.0
+AVAX_STRONG_REVERSION_MAX_MARKET_RSI = 35.0
 OVERHEATED_MARKET_RSI_LEVEL = 75.0
 TREND_MID_RSI_LOW = 60.0
 TREND_MID_RSI_HIGH = 65.0
@@ -400,6 +401,11 @@ class Strategy:
                     not strong_reversion_buy
                     or symbol != "ETH"
                 )
+                allow_avax_strong_reversion_buy = (
+                    symbol != "AVAX"
+                    or not strong_reversion_buy
+                    or market_state["avg_rsi"] < AVAX_STRONG_REVERSION_MAX_MARKET_RSI
+                )
                 eth_pure_reversion_buy = pure_reversion_buy and symbol == "ETH"
                 pure_trend_buy = (
                     macd_histogram_positive
@@ -440,6 +446,7 @@ class Strategy:
                     and allow_extreme_fall_buy
                     and allow_btc_pure_reversion_buy
                     and allow_eth_strong_reversion_buy
+                    and allow_avax_strong_reversion_buy
                     and allow_reversion_regime_buy
                     and allow_trend_regime_buy
                     and allow_trend_trap_buy
