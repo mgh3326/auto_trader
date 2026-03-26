@@ -10,6 +10,8 @@ from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from .protocol import (
+    _SIDE_MAP,
+    _US_SYMBOL_RESERVED_TOKENS,
     DOMESTIC_COMPACT_FILL_FIELDS,
     DOMESTIC_EXECUTION_TR_CODES,
     DOMESTIC_OFFICIAL_FILL_FIELDS,
@@ -17,8 +19,6 @@ from .protocol import (
     OVERSEAS_EXECUTION_TR_CODES,
     OVERSEAS_FILL_FIELDS,
     OVERSEAS_SIDE_MAP,
-    _SIDE_MAP,
-    _US_SYMBOL_RESERVED_TOKENS,
 )
 
 logger = logging.getLogger(__name__)

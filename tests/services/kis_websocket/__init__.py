@@ -1,5 +1,3 @@
-import datetime
-
 def build_domestic_message(
     *,
     symbol: str = "012450",

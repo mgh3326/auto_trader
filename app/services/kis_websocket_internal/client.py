@@ -11,15 +11,16 @@ import websockets
 from websockets.exceptions import ConnectionClosed, WebSocketException
 
 from app.core.config import settings
+
 from . import approval_keys
 from .constants import RECOVERABLE_APPROVAL_MSG_CODES
 from .parsers import ExecutionMessageParser
 from .protocol import (
     DOMESTIC_EXECUTION_TR_MOCK,
     DOMESTIC_EXECUTION_TR_REAL,
-    KISSubscriptionAckError,
     OVERSEAS_EXECUTION_TR_MOCK,
     OVERSEAS_EXECUTION_TR_REAL,
+    KISSubscriptionAckError,
 )
 
 logger = logging.getLogger(__name__)
@@ -355,7 +356,9 @@ class KISExecutionWebSocket:
                         continue
 
                     data["received_at"] = received_at
-                    data.setdefault("correlation_id", self._parser._new_correlation_id())
+                    data.setdefault(
+                        "correlation_id", self._parser._new_correlation_id()
+                    )
 
                     if self._parser.is_execution_event(data):
                         self.execution_events_received += 1

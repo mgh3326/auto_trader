@@ -1,5 +1,3 @@
-import asyncio
-import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -13,6 +11,7 @@ from app.services.kis_websocket import (
     KISExecutionWebSocket,
     KISSubscriptionAckError,
 )
+
 
 @pytest.mark.unit
 class TestKISWebSocketClient:
@@ -78,7 +77,8 @@ class TestKISWebSocketClient:
 
         with (
             patch(
-                "app.services.kis_websocket_internal.client.websockets.connect", new=AsyncMock(return_value=mock_websocket)
+                "app.services.kis_websocket_internal.client.websockets.connect",
+                new=AsyncMock(return_value=mock_websocket),
             ) as mock_connect,
             patch.object(client, "_subscribe_execution_tr", new=AsyncMock()),
         ):
@@ -216,8 +216,14 @@ class TestKISWebSocketClient:
                 new=AsyncMock(side_effect=connect_fail_then_success),
             ),
             patch.object(client, "_close_websocket_best_effort", close_mock),
-            patch("app.services.kis_websocket_internal.approval_keys._issue_approval_key", reissue_mock),
-            patch("app.services.kis_websocket_internal.approval_keys._cache_approval_key", cache_mock),
+            patch(
+                "app.services.kis_websocket_internal.approval_keys._issue_approval_key",
+                reissue_mock,
+            ),
+            patch(
+                "app.services.kis_websocket_internal.approval_keys._cache_approval_key",
+                cache_mock,
+            ),
         ):
             await client.connect_and_subscribe()
 
@@ -273,8 +279,14 @@ class TestKISWebSocketClient:
                 new=AsyncMock(side_effect=connect_fail_then_success),
             ),
             patch.object(client, "_close_websocket_best_effort", close_mock),
-            patch("app.services.kis_websocket_internal.approval_keys._issue_approval_key", reissue_mock),
-            patch("app.services.kis_websocket_internal.approval_keys._cache_approval_key", cache_mock),
+            patch(
+                "app.services.kis_websocket_internal.approval_keys._issue_approval_key",
+                reissue_mock,
+            ),
+            patch(
+                "app.services.kis_websocket_internal.approval_keys._cache_approval_key",
+                cache_mock,
+            ),
         ):
             await client.connect_and_subscribe()
 
@@ -319,8 +331,14 @@ class TestKISWebSocketClient:
             ),
             patch.object(client, "_connect_and_subscribe_internal", connect_mock),
             patch.object(client, "_close_websocket_best_effort", close_mock),
-            patch("app.services.kis_websocket_internal.approval_keys._issue_approval_key", new=AsyncMock()),
-            patch("app.services.kis_websocket_internal.approval_keys._cache_approval_key", new=AsyncMock()),
+            patch(
+                "app.services.kis_websocket_internal.approval_keys._issue_approval_key",
+                new=AsyncMock(),
+            ),
+            patch(
+                "app.services.kis_websocket_internal.approval_keys._cache_approval_key",
+                new=AsyncMock(),
+            ),
         ):
             with pytest.raises(
                 RuntimeError, match="KIS WebSocket connection not established"
@@ -432,9 +450,11 @@ class TestKISWebSocketClient:
         """Test that listen() correctly invokes callback for official H0GSCNI0 fill."""
         client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
         client.websocket = AsyncMock()
-        
+
         # official H0GSCNI0 message
-        payload = "12345678^01^ORD1^0000000000^02^0^153045^NVDA^3^875.00^0000000003^2^0^1"
+        payload = (
+            "12345678^01^ORD1^0000000000^02^0^153045^NVDA^3^875.00^0000000003^2^0^1"
+        )
         message = f"0|H0GSCNI0|1|{payload}"
         client.websocket.__aiter__.return_value = [message]
 
