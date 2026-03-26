@@ -1135,6 +1135,86 @@ class TestScreenStocksTvScreenerContract:
         assert rows[0]["upside_pct"] == 10.0
 
     @pytest.mark.asyncio
+    async def test_us_screen_stocks_enrichment_failure_warns_without_failing_response(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def mock_screen_us_via_tvscreener(**kwargs: Any) -> dict[str, Any]:
+            return {
+                "stocks": [
+                    {
+                        "symbol": "WFC/PD",
+                        "name": "Wells Fargo Preferred",
+                        "price": 24.5,
+                        "change_percent": 0.2,
+                        "volume": 150000.0,
+                        "market_cap": 52_000_000_000.0,
+                    },
+                    {
+                        "symbol": "AAPL",
+                        "name": "Apple Inc.",
+                        "price": 200.0,
+                        "change_percent": 1.2,
+                        "volume": 75_000_000.0,
+                        "market_cap": 2_800_000_000_000.0,
+                    },
+                ],
+                "count": 2,
+                "filters_applied": {"sort_by": "volume", "sort_order": "desc"},
+                "source": "tvscreener",
+                "error": None,
+            }
+
+        async def fail_legacy_us(**kwargs: Any) -> dict[str, Any]:
+            raise AssertionError(
+                "legacy US path should not run for plain stock requests"
+            )
+
+        async def mock_fetch_screen_enrichment_us(
+            symbol: str, **kwargs: Any
+        ) -> dict[str, Any]:
+            if symbol == "WFC/PD":
+                raise RuntimeError("opinions unavailable for WFC/PD")
+            return {
+                "sector": "Technology",
+                "analyst_buy": 18,
+                "analyst_hold": 4,
+                "analyst_sell": 1,
+                "avg_target": 220.0,
+                "upside_pct": 10.0,
+            }
+
+        monkeypatch.setattr(
+            screening_us,
+            "_screen_us_via_tvscreener",
+            mock_screen_us_via_tvscreener,
+        )
+        monkeypatch.setattr(screening_us, "_screen_us", fail_legacy_us)
+        monkeypatch.setattr(
+            screening_enrichment,
+            "_fetch_screen_enrichment_us",
+            mock_fetch_screen_enrichment_us,
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="us",
+            asset_type="stock",
+            sort_by="volume",
+            sort_order="desc",
+            limit=2,
+        )
+
+        assert result["returned_count"] == 2
+        results_by_code = {item["code"]: item for item in result["results"]}
+        assert set(results_by_code) == {"AAPL", "WFC/PD"}
+        assert results_by_code["AAPL"]["sector"] == "Technology"
+        assert results_by_code["WFC/PD"]["sector"] is None
+        assert any(
+            "us:WFC/PD: RuntimeError: opinions unavailable for WFC/PD" == warning
+            for warning in result.get("warnings", [])
+        )
+
+    @pytest.mark.asyncio
     async def test_us_category_preserves_acronym_case_for_tvscreener_filter(
         self, monkeypatch
     ):
@@ -3841,9 +3921,9 @@ class TestScreenStocksFilters:
         assert result is not None
         assert result["filters_applied"]["min_market_cap"] == 100000
         # Verify Naver Finance was NOT called (uses KRX batch valuation instead)
-        assert not naver_finance_called, (
-            "Naver Finance should not be called for min_market_cap only"
-        )
+        assert (
+            not naver_finance_called
+        ), "Naver Finance should not be called for min_market_cap only"
 
 
 class TestScreenStocksSorting:
@@ -4229,9 +4309,9 @@ class TestScreenStocksPhase2Spec:
         assert len(result["results"]) > 0, "Should have ETF results"
 
         for item in result["results"]:
-            assert item.get("asset_type") == "etf", (
-                "All ETFs should have asset_type='etf'"
-            )
+            assert (
+                item.get("asset_type") == "etf"
+            ), "All ETFs should have asset_type='etf'"
             assert "category" in item, "All ETFs should have category field"
             assert isinstance(item["category"], str), "Category should be a string"
 

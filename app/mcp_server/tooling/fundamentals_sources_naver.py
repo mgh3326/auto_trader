@@ -21,6 +21,7 @@ import yfinance as yf
 
 import app.services.brokers.upbit.client as upbit_service
 from app.core.config import settings
+from app.core.symbol import to_db_symbol, to_yahoo_symbol
 from app.mcp_server.tooling.shared import normalize_value as _normalize_value
 from app.monitoring import build_yfinance_tracing_session
 from app.services import naver_finance
@@ -91,6 +92,12 @@ def _coerce_optional_number(value: Any) -> int | float | None:
             return None
         return value
     return None
+
+
+def _normalize_yfinance_symbol(symbol: str) -> str:
+    """Normalize external US symbols to the Yahoo Finance ticker format."""
+    normalized = to_db_symbol(str(symbol or "").strip().upper())
+    return to_yahoo_symbol(normalized)
 
 
 def _build_screen_enrichment_payload(
@@ -342,11 +349,11 @@ async def _fetch_news_finnhub(symbol: str, market: str, limit: int) -> dict[str,
             {
                 "title": item.get("headline", ""),
                 "source": item.get("source", ""),
-                "datetime": datetime.datetime.fromtimestamp(
-                    item.get("datetime", 0)
-                ).isoformat()
-                if item.get("datetime")
-                else None,
+                "datetime": (
+                    datetime.datetime.fromtimestamp(item.get("datetime", 0)).isoformat()
+                    if item.get("datetime")
+                    else None
+                ),
                 "url": item.get("url", ""),
                 "summary": item.get("summary", ""),
                 "sentiment": item.get("sentiment"),
@@ -397,7 +404,7 @@ async def _fetch_financials_yfinance(
 ) -> dict[str, Any]:
     loop = asyncio.get_running_loop()
     session = build_yfinance_tracing_session()
-    ticker = yf.Ticker(symbol, session=session)
+    ticker = yf.Ticker(_normalize_yfinance_symbol(symbol), session=session)
 
     def fetch_sync() -> dict[str, Any]:
         statement_map = {
@@ -723,7 +730,7 @@ async def _fetch_investment_opinions_yfinance(
     loop = asyncio.get_running_loop()
     if session is None:
         session = build_yfinance_tracing_session()
-    ticker = yf.Ticker(symbol, session=session)
+    ticker = yf.Ticker(_normalize_yfinance_symbol(symbol), session=session)
 
     def _collect() -> tuple[dict[str, Any] | None, Any, Any, dict[str, Any] | None]:
         targets = None
@@ -826,7 +833,7 @@ async def _fetch_investment_opinions_yfinance_screen(
     loop = asyncio.get_running_loop()
     if session is None:
         session = build_yfinance_tracing_session()
-    ticker = yf.Ticker(symbol, session=session)
+    ticker = yf.Ticker(_normalize_yfinance_symbol(symbol), session=session)
 
     def _collect() -> tuple[dict[str, Any] | None, Any]:
         targets = None
@@ -951,7 +958,7 @@ async def _fetch_valuation_yfinance(
     loop = asyncio.get_running_loop()
     if session is None:
         session = build_yfinance_tracing_session()
-    ticker = yf.Ticker(symbol, session=session)
+    ticker = yf.Ticker(_normalize_yfinance_symbol(symbol), session=session)
     if snapshot is not None and snapshot.info is not None:
         info = snapshot.info
     else:
@@ -1087,7 +1094,10 @@ async def _fetch_sector_peers_us(
             session = build_yfinance_tracing_session()
 
             def _fetch_info(symbol: str = ticker, yf_session=session) -> dict[str, Any]:
-                return yf.Ticker(symbol, session=yf_session).info
+                return yf.Ticker(
+                    _normalize_yfinance_symbol(symbol),
+                    session=yf_session,
+                ).info
 
             info: dict[str, Any] = await asyncio.to_thread(_fetch_info)
             return (ticker, info)

@@ -3228,6 +3228,65 @@ class TestScreenEnrichmentHelpers:
         }
         assert any("opinions unavailable" in message for message in caplog.messages)
 
+    @pytest.mark.parametrize(
+        ("raw_symbol", "expected_yahoo_symbol"),
+        [
+            ("WFC/PD", "WFC-PD"),
+            ("BRK/B", "BRK-B"),
+            ("BRK-B", "BRK-B"),
+            ("BRK.B", "BRK-B"),
+        ],
+    )
+    async def test_us_screen_enrichment_screen_mode_normalizes_yahoo_symbols(
+        self,
+        monkeypatch,
+        raw_symbol: str,
+        expected_yahoo_symbol: str,
+    ) -> None:
+        captured_symbols: list[str] = []
+
+        class MockTicker:
+            analyst_price_targets = {"mean": 55.0, "current": 50.0}
+            recommendations = None
+
+        def ticker_factory(symbol: str, session=None) -> MockTicker:
+            assert session is not None
+            captured_symbols.append(symbol)
+            return MockTicker()
+
+        async def mock_profile(symbol: str) -> dict[str, object]:
+            assert symbol == raw_symbol
+            return {"sector": "Financial Services"}
+
+        monkeypatch.setattr(
+            fundamentals_sources_naver.yf,
+            "Ticker",
+            ticker_factory,
+        )
+        monkeypatch.setattr(
+            fundamentals_sources_naver,
+            "_fetch_company_profile_finnhub",
+            mock_profile,
+            raising=False,
+        )
+
+        result = await fundamentals_sources_naver._fetch_screen_enrichment_us(
+            raw_symbol,
+            current_price=50.0,
+            session=object(),
+            include_opinion_history=False,
+        )
+
+        assert captured_symbols == [expected_yahoo_symbol]
+        assert result == {
+            "sector": "Financial Services",
+            "analyst_buy": 0,
+            "analyst_hold": 0,
+            "analyst_sell": 0,
+            "avg_target": 55.0,
+            "upside_pct": 10.0,
+        }
+
     async def test_screen_enrichment_raises_when_both_providers_fail(
         self, monkeypatch
     ) -> None:
