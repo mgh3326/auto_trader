@@ -94,8 +94,9 @@ class _TvCondition:
 
 
 class _TvField:
-    def __init__(self, label: str) -> None:
+    def __init__(self, label: str, name: str | None = None) -> None:
         self.label = label
+        self.name = name or label.upper()
 
     def __eq__(self, other: object) -> bool:  # type: ignore[override]
         return cast(bool, cast(object, _TvCondition(f"{self.label}=={other}")))
@@ -179,16 +180,18 @@ def build_tools() -> dict[str, Callable[..., Any]]:
 def fake_crypto_tvscreener_module() -> SimpleNamespace:
     return SimpleNamespace(
         CryptoField=SimpleNamespace(
-            NAME=_TvField("name"),
-            DESCRIPTION=_TvField("description"),
-            PRICE=_TvField("price"),
-            CHANGE_PERCENT=_TvField("change_percent"),
-            RELATIVE_STRENGTH_INDEX_14=_TvField("rsi14"),
-            AVERAGE_DIRECTIONAL_INDEX_14=_TvField("adx14"),
-            VOLUME_24H_IN_USD=_TvField("volume24h"),
-            VALUE_TRADED=_TvField("value_traded"),
-            MARKET_CAP=_TvField("market_cap"),
-            EXCHANGE=_TvField("exchange"),
+            NAME=_TvField("name", "NAME"),
+            DESCRIPTION=_TvField("description", "DESCRIPTION"),
+            PRICE=_TvField("price", "PRICE"),
+            CHANGE_PERCENT=_TvField("change_percent", "CHANGE_PERCENT"),
+            RELATIVE_STRENGTH_INDEX_14=_TvField("rsi14", "RELATIVE_STRENGTH_INDEX_14"),
+            AVERAGE_DIRECTIONAL_INDEX_14=_TvField(
+                "adx14", "AVERAGE_DIRECTIONAL_INDEX_14"
+            ),
+            VOLUME_24H_IN_USD=_TvField("volume24h", "VOLUME_24H_IN_USD"),
+            VALUE_TRADED=_TvField("value_traded", "VALUE_TRADED"),
+            MARKET_CAP=_TvField("market_cap", "MARKET_CAP"),
+            EXCHANGE=_TvField("exchange", "EXCHANGE"),
         )
     )
 
@@ -359,6 +362,25 @@ def _mock_crypto_external_sources(monkeypatch: pytest.MonkeyPatch):
         screening_us,
         "_fetch_ohlcv_for_indicators",
         mock_fetch_ohlcv_for_indicators,
+    )
+
+    # Mock tvscreener globally for TvScreenerService to avoid live calls in tests
+    # and ensure consistent behavior with mocked data.
+    from app.services import tvscreener_service
+
+    # We can't easily import fake_crypto_tvscreener_module here as it's a fixture,
+    # but we can define a simple mock or use the one from screening_crypto if already patched.
+    # For now, let's just make it raise ImportError if not explicitly mocked in the test,
+    # which will trigger legacy fallback in most MCP tests.
+    def mock_import_tvscreener():
+        raise ImportError(
+            "tvscreener disabled by default in tests to prevent live calls"
+        )
+
+    monkeypatch.setattr(
+        tvscreener_service,
+        "_import_tvscreener",
+        mock_import_tvscreener,
     )
 
 

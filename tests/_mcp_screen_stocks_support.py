@@ -40,8 +40,9 @@ class _TvCondition:
 
 
 class _TvField:
-    def __init__(self, label: str) -> None:
+    def __init__(self, label: str, name: str | None = None) -> None:
         self.label = label
+        self.name = name or label.upper()
 
     def __eq__(self, other: object) -> bool:
         return cast(bool, cast(object, _TvCondition(f"{self.label}=={other}")))
@@ -75,16 +76,18 @@ def build_tools() -> dict[str, ToolFunc]:
 def fake_crypto_tvscreener_module() -> SimpleNamespace:
     return SimpleNamespace(
         CryptoField=SimpleNamespace(
-            NAME=_TvField("name"),
-            DESCRIPTION=_TvField("description"),
-            PRICE=_TvField("price"),
-            CHANGE_PERCENT=_TvField("change_percent"),
-            RELATIVE_STRENGTH_INDEX_14=_TvField("rsi14"),
-            AVERAGE_DIRECTIONAL_INDEX_14=_TvField("adx14"),
-            VOLUME_24H_IN_USD=_TvField("volume24h"),
-            VALUE_TRADED=_TvField("value_traded"),
-            MARKET_CAP=_TvField("market_cap"),
-            EXCHANGE=_TvField("exchange"),
+            NAME=_TvField("name", "NAME"),
+            DESCRIPTION=_TvField("description", "DESCRIPTION"),
+            PRICE=_TvField("price", "PRICE"),
+            CHANGE_PERCENT=_TvField("change_percent", "CHANGE_PERCENT"),
+            RELATIVE_STRENGTH_INDEX_14=_TvField("rsi14", "RELATIVE_STRENGTH_INDEX_14"),
+            AVERAGE_DIRECTIONAL_INDEX_14=_TvField(
+                "adx14", "AVERAGE_DIRECTIONAL_INDEX_14"
+            ),
+            VOLUME_24H_IN_USD=_TvField("volume24h", "VOLUME_24H_IN_USD"),
+            VALUE_TRADED=_TvField("value_traded", "VALUE_TRADED"),
+            MARKET_CAP=_TvField("market_cap", "MARKET_CAP"),
+            EXCHANGE=_TvField("exchange", "EXCHANGE"),
         )
     )
 

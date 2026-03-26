@@ -1,27 +1,27 @@
-import pytest
-import pandas as pd
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pandas as pd
+import pytest
+
 from app.services.tvscreener_service import (
     TvScreenerService,
-    TvScreenerError,
 )
 
 
 class FakeQuery:
     """Mock query where sort_by returns None"""
-    
+
     def __init__(self, data, return_none_on_sort=False):
         self.data = data
         self.return_none_on_sort = return_none_on_sort
         self.sort_applied = False
         self.sort_field = None
         self.sort_ascending = None
-    
+
     def where(self, condition):
         return self
-    
+
     def sort_by(self, field, ascending=True):
         if self.return_none_on_sort:
             return None
@@ -29,10 +29,10 @@ class FakeQuery:
         self.sort_field = field
         self.sort_ascending = ascending
         return self
-    
+
     def set_range(self, start, end):
         return self
-    
+
     def get(self):
         return self.data
 
@@ -41,22 +41,25 @@ class FakeQuery:
 @pytest.mark.asyncio
 async def test_query_crypto_screener_handles_sort_by_none():
     """Test fallback behavior when sort_by() returns None"""
-    
+
     # Given: Mock object where sort_by returns None
-    fake_df = pd.DataFrame({
-        "name": ["BTC", "ETH", "XRP"],
-        "price": [100_000_000, 5_000_000, 1_000],
-        "value_traded": [900e9, 1200e9, 700e9],
-    })
-    
+    fake_df = pd.DataFrame(
+        {
+            "name": ["BTC", "ETH", "XRP"],
+            "price": [100_000_000, 5_000_000, 1_000],
+            "value_traded": [900e9, 1200e9, 700e9],
+        }
+    )
+
     fake_screener = MagicMock()
     fake_query = FakeQuery(fake_df, return_none_on_sort=True)
     fake_screener.select.return_value = fake_query
-    
+
     # Create mock enums with .name property
     class MockField:
         def __init__(self, name):
             self.name = name
+
         def __str__(self):
             return f"CryptoField.{self.name}"
 
@@ -68,9 +71,9 @@ async def test_query_crypto_screener_handles_sort_by_none():
             VALUE_TRADED=MockField("VALUE_TRADED"),
         ),
     )
-    
+
     service = TvScreenerService()
-    
+
     # When & Then: Should return result without exception even if sort_by fails
     with patch(
         "app.services.tvscreener_service._import_tvscreener",
@@ -78,12 +81,15 @@ async def test_query_crypto_screener_handles_sort_by_none():
     ):
         # Currently this test should fail with TvScreenerError
         result = await service.query_crypto_screener(
-            columns=[fake_tvscreener.CryptoField.NAME, fake_tvscreener.CryptoField.PRICE],
+            columns=[
+                fake_tvscreener.CryptoField.NAME,
+                fake_tvscreener.CryptoField.PRICE,
+            ],
             sort_by=fake_tvscreener.CryptoField.VALUE_TRADED,
             ascending=False,
             limit=10,
         )
-        
+
         # Fallback: Check if sorted at Python level
         assert isinstance(result, pd.DataFrame)
         assert len(result) == 3
@@ -97,22 +103,25 @@ async def test_query_crypto_screener_handles_sort_by_none():
 @pytest.mark.asyncio
 async def test_query_stock_screener_handles_sort_by_none():
     """Test fallback behavior when StockScreener.sort_by() returns None"""
-    
+
     # Given: Mock object where sort_by returns None
-    fake_df = pd.DataFrame({
-        "name": ["AAPL", "MSFT", "GOOGL"],
-        "price": [150, 300, 2800],
-        "market_capitalization": [2.5e12, 2.2e12, 1.8e12],
-    })
-    
+    fake_df = pd.DataFrame(
+        {
+            "name": ["AAPL", "MSFT", "GOOGL"],
+            "price": [150, 300, 2800],
+            "market_capitalization": [2.5e12, 2.2e12, 1.8e12],
+        }
+    )
+
     fake_screener = MagicMock()
     fake_query = FakeQuery(fake_df, return_none_on_sort=True)
     fake_screener.select.return_value = fake_query
-    
+
     # Create mock enums with .name property
     class MockField:
         def __init__(self, name):
             self.name = name
+
         def __str__(self):
             return f"StockField.{self.name}"
 
@@ -125,9 +134,9 @@ async def test_query_stock_screener_handles_sort_by_none():
             COUNTRY=MockField("COUNTRY"),
         ),
     )
-    
+
     service = TvScreenerService()
-    
+
     # When & Then: Should return result without exception even if sort_by fails
     with patch(
         "app.services.tvscreener_service._import_tvscreener",
@@ -139,7 +148,7 @@ async def test_query_stock_screener_handles_sort_by_none():
             ascending=False,
             limit=10,
         )
-        
+
         # Fallback: Check if sorted at Python level
         assert isinstance(result, pd.DataFrame)
         assert len(result) == 3
