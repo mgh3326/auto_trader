@@ -100,3 +100,106 @@ exp97	0.644080	1.353863	1.419566	-0.071501	3.063491	kept	min_votes=3, weighted=4
 exp98	0.741743	1.459236	1.434986	-0.071501	3.063491	kept	min_votes=3, weighted=4, min_sell=3, block_high=False, fall_block=True, level=55.0, change=-1.0
 exp99	0.584327	1.294989	1.421323	-0.031796	3.063491	kept	min_votes=3, weighted=4, min_sell=3, block_high=False, fall_block=True, level=60.0, change=0.0
 exp100	0.575496	1.287910	1.424828	-0.031796	3.063491	kept	min_votes=3, weighted=4, min_sell=3, block_high=False, fall_block=True, level=60.0, change=-1.0
+exp101	0.498235	1.380515	1.764562	-1.306594	NA	reverted	require MACD line above zero for bullish vote
+exp102	1.161215	2.065213	1.807995	-0.796349	NA	kept	block oversold buys during breadth collapse without MACD confirmation
+exp103	1.107316	1.975092	1.735553	-0.917508	NA	reverted	raise RSI exit threshold for trend entries
+exp104	1.964712	2.596085	1.262747	0.923072	NA	kept	require breadth capitulation for pure volume reversion buys
+exp105	2.446698	3.065798	1.238200	0.923072	NA	kept	block pure trend buys in overheated market breadth
+exp106	2.979612	3.614729	1.270234	1.638914	NA	kept	require breadth acceleration for mid-band trend buys
+exp107	2.779041	3.503296	1.448510	1.479582	NA	reverted	raise RSI exit for filtered trend entries
+exp108	2.987947	3.601571	1.227249	1.743036	NA	kept	upsize MACD-confirmed reversion entries
+exp109	2.979783	3.593367	1.227168	1.743036	NA	reverted	upsize capitulation-only volume reversion entries
+exp110	2.987947	3.601571	1.227249	1.743036	NA	reverted	use 8-period fast RSI for entry timing
+exp111	2.827301	3.510757	1.366911	1.379777	NA	reverted	widen stop-loss for filtered trend entries
+exp112	2.982822	3.609069	1.252493	1.680211	NA	reverted	delay bear-vote exit for MACD-confirmed reversion
+exp113	3.002188	3.609681	1.214986	1.775475	NA	kept	use 6-period fast RSI for entry timing
+exp114	3.002188	3.609681	1.214986	1.775475	NA	reverted	add RSI divergence as reversion tie-breaker
+exp115	2.867268	3.422955	1.111374	1.775475	NA	reverted	use 4-day momentum for breakout confirmation
+exp116	2.972319	3.525537	1.106435	1.775475	NA	reverted	use 6-day momentum for breakout confirmation
+exp117	2.656022	3.493788	1.675533	0.974230	NA	reverted	loosen volume spike threshold to 1.4x average
+exp118	2.717586	3.570640	1.706109	1.193025	NA	reverted	tighten volume spike threshold to 1.6x average
+exp119	2.992326	3.598546	1.212440	1.775475	NA	reverted	widen Bollinger bands to 1.7 std
+exp120	2.990751	3.598248	1.214994	1.775475	NA	reverted	narrow Bollinger bands to 1.4 std
+exp121	2.723741	3.446328	1.445173	1.155300	NA	reverted	use 10-span fast EMA for trend confirmation
+exp122	2.907840	3.556143	1.296607	1.561323	NA	reverted	use 6-span fast EMA for trend confirmation
+exp123	2.885936	3.543774	1.315675	1.511845	NA	reverted	use 20-span slow EMA for trend confirmation
+exp124	2.723741	3.446328	1.445173	1.155300	NA	reverted	use 28-span slow EMA for trend confirmation
+exp125	3.002188	3.609681	1.214986	1.775475	NA	reverted	widen stop-loss to 2.5 percent
+exp126	2.623453	3.381539	1.516173	0.943290	NA	reverted	require positive MACD line for pure trend buys
+exp127	2.973978	3.583749	1.219541	1.756952	NA	reverted	reduce pure trend position size to 8 percent
+exp128	3.128666	3.784614	1.311896	1.775475	NA	kept	block trend buys in hot mid-acceleration breadth
+exp129	3.095133	3.706047	1.221828	1.775475	NA	reverted	skip RSI exits when loss is still within 1 percent
+exp130	3.334262	3.820843	0.973163	2.339900	2.056769	kept	lower hot breadth threshold to 64 RSI
+exp132	3.334262	3.820843	0.973163	2.339900	NA	reverted	lower hot breadth threshold to 63 RSI
+exp133	3.182016	3.714978	1.065924	2.021730	NA	reverted	block trend buys on low-breadth rebound spikes
+exp134	3.249732	3.746813	0.994161	2.204244	NA	reverted	downsize low-breadth pure trend entries
+exp135	3.222232	3.698267	0.952070	2.200668	NA	reverted	require stronger symbol RSI in low-breadth trends
+exp136	3.258389	3.672600	0.828421	2.339900	NA	reverted	extend trend acceleration gate down to 58 RSI
+exp137	3.552981	3.952017	0.798071	2.799790	NA	kept	block BTC pure reversion entries
+exp138	3.447561	3.820099	0.745075	2.727938	NA	reverted	block BTC pure trend entries
+exp139	3.626812	3.995232	0.736839	2.972650	NA	kept	block ETH strong reversion entries
+exp140	3.606834	3.983890	0.754113	2.944117	NA	reverted	downsize BTC pure trend entries
+exp141	3.639003	4.008505	0.739003	2.996724	2.911437	kept	downsize AVAX pure trend entries
+exp142	3.652705	4.011862	0.718314	3.036198	NA	kept	downsize XRP pure trend entries
+exp143	3.644546	3.998759	0.708427	3.030262	NA	reverted	downsize DOT pure trend entries
+exp144	3.706407	4.045514	0.678214	3.161855	NA	kept	downsize ETH pure reversion entries
+exp145	3.502643	3.989990	0.974694	3.019701	NA	reverted	delay pure trend RSI exits to 60
+exp146	3.719019	4.046675	0.655312	3.201203	NA	kept	lower XRP pure trend size to 6 percent
+exp147	3.772435	4.079933	0.614995	3.333205	NA	kept	lower ETH pure reversion size to 6 percent
+exp148	3.783684	4.078544	0.589719	3.372130	NA	kept	lower XRP pure trend size to 4 percent
+exp149	3.835558	4.110842	0.550568	3.509707	NA	kept	lower ETH pure reversion size to 4 percent
+exp150	3.884371	4.141245	0.513747	3.651387	3.486604	kept	lower ETH pure reversion size to 2 percent
+exp151	3.907102	4.155538	0.496871	3.672345	NA	kept	lower ETH pure reversion size to 1 percent
+exp152	3.928381	4.169110	0.481457	3.669069	NA	kept	lower ETH pure reversion size to zero
+exp153	3.937055	4.165204	0.456297	3.669069	NA	kept	lower XRP pure trend size to 2 percent
+exp154	3.970361	4.274195	0.607669	3.669069	NA	kept	lower XRP pure trend size to zero
+exp155	3.976030	4.285425	0.618791	3.669069	3.734468	kept	lower AVAX pure trend size to 6 percent
+exp156	3.977076	4.292568	0.630985	3.669069	3.820493	kept	lower AVAX pure trend size to 4 percent
+exp157	3.973064	4.295396	0.644665	3.669069	NA	reverted	lower AVAX pure trend size to 2 percent
+exp158	3.952674	4.276116	0.646884	3.644165	NA	reverted	lower BTC pure trend size to 8 percent
+exp159	3.973153	4.278632	0.610958	3.669069	NA	reverted	lower DOT pure trend size to 8 percent
+exp160	3.889912	3.998989	0.218154	3.669069	NA	reverted	skip zero-weight buy signals entirely
+exp161	3.930713	4.249986	0.638546	3.669069	NA	reverted	block DOT pure reversion in milder markets
+exp162	4.006572	4.312531	0.611918	3.748921	NA	kept	block AVAX strong reversion in mild markets
+exp163	4.024935	4.348613	0.647357	3.748921	NA	kept	require stronger market breadth for AVAX trend
+exp164	3.966448	4.304652	0.676408	3.771311	NA	reverted	boost pure reversion sizing in deep capitulation
+exp165	3.997461	4.331901	0.668879	3.637753	NA	reverted	increase strong reversion size to 18 percent
+exp166	4.024020	4.343129	0.638218	3.748921	NA	reverted	block stalled BTC trend entries in overheated markets
+exp167	4.029787	4.378210	0.696845	3.748921	NA	kept	block LINK trend reentry during mild hot acceleration
+exp168	4.028926	4.372900	0.687949	3.748921	NA	reverted	block stalled BTC trend entries on top of LINK gate
+exp169	4.110953	4.444545	0.667186	3.748921	3.985036	kept	require stronger mid-rsi acceleration for DOT trend
+exp170	4.110025	4.439236	0.658423	3.748921	NA	reverted	add BTC hot stall filter on top of DOT and LINK gates
+exp171	4.113503	4.459308	0.691610	3.748921	NA	kept	downsize hot stalled BTC trend entries
+exp172	4.132871	4.472183	0.678623	3.800419	NA	kept	downsize ADA reversion in stalled washout
+exp173	4.137325	4.499506	0.724361	3.800419	NA	kept	downsize SOL trend entries in low breadth selloff
+exp174	4.164590	4.523156	0.717132	3.800419	NA	kept	downsize DOT reversion in milder markets
+exp175	4.165507	4.523969	0.716924	3.800419	3.985036	kept	downsize BTC trend entries during mid hot acceleration
+exp176	4.180414	4.537358	0.713886	3.800419	NA	kept	downsize DOT mild reversion entries to 2 percent
+exp177	4.183074	4.552651	0.739153	3.800419	NA	kept	downsize SOL low breadth trend entries to 2 percent
+exp178	4.184341	4.560020	0.751359	3.800419	NA	kept	downsize hot stalled BTC trend entries to 2 percent
+exp179	4.195594	4.567520	0.743852	3.830418	NA	kept	downsize ADA stalled washout reversion to 2 percent
+exp180	4.196037	4.567917	0.743760	3.830418	3.985036	kept	downsize BTC mid hot acceleration trend to 2 percent
+exp181	4.200838	4.572239	0.742802	3.830418	NA	kept	downsize DOT mild reversion entries to 1 percent
+exp182	4.201667	4.577128	0.750922	3.830418	NA	kept	downsize SOL low breadth trend entries to 1 percent
+exp183	4.202042	4.579348	0.754612	3.830418	NA	kept	downsize hot stalled BTC trend entries to 1 percent
+exp184	4.205721	4.581809	0.752177	3.840264	NA	kept	downsize ADA stalled washout reversion to 1 percent
+exp185	4.205854	4.581929	0.752150	3.840264	NA	kept	downsize BTC mid hot acceleration trend to 1 percent
+exp186	4.106726	4.498652	0.783851	3.840264	NA	reverted	zero DOT mild reversion entries
+exp187	4.206655	4.586714	0.760118	3.840264	NA	kept	zero SOL low breadth trend entries
+exp188	4.203662	4.568942	0.730562	3.840264	NA	reverted	zero hot stalled BTC trend entries
+exp189	4.210292	4.589155	0.757728	3.850031	NA	kept	zero ADA stalled washout reversion
+exp190	4.210420	4.589271	0.757701	3.850031	NA	kept	zero BTC mid hot acceleration trend
+exp191	4.211408	4.595237	0.767658	3.850031	NA	kept	downsize SOL hot stalled trend entries
+exp192	4.211854	4.597934	0.772160	3.850031	NA	kept	downsize LINK hot stalled trend entries
+exp193	4.217056	4.601444	0.768776	3.864074	NA	kept	zero XRP stalled washout reversion
+exp194	4.222427	4.605080	0.765307	3.878618	NA	kept	zero SOL mild reversion entries
+exp195	4.222860	4.607753	0.769787	3.878618	NA	kept	zero LINK hot stalled trend entries
+exp196	4.223778	4.613446	0.779336	3.878618	NA	kept	zero SOL hot stalled trend entries
+exp197	4.226179	4.615579	0.778801	3.878618	NA	kept	downsize DOT mild reversion entries to half percent
+exp198	4.226349	4.616631	0.780565	3.878618	NA	kept	downsize hot stalled BTC trend entries to half percent
+exp199	4.227539	4.617692	0.780305	3.878618	NA	kept	downsize DOT mild reversion entries to quarter percent
+exp200	4.227623	4.618207	0.781168	3.878618	NA	kept	downsize hot stalled BTC trend entries to quarter percent
+exp201	4.228216	4.618736	0.781040	3.878618	NA	kept	downsize DOT mild reversion entries to eighth percent
+exp202	4.228511	4.619000	0.780976	3.878618	NA	kept	downsize DOT mild reversion entries to sixteenth percent
+exp203	4.228659	4.619131	0.780944	3.878618	NA	kept	downsize DOT mild reversion entries to thirty-second percent
+exp204	4.228733	4.619197	0.780929	3.878618	3.985036	kept	downsize DOT mild reversion entries to sixty-fourth percent
