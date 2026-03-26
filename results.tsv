@@ -159,3 +159,13 @@ exp157	3.973064	4.295396	0.644665	3.669069	NA	reverted	lower AVAX pure trend siz
 exp158	3.952674	4.276116	0.646884	3.644165	NA	reverted	lower BTC pure trend size to 8 percent
 exp159	3.973153	4.278632	0.610958	3.669069	NA	reverted	lower DOT pure trend size to 8 percent
 exp160	3.889912	3.998989	0.218154	3.669069	NA	reverted	skip zero-weight buy signals entirely
+exp161	3.930713	4.249986	0.638546	3.669069	NA	reverted	block DOT pure reversion in milder markets
+exp162	4.006572	4.312531	0.611918	3.748921	NA	kept	block AVAX strong reversion in mild markets
+exp163	4.024935	4.348613	0.647357	3.748921	NA	kept	require stronger market breadth for AVAX trend
+exp164	3.966448	4.304652	0.676408	3.771311	NA	reverted	boost pure reversion sizing in deep capitulation
+exp165	3.997461	4.331901	0.668879	3.637753	NA	reverted	increase strong reversion size to 18 percent
+exp166	4.024020	4.343129	0.638218	3.748921	NA	reverted	block stalled BTC trend entries in overheated markets
+exp167	4.029787	4.378210	0.696845	3.748921	NA	kept	block LINK trend reentry during mild hot acceleration
+exp168	4.028926	4.372900	0.687949	3.748921	NA	reverted	block stalled BTC trend entries on top of LINK gate
+exp169	4.110953	4.444545	0.667186	3.748921	3.985036	kept	require stronger mid-rsi acceleration for DOT trend
+exp170	4.110025	4.439236	0.658423	3.748921	NA	reverted	add BTC hot stall filter on top of DOT and LINK gates
