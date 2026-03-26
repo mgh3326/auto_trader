@@ -1059,18 +1059,35 @@ class TvScreenerService:
                             f".where({condition!r})"
                         )
 
+                # Defensive: Handle sort_by() returning None (AUTO_TRADER-3P)
+                sort_fallback_needed = False
                 if sort_by:
-                    query = query.sort_by(sort_by, ascending=ascending)
-                    if query is None:
-                        raise TvScreenerError(
-                            "StockScreener query returned None after chaining "
-                            f".sort_by({sort_by!r}, ascending={ascending})"
+                    sorted_query = query.sort_by(sort_by, ascending=ascending)
+                    if sorted_query is None:
+                        # Fallback: sort_by failed, proceed without sorting and sort later in Python
+                        logger.warning(
+                            "StockScreener.sort_by() returned None for field=%s ascending=%s. "
+                            "Falling back to client-side sorting.",
+                            sort_by,
+                            ascending,
                         )
+                        sort_fallback_needed = True
+                    else:
+                        query = sorted_query
 
-                if limit:
+                if limit and not sort_fallback_needed:
+                    # If we need fallback sort, we must get all rows and limit after sorting
                     query = query.set_range(0, limit)
 
-                return query.get()
+                result = query.get()
+
+                # Fallback sorting: if sort_by failed, sort in Python
+                if sort_fallback_needed and sort_by is not None:
+                    result = _apply_client_side_sort(result, sort_by, ascending)
+                    if limit:
+                        result = result.head(limit)
+
+                return result
 
             result = await self.fetch_with_retry(
                 _execute_query,
