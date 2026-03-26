@@ -174,3 +174,8 @@ exp172	4.132871	4.472183	0.678623	3.800419	NA	kept	downsize ADA reversion in sta
 exp173	4.137325	4.499506	0.724361	3.800419	NA	kept	downsize SOL trend entries in low breadth selloff
 exp174	4.164590	4.523156	0.717132	3.800419	NA	kept	downsize DOT reversion in milder markets
 exp175	4.165507	4.523969	0.716924	3.800419	3.985036	kept	downsize BTC trend entries during mid hot acceleration
+exp176	4.180414	4.537358	0.713886	3.800419	NA	kept	downsize DOT mild reversion entries to 2 percent
+exp177	4.183074	4.552651	0.739153	3.800419	NA	kept	downsize SOL low breadth trend entries to 2 percent
+exp178	4.184341	4.560020	0.751359	3.800419	NA	kept	downsize hot stalled BTC trend entries to 2 percent
+exp179	4.195594	4.567520	0.743852	3.830418	NA	kept	downsize ADA stalled washout reversion to 2 percent
+exp180	4.196037	4.567917	0.743760	3.830418	3.985036	kept	downsize BTC mid hot acceleration trend to 2 percent
