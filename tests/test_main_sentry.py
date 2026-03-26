@@ -149,3 +149,26 @@ class TestYfinanceLogEventFiltering:
         }
         result = _before_send(event, hint)
         assert result is not None  # kept
+
+    def test_yfinance_unknown_host_html_500_event_is_dropped(self):
+        """yfinance logger 'HTTP Error 500' unknown host error should not create Sentry event."""
+        event = {
+            "logger": "yfinance",
+            "message": (
+                "HTTP Error 500: <!DOCTYPE html><!-- Unknown Host -->"
+                "Will be right back..."
+            ),
+            "level": "error",
+        }
+        hint: dict = {
+            "log_record": type(
+                "LogRecord",
+                (),
+                {
+                    "name": "yfinance",
+                    "getMessage": lambda self: event["message"],
+                },
+            )(),
+        }
+        result = _before_send(event, hint)
+        assert result is None  # dropped

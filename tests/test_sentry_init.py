@@ -674,6 +674,33 @@ class TestYfinanceNoiseFilter:
         }
         assert sentry_module._before_send_log(sentry_log, {}) is None
 
+    def test_before_send_drops_yfinance_unknown_host_500_html(self):
+        """yfinance unknown-host 500 HTML errors are dropped as noise."""
+        event: Event = {
+            "logger": "yfinance",
+            "message": (
+                "HTTP Error 500: <!DOCTYPE html><!-- Unknown Host -->"
+                "Will be right back... quoteSummary/WFC/PD"
+            ),
+        }
+        assert sentry_module._before_send(event, {}) is None
+
+    def test_before_send_log_drops_yfinance_unknown_host_500_html(self):
+        """yfinance unknown-host 500 HTML logs are dropped from structured logs too."""
+        sentry_log: Log = {
+            "severity_text": "error",
+            "severity_number": 17,
+            "body": (
+                "HTTP Error 500: <!DOCTYPE html><!-- Unknown Host -->"
+                "Will be right back... quoteSummary/WFC/PD"
+            ),
+            "attributes": {"logger.name": "yfinance"},
+            "time_unix_nano": 1,
+            "trace_id": None,
+            "span_id": None,
+        }
+        assert sentry_module._before_send_log(sentry_log, {}) is None
+
 
 @pytest.mark.unit
 class TestFastmcpToolValidationFilter:
