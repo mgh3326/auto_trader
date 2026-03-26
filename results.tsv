@@ -169,3 +169,8 @@ exp167	4.029787	4.378210	0.696845	3.748921	NA	kept	block LINK trend reentry duri
 exp168	4.028926	4.372900	0.687949	3.748921	NA	reverted	block stalled BTC trend entries on top of LINK gate
 exp169	4.110953	4.444545	0.667186	3.748921	3.985036	kept	require stronger mid-rsi acceleration for DOT trend
 exp170	4.110025	4.439236	0.658423	3.748921	NA	reverted	add BTC hot stall filter on top of DOT and LINK gates
+exp171	4.113503	4.459308	0.691610	3.748921	NA	kept	downsize hot stalled BTC trend entries
+exp172	4.132871	4.472183	0.678623	3.800419	NA	kept	downsize ADA reversion in stalled washout
+exp173	4.137325	4.499506	0.724361	3.800419	NA	kept	downsize SOL trend entries in low breadth selloff
+exp174	4.164590	4.523156	0.717132	3.800419	NA	kept	downsize DOT reversion in milder markets
+exp175	4.165507	4.523969	0.716924	3.800419	3.985036	kept	downsize BTC trend entries during mid hot acceleration
