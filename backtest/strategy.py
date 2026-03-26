@@ -38,6 +38,9 @@ EXTREME_FALLING_MARKET_CHANGE = -6.0
 REVERSION_MARKET_CHANGE_CEILING = -2.0
 AVAX_STRONG_REVERSION_MAX_MARKET_RSI = 35.0
 AVAX_TREND_MIN_MARKET_RSI = 60.0
+LINK_TREND_RSI_LOW = 58.0
+LINK_TREND_RSI_HIGH = 60.0
+LINK_TREND_MAX_ACCELERATION = 6.0
 OVERHEATED_MARKET_RSI_LEVEL = 75.0
 TREND_MID_RSI_LOW = 60.0
 TREND_MID_RSI_HIGH = 65.0
@@ -416,7 +419,14 @@ class Strategy:
                     and not dual_rsi_oversold
                 )
                 avax_pure_trend_buy = pure_trend_buy and symbol == "AVAX"
+                link_pure_trend_buy = pure_trend_buy and symbol == "LINK"
                 xrp_pure_trend_buy = pure_trend_buy and symbol == "XRP"
+                allow_link_trend_buy = (
+                    not link_pure_trend_buy
+                    or market_state["avg_rsi"] < LINK_TREND_RSI_LOW
+                    or market_state["avg_rsi"] >= LINK_TREND_RSI_HIGH
+                    or market_state["avg_rsi_change"] <= LINK_TREND_MAX_ACCELERATION
+                )
                 allow_avax_trend_buy = (
                     not avax_pure_trend_buy
                     or market_state["avg_rsi"] >= AVAX_TREND_MIN_MARKET_RSI
@@ -452,6 +462,7 @@ class Strategy:
                     and allow_btc_pure_reversion_buy
                     and allow_eth_strong_reversion_buy
                     and allow_avax_strong_reversion_buy
+                    and allow_link_trend_buy
                     and allow_avax_trend_buy
                     and allow_reversion_regime_buy
                     and allow_trend_regime_buy
