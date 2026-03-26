@@ -18,6 +18,7 @@ RSI_EXIT = 55
 MAX_POSITIONS = 5
 POSITION_SIZE = 0.10
 STRONG_REVERSION_POSITION_SIZE = 0.15
+BTC_HOT_STALL_TREND_POSITION_SIZE = 0.05
 AVAX_TREND_POSITION_SIZE = 0.04
 XRP_TREND_POSITION_SIZE = 0.00
 ETH_PURE_REVERSION_POSITION_SIZE = 0.00
@@ -38,6 +39,8 @@ EXTREME_FALLING_MARKET_CHANGE = -6.0
 REVERSION_MARKET_CHANGE_CEILING = -2.0
 AVAX_STRONG_REVERSION_MAX_MARKET_RSI = 35.0
 AVAX_TREND_MIN_MARKET_RSI = 60.0
+BTC_TREND_HOT_RSI_LEVEL = 70.0
+BTC_TREND_STALL_CHANGE = 2.0
 LINK_TREND_RSI_LOW = 58.0
 LINK_TREND_RSI_HIGH = 60.0
 LINK_TREND_MAX_ACCELERATION = 6.0
@@ -419,6 +422,12 @@ class Strategy:
                     and volume_above_avg
                     and not dual_rsi_oversold
                 )
+                btc_hot_stall_trend_buy = (
+                    pure_trend_buy
+                    and symbol == "BTC"
+                    and market_state["avg_rsi"] >= BTC_TREND_HOT_RSI_LEVEL
+                    and market_state["avg_rsi_change"] < BTC_TREND_STALL_CHANGE
+                )
                 avax_pure_trend_buy = pure_trend_buy and symbol == "AVAX"
                 dot_pure_trend_buy = pure_trend_buy and symbol == "DOT"
                 link_pure_trend_buy = pure_trend_buy and symbol == "LINK"
@@ -483,6 +492,8 @@ class Strategy:
                     )
                     if strong_reversion_buy:
                         buy_weight = STRONG_REVERSION_POSITION_SIZE
+                    elif btc_hot_stall_trend_buy:
+                        buy_weight = BTC_HOT_STALL_TREND_POSITION_SIZE
                     elif eth_pure_reversion_buy:
                         buy_weight = ETH_PURE_REVERSION_POSITION_SIZE
                     elif avax_pure_trend_buy:
