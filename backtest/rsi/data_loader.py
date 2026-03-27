@@ -168,7 +168,8 @@ def fetch_and_cache(
     df = normalize_candles(raw)
     if len(df) > 0:
         save_candles(market, df, data_dir)
-    return load_candles(market, start, end, data_dir) or df
+    loaded = load_candles(market, start, end, data_dir)
+    return loaded if loaded is not None else df
 
 
 def fetch_all_universe(

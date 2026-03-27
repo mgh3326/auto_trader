@@ -273,3 +273,4 @@ blog/images/screenshot_*.png
 
 # Backtest cached data
 backtest/data/
+backtest/output/
