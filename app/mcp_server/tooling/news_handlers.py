@@ -16,17 +16,18 @@ if TYPE_CHECKING:
 NEWS_TOOL_NAMES = ["get_market_news", "search_news"]
 
 
-def _article_to_dict(article: Any) -> dict[str, Any]:
-    published = getattr(article, "article_published_at", None)
+def _article_to_dict(article: NewsArticle) -> dict[str, Any]:
     return {
         "id": article.id,
         "title": article.title,
         "url": article.url,
         "source": article.source,
-        "feed_source": getattr(article, "feed_source", None),
+        "feed_source": article.feed_source,
         "summary": article.summary,
-        "published_at": published.isoformat() if published else None,
-        "keywords": getattr(article, "keywords", None),
+        "published_at": article.article_published_at.isoformat()
+        if article.article_published_at
+        else None,
+        "keywords": article.keywords,
     }
 
 
