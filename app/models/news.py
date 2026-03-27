@@ -3,7 +3,16 @@
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import BigInteger, ForeignKey, Index, String, Text, UniqueConstraint
+import sqlalchemy as sa
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -19,7 +28,11 @@ class Sentiment(StrEnum):
 class NewsArticle(Base):
     __tablename__ = "news_articles"
 
-    __table_args__ = (UniqueConstraint("url", name="uq_news_article_url"),)
+    __table_args__ = (
+        UniqueConstraint("url", name="uq_news_article_url"),
+        Index("ix_news_articles_keywords", "keywords", postgresql_using="gin"),
+        Index("ix_news_articles_published_feed", "article_published_at", "feed_source"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
 
@@ -34,11 +47,27 @@ class NewsArticle(Base):
         String(200), nullable=True, comment="기자명"
     )
 
-    article_content: Mapped[str] = mapped_column(
-        Text, nullable=False, comment="기사 본문"
+    article_content: Mapped[str | None] = mapped_column(
+        Text, nullable=True, comment="기사 본문 (RSS 뉴스는 NULL 가능)"
     )
     summary: Mapped[str | None] = mapped_column(
         Text, nullable=True, comment="기사 요약 (LLM 생성)"
+    )
+    feed_source: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True,
+        index=True,
+        comment="RSS 피드 소스 (mk_stock, yna_market 등)",
+    )
+    keywords: Mapped[list | None] = mapped_column(
+        JSONB, nullable=True, comment="키워드 배열"
+    )
+    is_analyzed: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=sa.text("false"),
+        comment="LLM 분석 완료 여부",
     )
 
     stock_symbol: Mapped[str | None] = mapped_column(
