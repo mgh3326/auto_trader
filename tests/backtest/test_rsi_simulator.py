@@ -4,30 +4,33 @@ import sys
 from pathlib import Path
 
 import pandas as pd
-import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "backtest"))
 
 from rsi.config import BacktestConfig
-from rsi.simulator import run_backtest, Portfolio, BacktestResult
+from rsi.simulator import BacktestResult, run_backtest
 
 
-def _make_flat_candles(market: str, n_bars: int = 50, price: float = 1000.0) -> pd.DataFrame:
+def _make_flat_candles(
+    market: str, n_bars: int = 50, price: float = 1000.0
+) -> pd.DataFrame:
     """Flat price candles for predictable testing."""
     datetimes = (
         pd.date_range("2024-01-01", periods=n_bars, freq="h")
         .strftime("%Y-%m-%dT%H:%M:%S")
         .tolist()
     )
-    return pd.DataFrame({
-        "datetime": datetimes,
-        "open": [price] * n_bars,
-        "high": [price] * n_bars,
-        "low": [price] * n_bars,
-        "close": [price] * n_bars,
-        "volume": [100.0] * n_bars,
-        "value": [1_000_000.0] * n_bars,
-    })
+    return pd.DataFrame(
+        {
+            "datetime": datetimes,
+            "open": [price] * n_bars,
+            "high": [price] * n_bars,
+            "low": [price] * n_bars,
+            "close": [price] * n_bars,
+            "volume": [100.0] * n_bars,
+            "value": [1_000_000.0] * n_bars,
+        }
+    )
 
 
 def _make_rising_candles(market: str, n_bars: int = 50) -> pd.DataFrame:
@@ -38,22 +41,28 @@ def _make_rising_candles(market: str, n_bars: int = 50) -> pd.DataFrame:
         .tolist()
     )
     prices = [1000.0 + i * 10.0 for i in range(n_bars)]
-    return pd.DataFrame({
-        "datetime": datetimes,
-        "open": prices,
-        "high": [p + 5 for p in prices],
-        "low": [p - 5 for p in prices],
-        "close": prices,
-        "volume": [100.0] * n_bars,
-        "value": [1_000_000.0] * n_bars,
-    })
+    return pd.DataFrame(
+        {
+            "datetime": datetimes,
+            "open": prices,
+            "high": [p + 5 for p in prices],
+            "low": [p - 5 for p in prices],
+            "close": prices,
+            "volume": [100.0] * n_bars,
+            "value": [1_000_000.0] * n_bars,
+        }
+    )
 
 
 class TestBacktestResult:
     def test_result_has_equity_curve(self):
         config = BacktestConfig(
-            start="2024-01-01", end="2024-01-02",
-            top_n=1, pick_k=1, max_rsi=99, rebalance_hours=24,
+            start="2024-01-01",
+            end="2024-01-02",
+            top_n=1,
+            pick_k=1,
+            max_rsi=99,
+            rebalance_hours=24,
         )
         all_data = {"KRW-BTC": _make_flat_candles("KRW-BTC", n_bars=48)}
         result = run_backtest(all_data, config)
@@ -62,7 +71,9 @@ class TestBacktestResult:
         assert len(result.timestamps) == len(result.equity_curve)
 
     def test_no_trade_on_empty_data(self):
-        config = BacktestConfig(start="2024-01-01", end="2024-01-02", top_n=1, pick_k=1, max_rsi=99)
+        config = BacktestConfig(
+            start="2024-01-01", end="2024-01-02", top_n=1, pick_k=1, max_rsi=99
+        )
         result = run_backtest({}, config)
         assert result.rebalance_count == 0
         assert len(result.trades) == 0
@@ -72,9 +83,14 @@ class TestPortfolioEquity:
     def test_flat_price_equity_decreases_by_fees(self):
         """With flat prices, equity should only decrease due to fees."""
         config = BacktestConfig(
-            start="2024-01-01", end="2024-01-02",
-            top_n=1, pick_k=1, max_rsi=99, rebalance_hours=24,
-            fee_rate=0.001, slippage_bps=0,
+            start="2024-01-01",
+            end="2024-01-02",
+            top_n=1,
+            pick_k=1,
+            max_rsi=99,
+            rebalance_hours=24,
+            fee_rate=0.001,
+            slippage_bps=0,
         )
         all_data = {"KRW-BTC": _make_flat_candles("KRW-BTC", n_bars=48)}
         result = run_backtest(all_data, config)
@@ -84,8 +100,12 @@ class TestPortfolioEquity:
     def test_rising_price_positive_return(self):
         """With rising prices and low RSI entry, should have positive return."""
         config = BacktestConfig(
-            start="2024-01-01", end="2024-01-02",
-            top_n=1, pick_k=1, max_rsi=99, rebalance_hours=24,
+            start="2024-01-01",
+            end="2024-01-02",
+            top_n=1,
+            pick_k=1,
+            max_rsi=99,
+            rebalance_hours=24,
         )
         all_data = {"KRW-BTC": _make_rising_candles("KRW-BTC", n_bars=48)}
         result = run_backtest(all_data, config)
@@ -98,8 +118,12 @@ class TestRebalancing:
     def test_rebalance_count(self):
         """48 hours of data with 24h rebalance → should rebalance ~2 times."""
         config = BacktestConfig(
-            start="2024-01-01", end="2024-01-02",
-            top_n=1, pick_k=1, max_rsi=99, rebalance_hours=24,
+            start="2024-01-01",
+            end="2024-01-02",
+            top_n=1,
+            pick_k=1,
+            max_rsi=99,
+            rebalance_hours=24,
         )
         all_data = {"KRW-BTC": _make_flat_candles("KRW-BTC", n_bars=48)}
         result = run_backtest(all_data, config)
@@ -107,8 +131,12 @@ class TestRebalancing:
 
     def test_trades_logged(self):
         config = BacktestConfig(
-            start="2024-01-01", end="2024-01-02",
-            top_n=1, pick_k=1, max_rsi=99, rebalance_hours=24,
+            start="2024-01-01",
+            end="2024-01-02",
+            top_n=1,
+            pick_k=1,
+            max_rsi=99,
+            rebalance_hours=24,
         )
         all_data = {"KRW-BTC": _make_flat_candles("KRW-BTC", n_bars=48)}
         result = run_backtest(all_data, config)

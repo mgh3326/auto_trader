@@ -2,18 +2,15 @@
 
 import sys
 from pathlib import Path
-from unittest.mock import patch, MagicMock
 
 import pandas as pd
-import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "backtest"))
 
 from rsi.data_loader import (
-    normalize_candles,
-    merge_with_existing,
     load_candles,
-    DATA_DIR,
+    merge_with_existing,
+    normalize_candles,
 )
 
 
@@ -23,7 +20,15 @@ class TestNormalizeCandles:
     def test_empty_list_returns_empty_df(self):
         df = normalize_candles([])
         assert len(df) == 0
-        assert list(df.columns) == ["datetime", "open", "high", "low", "close", "volume", "value"]
+        assert list(df.columns) == [
+            "datetime",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "value",
+        ]
 
     def test_maps_upbit_columns(self):
         raw = [
@@ -45,8 +50,24 @@ class TestNormalizeCandles:
 
     def test_sorts_by_datetime_ascending(self):
         raw = [
-            {"candle_date_time_kst": "2024-01-01T11:00:00", "opening_price": 100, "high_price": 100, "low_price": 100, "trade_price": 100, "candle_acc_trade_volume": 1, "candle_acc_trade_price": 100},
-            {"candle_date_time_kst": "2024-01-01T09:00:00", "opening_price": 99, "high_price": 99, "low_price": 99, "trade_price": 99, "candle_acc_trade_volume": 1, "candle_acc_trade_price": 99},
+            {
+                "candle_date_time_kst": "2024-01-01T11:00:00",
+                "opening_price": 100,
+                "high_price": 100,
+                "low_price": 100,
+                "trade_price": 100,
+                "candle_acc_trade_volume": 1,
+                "candle_acc_trade_price": 100,
+            },
+            {
+                "candle_date_time_kst": "2024-01-01T09:00:00",
+                "opening_price": 99,
+                "high_price": 99,
+                "low_price": 99,
+                "trade_price": 99,
+                "candle_acc_trade_volume": 1,
+                "candle_acc_trade_price": 99,
+            },
         ]
         df = normalize_candles(raw)
         assert df.iloc[0]["datetime"] == "2024-01-01T09:00:00"
@@ -66,10 +87,12 @@ class TestMergeWithExisting:
         parquet_path = tmp_path / "test.parquet"
         existing.to_parquet(parquet_path, index=False)
 
-        new_df = pd.DataFrame({
-            "datetime": ["2024-01-01T09:00:00", "2024-01-01T10:00:00"],
-            "close": [101.0, 102.0],
-        })
+        new_df = pd.DataFrame(
+            {
+                "datetime": ["2024-01-01T09:00:00", "2024-01-01T10:00:00"],
+                "close": [101.0, 102.0],
+            }
+        )
         result = merge_with_existing(new_df, parquet_path)
         assert len(result) == 2
         # New data should overwrite existing for same datetime
@@ -85,19 +108,21 @@ class TestLoadCandles:
         assert result is None
 
     def test_filters_by_date_range(self, tmp_path):
-        df = pd.DataFrame({
-            "datetime": [
-                "2024-01-01T09:00:00",
-                "2024-01-15T09:00:00",
-                "2024-02-15T09:00:00",
-            ],
-            "open": [100, 101, 102],
-            "high": [100, 101, 102],
-            "low": [100, 101, 102],
-            "close": [100, 101, 102],
-            "volume": [10, 10, 10],
-            "value": [1000, 1010, 1020],
-        })
+        df = pd.DataFrame(
+            {
+                "datetime": [
+                    "2024-01-01T09:00:00",
+                    "2024-01-15T09:00:00",
+                    "2024-02-15T09:00:00",
+                ],
+                "open": [100, 101, 102],
+                "high": [100, 101, 102],
+                "low": [100, 101, 102],
+                "close": [100, 101, 102],
+                "volume": [10, 10, 10],
+                "value": [1000, 1010, 1020],
+            }
+        )
         path = tmp_path / "KRW-BTC.parquet"
         df.to_parquet(path, index=False)
 

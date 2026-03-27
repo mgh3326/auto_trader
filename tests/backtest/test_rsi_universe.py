@@ -4,7 +4,6 @@ import sys
 from pathlib import Path
 
 import pandas as pd
-import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "backtest"))
 
@@ -15,15 +14,17 @@ def _make_candles(market: str, values: list[float]) -> pd.DataFrame:
     """Helper: create candle DataFrame with given hourly values."""
     n = len(values)
     datetimes = [f"2024-01-01T{h:02d}:00:00" for h in range(n)]
-    return pd.DataFrame({
-        "datetime": datetimes,
-        "open": [100.0] * n,
-        "high": [100.0] * n,
-        "low": [100.0] * n,
-        "close": [100.0] * n,
-        "volume": [1.0] * n,
-        "value": values,
-    })
+    return pd.DataFrame(
+        {
+            "datetime": datetimes,
+            "open": [100.0] * n,
+            "high": [100.0] * n,
+            "low": [100.0] * n,
+            "close": [100.0] * n,
+            "volume": [1.0] * n,
+            "value": values,
+        }
+    )
 
 
 class TestSelectUniverse:
@@ -50,11 +51,17 @@ class TestSelectUniverse:
     def test_skips_markets_without_data_at_timestamp(self):
         btc = _make_candles("KRW-BTC", [1000, 2000])
         # ETH only has data at T00, not T01
-        eth = pd.DataFrame({
-            "datetime": ["2024-01-01T00:00:00"],
-            "open": [100], "high": [100], "low": [100], "close": [100],
-            "volume": [1], "value": [9999],
-        })
+        eth = pd.DataFrame(
+            {
+                "datetime": ["2024-01-01T00:00:00"],
+                "open": [100],
+                "high": [100],
+                "low": [100],
+                "close": [100],
+                "volume": [1],
+                "value": [9999],
+            }
+        )
         all_data = {"KRW-BTC": btc, "KRW-ETH": eth}
         result = select_universe(all_data, "2024-01-01T01:00:00", top_n=2, window=2)
         assert "KRW-BTC" in result

@@ -5,7 +5,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "backtest"))
 
@@ -37,15 +36,17 @@ def _generate_synthetic_market(
     )
 
     prices_arr = np.array(prices)
-    return pd.DataFrame({
-        "datetime": datetimes[:n_bars],
-        "open": prices_arr,
-        "high": prices_arr * (1 + rng.uniform(0, 0.01, n_bars)),
-        "low": prices_arr * (1 - rng.uniform(0, 0.01, n_bars)),
-        "close": prices_arr,
-        "volume": rng.uniform(50, 200, n_bars),
-        "value": rng.uniform(base_value * 0.5, base_value * 1.5, n_bars),
-    })
+    return pd.DataFrame(
+        {
+            "datetime": datetimes[:n_bars],
+            "open": prices_arr,
+            "high": prices_arr * (1 + rng.uniform(0, 0.01, n_bars)),
+            "low": prices_arr * (1 - rng.uniform(0, 0.01, n_bars)),
+            "close": prices_arr,
+            "volume": rng.uniform(50, 200, n_bars),
+            "value": rng.uniform(base_value * 0.5, base_value * 1.5, n_bars),
+        }
+    )
 
 
 class TestFullPipeline:
@@ -55,7 +56,10 @@ class TestFullPipeline:
         """Run full backtest with 5 synthetic markets."""
         all_data = {
             f"KRW-COIN{i}": _generate_synthetic_market(
-                f"KRW-COIN{i}", n_days=10, seed=i, base_value=1_000_000 * (5 - i),
+                f"KRW-COIN{i}",
+                n_days=10,
+                seed=i,
+                base_value=1_000_000 * (5 - i),
             )
             for i in range(5)
         }
@@ -80,36 +84,54 @@ class TestFullPipeline:
     def test_parameter_sensitivity(self):
         """Different parameters should produce different results."""
         all_data = {
-            f"KRW-COIN{i}": _generate_synthetic_market(f"KRW-COIN{i}", n_days=10, seed=i)
+            f"KRW-COIN{i}": _generate_synthetic_market(
+                f"KRW-COIN{i}", n_days=10, seed=i
+            )
             for i in range(10)
         }
 
         config_a = BacktestConfig(
-            start="2024-01-01", end="2024-01-10",
-            top_n=5, pick_k=2, max_rsi=40, rebalance_hours=24,
+            start="2024-01-01",
+            end="2024-01-10",
+            top_n=5,
+            pick_k=2,
+            max_rsi=40,
+            rebalance_hours=24,
         )
         config_b = BacktestConfig(
-            start="2024-01-01", end="2024-01-10",
-            top_n=8, pick_k=4, max_rsi=60, rebalance_hours=12,
+            start="2024-01-01",
+            end="2024-01-10",
+            top_n=8,
+            pick_k=4,
+            max_rsi=60,
+            rebalance_hours=12,
         )
 
         result_a = run_backtest(all_data, config_a)
         result_b = run_backtest(all_data, config_b)
 
         # Results should differ (different params → different trades)
-        assert result_a.equity_curve != result_b.equity_curve or \
-               result_a.trade_count != result_b.trade_count or \
-               result_a.rebalance_count != result_b.rebalance_count
+        assert (
+            result_a.equity_curve != result_b.equity_curve
+            or result_a.trade_count != result_b.trade_count
+            or result_a.rebalance_count != result_b.rebalance_count
+        )
 
     def test_max_rsi_filter_reduces_trades(self):
         """Stricter max_rsi should result in fewer or equal trades."""
         all_data = {
-            f"KRW-COIN{i}": _generate_synthetic_market(f"KRW-COIN{i}", n_days=10, seed=i)
+            f"KRW-COIN{i}": _generate_synthetic_market(
+                f"KRW-COIN{i}", n_days=10, seed=i
+            )
             for i in range(5)
         }
 
-        loose = BacktestConfig(start="2024-01-01", end="2024-01-10", top_n=5, pick_k=3, max_rsi=80)
-        strict = BacktestConfig(start="2024-01-01", end="2024-01-10", top_n=5, pick_k=3, max_rsi=20)
+        loose = BacktestConfig(
+            start="2024-01-01", end="2024-01-10", top_n=5, pick_k=3, max_rsi=80
+        )
+        strict = BacktestConfig(
+            start="2024-01-01", end="2024-01-10", top_n=5, pick_k=3, max_rsi=20
+        )
 
         result_loose = run_backtest(all_data, loose)
         result_strict = run_backtest(all_data, strict)
@@ -123,8 +145,11 @@ class TestFullPipeline:
             "KRW-BTC": _generate_synthetic_market("KRW-BTC", n_days=5, seed=0),
         }
         config = BacktestConfig(
-            start="2024-01-01", end="2024-01-05",
-            top_n=1, pick_k=1, max_rsi=99,
+            start="2024-01-01",
+            end="2024-01-05",
+            top_n=1,
+            pick_k=1,
+            max_rsi=99,
             initial_capital=5_000_000,
         )
         result = run_backtest(all_data, config)
