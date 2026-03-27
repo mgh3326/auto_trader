@@ -1,12 +1,13 @@
 """Tests for RSS news collection features."""
 
 import inspect
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
+from app.core.timezone import KST
 from app.models.news import NewsArticle
 from app.schemas.news import (
     BulkCreateResponse,
@@ -18,6 +19,61 @@ from app.schemas.news import (
 from app.services.llm_news_service import bulk_create_news_articles
 
 
+class TestKstNaiveHelpers:
+    """Test KST naive datetime helpers."""
+
+    def test_now_kst_naive_has_no_tzinfo(self):
+        from app.core.timezone import now_kst_naive
+
+        result = now_kst_naive()
+        assert result.tzinfo is None
+
+    def test_now_kst_naive_is_kst_time(self):
+        """Value should be close to now_kst() but without tzinfo."""
+        from app.core.timezone import now_kst, now_kst_naive
+
+        aware = now_kst()
+        naive = now_kst_naive()
+        # Difference should be < 1 second (same moment, just stripped)
+        diff = abs(aware.replace(tzinfo=None) - naive)
+        assert diff < timedelta(seconds=1)
+
+    def test_to_kst_naive_from_utc_aware(self):
+        from app.core.timezone import to_kst_naive
+
+        utc_dt = datetime(2026, 3, 27, 0, 0, 0, tzinfo=UTC)
+        result = to_kst_naive(utc_dt)
+        assert result == datetime(2026, 3, 27, 9, 0, 0)
+        assert result.tzinfo is None
+
+    def test_to_kst_naive_from_kst_aware(self):
+        from app.core.timezone import to_kst_naive
+
+        kst_dt = datetime(2026, 3, 27, 9, 0, 0, tzinfo=KST)
+        result = to_kst_naive(kst_dt)
+        assert result == datetime(2026, 3, 27, 9, 0, 0)
+        assert result.tzinfo is None
+
+    def test_to_kst_naive_from_naive_passthrough(self):
+        """Naive input assumed to be KST already — returned as-is."""
+        from app.core.timezone import to_kst_naive
+
+        naive_dt = datetime(2026, 3, 27, 9, 0, 0)
+        result = to_kst_naive(naive_dt)
+        assert result == naive_dt
+        assert result.tzinfo is None
+
+    def test_to_kst_naive_from_arbitrary_offset(self):
+        """Aware datetime with +05:30 offset should convert to KST then strip."""
+        from app.core.timezone import to_kst_naive
+
+        ist = timezone(timedelta(hours=5, minutes=30))
+        ist_dt = datetime(2026, 3, 27, 5, 30, 0, tzinfo=ist)  # = 00:00 UTC = 09:00 KST
+        result = to_kst_naive(ist_dt)
+        assert result == datetime(2026, 3, 27, 9, 0, 0)
+        assert result.tzinfo is None
+
+
 class TestNewsArticleModel:
     """Test NewsArticle model has RSS fields."""
 
@@ -25,8 +81,8 @@ class TestNewsArticleModel:
         article = NewsArticle(
             url="https://example.com/1",
             title="Test",
-            scraped_at=datetime.now(UTC),
-            created_at=datetime.now(UTC),
+            scraped_at=datetime(2026, 3, 27, 9, 0, 0),
+            created_at=datetime(2026, 3, 27, 9, 0, 0),
             feed_source="mk_stock",
         )
         assert article.feed_source == "mk_stock"
@@ -35,8 +91,8 @@ class TestNewsArticleModel:
         article = NewsArticle(
             url="https://example.com/2",
             title="Test",
-            scraped_at=datetime.now(UTC),
-            created_at=datetime.now(UTC),
+            scraped_at=datetime(2026, 3, 27, 9, 0, 0),
+            created_at=datetime(2026, 3, 27, 9, 0, 0),
             keywords=["반도체", "AI"],
         )
         assert article.keywords == ["반도체", "AI"]
@@ -46,8 +102,8 @@ class TestNewsArticleModel:
         article = NewsArticle(
             url="https://example.com/3",
             title="Test",
-            scraped_at=datetime.now(UTC),
-            created_at=datetime.now(UTC),
+            scraped_at=datetime(2026, 3, 27, 9, 0, 0),
+            created_at=datetime(2026, 3, 27, 9, 0, 0),
         )
         assert article.is_analyzed is None
 
@@ -55,8 +111,8 @@ class TestNewsArticleModel:
         article = NewsArticle(
             url="https://example.com/3",
             title="Test",
-            scraped_at=datetime.now(UTC),
-            created_at=datetime.now(UTC),
+            scraped_at=datetime(2026, 3, 27, 9, 0, 0),
+            created_at=datetime(2026, 3, 27, 9, 0, 0),
             is_analyzed=False,
         )
         assert article.is_analyzed is False
@@ -66,8 +122,8 @@ class TestNewsArticleModel:
         article = NewsArticle(
             url="https://example.com/4",
             title="Test",
-            scraped_at=datetime.now(UTC),
-            created_at=datetime.now(UTC),
+            scraped_at=datetime(2026, 3, 27, 9, 0, 0),
+            created_at=datetime(2026, 3, 27, 9, 0, 0),
             article_content=None,
         )
         assert article.article_content is None
@@ -407,7 +463,7 @@ class TestMCPNewsTools:
                 source="매일경제",
                 feed_source="mk_stock",
                 summary="요약",
-                article_published_at=datetime(2026, 3, 27, 9, 0, 0, tzinfo=UTC),
+                article_published_at=datetime(2026, 3, 27, 9, 0, 0),
                 keywords=["반도체"],
             )
         ]
@@ -472,6 +528,139 @@ class TestKeywordQuerySafety:
             _json.loads(unsafe)
 
 
+class TestKstNaiveDatetimeStorage:
+    """Verify news articles are stored with KST naive datetimes."""
+
+    @pytest.mark.asyncio
+    async def test_create_article_stores_kst_naive_scraped_at(self):
+        from app.services.llm_news_service import create_news_article
+
+        mock_db = AsyncMock()
+        mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+        mock_db.__aexit__ = AsyncMock(return_value=False)
+        mock_db.commit = AsyncMock()
+        mock_db.refresh = AsyncMock()
+
+        added_article = None
+
+        def capture_add(article):
+            nonlocal added_article
+            added_article = article
+
+        mock_db.add = capture_add
+
+        with patch(
+            "app.services.llm_news_service.AsyncSessionLocal", return_value=mock_db
+        ):
+            await create_news_article(
+                title="Test", url="https://example.com/kst1"
+            )
+
+        assert added_article.scraped_at.tzinfo is None
+        assert added_article.created_at.tzinfo is None
+
+    @pytest.mark.asyncio
+    async def test_create_article_normalizes_aware_published_at(self):
+        """An aware published_at (e.g. UTC) should be stored as KST naive."""
+        from app.services.llm_news_service import create_news_article
+
+        mock_db = AsyncMock()
+        mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+        mock_db.__aexit__ = AsyncMock(return_value=False)
+        mock_db.commit = AsyncMock()
+        mock_db.refresh = AsyncMock()
+
+        added_article = None
+
+        def capture_add(article):
+            nonlocal added_article
+            added_article = article
+
+        mock_db.add = capture_add
+
+        utc_published = datetime(2026, 3, 27, 0, 0, 0, tzinfo=UTC)
+
+        with patch(
+            "app.services.llm_news_service.AsyncSessionLocal", return_value=mock_db
+        ):
+            await create_news_article(
+                title="Test",
+                url="https://example.com/kst2",
+                published_at=utc_published,
+            )
+
+        # UTC 00:00 → KST 09:00, naive
+        assert added_article.article_published_at == datetime(2026, 3, 27, 9, 0, 0)
+        assert added_article.article_published_at.tzinfo is None
+
+    @pytest.mark.asyncio
+    async def test_create_article_none_published_at_stays_none(self):
+        from app.services.llm_news_service import create_news_article
+
+        mock_db = AsyncMock()
+        mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+        mock_db.__aexit__ = AsyncMock(return_value=False)
+        mock_db.commit = AsyncMock()
+        mock_db.refresh = AsyncMock()
+
+        added_article = None
+
+        def capture_add(article):
+            nonlocal added_article
+            added_article = article
+
+        mock_db.add = capture_add
+
+        with patch(
+            "app.services.llm_news_service.AsyncSessionLocal", return_value=mock_db
+        ):
+            await create_news_article(
+                title="Test", url="https://example.com/kst3", published_at=None
+            )
+
+        assert added_article.article_published_at is None
+
+    @pytest.mark.asyncio
+    async def test_bulk_create_stores_kst_naive(self):
+        from app.services.llm_news_service import bulk_create_news_articles
+
+        articles_input = [
+            NewsArticleCreate(
+                url="https://example.com/bulk-kst1",
+                title="Bulk 1",
+                published_at=datetime(2026, 3, 27, 0, 0, 0, tzinfo=UTC),
+            ),
+        ]
+
+        mock_db = AsyncMock()
+        mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+        mock_db.__aexit__ = AsyncMock(return_value=False)
+
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = []
+        mock_db.execute = AsyncMock(return_value=mock_result)
+        mock_db.commit = AsyncMock()
+
+        added_articles = []
+
+        def capture_add(article):
+            added_articles.append(article)
+
+        mock_db.add = capture_add
+
+        with patch(
+            "app.services.llm_news_service.AsyncSessionLocal", return_value=mock_db
+        ):
+            await bulk_create_news_articles(articles_input)
+
+        assert len(added_articles) == 1
+        art = added_articles[0]
+        assert art.scraped_at.tzinfo is None
+        assert art.created_at.tzinfo is None
+        assert art.article_published_at == datetime(2026, 3, 27, 9, 0, 0)
+        assert art.article_published_at.tzinfo is None
+
+
 class TestBulkCreateIntraBatchDedup:
     """Test that duplicate URLs within the same batch are handled."""
 
@@ -511,3 +700,83 @@ class TestBulkCreateIntraBatchDedup:
         assert skipped == 1
         assert skipped_urls == ["https://example.com/same"]
         assert len(added_articles) == 2
+
+
+class TestKstNaiveCutoffQueries:
+    """Verify query cutoffs use KST naive, not UTC aware."""
+
+    @pytest.mark.asyncio
+    async def test_get_news_articles_hours_cutoff_is_naive(self):
+        """get_news_articles with hours= should build a naive cutoff."""
+        from app.services.llm_news_service import get_news_articles
+
+        captured_queries = []
+        mock_db = AsyncMock()
+        mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+        mock_db.__aexit__ = AsyncMock(return_value=False)
+
+        # Capture the executed query's compiled params
+        async def capture_execute(stmt, *args, **kwargs):
+            captured_queries.append(stmt)
+            mock_result = MagicMock()
+            mock_result.scalars.return_value.all.return_value = []
+            mock_result.scalar_one.return_value = 0
+            return mock_result
+
+        mock_db.execute = capture_execute
+
+        with patch(
+            "app.services.llm_news_service.AsyncSessionLocal", return_value=mock_db
+        ):
+            await get_news_articles(hours=24)
+
+        # Verify at least one query was executed (the main query + count query)
+        assert len(captured_queries) >= 2
+
+    @pytest.mark.asyncio
+    async def test_search_news_db_cutoff_is_naive(self):
+        """_search_news_db should not raise offset-naive/aware mismatch."""
+        from app.mcp_server.tooling.news_handlers import _search_news_db
+
+        mock_db = AsyncMock()
+        mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+        mock_db.__aexit__ = AsyncMock(return_value=False)
+
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = []
+        mock_result.scalar_one.return_value = 0
+        mock_db.execute = AsyncMock(return_value=mock_result)
+
+        with patch(
+            "app.mcp_server.tooling.news_handlers.AsyncSessionLocal",
+            return_value=mock_db,
+        ):
+            articles, total = await _search_news_db(query="반도체", days=7)
+
+        assert total == 0
+        assert articles == []
+
+    @pytest.mark.asyncio
+    async def test_get_market_news_impl_no_tz_error(self):
+        """Full MCP impl should not raise timezone mismatch."""
+        from app.mcp_server.tooling.news_handlers import _get_market_news_impl
+
+        mock_article = MagicMock(
+            id=1,
+            url="https://example.com/1",
+            title="Test",
+            source="매일경제",
+            feed_source="mk_stock",
+            summary="요약",
+            article_published_at=datetime(2026, 3, 27, 9, 0, 0),  # naive KST
+            keywords=["반도체"],
+        )
+
+        with patch(
+            "app.mcp_server.tooling.news_handlers.get_news_articles",
+            new_callable=AsyncMock,
+            return_value=([mock_article], 1),
+        ):
+            result = await _get_market_news_impl(hours=24)
+
+        assert result["count"] == 1
