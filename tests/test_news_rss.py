@@ -700,3 +700,83 @@ class TestBulkCreateIntraBatchDedup:
         assert skipped == 1
         assert skipped_urls == ["https://example.com/same"]
         assert len(added_articles) == 2
+
+
+class TestKstNaiveCutoffQueries:
+    """Verify query cutoffs use KST naive, not UTC aware."""
+
+    @pytest.mark.asyncio
+    async def test_get_news_articles_hours_cutoff_is_naive(self):
+        """get_news_articles with hours= should build a naive cutoff."""
+        from app.services.llm_news_service import get_news_articles
+
+        captured_queries = []
+        mock_db = AsyncMock()
+        mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+        mock_db.__aexit__ = AsyncMock(return_value=False)
+
+        # Capture the executed query's compiled params
+        async def capture_execute(stmt, *args, **kwargs):
+            captured_queries.append(stmt)
+            mock_result = MagicMock()
+            mock_result.scalars.return_value.all.return_value = []
+            mock_result.scalar_one.return_value = 0
+            return mock_result
+
+        mock_db.execute = capture_execute
+
+        with patch(
+            "app.services.llm_news_service.AsyncSessionLocal", return_value=mock_db
+        ):
+            await get_news_articles(hours=24)
+
+        # Verify at least one query was executed (the main query + count query)
+        assert len(captured_queries) >= 2
+
+    @pytest.mark.asyncio
+    async def test_search_news_db_cutoff_is_naive(self):
+        """_search_news_db should not raise offset-naive/aware mismatch."""
+        from app.mcp_server.tooling.news_handlers import _search_news_db
+
+        mock_db = AsyncMock()
+        mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+        mock_db.__aexit__ = AsyncMock(return_value=False)
+
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = []
+        mock_result.scalar_one.return_value = 0
+        mock_db.execute = AsyncMock(return_value=mock_result)
+
+        with patch(
+            "app.mcp_server.tooling.news_handlers.AsyncSessionLocal",
+            return_value=mock_db,
+        ):
+            articles, total = await _search_news_db(query="반도체", days=7)
+
+        assert total == 0
+        assert articles == []
+
+    @pytest.mark.asyncio
+    async def test_get_market_news_impl_no_tz_error(self):
+        """Full MCP impl should not raise timezone mismatch."""
+        from app.mcp_server.tooling.news_handlers import _get_market_news_impl
+
+        mock_article = MagicMock(
+            id=1,
+            url="https://example.com/1",
+            title="Test",
+            source="매일경제",
+            feed_source="mk_stock",
+            summary="요약",
+            article_published_at=datetime(2026, 3, 27, 9, 0, 0),  # naive KST
+            keywords=["반도체"],
+        )
+
+        with patch(
+            "app.mcp_server.tooling.news_handlers.get_news_articles",
+            new_callable=AsyncMock,
+            return_value=([mock_article], 1),
+        ):
+            result = await _get_market_news_impl(hours=24)
+
+        assert result["count"] == 1

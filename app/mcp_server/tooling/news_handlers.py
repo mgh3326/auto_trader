@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import func, or_, select
 
 from app.core.db import AsyncSessionLocal
+from app.core.timezone import now_kst_naive
 from app.models.news import NewsArticle
 from app.services.llm_news_service import get_news_articles
 
@@ -58,7 +59,7 @@ async def _search_news_db(
     days: int = 7,
     limit: int = 20,
 ) -> tuple[list[NewsArticle], int]:
-    cutoff = datetime.now(UTC) - timedelta(days=days)
+    cutoff = now_kst_naive() - timedelta(days=days)
     like_pattern = f"%{query}%"
 
     async with AsyncSessionLocal() as db:

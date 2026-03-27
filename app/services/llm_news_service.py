@@ -250,7 +250,7 @@ async def get_news_articles(
         if feed_source:
             conditions.append(NewsArticle.feed_source == feed_source)
         if hours is not None:
-            cutoff = datetime.now(UTC) - timedelta(hours=hours)
+            cutoff = now_kst_naive() - timedelta(hours=hours)
             conditions.append(NewsArticle.article_published_at >= cutoff)
         if keyword:
             conditions.append(NewsArticle.keywords.op("@>")(json.dumps([keyword])))
