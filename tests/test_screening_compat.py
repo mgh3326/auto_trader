@@ -25,11 +25,6 @@ class TestBackwardCompat:
 
         assert callable(_screen_us)
 
-    def test_screen_crypto_from_old_path(self):
-        from app.mcp_server.tooling.analysis_screen_core import _screen_crypto
-
-        assert callable(_screen_crypto)
-
     def test_build_screen_response_from_old_path(self):
         from app.mcp_server.tooling.analysis_screen_core import _build_screen_response
 
@@ -49,13 +44,6 @@ class TestBackwardCompat:
         from app.mcp_server.tooling.analysis_screen_core import _to_optional_int
 
         assert callable(_to_optional_int)
-
-    def test_enrich_crypto_indicators_from_old_path(self):
-        from app.mcp_server.tooling.analysis_screen_core import (
-            _enrich_crypto_indicators,
-        )
-
-        assert callable(_enrich_crypto_indicators)
 
     def test_screen_kr_via_tvscreener_from_old_path(self):
         from app.mcp_server.tooling.analysis_screen_core import (

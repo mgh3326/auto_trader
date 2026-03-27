@@ -8,10 +8,10 @@ import pandas as pd
 import pytest
 
 from app.mcp_server.tooling.analysis_screen_core import (
-    _enrich_crypto_indicators,
     _screen_crypto_via_tvscreener,
 )
 from app.services.tvscreener_service import (
+    TvScreenerError,
     TvScreenerRateLimitError,
     TvScreenerTimeoutError,
 )
@@ -157,161 +157,6 @@ def test_to_optional_float_treats_nan_strings_as_missing() -> None:
 
     assert _to_optional_float("nan") is None
     assert _to_optional_float(float("nan")) is None
-
-
-@pytest.mark.asyncio
-async def test_enrich_crypto_indicators_uses_upbit_bulk_query(
-    crypto_candidates: list[dict[str, object]],
-    normalized_crypto_df: pd.DataFrame,
-    fake_tvscreener_module: SimpleNamespace,
-) -> None:
-    service = AsyncMock()
-    service.query_crypto_screener.return_value = normalized_crypto_df
-
-    with (
-        patch(
-            "app.mcp_server.tooling.screening.crypto._import_tvscreener",
-            return_value=fake_tvscreener_module,
-        ),
-        patch(
-            "app.mcp_server.tooling.screening.crypto.TvScreenerService",
-            return_value=service,
-        ),
-    ):
-        diagnostics = await _enrich_crypto_indicators(crypto_candidates)
-
-    service.query_crypto_screener.assert_awaited_once()
-    kwargs = service.query_crypto_screener.await_args.kwargs
-    assert kwargs["limit"] == 300
-    assert kwargs["columns"] == [
-        fake_tvscreener_module.CryptoField.NAME,
-        fake_tvscreener_module.CryptoField.RELATIVE_STRENGTH_INDEX_14,
-        fake_tvscreener_module.CryptoField.AVERAGE_DIRECTIONAL_INDEX_14,
-        fake_tvscreener_module.CryptoField.VOLUME_24H_IN_USD,
-    ]
-    assert kwargs["where_clause"] == [
-        fake_tvscreener_module.CryptoField.EXCHANGE == "UPBIT",
-        fake_tvscreener_module.CryptoField.NAME.isin(["BTCKRW", "ETHKRW", "XRPKRW"]),
-    ]
-    assert crypto_candidates[0]["rsi"] == 45.5
-    assert crypto_candidates[0]["adx"] == 25.3
-    assert crypto_candidates[0]["volume_24h"] == 156_000_000.0
-    assert crypto_candidates[1]["rsi"] == 32.1
-    assert diagnostics == {
-        "attempted": 3,
-        "succeeded": 3,
-        "failed": 0,
-        "rate_limited": 0,
-        "timeout": 0,
-        "error_samples": [],
-    }
-
-
-@pytest.mark.asyncio
-async def test_enrich_crypto_indicators_applies_partial_matches_only(
-    crypto_candidates: list[dict[str, object]],
-    fake_tvscreener_module: SimpleNamespace,
-) -> None:
-    service = AsyncMock()
-    service.query_crypto_screener.return_value = pd.DataFrame(
-        {
-            "symbol": ["UPBIT:BTCKRW", "UPBIT:ETHKRW", "BINANCE:XRPUSDT"],
-            "relative_strength_index_14": [40.0, 35.0, 20.0],
-            "average_directional_index_14": [20.0, 18.0, 10.0],
-            "volume_24h_in_usd": [1.0, 2.0, 3.0],
-        }
-    )
-
-    with (
-        patch(
-            "app.mcp_server.tooling.screening.crypto._import_tvscreener",
-            return_value=fake_tvscreener_module,
-        ),
-        patch(
-            "app.mcp_server.tooling.screening.crypto.TvScreenerService",
-            return_value=service,
-        ),
-    ):
-        diagnostics = await _enrich_crypto_indicators(crypto_candidates)
-
-    assert crypto_candidates[0]["rsi"] == 40.0
-    assert crypto_candidates[1]["rsi"] == 35.0
-    assert crypto_candidates[2]["rsi"] is None
-    assert diagnostics["succeeded"] == 2
-    assert diagnostics["failed"] == 1
-
-
-@pytest.mark.asyncio
-async def test_enrich_crypto_indicators_handles_empty_results(
-    crypto_candidates: list[dict[str, object]],
-    fake_tvscreener_module: SimpleNamespace,
-) -> None:
-    service = AsyncMock()
-    service.query_crypto_screener.return_value = pd.DataFrame()
-
-    with (
-        patch(
-            "app.mcp_server.tooling.screening.crypto._import_tvscreener",
-            return_value=fake_tvscreener_module,
-        ),
-        patch(
-            "app.mcp_server.tooling.screening.crypto.TvScreenerService",
-            return_value=service,
-        ),
-    ):
-        diagnostics = await _enrich_crypto_indicators(crypto_candidates)
-
-    assert all(candidate["rsi"] is None for candidate in crypto_candidates)
-    assert diagnostics["failed"] == 3
-    assert diagnostics["succeeded"] == 0
-
-
-@pytest.mark.asyncio
-async def test_enrich_crypto_indicators_handles_rate_limit(
-    crypto_candidates: list[dict[str, object]],
-    fake_tvscreener_module: SimpleNamespace,
-) -> None:
-    service = AsyncMock()
-    service.query_crypto_screener.side_effect = TvScreenerRateLimitError("rate limit")
-
-    with (
-        patch(
-            "app.mcp_server.tooling.screening.crypto._import_tvscreener",
-            return_value=fake_tvscreener_module,
-        ),
-        patch(
-            "app.mcp_server.tooling.screening.crypto.TvScreenerService",
-            return_value=service,
-        ),
-    ):
-        diagnostics = await _enrich_crypto_indicators(crypto_candidates)
-
-    assert diagnostics["rate_limited"] == 3
-    assert diagnostics["failed"] == 0
-
-
-@pytest.mark.asyncio
-async def test_enrich_crypto_indicators_handles_timeout(
-    crypto_candidates: list[dict[str, object]],
-    fake_tvscreener_module: SimpleNamespace,
-) -> None:
-    service = AsyncMock()
-    service.query_crypto_screener.side_effect = TvScreenerTimeoutError("timeout")
-
-    with (
-        patch(
-            "app.mcp_server.tooling.screening.crypto._import_tvscreener",
-            return_value=fake_tvscreener_module,
-        ),
-        patch(
-            "app.mcp_server.tooling.screening.crypto.TvScreenerService",
-            return_value=service,
-        ),
-    ):
-        diagnostics = await _enrich_crypto_indicators(crypto_candidates)
-
-    assert diagnostics["timeout"] == 3
-    assert diagnostics["failed"] == 0
 
 
 @pytest.mark.asyncio
@@ -698,57 +543,25 @@ async def test_finalize_crypto_screen_preserves_existing_market_cap_when_coingec
 
 
 @pytest.mark.asyncio
-async def test_enrich_crypto_indicators_manual_fallback_uses_upbit_keys(
-    crypto_candidates: list[dict[str, object]],
-) -> None:
-    with (
-        patch(
-            "app.mcp_server.tooling.screening.crypto._import_tvscreener",
-            side_effect=ImportError,
-        ),
-        patch(
-            "app.mcp_server.tooling.screening.crypto.compute_crypto_realtime_rsi_map",
-            new=AsyncMock(
-                return_value={"KRW-BTC": 41.2, "KRW-ETH": 37.4, "KRW-XRP": 55.1}
-            ),
-        ),
-    ):
-        diagnostics = await _enrich_crypto_indicators(crypto_candidates)
+async def test_screen_crypto_fallback_removed_propagates_error():
+    """tvscreener 실패 시 legacy fallback 없이 예외가 전파되어야 함."""
+    from app.mcp_server.tooling.screening.crypto import _screen_crypto_with_fallback
 
-    assert [candidate["rsi"] for candidate in crypto_candidates] == [41.2, 37.4, 55.1]
-    assert diagnostics["succeeded"] == 3
+    with patch(
+        "app.mcp_server.tooling.screening.crypto._screen_crypto_via_tvscreener"
+    ) as mock_tvscreener:
+        mock_tvscreener.side_effect = TvScreenerError("sort_by returned None")
 
-
-class TestCryptoScreeningIntegration:
-    @pytest.mark.integration
-    @pytest.mark.live
-    @pytest.mark.asyncio
-    async def test_enrich_real_symbols(self) -> None:
-        pytest.importorskip("tvscreener")
-
-        candidates = [
-            {
-                "market": "crypto",
-                "original_market": "KRW-BTC",
-                "symbol": "KRW-BTC",
-                "name": "BTC",
-                "rsi": None,
-            },
-            {
-                "market": "crypto",
-                "original_market": "KRW-ETH",
-                "symbol": "KRW-ETH",
-                "name": "ETH",
-                "rsi": None,
-            },
-        ]
-
-        diagnostics = await _enrich_crypto_indicators(candidates)
-
-        assert diagnostics["attempted"] == 2
-        assert diagnostics["succeeded"] >= 1
-        assert any(candidate.get("rsi") is not None for candidate in candidates)
-        for candidate in candidates:
-            rsi = candidate.get("rsi")
-            if rsi is not None:
-                assert 0.0 <= float(rsi) <= 100.0
+        with pytest.raises(TvScreenerError, match="sort_by returned None"):
+            await _screen_crypto_with_fallback(
+                market="crypto",
+                asset_type=None,
+                category=None,
+                min_market_cap=None,
+                max_per=None,
+                min_dividend_yield=None,
+                max_rsi=None,
+                sort_by="trade_amount",
+                sort_order="desc",
+                limit=10,
+            )
