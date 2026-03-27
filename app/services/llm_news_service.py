@@ -210,6 +210,7 @@ async def bulk_create_news_articles(
                 created_at=datetime.now(UTC),
             )
             db.add(article)
+            existing_urls.add(url)
             inserted_count += 1
 
         if inserted_count > 0:

@@ -469,3 +469,47 @@ class TestKeywordQuerySafety:
         unsafe = f'["{keyword}"]'
         with pytest.raises(_json.JSONDecodeError):
             _json.loads(unsafe)
+
+
+class TestBulkCreateIntraBatchDedup:
+    """Test that duplicate URLs within the same batch are handled."""
+
+    @pytest.mark.asyncio
+    async def test_duplicate_urls_in_same_batch(self):
+        from app.services.llm_news_service import bulk_create_news_articles
+        from app.schemas.news import NewsArticleCreate
+
+        articles_input = [
+            NewsArticleCreate(url="https://example.com/same", title="First"),
+            NewsArticleCreate(url="https://example.com/same", title="Second (dup)"),
+            NewsArticleCreate(url="https://example.com/other", title="Other"),
+        ]
+
+        mock_db = AsyncMock()
+        mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+        mock_db.__aexit__ = AsyncMock(return_value=False)
+
+        # No existing URLs in DB
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = []
+        mock_db.execute = AsyncMock(return_value=mock_result)
+        mock_db.commit = AsyncMock()
+
+        added_articles = []
+
+        def capture_add(article):
+            added_articles.append(article)
+
+        mock_db.add = capture_add
+
+        with patch(
+            "app.services.llm_news_service.AsyncSessionLocal", return_value=mock_db
+        ):
+            inserted, skipped, skipped_urls = await bulk_create_news_articles(
+                articles_input
+            )
+
+        assert inserted == 2
+        assert skipped == 1
+        assert skipped_urls == ["https://example.com/same"]
+        assert len(added_articles) == 2
