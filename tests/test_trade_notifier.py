@@ -1017,10 +1017,7 @@ async def test_send_to_discord_success(trade_notifier):
         assert "embeds" in json_data
         assert json_data["embeds"] == [embed]
 
-        # Verify headers
-        assert "headers" in call_args.kwargs
-        headers = call_args.kwargs["headers"]
-        assert headers["Content-Type"] == "application/json"
+        # Note: httpx sets Content-Type automatically when using json= parameter
 
 
 @pytest.mark.unit

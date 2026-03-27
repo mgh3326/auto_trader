@@ -10,6 +10,11 @@ from app.core.timezone import format_datetime
 
 from . import formatters_discord as fmt_discord
 from . import formatters_telegram as fmt_telegram
+from .transports import (
+    send_discord_content_single,
+    send_discord_embed_single,
+    send_telegram,
+)
 from .types import DiscordEmbed
 
 logger = logging.getLogger(__name__)
@@ -501,139 +506,45 @@ class TradeNotifier:
             market_type=market_type,
         )
 
-    # ── transport methods (keep original implementations for backward compat) ──
+    # ── transport wrappers (delegate to transports module) ──
 
     async def _send_to_telegram(
         self, message: str, parse_mode: str = "Markdown"
     ) -> bool:
         """Send message to all configured Telegram chats."""
-        if not self._enabled or not self._http_client or not self._bot_token:
+        if not self._http_client or not self._bot_token or not self._chat_ids:
             return False
-
-        success_count = 0
-        url = f"https://api.telegram.org/bot{self._bot_token}/sendMessage"
-
-        for chat_id in self._chat_ids:
-            try:
-                response = await self._http_client.post(
-                    url,
-                    json={
-                        "chat_id": chat_id,
-                        "text": message,
-                        "parse_mode": parse_mode,
-                        "disable_web_page_preview": True,
-                    },
-                )
-                _ = response.raise_for_status()
-                success_count += 1
-
-            except Exception as e:
-                logger.error(f"Failed to send notification to chat {chat_id}: {e}")
-
-        if success_count > 0:
-            logger.info(f"Notification sent to {success_count} chat(s)")
-            return True
-        return False
-
-    async def _send_to_discord(self, message: str) -> bool:
-        """Send message to all configured Discord webhooks."""
-        if not self._enabled or not self._http_client or not self._discord_webhook_urls:
-            return False
-
-        success_count = 0
-
-        for webhook_url in self._discord_webhook_urls:
-            try:
-                response = await self._http_client.post(
-                    webhook_url,
-                    json={"content": message},
-                    headers={"Content-Type": "application/json"},
-                )
-                _ = response.raise_for_status()
-                success_count += 1
-
-            except Exception as e:
-                logger.error(f"Failed to send notification to Discord webhook: {e}")
-
-        if success_count > 0:
-            logger.info(f"Notification sent to {success_count} Discord webhook(s)")
-            return True
-        return False
-
-    async def _send_to_discord_embed(self, embed: DiscordEmbed) -> bool:
-        """Send Discord embed to all configured Discord webhooks."""
-        if not self._enabled or not self._http_client or not self._discord_webhook_urls:
-            return False
-
-        success_count = 0
-
-        for webhook_url in self._discord_webhook_urls:
-            try:
-                response = await self._http_client.post(
-                    webhook_url,
-                    json={"embeds": [embed]},
-                    headers={"Content-Type": "application/json"},
-                )
-                _ = response.raise_for_status()
-                success_count += 1
-
-            except Exception as e:
-                logger.error(f"Failed to send embed to Discord webhook: {e}")
-
-        if success_count > 0:
-            logger.info(f"Embed sent to {success_count} Discord webhook(s)")
-            return True
-        return False
+        return await send_telegram(
+            http_client=self._http_client,
+            bot_token=self._bot_token,
+            chat_ids=self._chat_ids,
+            text=message,
+            parse_mode=parse_mode,
+        )
 
     async def _send_to_discord_embed_single(
         self, embed: DiscordEmbed, webhook_url: str
     ) -> bool:
         """Send Discord embed to a specific webhook URL."""
-        if not self._enabled or not self._http_client:
+        if not self._http_client or not webhook_url:
             return False
-
-        if not webhook_url:
-            logger.warning("No Discord webhook URL provided")
-            return False
-
-        try:
-            response = await self._http_client.post(
-                webhook_url,
-                json={"embeds": [embed]},
-                headers={"Content-Type": "application/json"},
-            )
-            _ = response.raise_for_status()
-            logger.info("Embed sent to Discord webhook")
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to send embed to Discord webhook: {e}")
-            return False
+        return await send_discord_embed_single(
+            http_client=self._http_client,
+            webhook_url=webhook_url,
+            embed=embed,
+        )
 
     async def _send_to_discord_content_single(
         self, content: str, webhook_url: str
     ) -> bool:
         """Send plain text content to a specific Discord webhook URL."""
-        if not self._enabled or not self._http_client:
+        if not self._http_client or not webhook_url:
             return False
-
-        if not webhook_url:
-            logger.warning("No Discord webhook URL provided")
-            return False
-
-        try:
-            response = await self._http_client.post(
-                webhook_url,
-                json={"content": content},
-                headers={"Content-Type": "application/json"},
-            )
-            _ = response.raise_for_status()
-            logger.info("Content sent to Discord webhook")
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to send content to Discord webhook: {e}")
-            return False
+        return await send_discord_content_single(
+            http_client=self._http_client,
+            webhook_url=webhook_url,
+            content=content,
+        )
 
     # ── public notify methods ──────────────────────────────────────────
 
