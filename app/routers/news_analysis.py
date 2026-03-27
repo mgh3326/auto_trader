@@ -133,24 +133,6 @@ async def list_news_articles(
             detail=f"Failed to query news: {str(e)}",
         )
 
-        page_info = {
-            "limit": limit,
-            "offset": offset,
-            "total": total,
-        }
-
-        return NewsListResponse(
-            total=total,
-            items=[NewsArticleResponse.model_validate(a) for a in articles],
-            page_info=page_info,
-        )
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to query news: {str(e)}",
-        )
-
 
 @router.get("/{article_id}", response_model=NewsAnalysisResponse)
 async def get_news_article_with_analysis(

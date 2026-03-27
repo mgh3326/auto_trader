@@ -1,9 +1,20 @@
 """Tests for RSS news collection features."""
 
+import inspect
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from datetime import datetime, UTC
+from fastapi.testclient import TestClient
 
 from app.models.news import NewsArticle
+from app.schemas.news import (
+    BulkCreateResponse,
+    NewsAnalysisRequest,
+    NewsArticleBulkCreate,
+    NewsArticleCreate,
+    NewsArticleResponse,
+)
 
 
 class TestNewsArticleModel:
@@ -61,14 +72,6 @@ class TestNewsArticleModel:
         assert article.article_content is None
 
 
-from app.schemas.news import (
-    NewsArticleCreate,
-    NewsArticleBulkCreate,
-    BulkCreateResponse,
-    NewsArticleResponse,
-)
-
-
 class TestNewsSchemas:
     """Test updated news schemas."""
 
@@ -93,9 +96,7 @@ class TestNewsSchemas:
         assert article.keywords == ["반도체", "AI", "삼성전자"]
 
     def test_create_with_published_at(self):
-        from datetime import datetime, timezone, timedelta
-
-        kst = timezone(timedelta(hours=9))
+        kst = datetime.now(UTC).astimezone().tzinfo
         dt = datetime(2026, 3, 27, 9, 29, 9, tzinfo=kst)
         article = NewsArticleCreate(
             url="https://example.com/3",
@@ -151,10 +152,6 @@ class TestNewsSchemas:
         assert resp.is_analyzed is False
 
 
-from unittest.mock import AsyncMock, MagicMock, patch
-from datetime import timedelta
-
-
 class TestCreateNewsArticle:
     """Test create_news_article with new RSS fields."""
 
@@ -169,7 +166,6 @@ class TestCreateNewsArticle:
         with patch(
             "app.services.llm_news_service.AsyncSessionLocal", return_value=mock_db
         ):
-            # capture the article added to db
             added_article = None
 
             def capture_add(article):
@@ -230,7 +226,6 @@ class TestBulkCreateNewsArticles:
     @pytest.mark.asyncio
     async def test_bulk_create_inserts_new_articles(self):
         from app.services.llm_news_service import bulk_create_news_articles
-        from app.schemas.news import NewsArticleCreate
 
         articles_input = [
             NewsArticleCreate(
@@ -249,14 +244,12 @@ class TestBulkCreateNewsArticles:
         mock_db.__aenter__ = AsyncMock(return_value=mock_db)
         mock_db.__aexit__ = AsyncMock(return_value=False)
 
-        # Simulate no existing URLs
         mock_result = MagicMock()
         mock_result.scalars.return_value.all.return_value = []
         mock_db.execute = AsyncMock(return_value=mock_result)
         mock_db.commit = AsyncMock()
 
         added_articles = []
-        original_add = mock_db.add
 
         def capture_add(article):
             added_articles.append(article)
@@ -277,7 +270,6 @@ class TestBulkCreateNewsArticles:
     @pytest.mark.asyncio
     async def test_bulk_create_skips_existing_urls(self):
         from app.services.llm_news_service import bulk_create_news_articles
-        from app.schemas.news import NewsArticleCreate
 
         articles_input = [
             NewsArticleCreate(url="https://example.com/existing", title="Dup"),
@@ -288,7 +280,6 @@ class TestBulkCreateNewsArticles:
         mock_db.__aenter__ = AsyncMock(return_value=mock_db)
         mock_db.__aexit__ = AsyncMock(return_value=False)
 
-        # Simulate "existing" URL already in DB
         mock_result = MagicMock()
         mock_result.scalars.return_value.all.return_value = [
             "https://example.com/existing"
@@ -315,9 +306,6 @@ class TestBulkCreateNewsArticles:
         assert skipped_urls == ["https://example.com/existing"]
         assert len(added_articles) == 1
         assert added_articles[0].url == "https://example.com/new"
-
-
-import inspect
 
 
 class TestGetNewsArticlesFilters:
@@ -348,12 +336,10 @@ class TestGetNewsArticlesFilters:
         assert "has_analysis" in sig.parameters
 
 
-from fastapi.testclient import TestClient
-
-
 def _make_test_app():
     """Create a minimal FastAPI app with the news router for testing."""
     from fastapi import FastAPI
+
     from app.routers.news_analysis import router
 
     app = FastAPI()
@@ -383,7 +369,6 @@ class TestGetEndpointNewParams:
         """Endpoint should accept hours parameter without 422."""
         app = _make_test_app()
         client = TestClient(app)
-        # Will fail with 500 because no DB, but should NOT fail with 422
         resp = client.get("/api/v1/news?hours=24")
         assert resp.status_code != 422
 
@@ -458,9 +443,9 @@ class TestAnalyzeEndpointDefense:
 
     def test_analyze_requires_content(self):
         """POST /analyze should require content field."""
-        from app.schemas.news import NewsAnalysisRequest
+        from pydantic import ValidationError
 
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             NewsAnalysisRequest(
                 url="https://example.com/1",
                 title="Test",
