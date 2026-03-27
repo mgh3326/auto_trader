@@ -21,6 +21,8 @@ from app.mcp_server.tooling.shared import (
     is_us_equity_symbol as _is_us_equity_symbol,
 )
 
+# NOTE: These alias sets intentionally differ from _helpers.py — sector_peers
+# does NOT accept "equity_kr"/"equity_us" to preserve the original tool contract.
 _KR_ALIASES = frozenset({"kr", "krx", "korea", "kospi", "kosdaq", "kis", "naver"})
 _US_ALIASES = frozenset({"us", "usa", "nyse", "nasdaq", "yahoo"})
 
