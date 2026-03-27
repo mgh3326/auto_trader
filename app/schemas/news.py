@@ -11,10 +11,15 @@ class NewsArticleCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=500, description="뉴스 제목")
     source: str | None = Field(None, max_length=100, description="뉴스 출처")
     author: str | None = Field(None, max_length=200, description="기자명")
-    content: str = Field(..., min_length=1, description="기사 본문")
+    content: str | None = Field(None, description="기사 본문 (RSS 뉴스는 없을 수 있음)")
+    summary: str | None = Field(None, description="기사 요약")
     stock_symbol: str | None = Field(None, max_length=20, description="관련 종목 코드")
     stock_name: str | None = Field(None, max_length=100, description="관련 종목명")
     published_at: datetime | None = Field(None, description="기사 발행일시")
+    feed_source: str | None = Field(
+        None, max_length=50, description="RSS 피드 소스 (mk_stock, yna_market 등)"
+    )
+    keywords: list[str] | None = Field(None, description="키워드 배열")
 
     @field_validator("url")
     @classmethod
@@ -27,6 +32,17 @@ class NewsArticleCreate(BaseModel):
         return v.strip()
 
 
+class NewsArticleBulkCreate(BaseModel):
+    articles: list[NewsArticleCreate] = Field(..., max_length=500)
+
+
+class BulkCreateResponse(BaseModel):
+    success: bool
+    inserted_count: int
+    skipped_count: int
+    skipped_urls: list[str]
+
+
 class NewsArticleResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -35,7 +51,7 @@ class NewsArticleResponse(BaseModel):
     title: str
     source: str | None
     author: str | None
-    content: str = Field(validation_alias="article_content")
+    content: str | None = Field(validation_alias="article_content")
     summary: str | None
     stock_symbol: str | None
     stock_name: str | None
@@ -44,6 +60,9 @@ class NewsArticleResponse(BaseModel):
     user_id: int | None
     created_at: datetime
     updated_at: datetime | None
+    feed_source: str | None = None
+    keywords: list[str] | None = None
+    is_analyzed: bool = False
 
 
 class NewsAnalysisResultResponse(BaseModel):
@@ -68,7 +87,7 @@ class NewsAnalysisResultResponse(BaseModel):
 
 class NewsAnalysisRequest(BaseModel):
     url: str = Field(..., description="분석할 뉴스 기사 URL")
-    content: str = Field(..., description="기사 본문 (스크래핑된 텍스트)")
+    content: str = Field(..., min_length=1, description="기사 본문 (스크래핑된 텍스트)")
     title: str = Field(..., description="뉴스 제목")
     source: str | None = Field(None, description="뉴스 출처")
     stock_symbol: str | None = Field(None, description="관련 종목 코드 (선택사항)")
@@ -96,6 +115,10 @@ class NewsQueryParams(BaseModel):
         None, description="감정으로 필터링 (positive/negative/neutral)"
     )
     source: str | None = Field(None, description="뉴스 출처로 필터링")
+    hours: int | None = Field(None, ge=1, le=720, description="최근 N시간 이내 기사만")
+    feed_source: str | None = Field(None, description="RSS 피드 소스로 필터링")
+    keyword: str | None = Field(None, description="키워드로 필터링")
+    has_analysis: bool | None = Field(None, description="분석 완료 여부로 필터링")
     limit: int = Field(10, ge=1, le=100, description="반환할 뉴스 수")
     offset: int = Field(0, ge=0, description="건너뛸 뉴스 수")
 

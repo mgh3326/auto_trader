@@ -8,10 +8,6 @@ from typing import Any, cast
 
 import yfinance as yf
 
-from app.mcp_server.tooling.market_data_indicators import (
-    _calculate_rsi,
-    _fetch_ohlcv_for_indicators,
-)
 from app.mcp_server.tooling.screening.common import (
     _apply_basic_filters,
     _build_screen_response,
@@ -56,7 +52,6 @@ async def _screen_us(
     sort_by: str,
     sort_order: str,
     limit: int,
-    enrich_rsi: bool = True,
 ) -> dict[str, Any]:
     """Screen US market stocks using yfinance screener."""
     (
@@ -205,48 +200,6 @@ async def _screen_us(
             if mapped["close"] in (None, 0):
                 continue
             results.append(mapped)
-
-        if enrich_rsi and results:
-            semaphore = asyncio.Semaphore(10)
-
-            async def calculate_rsi_for_stock(item: dict[str, Any]):
-                async with semaphore:
-                    item_copy = item.copy()
-                    symbol = item["code"]
-
-                    try:
-                        df = await _fetch_ohlcv_for_indicators(symbol, "us", count=50)
-                        if not df.empty and "close" in df.columns:
-                            rsi_result = _calculate_rsi(df["close"])
-                            if rsi_result and "14" in rsi_result:
-                                item_copy["rsi"] = rsi_result["14"]
-                    except Exception:
-                        pass
-
-                    return item_copy
-
-            subset_limit = min(len(results), limit * 3, 150)
-            subset = results[:subset_limit]
-            try:
-                subset_with_rsi = await asyncio.wait_for(
-                    asyncio.gather(
-                        *[calculate_rsi_for_stock(item) for item in subset],
-                        return_exceptions=True,
-                    ),
-                    timeout=_timeout_seconds("rsi_enrichment"),
-                )
-                for i, enriched in enumerate(subset_with_rsi):
-                    if isinstance(enriched, Exception):
-                        continue
-                    if not isinstance(enriched, dict):
-                        continue
-                    rsi_value = enriched.get("rsi")
-                    if rsi_value is not None:
-                        results[i]["rsi"] = rsi_value
-            except TimeoutError:
-                pass
-            except Exception:
-                pass
 
         if max_rsi is not None:
             results = _apply_basic_filters(
@@ -638,7 +591,6 @@ async def _screen_us_with_fallback(
     sort_by: str,
     sort_order: str,
     limit: int,
-    enrich_rsi: bool,
 ) -> dict[str, Any]:
     """Screen US market with tvscreener fallback to legacy."""
     capability_snapshot = await _get_tvscreener_stock_capability_snapshot(
@@ -702,5 +654,4 @@ async def _screen_us_with_fallback(
         sort_by=sort_by,
         sort_order=sort_order,
         limit=limit,
-        enrich_rsi=enrich_rsi,
     )

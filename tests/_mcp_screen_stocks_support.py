@@ -1685,21 +1685,6 @@ def _mock_crypto_external_sources(monkeypatch: pytest.MonkeyPatch):
         "get",
         mock_market_cap_cache_get,
     )
-    monkeypatch.setattr(
-        screening_kr,
-        "_fetch_ohlcv_for_indicators",
-        mock_fetch_ohlcv_for_indicators,
-    )
-    monkeypatch.setattr(
-        screening_us,
-        "_fetch_ohlcv_for_indicators",
-        mock_fetch_ohlcv_for_indicators,
-    )
-    monkeypatch.setattr(
-        screening_crypto,
-        "_fetch_ohlcv_for_indicators",
-        mock_fetch_ohlcv_for_indicators,
-    )
 
 
 class TestScreenStocksCrypto:
@@ -2658,28 +2643,11 @@ class TestScreenStocksFundamentalsExpansion:
         async def mock_fetch_top_traded_coins(fiat):
             return mock_upbit_coins
 
-        enrich_mock = AsyncMock(
-            return_value={
-                "attempted": 2,
-                "succeeded": 0,
-                "failed": 2,
-                "rate_limited": 0,
-                "timeout": 0,
-                "error_samples": [],
-            }
-        )
-
         monkeypatch.setattr(
             upbit_service,
             "fetch_top_traded_coins",
             mock_fetch_top_traded_coins,
         )
-        monkeypatch.setattr(
-            screening_crypto,
-            "_enrich_crypto_indicators",
-            enrich_mock,
-        )
-
         tools = build_tools()
         result = await tools["screen_stocks"](
             market="crypto",
@@ -2693,9 +2661,6 @@ class TestScreenStocksFundamentalsExpansion:
             sort_order="desc",
             limit=20,
         )
-
-        enrich_mock.assert_awaited_once()
-        assert result["meta"]["rsi_enrichment"]["attempted"] > 0
         assert all("score" not in item for item in result["results"])
 
     @pytest.mark.asyncio
@@ -2705,33 +2670,11 @@ class TestScreenStocksFundamentalsExpansion:
         async def mock_fetch_top_traded_coins(fiat):
             return mock_upbit_coins
 
-        async def enrich_candidates(candidates):
-            candidates[0]["rsi"] = 41.0
-            candidates[0]["rsi_bucket"] = 40
-            candidates[1]["rsi"] = 29.0
-            candidates[1]["rsi_bucket"] = 25
-            return {
-                "attempted": 2,
-                "succeeded": 2,
-                "failed": 0,
-                "rate_limited": 0,
-                "timeout": 0,
-                "error_samples": [],
-            }
-
-        enrich_mock = AsyncMock(side_effect=enrich_candidates)
-
         monkeypatch.setattr(
             upbit_service,
             "fetch_top_traded_coins",
             mock_fetch_top_traded_coins,
         )
-        monkeypatch.setattr(
-            screening_crypto,
-            "_enrich_crypto_indicators",
-            enrich_mock,
-        )
-
         tools = build_tools()
         result = await tools["screen_stocks"](
             market="crypto",
@@ -2746,10 +2689,6 @@ class TestScreenStocksFundamentalsExpansion:
             limit=20,
         )
 
-        enrich_mock.assert_awaited_once()
-        assert result["meta"]["rsi_enrichment"]["attempted"] == 2
-        assert result["meta"]["rsi_enrichment"]["succeeded"] == 2
-        assert all("rsi" in item for item in result["results"])
         assert all("rsi_14" not in item for item in result["results"])
 
     @pytest.mark.asyncio
@@ -3290,9 +3229,13 @@ class TestScreenStocksRsiLogging:
             mock_fetch_valuation_all_cached,
         )
         monkeypatch.setattr(
-            screening_kr, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+            "app.mcp_server.tooling.market_data_indicators._fetch_ohlcv_for_indicators",
+            mock_fetch_ohlcv,
         )
-        monkeypatch.setattr(screening_kr, "_calculate_rsi", mock_calculate_rsi)
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.market_data_indicators._calculate_rsi",
+            mock_calculate_rsi,
+        )
 
         result = await analysis_screen_core._screen_kr(
             market="kospi",
@@ -3506,23 +3449,8 @@ class TestScreenStocksRsiLogging:
                 }
             ]
 
-        async def mock_enrich_crypto_indicators(candidates):
-            return {
-                "attempted": len(candidates),
-                "succeeded": 0,
-                "failed": len(candidates),
-                "rate_limited": 0,
-                "timeout": 0,
-                "error_samples": ["RuntimeError: boom-crypto"],
-            }
-
         monkeypatch.setattr(
             upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
-        )
-        monkeypatch.setattr(
-            screening_crypto,
-            "_enrich_crypto_indicators",
-            mock_enrich_crypto_indicators,
         )
 
         caplog.set_level(logging.ERROR)
@@ -3604,7 +3532,7 @@ class TestScreenStocksRsiLogging:
 
     @pytest.mark.asyncio
     async def test_crypto_rsi_rate_limited_diagnostic_counts(self, monkeypatch):
-        """Crypto RSI enrichment should surface rate-limited diagnostics when enrich_rsi=True."""
+        """Crypto RSI enrichment should surface rate-limited diagnostics."""
 
         async def mock_fetch_top_traded_coins(fiat):
             return [
@@ -3618,23 +3546,8 @@ class TestScreenStocksRsiLogging:
                 }
             ]
 
-        async def mock_enrich_crypto_indicators(candidates):
-            return {
-                "attempted": len(candidates),
-                "succeeded": 0,
-                "failed": 0,
-                "rate_limited": len(candidates),
-                "timeout": 0,
-                "error_samples": [],
-            }
-
         monkeypatch.setattr(
             upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
-        )
-        monkeypatch.setattr(
-            screening_crypto,
-            "_enrich_crypto_indicators",
-            mock_enrich_crypto_indicators,
         )
 
         tools = build_tools()

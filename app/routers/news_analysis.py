@@ -5,14 +5,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import get_db
 from app.models.news import NewsArticle
 from app.schemas.news import (
+    BulkCreateResponse,
     NewsAnalysisRequest,
     NewsAnalysisResponse,
     NewsAnalysisResultResponse,
+    NewsArticleBulkCreate,
     NewsArticleResponse,
     NewsListResponse,
 )
 from app.services.llm_news_service import (
     NewsAnalyzer,
+    bulk_create_news_articles,
     create_news_article,
     get_news_analysis,
     get_news_articles,
@@ -62,6 +65,27 @@ async def analyze_news_article(
         )
 
 
+@router.post(
+    "/bulk", response_model=BulkCreateResponse, status_code=status.HTTP_201_CREATED
+)
+async def bulk_create_news(request: NewsArticleBulkCreate):
+    try:
+        inserted, skipped, skipped_urls = await bulk_create_news_articles(
+            request.articles
+        )
+        return BulkCreateResponse(
+            success=True,
+            inserted_count=inserted,
+            skipped_count=skipped,
+            skipped_urls=skipped_urls,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to bulk create news: {str(e)}",
+        )
+
+
 @router.get("", response_model=NewsListResponse)
 async def list_news_articles(
     stock_symbol: str | None = Query(None, description="종목 코드로 필터링"),
@@ -69,6 +93,12 @@ async def list_news_articles(
         None, description="감정 분석으로 필터링 (positive/negative/neutral)"
     ),
     source: str | None = Query(None, description="뉴스 출처로 필터링"),
+    hours: int | None = Query(None, ge=1, le=720, description="최근 N시간 이내 기사만"),
+    feed_source: str | None = Query(
+        None, description="RSS 피드 소스로 필터링 (mk_stock, yna_market 등)"
+    ),
+    keyword: str | None = Query(None, description="키워드로 필터링"),
+    has_analysis: bool | None = Query(None, description="분석 완료 여부로 필터링"),
     limit: int = Query(10, ge=1, le=100, description="반환할 뉴스 수"),
     offset: int = Query(0, ge=0, description="건너뛸 뉴스 수"),
 ):
@@ -79,6 +109,10 @@ async def list_news_articles(
             source=source,
             limit=limit,
             offset=offset,
+            hours=hours,
+            feed_source=feed_source,
+            keyword=keyword,
+            has_analysis=has_analysis,
         )
 
         page_info = {

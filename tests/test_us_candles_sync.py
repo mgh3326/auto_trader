@@ -135,6 +135,15 @@ def test_merge_kr_intraday_and_us_candle_heads_migration_structure() -> None:
     )
 
 
+def test_merge_trade_review_and_rss_news_heads_migration_structure() -> None:
+    _, merge_content = _read_migration("*_merge_trade_review_and_rss_news_heads.py")
+
+    assert (
+        'down_revision: str | Sequence[str] | None = ("672f39265fed", "f3a4b5c6d7e8")'
+        in merge_content
+    )
+
+
 def test_us_candles_timescale_migration_defines_required_base_table_contract() -> None:
     _, content = _read_migration("*_add_us_candles_timescale.py")
 

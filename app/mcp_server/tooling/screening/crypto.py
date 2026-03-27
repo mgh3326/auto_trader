@@ -12,13 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 import app.services.brokers.upbit.client as upbit_service
 from app.core.db import AsyncSessionLocal
-from app.mcp_server.tooling.analysis_crypto_score import (
-    calculate_crypto_metrics_from_ohlcv,
-)
 from app.mcp_server.tooling.analysis_screen_crypto import finalize_crypto_screen
-from app.mcp_server.tooling.market_data_indicators import (
-    _fetch_ohlcv_for_indicators,
-)
 from app.mcp_server.tooling.screening.common import (
     MarketCapCache,
     _clean_text,
@@ -74,88 +68,6 @@ def _get_voting_evaluator() -> CryptoVotingSignals:
     if _voting_evaluator is None:
         _voting_evaluator = CryptoVotingSignals()
     return _voting_evaluator
-
-
-async def _run_crypto_indicator_enrichment(
-    enrichment_items: list[dict[str, Any]],
-    candidates: list[dict[str, Any]],
-    filtered: list[dict[str, Any]],
-    limit: int,
-) -> dict[str, Any]:
-    metric_diagnostics = _empty_rsi_enrichment_diagnostics()
-    metric_diagnostics["attempted"] = len(enrichment_items)
-    _enrich_semaphore = asyncio.Semaphore(5)
-    _enrich_succeeded = 0
-    _enrich_failed = 0
-    _enrich_timeout = 0
-    _enrich_error_samples: list[str] = []
-
-    async def _enrich_single_item(item: dict[str, Any]) -> None:
-        nonlocal _enrich_succeeded, _enrich_failed, _enrich_timeout
-        symbol = str(item.get("symbol") or "").strip().upper()
-        if not symbol:
-            return
-        async with _enrich_semaphore:
-            try:
-                df = await asyncio.wait_for(
-                    _fetch_ohlcv_for_indicators(symbol, "crypto", count=50),
-                    timeout=_timeout_seconds("crypto_enrichment"),
-                )
-                metrics = calculate_crypto_metrics_from_ohlcv(df)
-            except TimeoutError:
-                _enrich_timeout += 1
-                if len(_enrich_error_samples) < 3:
-                    _enrich_error_samples.append(f"TimeoutError: {symbol}")
-                return
-            except Exception as exc:
-                _enrich_failed += 1
-                if len(_enrich_error_samples) < 3:
-                    _enrich_error_samples.append(f"{type(exc).__name__}: {exc}"[:100])
-                return
-            _enrich_succeeded += 1
-            item["volume_ratio"] = metrics.get("volume_ratio")
-            item["candle_type"] = metrics.get("candle_type") or "flat"
-            item["plus_di"] = metrics.get("plus_di")
-            item["minus_di"] = metrics.get("minus_di")
-            if item.get("adx") is None:
-                item["adx"] = metrics.get("adx")
-            if item.get("rsi") is None:
-                item["rsi"] = metrics.get("rsi")
-                item["rsi_bucket"] = _compute_rsi_bucket(item.get("rsi"))
-
-            # NEW: Voting signal enrichment
-            voting_result = _get_voting_evaluator().evaluate(df)
-            if voting_result is not None:
-                item["bull_votes"] = voting_result.bull_votes
-                item["bear_votes"] = voting_result.bear_votes
-                item["buy_signal"] = voting_result.buy_signal
-                item["sell_signal"] = voting_result.sell_signal
-                item["bull_flags"] = voting_result.bull_flags
-            else:
-                item["bull_votes"] = None
-                item["bear_votes"] = None
-                item["buy_signal"] = None
-                item["sell_signal"] = None
-                item["bull_flags"] = None
-
-    with sentry_sdk.start_span(
-        op="crypto.screen.enrichment",
-        name="crypto indicator enrichment",
-    ) as enrich_span:
-        enrich_span.set_data("candidate_count", len(candidates))
-        enrich_span.set_data("filtered_count", len(filtered))
-        enrich_span.set_data("limit", limit)
-        enrich_span.set_data("concurrency", 5)
-        await asyncio.gather(
-            *[_enrich_single_item(item) for item in enrichment_items],
-            return_exceptions=True,
-        )
-
-    metric_diagnostics["succeeded"] = _enrich_succeeded
-    metric_diagnostics["failed"] = _enrich_failed
-    metric_diagnostics["timeout"] = _enrich_timeout
-    metric_diagnostics["error_samples"] = _enrich_error_samples[:3]
-    return metric_diagnostics
 
 
 async def _run_crypto_coingecko_fetch() -> dict[str, Any]:
@@ -402,13 +314,11 @@ async def _screen_crypto_via_tvscreener(
         candidates.append(item)
 
     if max_rsi is not None:
-        filtered = [
+        candidates = [
             item
             for item in candidates
             if item.get("rsi") is not None and float(item["rsi"]) <= max_rsi
         ]
-    else:
-        filtered = candidates
 
     coingecko_fetch_task = asyncio.create_task(_run_crypto_coingecko_fetch())
     try:
@@ -433,21 +343,13 @@ async def _screen_crypto_via_tvscreener(
             )
 
         if max_rsi is not None:
-            filtered = [
+            candidates = [
                 item
                 for item in candidates
                 if item.get("rsi") is not None and float(item["rsi"]) <= max_rsi
             ]
-        else:
-            filtered = candidates
 
-        enrichment_items = filtered[:limit]
-        metric_diagnostics = await _run_crypto_indicator_enrichment(
-            enrichment_items,
-            candidates,
-            filtered,
-            limit,
-        )
+        metric_diagnostics = _empty_rsi_enrichment_diagnostics()
         coingecko_payload = await coingecko_fetch_task
     finally:
         if not coingecko_fetch_task.done():
