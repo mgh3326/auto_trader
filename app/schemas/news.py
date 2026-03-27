@@ -120,7 +120,7 @@ class NewsQueryParams(BaseModel):
     keyword: str | None = Field(None, description="키워드로 필터링")
     has_analysis: bool | None = Field(None, description="분석 완료 여부로 필터링")
     limit: int = Field(10, ge=1, le=100, description="반환할 뉴스 수")
-    offset: int = Field(0, ge=0, description="걸너뛸 뉴스 수")
+    offset: int = Field(0, ge=0, description="건너뛸 뉴스 수")
 
 
 class NewsListResponse(BaseModel):

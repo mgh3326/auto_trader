@@ -100,7 +100,7 @@ async def list_news_articles(
     keyword: str | None = Query(None, description="키워드로 필터링"),
     has_analysis: bool | None = Query(None, description="분석 완료 여부로 필터링"),
     limit: int = Query(10, ge=1, le=100, description="반환할 뉴스 수"),
-    offset: int = Query(0, ge=0, description="걸너뛸 뉴스 수"),
+    offset: int = Query(0, ge=0, description="건너뛸 뉴스 수"),
 ):
     try:
         articles, total = await get_news_articles(
