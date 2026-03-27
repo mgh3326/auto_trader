@@ -11,7 +11,6 @@ from app.monitoring.trade_notifier.formatters_discord import (
     format_failure_notification,
     format_sell_notification,
     format_toss_buy_recommendation,
-    format_toss_price_recommendation,
     format_toss_sell_recommendation,
 )
 
@@ -134,8 +133,12 @@ class TestFormatAnalysisNotification:
 class TestFormatAutomationSummary:
     def test_without_errors(self):
         embed = format_automation_summary(
-            total_coins=10, analyzed=10, bought=3, sold=2,
-            errors=0, duration_seconds=45.5,
+            total_coins=10,
+            analyzed=10,
+            bought=3,
+            sold=2,
+            errors=0,
+            duration_seconds=45.5,
         )
         assert embed["title"] == "🤖 자동 거래 실행 완료"
         assert embed["color"] == 0x00FFFF
@@ -145,8 +148,12 @@ class TestFormatAutomationSummary:
 
     def test_with_errors(self):
         embed = format_automation_summary(
-            total_coins=5, analyzed=5, bought=1, sold=1,
-            errors=2, duration_seconds=30.0,
+            total_coins=5,
+            analyzed=5,
+            bought=1,
+            sold=1,
+            errors=2,
+            duration_seconds=30.0,
         )
         fields = {f["name"]: f["value"] for f in embed["fields"]}
         assert fields["오류 발생"] == "2건"

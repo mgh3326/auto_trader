@@ -63,7 +63,11 @@ class TestDecisionText:
 @pytest.mark.unit
 class TestTypedDicts:
     def test_discord_field_creation(self):
-        field: DiscordField = {"name": "\uc885\ubaa9", "value": "\uc0bc\uc131\uc804\uc790", "inline": True}
+        field: DiscordField = {
+            "name": "\uc885\ubaa9",
+            "value": "\uc0bc\uc131\uc804\uc790",
+            "inline": True,
+        }
         assert field["name"] == "\uc885\ubaa9"
 
     def test_discord_embed_creation(self):

@@ -552,9 +552,7 @@ class TestKstNaiveDatetimeStorage:
         with patch(
             "app.services.llm_news_service.AsyncSessionLocal", return_value=mock_db
         ):
-            await create_news_article(
-                title="Test", url="https://example.com/kst1"
-            )
+            await create_news_article(title="Test", url="https://example.com/kst1")
 
         assert added_article.scraped_at.tzinfo is None
         assert added_article.created_at.tzinfo is None

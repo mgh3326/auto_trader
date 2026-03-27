@@ -45,9 +45,7 @@ async def handle_get_financials(
         raise ValueError("freq must be 'annual' or 'quarterly'")
 
     if _is_crypto_market(symbol):
-        raise ValueError(
-            "Financial statements are not available for cryptocurrencies"
-        )
+        raise ValueError("Financial statements are not available for cryptocurrencies")
 
     if market is None:
         if _is_korean_equity_code(symbol):

@@ -42,16 +42,20 @@ from app.mcp_server.tooling import (
     portfolio_cash,
     portfolio_holdings,
 )
+from app.mcp_server.tooling.fundamentals import _crypto as fundamentals_crypto
+from app.mcp_server.tooling.fundamentals import _financials as fundamentals_financials
 from app.mcp_server.tooling.fundamentals import (
-    _crypto as fundamentals_crypto,
-    _financials as fundamentals_financials,
     _market_index as fundamentals_market_index,
-    _news as fundamentals_news,
-    _profiles as fundamentals_profiles,
-    _sector_peers as fundamentals_sector_peers,
-    _support_resistance as fundamentals_support_resistance,
-    _valuation as fundamentals_valuation,
 )
+from app.mcp_server.tooling.fundamentals import _news as fundamentals_news
+from app.mcp_server.tooling.fundamentals import _profiles as fundamentals_profiles
+from app.mcp_server.tooling.fundamentals import (
+    _sector_peers as fundamentals_sector_peers,
+)
+from app.mcp_server.tooling.fundamentals import (
+    _support_resistance as fundamentals_support_resistance,
+)
+from app.mcp_server.tooling.fundamentals import _valuation as fundamentals_valuation
 from app.mcp_server.tooling.registry import register_all_tools
 from app.mcp_server.tooling.screening import crypto as screening_crypto
 from app.mcp_server.tooling.screening import kr as screening_kr

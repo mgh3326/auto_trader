@@ -74,9 +74,7 @@ async def handle_get_investment_opinions(
         raise ValueError("symbol is required")
 
     if _is_crypto_market(symbol):
-        raise ValueError(
-            "Investment opinions are not available for cryptocurrencies"
-        )
+        raise ValueError("Investment opinions are not available for cryptocurrencies")
 
     if market is None:
         if _is_korean_equity_code(symbol):

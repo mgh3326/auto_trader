@@ -204,7 +204,9 @@ async def bulk_create_news_articles(
                 author=article_data.author,
                 stock_symbol=article_data.stock_symbol,
                 stock_name=article_data.stock_name,
-                article_published_at=to_kst_naive(article_data.published_at) if article_data.published_at else None,
+                article_published_at=to_kst_naive(article_data.published_at)
+                if article_data.published_at
+                else None,
                 feed_source=article_data.feed_source,
                 keywords=article_data.keywords,
                 scraped_at=now_kst_naive(),

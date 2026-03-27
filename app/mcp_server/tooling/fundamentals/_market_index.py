@@ -39,22 +39,16 @@ async def handle_get_market_index(
             if meta["source"] == "naver":
                 current_data, history = await asyncio.gather(
                     _fetch_index_kr_current(meta["naver_code"], meta["name"]),
-                    _fetch_index_kr_history(
-                        meta["naver_code"], capped_count, period
-                    ),
+                    _fetch_index_kr_history(meta["naver_code"], capped_count, period),
                 )
             else:
                 current_data, history = await asyncio.gather(
                     _fetch_index_us_current(meta["yf_ticker"], meta["name"], sym),
-                    _fetch_index_us_history(
-                        meta["yf_ticker"], capped_count, period
-                    ),
+                    _fetch_index_us_history(meta["yf_ticker"], capped_count, period),
                 )
             return {"indices": [current_data], "history": history}
         except Exception as exc:
-            return _error_payload(
-                source=meta["source"], message=str(exc), symbol=sym
-            )
+            return _error_payload(source=meta["source"], message=str(exc), symbol=sym)
 
     tasks = []
     for idx_sym in _DEFAULT_INDICES:

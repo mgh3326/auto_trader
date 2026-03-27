@@ -47,9 +47,7 @@ def detect_equity_market(symbol: str, market: str | None) -> str:
     if market is not None:
         return normalize_equity_market(market)
     if _is_crypto_market(symbol):
-        raise ValueError(
-            "not available for cryptocurrencies"
-        )
+        raise ValueError("not available for cryptocurrencies")
     if _is_korean_equity_code(symbol):
         return "kr"
     return "us"

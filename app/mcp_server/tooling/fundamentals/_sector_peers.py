@@ -62,9 +62,7 @@ async def handle_get_sector_peers(
 
     try:
         if resolved_market == "kr":
-            return await _fetch_sector_peers_naver(
-                symbol, capped_limit, manual_peers
-            )
+            return await _fetch_sector_peers_naver(symbol, capped_limit, manual_peers)
         return await _fetch_sector_peers_us(symbol, capped_limit, manual_peers)
     except Exception as exc:
         source = "naver" if resolved_market == "kr" else "finnhub+yfinance"
