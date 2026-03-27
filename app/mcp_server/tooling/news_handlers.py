@@ -4,7 +4,8 @@ import json
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import cast, func, or_, select
+from sqlalchemy.dialects.postgresql import JSONB
 
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst_naive
@@ -33,10 +34,13 @@ def _article_to_dict(article: NewsArticle) -> dict[str, Any]:
 
 
 async def _get_market_news_impl(
-    hours: int = 24,
+    hours: int | None = 24,
     feed_source: str | None = None,
-    limit: int = 20,
+    limit: int | None = 20,
 ) -> dict[str, Any]:
+    hours = hours or 24
+    limit = limit or 20
+
     articles, total = await get_news_articles(
         hours=hours,
         feed_source=feed_source,
@@ -67,7 +71,7 @@ async def _search_news_db(
             NewsArticle.article_published_at >= cutoff,
             or_(
                 NewsArticle.title.ilike(like_pattern),
-                NewsArticle.keywords.op("@>")(json.dumps([query])),
+                NewsArticle.keywords.op("@>")(cast(json.dumps([query]), JSONB)),
             ),
         ]
 
@@ -89,9 +93,12 @@ async def _search_news_db(
 
 async def _search_news_impl(
     query: str,
-    days: int = 7,
-    limit: int = 20,
+    days: int | None = 7,
+    limit: int | None = 20,
 ) -> dict[str, Any]:
+    days = days or 7
+    limit = limit or 20
+
     articles, total = await _search_news_db(query=query, days=days, limit=limit)
     news_list = [_article_to_dict(a) for a in articles]
 

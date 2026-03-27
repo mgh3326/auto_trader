@@ -5,7 +5,8 @@ from datetime import datetime, timedelta
 from google import genai
 from google.genai import types
 from google.genai.types import HttpOptions
-from sqlalchemy import func, select
+from sqlalchemy import cast, func, select
+from sqlalchemy.dialects.postgresql import JSONB
 
 from app.analysis.news_prompt import build_news_analysis_prompt
 from app.core.config import settings
@@ -255,7 +256,9 @@ async def get_news_articles(
             cutoff = now_kst_naive() - timedelta(hours=hours)
             conditions.append(NewsArticle.article_published_at >= cutoff)
         if keyword:
-            conditions.append(NewsArticle.keywords.op("@>")(json.dumps([keyword])))
+            conditions.append(
+                NewsArticle.keywords.op("@>")(cast(json.dumps([keyword]), JSONB))
+            )
         if has_analysis is True:
             conditions.append(NewsArticle.is_analyzed.is_(True))
         elif has_analysis is False:
