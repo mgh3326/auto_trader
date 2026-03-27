@@ -451,3 +451,18 @@ class TestMCPNewsTools:
         assert result["query"] == "반도체"
         assert result["count"] == 0
         assert result["news"] == []
+
+
+class TestAnalyzeEndpointDefense:
+    """Ensure /analyze skips analysis when article_content is NULL."""
+
+    def test_analyze_requires_content(self):
+        """POST /analyze should require content field."""
+        from app.schemas.news import NewsAnalysisRequest
+
+        with pytest.raises(Exception):
+            NewsAnalysisRequest(
+                url="https://example.com/1",
+                title="Test",
+                content="",
+            )

@@ -87,7 +87,7 @@ class NewsAnalysisResultResponse(BaseModel):
 
 class NewsAnalysisRequest(BaseModel):
     url: str = Field(..., description="분석할 뉴스 기사 URL")
-    content: str = Field(..., description="기사 본문 (스크래핑된 텍스트)")
+    content: str = Field(..., min_length=1, description="기사 본문 (스크래핑된 텍스트)")
     title: str = Field(..., description="뉴스 제목")
     source: str | None = Field(None, description="뉴스 출처")
     stock_symbol: str | None = Field(None, description="관련 종목 코드 (선택사항)")
