@@ -81,8 +81,8 @@ class TestNewsArticleModel:
         article = NewsArticle(
             url="https://example.com/1",
             title="Test",
-            scraped_at=datetime.now(UTC),
-            created_at=datetime.now(UTC),
+            scraped_at=datetime(2026, 3, 27, 9, 0, 0),
+            created_at=datetime(2026, 3, 27, 9, 0, 0),
             feed_source="mk_stock",
         )
         assert article.feed_source == "mk_stock"
@@ -91,8 +91,8 @@ class TestNewsArticleModel:
         article = NewsArticle(
             url="https://example.com/2",
             title="Test",
-            scraped_at=datetime.now(UTC),
-            created_at=datetime.now(UTC),
+            scraped_at=datetime(2026, 3, 27, 9, 0, 0),
+            created_at=datetime(2026, 3, 27, 9, 0, 0),
             keywords=["반도체", "AI"],
         )
         assert article.keywords == ["반도체", "AI"]
@@ -102,8 +102,8 @@ class TestNewsArticleModel:
         article = NewsArticle(
             url="https://example.com/3",
             title="Test",
-            scraped_at=datetime.now(UTC),
-            created_at=datetime.now(UTC),
+            scraped_at=datetime(2026, 3, 27, 9, 0, 0),
+            created_at=datetime(2026, 3, 27, 9, 0, 0),
         )
         assert article.is_analyzed is None
 
@@ -111,8 +111,8 @@ class TestNewsArticleModel:
         article = NewsArticle(
             url="https://example.com/3",
             title="Test",
-            scraped_at=datetime.now(UTC),
-            created_at=datetime.now(UTC),
+            scraped_at=datetime(2026, 3, 27, 9, 0, 0),
+            created_at=datetime(2026, 3, 27, 9, 0, 0),
             is_analyzed=False,
         )
         assert article.is_analyzed is False
@@ -122,8 +122,8 @@ class TestNewsArticleModel:
         article = NewsArticle(
             url="https://example.com/4",
             title="Test",
-            scraped_at=datetime.now(UTC),
-            created_at=datetime.now(UTC),
+            scraped_at=datetime(2026, 3, 27, 9, 0, 0),
+            created_at=datetime(2026, 3, 27, 9, 0, 0),
             article_content=None,
         )
         assert article.article_content is None
@@ -463,7 +463,7 @@ class TestMCPNewsTools:
                 source="매일경제",
                 feed_source="mk_stock",
                 summary="요약",
-                article_published_at=datetime(2026, 3, 27, 9, 0, 0, tzinfo=UTC),
+                article_published_at=datetime(2026, 3, 27, 9, 0, 0),
                 keywords=["반도체"],
             )
         ]
