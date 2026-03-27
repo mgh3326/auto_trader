@@ -346,3 +346,55 @@ class TestGetNewsArticlesFilters:
 
         sig = inspect.signature(get_news_articles)
         assert "has_analysis" in sig.parameters
+
+
+from fastapi.testclient import TestClient
+
+
+def _make_test_app():
+    """Create a minimal FastAPI app with the news router for testing."""
+    from fastapi import FastAPI
+    from app.routers.news_analysis import router
+
+    app = FastAPI()
+    app.include_router(router)
+    return app
+
+
+class TestBulkEndpoint:
+    """Test POST /api/v1/news/bulk endpoint exists and validates input."""
+
+    def test_bulk_endpoint_exists(self):
+        app = _make_test_app()
+        routes = [r.path for r in app.routes]
+        assert "/api/v1/news/bulk" in routes
+
+    def test_bulk_endpoint_rejects_empty_body(self):
+        app = _make_test_app()
+        client = TestClient(app)
+        resp = client.post("/api/v1/news/bulk", json={})
+        assert resp.status_code == 422
+
+
+class TestGetEndpointNewParams:
+    """Test GET /api/v1/news accepts new query parameters."""
+
+    def test_accepts_hours_param(self):
+        """Endpoint should accept hours parameter without 422."""
+        app = _make_test_app()
+        client = TestClient(app)
+        # Will fail with 500 because no DB, but should NOT fail with 422
+        resp = client.get("/api/v1/news?hours=24")
+        assert resp.status_code != 422
+
+    def test_accepts_feed_source_param(self):
+        app = _make_test_app()
+        client = TestClient(app)
+        resp = client.get("/api/v1/news?feed_source=mk_stock")
+        assert resp.status_code != 422
+
+    def test_accepts_keyword_param(self):
+        app = _make_test_app()
+        client = TestClient(app)
+        resp = client.get("/api/v1/news?keyword=반도체")
+        assert resp.status_code != 422
