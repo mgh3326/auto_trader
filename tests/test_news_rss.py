@@ -1,12 +1,13 @@
 """Tests for RSS news collection features."""
 
 import inspect
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
+from app.core.timezone import KST
 from app.models.news import NewsArticle
 from app.schemas.news import (
     BulkCreateResponse,
@@ -16,6 +17,61 @@ from app.schemas.news import (
     NewsArticleResponse,
 )
 from app.services.llm_news_service import bulk_create_news_articles
+
+
+class TestKstNaiveHelpers:
+    """Test KST naive datetime helpers."""
+
+    def test_now_kst_naive_has_no_tzinfo(self):
+        from app.core.timezone import now_kst_naive
+
+        result = now_kst_naive()
+        assert result.tzinfo is None
+
+    def test_now_kst_naive_is_kst_time(self):
+        """Value should be close to now_kst() but without tzinfo."""
+        from app.core.timezone import now_kst, now_kst_naive
+
+        aware = now_kst()
+        naive = now_kst_naive()
+        # Difference should be < 1 second (same moment, just stripped)
+        diff = abs(aware.replace(tzinfo=None) - naive)
+        assert diff < timedelta(seconds=1)
+
+    def test_to_kst_naive_from_utc_aware(self):
+        from app.core.timezone import to_kst_naive
+
+        utc_dt = datetime(2026, 3, 27, 0, 0, 0, tzinfo=UTC)
+        result = to_kst_naive(utc_dt)
+        assert result == datetime(2026, 3, 27, 9, 0, 0)
+        assert result.tzinfo is None
+
+    def test_to_kst_naive_from_kst_aware(self):
+        from app.core.timezone import to_kst_naive
+
+        kst_dt = datetime(2026, 3, 27, 9, 0, 0, tzinfo=KST)
+        result = to_kst_naive(kst_dt)
+        assert result == datetime(2026, 3, 27, 9, 0, 0)
+        assert result.tzinfo is None
+
+    def test_to_kst_naive_from_naive_passthrough(self):
+        """Naive input assumed to be KST already — returned as-is."""
+        from app.core.timezone import to_kst_naive
+
+        naive_dt = datetime(2026, 3, 27, 9, 0, 0)
+        result = to_kst_naive(naive_dt)
+        assert result == naive_dt
+        assert result.tzinfo is None
+
+    def test_to_kst_naive_from_arbitrary_offset(self):
+        """Aware datetime with +05:30 offset should convert to KST then strip."""
+        from app.core.timezone import to_kst_naive
+
+        ist = timezone(timedelta(hours=5, minutes=30))
+        ist_dt = datetime(2026, 3, 27, 5, 30, 0, tzinfo=ist)  # = 00:00 UTC = 09:00 KST
+        result = to_kst_naive(ist_dt)
+        assert result == datetime(2026, 3, 27, 9, 0, 0)
+        assert result.tzinfo is None
 
 
 class TestNewsArticleModel:
