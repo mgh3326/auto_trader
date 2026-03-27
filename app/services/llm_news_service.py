@@ -10,8 +10,8 @@ from sqlalchemy import func, select
 from app.analysis.news_prompt import build_news_analysis_prompt
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
-from app.core.timezone import now_kst_naive, to_kst_naive
 from app.core.model_rate_limiter import ModelRateLimiter
+from app.core.timezone import now_kst_naive, to_kst_naive
 from app.models.news import NewsAnalysisResult, NewsArticle, Sentiment
 
 GEMINI_TIMEOUT = 3 * 60 * 1000
