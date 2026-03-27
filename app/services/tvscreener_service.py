@@ -866,12 +866,9 @@ class TvScreenerService:
                         )
 
                 if sort_by:
-                    query = query.sort_by(sort_by, ascending=ascending)
-                    if query is None:
-                        raise TvScreenerError(
-                            "CryptoScreener query returned None after chaining "
-                            f".sort_by({sort_by!r}, ascending={ascending})"
-                        )
+                    sort_result = query.sort_by(sort_by, ascending=ascending)
+                    if sort_result is not None:
+                        query = sort_result
 
                 if limit:
                     query = query.set_range(0, limit)
@@ -969,12 +966,9 @@ class TvScreenerService:
                         )
 
                 if sort_by:
-                    query = query.sort_by(sort_by, ascending=ascending)
-                    if query is None:
-                        raise TvScreenerError(
-                            "StockScreener query returned None after chaining "
-                            f".sort_by({sort_by!r}, ascending={ascending})"
-                        )
+                    sort_result = query.sort_by(sort_by, ascending=ascending)
+                    if sort_result is not None:
+                        query = sort_result
 
                 if limit:
                     query = query.set_range(0, limit)

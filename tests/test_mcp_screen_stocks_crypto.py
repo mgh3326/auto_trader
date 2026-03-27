@@ -1044,7 +1044,9 @@ class TestScreenStocksCrypto:
         assert result["meta"]["filtered_by_crash"] == 0
 
     @pytest.mark.asyncio
-    async def test_crypto_coingecko_enrichment_sets_market_cap_and_meta(self, monkeypatch):
+    async def test_crypto_coingecko_enrichment_sets_market_cap_and_meta(
+        self, monkeypatch
+    ):
         mock_result = {
             "results": [
                 {
@@ -1456,5 +1458,3 @@ async def test_screen_stocks_crypto_cooldown_filter_degrades_safely(
     # Results should still be returned
     assert len(result["results"]) >= 1
     assert "KRW-BTC" in [item["symbol"] for item in result["results"]]
-
-

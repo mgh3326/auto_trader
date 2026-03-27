@@ -267,7 +267,7 @@ async def test_crypto_screener_raises_when_where_returns_none(
 
 
 @pytest.mark.asyncio
-async def test_crypto_screener_raises_when_sort_by_returns_none(
+async def test_crypto_screener_supports_inplace_sort_by_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = TvScreenerService()
@@ -276,11 +276,13 @@ async def test_crypto_screener_raises_when_sort_by_returns_none(
         "app.services.tvscreener_service._import_tvscreener", lambda: module
     )
 
-    with pytest.raises(TvScreenerError, match="returned None after chaining .sort_by"):
-        await service.query_crypto_screener(
-            columns=["name"],
-            sort_by="rsi",
-        )
+    result = await service.query_crypto_screener(
+        columns=["name"],
+        sort_by="rsi",
+    )
+
+    assert result.empty
+    assert module.CryptoScreener().query.sort_by_calls == [("rsi", True)]
 
 
 @pytest.mark.asyncio
@@ -301,7 +303,7 @@ async def test_stock_screener_raises_when_where_returns_none(
 
 
 @pytest.mark.asyncio
-async def test_stock_screener_raises_when_sort_by_returns_none(
+async def test_stock_screener_supports_inplace_sort_by_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = TvScreenerService()
@@ -310,8 +312,10 @@ async def test_stock_screener_raises_when_sort_by_returns_none(
         "app.services.tvscreener_service._import_tvscreener", lambda: module
     )
 
-    with pytest.raises(TvScreenerError, match="returned None after chaining .sort_by"):
-        await service.query_stock_screener(
-            columns=["name"],
-            sort_by="rsi",
-        )
+    result = await service.query_stock_screener(
+        columns=["name"],
+        sort_by="rsi",
+    )
+
+    assert result.empty
+    assert module.StockScreener().query.sort_by_calls == [("rsi", True)]

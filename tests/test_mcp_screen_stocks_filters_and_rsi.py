@@ -13,7 +13,9 @@ pytest_plugins = ("tests._mcp_tooling_support",)
 
 class TestScreenStocksRsiLogging:
     @pytest.mark.asyncio
-    async def test_crypto_rsi_enrichment_handles_generic_exception(self, monkeypatch, caplog):
+    async def test_crypto_rsi_enrichment_handles_generic_exception(
+        self, monkeypatch, caplog
+    ):
         mock_result = {
             "results": [
                 {
@@ -112,14 +114,18 @@ class TestScreenStocksFilters:
         assert "error" not in result, f"Unexpected error: {result.get('error')}"
 
     @pytest.mark.asyncio
-    async def test_crypto_market_cap_filter_warning(self, mock_upbit_coins, monkeypatch):
+    async def test_crypto_market_cap_filter_warning(
+        self, mock_upbit_coins, monkeypatch
+    ):
         mock_result = {
             "results": [],
             "total_count": 0,
             "returned_count": 0,
             "filters_applied": {"min_market_cap": 300000000000},
             "market": "crypto",
-            "warnings": ["min_market_cap filter is not supported for crypto market; ignored"],
+            "warnings": [
+                "min_market_cap filter is not supported for crypto market; ignored"
+            ],
             "meta": {},
         }
 
@@ -757,7 +763,9 @@ class TestScreenStocksPhase2Spec:
         assert result["filters_applied"]["sort_order"] == "desc"
 
     @pytest.mark.asyncio
-    async def test_crypto_rsi_enrichment_without_filters(self, mock_upbit_coins, monkeypatch):
+    async def test_crypto_rsi_enrichment_without_filters(
+        self, mock_upbit_coins, monkeypatch
+    ):
         mock_result = {
             "results": [{"symbol": "KRW-BTC"}],
             "market": "crypto",

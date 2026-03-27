@@ -5,20 +5,44 @@ from typing import Any
 
 import pytest
 
-import app.services.brokers.upbit.client as upbit_service
 from app.mcp_server.tooling import (
     analysis_recommend,
     analysis_screening,
     analysis_tool_handlers,
     portfolio_holdings,
 )
-from app.mcp_server.tooling.screening import crypto as screening_crypto
 from app.mcp_server.tooling.screening import kr as screening_kr
 from app.mcp_server.tooling.screening import us as screening_us
 from tests._mcp_recommend_support import _mock_empty_holdings, _mock_kr_sources
 from tests._mcp_tooling_support import build_tools
 
 pytest_plugins = ("tests._mcp_tooling_support",)
+
+
+def _mock_crypto_screen(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    results: list[dict[str, Any]],
+    warnings: list[str] | None = None,
+) -> None:
+    async def fake_screen_crypto(**kwargs: Any) -> dict[str, Any]:
+        return {
+            "market": "crypto",
+            "results": results,
+            "warnings": list(warnings or []),
+            "filters_applied": {
+                "market": "crypto",
+                "sort_by": kwargs.get("sort_by"),
+                "sort_order": kwargs.get("sort_order"),
+            },
+            "meta": {"source": "tvscreener"},
+        }
+
+    monkeypatch.setattr(
+        analysis_screening,
+        "_screen_crypto_with_fallback",
+        fake_screen_crypto,
+    )
 
 
 @pytest.mark.asyncio
@@ -581,34 +605,30 @@ class TestRecommendStocksIntegration:
         self, recommend_stocks, monkeypatch: pytest.MonkeyPatch
     ):
         _mock_empty_holdings(monkeypatch)
-
-        async def mock_fetch_top_traded_coins(
-            fiat: str = "KRW",
-        ) -> list[dict[str, Any]]:
-            assert fiat == "KRW"
-            return [
+        _mock_crypto_screen(
+            monkeypatch,
+            results=[
                 {
-                    "market": "KRW-BTC",
-                    "korean_name": "비트코인",
-                    "trade_price": 100_000_000,
-                    "signed_change_rate": 0.01,
-                    "acc_trade_price_24h": 1_000_000_000_000,
-                    "volume": 10_000,
+                    "symbol": "KRW-BTC",
+                    "name": "비트코인",
+                    "close": 100_000_000,
+                    "change_rate": 0.01,
+                    "trade_amount_24h": 1_000_000_000_000,
+                    "volume_24h": 10_000,
+                    "rsi": 41.0,
+                    "rsi_bucket": 40,
                 },
                 {
-                    "market": "KRW-ETH",
-                    "korean_name": "이더리움",
-                    "trade_price": 5_000_000,
-                    "signed_change_rate": 0.02,
-                    "acc_trade_price_24h": 800_000_000_000,
-                    "volume": 20_000,
+                    "symbol": "KRW-ETH",
+                    "name": "이더리움",
+                    "close": 5_000_000,
+                    "change_rate": 0.02,
+                    "trade_amount_24h": 800_000_000_000,
+                    "volume_24h": 20_000,
+                    "rsi": 52.0,
+                    "rsi_bucket": 50,
                 },
-            ]
-
-        monkeypatch.setattr(
-            upbit_service,
-            "fetch_top_traded_coins",
-            mock_fetch_top_traded_coins,
+            ],
         )
 
         result = await recommend_stocks(
@@ -629,25 +649,19 @@ class TestRecommendStocksIntegration:
         self, recommend_stocks, monkeypatch: pytest.MonkeyPatch
     ):
         _mock_empty_holdings(monkeypatch)
-
-        async def mock_fetch_top_traded_coins(
-            fiat: str = "KRW",
-        ) -> list[dict[str, Any]]:
-            assert fiat == "KRW"
-            return [
+        _mock_crypto_screen(
+            monkeypatch,
+            results=[
                 {
-                    "market": "KRW-BTC",
-                    "korean_name": "비트코인",
-                    "trade_price": 100_000,
-                    "signed_change_rate": 0.01,
-                    "acc_trade_price_24h": 1_000_000_000_000,
+                    "symbol": "KRW-BTC",
+                    "name": "비트코인",
+                    "close": 100_000,
+                    "change_rate": 0.01,
+                    "trade_amount_24h": 1_000_000_000_000,
+                    "rsi": 35.0,
+                    "rsi_bucket": 35,
                 }
-            ]
-
-        monkeypatch.setattr(
-            upbit_service,
-            "fetch_top_traded_coins",
-            mock_fetch_top_traded_coins,
+            ],
         )
 
         result = await recommend_stocks(
@@ -668,45 +682,28 @@ class TestRecommendStocksIntegration:
         self, recommend_stocks, monkeypatch: pytest.MonkeyPatch
     ):
         _mock_empty_holdings(monkeypatch)
-
-        async def mock_fetch_top_traded_coins(
-            fiat: str = "KRW",
-        ) -> list[dict[str, Any]]:
-            assert fiat == "KRW"
-            return [
+        _mock_crypto_screen(
+            monkeypatch,
+            results=[
                 {
-                    "market": "KRW-BTC",
-                    "korean_name": "비트코인",
-                    "trade_price": 100_000_000,
-                    "signed_change_rate": 0.01,
-                    "acc_trade_price_24h": 1_000_000_000_000,
-                    "volume": 10_000,
+                    "symbol": "KRW-BTC",
+                    "name": "비트코인",
+                    "close": 100_000_000,
+                    "change_rate": 0.01,
+                    "trade_amount_24h": 1_000_000_000_000,
+                    "volume_24h": 10_000,
+                    "rsi": 32.0,
+                    "rsi_bucket": 30,
+                    "market_cap": 2_000_000_000_000_000,
+                    "market_cap_rank": 1,
+                    "market_warning": None,
+                    "volume_ratio": 1.2,
+                    "candle_type": "flat",
+                    "adx": 22.5,
+                    "plus_di": 18.0,
+                    "minus_di": 11.0,
                 }
-            ]
-
-        async def mock_market_cap_cache_get():
-            return {
-                "data": {
-                    "BTC": {
-                        "market_cap": 2_000_000_000_000_000,
-                        "market_cap_rank": 1,
-                    }
-                },
-                "cached": True,
-                "age_seconds": 1.5,
-                "stale": False,
-                "error": None,
-            }
-
-        monkeypatch.setattr(
-            upbit_service,
-            "fetch_top_traded_coins",
-            mock_fetch_top_traded_coins,
-        )
-        monkeypatch.setattr(
-            screening_crypto._CRYPTO_MARKET_CAP_CACHE,
-            "get",
-            mock_market_cap_cache_get,
+            ],
         )
 
         result = await recommend_stocks(
@@ -736,31 +733,28 @@ class TestRecommendStocksIntegration:
         self, recommend_stocks, monkeypatch: pytest.MonkeyPatch
     ):
         _mock_empty_holdings(monkeypatch)
-
-        async def mock_fetch_top_traded_coins(
-            fiat: str = "KRW",
-        ) -> list[dict[str, Any]]:
-            return [
+        _mock_crypto_screen(
+            monkeypatch,
+            results=[
                 {
-                    "market": "KRW-BTC",
-                    "korean_name": "비트코인",
-                    "trade_price": 101_000_000,
-                    "signed_change_rate": 0.01,
-                    "acc_trade_price_24h": 1_000_000_000_000,
+                    "symbol": "KRW-BTC",
+                    "name": "비트코인",
+                    "close": 101_000_000,
+                    "change_rate": 0.01,
+                    "trade_amount_24h": 1_000_000_000_000,
+                    "rsi": 40.0,
+                    "rsi_bucket": 40,
                 },
                 {
-                    "market": "KRW-ETH",
-                    "korean_name": "이더리움",
-                    "trade_price": 5_050_000,
-                    "signed_change_rate": 0.02,
-                    "acc_trade_price_24h": 800_000_000_000,
+                    "symbol": "KRW-ETH",
+                    "name": "이더리움",
+                    "close": 5_050_000,
+                    "change_rate": 0.02,
+                    "trade_amount_24h": 800_000_000_000,
+                    "rsi": 28.0,
+                    "rsi_bucket": 25,
                 },
-            ]
-
-        monkeypatch.setattr(
-            upbit_service,
-            "fetch_top_traded_coins",
-            mock_fetch_top_traded_coins,
+            ],
         )
 
         result = await recommend_stocks(
@@ -785,41 +779,37 @@ class TestRecommendStocksIntegration:
         self, recommend_stocks, monkeypatch
     ):
         _mock_empty_holdings(monkeypatch)
-
-        async def mock_fetch_top_traded_coins(
-            fiat: str = "KRW",
-        ) -> list[dict[str, Any]]:
-            return [
+        _mock_crypto_screen(
+            monkeypatch,
+            results=[
                 {
-                    "market": "KRW-BTC",
-                    "korean_name": "비트코인",
-                    "trade_price": 100_000_000,
-                    "signed_change_rate": 0.01,
-                    "acc_trade_price_24h": 2_000_000_000_000,
-                    "rsi": 41.0,
-                },
-                {
-                    "market": "KRW-ETH",
-                    "korean_name": "이더리움",
-                    "trade_price": 5_000_000,
-                    "signed_change_rate": 0.02,
-                    "acc_trade_price_24h": 1_500_000_000_000,
+                    "symbol": "KRW-ETH",
+                    "name": "이더리움",
+                    "close": 5_000_000,
+                    "change_rate": 0.02,
+                    "trade_amount_24h": 1_500_000_000_000,
                     "rsi": 21.0,
+                    "rsi_bucket": 20,
                 },
                 {
-                    "market": "KRW-XRP",
-                    "korean_name": "리플",
-                    "trade_price": 1_000,
-                    "signed_change_rate": 0.03,
-                    "acc_trade_price_24h": 900_000_000_000,
+                    "symbol": "KRW-XRP",
+                    "name": "리플",
+                    "close": 1_000,
+                    "change_rate": 0.03,
+                    "trade_amount_24h": 900_000_000_000,
                     "rsi": 27.0,
+                    "rsi_bucket": 25,
                 },
-            ]
-
-        monkeypatch.setattr(
-            upbit_service,
-            "fetch_top_traded_coins",
-            mock_fetch_top_traded_coins,
+                {
+                    "symbol": "KRW-BTC",
+                    "name": "비트코인",
+                    "close": 100_000_000,
+                    "change_rate": 0.01,
+                    "trade_amount_24h": 2_000_000_000_000,
+                    "rsi": 41.0,
+                    "rsi_bucket": 40,
+                },
+            ],
         )
 
         result = await recommend_stocks(
@@ -841,25 +831,20 @@ class TestRecommendStocksIntegration:
         self, recommend_stocks, monkeypatch: pytest.MonkeyPatch
     ):
         _mock_empty_holdings(monkeypatch)
-
-        async def mock_fetch_top_traded_coins(
-            fiat: str = "KRW",
-        ) -> list[dict[str, Any]]:
-            return [
+        _mock_crypto_screen(
+            monkeypatch,
+            results=[
                 {
-                    "market": "KRW-BTC",
-                    "korean_name": "비트코인",
-                    "trade_price": 100_000,
-                    "signed_change_rate": 0.01,
-                    "acc_trade_price_24h": 1_000_000_000_000,
-                    "volume": 10_000,
+                    "symbol": "KRW-BTC",
+                    "name": "비트코인",
+                    "close": 100_000,
+                    "change_rate": 0.01,
+                    "trade_amount_24h": 1_000_000_000_000,
+                    "volume_24h": 10_000,
+                    "rsi": 31.0,
+                    "rsi_bucket": 30,
                 }
-            ]
-
-        monkeypatch.setattr(
-            upbit_service,
-            "fetch_top_traded_coins",
-            mock_fetch_top_traded_coins,
+            ],
         )
 
         result = await recommend_stocks(
@@ -1393,104 +1378,6 @@ class TestTwoStageRelaxation:
         symbols = {item["symbol"] for item in result["recommendations"]}
         assert "555555" not in symbols
         assert "666666" in symbols
-
-
-class TestScreenCryptoBehavior:
-    @pytest.mark.asyncio
-    async def test_screen_crypto_market_cap_not_misrepresented(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        async def mock_fetch_top_traded_coins(
-            fiat: str = "KRW",
-        ) -> list[dict[str, Any]]:
-            assert fiat == "KRW"
-            return [
-                {
-                    "market": "KRW-BTC",
-                    "trade_price": 100_000_000,
-                    "signed_change_rate": 0.01,
-                    "acc_trade_price_24h": 1_000_000_000_000,
-                    "acc_trade_volume_24h": 10_000,
-                }
-            ]
-
-        monkeypatch.setattr(
-            upbit_service,
-            "fetch_top_traded_coins",
-            mock_fetch_top_traded_coins,
-        )
-
-        result = await screening_crypto._screen_crypto(
-            market="crypto",
-            asset_type=None,
-            category=None,
-            min_market_cap=None,
-            max_per=None,
-            min_dividend_yield=None,
-            max_rsi=None,
-            sort_by="trade_amount",
-            sort_order="desc",
-            limit=5,
-        )
-
-        assert result["results"]
-        first = result["results"][0]
-        assert first["trade_amount_24h"] == 1_000_000_000_000
-        assert "volume" not in first
-        assert first["market_cap"] is None
-        assert first["market_cap_rank"] is None
-        assert "score" not in first
-        assert "rsi_bucket" in first
-
-    @pytest.mark.asyncio
-    async def test_screen_crypto_min_market_cap_not_filtered(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        async def mock_fetch_top_traded_coins(
-            fiat: str = "KRW",
-        ) -> list[dict[str, Any]]:
-            assert fiat == "KRW"
-            return [
-                {
-                    "market": "KRW-AAA",
-                    "trade_price": 1000,
-                    "signed_change_rate": 0.01,
-                    "acc_trade_price_24h": 1000,
-                    "acc_trade_volume_24h": 10_000,
-                },
-                {
-                    "market": "KRW-BBB",
-                    "trade_price": 1000,
-                    "signed_change_rate": 0.01,
-                    "acc_trade_price_24h": 5000,
-                    "acc_trade_volume_24h": 10_000,
-                },
-            ]
-
-        monkeypatch.setattr(
-            upbit_service,
-            "fetch_top_traded_coins",
-            mock_fetch_top_traded_coins,
-        )
-
-        result = await screening_crypto._screen_crypto(
-            market="crypto",
-            asset_type=None,
-            category=None,
-            min_market_cap=3000,
-            max_per=None,
-            min_dividend_yield=None,
-            max_rsi=None,
-            sort_by="trade_amount",
-            sort_order="desc",
-            limit=5,
-        )
-
-        symbols = [item["symbol"] for item in result["results"]]
-        assert "KRW-AAA" in symbols
-        assert "KRW-BBB" in symbols
-        assert "warnings" in result
-        assert any("min_market_cap" in w for w in result["warnings"])
 
 
 class TestScreenUsBehavior:
