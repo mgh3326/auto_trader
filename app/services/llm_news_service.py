@@ -1,6 +1,6 @@
 import json
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from google import genai
 from google.genai import types
@@ -137,22 +137,28 @@ class NewsAnalyzer:
 async def create_news_article(
     title: str,
     url: str,
-    content: str,
+    content: str | None = None,
     source: str | None = None,
     author: str | None = None,
     stock_symbol: str | None = None,
     stock_name: str | None = None,
     published_at: datetime | None = None,
+    feed_source: str | None = None,
+    keywords: list[str] | None = None,
+    summary: str | None = None,
 ) -> NewsArticle:
     article = NewsArticle(
         url=url,
         title=title,
         article_content=content,
+        summary=summary,
         source=source,
         author=author,
         stock_symbol=stock_symbol,
         stock_name=stock_name,
         article_published_at=published_at,
+        feed_source=feed_source,
+        keywords=keywords,
         scraped_at=datetime.now(UTC),
         created_at=datetime.now(UTC),
     )
@@ -165,15 +171,65 @@ async def create_news_article(
     return article
 
 
+async def bulk_create_news_articles(
+    articles: list,
+) -> tuple[int, int, list[str]]:
+    if not articles:
+        return 0, 0, []
+
+    urls = [a.url.strip() for a in articles]
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(NewsArticle.url).where(NewsArticle.url.in_(urls))
+        )
+        existing_urls = set(result.scalars().all())
+
+        inserted_count = 0
+        skipped_urls = []
+
+        for article_data in articles:
+            url = article_data.url.strip()
+            if url in existing_urls:
+                skipped_urls.append(url)
+                continue
+
+            article = NewsArticle(
+                url=url,
+                title=article_data.title.strip(),
+                article_content=article_data.content,
+                summary=article_data.summary,
+                source=article_data.source,
+                author=article_data.author,
+                stock_symbol=article_data.stock_symbol,
+                stock_name=article_data.stock_name,
+                article_published_at=article_data.published_at,
+                feed_source=article_data.feed_source,
+                keywords=article_data.keywords,
+                scraped_at=datetime.now(UTC),
+                created_at=datetime.now(UTC),
+            )
+            db.add(article)
+            inserted_count += 1
+
+        if inserted_count > 0:
+            await db.commit()
+
+    return inserted_count, len(skipped_urls), skipped_urls
+
+
 async def get_news_articles(
     stock_symbol: str | None = None,
     sentiment: str | None = None,
     source: str | None = None,
     limit: int = 10,
     offset: int = 0,
+    hours: int | None = None,
+    feed_source: str | None = None,
+    keyword: str | None = None,
+    has_analysis: bool | None = None,
 ) -> tuple[list[NewsArticle], int]:
-    """
-    Query news articles with optional filters.
+    """Query news articles with optional filters.
 
     Returns (list_of_articles, total_count).
     """
@@ -181,33 +237,38 @@ async def get_news_articles(
         from sqlalchemy import distinct, exists
 
         query = select(distinct(NewsArticle.id), NewsArticle).select_from(NewsArticle)
+        total_query = select(func.count(NewsArticle.id)).select_from(NewsArticle)
+
+        conditions = []
 
         if stock_symbol:
-            query = query.where(NewsArticle.stock_symbol == stock_symbol)
+            conditions.append(NewsArticle.stock_symbol == stock_symbol)
         if source:
-            query = query.where(NewsArticle.source == source)
+            conditions.append(NewsArticle.source == source)
+        if feed_source:
+            conditions.append(NewsArticle.feed_source == feed_source)
+        if hours is not None:
+            cutoff = datetime.now(UTC) - timedelta(hours=hours)
+            conditions.append(NewsArticle.article_published_at >= cutoff)
+        if keyword:
+            conditions.append(NewsArticle.keywords.op("@>")(f'["{keyword}"]'))
+        if has_analysis is True:
+            conditions.append(NewsArticle.is_analyzed.is_(True))
+        elif has_analysis is False:
+            conditions.append(NewsArticle.is_analyzed.is_(False))
         if sentiment:
-            query = query.where(
+            conditions.append(
                 exists().where(
                     (NewsAnalysisResult.article_id == NewsArticle.id)
                     & (NewsAnalysisResult.sentiment == sentiment)
                 )
             )
+
+        for cond in conditions:
+            query = query.where(cond)
+            total_query = total_query.where(cond)
 
         query = query.order_by(NewsArticle.article_published_at.desc().nulls_last())
-
-        total_query = select(func.count(NewsArticle.id)).select_from(NewsArticle)
-        if stock_symbol:
-            total_query = total_query.where(NewsArticle.stock_symbol == stock_symbol)
-        if source:
-            total_query = total_query.where(NewsArticle.source == source)
-        if sentiment:
-            total_query = total_query.where(
-                exists().where(
-                    (NewsAnalysisResult.article_id == NewsArticle.id)
-                    & (NewsAnalysisResult.sentiment == sentiment)
-                )
-            )
 
         result = await db.execute(query.offset(offset).limit(limit))
         articles = result.scalars().all()
