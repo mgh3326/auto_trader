@@ -13,9 +13,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import app.services.brokers.upbit.client as upbit_service
 from app.core.async_rate_limiter import RateLimitExceededError
 from app.core.db import AsyncSessionLocal
-from app.mcp_server.tooling.analysis_crypto_score import (
-    calculate_crypto_metrics_from_ohlcv,
-)
 from app.mcp_server.tooling.analysis_screen_crypto import finalize_crypto_screen
 from app.mcp_server.tooling.market_data_indicators import (
     _normalize_crypto_symbol,
@@ -801,13 +798,11 @@ async def _screen_crypto_via_tvscreener(
         candidates.append(item)
 
     if max_rsi is not None:
-        filtered = [
+        candidates = [
             item
             for item in candidates
             if item.get("rsi") is not None and float(item["rsi"]) <= max_rsi
         ]
-    else:
-        filtered = candidates
 
     coingecko_fetch_task = asyncio.create_task(_run_crypto_coingecko_fetch())
     try:
@@ -832,13 +827,11 @@ async def _screen_crypto_via_tvscreener(
             )
 
         if max_rsi is not None:
-            filtered = [
+            candidates = [
                 item
                 for item in candidates
                 if item.get("rsi") is not None and float(item["rsi"]) <= max_rsi
             ]
-        else:
-            filtered = candidates
 
         metric_diagnostics = _empty_rsi_enrichment_diagnostics()
         coingecko_payload = await coingecko_fetch_task

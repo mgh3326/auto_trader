@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import datetime
 import traceback
 from collections.abc import Awaitable, Callable
@@ -1083,7 +1082,6 @@ __all__ = [
     "_collect_crypto_candidates",
     "_apply_exclusions_and_dedupe",
     "_apply_kr_relaxed_fallback",
-    "_enrich_missing_rsi",
     "_score_and_allocate",
     "_empty_recommend_response",
     "_build_recommend_response",
