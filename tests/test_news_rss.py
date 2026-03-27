@@ -528,6 +528,139 @@ class TestKeywordQuerySafety:
             _json.loads(unsafe)
 
 
+class TestKstNaiveDatetimeStorage:
+    """Verify news articles are stored with KST naive datetimes."""
+
+    @pytest.mark.asyncio
+    async def test_create_article_stores_kst_naive_scraped_at(self):
+        from app.services.llm_news_service import create_news_article
+
+        mock_db = AsyncMock()
+        mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+        mock_db.__aexit__ = AsyncMock(return_value=False)
+        mock_db.commit = AsyncMock()
+        mock_db.refresh = AsyncMock()
+
+        added_article = None
+
+        def capture_add(article):
+            nonlocal added_article
+            added_article = article
+
+        mock_db.add = capture_add
+
+        with patch(
+            "app.services.llm_news_service.AsyncSessionLocal", return_value=mock_db
+        ):
+            await create_news_article(
+                title="Test", url="https://example.com/kst1"
+            )
+
+        assert added_article.scraped_at.tzinfo is None
+        assert added_article.created_at.tzinfo is None
+
+    @pytest.mark.asyncio
+    async def test_create_article_normalizes_aware_published_at(self):
+        """An aware published_at (e.g. UTC) should be stored as KST naive."""
+        from app.services.llm_news_service import create_news_article
+
+        mock_db = AsyncMock()
+        mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+        mock_db.__aexit__ = AsyncMock(return_value=False)
+        mock_db.commit = AsyncMock()
+        mock_db.refresh = AsyncMock()
+
+        added_article = None
+
+        def capture_add(article):
+            nonlocal added_article
+            added_article = article
+
+        mock_db.add = capture_add
+
+        utc_published = datetime(2026, 3, 27, 0, 0, 0, tzinfo=UTC)
+
+        with patch(
+            "app.services.llm_news_service.AsyncSessionLocal", return_value=mock_db
+        ):
+            await create_news_article(
+                title="Test",
+                url="https://example.com/kst2",
+                published_at=utc_published,
+            )
+
+        # UTC 00:00 → KST 09:00, naive
+        assert added_article.article_published_at == datetime(2026, 3, 27, 9, 0, 0)
+        assert added_article.article_published_at.tzinfo is None
+
+    @pytest.mark.asyncio
+    async def test_create_article_none_published_at_stays_none(self):
+        from app.services.llm_news_service import create_news_article
+
+        mock_db = AsyncMock()
+        mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+        mock_db.__aexit__ = AsyncMock(return_value=False)
+        mock_db.commit = AsyncMock()
+        mock_db.refresh = AsyncMock()
+
+        added_article = None
+
+        def capture_add(article):
+            nonlocal added_article
+            added_article = article
+
+        mock_db.add = capture_add
+
+        with patch(
+            "app.services.llm_news_service.AsyncSessionLocal", return_value=mock_db
+        ):
+            await create_news_article(
+                title="Test", url="https://example.com/kst3", published_at=None
+            )
+
+        assert added_article.article_published_at is None
+
+    @pytest.mark.asyncio
+    async def test_bulk_create_stores_kst_naive(self):
+        from app.services.llm_news_service import bulk_create_news_articles
+
+        articles_input = [
+            NewsArticleCreate(
+                url="https://example.com/bulk-kst1",
+                title="Bulk 1",
+                published_at=datetime(2026, 3, 27, 0, 0, 0, tzinfo=UTC),
+            ),
+        ]
+
+        mock_db = AsyncMock()
+        mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+        mock_db.__aexit__ = AsyncMock(return_value=False)
+
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = []
+        mock_db.execute = AsyncMock(return_value=mock_result)
+        mock_db.commit = AsyncMock()
+
+        added_articles = []
+
+        def capture_add(article):
+            added_articles.append(article)
+
+        mock_db.add = capture_add
+
+        with patch(
+            "app.services.llm_news_service.AsyncSessionLocal", return_value=mock_db
+        ):
+            await bulk_create_news_articles(articles_input)
+
+        assert len(added_articles) == 1
+        art = added_articles[0]
+        assert art.scraped_at.tzinfo is None
+        assert art.created_at.tzinfo is None
+        assert art.article_published_at == datetime(2026, 3, 27, 9, 0, 0)
+        assert art.article_published_at.tzinfo is None
+
+
 class TestBulkCreateIntraBatchDedup:
     """Test that duplicate URLs within the same batch are handled."""
 

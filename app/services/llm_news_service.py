@@ -1,6 +1,6 @@
 import json
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 from google import genai
 from google.genai import types
@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from app.analysis.news_prompt import build_news_analysis_prompt
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
+from app.core.timezone import now_kst_naive, to_kst_naive
 from app.core.model_rate_limiter import ModelRateLimiter
 from app.models.news import NewsAnalysisResult, NewsArticle, Sentiment
 
@@ -63,7 +64,7 @@ class NewsAnalyzer:
             prompt=prompt,
             raw_response=json.dumps(result, ensure_ascii=False),
             processing_time_ms=processing_time_ms,
-            created_at=datetime.now(UTC),
+            created_at=now_kst_naive(),
         )
 
         async with AsyncSessionLocal() as db:
@@ -156,11 +157,11 @@ async def create_news_article(
         author=author,
         stock_symbol=stock_symbol,
         stock_name=stock_name,
-        article_published_at=published_at,
+        article_published_at=to_kst_naive(published_at) if published_at else None,
         feed_source=feed_source,
         keywords=keywords,
-        scraped_at=datetime.now(UTC),
-        created_at=datetime.now(UTC),
+        scraped_at=now_kst_naive(),
+        created_at=now_kst_naive(),
     )
 
     async with AsyncSessionLocal() as db:
@@ -203,11 +204,11 @@ async def bulk_create_news_articles(
                 author=article_data.author,
                 stock_symbol=article_data.stock_symbol,
                 stock_name=article_data.stock_name,
-                article_published_at=article_data.published_at,
+                article_published_at=to_kst_naive(article_data.published_at) if article_data.published_at else None,
                 feed_source=article_data.feed_source,
                 keywords=article_data.keywords,
-                scraped_at=datetime.now(UTC),
-                created_at=datetime.now(UTC),
+                scraped_at=now_kst_naive(),
+                created_at=now_kst_naive(),
             )
             db.add(article)
             existing_urls.add(url)
