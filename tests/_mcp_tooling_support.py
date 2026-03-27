@@ -42,6 +42,16 @@ from app.mcp_server.tooling import (
     portfolio_cash,
     portfolio_holdings,
 )
+from app.mcp_server.tooling.fundamentals import (
+    _crypto as fundamentals_crypto,
+    _financials as fundamentals_financials,
+    _market_index as fundamentals_market_index,
+    _news as fundamentals_news,
+    _profiles as fundamentals_profiles,
+    _sector_peers as fundamentals_sector_peers,
+    _support_resistance as fundamentals_support_resistance,
+    _valuation as fundamentals_valuation,
+)
 from app.mcp_server.tooling.registry import register_all_tools
 from app.mcp_server.tooling.screening import crypto as screening_crypto
 from app.mcp_server.tooling.screening import kr as screening_kr
@@ -145,6 +155,14 @@ _PATCH_MODULES = (
     analysis_screening,
     analysis_tool_handlers,
     fundamentals_handlers,
+    fundamentals_crypto,
+    fundamentals_financials,
+    fundamentals_market_index,
+    fundamentals_news,
+    fundamentals_profiles,
+    fundamentals_sector_peers,
+    fundamentals_support_resistance,
+    fundamentals_valuation,
     fundamentals_sources_binance,
     fundamentals_sources_coingecko,
     fundamentals_sources_finnhub,

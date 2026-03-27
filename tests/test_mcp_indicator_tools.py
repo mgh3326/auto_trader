@@ -665,7 +665,7 @@ async def test_get_support_resistance_clusters_levels(monkeypatch):
 @pytest.mark.asyncio
 async def test_get_support_resistance_uses_single_ohlcv_fetch(monkeypatch):
     """Verify get_support_resistance fetches OHLCV only once (not twice)."""
-    from app.mcp_server.tooling import fundamentals_handlers
+    from app.mcp_server.tooling.fundamentals import _support_resistance
 
     tools = build_tools()
     fetch_calls = []
@@ -683,9 +683,9 @@ async def test_get_support_resistance_uses_single_ohlcv_fetch(monkeypatch):
             }
         )
 
-    # Patch in fundamentals_handlers since that's where the import happens
+    # Patch in the support_resistance submodule where the import lives
     monkeypatch.setattr(
-        fundamentals_handlers,
+        _support_resistance,
         "_fetch_ohlcv_for_indicators",
         mock_fetch_ohlcv,
     )
