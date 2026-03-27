@@ -14,7 +14,9 @@ class TestGetOrderbookMarketMismatch:
     """Test that crypto symbols with market='kr' are handled correctly."""
 
     @pytest.mark.asyncio
-    async def test_get_orderbook_crypto_symbol_with_kr_market_auto_routes_to_crypto(self):
+    async def test_get_orderbook_crypto_symbol_with_kr_market_auto_routes_to_crypto(
+        self,
+    ):
         """KRW-DOT with market='kr' should auto-route to crypto, not fail validation."""
         tools = build_tools()
         get_orderbook = tools["get_orderbook"]
