@@ -502,7 +502,6 @@ async def _collect_kr_candidates(
         sort_by=request["sort_by"],
         sort_order=request["sort_order"],
         limit=request["candidate_limit"],
-        enrich_rsi=False,
     )
     screen_error_raw = screen_result.get("error")
     if screen_error_raw is not None:
@@ -578,7 +577,6 @@ async def _collect_crypto_candidates(
         sort_by="rsi",
         sort_order="asc",
         limit=CRYPTO_PREFILTER_LIMIT,
-        enrich_rsi=True,
     )
     screen_error_raw = screen_result.get("error")
     if screen_error_raw is not None:
@@ -729,7 +727,6 @@ async def _apply_kr_relaxed_fallback(
             sort_by=request["sort_by"],
             sort_order=request["sort_order"],
             limit=request["candidate_limit"],
-            enrich_rsi=False,
         )
         if not fallback_result.get("error"):
             fallback_normalized = [
@@ -781,65 +778,6 @@ async def _apply_kr_relaxed_fallback(
         request["warnings"].append(f"Fallback 스크리닝 실패: {fallback_error}")
 
     return candidates
-
-
-async def _enrich_missing_rsi(
-    *,
-    candidates: list[dict[str, Any]],
-    market: str,
-    get_indicators_fn: Callable[..., Awaitable[dict[str, Any]]],
-) -> None:
-    rsi_missing_candidates = [
-        candidate for candidate in candidates[:20] if candidate.get("rsi") is None
-    ]
-    if not rsi_missing_candidates:
-        return
-
-    logger.debug(
-        "recommend_stocks rsi enrichment start count=%d", len(rsi_missing_candidates)
-    )
-    rsi_semaphore = asyncio.Semaphore(5)
-
-    async def _fetch_rsi_for_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
-        async with rsi_semaphore:
-            symbol = candidate.get("symbol", "")
-            if not symbol:
-                return candidate
-            try:
-                indicators = await get_indicators_fn(symbol, ["rsi"], market)
-                if indicators.get("error"):
-                    logger.debug(
-                        "recommend_stocks RSI fetch failed symbol=%s error=%s",
-                        symbol,
-                        indicators.get("error"),
-                    )
-                    return candidate
-                rsi_data = indicators.get("indicators", {}).get("rsi", {})
-                rsi_value = rsi_data.get("14")
-                if rsi_value is not None:
-                    candidate["rsi"] = _to_optional_float(rsi_value)
-            except Exception as exc:
-                logger.debug(
-                    "recommend_stocks RSI fetch exception symbol=%s error=%s",
-                    symbol,
-                    exc,
-                )
-            return candidate
-
-    try:
-        updated_candidates = await asyncio.gather(
-            *[
-                _fetch_rsi_for_candidate(candidate)
-                for candidate in rsi_missing_candidates
-            ],
-            return_exceptions=True,
-        )
-        for index, updated in enumerate(updated_candidates):
-            if isinstance(updated, dict):
-                updated_candidate = cast(dict[str, Any], updated)
-                rsi_missing_candidates[index].update(updated_candidate)
-    except Exception as exc:
-        logger.debug("recommend_stocks RSI batch fetch failed: %s", exc)
 
 
 def _score_and_allocate(
@@ -1007,7 +945,6 @@ async def recommend_stocks_impl(
 ) -> dict[str, Any]:
     from app.mcp_server.tooling.portfolio_holdings import (
         _collect_portfolio_positions,
-        _get_indicators_impl,
     )
 
     request: RecommendRequestContext = _prepare_recommend_request(
@@ -1153,11 +1090,6 @@ async def recommend_stocks_impl(
             exclude_set=exclude_set,
             request=request,
             screen_kr_fn=screen_kr_fn,
-        )
-        await _enrich_missing_rsi(
-            candidates=deduped_candidates,
-            market=normalized_market,
-            get_indicators_fn=_get_indicators_impl,
         )
 
         logger.info(

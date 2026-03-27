@@ -496,7 +496,7 @@ class TestRecommendStocksIntegration:
         assert any("US 후보 수집 실패" in warning for warning in result["warnings"])
 
     @pytest.mark.asyncio
-    async def test_rsi_enrichment_populates_missing_rsi(
+    async def test_recommendation_with_provided_rsi(
         self, recommend_stocks, monkeypatch: pytest.MonkeyPatch
     ):
         _mock_kr_sources(
@@ -509,6 +509,7 @@ class TestRecommendStocksIntegration:
                     "volume": 1_500_000,
                     "change_rate": 1.0,
                     "market_cap": 1500,
+                    "rsi": 37.5,
                 },
                 {
                     "code": "888888",
@@ -517,6 +518,7 @@ class TestRecommendStocksIntegration:
                     "volume": 1_700_000,
                     "change_rate": 0.8,
                     "market_cap": 1700,
+                    "rsi": 37.5,
                 },
             ],
             valuations={
@@ -526,21 +528,6 @@ class TestRecommendStocksIntegration:
         )
         _mock_empty_holdings(monkeypatch)
 
-        async def mock_get_indicators_impl(
-            symbol: str, indicators: list[str], market: str | None = None
-        ) -> dict[str, Any]:
-            assert indicators == ["rsi"]
-            return {
-                "symbol": symbol,
-                "instrument_type": "equity_kr",
-                "source": "mock",
-                "indicators": {"rsi": {"14": 37.5}},
-            }
-
-        monkeypatch.setattr(
-            portfolio_holdings, "_get_indicators_impl", mock_get_indicators_impl
-        )
-
         result = await recommend_stocks(
             budget=1_000_000,
             market="kr",
@@ -549,7 +536,7 @@ class TestRecommendStocksIntegration:
         )
 
         assert result["recommendations"]
-        assert all(rec.get("rsi") is not None for rec in result["recommendations"])
+        assert all(rec.get("rsi") == 37.5 for rec in result["recommendations"])
         assert all("rsi_14" not in rec for rec in result["recommendations"])
 
     @pytest.mark.asyncio
@@ -566,6 +553,7 @@ class TestRecommendStocksIntegration:
                     "volume": 12_000_000,
                     "change_rate": 6.0,
                     "market_cap": 2000,
+                    "rsi": 28.0,
                 }
             ],
             valuations={
@@ -573,20 +561,6 @@ class TestRecommendStocksIntegration:
             },
         )
         _mock_empty_holdings(monkeypatch)
-
-        async def mock_get_indicators_impl(
-            symbol: str, indicators: list[str], market: str | None = None
-        ) -> dict[str, Any]:
-            return {
-                "symbol": symbol,
-                "instrument_type": "equity_kr",
-                "source": "mock",
-                "indicators": {"rsi": {"14": 28.0}},
-            }
-
-        monkeypatch.setattr(
-            portfolio_holdings, "_get_indicators_impl", mock_get_indicators_impl
-        )
 
         result = await recommend_stocks(
             budget=300_000,
@@ -1457,7 +1431,6 @@ class TestScreenCryptoBehavior:
             sort_by="trade_amount",
             sort_order="desc",
             limit=5,
-            enrich_rsi=False,
         )
 
         assert result["results"]
@@ -1511,7 +1484,6 @@ class TestScreenCryptoBehavior:
             sort_by="trade_amount",
             sort_order="desc",
             limit=5,
-            enrich_rsi=False,
         )
 
         symbols = [item["symbol"] for item in result["results"]]
@@ -1562,7 +1534,6 @@ class TestScreenUsBehavior:
             sort_by="volume",
             sort_order="desc",
             limit=10,
-            enrich_rsi=False,
         )
 
         assert result["returned_count"] == 1

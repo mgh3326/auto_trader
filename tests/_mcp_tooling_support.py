@@ -345,21 +345,6 @@ def _mock_crypto_external_sources(monkeypatch: pytest.MonkeyPatch):
         "get",
         mock_market_cap_cache_get,
     )
-    monkeypatch.setattr(
-        screening_crypto,
-        "_fetch_ohlcv_for_indicators",
-        mock_fetch_ohlcv_for_indicators,
-    )
-    monkeypatch.setattr(
-        screening_kr,
-        "_fetch_ohlcv_for_indicators",
-        mock_fetch_ohlcv_for_indicators,
-    )
-    monkeypatch.setattr(
-        screening_us,
-        "_fetch_ohlcv_for_indicators",
-        mock_fetch_ohlcv_for_indicators,
-    )
 
 
 def _patch_runtime_attr(

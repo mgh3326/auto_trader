@@ -621,7 +621,6 @@ async def screen_stocks_impl(
         sort_by=normalized_sort_by,
         sort_order=normalized_sort_order,
         limit=limit,
-        enrich_rsi=True,
     )
 
 
