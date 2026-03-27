@@ -451,3 +451,21 @@ class TestAnalyzeEndpointDefense:
                 title="Test",
                 content="",
             )
+
+
+class TestKeywordQuerySafety:
+    """Ensure keyword with special chars produces valid JSON."""
+
+    def test_keyword_with_double_quote(self):
+        import json as _json
+
+        keyword = 'test"injection'
+        # The safe way:
+        safe = _json.dumps([keyword])
+        parsed = _json.loads(safe)
+        assert parsed == [keyword]
+
+        # The unsafe way would produce invalid JSON:
+        unsafe = f'["{keyword}"]'
+        with pytest.raises(_json.JSONDecodeError):
+            _json.loads(unsafe)

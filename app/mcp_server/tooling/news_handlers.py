@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -64,7 +65,7 @@ async def _search_news_db(
             NewsArticle.article_published_at >= cutoff,
             or_(
                 NewsArticle.title.ilike(like_pattern),
-                NewsArticle.keywords.op("@>")(f'["{query}"]'),
+                NewsArticle.keywords.op("@>")(json.dumps([query])),
             ),
         ]
 

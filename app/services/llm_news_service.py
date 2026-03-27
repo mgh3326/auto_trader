@@ -251,7 +251,7 @@ async def get_news_articles(
             cutoff = datetime.now(UTC) - timedelta(hours=hours)
             conditions.append(NewsArticle.article_published_at >= cutoff)
         if keyword:
-            conditions.append(NewsArticle.keywords.op("@>")(f'["{keyword}"]'))
+            conditions.append(NewsArticle.keywords.op("@>")(json.dumps([keyword])))
         if has_analysis is True:
             conditions.append(NewsArticle.is_analyzed.is_(True))
         elif has_analysis is False:
