@@ -259,8 +259,8 @@ def _validate_crypto_orderbook_symbol_input(symbol: str | int) -> str:
     value = str(symbol).strip().upper()
     if not value:
         raise ValueError("symbol is required")
-    if not value.startswith("KRW-"):
-        raise ValueError("crypto orderbook only supports KRW-* symbols")
+    if not value.startswith(("KRW-", "USDT-")):
+        raise ValueError("crypto orderbook only supports KRW-* and USDT-* symbols")
     return value
 
 
@@ -823,6 +823,12 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
         market_type = _normalize_market(requested_market)
         if market_type is None:
             raise ValueError(f"Unsupported market: {market}")
+
+        # AUTO_TRADER-4G/4H Fix: Detect crypto symbols even when market="kr" is specified
+        # If symbol looks like a crypto symbol (KRW-*, USDT-*), auto-route to crypto
+        symbol_str = str(symbol).strip().upper()
+        if symbol_str.startswith(("KRW-", "USDT-")):
+            market_type = "crypto"
 
         source = "kis"
         instrument_type = "equity_kr"

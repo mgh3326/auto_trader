@@ -395,11 +395,11 @@ async def test_get_orderbook_raises_on_invalid_input() -> None:
         await tools["get_orderbook"]("005930", market="us")
 
     with pytest.raises(
-        ValueError, match=r"crypto orderbook only supports KRW-\* symbols"
+        ValueError, match=r"crypto orderbook only supports KRW-\* and USDT-\* symbols"
     ):
         await tools["get_orderbook"]("BTC", market="crypto")
 
     with pytest.raises(
-        ValueError, match=r"crypto orderbook only supports KRW-\* symbols"
+        ValueError, match=r"crypto orderbook only supports KRW-\* and USDT-\* symbols"
     ):
-        await tools["get_orderbook"]("USDT-BTC", market="crypto")
+        await tools["get_orderbook"]("INVALID-BTC", market="crypto")
