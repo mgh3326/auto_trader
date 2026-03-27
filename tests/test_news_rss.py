@@ -398,3 +398,56 @@ class TestGetEndpointNewParams:
         client = TestClient(app)
         resp = client.get("/api/v1/news?keyword=반도체")
         assert resp.status_code != 422
+
+
+class TestMCPNewsTools:
+    """Test MCP news tool registration and basic behavior."""
+
+    def test_news_tool_names_exported(self):
+        from app.mcp_server.tooling.news_handlers import NEWS_TOOL_NAMES
+
+        assert "get_market_news" in NEWS_TOOL_NAMES
+        assert "search_news" in NEWS_TOOL_NAMES
+
+    @pytest.mark.asyncio
+    async def test_get_market_news_calls_service(self):
+        from app.mcp_server.tooling.news_handlers import _get_market_news_impl
+
+        mock_articles = [
+            MagicMock(
+                id=1,
+                url="https://example.com/1",
+                title="Test News",
+                source="매일경제",
+                feed_source="mk_stock",
+                summary="요약",
+                article_published_at=datetime(2026, 3, 27, 9, 0, 0, tzinfo=UTC),
+                keywords=["반도체"],
+            )
+        ]
+
+        with patch(
+            "app.mcp_server.tooling.news_handlers.get_news_articles",
+            new_callable=AsyncMock,
+            return_value=(mock_articles, 1),
+        ):
+            result = await _get_market_news_impl(hours=24, feed_source=None, limit=20)
+
+        assert result["count"] == 1
+        assert len(result["news"]) == 1
+        assert result["news"][0]["title"] == "Test News"
+
+    @pytest.mark.asyncio
+    async def test_search_news_calls_service(self):
+        from app.mcp_server.tooling.news_handlers import _search_news_impl
+
+        with patch(
+            "app.mcp_server.tooling.news_handlers._search_news_db",
+            new_callable=AsyncMock,
+            return_value=([], 0),
+        ):
+            result = await _search_news_impl(query="반도체", days=7, limit=20)
+
+        assert result["query"] == "반도체"
+        assert result["count"] == 0
+        assert result["news"] == []
