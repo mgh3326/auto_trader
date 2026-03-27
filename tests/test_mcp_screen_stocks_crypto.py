@@ -1,4 +1,3 @@
-import asyncio
 from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import parse_qs, urlparse
 
@@ -569,7 +568,6 @@ class TestScreenStocksCrypto:
             AsyncMock(return_value={}),
             raising=False,
         )
-
 
         tv_result = await tools["screen_stocks"](
             market="crypto",
