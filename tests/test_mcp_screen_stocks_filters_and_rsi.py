@@ -1,81 +1,18 @@
 import logging
 from unittest.mock import AsyncMock
 
-import pandas as pd
 import pytest
 
 import app.services.brokers.upbit.client as upbit_service
-from app.core.async_rate_limiter import RateLimitExceededError
-from app.mcp_server.tooling import analysis_screen_core
+import app.services.naver_finance as naver_finance
 from app.mcp_server.tooling.screening import crypto as screening_crypto
 from app.mcp_server.tooling.screening import kr as screening_kr
-from app.services import naver_finance
 from tests._mcp_tooling_support import build_tools
 
 pytest_plugins = ("tests._mcp_tooling_support",)
 
 
 class TestScreenStocksRsiLogging:
-    @pytest.mark.asyncio
-    async def test_kr_rsi_uses_short_code_over_code(self, monkeypatch):
-        async def mock_fetch_stock_all_cached(market):
-            if market == "STK":
-                return [
-                    {
-                        "code": "KR7005930003",
-                        "short_code": "005930",
-                        "name": "삼성전자",
-                        "close": 80000.0,
-                        "volume": 1000,
-                        "market_cap": 1_000_000,
-                    }
-                ]
-            return []
-
-        async def mock_fetch_valuation_all_cached(market):
-            return {}
-
-        called_symbols: list[tuple[str, str, int]] = []
-
-        async def mock_fetch_ohlcv(symbol, market_type, count):
-            called_symbols.append((symbol, market_type, count))
-            return pd.DataFrame({"close": [100.0 + i for i in range(50)]})
-
-        def mock_calculate_rsi(close):
-            return {"14": 42.0}
-
-        monkeypatch.setattr(
-            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
-        )
-        monkeypatch.setattr(
-            screening_kr,
-            "fetch_valuation_all_cached",
-            mock_fetch_valuation_all_cached,
-        )
-        monkeypatch.setattr(
-            screening_kr, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
-        )
-        monkeypatch.setattr(screening_kr, "_calculate_rsi", mock_calculate_rsi)
-
-        result = await analysis_screen_core._screen_kr(
-            market="kospi",
-            asset_type="stock",
-            category=None,
-            min_market_cap=None,
-            max_per=None,
-            max_pbr=None,
-            min_dividend_yield=None,
-            max_rsi=None,
-            sort_by="volume",
-            sort_order="desc",
-            limit=5,
-        )
-
-        assert called_symbols, "OHLCV fetch should be called for RSI enrichment"
-        assert called_symbols[0][0] == "005930"
-        assert called_symbols[0][1] == "equity_kr"
-        assert result["results"][0]["rsi"] == 42.0
-
     @pytest.mark.asyncio
     async def test_crypto_rsi_falls_back_to_market_field(self, monkeypatch, caplog):
         async def mock_fetch_top_traded_coins(fiat):
@@ -94,8 +31,7 @@ class TestScreenStocksRsiLogging:
             upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
         )
         monkeypatch.setattr(
-            screening_crypto,
-            "compute_crypto_realtime_rsi_map",
+            "app.mcp_server.tooling.market_data_indicators.compute_crypto_realtime_rsi_map",
             realtime_rsi_mock,
         )
 
@@ -118,133 +54,6 @@ class TestScreenStocksRsiLogging:
         diagnostics = result["meta"]["rsi_enrichment"]
         assert diagnostics["attempted"] == 1
         assert diagnostics["failed"] == 1
-
-    @pytest.mark.asyncio
-    async def test_kr_rsi_ohlcv_exception_logs_error(self, monkeypatch, caplog):
-        async def mock_fetch_stock_all_cached(market):
-            if market == "STK":
-                return [
-                    {
-                        "code": "KR7005930003",
-                        "short_code": "005930",
-                        "name": "삼성전자",
-                        "close": 80000.0,
-                        "volume": 1000,
-                        "market_cap": 1_000_000,
-                    }
-                ]
-            return []
-
-        async def mock_fetch_valuation_all_cached(market):
-            return {}
-
-        async def mock_fetch_ohlcv(symbol, market_type, count):
-            raise RuntimeError("boom-kr")
-
-        monkeypatch.setattr(
-            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
-        )
-        monkeypatch.setattr(
-            screening_kr,
-            "fetch_valuation_all_cached",
-            mock_fetch_valuation_all_cached,
-        )
-        monkeypatch.setattr(
-            screening_kr, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
-        )
-
-        caplog.set_level(logging.ERROR)
-        result = await analysis_screen_core._screen_kr(
-            market="kospi",
-            asset_type="stock",
-            category=None,
-            min_market_cap=None,
-            max_per=None,
-            max_pbr=None,
-            min_dividend_yield=None,
-            max_rsi=None,
-            sort_by="volume",
-            sort_order="desc",
-            limit=5,
-        )
-
-        assert result["returned_count"] == 1
-        assert result["results"][0].get("rsi") is None
-        assert any("[RSI-KR] ❌ Failed" in record.message for record in caplog.records)
-        assert any("RuntimeError" in record.message for record in caplog.records)
-
-    @pytest.mark.asyncio
-    async def test_kr_rsi_empty_or_malformed_ohlcv_keeps_base_rows(self, monkeypatch):
-        async def mock_fetch_stock_all_cached(market):
-            if market == "STK":
-                return [
-                    {
-                        "code": "KR7005930003",
-                        "short_code": "005930",
-                        "name": "삼성전자",
-                        "close": 80000.0,
-                        "volume": 1000,
-                        "market_cap": 1_000_000,
-                    },
-                    {
-                        "code": "KR7000660001",
-                        "short_code": "000660",
-                        "name": "SK하이닉스",
-                        "close": 150000.0,
-                        "volume": 900,
-                        "market_cap": 900_000,
-                    },
-                ]
-            return []
-
-        async def mock_fetch_valuation_all_cached(market):
-            return {}
-
-        async def mock_fetch_ohlcv(symbol, market_type, count):
-            assert market_type == "equity_kr"
-            assert count == 50
-            if symbol == "005930":
-                return pd.DataFrame()
-            return pd.DataFrame({"date": pd.to_datetime(["2026-03-07"]), "open": [1.0]})
-
-        monkeypatch.setattr(
-            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
-        )
-        monkeypatch.setattr(
-            screening_kr,
-            "fetch_valuation_all_cached",
-            mock_fetch_valuation_all_cached,
-        )
-        monkeypatch.setattr(
-            screening_kr, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
-        )
-
-        result = await analysis_screen_core._screen_kr(
-            market="kospi",
-            asset_type="stock",
-            category=None,
-            min_market_cap=None,
-            max_per=None,
-            max_pbr=None,
-            min_dividend_yield=None,
-            max_rsi=None,
-            sort_by="volume",
-            sort_order="desc",
-            limit=5,
-        )
-
-        assert result["returned_count"] == 2
-        assert [item["code"] for item in result["results"]] == [
-            "KR7005930003",
-            "KR7000660001",
-        ]
-        assert all(item.get("rsi") is None for item in result["results"])
-        diagnostics = result["meta"]["rsi_enrichment"]
-        assert diagnostics["attempted"] == 2
-        assert diagnostics["succeeded"] == 0
-        assert diagnostics["failed"] == 2
-        assert diagnostics["error_samples"]
-        assert diagnostics["error_samples"][0] == "Missing OHLCV close data"
 
     @pytest.mark.asyncio
     async def test_crypto_rsi_ohlcv_exception_logs_error(self, monkeypatch, caplog):
@@ -299,60 +108,6 @@ class TestScreenStocksRsiLogging:
         diagnostics = result["meta"]["rsi_enrichment"]
         assert diagnostics["failed"] == 1
         assert diagnostics["error_samples"] == ["RuntimeError: boom-crypto"]
-
-    @pytest.mark.asyncio
-    async def test_kr_rsi_rate_limited_diagnostic_counts(self, monkeypatch):
-        async def mock_fetch_stock_all_cached(market):
-            if market == "STK":
-                return [
-                    {
-                        "code": "KR7005930003",
-                        "short_code": "005930",
-                        "name": "삼성전자",
-                        "close": 80000.0,
-                        "volume": 1000,
-                        "market_cap": 1_000_000,
-                    }
-                ]
-            return []
-
-        async def mock_fetch_valuation_all_cached(market):
-            return {}
-
-        async def mock_fetch_ohlcv(symbol, market_type, count):
-            raise RateLimitExceededError("KIS rate limit retries exhausted")
-
-        monkeypatch.setattr(
-            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
-        )
-        monkeypatch.setattr(
-            screening_kr,
-            "fetch_valuation_all_cached",
-            mock_fetch_valuation_all_cached,
-        )
-        monkeypatch.setattr(
-            screening_kr, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
-        )
-
-        result = await analysis_screen_core._screen_kr(
-            market="kospi",
-            asset_type="stock",
-            category=None,
-            min_market_cap=None,
-            max_per=None,
-            max_pbr=None,
-            min_dividend_yield=None,
-            max_rsi=None,
-            sort_by="volume",
-            sort_order="desc",
-            limit=5,
-        )
-
-        diagnostics = result["meta"]["rsi_enrichment"]
-        assert diagnostics["attempted"] == 1
-        assert diagnostics["succeeded"] == 0
-        assert diagnostics["rate_limited"] == 1
-        assert diagnostics["failed"] == 0
 
     @pytest.mark.asyncio
     async def test_crypto_rsi_rate_limited_diagnostic_counts(self, monkeypatch):

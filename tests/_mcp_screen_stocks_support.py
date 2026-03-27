@@ -3275,9 +3275,13 @@ class TestScreenStocksRsiLogging:
             mock_fetch_valuation_all_cached,
         )
         monkeypatch.setattr(
-            screening_kr, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+            "app.mcp_server.tooling.market_data_indicators._fetch_ohlcv_for_indicators",
+            mock_fetch_ohlcv,
         )
-        monkeypatch.setattr(screening_kr, "_calculate_rsi", mock_calculate_rsi)
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.market_data_indicators._calculate_rsi",
+            mock_calculate_rsi,
+        )
 
         result = await analysis_screen_core._screen_kr(
             market="kospi",
