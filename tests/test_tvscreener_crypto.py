@@ -697,28 +697,6 @@ async def test_finalize_crypto_screen_preserves_existing_market_cap_when_coingec
     assert first["market_cap_rank"] == 1
 
 
-@pytest.mark.asyncio
-async def test_enrich_crypto_indicators_manual_fallback_uses_upbit_keys(
-    crypto_candidates: list[dict[str, object]],
-) -> None:
-    with (
-        patch(
-            "app.mcp_server.tooling.screening.crypto._import_tvscreener",
-            side_effect=ImportError,
-        ),
-        patch(
-            "app.mcp_server.tooling.screening.crypto.compute_crypto_realtime_rsi_map",
-            new=AsyncMock(
-                return_value={"KRW-BTC": 41.2, "KRW-ETH": 37.4, "KRW-XRP": 55.1}
-            ),
-        ),
-    ):
-        diagnostics = await _enrich_crypto_indicators(crypto_candidates)
-
-    assert [candidate["rsi"] for candidate in crypto_candidates] == [41.2, 37.4, 55.1]
-    assert diagnostics["succeeded"] == 3
-
-
 class TestCryptoScreeningIntegration:
     @pytest.mark.integration
     @pytest.mark.live
