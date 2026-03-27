@@ -27,7 +27,7 @@ from app.mcp_server.tooling.analysis_screen_core import (
     _normalize_screen_market,
     _normalize_sort_by,
     _normalize_sort_order,
-    _screen_crypto,
+    _screen_crypto_with_fallback,
     _screen_kr,
     _validate_screen_filters,
     normalize_screen_request,
@@ -289,7 +289,7 @@ async def _recommend_stocks_impl(
         exclude_held=exclude_held,
         top_stocks_fallback=top_stocks_fallback,
         screen_kr_fn=_screen_kr,
-        screen_crypto_fn=_screen_crypto,
+        screen_crypto_fn=_screen_crypto_with_fallback,
         top_stocks_override=top_stocks_fallback,
     )
 

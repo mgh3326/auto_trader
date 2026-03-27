@@ -52,9 +52,7 @@ from app.mcp_server.tooling.screening.common import (  # noqa: F401
 # --- crypto -------------------------------------------------------------------
 from app.mcp_server.tooling.screening.crypto import (  # noqa: F401
     _CRYPTO_MARKET_CAP_CACHE,
-    _enrich_crypto_indicators,
     _run_crypto_coingecko_fetch,
-    _screen_crypto,
     _screen_crypto_via_tvscreener,
     _screen_crypto_with_fallback,
 )

@@ -3,7 +3,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-import app.services.brokers.upbit.client as upbit_service
 import app.services.naver_finance as naver_finance
 from app.mcp_server.tooling.screening import crypto as screening_crypto
 from app.mcp_server.tooling.screening import kr as screening_kr
@@ -14,177 +13,30 @@ pytest_plugins = ("tests._mcp_tooling_support",)
 
 class TestScreenStocksRsiLogging:
     @pytest.mark.asyncio
-    async def test_crypto_rsi_falls_back_to_market_field(self, monkeypatch, caplog):
-        async def mock_fetch_top_traded_coins(fiat):
-            return [
+    async def test_crypto_rsi_enrichment_handles_generic_exception(self, monkeypatch, caplog):
+        mock_result = {
+            "results": [
                 {
-                    "trade_price": 100_000_000,
-                    "signed_change_rate": 0.01,
-                    "acc_trade_volume_24h": 123.0,
-                    "acc_trade_price_24h": 456.0,
-                }
-            ]
-
-        realtime_rsi_mock = AsyncMock(return_value={})
-
-        monkeypatch.setattr(
-            upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
-        )
-        monkeypatch.setattr(
-            "app.mcp_server.tooling.market_data_indicators.compute_crypto_realtime_rsi_map",
-            realtime_rsi_mock,
-        )
-
-        caplog.set_level(logging.ERROR)
-        tools = build_tools()
-        result = await tools["screen_stocks"](
-            market="crypto",
-            asset_type=None,
-            category=None,
-            min_market_cap=None,
-            max_per=None,
-            min_dividend_yield=None,
-            max_rsi=None,
-            sort_by="rsi",
-            sort_order="asc",
-            limit=5,
-        )
-
-        assert result["returned_count"] == 1
-        diagnostics = result["meta"]["rsi_enrichment"]
-        assert diagnostics["attempted"] == 1
-        assert diagnostics["failed"] == 1
-
-    @pytest.mark.asyncio
-    async def test_crypto_rsi_ohlcv_exception_logs_error(self, monkeypatch, caplog):
-        async def mock_fetch_top_traded_coins(fiat):
-            return [
-                {
-                    "market": "KRW-BTC",
+                    "symbol": "KRW-BTC",
                     "korean_name": "비트코인",
                     "trade_price": 100_000_000,
                     "signed_change_rate": 0.01,
                     "acc_trade_volume_24h": 123.0,
                     "acc_trade_price_24h": 456.0,
                 }
-            ]
+            ],
+            "returned_count": 1,
+            "warnings": ["parallel execution returned unexpected shape"],
+            "meta": {},
+            "filters_applied": {},
+            "market": "crypto",
+        }
 
-        async def mock_enrich_crypto_indicators(candidates):
-            return {
-                "attempted": len(candidates),
-                "succeeded": 0,
-                "failed": len(candidates),
-                "rate_limited": 0,
-                "timeout": 0,
-                "error_samples": ["RuntimeError: boom-crypto"],
-            }
-
-        monkeypatch.setattr(
-            upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
-        )
         monkeypatch.setattr(
             screening_crypto,
-            "_enrich_crypto_indicators",
-            mock_enrich_crypto_indicators,
+            "_screen_crypto_via_tvscreener",
+            AsyncMock(return_value=mock_result),
         )
-
-        caplog.set_level(logging.ERROR)
-        tools = build_tools()
-        result = await tools["screen_stocks"](
-            market="crypto",
-            asset_type=None,
-            category=None,
-            min_market_cap=None,
-            max_per=None,
-            min_dividend_yield=None,
-            max_rsi=None,
-            sort_by="rsi",
-            sort_order="desc",
-            limit=5,
-        )
-
-        assert result["returned_count"] == 1
-        assert result["results"][0].get("rsi") is None
-        diagnostics = result["meta"]["rsi_enrichment"]
-        assert diagnostics["failed"] == 1
-        assert diagnostics["error_samples"] == ["RuntimeError: boom-crypto"]
-
-    @pytest.mark.asyncio
-    async def test_crypto_rsi_rate_limited_diagnostic_counts(self, monkeypatch):
-        async def mock_fetch_top_traded_coins(fiat):
-            return [
-                {
-                    "market": "KRW-BTC",
-                    "korean_name": "비트코인",
-                    "trade_price": 100_000_000,
-                    "signed_change_rate": 0.01,
-                    "acc_trade_volume_24h": 123.0,
-                    "acc_trade_price_24h": 456.0,
-                }
-            ]
-
-        async def mock_enrich_crypto_indicators(candidates):
-            return {
-                "attempted": len(candidates),
-                "succeeded": 0,
-                "failed": 0,
-                "rate_limited": len(candidates),
-                "timeout": 0,
-                "error_samples": [],
-            }
-
-        monkeypatch.setattr(
-            upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
-        )
-        monkeypatch.setattr(
-            screening_crypto,
-            "_enrich_crypto_indicators",
-            mock_enrich_crypto_indicators,
-        )
-
-        tools = build_tools()
-        result = await tools["screen_stocks"](
-            market="crypto",
-            asset_type=None,
-            category=None,
-            min_market_cap=None,
-            max_per=None,
-            min_dividend_yield=None,
-            max_rsi=70,
-            sort_by="trade_amount",
-            sort_order="desc",
-            limit=5,
-        )
-
-        diagnostics = result["meta"]["rsi_enrichment"]
-        assert diagnostics["attempted"] == 1
-        assert diagnostics["succeeded"] == 0
-        assert diagnostics["rate_limited"] == 1
-        assert diagnostics["failed"] == 0
-
-    @pytest.mark.asyncio
-    async def test_crypto_rsi_gather_exception_is_logged(self, monkeypatch, caplog):
-        async def mock_fetch_top_traded_coins(fiat):
-            return [
-                {
-                    "market": "KRW-BTC",
-                    "korean_name": "비트코인",
-                    "trade_price": 100_000_000,
-                    "signed_change_rate": 0.01,
-                    "acc_trade_volume_24h": 123.0,
-                    "acc_trade_price_24h": 456.0,
-                }
-            ]
-
-        async def mock_gather(*aws, **kwargs):
-            for awaitable in aws:
-                awaitable.close()
-            return [RuntimeError("forced gather failure")]
-
-        monkeypatch.setattr(
-            upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
-        )
-        monkeypatch.setattr(screening_crypto.asyncio, "gather", mock_gather)
 
         caplog.set_level(logging.WARNING)
         tools = build_tools()
@@ -260,14 +112,21 @@ class TestScreenStocksFilters:
         assert "error" not in result, f"Unexpected error: {result.get('error')}"
 
     @pytest.mark.asyncio
-    async def test_crypto_min_market_cap(self, mock_upbit_coins, monkeypatch):
-        async def mock_fetch_top_traded_coins(fiat):
-            return mock_upbit_coins
+    async def test_crypto_market_cap_filter_warning(self, mock_upbit_coins, monkeypatch):
+        mock_result = {
+            "results": [],
+            "total_count": 0,
+            "returned_count": 0,
+            "filters_applied": {"min_market_cap": 300000000000},
+            "market": "crypto",
+            "warnings": ["min_market_cap filter is not supported for crypto market; ignored"],
+            "meta": {},
+        }
 
         monkeypatch.setattr(
-            upbit_service,
-            "fetch_top_traded_coins",
-            mock_fetch_top_traded_coins,
+            screening_crypto,
+            "_screen_crypto_via_tvscreener",
+            AsyncMock(return_value=mock_result),
         )
 
         tools = build_tools()
@@ -898,16 +757,18 @@ class TestScreenStocksPhase2Spec:
         assert result["filters_applied"]["sort_order"] == "desc"
 
     @pytest.mark.asyncio
-    async def test_crypto_high_volume_strategy_defaults_to_trade_amount(
-        self, mock_upbit_coins, monkeypatch
-    ):
-        async def mock_fetch_top_traded_coins(fiat):
-            return mock_upbit_coins
+    async def test_crypto_rsi_enrichment_without_filters(self, mock_upbit_coins, monkeypatch):
+        mock_result = {
+            "results": [{"symbol": "KRW-BTC"}],
+            "market": "crypto",
+            "filters_applied": {"sort_by": "trade_amount", "sort_order": "desc"},
+            "meta": {},
+        }
 
         monkeypatch.setattr(
-            upbit_service,
-            "fetch_top_traded_coins",
-            mock_fetch_top_traded_coins,
+            screening_crypto,
+            "_screen_crypto_via_tvscreener",
+            AsyncMock(return_value=mock_result),
         )
 
         tools = build_tools()

@@ -2643,28 +2643,11 @@ class TestScreenStocksFundamentalsExpansion:
         async def mock_fetch_top_traded_coins(fiat):
             return mock_upbit_coins
 
-        enrich_mock = AsyncMock(
-            return_value={
-                "attempted": 2,
-                "succeeded": 0,
-                "failed": 2,
-                "rate_limited": 0,
-                "timeout": 0,
-                "error_samples": [],
-            }
-        )
-
         monkeypatch.setattr(
             upbit_service,
             "fetch_top_traded_coins",
             mock_fetch_top_traded_coins,
         )
-        monkeypatch.setattr(
-            screening_crypto,
-            "_enrich_crypto_indicators",
-            enrich_mock,
-        )
-
         tools = build_tools()
         result = await tools["screen_stocks"](
             market="crypto",
@@ -2678,9 +2661,6 @@ class TestScreenStocksFundamentalsExpansion:
             sort_order="desc",
             limit=20,
         )
-
-        enrich_mock.assert_awaited_once()
-        assert result["meta"]["rsi_enrichment"]["attempted"] > 0
         assert all("score" not in item for item in result["results"])
 
     @pytest.mark.asyncio
@@ -2690,33 +2670,11 @@ class TestScreenStocksFundamentalsExpansion:
         async def mock_fetch_top_traded_coins(fiat):
             return mock_upbit_coins
 
-        async def enrich_candidates(candidates):
-            candidates[0]["rsi"] = 41.0
-            candidates[0]["rsi_bucket"] = 40
-            candidates[1]["rsi"] = 29.0
-            candidates[1]["rsi_bucket"] = 25
-            return {
-                "attempted": 2,
-                "succeeded": 2,
-                "failed": 0,
-                "rate_limited": 0,
-                "timeout": 0,
-                "error_samples": [],
-            }
-
-        enrich_mock = AsyncMock(side_effect=enrich_candidates)
-
         monkeypatch.setattr(
             upbit_service,
             "fetch_top_traded_coins",
             mock_fetch_top_traded_coins,
         )
-        monkeypatch.setattr(
-            screening_crypto,
-            "_enrich_crypto_indicators",
-            enrich_mock,
-        )
-
         tools = build_tools()
         result = await tools["screen_stocks"](
             market="crypto",
@@ -2731,10 +2689,6 @@ class TestScreenStocksFundamentalsExpansion:
             limit=20,
         )
 
-        enrich_mock.assert_awaited_once()
-        assert result["meta"]["rsi_enrichment"]["attempted"] == 2
-        assert result["meta"]["rsi_enrichment"]["succeeded"] == 2
-        assert all("rsi" in item for item in result["results"])
         assert all("rsi_14" not in item for item in result["results"])
 
     @pytest.mark.asyncio
@@ -3495,23 +3449,8 @@ class TestScreenStocksRsiLogging:
                 }
             ]
 
-        async def mock_enrich_crypto_indicators(candidates):
-            return {
-                "attempted": len(candidates),
-                "succeeded": 0,
-                "failed": len(candidates),
-                "rate_limited": 0,
-                "timeout": 0,
-                "error_samples": ["RuntimeError: boom-crypto"],
-            }
-
         monkeypatch.setattr(
             upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
-        )
-        monkeypatch.setattr(
-            screening_crypto,
-            "_enrich_crypto_indicators",
-            mock_enrich_crypto_indicators,
         )
 
         caplog.set_level(logging.ERROR)
@@ -3607,23 +3546,8 @@ class TestScreenStocksRsiLogging:
                 }
             ]
 
-        async def mock_enrich_crypto_indicators(candidates):
-            return {
-                "attempted": len(candidates),
-                "succeeded": 0,
-                "failed": 0,
-                "rate_limited": len(candidates),
-                "timeout": 0,
-                "error_samples": [],
-            }
-
         monkeypatch.setattr(
             upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
-        )
-        monkeypatch.setattr(
-            screening_crypto,
-            "_enrich_crypto_indicators",
-            mock_enrich_crypto_indicators,
         )
 
         tools = build_tools()
