@@ -10,7 +10,7 @@ from app.core.timezone import format_datetime
 
 from . import formatters_discord as fmt_discord
 from . import formatters_telegram as fmt_telegram
-from .types import DiscordEmbed, DiscordField
+from .types import DiscordEmbed
 
 logger = logging.getLogger(__name__)
 

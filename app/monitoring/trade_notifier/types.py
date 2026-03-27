@@ -33,7 +33,7 @@ COLORS: dict[str, int] = {
 
 # Decision -> emoji mapping
 DECISION_EMOJI: dict[str, str] = {
-    "buy": "\U0001f7e2",   # green circle
+    "buy": "\U0001f7e2",  # green circle
     "hold": "\U0001f7e1",  # yellow circle
     "sell": "\U0001f534",  # red circle
 }

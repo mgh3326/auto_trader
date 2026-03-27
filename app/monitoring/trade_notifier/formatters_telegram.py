@@ -266,9 +266,7 @@ def format_toss_price_recommendation_html(
             f"<b>KIS 보유:</b> {kis_quantity}주 (평단가 {price_fmt(kis_avg_price)}, {kis_sign}{kis_profit:.1f}%)"
         )
 
-    lines.append(
-        f"<b>AI 판단:</b> {emoji} {decision_kr} (신뢰도 {confidence:.0f}%)"
-    )
+    lines.append(f"<b>AI 판단:</b> {emoji} {decision_kr} (신뢰도 {confidence:.0f}%)")
 
     # 근거 추가
     if reasons:

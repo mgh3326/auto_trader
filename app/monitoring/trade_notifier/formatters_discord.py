@@ -402,7 +402,11 @@ def format_toss_price_recommendation(
     emoji = DECISION_EMOJI.get(decision.lower(), "⚪")
     decision_kr = DECISION_TEXT.get(decision.lower(), decision)
 
-    decision_color = {"buy": COLORS["buy"], "hold": COLORS["hold"], "sell": COLORS["sell"]}
+    decision_color = {
+        "buy": COLORS["buy"],
+        "hold": COLORS["hold"],
+        "sell": COLORS["sell"],
+    }
     color = decision_color.get(decision.lower(), COLORS["default"])
 
     fields: list[DiscordField] = [
