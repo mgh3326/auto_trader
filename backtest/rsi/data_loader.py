@@ -151,10 +151,13 @@ def fetch_and_cache(
     start: str,
     end: str,
     data_dir: Path = DATA_DIR,
-) -> pd.DataFrame:
+) -> pd.DataFrame | None:
     """Fetch 1h candles from API, cache to parquet, and return.
 
     Performs incremental fetch: only downloads data not yet cached.
+
+    Returns:
+        DataFrame with candles for the date range, or None if no data available.
     """
     cached = load_candles(market, start, end, data_dir)
     if cached is not None and len(cached) > 0:
@@ -168,8 +171,8 @@ def fetch_and_cache(
     df = normalize_candles(raw)
     if len(df) > 0:
         save_candles(market, df, data_dir)
-    loaded = load_candles(market, start, end, data_dir)
-    return loaded if loaded is not None else df
+        return load_candles(market, start, end, data_dir)
+    return None
 
 
 def fetch_all_universe(

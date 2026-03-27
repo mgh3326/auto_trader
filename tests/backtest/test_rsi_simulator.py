@@ -14,11 +14,11 @@ from rsi.simulator import run_backtest, Portfolio, BacktestResult
 
 def _make_flat_candles(market: str, n_bars: int = 50, price: float = 1000.0) -> pd.DataFrame:
     """Flat price candles for predictable testing."""
-    datetimes = []
-    for i in range(n_bars):
-        day = i // 24 + 1
-        hour = i % 24
-        datetimes.append(f"2024-01-{day:02d}T{hour:02d}:00:00")
+    datetimes = (
+        pd.date_range("2024-01-01", periods=n_bars, freq="h")
+        .strftime("%Y-%m-%dT%H:%M:%S")
+        .tolist()
+    )
     return pd.DataFrame({
         "datetime": datetimes,
         "open": [price] * n_bars,
@@ -32,13 +32,12 @@ def _make_flat_candles(market: str, n_bars: int = 50, price: float = 1000.0) -> 
 
 def _make_rising_candles(market: str, n_bars: int = 50) -> pd.DataFrame:
     """Steadily rising prices."""
-    datetimes = []
-    prices = []
-    for i in range(n_bars):
-        day = i // 24 + 1
-        hour = i % 24
-        datetimes.append(f"2024-01-{day:02d}T{hour:02d}:00:00")
-        prices.append(1000.0 + i * 10.0)
+    datetimes = (
+        pd.date_range("2024-01-01", periods=n_bars, freq="h")
+        .strftime("%Y-%m-%dT%H:%M:%S")
+        .tolist()
+    )
+    prices = [1000.0 + i * 10.0 for i in range(n_bars)]
     return pd.DataFrame({
         "datetime": datetimes,
         "open": prices,

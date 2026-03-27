@@ -1,7 +1,6 @@
 """Performance metrics for backtest results."""
 
 from dataclasses import dataclass
-from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -53,10 +52,13 @@ def compute_metrics(
 
     cum_return = (curve[-1] / curve[0]) - 1.0
 
-    # CAGR
+    # CAGR — guard against overflow when period is very short
     n_hours = len(curve) - 1
     years = n_hours / hours_per_year
-    if years > 0 and curve[-1] > 0 and curve[0] > 0:
+    if years < 1 / 365:
+        # Less than one day: CAGR is not meaningful, use simple return
+        cagr = cum_return
+    elif curve[-1] > 0 and curve[0] > 0:
         cagr = (curve[-1] / curve[0]) ** (1.0 / years) - 1.0
     else:
         cagr = 0.0

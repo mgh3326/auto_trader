@@ -35,14 +35,35 @@ class BacktestResult:
     config: BacktestConfig
 
 
-def _get_prices_at(all_data: dict[str, pd.DataFrame], timestamp: str) -> dict[str, float]:
-    """Get close prices for all markets at a specific timestamp."""
-    prices: dict[str, float] = {}
+PriceIndex = dict[str, dict[str, float]]  # market -> {datetime -> close}
+
+
+def _build_price_index(all_data: dict[str, pd.DataFrame]) -> PriceIndex:
+    """Pre-build a price lookup dict for O(1) access per (market, timestamp)."""
+    index: PriceIndex = {}
     for market, df in all_data.items():
-        mask = df["datetime"] == timestamp
-        rows = df[mask]
-        if len(rows) > 0:
-            prices[market] = float(rows.iloc[0]["close"])
+        index[market] = dict(zip(df["datetime"], df["close"].astype(float)))
+    return index
+
+
+def _get_prices_at(
+    price_index: PriceIndex,
+    timestamp: str,
+    last_known: dict[str, float],
+) -> dict[str, float]:
+    """Get close prices at timestamp using pre-built index.
+
+    Falls back to last-known price when a market has no candle at this bar,
+    preventing artificial equity drops from data gaps.
+    """
+    prices: dict[str, float] = {}
+    for market, ts_map in price_index.items():
+        price = ts_map.get(timestamp)
+        if price is not None:
+            prices[market] = price
+            last_known[market] = price
+        elif market in last_known:
+            prices[market] = last_known[market]
     return prices
 
 
@@ -188,6 +209,10 @@ def run_backtest(
             config=config,
         )
 
+    # Pre-build price index for O(1) lookup (critical for RPi5 performance)
+    price_index = _build_price_index(all_data)
+    last_known_prices: dict[str, float] = {}
+
     portfolio = Portfolio(cash=config.initial_capital)
     equity_curve: list[float] = []
     equity_timestamps: list[str] = []
@@ -196,7 +221,7 @@ def run_backtest(
     bars_since_rebalance = config.rebalance_hours  # Force rebalance on first bar
 
     for ts in timestamps:
-        prices = _get_prices_at(all_data, ts)
+        prices = _get_prices_at(price_index, ts, last_known_prices)
 
         # Check if it's time to rebalance
         if bars_since_rebalance >= config.rebalance_hours:

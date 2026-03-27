@@ -1,6 +1,5 @@
 """RSI-based coin selection strategy."""
 
-import numpy as np
 import pandas as pd
 
 from .config import BacktestConfig

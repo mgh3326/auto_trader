@@ -30,11 +30,11 @@ def _generate_synthetic_market(
         ret = rng.normal(0, volatility)
         prices.append(prices[-1] * (1 + ret))
 
-    datetimes = []
-    for i in range(n_bars):
-        day = i // 24 + 1
-        hour = i % 24
-        datetimes.append(f"2024-01-{day:02d}T{hour:02d}:00:00")
+    datetimes = (
+        pd.date_range("2024-01-01", periods=n_bars, freq="h")
+        .strftime("%Y-%m-%dT%H:%M:%S")
+        .tolist()
+    )
 
     prices_arr = np.array(prices)
     return pd.DataFrame({

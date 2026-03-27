@@ -10,6 +10,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "backtest"))
 
 from rsi.config import BacktestConfig
+from rsi.indicators import calc_rsi
 from rsi.strategy import select_coins
 
 
@@ -69,12 +70,18 @@ class TestSelectCoins:
             "KRW-C": _make_candles_with_rsi("KRW-C", 45),
         }
         universe = ["KRW-A", "KRW-B", "KRW-C"]
-        # Use last available timestamp
         ts = all_data["KRW-A"]["datetime"].iloc[-1]
         result = select_coins(universe, all_data, ts, config)
-        # Should be sorted ascending by RSI
-        assert len(result) <= 3
-        # First coin should have lowest RSI
+        assert len(result) > 0
+        # Verify RSI ordering: each selected coin's RSI <= next one's
+        rsi_values = []
+        for market in result:
+            closes = all_data[market][all_data[market]["datetime"] <= ts]["close"].to_numpy(dtype=float)
+            rsi_values.append(calc_rsi(closes, period=14))
+        for i in range(len(rsi_values) - 1):
+            assert rsi_values[i] <= rsi_values[i + 1], (
+                f"RSI not ascending: {result[i]}={rsi_values[i]:.1f} > {result[i+1]}={rsi_values[i+1]:.1f}"
+            )
 
     def test_picks_at_most_k(self):
         config = BacktestConfig(start="2024-01-01", end="2024-02-01", max_rsi=99.0, pick_k=2, rsi_period=14)
