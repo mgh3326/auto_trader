@@ -15,6 +15,7 @@ from app.schemas.news import (
     NewsArticleCreate,
     NewsArticleResponse,
 )
+from app.services.llm_news_service import bulk_create_news_articles
 
 
 class TestNewsArticleModel:
@@ -476,9 +477,6 @@ class TestBulkCreateIntraBatchDedup:
 
     @pytest.mark.asyncio
     async def test_duplicate_urls_in_same_batch(self):
-        from app.services.llm_news_service import bulk_create_news_articles
-        from app.schemas.news import NewsArticleCreate
-
         articles_input = [
             NewsArticleCreate(url="https://example.com/same", title="First"),
             NewsArticleCreate(url="https://example.com/same", title="Second (dup)"),

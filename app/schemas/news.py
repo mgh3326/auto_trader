@@ -33,7 +33,7 @@ class NewsArticleCreate(BaseModel):
 
 
 class NewsArticleBulkCreate(BaseModel):
-    articles: list[NewsArticleCreate]
+    articles: list[NewsArticleCreate] = Field(..., max_length=500)
 
 
 class BulkCreateResponse(BaseModel):
@@ -115,8 +115,12 @@ class NewsQueryParams(BaseModel):
         None, description="감정으로 필터링 (positive/negative/neutral)"
     )
     source: str | None = Field(None, description="뉴스 출처로 필터링")
+    hours: int | None = Field(None, ge=1, le=720, description="최근 N시간 이내 기사만")
+    feed_source: str | None = Field(None, description="RSS 피드 소스로 필터링")
+    keyword: str | None = Field(None, description="키워드로 필터링")
+    has_analysis: bool | None = Field(None, description="분석 완료 여부로 필터링")
     limit: int = Field(10, ge=1, le=100, description="반환할 뉴스 수")
-    offset: int = Field(0, ge=0, description="걄러뛸 뉴스 수")
+    offset: int = Field(0, ge=0, description="걸너뛸 뉴스 수")
 
 
 class NewsListResponse(BaseModel):
