@@ -52,7 +52,7 @@ def upgrade() -> None:
     )
     op.alter_column(
         "news_articles",
-        "content",
+        "article_content",
         existing_type=sa.Text(),
         nullable=True,
         existing_comment="기사 본문",
@@ -68,7 +68,7 @@ def upgrade() -> None:
     op.create_index(
         "ix_news_articles_published_feed",
         "news_articles",
-        ["published_at", "feed_source"],
+        ["article_published_at", "feed_source"],
     )
     # ### end Alembic commands ###
 
@@ -81,7 +81,7 @@ def downgrade() -> None:
     op.drop_index("ix_news_articles_feed_source", table_name="news_articles")
     op.alter_column(
         "news_articles",
-        "content",
+        "article_content",
         existing_type=sa.Text(),
         nullable=False,
         existing_comment="기사 본문",
