@@ -1685,21 +1685,6 @@ def _mock_crypto_external_sources(monkeypatch: pytest.MonkeyPatch):
         "get",
         mock_market_cap_cache_get,
     )
-    monkeypatch.setattr(
-        screening_kr,
-        "_fetch_ohlcv_for_indicators",
-        mock_fetch_ohlcv_for_indicators,
-    )
-    monkeypatch.setattr(
-        screening_us,
-        "_fetch_ohlcv_for_indicators",
-        mock_fetch_ohlcv_for_indicators,
-    )
-    monkeypatch.setattr(
-        screening_crypto,
-        "_fetch_ohlcv_for_indicators",
-        mock_fetch_ohlcv_for_indicators,
-    )
 
 
 class TestScreenStocksCrypto:
@@ -3604,7 +3589,7 @@ class TestScreenStocksRsiLogging:
 
     @pytest.mark.asyncio
     async def test_crypto_rsi_rate_limited_diagnostic_counts(self, monkeypatch):
-        """Crypto RSI enrichment should surface rate-limited diagnostics when enrich_rsi=True."""
+        """Crypto RSI enrichment should surface rate-limited diagnostics."""
 
         async def mock_fetch_top_traded_coins(fiat):
             return [
