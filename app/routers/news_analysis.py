@@ -14,7 +14,6 @@ from app.schemas.news import (
     NewsListResponse,
 )
 from app.services.llm_news_service import (
-    NewsAnalyzer,
     bulk_create_news_articles,
     create_news_article,
     get_news_analysis,
@@ -40,28 +39,15 @@ async def analyze_news_article(
             stock_name=request.stock_name,
         )
 
-        analyzer = NewsAnalyzer()
-        try:
-            analysis = await analyzer.analyze_news(
-                article_id=article.id,
-                title=request.title,
-                content=request.content,
-                stock_symbol=request.stock_symbol,
-                stock_name=request.stock_name,
-                source=request.source,
-            )
-
-            return NewsAnalysisResponse(
-                article=NewsArticleResponse.model_validate(article),
-                analysis=NewsAnalysisResultResponse.model_validate(analysis),
-            )
-        finally:
-            await analyzer.close()
+        return NewsAnalysisResponse(
+            article=NewsArticleResponse.model_validate(article),
+            analysis=None,
+        )
 
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to analyze news: {str(e)}",
+            detail=f"Failed to save news article: {str(e)}",
         )
 
 
@@ -100,7 +86,7 @@ async def list_news_articles(
     keyword: str | None = Query(None, description="키워드로 필터링"),
     has_analysis: bool | None = Query(None, description="분석 완료 여부로 필터링"),
     limit: int = Query(10, ge=1, le=100, description="반환할 뉴스 수"),
-    offset: int = Query(0, ge=0, description="건너뛸 뉴스 수"),
+    offset: int = Query(0, ge=0, description="걸러뛸 뉴스 수"),
 ):
     try:
         articles, total = await get_news_articles(
