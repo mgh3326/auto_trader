@@ -239,7 +239,7 @@ async def get_news_articles(
     Returns (list_of_articles, total_count).
     """
     async with AsyncSessionLocal() as db:
-        from sqlalchemy import distinct, exists
+        from sqlalchemy import exists
 
         query = select(NewsArticle).distinct()
         total_query = select(func.count(NewsArticle.id)).select_from(NewsArticle)
