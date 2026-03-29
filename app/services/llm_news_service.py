@@ -241,7 +241,7 @@ async def get_news_articles(
     async with AsyncSessionLocal() as db:
         from sqlalchemy import distinct, exists
 
-        query = select(distinct(NewsArticle.id), NewsArticle).select_from(NewsArticle)
+        query = select(NewsArticle).distinct()
         total_query = select(func.count(NewsArticle.id)).select_from(NewsArticle)
 
         conditions = []
