@@ -20,6 +20,7 @@ from app.schemas.n8n import (
     N8nMarketContextResponse,
     N8nMarketContextSummary,
     N8nMarketOverview,
+    N8nNewsResponse,
     N8nPendingOrdersResponse,
     N8nPendingOrderSummary,
     N8nPendingResolveRequest,
@@ -39,6 +40,7 @@ from app.services.n8n_filled_orders_service import fetch_filled_orders
 from app.services.n8n_formatting import fmt_date_with_weekday
 from app.services.n8n_kr_morning_report_service import fetch_kr_morning_report
 from app.services.n8n_market_context_service import fetch_market_context
+from app.services.n8n_news_service import fetch_n8n_news
 from app.services.n8n_pending_orders_service import fetch_pending_orders
 from app.services.n8n_pending_review_service import fetch_pending_review
 from app.services.n8n_pending_snapshot_service import (
@@ -534,3 +536,40 @@ async def get_kr_morning_report(
         return JSONResponse(status_code=500, content=payload.model_dump())
 
     return N8nKrMorningReportResponse(**result)
+
+
+@router.get("/news", response_model=N8nNewsResponse)
+async def get_n8n_news(
+    hours: int = Query(24, ge=1, le=168, description="Lookback period in hours"),
+    feed_source: str | None = Query(
+        None, description="Filter by feed source (e.g., mk_stock)"
+    ),
+    keyword: str | None = Query(None, description="Filter by keyword in title/content"),
+    limit: int = Query(20, ge=1, le=100, description="Maximum articles to return"),
+) -> N8nNewsResponse | JSONResponse:
+    as_of_dt = now_kst().replace(microsecond=0)
+    as_of = as_of_dt.isoformat()
+
+    try:
+        result = await fetch_n8n_news(
+            hours=hours,
+            feed_source=feed_source,
+            keyword=keyword,
+            limit=limit,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to fetch n8n news")
+        from app.schemas.n8n.news import N8nNewsSummary
+
+        payload = N8nNewsResponse(
+            success=False,
+            as_of=as_of,
+            items=[],
+            summary=N8nNewsSummary(total=0, sources=[], date_range=""),
+            discord_title=f"📰 최신 뉴스 (0건) | {as_of_dt.strftime('%m/%d %H:%M')}",
+            discord_body="⚠️ 뉴스를 불러오는 중 오류가 발생했습니다.",
+            errors=[{"error": str(exc)}],
+        )
+        return JSONResponse(status_code=500, content=payload.model_dump())
+
+    return result

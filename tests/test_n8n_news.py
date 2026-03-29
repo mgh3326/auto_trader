@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, patch
 
-from app.schemas.n8n.news import N8nNewsItem, N8nNewsResponse, N8nNewsSummary
+import pytest
 
+from app.schemas.n8n.news import N8nNewsItem, N8nNewsResponse, N8nNewsSummary
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -27,8 +27,8 @@ def _make_fake_article(
     stock_name: str | None = None,
 ):
     """Return a mock object that looks like a NewsArticle ORM instance."""
-    from unittest.mock import MagicMock
     from datetime import datetime
+    from unittest.mock import MagicMock
 
     art = MagicMock()
     art.id = id
@@ -43,6 +43,110 @@ def _make_fake_article(
     art.stock_symbol = stock_symbol
     art.stock_name = stock_name
     return art
+
+
+# ---------------------------------------------------------------------------
+# Router-level tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestN8nNewsRouter:
+    def _get_client(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from app.routers.n8n import router
+
+        app = FastAPI()
+        app.include_router(router)
+        return TestClient(app)
+
+    def test_get_news_success(self):
+        mock_result = N8nNewsResponse(
+            success=True,
+            as_of="2026-03-29T10:00:00+09:00",
+            items=[
+                N8nNewsItem(
+                    id=1,
+                    title="테스트 뉴스",
+                    url="https://example.com/1",
+                    source="매일경제",
+                    feed_source=None,
+                    summary=None,
+                    content_preview=None,
+                    published_at=None,
+                    keywords=None,
+                    stock_symbol=None,
+                    stock_name=None,
+                ),
+            ],
+            summary=N8nNewsSummary(total=1, sources=["매일경제"], date_range=""),
+            discord_title="📰 최신 뉴스 (1건)",
+            discord_body="**[매일경제]** 테스트 뉴스\n> ...",
+        )
+
+        with patch(
+            "app.routers.n8n.fetch_n8n_news",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ) as mock_fetch:
+            client = self._get_client()
+            resp = client.get("/api/n8n/news?hours=2")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["success"] is True
+        assert data["summary"]["total"] == 1
+        assert len(data["items"]) == 1
+        mock_fetch.assert_called_once_with(
+            hours=2,
+            feed_source=None,
+            keyword=None,
+            limit=20,
+        )
+
+    def test_get_news_with_filters(self):
+        mock_result = N8nNewsResponse(
+            success=True,
+            as_of="2026-03-29T10:00:00+09:00",
+            items=[],
+            summary=N8nNewsSummary(total=0, sources=[], date_range=""),
+            discord_title="📰 최신 뉴스 (0건)",
+            discord_body="",
+        )
+
+        with patch(
+            "app.routers.n8n.fetch_n8n_news",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ) as mock_fetch:
+            client = self._get_client()
+            resp = client.get(
+                "/api/n8n/news?hours=6&feed_source=mk_stock&keyword=삼성&limit=5"
+            )
+
+        assert resp.status_code == 200
+        mock_fetch.assert_called_once_with(
+            hours=6,
+            feed_source="mk_stock",
+            keyword="삼성",
+            limit=5,
+        )
+
+    def test_get_news_error_returns_500(self):
+        with patch(
+            "app.routers.n8n.fetch_n8n_news",
+            new_callable=AsyncMock,
+            side_effect=Exception("DB error"),
+        ):
+            client = self._get_client()
+            resp = client.get("/api/n8n/news")
+
+        assert resp.status_code == 500
+        data = resp.json()
+        assert data["success"] is False
+        assert "DB error" in str(data["errors"])
 
 
 # ---------------------------------------------------------------------------
