@@ -15,3 +15,4 @@ from app.schemas.n8n.pending_orders import *  # noqa: F401,F403
 from app.schemas.n8n.pending_review import *  # noqa: F401,F403
 from app.schemas.n8n.pending_snapshot import *  # noqa: F401,F403
 from app.schemas.n8n.trade_review import *  # noqa: F401,F403
+from app.schemas.n8n.news import *  # noqa: F401,F403
