@@ -6,7 +6,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst_naive, to_kst_naive
-from app.models.news import NewsAnalysisResult, NewsArticle, Sentiment
+from app.models.news import NewsAnalysisResult, NewsArticle
 
 
 async def create_news_article(
