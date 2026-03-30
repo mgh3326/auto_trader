@@ -18,85 +18,181 @@ from indicators import (
 if TYPE_CHECKING:
     from pandas import Series
 
-# Strategy Constants
-RSI_PERIOD_FAST = 6
-RSI_PERIOD_SLOW = 14
-RSI_OVERSOLD = 30
-RSI_EXIT = 55
-MAX_POSITIONS = 5
-POSITION_SIZE = 0.10
-STRONG_REVERSION_POSITION_SIZE = 0.15
-BTC_HOT_STALL_TREND_POSITION_SIZE = 0.0025
-BTC_MID_HOT_ACCEL_TREND_POSITION_SIZE = 0.00
-ADA_STALLED_WASHOUT_REVERSION_POSITION_SIZE = 0.00
-DOT_MILD_REVERSION_POSITION_SIZE = 0.00015625
-SOL_HOT_STALL_TREND_POSITION_SIZE = 0.00
-LINK_HOT_STALL_TREND_POSITION_SIZE = 0.00
-XRP_STALLED_WASHOUT_REVERSION_POSITION_SIZE = 0.00
-SOL_MILD_REVERSION_POSITION_SIZE = 0.00
-SOL_LOW_BREADTH_TREND_POSITION_SIZE = 0.00
-AVAX_TREND_POSITION_SIZE = 0.04
-XRP_TREND_POSITION_SIZE = 0.00
-ETH_PURE_REVERSION_POSITION_SIZE = 0.00
-HOLDING_DAYS = 21
-STOP_LOSS_PCT = 0.02
-COOLDOWN_DAYS = 15
+# Unified Strategy Parameters
+PARAMS = {
+    # RSI Parameters
+    "rsi_period_fast": 6,
+    "rsi_period_slow": 14,
+    "rsi_oversold": 30,
+    "rsi_exit": 55,
+    # Position Sizing
+    "max_positions": 5,
+    "position_size": 0.10,
+    "strong_reversion_position_size": 0.15,
+    "btc_hot_stall_trend_position_size": 0.0025,
+    "btc_mid_hot_accel_trend_position_size": 0.00,
+    "ada_stalled_washout_reversion_position_size": 0.00,
+    "dot_mild_reversion_position_size": 0.00015625,
+    "sol_hot_stall_trend_position_size": 0.00,
+    "link_hot_stall_trend_position_size": 0.00,
+    "xrp_stalled_washout_reversion_position_size": 0.00,
+    "sol_mild_reversion_position_size": 0.00,
+    "sol_low_breadth_trend_position_size": 0.00,
+    "avax_trend_position_size": 0.04,
+    "xrp_trend_position_size": 0.00,
+    "eth_pure_reversion_position_size": 0.00,
+    # Exit Parameters
+    "holding_days": 21,
+    "stop_loss_pct": 0.02,
+    "cooldown_days": 15,
+    # Voting Parameters
+    "min_votes": 4,
+    "min_weighted_buy_votes": 4,
+    "min_sell_votes": 2,
+    "block_high_rsi_buys": False,
+    "total_bull_signals": 6,
+    # Market State Filters
+    "falling_market_block_buys": True,
+    "falling_market_rsi_level": 55.0,
+    "falling_market_change": -1.0,
+    "extreme_falling_market_change": -6.0,
+    "reversion_market_change_ceiling": -2.0,
+    "overheated_market_rsi_level": 75.0,
+    # Symbol-Specific Thresholds
+    "avax_strong_reversion_max_market_rsi": 35.0,
+    "avax_trend_min_market_rsi": 60.0,
+    "btc_trend_hot_rsi_level": 70.0,
+    "btc_trend_stall_change": 2.0,
+    "btc_mid_hot_rsi_low": 60.0,
+    "btc_mid_hot_rsi_high": 65.0,
+    "btc_extreme_accel_change": 15.0,
+    "ada_stalled_washout_rsi": 26.0,
+    "ada_stalled_washout_change": -2.5,
+    "xrp_stalled_washout_rsi": 26.0,
+    "xrp_stalled_washout_change": -2.5,
+    "sol_mild_reversion_rsi": 32.0,
+    "dot_mild_reversion_rsi": 33.0,
+    "sol_hot_stall_rsi_low": 66.0,
+    "sol_hot_stall_rsi_high": 68.0,
+    "sol_hot_stall_change": 1.5,
+    "link_hot_stall_rsi_low": 66.0,
+    "link_hot_stall_rsi_high": 68.0,
+    "link_hot_stall_change": 1.5,
+    "sol_low_breadth_rsi": 49.0,
+    "sol_low_breadth_change": -5.0,
+    "link_trend_rsi_low": 58.0,
+    "link_trend_rsi_high": 60.0,
+    "link_trend_max_acceleration": 6.0,
+    "dot_trend_mid_rsi_min_change": 12.0,
+    "trend_mid_rsi_low": 60.0,
+    "trend_mid_rsi_high": 65.0,
+    "trend_mid_rsi_min_change": 5.0,
+    "trend_hot_rsi_level": 64.0,
+    "trend_trap_change_low": 3.0,
+    "trend_trap_change_high": 9.0,
+    # Indicator Periods
+    "macd_fast": 12,
+    "macd_slow": 26,
+    "macd_signal": 9,
+    "bb_period": 15,
+    "bb_std": 1.5,
+    "ema_fast": 8,
+    "ema_slow": 24,
+    "momentum_period": 5,
+    "volume_lookback": 20,
+    "volume_threshold": 1.5,
+}
 
-# Multi-Signal Voting Parameters
-MIN_VOTES = 4
-MIN_WEIGHTED_BUY_VOTES = 4
-MIN_SELL_VOTES = 2
-BLOCK_HIGH_RSI_BUYS = False
-TOTAL_BULL_SIGNALS = 6  # Total number of possible bull signals for vote ratio
-FALLING_MARKET_BLOCK_BUYS = True
-FALLING_MARKET_RSI_LEVEL = 55.0
-FALLING_MARKET_CHANGE = -1.0
-EXTREME_FALLING_MARKET_CHANGE = -6.0
-REVERSION_MARKET_CHANGE_CEILING = -2.0
-AVAX_STRONG_REVERSION_MAX_MARKET_RSI = 35.0
-AVAX_TREND_MIN_MARKET_RSI = 60.0
-BTC_TREND_HOT_RSI_LEVEL = 70.0
-BTC_TREND_STALL_CHANGE = 2.0
-BTC_MID_HOT_RSI_LOW = 60.0
-BTC_MID_HOT_RSI_HIGH = 65.0
-BTC_EXTREME_ACCEL_CHANGE = 15.0
-ADA_STALLED_WASHOUT_RSI = 26.0
-ADA_STALLED_WASHOUT_CHANGE = -2.5
-XRP_STALLED_WASHOUT_RSI = 26.0
-XRP_STALLED_WASHOUT_CHANGE = -2.5
-SOL_MILD_REVERSION_RSI = 32.0
-DOT_MILD_REVERSION_RSI = 33.0
-SOL_HOT_STALL_RSI_LOW = 66.0
-SOL_HOT_STALL_RSI_HIGH = 68.0
-SOL_HOT_STALL_CHANGE = 1.5
-LINK_HOT_STALL_RSI_LOW = 66.0
-LINK_HOT_STALL_RSI_HIGH = 68.0
-LINK_HOT_STALL_CHANGE = 1.5
-SOL_LOW_BREADTH_RSI = 49.0
-SOL_LOW_BREADTH_CHANGE = -5.0
-LINK_TREND_RSI_LOW = 58.0
-LINK_TREND_RSI_HIGH = 60.0
-LINK_TREND_MAX_ACCELERATION = 6.0
-DOT_TREND_MID_RSI_MIN_CHANGE = 12.0
-OVERHEATED_MARKET_RSI_LEVEL = 75.0
-TREND_MID_RSI_LOW = 60.0
-TREND_MID_RSI_HIGH = 65.0
-TREND_MID_RSI_MIN_CHANGE = 5.0
-TREND_HOT_RSI_LEVEL = 64.0
-TREND_TRAP_CHANGE_LOW = 3.0
-TREND_TRAP_CHANGE_HIGH = 9.0
+# Minimum history bars required for all indicators
+MIN_HISTORY_BARS = (
+    max(
+        PARAMS["rsi_period_slow"],
+        PARAMS["bb_period"],
+        PARAMS["ema_slow"],
+        PARAMS["macd_slow"] + PARAMS["macd_signal"],
+    )
+    + 1
+)
 
-# Indicator Periods
-MACD_FAST = 12
-MACD_SLOW = 26
-MACD_SIGNAL = 9
-BB_PERIOD = 15
-BB_STD = 1.5
-EMA_FAST = 8
-EMA_SLOW = 24
-MOMENTUM_PERIOD = 5
-VOLUME_LOOKBACK = 20
-VOLUME_THRESHOLD = 1.5
+# Backward compatibility aliases (to be removed after full migration)
+RSI_PERIOD_FAST = PARAMS["rsi_period_fast"]
+RSI_PERIOD_SLOW = PARAMS["rsi_period_slow"]
+RSI_OVERSOLD = PARAMS["rsi_oversold"]
+RSI_EXIT = PARAMS["rsi_exit"]
+MAX_POSITIONS = PARAMS["max_positions"]
+POSITION_SIZE = PARAMS["position_size"]
+STRONG_REVERSION_POSITION_SIZE = PARAMS["strong_reversion_position_size"]
+BTC_HOT_STALL_TREND_POSITION_SIZE = PARAMS["btc_hot_stall_trend_position_size"]
+BTC_MID_HOT_ACCEL_TREND_POSITION_SIZE = PARAMS["btc_mid_hot_accel_trend_position_size"]
+ADA_STALLED_WASHOUT_REVERSION_POSITION_SIZE = PARAMS[
+    "ada_stalled_washout_reversion_position_size"
+]
+DOT_MILD_REVERSION_POSITION_SIZE = PARAMS["dot_mild_reversion_position_size"]
+SOL_HOT_STALL_TREND_POSITION_SIZE = PARAMS["sol_hot_stall_trend_position_size"]
+LINK_HOT_STALL_TREND_POSITION_SIZE = PARAMS["link_hot_stall_trend_position_size"]
+XRP_STALLED_WASHOUT_REVERSION_POSITION_SIZE = PARAMS[
+    "xrp_stalled_washout_reversion_position_size"
+]
+SOL_MILD_REVERSION_POSITION_SIZE = PARAMS["sol_mild_reversion_position_size"]
+SOL_LOW_BREADTH_TREND_POSITION_SIZE = PARAMS["sol_low_breadth_trend_position_size"]
+AVAX_TREND_POSITION_SIZE = PARAMS["avax_trend_position_size"]
+XRP_TREND_POSITION_SIZE = PARAMS["xrp_trend_position_size"]
+ETH_PURE_REVERSION_POSITION_SIZE = PARAMS["eth_pure_reversion_position_size"]
+HOLDING_DAYS = PARAMS["holding_days"]
+STOP_LOSS_PCT = PARAMS["stop_loss_pct"]
+COOLDOWN_DAYS = PARAMS["cooldown_days"]
+MIN_VOTES = PARAMS["min_votes"]
+MIN_WEIGHTED_BUY_VOTES = PARAMS["min_weighted_buy_votes"]
+MIN_SELL_VOTES = PARAMS["min_sell_votes"]
+BLOCK_HIGH_RSI_BUYS = PARAMS["block_high_rsi_buys"]
+TOTAL_BULL_SIGNALS = PARAMS["total_bull_signals"]
+FALLING_MARKET_BLOCK_BUYS = PARAMS["falling_market_block_buys"]
+FALLING_MARKET_RSI_LEVEL = PARAMS["falling_market_rsi_level"]
+FALLING_MARKET_CHANGE = PARAMS["falling_market_change"]
+EXTREME_FALLING_MARKET_CHANGE = PARAMS["extreme_falling_market_change"]
+REVERSION_MARKET_CHANGE_CEILING = PARAMS["reversion_market_change_ceiling"]
+AVAX_STRONG_REVERSION_MAX_MARKET_RSI = PARAMS["avax_strong_reversion_max_market_rsi"]
+AVAX_TREND_MIN_MARKET_RSI = PARAMS["avax_trend_min_market_rsi"]
+BTC_TREND_HOT_RSI_LEVEL = PARAMS["btc_trend_hot_rsi_level"]
+BTC_TREND_STALL_CHANGE = PARAMS["btc_trend_stall_change"]
+BTC_MID_HOT_RSI_LOW = PARAMS["btc_mid_hot_rsi_low"]
+BTC_MID_HOT_RSI_HIGH = PARAMS["btc_mid_hot_rsi_high"]
+BTC_EXTREME_ACCEL_CHANGE = PARAMS["btc_extreme_accel_change"]
+ADA_STALLED_WASHOUT_RSI = PARAMS["ada_stalled_washout_rsi"]
+ADA_STALLED_WASHOUT_CHANGE = PARAMS["ada_stalled_washout_change"]
+XRP_STALLED_WASHOUT_RSI = PARAMS["xrp_stalled_washout_rsi"]
+XRP_STALLED_WASHOUT_CHANGE = PARAMS["xrp_stalled_washout_change"]
+SOL_MILD_REVERSION_RSI = PARAMS["sol_mild_reversion_rsi"]
+DOT_MILD_REVERSION_RSI = PARAMS["dot_mild_reversion_rsi"]
+SOL_HOT_STALL_RSI_LOW = PARAMS["sol_hot_stall_rsi_low"]
+SOL_HOT_STALL_RSI_HIGH = PARAMS["sol_hot_stall_rsi_high"]
+SOL_HOT_STALL_CHANGE = PARAMS["sol_hot_stall_change"]
+LINK_HOT_STALL_RSI_LOW = PARAMS["link_hot_stall_rsi_low"]
+LINK_HOT_STALL_RSI_HIGH = PARAMS["link_hot_stall_rsi_high"]
+LINK_HOT_STALL_CHANGE = PARAMS["link_hot_stall_change"]
+SOL_LOW_BREADTH_RSI = PARAMS["sol_low_breadth_rsi"]
+SOL_LOW_BREADTH_CHANGE = PARAMS["sol_low_breadth_change"]
+LINK_TREND_RSI_LOW = PARAMS["link_trend_rsi_low"]
+LINK_TREND_RSI_HIGH = PARAMS["link_trend_rsi_high"]
+LINK_TREND_MAX_ACCELERATION = PARAMS["link_trend_max_acceleration"]
+DOT_TREND_MID_RSI_MIN_CHANGE = PARAMS["dot_trend_mid_rsi_min_change"]
+OVERHEATED_MARKET_RSI_LEVEL = PARAMS["overheated_market_rsi_level"]
+TREND_MID_RSI_LOW = PARAMS["trend_mid_rsi_low"]
+TREND_MID_RSI_HIGH = PARAMS["trend_mid_rsi_high"]
+TREND_MID_RSI_MIN_CHANGE = PARAMS["trend_mid_rsi_min_change"]
+TREND_HOT_RSI_LEVEL = PARAMS["trend_hot_rsi_level"]
+TREND_TRAP_CHANGE_LOW = PARAMS["trend_trap_change_low"]
+TREND_TRAP_CHANGE_HIGH = PARAMS["trend_trap_change_high"]
+MACD_FAST = PARAMS["macd_fast"]
+MACD_SLOW = PARAMS["macd_slow"]
+MACD_SIGNAL = PARAMS["macd_signal"]
+BB_PERIOD = PARAMS["bb_period"]
+BB_STD = PARAMS["bb_std"]
+EMA_FAST = PARAMS["ema_fast"]
+EMA_SLOW = PARAMS["ema_slow"]
+MOMENTUM_PERIOD = PARAMS["momentum_period"]
+VOLUME_LOOKBACK = PARAMS["volume_lookback"]
+VOLUME_THRESHOLD = PARAMS["volume_threshold"]
 
 
 def _format_vote_reason(

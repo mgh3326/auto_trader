@@ -1156,6 +1156,52 @@ class TestHardExitPriority:
         assert "holding" in sell_signals[0].reason.lower()
 
 
+class TestParamsConfig:
+    """Tests that verify PARAMS dict values match expected baselines."""
+
+    def test_params_match_exp204_baseline(self):
+        """Test that PARAMS values match the expected baseline for refactoring."""
+        assert strategy.PARAMS["rsi_period_fast"] == 6
+        assert strategy.PARAMS["rsi_period_slow"] == 14
+        assert strategy.PARAMS["rsi_oversold"] == 30
+        assert strategy.PARAMS["rsi_exit"] == 55
+        assert strategy.PARAMS["bb_std"] == 1.5
+        assert strategy.PARAMS["min_votes"] == 4
+        assert strategy.PARAMS["min_weighted_buy_votes"] == 4
+        assert strategy.PARAMS["min_sell_votes"] == 2
+        assert strategy.PARAMS["max_positions"] == 5
+        assert strategy.PARAMS["position_size"] == 0.10
+
+    def test_min_history_bars_calculation(self):
+        """Test MIN_HISTORY_BARS matches the prior warmup requirement."""
+        # MIN_HISTORY_BARS should be max of indicator periods + 1
+        expected = (
+            max(
+                strategy.PARAMS["rsi_period_slow"],  # 14
+                strategy.PARAMS["bb_period"],  # 15
+                strategy.PARAMS["ema_slow"],  # 24
+                strategy.PARAMS["macd_slow"]
+                + strategy.PARAMS["macd_signal"],  # 26 + 9 = 35
+            )
+            + 1
+        )
+        assert strategy.MIN_HISTORY_BARS == expected
+        assert strategy.MIN_HISTORY_BARS == 36
+
+    def test_backward_compatible_aliases(self):
+        """Test that backward-compatible aliases map to PARAMS values."""
+        assert strategy.RSI_PERIOD_FAST == strategy.PARAMS["rsi_period_fast"]
+        assert strategy.RSI_PERIOD_SLOW == strategy.PARAMS["rsi_period_slow"]
+        assert strategy.RSI_OVERSOLD == strategy.PARAMS["rsi_oversold"]
+        assert strategy.RSI_EXIT == strategy.PARAMS["rsi_exit"]
+        assert strategy.MAX_POSITIONS == strategy.PARAMS["max_positions"]
+        assert strategy.POSITION_SIZE == strategy.PARAMS["position_size"]
+        assert strategy.MIN_VOTES == strategy.PARAMS["min_votes"]
+        assert strategy.MIN_SELL_VOTES == strategy.PARAMS["min_sell_votes"]
+        assert strategy.HOLDING_DAYS == strategy.PARAMS["holding_days"]
+        assert strategy.STOP_LOSS_PCT == strategy.PARAMS["stop_loss_pct"]
+
+
 class TestStrategyContractFreezing:
     """Characterization tests to lock down behaviors likely to drift during modularization."""
 
