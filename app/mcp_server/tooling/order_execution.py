@@ -528,6 +528,81 @@ async def _execute_order(
     )
 
 
+def _validate_buy_journal_requirements(
+    *,
+    side: str,
+    dry_run: bool,
+    thesis: str | None,
+    strategy: str | None,
+) -> None:
+    """Validate that buy orders have required journal fields when not in dry-run mode."""
+    if side != "buy" or dry_run:
+        return
+    if not (thesis or "").strip():
+        raise ValueError("thesis is required for buy orders when dry_run=False")
+    if not (strategy or "").strip():
+        raise ValueError("strategy is required for buy orders when dry_run=False")
+
+
+async def _create_trade_journal_for_buy(
+    *,
+    symbol: str,
+    market_type: str,
+    preview: dict[str, Any],
+    thesis: str,
+    strategy: str,
+    target_price: float | None,
+    stop_loss: float | None,
+    min_hold_days: int | None,
+    notes: str | None,
+    indicators_snapshot: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Create a draft trade journal entry for a buy order.
+
+    Returns a dict with journal_created, journal_id, journal_status.
+    Raises on DB errors to allow caller to handle.
+    """
+    from decimal import Decimal
+    from app.models.trade_journal import InstrumentType, JournalStatus, TradeJournal
+
+    hold_until = (
+        now_kst() + datetime.timedelta(days=min_hold_days)
+        if min_hold_days and min_hold_days > 0
+        else None
+    )
+    account_name = "upbit" if market_type == "crypto" else "kis"
+
+    journal = TradeJournal(
+        symbol=symbol,
+        instrument_type=InstrumentType(market_type),
+        side="buy",
+        entry_price=Decimal(str(_to_float(preview.get("price"), default=0.0))),
+        quantity=Decimal(str(_to_float(preview.get("quantity"), default=0.0))),
+        amount=Decimal(str(_to_float(preview.get("estimated_value"), default=0.0))),
+        thesis=thesis.strip(),
+        strategy=strategy.strip(),
+        target_price=Decimal(str(target_price)) if target_price is not None else None,
+        stop_loss=Decimal(str(stop_loss)) if stop_loss is not None else None,
+        min_hold_days=min_hold_days,
+        hold_until=hold_until,
+        indicators_snapshot=indicators_snapshot,
+        notes=notes,
+        account=account_name,
+        status=JournalStatus.draft,
+    )
+
+    async with _order_session_factory()() as db:
+        db.add(journal)
+        await db.commit()
+        await db.refresh(journal)
+
+    return {
+        "journal_created": True,
+        "journal_id": journal.id,
+        "journal_status": "draft",
+    }
+
+
 async def _place_order_impl(
     symbol: str,
     side: Literal["buy", "sell"],
@@ -538,6 +613,13 @@ async def _place_order_impl(
     amount: float | None = None,
     dry_run: bool = True,
     reason: str = "",
+    thesis: str | None = None,
+    strategy: str | None = None,
+    target_price: float | None = None,
+    stop_loss: float | None = None,
+    min_hold_days: int | None = None,
+    notes: str | None = None,
+    indicators_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     MAX_ORDERS_PER_DAY = 20
 
@@ -567,6 +649,24 @@ async def _place_order_impl(
         )
 
     market_type, normalized_symbol = _resolve_market_type(symbol, market)
+
+    # Validate buy order journal requirements before any external API calls
+    try:
+        _validate_buy_journal_requirements(
+            side=side_lower,
+            dry_run=dry_run,
+            thesis=thesis,
+            strategy=strategy,
+        )
+    except ValueError as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "source": "upbit" if market_type == "crypto" else "kis",
+            "symbol": normalized_symbol,
+            "instrument_type": market_type,
+        }
+
     source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "kis"}
     source = source_map[market_type]
 
