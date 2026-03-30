@@ -283,6 +283,45 @@ def save_candles(market: str, df: pd.DataFrame, data_dir: Path | None = None) ->
     merged_df.to_parquet(parquet_path, index=False)
 
 
+def _validate_data_quality(df: pd.DataFrame, interval: str) -> dict[str, float | int]:
+    total_bars = len(df)
+    if total_bars <= 1:
+        return {
+            "missing_pct": 0.0,
+            "max_gap_hours": 0.0,
+            "total_bars": total_bars,
+        }
+
+    dates = pd.to_datetime(df["date"]).sort_values()
+    diffs = dates.diff().dropna()
+
+    freq_map = {
+        "1d": pd.Timedelta(days=1),
+        "1h": pd.Timedelta(hours=1),
+        "4h": pd.Timedelta(hours=4),
+    }
+    expected_freq = freq_map.get(interval, pd.Timedelta(days=1))
+
+    missing_bars = 0
+    max_gap = pd.Timedelta(0)
+    for diff in diffs:
+        if diff > expected_freq:
+            gap_bars = int(diff / expected_freq) - 1
+            missing_bars += gap_bars
+            if diff > max_gap:
+                max_gap = diff
+
+    expected_total = total_bars + missing_bars
+    missing_pct = (missing_bars / expected_total * 100) if expected_total > 0 else 0.0
+    max_gap_hours = max_gap.total_seconds() / 3600
+
+    return {
+        "missing_pct": round(missing_pct, 2),
+        "max_gap_hours": round(max_gap_hours, 1),
+        "total_bars": total_bars,
+    }
+
+
 def main() -> None:
     """Main entry point."""
     args = _parse_args()
@@ -342,7 +381,14 @@ def main() -> None:
             if candles:
                 df = _normalize_candles(candles, interval=interval)
                 save_candles(market, df, data_dir=target_dir)
-                print(f"✓ ({len(df)} candles)")
+                quality = _validate_data_quality(df, interval)
+                status = f"OK ({int(quality['total_bars'])} bars"
+                if quality["missing_pct"] > 0:
+                    status += f", {quality['missing_pct']:.1f}% missing"
+                if quality["max_gap_hours"] > 6:
+                    status += f", WARNING: {quality['max_gap_hours']:.0f}h gap"
+                status += ")"
+                print(status)
             else:
                 print("✗ (no data)")
         except Exception as e:

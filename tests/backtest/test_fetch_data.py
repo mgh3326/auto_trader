@@ -217,6 +217,79 @@ class TestCandleNormalization:
         assert df["close"].tolist() == [50500.0, 51200.0]
 
 
+class TestDataQuality:
+    def test_validate_1h_no_gaps(self):
+        dates = pd.date_range("2026-03-20", periods=24, freq="h")
+        df = pd.DataFrame(
+            {
+                "date": dates.strftime("%Y-%m-%dT%H:%M:%S"),
+                "open": [1.0] * 24,
+                "high": [1.0] * 24,
+                "low": [1.0] * 24,
+                "close": [1.0] * 24,
+                "volume": [1.0] * 24,
+                "value": [1.0] * 24,
+            }
+        )
+        result = fetch_data._validate_data_quality(df, "1h")
+        assert result["missing_pct"] == 0.0
+        assert result["max_gap_hours"] == 0.0
+        assert result["total_bars"] == 24
+
+    def test_validate_1h_with_gap(self):
+        dates = [
+            "2026-03-20T00:00:00",
+            "2026-03-20T01:00:00",
+            "2026-03-20T02:00:00",
+            "2026-03-20T09:00:00",
+        ]
+        df = pd.DataFrame(
+            {
+                "date": dates,
+                "open": [1.0] * 4,
+                "high": [1.0] * 4,
+                "low": [1.0] * 4,
+                "close": [1.0] * 4,
+                "volume": [1.0] * 4,
+                "value": [1.0] * 4,
+            }
+        )
+        result = fetch_data._validate_data_quality(df, "1h")
+        assert result["missing_pct"] > 0
+        assert result["max_gap_hours"] >= 6.0
+
+    def test_validate_1d_no_gaps(self):
+        df = pd.DataFrame(
+            {
+                "date": ["2026-03-20", "2026-03-21", "2026-03-22"],
+                "open": [1.0] * 3,
+                "high": [1.0] * 3,
+                "low": [1.0] * 3,
+                "close": [1.0] * 3,
+                "volume": [1.0] * 3,
+                "value": [1.0] * 3,
+            }
+        )
+        result = fetch_data._validate_data_quality(df, "1d")
+        assert result["total_bars"] == 3
+
+    def test_validate_single_bar(self):
+        df = pd.DataFrame(
+            {
+                "date": ["2026-03-20T00:00:00"],
+                "open": [1.0],
+                "high": [1.0],
+                "low": [1.0],
+                "close": [1.0],
+                "volume": [1.0],
+                "value": [1.0],
+            }
+        )
+        result = fetch_data._validate_data_quality(df, "1h")
+        assert result["total_bars"] == 1
+        assert result["missing_pct"] == 0.0
+
+
 class TestMinuteCandleFetch:
     def test_fetch_candles_minutes_builds_correct_url(self, monkeypatch):
         captured_urls: list[str] = []
