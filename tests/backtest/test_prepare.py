@@ -10,7 +10,7 @@ import pytest
 # Add backtest directory to path for imports
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "backtest"))
 
-import prepare
+import prepare  # pyright: ignore[reportMissingImports]
 
 
 class TestContractConstants:
@@ -905,6 +905,104 @@ class TestLoadDataRange:
         assert result_split.keys() == result_range.keys()
         for sym in result_split:
             pd.testing.assert_frame_equal(result_split[sym], result_range[sym])
+
+
+class TestIntervalSupport:
+    """Tests for interval-aware helper behavior."""
+
+    def test_lookback_bars_for_interval_daily(self):
+        assert prepare.lookback_bars_for_interval("1d") == 200
+
+    def test_lookback_bars_for_interval_non_daily(self):
+        assert prepare.lookback_bars_for_interval("60m") == 500
+
+    def test_data_dir_for_interval_daily_uses_base_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(prepare, "DATA_DIR", tmp_path)
+        assert prepare.data_dir_for_interval("1d") == tmp_path
+
+    def test_data_dir_for_interval_non_daily_uses_subdir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(prepare, "DATA_DIR", tmp_path)
+        assert prepare.data_dir_for_interval("5m") == tmp_path / "5m"
+
+
+class TestSharpeAnnualization:
+    """Tests for interval-aware Sharpe annualization."""
+
+    def test_annualization_factor_daily(self):
+        assert prepare.annualization_factor("1d") == pytest.approx(np.sqrt(365.0))
+
+    def test_annualization_factor_hourly(self):
+        assert prepare.annualization_factor("60m") == pytest.approx(
+            np.sqrt(365.0 * 24.0)
+        )
+
+    def test_calc_sharpe_respects_custom_annualize_factor(self):
+        returns = [0.01, 0.02, -0.01, 0.015, 0.005]
+        arr = np.array(returns)
+        expected = (np.mean(arr) / np.std(arr, ddof=1)) * 10.0
+        sharpe = prepare._calc_sharpe(returns, annualize_factor=10.0)
+        assert sharpe == pytest.approx(expected)
+
+
+class TestLoadDataInterval:
+    """Tests for interval-aware data loading paths."""
+
+    def test_load_data_range_reads_from_interval_subdir(self, tmp_path, monkeypatch):
+        interval_dir = tmp_path / "60m"
+        interval_dir.mkdir(parents=True)
+
+        df = pd.DataFrame(
+            {
+                "date": ["2025-06-10", "2025-06-20"],
+                "open": [100.0, 101.0],
+                "high": [110.0, 111.0],
+                "low": [90.0, 91.0],
+                "close": [105.0, 106.0],
+                "volume": [1000.0, 1001.0],
+                "value": [100000.0, 100001.0],
+            }
+        )
+        df.to_parquet(interval_dir / "KRW-BTC.parquet")
+
+        monkeypatch.setattr(prepare, "DATA_DIR", tmp_path)
+        monkeypatch.setattr(prepare, "DEFAULT_SYMBOLS", ["BTC"])
+
+        result = prepare.load_data_range("2025-06-01", "2025-06-30", bar_interval="60m")
+        assert "BTC" in result
+        assert len(result["BTC"]) == 2
+
+    def test_load_data_passes_interval_to_load_data_range(self, tmp_path, monkeypatch):
+        interval_dir = tmp_path / "60m"
+        interval_dir.mkdir(parents=True)
+
+        df = pd.DataFrame(
+            {
+                "date": ["2025-07-10", "2025-07-20"],
+                "open": [100.0, 101.0],
+                "high": [110.0, 111.0],
+                "low": [90.0, 91.0],
+                "close": [105.0, 106.0],
+                "volume": [1000.0, 1001.0],
+                "value": [100000.0, 100001.0],
+            }
+        )
+        df.to_parquet(interval_dir / "KRW-BTC.parquet")
+
+        monkeypatch.setattr(prepare, "DATA_DIR", tmp_path)
+        monkeypatch.setattr(prepare, "DEFAULT_SYMBOLS", ["BTC"])
+        monkeypatch.setattr(
+            prepare,
+            "SPLITS",
+            {"val": {"start": "2025-07-01", "end": "2025-07-31"}},
+        )
+
+        from_split = prepare.load_data("val", bar_interval="60m")
+        start, end = prepare.SPLITS["val"]["start"], prepare.SPLITS["val"]["end"]
+        from_range = prepare.load_data_range(start, end, bar_interval="60m")
+
+        assert from_split.keys() == from_range.keys()
+        for sym in from_split:
+            pd.testing.assert_frame_equal(from_split[sym], from_range[sym])
 
 
 class TestCVResult:

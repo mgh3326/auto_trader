@@ -30,21 +30,68 @@ SPLITS = {
 # Data directory
 DATA_DIR = Path(__file__).resolve().parent / "data"
 
+
+def lookback_bars_for_interval(interval: str) -> int:
+    """Return required history bars for a bar interval."""
+    return 200 if interval == "1d" else 500
+
+
+def annualization_factor(interval: str) -> float:
+    """Return Sharpe annualization factor (sqrt of bars per year)."""
+    if interval == "1d":
+        bars_per_year = 365.0
+    elif interval.endswith("m"):
+        minutes = max(int(interval[:-1]), 1)
+        bars_per_year = (365.0 * 24.0 * 60.0) / minutes
+    elif interval.endswith("h"):
+        hours = max(int(interval[:-1]), 1)
+        bars_per_year = (365.0 * 24.0) / hours
+    else:
+        bars_per_year = 365.0
+    return float(np.sqrt(bars_per_year))
+
+
+def data_dir_for_interval(interval: str) -> Path:
+    """Return data directory for bar interval."""
+    return DATA_DIR if interval == "1d" else DATA_DIR / interval
+
+
 # Walk-forward cross-validation folds
 # Each fold: train period expands, val is next 3 months
 # train_start/train_end are documented for context (warmup window);
 # cross_validate() evaluates only on the val window.
 CV_FOLDS = [
-    {"train_start": "2024-04-01", "train_end": "2025-03-31", "val_start": "2025-04-01", "val_end": "2025-06-30"},
-    {"train_start": "2024-04-01", "train_end": "2025-06-30", "val_start": "2025-07-01", "val_end": "2025-09-30"},
-    {"train_start": "2024-04-01", "train_end": "2025-09-30", "val_start": "2025-10-01", "val_end": "2025-12-31"},
-    {"train_start": "2024-04-01", "train_end": "2025-12-31", "val_start": "2026-01-01", "val_end": "2026-03-22"},
+    {
+        "train_start": "2024-04-01",
+        "train_end": "2025-03-31",
+        "val_start": "2025-04-01",
+        "val_end": "2025-06-30",
+    },
+    {
+        "train_start": "2024-04-01",
+        "train_end": "2025-06-30",
+        "val_start": "2025-07-01",
+        "val_end": "2025-09-30",
+    },
+    {
+        "train_start": "2024-04-01",
+        "train_end": "2025-09-30",
+        "val_start": "2025-10-01",
+        "val_end": "2025-12-31",
+    },
+    {
+        "train_start": "2024-04-01",
+        "train_end": "2025-12-31",
+        "val_start": "2026-01-01",
+        "val_end": "2026-03-22",
+    },
 ]
 
 
 @dataclass(frozen=True)
 class BarData:
     """Single bar/candle data with symbol and history."""
+
     symbol: str
     date: str
     open: float
@@ -53,21 +100,27 @@ class BarData:
     close: float
     volume: float
     value: float
-    history: pd.DataFrame = field(repr=False)  # LOOKBACK_BARS of history including current bar
+    history: pd.DataFrame = field(
+        repr=False
+    )  # LOOKBACK_BARS of history including current bar
 
 
 @dataclass
 class Signal:
     """Trading signal from strategy."""
+
     symbol: str
     action: str  # "buy" or "sell"
-    weight: float  # Target portfolio weight (0-1) for buy, fraction to sell (0-1) for sell
+    weight: (
+        float  # Target portfolio weight (0-1) for buy, fraction to sell (0-1) for sell
+    )
     reason: str = ""  # Reason for the signal
 
 
 @dataclass
 class PortfolioState:
     """Current portfolio state."""
+
     cash: float
     positions: dict[str, float]  # symbol -> quantity
     avg_prices: dict[str, float]  # symbol -> avg entry price
@@ -92,6 +145,7 @@ class PortfolioState:
 @dataclass
 class BacktestResult:
     """Result of a backtest run."""
+
     total_return_pct: float
     sharpe: float
     max_drawdown_pct: float
@@ -144,19 +198,23 @@ def _resolve_split_dates(split: str) -> tuple[str, str]:
     return SPLITS[split]["start"], SPLITS[split]["end"]
 
 
-def load_data_range(start: str, end: str) -> dict[str, pd.DataFrame]:
+def load_data_range(
+    start: str, end: str, bar_interval: str = "1d"
+) -> dict[str, pd.DataFrame]:
     """Load backtest data for an arbitrary date range.
 
     Args:
         start: Start date (YYYY-MM-DD)
         end: End date (YYYY-MM-DD)
+        bar_interval: Bar interval to load (e.g. "1d", "60m", "5m")
 
     Returns:
         Dictionary mapping symbol to DataFrame with OHLCV data
     """
     data: dict[str, pd.DataFrame] = {}
+    interval_dir = data_dir_for_interval(bar_interval)
     for symbol in DEFAULT_SYMBOLS:
-        path = DATA_DIR / f"KRW-{symbol}.parquet"
+        path = interval_dir / f"KRW-{symbol}.parquet"
         if not path.exists():
             continue
         df = pd.read_parquet(path)
@@ -171,20 +229,23 @@ def load_data_range(start: str, end: str) -> dict[str, pd.DataFrame]:
     return data
 
 
-def load_data(split: str = "val") -> dict[str, pd.DataFrame]:
+def load_data(split: str = "val", bar_interval: str = "1d") -> dict[str, pd.DataFrame]:
     """Load backtest data for the given split.
 
     Args:
         split: Data split to load ("train", "val", or "test")
+        bar_interval: Bar interval to load (e.g. "1d", "60m", "5m")
 
     Returns:
         Dictionary mapping symbol to DataFrame with OHLCV data
     """
     start, end = _resolve_split_dates(split)
-    return load_data_range(start, end)
+    return load_data_range(start, end, bar_interval=bar_interval)
 
 
-def _calc_execution_price(bar: BarData, action: str, slippage_bps: int = SLIPPAGE_BPS) -> float:
+def _calc_execution_price(
+    bar: BarData, action: str, slippage_bps: float = SLIPPAGE_BPS
+) -> float:
     """Calculate execution price with slippage.
 
     For buys: price moves up (higher price)
@@ -285,9 +346,7 @@ def _execute_signal(
 
     if signal.action == "buy":
         price = _calc_execution_price(bar, "buy")
-        quantity = _calc_buy_quantity(
-            state.cash, signal.weight, portfolio_value, price
-        )
+        quantity = _calc_buy_quantity(state.cash, signal.weight, portfolio_value, price)
 
         if quantity > 0:
             cost = quantity * price
@@ -308,23 +367,23 @@ def _execute_signal(
                 new_state.position_dates[signal.symbol] = bar.date
 
                 # Log trade
-                new_state.trade_log.append({
-                    "date": bar.date,
-                    "symbol": signal.symbol,
-                    "action": "buy",
-                    "quantity": quantity,
-                    "price": price,
-                    "fee": fee,
-                    "reason": signal.reason,
-                })
+                new_state.trade_log.append(
+                    {
+                        "date": bar.date,
+                        "symbol": signal.symbol,
+                        "action": "buy",
+                        "quantity": quantity,
+                        "price": price,
+                        "fee": fee,
+                        "reason": signal.reason,
+                    }
+                )
 
     elif signal.action == "sell":
         current_qty = state.positions.get(signal.symbol, 0)
         if current_qty > 0:
             price = _calc_execution_price(bar, "sell")
-            quantity = _calc_sell_quantity(
-                current_qty, signal.weight
-            )
+            quantity = _calc_sell_quantity(current_qty, signal.weight)
 
             if quantity > 0:
                 proceeds = quantity * price
@@ -344,16 +403,18 @@ def _execute_signal(
                         del new_state.position_dates[signal.symbol]
 
                 # Log trade
-                new_state.trade_log.append({
-                    "date": bar.date,
-                    "symbol": signal.symbol,
-                    "action": "sell",
-                    "quantity": quantity,
-                    "price": price,
-                    "fee": fee,
-                    "realized_pnl": realized_pnl,
-                    "reason": signal.reason,
-                })
+                new_state.trade_log.append(
+                    {
+                        "date": bar.date,
+                        "symbol": signal.symbol,
+                        "action": "sell",
+                        "quantity": quantity,
+                        "price": price,
+                        "fee": fee,
+                        "realized_pnl": realized_pnl,
+                        "reason": signal.reason,
+                    }
+                )
 
     return new_state
 
@@ -374,6 +435,7 @@ def run_backtest(
         BacktestResult with metrics and trade log
     """
     import time
+
     start_time = time.time()
 
     # Build unified date sequence from the split window only.
@@ -424,9 +486,23 @@ def run_backtest(
             if date in df.index:
                 row = df.loc[date]
                 # Get history up to and including current date (LOOKBACK_BARS rows)
-                idx = df.index.get_loc(date)
+                loc = df.index.get_loc(date)
+                if isinstance(loc, slice):
+                    idx = loc.stop - 1
+                elif isinstance(loc, np.ndarray):
+                    if loc.dtype == bool:
+                        matches = np.flatnonzero(loc)
+                        if len(matches) == 0:
+                            continue
+                        idx = int(matches[-1])
+                    else:
+                        if len(loc) == 0:
+                            continue
+                        idx = int(loc[-1])
+                else:
+                    idx = int(loc)
                 start_idx = max(0, idx - LOOKBACK_BARS + 1)
-                history = df.iloc[start_idx:idx + 1].copy()
+                history = df.iloc[start_idx : idx + 1].copy()
 
                 bar_data[symbol] = BarData(
                     symbol=symbol,
@@ -510,7 +586,11 @@ def _calc_total_return(equity_curve: list[float]) -> float:
     return (equity_curve[-1] - equity_curve[0]) / equity_curve[0] * 100
 
 
-def _calc_sharpe(returns: list[float], risk_free_rate: float = 0.0) -> float:
+def _calc_sharpe(
+    returns: list[float],
+    risk_free_rate: float = 0.0,
+    annualize_factor: float | None = None,
+) -> float:
     """Calculate annualized Sharpe ratio."""
     if not returns:
         return 0.0
@@ -522,8 +602,8 @@ def _calc_sharpe(returns: list[float], risk_free_rate: float = 0.0) -> float:
     if std_return == 0 or np.isnan(std_return):
         return 0.0
 
-    # Annualize (assuming daily returns)
-    sharpe = (mean_return / std_return) * np.sqrt(365)
+    factor = annualize_factor if annualize_factor is not None else np.sqrt(365)
+    sharpe = (mean_return / std_return) * factor
     return float(sharpe)
 
 
@@ -550,7 +630,7 @@ def _calc_trade_metrics(trade_log: list[dict[str, Any]]) -> tuple[float, float, 
         return 0.0, 0.0, 0.0
 
     # Match buy/sell pairs for PnL
-    trades_by_symbol: dict[str, list[dict]] = {}
+    trades_by_symbol: dict[str, list[dict[str, Any]]] = {}
     for trade in trade_log:
         symbol = trade["symbol"]
         if symbol not in trades_by_symbol:
@@ -587,6 +667,7 @@ def _calc_trade_metrics(trade_log: list[dict[str, Any]]) -> tuple[float, float, 
                     if entry_date:
                         try:
                             from datetime import datetime
+
                             entry = datetime.strptime(entry_date, "%Y-%m-%d")
                             exit_date = datetime.strptime(trade["date"], "%Y-%m-%d")
                             days = (exit_date - entry).days
@@ -602,7 +683,7 @@ def _calc_trade_metrics(trade_log: list[dict[str, Any]]) -> tuple[float, float, 
     total_trades = wins + losses
     win_rate = wins / total_trades if total_trades > 0 else 0.0
     profit_factor = gross_profit / gross_loss if gross_loss > 0 else gross_profit
-    avg_holding_days = np.mean(holding_days_list) if holding_days_list else 0.0
+    avg_holding_days = float(np.mean(holding_days_list)) if holding_days_list else 0.0
 
     return win_rate, profit_factor, avg_holding_days
 
