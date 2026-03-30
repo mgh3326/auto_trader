@@ -598,7 +598,6 @@ async def get_crypto_estimated_costs(
     import logging
 
     import app.services.brokers.upbit.client as upbit
-    from app.analysis.service_analyzers import UpbitAnalyzer
 
     user = await get_user_from_request(request, db)
     settings_service = SymbolTradeSettingsService(db)
@@ -618,12 +617,17 @@ async def get_crypto_estimated_costs(
         db=db,
     )
 
-    # 거래 가능한 코인만 필터링
+    # 거래 가능한 코인만 필터링 (is_tradable 로직 인라인화)
+    MIN_TRADE_THRESHOLD = 1000
     tradable_coins = [
         coin
         for coin in my_coins
         if str(coin.get("currency") or "").upper() != "KRW"
-        and UpbitAnalyzer.is_tradable(coin)
+        and (
+            (float(coin.get("balance", 0)) + float(coin.get("locked", 0)))
+            * float(coin.get("avg_buy_price", 0))
+        )
+        >= MIN_TRADE_THRESHOLD
         and str(coin.get("currency") or "").upper() in tradable_currencies
     ]
 

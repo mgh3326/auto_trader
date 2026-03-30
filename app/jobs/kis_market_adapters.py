@@ -19,7 +19,6 @@ class SupportsMarketAutomation(Protocol):
 @dataclass(slots=True)
 class DomesticAutomationAdapter:
     kis_client_factory: Callable[[], Any]
-    analyzer_factory: Callable[[], Any]
     async_session_factory: Callable[[], Any]
     manual_holdings_service_factory: Callable[[Any], Any]
     manual_market_type: Any
@@ -56,7 +55,6 @@ class DomesticAutomationAdapter:
 
     async def execute(self) -> AutomationResult:
         kis = self.kis_client_factory()
-        analyzer = self.analyzer_factory()
 
         try:
             my_stocks = await kis.fetch_my_stocks()
@@ -125,37 +123,13 @@ class DomesticAutomationAdapter:
 
                 stock_steps: StepResults = []
 
-                try:
-                    await analyzer.analyze_stock_json(
-                        self.analysis_target(name=name, symbol=code)
-                    )
-                    stock_steps.append(
-                        {
-                            "step": "분석",
-                            "result": {"success": True, "message": "분석 완료"},
-                        }
-                    )
-                except Exception as exc:
-                    error_msg = str(exc)
-                    stock_steps.append(
-                        {
-                            "step": "분석",
-                            "result": {"success": False, "error": error_msg},
-                        }
-                    )
-                    logger.error(
-                        "[분석 실패] %s(%s): %s",
-                        name,
-                        code,
-                        error_msg,
-                        extra={"task": "kis.run_per_domestic_stock_automation"},
-                    )
-                    results.append(
-                        self.build_result_entry(
-                            name=name, symbol=code, steps=stock_steps
-                        )
-                    )
-                    continue
+                # Analysis step skipped (Gemini removed, OpenClaw replacement pending)
+                stock_steps.append(
+                    {
+                        "step": "분석",
+                        "result": {"success": True, "message": "분석 스킵 (대체 분석기 준비 중)"},
+                    }
+                )
 
                 try:
                     cancel_result = await self.cancel_pending_orders(
@@ -440,14 +414,11 @@ class DomesticAutomationAdapter:
                 exc_info=True,
             )
             return {"status": "failed", "error": str(exc)}
-        finally:
-            await analyzer.close()
 
 
 @dataclass(slots=True)
 class OverseasAutomationAdapter:
     kis_client_factory: Callable[[], Any]
-    analyzer_factory: Callable[[], Any]
     async_session_factory: Callable[[], Any]
     manual_holdings_service_factory: Callable[[Any], Any]
     manual_market_type: Any
@@ -489,7 +460,6 @@ class OverseasAutomationAdapter:
 
     async def execute(self) -> AutomationResult:
         kis = self.kis_client_factory()
-        analyzer = self.analyzer_factory()
 
         try:
             my_stocks = await kis.fetch_my_overseas_stocks()
@@ -569,29 +539,13 @@ class OverseasAutomationAdapter:
 
                 stock_steps: StepResults = []
 
-                try:
-                    await analyzer.analyze_stock_json(
-                        self.analysis_target(name=name or symbol, symbol=symbol)
-                    )
-                    stock_steps.append(
-                        {
-                            "step": "분석",
-                            "result": {"success": True, "message": "분석 완료"},
-                        }
-                    )
-                except Exception as exc:
-                    stock_steps.append(
-                        {
-                            "step": "분석",
-                            "result": {"success": False, "error": str(exc)},
-                        }
-                    )
-                    results.append(
-                        self.build_result_entry(
-                            name=name, symbol=symbol, steps=stock_steps
-                        )
-                    )
-                    continue
+                # Analysis step skipped (Gemini removed, OpenClaw replacement pending)
+                stock_steps.append(
+                    {
+                        "step": "분석",
+                        "result": {"success": True, "message": "분석 스킵 (대체 분석기 준비 중)"},
+                    }
+                )
 
                 try:
                     cancel_result = await self.cancel_pending_orders(
@@ -809,5 +763,3 @@ class OverseasAutomationAdapter:
             }
         except Exception as exc:
             return {"status": "failed", "error": str(exc)}
-        finally:
-            await analyzer.close()

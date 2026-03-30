@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 
-from app.analysis.service_analyzers import KISAnalyzer
 from app.core.symbol import to_db_symbol
 from app.monitoring.trade_notifier import get_trade_notifier
 from app.services.brokers.kis.client import KISClient
@@ -155,161 +154,22 @@ async def _analyze_domestic_stock_async(code: str) -> dict[str, object]:
     if not code:
         return {"status": "failed", "error": "종목 코드가 필요합니다."}
 
-    kis = KISClient()
-    analyzer = KISAnalyzer()
-
-    try:
-        # 기본 정보 조회로 종목명 확인
-        info = await kis.fetch_fundamental_info(code)
-        name = info.get("종목명", code)
-        current_price = info.get("현재가", 0)
-
-        result, _ = await analyzer.analyze_stock_json(name)
-
-        if result is None:
-            return {
-                "status": "failed",
-                "symbol": code,
-                "name": name,
-                "error": "분석 결과를 가져올 수 없습니다.",
-            }
-
-        # Telegram notification
-        if hasattr(result, "decision"):
-            try:
-                notifier = get_trade_notifier()
-                await notifier.notify_analysis_complete(
-                    symbol=code,
-                    korean_name=name,
-                    decision=result.decision,
-                    confidence=float(result.confidence) if result.confidence else 0.0,
-                    reasons=result.reasons
-                    if hasattr(result, "reasons") and result.reasons
-                    else [],
-                    market_type="국내주식",
-                )
-            except Exception as notify_error:
-                logger.warning("⚠️ 텔레그램 알림 전송 실패: %s", notify_error)
-
-            # 수동 잔고(토스 등) 알림 전송
-            try:
-                from app.core.db import AsyncSessionLocal
-                from app.models.manual_holdings import MarketType
-                from app.services.toss_notification_service import (
-                    send_toss_notification_if_needed,
-                )
-
-                async with AsyncSessionLocal() as db:
-                    # USER_ID는 현재 1로 고정 (추후 다중 사용자 지원 시 변경 필요)
-                    user_id = 1
-
-                    # 매수/매도 추천 가격 추출
-                    recommended_buy_price = None
-                    recommended_sell_price = None
-                    recommended_quantity = 1
-
-                    if result.decision == "buy" and hasattr(
-                        result, "appropriate_buy_min"
-                    ):
-                        # 4개 구간 중 가장 적절한 매수가 (appropriate_buy_min)
-                        recommended_buy_price = float(result.appropriate_buy_min)
-                    elif result.decision == "sell" and hasattr(
-                        result, "appropriate_sell_min"
-                    ):
-                        # 4개 구간 중 가장 적절한 매도가 (appropriate_sell_min)
-                        recommended_sell_price = float(result.appropriate_sell_min)
-
-                    await send_toss_notification_if_needed(
-                        db=db,
-                        user_id=user_id,
-                        ticker=code,
-                        name=name,
-                        market_type=MarketType.KR,
-                        decision=result.decision,
-                        current_price=float(current_price) if current_price else 0.0,
-                        recommended_buy_price=recommended_buy_price,
-                        recommended_sell_price=recommended_sell_price,
-                        recommended_quantity=recommended_quantity,
-                    )
-            except Exception as toss_error:
-                logger.warning("⚠️ 토스 알림 전송 실패: %s", toss_error)
-
-        return {
-            "status": "completed",
-            "symbol": code,
-            "name": name,
-            "message": f"{name} 분석이 완료되었습니다.",
-        }
-    except Exception as exc:
-        return {"status": "failed", "symbol": code, "error": str(exc)}
-    finally:
-        await analyzer.close()
+    return {
+        "status": "ignored",
+        "symbol": code,
+        "message": "Gemini analyzer removed. OpenClaw-based analysis coming soon.",
+    }
 
 
 async def run_analysis_for_my_domestic_stocks() -> dict:
     """보유 국내 주식 AI 분석 실행"""
 
     async def _run() -> dict:
-        kis = KISClient()
-        analyzer = KISAnalyzer()
-
-        try:
-            my_stocks = await kis.fetch_my_stocks()
-            if not my_stocks:
-                return {
-                    "status": "completed",
-                    "analyzed_count": 0,
-                    "total_count": 0,
-                    "message": NO_DOMESTIC_STOCKS_MESSAGE,
-                    "results": [],
-                }
-
-            total_count = len(my_stocks)
-            results = []
-
-            for _index, stock in enumerate(my_stocks, 1):
-                code = stock.get("pdno")
-                name = stock.get("prdt_name")
-
-                try:
-                    result, _ = await analyzer.analyze_stock_json(name)
-                    results.append({"name": name, "code": code, "success": True})
-
-                    # Send Telegram notification if analysis completed successfully
-                    if result is not None and hasattr(result, "decision"):
-                        try:
-                            notifier = get_trade_notifier()
-                            await notifier.notify_analysis_complete(
-                                symbol=code,
-                                korean_name=name,
-                                decision=result.decision,
-                                confidence=float(result.confidence)
-                                if result.confidence
-                                else 0.0,
-                                reasons=result.reasons
-                                if hasattr(result, "reasons") and result.reasons
-                                else [],
-                                market_type="국내주식",
-                            )
-                        except Exception as notify_error:
-                            logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
-                except Exception as e:
-                    results.append(
-                        {"name": name, "code": code, "success": False, "error": str(e)}
-                    )
-
-            success_count = sum(1 for r in results if r["success"])
-            return {
-                "status": "completed",
-                "analyzed_count": success_count,
-                "total_count": total_count,
-                "message": f"{success_count}/{total_count}개 종목 분석 완료",
-                "results": results,
-            }
-        except Exception as e:
-            return {"status": "failed", "error": str(e)}
-        finally:
-            await analyzer.close()
+        return {
+            "status": "ignored",
+            "message": "Gemini analyzer removed. OpenClaw-based analysis coming soon.",
+            "results": [],
+        }
 
     return await _run()
 
@@ -528,7 +388,6 @@ async def run_per_domestic_stock_automation() -> dict:
 
     adapter = DomesticAutomationAdapter(
         kis_client_factory=KISClient,
-        analyzer_factory=KISAnalyzer,
         async_session_factory=AsyncSessionLocal,
         manual_holdings_service_factory=ManualHoldingsService,
         manual_market_type=MarketType.KR,
@@ -707,175 +566,22 @@ async def _analyze_overseas_stock_async(symbol: str) -> dict[str, object]:
     if not symbol:
         return {"status": "failed", "error": "심볼이 필요합니다."}
 
-    import app.services.brokers.yahoo.client as yahoo
-    from app.analysis.service_analyzers import YahooAnalyzer
-
-    analyzer = (
-        YahooAnalyzer()
-    )  # 해외 주식은 YahooAnalyzer 사용 (또는 KISAnalyzer 확장 필요 시 변경)
-
-    try:
-        result, _ = await analyzer.analyze_stock_json(symbol)
-
-        if result is None:
-            return {
-                "status": "failed",
-                "symbol": symbol,
-                "error": "분석 결과를 가져올 수 없습니다.",
-            }
-
-        # Telegram notification
-        if hasattr(result, "decision"):
-            try:
-                notifier = get_trade_notifier()
-                await notifier.notify_analysis_complete(
-                    symbol=symbol,
-                    korean_name=symbol,  # 해외주식은 한글명이 없을 수 있음
-                    decision=result.decision,
-                    confidence=float(result.confidence) if result.confidence else 0.0,
-                    reasons=result.reasons
-                    if hasattr(result, "reasons") and result.reasons
-                    else [],
-                    market_type="해외주식",
-                )
-            except Exception as notify_error:
-                logger.warning("⚠️ 텔레그램 알림 전송 실패: %s", notify_error)
-
-            # 수동 잔고(토스 등) 알림 전송
-            try:
-                from app.core.db import AsyncSessionLocal
-                from app.models.manual_holdings import MarketType
-                from app.services.toss_notification_service import (
-                    send_toss_notification_if_needed,
-                )
-
-                # 현재가 조회
-                current_price = 0.0
-                try:
-                    price_df = await yahoo.fetch_price(symbol)
-                    if not price_df.empty:
-                        current_price = float(price_df.iloc[0]["close"])
-                except Exception as price_error:
-                    logger.warning(f"현재가 조회 실패 ({symbol}): {price_error}")
-
-                async with AsyncSessionLocal() as db:
-                    # USER_ID는 현재 1로 고정 (추후 다중 사용자 지원 시 변경 필요)
-                    user_id = 1
-
-                    # 매수/매도 추천 가격 추출
-                    recommended_buy_price = None
-                    recommended_sell_price = None
-                    recommended_quantity = 1
-
-                    if result.decision == "buy" and hasattr(
-                        result, "appropriate_buy_min"
-                    ):
-                        # 4개 구간 중 가장 적절한 매수가 (appropriate_buy_min)
-                        recommended_buy_price = float(result.appropriate_buy_min)
-                    elif result.decision == "sell" and hasattr(
-                        result, "appropriate_sell_min"
-                    ):
-                        # 4개 구간 중 가장 적절한 매도가 (appropriate_sell_min)
-                        recommended_sell_price = float(result.appropriate_sell_min)
-
-                    await send_toss_notification_if_needed(
-                        db=db,
-                        user_id=user_id,
-                        ticker=symbol,
-                        name=symbol,
-                        market_type=MarketType.US,
-                        decision=result.decision,
-                        current_price=current_price,
-                        recommended_buy_price=recommended_buy_price,
-                        recommended_sell_price=recommended_sell_price,
-                        recommended_quantity=recommended_quantity,
-                    )
-            except Exception as toss_error:
-                logger.warning("⚠️ 토스 알림 전송 실패: %s", toss_error)
-
-        return {
-            "status": "completed",
-            "symbol": symbol,
-            "message": f"{symbol} 분석이 완료되었습니다.",
-        }
-    except Exception as exc:
-        return {"status": "failed", "symbol": symbol, "error": str(exc)}
-    finally:
-        await analyzer.close()
+    return {
+        "status": "ignored",
+        "symbol": symbol,
+        "message": "Gemini analyzer removed. OpenClaw-based analysis coming soon.",
+    }
 
 
 async def run_analysis_for_my_overseas_stocks() -> dict:
     """보유 해외 주식 AI 분석 실행"""
 
     async def _run() -> dict:
-        kis = KISClient()
-        from app.analysis.service_analyzers import YahooAnalyzer
-
-        analyzer = YahooAnalyzer()
-
-        try:
-            my_stocks = await kis.fetch_my_overseas_stocks()
-            if not my_stocks:
-                return {
-                    "status": "completed",
-                    "analyzed_count": 0,
-                    "total_count": 0,
-                    "message": NO_OVERSEAS_STOCKS_MESSAGE,
-                    "results": [],
-                }
-
-            total_count = len(my_stocks)
-            results = []
-
-            for _index, stock in enumerate(my_stocks, 1):
-                symbol = stock.get("ovrs_pdno")  # 심볼
-                name = stock.get("ovrs_item_name")
-
-                try:
-                    # 해외주식은 심볼로 분석
-                    result, _ = await analyzer.analyze_stock_json(symbol)
-                    results.append({"name": name, "symbol": symbol, "success": True})
-
-                    # Send Telegram notification if analysis completed successfully
-                    if result is not None and hasattr(result, "decision"):
-                        try:
-                            notifier = get_trade_notifier()
-                            await notifier.notify_analysis_complete(
-                                symbol=symbol,
-                                korean_name=name or symbol,
-                                decision=result.decision,
-                                confidence=float(result.confidence)
-                                if result.confidence
-                                else 0.0,
-                                reasons=result.reasons
-                                if hasattr(result, "reasons") and result.reasons
-                                else [],
-                                market_type="해외주식",
-                            )
-                        except Exception as notify_error:
-                            logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
-                except Exception as e:
-                    results.append(
-                        {
-                            "name": name,
-                            "symbol": symbol,
-                            "success": False,
-                            "error": str(e),
-                        }
-                    )
-
-            success_count = sum(1 for r in results if r["success"])
-            return {
-                "status": "completed",
-                "analyzed_count": success_count,
-                "total_count": total_count,
-                "message": f"{success_count}/{total_count}개 종목 분석 완료",
-                "results": results,
-            }
-        except Exception as e:
-            return {"status": "failed", "error": str(e)}
-        finally:
-            await analyzer.close()
+        return {
+            "status": "ignored",
+            "message": "Gemini analyzer removed. OpenClaw-based analysis coming soon.",
+            "results": [],
+        }
 
     return await _run()
 
@@ -1148,14 +854,12 @@ async def _cancel_overseas_pending_orders(
 
 async def run_per_overseas_stock_automation() -> dict:
     """해외 주식 종목별 자동 실행 (미체결취소 -> 분석 -> 매수 -> 매도)"""
-    from app.analysis import service_analyzers
     from app.core.db import AsyncSessionLocal
     from app.models.manual_holdings import MarketType
     from app.services.manual_holdings_service import ManualHoldingsService
 
     adapter = OverseasAutomationAdapter(
         kis_client_factory=KISClient,
-        analyzer_factory=service_analyzers.YahooAnalyzer,
         async_session_factory=AsyncSessionLocal,
         manual_holdings_service_factory=ManualHoldingsService,
         manual_market_type=MarketType.US,

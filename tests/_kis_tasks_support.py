@@ -11,7 +11,6 @@ async def _noop_sleep(_delay: float) -> None:
 @dataclass(slots=True)
 class AutomationScenario:
     client_factory: Any
-    analyzer_factory: Any
     manual_service_factory: Any
     buy_handler: Any
     sell_handler: Any
@@ -23,7 +22,6 @@ class AutomationScenario:
         mock_db_session.__aexit__ = AsyncMock(return_value=None)
 
         monkeypatch.setattr(kis_tasks, "KISClient", self.client_factory)
-        monkeypatch.setattr(kis_tasks, "KISAnalyzer", self.analyzer_factory)
         monkeypatch.setattr(
             kis_tasks,
             "process_kis_domestic_buy_orders_with_analysis",
@@ -119,7 +117,6 @@ def build_domestic_holdings_scenario() -> AutomationScenario:
 
     return AutomationScenario(
         client_factory=DummyKIS,
-        analyzer_factory=DummyAnalyzer,
         manual_service_factory=EmptyManualService,
         buy_handler=fake_buy,
         sell_handler=fake_sell,
@@ -130,7 +127,6 @@ def build_domestic_holdings_scenario() -> AutomationScenario:
 @dataclass(slots=True)
 class OverseasNotificationScenario:
     client_factory: Any
-    analyzer_factory: Any
     manual_service_factory: Any
     notifier_factory: Any
     buy_handler: Any
@@ -138,14 +134,11 @@ class OverseasNotificationScenario:
     notifications: list[dict[str, Any]] = field(default_factory=list)
 
     def apply(self, monkeypatch: Any, kis_tasks: Any) -> ExitStack:
-        from app.analysis import service_analyzers
-
         mock_db_session = MagicMock()
         mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
         mock_db_session.__aexit__ = AsyncMock(return_value=None)
 
         monkeypatch.setattr(kis_tasks, "KISClient", self.client_factory)
-        monkeypatch.setattr(service_analyzers, "YahooAnalyzer", self.analyzer_factory)
         monkeypatch.setattr(
             kis_tasks,
             "process_kis_overseas_buy_orders_with_analysis",
@@ -258,7 +251,6 @@ def build_overseas_notification_scenario(
 
     return OverseasNotificationScenario(
         client_factory=DummyKIS,
-        analyzer_factory=DummyAnalyzer,
         manual_service_factory=EmptyManualService,
         notifier_factory=RecordingNotifier,
         buy_handler=fake_buy,

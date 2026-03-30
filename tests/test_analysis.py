@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 
 from app.analysis.indicators import add_indicators
-from app.analysis.prompt import format_decimal, format_quantity
+from app.utils.formatting import format_decimal, format_quantity
 
 
 class TestTechnicalIndicators:

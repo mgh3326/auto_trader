@@ -1,6 +1,5 @@
 import json
 import os
-import random
 from typing import Annotated, Any, Literal
 
 from pydantic import Field, field_validator
@@ -225,8 +224,6 @@ class Settings(BaseSettings):
     drop_pct: float = -3.0  # '-3'은 -3 %
     # Scheduler
     cron: str = "0 * * * *"  # 매시 정각
-    google_api_key: str
-    google_api_keys: list[str] | None = None
 
     @property
     def telegram_chat_ids(self) -> list[str]:
@@ -239,37 +236,6 @@ class Settings(BaseSettings):
     @classmethod
     def parse_api_rate_limits(cls, v: Any) -> ApiRateLimitMap:
         return _parse_api_rate_limit_overrides(v)
-
-    @field_validator("google_api_keys", mode="before")
-    @classmethod
-    def split_google_api_keys(cls, v: Any) -> list[str]:
-        if isinstance(v, str):
-            if not v:  # 빈 문자열 처리
-                return []
-            return [key.strip() for key in v.split(",") if key.strip()]
-        return v
-
-    def _ensure_key_index(self):
-        """API 키 인덱스 초기화 (필요시에만)"""
-        if not hasattr(self, "_current_key_index"):
-            keys = self.google_api_keys or [self.google_api_key]
-            self._current_key_index = random.randint(0, len(keys) - 1)
-
-    def get_random_key(self) -> str:
-        """랜덤 Google API 키 반환"""
-        keys = self.google_api_keys or [self.google_api_key]
-        self._ensure_key_index()
-        random_index = random.randint(0, len(keys) - 1)
-        self._current_key_index = random_index
-        return keys[random_index]
-
-    def get_next_key(self) -> str:
-        """순환 방식으로 다음 Google API 키 반환"""
-        keys = self.google_api_keys or [self.google_api_key]
-        self._ensure_key_index()
-        self._current_key_index = (self._current_key_index + 1) % len(keys)
-        key = keys[self._current_key_index]
-        return key
 
     def get_redis_url(self) -> str:
         """Redis 연결 URL 생성"""

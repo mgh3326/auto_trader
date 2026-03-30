@@ -3,8 +3,8 @@ from typing import Any
 from sqlalchemy import delete, desc, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.analysis.prompt import format_decimal
 from app.models.analysis import StockAnalysisResult, StockInfo
+from app.utils.formatting import format_decimal
 
 
 class StockInfoService:

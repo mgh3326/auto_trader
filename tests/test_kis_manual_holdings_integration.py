@@ -104,7 +104,6 @@ class TestManualHoldingsIntegration:
             ),
         ):
             monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-            monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
             monkeypatch.setattr(
                 kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy
             )
@@ -201,7 +200,6 @@ class TestManualHoldingsIntegration:
             ),
         ):
             monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-            monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
             monkeypatch.setattr(
                 kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy
             )
@@ -285,7 +283,6 @@ class TestManualHoldingsIntegration:
             ),
         ):
             monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-            monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
             monkeypatch.setattr(
                 kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy
             )
@@ -366,7 +363,6 @@ class TestManualHoldingsIntegration:
             ),
         ):
             monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-            monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
             monkeypatch.setattr(
                 kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy
             )
@@ -455,7 +451,6 @@ class TestManualHoldingsIntegration:
             ),
         ):
             monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-            monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
             monkeypatch.setattr(
                 kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy
             )
@@ -549,7 +544,6 @@ class TestManualHoldingsIntegration:
             ),
         ):
             monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-            monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
             monkeypatch.setattr(
                 kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy
             )
