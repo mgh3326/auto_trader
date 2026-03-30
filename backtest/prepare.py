@@ -751,6 +751,7 @@ def cross_validate(
     strategy_class: type,
     folds: list[dict[str, str]] | None = None,
     initial_capital: float = INITIAL_CAPITAL,
+    bar_interval: str = BAR_INTERVAL,
 ) -> CVResult:
     """Run walk-forward cross-validation.
 
@@ -775,7 +776,11 @@ def cross_validate(
     fold_indices: list[int] = []
 
     for i, fold in enumerate(folds):
-        val_data = load_data_range(fold["val_start"], fold["val_end"])
+        val_data = load_data_range(
+            fold["val_start"],
+            fold["val_end"],
+            bar_interval=bar_interval,
+        )
         if not val_data:
             continue
 
