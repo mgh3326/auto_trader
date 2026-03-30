@@ -1676,6 +1676,29 @@ async def test_place_order_crypto_profitable_sell_does_not_record_cooldown(monke
 
     _patch_runtime_attr(monkeypatch, "upbit_service", DummyUpbit())
 
+    _patch_runtime_attr(
+        monkeypatch,
+        "_preview_order",
+        AsyncMock(
+            return_value={
+                "symbol": "KRW-BTC",
+                "side": "sell",
+                "order_type": "market",
+                "price": 55000000.0,
+                "quantity": 0.5,
+                "estimated_value": 27500000.0,
+                "fee": 13750.0,
+                "avg_buy_price": 50000000.0,
+            }
+        ),
+    )
+
+    # Mock _save_order_fill and _link_journal_to_fill
+    monkeypatch.setattr(
+        order_execution, "_save_order_fill", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(order_execution, "_link_journal_to_fill", AsyncMock())
+
     result = await tools["place_order"](
         symbol="KRW-BTC",
         side="sell",
@@ -1686,3 +1709,112 @@ async def test_place_order_crypto_profitable_sell_does_not_record_cooldown(monke
 
     assert result["success"] is True
     assert len(fake_cooldown_service.recorded_symbols) == 0
+
+
+class TestOrderFillRecording:
+    """Tests for automatic recording of order fills to review.trades."""
+
+    @pytest.mark.asyncio
+    async def test_successful_order_saves_fill(self, monkeypatch) -> None:
+        """Real order execution should save to review.trades."""
+        tools = build_tools()
+
+        # Mock Upbit API calls
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_multiple_current_prices",
+            AsyncMock(return_value={"KRW-BTC": 95000000.0}),
+        )
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_my_coins",
+            AsyncMock(
+                return_value=[
+                    {"currency": "KRW", "balance": "500000000", "locked": "0"}
+                ]
+            ),
+        )
+        monkeypatch.setattr(
+            upbit_service,
+            "place_buy_order",
+            AsyncMock(
+                return_value={
+                    "uuid": "test-fill-uuid",
+                    "side": "bid",
+                    "market": "KRW-BTC",
+                    "price": "95000000",
+                    "volume": "0.001",
+                }
+            ),
+        )
+
+        # Mock the save function to capture the call
+        save_mock = AsyncMock()
+        monkeypatch.setattr(
+            order_execution,
+            "_save_order_fill",
+            save_mock,
+        )
+
+        # Mock journal link
+        link_mock = AsyncMock()
+        monkeypatch.setattr(
+            order_execution,
+            "_link_journal_to_fill",
+            link_mock,
+        )
+
+        result = await tools["place_order"](
+            symbol="KRW-BTC",
+            side="buy",
+            order_type="limit",
+            price=95000000.0,
+            quantity=0.001,
+            dry_run=False,
+            reason="test fill",
+        )
+
+        assert result["success"] is True
+        assert result["dry_run"] is False
+        assert result.get("fill_recorded") is True
+        save_mock.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_dry_run_does_not_save_fill(self, monkeypatch) -> None:
+        """Dry-run orders should NOT save to review.trades."""
+        tools = build_tools()
+
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_multiple_current_prices",
+            AsyncMock(return_value={"KRW-BTC": 95000000.0}),
+        )
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_my_coins",
+            AsyncMock(
+                return_value=[
+                    {"currency": "KRW", "balance": "500000000", "locked": "0"}
+                ]
+            ),
+        )
+
+        save_mock = AsyncMock()
+        monkeypatch.setattr(
+            order_execution,
+            "_save_order_fill",
+            save_mock,
+        )
+
+        result = await tools["place_order"](
+            symbol="KRW-BTC",
+            side="buy",
+            order_type="limit",
+            price=95000000.0,
+            quantity=0.001,
+            dry_run=True,
+        )
+
+        assert result["success"] is True
+        assert result["dry_run"] is True
+        save_mock.assert_not_awaited()
