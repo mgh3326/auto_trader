@@ -879,6 +879,34 @@ async def _place_order_impl(
             dry_run=False,
         )
 
+        # Initialize journal tracking variables
+        journal_created = False
+        journal_id: int | None = None
+        journal_status: str | None = None
+        journal_warning: str | None = None
+
+        # Create draft journal for buy orders (real execution only)
+        if side_lower == "buy":
+            try:
+                journal_result = await _create_trade_journal_for_buy(
+                    symbol=normalized_symbol,
+                    market_type=market_type,
+                    preview=dry_run_result,
+                    thesis=typing_cast(str, thesis),
+                    strategy=typing_cast(str, strategy),
+                    target_price=target_price,
+                    stop_loss=stop_loss,
+                    min_hold_days=min_hold_days,
+                    notes=notes,
+                    indicators_snapshot=indicators_snapshot,
+                )
+                journal_created = journal_result["journal_created"]
+                journal_id = journal_result["journal_id"]
+                journal_status = journal_result["journal_status"]
+            except Exception as journal_exc:
+                journal_warning = f"trade journal creation failed after order execution: {journal_exc}"
+                logger.warning(journal_warning)
+
         # Record stop-loss cooldown for crypto sells below threshold
         if (
             market_type == "crypto"
@@ -930,19 +958,29 @@ async def _place_order_impl(
                 fill_recorded = True
                 # Phase 2: Link journal to this trade
                 await _link_journal_to_fill(normalized_symbol, trade_id)
+                if journal_created:
+                    journal_status = "active"
+            elif journal_created:
+                journal_warning = "trade journal created but fill was not recorded; journal remains draft"
         except Exception as db_exc:
             logger.warning("Failed to record fill to DB: %s", db_exc)
 
-        return {
+        response: dict[str, Any] = {
             "success": True,
             "dry_run": False,
             "preview": dry_run_result,
             "execution": execution_result,
             "fill_recorded": fill_recorded,
+            "journal_created": journal_created,
+            "journal_id": journal_id,
+            "journal_status": journal_status,
             "message": "Order placed and fill recorded successfully"
             if fill_recorded
             else "Order placed successfully",
         }
+        if journal_warning:
+            response["journal_warning"] = journal_warning
+        return response
     except Exception as exc:
         await _record_order_history(
             symbol=normalized_symbol,

@@ -1903,3 +1903,179 @@ class TestOrderFillRecording:
         assert result["success"] is True
         assert result["dry_run"] is True
         save_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_real_buy_creates_journal_then_links_fill(self, monkeypatch) -> None:
+        """Real buy orders should create journal and link to fill."""
+        tools = build_tools()
+
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_multiple_current_prices",
+            AsyncMock(return_value={"KRW-BTC": 95_000_000.0}),
+        )
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_my_coins",
+            AsyncMock(
+                return_value=[
+                    {"currency": "KRW", "balance": "500000000", "locked": "0"}
+                ]
+            ),
+        )
+        monkeypatch.setattr(
+            upbit_service,
+            "place_buy_order",
+            AsyncMock(
+                return_value={
+                    "uuid": "test-uuid",
+                    "side": "bid",
+                    "market": "KRW-BTC",
+                    "price": "95000000",
+                    "volume": "0.001",
+                }
+            ),
+        )
+
+        create_journal_mock = AsyncMock(
+            return_value={
+                "journal_created": True,
+                "journal_id": 77,
+                "journal_status": "draft",
+            }
+        )
+        monkeypatch.setattr(
+            order_execution, "_create_trade_journal_for_buy", create_journal_mock
+        )
+        monkeypatch.setattr(
+            order_execution, "_save_order_fill", AsyncMock(return_value=555)
+        )
+        monkeypatch.setattr(order_execution, "_link_journal_to_fill", AsyncMock())
+
+        result = await tools["place_order"](
+            symbol="KRW-BTC",
+            side="buy",
+            order_type="limit",
+            price=95_000_000.0,
+            quantity=0.001,
+            dry_run=False,
+            thesis="Breakout above weekly resistance",
+            strategy="weekly-breakout",
+        )
+
+        assert result["success"] is True
+        assert result["journal_created"] is True
+        assert result["journal_id"] == 77
+        assert result["journal_status"] == "active"
+        create_journal_mock.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_sell_order_does_not_create_trade_journal(self, monkeypatch) -> None:
+        """Sell orders should not create trade journals."""
+        tools = build_tools()
+
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_multiple_current_prices",
+            AsyncMock(return_value={"KRW-BTC": 95_000_000.0}),
+        )
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_my_coins",
+            AsyncMock(
+                return_value=[
+                    {"currency": "KRW", "balance": "500000000", "locked": "0"},
+                    {"currency": "BTC", "balance": "0.01", "locked": "0"},
+                ]
+            ),
+        )
+        monkeypatch.setattr(
+            upbit_service,
+            "place_sell_order",
+            AsyncMock(
+                return_value={
+                    "uuid": "test-uuid",
+                    "side": "ask",
+                    "market": "KRW-BTC",
+                    "price": "95000000",
+                    "volume": "0.001",
+                }
+            ),
+        )
+
+        create_journal_mock = AsyncMock()
+        monkeypatch.setattr(
+            order_execution, "_create_trade_journal_for_buy", create_journal_mock
+        )
+
+        result = await tools["place_order"](
+            symbol="KRW-BTC",
+            side="sell",
+            order_type="limit",
+            price=95_000_000.0,
+            quantity=0.001,
+            dry_run=False,
+        )
+
+        assert result["success"] is True
+        create_journal_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_journal_creation_failure_keeps_order_success(
+        self, monkeypatch
+    ) -> None:
+        """Journal creation failure should not fail the order."""
+        tools = build_tools()
+
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_multiple_current_prices",
+            AsyncMock(return_value={"KRW-BTC": 95_000_000.0}),
+        )
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_my_coins",
+            AsyncMock(
+                return_value=[
+                    {"currency": "KRW", "balance": "500000000", "locked": "0"}
+                ]
+            ),
+        )
+        monkeypatch.setattr(
+            upbit_service,
+            "place_buy_order",
+            AsyncMock(
+                return_value={
+                    "uuid": "test-uuid",
+                    "side": "bid",
+                    "market": "KRW-BTC",
+                    "price": "95000000",
+                    "volume": "0.001",
+                }
+            ),
+        )
+
+        monkeypatch.setattr(
+            order_execution,
+            "_create_trade_journal_for_buy",
+            AsyncMock(side_effect=RuntimeError("db down")),
+        )
+        monkeypatch.setattr(
+            order_execution, "_save_order_fill", AsyncMock(return_value=555)
+        )
+        monkeypatch.setattr(order_execution, "_link_journal_to_fill", AsyncMock())
+
+        result = await tools["place_order"](
+            symbol="KRW-BTC",
+            side="buy",
+            order_type="limit",
+            price=95_000_000.0,
+            quantity=0.001,
+            dry_run=False,
+            thesis="Breakout above weekly resistance",
+            strategy="weekly-breakout",
+        )
+
+        assert result["success"] is True
+        assert result["journal_created"] is False
+        assert "journal_warning" in result
