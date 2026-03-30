@@ -397,6 +397,47 @@ class TestTradeJournalRegistration:
         }
 
 
+class TestCreateTradeJournalForBuy:
+    """Tests for _create_trade_journal_for_buy helper."""
+
+    @pytest.mark.asyncio
+    async def test_create_trade_journal_for_buy_inserts_new_draft(self) -> None:
+        """Helper should always insert a new draft journal row."""
+        from app.mcp_server.tooling.order_execution import _create_trade_journal_for_buy
+        from app.models.trade_journal import JournalStatus
+
+        mock_session = AsyncMock()
+        factory = _mock_session_factory(mock_session)
+
+        with patch(
+            "app.mcp_server.tooling.order_execution._order_session_factory",
+            return_value=factory,
+        ):
+            result = await _create_trade_journal_for_buy(
+                symbol="KRW-BTC",
+                market_type="crypto",
+                preview={
+                    "price": 95_000_000.0,
+                    "quantity": 0.001,
+                    "estimated_value": 95_000.0,
+                },
+                thesis="weekly breakout",
+                strategy="weekly-breakout",
+                target_price=None,
+                stop_loss=None,
+                min_hold_days=7,
+                notes="first scale-in",
+                indicators_snapshot={"rsi_14": 58.2},
+            )
+
+        inserted = mock_session.add.call_args.args[0]
+        assert inserted.status == JournalStatus.draft
+        assert inserted.symbol == "KRW-BTC"
+        assert inserted.trade_id is None
+        assert result["journal_created"] is True
+        assert result["journal_status"] == "draft"
+
+
 class TestJournalFillIntegration:
     """Integration tests for journal-fill linking functionality."""
 

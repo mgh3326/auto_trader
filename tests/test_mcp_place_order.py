@@ -485,6 +485,8 @@ async def test_place_order_insufficient_balance_kis_domestic_blocks_real_order(
         quantity=1,
         price=5000000.0,
         dry_run=False,
+        thesis="Test thesis",
+        strategy="test-strategy",
     )
 
     assert result["success"] is False
@@ -715,6 +717,8 @@ async def test_place_order_nyse_exchange_code(monkeypatch):
         quantity=10,
         price=150.0,
         dry_run=False,
+        thesis="Test thesis for TSM",
+        strategy="test-strategy",
     )
 
     assert result["success"] is True
@@ -913,6 +917,8 @@ class TestPlaceOrderHighAmount:
             amount=5_500_000.0,
             price=110000.0,
             dry_run=False,
+            thesis="Test thesis for Samsung",
+            strategy="test-strategy",
         )
 
         assert result["success"] is True
@@ -976,6 +982,8 @@ class TestPlaceOrderHighAmount:
             amount=2_500_000.0,
             price=250.0,
             dry_run=False,
+            thesis="Test thesis for AAPL",
+            strategy="test-strategy",
         )
 
         assert result["success"] is True
@@ -1025,6 +1033,8 @@ class TestPlaceOrderHighAmount:
             order_type="market",
             amount=5_000_000.0,
             dry_run=False,
+            thesis="Test thesis for BTC",
+            strategy="test-strategy",
         )
 
         assert result["success"] is True
@@ -1081,6 +1091,8 @@ class TestPlaceOrderHighAmount:
             order_type="market",
             amount=5_000_000.0,
             dry_run=False,
+            thesis="Test thesis for BTC",
+            strategy="test-strategy",
         )
 
         assert result["success"] is False
@@ -1125,6 +1137,8 @@ async def test_place_order_kr_limit_keeps_valid_tick_without_adjustment_metadata
         quantity=10,
         price=1_098_000,
         dry_run=False,
+        thesis="Test thesis for Samsung",
+        strategy="test-strategy",
     )
 
     assert result["success"] is True
@@ -1172,6 +1186,8 @@ async def test_place_order_kr_limit_applies_tick_adjustment_and_metadata(
         quantity=10,
         price=1_098_500,
         dry_run=False,
+        thesis="Test thesis for Samsung",
+        strategy="test-strategy",
     )
 
     assert result["success"] is True
@@ -1365,6 +1381,8 @@ async def test_place_order_kr_equity_balance_lookup_failure_blocks_real_order(
         amount=700_000.0,
         price=70000.0,
         dry_run=False,
+        thesis="Test thesis for Samsung",
+        strategy="test-strategy",
     )
 
     assert result["success"] is False
@@ -1857,6 +1875,8 @@ class TestOrderFillRecording:
             quantity=0.001,
             dry_run=False,
             reason="test fill",
+            thesis="Test thesis for BTC",
+            strategy="test-strategy",
         )
 
         assert result["success"] is True
