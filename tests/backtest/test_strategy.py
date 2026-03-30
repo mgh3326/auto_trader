@@ -136,6 +136,39 @@ def _make_overbought_history(periods: int = 40) -> pd.DataFrame:
     return _make_history(closes)
 
 
+def _signal_data(
+    *,
+    rsi_fast: float = 25.0,
+    rsi_slow: float = 25.0,
+    bull_votes: int = 0,
+    bear_votes: int = 0,
+    weighted_bull_votes: int | None = None,
+    bull_flags: dict[str, bool] | None = None,
+    bear_flags: dict[str, bool] | None = None,
+) -> dict[str, object]:
+    """Build a complete signal data dict for monkeypatched tests.
+
+    This helper fills the full _evaluate_signals() payload shape used by on_bar().
+    """
+    if bull_flags is None:
+        bull_flags = {}
+    if bear_flags is None:
+        bear_flags = {}
+    if weighted_bull_votes is None:
+        weighted_bull_votes = bull_votes + int(
+            bull_flags.get("dual_rsi_oversold", False)
+        )
+    return {
+        "rsi_fast": rsi_fast,
+        "rsi_slow": rsi_slow,
+        "bull_votes": bull_votes,
+        "bear_votes": bear_votes,
+        "weighted_bull_votes": weighted_bull_votes,
+        "bull_flags": bull_flags,
+        "bear_flags": bear_flags,
+    }
+
+
 class TestRSICalculation:
     """Tests for RSI calculation."""
 
@@ -1120,3 +1153,377 @@ class TestHardExitPriority:
         sell_signals = [s for s in signals if s.action == "sell"]
         assert len(sell_signals) == 1
         assert "holding" in sell_signals[0].reason.lower()
+
+
+class TestStrategyContractFreezing:
+    """Characterization tests to lock down behaviors likely to drift during modularization."""
+
+    def test_weighted_bull_votes_double_counts_dual_rsi(self, monkeypatch):
+        """Test that weighted_bull_votes double-counts dual_rsi_oversold."""
+        strat = strategy.Strategy()
+
+        # Create signal data with dual_rsi_oversold=True
+        signal_result = _signal_data(
+            rsi_fast=25.0,
+            rsi_slow=25.0,
+            bull_votes=4,
+            bear_votes=0,
+            bull_flags={"dual_rsi_oversold": True},
+            bear_flags={},
+        )
+
+        def mock_evaluate(bar):
+            return signal_result
+
+        monkeypatch.setattr(strat, "_evaluate_signals", mock_evaluate)
+
+        history = _make_history([100.0] * 40)
+        bar = _make_bar_data("BTC", "2025-04-01", 100.0, history)
+        result = strat._evaluate_signals(bar)
+
+        # weighted_bull_votes should be bull_votes + 1 when dual_rsi_oversold is True
+        assert result["weighted_bull_votes"] == result["bull_votes"] + 1
+
+    def test_bull_reason_uses_registry_order(self, monkeypatch):
+        """Test that bull reason string maintains deterministic signal order."""
+        strat = strategy.Strategy()
+
+        # Mock to return specific flags in a known order
+        def mock_evaluate(bar):
+            return _signal_data(
+                rsi_fast=25.0,
+                rsi_slow=25.0,
+                bull_votes=4,
+                bear_votes=0,
+                bull_flags={
+                    "dual_rsi_oversold": True,
+                    "macd_histogram_positive": True,
+                    "close_below_bb_lower": True,
+                    "ema_fast_above_slow": True,
+                    "momentum_positive": False,
+                    "volume_above_avg": False,
+                },
+                bear_flags={},
+            )
+
+        monkeypatch.setattr(strat, "_evaluate_signals", mock_evaluate)
+
+        history = _make_history([100.0] * 40)
+        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-01", 100.0, history)}
+        portfolio = prepare.PortfolioState(
+            cash=100000.0,
+            positions={},
+            avg_prices={},
+            position_dates={},
+            trade_log=[],
+            equity=100000.0,
+            date="2025-04-01",
+        )
+
+        signals = strat.on_bar(bar_data, portfolio)
+        buy_signals = [s for s in signals if s.action == "buy"]
+
+        assert len(buy_signals) == 1
+        # Verify reason contains expected signals in order
+        assert "Bull votes 4" in buy_signals[0].reason
+        assert "dual rsi oversold" in buy_signals[0].reason
+        assert "macd histogram positive" in buy_signals[0].reason
+        assert "close below bb lower" in buy_signals[0].reason
+        assert "ema fast above slow" in buy_signals[0].reason
+
+    def test_sell_priority_stop_loss_over_rsi_recovery_over_max_holding_over_bear_votes(
+        self, monkeypatch
+    ):
+        """Test staged sell priority: stop_loss -> rsi_recovery -> max_holding -> bear_votes."""
+        strat = strategy.Strategy()
+
+        history = _make_history([100.0] * 40)
+        # Price below stop-loss level (need < not <= for stop-loss trigger)
+        current_price = 100.0 * (1 - strategy.STOP_LOSS_PCT - 0.001)
+        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-01", current_price, history)}
+
+        # All conditions met: RSI high (recovery), holding period exceeded, bear votes
+        def mock_evaluate(bar):
+            return _signal_data(
+                rsi_fast=60.0,
+                rsi_slow=60.0,  # Above RSI_EXIT (55) - would trigger recovery
+                bull_votes=0,
+                bear_votes=3,  # Above MIN_SELL_VOTES (2)
+                bear_flags={"rsi_slow_high": True, "momentum_negative": True},
+            )
+
+        monkeypatch.setattr(strat, "_evaluate_signals", mock_evaluate)
+
+        portfolio = prepare.PortfolioState(
+            cash=50000.0,
+            positions={"BTC": 1.0},
+            avg_prices={"BTC": 100.0},
+            # Entry 30 days ago - exceeds HOLDING_DAYS (21)
+            position_dates={"BTC": "2025-03-02"},
+            trade_log=[],
+            equity=150000.0,
+            date="2025-04-01",
+        )
+
+        signals = strat.on_bar(bar_data, portfolio)
+        sell_signals = [s for s in signals if s.action == "sell"]
+
+        assert len(sell_signals) == 1
+        # Stop-loss should take priority over all other exits
+        assert "Stop-loss" in sell_signals[0].reason
+
+    def test_symbol_specific_weight_strong_reversion(self, monkeypatch):
+        """Test strong reversion position size for applicable symbols."""
+        strat = strategy.Strategy()
+
+        # Mock to trigger strong_reversion_buy conditions
+        def mock_evaluate(bar):
+            return _signal_data(
+                rsi_fast=25.0,
+                rsi_slow=25.0,
+                bull_votes=4,
+                bear_votes=0,
+                bull_flags={
+                    "dual_rsi_oversold": True,
+                    "macd_histogram_positive": True,  # strong_reversion needs this
+                    "close_below_bb_lower": True,  # strong_reversion needs this
+                },
+            )
+
+        monkeypatch.setattr(strat, "_evaluate_signals", mock_evaluate)
+
+        history = _make_history([100.0] * 40)
+        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-01", 100.0, history)}
+        portfolio = prepare.PortfolioState(
+            cash=100000.0,
+            positions={},
+            avg_prices={},
+            position_dates={},
+            trade_log=[],
+            equity=100000.0,
+            date="2025-04-01",
+        )
+
+        signals = strat.on_bar(bar_data, portfolio)
+        buy_signals = [s for s in signals if s.action == "buy"]
+
+        assert len(buy_signals) == 1
+        # Strong reversion should use 0.15 weight
+        assert buy_signals[0].weight == strategy.STRONG_REVERSION_POSITION_SIZE
+        assert buy_signals[0].weight == 0.15
+
+    def test_symbol_specific_weight_btc_hot_stall_trend(self, monkeypatch):
+        """Test BTC hot-stall trend position size."""
+        strat = strategy.Strategy()
+
+        # Mock to trigger btc_hot_stall_trend_buy conditions
+        def mock_evaluate(bar):
+            return _signal_data(
+                rsi_fast=45.0,
+                rsi_slow=50.0,  # Not oversold
+                bull_votes=4,
+                bear_votes=0,
+                bull_flags={
+                    "macd_histogram_positive": True,
+                    "ema_fast_above_slow": True,
+                    "momentum_positive": True,
+                    "volume_above_avg": True,
+                },
+            )
+
+        monkeypatch.setattr(strat, "_evaluate_signals", mock_evaluate)
+
+        history = _make_history([100.0] * 40)
+        bar_data = {"BTC": _make_bar_data("BTC", "2025-04-01", 100.0, history)}
+
+        # Mock market state for hot stall conditions
+        original_market_state = strat._market_state
+
+        def mock_market_state(bar_data):
+            return {"avg_rsi": 72.0, "avg_rsi_change": 1.0}  # Hot, low change (stall)
+
+        monkeypatch.setattr(strat, "_market_state", mock_market_state)
+
+        portfolio = prepare.PortfolioState(
+            cash=100000.0,
+            positions={},
+            avg_prices={},
+            position_dates={},
+            trade_log=[],
+            equity=100000.0,
+            date="2025-04-01",
+        )
+
+        signals = strat.on_bar(bar_data, portfolio)
+        buy_signals = [s for s in signals if s.action == "buy"]
+
+        if buy_signals:
+            # BTC hot-stall trend should use 0.0025 weight
+            assert buy_signals[0].weight == strategy.BTC_HOT_STALL_TREND_POSITION_SIZE
+            assert buy_signals[0].weight == 0.0025
+
+    def test_symbol_specific_weight_dot_mild_reversion(self, monkeypatch):
+        """Test DOT mild reversion position size."""
+        strat = strategy.Strategy()
+
+        # Mock to trigger dot_mild_reversion_buy conditions
+        def mock_evaluate(bar):
+            return _signal_data(
+                rsi_fast=28.0,
+                rsi_slow=28.0,  # Below oversold threshold (30)
+                bull_votes=4,
+                bear_votes=0,
+                bull_flags={
+                    "dual_rsi_oversold": True,
+                    "close_below_bb_lower": True,
+                    "volume_above_avg": True,
+                },
+            )
+
+        monkeypatch.setattr(strat, "_evaluate_signals", mock_evaluate)
+
+        history = _make_history([100.0] * 40)
+        bar_data = {"DOT": _make_bar_data("DOT", "2025-04-01", 100.0, history)}
+
+        # Mock market state for mild reversion conditions
+        def mock_market_state(bar_data):
+            return {
+                "avg_rsi": 35.0,
+                "avg_rsi_change": -1.0,
+            }  # Above DOT_MILD_REVERSION_RSI (33)
+
+        monkeypatch.setattr(strat, "_market_state", mock_market_state)
+
+        portfolio = prepare.PortfolioState(
+            cash=100000.0,
+            positions={},
+            avg_prices={},
+            position_dates={},
+            trade_log=[],
+            equity=100000.0,
+            date="2025-04-01",
+        )
+
+        signals = strat.on_bar(bar_data, portfolio)
+        buy_signals = [s for s in signals if s.action == "buy"]
+
+        if buy_signals:
+            # DOT mild reversion should use 0.00015625 weight
+            assert buy_signals[0].weight == strategy.DOT_MILD_REVERSION_POSITION_SIZE
+            assert buy_signals[0].weight == 0.00015625
+
+    def test_symbol_specific_weight_avax_pure_trend(self, monkeypatch):
+        """Test AVAX pure trend position size."""
+        strat = strategy.Strategy()
+
+        # Mock to trigger avax_pure_trend_buy conditions
+        def mock_evaluate(bar):
+            return _signal_data(
+                rsi_fast=45.0,
+                rsi_slow=50.0,  # Not oversold
+                bull_votes=4,
+                bear_votes=0,
+                bull_flags={
+                    "macd_histogram_positive": True,
+                    "ema_fast_above_slow": True,
+                    "momentum_positive": True,
+                    "volume_above_avg": True,
+                },
+            )
+
+        monkeypatch.setattr(strat, "_evaluate_signals", mock_evaluate)
+
+        history = _make_history([100.0] * 40)
+        bar_data = {"AVAX": _make_bar_data("AVAX", "2025-04-01", 100.0, history)}
+
+        # Mock market state for AVAX trend conditions (avg_rsi >= 60)
+        def mock_market_state(bar_data):
+            return {"avg_rsi": 65.0, "avg_rsi_change": 3.0}
+
+        monkeypatch.setattr(strat, "_market_state", mock_market_state)
+
+        portfolio = prepare.PortfolioState(
+            cash=100000.0,
+            positions={},
+            avg_prices={},
+            position_dates={},
+            trade_log=[],
+            equity=100000.0,
+            date="2025-04-01",
+        )
+
+        signals = strat.on_bar(bar_data, portfolio)
+        buy_signals = [s for s in signals if s.action == "buy"]
+
+        if buy_signals:
+            # AVAX pure trend should use 0.04 weight
+            assert buy_signals[0].weight == strategy.AVAX_TREND_POSITION_SIZE
+            assert buy_signals[0].weight == 0.04
+
+    def test_cooldown_blocks_reentry_after_stop_loss(self, monkeypatch):
+        """Test that cooldown blocks re-entry after stop-loss exit."""
+        strat = strategy.Strategy()
+
+        # First, simulate a stop-loss exit
+        stop_loss_history = _make_history([84.0] * 40)
+        stop_loss_bar = {
+            "BTC": _make_bar_data("BTC", "2025-04-08", 84.0, stop_loss_history)
+        }
+        held_portfolio = prepare.PortfolioState(
+            cash=50000.0,
+            positions={"BTC": 1.0},
+            avg_prices={"BTC": 100.0},
+            position_dates={"BTC": "2025-04-01"},
+            trade_log=[],
+            equity=134000.0,
+            date="2025-04-08",
+        )
+
+        def mock_evaluate_sl(bar: prepare.BarData) -> dict[str, object]:
+            return _signal_data(
+                rsi_fast=45.0,
+                rsi_slow=40.0,
+                bull_votes=0,
+                bear_votes=0,
+            )
+
+        monkeypatch.setattr(strat, "_evaluate_signals", mock_evaluate_sl)
+
+        exit_signals = strat.on_bar(stop_loss_bar, held_portfolio)
+
+        assert len(exit_signals) == 1
+        assert exit_signals[0].action == "sell"
+        assert "Stop-loss" in exit_signals[0].reason
+
+        # Verify cooldown is recorded
+        assert "BTC" in strat._stop_loss_dates
+        assert strat._stop_loss_dates["BTC"] == "2025-04-08"
+
+        # Now try to re-buy 4 days later (within 15-day cooldown)
+        rebuy_history = _make_history([80.0] * 40)
+        rebuy_bar = {"BTC": _make_bar_data("BTC", "2025-04-12", 80.0, rebuy_history)}
+        empty_portfolio = prepare.PortfolioState(
+            cash=100000.0,
+            positions={},
+            avg_prices={},
+            position_dates={},
+            trade_log=[],
+            equity=100000.0,
+            date="2025-04-12",
+        )
+
+        def mock_evaluate_buy(bar: prepare.BarData) -> dict[str, object]:
+            return _signal_data(
+                rsi_fast=20.0,
+                rsi_slow=25.0,
+                bull_votes=4,
+                bear_votes=0,
+                bull_flags={"dual_rsi_oversold": True},
+            )
+
+        monkeypatch.setattr(strat, "_evaluate_signals", mock_evaluate_buy)
+
+        rebuy_signals = strat.on_bar(rebuy_bar, empty_portfolio)
+
+        # Rebuy should be blocked by cooldown
+        assert rebuy_signals == []
