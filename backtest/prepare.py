@@ -227,7 +227,10 @@ def _resolve_split_dates(split: str) -> tuple[str, str]:
 
 
 def load_data_range(
-    start: str, end: str, bar_interval: str = "1d"
+    start: str,
+    end: str,
+    bar_interval: str = "1d",
+    require_all_symbols: bool = True,
 ) -> dict[str, pd.DataFrame]:
     """Load backtest data for an arbitrary date range.
 
@@ -235,15 +238,18 @@ def load_data_range(
         start: Start date (YYYY-MM-DD)
         end: End date (YYYY-MM-DD)
         bar_interval: Bar interval to load (e.g. "1d", "60m", "5m")
+        require_all_symbols: Fail fast when expected symbol files are missing
 
     Returns:
         Dictionary mapping symbol to DataFrame with OHLCV data
     """
     data: dict[str, pd.DataFrame] = {}
     interval_dir = data_dir_for_interval(bar_interval)
+    missing_symbols: list[str] = []
     for symbol in DEFAULT_SYMBOLS:
         path = interval_dir / f"KRW-{symbol}.parquet"
         if not path.exists():
+            missing_symbols.append(symbol)
             continue
         df = pd.read_parquet(path)
         required = ["date", "open", "high", "low", "close", "volume", "value"]
@@ -254,21 +260,41 @@ def load_data_range(
         df = df.sort_values("date").reset_index(drop=True)
         if len(df) > 0:
             data[symbol] = df
+
+    if require_all_symbols and missing_symbols:
+        missing_csv = ", ".join(missing_symbols)
+        fetch_symbols = " ".join(missing_symbols)
+        raise ValueError(
+            "Missing backtest data for symbols: "
+            f"{missing_csv}. "
+            "Refresh the fixed universe with "
+            f"`uv run backtest/fetch_data.py --symbols {fetch_symbols}`."
+        )
     return data
 
 
-def load_data(split: str = "val", bar_interval: str = "1d") -> dict[str, pd.DataFrame]:
+def load_data(
+    split: str = "val",
+    bar_interval: str = "1d",
+    require_all_symbols: bool = True,
+) -> dict[str, pd.DataFrame]:
     """Load backtest data for the given split.
 
     Args:
         split: Data split to load ("train", "val", or "test")
         bar_interval: Bar interval to load (e.g. "1d", "60m", "5m")
+        require_all_symbols: Fail fast when expected symbol files are missing
 
     Returns:
         Dictionary mapping symbol to DataFrame with OHLCV data
     """
     start, end = _resolve_split_dates(split)
-    return load_data_range(start, end, bar_interval=bar_interval)
+    return load_data_range(
+        start,
+        end,
+        bar_interval=bar_interval,
+        require_all_symbols=require_all_symbols,
+    )
 
 
 def _calc_execution_price(

@@ -1036,6 +1036,55 @@ class TestLoadDataRange:
         result = prepare.load_data_range("1990-01-01", "1990-01-31")
         assert result == {}
 
+    def test_load_data_range_raises_when_expected_symbol_file_missing(
+        self, tmp_path, monkeypatch
+    ):
+        """Fixed-universe backtests should fail fast when symbol files are missing."""
+        df = pd.DataFrame(
+            {
+                "date": ["2025-06-10", "2025-06-20"],
+                "open": [100.0, 101.0],
+                "high": [110.0, 111.0],
+                "low": [90.0, 91.0],
+                "close": [105.0, 106.0],
+                "volume": [1000.0, 1001.0],
+                "value": [100000.0, 100001.0],
+            }
+        )
+        df.to_parquet(tmp_path / "KRW-BTC.parquet")
+        monkeypatch.setattr(prepare, "DATA_DIR", tmp_path)
+        monkeypatch.setattr(prepare, "DEFAULT_SYMBOLS", ["BTC", "ETH"])
+
+        with pytest.raises(ValueError, match="ETH"):
+            prepare.load_data_range("2025-06-01", "2025-06-30")
+
+    def test_load_data_range_can_allow_missing_symbol_files(
+        self, tmp_path, monkeypatch
+    ):
+        """Partial datasets should remain accessible only when explicitly requested."""
+        df = pd.DataFrame(
+            {
+                "date": ["2025-06-10", "2025-06-20"],
+                "open": [100.0, 101.0],
+                "high": [110.0, 111.0],
+                "low": [90.0, 91.0],
+                "close": [105.0, 106.0],
+                "volume": [1000.0, 1001.0],
+                "value": [100000.0, 100001.0],
+            }
+        )
+        df.to_parquet(tmp_path / "KRW-BTC.parquet")
+        monkeypatch.setattr(prepare, "DATA_DIR", tmp_path)
+        monkeypatch.setattr(prepare, "DEFAULT_SYMBOLS", ["BTC", "ETH"])
+
+        result = prepare.load_data_range(
+            "2025-06-01",
+            "2025-06-30",
+            require_all_symbols=False,
+        )
+
+        assert set(result) == {"BTC"}
+
     def test_load_data_delegates_from_load_data(self, tmp_path, monkeypatch):
         """load_data should produce the same result as load_data_range with split dates."""
         df = pd.DataFrame(

@@ -39,6 +39,15 @@ class TestIntervalSupport:
             args = fetch_data._parse_args()
             assert args.interval == "4h"
 
+    def test_end_date_parses(self):
+        """Test --end-date parses as a plain CLI string."""
+        with mock.patch(
+            "sys.argv",
+            ["fetch_data.py", "--interval", "1d", "--end-date", "2026-03-22"],
+        ):
+            args = fetch_data._parse_args()
+            assert args.end_date == "2026-03-22"
+
     def test_data_dir_for_1d(self):
         """Test data directory for 1d interval (backward compat: flat dir)."""
         result = fetch_data._data_dir_for_interval("1d")
@@ -156,7 +165,7 @@ class TestMarketSelection:
         def fake_fetch_markets():
             return markets
 
-        def fake_fetch_candles(market, days):
+        def fake_fetch_candles(market, days, *, to_date=None):
             fetched_markets.append(market)
             return []
 
@@ -215,6 +224,54 @@ class TestCandleNormalization:
         ]
         assert df["date"].tolist() == ["2026-03-20", "2026-03-21"]
         assert df["close"].tolist() == [50500.0, 51200.0]
+
+
+class TestDeterministicWindow:
+    """Tests for reproducible backtest fetch windows."""
+
+    def test_resolve_fetch_end_datetime_defaults_daily_to_backtest_horizon(self):
+        result = fetch_data._resolve_fetch_end_datetime("1d", None)
+        assert result == datetime(2026, 3, 23, 0, 0, 0)
+
+    def test_resolve_fetch_end_datetime_uses_explicit_end_date(self):
+        result = fetch_data._resolve_fetch_end_datetime("1d", "2026-03-22")
+        assert result == datetime(2026, 3, 23, 0, 0, 0)
+
+    def test_save_candles_can_replace_existing_snapshot(self, tmp_path):
+        existing_df = pd.DataFrame(
+            {
+                "date": ["2025-06-10", "2025-06-11", "2025-06-12"],
+                "open": [1.0, 2.0, 3.0],
+                "high": [1.0, 2.0, 3.0],
+                "low": [1.0, 2.0, 3.0],
+                "close": [1.0, 2.0, 3.0],
+                "volume": [1.0, 2.0, 3.0],
+                "value": [1.0, 2.0, 3.0],
+            }
+        )
+        new_df = pd.DataFrame(
+            {
+                "date": ["2025-06-10", "2025-06-11"],
+                "open": [10.0, 20.0],
+                "high": [10.0, 20.0],
+                "low": [10.0, 20.0],
+                "close": [10.0, 20.0],
+                "volume": [10.0, 20.0],
+                "value": [10.0, 20.0],
+            }
+        )
+        parquet_path = tmp_path / "KRW-BTC.parquet"
+        existing_df.to_parquet(parquet_path, index=False)
+
+        fetch_data.save_candles(
+            "KRW-BTC",
+            new_df,
+            data_dir=tmp_path,
+            replace_existing=True,
+        )
+
+        saved = pd.read_parquet(parquet_path)
+        pd.testing.assert_frame_equal(saved, new_df)
 
 
 class TestDataQuality:
@@ -613,7 +670,7 @@ class TestIncrementalRefresh:
 
         seen_days: list[int] = []
 
-        def fake_fetch_candles(market, days):
+        def fake_fetch_candles(market, days, *, to_date=None):
             seen_days.append(days)
             return []
 
@@ -654,15 +711,17 @@ class TestIncrementalRefresh:
 
         fetch_data.main()
 
-        assert seen_days == [7]
+        assert seen_days == [365]
 
 
 class TestIntervalAwareMain:
     def test_main_1h_calls_fetch_candles_minutes(self, monkeypatch, tmp_path):
         called_with: list[dict[str, object]] = []
 
-        def fake_fetch_candles_minutes(market, unit, hours):
-            called_with.append({"market": market, "unit": unit, "hours": hours})
+        def fake_fetch_candles_minutes(market, unit, hours, *, to_date=None):
+            called_with.append(
+                {"market": market, "unit": unit, "hours": hours, "to_date": to_date}
+            )
             return []
 
         data_dir = tmp_path / "data" / "1h"
@@ -692,12 +751,13 @@ class TestIntervalAwareMain:
         assert len(called_with) == 1
         assert called_with[0]["unit"] == 60
         assert called_with[0]["hours"] == 30 * 24
+        assert isinstance(called_with[0]["to_date"], datetime)
 
     def test_main_1d_calls_fetch_candles(self, monkeypatch, tmp_path):
         called_with: list[dict[str, object]] = []
 
-        def fake_fetch_candles(market, days):
-            called_with.append({"market": market, "days": days})
+        def fake_fetch_candles(market, days, *, to_date=None):
+            called_with.append({"market": market, "days": days, "to_date": to_date})
             return []
 
         data_dir = tmp_path / "data"
@@ -724,6 +784,7 @@ class TestIntervalAwareMain:
 
         assert len(called_with) == 1
         assert called_with[0]["days"] == 30
+        assert called_with[0]["to_date"] == datetime(2026, 3, 23, 0, 0, 0)
 
 
 class TestIncrementalRefreshHourly:

@@ -1,6 +1,7 @@
 """Upbit daily candle backfill script."""
 
 import argparse
+import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -8,6 +9,11 @@ from typing import Any
 
 import httpx
 import pandas as pd
+
+# Add backtest directory to path so this script can import the fixed research horizon.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import prepare
 
 # Upbit API endpoint
 UPBIT_API_URL = "https://api.upbit.com/v1"
@@ -34,6 +40,13 @@ def _parse_args():
         default="1d",
         help="Candle interval (default: 1d)",
     )
+    parser.add_argument(
+        "--end-date",
+        help=(
+            "Fetch candles up to this date (YYYY-MM-DD). "
+            "Defaults to the fixed backtest horizon for daily bars."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -41,6 +54,29 @@ def _data_dir_for_interval(interval: str) -> Path:
     if interval == "1d":
         return DATA_DIR
     return DATA_DIR / interval
+
+
+def _default_backtest_end_date() -> str:
+    """Return the fixed end date used by the backtest splits."""
+    return max(split["end"] for split in prepare.SPLITS.values())
+
+
+def _resolve_fetch_end_datetime(interval: str, end_date: str | None) -> datetime:
+    """Resolve the fetch end timestamp.
+
+    Daily backtest data must be reproducible, so the default window is anchored to the
+    fixed split horizon instead of drifting with the current date.
+    """
+    if end_date is None:
+        if interval == "1d":
+            end_date = _default_backtest_end_date()
+        else:
+            return datetime.now()
+
+    resolved = datetime.fromisoformat(end_date)
+    if len(end_date) == 10:
+        return resolved + timedelta(days=1)
+    return resolved
 
 
 def _filter_krw_markets(markets: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -118,7 +154,12 @@ def fetch_markets() -> list[dict[str, Any]]:
         return response.json()
 
 
-def fetch_candles(market: str, days: int) -> list[dict[str, Any]]:
+def fetch_candles(
+    market: str,
+    days: int,
+    *,
+    to_date: datetime | None = None,
+) -> list[dict[str, Any]]:
     """Fetch daily candles for a market.
 
     Args:
@@ -132,7 +173,7 @@ def fetch_candles(market: str, days: int) -> list[dict[str, Any]]:
     all_candles = []
 
     # Calculate number of requests needed (max 200 per request)
-    to_date = datetime.now()
+    to_date = to_date or datetime.now()
     remaining_days = days
 
     with httpx.Client() as client:
@@ -167,12 +208,16 @@ def fetch_candles(market: str, days: int) -> list[dict[str, Any]]:
 
 
 def fetch_candles_minutes(
-    market: str, unit: int = 60, hours: int = 24
+    market: str,
+    unit: int = 60,
+    hours: int = 24,
+    *,
+    to_date: datetime | None = None,
 ) -> list[dict[str, Any]]:
     url = f"{UPBIT_API_URL}/candles/minutes/{unit}"
     all_candles: list[dict[str, Any]] = []
     remaining = hours
-    to_date = datetime.now()
+    to_date = to_date or datetime.now()
 
     with httpx.Client() as client:
         while remaining > 0:
@@ -268,7 +313,13 @@ def _merge_with_existing(new_df: pd.DataFrame, parquet_path: Path) -> pd.DataFra
     return combined
 
 
-def save_candles(market: str, df: pd.DataFrame, data_dir: Path | None = None) -> None:
+def save_candles(
+    market: str,
+    df: pd.DataFrame,
+    data_dir: Path | None = None,
+    *,
+    replace_existing: bool = False,
+) -> None:
     """Save candles to parquet file.
 
     Args:
@@ -278,6 +329,10 @@ def save_candles(market: str, df: pd.DataFrame, data_dir: Path | None = None) ->
     target_dir = data_dir or DATA_DIR
     target_dir.mkdir(parents=True, exist_ok=True)
     parquet_path = target_dir / f"{market}.parquet"
+
+    if replace_existing:
+        df.to_parquet(parquet_path, index=False)
+        return
 
     merged_df = _merge_with_existing(df, parquet_path)
     merged_df.to_parquet(parquet_path, index=False)
@@ -328,6 +383,8 @@ def main() -> None:
     interval = args.interval
     target_dir = _data_dir_for_interval(interval)
     unit_map = {"1h": 60, "4h": 240}
+    fetch_end = _resolve_fetch_end_datetime(interval, args.end_date)
+    deterministic_snapshot = interval == "1d" or args.end_date is not None
 
     # Determine which markets to fetch
     if args.symbols:
@@ -357,7 +414,10 @@ def main() -> None:
 
         markets = _select_top_n(markets_with_price, args.top_n)
 
-    print(f"Fetching {args.days} days ({interval}) for {len(markets)} markets...")
+    print(
+        f"Fetching {args.days} days ({interval}) for {len(markets)} markets"
+        f" through {fetch_end.strftime('%Y-%m-%d')}..."
+    )
 
     for market in markets:
         try:
@@ -369,18 +429,34 @@ def main() -> None:
             print(f"  Fetching {market}...", end=" ")
 
             if interval == "1d":
-                refresh_days = _determine_refresh_days(existing_df, args.days)
-                candles = fetch_candles(market, refresh_days)
+                refresh_days = (
+                    args.days
+                    if deterministic_snapshot
+                    else _determine_refresh_days(existing_df, args.days)
+                )
+                candles = fetch_candles(market, refresh_days, to_date=fetch_end)
             else:
                 total_hours = args.days * 24
-                refresh_hours = _determine_refresh_hours(existing_df, total_hours)
+                refresh_hours = (
+                    total_hours
+                    if args.end_date is not None
+                    else _determine_refresh_hours(existing_df, total_hours)
+                )
                 candles = fetch_candles_minutes(
-                    market, unit=unit_map[interval], hours=refresh_hours
+                    market,
+                    unit=unit_map[interval],
+                    hours=refresh_hours,
+                    to_date=fetch_end,
                 )
 
             if candles:
                 df = _normalize_candles(candles, interval=interval)
-                save_candles(market, df, data_dir=target_dir)
+                save_candles(
+                    market,
+                    df,
+                    data_dir=target_dir,
+                    replace_existing=deterministic_snapshot,
+                )
                 quality = _validate_data_quality(df, interval)
                 status = f"OK ({int(quality['total_bars'])} bars"
                 if quality["missing_pct"] > 0:
