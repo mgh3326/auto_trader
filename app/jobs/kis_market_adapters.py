@@ -127,7 +127,10 @@ class DomesticAutomationAdapter:
                 stock_steps.append(
                     {
                         "step": "분석",
-                        "result": {"success": True, "message": "분석 스킵 (대체 분석기 준비 중)"},
+                        "result": {
+                            "success": True,
+                            "message": "분석 스킵 (대체 분석기 준비 중)",
+                        },
                     }
                 )
 
@@ -543,7 +546,10 @@ class OverseasAutomationAdapter:
                 stock_steps.append(
                     {
                         "step": "분석",
-                        "result": {"success": True, "message": "분석 스킵 (대체 분석기 준비 중)"},
+                        "result": {
+                            "success": True,
+                            "message": "분석 스킵 (대체 분석기 준비 중)",
+                        },
                     }
                 )
 

@@ -5,7 +5,7 @@ Tests for Toss notification integration in KIS automation tasks.
 (Gemini analyzer 제거 후, OpenClaw 기반 대체 전까지 no-op)
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -20,7 +20,9 @@ class TestDomesticStockTossNotification:
     """국내 주식 분석 함수 no-op 테스트"""
 
     @pytest.mark.asyncio
-    async def test_analyze_domestic_stock_returns_ignored_on_buy_scenario(self, mock_db):
+    async def test_analyze_domestic_stock_returns_ignored_on_buy_scenario(
+        self, mock_db
+    ):
         """국내 주식 분석 함수는 no-op으로 ignored 상태를 반환해야 함"""
         from app.jobs import kis_trading as kis_tasks
 
@@ -34,7 +36,9 @@ class TestDomesticStockTossNotification:
             mock_send_toss.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_analyze_domestic_stock_returns_ignored_on_sell_scenario(self, mock_db):
+    async def test_analyze_domestic_stock_returns_ignored_on_sell_scenario(
+        self, mock_db
+    ):
         """국내 주식 분석 함수는 no-op으로 ignored 상태를 반환해야 함"""
         from app.jobs import kis_trading as kis_tasks
 
@@ -64,7 +68,9 @@ class TestOverseasStockTossNotification:
     """해외 주식 분석 함수 no-op 테스트"""
 
     @pytest.mark.asyncio
-    async def test_analyze_overseas_stock_returns_ignored_on_buy_scenario(self, mock_db):
+    async def test_analyze_overseas_stock_returns_ignored_on_buy_scenario(
+        self, mock_db
+    ):
         """해외 주식 분석 함수는 no-op으로 ignored 상태를 반환해야 함"""
         from app.jobs import kis_trading as kis_tasks
 
@@ -78,7 +84,9 @@ class TestOverseasStockTossNotification:
             mock_send_toss.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_analyze_overseas_stock_returns_ignored_on_sell_scenario(self, mock_db):
+    async def test_analyze_overseas_stock_returns_ignored_on_sell_scenario(
+        self, mock_db
+    ):
         """해외 주식 분석 함수는 no-op으로 ignored 상태를 반환해야 함"""
         from app.jobs import kis_trading as kis_tasks
 
