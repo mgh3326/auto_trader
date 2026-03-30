@@ -1715,6 +1715,91 @@ class TestOrderFillRecording:
     """Tests for automatic recording of order fills to review.trades."""
 
     @pytest.mark.asyncio
+    async def test_real_buy_requires_thesis_before_execution(self, monkeypatch) -> None:
+        """Real buy orders must have thesis before execution."""
+        tools = build_tools()
+        preview_mock = AsyncMock()
+        place_buy_mock = AsyncMock()
+        monkeypatch.setattr(order_execution, "_preview_order", preview_mock)
+        monkeypatch.setattr(upbit_service, "place_buy_order", place_buy_mock)
+
+        result = await tools["place_order"](
+            symbol="KRW-BTC",
+            side="buy",
+            order_type="limit",
+            price=95_000_000.0,
+            quantity=0.001,
+            dry_run=False,
+            strategy="breakout",
+        )
+
+        assert result["success"] is False
+        assert result["error"] == "thesis is required for buy orders when dry_run=False"
+        preview_mock.assert_not_awaited()
+        place_buy_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_real_buy_requires_strategy_before_execution(
+        self, monkeypatch
+    ) -> None:
+        """Real buy orders must have strategy before execution."""
+        tools = build_tools()
+        preview_mock = AsyncMock()
+        place_buy_mock = AsyncMock()
+        monkeypatch.setattr(order_execution, "_preview_order", preview_mock)
+        monkeypatch.setattr(upbit_service, "place_buy_order", place_buy_mock)
+
+        result = await tools["place_order"](
+            symbol="KRW-BTC",
+            side="buy",
+            order_type="limit",
+            price=95_000_000.0,
+            quantity=0.001,
+            dry_run=False,
+            thesis="Breakout above resistance",
+        )
+
+        assert result["success"] is False
+        assert (
+            result["error"] == "strategy is required for buy orders when dry_run=False"
+        )
+        preview_mock.assert_not_awaited()
+        place_buy_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_dry_run_buy_allows_missing_thesis_and_strategy(
+        self, monkeypatch
+    ) -> None:
+        """Dry-run buy orders can work without thesis/strategy."""
+        tools = build_tools()
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_multiple_current_prices",
+            AsyncMock(return_value={"KRW-BTC": 95_000_000.0}),
+        )
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_my_coins",
+            AsyncMock(
+                return_value=[
+                    {"currency": "KRW", "balance": "500000000", "locked": "0"}
+                ]
+            ),
+        )
+
+        result = await tools["place_order"](
+            symbol="KRW-BTC",
+            side="buy",
+            order_type="limit",
+            price=95_000_000.0,
+            quantity=0.001,
+            dry_run=True,
+        )
+
+        assert result["success"] is True
+        assert result["dry_run"] is True
+
+    @pytest.mark.asyncio
     async def test_successful_order_saves_fill(self, monkeypatch) -> None:
         """Real order execution should save to review.trades."""
         tools = build_tools()
