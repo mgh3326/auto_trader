@@ -866,9 +866,7 @@ class TvScreenerService:
                         )
 
                 if sort_by:
-                    sort_result = query.sort_by(sort_by, ascending=ascending)
-                    if sort_result is not None:
-                        query = sort_result
+                    query = query.sort_by(sort_by, ascending=ascending)
 
                 if limit:
                     query = query.set_range(0, limit)
@@ -966,9 +964,7 @@ class TvScreenerService:
                         )
 
                 if sort_by:
-                    sort_result = query.sort_by(sort_by, ascending=ascending)
-                    if sort_result is not None:
-                        query = sort_result
+                    query = query.sort_by(sort_by, ascending=ascending)
 
                 if limit:
                     query = query.set_range(0, limit)
