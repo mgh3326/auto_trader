@@ -31,6 +31,24 @@ class NewsArticleCreate(BaseModel):
     def validate_title(cls, v: str) -> str:
         return v.strip()
 
+    @field_validator("source", "author", "feed_source")
+    @classmethod
+    def normalize_optional_text(cls, v: str | None) -> str | None:
+        """Trim optional text fields; whitespace-only becomes None."""
+        if v is None:
+            return None
+        value = v.strip()
+        return value or None
+
+    @field_validator("keywords")
+    @classmethod
+    def normalize_keywords(cls, v: list[str] | None) -> list[str] | None:
+        """Clean keyword array: trim, drop empty/whitespace entries."""
+        if not v:
+            return None
+        cleaned = [item.strip() for item in v if item and item.strip()]
+        return cleaned or None
+
 
 class NewsArticleBulkCreate(BaseModel):
     articles: list[NewsArticleCreate] = Field(..., max_length=500)

@@ -49,6 +49,11 @@ async def create_news_article(
 async def bulk_create_news_articles(
     articles: list,
 ) -> tuple[int, int, list[str]]:
+    """Insert crawled news rows and skip exact duplicate URLs.
+
+    This intentionally does not do title/source/published_at fuzzy dedupe.
+    URL-only dedupe is the current production rule for the briefing pipeline.
+    """
     if not articles:
         return 0, 0, []
 
