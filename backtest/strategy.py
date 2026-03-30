@@ -6,6 +6,14 @@ import numpy as np
 import pandas as pd
 
 import prepare
+from indicators import (
+    _calc_average_volume,
+    _calc_bollinger,
+    _calc_ema,
+    _calc_macd,
+    _calc_momentum,
+    _calc_rsi,
+)
 
 if TYPE_CHECKING:
     from pandas import Series
@@ -91,97 +99,9 @@ VOLUME_LOOKBACK = 20
 VOLUME_THRESHOLD = 1.5
 
 
-def _calc_rsi(closes: np.ndarray, period: int) -> float | None:
-    """Calculate RSI using Wilder's smoothing method."""
-    if len(closes) < period + 1:
-        return None
-
-    deltas = np.diff(closes)
-    gains = np.where(deltas > 0, deltas, 0)
-    losses = np.where(deltas < 0, -deltas, 0)
-
-    avg_gain = np.mean(gains[:period])
-    avg_loss = np.mean(losses[:period])
-
-    if avg_loss == 0:
-        return 100.0 if avg_gain > 0 else 50.0
-
-    for i in range(period, len(gains)):
-        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
-        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
-
-    rs = avg_gain / avg_loss if avg_loss > 0 else float('inf')
-    rsi = 100 - (100 / (1 + rs))
-    return float(rsi)
-
-
-def _calc_ema(closes: np.ndarray, span: int) -> np.ndarray | None:
-    """Calculate EMA using exponential smoothing.
-
-    Returns None if insufficient history (need at least span data points).
-    Returns full EMA array; caller should use [-1] for latest value.
-    """
-    if len(closes) < span:
-        return None
-    return pd.Series(closes).ewm(span=span, adjust=False).mean().values
-
-
-def _calc_macd(
-    closes: np.ndarray, fast: int, slow: int, signal: int
-) -> tuple[float, float, float] | None:
-    """Calculate MACD line, signal line, and histogram.
-
-    Returns (macd_line, signal_line, histogram) or None if insufficient history.
-    """
-    if len(closes) < slow + signal:
-        return None
-    ema_fast = pd.Series(closes).ewm(span=fast, adjust=False).mean()
-    ema_slow = pd.Series(closes).ewm(span=slow, adjust=False).mean()
-    macd_line = ema_fast - ema_slow
-    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
-    histogram = macd_line - signal_line
-    return float(macd_line.iloc[-1]), float(signal_line.iloc[-1]), float(histogram.iloc[-1])
-
-
-def _calc_bollinger(
-    closes: np.ndarray, period: int, std_mult: float
-) -> tuple[float, float, float] | None:
-    """Calculate Bollinger Bands (upper, middle, lower).
-
-    Returns (upper, middle, lower) or None if insufficient history.
-    """
-    if len(closes) < period:
-        return None
-    middle = np.mean(closes[-period:])
-    std = np.std(closes[-period:])
-    upper = middle + std_mult * std
-    lower = middle - std_mult * std
-    return float(upper), float(middle), float(lower)
-
-
-def _calc_momentum(closes: np.ndarray, period: int) -> float | None:
-    """Calculate price momentum: (current - period_ago) / period_ago * 100.
-
-    Returns momentum value or None if insufficient history.
-    """
-    if len(closes) < period + 1:
-        return None
-    current = closes[-1]
-    past = closes[-(period + 1)]
-    return float((current - past) / past * 100)
-
-
-def _calc_average_volume(volumes: np.ndarray, lookback: int) -> float | None:
-    """Calculate average volume over lookback period.
-
-    Returns average volume or None if insufficient history.
-    """
-    if len(volumes) < lookback:
-        return None
-    return float(np.mean(volumes[-lookback:]))
-
-
-def _format_vote_reason(prefix: str, votes: int, flags: dict[str, bool], limit: int) -> str:
+def _format_vote_reason(
+    prefix: str, votes: int, flags: dict[str, bool], limit: int
+) -> str:
     """Format vote reason string with triggered signal names.
 
     Args:
@@ -206,6 +126,7 @@ class Strategy:
 
     def _days_between(self, date1: str, date2: str) -> int:
         from datetime import datetime
+
         try:
             d1 = datetime.strptime(date1, "%Y-%m-%d")
             d2 = datetime.strptime(date2, "%Y-%m-%d")
@@ -249,7 +170,10 @@ class Strategy:
         - bear_flags: dict of which bear signals triggered
         Returns None if insufficient history.
         """
-        if len(bar.history) < max(RSI_PERIOD_SLOW, BB_PERIOD, EMA_SLOW, MACD_SLOW + MACD_SIGNAL) + 1:
+        if (
+            len(bar.history)
+            < max(RSI_PERIOD_SLOW, BB_PERIOD, EMA_SLOW, MACD_SLOW + MACD_SIGNAL) + 1
+        ):
             return None
 
         closes = bar.history["close"].values
@@ -273,20 +197,30 @@ class Strategy:
 
         # Bull votes
         bull_flags = {
-            "dual_rsi_oversold": rsi_slow <= RSI_OVERSOLD and (rsi_fast is not None and rsi_fast <= RSI_OVERSOLD),
-            "macd_histogram_positive": macd_result is not None and macd_result[2] > 0,  # histogram > 0
-            "close_below_bb_lower": bb_result is not None and current_close < bb_result[2],  # close < lower
-            "ema_fast_above_slow": ema_fast_result is not None and ema_slow_result is not None and ema_fast_result[-1] > ema_slow_result[-1],
+            "dual_rsi_oversold": rsi_slow <= RSI_OVERSOLD
+            and (rsi_fast is not None and rsi_fast <= RSI_OVERSOLD),
+            "macd_histogram_positive": macd_result is not None
+            and macd_result[2] > 0,  # histogram > 0
+            "close_below_bb_lower": bb_result is not None
+            and current_close < bb_result[2],  # close < lower
+            "ema_fast_above_slow": ema_fast_result is not None
+            and ema_slow_result is not None
+            and ema_fast_result[-1] > ema_slow_result[-1],
             "momentum_positive": momentum is not None and momentum > 0,
-            "volume_above_avg": avg_volume is not None and current_volume > avg_volume * VOLUME_THRESHOLD,
+            "volume_above_avg": avg_volume is not None
+            and current_volume > avg_volume * VOLUME_THRESHOLD,
         }
         bull_votes = sum(1 for v in bull_flags.values() if v)
 
         # Bear votes
         bear_flags = {
-            "macd_histogram_negative": macd_result is not None and macd_result[2] < 0,  # histogram < 0
-            "close_above_bb_upper": bb_result is not None and current_close > bb_result[0],  # close > upper
-            "ema_fast_below_slow": ema_fast_result is not None and ema_slow_result is not None and ema_fast_result[-1] < ema_slow_result[-1],
+            "macd_histogram_negative": macd_result is not None
+            and macd_result[2] < 0,  # histogram < 0
+            "close_above_bb_upper": bb_result is not None
+            and current_close > bb_result[0],  # close > upper
+            "ema_fast_below_slow": ema_fast_result is not None
+            and ema_slow_result is not None
+            and ema_fast_result[-1] < ema_slow_result[-1],
             "momentum_negative": momentum is not None and momentum < 0,
             "rsi_slow_high": rsi_slow > RSI_EXIT,  # Slow RSI above exit threshold
         }
@@ -340,20 +274,28 @@ class Strategy:
 
                 # 1. Stop-loss (highest priority)
                 if avg_price > 0 and bar.close < avg_price * (1 - STOP_LOSS_PCT):
-                    signals.append(prepare.Signal(
-                        symbol=symbol, action="sell", weight=1.0,
-                        reason=f"Stop-loss ({(bar.close/avg_price - 1)*100:.1f}%)",
-                    ))
+                    signals.append(
+                        prepare.Signal(
+                            symbol=symbol,
+                            action="sell",
+                            weight=1.0,
+                            reason=f"Stop-loss ({(bar.close / avg_price - 1) * 100:.1f}%)",
+                        )
+                    )
                     current_positions.discard(symbol)
                     self._stop_loss_dates[symbol] = portfolio.date
                     continue
 
                 # 2. RSI recovery exit (when profitable)
                 if rsi_slow >= RSI_EXIT:
-                    signals.append(prepare.Signal(
-                        symbol=symbol, action="sell", weight=1.0,
-                        reason=f"RSI recovered to {rsi_slow:.0f}",
-                    ))
+                    signals.append(
+                        prepare.Signal(
+                            symbol=symbol,
+                            action="sell",
+                            weight=1.0,
+                            reason=f"RSI recovered to {rsi_slow:.0f}",
+                        )
+                    )
                     current_positions.discard(symbol)
                     continue
 
@@ -362,10 +304,14 @@ class Strategy:
                 if entry_date:
                     holding_days = self._days_between(entry_date, portfolio.date)
                     if holding_days >= HOLDING_DAYS:
-                        signals.append(prepare.Signal(
-                            symbol=symbol, action="sell", weight=1.0,
-                            reason=f"Max holding {holding_days}d",
-                        ))
+                        signals.append(
+                            prepare.Signal(
+                                symbol=symbol,
+                                action="sell",
+                                weight=1.0,
+                                reason=f"Max holding {holding_days}d",
+                            )
+                        )
                         current_positions.discard(symbol)
                         continue
 
@@ -374,10 +320,14 @@ class Strategy:
                     reason = _format_vote_reason(
                         "Bear", bear_votes, signal_data["bear_flags"], 3
                     )
-                    signals.append(prepare.Signal(
-                        symbol=symbol, action="sell", weight=1.0,
-                        reason=reason,
-                    ))
+                    signals.append(
+                        prepare.Signal(
+                            symbol=symbol,
+                            action="sell",
+                            weight=1.0,
+                            reason=reason,
+                        )
+                    )
                     current_positions.discard(symbol)
                     continue
 
@@ -385,7 +335,9 @@ class Strategy:
             if not is_held and len(current_positions) < MAX_POSITIONS:
                 # Check cooldown after stop-loss
                 if symbol in self._stop_loss_dates:
-                    days_since_sl = self._days_between(self._stop_loss_dates[symbol], portfolio.date)
+                    days_since_sl = self._days_between(
+                        self._stop_loss_dates[symbol], portfolio.date
+                    )
                     if days_since_sl < COOLDOWN_DAYS:
                         continue
                     else:
@@ -448,13 +400,9 @@ class Strategy:
                     and close_below_bb_lower
                     and macd_histogram_positive
                 )
-                allow_btc_pure_reversion_buy = (
-                    not pure_reversion_buy
-                    or symbol != "BTC"
-                )
+                allow_btc_pure_reversion_buy = not pure_reversion_buy or symbol != "BTC"
                 allow_eth_strong_reversion_buy = (
-                    not strong_reversion_buy
-                    or symbol != "ETH"
+                    not strong_reversion_buy or symbol != "ETH"
                 )
                 allow_avax_strong_reversion_buy = (
                     symbol != "AVAX"
@@ -478,7 +426,9 @@ class Strategy:
                 btc_mid_hot_accel_buy = (
                     pure_trend_buy
                     and symbol == "BTC"
-                    and BTC_MID_HOT_RSI_LOW <= market_state["avg_rsi"] < BTC_MID_HOT_RSI_HIGH
+                    and BTC_MID_HOT_RSI_LOW
+                    <= market_state["avg_rsi"]
+                    < BTC_MID_HOT_RSI_HIGH
                     and market_state["avg_rsi_change"] >= BTC_EXTREME_ACCEL_CHANGE
                 )
                 sol_low_breadth_trend_buy = (
@@ -490,13 +440,17 @@ class Strategy:
                 sol_hot_stall_trend_buy = (
                     pure_trend_buy
                     and symbol == "SOL"
-                    and SOL_HOT_STALL_RSI_LOW <= market_state["avg_rsi"] < SOL_HOT_STALL_RSI_HIGH
+                    and SOL_HOT_STALL_RSI_LOW
+                    <= market_state["avg_rsi"]
+                    < SOL_HOT_STALL_RSI_HIGH
                     and market_state["avg_rsi_change"] < SOL_HOT_STALL_CHANGE
                 )
                 link_hot_stall_trend_buy = (
                     pure_trend_buy
                     and symbol == "LINK"
-                    and LINK_HOT_STALL_RSI_LOW <= market_state["avg_rsi"] < LINK_HOT_STALL_RSI_HIGH
+                    and LINK_HOT_STALL_RSI_LOW
+                    <= market_state["avg_rsi"]
+                    < LINK_HOT_STALL_RSI_HIGH
                     and market_state["avg_rsi_change"] < LINK_HOT_STALL_CHANGE
                 )
                 avax_pure_trend_buy = pure_trend_buy and symbol == "AVAX"
@@ -529,7 +483,9 @@ class Strategy:
                 )
                 require_trend_acceleration = (
                     pure_trend_buy
-                    and TREND_MID_RSI_LOW <= market_state["avg_rsi"] < TREND_MID_RSI_HIGH
+                    and TREND_MID_RSI_LOW
+                    <= market_state["avg_rsi"]
+                    < TREND_MID_RSI_HIGH
                 )
                 allow_trend_acceleration_buy = (
                     not require_trend_acceleration
@@ -558,9 +514,7 @@ class Strategy:
                     and allow_trend_acceleration_buy
                     and allow_dot_trend_acceleration_buy
                 ):
-                    reason = _format_vote_reason(
-                        "Bull", bull_votes, bull_flags, 4
-                    )
+                    reason = _format_vote_reason("Bull", bull_votes, bull_flags, 4)
                     if strong_reversion_buy:
                         buy_weight = STRONG_REVERSION_POSITION_SIZE
                     elif btc_hot_stall_trend_buy:
@@ -589,10 +543,14 @@ class Strategy:
                         buy_weight = XRP_TREND_POSITION_SIZE
                     else:
                         buy_weight = POSITION_SIZE
-                    signals.append(prepare.Signal(
-                        symbol=symbol, action="buy", weight=buy_weight,
-                        reason=reason,
-                    ))
+                    signals.append(
+                        prepare.Signal(
+                            symbol=symbol,
+                            action="buy",
+                            weight=buy_weight,
+                            reason=reason,
+                        )
+                    )
                     current_positions.add(symbol)
 
         return signals
