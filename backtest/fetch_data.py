@@ -4,6 +4,7 @@ import argparse
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pandas as pd
@@ -17,19 +18,37 @@ DATA_DIR = Path(__file__).resolve().parent / "data"
 
 def _parse_args():
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description="Fetch Upbit daily candle data")
-    parser.add_argument("--symbols", nargs="*", help="Specific symbols to fetch (e.g., BTC ETH)")
-    parser.add_argument("--days", type=int, default=730, help="Number of days to fetch (default: 730)")
-    parser.add_argument("--top-n", type=int, default=100, help="Top N markets by volume (default: 100)")
+    parser = argparse.ArgumentParser(description="Fetch Upbit candle data")
+    parser.add_argument(
+        "--symbols", nargs="*", help="Specific symbols to fetch (e.g., BTC ETH)"
+    )
+    parser.add_argument(
+        "--days", type=int, default=730, help="Number of days to fetch (default: 730)"
+    )
+    parser.add_argument(
+        "--top-n", type=int, default=100, help="Top N markets by volume (default: 100)"
+    )
+    parser.add_argument(
+        "--interval",
+        choices=["1d", "1h", "4h"],
+        default="1d",
+        help="Candle interval (default: 1d)",
+    )
     return parser.parse_args()
 
 
-def _filter_krw_markets(markets: list[dict]) -> list[dict]:
+def _data_dir_for_interval(interval: str) -> Path:
+    if interval == "1d":
+        return DATA_DIR
+    return DATA_DIR / interval
+
+
+def _filter_krw_markets(markets: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Filter markets to only KRW pairs."""
     return [m for m in markets if m.get("market", "").startswith("KRW-")]
 
 
-def _select_top_n(markets: list[dict], top_n: int) -> list[str]:
+def _select_top_n(markets: list[dict[str, Any]], top_n: int) -> list[str]:
     """Select top N markets by 24h traded value (acc_trade_price_24h)."""
     # Sort by acc_trade_price_24h (24h accumulated trade price) descending
     sorted_markets = sorted(
@@ -69,7 +88,7 @@ def _determine_refresh_days(
     return max(1, min(int(requested_days), refresh_days))
 
 
-def fetch_markets() -> list[dict]:
+def fetch_markets() -> list[dict[str, Any]]:
     """Fetch all available markets from Upbit."""
     url = f"{UPBIT_API_URL}/market/all"
     with httpx.Client() as client:
@@ -78,7 +97,7 @@ def fetch_markets() -> list[dict]:
         return response.json()
 
 
-def fetch_candles(market: str, days: int) -> list[dict]:
+def fetch_candles(market: str, days: int) -> list[dict[str, Any]]:
     """Fetch daily candles for a market.
 
     Args:
@@ -114,7 +133,9 @@ def fetch_candles(market: str, days: int) -> list[dict]:
             all_candles.extend(candles)
 
             # Update to_date for next pagination
-            oldest_date = datetime.fromisoformat(candles[-1]["candle_date_time_utc"].replace("Z", "+00:00"))
+            oldest_date = datetime.fromisoformat(
+                candles[-1]["candle_date_time_utc"].replace("Z", "+00:00")
+            )
             to_date = oldest_date - timedelta(days=1)
             remaining_days -= count
 
@@ -124,23 +145,27 @@ def fetch_candles(market: str, days: int) -> list[dict]:
     return all_candles
 
 
-def _normalize_candles(candles: list[dict]) -> pd.DataFrame:
+def _normalize_candles(candles: list[dict[str, Any]]) -> pd.DataFrame:
     """Normalize Upbit API candle data to target schema."""
     if not candles:
-        return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume", "value"])
+        return pd.DataFrame(
+            columns=["date", "open", "high", "low", "close", "volume", "value"]
+        )
 
     df = pd.DataFrame(candles)
 
     # Map Upbit columns to our schema
-    df = df.rename(columns={
-        "candle_date_time_utc": "date",
-        "opening_price": "open",
-        "high_price": "high",
-        "low_price": "low",
-        "trade_price": "close",
-        "candle_acc_trade_volume": "volume",
-        "candle_acc_trade_price": "value",
-    })
+    df = df.rename(
+        columns={
+            "candle_date_time_utc": "date",
+            "opening_price": "open",
+            "high_price": "high",
+            "low_price": "low",
+            "trade_price": "close",
+            "candle_acc_trade_volume": "volume",
+            "candle_acc_trade_price": "value",
+        }
+    )
 
     # Keep only required columns
     df = df[["date", "open", "high", "low", "close", "volume", "value"]]
@@ -181,15 +206,15 @@ def _merge_with_existing(new_df: pd.DataFrame, parquet_path: Path) -> pd.DataFra
     return combined
 
 
-def save_candles(market: str, df: pd.DataFrame) -> None:
+def save_candles(market: str, df: pd.DataFrame, data_dir: Path = DATA_DIR) -> None:
     """Save candles to parquet file.
 
     Args:
         market: Market code (e.g., "KRW-BTC")
         df: DataFrame with candle data
     """
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    parquet_path = DATA_DIR / f"{market}.parquet"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    parquet_path = data_dir / f"{market}.parquet"
 
     merged_df = _merge_with_existing(df, parquet_path)
     merged_df.to_parquet(parquet_path, index=False)
@@ -198,6 +223,7 @@ def save_candles(market: str, df: pd.DataFrame) -> None:
 def main() -> None:
     """Main entry point."""
     args = _parse_args()
+    data_dir = _data_dir_for_interval(args.interval)
 
     # Determine which markets to fetch
     if args.symbols:
@@ -212,7 +238,9 @@ def main() -> None:
         for market in krw_markets:
             try:
                 with httpx.Client() as client:
-                    response = client.get(f"{UPBIT_API_URL}/ticker", params={"markets": market["market"]})
+                    response = client.get(
+                        f"{UPBIT_API_URL}/ticker", params={"markets": market["market"]}
+                    )
                     if response.status_code == 200:
                         ticker = response.json()[0]
                         market["acc_trade_price_24h"] = ticker.get(
@@ -229,15 +257,17 @@ def main() -> None:
 
     for market in markets:
         try:
-            parquet_path = DATA_DIR / f"{market}.parquet"
-            existing_df = pd.read_parquet(parquet_path) if parquet_path.exists() else None
+            parquet_path = data_dir / f"{market}.parquet"
+            existing_df = (
+                pd.read_parquet(parquet_path) if parquet_path.exists() else None
+            )
             refresh_days = _determine_refresh_days(existing_df, args.days)
 
             print(f"  Fetching {market}...", end=" ")
             candles = fetch_candles(market, refresh_days)
             if candles:
                 df = _normalize_candles(candles)
-                save_candles(market, df)
+                save_candles(market, df, data_dir=data_dir)
                 print(f"✓ ({len(df)} candles)")
             else:
                 print("✗ (no data)")

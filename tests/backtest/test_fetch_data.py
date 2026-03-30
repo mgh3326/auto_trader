@@ -1,5 +1,6 @@
 """Tests for backtest fetch_data module."""
 
+import importlib.util
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -7,10 +8,51 @@ from unittest import mock
 
 import pandas as pd
 
-# Add backtest directory to path for imports
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "backtest"))
+backtest_dir = Path(__file__).resolve().parent.parent.parent / "backtest"
+spec = importlib.util.spec_from_file_location(
+    "fetch_data", backtest_dir / "fetch_data.py"
+)
+if spec is None or spec.loader is None:
+    raise ImportError("Unable to load backtest/fetch_data.py")
+fetch_data = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fetch_data)
 
-import fetch_data
+
+class TestIntervalSupport:
+    """Tests for --interval option and path routing."""
+
+    def test_default_interval_is_1d(self):
+        """Test that default interval is '1d'."""
+        with mock.patch("sys.argv", ["fetch_data.py"]):
+            args = fetch_data._parse_args()
+            assert args.interval == "1d"
+
+    def test_interval_1h_parses(self):
+        """Test --interval 1h parses correctly."""
+        with mock.patch("sys.argv", ["fetch_data.py", "--interval", "1h"]):
+            args = fetch_data._parse_args()
+            assert args.interval == "1h"
+
+    def test_interval_4h_parses(self):
+        """Test --interval 4h parses correctly."""
+        with mock.patch("sys.argv", ["fetch_data.py", "--interval", "4h"]):
+            args = fetch_data._parse_args()
+            assert args.interval == "4h"
+
+    def test_data_dir_for_1d(self):
+        """Test data directory for 1d interval (backward compat: flat dir)."""
+        result = fetch_data._data_dir_for_interval("1d")
+        assert result == fetch_data.DATA_DIR
+
+    def test_data_dir_for_1h(self):
+        """Test data directory for 1h interval."""
+        result = fetch_data._data_dir_for_interval("1h")
+        assert result == fetch_data.DATA_DIR / "1h"
+
+    def test_data_dir_for_4h(self):
+        """Test data directory for 4h interval."""
+        result = fetch_data._data_dir_for_interval("4h")
+        assert result == fetch_data.DATA_DIR / "4h"
 
 
 class TestMarketSelection:
@@ -103,6 +145,7 @@ class TestMarketSelection:
                 return False
 
             def get(self, url, params=None):
+                assert params is not None
                 market = params["markets"]
                 return FakeResponse(
                     [
