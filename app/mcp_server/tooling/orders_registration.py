@@ -55,6 +55,8 @@ def register_order_tools(mcp: FastMCP) -> None:
             "Place buy/sell orders for stocks or crypto. "
             "Supports Upbit (crypto) and KIS (KR/US equities). "
             "Always returns dry_run preview unless explicitly set to False. "
+            "For real buy orders (dry_run=False), thesis and strategy are required "
+            "so a trade journal can be created automatically. "
             "Safety limit: max 20 orders/day. "
             "dry_run=True by default for safety."
         ),
@@ -68,6 +70,13 @@ def register_order_tools(mcp: FastMCP) -> None:
         amount: float | None = None,
         dry_run: bool = True,
         reason: str = "",
+        thesis: str | None = None,
+        strategy: str | None = None,
+        target_price: float | None = None,
+        stop_loss: float | None = None,
+        min_hold_days: int | None = None,
+        notes: str | None = None,
+        indicators_snapshot: dict | None = None,
     ):
         return await orders_history._place_order_impl(
             symbol=symbol,
@@ -78,6 +87,13 @@ def register_order_tools(mcp: FastMCP) -> None:
             amount=amount,
             dry_run=dry_run,
             reason=reason,
+            thesis=thesis,
+            strategy=strategy,
+            target_price=target_price,
+            stop_loss=stop_loss,
+            min_hold_days=min_hold_days,
+            notes=notes,
+            indicators_snapshot=indicators_snapshot,
         )
 
     @mcp.tool(
