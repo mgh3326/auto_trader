@@ -584,6 +584,105 @@ class TestIncrementalRefresh:
         assert seen_days == [7]
 
 
+class TestIntervalAwareMain:
+    def test_main_1h_calls_fetch_candles_minutes(self, monkeypatch, tmp_path):
+        called_with: list[dict[str, object]] = []
+
+        def fake_fetch_candles_minutes(market, unit, hours):
+            called_with.append({"market": market, "unit": unit, "hours": hours})
+            return []
+
+        data_dir = tmp_path / "data" / "1h"
+        data_dir.mkdir(parents=True)
+
+        monkeypatch.setattr(fetch_data, "DATA_DIR", tmp_path / "data")
+        monkeypatch.setattr(
+            fetch_data, "fetch_candles_minutes", fake_fetch_candles_minutes
+        )
+        monkeypatch.setattr(fetch_data.time, "sleep", lambda *a: None)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "fetch_data.py",
+                "--interval",
+                "1h",
+                "--symbols",
+                "BTC",
+                "--days",
+                "30",
+            ],
+        )
+
+        fetch_data.main()
+
+        assert len(called_with) == 1
+        assert called_with[0]["unit"] == 60
+        assert called_with[0]["hours"] == 30 * 24
+
+    def test_main_1d_calls_fetch_candles(self, monkeypatch, tmp_path):
+        called_with: list[dict[str, object]] = []
+
+        def fake_fetch_candles(market, days):
+            called_with.append({"market": market, "days": days})
+            return []
+
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(parents=True)
+
+        monkeypatch.setattr(fetch_data, "DATA_DIR", data_dir)
+        monkeypatch.setattr(fetch_data, "fetch_candles", fake_fetch_candles)
+        monkeypatch.setattr(fetch_data.time, "sleep", lambda *a: None)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "fetch_data.py",
+                "--interval",
+                "1d",
+                "--symbols",
+                "BTC",
+                "--days",
+                "30",
+            ],
+        )
+
+        fetch_data.main()
+
+        assert len(called_with) == 1
+        assert called_with[0]["days"] == 30
+
+
+class TestIncrementalRefreshHourly:
+    def test_determine_refresh_hours_empty(self):
+        hours = fetch_data._determine_refresh_hours(None, requested_hours=720)
+        assert hours == 720
+
+    def test_determine_refresh_hours_recent_data(self):
+        existing_df = pd.DataFrame(
+            {
+                "date": [
+                    "2026-03-22T10:00:00",
+                    "2026-03-22T11:00:00",
+                    "2026-03-22T12:00:00",
+                ],
+                "open": [1.0] * 3,
+                "high": [1.0] * 3,
+                "low": [1.0] * 3,
+                "close": [1.0] * 3,
+                "volume": [1.0] * 3,
+                "value": [1.0] * 3,
+            }
+        )
+        hours = fetch_data._determine_refresh_hours(
+            existing_df,
+            requested_hours=720,
+            overlap_hours=48,
+            now=datetime(2026, 3, 22, 13, 0, 0),
+        )
+        assert hours == 49
+
+
 class TestCLIOptions:
     """Tests for CLI argument parsing."""
 

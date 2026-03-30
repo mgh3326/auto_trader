@@ -88,6 +88,27 @@ def _determine_refresh_days(
     return max(1, min(int(requested_days), refresh_days))
 
 
+def _determine_refresh_hours(
+    existing_df: pd.DataFrame | None,
+    requested_hours: int,
+    overlap_hours: int = 48,
+    now: datetime | None = None,
+) -> int:
+    if existing_df is None or existing_df.empty:
+        return max(1, int(requested_hours))
+    if "date" not in existing_df.columns:
+        return max(1, min(int(requested_hours), int(overlap_hours)))
+
+    reference = now or datetime.now()
+    last_stored = pd.to_datetime(existing_df["date"], errors="coerce").max()
+    if pd.isna(last_stored):
+        return max(1, min(int(requested_hours), int(overlap_hours)))
+
+    stale_hours = max(0, int((reference - last_stored).total_seconds() / 3600))
+    refresh_hours = stale_hours + int(overlap_hours)
+    return max(1, min(int(requested_hours), refresh_hours))
+
+
 def fetch_markets() -> list[dict[str, Any]]:
     """Fetch all available markets from Upbit."""
     url = f"{UPBIT_API_URL}/market/all"
@@ -247,15 +268,16 @@ def _merge_with_existing(new_df: pd.DataFrame, parquet_path: Path) -> pd.DataFra
     return combined
 
 
-def save_candles(market: str, df: pd.DataFrame, data_dir: Path = DATA_DIR) -> None:
+def save_candles(market: str, df: pd.DataFrame, data_dir: Path | None = None) -> None:
     """Save candles to parquet file.
 
     Args:
         market: Market code (e.g., "KRW-BTC")
         df: DataFrame with candle data
     """
-    data_dir.mkdir(parents=True, exist_ok=True)
-    parquet_path = data_dir / f"{market}.parquet"
+    target_dir = data_dir or DATA_DIR
+    target_dir.mkdir(parents=True, exist_ok=True)
+    parquet_path = target_dir / f"{market}.parquet"
 
     merged_df = _merge_with_existing(df, parquet_path)
     merged_df.to_parquet(parquet_path, index=False)
@@ -264,7 +286,9 @@ def save_candles(market: str, df: pd.DataFrame, data_dir: Path = DATA_DIR) -> No
 def main() -> None:
     """Main entry point."""
     args = _parse_args()
-    data_dir = _data_dir_for_interval(args.interval)
+    interval = args.interval
+    target_dir = _data_dir_for_interval(interval)
+    unit_map = {"1h": 60, "4h": 240}
 
     # Determine which markets to fetch
     if args.symbols:
@@ -294,21 +318,30 @@ def main() -> None:
 
         markets = _select_top_n(markets_with_price, args.top_n)
 
-    print(f"Fetching {args.days} days of data for {len(markets)} markets...")
+    print(f"Fetching {args.days} days ({interval}) for {len(markets)} markets...")
 
     for market in markets:
         try:
-            parquet_path = data_dir / f"{market}.parquet"
+            parquet_path = target_dir / f"{market}.parquet"
             existing_df = (
                 pd.read_parquet(parquet_path) if parquet_path.exists() else None
             )
-            refresh_days = _determine_refresh_days(existing_df, args.days)
 
             print(f"  Fetching {market}...", end=" ")
-            candles = fetch_candles(market, refresh_days)
+
+            if interval == "1d":
+                refresh_days = _determine_refresh_days(existing_df, args.days)
+                candles = fetch_candles(market, refresh_days)
+            else:
+                total_hours = args.days * 24
+                refresh_hours = _determine_refresh_hours(existing_df, total_hours)
+                candles = fetch_candles_minutes(
+                    market, unit=unit_map[interval], hours=refresh_hours
+                )
+
             if candles:
-                df = _normalize_candles(candles)
-                save_candles(market, df, data_dir=data_dir)
+                df = _normalize_candles(candles, interval=interval)
+                save_candles(market, df, data_dir=target_dir)
                 print(f"✓ ({len(df)} candles)")
             else:
                 print("✗ (no data)")
