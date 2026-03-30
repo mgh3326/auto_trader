@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import json
+from decimal import Decimal
 from typing import Any, Literal
 from typing import cast as typing_cast
 
@@ -35,6 +36,7 @@ from app.mcp_server.tooling.shared import (
 )
 from app.models.review import Trade
 from app.models.trade_journal import JournalStatus, TradeJournal
+from app.models.trading import InstrumentType
 from app.services.brokers.kis import (
     KISClient,
     extract_domestic_cash_summary_from_integrated_margin,
@@ -562,9 +564,6 @@ async def _create_trade_journal_for_buy(
     Returns a dict with journal_created, journal_id, journal_status.
     Raises on DB errors to allow caller to handle.
     """
-    from decimal import Decimal
-    from app.models.trade_journal import InstrumentType, JournalStatus, TradeJournal
-
     hold_until = (
         now_kst() + datetime.timedelta(days=min_hold_days)
         if min_hold_days and min_hold_days > 0

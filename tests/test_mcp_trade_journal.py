@@ -437,6 +437,52 @@ class TestCreateTradeJournalForBuy:
         assert result["journal_created"] is True
         assert result["journal_status"] == "draft"
 
+    @pytest.mark.asyncio
+    async def test_rebuy_same_symbol_creates_fresh_draft_without_active_lookup(
+        self,
+    ) -> None:
+        """Re-buy should create a fresh draft instead of reusing an active journal."""
+        from app.mcp_server.tooling.order_execution import _create_trade_journal_for_buy
+        from app.models.trade_journal import JournalStatus
+
+        mock_session = AsyncMock()
+
+        async def refresh_side_effect(journal: TradeJournal) -> None:
+            journal.id = 99
+
+        mock_session.refresh.side_effect = refresh_side_effect
+        factory = _mock_session_factory(mock_session)
+
+        with patch(
+            "app.mcp_server.tooling.order_execution._order_session_factory",
+            return_value=factory,
+        ):
+            result = await _create_trade_journal_for_buy(
+                symbol="KRW-BTC",
+                market_type="crypto",
+                preview={
+                    "price": 96_000_000.0,
+                    "quantity": 0.002,
+                    "estimated_value": 192_000.0,
+                },
+                thesis="second scale-in after breakout retest",
+                strategy="weekly-breakout",
+                target_price=110_000_000.0,
+                stop_loss=92_000_000.0,
+                min_hold_days=14,
+                notes="rebuy entry",
+                indicators_snapshot={"rsi_14": 61.5},
+            )
+
+        inserted = mock_session.add.call_args.args[0]
+        assert inserted.status == JournalStatus.draft
+        assert inserted.symbol == "KRW-BTC"
+        assert inserted.trade_id is None
+        mock_session.execute.assert_not_called()
+        assert result["journal_created"] is True
+        assert result["journal_id"] == 99
+        assert result["journal_status"] == "draft"
+
 
 class TestJournalFillIntegration:
     """Integration tests for journal-fill linking functionality."""
@@ -498,3 +544,40 @@ class TestJournalFillIntegration:
 
         # Verify no commit was made (nothing to update)
         mock_session.commit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_link_journal_to_fill_queries_latest_draft_for_same_symbol(
+        self,
+    ) -> None:
+        """Linking should target the newest draft for the symbol on re-buy."""
+        from app.mcp_server.tooling.order_execution import _link_journal_to_fill
+        from app.models.trade_journal import JournalStatus
+
+        mock_session = AsyncMock()
+        draft_journal = TradeJournal(
+            id=84,
+            symbol="KRW-BTC",
+            instrument_type=InstrumentType.crypto,
+            thesis="newest thesis",
+            status="draft",
+        )
+
+        mock_scalars = MagicMock()
+        mock_scalars.first.return_value = draft_journal
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute.return_value = mock_result
+
+        factory = _mock_session_factory(mock_session)
+        with patch(
+            "app.mcp_server.tooling.order_execution._order_session_factory",
+            return_value=factory,
+        ):
+            await _link_journal_to_fill("KRW-BTC", trade_id=321)
+
+        stmt = mock_session.execute.call_args.args[0]
+        compiled = stmt.compile()
+
+        assert compiled.params["symbol_1"] == "KRW-BTC"
+        assert compiled.params["status_1"] == JournalStatus.draft
+        assert "ORDER BY review.trade_journals.created_at DESC" in str(compiled)
