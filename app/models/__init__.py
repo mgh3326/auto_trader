@@ -19,6 +19,7 @@ from .research_backtest import (
 )
 from .review import PendingSnapshot, Trade, TradeReview, TradeSnapshot
 from .symbol_trade_settings import SymbolTradeSettings
+from .trade_journal import JournalStatus, TradeJournal
 from .trade_profile import (
     AssetProfile,
     FilterName,
@@ -75,6 +76,8 @@ __all__ = [
     "Trade",
     "TradeSnapshot",
     "TradeReview",
+    "TradeJournal",
+    "JournalStatus",
     "PendingSnapshot",
     # "AlertRule", "AlertEvent",
     # "PricesLatest", "PricesOHLCV", "FxRate",

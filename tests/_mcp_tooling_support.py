@@ -41,6 +41,7 @@ from app.mcp_server.tooling import (
     orders_modify_cancel,
     portfolio_cash,
     portfolio_holdings,
+    trade_journal_tools,
 )
 from app.mcp_server.tooling.fundamentals import _crypto as fundamentals_crypto
 from app.mcp_server.tooling.fundamentals import _financials as fundamentals_financials
@@ -179,6 +180,7 @@ _PATCH_MODULES = (
     orders_modify_cancel,
     portfolio_cash,
     portfolio_holdings,
+    trade_journal_tools,
     screening_kr,
     screening_us,
     screening_crypto,

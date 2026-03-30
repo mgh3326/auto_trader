@@ -21,6 +21,10 @@ from app.mcp_server.tooling.news_registration import (
     register_news_tools,
 )
 from app.mcp_server.tooling.registry import register_all_tools
+from app.mcp_server.tooling.trade_journal_registration import (
+    TRADE_JOURNAL_TOOL_NAMES,
+    register_trade_journal_tools,
+)
 from app.mcp_server.tooling.trade_profile_registration import (
     TRADE_PROFILE_TOOL_NAMES,
     register_trade_profile_tools,
@@ -34,7 +38,9 @@ __all__ = [
     "WATCH_ALERT_TOOL_NAMES",
     "TRADE_PROFILE_TOOL_NAMES",
     "NEWS_TOOL_NAMES",
+    "TRADE_JOURNAL_TOOL_NAMES",
     "register_all_tools",
+    "register_trade_journal_tools",
     "register_trade_profile_tools",
     "register_watch_alert_tools",
     "register_news_tools",

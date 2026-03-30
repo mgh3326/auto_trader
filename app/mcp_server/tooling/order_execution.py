@@ -5,9 +5,16 @@ from __future__ import annotations
 import datetime
 import json
 from typing import Any, Literal
+from typing import cast as typing_cast
+
+from sqlalchemy import desc, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import app.services.brokers.upbit.client as upbit_service
 from app.core.config import settings
+from app.core.db import AsyncSessionLocal
+from app.core.timezone import now_kst
 from app.mcp_server.tick_size import adjust_tick_size_kr, get_tick_size_kr
 from app.mcp_server.tooling.market_data_quotes import (
     _fetch_quote_equity_kr,
@@ -26,6 +33,8 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import (
     to_float as _to_float,
 )
+from app.models.review import Trade
+from app.models.trade_journal import JournalStatus, TradeJournal
 from app.services.brokers.kis import (
     KISClient,
     extract_domestic_cash_summary_from_integrated_margin,
@@ -51,6 +60,98 @@ def _get_crypto_trade_cooldown_service() -> CryptoTradeCooldownService:
     if _order_cooldown_service is None:
         _order_cooldown_service = CryptoTradeCooldownService()
     return _order_cooldown_service
+
+
+def _order_session_factory() -> async_sessionmaker[AsyncSession]:
+    return typing_cast(
+        async_sessionmaker[AsyncSession], typing_cast(object, AsyncSessionLocal)
+    )
+
+
+async def _save_order_fill(
+    symbol: str,
+    instrument_type: str,
+    side: str,
+    price: float,
+    quantity: float,
+    total_amount: float,
+    fee: float,
+    currency: str,
+    account: str,
+    order_id: str | None,
+) -> int | None:
+    """Save executed order to review.trades for permanent history.
+
+    Returns the trade ID if inserted, None if conflict (already exists).
+    """
+    try:
+        async with _order_session_factory()() as db:
+            stmt = (
+                pg_insert(Trade)
+                .values(
+                    trade_date=now_kst(),
+                    symbol=symbol,
+                    instrument_type=instrument_type,
+                    side=side,
+                    price=price,
+                    quantity=quantity,
+                    total_amount=total_amount,
+                    fee=fee,
+                    currency=currency,
+                    account=account,
+                    order_id=order_id,
+                )
+                .on_conflict_do_nothing(
+                    constraint="uq_review_trades_account_order",
+                )
+            )
+            result = await db.execute(stmt)
+            await db.commit()
+
+            # result.inserted_primary_key returns a tuple of primary keys
+            if result.inserted_primary_key and result.inserted_primary_key[0]:
+                return typing_cast(int, result.inserted_primary_key[0])
+            return None
+    except Exception as exc:
+        logger.warning("Failed to save order fill: %s", exc)
+        return None
+
+
+async def _link_journal_to_fill(symbol: str, trade_id: int) -> None:
+    """Link a draft journal to a fill: draft -> active, set trade_id, recalculate hold_until."""
+    try:
+        async with _order_session_factory()() as db:
+            stmt = (
+                select(TradeJournal)
+                .where(
+                    TradeJournal.symbol == symbol,
+                    TradeJournal.status == JournalStatus.draft,
+                )
+                .order_by(desc(TradeJournal.created_at))
+                .limit(1)
+            )
+            result = await db.execute(stmt)
+            journal = result.scalars().first()
+
+            if journal is None:
+                return
+
+            journal.status = JournalStatus.active
+            journal.trade_id = trade_id
+            if journal.min_hold_days:
+                from datetime import timedelta
+
+                journal.hold_until = now_kst() + timedelta(days=journal.min_hold_days)
+
+            await db.commit()
+            logger.info(
+                "Linked journal id=%s to trade id=%s for %s",
+                journal.id,
+                trade_id,
+                symbol,
+            )
+    except Exception as exc:
+        logger.warning("Failed to link journal to fill: %s", exc)
 
 
 def _calculate_date_range(days: int) -> tuple[str, str]:
@@ -694,12 +795,53 @@ async def _place_order_impl(
                     cooldown_exc,
                 )
 
+        # --- Recording to DB (Phase 1) ---
+        fill_recorded = False
+        try:
+            # Normalize result for storage
+            # Note: Upbit returns uuid, KIS returns odno
+            order_id = execution_result.get("uuid") or execution_result.get("odno")
+
+            # Use preview data for price/quantity as most APIs don't return fill details
+            # immediately in the order response (they are asynchronous)
+            # We record what we SENT as the fill for now.
+            price_val = _to_float(dry_run_result.get("price"), default=0.0)
+            qty_val = _to_float(dry_run_result.get("quantity"), default=0.0)
+            amt_val = _to_float(dry_run_result.get("estimated_value"), default=0.0)
+            fee_val = _to_float(dry_run_result.get("fee"), default=0.0)
+
+            currency = "KRW" if market_type != "equity_us" else "USD"
+            account_name = "upbit" if market_type == "crypto" else "kis"
+
+            trade_id = await _save_order_fill(
+                symbol=normalized_symbol,
+                instrument_type=market_type,
+                side=side_lower,
+                price=price_val,
+                quantity=qty_val,
+                total_amount=amt_val,
+                fee=fee_val,
+                currency=currency,
+                account=account_name,
+                order_id=str(order_id) if order_id else None,
+            )
+
+            if trade_id:
+                fill_recorded = True
+                # Phase 2: Link journal to this trade
+                await _link_journal_to_fill(normalized_symbol, trade_id)
+        except Exception as db_exc:
+            logger.warning("Failed to record fill to DB: %s", db_exc)
+
         return {
             "success": True,
             "dry_run": False,
             "preview": dry_run_result,
             "execution": execution_result,
-            "message": "Order placed successfully",
+            "fill_recorded": fill_recorded,
+            "message": "Order placed and fill recorded successfully"
+            if fill_recorded
+            else "Order placed successfully",
         }
     except Exception as exc:
         await _record_order_history(
