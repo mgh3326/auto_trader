@@ -102,6 +102,7 @@ class TestN8nNewsRouter:
         mock_fetch.assert_called_once_with(
             hours=2,
             feed_source=None,
+            source=None,
             keyword=None,
             limit=20,
         )
@@ -130,6 +131,7 @@ class TestN8nNewsRouter:
         mock_fetch.assert_called_once_with(
             hours=6,
             feed_source="mk_stock",
+            source=None,
             keyword="삼성",
             limit=5,
         )
@@ -253,6 +255,7 @@ class TestN8nNewsService:
         mock_get.assert_called_once_with(
             hours=6,
             feed_source="mk_stock",
+            source=None,
             keyword="삼성",
             limit=5,
         )

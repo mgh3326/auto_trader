@@ -23,6 +23,22 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - The middleware never calls `capture_exception` directly; exception capture is handled by Sentry's `MCPIntegration`
 
 ## Tools
+
+### News Tools (Pre-Market Briefing Pipeline)
+
+- `get_market_news(hours=24, feed_source=None, source=None, keyword=None, limit=20)`
+  - Fetch recent market news for OpenClaw pre-market briefing
+  - `feed_source`: Collection path key (e.g., `browser_naver_mainnews`, `browser_naver_research`, `rss_mk`)
+  - `source`: Publisher label (e.g., `연합뉴스`, `매일경제`, `유안타증권`)
+  - Returns: `count`, `total`, `news` (list), `sources` (unique publishers), `feed_sources` (unique collection paths)
+  - Each article includes `stock_symbol` and `stock_name` for holdings impact analysis
+
+- `search_news(query, days=7, limit=20)`
+  - Search news by keyword in title and keywords field
+  - Returns matching articles with relevance based on title/keyword match
+
+### Market Data Tools
+
 - `search_symbol(query, limit=20)`
 - `get_quote(symbol, market=None)`
 - `get_orderbook(symbol, market="kr")`

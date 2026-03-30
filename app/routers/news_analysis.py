@@ -81,7 +81,11 @@ async def list_news_articles(
     source: str | None = Query(None, description="뉴스 출처로 필터링"),
     hours: int | None = Query(None, ge=1, le=720, description="최근 N시간 이내 기사만"),
     feed_source: str | None = Query(
-        None, description="RSS 피드 소스로 필터링 (mk_stock, yna_market 등)"
+        None,
+        description=(
+            "collection path key로 필터링 "
+            "(e.g., browser_naver_mainnews, browser_naver_research, mk_stock)"
+        ),
     ),
     keyword: str | None = Query(None, description="키워드로 필터링"),
     has_analysis: bool | None = Query(None, description="분석 완료 여부로 필터링"),

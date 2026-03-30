@@ -17,7 +17,12 @@ class NewsArticleCreate(BaseModel):
     stock_name: str | None = Field(None, max_length=100, description="관련 종목명")
     published_at: datetime | None = Field(None, description="기사 발행일시")
     feed_source: str | None = Field(
-        None, max_length=50, description="RSS 피드 소스 (mk_stock, yna_market 등)"
+        None,
+        max_length=50,
+        description=(
+            "수집 경로 key "
+            "(e.g., browser_naver_mainnews, browser_naver_research, mk_stock)"
+        ),
     )
     keywords: list[str] | None = Field(None, description="키워드 배열")
 
@@ -30,6 +35,24 @@ class NewsArticleCreate(BaseModel):
     @classmethod
     def validate_title(cls, v: str) -> str:
         return v.strip()
+
+    @field_validator("source", "author", "feed_source")
+    @classmethod
+    def normalize_optional_text(cls, v: str | None) -> str | None:
+        """Trim optional text fields; whitespace-only becomes None."""
+        if v is None:
+            return None
+        value = v.strip()
+        return value or None
+
+    @field_validator("keywords")
+    @classmethod
+    def normalize_keywords(cls, v: list[str] | None) -> list[str] | None:
+        """Clean keyword array: trim, drop empty/whitespace entries."""
+        if not v:
+            return None
+        cleaned = [item.strip() for item in v if item and item.strip()]
+        return cleaned or None
 
 
 class NewsArticleBulkCreate(BaseModel):
@@ -116,7 +139,13 @@ class NewsQueryParams(BaseModel):
     )
     source: str | None = Field(None, description="뉴스 출처로 필터링")
     hours: int | None = Field(None, ge=1, le=720, description="최근 N시간 이내 기사만")
-    feed_source: str | None = Field(None, description="RSS 피드 소스로 필터링")
+    feed_source: str | None = Field(
+        None,
+        description=(
+            "collection path key로 필터링 "
+            "(e.g., browser_naver_mainnews, browser_naver_research, mk_stock)"
+        ),
+    )
     keyword: str | None = Field(None, description="키워드로 필터링")
     has_analysis: bool | None = Field(None, description="분석 완료 여부로 필터링")
     limit: int = Field(10, ge=1, le=100, description="반환할 뉴스 수")
