@@ -55,7 +55,7 @@ def _run_single(split: str, bar_interval: str) -> None:
     strat = strategy.Strategy()
 
     print("Running backtest...")
-    result = prepare.run_backtest(data, strat)
+    result = prepare.run_backtest(data, strat, bar_interval=bar_interval)
 
     total_bars = sum(len(df) for df in data.values())
     print(f"\nLoaded {total_bars} bars across {len(data)} symbols")

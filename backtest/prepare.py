@@ -785,7 +785,7 @@ def cross_validate(
             continue
 
         strat = strategy_class()
-        result = run_backtest(val_data, strat, initial_capital)
+        result = run_backtest(val_data, strat, initial_capital, bar_interval=bar_interval)
         score = compute_score(result)
 
         fold_scores.append(score)
