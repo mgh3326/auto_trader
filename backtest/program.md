@@ -49,6 +49,46 @@ To get live numbers: `tail -20 results.tsv | sort -t$'\t' -k2 -rn | head -5`
 3. Verify data exists: `ls backtest/data/`
 4. Run baseline: `uv run backtest/backtest.py --mode cv` to confirm current score.
 
+## Orchestrator Usage
+
+For autonomous multi-round experiments:
+
+```bash
+# Manual mode: you or another AI agent commits strategy.py changes,
+# orchestrator waits for the next commit and then runs one experiment round.
+uv run backtest/orchestrator.py --mode manual --rounds 20
+
+# Auto mode: orchestrator invokes the AI CLI, waits for a fresh commit,
+# then runs one experiment round automatically.
+uv run backtest/orchestrator.py --mode auto --rounds 50 --ai-cli claude
+```
+
+### Description Source
+
+- `--description "<text>"` overrides every round
+- If `--description` is omitted, orchestrator uses `git log -1 --format=%s`
+- If there is no commit subject available, orchestrator stops with an error
+
+### Manual Mode Behavior
+
+- Orchestrator stores the current `HEAD` when it starts
+- Each round waits for a new commit with `git rev-parse HEAD`
+- While waiting it polls every few seconds and prints `Waiting for new commit... (Ctrl+C to stop)`
+- `Ctrl+C` requests a graceful stop and prints the final summary after the current round finishes
+
+### Strategy Modification Guidelines for AI Agents
+
+When modifying `backtest/strategy.py` in auto mode:
+
+1. Read current `PARAMS` and signal definitions before changing anything
+2. Choose exactly ONE change per experiment:
+   - adjust a single parameter value
+   - add or remove one signal function
+   - modify one signal threshold
+   - change one position-sizing rule
+3. Commit with a descriptive message: `git commit -m "exp<N>: <what changed>"`
+4. Do NOT modify `prepare.py`, `backtest.py`, `fetch_data.py`, or any file outside `backtest/strategy.py`
+
 ## The Experiment Loop
 
 LOOP FOREVER:
@@ -62,6 +102,8 @@ LOOP FOREVER:
 5. Check `results.tsv` for the recorded result
 6. If reverted: think about why, try a different approach
 7. Go to step 1
+
+With `backtest/orchestrator.py`, the same loop is managed automatically across many rounds. In `manual` mode the orchestrator waits for the next commit; in `auto` mode it also invokes the AI CLI before each round.
 
 ### Manual Loop (without run_experiment.py)
 
@@ -216,6 +258,10 @@ Most zero-weight positions were turned off individually. Try:
 - **Syntax error in strategy.py** → backtest crashes → `run_experiment.py` auto-reverts
 - **Timeout** → 120 seconds max → auto-reverts
 - **5 consecutive reverts** → pause and reconsider approach (don't keep trying small variations of a failed idea)
+- **Orchestrator revert limit** → `--max-consecutive-reverts` exits with code `3` after too many consecutive reverts
+- **Orchestrator total timeout** → `--timeout` stops the multi-round loop when wall-clock time is exhausted
+- **Low disk space** → orchestrator stops if free disk space drops below 500 MB
+- **RPi5 note** → 4-fold CV can take 2-4 minutes per round, so 50 rounds may take 2-3 hours; prefer a MacBook when possible
 
 ## Allowed Libraries
 
