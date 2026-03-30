@@ -8,6 +8,7 @@ Create Date: 2026-03-17 10:36:52.860827
 from collections.abc import Sequence
 
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
@@ -17,7 +18,7 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 # Existing instrument_type enum — reuse, do not create
-instrument_type_enum = sa.Enum(
+instrument_type_enum = postgresql.ENUM(
     "equity_kr", "equity_us", "crypto", "forex", "index",
     name="instrument_type",
     create_type=False,
