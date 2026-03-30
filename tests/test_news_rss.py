@@ -487,6 +487,19 @@ class TestGetEndpointNewParams:
         resp = client.get("/api/v1/news?keyword=반도체")
         assert resp.status_code != 422
 
+    def test_feed_source_openapi_description_uses_collection_path_key(self):
+        """Public API docs should describe feed_source as a collection path key."""
+        app = _make_test_app()
+        openapi = app.openapi()
+        params = openapi["paths"]["/api/v1/news"]["get"]["parameters"]
+        feed_source_param = next(p for p in params if p["name"] == "feed_source")
+
+        description = feed_source_param["schema"].get("description") or feed_source_param.get(
+            "description", ""
+        )
+        assert "collection path key" in description
+        assert "browser_naver_mainnews" in description
+
 
 class TestMCPNewsTools:
     """Test MCP news tool registration and basic behavior."""
