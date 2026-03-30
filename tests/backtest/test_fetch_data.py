@@ -1,5 +1,6 @@
 """Tests for backtest fetch_data module."""
 
+import importlib.util
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -7,10 +8,51 @@ from unittest import mock
 
 import pandas as pd
 
-# Add backtest directory to path for imports
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "backtest"))
+backtest_dir = Path(__file__).resolve().parent.parent.parent / "backtest"
+spec = importlib.util.spec_from_file_location(
+    "fetch_data", backtest_dir / "fetch_data.py"
+)
+if spec is None or spec.loader is None:
+    raise ImportError("Unable to load backtest/fetch_data.py")
+fetch_data = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fetch_data)
 
-import fetch_data
+
+class TestIntervalSupport:
+    """Tests for --interval option and path routing."""
+
+    def test_default_interval_is_1d(self):
+        """Test that default interval is '1d'."""
+        with mock.patch("sys.argv", ["fetch_data.py"]):
+            args = fetch_data._parse_args()
+            assert args.interval == "1d"
+
+    def test_interval_1h_parses(self):
+        """Test --interval 1h parses correctly."""
+        with mock.patch("sys.argv", ["fetch_data.py", "--interval", "1h"]):
+            args = fetch_data._parse_args()
+            assert args.interval == "1h"
+
+    def test_interval_4h_parses(self):
+        """Test --interval 4h parses correctly."""
+        with mock.patch("sys.argv", ["fetch_data.py", "--interval", "4h"]):
+            args = fetch_data._parse_args()
+            assert args.interval == "4h"
+
+    def test_data_dir_for_1d(self):
+        """Test data directory for 1d interval (backward compat: flat dir)."""
+        result = fetch_data._data_dir_for_interval("1d")
+        assert result == fetch_data.DATA_DIR
+
+    def test_data_dir_for_1h(self):
+        """Test data directory for 1h interval."""
+        result = fetch_data._data_dir_for_interval("1h")
+        assert result == fetch_data.DATA_DIR / "1h"
+
+    def test_data_dir_for_4h(self):
+        """Test data directory for 4h interval."""
+        result = fetch_data._data_dir_for_interval("4h")
+        assert result == fetch_data.DATA_DIR / "4h"
 
 
 class TestMarketSelection:
@@ -103,6 +145,7 @@ class TestMarketSelection:
                 return False
 
             def get(self, url, params=None):
+                assert params is not None
                 market = params["markets"]
                 return FakeResponse(
                     [
@@ -172,6 +215,202 @@ class TestCandleNormalization:
         ]
         assert df["date"].tolist() == ["2026-03-20", "2026-03-21"]
         assert df["close"].tolist() == [50500.0, 51200.0]
+
+
+class TestDataQuality:
+    def test_validate_1h_no_gaps(self):
+        dates = pd.date_range("2026-03-20", periods=24, freq="h")
+        df = pd.DataFrame(
+            {
+                "date": dates.strftime("%Y-%m-%dT%H:%M:%S"),
+                "open": [1.0] * 24,
+                "high": [1.0] * 24,
+                "low": [1.0] * 24,
+                "close": [1.0] * 24,
+                "volume": [1.0] * 24,
+                "value": [1.0] * 24,
+            }
+        )
+        result = fetch_data._validate_data_quality(df, "1h")
+        assert result["missing_pct"] == 0.0
+        assert result["max_gap_hours"] == 0.0
+        assert result["total_bars"] == 24
+
+    def test_validate_1h_with_gap(self):
+        dates = [
+            "2026-03-20T00:00:00",
+            "2026-03-20T01:00:00",
+            "2026-03-20T02:00:00",
+            "2026-03-20T09:00:00",
+        ]
+        df = pd.DataFrame(
+            {
+                "date": dates,
+                "open": [1.0] * 4,
+                "high": [1.0] * 4,
+                "low": [1.0] * 4,
+                "close": [1.0] * 4,
+                "volume": [1.0] * 4,
+                "value": [1.0] * 4,
+            }
+        )
+        result = fetch_data._validate_data_quality(df, "1h")
+        assert result["missing_pct"] > 0
+        assert result["max_gap_hours"] >= 6.0
+
+    def test_validate_1d_no_gaps(self):
+        df = pd.DataFrame(
+            {
+                "date": ["2026-03-20", "2026-03-21", "2026-03-22"],
+                "open": [1.0] * 3,
+                "high": [1.0] * 3,
+                "low": [1.0] * 3,
+                "close": [1.0] * 3,
+                "volume": [1.0] * 3,
+                "value": [1.0] * 3,
+            }
+        )
+        result = fetch_data._validate_data_quality(df, "1d")
+        assert result["total_bars"] == 3
+
+    def test_validate_single_bar(self):
+        df = pd.DataFrame(
+            {
+                "date": ["2026-03-20T00:00:00"],
+                "open": [1.0],
+                "high": [1.0],
+                "low": [1.0],
+                "close": [1.0],
+                "volume": [1.0],
+                "value": [1.0],
+            }
+        )
+        result = fetch_data._validate_data_quality(df, "1h")
+        assert result["total_bars"] == 1
+        assert result["missing_pct"] == 0.0
+
+
+class TestMinuteCandleFetch:
+    def test_fetch_candles_minutes_builds_correct_url(self, monkeypatch):
+        captured_urls: list[str] = []
+
+        class FakeResponse:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return [
+                    {
+                        "candle_date_time_utc": "2026-03-20T10:00:00",
+                        "opening_price": 50000.0,
+                        "high_price": 51000.0,
+                        "low_price": 49000.0,
+                        "trade_price": 50500.0,
+                        "candle_acc_trade_volume": 10.5,
+                        "candle_acc_trade_price": 500000.0,
+                    }
+                ]
+
+        class FakeClient:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def get(self, url, params=None):
+                captured_urls.append(url)
+                return FakeResponse()
+
+        monkeypatch.setattr(fetch_data.httpx, "Client", FakeClient)
+        monkeypatch.setattr(fetch_data.time, "sleep", lambda *a: None)
+
+        fetch_data.fetch_candles_minutes("KRW-BTC", unit=60, hours=1)
+
+        assert any("/candles/minutes/60" in u for u in captured_urls)
+
+    def test_fetch_candles_minutes_paginates(self, monkeypatch):
+        call_count = [0]
+
+        class FakeResponse:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                call_count[0] += 1
+                if call_count[0] <= 2:
+                    base_time = datetime(2026, 3, 20 - call_count[0], 23, 0, 0)
+                    return [
+                        {
+                            "candle_date_time_utc": (
+                                base_time - timedelta(hours=i)
+                            ).strftime("%Y-%m-%dT%H:%M:%S"),
+                            "opening_price": 1.0,
+                            "high_price": 1.0,
+                            "low_price": 1.0,
+                            "trade_price": 1.0,
+                            "candle_acc_trade_volume": 1.0,
+                            "candle_acc_trade_price": 1.0,
+                        }
+                        for i in range(200)
+                    ]
+                return []
+
+        class FakeClient:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def get(self, url, params=None):
+                return FakeResponse()
+
+        monkeypatch.setattr(fetch_data.httpx, "Client", FakeClient)
+        monkeypatch.setattr(fetch_data.time, "sleep", lambda *a: None)
+
+        result = fetch_data.fetch_candles_minutes("KRW-BTC", unit=60, hours=400)
+        assert len(result) == 400
+
+    def test_normalize_minute_candles_datetime_format(self):
+        api_rows = [
+            {
+                "candle_date_time_utc": "2026-03-20T14:00:00",
+                "opening_price": 50000.0,
+                "high_price": 51000.0,
+                "low_price": 49000.0,
+                "trade_price": 50500.0,
+                "candle_acc_trade_volume": 10.5,
+                "candle_acc_trade_price": 500000.0,
+            }
+        ]
+
+        df = fetch_data._normalize_candles(api_rows, interval="1h")
+
+        assert df["date"].iloc[0] == "2026-03-20T14:00:00"
+
+
+class TestNormalizeCandlesInterval:
+    def test_1d_normalization_date_only(self):
+        api_rows = [
+            {
+                "candle_date_time_utc": "2026-03-20T00:00:00",
+                "opening_price": 50000.0,
+                "high_price": 51000.0,
+                "low_price": 49000.0,
+                "trade_price": 50500.0,
+                "candle_acc_trade_volume": 100.5,
+                "candle_acc_trade_price": 5000000.0,
+            }
+        ]
+
+        df = fetch_data._normalize_candles(api_rows, interval="1d")
+
+        assert df["date"].iloc[0] == "2026-03-20"
 
 
 class TestMergeDedupe:
@@ -416,6 +655,105 @@ class TestIncrementalRefresh:
         fetch_data.main()
 
         assert seen_days == [7]
+
+
+class TestIntervalAwareMain:
+    def test_main_1h_calls_fetch_candles_minutes(self, monkeypatch, tmp_path):
+        called_with: list[dict[str, object]] = []
+
+        def fake_fetch_candles_minutes(market, unit, hours):
+            called_with.append({"market": market, "unit": unit, "hours": hours})
+            return []
+
+        data_dir = tmp_path / "data" / "1h"
+        data_dir.mkdir(parents=True)
+
+        monkeypatch.setattr(fetch_data, "DATA_DIR", tmp_path / "data")
+        monkeypatch.setattr(
+            fetch_data, "fetch_candles_minutes", fake_fetch_candles_minutes
+        )
+        monkeypatch.setattr(fetch_data.time, "sleep", lambda *a: None)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "fetch_data.py",
+                "--interval",
+                "1h",
+                "--symbols",
+                "BTC",
+                "--days",
+                "30",
+            ],
+        )
+
+        fetch_data.main()
+
+        assert len(called_with) == 1
+        assert called_with[0]["unit"] == 60
+        assert called_with[0]["hours"] == 30 * 24
+
+    def test_main_1d_calls_fetch_candles(self, monkeypatch, tmp_path):
+        called_with: list[dict[str, object]] = []
+
+        def fake_fetch_candles(market, days):
+            called_with.append({"market": market, "days": days})
+            return []
+
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(parents=True)
+
+        monkeypatch.setattr(fetch_data, "DATA_DIR", data_dir)
+        monkeypatch.setattr(fetch_data, "fetch_candles", fake_fetch_candles)
+        monkeypatch.setattr(fetch_data.time, "sleep", lambda *a: None)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "fetch_data.py",
+                "--interval",
+                "1d",
+                "--symbols",
+                "BTC",
+                "--days",
+                "30",
+            ],
+        )
+
+        fetch_data.main()
+
+        assert len(called_with) == 1
+        assert called_with[0]["days"] == 30
+
+
+class TestIncrementalRefreshHourly:
+    def test_determine_refresh_hours_empty(self):
+        hours = fetch_data._determine_refresh_hours(None, requested_hours=720)
+        assert hours == 720
+
+    def test_determine_refresh_hours_recent_data(self):
+        existing_df = pd.DataFrame(
+            {
+                "date": [
+                    "2026-03-22T10:00:00",
+                    "2026-03-22T11:00:00",
+                    "2026-03-22T12:00:00",
+                ],
+                "open": [1.0] * 3,
+                "high": [1.0] * 3,
+                "low": [1.0] * 3,
+                "close": [1.0] * 3,
+                "volume": [1.0] * 3,
+                "value": [1.0] * 3,
+            }
+        )
+        hours = fetch_data._determine_refresh_hours(
+            existing_df,
+            requested_hours=720,
+            overlap_hours=48,
+            now=datetime(2026, 3, 22, 13, 0, 0),
+        )
+        assert hours == 49
 
 
 class TestCLIOptions:

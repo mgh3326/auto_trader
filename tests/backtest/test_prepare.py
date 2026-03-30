@@ -10,7 +10,88 @@ import pytest
 # Add backtest directory to path for imports
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "backtest"))
 
-import prepare
+import prepare  # pyright: ignore[reportMissingImports]
+
+
+class TestDataQualityFill:
+    def test_validate_and_fill_daily_returns_unchanged_dataframe(self):
+        df = pd.DataFrame(
+            {
+                "date": ["2026-01-01", "2026-01-02"],
+                "open": [100.0, 110.0],
+                "high": [105.0, 115.0],
+                "low": [95.0, 108.0],
+                "close": [102.0, 112.0],
+                "volume": [1000.0, 1100.0],
+                "value": [102000.0, 123200.0],
+            }
+        )
+
+        result = prepare.validate_and_fill(df, "1d")
+
+        pd.testing.assert_frame_equal(result, df)
+
+    def test_validate_and_fill_hourly_reindexes_and_fills_short_gaps(self):
+        df = pd.DataFrame(
+            {
+                "date": [
+                    "2026-01-01 00:00:00",
+                    "2026-01-01 03:00:00",
+                    "2026-01-01 04:00:00",
+                ],
+                "open": [100.0, 103.0, 104.0],
+                "high": [101.0, 104.0, 105.0],
+                "low": [99.0, 102.0, 103.0],
+                "close": [100.5, 103.5, 104.5],
+                "volume": [1000.0, 1300.0, 1400.0],
+                "value": [100500.0, 134550.0, 146300.0],
+            }
+        )
+
+        result = prepare.validate_and_fill(df, "1h")
+
+        assert result["date"].tolist() == [
+            "2026-01-01 00:00:00",
+            "2026-01-01 01:00:00",
+            "2026-01-01 02:00:00",
+            "2026-01-01 03:00:00",
+            "2026-01-01 04:00:00",
+        ]
+        assert result.loc[1, "close"] == pytest.approx(100.5)
+        assert result.loc[2, "close"] == pytest.approx(100.5)
+        assert result.loc[1, "volume"] == pytest.approx(1000.0)
+        assert result.loc[2, "volume"] == pytest.approx(1000.0)
+
+    def test_validate_and_fill_4h_does_not_fill_24h_or_longer_gap(self):
+        df = pd.DataFrame(
+            {
+                "date": [
+                    "2026-01-01 00:00:00",
+                    "2026-01-02 04:00:00",
+                ],
+                "open": [100.0, 120.0],
+                "high": [101.0, 121.0],
+                "low": [99.0, 119.0],
+                "close": [100.5, 120.5],
+                "volume": [1000.0, 2000.0],
+                "value": [100500.0, 241000.0],
+            }
+        )
+
+        result = prepare.validate_and_fill(df, "4h")
+
+        assert result["date"].tolist() == [
+            "2026-01-01 00:00:00",
+            "2026-01-01 04:00:00",
+            "2026-01-01 08:00:00",
+            "2026-01-01 12:00:00",
+            "2026-01-01 16:00:00",
+            "2026-01-01 20:00:00",
+            "2026-01-02 00:00:00",
+            "2026-01-02 04:00:00",
+        ]
+        assert result.loc[5, "close"] == pytest.approx(100.5)
+        assert np.isnan(result.loc[6, "close"])
 
 
 class TestContractConstants:
@@ -802,6 +883,81 @@ class TestRunBacktest:
         assert len(result.equity_curve) > 0
 
 
+class TestRunBacktestInterval:
+    def test_run_backtest_uses_interval_lookback_data_dir_and_result_builder(
+        self, tmp_path, monkeypatch
+    ):
+        interval = "60m"
+        interval_dir = tmp_path / interval
+        interval_dir.mkdir(parents=True)
+
+        full_df = pd.DataFrame(
+            {
+                "date": [
+                    "2025-04-01 00:00:00",
+                    "2025-04-01 01:00:00",
+                    "2025-04-01 02:00:00",
+                ],
+                "open": [100.0, 101.0, 102.0],
+                "high": [101.0, 102.0, 103.0],
+                "low": [99.0, 100.0, 101.0],
+                "close": [100.5, 101.5, 102.5],
+                "volume": [1000.0, 1001.0, 1002.0],
+                "value": [100500.0, 101500.0, 102500.0],
+            }
+        )
+        full_df.to_parquet(interval_dir / "KRW-BTC.parquet", index=False)
+
+        data = {
+            "BTC": full_df.iloc[[-1]].reset_index(drop=True),
+        }
+
+        monkeypatch.setattr(prepare, "DATA_DIR", tmp_path)
+
+        lookback_called_with: list[str] = []
+        captured_history_lengths: list[int] = []
+        captured_build_interval: list[str] = []
+
+        def fake_lookback(interval_name: str) -> int:
+            lookback_called_with.append(interval_name)
+            return 2
+
+        def fake_build_result(
+            state: prepare.PortfolioState,
+            equity_curve: list[float],
+            backtest_seconds: float,
+            bar_interval: str = "1d",
+        ) -> prepare.BacktestResult:
+            captured_build_interval.append(bar_interval)
+            return prepare.BacktestResult(
+                total_return_pct=0.0,
+                sharpe=0.0,
+                max_drawdown_pct=0.0,
+                num_trades=0,
+                win_rate_pct=0.0,
+                profit_factor=0.0,
+                avg_holding_days=0.0,
+                backtest_seconds=backtest_seconds,
+                trade_log=state.trade_log,
+                equity_curve=equity_curve,
+            )
+
+        monkeypatch.setattr(prepare, "lookback_bars_for_interval", fake_lookback)
+        monkeypatch.setattr(prepare, "_build_result", fake_build_result)
+
+        class CaptureHistoryStrategy:
+            def on_bar(self, bar_data, portfolio):
+                if "BTC" in bar_data:
+                    captured_history_lengths.append(len(bar_data["BTC"].history))
+                return []
+
+        prepare.run_backtest(data, CaptureHistoryStrategy(), bar_interval=interval)
+
+        assert lookback_called_with == [interval]
+        assert captured_history_lengths == [2]
+        assert captured_build_interval == [interval]
+
+
 class TestCVFolds:
     """Tests for walk-forward CV fold definitions."""
 
@@ -905,6 +1061,104 @@ class TestLoadDataRange:
         assert result_split.keys() == result_range.keys()
         for sym in result_split:
             pd.testing.assert_frame_equal(result_split[sym], result_range[sym])
+
+
+class TestIntervalSupport:
+    """Tests for interval-aware helper behavior."""
+
+    def test_lookback_bars_for_interval_daily(self):
+        assert prepare.lookback_bars_for_interval("1d") == 200
+
+    def test_lookback_bars_for_interval_non_daily(self):
+        assert prepare.lookback_bars_for_interval("60m") == 500
+
+    def test_data_dir_for_interval_daily_uses_base_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(prepare, "DATA_DIR", tmp_path)
+        assert prepare.data_dir_for_interval("1d") == tmp_path
+
+    def test_data_dir_for_interval_non_daily_uses_subdir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(prepare, "DATA_DIR", tmp_path)
+        assert prepare.data_dir_for_interval("5m") == tmp_path / "5m"
+
+
+class TestSharpeAnnualization:
+    """Tests for interval-aware Sharpe annualization."""
+
+    def test_annualization_factor_daily(self):
+        assert prepare.annualization_factor("1d") == pytest.approx(np.sqrt(365.0))
+
+    def test_annualization_factor_hourly(self):
+        assert prepare.annualization_factor("60m") == pytest.approx(
+            np.sqrt(365.0 * 24.0)
+        )
+
+    def test_calc_sharpe_respects_custom_annualize_factor(self):
+        returns = [0.01, 0.02, -0.01, 0.015, 0.005]
+        arr = np.array(returns)
+        expected = (np.mean(arr) / np.std(arr, ddof=1)) * 10.0
+        sharpe = prepare._calc_sharpe(returns, annualize_factor=10.0)
+        assert sharpe == pytest.approx(expected)
+
+
+class TestLoadDataInterval:
+    """Tests for interval-aware data loading paths."""
+
+    def test_load_data_range_reads_from_interval_subdir(self, tmp_path, monkeypatch):
+        interval_dir = tmp_path / "60m"
+        interval_dir.mkdir(parents=True)
+
+        df = pd.DataFrame(
+            {
+                "date": ["2025-06-10", "2025-06-20"],
+                "open": [100.0, 101.0],
+                "high": [110.0, 111.0],
+                "low": [90.0, 91.0],
+                "close": [105.0, 106.0],
+                "volume": [1000.0, 1001.0],
+                "value": [100000.0, 100001.0],
+            }
+        )
+        df.to_parquet(interval_dir / "KRW-BTC.parquet")
+
+        monkeypatch.setattr(prepare, "DATA_DIR", tmp_path)
+        monkeypatch.setattr(prepare, "DEFAULT_SYMBOLS", ["BTC"])
+
+        result = prepare.load_data_range("2025-06-01", "2025-06-30", bar_interval="60m")
+        assert "BTC" in result
+        assert len(result["BTC"]) == 2
+
+    def test_load_data_passes_interval_to_load_data_range(self, tmp_path, monkeypatch):
+        interval_dir = tmp_path / "60m"
+        interval_dir.mkdir(parents=True)
+
+        df = pd.DataFrame(
+            {
+                "date": ["2025-07-10", "2025-07-20"],
+                "open": [100.0, 101.0],
+                "high": [110.0, 111.0],
+                "low": [90.0, 91.0],
+                "close": [105.0, 106.0],
+                "volume": [1000.0, 1001.0],
+                "value": [100000.0, 100001.0],
+            }
+        )
+        df.to_parquet(interval_dir / "KRW-BTC.parquet")
+
+        monkeypatch.setattr(prepare, "DATA_DIR", tmp_path)
+        monkeypatch.setattr(prepare, "DEFAULT_SYMBOLS", ["BTC"])
+        monkeypatch.setattr(
+            prepare,
+            "SPLITS",
+            {"val": {"start": "2025-07-01", "end": "2025-07-31"}},
+        )
+
+        from_split = prepare.load_data("val", bar_interval="60m")
+        start, end = prepare.SPLITS["val"]["start"], prepare.SPLITS["val"]["end"]
+        from_range = prepare.load_data_range(start, end, bar_interval="60m")
+
+        assert from_split.keys() == from_range.keys()
+        for sym in from_split:
+            pd.testing.assert_frame_equal(from_split[sym], from_range[sym])
 
 
 class TestCVResult:

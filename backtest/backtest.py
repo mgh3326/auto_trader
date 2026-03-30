@@ -1,14 +1,16 @@
 """Backtest runner."""
 
 import argparse
+import importlib
 import sys
 from pathlib import Path
+from typing import Any
 
 # Add backtest directory to path for imports
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import prepare
-import strategy
+prepare = importlib.import_module("prepare")
+strategy = importlib.import_module("strategy")
 
 
 def main() -> None:
@@ -26,18 +28,23 @@ def main() -> None:
         default="val",
         help="Split to use in single mode (default: val)",
     )
+    parser.add_argument(
+        "--interval",
+        default="1d",
+        help="Bar interval to load (default: 1d)",
+    )
     args = parser.parse_args()
 
     if args.mode == "cv":
-        _run_cv()
+        _run_cv(args.interval)
     else:
-        _run_single(args.split)
+        _run_single(args.split, args.interval)
 
 
-def _run_single(split: str) -> None:
+def _run_single(split: str, bar_interval: str) -> None:
     """Run backtest on a single split."""
     print(f"Loading {split} data...")
-    data = prepare.load_data(split)
+    data = prepare.load_data(split, bar_interval=bar_interval)
 
     if not data:
         print("No data available. Run fetch_data.py first.")
@@ -48,19 +55,19 @@ def _run_single(split: str) -> None:
     strat = strategy.Strategy()
 
     print("Running backtest...")
-    result = prepare.run_backtest(data, strat)
+    result = prepare.run_backtest(data, strat, bar_interval=bar_interval)
 
     total_bars = sum(len(df) for df in data.values())
     print(f"\nLoaded {total_bars} bars across {len(data)} symbols")
     _print_result(result)
 
 
-def _run_cv() -> None:
+def _run_cv(bar_interval: str) -> None:
     """Run walk-forward cross-validation."""
     print("Running walk-forward cross-validation...")
     print(f"Folds: {len(prepare.CV_FOLDS)}")
 
-    cv_result = prepare.cross_validate(strategy.Strategy)
+    cv_result = prepare.cross_validate(strategy.Strategy, bar_interval=bar_interval)
 
     print("\n" + "=" * 50)
     print("CROSS-VALIDATION RESULTS")
@@ -87,7 +94,7 @@ def _run_cv() -> None:
     print("=" * 50)
 
 
-def _print_result(result: prepare.BacktestResult) -> None:
+def _print_result(result: Any) -> None:
     """Print single backtest result."""
     score = prepare.compute_score(result)
     print("\n" + "=" * 40)

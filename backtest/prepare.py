@@ -30,21 +30,96 @@ SPLITS = {
 # Data directory
 DATA_DIR = Path(__file__).resolve().parent / "data"
 
+
+def lookback_bars_for_interval(interval: str) -> int:
+    """Return required history bars for a bar interval."""
+    return 200 if interval == "1d" else 500
+
+
+def annualization_factor(interval: str) -> float:
+    """Return Sharpe annualization factor (sqrt of bars per year)."""
+    if interval == "1d":
+        bars_per_year = 365.0
+    elif interval.endswith("m"):
+        minutes = max(int(interval[:-1]), 1)
+        bars_per_year = (365.0 * 24.0 * 60.0) / minutes
+    elif interval.endswith("h"):
+        hours = max(int(interval[:-1]), 1)
+        bars_per_year = (365.0 * 24.0) / hours
+    else:
+        bars_per_year = 365.0
+    return float(np.sqrt(bars_per_year))
+
+
+def data_dir_for_interval(interval: str) -> Path:
+    """Return data directory for bar interval."""
+    return DATA_DIR if interval == "1d" else DATA_DIR / interval
+
+
+def validate_and_fill(df: pd.DataFrame, interval: str) -> pd.DataFrame:
+    if interval == "1d" or df.empty:
+        return df
+
+    if interval not in {"1h", "4h"}:
+        return df
+
+    freq = interval.lower()
+    prepared = df.copy()
+    prepared["date"] = pd.to_datetime(prepared["date"])
+    prepared = prepared.sort_values("date").drop_duplicates(subset="date", keep="last")
+    prepared = prepared.set_index("date")
+
+    full_index = pd.date_range(
+        start=prepared.index.min(),
+        end=prepared.index.max(),
+        freq=freq,
+    )
+    reindexed = prepared.reindex(full_index)
+
+    max_gap_bars = int(pd.Timedelta("24h") / pd.Timedelta(freq)) - 1
+    filled = reindexed.ffill(limit=max_gap_bars)
+    filled.index.name = "date"
+    result = filled.reset_index()
+    result["date"] = result["date"].dt.strftime("%Y-%m-%d %H:%M:%S")
+    return result
+
+
 # Walk-forward cross-validation folds
 # Each fold: train period expands, val is next 3 months
 # train_start/train_end are documented for context (warmup window);
 # cross_validate() evaluates only on the val window.
 CV_FOLDS = [
-    {"train_start": "2024-04-01", "train_end": "2025-03-31", "val_start": "2025-04-01", "val_end": "2025-06-30"},
-    {"train_start": "2024-04-01", "train_end": "2025-06-30", "val_start": "2025-07-01", "val_end": "2025-09-30"},
-    {"train_start": "2024-04-01", "train_end": "2025-09-30", "val_start": "2025-10-01", "val_end": "2025-12-31"},
-    {"train_start": "2024-04-01", "train_end": "2025-12-31", "val_start": "2026-01-01", "val_end": "2026-03-22"},
+    {
+        "train_start": "2024-04-01",
+        "train_end": "2025-03-31",
+        "val_start": "2025-04-01",
+        "val_end": "2025-06-30",
+    },
+    {
+        "train_start": "2024-04-01",
+        "train_end": "2025-06-30",
+        "val_start": "2025-07-01",
+        "val_end": "2025-09-30",
+    },
+    {
+        "train_start": "2024-04-01",
+        "train_end": "2025-09-30",
+        "val_start": "2025-10-01",
+        "val_end": "2025-12-31",
+    },
+    {
+        "train_start": "2024-04-01",
+        "train_end": "2025-12-31",
+        "val_start": "2026-01-01",
+        "val_end": "2026-03-22",
+    },
 ]
 
 
 @dataclass(frozen=True)
 class BarData:
     """Single bar/candle data with symbol and history."""
+
     symbol: str
     date: str
     open: float
@@ -53,21 +128,27 @@ class BarData:
     close: float
     volume: float
     value: float
-    history: pd.DataFrame = field(repr=False)  # LOOKBACK_BARS of history including current bar
+    history: pd.DataFrame = field(
+        repr=False
+    )  # LOOKBACK_BARS of history including current bar
 
 
 @dataclass
 class Signal:
     """Trading signal from strategy."""
+
     symbol: str
     action: str  # "buy" or "sell"
-    weight: float  # Target portfolio weight (0-1) for buy, fraction to sell (0-1) for sell
+    weight: (
+        float  # Target portfolio weight (0-1) for buy, fraction to sell (0-1) for sell
+    )
     reason: str = ""  # Reason for the signal
 
 
 @dataclass
 class PortfolioState:
     """Current portfolio state."""
+
     cash: float
     positions: dict[str, float]  # symbol -> quantity
     avg_prices: dict[str, float]  # symbol -> avg entry price
@@ -92,6 +173,7 @@ class PortfolioState:
 @dataclass
 class BacktestResult:
     """Result of a backtest run."""
+
     total_return_pct: float
     sharpe: float
     max_drawdown_pct: float
@@ -144,19 +226,23 @@ def _resolve_split_dates(split: str) -> tuple[str, str]:
     return SPLITS[split]["start"], SPLITS[split]["end"]
 
 
-def load_data_range(start: str, end: str) -> dict[str, pd.DataFrame]:
+def load_data_range(
+    start: str, end: str, bar_interval: str = "1d"
+) -> dict[str, pd.DataFrame]:
     """Load backtest data for an arbitrary date range.
 
     Args:
         start: Start date (YYYY-MM-DD)
         end: End date (YYYY-MM-DD)
+        bar_interval: Bar interval to load (e.g. "1d", "60m", "5m")
 
     Returns:
         Dictionary mapping symbol to DataFrame with OHLCV data
     """
     data: dict[str, pd.DataFrame] = {}
+    interval_dir = data_dir_for_interval(bar_interval)
     for symbol in DEFAULT_SYMBOLS:
-        path = DATA_DIR / f"KRW-{symbol}.parquet"
+        path = interval_dir / f"KRW-{symbol}.parquet"
         if not path.exists():
             continue
         df = pd.read_parquet(path)
@@ -171,20 +257,23 @@ def load_data_range(start: str, end: str) -> dict[str, pd.DataFrame]:
     return data
 
 
-def load_data(split: str = "val") -> dict[str, pd.DataFrame]:
+def load_data(split: str = "val", bar_interval: str = "1d") -> dict[str, pd.DataFrame]:
     """Load backtest data for the given split.
 
     Args:
         split: Data split to load ("train", "val", or "test")
+        bar_interval: Bar interval to load (e.g. "1d", "60m", "5m")
 
     Returns:
         Dictionary mapping symbol to DataFrame with OHLCV data
     """
     start, end = _resolve_split_dates(split)
-    return load_data_range(start, end)
+    return load_data_range(start, end, bar_interval=bar_interval)
 
 
-def _calc_execution_price(bar: BarData, action: str, slippage_bps: int = SLIPPAGE_BPS) -> float:
+def _calc_execution_price(
+    bar: BarData, action: str, slippage_bps: float = SLIPPAGE_BPS
+) -> float:
     """Calculate execution price with slippage.
 
     For buys: price moves up (higher price)
@@ -285,9 +374,7 @@ def _execute_signal(
 
     if signal.action == "buy":
         price = _calc_execution_price(bar, "buy")
-        quantity = _calc_buy_quantity(
-            state.cash, signal.weight, portfolio_value, price
-        )
+        quantity = _calc_buy_quantity(state.cash, signal.weight, portfolio_value, price)
 
         if quantity > 0:
             cost = quantity * price
@@ -308,23 +395,23 @@ def _execute_signal(
                 new_state.position_dates[signal.symbol] = bar.date
 
                 # Log trade
-                new_state.trade_log.append({
-                    "date": bar.date,
-                    "symbol": signal.symbol,
-                    "action": "buy",
-                    "quantity": quantity,
-                    "price": price,
-                    "fee": fee,
-                    "reason": signal.reason,
-                })
+                new_state.trade_log.append(
+                    {
+                        "date": bar.date,
+                        "symbol": signal.symbol,
+                        "action": "buy",
+                        "quantity": quantity,
+                        "price": price,
+                        "fee": fee,
+                        "reason": signal.reason,
+                    }
+                )
 
     elif signal.action == "sell":
         current_qty = state.positions.get(signal.symbol, 0)
         if current_qty > 0:
             price = _calc_execution_price(bar, "sell")
-            quantity = _calc_sell_quantity(
-                current_qty, signal.weight
-            )
+            quantity = _calc_sell_quantity(current_qty, signal.weight)
 
             if quantity > 0:
                 proceeds = quantity * price
@@ -344,16 +431,18 @@ def _execute_signal(
                         del new_state.position_dates[signal.symbol]
 
                 # Log trade
-                new_state.trade_log.append({
-                    "date": bar.date,
-                    "symbol": signal.symbol,
-                    "action": "sell",
-                    "quantity": quantity,
-                    "price": price,
-                    "fee": fee,
-                    "realized_pnl": realized_pnl,
-                    "reason": signal.reason,
-                })
+                new_state.trade_log.append(
+                    {
+                        "date": bar.date,
+                        "symbol": signal.symbol,
+                        "action": "sell",
+                        "quantity": quantity,
+                        "price": price,
+                        "fee": fee,
+                        "realized_pnl": realized_pnl,
+                        "reason": signal.reason,
+                    }
+                )
 
     return new_state
 
@@ -362,6 +451,7 @@ def run_backtest(
     data: dict[str, pd.DataFrame],
     strategy: Strategy,
     initial_capital: float = INITIAL_CAPITAL,
+    bar_interval: str = "1d",
 ) -> BacktestResult:
     """Run backtest with given data and strategy.
 
@@ -369,11 +459,13 @@ def run_backtest(
         data: Dictionary mapping symbol to DataFrame
         strategy: Strategy instance implementing on_bar protocol
         initial_capital: Starting capital
+        bar_interval: Bar interval used for history depth and data source
 
     Returns:
         BacktestResult with metrics and trade log
     """
     import time
+
     start_time = time.time()
 
     # Build unified date sequence from the split window only.
@@ -399,9 +491,11 @@ def run_backtest(
     # Pre-index data by symbol for efficient lookup.
     # Prefer the on-disk source when available so history can include
     # pre-split warmup bars even if `load_data()` filtered them out.
+    interval_dir = data_dir_for_interval(bar_interval)
+    lookback_bars = lookback_bars_for_interval(bar_interval)
     indexed_data: dict[str, pd.DataFrame] = {}
     for symbol, df in data.items():
-        full_path = DATA_DIR / f"KRW-{symbol}.parquet"
+        full_path = interval_dir / f"KRW-{symbol}.parquet"
         source_df = pd.read_parquet(full_path) if full_path.exists() else df
         indexed_data[symbol] = source_df.set_index("date").sort_index()
 
@@ -423,10 +517,24 @@ def run_backtest(
         for symbol, df in indexed_data.items():
             if date in df.index:
                 row = df.loc[date]
-                # Get history up to and including current date (LOOKBACK_BARS rows)
-                idx = df.index.get_loc(date)
-                start_idx = max(0, idx - LOOKBACK_BARS + 1)
-                history = df.iloc[start_idx:idx + 1].copy()
+                # Get history up to and including current date (lookback_bars rows)
+                loc = df.index.get_loc(date)
+                if isinstance(loc, slice):
+                    idx = loc.stop - 1
+                elif isinstance(loc, np.ndarray):
+                    if loc.dtype == bool:
+                        matches = np.flatnonzero(loc)
+                        if len(matches) == 0:
+                            continue
+                        idx = int(matches[-1])
+                    else:
+                        if len(loc) == 0:
+                            continue
+                        idx = int(loc[-1])
+                else:
+                    idx = int(loc)
+                start_idx = max(0, idx - lookback_bars + 1)
+                history = df.iloc[start_idx : idx + 1].copy()
 
                 bar_data[symbol] = BarData(
                     symbol=symbol,
@@ -466,11 +574,14 @@ def run_backtest(
 
     # Calculate metrics
     elapsed = time.time() - start_time
-    return _build_result(state, equity_curve, elapsed)
+    return _build_result(state, equity_curve, elapsed, bar_interval=bar_interval)
 
 
 def _build_result(
-    state: PortfolioState, equity_curve: list[float], backtest_seconds: float = 0.0
+    state: PortfolioState,
+    equity_curve: list[float],
+    backtest_seconds: float = 0.0,
+    bar_interval: str = "1d",
 ) -> BacktestResult:
     """Build BacktestResult from final state."""
     total_return_pct = _calc_total_return(equity_curve)
@@ -482,7 +593,10 @@ def _build_result(
             (equity_curve[i] - equity_curve[i - 1]) / equity_curve[i - 1]
             for i in range(1, len(equity_curve))
         ]
-        sharpe = _calc_sharpe(daily_returns)
+        sharpe = _calc_sharpe(
+            daily_returns,
+            annualize_factor=annualization_factor(bar_interval),
+        )
     else:
         sharpe = 0.0
 
@@ -510,7 +624,11 @@ def _calc_total_return(equity_curve: list[float]) -> float:
     return (equity_curve[-1] - equity_curve[0]) / equity_curve[0] * 100
 
 
-def _calc_sharpe(returns: list[float], risk_free_rate: float = 0.0) -> float:
+def _calc_sharpe(
+    returns: list[float],
+    risk_free_rate: float = 0.0,
+    annualize_factor: float | None = None,
+) -> float:
     """Calculate annualized Sharpe ratio."""
     if not returns:
         return 0.0
@@ -522,8 +640,8 @@ def _calc_sharpe(returns: list[float], risk_free_rate: float = 0.0) -> float:
     if std_return == 0 or np.isnan(std_return):
         return 0.0
 
-    # Annualize (assuming daily returns)
-    sharpe = (mean_return / std_return) * np.sqrt(365)
+    factor = annualize_factor if annualize_factor is not None else np.sqrt(365)
+    sharpe = (mean_return / std_return) * factor
     return float(sharpe)
 
 
@@ -550,7 +668,7 @@ def _calc_trade_metrics(trade_log: list[dict[str, Any]]) -> tuple[float, float, 
         return 0.0, 0.0, 0.0
 
     # Match buy/sell pairs for PnL
-    trades_by_symbol: dict[str, list[dict]] = {}
+    trades_by_symbol: dict[str, list[dict[str, Any]]] = {}
     for trade in trade_log:
         symbol = trade["symbol"]
         if symbol not in trades_by_symbol:
@@ -587,6 +705,7 @@ def _calc_trade_metrics(trade_log: list[dict[str, Any]]) -> tuple[float, float, 
                     if entry_date:
                         try:
                             from datetime import datetime
+
                             entry = datetime.strptime(entry_date, "%Y-%m-%d")
                             exit_date = datetime.strptime(trade["date"], "%Y-%m-%d")
                             days = (exit_date - entry).days
@@ -602,7 +721,7 @@ def _calc_trade_metrics(trade_log: list[dict[str, Any]]) -> tuple[float, float, 
     total_trades = wins + losses
     win_rate = wins / total_trades if total_trades > 0 else 0.0
     profit_factor = gross_profit / gross_loss if gross_loss > 0 else gross_profit
-    avg_holding_days = np.mean(holding_days_list) if holding_days_list else 0.0
+    avg_holding_days = float(np.mean(holding_days_list)) if holding_days_list else 0.0
 
     return win_rate, profit_factor, avg_holding_days
 
@@ -632,6 +751,7 @@ def cross_validate(
     strategy_class: type,
     folds: list[dict[str, str]] | None = None,
     initial_capital: float = INITIAL_CAPITAL,
+    bar_interval: str = BAR_INTERVAL,
 ) -> CVResult:
     """Run walk-forward cross-validation.
 
@@ -656,12 +776,16 @@ def cross_validate(
     fold_indices: list[int] = []
 
     for i, fold in enumerate(folds):
-        val_data = load_data_range(fold["val_start"], fold["val_end"])
+        val_data = load_data_range(
+            fold["val_start"],
+            fold["val_end"],
+            bar_interval=bar_interval,
+        )
         if not val_data:
             continue
 
         strat = strategy_class()
-        result = run_backtest(val_data, strat, initial_capital)
+        result = run_backtest(val_data, strat, initial_capital, bar_interval=bar_interval)
         score = compute_score(result)
 
         fold_scores.append(score)
