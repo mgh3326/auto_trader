@@ -294,6 +294,165 @@ def _signal_rsi_slow_high(ctx: SignalContext, params: dict) -> bool:
     return ctx.rsi_slow is not None and ctx.rsi_slow > params["rsi_exit"]
 
 
+def _setup_special_reversion_buy(
+    bull_flags: dict, bull_votes: int, weighted_bull_votes: int, params: dict
+) -> bool:
+    return (
+        bull_votes == params["min_votes"] - 1
+        and bull_flags.get("dual_rsi_oversold", False)
+        and bull_flags.get("close_below_bb_lower", False)
+        and weighted_bull_votes >= params["min_weighted_buy_votes"]
+    )
+
+
+def _setup_pure_reversion_buy(bull_flags: dict, params: dict) -> bool:
+    return (
+        bull_flags.get("dual_rsi_oversold", False)
+        and bull_flags.get("close_below_bb_lower", False)
+        and bull_flags.get("volume_above_avg", False)
+        and not bull_flags.get("macd_histogram_positive", False)
+    )
+
+
+def _setup_strong_reversion_buy(bull_flags: dict, params: dict) -> bool:
+    return (
+        bull_flags.get("dual_rsi_oversold", False)
+        and bull_flags.get("close_below_bb_lower", False)
+        and bull_flags.get("macd_histogram_positive", False)
+    )
+
+
+def _setup_pure_trend_buy(bull_flags: dict, params: dict) -> bool:
+    return (
+        bull_flags.get("macd_histogram_positive", False)
+        and bull_flags.get("ema_fast_above_slow", False)
+        and bull_flags.get("momentum_positive", False)
+        and bull_flags.get("volume_above_avg", False)
+        and not bull_flags.get("dual_rsi_oversold", False)
+    )
+
+
+# Symbol-specific buy rules: (symbol, setup_fn, market_fn, size_key)
+SYMBOL_BUY_RULES = [
+    (
+        "*",
+        lambda s, b, p: _setup_strong_reversion_buy(b, p),
+        None,
+        "strong_reversion_position_size",
+    ),
+    (
+        "BTC",
+        lambda s, b, p: _setup_pure_trend_buy(b, p),
+        lambda m, p: (
+            m["avg_rsi"] >= p["btc_trend_hot_rsi_level"]
+            and m["avg_rsi_change"] < p["btc_trend_stall_change"]
+        ),
+        "btc_hot_stall_trend_position_size",
+    ),
+    (
+        "BTC",
+        lambda s, b, p: _setup_pure_trend_buy(b, p),
+        lambda m, p: (
+            p["btc_mid_hot_rsi_low"] <= m["avg_rsi"] < p["btc_mid_hot_rsi_high"]
+            and m["avg_rsi_change"] >= p["btc_extreme_accel_change"]
+        ),
+        "btc_mid_hot_accel_trend_position_size",
+    ),
+    (
+        "SOL",
+        lambda s, b, p: _setup_pure_trend_buy(b, p),
+        lambda m, p: (
+            p["sol_hot_stall_rsi_low"] <= m["avg_rsi"] < p["sol_hot_stall_rsi_high"]
+            and m["avg_rsi_change"] < p["sol_hot_stall_change"]
+        ),
+        "sol_hot_stall_trend_position_size",
+    ),
+    (
+        "LINK",
+        lambda s, b, p: _setup_pure_trend_buy(b, p),
+        lambda m, p: (
+            p["link_hot_stall_rsi_low"] <= m["avg_rsi"] < p["link_hot_stall_rsi_high"]
+            and m["avg_rsi_change"] < p["link_hot_stall_change"]
+        ),
+        "link_hot_stall_trend_position_size",
+    ),
+    (
+        "XRP",
+        lambda s, b, p: _setup_pure_reversion_buy(b, p) and s == "XRP",
+        lambda m, p: (
+            m["avg_rsi"] < p["xrp_stalled_washout_rsi"]
+            and m["avg_rsi_change"] > p["xrp_stalled_washout_change"]
+        ),
+        "xrp_stalled_washout_reversion_position_size",
+    ),
+    (
+        "SOL",
+        lambda s, b, p: _setup_pure_reversion_buy(b, p) and s == "SOL",
+        lambda m, p: m["avg_rsi"] > p["sol_mild_reversion_rsi"],
+        "sol_mild_reversion_position_size",
+    ),
+    (
+        "SOL",
+        lambda s, b, p: _setup_pure_trend_buy(b, p) and s == "SOL",
+        lambda m, p: (
+            m["avg_rsi"] < p["sol_low_breadth_rsi"]
+            and m["avg_rsi_change"] <= p["sol_low_breadth_change"]
+        ),
+        "sol_low_breadth_trend_position_size",
+    ),
+    (
+        "ADA",
+        lambda s, b, p: _setup_pure_reversion_buy(b, p) and s == "ADA",
+        lambda m, p: (
+            m["avg_rsi"] < p["ada_stalled_washout_rsi"]
+            and m["avg_rsi_change"] > p["ada_stalled_washout_change"]
+        ),
+        "ada_stalled_washout_reversion_position_size",
+    ),
+    (
+        "DOT",
+        lambda s, b, p: _setup_pure_reversion_buy(b, p) and s == "DOT",
+        lambda m, p: m["avg_rsi"] > p["dot_mild_reversion_rsi"],
+        "dot_mild_reversion_position_size",
+    ),
+    (
+        "ETH",
+        lambda s, b, p: _setup_pure_reversion_buy(b, p) and s == "ETH",
+        None,
+        "eth_pure_reversion_position_size",
+    ),
+    (
+        "AVAX",
+        lambda s, b, p: _setup_pure_trend_buy(b, p) and s == "AVAX",
+        None,
+        "avax_trend_position_size",
+    ),
+    (
+        "XRP",
+        lambda s, b, p: _setup_pure_trend_buy(b, p) and s == "XRP",
+        None,
+        "xrp_trend_position_size",
+    ),
+]
+
+
+def _resolve_symbol_buy_weight(
+    symbol: str,
+    bull_flags: dict,
+    market_state: dict,
+    params: dict,
+) -> tuple[float, str | None]:
+    for rule_symbol, setup_fn, market_fn, size_key in SYMBOL_BUY_RULES:
+        if rule_symbol != "*" and rule_symbol != symbol:
+            continue
+        if not setup_fn(symbol, bull_flags, params):
+            continue
+        if market_fn is not None and not market_fn(market_state, params):
+            continue
+        return params[size_key], size_key
+    return params["position_size"], None
+
+
 # Signal registries - order matters for reason string formatting
 BULL_SIGNALS = [
     ("dual_rsi_oversold", _signal_dual_rsi_oversold),
