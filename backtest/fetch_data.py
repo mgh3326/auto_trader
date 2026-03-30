@@ -145,7 +145,46 @@ def fetch_candles(market: str, days: int) -> list[dict[str, Any]]:
     return all_candles
 
 
-def _normalize_candles(candles: list[dict[str, Any]]) -> pd.DataFrame:
+def fetch_candles_minutes(
+    market: str, unit: int = 60, hours: int = 24
+) -> list[dict[str, Any]]:
+    url = f"{UPBIT_API_URL}/candles/minutes/{unit}"
+    all_candles: list[dict[str, Any]] = []
+    remaining = hours
+    to_date = datetime.now()
+
+    with httpx.Client() as client:
+        while remaining > 0:
+            count = min(200, remaining)
+            params = {
+                "market": market,
+                "count": count,
+                "to": to_date.strftime("%Y-%m-%dT%H:%M:%S"),
+            }
+
+            response = client.get(url, params=params)
+            response.raise_for_status()
+            candles = response.json()
+
+            if not candles:
+                break
+
+            all_candles.extend(candles)
+
+            oldest = datetime.fromisoformat(
+                candles[-1]["candle_date_time_utc"].replace("Z", "+00:00")
+            )
+            to_date = oldest - timedelta(hours=1)
+            remaining -= count
+
+            time.sleep(0.11)
+
+    return all_candles
+
+
+def _normalize_candles(
+    candles: list[dict[str, Any]], interval: str = "1d"
+) -> pd.DataFrame:
     """Normalize Upbit API candle data to target schema."""
     if not candles:
         return pd.DataFrame(
@@ -170,8 +209,10 @@ def _normalize_candles(candles: list[dict[str, Any]]) -> pd.DataFrame:
     # Keep only required columns
     df = df[["date", "open", "high", "low", "close", "volume", "value"]]
 
-    # Convert date to string format (YYYY-MM-DD)
-    df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
+    if interval == "1d":
+        df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
+    else:
+        df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%dT%H:%M:%S")
 
     # Sort by date ascending
     df = df.sort_values("date").reset_index(drop=True)

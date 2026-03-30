@@ -217,6 +217,129 @@ class TestCandleNormalization:
         assert df["close"].tolist() == [50500.0, 51200.0]
 
 
+class TestMinuteCandleFetch:
+    def test_fetch_candles_minutes_builds_correct_url(self, monkeypatch):
+        captured_urls: list[str] = []
+
+        class FakeResponse:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return [
+                    {
+                        "candle_date_time_utc": "2026-03-20T10:00:00",
+                        "opening_price": 50000.0,
+                        "high_price": 51000.0,
+                        "low_price": 49000.0,
+                        "trade_price": 50500.0,
+                        "candle_acc_trade_volume": 10.5,
+                        "candle_acc_trade_price": 500000.0,
+                    }
+                ]
+
+        class FakeClient:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def get(self, url, params=None):
+                captured_urls.append(url)
+                return FakeResponse()
+
+        monkeypatch.setattr(fetch_data.httpx, "Client", FakeClient)
+        monkeypatch.setattr(fetch_data.time, "sleep", lambda *a: None)
+
+        fetch_data.fetch_candles_minutes("KRW-BTC", unit=60, hours=1)
+
+        assert any("/candles/minutes/60" in u for u in captured_urls)
+
+    def test_fetch_candles_minutes_paginates(self, monkeypatch):
+        call_count = [0]
+
+        class FakeResponse:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                call_count[0] += 1
+                if call_count[0] <= 2:
+                    base_time = datetime(2026, 3, 20 - call_count[0], 23, 0, 0)
+                    return [
+                        {
+                            "candle_date_time_utc": (
+                                base_time - timedelta(hours=i)
+                            ).strftime("%Y-%m-%dT%H:%M:%S"),
+                            "opening_price": 1.0,
+                            "high_price": 1.0,
+                            "low_price": 1.0,
+                            "trade_price": 1.0,
+                            "candle_acc_trade_volume": 1.0,
+                            "candle_acc_trade_price": 1.0,
+                        }
+                        for i in range(200)
+                    ]
+                return []
+
+        class FakeClient:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def get(self, url, params=None):
+                return FakeResponse()
+
+        monkeypatch.setattr(fetch_data.httpx, "Client", FakeClient)
+        monkeypatch.setattr(fetch_data.time, "sleep", lambda *a: None)
+
+        result = fetch_data.fetch_candles_minutes("KRW-BTC", unit=60, hours=400)
+        assert len(result) == 400
+
+    def test_normalize_minute_candles_datetime_format(self):
+        api_rows = [
+            {
+                "candle_date_time_utc": "2026-03-20T14:00:00",
+                "opening_price": 50000.0,
+                "high_price": 51000.0,
+                "low_price": 49000.0,
+                "trade_price": 50500.0,
+                "candle_acc_trade_volume": 10.5,
+                "candle_acc_trade_price": 500000.0,
+            }
+        ]
+
+        df = fetch_data._normalize_candles(api_rows, interval="1h")
+
+        assert df["date"].iloc[0] == "2026-03-20T14:00:00"
+
+
+class TestNormalizeCandlesInterval:
+    def test_1d_normalization_date_only(self):
+        api_rows = [
+            {
+                "candle_date_time_utc": "2026-03-20T00:00:00",
+                "opening_price": 50000.0,
+                "high_price": 51000.0,
+                "low_price": 49000.0,
+                "trade_price": 50500.0,
+                "candle_acc_trade_volume": 100.5,
+                "candle_acc_trade_price": 5000000.0,
+            }
+        ]
+
+        df = fetch_data._normalize_candles(api_rows, interval="1d")
+
+        assert df["date"].iloc[0] == "2026-03-20"
+
+
 class TestMergeDedupe:
     """Tests for merge and dedupe functionality."""
 
