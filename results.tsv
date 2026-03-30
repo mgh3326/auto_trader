@@ -203,3 +203,4 @@ exp201	4.228216	4.618736	0.781040	3.878618	NA	kept	downsize DOT mild reversion e
 exp202	4.228511	4.619000	0.780976	3.878618	NA	kept	downsize DOT mild reversion entries to sixteenth percent
 exp203	4.228659	4.619131	0.780944	3.878618	NA	kept	downsize DOT mild reversion entries to thirty-second percent
 exp204	4.228733	4.619197	0.780929	3.878618	3.985036	kept	downsize DOT mild reversion entries to sixty-fourth percent
+exp205	4.123883	4.550076	0.852386	3.602134	NA	reverted	verify run_experiment.py
