@@ -102,6 +102,7 @@ class TestN8nNewsRouter:
         mock_fetch.assert_called_once_with(
             hours=2,
             feed_source=None,
+            source=None,
             keyword=None,
             limit=20,
         )
@@ -130,36 +131,9 @@ class TestN8nNewsRouter:
         mock_fetch.assert_called_once_with(
             hours=6,
             feed_source="mk_stock",
+            source=None,
             keyword="삼성",
             limit=5,
-        )
-
-    def test_get_news_with_source_filter(self):
-        """Endpoint should accept source parameter for publisher filtering."""
-        mock_result = N8nNewsResponse(
-            success=True,
-            as_of="2026-03-29T10:00:00+09:00",
-            items=[],
-            summary=N8nNewsSummary(total=0, sources=[], date_range=""),
-            discord_title="📰 최신 뉴스 (0건)",
-            discord_body="",
-        )
-
-        with patch(
-            "app.routers.n8n.fetch_n8n_news",
-            new_callable=AsyncMock,
-            return_value=mock_result,
-        ) as mock_fetch:
-            client = self._get_client()
-            resp = client.get("/api/n8n/news?hours=2&source=연합뉴스")
-
-        assert resp.status_code == 200
-        mock_fetch.assert_called_once_with(
-            hours=2,
-            feed_source=None,
-            source="연합뉴스",
-            keyword=None,
-            limit=20,
         )
 
     def test_get_news_error_returns_500(self):
@@ -281,54 +255,10 @@ class TestN8nNewsService:
         mock_get.assert_called_once_with(
             hours=6,
             feed_source="mk_stock",
+            source=None,
             keyword="삼성",
             limit=5,
         )
-
-    @pytest.mark.asyncio
-    async def test_source_filter_param_forwarded(self):
-        """source parameter should be forwarded to get_news_articles."""
-        from app.services.n8n_news_service import fetch_n8n_news
-
-        mock_get = AsyncMock(return_value=([], 0))
-
-        with patch("app.services.n8n_news_service.get_news_articles", mock_get):
-            await fetch_n8n_news(
-                hours=6,
-                feed_source="mk_stock",
-                source="연합뉴스",
-                keyword="삼성",
-                limit=5,
-            )
-
-        mock_get.assert_called_once_with(
-            hours=6,
-            feed_source="mk_stock",
-            source="연합뉴스",
-            keyword="삼성",
-            limit=5,
-        )
-
-    @pytest.mark.asyncio
-    async def test_summary_includes_feed_sources(self):
-        """N8nNewsSummary should include feed_sources list."""
-        from app.services.n8n_news_service import fetch_n8n_news
-
-        articles = [
-            _make_fake_article(id=1, source="매일경제", feed_source="mk_stock"),
-            _make_fake_article(id=2, source="연합뉴스", feed_source="yna_market"),
-        ]
-
-        with patch(
-            "app.services.n8n_news_service.get_news_articles",
-            new_callable=AsyncMock,
-            return_value=(articles, 2),
-        ):
-            resp = await fetch_n8n_news(hours=24)
-
-        assert resp.summary.feed_sources is not None
-        assert "mk_stock" in resp.summary.feed_sources
-        assert "yna_market" in resp.summary.feed_sources
 
     @pytest.mark.asyncio
     async def test_discord_body_format(self):

@@ -76,8 +76,9 @@ def _build_discord_body(items: list[N8nNewsItem], sources: list[str]) -> str:
 async def fetch_n8n_news(
     hours: int = 2,
     feed_source: str | None = None,
-    limit: int = 10,
+    source: str | None = None,
     keyword: str | None = None,
+    limit: int = 10,
 ) -> N8nNewsResponse:
     """Fetch recent news articles formatted for n8n → Discord posting."""
     as_of_dt = now_kst().replace(microsecond=0)
@@ -87,6 +88,7 @@ async def fetch_n8n_news(
         articles, total = await get_news_articles(
             hours=hours,
             feed_source=feed_source,
+            source=source,
             keyword=keyword,
             limit=limit,
         )
@@ -109,10 +111,14 @@ async def fetch_n8n_news(
         ]
 
         unique_sources = sorted({item.source for item in items if item.source})
+        unique_feed_sources = sorted(
+            {item.feed_source for item in items if item.feed_source}
+        )
 
         summary = N8nNewsSummary(
             total=len(items),
             sources=unique_sources,
+            feed_sources=unique_feed_sources,
             date_range=_build_date_range(articles),
         )
 

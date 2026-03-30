@@ -49,7 +49,13 @@ class N8nNewsItem(BaseModel):
 
 class N8nNewsSummary(BaseModel):
     total: int = Field(..., description="Total articles returned")
-    sources: list[str] = Field(default_factory=list, description="Unique source names")
+    sources: list[str] = Field(
+        default_factory=list, description="Unique publisher source names"
+    )
+    feed_sources: list[str] = Field(
+        default_factory=list,
+        description="Unique collection path keys (feed_source values)",
+    )
     date_range: str = Field("", description="e.g. 2026-03-30 07:00 ~ 09:00")
 
 

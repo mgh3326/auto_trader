@@ -542,7 +542,11 @@ async def get_kr_morning_report(
 async def get_n8n_news(
     hours: int = Query(24, ge=1, le=168, description="Lookback period in hours"),
     feed_source: str | None = Query(
-        None, description="Filter by feed source (e.g., mk_stock)"
+        None,
+        description="Filter by collection path key (e.g., browser_naver_mainnews, mk_stock)",
+    ),
+    source: str | None = Query(
+        None, description="Filter by publisher label (e.g., 연합뉴스, 매일경제)"
     ),
     keyword: str | None = Query(None, description="Filter by keyword in title/content"),
     limit: int = Query(20, ge=1, le=100, description="Maximum articles to return"),
@@ -554,6 +558,7 @@ async def get_n8n_news(
         result = await fetch_n8n_news(
             hours=hours,
             feed_source=feed_source,
+            source=source,
             keyword=keyword,
             limit=limit,
         )

@@ -30,12 +30,16 @@ def _article_to_dict(article: NewsArticle) -> dict[str, Any]:
         if article.article_published_at
         else None,
         "keywords": article.keywords,
+        "stock_symbol": article.stock_symbol,
+        "stock_name": article.stock_name,
     }
 
 
 async def _get_market_news_impl(
     hours: int | None = 24,
     feed_source: str | None = None,
+    source: str | None = None,
+    keyword: str | None = None,
     limit: int | None = 20,
 ) -> dict[str, Any]:
     hours = hours or 24
@@ -44,17 +48,23 @@ async def _get_market_news_impl(
     articles, total = await get_news_articles(
         hours=hours,
         feed_source=feed_source,
+        source=source,
+        keyword=keyword,
         limit=limit,
     )
 
     news_list = [_article_to_dict(a) for a in articles]
-    sources = list({a.get("feed_source") for a in news_list if a.get("feed_source")})
+    source_names = list({a.get("source") for a in news_list if a.get("source")})
+    feed_source_names = list(
+        {a.get("feed_source") for a in news_list if a.get("feed_source")}
+    )
 
     return {
         "count": len(news_list),
         "total": total,
         "news": news_list,
-        "sources": sorted(sources),
+        "sources": sorted(source_names),
+        "feed_sources": sorted(feed_source_names),
     }
 
 
@@ -114,17 +124,24 @@ def _register_news_tools_impl(mcp: FastMCP) -> None:
     @mcp.tool(
         name="get_market_news",
         description=(
-            "Get recent market news from RSS feeds (매경, 연합뉴스 등). "
-            "For stock-specific news, use get_news instead."
+            "Get recent market news. Supports filtering by publisher (source), "
+            "collection path (feed_source), and keyword. Returns both publisher names "
+            "and collection paths for briefing segmentation."
         ),
     )
     async def get_market_news(
         hours: int = 24,
         feed_source: str | None = None,
+        source: str | None = None,
+        keyword: str | None = None,
         limit: int = 20,
     ) -> dict[str, Any]:
         return await _get_market_news_impl(
-            hours=hours, feed_source=feed_source, limit=limit
+            hours=hours,
+            feed_source=feed_source,
+            source=source,
+            keyword=keyword,
+            limit=limit,
         )
 
     @mcp.tool(
