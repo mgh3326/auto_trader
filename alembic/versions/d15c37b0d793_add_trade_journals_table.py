@@ -16,7 +16,7 @@ down_revision: str | Sequence[str] | None = "2d4e6f8a0b1c"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-instrument_type_enum = sa.Enum(
+instrument_type_enum = postgresql.ENUM(
     "equity_kr", "equity_us", "crypto", "forex", "index",
     name="instrument_type",
     create_type=False,
