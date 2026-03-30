@@ -494,9 +494,9 @@ class TestGetEndpointNewParams:
         params = openapi["paths"]["/api/v1/news"]["get"]["parameters"]
         feed_source_param = next(p for p in params if p["name"] == "feed_source")
 
-        description = feed_source_param["schema"].get("description") or feed_source_param.get(
-            "description", ""
-        )
+        description = feed_source_param["schema"].get(
+            "description"
+        ) or feed_source_param.get("description", "")
         assert "collection path key" in description
         assert "browser_naver_mainnews" in description
 
