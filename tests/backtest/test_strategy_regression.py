@@ -560,6 +560,35 @@ def test_backtest_runner_imports_local_strategy_module() -> None:
     assert callable(strategy._setup_pure_trend_buy)
 
 
+def test_backtest_runner_uses_direct_imports() -> None:
+    """Verify that backtest.py uses direct imports instead of importlib.
+
+    This test imports backtest.py as a module to verify import mechanism.
+    """
+    import importlib.util
+    import os
+
+    backtest_path = (
+        Path(__file__).resolve().parent.parent.parent / "backtest" / "backtest.py"
+    )
+    assert backtest_path.exists(), f"backtest.py not found at {backtest_path}"
+
+    # Read the file content to verify import style
+    content = backtest_path.read_text()
+
+    # Should use direct imports, not importlib
+    assert "import prepare" in content, "backtest.py should import prepare directly"
+    assert "import strategy" in content, "backtest.py should import strategy directly"
+
+    # Should NOT use importlib.import_module for prepare/strategy
+    assert 'importlib.import_module("prepare")' not in content, (
+        "backtest.py should not use importlib for prepare"
+    )
+    assert 'importlib.import_module("strategy")' not in content, (
+        "backtest.py should not use importlib for strategy"
+    )
+
+
 # =============================================================================
 # Parameter Access Test
 # =============================================================================

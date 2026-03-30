@@ -1,7 +1,6 @@
 """Backtest runner."""
 
 import argparse
-import importlib
 import sys
 from pathlib import Path
 from typing import Any
@@ -9,8 +8,8 @@ from typing import Any
 # Add backtest directory to path for imports
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-prepare = importlib.import_module("prepare")
-strategy = importlib.import_module("strategy")
+import prepare
+import strategy
 
 
 def main() -> None:
