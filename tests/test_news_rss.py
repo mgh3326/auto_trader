@@ -132,6 +132,52 @@ class TestNewsArticleModel:
 class TestNewsSchemas:
     """Test updated news schemas."""
 
+    def test_news_article_create_trims_source_fields(self):
+        """source, feed_source should be trimmed; keywords cleaned."""
+        article = NewsArticleCreate(
+            url="https://example.com/1",
+            title="  Title  ",
+            source="  연합뉴스  ",
+            feed_source="  browser_naver_mainnews  ",
+            keywords=[" 삼성전자 ", " ", "AI"],
+        )
+        assert article.title == "Title"
+        assert article.source == "연합뉴스"
+        assert article.feed_source == "browser_naver_mainnews"
+        assert article.keywords == ["삼성전자", "AI"]
+
+    def test_news_article_create_normalizes_whitespace_only_to_none(self):
+        """Whitespace-only strings become None for optional text fields."""
+        article = NewsArticleCreate(
+            url="https://example.com/1",
+            title="Title",
+            source="   ",
+            feed_source="   ",
+            author="   ",
+        )
+        assert article.source is None
+        assert article.feed_source is None
+        assert article.author is None
+
+    def test_news_article_create_empty_keywords_become_none(self):
+        """Empty or whitespace-only keywords list becomes None."""
+        article = NewsArticleCreate(
+            url="https://example.com/1",
+            title="Title",
+            keywords=["  ", "", "   "],
+        )
+        assert article.keywords is None
+
+    def test_briefing_content_type_is_encoded_by_feed_source_not_db_column(self):
+        """feed_source naming conventions encode content type without schema change."""
+        article = NewsArticleCreate(
+            url="https://example.com/research",
+            title="유안타증권 리포트",
+            source="유안타증권",
+            feed_source="browser_naver_research",
+        )
+        assert article.feed_source == "browser_naver_research"
+
     def test_create_without_content(self):
         """RSS news may have no content, only summary."""
         article = NewsArticleCreate(
@@ -450,6 +496,60 @@ class TestMCPNewsTools:
 
         assert "get_market_news" in NEWS_TOOL_NAMES
         assert "search_news" in NEWS_TOOL_NAMES
+
+    @pytest.mark.asyncio
+    async def test_get_market_news_returns_sources_and_feed_sources(self):
+        """MCP get_market_news should return both sources (publisher) and feed_sources (collection path)."""
+        from app.mcp_server.tooling.news_handlers import _get_market_news_impl
+
+        mock_articles = [
+            MagicMock(
+                id=1,
+                url="https://example.com/1",
+                title="Test News 1",
+                source="매일경제",
+                feed_source="mk_stock",
+                summary="요약1",
+                article_published_at=datetime(2026, 3, 27, 9, 0, 0),
+                keywords=["반도체"],
+                stock_symbol="005930",
+                stock_name="삼성전자",
+            ),
+            MagicMock(
+                id=2,
+                url="https://example.com/2",
+                title="Test News 2",
+                source="연합뉴스",
+                feed_source="browser_naver_mainnews",
+                summary="요약2",
+                article_published_at=datetime(2026, 3, 27, 9, 30, 0),
+                keywords=["AI"],
+                stock_symbol=None,
+                stock_name=None,
+            ),
+        ]
+
+        with patch(
+            "app.mcp_server.tooling.news_handlers.get_news_articles",
+            new_callable=AsyncMock,
+            return_value=(mock_articles, 2),
+        ):
+            result = await _get_market_news_impl(hours=24, feed_source=None, limit=20)
+
+        assert "count" in result
+        assert "sources" in result
+        assert "feed_sources" in result
+        assert "news" in result
+        assert result["count"] == 2
+        # sources should contain publisher names
+        assert "매일경제" in result["sources"]
+        assert "연합뉴스" in result["sources"]
+        # feed_sources should contain collection path keys
+        assert "mk_stock" in result["feed_sources"]
+        assert "browser_naver_mainnews" in result["feed_sources"]
+        # Each news item should have stock_symbol and stock_name
+        assert result["news"][0]["stock_symbol"] == "005930"
+        assert result["news"][0]["stock_name"] == "삼성전자"
 
     @pytest.mark.asyncio
     async def test_get_market_news_calls_service(self):
