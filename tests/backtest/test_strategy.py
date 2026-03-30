@@ -1202,6 +1202,79 @@ class TestParamsConfig:
         assert strategy.STOP_LOSS_PCT == strategy.PARAMS["stop_loss_pct"]
 
 
+class TestSignalRegistry:
+    """Tests for signal registry behavior."""
+
+    def test_bull_signal_registry_count(self):
+        """Test that there are exactly 6 bull signals."""
+        assert len(strategy.BULL_SIGNALS) == 6
+
+    def test_bear_signal_registry_count(self):
+        """Test that there are exactly 5 bear signals."""
+        assert len(strategy.BEAR_SIGNALS) == 5
+
+    def test_bull_registry_order_matches_reason_format(self):
+        """Test that registry order matches expected reason string order."""
+        expected_order = [
+            "dual_rsi_oversold",
+            "macd_histogram_positive",
+            "close_below_bb_lower",
+            "ema_fast_above_slow",
+            "momentum_positive",
+            "volume_above_avg",
+        ]
+        actual_order = [name for name, _ in strategy.BULL_SIGNALS]
+        assert actual_order == expected_order
+
+    def test_bear_registry_order_matches_reason_format(self):
+        """Test that registry order matches expected reason string order."""
+        expected_order = [
+            "macd_histogram_negative",
+            "close_above_bb_upper",
+            "ema_fast_below_slow",
+            "momentum_negative",
+            "rsi_slow_high",
+        ]
+        actual_order = [name for name, _ in strategy.BEAR_SIGNALS]
+        assert actual_order == expected_order
+
+    def test_evaluate_signals_returns_same_flag_keys(self):
+        """Test that _evaluate_signals returns expected flag keys."""
+        strat = strategy.Strategy()
+        history, current_price = _make_strong_bullish_setup(50)
+        bar = _make_bar_data("BTC", "2025-04-01", current_price, history)
+
+        result = strat._evaluate_signals(bar)
+
+        assert result is not None
+        # Should have same keys as registry
+        assert set(result["bull_flags"].keys()) == {
+            name for name, _ in strategy.BULL_SIGNALS
+        }
+        assert set(result["bear_flags"].keys()) == {
+            name for name, _ in strategy.BEAR_SIGNALS
+        }
+
+    def test_signal_context_creation(self):
+        """Test SignalContext dataclass creation."""
+        ctx = strategy.SignalContext(
+            closes=np.array([100.0, 101.0, 102.0]),
+            volumes=np.array([1000.0, 1100.0, 1200.0]),
+            current_close=102.0,
+            current_volume=1200.0,
+            rsi_fast=25.0,
+            rsi_slow=28.0,
+            macd=(0.5, 0.3, 0.2),
+            bb=(105.0, 100.0, 95.0),
+            ema_fast=np.array([101.0, 102.0]),
+            ema_slow=np.array([99.0, 100.0]),
+            momentum=2.0,
+            avg_volume=1100.0,
+        )
+        assert ctx.rsi_slow == 28.0
+        assert ctx.current_close == 102.0
+
+
 class TestStrategyContractFreezing:
     """Characterization tests to lock down behaviors likely to drift during modularization."""
 

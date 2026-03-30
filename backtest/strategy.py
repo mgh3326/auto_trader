@@ -1,5 +1,6 @@
 """Backtest strategy implementation."""
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -17,6 +18,23 @@ from indicators import (
 
 if TYPE_CHECKING:
     from pandas import Series
+
+
+@dataclass(frozen=True)
+class SignalContext:
+    closes: np.ndarray
+    volumes: np.ndarray
+    current_close: float
+    current_volume: float
+    rsi_fast: float | None
+    rsi_slow: float | None
+    macd: tuple[float, float, float] | None
+    bb: tuple[float, float, float] | None
+    ema_fast: np.ndarray | None
+    ema_slow: np.ndarray | None
+    momentum: float | None
+    avg_volume: float | None
+
 
 # Unified Strategy Parameters
 PARAMS = {
@@ -214,6 +232,87 @@ def _format_vote_reason(
     return f"{prefix} votes {votes}/{total_signals}: {', '.join(triggered[:limit])}"
 
 
+# Bull signal functions
+def _signal_dual_rsi_oversold(ctx: SignalContext, params: dict) -> bool:
+    return (
+        ctx.rsi_slow is not None
+        and ctx.rsi_slow <= params["rsi_oversold"]
+        and ctx.rsi_fast is not None
+        and ctx.rsi_fast <= params["rsi_oversold"]
+    )
+
+
+def _signal_macd_histogram_positive(ctx: SignalContext, params: dict) -> bool:
+    return ctx.macd is not None and ctx.macd[2] > 0
+
+
+def _signal_close_below_bb_lower(ctx: SignalContext, params: dict) -> bool:
+    return ctx.bb is not None and ctx.current_close < ctx.bb[2]
+
+
+def _signal_ema_fast_above_slow(ctx: SignalContext, params: dict) -> bool:
+    return (
+        ctx.ema_fast is not None
+        and ctx.ema_slow is not None
+        and ctx.ema_fast[-1] > ctx.ema_slow[-1]
+    )
+
+
+def _signal_momentum_positive(ctx: SignalContext, params: dict) -> bool:
+    return ctx.momentum is not None and ctx.momentum > 0
+
+
+def _signal_volume_above_avg(ctx: SignalContext, params: dict) -> bool:
+    return (
+        ctx.avg_volume is not None
+        and ctx.current_volume > ctx.avg_volume * params["volume_threshold"]
+    )
+
+
+# Bear signal functions
+def _signal_macd_histogram_negative(ctx: SignalContext, params: dict) -> bool:
+    return ctx.macd is not None and ctx.macd[2] < 0
+
+
+def _signal_close_above_bb_upper(ctx: SignalContext, params: dict) -> bool:
+    return ctx.bb is not None and ctx.current_close > ctx.bb[0]
+
+
+def _signal_ema_fast_below_slow(ctx: SignalContext, params: dict) -> bool:
+    return (
+        ctx.ema_fast is not None
+        and ctx.ema_slow is not None
+        and ctx.ema_fast[-1] < ctx.ema_slow[-1]
+    )
+
+
+def _signal_momentum_negative(ctx: SignalContext, params: dict) -> bool:
+    return ctx.momentum is not None and ctx.momentum < 0
+
+
+def _signal_rsi_slow_high(ctx: SignalContext, params: dict) -> bool:
+    return ctx.rsi_slow is not None and ctx.rsi_slow > params["rsi_exit"]
+
+
+# Signal registries - order matters for reason string formatting
+BULL_SIGNALS = [
+    ("dual_rsi_oversold", _signal_dual_rsi_oversold),
+    ("macd_histogram_positive", _signal_macd_histogram_positive),
+    ("close_below_bb_lower", _signal_close_below_bb_lower),
+    ("ema_fast_above_slow", _signal_ema_fast_above_slow),
+    ("momentum_positive", _signal_momentum_positive),
+    ("volume_above_avg", _signal_volume_above_avg),
+]
+
+BEAR_SIGNALS = [
+    ("macd_histogram_negative", _signal_macd_histogram_negative),
+    ("close_above_bb_upper", _signal_close_above_bb_upper),
+    ("ema_fast_below_slow", _signal_ema_fast_below_slow),
+    ("momentum_negative", _signal_momentum_negative),
+    ("rsi_slow_high", _signal_rsi_slow_high),
+]
+
+
 class Strategy:
     """Dual RSI mean-reversion with cooldown after stop-loss."""
 
@@ -266,60 +365,53 @@ class Strategy:
         - bear_flags: dict of which bear signals triggered
         Returns None if insufficient history.
         """
-        if (
-            len(bar.history)
-            < max(RSI_PERIOD_SLOW, BB_PERIOD, EMA_SLOW, MACD_SLOW + MACD_SIGNAL) + 1
-        ):
+        if len(bar.history) < MIN_HISTORY_BARS:
             return None
 
         closes = bar.history["close"].values
         volumes = bar.history["volume"].values
 
         # Calculate indicators
-        rsi_fast = _calc_rsi(closes, RSI_PERIOD_FAST)
-        rsi_slow = _calc_rsi(closes, RSI_PERIOD_SLOW)
-        macd_result = _calc_macd(closes, MACD_FAST, MACD_SLOW, MACD_SIGNAL)
-        bb_result = _calc_bollinger(closes, BB_PERIOD, BB_STD)
-        ema_fast_result = _calc_ema(closes, EMA_FAST)
-        ema_slow_result = _calc_ema(closes, EMA_SLOW)
-        momentum = _calc_momentum(closes, MOMENTUM_PERIOD)
-        avg_volume = _calc_average_volume(volumes, VOLUME_LOOKBACK)
+        rsi_fast = _calc_rsi(closes, PARAMS["rsi_period_fast"])
+        rsi_slow = _calc_rsi(closes, PARAMS["rsi_period_slow"])
+        macd_result = _calc_macd(
+            closes,
+            PARAMS["macd_fast"],
+            PARAMS["macd_slow"],
+            PARAMS["macd_signal"],
+        )
+        bb_result = _calc_bollinger(closes, PARAMS["bb_period"], PARAMS["bb_std"])
+        ema_fast_result = _calc_ema(closes, PARAMS["ema_fast"])
+        ema_slow_result = _calc_ema(closes, PARAMS["ema_slow"])
+        momentum = _calc_momentum(closes, PARAMS["momentum_period"])
+        avg_volume = _calc_average_volume(volumes, PARAMS["volume_lookback"])
 
         if rsi_slow is None:
             return None
 
-        current_close = closes[-1]
-        current_volume = volumes[-1]
+        ctx = SignalContext(
+            closes=closes,
+            volumes=volumes,
+            current_close=closes[-1],
+            current_volume=volumes[-1],
+            rsi_fast=rsi_fast,
+            rsi_slow=rsi_slow,
+            macd=macd_result,
+            bb=bb_result,
+            ema_fast=ema_fast_result,
+            ema_slow=ema_slow_result,
+            momentum=momentum,
+            avg_volume=avg_volume,
+        )
 
-        # Bull votes
-        bull_flags = {
-            "dual_rsi_oversold": rsi_slow <= RSI_OVERSOLD
-            and (rsi_fast is not None and rsi_fast <= RSI_OVERSOLD),
-            "macd_histogram_positive": macd_result is not None
-            and macd_result[2] > 0,  # histogram > 0
-            "close_below_bb_lower": bb_result is not None
-            and current_close < bb_result[2],  # close < lower
-            "ema_fast_above_slow": ema_fast_result is not None
-            and ema_slow_result is not None
-            and ema_fast_result[-1] > ema_slow_result[-1],
-            "momentum_positive": momentum is not None and momentum > 0,
-            "volume_above_avg": avg_volume is not None
-            and current_volume > avg_volume * VOLUME_THRESHOLD,
-        }
+        bull_flags = {}
+        for name, fn in BULL_SIGNALS:
+            bull_flags[name] = fn(ctx, PARAMS)
         bull_votes = sum(1 for v in bull_flags.values() if v)
 
-        # Bear votes
-        bear_flags = {
-            "macd_histogram_negative": macd_result is not None
-            and macd_result[2] < 0,  # histogram < 0
-            "close_above_bb_upper": bb_result is not None
-            and current_close > bb_result[0],  # close > upper
-            "ema_fast_below_slow": ema_fast_result is not None
-            and ema_slow_result is not None
-            and ema_fast_result[-1] < ema_slow_result[-1],
-            "momentum_negative": momentum is not None and momentum < 0,
-            "rsi_slow_high": rsi_slow > RSI_EXIT,  # Slow RSI above exit threshold
-        }
+        bear_flags = {}
+        for name, fn in BEAR_SIGNALS:
+            bear_flags[name] = fn(ctx, PARAMS)
         bear_votes = sum(1 for v in bear_flags.values() if v)
 
         return {
