@@ -2,7 +2,6 @@ import asyncio
 from typing import Any
 
 import app.services.brokers.upbit.client as upbit
-from app.analysis.service_analyzers import KISAnalyzer, UpbitAnalyzer, YahooAnalyzer
 from app.monitoring.trade_notifier import get_trade_notifier
 from app.services.order_service import (
     cancel_existing_buy_orders,
@@ -16,19 +15,29 @@ from app.services.upbit_symbol_universe_service import (
     get_upbit_market_by_coin,
 )
 
+# Minimum trade threshold for determining if a coin is tradable
+MIN_TRADE_THRESHOLD = 1000
+
 
 def _normalize_currency(value: object) -> str:
     return str(value or "").upper().strip()
 
 
+def _is_tradable(coin: dict[str, Any]) -> bool:
+    """Check if a coin is tradable based on its estimated value."""
+    estimated_value = (
+        float(coin.get("balance", 0)) + float(coin.get("locked", 0))
+    ) * float(coin.get("avg_buy_price", 0))
+    return estimated_value >= MIN_TRADE_THRESHOLD
+
+
 async def _resolve_tradable_coins(
     my_coins: list[dict[str, Any]],
-    analyzer: UpbitAnalyzer,
 ) -> list[dict[str, Any]]:
     tradable_coins: list[dict[str, Any]] = []
     for coin in my_coins:
         currency = _normalize_currency(coin.get("currency"))
-        if not currency or currency == "KRW" or not analyzer.is_tradable(coin):
+        if not currency or currency == "KRW" or not _is_tradable(coin):
             continue
 
         market = await get_upbit_market_by_coin(currency)
@@ -45,73 +54,29 @@ async def _resolve_tradable_coins(
 async def _fetch_tradable_coins() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """보유 중인 코인과 거래 가능한 코인을 동시에 조회."""
     my_coins = await upbit.fetch_my_coins()
-
-    analyzer = UpbitAnalyzer()
-    try:
-        tradable_coins = await _resolve_tradable_coins(my_coins, analyzer)
-    finally:
-        await analyzer.close()
-
+    tradable_coins = await _resolve_tradable_coins(my_coins)
     return my_coins, tradable_coins
 
 
 async def _analyze_coin_async(currency: str) -> dict[str, object]:
-    """단일 코인 분석을 수행하는 비동기 헬퍼."""
+    """단일 코인 분석을 수행하는 비동기 헬퍼.
+
+    Note: Gemini analyzer removed. This function is now a no-op placeholder.
+    OpenClaw-based analysis will be implemented in the future.
+    """
     if not currency:
         return {"status": "failed", "error": "코인 코드가 필요합니다."}
 
     currency_code = currency.upper()
     korean_name = await get_upbit_korean_name_by_coin(currency_code)
-    await get_upbit_market_by_coin(currency_code)
 
-    analyzer = UpbitAnalyzer()
-    try:
-        result, model = await analyzer.analyze_coin_json(korean_name)
-
-        # Check if analysis failed (result is None)
-        if result is None:
-            return {
-                "status": "failed",
-                "currency": currency_code,
-                "korean_name": korean_name,
-                "error": "분석 결과를 가져올 수 없습니다.",
-            }
-
-        # Send Telegram notification if analysis completed successfully
-        if hasattr(result, "decision"):
-            try:
-                notifier = get_trade_notifier()
-                result_decision = getattr(result, "decision", None)
-                result_confidence = getattr(result, "confidence", None)
-                result_reasons = getattr(result, "reasons", None)
-                await notifier.notify_analysis_complete(
-                    symbol=currency_code,
-                    korean_name=korean_name,
-                    decision=str(result_decision),
-                    confidence=float(result_confidence) if result_confidence else 0.0,
-                    reasons=result_reasons if result_reasons else [],
-                    market_type="암호화폐",
-                )
-            except Exception as notify_error:  # pragma: no cover
-                print(f"⚠️ 텔레그램 알림 전송 실패: {notify_error}")
-
-        return {
-            "status": "completed",
-            "currency": currency_code,
-            "korean_name": korean_name,
-            "message": f"{korean_name} 분석이 완료되었습니다.",
-        }
-    except UpbitSymbolUniverseLookupError:
-        raise
-    except Exception as exc:  # pragma: no cover - defensive logging
-        return {
-            "status": "failed",
-            "currency": currency_code,
-            "korean_name": korean_name,
-            "error": str(exc),
-        }
-    finally:
-        await analyzer.close()
+    # Analyzer removed - return placeholder response
+    return {
+        "status": "ignored",
+        "currency": currency_code,
+        "korean_name": korean_name,
+        "message": "Gemini analyzer removed. OpenClaw-based analysis coming soon.",
+    }
 
 
 async def _execute_buy_order_for_coin_async(currency: str) -> dict[str, object]:
@@ -341,104 +306,41 @@ async def run_analysis_for_stock(
     name: str,
     instrument_type: str,
 ) -> dict[str, object]:
-    analyzer = None
-    try:
-        if instrument_type == "equity_kr":
-            analyzer = KISAnalyzer()
-            result, _ = await analyzer.analyze_stock_json(name)
-        elif instrument_type == "equity_us":
-            analyzer = YahooAnalyzer()
-            result, _ = await analyzer.analyze_stock_json(symbol)
-        elif instrument_type == "crypto":
-            analyzer = UpbitAnalyzer()
-            result, _ = await analyzer.analyze_coin_json(name)
-        else:
-            return {
-                "status": "ignored",
-                "reason": f"unsupported type: {instrument_type}",
-            }
+    """Run analysis for a stock.
 
-        if result is None:
-            return {
-                "status": "failed",
-                "symbol": symbol,
-                "name": name,
-                "reason": "analysis returned None",
-            }
-
-        return {
-            "status": "ok",
-            "symbol": symbol,
-            "name": name,
-            "instrument_type": instrument_type,
-        }
-    finally:
-        if analyzer and hasattr(analyzer, "close"):
-            await analyzer.close()
+    Note: Gemini analyzer removed. This function is now a no-op placeholder.
+    OpenClaw-based analysis will be implemented in the future.
+    """
+    return {
+        "status": "ignored",
+        "symbol": symbol,
+        "name": name,
+        "instrument_type": instrument_type,
+        "reason": "Gemini analyzer removed. OpenClaw-based analysis coming soon.",
+    }
 
 
 async def run_analysis_for_my_coins() -> dict[str, object]:
-    analyzer = UpbitAnalyzer()
+    """Run analysis for user's coins.
 
-    try:
-        my_coins = await upbit.fetch_my_coins()
-        tradable_coins = await _resolve_tradable_coins(my_coins, analyzer)
-
-        if not tradable_coins:
-            return {
-                "status": "completed",
-                "analyzed_count": 0,
-                "total_count": 0,
-                "message": "거래 가능한 코인이 없습니다.",
-                "results": [],
-            }
-
-        coin_names = [str(coin["korean_name"]) for coin in tradable_coins]
-
-        total_count = len(coin_names)
-        results = []
-
-        for coin_name in coin_names:
-            try:
-                _, model = await analyzer.analyze_coin_json(coin_name)
-                results.append(
-                    {"coin_name": coin_name, "success": True, "model": model}
-                )
-            except Exception as exc:
-                results.append(
-                    {"coin_name": coin_name, "success": False, "error": str(exc)}
-                )
-
-        success_count = sum(1 for result in results if result["success"])
-        return {
-            "status": "completed",
-            "analyzed_count": success_count,
-            "total_count": total_count,
-            "message": f"{success_count}/{total_count}개 코인 분석 완료",
-            "results": results,
-        }
-    except UpbitSymbolUniverseLookupError:
-        raise
-    except Exception as exc:
-        return {
-            "status": "failed",
-            "error": str(exc),
-            "analyzed_count": 0,
-            "total_count": 0,
-            "results": [],
-        }
-    finally:
-        await analyzer.close()
+    Note: Gemini analyzer removed. This function is now a no-op placeholder.
+    OpenClaw-based analysis will be implemented in the future.
+    """
+    return {
+        "status": "ignored",
+        "analyzed_count": 0,
+        "total_count": 0,
+        "message": "Gemini analyzer removed. OpenClaw-based analysis coming soon.",
+        "results": [],
+    }
 
 
 async def execute_buy_orders_task() -> dict[str, object]:
     from app.services.stock_info_service import process_buy_orders_with_analysis
 
-    analyzer = UpbitAnalyzer()
-
     try:
         my_coins = await upbit.fetch_my_coins()
-        tradable_coins = await _resolve_tradable_coins(my_coins, analyzer)
+        tradable_coins = await _resolve_tradable_coins(my_coins)
 
         if not tradable_coins:
             return {
@@ -525,16 +427,12 @@ async def execute_buy_orders_task() -> dict[str, object]:
             "total_count": 0,
             "results": [],
         }
-    finally:
-        await analyzer.close()
 
 
 async def execute_sell_orders_task() -> dict[str, object]:
-    analyzer = UpbitAnalyzer()
-
     try:
         my_coins = await upbit.fetch_my_coins()
-        tradable_coins = await _resolve_tradable_coins(my_coins, analyzer)
+        tradable_coins = await _resolve_tradable_coins(my_coins)
 
         if not tradable_coins:
             return {
@@ -634,8 +532,6 @@ async def execute_sell_orders_task() -> dict[str, object]:
             "total_count": 0,
             "results": [],
         }
-    finally:
-        await analyzer.close()
 
 
 async def execute_buy_order_for_coin_task(currency: str) -> dict[str, object]:

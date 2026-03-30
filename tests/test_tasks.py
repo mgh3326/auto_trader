@@ -7,35 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 
-def _patch_upbit_analyzer(monkeypatch, *, tradable: bool):
-    """Patch UpbitAnalyzer to simplify task execution."""
-    from app.jobs import analyze
-
-    created = []
-
-    class DummyAnalyzer:
-        def __init__(self):
-            self.closed = False
-            created.append(self)
-
-        def _is_tradable(self, coin):
-            return tradable
-
-        def is_tradable(self, coin):
-            return self._is_tradable(coin)
-
-        async def analyze_coins_json(self, names):
-            return {"status": "ok"}, "model"
-
-        async def close(self):
-            self.closed = True
-
-    monkeypatch.setattr(analyze, "UpbitAnalyzer", DummyAnalyzer)
-    return created
-
-
 def test_run_analysis_for_my_coins_no_tradable(monkeypatch):
-    """거래 가능한 코인이 없을 때 완료 상태로 즉시 반환하는지 확인."""
     from app.jobs import analyze
 
     async def fake_fetch_my_coins():
@@ -45,15 +17,17 @@ def test_run_analysis_for_my_coins_no_tradable(monkeypatch):
         "app.services.brokers.upbit.client.fetch_my_coins",
         fake_fetch_my_coins,
     )
-    analyzers = _patch_upbit_analyzer(monkeypatch, tradable=False)
 
     result = asyncio.run(analyze.run_analysis_for_my_coins())
 
-    assert result["status"] == "completed"
+    assert result["status"] == "ignored"
     assert result["analyzed_count"] == 0
     assert result["total_count"] == 0
+    assert (
+        result["message"]
+        == "Gemini analyzer removed. OpenClaw-based analysis coming soon."
+    )
     assert result["results"] == []
-    assert analyzers and analyzers[0].closed is True
 
 
 def test_execute_buy_orders_task_no_tradable(monkeypatch):
@@ -67,7 +41,6 @@ def test_execute_buy_orders_task_no_tradable(monkeypatch):
         "app.services.brokers.upbit.client.fetch_my_coins",
         fake_fetch_my_coins,
     )
-    analyzers = _patch_upbit_analyzer(monkeypatch, tradable=False)
 
     result = asyncio.run(analyze.execute_buy_orders_task())
 
@@ -75,7 +48,6 @@ def test_execute_buy_orders_task_no_tradable(monkeypatch):
     assert result["success_count"] == 0
     assert result["total_count"] == 0
     assert result["results"] == []
-    assert analyzers and analyzers[0].closed is True
 
 
 @pytest.mark.asyncio

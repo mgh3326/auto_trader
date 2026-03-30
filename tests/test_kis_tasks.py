@@ -48,7 +48,6 @@ def test_domestic_adapter_uses_name_and_refreshes_after_sell_cancel():
 
     adapter = DomesticAutomationAdapter(
         kis_client_factory=lambda: None,
-        analyzer_factory=lambda: None,
         async_session_factory=lambda: None,
         manual_holdings_service_factory=lambda db: None,
         manual_market_type="KR",
@@ -92,7 +91,6 @@ def test_overseas_adapter_uses_symbol_without_sell_cancel_refresh():
 
     adapter = OverseasAutomationAdapter(
         kis_client_factory=lambda: None,
-        analyzer_factory=lambda: None,
         async_session_factory=lambda: None,
         manual_holdings_service_factory=lambda db: None,
         manual_market_type="US",
@@ -240,7 +238,6 @@ def test_run_per_domestic_stock_automation_executes_all_steps(monkeypatch):
         ),
     ):
         monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-        monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
         monkeypatch.setattr(
             kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy
         )
@@ -370,7 +367,6 @@ def test_run_per_domestic_stock_automation_with_real_trading_service(monkeypatch
     mock_settings.buy_quantity_per_order = 1
 
     monkeypatch.setattr(kis_tasks, "KISClient", lambda: dummy_kis)
-    monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
 
     # Mock ManualHoldingsService to return empty list
     class MockManualService:
@@ -498,7 +494,6 @@ def test_run_per_domestic_stock_automation_handles_buy_exception(monkeypatch):
         ),
     ):
         monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-        monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
         monkeypatch.setattr(
             kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy
         )
@@ -586,7 +581,6 @@ def test_run_per_domestic_stock_automation_handles_sell_exception(monkeypatch):
         ),
     ):
         monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-        monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
         monkeypatch.setattr(
             kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy
         )
@@ -692,7 +686,6 @@ def test_run_per_domestic_stock_automation_refreshes_holdings(monkeypatch):
         ),
     ):
         monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-        monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
         monkeypatch.setattr(
             kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy
         )
@@ -919,7 +912,6 @@ def test_run_per_overseas_stock_automation_cancels_pending_orders(monkeypatch):
     """해외주식 자동화 시 미체결 주문이 취소되어야 함."""
     from unittest.mock import AsyncMock, MagicMock, patch
 
-    from app.analysis import service_analyzers
     from app.jobs import kis_market_adapters
     from app.jobs import kis_trading as kis_tasks
 
@@ -1024,7 +1016,6 @@ def test_run_per_overseas_stock_automation_cancels_pending_orders(monkeypatch):
         ),
     ):
         monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-        monkeypatch.setattr(service_analyzers, "YahooAnalyzer", DummyAnalyzer)
         monkeypatch.setattr(
             kis_tasks, "process_kis_overseas_buy_orders_with_analysis", fake_buy
         )
@@ -1166,7 +1157,6 @@ class TestDomesticStockPendingOrderCancel:
             ),
         ):
             monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-            monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
             monkeypatch.setattr(
                 kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy
             )
@@ -1272,7 +1262,6 @@ class TestOrderableQuantityUsage:
             ),
         ):
             monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-            monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
             monkeypatch.setattr(
                 kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy
             )
@@ -1369,7 +1358,6 @@ class TestOrderableQuantityUsage:
             ),
         ):
             monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-            monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
             monkeypatch.setattr(
                 kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy
             )
@@ -1490,7 +1478,6 @@ class TestOrderableQuantityUsage:
             ),
         ):
             monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-            monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
             monkeypatch.setattr(
                 kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy
             )
@@ -1520,7 +1507,6 @@ class TestOverseasManualHoldings:
 
         import pandas as pd
 
-        from app.analysis import service_analyzers
         from app.jobs import kis_trading as kis_tasks
 
         analyzed_symbols = []
@@ -1611,7 +1597,6 @@ class TestOverseasManualHoldings:
             ),
         ):
             monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-            monkeypatch.setattr(service_analyzers, "YahooAnalyzer", DummyAnalyzer)
             monkeypatch.setattr(
                 kis_tasks, "process_kis_overseas_buy_orders_with_analysis", fake_buy
             )
@@ -1638,10 +1623,6 @@ class TestOverseasManualHoldings:
 
         assert result["status"] == "completed"
 
-        # AAPL(KIS)과 CONY(토스) 모두 분석되어야 함
-        assert "AAPL" in analyzed_symbols, "KIS 종목 AAPL이 분석되어야 함"
-        assert "CONY" in analyzed_symbols, "토스 종목 CONY가 분석되어야 함"
-
         # 매수는 두 종목 모두 시도
         assert len(buy_calls) == 2, (
             f"KIS와 토스 종목 모두 매수 시도해야 함, 실제: {buy_calls}"
@@ -1661,7 +1642,6 @@ class TestOverseasManualHoldings:
 
         import pandas as pd
 
-        from app.analysis import service_analyzers
         from app.jobs import kis_trading as kis_tasks
 
         sell_calls = []
@@ -1731,7 +1711,6 @@ class TestOverseasManualHoldings:
             ),
         ):
             monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-            monkeypatch.setattr(service_analyzers, "YahooAnalyzer", DummyAnalyzer)
             monkeypatch.setattr(
                 kis_tasks, "process_kis_overseas_buy_orders_with_analysis", fake_buy
             )
@@ -1782,7 +1761,6 @@ class TestOverseasManualHoldings:
         from decimal import Decimal
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        from app.analysis import service_analyzers
         from app.jobs import kis_trading as kis_tasks
 
         analyzed_symbols = []
@@ -1855,7 +1833,6 @@ class TestOverseasManualHoldings:
             ),
         ):
             monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-            monkeypatch.setattr(service_analyzers, "YahooAnalyzer", DummyAnalyzer)
             monkeypatch.setattr(
                 kis_tasks, "process_kis_overseas_buy_orders_with_analysis", fake_buy
             )
@@ -1868,11 +1845,5 @@ class TestOverseasManualHoldings:
 
         assert result["status"] == "completed"
 
-        # AAPL은 한 번만 분석되어야 함 (중복 추가 안됨)
-        aapl_count = analyzed_symbols.count("AAPL")
-        assert aapl_count == 1, (
-            f"KIS에 있는 AAPL은 한 번만 분석되어야 함, 실제: {aapl_count}번"
-        )
-
-        # 결과에도 AAPL은 한 번만 포함
+        # 결과에도 AAPL은 한 번만 포함 (중복 추가 안됨)
         assert len(result["results"]) == 1

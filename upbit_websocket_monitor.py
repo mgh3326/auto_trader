@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
 업비트 WebSocket MyOrder 모니터링 실행 스크립트
-매수/매도가 발생할 때마다 analyze_coin_json으로 단일 코인 분석을 수행합니다.
+
+Note: Gemini analyzer removed. WebSocket monitoring continues without AI analysis.
+OpenClaw-based analysis will be implemented in the future.
 """
 
 import asyncio
 import logging
 
-from app.analysis.service_analyzers import UpbitAnalyzer
 from app.monitoring.sentry import capture_exception, init_sentry
 from app.services.upbit_websocket import UpbitOrderAnalysisService
 
@@ -22,17 +23,10 @@ async def main():
     """메인 실행 함수"""
     init_sentry(service_name="auto-trader-upbit-ws")
 
-    # 분석기 초기화
-    analyzer = UpbitAnalyzer()
-
     async def analyze_coin_callback(coin_name: str):
-        """코인 분석 콜백 함수"""
-        try:
-            result, model = await analyzer.analyze_coin_json(coin_name)
-            if result is None:
-                logger.warning(f"코인 분석 실패: {coin_name}")
-        except Exception as e:
-            logger.error(f"코인 분석 오류 ({coin_name}): {e}")
+        """코인 분석 콜백 함수 (no-op - analyzer removed)"""
+        # Analyzer removed - just log that we received the callback
+        logger.info(f"코인 분석 콜백 수신 (분석 기능 비활성화): {coin_name}")
 
     service = UpbitOrderAnalysisService(
         analyzer_callback=analyze_coin_callback,
@@ -59,7 +53,6 @@ async def main():
     finally:
         # 정리 작업
         await service.stop_monitoring()
-        await analyzer.close()
         logger.info("모니터링이 완전히 종료되었습니다.")
 
 

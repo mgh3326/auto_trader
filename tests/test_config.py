@@ -47,7 +47,6 @@ def _required_settings_kwargs() -> dict[str, str]:
     return {
         "kis_app_key": settings.kis_app_key,
         "kis_app_secret": settings.kis_app_secret,
-        "google_api_key": settings.google_api_key,
         "opendart_api_key": settings.opendart_api_key,
         "DATABASE_URL": settings.DATABASE_URL,
         "upbit_access_key": settings.upbit_access_key,
@@ -79,7 +78,6 @@ class TestSettings:
         # Test that required attributes exist (these will be None in test env)
         assert hasattr(settings, "kis_app_key")
         assert hasattr(settings, "telegram_token")
-        assert hasattr(settings, "google_api_key")
         assert hasattr(settings, "opendart_api_key")
         assert hasattr(settings, "DATABASE_URL")
 
@@ -131,16 +129,6 @@ class TestConfigLoading:
         assert redis_url.startswith(expected_scheme)
         assert f"{settings.redis_host}:{settings.redis_port}" in redis_url
         assert redis_url.endswith(f"/{settings.redis_db}")
-
-    def test_api_key_methods(self):
-        """Test API key rotation methods."""
-        # Test get_random_key method
-        random_key = settings.get_random_key()
-        assert isinstance(random_key, str)
-
-        # Test get_next_key method
-        next_key = settings.get_next_key()
-        assert isinstance(next_key, str)
 
     def test_api_rate_limit_defaults_include_builtins(self):
         cfg = _new_settings()

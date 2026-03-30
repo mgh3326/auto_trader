@@ -8,10 +8,8 @@ import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
-# 테스트를 위해 서비스 및 분석기 임포트
 import app.services.brokers.upbit.client as upbit
 import app.services.brokers.yahoo.client as yahoo
-from app.analysis.analyzer import Analyzer
 from app.main import api
 from app.services.brokers.kis.client import (
     kis as kis_client,  # kis 인스턴스를 직접 임포트
@@ -54,10 +52,8 @@ class TestApplicationIntegration:
     @patch("app.services.brokers.upbit.client.httpx.AsyncClient")
     @patch("app.services.brokers.yahoo.client.yf.Ticker")
     @patch("httpx.AsyncClient")
-    @patch("app.analysis.analyzer.genai.Client")
     def test_external_services_integration(
         self,
-        mock_gemini_client,
         mock_kis_client,
         mock_yahoo_ticker,
         mock_upbit_client,
@@ -157,32 +153,5 @@ class TestExternalServiceMocking:
         mock_instance.get.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch("app.analysis.analyzer.Analyzer._save_to_db", new_callable=AsyncMock)
-    @patch("app.analysis.analyzer.genai.Client")
-    async def test_gemini_service_mocking(self, mock_gemini_client, mock_save_db):
-        """Test Gemini AI service mocking."""
-        mock_instance = mock_gemini_client.return_value
-        mock_response = MagicMock()
-        mock_response.text = "test response"
-        mock_candidate = MagicMock()
-        mock_candidate.finish_reason = "STOP"
-        mock_response.candidates = [mock_candidate]
-        mock_instance.models.generate_content.return_value = mock_response
-
-        analyzer = Analyzer()
-        dummy_df = pd.DataFrame(
-            {
-                "date": pd.to_datetime(["2023-01-01", "2023-01-02", "2023-01-03"]),
-                "close": [1, 2, 3],
-                "high": [1, 2, 3],
-                "low": [1, 2, 3],
-                "open": [1, 2, 3],
-                "volume": [1, 2, 3],
-            }
-        )
-
-        await analyzer.analyze_and_save(
-            df=dummy_df, symbol="TEST", name="Test", instrument_type="test"
-        )
-
-        assert mock_gemini_client.called
+    async def test_analysis_workflow_placeholder(self):
+        pass
