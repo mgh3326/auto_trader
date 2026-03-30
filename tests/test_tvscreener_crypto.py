@@ -548,9 +548,9 @@ async def test_screen_crypto_fallback_removed_propagates_error():
     with patch(
         "app.mcp_server.tooling.screening.crypto._screen_crypto_via_tvscreener"
     ) as mock_tvscreener:
-        mock_tvscreener.side_effect = TvScreenerError("sort_by returned None")
+        mock_tvscreener.side_effect = TvScreenerError("screener query failed")
 
-        with pytest.raises(TvScreenerError, match="sort_by returned None"):
+        with pytest.raises(TvScreenerError, match="screener query failed"):
             await _screen_crypto_with_fallback(
                 market="crypto",
                 asset_type=None,
