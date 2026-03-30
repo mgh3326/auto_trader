@@ -883,6 +883,81 @@ class TestRunBacktest:
         assert len(result.equity_curve) > 0
 
 
+class TestRunBacktestInterval:
+    def test_run_backtest_uses_interval_lookback_data_dir_and_result_builder(
+        self, tmp_path, monkeypatch
+    ):
+        interval = "60m"
+        interval_dir = tmp_path / interval
+        interval_dir.mkdir(parents=True)
+
+        full_df = pd.DataFrame(
+            {
+                "date": [
+                    "2025-04-01 00:00:00",
+                    "2025-04-01 01:00:00",
+                    "2025-04-01 02:00:00",
+                ],
+                "open": [100.0, 101.0, 102.0],
+                "high": [101.0, 102.0, 103.0],
+                "low": [99.0, 100.0, 101.0],
+                "close": [100.5, 101.5, 102.5],
+                "volume": [1000.0, 1001.0, 1002.0],
+                "value": [100500.0, 101500.0, 102500.0],
+            }
+        )
+        full_df.to_parquet(interval_dir / "KRW-BTC.parquet", index=False)
+
+        data = {
+            "BTC": full_df.iloc[[-1]].reset_index(drop=True),
+        }
+
+        monkeypatch.setattr(prepare, "DATA_DIR", tmp_path)
+
+        lookback_called_with: list[str] = []
+        captured_history_lengths: list[int] = []
+        captured_build_interval: list[str] = []
+
+        def fake_lookback(interval_name: str) -> int:
+            lookback_called_with.append(interval_name)
+            return 2
+
+        def fake_build_result(
+            state: prepare.PortfolioState,
+            equity_curve: list[float],
+            backtest_seconds: float,
+            bar_interval: str = "1d",
+        ) -> prepare.BacktestResult:
+            captured_build_interval.append(bar_interval)
+            return prepare.BacktestResult(
+                total_return_pct=0.0,
+                sharpe=0.0,
+                max_drawdown_pct=0.0,
+                num_trades=0,
+                win_rate_pct=0.0,
+                profit_factor=0.0,
+                avg_holding_days=0.0,
+                backtest_seconds=backtest_seconds,
+                trade_log=state.trade_log,
+                equity_curve=equity_curve,
+            )
+
+        monkeypatch.setattr(prepare, "lookback_bars_for_interval", fake_lookback)
+        monkeypatch.setattr(prepare, "_build_result", fake_build_result)
+
+        class CaptureHistoryStrategy:
+            def on_bar(self, bar_data, portfolio):
+                if "BTC" in bar_data:
+                    captured_history_lengths.append(len(bar_data["BTC"].history))
+                return []
+
+        prepare.run_backtest(data, CaptureHistoryStrategy(), bar_interval=interval)
+
+        assert lookback_called_with == [interval]
+        assert captured_history_lengths == [2]
+        assert captured_build_interval == [interval]
+
+
 class TestCVFolds:
     """Tests for walk-forward CV fold definitions."""
 

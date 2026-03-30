@@ -451,6 +451,7 @@ def run_backtest(
     data: dict[str, pd.DataFrame],
     strategy: Strategy,
     initial_capital: float = INITIAL_CAPITAL,
+    bar_interval: str = "1d",
 ) -> BacktestResult:
     """Run backtest with given data and strategy.
 
@@ -458,6 +459,7 @@ def run_backtest(
         data: Dictionary mapping symbol to DataFrame
         strategy: Strategy instance implementing on_bar protocol
         initial_capital: Starting capital
+        bar_interval: Bar interval used for history depth and data source
 
     Returns:
         BacktestResult with metrics and trade log
@@ -489,9 +491,11 @@ def run_backtest(
     # Pre-index data by symbol for efficient lookup.
     # Prefer the on-disk source when available so history can include
     # pre-split warmup bars even if `load_data()` filtered them out.
+    interval_dir = data_dir_for_interval(bar_interval)
+    lookback_bars = lookback_bars_for_interval(bar_interval)
     indexed_data: dict[str, pd.DataFrame] = {}
     for symbol, df in data.items():
-        full_path = DATA_DIR / f"KRW-{symbol}.parquet"
+        full_path = interval_dir / f"KRW-{symbol}.parquet"
         source_df = pd.read_parquet(full_path) if full_path.exists() else df
         indexed_data[symbol] = source_df.set_index("date").sort_index()
 
@@ -513,7 +517,7 @@ def run_backtest(
         for symbol, df in indexed_data.items():
             if date in df.index:
                 row = df.loc[date]
-                # Get history up to and including current date (LOOKBACK_BARS rows)
+                # Get history up to and including current date (lookback_bars rows)
                 loc = df.index.get_loc(date)
                 if isinstance(loc, slice):
                     idx = loc.stop - 1
@@ -529,7 +533,7 @@ def run_backtest(
                         idx = int(loc[-1])
                 else:
                     idx = int(loc)
-                start_idx = max(0, idx - LOOKBACK_BARS + 1)
+                start_idx = max(0, idx - lookback_bars + 1)
                 history = df.iloc[start_idx : idx + 1].copy()
 
                 bar_data[symbol] = BarData(
@@ -570,11 +574,14 @@ def run_backtest(
 
     # Calculate metrics
     elapsed = time.time() - start_time
-    return _build_result(state, equity_curve, elapsed)
+    return _build_result(state, equity_curve, elapsed, bar_interval=bar_interval)
 
 
 def _build_result(
-    state: PortfolioState, equity_curve: list[float], backtest_seconds: float = 0.0
+    state: PortfolioState,
+    equity_curve: list[float],
+    backtest_seconds: float = 0.0,
+    bar_interval: str = "1d",
 ) -> BacktestResult:
     """Build BacktestResult from final state."""
     total_return_pct = _calc_total_return(equity_curve)
@@ -586,7 +593,10 @@ def _build_result(
             (equity_curve[i] - equity_curve[i - 1]) / equity_curve[i - 1]
             for i in range(1, len(equity_curve))
         ]
-        sharpe = _calc_sharpe(daily_returns)
+        sharpe = _calc_sharpe(
+            daily_returns,
+            annualize_factor=annualization_factor(bar_interval),
+        )
     else:
         sharpe = 0.0
 
