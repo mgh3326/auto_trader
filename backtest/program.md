@@ -1,129 +1,110 @@
-# Backtest Module Program Guide
+# autotrader backtest — autoresearch program
 
-## Overview
+Autonomous trading strategy research on Upbit spot crypto (daily bars).
 
-This backtest module provides a fixed-file backtesting framework for Upbit spot crypto daily bars. It supports deterministic backtesting with a pluggable strategy interface.
+## Context
 
-## Architecture
+This project uses the autoresearch pattern for trading strategy discovery.
+The strategy has already been tuned through 204 experiments (baseline 0.84 → 4.23 cv_score).
 
-### Fixed Files (Do Not Modify)
+Your job: **push cv_score higher** by modifying `strategy.py`.
 
-- **`prepare.py`** - Backtest engine with deterministic execution, metrics calculation, and data loading
-- **`backtest.py`** - Fixed entry point runner that loads data, runs strategy, and prints results
-- **`fetch_data.py`** - Upbit daily candle backfill script with incremental updates
+- **Market:** Upbit KRW spot (no futures, no leverage)
+- **Timeframe:** Daily bars (1시간봉 is future work)
+- **Universe:** BTC, ETH, SOL, XRP, LINK, ADA, DOT, AVAX
+- **Capital:** 10,000,000 KRW
+- **Fees:** 0.05% commission + 2bps slippage
+- **Evaluation:** Walk-forward CV (4 folds), NOT single split
 
-### Mutable File (Modify This)
+## Current Leaderboard
 
-- **`strategy.py`** - Your trading strategy implementation. Edit this file to experiment with different approaches.
+Check `results.tsv` for full history. Top scores:
 
-### Benchmarks (Reference Only)
+```
+RANK  EXPERIMENT   CV_SCORE   MEAN      STD       MIN_FOLD
+1.    exp204       4.228733   4.619197  0.780929  3.878618  ← CURRENT BEST
+2.    exp203       4.228659   4.619131  0.780944  3.878618
+3.    exp202       4.228511   4.619000  0.780976  3.878618
+```
 
-- **`benchmarks/buy_and_hold.py`** - Buy-and-hold baseline
-- **`benchmarks/random_baseline.py`** - Random action baseline for comparison
+**Your goal: beat cv_score 4.228733.**
 
-## Quick Start
+To get live numbers: `tail -20 results.tsv | sort -t$'\t' -k2 -rn | head -5`
 
-### 1. Backfill Data
+## Rules
 
-Fetch historical data for the default symbols:
+**What you CAN do:**
+- Modify `backtest/strategy.py` — this is the ONLY file you edit.
+
+**What you CANNOT do:**
+- Modify `prepare.py`, `backtest.py`, `fetch_data.py`, or anything in `benchmarks/`.
+- Install new packages. Only `numpy`, `pandas`, `ta`, `scipy`, and standard library.
+- Look at or optimize for test set data.
+- Make changes that take >120 seconds per CV run.
+
+## Setup
+
+1. Read `backtest/strategy.py`, `backtest/prepare.py`, `backtest/backtest.py`, this file.
+2. Check current best: `tail -5 results.tsv`
+3. Verify data exists: `ls backtest/data/`
+4. Run baseline: `uv run backtest/backtest.py --mode cv` to confirm current score.
+
+## The Experiment Loop
+
+LOOP FOREVER:
+
+1. `git status` — ensure clean working tree
+2. Modify `strategy.py` with ONE experimental idea
+3. `git add backtest/strategy.py && git commit -m "exp<N>: <description>"`
+4. `uv run backtest/run_experiment.py --description "<description>"`
+   - This runs CV backtest, parses score, compares to best, keeps or reverts automatically
+   - Exit code: 0 = improved (kept), 1 = worse (reverted), 2 = crashed (reverted)
+5. Check `results.tsv` for the recorded result
+6. If reverted: think about why, try a different approach
+7. Go to step 1
+
+### Manual Loop (without run_experiment.py)
 
 ```bash
-uv run backtest/fetch_data.py --symbols BTC ETH SOL --days 365
+# Step 3: commit
+git add backtest/strategy.py
+git commit -m "exp<N>: <description>"
+
+# Step 4: run CV
+uv run backtest/backtest.py --mode cv > run.log 2>&1
+
+# Step 5: check score
+grep "^cv_score:" run.log
+
+# Step 6: decide
+# If improved → keep, record in results.tsv
+# If worse → git reset --hard HEAD~1, record in results.tsv
 ```
 
-Or fetch top 100 markets by 24h traded value:
+## Output Format
 
-```bash
-uv run backtest/fetch_data.py --top-n 100 --days 730
+CV backtest prints these lines (grep targets):
+
+```
+cv_score:           X.XXXXXX    ← PRIMARY metric
+mean_score:         X.XXXXXX
+std_score:          X.XXXXXX
+min_fold_score:     X.XXXXXX
 ```
 
-### 2. Run Backtest
-
-```bash
-uv run backtest/backtest.py
+Per-fold detail:
+```
+Fold N [YYYY-MM-DD ~ YYYY-MM-DD]
+  score:      X.XXXX
+  sharpe:     X.XX
+  return:     X.XX%
+  max_dd:     X.XX%
+  trades:     N
 ```
 
-This will:
-- Load the validation split data
-- Run your strategy from `strategy.py`
-- Print performance metrics and score
+## Scoring
 
-Warmup note:
-- Trades are evaluated only on the selected split dates.
-- `BarData.history` may include pre-split rows so indicators can warm up before the first validation/test bar.
-
-### 3. Iterate on Strategy
-
-Edit `backtest/strategy.py` to modify the trading logic. The fixed runner ensures fair comparison between iterations.
-
-## Strategy Interface
-
-Your strategy class must implement:
-
-```python
-def on_bar(
-    self,
-    bar_data: dict[str, BarData],        # Symbol -> BarData with history
-    portfolio: PortfolioState,            # Current portfolio state
-) -> list[Signal]:                       # List of signals to execute
-```
-
-### BarData Fields
-
-- `symbol` - Symbol name
-- `date` - Current date (YYYY-MM-DD)
-- `open`, `high`, `low`, `close` - OHLC prices
-- `volume` - Trading volume
-- `value` - Trading value (volume * price)
-- `history` - DataFrame with LOOKBACK_BARS of history including current bar
-
-### Signal Format
-
-```python
-Signal(
-    symbol="BTC",        # Symbol to trade
-    action="buy",        # "buy" or "sell"
-    weight=0.15,         # Target weight for buy, fraction to sell for sell
-    reason="RSI < 30",   # Reason for the signal (optional)
-)
-```
-
-**Buy signals:** `weight` is the target portfolio weight (0-1).
-**Sell signals:** `weight` is the fraction of current position to sell (1.0 = full liquidation).
-
-### PortfolioState Fields
-
-- `cash` - Available cash
-- `positions` - Dict of symbol -> quantity held
-- `avg_prices` - Dict of symbol -> average entry price
-- `position_dates` - Dict of symbol -> entry date (use for holding period)
-- `equity` - Current portfolio equity (cash + position values)
-- `date` - Current date
-- `trade_log` - List of executed trades
-
-## Data Splits
-
-The backtest uses fixed date splits (revised 2026-03-22 for balanced RSI signal coverage):
-
-- **Train**: 2024-04-01 to 2025-06-30 (451 days, RSI<30=12, bull+bear mix)
-- **Validation**: 2025-07-01 to 2026-01-31 (214 days, RSI<30=16, default for `backtest.py`)
-- **Test**: 2026-02-01 to 2026-03-22 (50 days, RSI<30=7, recent holdout)
-
-## Metrics
-
-The backtest computes:
-
-- **Score** - Composite metric based on Sharpe with penalties
-- **Total Return** - Percentage return over period
-- **Sharpe Ratio** - Risk-adjusted return (annualized)
-- **Max Drawdown** - Peak-to-trough decline percentage
-- **Win Rate** - Percentage of profitable trades
-- **Profit Factor** - Gross profit / gross loss
-- **Avg Holding Days** - Mean position holding period
-- **Backtest Seconds** - Runtime measurement
-
-## Score Formula
-
+### Per-Fold Score (from prepare.py)
 ```python
 score = result.sharpe
 if result.max_drawdown_pct > 20:
@@ -132,77 +113,16 @@ if result.num_trades < 10:
     score -= 1.0
 ```
 
-## Default Universe
-
-The fixed universe includes: BTC, ETH, SOL, XRP, LINK, ADA, DOT, AVAX
-
-## Constants
-
-Default values in `prepare.py`:
-
-- `INITIAL_CAPITAL = 10_000_000` (10 million KRW)
-- `TRADING_FEE = 0.0005` (0.05%)
-- `SLIPPAGE_BPS = 2.0` (0.02%)
-- `LOOKBACK_BARS = 200`
-
-Default values in `strategy.py`:
-
-- `RSI_PERIOD = 14`
-- `RSI_OVERSOLD = 30`
-- `RSI_OVERBOUGHT = 70`
-- `MAX_POSITIONS = 5`
-- `POSITION_SIZE = 0.15`
-- `HOLDING_DAYS = 7`
-
-## Allowed Libraries
-
-You may use:
-- pandas, numpy (data manipulation)
-- Standard library modules
-
-Do not add external dependencies without updating pyproject.toml.
-
-## Development Workflow
-
-1. Modify `strategy.py` with your approach
-2. Run `uv run backtest/backtest.py` to see results
-3. Compare score against previous iterations
-4. Iterate until satisfied with performance
-
-## Baseline Scores
-
-*Recorded 2026-03-22, val split, BTC/ETH/SOL/XRP*
-
-| Strategy | Score | Return % | Sharpe | Max DD % | Trades |
-|----------|-------|----------|--------|----------|--------|
-| RSI | -0.66 | -4.0% | -0.66 | 18.4% | 18 |
-| Buy & Hold | ~-5.73 | -36.3% | -2.35 | 43.7% | 3 |
-| Random | ~-1.77 | -13.7% | -1.77 | 19.6% | 19 |
-
-**Your goal: beat RSI score of -0.66.**
-
-## Autoresearch Loop (Phase 2) — CV Mode
-
-### Setup
-```bash
-git checkout -b autotrader/<tag> main
-echo -e "commit\tcv_score\tmean\tstd\tmin_fold\tstatus\tdescription" > results.tsv
+### CV Score (aggregated)
+```python
+cv_score = mean(fold_scores) - 0.5 * std(fold_scores) - catastrophic_penalty
+# catastrophic_penalty: +1.0 for each fold with score < -2.0
 ```
 
-### The Loop
-```
-LOOP FOREVER:
-1. Read current strategy.py and previous scores
-2. Propose a modification to strategy.py
-3. git commit -m "exp<N>: description"
-4. uv run backtest/backtest.py --mode cv > run.log 2>&1
-5. grep "^cv_score:" run.log
-6. If cv_score IMPROVED (higher than best): keep
-7. If cv_score equal or worse: git reset --hard HEAD~1
-8. Record in results.tsv
-```
+Higher is better. Penalizes high variance across folds and catastrophic individual folds.
 
-### CV Folds
+## CV Folds
+
 ```
 Fold 1: Train [2024-04-01 ~ 2025-03-31]  Val [2025-04-01 ~ 2025-06-30]
 Fold 2: Train [2024-04-01 ~ 2025-06-30]  Val [2025-07-01 ~ 2025-09-30]
@@ -210,62 +130,99 @@ Fold 3: Train [2024-04-01 ~ 2025-09-30]  Val [2025-10-01 ~ 2025-12-31]
 Fold 4: Train [2024-04-01 ~ 2025-12-31]  Val [2026-01-01 ~ 2026-03-22]
 ```
 
-### CV Score Formula
-```
-cv_score = mean(fold_scores) - 0.5 * std(fold_scores) - catastrophic_penalty
-```
-- `catastrophic_penalty`: +1.0 for each fold scoring below -2.0
-- This penalizes strategies that only work in one market regime
+- **CV mode (`--mode cv`):** Used for all experiment scoring. Must generalize across 4 time periods.
+- **Single mode (default):** For debugging only. Do NOT use for experiment decisions.
 
-### Key Difference from Single-Split
-- **Old:** Optimize score on val split only → overfitting risk
-- **New:** Optimize cv_score across 4 folds → must generalize across time periods
+## results.tsv
 
-### Single-Split Mode (still available)
-```bash
-uv run backtest/backtest.py                # val split (default)
-uv run backtest/backtest.py --split test   # test split (final eval only)
-uv run backtest/backtest.py --split train  # train split
+8-column TSV (tab-separated). Do NOT modify existing rows.
+
+```
+experiment  cv_score  mean  std  min_fold  test_score  status  description
 ```
 
-### Rules
-- **Only edit strategy.py** — prepare.py, backtest.py, fetch_data.py are fixed
-- **No new dependencies** — numpy, pandas, and stdlib only
-- **Time budget** — 30 seconds per fold, ~120 seconds for full CV run (RPi5 safe)
+- `test_score`: `NA` during experimentation (evaluated at the end only)
+- `status`: `keep` | `revert` | `crash`
 
-### Research Directions (Tier 1 — most likely to improve)
-- RSI threshold tuning (30→35? 25?)
-- Holding period optimization (7→14 days?)
-- Position sizing (15%→20%? dynamic based on RSI depth?)
-- Multi-timeframe RSI (7-day + 14-day agreement)
-- Stop-loss addition (e.g., -10% from entry → forced sell)
+## Strategy Interface
 
-### Research Directions (Tier 2 — medium risk)
-- MACD crossover as confirmation signal
-- Bollinger Band squeeze detection
-- EMA trend filter (only buy when price > EMA50)
-- Volume spike confirmation
-- Correlation-aware position limits
-
-### Research Directions (Tier 3 — exploratory)
-- Multi-signal voting (MIN_VOTES like nunchi)
-- Dynamic position sizing based on volatility
-- Mean reversion with z-score
-- Regime detection (trending vs ranging)
-
-## Testing
-
-Run the test suite:
-
-```bash
-uv run pytest tests/backtest -v
+```python
+class Strategy:
+    def on_bar(self, bar_data: dict[str, BarData], portfolio: PortfolioState) -> list[Signal]:
+        ...
 ```
 
-## Notes
+### BarData
+- `symbol`, `date`, `open`, `high`, `low`, `close`, `volume`, `value`
+- `history` — DataFrame with last 200 bars (including current)
 
-- Data is stored in `backtest/data/` as Parquet files
-- Results and logs are gitignored
-- Keep the universe fixed for fair comparison
-- The validation split is used for development; test split for final evaluation
-- Universe selection uses 24h accumulated trade price (acc_trade_price_24h) for ranking
-- Incremental refresh re-downloads only the stale gap plus an overlap window, then merges and deduplicates by `date`
+### Signal
+```python
+Signal(symbol="BTC", action="buy", weight=0.15, reason="RSI < 30")
+```
+- **Buy:** `weight` = target portfolio weight (0–1)
+- **Sell:** `weight` = fraction of position to sell (1.0 = full liquidation)
+
+### PortfolioState
+- `cash`, `positions`, `avg_prices`, `position_dates`, `equity`, `date`, `trade_log`
+
+## Current Strategy Summary (exp204)
+
+Dual RSI mean-reversion with multi-signal voting and per-symbol position sizing.
+
+- 6 bull signals (dual RSI oversold, MACD histogram, BB lower, EMA cross, momentum, volume)
+- 5 bear signals (MACD negative, BB upper, EMA cross down, momentum negative, RSI high)
+- `MIN_VOTES=4` for buy, `MIN_SELL_VOTES=2` for sell
+- Regime gates: falling market block, overheated market filter, trend trap filter
+- Per-symbol position sizes (many zeroed out through 204 experiments)
+- Stop-loss 2%, max holding 21 days, cooldown 15 days after stop-loss
+
+## Strategy Research Directions
+
+### Tier 1 — Micro-Optimization (Highest Probability)
+Most zero-weight positions were turned off individually. Try:
+- **Batch re-enable with tiny weights** — some zeroed signals might help in combination
+- **Fine-tune non-zero weights** — AVAX trend (0.04) and strong reversion (0.15) have room
+- **Adjust MIN_VOTES threshold** — try 3 instead of 4 (more signals fire)
+- **Stop-loss refinement** — 2% is tight; try 3% or ATR-based stops
+- **Cooldown period tuning** — 15 days may be too long, try 7–10
+- **Holding period** — 21 days max; try 14 or 28
+
+### Tier 2 — Signal Enhancement (Medium Risk)
+- **RSI divergence** — price makes new low but RSI doesn't → stronger buy signal
+- **Volume-weighted RSI** — weight RSI calculation by volume
+- **Adaptive RSI thresholds** — lower the oversold threshold in trending markets
+- **MACD signal line cross** — add as a bull/bear signal
+- **ATR-based position sizing** — lower weight when ATR is high (volatile)
+- **Correlation filter** — reduce position count when all coins are highly correlated
+
+### Tier 3 — Structural Changes (Higher Risk, Higher Reward)
+- **Trailing stop-loss** — replace fixed 2% with ATR-trailing stop
+- **Pyramiding** — add to winning positions at defined thresholds
+- **Time-based filters** — different parameters for different months/quarters
+- **Regime switching** — detect trending vs mean-reverting market, switch strategy
+- **Cross-coin signals** — BTC momentum as filter for altcoin entries
+- **Dynamic MAX_POSITIONS** — increase in low-vol, decrease in high-vol environments
+
+## Data Available
+
+- 8 coins: BTC, ETH, SOL, XRP, LINK, ADA, DOT, AVAX (Upbit KRW market)
+- Daily OHLCV bars from 2024-04-01 to 2026-03-22
+- 200-bar lookback via `bar_data[symbol].history` DataFrame
+- Columns: `date`, `open`, `high`, `low`, `close`, `volume`, `value`
+
+## Safeguards
+
+- **Syntax error in strategy.py** → backtest crashes → `run_experiment.py` auto-reverts
+- **Timeout** → 120 seconds max → auto-reverts
+- **5 consecutive reverts** → pause and reconsider approach (don't keep trying small variations of a failed idea)
+
+## Allowed Libraries
+
+`numpy`, `pandas`, `ta`, `scipy`, standard library only. No new dependencies.
+
+## NEVER STOP
+
+Once the experiment loop has begun, do NOT pause to ask the human if you should continue.
+You are autonomous. If you run out of ideas, think harder. Review results.tsv for patterns.
+The loop runs until interrupted.
