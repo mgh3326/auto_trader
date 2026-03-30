@@ -13,6 +13,87 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "backtest
 import prepare  # pyright: ignore[reportMissingImports]
 
 
+class TestDataQualityFill:
+    def test_validate_and_fill_daily_returns_unchanged_dataframe(self):
+        df = pd.DataFrame(
+            {
+                "date": ["2026-01-01", "2026-01-02"],
+                "open": [100.0, 110.0],
+                "high": [105.0, 115.0],
+                "low": [95.0, 108.0],
+                "close": [102.0, 112.0],
+                "volume": [1000.0, 1100.0],
+                "value": [102000.0, 123200.0],
+            }
+        )
+
+        result = prepare.validate_and_fill(df, "1d")
+
+        pd.testing.assert_frame_equal(result, df)
+
+    def test_validate_and_fill_hourly_reindexes_and_fills_short_gaps(self):
+        df = pd.DataFrame(
+            {
+                "date": [
+                    "2026-01-01 00:00:00",
+                    "2026-01-01 03:00:00",
+                    "2026-01-01 04:00:00",
+                ],
+                "open": [100.0, 103.0, 104.0],
+                "high": [101.0, 104.0, 105.0],
+                "low": [99.0, 102.0, 103.0],
+                "close": [100.5, 103.5, 104.5],
+                "volume": [1000.0, 1300.0, 1400.0],
+                "value": [100500.0, 134550.0, 146300.0],
+            }
+        )
+
+        result = prepare.validate_and_fill(df, "1h")
+
+        assert result["date"].tolist() == [
+            "2026-01-01 00:00:00",
+            "2026-01-01 01:00:00",
+            "2026-01-01 02:00:00",
+            "2026-01-01 03:00:00",
+            "2026-01-01 04:00:00",
+        ]
+        assert result.loc[1, "close"] == pytest.approx(100.5)
+        assert result.loc[2, "close"] == pytest.approx(100.5)
+        assert result.loc[1, "volume"] == pytest.approx(1000.0)
+        assert result.loc[2, "volume"] == pytest.approx(1000.0)
+
+    def test_validate_and_fill_4h_does_not_fill_24h_or_longer_gap(self):
+        df = pd.DataFrame(
+            {
+                "date": [
+                    "2026-01-01 00:00:00",
+                    "2026-01-02 04:00:00",
+                ],
+                "open": [100.0, 120.0],
+                "high": [101.0, 121.0],
+                "low": [99.0, 119.0],
+                "close": [100.5, 120.5],
+                "volume": [1000.0, 2000.0],
+                "value": [100500.0, 241000.0],
+            }
+        )
+
+        result = prepare.validate_and_fill(df, "4h")
+
+        assert result["date"].tolist() == [
+            "2026-01-01 00:00:00",
+            "2026-01-01 04:00:00",
+            "2026-01-01 08:00:00",
+            "2026-01-01 12:00:00",
+            "2026-01-01 16:00:00",
+            "2026-01-01 20:00:00",
+            "2026-01-02 00:00:00",
+            "2026-01-02 04:00:00",
+        ]
+        assert result.loc[5, "close"] == pytest.approx(100.5)
+        assert np.isnan(result.loc[6, "close"])
+
+
 class TestContractConstants:
     """Tests for approved contract constants."""
 

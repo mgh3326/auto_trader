@@ -56,6 +56,34 @@ def data_dir_for_interval(interval: str) -> Path:
     return DATA_DIR if interval == "1d" else DATA_DIR / interval
 
 
+def validate_and_fill(df: pd.DataFrame, interval: str) -> pd.DataFrame:
+    if interval == "1d" or df.empty:
+        return df
+
+    if interval not in {"1h", "4h"}:
+        return df
+
+    freq = interval.lower()
+    prepared = df.copy()
+    prepared["date"] = pd.to_datetime(prepared["date"])
+    prepared = prepared.sort_values("date").drop_duplicates(subset="date", keep="last")
+    prepared = prepared.set_index("date")
+
+    full_index = pd.date_range(
+        start=prepared.index.min(),
+        end=prepared.index.max(),
+        freq=freq,
+    )
+    reindexed = prepared.reindex(full_index)
+
+    max_gap_bars = int(pd.Timedelta("24h") / pd.Timedelta(freq)) - 1
+    filled = reindexed.ffill(limit=max_gap_bars)
+    filled.index.name = "date"
+    result = filled.reset_index()
+    result["date"] = result["date"].dt.strftime("%Y-%m-%d %H:%M:%S")
+    return result
+
+
 # Walk-forward cross-validation folds
 # Each fold: train period expands, val is next 3 months
 # train_start/train_end are documented for context (warmup window);
