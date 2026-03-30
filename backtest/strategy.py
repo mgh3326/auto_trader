@@ -1,11 +1,8 @@
 """Backtest strategy implementation."""
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 import numpy as np
-import pandas as pd
-
 import prepare
 from indicators import (
     _calc_average_volume,
@@ -15,9 +12,6 @@ from indicators import (
     _calc_momentum,
     _calc_rsi,
 )
-
-if TYPE_CHECKING:
-    from pandas import Series
 
 
 @dataclass(frozen=True)
@@ -600,7 +594,6 @@ class Strategy:
             if signal_data is None:
                 continue
 
-            rsi_fast = signal_data["rsi_fast"]
             rsi_slow = signal_data["rsi_slow"]
             bull_votes = signal_data["bull_votes"]
             bear_votes = signal_data["bear_votes"]
@@ -609,10 +602,6 @@ class Strategy:
             bear_flags = signal_data["bear_flags"]
             dual_rsi_oversold = bull_flags.get("dual_rsi_oversold", False)
             macd_histogram_positive = bull_flags.get("macd_histogram_positive", False)
-            close_below_bb_lower = bull_flags.get("close_below_bb_lower", False)
-            ema_fast_above_slow = bull_flags.get("ema_fast_above_slow", False)
-            momentum_positive = bull_flags.get("momentum_positive", False)
-            volume_above_avg = bull_flags.get("volume_above_avg", False)
             is_held = symbol in current_positions
 
             # Sell logic - hard exits in priority order
@@ -690,11 +679,11 @@ class Strategy:
                     else:
                         del self._stop_loss_dates[symbol]
 
-                special_reversion_buy = (
-                    bull_votes == MIN_VOTES - 1
-                    and dual_rsi_oversold
-                    and close_below_bb_lower
-                    and weighted_bull_votes >= MIN_WEIGHTED_BUY_VOTES
+                special_reversion_buy = _setup_special_reversion_buy(
+                    bull_flags,
+                    bull_votes,
+                    weighted_bull_votes,
+                    PARAMS,
                 )
 
                 # Buy on sufficient bull votes
@@ -714,39 +703,8 @@ class Strategy:
                     or market_state["avg_rsi_change"] >= EXTREME_FALLING_MARKET_CHANGE
                     or macd_histogram_positive
                 )
-                pure_reversion_buy = (
-                    dual_rsi_oversold
-                    and close_below_bb_lower
-                    and volume_above_avg
-                    and not macd_histogram_positive
-                )
-                ada_stalled_washout_buy = (
-                    pure_reversion_buy
-                    and symbol == "ADA"
-                    and market_state["avg_rsi"] < ADA_STALLED_WASHOUT_RSI
-                    and market_state["avg_rsi_change"] > ADA_STALLED_WASHOUT_CHANGE
-                )
-                xrp_stalled_washout_buy = (
-                    pure_reversion_buy
-                    and symbol == "XRP"
-                    and market_state["avg_rsi"] < XRP_STALLED_WASHOUT_RSI
-                    and market_state["avg_rsi_change"] > XRP_STALLED_WASHOUT_CHANGE
-                )
-                sol_mild_reversion_buy = (
-                    pure_reversion_buy
-                    and symbol == "SOL"
-                    and market_state["avg_rsi"] > SOL_MILD_REVERSION_RSI
-                )
-                dot_mild_reversion_buy = (
-                    pure_reversion_buy
-                    and symbol == "DOT"
-                    and market_state["avg_rsi"] > DOT_MILD_REVERSION_RSI
-                )
-                strong_reversion_buy = (
-                    dual_rsi_oversold
-                    and close_below_bb_lower
-                    and macd_histogram_positive
-                )
+                pure_reversion_buy = _setup_pure_reversion_buy(bull_flags, PARAMS)
+                strong_reversion_buy = _setup_strong_reversion_buy(bull_flags, PARAMS)
                 allow_btc_pure_reversion_buy = not pure_reversion_buy or symbol != "BTC"
                 allow_eth_strong_reversion_buy = (
                     not strong_reversion_buy or symbol != "ETH"
@@ -756,54 +714,10 @@ class Strategy:
                     or not strong_reversion_buy
                     or market_state["avg_rsi"] < AVAX_STRONG_REVERSION_MAX_MARKET_RSI
                 )
-                eth_pure_reversion_buy = pure_reversion_buy and symbol == "ETH"
-                pure_trend_buy = (
-                    macd_histogram_positive
-                    and ema_fast_above_slow
-                    and momentum_positive
-                    and volume_above_avg
-                    and not dual_rsi_oversold
-                )
-                btc_hot_stall_trend_buy = (
-                    pure_trend_buy
-                    and symbol == "BTC"
-                    and market_state["avg_rsi"] >= BTC_TREND_HOT_RSI_LEVEL
-                    and market_state["avg_rsi_change"] < BTC_TREND_STALL_CHANGE
-                )
-                btc_mid_hot_accel_buy = (
-                    pure_trend_buy
-                    and symbol == "BTC"
-                    and BTC_MID_HOT_RSI_LOW
-                    <= market_state["avg_rsi"]
-                    < BTC_MID_HOT_RSI_HIGH
-                    and market_state["avg_rsi_change"] >= BTC_EXTREME_ACCEL_CHANGE
-                )
-                sol_low_breadth_trend_buy = (
-                    pure_trend_buy
-                    and symbol == "SOL"
-                    and market_state["avg_rsi"] < SOL_LOW_BREADTH_RSI
-                    and market_state["avg_rsi_change"] <= SOL_LOW_BREADTH_CHANGE
-                )
-                sol_hot_stall_trend_buy = (
-                    pure_trend_buy
-                    and symbol == "SOL"
-                    and SOL_HOT_STALL_RSI_LOW
-                    <= market_state["avg_rsi"]
-                    < SOL_HOT_STALL_RSI_HIGH
-                    and market_state["avg_rsi_change"] < SOL_HOT_STALL_CHANGE
-                )
-                link_hot_stall_trend_buy = (
-                    pure_trend_buy
-                    and symbol == "LINK"
-                    and LINK_HOT_STALL_RSI_LOW
-                    <= market_state["avg_rsi"]
-                    < LINK_HOT_STALL_RSI_HIGH
-                    and market_state["avg_rsi_change"] < LINK_HOT_STALL_CHANGE
-                )
+                pure_trend_buy = _setup_pure_trend_buy(bull_flags, PARAMS)
                 avax_pure_trend_buy = pure_trend_buy and symbol == "AVAX"
                 dot_pure_trend_buy = pure_trend_buy and symbol == "DOT"
                 link_pure_trend_buy = pure_trend_buy and symbol == "LINK"
-                xrp_pure_trend_buy = pure_trend_buy and symbol == "XRP"
                 allow_link_trend_buy = (
                     not link_pure_trend_buy
                     or market_state["avg_rsi"] < LINK_TREND_RSI_LOW
@@ -862,34 +776,12 @@ class Strategy:
                     and allow_dot_trend_acceleration_buy
                 ):
                     reason = _format_vote_reason("Bull", bull_votes, bull_flags, 4)
-                    if strong_reversion_buy:
-                        buy_weight = STRONG_REVERSION_POSITION_SIZE
-                    elif btc_hot_stall_trend_buy:
-                        buy_weight = BTC_HOT_STALL_TREND_POSITION_SIZE
-                    elif btc_mid_hot_accel_buy:
-                        buy_weight = BTC_MID_HOT_ACCEL_TREND_POSITION_SIZE
-                    elif sol_hot_stall_trend_buy:
-                        buy_weight = SOL_HOT_STALL_TREND_POSITION_SIZE
-                    elif link_hot_stall_trend_buy:
-                        buy_weight = LINK_HOT_STALL_TREND_POSITION_SIZE
-                    elif xrp_stalled_washout_buy:
-                        buy_weight = XRP_STALLED_WASHOUT_REVERSION_POSITION_SIZE
-                    elif sol_mild_reversion_buy:
-                        buy_weight = SOL_MILD_REVERSION_POSITION_SIZE
-                    elif sol_low_breadth_trend_buy:
-                        buy_weight = SOL_LOW_BREADTH_TREND_POSITION_SIZE
-                    elif ada_stalled_washout_buy:
-                        buy_weight = ADA_STALLED_WASHOUT_REVERSION_POSITION_SIZE
-                    elif dot_mild_reversion_buy:
-                        buy_weight = DOT_MILD_REVERSION_POSITION_SIZE
-                    elif eth_pure_reversion_buy:
-                        buy_weight = ETH_PURE_REVERSION_POSITION_SIZE
-                    elif avax_pure_trend_buy:
-                        buy_weight = AVAX_TREND_POSITION_SIZE
-                    elif xrp_pure_trend_buy:
-                        buy_weight = XRP_TREND_POSITION_SIZE
-                    else:
-                        buy_weight = POSITION_SIZE
+                    buy_weight, _ = _resolve_symbol_buy_weight(
+                        symbol,
+                        bull_flags,
+                        market_state,
+                        PARAMS,
+                    )
                     signals.append(
                         prepare.Signal(
                             symbol=symbol,

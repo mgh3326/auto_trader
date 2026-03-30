@@ -1278,29 +1278,15 @@ class TestSignalRegistry:
 class TestStrategyContractFreezing:
     """Characterization tests to lock down behaviors likely to drift during modularization."""
 
-    def test_weighted_bull_votes_double_counts_dual_rsi(self, monkeypatch):
+    def test_weighted_bull_votes_double_counts_dual_rsi(self):
         """Test that weighted_bull_votes double-counts dual_rsi_oversold."""
         strat = strategy.Strategy()
-
-        # Create signal data with dual_rsi_oversold=True
-        signal_result = _signal_data(
-            rsi_fast=25.0,
-            rsi_slow=25.0,
-            bull_votes=4,
-            bear_votes=0,
-            bull_flags={"dual_rsi_oversold": True},
-            bear_flags={},
-        )
-
-        def mock_evaluate(bar):
-            return signal_result
-
-        monkeypatch.setattr(strat, "_evaluate_signals", mock_evaluate)
-
-        history = _make_history([100.0] * 40)
-        bar = _make_bar_data("BTC", "2025-04-01", 100.0, history)
+        history, current_price = _make_strong_bullish_setup(50)
+        bar = _make_bar_data("BTC", "2025-04-01", current_price, history)
         result = strat._evaluate_signals(bar)
 
+        assert result is not None
+        assert result["bull_flags"]["dual_rsi_oversold"] is True
         # weighted_bull_votes should be bull_votes + 1 when dual_rsi_oversold is True
         assert result["weighted_bull_votes"] == result["bull_votes"] + 1
 
@@ -1457,8 +1443,6 @@ class TestStrategyContractFreezing:
         bar_data = {"BTC": _make_bar_data("BTC", "2025-04-01", 100.0, history)}
 
         # Mock market state for hot stall conditions
-        original_market_state = strat._market_state
-
         def mock_market_state(bar_data):
             return {"avg_rsi": 72.0, "avg_rsi_change": 1.0}  # Hot, low change (stall)
 
@@ -1477,10 +1461,10 @@ class TestStrategyContractFreezing:
         signals = strat.on_bar(bar_data, portfolio)
         buy_signals = [s for s in signals if s.action == "buy"]
 
-        if buy_signals:
-            # BTC hot-stall trend should use 0.0025 weight
-            assert buy_signals[0].weight == strategy.BTC_HOT_STALL_TREND_POSITION_SIZE
-            assert buy_signals[0].weight == 0.0025
+        assert len(buy_signals) == 1
+        # BTC hot-stall trend should use 0.0025 weight
+        assert buy_signals[0].weight == strategy.BTC_HOT_STALL_TREND_POSITION_SIZE
+        assert buy_signals[0].weight == 0.0025
 
     def test_symbol_specific_weight_dot_mild_reversion(self, monkeypatch):
         """Test DOT mild reversion position size."""
@@ -1509,7 +1493,7 @@ class TestStrategyContractFreezing:
         def mock_market_state(bar_data):
             return {
                 "avg_rsi": 35.0,
-                "avg_rsi_change": -1.0,
+                "avg_rsi_change": -3.0,
             }  # Above DOT_MILD_REVERSION_RSI (33)
 
         monkeypatch.setattr(strat, "_market_state", mock_market_state)
@@ -1527,10 +1511,10 @@ class TestStrategyContractFreezing:
         signals = strat.on_bar(bar_data, portfolio)
         buy_signals = [s for s in signals if s.action == "buy"]
 
-        if buy_signals:
-            # DOT mild reversion should use 0.00015625 weight
-            assert buy_signals[0].weight == strategy.DOT_MILD_REVERSION_POSITION_SIZE
-            assert buy_signals[0].weight == 0.00015625
+        assert len(buy_signals) == 1
+        # DOT mild reversion should use 0.00015625 weight
+        assert buy_signals[0].weight == strategy.DOT_MILD_REVERSION_POSITION_SIZE
+        assert buy_signals[0].weight == 0.00015625
 
     def test_symbol_specific_weight_avax_pure_trend(self, monkeypatch):
         """Test AVAX pure trend position size."""
@@ -1575,10 +1559,57 @@ class TestStrategyContractFreezing:
         signals = strat.on_bar(bar_data, portfolio)
         buy_signals = [s for s in signals if s.action == "buy"]
 
-        if buy_signals:
-            # AVAX pure trend should use 0.04 weight
-            assert buy_signals[0].weight == strategy.AVAX_TREND_POSITION_SIZE
-            assert buy_signals[0].weight == 0.04
+        assert len(buy_signals) == 1
+        # AVAX pure trend should use 0.04 weight
+        assert buy_signals[0].weight == strategy.AVAX_TREND_POSITION_SIZE
+        assert buy_signals[0].weight == 0.04
+
+    def test_buy_uses_symbol_weight_resolver(self, monkeypatch):
+        """Test that on_bar delegates final buy sizing to _resolve_symbol_buy_weight."""
+        strat = strategy.Strategy()
+
+        def mock_evaluate(bar):
+            return _signal_data(
+                rsi_fast=45.0,
+                rsi_slow=50.0,
+                bull_votes=4,
+                bear_votes=0,
+                bull_flags={
+                    "macd_histogram_positive": True,
+                    "ema_fast_above_slow": True,
+                    "momentum_positive": True,
+                    "volume_above_avg": True,
+                },
+            )
+
+        def mock_market_state(bar_data):
+            return {"avg_rsi": 65.0, "avg_rsi_change": 3.0}
+
+        def mock_resolve(symbol, bull_flags, market_state, params):
+            assert symbol == "AVAX"
+            return 0.123, "test_override"
+
+        monkeypatch.setattr(strat, "_evaluate_signals", mock_evaluate)
+        monkeypatch.setattr(strat, "_market_state", mock_market_state)
+        monkeypatch.setattr(strategy, "_resolve_symbol_buy_weight", mock_resolve)
+
+        history = _make_history([100.0] * 40)
+        bar_data = {"AVAX": _make_bar_data("AVAX", "2025-04-01", 100.0, history)}
+        portfolio = prepare.PortfolioState(
+            cash=100000.0,
+            positions={},
+            avg_prices={},
+            position_dates={},
+            trade_log=[],
+            equity=100000.0,
+            date="2025-04-01",
+        )
+
+        signals = strat.on_bar(bar_data, portfolio)
+        buy_signals = [s for s in signals if s.action == "buy"]
+
+        assert len(buy_signals) == 1
+        assert buy_signals[0].weight == 0.123
 
     def test_cooldown_blocks_reentry_after_stop_loss(self, monkeypatch):
         """Test that cooldown blocks re-entry after stop-loss exit."""
