@@ -88,10 +88,12 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - `status="pending"` 만 symbol 없이 호출 가능
   - `status in {"all", "filled", "cancelled"}` 는 symbol 필요
   - filled/cancelled 조회는 시장별 historical endpoint 제약 때문에 symbol fan-out을 자동 수행하지 않음
-- `place_order(symbol, side, order_type="limit", quantity=None, price=None, amount=None, dry_run=True, reason="", thesis=None, strategy=None, target_price=None, stop_loss=None, min_hold_days=None, notes=None, indicators_snapshot=None)`
+- `place_order(symbol, side, order_type="limit", quantity=None, price=None, amount=None, dry_run=True, reason="", exit_reason=None, thesis=None, strategy=None, target_price=None, stop_loss=None, min_hold_days=None, notes=None, indicators_snapshot=None)`
   - `side="buy"` 이고 `dry_run=False` 인 경우 `thesis` 와 `strategy` 가 필수
   - 실매수 성공 시 trade journal draft를 자동 생성하고 fill 저장 후 active로 연결 시도
-  - dry run / sell / 실패 주문에서는 auto journal 생성 안 함
+  - 실매도 성공 시 동일 symbol의 active journal을 FIFO 기준으로 auto-close 시도
+  - 부분 매도는 quantity를 수정하지 않고, fully-consumed journal만 close한다
+  - journal close 실패는 주문 성공을 되돌리지 않고 `journal_warning` 으로 응답한다
 - `modify_order(order_id, symbol, market=None, new_price=None, new_quantity=None, dry_run=True)`
 - `cancel_order(order_id, symbol=None, market=None)`
   - US equities: resolves exchange from symbol DB, open orders, and recent history before cancel
