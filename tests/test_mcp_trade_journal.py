@@ -581,3 +581,279 @@ class TestJournalFillIntegration:
         assert compiled.params["symbol_1"] == "KRW-BTC"
         assert compiled.params["status_1"] == JournalStatus.draft
         assert "ORDER BY review.trade_journals.created_at DESC" in str(compiled)
+
+
+class TestCloseJournalsOnSell:
+    """Tests for _close_journals_on_sell FIFO helper."""
+
+    @pytest.mark.asyncio
+    async def test_close_journals_on_sell_closes_single_full_exit(self) -> None:
+        """Sell quantity exactly matches journal quantity - close it."""
+        from app.mcp_server.tooling.order_execution import _close_journals_on_sell
+
+        now = datetime.now(UTC)
+        active = TradeJournal(
+            id=42,
+            symbol="KRW-BTC",
+            instrument_type=InstrumentType.crypto,
+            thesis="first entry",
+            status="active",
+            side="buy",
+            entry_price=Decimal("95000000"),
+            quantity=Decimal("0.01000000"),
+            created_at=now,
+            updated_at=now,
+        )
+
+        mock_session = AsyncMock()
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = [active]
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute.return_value = mock_result
+
+        factory = _mock_session_factory(mock_session)
+        with patch(
+            "app.mcp_server.tooling.order_execution._order_session_factory",
+            return_value=factory,
+        ):
+            result = await _close_journals_on_sell(
+                symbol="KRW-BTC",
+                sell_quantity=0.01,
+                sell_price=100000000.0,
+                exit_reason="manual_take_profit",
+            )
+
+        assert active.status == "closed"
+        assert active.exit_reason == "manual_take_profit"
+        assert active.exit_date is not None
+        assert float(active.pnl_pct) == pytest.approx(5.26, abs=0.1)
+        assert result["journals_closed"] == 1
+        assert result["journals_kept"] == 0
+        assert result["closed_ids"] == [42]
+
+    @pytest.mark.asyncio
+    async def test_close_journals_on_sell_partial_sell_keeps_all_active(self) -> None:
+        """Sell 5 when first journal has 8 - FIFO stops, no journals closed."""
+        from app.mcp_server.tooling.order_execution import _close_journals_on_sell
+
+        now = datetime.now(UTC)
+        first = TradeJournal(
+            id=42,
+            symbol="AAPL",
+            instrument_type=InstrumentType.equity_us,
+            thesis="scale-in 1",
+            status="active",
+            side="buy",
+            entry_price=Decimal("100"),
+            quantity=Decimal("8"),
+            created_at=now,
+            updated_at=now,
+        )
+        second = TradeJournal(
+            id=55,
+            symbol="AAPL",
+            instrument_type=InstrumentType.equity_us,
+            thesis="scale-in 2",
+            status="active",
+            side="buy",
+            entry_price=Decimal("120"),
+            quantity=Decimal("3"),
+            created_at=now + timedelta(seconds=1),
+            updated_at=now + timedelta(seconds=1),
+        )
+
+        mock_session = AsyncMock()
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = [first, second]
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute.return_value = mock_result
+
+        factory = _mock_session_factory(mock_session)
+        with patch(
+            "app.mcp_server.tooling.order_execution._order_session_factory",
+            return_value=factory,
+        ):
+            result = await _close_journals_on_sell(
+                symbol="AAPL",
+                sell_quantity=5.0,
+                sell_price=130.0,
+                exit_reason="rebalance",
+            )
+
+        # First journal qty (8) > sell qty (5), so FIFO stops, nothing closed
+        assert first.status == "active"
+        assert first.exit_price is None
+        assert second.status == "active"
+        assert second.exit_price is None
+        assert result == {
+            "journals_closed": 0,
+            "journals_kept": 2,
+            "closed_ids": [],
+            "total_pnl_pct": 0.0,
+        }
+        mock_session.commit.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_close_journals_on_sell_null_quantity_closes_without_consuming(
+        self,
+    ) -> None:
+        """quantity=None journal closes immediately without affecting remaining qty."""
+        from app.mcp_server.tooling.order_execution import _close_journals_on_sell
+
+        now = datetime.now(UTC)
+        null_qty_journal = TradeJournal(
+            id=99,
+            symbol="AAPL",
+            instrument_type=InstrumentType.equity_us,
+            thesis="legacy manual entry",
+            status="active",
+            side="buy",
+            entry_price=Decimal("100"),
+            quantity=None,
+            created_at=now,
+            updated_at=now,
+        )
+
+        mock_session = AsyncMock()
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = [null_qty_journal]
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute.return_value = mock_result
+
+        factory = _mock_session_factory(mock_session)
+        with patch(
+            "app.mcp_server.tooling.order_execution._order_session_factory",
+            return_value=factory,
+        ):
+            result = await _close_journals_on_sell(
+                symbol="AAPL",
+                sell_quantity=5.0,
+                sell_price=130.0,
+            )
+
+        assert null_qty_journal.status == "closed"
+        assert null_qty_journal.exit_reason == "sold_via_place_order"
+        assert result["journals_closed"] == 1
+        # No weighted PnL since quantity is None
+        assert result["total_pnl_pct"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_close_journals_on_sell_fully_consumes_multiple(self) -> None:
+        """Sell 11 with qty=8 and qty=3 journals - both close."""
+        from app.mcp_server.tooling.order_execution import _close_journals_on_sell
+
+        now = datetime.now(UTC)
+        first = TradeJournal(
+            id=42,
+            symbol="AAPL",
+            instrument_type=InstrumentType.equity_us,
+            thesis="scale-in 1",
+            status="active",
+            side="buy",
+            entry_price=Decimal("100"),
+            quantity=Decimal("8"),
+            created_at=now,
+            updated_at=now,
+        )
+        second = TradeJournal(
+            id=55,
+            symbol="AAPL",
+            instrument_type=InstrumentType.equity_us,
+            thesis="scale-in 2",
+            status="active",
+            side="buy",
+            entry_price=Decimal("120"),
+            quantity=Decimal("3"),
+            created_at=now + timedelta(seconds=1),
+            updated_at=now + timedelta(seconds=1),
+        )
+
+        mock_session = AsyncMock()
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = [first, second]
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute.return_value = mock_result
+
+        factory = _mock_session_factory(mock_session)
+        with patch(
+            "app.mcp_server.tooling.order_execution._order_session_factory",
+            return_value=factory,
+        ):
+            result = await _close_journals_on_sell(
+                symbol="AAPL",
+                sell_quantity=11.0,
+                sell_price=130.0,
+                exit_reason="full_exit",
+            )
+
+        assert first.status == "closed"
+        assert second.status == "closed"
+        assert result["journals_closed"] == 2
+        assert result["journals_kept"] == 0
+        assert result["closed_ids"] == [42, 55]
+
+    @pytest.mark.asyncio
+    async def test_close_journals_on_sell_no_active_journals(self) -> None:
+        """No active journals - return zeros."""
+        from app.mcp_server.tooling.order_execution import _close_journals_on_sell
+
+        mock_session = AsyncMock()
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = []
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute.return_value = mock_result
+
+        factory = _mock_session_factory(mock_session)
+        with patch(
+            "app.mcp_server.tooling.order_execution._order_session_factory",
+            return_value=factory,
+        ):
+            result = await _close_journals_on_sell(
+                symbol="AAPL",
+                sell_quantity=5.0,
+                sell_price=130.0,
+            )
+
+        assert result == {
+            "journals_closed": 0,
+            "journals_kept": 0,
+            "closed_ids": [],
+            "total_pnl_pct": 0.0,
+        }
+        mock_session.commit.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_close_journals_queries_active_ordered_by_created_at(self) -> None:
+        """Verify SQL queries only active journals ordered by created_at ASC."""
+        from app.mcp_server.tooling.order_execution import _close_journals_on_sell
+        from app.models.trade_journal import JournalStatus
+
+        mock_session = AsyncMock()
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = []
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute.return_value = mock_result
+
+        factory = _mock_session_factory(mock_session)
+        with patch(
+            "app.mcp_server.tooling.order_execution._order_session_factory",
+            return_value=factory,
+        ):
+            await _close_journals_on_sell(
+                symbol="AAPL",
+                sell_quantity=5.0,
+                sell_price=130.0,
+            )
+
+        stmt = mock_session.execute.call_args.args[0]
+        compiled = stmt.compile()
+
+        assert compiled.params["symbol_1"] == "AAPL"
+        assert compiled.params["status_1"] == JournalStatus.active
+        assert "ORDER BY review.trade_journals.created_at ASC" in str(compiled)

@@ -602,6 +602,86 @@ async def _create_trade_journal_for_buy(
     }
 
 
+async def _close_journals_on_sell(
+    *,
+    symbol: str,
+    sell_quantity: float,
+    sell_price: float,
+    exit_reason: str | None = None,
+) -> dict[str, Any]:
+    """Close active trade journals in FIFO order when a sell order succeeds.
+
+    - quantity is None: close immediately (legacy/manual case)
+    - quantity <= remaining_sell_qty: close and decrement remaining
+    - quantity > remaining_sell_qty: stop FIFO (partial sell, leave active)
+
+    Returns dict with journals_closed, journals_kept, closed_ids, total_pnl_pct.
+    """
+    sell_qty_dec = Decimal(str(sell_quantity))
+    sell_price_dec = Decimal(str(sell_price))
+    remaining_qty = sell_qty_dec
+    resolved_reason = (exit_reason or "").strip() or "sold_via_place_order"
+
+    async with _order_session_factory()() as db:
+        stmt = (
+            select(TradeJournal)
+            .where(
+                TradeJournal.symbol == symbol,
+                TradeJournal.status == JournalStatus.active,
+            )
+            .order_by(TradeJournal.created_at.asc())
+        )
+        result = await db.execute(stmt)
+        journals = list(result.scalars().all())
+
+        closed_ids: list[int] = []
+        weighted_pnl_sum = Decimal("0")
+        weighted_qty_sum = Decimal("0")
+
+        for journal in journals:
+            journal_qty = journal.quantity
+
+            if journal_qty is None:
+                # Legacy/manual case: close without consuming quantity
+                pass  # should_close = True (no quantity to check)
+            elif remaining_qty > 0 and journal_qty <= remaining_qty:
+                remaining_qty -= journal_qty
+            elif remaining_qty > 0 and journal_qty > remaining_qty:
+                # Partial sell: journal larger than remaining qty, stop FIFO
+                break
+            else:
+                # No remaining qty
+                break
+
+            journal.status = JournalStatus.closed
+            journal.exit_price = sell_price_dec
+            journal.exit_date = now_kst()
+            journal.exit_reason = resolved_reason
+
+            if journal.entry_price and journal.entry_price > 0:
+                pnl_pct = (
+                    (sell_price_dec - journal.entry_price) / journal.entry_price
+                ) * Decimal("100")
+                journal.pnl_pct = pnl_pct
+                if journal_qty and journal_qty > 0:
+                    weighted_pnl_sum += pnl_pct * journal_qty
+                    weighted_qty_sum += journal_qty
+
+            closed_ids.append(journal.id)
+
+        await db.commit()
+
+    total_pnl_pct = (
+        float(weighted_pnl_sum / weighted_qty_sum) if weighted_qty_sum > 0 else 0.0
+    )
+    return {
+        "journals_closed": len(closed_ids),
+        "journals_kept": len(journals) - len(closed_ids),
+        "closed_ids": closed_ids,
+        "total_pnl_pct": total_pnl_pct,
+    }
+
+
 async def _place_order_impl(
     symbol: str,
     side: Literal["buy", "sell"],
@@ -1006,6 +1086,7 @@ __all__ = [
     "_preview_order",
     "_execute_order",
     "_place_order_impl",
+    "_close_journals_on_sell",
     "_get_crypto_trade_cooldown_service",
     "CRYPTO_STOP_LOSS_PCT",
 ]
