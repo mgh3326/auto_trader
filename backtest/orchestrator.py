@@ -136,6 +136,32 @@ def get_next_experiment_id(results_path: Path = RESULTS_TSV) -> str:
     return f"exp{max_n + 1}"
 
 
+def get_recent_experiments(
+    results_path: Path = RESULTS_TSV, n: int = 20
+) -> list[tuple[str, str, str]]:
+    """Read the latest experiment/status/description triples from results.tsv."""
+    if n <= 0 or not results_path.exists():
+        return []
+
+    recent: list[tuple[str, str, str]] = []
+    for raw_line in results_path.read_text().splitlines()[1:]:
+        if not raw_line.strip():
+            continue
+        parts = raw_line.split("\t", 7)
+        if len(parts) < 8:
+            continue
+
+        experiment = parts[0].strip()
+        status = parts[6].strip().lower()
+        description = parts[7].strip()
+        if not experiment:
+            continue
+
+        recent.append((experiment, status, description))
+
+    return list(reversed(recent[-n:]))
+
+
 def read_last_result_row(results_path: Path = RESULTS_TSV) -> ExperimentResult | None:
     """Read the latest non-header row from results.tsv."""
     if not results_path.exists():
@@ -349,13 +375,37 @@ def build_ai_prompt(round_number: int, total_rounds: int, best_score: float) -> 
     """Build the prompt passed to the AI CLI in auto mode."""
     next_experiment = get_next_experiment_id(RESULTS_TSV)
     best_text = display_score(best_score)
-    return (
-        f"Read {PROGRAM_MD.relative_to(REPO_ROOT)}. "
-        f"Current best cv_score is {best_text}. "
-        f"You are on round {round_number}/{total_rounds}. "
-        "Modify backtest/strategy.py with exactly ONE experimental idea to improve the score. "
-        "Do not modify any other file. "
-        f"Then run: git add backtest/strategy.py && git commit -m '{next_experiment}: <description>'"
+    recent_experiments = get_recent_experiments(RESULTS_TSV, n=20)
+
+    recent_section_lines = [
+        "Recent experiments (DO NOT repeat these):",
+        "Entries marked [REVERT] already failed; do not retry them with another small parameter tweak.",
+    ]
+    if recent_experiments:
+        for experiment, status, description in recent_experiments:
+            status_label = status.upper()
+            if status in {"revert", "reverted"}:
+                status_label = "REVERT"
+            elif status in {"keep", "kept"}:
+                status_label = "KEEP"
+
+            recent_section_lines.append(
+                f"- {experiment} [{status_label}]: {description}"
+            )
+    else:
+        recent_section_lines.append("- No previous experiments recorded yet.")
+
+    return "\n".join(
+        [
+            f"Read {PROGRAM_MD.relative_to(REPO_ROOT)}.",
+            f"Current best cv_score is {best_text}.",
+            f"You are on round {round_number}/{total_rounds}.",
+            "Modify backtest/strategy.py with exactly ONE experimental idea to improve the score.",
+            "Do not modify any other file.",
+            "Use the recent experiment history below to avoid repeating past ideas.",
+            *recent_section_lines,
+            f"Then run: git add backtest/strategy.py && git commit -m '{next_experiment}: <description>'",
+        ]
     )
 
 

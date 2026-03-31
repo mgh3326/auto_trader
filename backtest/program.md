@@ -246,6 +246,29 @@ Most zero-weight positions were turned off individually. Try:
 - **Cross-coin signals** — BTC momentum as filter for altcoin entries
 - **Dynamic MAX_POSITIONS** — increase in low-vol, decrease in high-vol environments
 
+## Plateau Escape
+
+Before choosing the next experiment, inspect recent history first:
+
+```bash
+tail -30 results.tsv
+```
+
+Pick a direction that has not been tried recently.
+
+If you hit **5 consecutive reverts**, stop doing micro-adjustments and switch to a structural change instead. Good plateau-breakers:
+
+- Add one new signal function
+- Replace or redesign an exit rule
+- Introduce weighted voting instead of equal vote counting
+- Change how regime filters gate entries/exits
+- Rework position sizing logic based on volatility or signal strength
+
+Forbidden pattern:
+
+- Repeating the same parameter family with different values after recent reverts already covered that lane
+- Nudging one threshold up and down in small increments (for example 2% → 2.5% → 3%) instead of trying a genuinely different idea
+
 ## Data Available
 
 - 8 coins: BTC, ETH, SOL, XRP, LINK, ADA, DOT, AVAX (Upbit KRW market)
