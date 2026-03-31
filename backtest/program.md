@@ -246,6 +246,22 @@ Most zero-weight positions were turned off individually. Try:
 - **Cross-coin signals** — BTC momentum as filter for altcoin entries
 - **Dynamic MAX_POSITIONS** — increase in low-vol, decrease in high-vol environments
 
+## Plateau Escape
+
+If you hit 5 consecutive `revert`/`reverted` results, stop tweaking nearby parameter values and change direction.
+
+1. First inspect recent history: `tail -30 results.tsv`
+2. Read the recent `experiment`, `status`, and `description` entries
+3. Choose a direction that does NOT appear in the recent failed attempts
+4. Prefer structural changes over micro-tuning:
+   - add a new signal function
+   - change exit logic (for example trailing exits, regime-aware exits, or partial exits)
+   - introduce vote weighting or signal-family weighting
+   - change how regime filters gate entries/exits
+
+Forbidden pattern: repeatedly adjusting the same parameter to nearby values after repeated reverts.
+Examples: `stop_loss_pct 2.0 -> 2.5 -> 3.0`, halving the same AVAX weight again, or retesting the same threshold family with tiny increments.
+
 ## Data Available
 
 - 8 coins: BTC, ETH, SOL, XRP, LINK, ADA, DOT, AVAX (Upbit KRW market)
