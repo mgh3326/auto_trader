@@ -70,6 +70,23 @@ def test_read_best_result_row_returns_top_kept_entry(tmp_path: Path) -> None:
     assert result.description == "gamma"
 
 
+def test_get_recent_experiments_returns_latest_rows_newest_first(tmp_path: Path) -> None:
+    results_path = tmp_path / "results.tsv"
+    _write_results(
+        results_path,
+        [
+            "exp10\t4.100000\t4.1\t0.1\t3.9\tNA\tkeep\talpha",
+            "exp11\t4.300000\t4.3\t0.2\t4.0\tNA\trevert\tbeta",
+            "exp12\t4.500000\t4.5\t0.2\t4.1\tNA\tkept\tgamma",
+        ],
+    )
+
+    assert orchestrator.get_recent_experiments(results_path, n=2) == [
+        ("exp12", "kept", "gamma"),
+        ("exp11", "revert", "beta"),
+    ]
+
+
 def test_resolve_description_prefers_cli_value() -> None:
     assert (
         orchestrator.resolve_description(
@@ -109,3 +126,26 @@ def test_revert_limit_triggers_only_after_exceeding_threshold() -> None:
     orchestrator.apply_status(stats, status="revert")
 
     assert orchestrator.revert_limit_exceeded(stats, max_consecutive_reverts=3) is True
+
+
+def test_build_ai_prompt_includes_recent_experiment_history(
+    tmp_path: Path, monkeypatch
+) -> None:
+    results_path = tmp_path / "results.tsv"
+    _write_results(
+        results_path,
+        [
+            "exp24\t4.210000\t4.2\t0.2\t4.0\tNA\tkeep\tadd BTC trend gate",
+            "exp25\t4.180000\t4.2\t0.2\t4.0\tNA\trevert\thalve AVAX size",
+            "exp26\t4.170000\t4.2\t0.2\t4.0\tNA\trevert\traise stop-loss to 2.5%",
+        ],
+    )
+    monkeypatch.setattr(orchestrator, "RESULTS_TSV", results_path)
+
+    prompt = orchestrator.build_ai_prompt(round_number=3, total_rounds=20, best_score=4.228733)
+
+    assert "Recent experiments (DO NOT repeat these):" in prompt
+    assert "exp26 [REVERT]" in prompt
+    assert "raise stop-loss to 2.5%" in prompt
+    assert "exp25 [REVERT]" in prompt
+    assert "exp24 [KEEP]" in prompt
