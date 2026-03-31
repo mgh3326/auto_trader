@@ -15,7 +15,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "backtest
 
 import strategy
 
-
 # =============================================================================
 # Legacy Buy Weight Reference Helper (from commit 8177d23)
 # =============================================================================
@@ -565,8 +564,6 @@ def test_backtest_runner_uses_direct_imports() -> None:
 
     This test imports backtest.py as a module to verify import mechanism.
     """
-    import importlib.util
-    import os
 
     backtest_path = (
         Path(__file__).resolve().parent.parent.parent / "backtest" / "backtest.py"

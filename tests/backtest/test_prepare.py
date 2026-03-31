@@ -1272,6 +1272,21 @@ class TestCrossValidate:
 
     def test_cross_validate_empty_folds(self, tmp_path, monkeypatch):
         """cross_validate with empty date ranges should return sentinel."""
+        df = pd.DataFrame(
+            {
+                "date": ["2024-01-10", "2024-01-11"],
+                "open": [100.0, 101.0],
+                "high": [110.0, 111.0],
+                "low": [90.0, 91.0],
+                "close": [105.0, 106.0],
+                "volume": [1000.0, 1001.0],
+                "value": [100000.0, 100001.0],
+            }
+        )
+        df.to_parquet(tmp_path / "KRW-BTC.parquet")
+        monkeypatch.setattr(prepare, "DATA_DIR", tmp_path)
+        monkeypatch.setattr(prepare, "DEFAULT_SYMBOLS", ["BTC"])
+
         empty_folds = [
             {
                 "train_start": "1990-01-01",
