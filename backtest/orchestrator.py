@@ -32,6 +32,13 @@ class ExperimentResult:
 
 
 @dataclass(slots=True)
+class RecentExperiment:
+    experiment: str
+    status: str
+    description: str
+
+
+@dataclass(slots=True)
 class Stats:
     initial_best_score: float
     current_best_score: float
@@ -189,6 +196,33 @@ def read_best_result_row(results_path: Path = RESULTS_TSV) -> ExperimentResult |
         if best_result is None or candidate.cv_score > best_result.cv_score:
             best_result = candidate
     return best_result
+
+
+def get_recent_experiments(
+    results_path: Path = RESULTS_TSV,
+    n: int = 20,
+) -> list[RecentExperiment]:
+    """Read the latest experiment rows from results.tsv in reverse chronological order."""
+    if not results_path.exists() or n <= 0:
+        return []
+
+    experiments: list[RecentExperiment] = []
+    for raw_line in reversed(results_path.read_text().splitlines()[1:]):
+        if not raw_line.strip():
+            continue
+        parts = raw_line.split("\t", 7)
+        if len(parts) < 8:
+            continue
+        experiments.append(
+            RecentExperiment(
+                experiment=parts[0].strip(),
+                status=parts[6].strip().lower(),
+                description=parts[7].strip(),
+            )
+        )
+        if len(experiments) >= n:
+            break
+    return experiments
 
 
 def resolve_description(
@@ -349,12 +383,33 @@ def build_ai_prompt(round_number: int, total_rounds: int, best_score: float) -> 
     """Build the prompt passed to the AI CLI in auto mode."""
     next_experiment = get_next_experiment_id(RESULTS_TSV)
     best_text = display_score(best_score)
+    recent_experiments = get_recent_experiments(RESULTS_TSV, n=20)
+    recent_lines = ["Recent experiments (DO NOT repeat these):"]
+    if recent_experiments:
+        for result in recent_experiments:
+            if result.status in {"revert", "reverted"}:
+                status_label = "REVERTED"
+            elif result.status == "crash":
+                status_label = "CRASHED"
+            elif result.status in {"keep", "kept"}:
+                status_label = "KEPT"
+            else:
+                status_label = result.status.upper()
+            recent_lines.append(
+                f"- {result.experiment} | {status_label} | {result.description}"
+            )
+    else:
+        recent_lines.append("- none recorded yet")
+    recent_history = "\n".join(recent_lines)
+
     return (
-        f"Read {PROGRAM_MD.relative_to(REPO_ROOT)}. "
-        f"Current best cv_score is {best_text}. "
-        f"You are on round {round_number}/{total_rounds}. "
-        "Modify backtest/strategy.py with exactly ONE experimental idea to improve the score. "
-        "Do not modify any other file. "
+        f"Read {PROGRAM_MD.relative_to(REPO_ROOT)}.\n"
+        f"Current best cv_score is {best_text}.\n"
+        f"You are on round {round_number}/{total_rounds}.\n"
+        f"{recent_history}\n"
+        "Reverted experiments already failed; do not retry the same idea with nearby values.\n"
+        "Modify backtest/strategy.py with exactly ONE experimental idea to improve the score.\n"
+        "Do not modify any other file.\n"
         f"Then run: git add backtest/strategy.py && git commit -m '{next_experiment}: <description>'"
     )
 

@@ -70,6 +70,27 @@ def test_read_best_result_row_returns_top_kept_entry(tmp_path: Path) -> None:
     assert result.description == "gamma"
 
 
+def test_get_recent_experiments_returns_latest_rows_in_reverse_chronological_order(
+    tmp_path: Path,
+) -> None:
+    results_path = tmp_path / "results.tsv"
+    _write_results(
+        results_path,
+        [
+            "exp1\t4.100000\t4.1\t0.1\t3.9\tNA\tkeep\tfirst",
+            "exp2\t4.200000\t4.2\t0.1\t4.0\tNA\treverted\tsecond",
+            "exp3\t4.300000\t4.3\t0.1\t4.1\tNA\tcrash\tthird",
+        ],
+    )
+
+    results = orchestrator.get_recent_experiments(results_path, n=2)
+
+    assert [(result.experiment, result.status, result.description) for result in results] == [
+        ("exp3", "crash", "third"),
+        ("exp2", "reverted", "second"),
+    ]
+
+
 def test_resolve_description_prefers_cli_value() -> None:
     assert (
         orchestrator.resolve_description(
