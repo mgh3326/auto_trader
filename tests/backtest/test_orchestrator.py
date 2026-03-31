@@ -70,7 +70,9 @@ def test_read_best_result_row_returns_top_kept_entry(tmp_path: Path) -> None:
     assert result.description == "gamma"
 
 
-def test_get_recent_experiments_returns_latest_rows_newest_first(tmp_path: Path) -> None:
+def test_get_recent_experiments_returns_latest_rows_newest_first(
+    tmp_path: Path,
+) -> None:
     results_path = tmp_path / "results.tsv"
     _write_results(
         results_path,
@@ -142,7 +144,9 @@ def test_build_ai_prompt_includes_recent_experiment_history(
     )
     monkeypatch.setattr(orchestrator, "RESULTS_TSV", results_path)
 
-    prompt = orchestrator.build_ai_prompt(round_number=3, total_rounds=20, best_score=4.228733)
+    prompt = orchestrator.build_ai_prompt(
+        round_number=3, total_rounds=20, best_score=4.228733
+    )
 
     assert "Recent experiments (DO NOT repeat these):" in prompt
     assert "exp26 [REVERT]" in prompt
