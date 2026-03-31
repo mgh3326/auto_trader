@@ -5,13 +5,11 @@ This module contains all tests related to the place_order tool,
 extracted from test_mcp_server_tools.py for better organization.
 """
 
-import logging
 from unittest.mock import AsyncMock
 
 import pytest
 
 import app.services.brokers.upbit.client as upbit_service
-from app.core.config import settings
 from app.mcp_server.tooling import order_execution
 from tests._mcp_tooling_support import (
     _patch_runtime_attr,

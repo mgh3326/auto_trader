@@ -1010,6 +1010,8 @@ async def _place_order_impl(
 
         # --- Recording to DB (Phase 1) ---
         fill_recorded = False
+        price_val = 0.0
+        qty_val = 0.0
         try:
             # Normalize result for storage
             # Note: Upbit returns uuid, KIS returns odno
@@ -1054,12 +1056,16 @@ async def _place_order_impl(
         journal_close_result: dict[str, Any] | None = None
         if side_lower == "sell":
             try:
+                preview_qty = _to_float(dry_run_result.get("quantity"), default=0.0)
+                preview_price = _to_float(dry_run_result.get("price"), default=0.0)
                 resolved_sell_qty = (
-                    qty_val if qty_val > 0 else _to_float(order_quantity, default=0.0)
+                    preview_qty
+                    if preview_qty > 0
+                    else _to_float(order_quantity, default=0.0)
                 )
                 resolved_sell_price = (
-                    price_val
-                    if price_val > 0
+                    preview_price
+                    if preview_price > 0
                     else _to_float(current_price, default=0.0)
                 )
 
