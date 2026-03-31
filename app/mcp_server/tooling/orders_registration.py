@@ -57,6 +57,8 @@ def register_order_tools(mcp: FastMCP) -> None:
             "Always returns dry_run preview unless explicitly set to False. "
             "For real buy orders (dry_run=False), thesis and strategy are required "
             "so a trade journal can be created automatically. "
+            "For real sell orders, active trade journals are auto-closed in FIFO order. "
+            "Use exit_reason to record the sell thesis in the journal. "
             "Safety limit: max 20 orders/day. "
             "dry_run=True by default for safety."
         ),
@@ -70,6 +72,7 @@ def register_order_tools(mcp: FastMCP) -> None:
         amount: float | None = None,
         dry_run: bool = True,
         reason: str = "",
+        exit_reason: str | None = None,
         thesis: str | None = None,
         strategy: str | None = None,
         target_price: float | None = None,
@@ -87,6 +90,7 @@ def register_order_tools(mcp: FastMCP) -> None:
             amount=amount,
             dry_run=dry_run,
             reason=reason,
+            exit_reason=exit_reason,
             thesis=thesis,
             strategy=strategy,
             target_price=target_price,

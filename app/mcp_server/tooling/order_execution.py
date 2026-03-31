@@ -682,6 +682,11 @@ async def _close_journals_on_sell(
     }
 
 
+def _append_journal_warning(existing: str | None, new_message: str) -> str:
+    """Append a new journal warning to an existing one."""
+    return new_message if not existing else f"{existing}; {new_message}"
+
+
 async def _place_order_impl(
     symbol: str,
     side: Literal["buy", "sell"],
@@ -692,6 +697,7 @@ async def _place_order_impl(
     amount: float | None = None,
     dry_run: bool = True,
     reason: str = "",
+    exit_reason: str | None = None,
     thesis: str | None = None,
     strategy: str | None = None,
     target_price: float | None = None,
@@ -1044,6 +1050,31 @@ async def _place_order_impl(
         except Exception as db_exc:
             logger.warning("Failed to record fill to DB: %s", db_exc)
 
+        # Close journals for sell orders (best-effort, after fill save attempt)
+        journal_close_result: dict[str, Any] | None = None
+        if side_lower == "sell":
+            try:
+                resolved_sell_qty = (
+                    qty_val if qty_val > 0 else _to_float(order_quantity, default=0.0)
+                )
+                resolved_sell_price = (
+                    price_val
+                    if price_val > 0
+                    else _to_float(current_price, default=0.0)
+                )
+
+                journal_close_result = await _close_journals_on_sell(
+                    symbol=normalized_symbol,
+                    sell_quantity=resolved_sell_qty,
+                    sell_price=resolved_sell_price,
+                    exit_reason=exit_reason or reason,
+                )
+            except Exception as journal_exc:
+                journal_warning = _append_journal_warning(
+                    journal_warning, f"journal close failed after sell: {journal_exc}"
+                )
+                logger.warning("Failed to close journals on sell: %s", journal_exc)
+
         response: dict[str, Any] = {
             "success": True,
             "dry_run": False,
@@ -1057,6 +1088,10 @@ async def _place_order_impl(
             if fill_recorded
             else "Order placed successfully",
         }
+        if journal_close_result:
+            response["journals_closed"] = journal_close_result["journals_closed"]
+            response["journals_kept"] = journal_close_result["journals_kept"]
+            response["closed_journal_ids"] = journal_close_result["closed_ids"]
         if journal_warning:
             response["journal_warning"] = journal_warning
         return response
