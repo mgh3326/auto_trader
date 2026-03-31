@@ -1,6 +1,6 @@
 services:
   db:
-    image: postgres:17
+    image: postgres:18
     container_name: auto_trader_pg
     environment:
       POSTGRES_USER: postgres
