@@ -688,6 +688,25 @@ Response shape:
 - `summary.total_usd`: sum of USD `balance` fields
 - `errors`: per-source partial failures in non-strict mode
 
+### `get_available_capital` spec
+Parameters:
+- `account`: optional account filter (`upbit`, `kis`, `kis_domestic`, `kis_overseas`, `toss`)
+- `include_manual`: whether to include manual cash in aggregation (default: `true`)
+
+Behavior:
+- Aggregates orderable cash across all broker accounts (Upbit, KIS domestic, KIS overseas)
+- Converts USD orderable amounts to KRW equivalents using current exchange rate
+- Includes manual cash (Toss/non-API cash) when `include_manual=True`
+- Marks manual cash as stale when older than 3 days
+
+Response shape:
+- `accounts`: per-account cash entries with `krw_equivalent` added for USD accounts
+- `manual_cash`: manual cash details with `amount`, `updated_at`, and `stale_warning`
+- `summary.total_orderable_krw`: total orderable amount in KRW across all sources
+- `summary.exchange_rate_usd_krw`: USD to KRW exchange rate used for conversion
+- `summary.as_of`: ISO timestamp of when the data was retrieved
+- `errors`: per-source partial failures
+
 ### `get_holdings` spec
 Parameters:
 - `account`: optional account filter (`kis`, `upbit`, `toss`, `samsung_pension`, `isa`)
@@ -718,6 +737,42 @@ Market routing:
 - `market` can override routing: `crypto|upbit`, `kr|kis|krx|kospi|kosdaq`, `us|yahoo|nasdaq|nyse`
 - If `market` is omitted, routing is heuristic: KRW-/USDT- prefix -> crypto, 6-digit code -> KR equity, otherwise -> US equity
 - Crypto symbols must include `KRW-` or `USDT-` prefix
+
+### User Settings Tools
+
+- `get_user_setting(key)` - Get a user setting value by key. Returns the JSON value or None if not found.
+- `set_user_setting(key, value)` - Set a user setting value by key (upsert). Returns the serialized setting with key, value, and updated_at.
+
+These tools provide a generic key-value storage for user preferences and settings. Values are stored as JSON and can be any valid JSON-serializable data structure.
+
+Common settings:
+- `manual_cash`: Stores manually-managed cash amounts (e.g., `{"amount": 15000000}`) for accounts not backed by APIs (Toss, etc.)
+
+### `get_user_setting` spec
+Parameters:
+- `key`: Setting key string (required)
+
+Returns:
+- The JSON value stored for the key, or `None` if the key doesn't exist
+
+### `set_user_setting` spec
+Parameters:
+- `key`: Setting key string (required)
+- `value`: Any JSON-serializable value (required)
+
+Returns:
+```json
+{
+  "key": "manual_cash",
+  "value": {"amount": 15000000},
+  "updated_at": "2026-04-01T08:00:00+00:00"
+}
+```
+
+Behavior:
+- Creates the setting if it doesn't exist, updates it if it does (upsert)
+- `updated_at` is automatically set to the current timestamp
+- The (user_id, key) pair is unique; attempting to create a duplicate key for the same user will update the existing entry
 
 ## Run (docker-compose.prod)
 Environment variables:

@@ -16,6 +16,9 @@ from app.mcp_server.tooling.trade_journal_registration import (
 from app.mcp_server.tooling.trade_profile_registration import (
     register_trade_profile_tools,
 )
+from app.mcp_server.tooling.user_settings_registration import (
+    register_user_settings_tools,
+)
 from app.mcp_server.tooling.watch_alerts_registration import (
     register_watch_alert_tools,
 )
@@ -32,6 +35,7 @@ def register_all_tools(mcp: FastMCP) -> None:
     register_analysis_tools(mcp)
     register_watch_alert_tools(mcp)
     register_trade_profile_tools(mcp)
+    register_user_settings_tools(mcp)
     register_news_tools(mcp)
     register_trade_journal_tools(mcp)
 
