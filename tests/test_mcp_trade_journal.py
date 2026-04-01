@@ -696,6 +696,70 @@ class TestCloseJournalsOnSell:
         mock_session.commit.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_close_journals_on_sell_partial_sell_closes_first_only(
+        self,
+    ) -> None:
+        """Sell 10 with qty=8 and qty=3 journals - close first, keep second active."""
+        from app.mcp_server.tooling.order_execution import _close_journals_on_sell
+
+        now = datetime.now(UTC)
+        first = TradeJournal(
+            id=42,
+            symbol="AAPL",
+            instrument_type=InstrumentType.equity_us,
+            thesis="scale-in 1",
+            status="active",
+            side="buy",
+            entry_price=Decimal("100"),
+            quantity=Decimal("8"),
+            created_at=now,
+            updated_at=now,
+        )
+        second = TradeJournal(
+            id=55,
+            symbol="AAPL",
+            instrument_type=InstrumentType.equity_us,
+            thesis="scale-in 2",
+            status="active",
+            side="buy",
+            entry_price=Decimal("120"),
+            quantity=Decimal("3"),
+            created_at=now + timedelta(seconds=1),
+            updated_at=now + timedelta(seconds=1),
+        )
+
+        mock_session = AsyncMock()
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = [first, second]
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute.return_value = mock_result
+
+        factory = _mock_session_factory(mock_session)
+        with patch(
+            "app.mcp_server.tooling.order_execution._order_session_factory",
+            return_value=factory,
+        ):
+            result = await _close_journals_on_sell(
+                symbol="AAPL",
+                sell_quantity=10.0,
+                sell_price=130.0,
+                exit_reason="rebalance",
+            )
+
+        assert first.status == "closed"
+        assert first.exit_price == Decimal("130.0")
+        assert second.status == "active"
+        assert second.exit_price is None
+        assert result == {
+            "journals_closed": 1,
+            "journals_kept": 1,
+            "closed_ids": [42],
+            "total_pnl_pct": pytest.approx(30.0),
+        }
+        mock_session.commit.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_close_journals_on_sell_null_quantity_closes_without_consuming(
         self,
     ) -> None:
