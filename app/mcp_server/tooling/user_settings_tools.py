@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any, cast
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -73,7 +72,7 @@ async def set_user_setting(key: str, value: Any) -> dict[str, Any]:
                 index_elements=["user_id", "key"],
                 set_={
                     "value": value,
-                    # updated_at is handled by onupdate=func.now() on the column
+                    "updated_at": func.now(),
                 },
             )
         )

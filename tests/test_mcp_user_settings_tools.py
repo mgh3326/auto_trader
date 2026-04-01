@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy.dialects import postgresql
 
 from app.mcp_server.tooling.user_settings_tools import (
     get_user_setting,
@@ -87,6 +88,39 @@ async def test_set_user_setting_upserts_and_serializes_updated_at() -> None:
         "value": {"amount": 15000000},
         "updated_at": "2026-04-01T08:00:00+00:00",
     }
+
+
+@pytest.mark.asyncio
+async def test_set_user_setting_upsert_updates_updated_at_column() -> None:
+    """Conflict updates must explicitly advance updated_at."""
+    mock_session = MagicMock()
+    fake_row = MagicMock()
+    fake_row.key = "manual_cash"
+    fake_row.value = {"amount": 20000000}
+    fake_row.updated_at = datetime(2026, 4, 1, 9, 0, 0, tzinfo=UTC)
+
+    mock_session.execute = AsyncMock(
+        side_effect=[
+            SimpleNamespace(),
+            SimpleNamespace(scalar_one=lambda: fake_row),
+        ]
+    )
+    mock_session.commit = AsyncMock()
+
+    session_factory = MagicMock(return_value=_build_session_cm(mock_session))
+    with patch(
+        "app.mcp_server.tooling.user_settings_tools._session_factory",
+        return_value=session_factory,
+    ):
+        await set_user_setting(
+            key="manual_cash",
+            value={"amount": 20000000},
+        )
+
+    upsert_stmt = mock_session.execute.await_args_list[0].args[0]
+    compiled_sql = str(upsert_stmt.compile(dialect=postgresql.dialect()))
+
+    assert "updated_at" in compiled_sql
 
 
 @pytest.mark.asyncio
