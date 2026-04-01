@@ -1572,12 +1572,9 @@ async def test_place_order_crypto_sell_records_stop_loss_cooldown(monkeypatch):
         lambda: fake_cooldown_service,
     )
 
-    # Simulate holding with avg_buy_price that indicates stop-loss
-    # Current price 45000000 < avg_price 50000000 * (1 - 0.045) = 47750000
-    # So current price is below stop-loss threshold
     class DummyUpbit:
         async def fetch_multiple_current_prices(self, symbols, use_cache=True):
-            return {"KRW-BTC": 45000000.0}  # 10% below avg buy price
+            return {"KRW-BTC": 45000000.0}
 
         async def fetch_my_coins(self):
             return [
@@ -1673,11 +1670,9 @@ async def test_place_order_crypto_profitable_sell_does_not_record_cooldown(monke
         lambda: fake_cooldown_service,
     )
 
-    # Simulate holding with profit
-    # Current price 55000000 > avg_price 50000000 (profit)
     class DummyUpbit:
         async def fetch_multiple_current_prices(self, symbols, use_cache=True):
-            return {"KRW-BTC": 55000000.0}  # 10% above avg buy price
+            return {"KRW-BTC": 55000000.0}
 
         async def fetch_my_coins(self):
             return [
@@ -1711,7 +1706,6 @@ async def test_place_order_crypto_profitable_sell_does_not_record_cooldown(monke
         ),
     )
 
-    # Mock _save_order_fill and _link_journal_to_fill
     monkeypatch.setattr(
         order_execution, "_save_order_fill", AsyncMock(return_value=None)
     )
@@ -1727,6 +1721,164 @@ async def test_place_order_crypto_profitable_sell_does_not_record_cooldown(monke
 
     assert result["success"] is True
     assert len(fake_cooldown_service.recorded_symbols) == 0
+
+
+@pytest.mark.asyncio
+async def test_real_sell_closes_journals_and_returns_summary(monkeypatch) -> None:
+    """Real sell should close journals and return summary in response."""
+    tools = build_tools()
+
+    monkeypatch.setattr(
+        upbit_service,
+        "fetch_multiple_current_prices",
+        AsyncMock(return_value={"KRW-BTC": 95_000_000.0}),
+    )
+    monkeypatch.setattr(
+        upbit_service,
+        "fetch_my_coins",
+        AsyncMock(
+            return_value=[
+                {
+                    "currency": "BTC",
+                    "balance": "0.01",
+                    "locked": "0",
+                    "avg_buy_price": "90000000",
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        upbit_service,
+        "place_market_sell_order",
+        AsyncMock(
+            return_value={"uuid": "sell-uuid", "side": "ask", "market": "KRW-BTC"}
+        ),
+    )
+    monkeypatch.setattr(
+        order_execution, "_save_order_fill", AsyncMock(return_value=123)
+    )
+    monkeypatch.setattr(order_execution, "_link_journal_to_fill", AsyncMock())
+
+    close_mock = AsyncMock(
+        return_value={
+            "journals_closed": 2,
+            "journals_kept": 1,
+            "closed_ids": [42, 55],
+            "total_pnl_pct": 5.2,
+        }
+    )
+    monkeypatch.setattr(order_execution, "_close_journals_on_sell", close_mock)
+
+    result = await tools["place_order"](
+        symbol="KRW-BTC",
+        side="sell",
+        order_type="market",
+        quantity=0.01,
+        dry_run=False,
+        reason="rebalance",
+        exit_reason="take_profit",
+    )
+
+    assert result["success"] is True
+    assert result["journals_closed"] == 2
+    assert result["journals_kept"] == 1
+    assert result["closed_journal_ids"] == [42, 55]
+    close_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_sell_journal_close_failure_keeps_order_success(monkeypatch) -> None:
+    """Journal close failure should not fail the sell order."""
+    tools = build_tools()
+
+    monkeypatch.setattr(
+        upbit_service,
+        "fetch_multiple_current_prices",
+        AsyncMock(return_value={"KRW-BTC": 95_000_000.0}),
+    )
+    monkeypatch.setattr(
+        upbit_service,
+        "fetch_my_coins",
+        AsyncMock(
+            return_value=[
+                {
+                    "currency": "BTC",
+                    "balance": "0.01",
+                    "locked": "0",
+                    "avg_buy_price": "90000000",
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        upbit_service,
+        "place_market_sell_order",
+        AsyncMock(
+            return_value={"uuid": "sell-uuid", "side": "ask", "market": "KRW-BTC"}
+        ),
+    )
+    monkeypatch.setattr(
+        order_execution, "_save_order_fill", AsyncMock(return_value=123)
+    )
+    monkeypatch.setattr(order_execution, "_link_journal_to_fill", AsyncMock())
+    monkeypatch.setattr(
+        order_execution,
+        "_close_journals_on_sell",
+        AsyncMock(side_effect=RuntimeError("db timeout")),
+    )
+
+    result = await tools["place_order"](
+        symbol="KRW-BTC",
+        side="sell",
+        order_type="market",
+        quantity=0.01,
+        dry_run=False,
+    )
+
+    assert result["success"] is True
+    assert "journal_warning" in result
+    assert "journal close failed after sell" in result["journal_warning"]
+
+
+@pytest.mark.asyncio
+async def test_sell_dry_run_does_not_close_journals(monkeypatch) -> None:
+    """Dry run sell should not close journals."""
+    tools = build_tools()
+
+    monkeypatch.setattr(
+        upbit_service,
+        "fetch_multiple_current_prices",
+        AsyncMock(return_value={"KRW-BTC": 95_000_000.0}),
+    )
+    monkeypatch.setattr(
+        upbit_service,
+        "fetch_my_coins",
+        AsyncMock(
+            return_value=[
+                {
+                    "currency": "BTC",
+                    "balance": "0.01",
+                    "locked": "0",
+                    "avg_buy_price": "90000000",
+                }
+            ]
+        ),
+    )
+
+    close_mock = AsyncMock()
+    monkeypatch.setattr(order_execution, "_close_journals_on_sell", close_mock)
+
+    result = await tools["place_order"](
+        symbol="KRW-BTC",
+        side="sell",
+        order_type="market",
+        quantity=0.01,
+        dry_run=True,
+    )
+
+    assert result["success"] is True
+    assert result["dry_run"] is True
+    close_mock.assert_not_awaited()
 
 
 class TestOrderFillRecording:

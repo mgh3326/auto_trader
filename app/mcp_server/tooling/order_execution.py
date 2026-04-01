@@ -602,6 +602,91 @@ async def _create_trade_journal_for_buy(
     }
 
 
+async def _close_journals_on_sell(
+    *,
+    symbol: str,
+    sell_quantity: float,
+    sell_price: float,
+    exit_reason: str | None = None,
+) -> dict[str, Any]:
+    """Close active trade journals in FIFO order when a sell order succeeds.
+
+    - quantity is None: close immediately (legacy/manual case)
+    - quantity <= remaining_sell_qty: close and decrement remaining
+    - quantity > remaining_sell_qty: stop FIFO (partial sell, leave active)
+
+    Returns dict with journals_closed, journals_kept, closed_ids, total_pnl_pct.
+    """
+    sell_qty_dec = Decimal(str(sell_quantity))
+    sell_price_dec = Decimal(str(sell_price))
+    remaining_qty = sell_qty_dec
+    resolved_reason = (exit_reason or "").strip() or "sold_via_place_order"
+
+    async with _order_session_factory()() as db:
+        stmt = (
+            select(TradeJournal)
+            .where(
+                TradeJournal.symbol == symbol,
+                TradeJournal.status == JournalStatus.active,
+            )
+            .order_by(TradeJournal.created_at.asc())
+        )
+        result = await db.execute(stmt)
+        journals = list(result.scalars().all())
+
+        closed_ids: list[int] = []
+        weighted_pnl_sum = Decimal("0")
+        weighted_qty_sum = Decimal("0")
+
+        for journal in journals:
+            journal_qty = journal.quantity
+
+            if journal_qty is None:
+                # Legacy/manual case: close without consuming quantity
+                pass  # should_close = True (no quantity to check)
+            elif remaining_qty > 0 and journal_qty <= remaining_qty:
+                remaining_qty -= journal_qty
+            elif remaining_qty > 0 and journal_qty > remaining_qty:
+                # Partial sell: journal larger than remaining qty, stop FIFO
+                break
+            else:
+                # No remaining qty
+                break
+
+            journal.status = JournalStatus.closed
+            journal.exit_price = sell_price_dec
+            journal.exit_date = now_kst()
+            journal.exit_reason = resolved_reason
+
+            if journal.entry_price and journal.entry_price > 0:
+                pnl_pct = (
+                    (sell_price_dec - journal.entry_price) / journal.entry_price
+                ) * Decimal("100")
+                journal.pnl_pct = pnl_pct
+                if journal_qty and journal_qty > 0:
+                    weighted_pnl_sum += pnl_pct * journal_qty
+                    weighted_qty_sum += journal_qty
+
+            closed_ids.append(journal.id)
+
+        await db.commit()
+
+    total_pnl_pct = (
+        float(weighted_pnl_sum / weighted_qty_sum) if weighted_qty_sum > 0 else 0.0
+    )
+    return {
+        "journals_closed": len(closed_ids),
+        "journals_kept": len(journals) - len(closed_ids),
+        "closed_ids": closed_ids,
+        "total_pnl_pct": total_pnl_pct,
+    }
+
+
+def _append_journal_warning(existing: str | None, new_message: str) -> str:
+    """Append a new journal warning to an existing one."""
+    return new_message if not existing else f"{existing}; {new_message}"
+
+
 async def _place_order_impl(
     symbol: str,
     side: Literal["buy", "sell"],
@@ -612,6 +697,7 @@ async def _place_order_impl(
     amount: float | None = None,
     dry_run: bool = True,
     reason: str = "",
+    exit_reason: str | None = None,
     thesis: str | None = None,
     strategy: str | None = None,
     target_price: float | None = None,
@@ -924,6 +1010,8 @@ async def _place_order_impl(
 
         # --- Recording to DB (Phase 1) ---
         fill_recorded = False
+        price_val = 0.0
+        qty_val = 0.0
         try:
             # Normalize result for storage
             # Note: Upbit returns uuid, KIS returns odno
@@ -964,6 +1052,35 @@ async def _place_order_impl(
         except Exception as db_exc:
             logger.warning("Failed to record fill to DB: %s", db_exc)
 
+        # Close journals for sell orders (best-effort, after fill save attempt)
+        journal_close_result: dict[str, Any] | None = None
+        if side_lower == "sell":
+            try:
+                preview_qty = _to_float(dry_run_result.get("quantity"), default=0.0)
+                preview_price = _to_float(dry_run_result.get("price"), default=0.0)
+                resolved_sell_qty = (
+                    preview_qty
+                    if preview_qty > 0
+                    else _to_float(order_quantity, default=0.0)
+                )
+                resolved_sell_price = (
+                    preview_price
+                    if preview_price > 0
+                    else _to_float(current_price, default=0.0)
+                )
+
+                journal_close_result = await _close_journals_on_sell(
+                    symbol=normalized_symbol,
+                    sell_quantity=resolved_sell_qty,
+                    sell_price=resolved_sell_price,
+                    exit_reason=exit_reason or reason,
+                )
+            except Exception as journal_exc:
+                journal_warning = _append_journal_warning(
+                    journal_warning, f"journal close failed after sell: {journal_exc}"
+                )
+                logger.warning("Failed to close journals on sell: %s", journal_exc)
+
         response: dict[str, Any] = {
             "success": True,
             "dry_run": False,
@@ -977,6 +1094,10 @@ async def _place_order_impl(
             if fill_recorded
             else "Order placed successfully",
         }
+        if journal_close_result:
+            response["journals_closed"] = journal_close_result["journals_closed"]
+            response["journals_kept"] = journal_close_result["journals_kept"]
+            response["closed_journal_ids"] = journal_close_result["closed_ids"]
         if journal_warning:
             response["journal_warning"] = journal_warning
         return response
@@ -1006,6 +1127,7 @@ __all__ = [
     "_preview_order",
     "_execute_order",
     "_place_order_impl",
+    "_close_journals_on_sell",
     "_get_crypto_trade_cooldown_service",
     "CRYPTO_STOP_LOSS_PCT",
 ]
