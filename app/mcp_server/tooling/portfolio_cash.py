@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import app.services.brokers.upbit.client as upbit_service
@@ -238,7 +238,7 @@ def _is_stale_manual_cash(updated_at_iso: str | None) -> bool:
     try:
         updated_at = datetime.fromisoformat(updated_at_iso)
         if updated_at.tzinfo is None:
-            updated_at = updated_at.replace(tzinfo=timezone.utc)
+            updated_at = updated_at.replace(tzinfo=UTC)
         cutoff = now_kst() - timedelta(days=3)
         return updated_at < cutoff
     except (ValueError, TypeError):
@@ -258,7 +258,6 @@ async def get_available_capital_impl(
     Returns:
         Dict with accounts, manual_cash, summary, and errors
     """
-    account_filter = _normalize_account_filter(account)
     errors: list[dict[str, Any]] = []
 
     cash_result = await get_cash_balance_impl(account=account)
