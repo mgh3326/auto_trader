@@ -234,6 +234,7 @@ async def _screen_us_via_tvscreener(
     min_market_cap: float | None = None,
     max_per: float | None = None,
     min_dividend_yield: float | None = None,
+    min_analyst_buy: float | None = None,
     min_rsi: float | None = None,
     max_rsi: float | None = None,
     min_adx: float | None = None,
@@ -258,6 +259,7 @@ async def _screen_us_via_tvscreener(
             "min_market_cap": min_market_cap,
             "max_per": max_per,
             "min_dividend_yield": min_dividend_yield_normalized,
+            "min_analyst_buy": min_analyst_buy,
             "min_rsi": min_rsi,
             "max_rsi": max_rsi,
             "min_adx": min_adx,
@@ -299,6 +301,7 @@ async def _screen_us_via_tvscreener(
             StockField,
             "DIVIDEND_YIELD_FORWARD",
             "DIVIDEND_YIELD_RECENT",
+            "DIVIDEND_YIELD_CURRENT",
         )
         sector_field = _get_tvscreener_attr(StockField, "SECTOR")
         sector_display_field = _get_tvscreener_attr(StockField, "SECTOR_TR")
@@ -460,6 +463,7 @@ async def _screen_us_via_tvscreener(
                         row,
                         "dividend_yield_forward",
                         "dividend_yield_recent",
+                        "dividend_yield_current",
                     )
                 ),
                 "sector": _get_first_present(row, "sector.tr", "sector"),
@@ -479,7 +483,7 @@ async def _screen_us_via_tvscreener(
                     _get_first_present(row, "recommendation_under")
                 ),
                 "price_target_average": _to_optional_float(
-                    _get_first_present(row, "price_target_average")
+                    _get_first_present(row, "price_target_average", "target_price_average")
                 ),
                 "price_target_1y": _to_optional_float(
                     _get_first_present(row, "price_target_1y")
@@ -521,7 +525,12 @@ async def _screen_us_via_tvscreener(
                     recommendation_under or 0
                 )
             avg_target = _to_optional_float(
-                _get_first_present(row, "price_target_average", "price_target_1y")
+                _get_first_present(
+                    row,
+                    "price_target_1y",
+                    "price_target_average",
+                    "target_price_average",
+                )
             )
             if avg_target is not None:
                 stock["avg_target"] = avg_target
@@ -537,6 +546,14 @@ async def _screen_us_via_tvscreener(
                 stock["upside_pct"] = upside_pct
             stock["change_rate"] = stock["change_percent"]
             stocks.append(stock)
+
+        if min_analyst_buy is not None:
+            stocks = [
+                stock
+                for stock in stocks
+                if _to_optional_float(stock.get("analyst_buy")) is not None
+                and float(stock["analyst_buy"]) >= min_analyst_buy
+            ]
 
         filtered = _apply_basic_filters(
             stocks,
@@ -587,6 +604,7 @@ async def _screen_us_with_fallback(
     min_market_cap: float | None,
     max_per: float | None,
     min_dividend_yield: float | None,
+    min_analyst_buy: float | None,
     max_rsi: float | None,
     sort_by: str,
     sort_order: str,
@@ -620,6 +638,7 @@ async def _screen_us_with_fallback(
                 min_market_cap=min_market_cap,
                 max_per=max_per,
                 min_dividend_yield=min_dividend_yield,
+                min_analyst_buy=min_analyst_buy,
                 min_rsi=None,
                 max_rsi=max_rsi,
                 min_adx=None,

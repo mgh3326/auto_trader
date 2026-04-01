@@ -146,7 +146,7 @@ async def _decorate_screen_rows_with_equity_enrichment(
         if not symbol:
             warnings.append(f"{market or 'unknown'}:<missing-symbol>: missing symbol")
             return
-        if market == "us" and _row_has_complete_screen_enrichment(row):
+        if _row_has_complete_screen_enrichment(row):
             return
 
         async with semaphore:

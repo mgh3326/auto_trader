@@ -90,7 +90,22 @@ async def screen_stocks_unified(
             or normalized_request["min_analyst_buy"] is not None
         )
     )
-    query_limit = min(limit * 5, 100) if apply_post_enrichment_filters else limit
+    can_avoid_overfetch = (
+        normalized_asset_type in {None, "stock"}
+        and (
+            normalized_market == "us"
+            or (
+                normalized_market in {"kr", "kospi", "kosdaq"}
+                and normalized_request["sector"] is None
+                and normalized_request["min_analyst_buy"] is not None
+            )
+        )
+    )
+    query_limit = (
+        limit
+        if not apply_post_enrichment_filters or can_avoid_overfetch
+        else min(limit * 5, 100)
+    )
 
     # Validate filters before processing
     _validate_screen_filters(
@@ -109,10 +124,12 @@ async def screen_stocks_unified(
             market=normalized_market,
             asset_type=normalized_asset_type,
             category=normalized_request["effective_category"],
+            sector=normalized_request["sector"],
             min_market_cap=min_market_cap,
             max_per=max_per,
             max_pbr=max_pbr,
             min_dividend_yield=normalized_min_dividend_yield,
+            min_analyst_buy=normalized_request["min_analyst_buy"],
             max_rsi=max_rsi,
             sort_by=normalized_sort_by,
             sort_order=normalized_sort_order,
@@ -126,6 +143,7 @@ async def screen_stocks_unified(
             min_market_cap=min_market_cap,
             max_per=max_per,
             min_dividend_yield=normalized_min_dividend_yield,
+            min_analyst_buy=normalized_request["min_analyst_buy"],
             max_rsi=max_rsi,
             sort_by=normalized_sort_by,
             sort_order=normalized_sort_order,

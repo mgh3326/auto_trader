@@ -32,6 +32,28 @@ class TestCommonReExports:
 
         assert _clean_text("  hello  ") == "hello"
 
+    def test_get_tvscreener_attr_prefers_supported_pbr_alias(self):
+        from app.mcp_server.tooling.screening.common import _get_tvscreener_attr
+
+        enum_obj = type(
+            "StockField",
+            (),
+            {
+                "PRICE_TO_BOOK_FQ": None,
+                "PRICE_TO_BOOK_MRQ": "price_to_book_mrq",
+            },
+        )
+
+        assert (
+            _get_tvscreener_attr(
+                enum_obj,
+                "PRICE_TO_BOOK_FQ",
+                "PRICE_TO_BOOK_MRQ",
+                "PRICE_BOOK_CURRENT",
+            )
+            == "price_to_book_mrq"
+        )
+
     def test_normalize_screen_request_returns_dict(self):
         from app.mcp_server.tooling.screening.common import normalize_screen_request
 

@@ -35,8 +35,12 @@ _COLUMN_NAME_MAP = {
     "price to earnings ratio (ttm)": "price_to_earnings_ratio_ttm",
     "price to earnings ttm": "price_to_earnings_ratio_ttm",
     "price to book (fq)": "price_to_book_fq",
+    "price to book mrq": "price_to_book_mrq",
     "dividend yield forward": "dividend_yield_forward",
     "dividend yield recent": "dividend_yield_forward",
+    "dividend yield current": "dividend_yield_current",
+    "target price average": "target_price_average",
+    "price target average": "target_price_average",
     "country": "country",
     "exchange": "exchange",
 }
@@ -181,8 +185,12 @@ _STOCK_CAPABILITY_ALIASES: dict[str, tuple[str, ...]] = {
     "change_rate": ("CHANGE_PERCENT",),
     "market_cap": ("MARKET_CAPITALIZATION", "MARKET_CAP_BASIC"),
     "pe": ("PRICE_TO_EARNINGS_RATIO_TTM", "PRICE_TO_EARNINGS_TTM"),
-    "pbr": ("PRICE_TO_BOOK_FQ",),
-    "dividend_yield": ("DIVIDEND_YIELD_FORWARD", "DIVIDEND_YIELD_RECENT"),
+    "pbr": ("PRICE_TO_BOOK_FQ", "PRICE_TO_BOOK_MRQ", "PRICE_BOOK_CURRENT"),
+    "dividend_yield": (
+        "DIVIDEND_YIELD_FORWARD",
+        "DIVIDEND_YIELD_RECENT",
+        "DIVIDEND_YIELD_CURRENT",
+    ),
     "sector": ("SECTOR",),
 }
 

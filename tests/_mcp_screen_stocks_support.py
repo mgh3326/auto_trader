@@ -915,6 +915,76 @@ class TestScreenStocksTvScreenerContract:
         assert result["results"][0]["adx"] == 31.4
 
     @pytest.mark.asyncio
+    async def test_kr_tvscreener_enriched_rows_preserve_sector_and_analyst_fields(
+        self, monkeypatch
+    ):
+        async def mock_screen_kr_via_tvscreener(**kwargs):
+            assert kwargs["market"] == "kr"
+            return {
+                "stocks": [
+                    {
+                        "symbol": "005930",
+                        "name": "Samsung Electronics Co., Ltd.",
+                        "price": 174.4,
+                        "change_percent": 2.1,
+                        "volume": 44_000_000.0,
+                        "market_cap": 4_200_000.0,
+                        "per": 61.3,
+                        "pbr": 18.7,
+                        "dividend_yield": 0.004,
+                        "market": "KOSPI",
+                        "sector": "Electronic Technology",
+                        "analyst_buy": 65,
+                        "analyst_hold": 4,
+                        "analyst_sell": 1,
+                        "avg_target": 269.16,
+                        "upside_pct": 54.33,
+                    }
+                ],
+                "count": 1,
+                "filters_applied": {
+                    "market": "kr",
+                    "asset_type": "stock",
+                    "sort_by": "volume",
+                    "sort_order": "desc",
+                },
+                "source": "tvscreener",
+                "error": None,
+            }
+
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.screening.kr._screen_kr_via_tvscreener",
+            mock_screen_kr_via_tvscreener,
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="kr",
+            asset_type="stock",
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            max_pbr=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="volume",
+            sort_order="desc",
+            limit=5,
+        )
+
+        first = result["results"][0]
+        assert first["sector"] == "Electronic Technology"
+        assert first["analyst_buy"] == 65
+        assert first["analyst_hold"] == 4
+        assert first["analyst_sell"] == 1
+        assert first["avg_target"] == pytest.approx(269.16)
+        assert first["upside_pct"] == pytest.approx(54.33)
+        assert first["market_cap"] == pytest.approx(4_200_000.0)
+        assert first["per"] == pytest.approx(61.3)
+        assert first["pbr"] == pytest.approx(18.7)
+        assert first["dividend_yield"] == pytest.approx(0.004)
+
+    @pytest.mark.asyncio
     async def test_us_category_and_analyst_filter_stay_on_tvscreener_without_network_enrichment(
         self, monkeypatch
     ):
@@ -922,7 +992,7 @@ class TestScreenStocksTvScreenerContract:
             assert kwargs["market"] == "us"
             assert kwargs["asset_type"] is None
             assert kwargs["category"] == "Technology"
-            assert kwargs["limit"] == 5
+            assert kwargs["limit"] == 1
             return {
                 "stocks": [
                     {
@@ -989,6 +1059,16 @@ class TestScreenStocksTvScreenerContract:
         monkeypatch.setattr(
             "app.mcp_server.tooling.screening.us._screen_us",
             fail_legacy_us,
+        )
+        monkeypatch.setattr(
+            screening_us,
+            "_can_use_tvscreener_stock_path",
+            lambda **kwargs: True,
+        )
+        monkeypatch.setattr(
+            screening_us,
+            "_get_tvscreener_stock_capability_snapshot",
+            AsyncMock(return_value=object()),
         )
         monkeypatch.setattr(
             "app.mcp_server.tooling.screening.enrichment._fetch_screen_enrichment_us",
@@ -1787,11 +1867,6 @@ class TestScreenStocksCrypto:
         )
         monkeypatch.setattr(
             screening_crypto,
-            "_fetch_ohlcv_for_indicators",
-            mock_fetch_ohlcv,
-        )
-        monkeypatch.setattr(
-            screening_crypto,
             "get_upbit_market_display_names",
             AsyncMock(
                 return_value={
@@ -2312,7 +2387,7 @@ class TestScreenStocksFundamentalsExpansion:
             limit=2,
         )
 
-        assert captured["limit"] == 10
+        assert captured["limit"] == 2
         assert result["meta"]["source"] == "tvscreener"
         assert result["returned_count"] == 1
         assert [item["code"] for item in result["results"]] == ["005930"]
