@@ -354,7 +354,7 @@ class TestScreenStocksKRRegression:
     async def test_kr_batch_valuation_merge(
         self, mock_krx_stocks, mock_valuation_data, monkeypatch
     ):
-        """Batch valuation data should be merged into KR results."""
+        """Batch valuation data should be merged into legacy KR results."""
 
         async def mock_fetch_stock_all_cached(market):
             if market == "STK":
@@ -371,6 +371,16 @@ class TestScreenStocksKRRegression:
             screening_kr,
             "fetch_valuation_all_cached",
             mock_fetch_valuation_all_cached,
+        )
+        monkeypatch.setattr(
+            screening_kr,
+            "_can_use_tvscreener_stock_path",
+            lambda **kwargs: False,
+        )
+        monkeypatch.setattr(
+            screening_kr,
+            "_get_tvscreener_stock_capability_snapshot",
+            AsyncMock(return_value=object()),
         )
 
         tools = build_tools()

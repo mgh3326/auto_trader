@@ -8,7 +8,9 @@ import pandas as pd
 import pytest
 
 from app.mcp_server.tooling.screening.kr import _screen_kr_via_tvscreener
-from app.mcp_server.tooling.screening.tvscreener_support import _map_tvscreener_stock_row
+from app.mcp_server.tooling.screening.tvscreener_support import (
+    _map_tvscreener_stock_row,
+)
 from app.mcp_server.tooling.screening.us import _screen_us_via_tvscreener
 from app.services.tvscreener_service import _normalize_result_frame
 

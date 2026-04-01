@@ -483,7 +483,9 @@ async def _screen_us_via_tvscreener(
                     _get_first_present(row, "recommendation_under")
                 ),
                 "price_target_average": _to_optional_float(
-                    _get_first_present(row, "price_target_average", "target_price_average")
+                    _get_first_present(
+                        row, "price_target_average", "target_price_average"
+                    )
                 ),
                 "price_target_1y": _to_optional_float(
                     _get_first_present(row, "price_target_1y")

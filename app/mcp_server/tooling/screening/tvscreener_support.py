@@ -186,7 +186,9 @@ def _map_tvscreener_stock_row(
     recommendation_buy = _to_optional_int(
         _get_first_present(row, "analyst_buy", "recommendation_buy")
     )
-    recommendation_over = _to_optional_int(_get_first_present(row, "recommendation_over"))
+    recommendation_over = _to_optional_int(
+        _get_first_present(row, "recommendation_over")
+    )
     recommendation_hold = _to_optional_int(
         _get_first_present(row, "analyst_hold", "recommendation_hold")
     )

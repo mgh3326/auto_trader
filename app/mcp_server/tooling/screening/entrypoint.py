@@ -90,15 +90,12 @@ async def screen_stocks_unified(
             or normalized_request["min_analyst_buy"] is not None
         )
     )
-    can_avoid_overfetch = (
-        normalized_asset_type in {None, "stock"}
-        and (
-            normalized_market == "us"
-            or (
-                normalized_market in {"kr", "kospi", "kosdaq"}
-                and normalized_request["sector"] is None
-                and normalized_request["min_analyst_buy"] is not None
-            )
+    can_avoid_overfetch = normalized_asset_type in {None, "stock"} and (
+        normalized_market == "us"
+        or (
+            normalized_market in {"kr", "kospi", "kosdaq"}
+            and normalized_request["sector"] is None
+            and normalized_request["min_analyst_buy"] is not None
         )
     )
     query_limit = (
