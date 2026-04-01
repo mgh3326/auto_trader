@@ -8,11 +8,15 @@ from typing import Any
 from app.mcp_server.tooling.screening.common import (
     _apply_basic_filters,
     _build_screen_response,
+    _clean_text,
     _extract_kr_stock_code,
+    _get_first_present,
+    _get_tvscreener_attr,
     _kr_market_codes,
     _normalize_dividend_yield_threshold,
     _sort_and_limit,
     _timeout_seconds,
+    _to_optional_int,
     _to_optional_float,
 )
 from app.mcp_server.tooling.screening.enrichment import _pick_display_name
@@ -169,10 +173,12 @@ async def _screen_kr_via_tvscreener(
     market: str = "kr",
     asset_type: str | None = "stock",
     category: str | None = None,
+    sector: str | None = None,
     min_market_cap: float | None = None,
     max_per: float | None = None,
     max_pbr: float | None = None,
     min_dividend_yield: float | None = None,
+    min_analyst_buy: float | None = None,
     min_rsi: float | None = None,
     max_rsi: float | None = None,
     min_adx: float | None = None,
@@ -194,10 +200,12 @@ async def _screen_kr_via_tvscreener(
             "market": market,
             "asset_type": asset_type,
             "category": category,
+            "sector": sector,
             "min_market_cap": min_market_cap,
             "max_per": max_per,
             "max_pbr": max_pbr,
             "min_dividend_yield": min_dividend_yield_normalized,
+            "min_analyst_buy": min_analyst_buy,
             "min_rsi": min_rsi,
             "max_rsi": max_rsi,
             "min_adx": min_adx,
@@ -225,6 +233,59 @@ async def _screen_kr_via_tvscreener(
             result["error"] = error_msg
             return result
 
+        market_cap_field = _get_tvscreener_attr(
+            StockField,
+            "MARKET_CAPITALIZATION",
+            "MARKET_CAP_BASIC",
+        )
+        pe_field = _get_tvscreener_attr(
+            StockField,
+            "PRICE_TO_EARNINGS_RATIO_TTM",
+            "PRICE_TO_EARNINGS_TTM",
+        )
+        pbr_field = _get_tvscreener_attr(
+            StockField,
+            "PRICE_TO_BOOK_FQ",
+            "PRICE_TO_BOOK_MRQ",
+            "PRICE_BOOK_CURRENT",
+        )
+        dividend_field = _get_tvscreener_attr(
+            StockField,
+            "DIVIDEND_YIELD_FORWARD",
+            "DIVIDEND_YIELD_RECENT",
+            "DIVIDEND_YIELD_CURRENT",
+        )
+        sector_field = _get_tvscreener_attr(StockField, "SECTOR")
+        sector_display_field = _get_tvscreener_attr(StockField, "SECTOR_TR")
+        recommendation_buy_field = _get_tvscreener_attr(
+            StockField,
+            "RECOMMENDATION_BUY",
+        )
+        recommendation_over_field = _get_tvscreener_attr(
+            StockField,
+            "RECOMMENDATION_OVER",
+        )
+        recommendation_hold_field = _get_tvscreener_attr(
+            StockField,
+            "RECOMMENDATION_HOLD",
+        )
+        recommendation_sell_field = _get_tvscreener_attr(
+            StockField,
+            "RECOMMENDATION_SELL",
+        )
+        recommendation_under_field = _get_tvscreener_attr(
+            StockField,
+            "RECOMMENDATION_UNDER",
+        )
+        price_target_field = _get_tvscreener_attr(
+            StockField,
+            "PRICE_TARGET_1Y",
+        )
+        price_target_delta_field = _get_tvscreener_attr(
+            StockField,
+            "PRICE_TARGET_1Y_DELTA",
+        )
+
         columns = [
             StockField.ACTIVE_SYMBOL,
             StockField.DESCRIPTION,
@@ -235,6 +296,23 @@ async def _screen_kr_via_tvscreener(
             StockField.VOLUME,
             StockField.CHANGE_PERCENT,
         ]
+        for optional_field in (
+            market_cap_field,
+            pe_field,
+            pbr_field,
+            dividend_field,
+            sector_display_field,
+            sector_field,
+            recommendation_buy_field,
+            recommendation_over_field,
+            recommendation_hold_field,
+            recommendation_sell_field,
+            recommendation_under_field,
+            price_target_field,
+            price_target_delta_field,
+        ):
+            if optional_field is not None:
+                columns.append(optional_field)
 
         try:
             columns.append(StockField.COUNTRY)
@@ -300,6 +378,33 @@ async def _screen_kr_via_tvscreener(
 
             base = allowed_by_code[code]
             valuation = valuations.get(code, {})
+            sector = _clean_text(_get_first_present(row, "sector.tr", "sector"))
+            recommendation_buy = _to_optional_int(
+                _get_first_present(row, "recommendation_buy")
+            )
+            recommendation_over = _to_optional_int(
+                _get_first_present(row, "recommendation_over")
+            )
+            recommendation_hold = _to_optional_int(
+                _get_first_present(row, "recommendation_hold")
+            )
+            recommendation_sell = _to_optional_int(
+                _get_first_present(row, "recommendation_sell")
+            )
+            recommendation_under = _to_optional_int(
+                _get_first_present(row, "recommendation_under")
+            )
+            avg_target = _to_optional_float(
+                _get_first_present(
+                    row,
+                    "price_target_1y",
+                    "price_target_average",
+                    "target_price_average",
+                )
+            )
+            upside_pct = _to_optional_float(
+                _get_first_present(row, "price_target_1y_delta")
+            )
             stock = {
                 "symbol": code,
                 "short_code": code,
@@ -310,19 +415,80 @@ async def _screen_kr_via_tvscreener(
                 "adx": _to_optional_float(row.get("average_directional_index_14")),
                 "volume": _to_optional_float(row.get("volume")),
                 "change_percent": _to_optional_float(row.get("change_percent")),
-                "market_cap": _to_optional_float(base.get("market_cap")),
-                "per": _to_optional_float(valuation.get("per")),
-                "pbr": _to_optional_float(valuation.get("pbr")),
-                "dividend_yield": _to_optional_float(valuation.get("dividend_yield")),
+                "market_cap": _to_optional_float(
+                    _get_first_present(
+                        row,
+                        "market_capitalization",
+                        "market_cap_basic",
+                        "market_cap",
+                    )
+                ),
+                "per": _to_optional_float(
+                    _get_first_present(
+                        row,
+                        "price_to_earnings_ratio_ttm",
+                        "price_to_earnings_ttm",
+                    )
+                ),
+                "pbr": _to_optional_float(
+                    _get_first_present(
+                        row,
+                        "price_to_book_fq",
+                        "price_to_book_mrq",
+                        "price_book_current",
+                    )
+                ),
+                "dividend_yield": _to_optional_float(
+                    _get_first_present(
+                        row,
+                        "dividend_yield_forward",
+                        "dividend_yield_recent",
+                        "dividend_yield_current",
+                    )
+                ),
                 "market": base.get("market") or market,
                 "country": str(row.get("country", "")).strip()
                 if "country" in row
                 else "South Korea",
             }
             stock["change_rate"] = stock["change_percent"]
+            if stock["market_cap"] is None:
+                stock["market_cap"] = _to_optional_float(base.get("market_cap"))
+            if stock["per"] is None:
+                stock["per"] = _to_optional_float(valuation.get("per"))
+            if stock["pbr"] is None:
+                stock["pbr"] = _to_optional_float(valuation.get("pbr"))
+            if stock["dividend_yield"] is None:
+                stock["dividend_yield"] = _to_optional_float(
+                    valuation.get("dividend_yield")
+                )
             if not stock["name"]:
                 stock["name"] = str(base.get("name") or "").strip()
+            if sector:
+                stock["sector"] = sector
+            if recommendation_buy is not None or recommendation_over is not None:
+                stock["analyst_buy"] = (recommendation_buy or 0) + (
+                    recommendation_over or 0
+                )
+            if recommendation_hold is not None:
+                stock["analyst_hold"] = recommendation_hold
+            if recommendation_sell is not None or recommendation_under is not None:
+                stock["analyst_sell"] = (recommendation_sell or 0) + (
+                    recommendation_under or 0
+                )
+            if avg_target is not None:
+                stock["avg_target"] = avg_target
+            if upside_pct is not None:
+                stock["upside_pct"] = upside_pct
             stocks.append(stock)
+
+        if min_analyst_buy is not None:
+            stocks = [
+                stock
+                for stock in stocks
+                if _to_optional_float(stock.get("analyst_buy")) is not None
+                and float(stock["analyst_buy"]) >= min_analyst_buy
+            ]
 
         filtered = _apply_basic_filters(
             stocks,
@@ -370,10 +536,12 @@ async def _screen_kr_with_fallback(
     market: str,
     asset_type: str | None,
     category: str | None,
+    sector: str | None,
     min_market_cap: float | None,
     max_per: float | None,
     max_pbr: float | None,
     min_dividend_yield: float | None,
+    min_analyst_buy: float | None,
     max_rsi: float | None,
     sort_by: str,
     sort_order: str,
@@ -404,10 +572,12 @@ async def _screen_kr_with_fallback(
                 market=market,
                 asset_type=asset_type or "stock",
                 category=category,
+                sector=sector,
                 min_market_cap=min_market_cap,
                 max_per=max_per,
                 max_pbr=max_pbr,
                 min_dividend_yield=min_dividend_yield,
+                min_analyst_buy=min_analyst_buy,
                 min_rsi=None,
                 max_rsi=max_rsi,
                 min_adx=None,

@@ -139,64 +139,92 @@ def _map_tvscreener_stock_row(
         "close": row.get("price"),
         "change_rate": row.get("change_percent"),
         "volume": row.get("volume"),
-        "market_cap": row.get("market_cap"),
-        "per": row.get("per"),
-        "dividend_yield": row.get("dividend_yield"),
+        "market_cap": _to_optional_float(
+            _get_first_present(
+                row,
+                "market_cap",
+                "market_capitalization",
+                "market_cap_basic",
+            )
+        ),
+        "per": _to_optional_float(
+            _get_first_present(
+                row,
+                "per",
+                "price_to_earnings_ratio_ttm",
+                "price_to_earnings_ttm",
+            )
+        ),
+        "dividend_yield": _to_optional_float(
+            _get_first_present(
+                row,
+                "dividend_yield",
+                "dividend_yield_forward",
+                "dividend_yield_recent",
+                "dividend_yield_current",
+            )
+        ),
         "rsi": row.get("rsi"),
         "adx": row.get("adx"),
         "market": row.get("market") or market,
     }
-    if row.get("pbr") is not None or market in {"kr", "kospi", "kosdaq"}:
-        mapped["pbr"] = row.get("pbr")
-    if market == "us":
-        sector = _clean_text(_get_first_present(row, "sector.tr", "sector"))
-        if sector:
-            mapped["sector"] = sector
-        recommendation_buy = _to_optional_int(
-            _get_first_present(row, "recommendation_buy", "analyst_buy")
+    pbr = _to_optional_float(
+        _get_first_present(
+            row,
+            "pbr",
+            "price_to_book_fq",
+            "price_to_book_mrq",
+            "price_book_current",
         )
-        recommendation_over = _to_optional_int(
-            _get_first_present(row, "recommendation_over")
+    )
+    if pbr is not None or market in {"kr", "kospi", "kosdaq"}:
+        mapped["pbr"] = pbr
+
+    sector = _clean_text(_get_first_present(row, "sector.tr", "sector"))
+    if sector:
+        mapped["sector"] = sector
+    recommendation_buy = _to_optional_int(
+        _get_first_present(row, "analyst_buy", "recommendation_buy")
+    )
+    recommendation_over = _to_optional_int(_get_first_present(row, "recommendation_over"))
+    recommendation_hold = _to_optional_int(
+        _get_first_present(row, "analyst_hold", "recommendation_hold")
+    )
+    recommendation_sell = _to_optional_int(
+        _get_first_present(row, "analyst_sell", "recommendation_sell")
+    )
+    recommendation_under = _to_optional_int(
+        _get_first_present(row, "recommendation_under")
+    )
+    if recommendation_buy is not None or recommendation_over is not None:
+        mapped["analyst_buy"] = (recommendation_buy or 0) + (recommendation_over or 0)
+    if recommendation_hold is not None:
+        mapped["analyst_hold"] = recommendation_hold
+    if recommendation_sell is not None or recommendation_under is not None:
+        mapped["analyst_sell"] = (recommendation_sell or 0) + (
+            recommendation_under or 0
         )
-        recommendation_hold = _to_optional_int(
-            _get_first_present(row, "recommendation_hold", "analyst_hold")
+    avg_target = _to_optional_float(
+        _get_first_present(
+            row,
+            "avg_target",
+            "price_target_1y",
+            "price_target_average",
+            "target_price_average",
         )
-        recommendation_sell = _to_optional_int(
-            _get_first_present(row, "recommendation_sell", "analyst_sell")
+    )
+    if avg_target is not None:
+        mapped["avg_target"] = avg_target
+    upside_pct = _to_optional_float(
+        _get_first_present(row, "upside_pct", "price_target_1y_delta")
+    )
+    if upside_pct is None:
+        upside_pct = _compute_target_upside_pct(
+            avg_target=avg_target,
+            current_price=_to_optional_float(mapped.get("close")),
         )
-        recommendation_under = _to_optional_int(
-            _get_first_present(row, "recommendation_under")
-        )
-        if recommendation_buy is not None or recommendation_over is not None:
-            mapped["analyst_buy"] = (recommendation_buy or 0) + (
-                recommendation_over or 0
-            )
-        if recommendation_hold is not None:
-            mapped["analyst_hold"] = recommendation_hold
-        if recommendation_sell is not None or recommendation_under is not None:
-            mapped["analyst_sell"] = (recommendation_sell or 0) + (
-                recommendation_under or 0
-            )
-        avg_target = _to_optional_float(
-            _get_first_present(
-                row,
-                "price_target_average",
-                "price_target_1y",
-                "avg_target",
-            )
-        )
-        if avg_target is not None:
-            mapped["avg_target"] = avg_target
-        upside_pct = _to_optional_float(
-            _get_first_present(row, "price_target_1y_delta", "upside_pct")
-        )
-        if upside_pct is None:
-            upside_pct = _compute_target_upside_pct(
-                avg_target=avg_target,
-                current_price=_to_optional_float(mapped.get("close")),
-            )
-        if upside_pct is not None:
-            mapped["upside_pct"] = upside_pct
+    if upside_pct is not None:
+        mapped["upside_pct"] = upside_pct
     return mapped
 
 
