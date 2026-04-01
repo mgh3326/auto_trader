@@ -272,3 +272,23 @@ def test_portfolio_dashboard_page_renders_phase1_panels_and_scripts() -> None:
     assert "function fetchCashSummary()" in body
     assert "function openPositionDetail(" in body
     assert "function renderCharts(" in body
+
+
+def test_portfolio_dashboard_page_retains_filter_controls_and_component_detail_hooks() -> (
+    None
+):
+    client, _, _ = _create_client_with_dashboard()
+    response = client.get("/portfolio/")
+
+    assert response.status_code == 200
+    body = response.text
+
+    assert 'refreshButton.addEventListener("click", () => {' in body
+    assert 'marketSelect.addEventListener("change", fetchOverview);' in body
+    assert 'queryInput.addEventListener("keydown", (event) => {' in body
+    assert 'clearAccountsButton.addEventListener("click", () => {' in body
+    assert "fetchCashSummary();" in body
+    assert "function findSelectedPosition(" in body
+    assert "function renderComponentHoldings(" in body
+    assert "selectedPosition.components" in body
+    assert "계좌별 보유 내역" in body
