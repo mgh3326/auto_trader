@@ -308,6 +308,85 @@
             font-size: 0.84rem;
         }
 
+        .cash-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .cash-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.5rem 0.75rem;
+            background: #fff;
+            border: 1px solid var(--border-light);
+            border-radius: 0.5rem;
+            flex-wrap: wrap;
+            gap: 0.25rem;
+        }
+
+        .cash-item .subtle {
+            font-size: 0.8rem;
+        }
+
+        .position-row:hover,
+        .position-card:hover {
+            background: rgba(192, 90, 60, 0.05);
+        }
+
+        .chart-container {
+            position: relative;
+        }
+
+        .detail-section + .detail-section {
+            margin-top: 1rem;
+        }
+
+        .detail-component-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        .detail-component-card {
+            background: #fff;
+            border: 1px solid var(--border-light);
+            border-radius: 0.75rem;
+            padding: 0.85rem;
+        }
+
+        .detail-component-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+            margin-bottom: 0.6rem;
+        }
+
+        .detail-component-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.45rem 0.75rem;
+            font-size: 0.88rem;
+        }
+
+        @media (max-width: 760px) {
+            .offcanvas {
+                width: 100% !important;
+            }
+
+            .cash-item {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+
+            .detail-component-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
         @media (max-width: 1100px) {
             .page-grid {
                 grid-template-columns: 1fr;
@@ -423,6 +502,41 @@
                     </div>
                 </article>
 
+                <article class="panel" id="portfolio-cash-panel">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <h2><i class="bi bi-wallet2"></i> 현금</h2>
+                        <span class="subtle" id="cash-total">-</span>
+                    </div>
+                    <div class="cash-list mt-2">
+                        <div class="cash-item" id="cash-kis-krw" style="display: none;">
+                            <span class="subtle">KIS KRW</span>
+                            <strong class="cash-balance">-</strong>
+                        </div>
+                        <div class="cash-item" id="cash-kis-usd" style="display: none;">
+                            <span class="subtle">KIS USD</span>
+                            <strong class="cash-balance">-</strong>
+                        </div>
+                        <div class="cash-item" id="cash-upbit-krw" style="display: none;">
+                            <span class="subtle">Upbit KRW</span>
+                            <strong class="cash-balance">-</strong>
+                        </div>
+                        <div class="cash-item" id="cash-manual" style="display: none;">
+                            <span class="subtle">수동 현금</span>
+                            <strong class="cash-balance">-</strong>
+                        </div>
+                    </div>
+                </article>
+
+                <article class="panel" id="portfolio-allocation-panel">
+                    <h2><i class="bi bi-pie-chart"></i> 비중 분석</h2>
+                    <div class="chart-container mt-2" style="position: relative; height: 200px;">
+                        <canvas id="allocation-donut-chart"></canvas>
+                    </div>
+                    <div class="chart-container mt-3" style="position: relative; height: 200px;">
+                        <canvas id="top-positions-chart"></canvas>
+                    </div>
+                </article>
+
                 <article class="panel" id="portfolio-status-panel">
                     <h2><i class="bi bi-info-circle"></i> 상태</h2>
                     <div class="subtle mt-2" id="status-message">초기 조회를 준비 중입니다.</div>
@@ -435,7 +549,13 @@
     <script>
         const state = {
             overview: null,
+            cash: null,
             selectedAccounts: new Set(),
+            charts: {
+                allocation: null,
+                topPositions: null,
+            },
+            detailRequestId: 0,
         };
 
         const marketSelect = document.getElementById("market-select");
@@ -603,6 +723,7 @@
 
         function renderPositions(positions) {
             resultCount.textContent = `${positions.length} rows`;
+            destroyCharts();
 
             if (!positions.length) {
                 tableBody.innerHTML = '<tr><td colspan="7"><div class="empty-note">조건에 맞는 보유 종목이 없습니다.</div></td></tr>';
@@ -615,8 +736,9 @@
                 const symbol = escapeHtml(item.symbol);
                 const name = escapeHtml(item.name);
                 const marketType = escapeHtml(item.market_type);
+                const currentPrice = item.current_price ?? 0;
                 return `
-                    <tr>
+                    <tr class="position-row" data-symbol="${symbol}" data-market-type="${marketType}" data-current-price="${currentPrice}" style="cursor: pointer;">
                         <td><span class="${marketBadgeClass(item.market_type)}">${marketType}</span></td>
                         <td><strong>${symbol}</strong><br><span class="subtle">${name}</span></td>
                         <td>${formatNumber(item.quantity, 8)}</td>
@@ -633,8 +755,9 @@
                 const symbol = escapeHtml(item.symbol);
                 const name = escapeHtml(item.name);
                 const marketType = escapeHtml(item.market_type);
+                const currentPrice = item.current_price ?? 0;
                 return `
-                    <article class="result-card">
+                    <article class="result-card position-card" data-symbol="${symbol}" data-market-type="${marketType}" data-current-price="${currentPrice}" style="cursor: pointer;">
                         <div class="d-flex justify-content-between align-items-center">
                             <strong>${symbol}</strong>
                             <span class="${marketBadgeClass(item.market_type)}">${marketType}</span>
@@ -650,6 +773,331 @@
                     </article>
                 `;
             }).join("");
+
+            attachPositionInteractions();
+            renderCharts(positions);
+        }
+
+        function attachPositionInteractions() {
+            document.querySelectorAll(".position-row, .position-card").forEach((element) => {
+                element.addEventListener("click", () => {
+                    const symbol = element.getAttribute("data-symbol");
+                    const marketType = element.getAttribute("data-market-type");
+                    const currentPrice = parseFloat(element.getAttribute("data-current-price") || "0");
+                    if (symbol) {
+                        openPositionDetail(symbol, marketType || "", currentPrice);
+                    }
+                });
+            });
+        }
+
+        function findSelectedPosition(symbol, marketType) {
+            const positions = state.overview?.positions || [];
+            return positions.find((position) => (
+                position.symbol === symbol && position.market_type === marketType
+            )) || positions.find((position) => position.symbol === symbol) || null;
+        }
+
+        function renderComponentHoldings(selectedPosition) {
+            if (!selectedPosition || !Array.isArray(selectedPosition.components) || !selectedPosition.components.length) {
+                return '<div class="empty-note">계좌별 보유 내역이 없습니다.</div>';
+            }
+
+            return `
+                <div class="detail-component-list">
+                    ${selectedPosition.components.map((component) => `
+                        <article class="detail-component-card">
+                            <div class="detail-component-header">
+                                <div>
+                                    <strong>${escapeHtml(component.broker || "-")}</strong>
+                                    <div class="subtle">${escapeHtml(component.account_name || "-")}</div>
+                                </div>
+                                <span class="subtle">${escapeHtml(component.source || "-")}</span>
+                            </div>
+                            <div class="detail-component-grid">
+                                <div><strong>수량</strong><br>${formatNumber(component.quantity, 8)}</div>
+                                <div><strong>평균단가</strong><br>${formatNumber(component.avg_price)}</div>
+                                <div><strong>현재가</strong><br>${component.current_price === null ? "-" : formatNumber(component.current_price)}</div>
+                                <div><strong>평가금액</strong><br>${formatNumber(component.evaluation)}</div>
+                                <div><strong>손익</strong><br>${component.profit_loss === null ? "-" : formatNumber(component.profit_loss)}</div>
+                                <div><strong>수익률</strong><br>${component.profit_rate === null ? "-" : `${(Number(component.profit_rate) * 100).toFixed(2)}%`}</div>
+                            </div>
+                        </article>
+                    `).join("")}
+                </div>
+            `;
+        }
+
+        async function openPositionDetail(symbol, marketType, currentPrice) {
+            const requestId = ++state.detailRequestId;
+            const offcanvas = document.getElementById("portfolio-detail-panel");
+            const loadingState = document.getElementById("detail-loading-state");
+            const emptyState = document.getElementById("detail-empty-state");
+            const contentDiv = document.getElementById("detail-content");
+            const selectedPosition = findSelectedPosition(symbol, marketType);
+
+            document.getElementById("detailPanelLabel").textContent = `${symbol} 상세`;
+            loadingState.style.display = "block";
+            emptyState.style.display = "none";
+            contentDiv.style.display = "none";
+
+            const bsOffcanvas = bootstrap.Offcanvas.getOrCreateInstance(offcanvas);
+            bsOffcanvas.show();
+
+            try {
+                const url = `/portfolio/api/journal/${encodeURIComponent(symbol)}?current_price=${currentPrice || 0}`;
+                const response = await fetch(url);
+
+                if (requestId !== state.detailRequestId) return;
+
+                if (response.status === 404) {
+                    renderDetailPanel(selectedPosition, null);
+                    return;
+                }
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+
+                const journal = await response.json();
+                renderDetailPanel(selectedPosition, journal);
+            } catch (error) {
+                if (requestId !== state.detailRequestId) return;
+                renderDetailPanel(selectedPosition, null, error?.message || String(error));
+            }
+        }
+
+        function renderDetailPanel(selectedPosition, journal, journalError = null) {
+            const loadingState = document.getElementById("detail-loading-state");
+            const emptyState = document.getElementById("detail-empty-state");
+            const contentDiv = document.getElementById("detail-content");
+            const targetDistance = journal?.target_distance_pct !== undefined && journal?.target_distance_pct !== null
+                ? `${journal.target_distance_pct > 0 ? "+" : ""}${journal.target_distance_pct}%`
+                : "-";
+            const stopDistance = journal?.stop_distance_pct !== undefined && journal?.stop_distance_pct !== null
+                ? `${journal.stop_distance_pct > 0 ? "+" : ""}${journal.stop_distance_pct}%`
+                : "-";
+            const journalSection = journalError
+                ? `<div class="empty-note">Trade journal 조회 오류: ${escapeHtml(journalError)}</div>`
+                : journal
+                    ? `
+                        <div class="mb-3">
+                            <h6>투자 전략</h6>
+                            <p class="mb-1"><strong>전략:</strong> ${escapeHtml(journal.strategy || "-")}</p>
+                            <p class="mb-0 subtle">${escapeHtml(journal.thesis || "-")}</p>
+                        </div>
+                        <hr>
+                        <div class="mb-3">
+                            <h6>가격 목표</h6>
+                            <div class="row g-2">
+                                <div class="col-6">
+                                    <div class="p-2 rounded" style="background: rgba(74, 124, 89, 0.1);">
+                                        <div class="subtle small">목표가</div>
+                                        <strong>${journal.target_price !== null ? formatNumber(journal.target_price) : "-"}</strong>
+                                        <div class="small ${journal.target_distance_pct > 0 ? 'profit-positive' : ''}">${targetDistance}</div>
+                                    </div>
+                                </div>
+                                <div class="col-6">
+                                    <div class="p-2 rounded" style="background: rgba(181, 74, 74, 0.1);">
+                                        <div class="subtle small">손절가</div>
+                                        <strong>${journal.stop_loss !== null ? formatNumber(journal.stop_loss) : "-"}</strong>
+                                        <div class="small ${journal.stop_distance_pct < 0 ? 'profit-negative' : ''}">${stopDistance}</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <hr>
+                        <div class="mb-3">
+                            <h6>Trade Journal</h6>
+                            <p class="mb-1"><strong>진입가:</strong> ${journal.entry_price !== null ? formatNumber(journal.entry_price) : "-"}</p>
+                            <p class="mb-1"><strong>수량:</strong> ${journal.quantity !== null ? formatNumber(journal.quantity, 8) : "-"}</p>
+                            <p class="mb-1"><strong>상태:</strong> ${escapeHtml(journal.status || "-")}</p>
+                            ${journal.hold_until ? `<p class="mb-0"><strong>보유 기한:</strong> ${new Date(journal.hold_until).toLocaleDateString("ko-KR")} 까지</p>` : ""}
+                        </div>
+                        ${journal.notes ? `
+                            <hr>
+                            <div class="mb-3">
+                                <h6>노트</h6>
+                                <p class="mb-0 subtle">${escapeHtml(journal.notes)}</p>
+                            </div>
+                        ` : ""}
+                    `
+                    : '<div class="empty-note">작성된 trade journal이 없습니다.</div>';
+
+            contentDiv.innerHTML = `
+                <section class="detail-section">
+                    <h6>포지션 요약</h6>
+                    <p class="mb-1"><strong>시장:</strong> ${escapeHtml(selectedPosition?.market_type || "-")}</p>
+                    <p class="mb-1"><strong>종목명:</strong> ${escapeHtml(selectedPosition?.name || selectedPosition?.symbol || "-")}</p>
+                    <p class="mb-1"><strong>총 수량:</strong> ${selectedPosition ? formatNumber(selectedPosition.quantity, 8) : "-"}</p>
+                    <p class="mb-0"><strong>평가금액:</strong> ${selectedPosition ? formatNumber(selectedPosition.evaluation) : "-"}</p>
+                </section>
+                <section class="detail-section">
+                    <h6>계좌별 보유 내역</h6>
+                    ${renderComponentHoldings(selectedPosition)}
+                </section>
+                <section class="detail-section">
+                    ${journalSection}
+                </section>
+            `;
+
+            loadingState.style.display = "none";
+            emptyState.style.display = "none";
+            contentDiv.style.display = "block";
+        }
+
+        async function fetchCashSummary() {
+            try {
+                const response = await fetch("/portfolio/api/cash");
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                state.cash = await response.json();
+                renderCashSummary(state.cash);
+            } catch (error) {
+                console.error("Failed to fetch cash summary:", error);
+            }
+        }
+
+        function renderCashSummary(payload) {
+            if (!payload) return;
+
+            const accounts = payload.accounts || {};
+            const manualCash = payload.manual_cash;
+            const summary = payload.summary || {};
+
+            document.getElementById("cash-total").textContent =
+                formatNumber(summary.total_available_krw, 0) + " KRW";
+
+            const kisKrw = accounts.kis_krw;
+            const kisKrwEl = document.getElementById("cash-kis-krw");
+            if (kisKrw && kisKrw.balance !== null) {
+                kisKrwEl.style.display = "flex";
+                kisKrwEl.querySelector(".cash-balance").textContent =
+                    formatNumber(kisKrw.balance, 0) + " KRW";
+            } else {
+                kisKrwEl.style.display = "none";
+            }
+
+            const kisUsd = accounts.kis_usd;
+            const kisUsdEl = document.getElementById("cash-kis-usd");
+            if (kisUsd && kisUsd.balance !== null) {
+                kisUsdEl.style.display = "flex";
+                kisUsdEl.querySelector(".cash-balance").textContent =
+                    "$" + formatNumber(kisUsd.balance, 2);
+            } else {
+                kisUsdEl.style.display = "none";
+            }
+
+            const upbitKrw = accounts.upbit_krw;
+            const upbitEl = document.getElementById("cash-upbit-krw");
+            if (upbitKrw && upbitKrw.balance !== null) {
+                upbitEl.style.display = "flex";
+                upbitEl.querySelector(".cash-balance").textContent =
+                    formatNumber(upbitKrw.balance, 0) + " KRW";
+            } else {
+                upbitEl.style.display = "none";
+            }
+
+            const manualEl = document.getElementById("cash-manual");
+            if (manualCash && manualCash.amount !== null) {
+                manualEl.style.display = "flex";
+                manualEl.querySelector(".cash-balance").textContent =
+                    formatNumber(manualCash.amount, 0) + " KRW";
+                if (manualCash.stale_warning) {
+                    manualEl.querySelector(".subtle").innerHTML = '수동 현금 <span class="badge bg-warning text-dark">stale</span>';
+                }
+            } else {
+                manualEl.style.display = "none";
+            }
+        }
+
+        function buildAllocationSeries(positions) {
+            const byMarket = { KR: 0, US: 0, CRYPTO: 0 };
+            positions.forEach((p) => {
+                const evalValue = p.evaluation || 0;
+                byMarket[p.market_type] = (byMarket[p.market_type] || 0) + evalValue;
+            });
+            return {
+                labels: ["KR", "US", "CRYPTO"],
+                data: [byMarket.KR, byMarket.US, byMarket.CRYPTO],
+            };
+        }
+
+        function buildTopPositionsSeries(positions) {
+            const sorted = [...positions]
+                .sort((a, b) => (b.evaluation || 0) - (a.evaluation || 0))
+                .slice(0, 10);
+            return {
+                labels: sorted.map((p) => p.symbol),
+                data: sorted.map((p) => p.evaluation || 0),
+            };
+        }
+
+        function renderCharts(positions) {
+            if (!positions.length) return;
+
+            const donutData = buildAllocationSeries(positions);
+            const barData = buildTopPositionsSeries(positions);
+
+            const donutCtx = document.getElementById("allocation-donut-chart");
+            const barCtx = document.getElementById("top-positions-chart");
+
+            if (!donutCtx || !barCtx) return;
+
+            state.charts.allocation = new Chart(donutCtx, {
+                type: "doughnut",
+                data: {
+                    labels: donutData.labels,
+                    datasets: [{
+                        data: donutData.data,
+                        backgroundColor: ["#4a7c59", "#3d6a8a", "#c05a3c"],
+                        borderWidth: 0,
+                    }],
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { position: "bottom", labels: { boxWidth: 12, font: { size: 11 } } },
+                        title: { display: true, text: "시장별 비중", font: { size: 12 } },
+                    },
+                },
+            });
+
+            state.charts.topPositions = new Chart(barCtx, {
+                type: "bar",
+                data: {
+                    labels: barData.labels,
+                    datasets: [{
+                        label: "평가금액",
+                        data: barData.data,
+                        backgroundColor: "#4a7c59",
+                        borderRadius: 4,
+                    }],
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        title: { display: true, text: "상위 포지션 (Top 10)", font: { size: 12 } },
+                    },
+                    scales: {
+                        y: { beginAtZero: true, ticks: { font: { size: 10 } } },
+                        x: { ticks: { font: { size: 10 }, maxRotation: 45 } },
+                    },
+                },
+            });
+        }
+
+        function destroyCharts() {
+            if (state.charts.allocation) {
+                state.charts.allocation.destroy();
+                state.charts.allocation = null;
+            }
+            if (state.charts.topPositions) {
+                state.charts.topPositions.destroy();
+                state.charts.topPositions = null;
+            }
         }
 
         async function fetchOverview() {
@@ -681,7 +1129,10 @@
             }
         }
 
-        refreshButton.addEventListener("click", fetchOverview);
+        refreshButton.addEventListener("click", () => {
+            fetchOverview();
+            fetchCashSummary();
+        });
         marketSelect.addEventListener("change", fetchOverview);
         queryInput.addEventListener("keydown", (event) => {
             if (event.key !== "Enter") {
@@ -695,8 +1146,37 @@
             fetchOverview();
         });
 
-        window.addEventListener("DOMContentLoaded", fetchOverview, { once: true });
+        window.addEventListener("DOMContentLoaded", () => {
+            fetchOverview();
+            fetchCashSummary();
+        }, { once: true });
     </script>
+
+    <div class="offcanvas offcanvas-end" tabindex="-1" id="portfolio-detail-panel" aria-labelledby="detailPanelLabel">
+        <div class="offcanvas-header">
+            <h5 class="offcanvas-title" id="detailPanelLabel">포지션 상세</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Close"></button>
+        </div>
+        <div class="offcanvas-body">
+            <div id="detail-loading-state" style="display: none;">
+                <div class="text-center py-4">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                    <p class="mt-2 subtle">데이터를 불러오는 중...</p>
+                </div>
+            </div>
+            <div id="detail-empty-state" style="display: none;">
+                <div class="empty-note">
+                    <i class="bi bi-journal-x" style="font-size: 2rem; display: block; margin-bottom: 0.5rem;"></i>
+                    작성된 trade journal이 없습니다.
+                </div>
+            </div>
+            <div id="detail-content" style="display: none;"></div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </body>
 
 </html>

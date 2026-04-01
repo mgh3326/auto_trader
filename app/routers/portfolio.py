@@ -24,6 +24,7 @@ from app.schemas.manual_holdings import (
 from app.services.brokers.kis.client import KISClient
 from app.services.kis_holdings_service import get_kis_holding_for_ticker
 from app.services.merged_portfolio_service import MergedPortfolioService
+from app.services.portfolio_dashboard_service import PortfolioDashboardService
 from app.services.portfolio_overview_service import PortfolioOverviewService
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,12 @@ def get_portfolio_overview_service(
     db: AsyncSession = Depends(get_db),
 ) -> PortfolioOverviewService:
     return PortfolioOverviewService(db)
+
+
+def get_portfolio_dashboard_service(
+    db: AsyncSession = Depends(get_db),
+) -> PortfolioDashboardService:
+    return PortfolioDashboardService(db)
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -199,3 +206,31 @@ async def get_reference_prices(
     )
 
     return ReferencePricesResponse(**ref.to_dict())
+
+
+@router.get("/api/journal/{symbol}")
+async def get_portfolio_journal(
+    symbol: str,
+    current_price: float | None = None,
+    _current_user: User = Depends(get_authenticated_user),
+    dashboard_service: PortfolioDashboardService = Depends(
+        get_portfolio_dashboard_service
+    ),
+):
+    journal = await dashboard_service.get_latest_journal_snapshot(
+        symbol,
+        current_price=current_price,
+    )
+    if journal is None:
+        raise HTTPException(status_code=404, detail="Trade journal not found")
+    return journal
+
+
+@router.get("/api/cash")
+async def get_portfolio_cash(
+    _current_user: User = Depends(get_authenticated_user),
+    dashboard_service: PortfolioDashboardService = Depends(
+        get_portfolio_dashboard_service
+    ),
+):
+    return await dashboard_service.get_cash_snapshot()
