@@ -23,6 +23,7 @@ from app.mcp_server.tooling.portfolio_avg_cost import (
     simulate_avg_cost_impl,
 )
 from app.mcp_server.tooling.portfolio_cash import (
+    get_available_capital_impl as _get_available_capital_impl,
     get_cash_balance_impl as _get_cash_balance_impl,
 )
 from app.mcp_server.tooling.shared import (
@@ -105,6 +106,7 @@ PORTFOLIO_TOOL_NAMES: set[str] = {
     "get_holdings",
     "get_position",
     "get_cash_balance",
+    "get_available_capital",
     "simulate_avg_cost",
     "update_manual_holdings",
 }
@@ -1046,6 +1048,22 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
     )
     async def get_cash_balance(account: str | None = None) -> dict[str, Any]:
         return await _get_cash_balance_impl(account=account)
+
+    @mcp.tool(
+        name="get_available_capital",
+        description=(
+            "Query orderable capital across KIS, Upbit, and manual cash. "
+            "Converts USD orderable cash to KRW and can optionally exclude manual cash. "
+            "Manual cash is stored via set_user_setting/get_user_setting with key='manual_cash'."
+        ),
+    )
+    async def get_available_capital(
+        account: str | None = None,
+        include_manual: bool = True,
+    ) -> dict[str, Any]:
+        return await _get_available_capital_impl(
+            account=account, include_manual=include_manual
+        )
 
 
 __all__ = [

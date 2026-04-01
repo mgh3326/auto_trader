@@ -33,6 +33,7 @@ from .trade_profile import (
 from .trading import Exchange, Instrument, User, UserChannel, UserRole, UserWatchItem
 from .upbit_symbol_universe import UpbitSymbolUniverse
 from .us_symbol_universe import USSymbolUniverse
+from .user_settings import UserSetting
 
 # 필요한 다른 모델도 여기서 import
 # from .alert import AlertRule, AlertEvent
@@ -64,6 +65,7 @@ __all__ = [
     "KRSymbolUniverse",
     "UpbitSymbolUniverse",
     "USSymbolUniverse",
+    "UserSetting",
     "SymbolTradeSettings",
     "NewsArticle",
     "NewsAnalysisResult",

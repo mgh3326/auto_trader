@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import app.services.brokers.upbit.client as upbit_service
+from app.core.timezone import now_kst
 from app.mcp_server.tooling.shared import (
     logger,
     to_float,
@@ -12,10 +14,12 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import (
     normalize_account_filter as _normalize_account_filter,
 )
+from app.mcp_server.tooling.user_settings_tools import get_manual_cash_setting
 from app.services.brokers.kis import (
     KISClient,
     extract_domestic_cash_summary_from_integrated_margin,
 )
+from app.services.exchange_rate_service import get_usd_krw_rate as _get_usd_krw_rate
 
 
 async def _get_kis_domestic_pending_buy_amount(kis: KISClient) -> float:
@@ -218,8 +222,114 @@ async def get_cash_balance_impl(account: str | None = None) -> dict[str, Any]:
     }
 
 
+async def get_usd_krw_rate() -> float:
+    """Get the current USD to KRW exchange rate."""
+    try:
+        return await _get_usd_krw_rate()
+    except Exception as exc:
+        logger.warning("Failed to fetch USD/KRW rate: %s", exc)
+        return 1300.0
+
+
+def _is_stale_manual_cash(updated_at_iso: str | None) -> bool:
+    """Check if manual cash is stale (older than 3 days)."""
+    if not updated_at_iso:
+        return True
+    try:
+        updated_at = datetime.fromisoformat(updated_at_iso)
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+        cutoff = now_kst() - timedelta(days=3)
+        return updated_at < cutoff
+    except (ValueError, TypeError):
+        return True
+
+
+async def get_available_capital_impl(
+    account: str | None = None,
+    include_manual: bool = True,
+) -> dict[str, Any]:
+    """Query orderable capital across KIS, Upbit, and manual cash.
+
+    Args:
+        account: Optional account filter (upbit, kis, kis_domestic, kis_overseas, toss)
+        include_manual: Whether to include manual cash in the aggregation
+
+    Returns:
+        Dict with accounts, manual_cash, summary, and errors
+    """
+    account_filter = _normalize_account_filter(account)
+    errors: list[dict[str, Any]] = []
+
+    cash_result = await get_cash_balance_impl(account=account)
+    accounts = cash_result.get("accounts", [])
+    errors.extend(cash_result.get("errors", []))
+
+    has_usd_account = any(acc.get("currency") == "USD" for acc in accounts)
+    exchange_rate = None
+    if has_usd_account:
+        try:
+            exchange_rate = await get_usd_krw_rate()
+        except Exception as exc:
+            logger.warning("Failed to get exchange rate: %s", exc)
+            errors.append({"source": "exchange_rate", "error": str(exc)})
+            exchange_rate = 1300.0
+
+    total_orderable_krw = 0.0
+    processed_accounts: list[dict[str, Any]] = []
+
+    for acc in accounts:
+        processed_acc = dict(acc)
+        currency = acc.get("currency", "KRW")
+        orderable = float(acc.get("orderable", 0.0) or 0.0)
+
+        if currency == "KRW":
+            total_orderable_krw += orderable
+        elif currency == "USD" and exchange_rate is not None:
+            krw_equivalent = orderable * exchange_rate
+            processed_acc["krw_equivalent"] = krw_equivalent
+            total_orderable_krw += krw_equivalent
+
+        processed_accounts.append(processed_acc)
+
+    manual_cash_result: dict[str, Any] | None = None
+    if include_manual:
+        try:
+            manual_setting = await get_manual_cash_setting()
+            if manual_setting is not None:
+                value = manual_setting.get("value", {})
+                amount = (
+                    float(value.get("amount", 0.0)) if isinstance(value, dict) else 0.0
+                )
+                updated_at = manual_setting.get("updated_at")
+                stale_warning = _is_stale_manual_cash(updated_at)
+
+                manual_cash_result = {
+                    "amount": amount,
+                    "updated_at": updated_at,
+                    "stale_warning": stale_warning,
+                }
+                total_orderable_krw += amount
+        except Exception as exc:
+            logger.warning("Failed to get manual cash setting: %s", exc)
+            errors.append({"source": "manual_cash", "error": str(exc)})
+
+    return {
+        "accounts": processed_accounts,
+        "manual_cash": manual_cash_result,
+        "summary": {
+            "total_orderable_krw": total_orderable_krw,
+            "exchange_rate_usd_krw": exchange_rate,
+            "as_of": now_kst().isoformat(),
+        },
+        "errors": errors,
+    }
+
+
 __all__ = [
     "get_cash_balance_impl",
+    "get_available_capital_impl",
+    "get_usd_krw_rate",
     "is_us_nation_name",
     "extract_usd_orderable_from_row",
     "select_usd_row_for_us_order",
