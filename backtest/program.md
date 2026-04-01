@@ -5,7 +5,7 @@ Autonomous trading strategy research on Upbit spot crypto (daily bars).
 ## Context
 
 This project uses the autoresearch pattern for trading strategy discovery.
-The strategy has already been tuned through 204 experiments (baseline 0.84 → 4.23 cv_score).
+The dataset was refreshed for reproducibility (PR #428), resetting the baseline.
 
 Your job: **push cv_score higher** by modifying `strategy.py`.
 
@@ -18,18 +18,15 @@ Your job: **push cv_score higher** by modifying `strategy.py`.
 
 ## Current Leaderboard
 
-Check `results.tsv` for full history. Top scores:
+Check `results.tsv` for the authoritative best score. Always verify with:
 
-```
-RANK  EXPERIMENT   CV_SCORE   MEAN      STD       MIN_FOLD
-1.    exp204       4.228733   4.619197  0.780929  3.878618  ← CURRENT BEST
-2.    exp203       4.228659   4.619131  0.780944  3.878618
-3.    exp202       4.228511   4.619000  0.780976  3.878618
+```bash
+tail -5 results.tsv
 ```
 
-**Your goal: beat cv_score 4.228733.**
+**Your goal: beat the best cv_score in results.tsv.**
 
-To get live numbers: `tail -20 results.tsv | sort -t$'\t' -k2 -rn | head -5`
+Do NOT hardcode a target score. Always read `results.tsv` to find the current best.
 
 ## Rules
 
@@ -208,7 +205,7 @@ Signal(symbol="BTC", action="buy", weight=0.15, reason="RSI < 30")
 ### PortfolioState
 - `cash`, `positions`, `avg_prices`, `position_dates`, `equity`, `date`, `trade_log`
 
-## Current Strategy Summary (exp204)
+## Current Strategy Summary
 
 Dual RSI mean-reversion with multi-signal voting and per-symbol position sizing.
 
@@ -216,39 +213,51 @@ Dual RSI mean-reversion with multi-signal voting and per-symbol position sizing.
 - 5 bear signals (MACD negative, BB upper, EMA cross down, momentum negative, RSI high)
 - `MIN_VOTES=4` for buy, `MIN_SELL_VOTES=2` for sell
 - Regime gates: falling market block, overheated market filter, trend trap filter
-- Per-symbol position sizes (many zeroed out through 204 experiments)
+- Per-symbol position sizes — **many are zeroed out and have NO effect on results**
 - Stop-loss 2%, max holding 21 days, cooldown 15 days after stop-loss
+
+## ⚠️ IMPORTANT: Dead Parameters
+
+Many position-size parameters are **exactly 0.00** (e.g. `eth_pure_reversion_position_size`,
+`xrp_trend_position_size`, `sol_hot_stall_trend_position_size`, etc.).
+Changing these from 0.00 to 0.00 or adjusting thresholds for code paths gated by
+a zero-weight does **nothing** — the cv_score will be identical.
+
+**Before modifying a parameter, trace the code to confirm it actually affects trade execution.**
+If a position size is 0.00, the corresponding buy rule never fires regardless of thresholds.
 
 ## Strategy Research Directions
 
-### Tier 1 — Micro-Optimization (Highest Probability)
-Most zero-weight positions were turned off individually. Try:
-- **Batch re-enable with tiny weights** — some zeroed signals might help in combination
-- **Fine-tune non-zero weights** — AVAX trend (0.04) and strong reversion (0.15) have room
-- **Adjust MIN_VOTES threshold** — try 3 instead of 4 (more signals fire)
-- **Stop-loss refinement** — 2% is tight; try 3% or ATR-based stops
-- **Cooldown period tuning** — 15 days may be too long, try 7–10
-- **Holding period** — 21 days max; try 14 or 28
+### ❌ Already Exhausted (DO NOT retry)
+These have been tried extensively and always revert:
+- Changing `stop_loss_pct` (2% → 2.5%, 3%, etc.)
+- Changing `cooldown_days` (15 → 10, 7, etc.)
+- Changing `holding_days` (21 → 14, 28, etc.)
+- Adjusting zero-weight position sizes between 0.00 values
+- Fine-tuning `min_votes` (4 is optimal, 3 too loose, 5 kills all trades)
 
-### Tier 2 — Signal Enhancement (Medium Risk)
-- **RSI divergence** — price makes new low but RSI doesn't → stronger buy signal
-- **Volume-weighted RSI** — weight RSI calculation by volume
-- **Adaptive RSI thresholds** — lower the oversold threshold in trending markets
-- **MACD signal line cross** — add as a bull/bear signal
-- **ATR-based position sizing** — lower weight when ATR is high (volatile)
-- **Correlation filter** — reduce position count when all coins are highly correlated
+### Tier 1 — Signal Logic Changes (Highest Impact)
+- **Add a new bull/bear signal function** (e.g. RSI divergence, MACD cross, ATR breakout)
+- **Modify existing signal logic** — change what dual_rsi_oversold actually checks
+- **Weighted voting** — give RSI oversold 2x weight instead of equal votes
+- **Re-enable zeroed strategies with meaningful sizes** — set to 0.05+ not 0.001
+
+### Tier 2 — Exit Strategy Redesign
+- **Trailing stop-loss** — replace fixed 2% with ATR-trailing stop
+- **Partial profit taking** — sell 50% at RSI 50, rest at RSI 60
+- **Time-decay exit** — increase sell pressure as holding period grows
+- **Volatility-adjusted stop** — wider stops in volatile periods
 
 ### Tier 3 — Structural Changes (Higher Risk, Higher Reward)
-- **Trailing stop-loss** — replace fixed 2% with ATR-trailing stop
-- **Pyramiding** — add to winning positions at defined thresholds
-- **Time-based filters** — different parameters for different months/quarters
-- **Regime switching** — detect trending vs mean-reverting market, switch strategy
 - **Cross-coin signals** — BTC momentum as filter for altcoin entries
-- **Dynamic MAX_POSITIONS** — increase in low-vol, decrease in high-vol environments
+- **Regime switching** — detect trending vs mean-reverting market, switch strategy
+- **Dynamic MAX_POSITIONS** — increase in low-vol, decrease in high-vol
+- **Pyramiding** — add to winning positions at defined thresholds
+- **Correlation filter** — reduce position count when all coins move together
 
 ## Plateau Escape
 
-Before choosing the next experiment, inspect recent history first:
+Before choosing the next experiment, **ALWAYS** inspect recent history first:
 
 ```bash
 tail -30 results.tsv
@@ -256,18 +265,21 @@ tail -30 results.tsv
 
 Pick a direction that has not been tried recently.
 
-If you hit **5 consecutive reverts**, stop doing micro-adjustments and switch to a structural change instead. Good plateau-breakers:
+If you hit **3 consecutive reverts**, stop doing parameter tweaks entirely and switch to a **structural change**:
 
-- Add one new signal function
-- Replace or redesign an exit rule
-- Introduce weighted voting instead of equal vote counting
-- Change how regime filters gate entries/exits
-- Rework position sizing logic based on volatility or signal strength
+1. Add one new signal function to BULL_SIGNALS or BEAR_SIGNALS
+2. Replace or redesign an exit rule (e.g. trailing stop instead of fixed)
+3. Introduce weighted voting instead of equal vote counting
+4. Add a new regime filter or remove an existing one
+5. Rework position sizing logic based on volatility or signal strength
 
-Forbidden pattern:
+### Forbidden Patterns (HARD RULES)
 
-- Repeating the same parameter family with different values after recent reverts already covered that lane
-- Nudging one threshold up and down in small increments (for example 2% → 2.5% → 3%) instead of trying a genuinely different idea
+- ❌ Changing `stop_loss_pct`, `cooldown_days`, or `holding_days` — these are exhausted
+- ❌ Adjusting zero-weight position sizes by tiny amounts (0.00 → 0.001)
+- ❌ Nudging one threshold up and down in small increments
+- ❌ Repeating the same parameter family that appears in recent revert history
+- ❌ Any change that results in the EXACT SAME cv_score as baseline (means your change hit dead code)
 
 ## Data Available
 
