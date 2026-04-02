@@ -778,6 +778,130 @@ class TestMetrics:
         assert score == pytest.approx(0.5, abs=0.01)
 
 
+class TestScoreFormulaHardening:
+    """Tests for hardened scoring formula against score hacking."""
+
+    def test_score_formula_applies_progressive_penalties(self) -> None:
+        """Test that compute_score applies all progressive penalties correctly."""
+        result = prepare.BacktestResult(
+            total_return_pct=1.0,
+            sharpe=1.5,
+            max_drawdown_pct=25.0,
+            num_trades=20,
+            win_rate_pct=0.5,
+            profit_factor=1.5,
+            avg_holding_days=1.0,
+            time_in_market_pct=10.0,
+            backtest_seconds=0.0,
+            trade_log=[],
+            equity_curve=[100000.0, 101000.0],
+        )
+
+        score = prepare.compute_score(result)
+        expected = (
+            1.5
+            - (25.0 - 20.0) * 0.1
+            - (15 - (20 // 2)) * 0.2
+            - (20.0 - 10.0) * 0.1
+            - (2.0 - 1.0) * 0.5
+            - 0.5
+        )
+        assert score == pytest.approx(expected, abs=0.01)
+
+    def test_score_hacking_profile_scores_at_or_below_two(self) -> None:
+        """Test that known score-hacking exploit profile scores poorly."""
+        result = prepare.BacktestResult(
+            total_return_pct=0.8,
+            sharpe=4.28,
+            max_drawdown_pct=0.03,
+            num_trades=88,
+            win_rate_pct=0.955,
+            profit_factor=828.0,
+            avg_holding_days=1.0,
+            time_in_market_pct=10.7,
+            backtest_seconds=0.0,
+            trade_log=[],
+            equity_curve=[100000.0, 100800.0],
+        )
+        assert prepare.compute_score(result) <= 2.0
+
+    def test_compliant_strategy_keeps_sharpe_based_score(self) -> None:
+        """Test that compliant strategy keeps Sharpe-based score with minimal penalties."""
+        result = prepare.BacktestResult(
+            total_return_pct=15.0,
+            sharpe=2.5,
+            max_drawdown_pct=15.0,  # <= 20, no drawdown penalty
+            num_trades=40,  # >= 30 round trips, no trade count penalty
+            win_rate_pct=0.6,
+            profit_factor=2.0,
+            avg_holding_days=5.0,  # >= 1.5, no holding period penalty
+            time_in_market_pct=75.0,  # >= 20, no time-in-market penalty
+            backtest_seconds=0.0,
+            trade_log=[],
+            equity_curve=[100000.0, 115000.0],
+        )
+        score = prepare.compute_score(result)
+        # Should be approximately the Sharpe with minimal penalties
+        assert score >= 2.0  # Strong score maintained
+
+
+class TestTimeInMarketMetric:
+    """Tests for time_in_market_pct metric calculation."""
+
+    def test_run_backtest_calculates_time_in_market_pct(self, tmp_path, monkeypatch):
+        """Test that run_backtest calculates time_in_market_pct correctly.
+
+        Buys on first bar, holds across middle bar, exits on last bar.
+        With 3 bars total and position held for 2 bars (first and middle),
+        expected time_in_market_pct should be 66.67%.
+        """
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+
+        btc_df = pd.DataFrame(
+            {
+                "date": ["2025-07-01", "2025-07-02", "2025-07-03"],
+                "open": [100.0, 105.0, 110.0],
+                "high": [106.0, 111.0, 116.0],
+                "low": [95.0, 100.0, 105.0],
+                "close": [105.0, 110.0, 115.0],
+                "volume": [1000, 1100, 1200],
+                "value": [100000, 110000, 120000],
+            }
+        )
+        btc_df.to_parquet(data_dir / "KRW-BTC.parquet", index=False)
+
+        monkeypatch.setattr(prepare, "DATA_DIR", data_dir)
+        monkeypatch.setattr(prepare, "DEFAULT_SYMBOLS", ["BTC"])
+        monkeypatch.setattr(
+            prepare,
+            "SPLITS",
+            {"val": {"start": "2025-07-01", "end": "2025-07-03"}},
+        )
+
+        class BuyHoldSellStrategy:
+            def on_bar(self, bar_data, portfolio):
+                date = portfolio.date
+                if date == "2025-07-01" and "BTC" not in portfolio.positions:
+                    return [
+                        prepare.Signal(
+                            symbol="BTC", action="buy", weight=1.0, reason="Entry"
+                        )
+                    ]
+                if date == "2025-07-03" and "BTC" in portfolio.positions:
+                    return [
+                        prepare.Signal(
+                            symbol="BTC", action="sell", weight=1.0, reason="Exit"
+                        )
+                    ]
+                return []
+
+        result = prepare.run_backtest(prepare.load_data("val"), BuyHoldSellStrategy())
+
+        assert hasattr(result, "time_in_market_pct")
+        assert result.time_in_market_pct == pytest.approx(66.67, abs=0.1)
+
+
 class TestRunBacktest:
     """Tests for run_backtest function."""
 
@@ -1347,3 +1471,60 @@ class TestCrossValidate:
         assert len(result.fold_indices) == 4
         assert result.mean_score == pytest.approx(float(np.mean(result.fold_scores)))
         assert isinstance(result.cv_score, float)
+
+
+class TestTimeInMarketMetric:
+    """Tests for time_in_market_pct metric calculation."""
+
+    def test_run_backtest_calculates_time_in_market_pct(self, tmp_path, monkeypatch):
+        """Test that run_backtest calculates time_in_market_pct correctly.
+
+        Buys on first bar, holds across middle bar, exits on last bar.
+        With 3 bars total and position held for 2 bars (first and middle),
+        expected time_in_market_pct should be 66.67%.
+        """
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+
+        btc_df = pd.DataFrame(
+            {
+                "date": ["2025-07-01", "2025-07-02", "2025-07-03"],
+                "open": [100.0, 105.0, 110.0],
+                "high": [106.0, 111.0, 116.0],
+                "low": [95.0, 100.0, 105.0],
+                "close": [105.0, 110.0, 115.0],
+                "volume": [1000, 1100, 1200],
+                "value": [100000, 110000, 120000],
+            }
+        )
+        btc_df.to_parquet(data_dir / "KRW-BTC.parquet", index=False)
+
+        monkeypatch.setattr(prepare, "DATA_DIR", data_dir)
+        monkeypatch.setattr(prepare, "DEFAULT_SYMBOLS", ["BTC"])
+        monkeypatch.setattr(
+            prepare,
+            "SPLITS",
+            {"val": {"start": "2025-07-01", "end": "2025-07-03"}},
+        )
+
+        class BuyHoldSellStrategy:
+            def on_bar(self, bar_data, portfolio):
+                date = portfolio.date
+                if date == "2025-07-01" and "BTC" not in portfolio.positions:
+                    return [
+                        prepare.Signal(
+                            symbol="BTC", action="buy", weight=1.0, reason="Entry"
+                        )
+                    ]
+                if date == "2025-07-03" and "BTC" in portfolio.positions:
+                    return [
+                        prepare.Signal(
+                            symbol="BTC", action="sell", weight=1.0, reason="Exit"
+                        )
+                    ]
+                return []
+
+        result = prepare.run_backtest(prepare.load_data("val"), BuyHoldSellStrategy())
+
+        assert hasattr(result, "time_in_market_pct")
+        assert result.time_in_market_pct == pytest.approx(66.67, abs=0.1)
