@@ -599,6 +599,7 @@ class DomesticOrderClient:
                 "INQR_DVSN_1": "",
                 "ORD_GNO_BRNO": "",
                 "ODNO": order_number,
+                "EXCG_ID_DVSN_CD": "ALL",
                 "CTX_AREA_FK100": ctx_area_fk100,
                 "CTX_AREA_NK100": ctx_area_nk100,
             }
