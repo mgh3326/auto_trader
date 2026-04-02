@@ -226,7 +226,7 @@
                         {% if u.is_active %}활성{% else %}비활성{% endif %}
                     </span>
                 </td>
-                <td>{{ u.created_at[:10] if u.created_at else 'N/A' }}</td>
+                <td>{{ u.created_at.strftime('%Y-%m-%d') if u.created_at else 'N/A' }}</td>
                 <td>
                     <button class="btn-toggle {% if u.is_active %}active{% else %}inactive{% endif %}"
                             data-user-id="{{ u.id }}"
