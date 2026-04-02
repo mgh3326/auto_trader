@@ -36,3 +36,20 @@ class PositionDetailPageResponse(BaseModel):
     summary: PositionDetailSummaryResponse
     components: list[PositionDetailComponentResponse]
     journal: dict[str, Any] | None = None
+
+
+class PositionIndicatorsResponse(BaseModel):
+    price: float | None = None
+    indicators: dict[str, Any] = Field(default_factory=dict)
+
+
+class PositionNewsResponse(BaseModel):
+    count: int = 0
+    news: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class PositionOpinionsResponse(BaseModel):
+    supported: bool = True
+    message: str | None = None
+    consensus: dict[str, Any] | None = None
+    opinions: list[dict[str, Any]] = Field(default_factory=list)

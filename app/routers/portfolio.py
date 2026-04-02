@@ -307,7 +307,12 @@ async def get_portfolio_cash(
     return await dashboard_service.get_cash_snapshot()
 
 
-from app.schemas.portfolio_position_detail import PositionDetailPageResponse
+from app.schemas.portfolio_position_detail import (
+    PositionDetailPageResponse,
+    PositionIndicatorsResponse,
+    PositionNewsResponse,
+    PositionOpinionsResponse,
+)
 from app.services.portfolio_position_detail_service import (
     PortfolioPositionDetailNotFoundError,
     PortfolioPositionDetailService,
@@ -361,4 +366,50 @@ async def portfolio_position_detail_page(
             "user": current_user,
             "page_payload": payload,
         },
+    )
+
+
+@router.get(
+    "/api/positions/{market_type}/{symbol}/indicators",
+    response_model=PositionIndicatorsResponse,
+)
+async def get_position_indicators(
+    market_type: str,
+    symbol: str,
+    detail_service: PortfolioPositionDetailService = Depends(
+        get_portfolio_position_detail_service
+    ),
+):
+    return await detail_service.get_indicators_payload(
+        market_type=market_type, symbol=symbol
+    )
+
+
+@router.get(
+    "/api/positions/{market_type}/{symbol}/news",
+    response_model=PositionNewsResponse,
+)
+async def get_position_news(
+    market_type: str,
+    symbol: str,
+    detail_service: PortfolioPositionDetailService = Depends(
+        get_portfolio_position_detail_service
+    ),
+):
+    return await detail_service.get_news_payload(market_type=market_type, symbol=symbol)
+
+
+@router.get(
+    "/api/positions/{market_type}/{symbol}/opinions",
+    response_model=PositionOpinionsResponse,
+)
+async def get_position_opinions(
+    market_type: str,
+    symbol: str,
+    detail_service: PortfolioPositionDetailService = Depends(
+        get_portfolio_position_detail_service
+    ),
+):
+    return await detail_service.get_opinions_payload(
+        market_type=market_type, symbol=symbol
     )

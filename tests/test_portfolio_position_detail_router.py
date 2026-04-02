@@ -32,6 +32,18 @@ class _FakeDetailService:
                 "journal": {"strategy": "trend"},
             }
         )
+        self.get_indicators_payload = AsyncMock(
+            return_value={"price": 132.0, "indicators": {"rsi": {"14": 28.4}}}
+        )
+        self.get_news_payload = AsyncMock(return_value={"count": 0, "news": []})
+        self.get_opinions_payload = AsyncMock(
+            return_value={
+                "supported": True,
+                "message": None,
+                "consensus": None,
+                "opinions": [],
+            }
+        )
 
 
 def _create_client() -> tuple[TestClient, _FakeDetailService]:
@@ -73,3 +85,33 @@ def test_position_detail_page_returns_404_when_symbol_missing() -> None:
     response = client.get("/portfolio/positions/us/NVDA")
 
     assert response.status_code == 404
+
+
+@pytest.mark.unit
+def test_position_detail_indicators_api_returns_payload() -> None:
+    client, detail = _create_client()
+    detail.get_indicators_payload = AsyncMock(
+        return_value={"price": 132.0, "indicators": {"rsi": {"14": 28.4}}}
+    )
+
+    response = client.get("/portfolio/api/positions/us/NVDA/indicators")
+
+    assert response.status_code == 200
+    assert response.json()["indicators"]["rsi"]["14"] == 28.4
+
+
+@pytest.mark.unit
+def test_position_detail_opinions_api_returns_crypto_fallback() -> None:
+    client, detail = _create_client()
+    detail.get_opinions_payload = AsyncMock(
+        return_value={
+            "supported": False,
+            "message": "애널리스트 의견이 제공되지 않는 시장입니다.",
+            "opinions": [],
+        }
+    )
+
+    response = client.get("/portfolio/api/positions/crypto/KRW-BTC/opinions")
+
+    assert response.status_code == 200
+    assert response.json()["supported"] is False

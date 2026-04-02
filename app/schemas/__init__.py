@@ -33,6 +33,9 @@ from .portfolio_position_detail import (
     PositionDetailComponentResponse,
     PositionDetailPageResponse,
     PositionDetailSummaryResponse,
+    PositionIndicatorsResponse,
+    PositionNewsResponse,
+    PositionOpinionsResponse,
 )
 from .research_backtest import BacktestPairSummary, BacktestRunSummary
 
@@ -62,6 +65,9 @@ __all__ = [
     "PositionDetailComponentResponse",
     "PositionDetailSummaryResponse",
     "PositionDetailPageResponse",
+    "PositionIndicatorsResponse",
+    "PositionNewsResponse",
+    "PositionOpinionsResponse",
     # Trading
     "BuyOrderRequest",
     "SellOrderRequest",
