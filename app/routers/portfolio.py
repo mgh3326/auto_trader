@@ -9,6 +9,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
@@ -55,25 +56,95 @@ async def portfolio_dashboard_page(request: Request):
     )
 
 
+class EnrichSymbol(BaseModel):
+    symbol: str
+    market_type: Literal["KR", "US", "CRYPTO"]
+
+
+class EnrichRequest(BaseModel):
+    symbols: list[EnrichSymbol]
+
+
+def _merge_journal_snapshots(
+    payload: dict,
+    journal_map: dict[str, dict],
+) -> dict:
+    positions = payload.get("positions") or []
+    for position in positions:
+        position["journal"] = journal_map.get(position.get("symbol"))
+    return payload
+
+
 @router.get("/api/overview")
 async def get_portfolio_overview(
     market: Literal["ALL", "KR", "US", "CRYPTO"] = "ALL",
     account_keys: Annotated[list[str] | None, Query()] = None,
     q: Annotated[str | None, Query(min_length=1)] = None,
+    skip_missing_prices: bool = False,
     current_user: User = Depends(get_authenticated_user),
     overview_service: PortfolioOverviewService = Depends(
         get_portfolio_overview_service
     ),
+    dashboard_service: PortfolioDashboardService = Depends(
+        get_portfolio_dashboard_service
+    ),
 ):
     try:
-        return await overview_service.get_overview(
+        overview = await overview_service.get_overview(
             user_id=current_user.id,
             market=market,
             account_keys=account_keys,
             q=q,
+            skip_missing_prices=skip_missing_prices,
         )
+
+        if overview.get("success") and overview.get("positions"):
+            journal_map = await dashboard_service.get_journals_batch(
+                [position["symbol"] for position in overview["positions"]],
+                current_prices={
+                    position["symbol"]: position.get("current_price")
+                    for position in overview["positions"]
+                },
+            )
+            overview = _merge_journal_snapshots(overview, journal_map)
+
+        return overview
     except Exception as e:
         logger.error("Error fetching portfolio overview: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.post("/api/overview/enrich")
+async def enrich_portfolio_overview(
+    request: EnrichRequest,
+    current_user: User = Depends(get_authenticated_user),
+    overview_service: PortfolioOverviewService = Depends(
+        get_portfolio_overview_service
+    ),
+    dashboard_service: PortfolioDashboardService = Depends(
+        get_portfolio_dashboard_service
+    ),
+):
+    try:
+        targets = [
+            {"symbol": t.symbol, "market_type": t.market_type} for t in request.symbols
+        ]
+        payload = await overview_service.enrich_manual_positions(
+            user_id=current_user.id,
+            targets=targets,
+        )
+        if payload.get("success") and payload.get("positions"):
+            journal_map = await dashboard_service.get_journals_batch(
+                [position["symbol"] for position in payload["positions"]],
+                current_prices={
+                    position["symbol"]: position.get("current_price")
+                    for position in payload["positions"]
+                },
+            )
+            payload = _merge_journal_snapshots(payload, journal_map)
+        return payload
+    except Exception as e:
+        logger.error("Error enriching portfolio overview: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 

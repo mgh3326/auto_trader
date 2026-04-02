@@ -547,7 +547,16 @@
                 <article class="panel mt-3" id="portfolio-results-panel">
                     <div class="d-flex justify-content-between align-items-center gap-2">
                         <h2><i class="bi bi-table"></i> 보유 종목</h2>
-                        <span class="subtle" id="result-count">0 rows</span>
+                        <div class="d-flex align-items-center gap-2 flex-wrap">
+                            <label class="subtle" for="sort-select">정렬</label>
+                            <select id="sort-select" name="sort">
+                                <option value="evaluation_desc" selected>평가금액 순</option>
+                                <option value="profit_rate_desc">수익률 높은 순</option>
+                                <option value="profit_rate_asc">수익률 낮은 순</option>
+                                <option value="symbol_asc">심볼 순</option>
+                            </select>
+                            <span class="subtle" id="result-count">0 rows</span>
+                        </div>
                     </div>
 
                     <div class="results-table-wrap">
@@ -639,10 +648,12 @@
                 topPositions: null,
             },
             detailRequestId: 0,
+            sortMode: "evaluation_desc",
         };
 
         const marketSelect = document.getElementById("market-select");
         const queryInput = document.getElementById("query-input");
+        const sortSelect = document.getElementById("sort-select");
         const refreshButton = document.getElementById("refresh-button");
         const clearAccountsButton = document.getElementById("clear-accounts-button");
         const resultCount = document.getElementById("result-count");
@@ -737,6 +748,104 @@
             return params;
         }
 
+        function sortPositions(positions) {
+            const mode = state.sortMode || "evaluation_desc";
+            const sorted = [...positions];
+
+            sorted.sort((left, right) => {
+                if (mode === "symbol_asc") {
+                    return String(left.symbol || "").localeCompare(String(right.symbol || ""));
+                }
+
+                const leftValue = Number(
+                    mode.startsWith("profit_rate")
+                        ? left.profit_rate
+                        : left.evaluation
+                );
+                const rightValue = Number(
+                    mode.startsWith("profit_rate")
+                        ? right.profit_rate
+                        : right.evaluation
+                );
+
+                const safeLeft = Number.isFinite(leftValue) ? leftValue : Number.NEGATIVE_INFINITY;
+                const safeRight = Number.isFinite(rightValue) ? rightValue : Number.NEGATIVE_INFINITY;
+
+                if (mode.endsWith("_asc")) {
+                    return safeLeft - safeRight;
+                }
+                return safeRight - safeLeft;
+            });
+
+            return sorted;
+        }
+
+        function buildPortfolioWarnings(positions) {
+            const totalEvaluation = positions.reduce(
+                (sum, position) => sum + (Number(position.evaluation) || 0),
+                0,
+            );
+            if (totalEvaluation <= 0) {
+                return [];
+            }
+
+            const warnings = [];
+            positions.forEach((position) => {
+                const weight = (Number(position.evaluation) || 0) / totalEvaluation;
+                if (weight > 0.15) {
+                    warnings.push(`${position.symbol} 비중 과다 (${(weight * 100).toFixed(1)}%)`);
+                }
+            });
+
+            const marketTotals = positions.reduce((acc, position) => {
+                const marketType = position.market_type || "UNKNOWN";
+                acc[marketType] = (acc[marketType] || 0) + (Number(position.evaluation) || 0);
+                return acc;
+            }, {});
+
+            Object.entries(marketTotals).forEach(([marketType, value]) => {
+                const weight = value / totalEvaluation;
+                if (weight > 0.5) {
+                    warnings.push(`${marketType} 자산군 비중 과다 (${(weight * 100).toFixed(1)}%)`);
+                }
+            });
+
+            return warnings;
+        }
+
+        function getJournalHighlight(item) {
+            const journal = item.journal;
+            if (!journal) {
+                return { style: "", badges: "" };
+            }
+
+            const badges = [];
+            let background = "";
+            if (
+                journal.target_distance_pct !== undefined
+                && journal.target_distance_pct !== null
+                && journal.target_distance_pct >= 0
+                && journal.target_distance_pct <= 5
+            ) {
+                background = "background: rgba(74, 124, 89, 0.1);";
+                badges.push(`<span class="badge bg-success-subtle text-success-emphasis">Target ${journal.target_distance_pct > 0 ? "-" : ""}${Math.abs(journal.target_distance_pct).toFixed(1)}%</span>`);
+            }
+            if (
+                journal.stop_distance_pct !== undefined
+                && journal.stop_distance_pct !== null
+                && journal.stop_distance_pct <= 0
+                && Math.abs(journal.stop_distance_pct) <= 10
+            ) {
+                background = "background: rgba(181, 74, 74, 0.1);";
+                badges.push(`<span class="badge bg-danger-subtle text-danger-emphasis">Stop -${Math.abs(journal.stop_distance_pct).toFixed(1)}%</span>`);
+            }
+
+            return {
+                style: background,
+                badges: badges.join(" "),
+            };
+        }
+
         function renderAccountFacets(accounts) {
             if (!accounts || accounts.length === 0) {
                 accountFacets.innerHTML = '<div class="subtle">표시 가능한 계좌가 없습니다.</div>';
@@ -788,11 +897,13 @@
             document.getElementById("summary-crypto").textContent = formatNumber(summary.by_market.CRYPTO, 0);
         }
 
-        function renderWarnings(warnings) {
+        function renderWarnings(warnings, positions = []) {
             warningsList.innerHTML = "";
-            const visibleWarnings = Array.isArray(warnings)
+            const backendWarnings = Array.isArray(warnings)
                 ? warnings.filter((warning) => !/symbol\s+not\s+tradable/i.test(String(warning || "")))
                 : [];
+            const frontendWarnings = buildPortfolioWarnings(positions);
+            const visibleWarnings = [...backendWarnings, ...frontendWarnings];
 
             if (visibleWarnings.length === 0) {
                 statusMessage.textContent = "정상적으로 조회되었습니다.";
@@ -836,42 +947,55 @@
                 return;
             }
 
-            tableBody.innerHTML = positions.map((item) => {
+            const sortedPositions = sortPositions(positions);
+
+            tableBody.innerHTML = sortedPositions.map((item) => {
                 const pClass = profitClass(item.profit_loss);
                 const symbol = escapeHtml(item.symbol);
                 const name = escapeHtml(item.name);
                 const marketType = escapeHtml(item.market_type);
                 const currentPrice = item.current_price ?? 0;
+                const highlight = getJournalHighlight(item);
+
                 return `
-                    <tr class="position-row" data-symbol="${symbol}" data-market-type="${marketType}" data-current-price="${currentPrice}" style="cursor: pointer;">
+                    <tr class="position-row" data-symbol="${symbol}" data-market-type="${marketType}" data-current-price="${currentPrice}" style="cursor: pointer; ${highlight.style}">
                         <td><span class="${marketBadgeClass(item.market_type)}">${marketType}</span></td>
-                        <td><strong>${symbol}</strong><br><span class="subtle">${name}</span></td>
+                        <td>
+                            <strong>${symbol}</strong><br>
+                            <span class="subtle">${name}</span>
+                            ${highlight.badges ? `<div class="mt-1 d-flex gap-1 flex-wrap">${highlight.badges}</div>` : ""}
+                        </td>
                         <td>${formatNumber(item.quantity, 8)}</td>
                         <td>${formatNumber(item.avg_price)}</td>
-                        <td>${item.current_price === null ? "-" : formatNumber(item.current_price)}</td>
+                        <td>
+                            ${item.current_price === null ? '<span class="subtle">조회중...</span>' : formatNumber(item.current_price)}
+                        </td>
                         <td>${formatNumber(item.evaluation)}</td>
                         <td class="${pClass}">${formatProfit(item.profit_loss, item.profit_rate)}</td>
                     </tr>
                 `;
             }).join("");
 
-            cards.innerHTML = positions.map((item) => {
+            cards.innerHTML = sortedPositions.map((item) => {
                 const pClass = profitClass(item.profit_loss);
                 const symbol = escapeHtml(item.symbol);
                 const name = escapeHtml(item.name);
                 const marketType = escapeHtml(item.market_type);
                 const currentPrice = item.current_price ?? 0;
+                const highlight = getJournalHighlight(item);
+
                 return `
-                    <article class="result-card position-card" data-symbol="${symbol}" data-market-type="${marketType}" data-current-price="${currentPrice}" style="cursor: pointer;">
+                    <article class="result-card position-card" data-symbol="${symbol}" data-market-type="${marketType}" data-current-price="${currentPrice}" style="cursor: pointer; ${highlight.style}">
                         <div class="d-flex justify-content-between align-items-center">
                             <strong>${symbol}</strong>
                             <span class="${marketBadgeClass(item.market_type)}">${marketType}</span>
                         </div>
                         <div class="subtle">${name}</div>
+                        ${highlight.badges ? `<div class="mt-1 d-flex gap-1 flex-wrap">${highlight.badges}</div>` : ""}
                         <dl class="metric-grid">
                             <dt>수량</dt><dd>${formatNumber(item.quantity, 8)}</dd>
                             <dt>평균단가</dt><dd>${formatNumber(item.avg_price)}</dd>
-                            <dt>현재가</dt><dd>${item.current_price === null ? "-" : formatNumber(item.current_price)}</dd>
+                            <dt>현재가</dt><dd>${item.current_price === null ? '<span class="subtle">조회중...</span>' : formatNumber(item.current_price)}</dd>
                             <dt>평가금액</dt><dd>${formatNumber(item.evaluation)}</dd>
                             <dt>손익/수익률</dt><dd class="${pClass}">${formatProfit(item.profit_loss, item.profit_rate)}</dd>
                         </dl>
@@ -880,7 +1004,7 @@
             }).join("");
 
             attachPositionInteractions();
-            renderCharts(positions);
+            renderCharts(sortedPositions);
         }
 
         function renderOverviewLoadingState() {
@@ -1047,6 +1171,22 @@
                     <p class="mb-0"><strong>평가금액:</strong> ${selectedPosition ? formatNumber(selectedPosition.evaluation) : "-"}</p>
                 </section>
                 <section class="detail-section">
+                    <h6>매도 시뮬레이션</h6>
+                    <div class="panel p-2">
+                        <div class="row g-2 align-items-end">
+                            <div class="col-5">
+                                <label class="small">수량</label>
+                                <input type="number" id="sell-sim-qty" value="${selectedPosition?.quantity || 0}" min="0" max="${selectedPosition?.quantity || 0}" step="any">
+                            </div>
+                            <div class="col-5">
+                                <label class="small">가격</label>
+                                <input type="number" id="sell-sim-price" value="${selectedPosition?.current_price || 0}" min="0" step="any">
+                            </div>
+                        </div>
+                        <div id="sell-sim-result" class="mt-2 small text-muted" style="display: none;"></div>
+                    </div>
+                </section>
+                <section class="detail-section">
                     <h6>계좌별 보유 내역</h6>
                     ${renderComponentHoldings(selectedPosition)}
                 </section>
@@ -1055,9 +1195,86 @@
                 </section>
             `;
 
+            attachSellSimulation(selectedPosition);
             loadingState.style.display = "none";
             emptyState.style.display = "none";
             contentDiv.style.display = "block";
+        }
+
+        function attachSellSimulation(position) {
+            const quantityInput = document.getElementById("sell-sim-qty");
+            const priceInput = document.getElementById("sell-sim-price");
+            const resultDiv = document.getElementById("sell-sim-result");
+            if (!quantityInput || !priceInput || !resultDiv || !position) return;
+
+            const renderSimulation = () => {
+                const quantity = Number(quantityInput.value);
+                const price = Number(priceInput.value);
+                const simulation = calculateSellSimulation(position, quantity, price);
+                if (!simulation) {
+                    resultDiv.style.display = "none";
+                    resultDiv.innerHTML = "";
+                    return;
+                }
+
+                resultDiv.style.display = "block";
+                resultDiv.innerHTML = `
+                    <div class="summary-list">
+                        <div class="summary-row"><span>총 매도 금액</span><strong>${formatNumber(simulation.grossProceeds)} ${simulation.currency}</strong></div>
+                        <div class="summary-row"><span>수수료 추정</span><strong>${formatNumber(simulation.fees)} ${simulation.currency}</strong></div>
+                        <div class="summary-row"><span>세금 추정</span><strong>${formatNumber(simulation.taxes)} ${simulation.currency}</strong></div>
+                        <div class="summary-row"><span>순 회수 금액</span><strong>${formatNumber(simulation.netProceeds)} ${simulation.currency}</strong></div>
+                        <div class="summary-row"><span>잔여 수량</span><strong>${formatNumber(simulation.remainingQuantity, 8)}</strong></div>
+                    </div>
+                `;
+            };
+
+            quantityInput.addEventListener("input", renderSimulation);
+            priceInput.addEventListener("input", renderSimulation);
+            renderSimulation();
+        }
+
+        function calculateSellSimulation(position, quantity, price) {
+            if (!position || !Number.isFinite(quantity) || !Number.isFinite(price)) {
+                return null;
+            }
+            if (quantity <= 0 || price <= 0) {
+                return null;
+            }
+
+            const heldQuantity = Number(position.quantity) || 0;
+            const safeQuantity = Math.min(quantity, heldQuantity);
+            if (safeQuantity <= 0) {
+                return null;
+            }
+
+            const grossProceeds = safeQuantity * price;
+            const avgPrice = Number(position.avg_price) || 0;
+            const realizedGain = Math.max((price - avgPrice) * safeQuantity, 0);
+            const marketType = position.market_type;
+            let fees = 0;
+            let taxes = 0;
+            const currency = marketType === "US" ? "USD" : "KRW";
+
+            if (marketType === "KR") {
+                fees = grossProceeds * 0.00015;
+                taxes = grossProceeds * 0.0018;
+            } else if (marketType === "US") {
+                fees = grossProceeds * (0.0025 + 0.0000278);
+                taxes = realizedGain * 0.22;
+            } else if (marketType === "CRYPTO") {
+                fees = grossProceeds * 0.0005;
+                taxes = 0;
+            }
+
+            return {
+                currency,
+                grossProceeds,
+                fees,
+                taxes,
+                netProceeds: grossProceeds - fees - taxes,
+                remainingQuantity: heldQuantity - safeQuantity,
+            };
         }
 
         async function fetchCashSummary() {
@@ -1216,6 +1433,8 @@
 
         async function fetchOverview() {
             const params = buildQueryParams();
+            // Phase 1: Fast overview (skip manual price fills)
+            params.append("skip_missing_prices", "true");
             const url = `/portfolio/api/overview?${params.toString()}`;
             refreshButton.disabled = true;
             renderOverviewLoadingState();
@@ -1230,12 +1449,15 @@
 
                 renderAccountFacets(payload.facets.accounts || []);
                 renderSummary(payload.summary, payload.filters);
-                renderWarnings(payload.warnings || []);
+                renderWarnings(payload.warnings || [], payload.positions || []);
                 renderPositions(payload.positions || []);
 
                 if (payload.as_of) {
                     lastUpdated.textContent = `last updated: ${new Date(payload.as_of).toLocaleString("ko-KR")}`;
                 }
+
+                // Phase 2: Enrich manual positions
+                await fetchOverviewEnrich(payload.positions || []);
             } catch (error) {
                 statusMessage.textContent = `조회 실패: ${error}`;
                 warningsList.innerHTML = `<li>overview API 호출에 실패했습니다: ${escapeHtml(error)}</li>`;
@@ -1246,10 +1468,62 @@
             }
         }
 
+        async function fetchOverviewEnrich(positions) {
+            const targets = positions
+                .filter(p => p.current_price === null)
+                .map(p => ({ symbol: p.symbol, market_type: p.market_type }));
+
+            if (targets.length === 0) return;
+
+            try {
+                const response = await fetch("/portfolio/api/overview/enrich", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ symbols: targets }),
+                });
+
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const payload = await response.json();
+
+                if (payload.success && payload.positions) {
+                    mergeEnrichedPositions(state.overview.positions, payload.positions);
+                    renderPositions(state.overview.positions);
+                    const deduped = [
+                        ...new Set([...(state.overview.warnings || []), ...(payload.warnings || [])]),
+                    ];
+                    state.overview.warnings = deduped;
+                    renderWarnings(deduped, state.overview.positions);
+                }
+            } catch (error) {
+                console.error("Enrichment failed:", error);
+            }
+        }
+
+        function mergeEnrichedPositions(existing, incoming) {
+            const incomingMap = new Map(
+                incoming.map(p => [`${p.market_type}:${p.symbol}`, p])
+            );
+
+            existing.forEach((p, index) => {
+                const match = incomingMap.get(`${p.market_type}:${p.symbol}`);
+                if (match) {
+                    existing[index] = { ...p, ...match };
+                }
+            });
+        }
+
         refreshButton.addEventListener("click", () => {
             fetchOverview();
             fetchCashSummary();
         });
+        sortSelect.addEventListener("change", () => {
+            state.sortMode = sortSelect.value;
+            if (state.overview && state.overview.positions) {
+                renderPositions(state.overview.positions);
+                renderWarnings(state.overview.warnings || [], state.overview.positions);
+            }
+        });
+
         marketSelect.addEventListener("change", fetchOverview);
         queryInput.addEventListener("keydown", (event) => {
             if (event.key !== "Enter") {

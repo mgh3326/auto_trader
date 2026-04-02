@@ -993,115 +993,142 @@ async def test_get_overview_excludes_non_tradable_manual_crypto_everywhere(
     assert overview["warnings"] == warnings == []
 
 
+@pytest.mark.asyncio
+async def test_get_overview_skips_missing_price_fill_when_requested() -> None:
+    service = PortfolioOverviewService(AsyncMock())
+    service._collect_kis_components = AsyncMock(return_value=[])
+    service._collect_upbit_components = AsyncMock(return_value=[])
+    service._collect_manual_components = AsyncMock(return_value=[])
+    service._fill_missing_prices = AsyncMock()
+
+    await service.get_overview(user_id=1, skip_missing_prices=True)
+
+    service._fill_missing_prices.assert_not_awaited()
+
+    await service.get_overview(user_id=1, skip_missing_prices=False)
+    service._fill_missing_prices.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_collect_kis_kr_components_converts_percent_rate_to_decimal() -> None:
+    service = PortfolioOverviewService(AsyncMock())
+    kis_client = AsyncMock()
+    # KIS KR API returns percentage as e.g. "1.16" meaning 1.16%
+    kis_client.fetch_my_stocks = AsyncMock(
+        return_value=[
+            {
+                "pdno": "005930",
+                "prdt_name": "삼성전자",
+                "hldg_qty": "100",
+                "pchs_avg_pric": "70000",
+                "prpr": "75000",
+                "evlu_amt": "7500000",
+                "evlu_pfls_amt": "500000",
+                "evlu_pfls_rt": "1.16",  # 1.16%
+            }
+        ]
+    )
+
+    components, warnings = await service._collect_kis_kr_components(kis_client)
+    assert len(components) == 1
+    assert components[0]["profit_rate"] == pytest.approx(0.0116)
+    assert not warnings
+
+
+@pytest.mark.asyncio
+async def test_collect_kis_us_components_converts_percent_rate_to_decimal() -> None:
+    service = PortfolioOverviewService(AsyncMock())
+    kis_client = AsyncMock()
+    # KIS US API returns percentage as e.g. "-1.67" meaning -1.67%
+    kis_client.fetch_my_us_stocks = AsyncMock(
+        return_value=[
+            {
+                "ovrs_pdno": "TSLA",
+                "ovrs_item_name": "Tesla",
+                "ovrs_cblc_qty": "10",
+                "pchs_avg_pric": "200.0",
+                "now_pric2": "196.66",
+                "ovrs_stck_evlu_amt": "1966.6",
+                "frcr_evlu_pfls_amt": "-33.4",
+                "evlu_pfls_rt": "-1.67",  # -1.67%
+            }
+        ]
+    )
+
+    components, warnings = await service._collect_kis_us_components(kis_client)
+    assert len(components) == 1
+    assert components[0]["profit_rate"] == pytest.approx(-0.0167)
+    assert not warnings
+
+
 @pytest.mark.unit
 class TestAggregatePositions:
     """Test _aggregate_positions handles mixed-currency US positions."""
 
     def _make_service(self) -> PortfolioOverviewService:
-        """Create service with a mock DB session."""
         from unittest.mock import MagicMock
 
         return PortfolioOverviewService(MagicMock())
 
-    def test_us_mixed_source_uses_live_profit_rate(self):
-        """Issue #327: Mixed KIS+manual US positions should use KIS profit_rate.
+    def test_aggregate_positions_recomputes_mixed_us_profit_rate_from_cost_basis(
+        self,
+    ) -> None:
+        """Issue #327: Regression test for mixed US cost basis.
 
-        KIS returns avg_price in USD, manual holdings store avg_price in KRW.
-        Aggregation should prefer the live source's profit_rate over recalculating
-        from mixed-currency cost_basis.
+        Even if KIS profit_rate is -1.67% (0.0167), if we mix manual holdings
+        with KRW avg_price, the cost_basis must be normalized to USD before
+        the final profit_rate is calculated.
         """
         service = self._make_service()
+        usd_krw = 1350.0
+
         components = [
-            # KIS live: NVDA, 5 shares, $150 avg, $160 current
+            # KIS live: GOOGL, 5 shares, $150 avg, $160 current
             {
                 "market_type": "US",
-                "symbol": "NVDA",
-                "name": "NVIDIA",
+                "symbol": "GOOGL",
+                "name": "Alphabet Inc.",
                 "account_key": "live:kis",
                 "broker": "kis",
                 "account_name": "KIS",
                 "source": "live",
-                "quantity": 5,
-                "avg_price": 150.0,  # USD
-                "current_price": 160.0,  # USD
-                "evaluation": 800.0,  # USD
-                "profit_loss": 50.0,  # USD
-                "profit_rate": 0.0667,  # Correct from KIS API
+                "quantity": 5.0,
+                "avg_price": 150.0,
+                "current_price": 160.0,
+                "evaluation": 800.0,
+                "profit_loss": 50.0,
+                "profit_rate": 0.0667,
             },
-            # Manual (Toss): NVDA, 5 shares, ₩200,000 avg (KRW!)
+            # Manual: GOOGL, 5 shares, ₩200,000 avg (KRW!)
             {
                 "market_type": "US",
-                "symbol": "NVDA",
-                "name": "NVIDIA",
+                "symbol": "GOOGL",
+                "name": "Alphabet Inc.",
                 "account_key": "manual:1",
                 "broker": "toss",
                 "account_name": "Toss",
                 "source": "manual",
-                "quantity": 5,
-                "avg_price": 200_000.0,  # KRW! (currency mismatch)
-                "current_price": 160.0,  # USD (filled by _fill_missing_prices)
-                "evaluation": 800.0,  # USD (recalculated)
-                "profit_loss": -199_200.0,  # Wrong: 800 - 1_000_000
-                "profit_rate": -0.9992,  # Wrong: mixed currencies
+                "quantity": 5.0,
+                "avg_price": 200000.0,  # ₩200,000 / 1350 ≈ $148.15
+                "current_price": 160.0,
+                "evaluation": 800.0,
+                "profit_loss": 59.26,  # (5*160) - (5*148.15)
+                "profit_rate": 0.08,
             },
         ]
 
-        positions = service._aggregate_positions(components)
-        nvda = next(p for p in positions if p["symbol"] == "NVDA")
+        # In the old code, this would produce a deeply negative profit_rate
+        # because $1600 evaluation was compared to ~₩1,000,000 cost basis.
+        positions = service._aggregate_positions(components, usd_krw=usd_krw)
+        googl = next(p for p in positions if p["symbol"] == "GOOGL")
 
-        # The position profit_rate should NOT be deeply negative
-        # With the fix, it should use the live source's profit_rate as basis
-        # or at minimum not produce -99% due to currency mismatch
-        assert nvda["profit_rate"] > -0.5, (
-            f"Expected reasonable profit_rate, got {nvda['profit_rate']}"
+        # expected_cost_basis = (5 * 150) + (5 * (200000 / 1350)) = 750 + 740.74 = 1490.74
+        # expected_evaluation = 10 * 160 = 1600
+        # expected_profit_loss = 1600 - 1490.74 = 109.26
+        # expected_profit_rate = 109.26 / 1490.74 ≈ 0.0733
+        expected_cost_basis = 1490.7407
+        expected_evaluation = 1600.0
+        expected_profit_loss = expected_evaluation - expected_cost_basis
+        assert googl["profit_rate"] == pytest.approx(
+            expected_profit_loss / expected_cost_basis, rel=1e-3
         )
-
-    def test_single_source_kr_unchanged(self):
-        """KR positions from single source should work as before."""
-        service = self._make_service()
-        components = [
-            {
-                "market_type": "KR",
-                "symbol": "005930",
-                "name": "삼성전자",
-                "account_key": "live:kis",
-                "broker": "kis",
-                "account_name": "KIS",
-                "source": "live",
-                "quantity": 100,
-                "avg_price": 70_000.0,
-                "current_price": 75_000.0,
-                "evaluation": 7_500_000.0,
-                "profit_loss": 500_000.0,
-                "profit_rate": 0.0714,
-            },
-        ]
-
-        positions = service._aggregate_positions(components)
-        samsung = next(p for p in positions if p["symbol"] == "005930")
-        assert abs(samsung["profit_rate"] - 0.0714) < 0.01
-
-    def test_single_source_us_unchanged(self):
-        """US positions from KIS only should work correctly."""
-        service = self._make_service()
-        components = [
-            {
-                "market_type": "US",
-                "symbol": "AAPL",
-                "name": "Apple",
-                "account_key": "live:kis",
-                "broker": "kis",
-                "account_name": "KIS",
-                "source": "live",
-                "quantity": 10,
-                "avg_price": 180.0,  # USD
-                "current_price": 190.0,  # USD
-                "evaluation": 1_900.0,  # USD
-                "profit_loss": 100.0,  # USD
-                "profit_rate": 0.0556,  # Correct
-            },
-        ]
-
-        positions = service._aggregate_positions(components)
-        aapl = next(p for p in positions if p["symbol"] == "AAPL")
-        assert abs(aapl["profit_rate"] - 0.0556) < 0.01

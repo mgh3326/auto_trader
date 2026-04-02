@@ -52,23 +52,48 @@ class _FakeOverviewService:
                 "warnings": [],
             }
         )
+        self.enrich_manual_positions = AsyncMock(
+            return_value={
+                "success": True,
+                "as_of": "2026-02-20T00:00:00+00:00",
+                "positions": [
+                    {
+                        "market_type": "US",
+                        "symbol": "AAPL",
+                        "name": "Apple Inc.",
+                        "quantity": 2,
+                        "avg_price": 150.0,
+                        "current_price": 165.0,
+                        "evaluation": 330.0,
+                        "profit_loss": 30.0,
+                        "profit_rate": 0.1,
+                        "components": [],
+                    }
+                ],
+                "warnings": [],
+            }
+        )
 
 
-def _create_client() -> tuple[TestClient, _FakeOverviewService]:
+def _create_client() -> tuple[TestClient, _FakeOverviewService, _FakeDashboardService]:
     app = FastAPI()
-    fake_service = _FakeOverviewService()
+    fake_overview = _FakeOverviewService()
+    fake_dashboard = _FakeDashboardService()
     app.include_router(portfolio.router)
     app.dependency_overrides[portfolio.get_authenticated_user] = lambda: (
         SimpleNamespace(id=7)
     )
     app.dependency_overrides[portfolio.get_portfolio_overview_service] = lambda: (
-        fake_service
+        fake_overview
     )
-    return TestClient(app), fake_service
+    app.dependency_overrides[portfolio.get_portfolio_dashboard_service] = lambda: (
+        fake_dashboard
+    )
+    return TestClient(app), fake_overview, fake_dashboard
 
 
 def test_portfolio_dashboard_page_renders_screener_style_shell() -> None:
-    client, _ = _create_client()
+    client, _, _ = _create_client()
     response = client.get("/portfolio/")
     assert response.status_code == 200
     assert "text/html" in response.headers.get("content-type", "")
@@ -100,7 +125,7 @@ def test_portfolio_dashboard_page_renders_full_width_results_layout() -> None:
 
 
 def test_portfolio_overview_api_passes_repeated_account_keys() -> None:
-    client, fake_service = _create_client()
+    client, fake_service, fake_dashboard = _create_client()
     response = client.get(
         "/portfolio/api/overview",
         params=[
@@ -122,11 +147,13 @@ def test_portfolio_overview_api_passes_repeated_account_keys() -> None:
         market="US",
         account_keys=["live:kis", "manual:1"],
         q="aapl",
+        skip_missing_prices=False,
     )
+    fake_dashboard.get_cash_snapshot.assert_not_awaited()
 
 
 def test_portfolio_overview_api_uses_default_filters() -> None:
-    client, fake_service = _create_client()
+    client, fake_service, fake_dashboard = _create_client()
     response = client.get("/portfolio/api/overview")
 
     assert response.status_code == 200
@@ -135,11 +162,75 @@ def test_portfolio_overview_api_uses_default_filters() -> None:
         market="ALL",
         account_keys=None,
         q=None,
+        skip_missing_prices=False,
+    )
+    fake_dashboard.get_cash_snapshot.assert_not_awaited()
+
+
+def test_portfolio_overview_api_forwards_skip_missing_prices_flag() -> None:
+    client, fake_service, fake_dashboard = _create_client()
+    response = client.get(
+        "/portfolio/api/overview",
+        params={"skip_missing_prices": "true"},
+    )
+
+    assert response.status_code == 200
+    fake_service.get_overview.assert_awaited_once_with(
+        user_id=7,
+        market="ALL",
+        account_keys=None,
+        q=None,
+        skip_missing_prices=True,
+    )
+    fake_dashboard.get_cash_snapshot.assert_not_awaited()
+
+
+def test_portfolio_overview_api_merges_batch_journal_snapshots() -> None:
+    client, _, fake_dashboard = _create_client()
+
+    response = client.get("/portfolio/api/overview")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["positions"][0]["journal"]["target_price"] == 165.0
+    assert payload["positions"][0]["journal"]["target_distance_pct"] == 3.12
+    fake_dashboard.get_journals_batch.assert_awaited_once_with(
+        ["AAPL"],
+        current_prices={"AAPL": 160.0},
+    )
+
+
+def test_portfolio_enrich_api_returns_only_requested_positions() -> None:
+    client, fake_service, fake_dashboard = _create_client()
+
+    response = client.post(
+        "/portfolio/api/overview/enrich",
+        json={
+            "symbols": [
+                {"symbol": "AAPL", "market_type": "US"},
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert len(payload["positions"]) == 1
+    assert payload["positions"][0]["symbol"] == "AAPL"
+    assert payload["positions"][0]["journal"]["target_distance_pct"] == 3.12
+
+    fake_service.enrich_manual_positions.assert_awaited_once_with(
+        user_id=7,
+        targets=[{"symbol": "AAPL", "market_type": "US"}],
+    )
+    fake_dashboard.get_journals_batch.assert_awaited_once_with(
+        ["AAPL"],
+        current_prices={"AAPL": 165.0},
     )
 
 
 def test_portfolio_overview_api_rejects_invalid_market() -> None:
-    client, fake_service = _create_client()
+    client, fake_service, _ = _create_client()
     response = client.get("/portfolio/api/overview", params={"market": "INVALID"})
 
     assert response.status_code == 422
@@ -199,6 +290,17 @@ class _FakeDashboardService:
                     "as_of": "2026-04-01T00:00:00+00:00",
                 },
                 "errors": [],
+            }
+        )
+        self.get_journals_batch = AsyncMock(
+            return_value={
+                "AAPL": {
+                    "symbol": "AAPL",
+                    "target_price": 165.0,
+                    "stop_loss": 135.0,
+                    "target_distance_pct": 3.12,
+                    "stop_distance_pct": -7.14,
+                }
             }
         )
 
@@ -285,6 +387,14 @@ def test_portfolio_dashboard_page_renders_phase1_panels_and_scripts() -> None:
     assert "function fetchCashSummary()" in body
     assert "function openPositionDetail(" in body
     assert "function renderCharts(" in body
+    assert 'id="sort-select"' in body
+    assert 'params.append("skip_missing_prices", "true");' in body
+    assert "function mergeEnrichedPositions(" in body
+    assert "function buildPortfolioWarnings(" in body
+    assert "function calculateSellSimulation(" in body
+    assert "/portfolio/api/overview/enrich" in body
+    assert "조회중..." in body
+    assert "/portfolio/api/simulate-sell" not in body
 
 
 def test_portfolio_dashboard_page_retains_filter_controls_and_component_detail_hooks() -> (

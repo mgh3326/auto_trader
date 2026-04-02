@@ -13,27 +13,12 @@ class PortfolioDashboardService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
-    async def get_latest_journal_snapshot(
+    def _serialize_journal_snapshot(
         self,
-        symbol: str,
+        journal: TradeJournal,
         *,
         current_price: float | None = None,
-    ) -> dict[str, Any] | None:
-        stmt = (
-            select(TradeJournal)
-            .where(
-                TradeJournal.symbol == symbol,
-                TradeJournal.status.in_([JournalStatus.draft, JournalStatus.active]),
-            )
-            .order_by(desc(TradeJournal.created_at))
-            .limit(1)
-        )
-        result = await self.db.execute(stmt)
-        journal = result.scalars().first()
-
-        if journal is None:
-            return None
-
+    ) -> dict[str, Any]:
         serialized = {
             "id": journal.id,
             "symbol": journal.symbol,
@@ -87,10 +72,65 @@ class PortfolioDashboardService:
                 )
             if serialized["stop_loss"] is not None:
                 serialized["stop_distance_pct"] = round(
-                    (serialized["stop_loss"] - current_price) / current_price * 100, 2
+                    (serialized["stop_loss"] - current_price) / current_price * 100,
+                    2,
                 )
 
         return serialized
+
+    async def get_latest_journal_snapshot(
+        self,
+        symbol: str,
+        *,
+        current_price: float | None = None,
+    ) -> dict[str, Any] | None:
+        stmt = (
+            select(TradeJournal)
+            .where(
+                TradeJournal.symbol == symbol,
+                TradeJournal.status.in_([JournalStatus.draft, JournalStatus.active]),
+            )
+            .order_by(desc(TradeJournal.created_at))
+            .limit(1)
+        )
+        result = await self.db.execute(stmt)
+        journal = result.scalars().first()
+
+        if journal is None:
+            return None
+
+        return self._serialize_journal_snapshot(journal, current_price=current_price)
+
+    async def get_journals_batch(
+        self,
+        symbols: list[str],
+        *,
+        current_prices: dict[str, float | None] | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        unique_symbols = sorted({symbol for symbol in symbols if symbol})
+        if not unique_symbols:
+            return {}
+
+        stmt = select(TradeJournal).where(
+            TradeJournal.symbol.in_(unique_symbols),
+            TradeJournal.status.in_([JournalStatus.draft, JournalStatus.active]),
+        )
+        result = await self.db.execute(stmt)
+        journals = result.scalars().all()
+
+        latest_by_symbol: dict[str, TradeJournal] = {}
+        for journal in journals:
+            existing = latest_by_symbol.get(journal.symbol)
+            if existing is None or journal.created_at > existing.created_at:
+                latest_by_symbol[journal.symbol] = journal
+
+        return {
+            symbol: self._serialize_journal_snapshot(
+                journal,
+                current_price=(current_prices or {}).get(symbol),
+            )
+            for symbol, journal in latest_by_symbol.items()
+        }
 
     async def get_cash_snapshot(self) -> dict[str, Any]:
         raw_data = await get_available_capital_impl(include_manual=True)
