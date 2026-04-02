@@ -207,3 +207,19 @@ def test_build_report_payload_returns_approved_top_level_sections() -> None:
     assert payload["summary"]["split"] == "val"
     assert payload["top_trades"][0]["symbol"] == "BTC"
     assert payload["bottom_trades"][0]["symbol"] == "ETH"
+
+
+def test_build_report_payload_uses_official_time_in_market_pct() -> None:
+    """Test that report uses BacktestResult.time_in_market_pct in both summary and risk_metrics."""
+    result = _make_result()
+    result.time_in_market_pct = 37.5
+
+    payload = report.build_report_payload(
+        result,
+        data={"BTC": object()},
+        split_info={"name": "val", "start": "2025-07-01", "end": "2026-01-31"},
+        cv_result=_make_cv_result(),
+    )
+
+    assert payload["summary"]["time_in_market_pct"] == pytest.approx(37.5)
+    assert payload["risk_metrics"]["time_in_market_pct"] == pytest.approx(37.5)

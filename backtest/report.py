@@ -206,7 +206,9 @@ def _drawdown_period_days(
     max_drawdown_trough_date: datetime | None = None
     max_drawdown_trough_index = 0
 
-    for idx, (date_str, equity) in enumerate(zip(equity_dates, equity_curve, strict=True)):
+    for idx, (date_str, equity) in enumerate(
+        zip(equity_dates, equity_curve, strict=True)
+    ):
         date = _parse_date(date_str)
         equity_value = float(equity)
         if equity_value >= peak_value:
@@ -220,7 +222,9 @@ def _drawdown_period_days(
         if current_drawdown_start is None:
             current_drawdown_start = peak_date
 
-        drawdown_value = (peak_value - equity_value) / peak_value if peak_value > 0 else 0.0
+        drawdown_value = (
+            (peak_value - equity_value) / peak_value if peak_value > 0 else 0.0
+        )
         if drawdown_value > max_drawdown_value:
             max_drawdown_value = drawdown_value
             max_drawdown_peak = peak_value
@@ -245,7 +249,9 @@ def _drawdown_period_days(
     return longest_days, recovery_days
 
 
-def _time_in_market_pct(equity_dates: list[str], trade_log: list[dict[str, Any]]) -> float:
+def _time_in_market_pct(
+    equity_dates: list[str], trade_log: list[dict[str, Any]]
+) -> float:
     if len(equity_dates) <= 1:
         return 0.0
 
@@ -275,8 +281,17 @@ def generate_risk_metrics(
     equity_curve: list[float],
     equity_dates: list[str],
     trade_log: list[dict[str, Any]],
+    time_in_market_pct: float | None = None,
 ) -> dict[str, Any]:
-    """Build risk metrics based on the approved definitions."""
+    """Build risk metrics based on the approved definitions.
+
+    Args:
+        equity_curve: List of equity values over time
+        equity_dates: List of dates corresponding to equity values
+        trade_log: List of executed trades
+        time_in_market_pct: Optional override for time-in-market percentage.
+            If not provided, will be calculated from trade_log.
+    """
     round_trips = build_round_trips(trade_log)
     wins = [float(trip["pnl"]) for trip in round_trips if float(trip["pnl"]) > 0]
     losses = [abs(float(trip["pnl"])) for trip in round_trips if float(trip["pnl"]) < 0]
@@ -284,6 +299,13 @@ def generate_risk_metrics(
     longest_dd_days, recovery_days = _drawdown_period_days(equity_curve, equity_dates)
     cagr = _cagr(equity_curve, equity_dates)
     max_dd_ratio = _calc_max_drawdown_pct(equity_curve) / 100.0
+
+    # Use provided time_in_market_pct or calculate from trade log
+    tim_pct = (
+        time_in_market_pct
+        if time_in_market_pct is not None
+        else _time_in_market_pct(equity_dates, trade_log)
+    )
 
     return {
         "calmar_ratio": (cagr / max_dd_ratio) if max_dd_ratio > 0 else 0.0,
@@ -296,7 +318,7 @@ def generate_risk_metrics(
         "max_consecutive_wins": max_wins,
         "longest_drawdown_period_days": longest_dd_days,
         "recovery_time_from_max_dd_days": recovery_days,
-        "time_in_market_pct": _time_in_market_pct(equity_dates, trade_log),
+        "time_in_market_pct": tim_pct,
     }
 
 
@@ -339,7 +361,9 @@ def build_report_payload(
         "start": split_info["start"],
         "end": split_info["end"],
         "initial_capital": initial_capital,
-        "final_equity": result.equity_curve[-1] if result.equity_curve else initial_capital,
+        "final_equity": result.equity_curve[-1]
+        if result.equity_curve
+        else initial_capital,
         "total_return_pct": result.total_return_pct,
         "sharpe_ratio": result.sharpe,
         "max_drawdown_pct": result.max_drawdown_pct,
@@ -349,6 +373,7 @@ def build_report_payload(
         "sell_trades": sell_count,
         "win_rate_pct": result.win_rate_pct * 100.0,
         "avg_holding_days": result.avg_holding_days,
+        "time_in_market_pct": result.time_in_market_pct,
         "score": prepare.compute_score(result),
         "symbols": sorted(data.keys()),
     }
@@ -370,6 +395,7 @@ def build_report_payload(
         result.equity_curve,
         result.equity_dates,
         result.trade_log,
+        time_in_market_pct=result.time_in_market_pct,
     )
 
     return {

@@ -155,6 +155,7 @@ def _print_result(result: Any) -> None:
     print(f"win_rate_pct:       {result.win_rate_pct * 100:.1f}%")
     print(f"profit_factor:      {result.profit_factor:.2f}")
     print(f"avg_holding_days:   {result.avg_holding_days:.1f}")
+    print(f"time_in_market_pct: {result.time_in_market_pct:.1f}%")
     print(f"backtest_seconds:   {result.backtest_seconds:.3f}")
     print("=" * 40)
 
