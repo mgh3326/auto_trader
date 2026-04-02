@@ -427,3 +427,27 @@ def test_portfolio_dashboard_offcanvas_contains_detail_page_link_hook() -> None:
     assert "상세 페이지 열기" in body
     assert "buildPositionDetailUrl(" in body
     assert "/portfolio/positions/" in body
+
+
+@pytest.mark.unit
+def test_portfolio_dashboard_page_includes_detail_url_contract_for_positions() -> None:
+    client, _, _ = _create_client_with_dashboard()
+    body = client.get("/portfolio/").text
+
+    assert 'data-detail-url="${detailUrl}"' in body
+    assert 'role="link"' in body
+    assert 'tabindex="0"' in body
+    assert "position-detail-link" in body
+
+
+@pytest.mark.unit
+def test_portfolio_dashboard_page_uses_guarded_delegated_navigation() -> None:
+    client, _, _ = _create_client_with_dashboard()
+    body = client.get("/portfolio/").text
+
+    assert "function shouldIgnorePositionActivationTarget(target)" in body
+    assert 'target?.closest("a, button, input, select, textarea, label' in body
+    assert 'event.key === "Enter" || event.key === " "' in body
+    assert "window.location.assign(detailUrl)" in body
+    assert "if (state.positionInteractionsBound) return;" in body
+    assert "state.positionInteractionsBound = true;" in body
