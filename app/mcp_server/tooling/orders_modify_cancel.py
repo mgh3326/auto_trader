@@ -144,7 +144,9 @@ def _normalize_kis_domestic_order(order: dict[str, Any]) -> dict[str, Any]:
     )
 
     remaining = int(
-        float(_get_kis_field(order, "rmn_qty", "RMN_QTY", default=ordered - filled) or 0)
+        float(
+            _get_kis_field(order, "rmn_qty", "RMN_QTY", default=ordered - filled) or 0
+        )
     )
 
     ordered_price = int(

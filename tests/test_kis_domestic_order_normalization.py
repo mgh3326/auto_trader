@@ -7,6 +7,7 @@ from app.mcp_server.tooling.orders_modify_cancel import (
     _normalize_kis_domestic_order,
 )
 
+
 @pytest.mark.unit
 @pytest.mark.parametrize(
     ("filled", "remaining", "status_name", "expected"),
@@ -30,6 +31,7 @@ def test_map_kis_status_handles_named_and_unnamed_statuses(
 ) -> None:
     assert _map_kis_status(filled, remaining, status_name) == expected
 
+
 def _build_domestic_order(**overrides: str) -> dict[str, str]:
     base = {
         "ord_dt": "20260401",
@@ -44,9 +46,16 @@ def _build_domestic_order(**overrides: str) -> dict[str, str]:
     base.update(overrides)
     return base
 
+
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("order", "expected_status", "expected_filled_qty", "expected_remaining_qty", "expected_avg_price"),
+    (
+        "order",
+        "expected_status",
+        "expected_filled_qty",
+        "expected_remaining_qty",
+        "expected_avg_price",
+    ),
     [
         (
             _build_domestic_order(
@@ -102,6 +111,7 @@ def test_normalize_kis_domestic_order_supports_output1_field_names(
     assert normalized["remaining_qty"] == expected_remaining_qty
     assert normalized["filled_avg_price"] == expected_avg_price
 
+
 @pytest.mark.unit
 def test_normalize_kis_domestic_order_keeps_output_compatibility_for_filled() -> None:
     normalized = _normalize_kis_domestic_order(
@@ -116,6 +126,7 @@ def test_normalize_kis_domestic_order_keeps_output_compatibility_for_filled() ->
     assert normalized["filled_qty"] == 10
     assert normalized["remaining_qty"] == 0
     assert normalized["filled_avg_price"] == 47250
+
 
 @pytest.mark.unit
 def test_normalize_kis_domestic_order_keeps_output_pending_status() -> None:
