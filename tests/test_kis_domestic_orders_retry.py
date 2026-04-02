@@ -39,7 +39,7 @@ class TestDomesticOrdersTransientRetry:
         }
         success_response = {
             "rt_cd": "0",
-            "output": [{"odno": "001", "pdno": "005930"}],
+            "output1": [{"odno": "001", "pdno": "005930"}],
             "ctx_area_fk100": "",
             "ctx_area_nk100": "",
         }
