@@ -289,6 +289,48 @@ async def test_get_order_history_pending_us_equity(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_order_history_pending_us_unfilled_status_name_maps_to_pending(
+    monkeypatch,
+):
+    tools = build_tools()
+
+    class MockKISClient:
+        async def inquire_korea_orders(self):
+            return []
+
+        async def inquire_overseas_orders(self, exchange_code):
+            if exchange_code == "NASD":
+                return [
+                    {
+                        "odno": "67891",
+                        "sll_buy_dvsn_cd": "02",
+                        "pdno": "AAPL",
+                        "ft_ord_qty": "100",
+                        "ft_ccld_qty": "0",
+                        "ft_ord_unpr3": "200.0",
+                        "ft_ccld_unpr3": "0",
+                        "ord_dt": "20240101",
+                        "ord_tmd": "093000",
+                        "prcs_stat_name": "미체결",
+                    }
+                ]
+            return []
+
+    _patch_kis_client(monkeypatch, MockKISClient)
+
+    result = await tools["get_order_history"](status="pending", market="us")
+
+    assert result["market"] == "us"
+    assert len(result["orders"]) == 1
+    order = result["orders"][0]
+    assert order["order_id"] == "67891"
+    assert order["symbol"] == "AAPL"
+    assert order["status"] == "pending"
+    assert order["filled_qty"] == 0
+    assert order["remaining_qty"] == 100
+
+
+@pytest.mark.asyncio
 async def test_get_order_history_pending_with_symbol_filter(monkeypatch):
     tools = build_tools()
 
@@ -508,6 +550,52 @@ async def test_get_order_history_kr_order_id_normalizes_list_response(monkeypatc
     assert result["market"] == "kr"
     assert len(result["orders"]) == 1
     assert result["orders"][0]["order_id"] == "KR-OD-1"
+
+
+@pytest.mark.asyncio
+async def test_get_order_history_kr_filled_filter_includes_output1_orders(monkeypatch):
+    tools = build_tools()
+
+    class FakeKIS:
+        async def inquire_daily_order_domestic(self, **kwargs):
+            return [
+                {
+                    "odno": "0012345678",
+                    "sll_buy_dvsn_cd": "02",
+                    "pdno": "035720",
+                    "prdt_name": "카카오",
+                    "ord_qty": "10",
+                    "ord_unpr": "47500",
+                    "tot_ccld_qty": "10",
+                    "avg_prvs": "47250",
+                    "rmn_qty": "0",
+                    "ord_dt": "20260401",
+                    "ord_tmd": "095032",
+                    "ccld_cndt_name": "없음",
+                    "excg_id_dvsn_cd": "SOR",
+                    "ordr_empno": "OpnAPI",
+                }
+            ]
+
+        async def inquire_korea_orders(self):
+            return []
+
+    _patch_kis_client(monkeypatch, lambda: FakeKIS())
+
+    result = await tools["get_order_history"](
+        symbol="035720",
+        market="kr",
+        status="filled",
+        days=30,
+        limit=20,
+    )
+
+    assert result["market"] == "kr"
+    assert len(result["orders"]) == 1
+    assert result["orders"][0]["order_id"] == "0012345678"
+    assert result["orders"][0]["status"] == "filled"
+    assert result["orders"][0]["filled_qty"] == 10
+    assert result["orders"][0]["filled_avg_price"] == 47250
 
 
 @pytest.mark.asyncio

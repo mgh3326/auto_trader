@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import app.services.portfolio_position_detail_service as detail_service_module
+from app.mcp_server.tooling import orders_history
 from app.services.portfolio_position_detail_service import (
     PortfolioPositionDetailNotFoundError,
     PortfolioPositionDetailService,
@@ -732,6 +733,99 @@ async def test_get_orders_payload_prefers_filled_timestamp_and_avg_price(
     assert payload["summary"]["last_fill"]["ordered_at"] == "2026-04-01T09:19:00+09:00"
     assert payload["recent_fills"][0]["price"] == 455.5
     assert payload["recent_fills"][0]["amount"] == 911.0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_orders_payload_surfaces_filled_kr_history_items(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = PortfolioPositionDetailService(
+        overview_service=MagicMock(),
+        dashboard_service=MagicMock(),
+    )
+
+    monkeypatch.setattr(
+        detail_service_module,
+        "get_order_history_impl",
+        AsyncMock(
+            side_effect=[
+                {
+                    "orders": [
+                        {
+                            "order_id": "0012345678",
+                            "symbol": "035720",
+                            "side": "buy",
+                            "status": "filled",
+                            "ordered_price": 47500,
+                            "filled_avg_price": 47250,
+                            "filled_qty": 10,
+                            "ordered_qty": 10,
+                            "ordered_at": "2026-04-01 095032",
+                            "filled_at": "",
+                            "currency": "KRW",
+                        }
+                    ],
+                    "errors": [],
+                },
+                {"orders": [], "errors": []},
+            ]
+        ),
+    )
+
+    payload = await service.get_orders_payload(market_type="kr", symbol="035720")
+
+    assert payload["summary"]["fill_count"] == 1
+    assert payload["summary"]["last_fill"]["order_id"] == "0012345678"
+    assert payload["recent_fills"][0]["price"] == 47250
+    assert payload["recent_fills"][0]["amount"] == 472500
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_orders_payload_uses_real_kr_history_normalization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = PortfolioPositionDetailService(
+        overview_service=MagicMock(),
+        dashboard_service=MagicMock(),
+    )
+
+    class FakeKIS:
+        async def inquire_daily_order_domestic(self, **kwargs):
+            return [
+                {
+                    "odno": "0012345678",
+                    "sll_buy_dvsn_cd": "02",
+                    "pdno": "035720",
+                    "prdt_name": "카카오",
+                    "ord_qty": "10",
+                    "ord_unpr": "47500",
+                    "tot_ccld_qty": "10",
+                    "avg_prvs": "47250",
+                    "rmn_qty": "0",
+                    "ord_dt": "20260401",
+                    "ord_tmd": "095032",
+                    "ccld_cndt_name": "없음",
+                    "excg_id_dvsn_cd": "SOR",
+                    "ordr_empno": "OpnAPI",
+                }
+            ]
+
+        async def inquire_korea_orders(self):
+            return []
+
+    monkeypatch.setattr(orders_history, "KISClient", lambda: FakeKIS())
+
+    payload = await service.get_orders_payload(market_type="kr", symbol="035720")
+
+    assert payload["summary"]["fill_count"] == 1
+    assert payload["summary"]["pending_count"] == 0
+    assert payload["summary"]["last_fill"]["order_id"] == "0012345678"
+    assert payload["recent_fills"][0]["price"] == 47250
+    assert payload["recent_fills"][0]["amount"] == 472500
+    assert payload["recent_fills"][0]["side"] == "buy"
+    assert payload["errors"] == []
 
 
 @pytest.mark.unit
