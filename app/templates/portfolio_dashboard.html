@@ -414,6 +414,12 @@
             background: rgba(192, 90, 60, 0.05);
         }
 
+        .position-row:focus,
+        .position-card:focus {
+            outline: 2px solid rgba(192, 90, 60, 0.55);
+            outline-offset: 2px;
+        }
+
         .chart-container {
             position: relative;
         }
@@ -956,9 +962,19 @@
                 const marketType = escapeHtml(item.market_type);
                 const currentPrice = item.current_price ?? 0;
                 const highlight = getJournalHighlight(item);
+                const detailUrl = buildPositionDetailUrl(item.symbol, item.market_type);
 
                 return `
-                    <tr class="position-row" data-symbol="${symbol}" data-market-type="${marketType}" data-current-price="${currentPrice}" style="cursor: pointer; ${highlight.style}">
+                    <tr
+                        class="position-row"
+                        data-symbol="${symbol}"
+                        data-market-type="${marketType}"
+                        data-current-price="${currentPrice}"
+                        data-detail-url="${detailUrl}"
+                        role="link"
+                        tabindex="0"
+                        style="cursor: pointer; ${highlight.style}"
+                    >
                         <td><span class="${marketBadgeClass(item.market_type)}">${marketType}</span></td>
                         <td>
                             <strong>${symbol}</strong><br>
@@ -971,7 +987,16 @@
                             ${item.current_price === null ? '<span class="subtle">조회중...</span>' : formatNumber(item.current_price)}
                         </td>
                         <td>${formatNumber(item.evaluation)}</td>
-                        <td class="${pClass}">${formatProfit(item.profit_loss, item.profit_rate)}</td>
+                        <td class="${pClass}">
+                            ${formatProfit(item.profit_loss, item.profit_rate)}
+                            <a
+                                class="position-detail-link btn btn-sm btn-outline-dark mt-1 d-block"
+                                href="${detailUrl}"
+                                data-no-row-nav="true"
+                            >
+                                상세 보기
+                            </a>
+                        </td>
                     </tr>
                 `;
             }).join("");
@@ -983,9 +1008,19 @@
                 const marketType = escapeHtml(item.market_type);
                 const currentPrice = item.current_price ?? 0;
                 const highlight = getJournalHighlight(item);
+                const detailUrl = buildPositionDetailUrl(item.symbol, item.market_type);
 
                 return `
-                    <article class="result-card position-card" data-symbol="${symbol}" data-market-type="${marketType}" data-current-price="${currentPrice}" style="cursor: pointer; ${highlight.style}">
+                    <article
+                        class="result-card position-card"
+                        data-symbol="${symbol}"
+                        data-market-type="${marketType}"
+                        data-current-price="${currentPrice}"
+                        data-detail-url="${detailUrl}"
+                        role="link"
+                        tabindex="0"
+                        style="cursor: pointer; ${highlight.style}"
+                    >
                         <div class="d-flex justify-content-between align-items-center">
                             <strong>${symbol}</strong>
                             <span class="${marketBadgeClass(item.market_type)}">${marketType}</span>
@@ -999,6 +1034,13 @@
                             <dt>평가금액</dt><dd>${formatNumber(item.evaluation)}</dd>
                             <dt>손익/수익률</dt><dd class="${pClass}">${formatProfit(item.profit_loss, item.profit_rate)}</dd>
                         </dl>
+                        <a
+                            class="position-detail-link btn btn-sm btn-outline-dark w-100 mt-2"
+                            href="${detailUrl}"
+                            data-no-row-nav="true"
+                        >
+                            상세 보기
+                        </a>
                     </article>
                 `;
             }).join("");
@@ -1016,16 +1058,57 @@
             destroyCharts();
         }
 
+        function shouldIgnorePositionActivationTarget(target) {
+            return Boolean(
+                target?.closest("a, button, input, select, textarea, label, [data-no-row-nav='true']")
+            );
+        }
+
+        function navigateToPositionDetail(detailUrl) {
+            if (!detailUrl) return;
+            window.location.assign(detailUrl);
+        }
+
+        function activatePositionElement(element) {
+            const detailUrl = element?.getAttribute("data-detail-url");
+            navigateToPositionDetail(detailUrl || "");
+        }
+
         function attachPositionInteractions() {
-            document.querySelectorAll(".position-row, .position-card").forEach((element) => {
-                element.addEventListener("click", () => {
-                    const symbol = element.getAttribute("data-symbol");
-                    const marketType = element.getAttribute("data-market-type");
-                    const currentPrice = parseFloat(element.getAttribute("data-current-price") || "0");
-                    if (symbol) {
-                        openPositionDetail(symbol, marketType || "", currentPrice);
-                    }
-                });
+            // Delegated click handler on table body
+            tableBody.addEventListener("click", (event) => {
+                if (shouldIgnorePositionActivationTarget(event.target)) return;
+                const row = event.target.closest(".position-row");
+                if (row) activatePositionElement(row);
+            });
+
+            // Delegated click handler on cards container
+            cards.addEventListener("click", (event) => {
+                if (shouldIgnorePositionActivationTarget(event.target)) return;
+                const card = event.target.closest(".position-card");
+                if (card) activatePositionElement(card);
+            });
+
+            // Keyboard activation for rows
+            tableBody.addEventListener("keydown", (event) => {
+                if (shouldIgnorePositionActivationTarget(event.target)) return;
+                if (event.key === "Enter" || event.key === " ") {
+                    const row = event.target.closest(".position-row");
+                    if (!row) return;
+                    event.preventDefault();
+                    activatePositionElement(row);
+                }
+            });
+
+            // Keyboard activation for cards
+            cards.addEventListener("keydown", (event) => {
+                if (shouldIgnorePositionActivationTarget(event.target)) return;
+                if (event.key === "Enter" || event.key === " ") {
+                    const card = event.target.closest(".position-card");
+                    if (!card) return;
+                    event.preventDefault();
+                    activatePositionElement(card);
+                }
             });
         }
 

@@ -437,7 +437,7 @@ def test_portfolio_dashboard_page_includes_detail_url_contract_for_positions() -
     assert 'data-detail-url="${detailUrl}"' in body
     assert 'role="link"' in body
     assert 'tabindex="0"' in body
-    assert 'class="position-detail-link"' in body
+    assert "position-detail-link" in body
 
 
 @pytest.mark.unit
@@ -446,6 +446,6 @@ def test_portfolio_dashboard_page_uses_guarded_delegated_navigation() -> None:
     body = client.get("/portfolio/").text
 
     assert "function shouldIgnorePositionActivationTarget(target)" in body
-    assert 'target.closest("a, button, input, select, textarea, label")' in body
+    assert 'target?.closest("a, button, input, select, textarea, label' in body
     assert 'event.key === "Enter" || event.key === " "' in body
     assert "window.location.assign(detailUrl)" in body
