@@ -795,7 +795,7 @@ def compute_score(result: BacktestResult) -> float:
        penalty = (2.0 - total_return_pct) * 0.5
 
     5. Holding period penalty: Applied when avg_holding_days < 1.5
-       penalty = 0.5 flat
+       penalty = 0.75 flat
     """
     score = result.sharpe
 
@@ -818,7 +818,7 @@ def compute_score(result: BacktestResult) -> float:
 
     # Holding period penalty: applied when holding periods are too short
     if result.avg_holding_days < 1.5:
-        score -= 0.5
+        score -= 0.75
 
     return score
 
