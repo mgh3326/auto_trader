@@ -175,9 +175,11 @@ class TestContractDataclasses:
             backtest_seconds=1.23,
             trade_log=[],
             equity_curve=[100000.0, 105000.0],
+            equity_dates=["2025-04-01", "2025-04-02"],
         )
         assert result.win_rate_pct == 0.6
         assert result.backtest_seconds == 1.23
+        assert result.equity_dates == ["2025-04-01", "2025-04-02"]
 
 
 class TestContractStrategySignature:
@@ -209,16 +211,17 @@ class TestContractScoreFormula:
     """Tests for approved score formula."""
 
     def test_score_formula_matches_approval(self):
-        """Test that compute_score uses approved formula."""
-        # Create result with specific metrics
+        """Test that compute_score uses approved formula with all penalties."""
+        # Create result with specific metrics that trigger all penalties
         result = prepare.BacktestResult(
             total_return_pct=15.0,
             sharpe=1.5,
-            max_drawdown_pct=25.0,  # > 20, should trigger penalty
-            num_trades=5,  # < 10, should trigger penalty
+            max_drawdown_pct=25.0,  # > 20, should trigger drawdown penalty
+            num_trades=20,  # 10 round trips, should trigger trade count penalty
             win_rate_pct=0.5,
             profit_factor=1.5,
-            avg_holding_days=3.0,
+            avg_holding_days=3.0,  # >= 1.5, no holding period penalty
+            time_in_market_pct=75.0,  # >= 20, no time-in-market penalty
             backtest_seconds=0.0,
             trade_log=[],
             equity_curve=[100000.0, 115000.0],
@@ -229,21 +232,25 @@ class TestContractScoreFormula:
         # Expected calculation:
         # score = sharpe = 1.5
         # max_drawdown_penalty = (25 - 20) * 0.1 = 0.5
-        # num_trades_penalty = 1.0 (since < 10)
+        # round_trips = 20 // 2 = 10, trade_count_penalty = (15 - 10) * 0.2 = 1.0
+        # total_return_penalty = 0 (15.0 >= 2.0)
+        # time_in_market_penalty = 0 (75.0 >= 20.0)
+        # holding_days_penalty = 0 (3.0 >= 1.5)
         # final_score = 1.5 - 0.5 - 1.0 = 0.0
-        expected_score = 1.5 - (25.0 - 20.0) * 0.1 - 1.0
+        expected_score = 1.5 - (25.0 - 20.0) * 0.1 - (15 - 10) * 0.2
         assert score == pytest.approx(expected_score, abs=0.01)
 
-    def test_score_formula_no_penalty_when_drawdown_low(self):
-        """Test that score has no drawdown penalty when <= 20%."""
+    def test_score_formula_no_penalty_when_metrics_compliant(self):
+        """Test that score has no penalties when all metrics are compliant."""
         result = prepare.BacktestResult(
             total_return_pct=15.0,
             sharpe=1.5,
-            max_drawdown_pct=15.0,  # <= 20, no penalty
-            num_trades=15,  # >= 10, no penalty
+            max_drawdown_pct=15.0,  # <= 20, no drawdown penalty
+            num_trades=40,  # 20 round trips >= 15, no trade count penalty
             win_rate_pct=0.5,
             profit_factor=1.5,
-            avg_holding_days=3.0,
+            avg_holding_days=5.0,  # >= 1.5, no holding period penalty
+            time_in_market_pct=75.0,  # >= 20, no time-in-market penalty
             backtest_seconds=0.0,
             trade_log=[],
             equity_curve=[100000.0, 115000.0],
@@ -754,15 +761,16 @@ class TestMetrics:
         assert sharpe == 0.0 or np.isnan(sharpe)
 
     def test_score_penalty_when_few_trades(self):
-        """Test that score includes penalty when num_trades < 10."""
+        """Test that score includes trade count penalty when round_trips < 15."""
         result = prepare.BacktestResult(
             total_return_pct=15.0,
             sharpe=1.5,
-            max_drawdown_pct=-10.0,
-            num_trades=5,
+            max_drawdown_pct=15.0,  # <= 20, no drawdown penalty
+            num_trades=10,  # 5 round trips < 15, should trigger penalty
             win_rate_pct=0.5,
             profit_factor=1.5,
-            avg_holding_days=3.0,
+            avg_holding_days=3.0,  # >= 1.5, no holding period penalty
+            time_in_market_pct=75.0,  # >= 20, no time-in-market penalty
             backtest_seconds=0.0,
             trade_log=[],
             equity_curve=[100000.0, 105000.0, 110000.0, 108000.0, 115000.0],
@@ -771,9 +779,79 @@ class TestMetrics:
         score = prepare.compute_score(result)
 
         # Score should be penalized for low trade count
-        # Formula: sharpe - 1.0 penalty when num_trades < 10
-        # 1.5 - 1.0 = 0.5
-        assert score == pytest.approx(0.5, abs=0.01)
+        # Formula: sharpe - trade_count_penalty where round_trips = 10 // 2 = 5
+        # 1.5 - (15 - 5) * 0.2 = 1.5 - 2.0 = -0.5
+        expected_score = 1.5 - (15 - 5) * 0.2
+        assert score == pytest.approx(expected_score, abs=0.01)
+
+
+class TestScoreFormulaHardening:
+    """Tests for hardened scoring formula against score hacking."""
+
+    def test_score_formula_applies_progressive_penalties(self) -> None:
+        """Test that compute_score applies all progressive penalties correctly."""
+        result = prepare.BacktestResult(
+            total_return_pct=1.0,
+            sharpe=1.5,
+            max_drawdown_pct=25.0,
+            num_trades=20,
+            win_rate_pct=0.5,
+            profit_factor=1.5,
+            avg_holding_days=1.0,
+            time_in_market_pct=10.0,
+            backtest_seconds=0.0,
+            trade_log=[],
+            equity_curve=[100000.0, 101000.0],
+        )
+
+        score = prepare.compute_score(result)
+        expected = (
+            1.5
+            - (25.0 - 20.0) * 0.1
+            - (15 - (20 // 2)) * 0.2
+            - (20.0 - 10.0) * 0.1
+            - (2.0 - 1.0) * 0.5
+            - 0.75
+        )
+        assert score == pytest.approx(expected, abs=0.01)
+
+    def test_score_hacking_profile_scores_at_or_below_two(self) -> None:
+        """Test that known score-hacking exploit profile scores poorly."""
+        result = prepare.BacktestResult(
+            total_return_pct=0.8,
+            sharpe=4.28,
+            max_drawdown_pct=0.03,
+            num_trades=88,
+            win_rate_pct=0.955,
+            profit_factor=828.0,
+            avg_holding_days=1.0,
+            time_in_market_pct=10.7,
+            backtest_seconds=0.0,
+            trade_log=[],
+            equity_curve=[100000.0, 100800.0],
+        )
+        # Score is heavily penalized from 4.28 down to 2.0 or below.
+        # This prevents low-exposure, low-return strategies from ranking high
+        assert prepare.compute_score(result) <= 2.0
+
+    def test_compliant_strategy_keeps_sharpe_based_score(self) -> None:
+        """Test that compliant strategy keeps Sharpe-based score with minimal penalties."""
+        result = prepare.BacktestResult(
+            total_return_pct=15.0,
+            sharpe=2.5,
+            max_drawdown_pct=15.0,  # <= 20, no drawdown penalty
+            num_trades=40,  # >= 30 round trips, no trade count penalty
+            win_rate_pct=0.6,
+            profit_factor=2.0,
+            avg_holding_days=5.0,  # >= 1.5, no holding period penalty
+            time_in_market_pct=75.0,  # >= 20, no time-in-market penalty
+            backtest_seconds=0.0,
+            trade_log=[],
+            equity_curve=[100000.0, 115000.0],
+        )
+        score = prepare.compute_score(result)
+        # Should be approximately the Sharpe with minimal penalties
+        assert score >= 2.0  # Strong score maintained
 
 
 class TestRunBacktest:
@@ -844,6 +922,12 @@ class TestRunBacktest:
 
         assert len(result.equity_curve) == 4  # Initial + 3 days
         assert result.equity_curve[0] == 10_000_000.0  # Initial capital
+        assert result.equity_dates == [
+            "2025-04-01",
+            "2025-04-01",
+            "2025-04-02",
+            "2025-04-03",
+        ]
 
     def test_run_backtest_handles_missing_symbol_dates(self):
         """Test that missing symbol dates are handled gracefully."""
@@ -917,6 +1001,7 @@ class TestRunBacktestInterval:
         lookback_called_with: list[str] = []
         captured_history_lengths: list[int] = []
         captured_build_interval: list[str] = []
+        captured_equity_dates: list[list[str]] = []
 
         def fake_lookback(interval_name: str) -> int:
             lookback_called_with.append(interval_name)
@@ -927,8 +1012,11 @@ class TestRunBacktestInterval:
             equity_curve: list[float],
             backtest_seconds: float,
             bar_interval: str = "1d",
+            equity_dates: list[str] | None = None,
+            time_in_market_pct: float = 0.0,
         ) -> prepare.BacktestResult:
             captured_build_interval.append(bar_interval)
+            captured_equity_dates.append(equity_dates or [])
             return prepare.BacktestResult(
                 total_return_pct=0.0,
                 sharpe=0.0,
@@ -937,9 +1025,11 @@ class TestRunBacktestInterval:
                 win_rate_pct=0.0,
                 profit_factor=0.0,
                 avg_holding_days=0.0,
+                time_in_market_pct=time_in_market_pct,
                 backtest_seconds=backtest_seconds,
                 trade_log=state.trade_log,
                 equity_curve=equity_curve,
+                equity_dates=equity_dates or [],
             )
 
         monkeypatch.setattr(prepare, "lookback_bars_for_interval", fake_lookback)
@@ -956,6 +1046,7 @@ class TestRunBacktestInterval:
         assert lookback_called_with == [interval]
         assert captured_history_lengths == [2]
         assert captured_build_interval == [interval]
+        assert captured_equity_dates == [["2025-04-01 02:00:00", "2025-04-01 02:00:00"]]
 
 
 class TestCVFolds:
@@ -1334,3 +1425,60 @@ class TestCrossValidate:
         assert len(result.fold_indices) == 4
         assert result.mean_score == pytest.approx(float(np.mean(result.fold_scores)))
         assert isinstance(result.cv_score, float)
+
+
+class TestTimeInMarketMetric:
+    """Tests for time_in_market_pct metric calculation."""
+
+    def test_run_backtest_calculates_time_in_market_pct(self, tmp_path, monkeypatch):
+        """Test that run_backtest calculates time_in_market_pct correctly.
+
+        Buys on first bar, holds across middle bar, exits on last bar.
+        With 3 bars total and position held for 2 bars (first and middle),
+        expected time_in_market_pct should be 66.67%.
+        """
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+
+        btc_df = pd.DataFrame(
+            {
+                "date": ["2025-07-01", "2025-07-02", "2025-07-03"],
+                "open": [100.0, 105.0, 110.0],
+                "high": [106.0, 111.0, 116.0],
+                "low": [95.0, 100.0, 105.0],
+                "close": [105.0, 110.0, 115.0],
+                "volume": [1000, 1100, 1200],
+                "value": [100000, 110000, 120000],
+            }
+        )
+        btc_df.to_parquet(data_dir / "KRW-BTC.parquet", index=False)
+
+        monkeypatch.setattr(prepare, "DATA_DIR", data_dir)
+        monkeypatch.setattr(prepare, "DEFAULT_SYMBOLS", ["BTC"])
+        monkeypatch.setattr(
+            prepare,
+            "SPLITS",
+            {"val": {"start": "2025-07-01", "end": "2025-07-03"}},
+        )
+
+        class BuyHoldSellStrategy:
+            def on_bar(self, bar_data, portfolio):
+                date = portfolio.date
+                if date == "2025-07-01" and "BTC" not in portfolio.positions:
+                    return [
+                        prepare.Signal(
+                            symbol="BTC", action="buy", weight=1.0, reason="Entry"
+                        )
+                    ]
+                if date == "2025-07-03" and "BTC" in portfolio.positions:
+                    return [
+                        prepare.Signal(
+                            symbol="BTC", action="sell", weight=1.0, reason="Exit"
+                        )
+                    ]
+                return []
+
+        result = prepare.run_backtest(prepare.load_data("val"), BuyHoldSellStrategy())
+
+        assert hasattr(result, "time_in_market_pct")
+        assert result.time_in_market_pct == pytest.approx(66.67, abs=0.1)

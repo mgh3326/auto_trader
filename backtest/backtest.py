@@ -1,6 +1,7 @@
 """Backtest runner."""
 
 import argparse
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import prepare
+import report
 import strategy
 
 
@@ -17,9 +19,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run backtest")
     parser.add_argument(
         "--mode",
-        choices=["single", "cv"],
+        choices=["single", "cv", "report"],
         default="single",
-        help="single: run on one split (default). cv: walk-forward cross-validation.",
+        help=(
+            "single: run on one split (default). "
+            "cv: walk-forward cross-validation. "
+            "report: detailed split + CV report."
+        ),
     )
     parser.add_argument(
         "--split",
@@ -32,10 +38,18 @@ def main() -> None:
         default="1d",
         help="Bar interval to load (default: 1d)",
     )
+    parser.add_argument(
+        "--output",
+        choices=["text", "json"],
+        default="text",
+        help="Report output format (default: text). Used with --mode report.",
+    )
     args = parser.parse_args()
 
     if args.mode == "cv":
         _run_cv(args.interval)
+    elif args.mode == "report":
+        _run_report(args.split, args.interval, args.output)
     else:
         _run_single(args.split, args.interval)
 
@@ -93,6 +107,40 @@ def _run_cv(bar_interval: str) -> None:
     print("=" * 50)
 
 
+def _run_report(split: str, bar_interval: str, output: str) -> None:
+    """Run detailed report for a single split plus cross-validation."""
+    data = prepare.load_data(split, bar_interval=bar_interval)
+
+    if not data:
+        print("No data available. Run fetch_data.py first.")
+        sys.exit(1)
+
+    single_result = prepare.run_backtest(
+        data,
+        strategy.Strategy(),
+        bar_interval=bar_interval,
+    )
+    cv_result = prepare.cross_validate(strategy.Strategy, bar_interval=bar_interval)
+    split_dates = prepare.SPLITS[split]
+    rendered = report.generate_report(
+        single_result,
+        data=data,
+        split_info={
+            "name": split,
+            "start": split_dates["start"],
+            "end": split_dates["end"],
+        },
+        cv_result=cv_result,
+        output=output,
+    )
+
+    if output == "json":
+        print(json.dumps(rendered, ensure_ascii=False, indent=2))
+        return
+
+    print(rendered)
+
+
 def _print_result(result: Any) -> None:
     """Print single backtest result."""
     score = prepare.compute_score(result)
@@ -107,6 +155,7 @@ def _print_result(result: Any) -> None:
     print(f"win_rate_pct:       {result.win_rate_pct * 100:.1f}%")
     print(f"profit_factor:      {result.profit_factor:.2f}")
     print(f"avg_holding_days:   {result.avg_holding_days:.1f}")
+    print(f"time_in_market_pct: {result.time_in_market_pct:.1f}%")
     print(f"backtest_seconds:   {result.backtest_seconds:.3f}")
     print("=" * 40)
 

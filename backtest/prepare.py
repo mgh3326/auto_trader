@@ -181,9 +181,11 @@ class BacktestResult:
     win_rate_pct: float  # Changed from win_rate for clarity
     profit_factor: float
     avg_holding_days: float
+    time_in_market_pct: float = 0.0  # Percentage of days with open positions
     backtest_seconds: float = 0.0  # Runtime measurement
     trade_log: list[dict[str, Any]] = field(default_factory=list)
     equity_curve: list[float] = field(default_factory=list)
+    equity_dates: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -509,9 +511,11 @@ def run_backtest(
             win_rate_pct=0.0,
             profit_factor=0.0,
             avg_holding_days=0.0,
+            time_in_market_pct=0.0,
             backtest_seconds=0.0,
             trade_log=[],
             equity_curve=[initial_capital],
+            equity_dates=[],
         )
 
     # Pre-index data by symbol for efficient lookup.
@@ -535,6 +539,8 @@ def run_backtest(
     )
 
     equity_curve = [initial_capital]
+    equity_dates = [dates[0]]
+    days_in_market = 0
 
     # Iterate through dates
     for date in dates:
@@ -597,10 +603,23 @@ def run_backtest(
             if symbol in bar_data:
                 equity += qty * bar_data[symbol].close
         equity_curve.append(equity)
+        equity_dates.append(date)
+
+        # Track days in market (after signal execution)
+        if state.positions:
+            days_in_market += 1
 
     # Calculate metrics
     elapsed = time.time() - start_time
-    return _build_result(state, equity_curve, elapsed, bar_interval=bar_interval)
+    time_in_market_pct = days_in_market / len(dates) * 100.0 if dates else 0.0
+    return _build_result(
+        state,
+        equity_curve,
+        elapsed,
+        bar_interval=bar_interval,
+        equity_dates=equity_dates,
+        time_in_market_pct=time_in_market_pct,
+    )
 
 
 def _build_result(
@@ -608,6 +627,8 @@ def _build_result(
     equity_curve: list[float],
     backtest_seconds: float = 0.0,
     bar_interval: str = "1d",
+    equity_dates: list[str] | None = None,
+    time_in_market_pct: float = 0.0,
 ) -> BacktestResult:
     """Build BacktestResult from final state."""
     total_return_pct = _calc_total_return(equity_curve)
@@ -637,9 +658,11 @@ def _build_result(
         win_rate_pct=win_rate_pct,
         profit_factor=profit_factor,
         avg_holding_days=avg_holding_days,
+        time_in_market_pct=time_in_market_pct,
         backtest_seconds=backtest_seconds,
         trade_log=state.trade_log,
         equity_curve=equity_curve,
+        equity_dates=equity_dates or [],
     )
 
 
@@ -753,22 +776,49 @@ def _calc_trade_metrics(trade_log: list[dict[str, Any]]) -> tuple[float, float, 
 
 
 def compute_score(result: BacktestResult) -> float:
-    """Compute composite score using approved formula.
+    """Compute composite score with anti-gaming penalties.
 
-    Formula: sharpe - drawdown_penalty - trade_count_penalty
-    where drawdown_penalty applies when max_drawdown_pct > 20
-    and trade_count_penalty applies when num_trades < 10
+    Base score is Sharpe ratio. Progressive penalties are applied to prevent
+    score hacking via low-exposure, low-return, or insufficient-trade strategies:
+
+    1. Drawdown penalty: Applied when max_drawdown_pct > 20%
+       penalty = (max_drawdown_pct - 20) * 0.1
+
+    2. Trade count penalty: Applied when round_trips < 15
+       penalty = (15 - round_trips) * 0.2
+       where round_trips = num_trades // 2
+
+    3. Time-in-market penalty: Applied when time_in_market_pct < 20%
+       penalty = (20.0 - time_in_market_pct) * 0.1
+
+    4. Total return penalty: Applied when total_return_pct < 2%
+       penalty = (2.0 - total_return_pct) * 0.5
+
+    5. Holding period penalty: Applied when avg_holding_days < 1.5
+       penalty = 0.75 flat
     """
-    # Base score is sharpe ratio
     score = result.sharpe
 
     # Drawdown penalty: applied when drawdown exceeds 20%
     if result.max_drawdown_pct > 20:
         score -= (result.max_drawdown_pct - 20) * 0.1
 
-    # Trade count penalty: flat penalty when too few trades
-    if result.num_trades < 10:
-        score -= 1.0
+    # Trade count penalty: based on round trips (each round trip = buy + sell)
+    round_trips = result.num_trades // 2
+    if round_trips < 15:
+        score -= (15 - round_trips) * 0.2
+
+    # Time-in-market penalty: applied when exposure is too low
+    if result.time_in_market_pct < 20.0:
+        score -= (20.0 - result.time_in_market_pct) * 0.1
+
+    # Total return penalty: applied when returns are too low
+    if result.total_return_pct < 2.0:
+        score -= (2.0 - result.total_return_pct) * 0.5
+
+    # Holding period penalty: applied when holding periods are too short
+    if result.avg_holding_days < 1.5:
+        score -= 0.75
 
     return score
 
@@ -811,7 +861,9 @@ def cross_validate(
             continue
 
         strat = strategy_class()
-        result = run_backtest(val_data, strat, initial_capital, bar_interval=bar_interval)
+        result = run_backtest(
+            val_data, strat, initial_capital, bar_interval=bar_interval
+        )
         score = compute_score(result)
 
         fold_scores.append(score)
