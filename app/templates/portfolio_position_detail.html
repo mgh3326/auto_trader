@@ -1,0 +1,22 @@
+<main class="detail-shell" id="position-detail-page">
+  <header class="detail-hero">
+    <a href="/portfolio/" class="back-link">포트폴리오로 돌아가기</a>
+    <div id="summary-card"></div>
+  </header>
+
+  <section id="position-components-section"></section>
+  <section id="position-journal-section">
+    <h2>Trade Journal</h2>
+  </section>
+  <section id="position-indicators-section" data-endpoint=""></section>
+  <section id="position-news-section">
+    <h2>최근 뉴스</h2>
+  </section>
+  <section id="position-opinions-section">
+    <h2>애널리스트 의견</h2>
+  </section>
+</main>
+
+<script>
+  const detailPayload = {{ page_payload | tojson }};
+</script>

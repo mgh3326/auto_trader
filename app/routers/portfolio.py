@@ -305,3 +305,60 @@ async def get_portfolio_cash(
     ),
 ):
     return await dashboard_service.get_cash_snapshot()
+
+
+from app.schemas.portfolio_position_detail import PositionDetailPageResponse
+from app.services.portfolio_position_detail_service import (
+    PortfolioPositionDetailNotFoundError,
+    PortfolioPositionDetailService,
+)
+
+
+class PositionDetailNotFoundHTTPError(HTTPException):
+    def __init__(self, symbol: str):
+        super().__init__(status_code=404, detail=f"Position not found: {symbol}")
+
+
+def get_portfolio_position_detail_service(
+    overview_service: PortfolioOverviewService = Depends(
+        get_portfolio_overview_service
+    ),
+    dashboard_service: PortfolioDashboardService = Depends(
+        get_portfolio_dashboard_service
+    ),
+) -> PortfolioPositionDetailService:
+    return PortfolioPositionDetailService(
+        overview_service=overview_service,
+        dashboard_service=dashboard_service,
+    )
+
+
+@router.get("/positions/{market_type}/{symbol}", response_class=HTMLResponse)
+async def portfolio_position_detail_page(
+    request: Request,
+    market_type: str,
+    symbol: str,
+    current_user: User = Depends(get_authenticated_user),
+    detail_service: PortfolioPositionDetailService = Depends(
+        get_portfolio_position_detail_service
+    ),
+):
+    try:
+        payload = await detail_service.get_page_payload(
+            user_id=current_user.id,
+            market_type=market_type,
+            symbol=symbol,
+        )
+    except PortfolioPositionDetailNotFoundError as exc:
+        raise HTTPException(
+            status_code=404, detail=f"Position not found: {symbol}"
+        ) from exc
+
+    return templates.TemplateResponse(
+        "portfolio_position_detail.html",
+        {
+            "request": request,
+            "user": current_user,
+            "page_payload": payload,
+        },
+    )
