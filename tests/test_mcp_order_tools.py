@@ -511,6 +511,52 @@ async def test_get_order_history_kr_order_id_normalizes_list_response(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_get_order_history_kr_filled_filter_includes_output1_orders(monkeypatch):
+    tools = build_tools()
+
+    class FakeKIS:
+        async def inquire_daily_order_domestic(self, **kwargs):
+            return [
+                {
+                    "odno": "0012345678",
+                    "sll_buy_dvsn_cd": "02",
+                    "pdno": "035720",
+                    "prdt_name": "카카오",
+                    "ord_qty": "10",
+                    "ord_unpr": "47500",
+                    "tot_ccld_qty": "10",
+                    "avg_prvs": "47250",
+                    "rmn_qty": "0",
+                    "ord_dt": "20260401",
+                    "ord_tmd": "095032",
+                    "ccld_cndt_name": "없음",
+                    "excg_id_dvsn_cd": "SOR",
+                    "ordr_empno": "OpnAPI",
+                }
+            ]
+
+        async def inquire_korea_orders(self):
+            return []
+
+    _patch_kis_client(monkeypatch, lambda: FakeKIS())
+
+    result = await tools["get_order_history"](
+        symbol="035720",
+        market="kr",
+        status="filled",
+        days=30,
+        limit=20,
+    )
+
+    assert result["market"] == "kr"
+    assert len(result["orders"]) == 1
+    assert result["orders"][0]["order_id"] == "0012345678"
+    assert result["orders"][0]["status"] == "filled"
+    assert result["orders"][0]["filled_qty"] == 10
+    assert result["orders"][0]["filled_avg_price"] == 47250
+
+
+@pytest.mark.asyncio
 async def test_modify_order_dry_run_contract(monkeypatch):
     tools = build_tools()
 
