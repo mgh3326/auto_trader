@@ -157,3 +157,49 @@ class PortfolioDashboardService:
             },
             "errors": errors,
         }
+
+    async def calculate_allocation_metrics(
+        self, positions: list[dict[str, Any]], cash_summary: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Calculate weight and weight warnings for positions."""
+        total_available = (cash_summary.get("summary") or {}).get("total_available_krw")
+        if total_available is None:
+            return positions
+
+        total_evaluation = sum(p.get("evaluation") or 0.0 for p in positions)
+        total_capital = total_evaluation + total_available
+
+        if total_capital <= 0:
+            return positions
+
+        for p in positions:
+            evaluation = p.get("evaluation") or 0.0
+            weight = evaluation / total_capital
+            p["weight"] = weight
+            # Warning if a single position > 25% of total capital
+            if weight > 0.25:
+                p["weight_warning"] = f"비중 과다 ({weight*100:.1f}%)"
+
+        return positions
+
+    async def simulate_sell_order(
+        self,
+        *,
+        user_id: int,
+        symbol: str,
+        market_type: str,
+        quantity: float,
+        price: float,
+    ) -> dict[str, Any]:
+        """Simulate a sell order and return the expected outcome."""
+        # This is a stub for now, but returns the expected structure
+        return {
+            "success": True,
+            "symbol": symbol,
+            "market_type": market_type,
+            "order_quantity": quantity,
+            "order_price": price,
+            "expected_proceeds": quantity * price,
+            "status": "simulated",
+            "message": "매도 시뮬레이션 결과입니다. 실제 주문은 발생하지 않았습니다.",
+        }

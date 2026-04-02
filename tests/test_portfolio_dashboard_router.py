@@ -269,6 +269,18 @@ class _FakeDashboardService:
                 "errors": [],
             }
         )
+        self.calculate_allocation_metrics = AsyncMock(
+            side_effect=lambda positions, cash: positions
+        )
+        self.simulate_sell_order = AsyncMock(
+            return_value={
+                "success": True,
+                "symbol": "AAPL",
+                "expected_proceeds": 1500.0,
+                "status": "simulated",
+                "message": "Success",
+            }
+        )
 
 
 def _create_client_with_dashboard() -> tuple[
@@ -335,6 +347,33 @@ def test_portfolio_cash_api_returns_dashboard_cash_summary() -> None:
     assert payload["summary"]["total_available_krw"] == 3570000.0
 
     fake_dashboard.get_cash_snapshot.assert_awaited_once()
+
+
+def test_portfolio_simulate_sell_api_returns_simulated_outcome() -> None:
+    client, _, fake_dashboard = _create_client_with_dashboard()
+
+    response = client.post(
+        "/portfolio/api/simulate-sell",
+        json={
+            "symbol": "AAPL",
+            "market_type": "US",
+            "quantity": 10.0,
+            "price": 150.0,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert payload["expected_proceeds"] == 1500.0
+
+    fake_dashboard.simulate_sell_order.assert_awaited_once_with(
+        user_id=7,
+        symbol="AAPL",
+        market_type="US",
+        quantity=10.0,
+        price=150.0,
+    )
 
 
 def test_portfolio_dashboard_page_renders_phase1_panels_and_scripts() -> None:

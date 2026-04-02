@@ -65,6 +65,13 @@ class EnrichRequest(BaseModel):
     symbols: list[EnrichSymbol]
 
 
+class SellSimulationRequest(BaseModel):
+    symbol: str
+    market_type: str
+    quantity: float
+    price: float
+
+
 @router.get("/api/overview")
 async def get_portfolio_overview(
     market: Literal["ALL", "KR", "US", "CRYPTO"] = "ALL",
@@ -75,15 +82,27 @@ async def get_portfolio_overview(
     overview_service: PortfolioOverviewService = Depends(
         get_portfolio_overview_service
     ),
+    dashboard_service: PortfolioDashboardService = Depends(
+        get_portfolio_dashboard_service
+    ),
 ):
     try:
-        return await overview_service.get_overview(
+        overview = await overview_service.get_overview(
             user_id=current_user.id,
             market=market,
             account_keys=account_keys,
             q=q,
             skip_missing_prices=skip_missing_prices,
         )
+
+        # Enrich with allocation metrics (weights and warnings)
+        if overview.get("success") and overview.get("positions"):
+            cash_summary = await dashboard_service.get_cash_snapshot()
+            overview["positions"] = await dashboard_service.calculate_allocation_metrics(
+                overview["positions"], cash_summary
+            )
+
+        return overview
     except Exception as e:
         logger.error("Error fetching portfolio overview: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e)) from e
@@ -107,6 +126,25 @@ async def enrich_portfolio_overview(
         )
     except Exception as e:
         logger.error("Error enriching portfolio overview: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+@router.post("/api/simulate-sell")
+async def simulate_sell(
+    request: SellSimulationRequest,
+    current_user: User = Depends(get_authenticated_user),
+    dashboard_service: PortfolioDashboardService = Depends(
+        get_portfolio_dashboard_service
+    ),
+):
+    try:
+        return await dashboard_service.simulate_sell_order(
+            user_id=current_user.id,
+            symbol=request.symbol,
+            market_type=request.market_type,
+            quantity=request.quantity,
+            price=request.price,
+        )
+    except Exception as e:
+        logger.error("Error simulating sell order: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 

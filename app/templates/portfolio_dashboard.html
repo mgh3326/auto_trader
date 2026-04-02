@@ -639,6 +639,10 @@
                 topPositions: null,
             },
             detailRequestId: 0,
+            sort: {
+                key: "evaluation",
+                order: "desc",
+            },
         };
 
         const marketSelect = document.getElementById("market-select");
@@ -836,16 +840,38 @@
                 return;
             }
 
-            tableBody.innerHTML = positions.map((item) => {
+            // Apply sorting
+            const sortedPositions = [...positions].sort((a, b) => {
+                let valA = a[state.sort.key];
+                let valB = b[state.sort.key];
+
+                if (typeof valA === "string") valA = valA.toLowerCase();
+                if (typeof valB === "string") valB = valB.toLowerCase();
+
+                if (valA === null || valA === undefined) return 1;
+                if (valB === null || valB === undefined) return -1;
+
+                if (valA < valB) return state.sort.order === "asc" ? -1 : 1;
+                if (valA > valB) return state.sort.order === "asc" ? 1 : -1;
+                return 0;
+            });
+
+            tableBody.innerHTML = sortedPositions.map((item) => {
                 const pClass = profitClass(item.profit_loss);
                 const symbol = escapeHtml(item.symbol);
                 const name = escapeHtml(item.name);
                 const marketType = escapeHtml(item.market_type);
                 const currentPrice = item.current_price ?? 0;
+                const weightWarning = item.weight_warning ? `<div class="text-danger small"><i class="bi bi-exclamation-triangle"></i> ${escapeHtml(item.weight_warning)}</div>` : "";
+
                 return `
                     <tr class="position-row" data-symbol="${symbol}" data-market-type="${marketType}" data-current-price="${currentPrice}" style="cursor: pointer;">
                         <td><span class="${marketBadgeClass(item.market_type)}">${marketType}</span></td>
-                        <td><strong>${symbol}</strong><br><span class="subtle">${name}</span></td>
+                        <td>
+                            <strong>${symbol}</strong><br>
+                            <span class="subtle">${name}</span>
+                            ${weightWarning}
+                        </td>
                         <td>${formatNumber(item.quantity, 8)}</td>
                         <td>${formatNumber(item.avg_price)}</td>
                         <td>${item.current_price === null ? '<span class="subtle">조회중...</span>' : formatNumber(item.current_price)}</td>
@@ -855,12 +881,14 @@
                 `;
             }).join("");
 
-            cards.innerHTML = positions.map((item) => {
+            cards.innerHTML = sortedPositions.map((item) => {
                 const pClass = profitClass(item.profit_loss);
                 const symbol = escapeHtml(item.symbol);
                 const name = escapeHtml(item.name);
                 const marketType = escapeHtml(item.market_type);
                 const currentPrice = item.current_price ?? 0;
+                const weightWarning = item.weight_warning ? `<div class="text-danger small mt-1"><i class="bi bi-exclamation-triangle"></i> ${escapeHtml(item.weight_warning)}</div>` : "";
+
                 return `
                     <article class="result-card position-card" data-symbol="${symbol}" data-market-type="${marketType}" data-current-price="${currentPrice}" style="cursor: pointer;">
                         <div class="d-flex justify-content-between align-items-center">
@@ -868,6 +896,7 @@
                             <span class="${marketBadgeClass(item.market_type)}">${marketType}</span>
                         </div>
                         <div class="subtle">${name}</div>
+                        ${weightWarning}
                         <dl class="metric-grid">
                             <dt>수량</dt><dd>${formatNumber(item.quantity, 8)}</dd>
                             <dt>평균단가</dt><dd>${formatNumber(item.avg_price)}</dd>
@@ -880,7 +909,7 @@
             }).join("");
 
             attachPositionInteractions();
-            renderCharts(positions);
+            renderCharts(sortedPositions);
         }
 
         function renderOverviewLoadingState() {
@@ -1047,6 +1076,25 @@
                     <p class="mb-0"><strong>평가금액:</strong> ${selectedPosition ? formatNumber(selectedPosition.evaluation) : "-"}</p>
                 </section>
                 <section class="detail-section">
+                    <h6>매도 시뮬레이션</h6>
+                    <div class="panel p-2">
+                        <div class="row g-2 align-items-end">
+                            <div class="col-5">
+                                <label class="small">수량</label>
+                                <input type="number" id="sell-sim-qty" value="${selectedPosition?.quantity || 0}" step="any">
+                            </div>
+                            <div class="col-5">
+                                <label class="small">가격</label>
+                                <input type="number" id="sell-sim-price" value="${selectedPosition?.current_price || 0}" step="any">
+                            </div>
+                            <div class="col-2">
+                                <button id="btn-sell-sim" class="btn btn-sm btn-outline-danger w-100" title="시뮬레이션"><i class="bi bi-play"></i></button>
+                            </div>
+                        </div>
+                        <div id="sell-sim-result" class="mt-2 small text-muted" style="display: none;"></div>
+                    </div>
+                </section>
+                <section class="detail-section">
                     <h6>계좌별 보유 내역</h6>
                     ${renderComponentHoldings(selectedPosition)}
                 </section>
@@ -1055,9 +1103,61 @@
                 </section>
             `;
 
+            attachSellSimulation(selectedPosition);
             loadingState.style.display = "none";
             emptyState.style.display = "none";
             contentDiv.style.display = "block";
+        }
+
+        function attachSellSimulation(position) {
+            const btn = document.getElementById("btn-sell-sim");
+            const resultDiv = document.getElementById("sell-sim-result");
+            if (!btn || !position) return;
+
+            btn.addEventListener("click", async () => {
+                const qty = parseFloat(document.getElementById("sell-sim-qty").value);
+                const price = parseFloat(document.getElementById("sell-sim-price").value);
+
+                if (isNaN(qty) || isNaN(price) || qty <= 0 || price <= 0) {
+                    alert("올바른 수량과 가격을 입력하세요.");
+                    return;
+                }
+
+                btn.disabled = true;
+                resultDiv.textContent = "계산 중...";
+                resultDiv.style.display = "block";
+
+                try {
+                    const response = await fetch("/portfolio/api/simulate-sell", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            symbol: position.symbol,
+                            market_type: position.market_type,
+                            quantity: qty,
+                            price: price
+                        }),
+                    });
+
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    const payload = await response.json();
+
+                    if (payload.success) {
+                        resultDiv.innerHTML = `
+                            <div class="alert alert-info py-2 px-3 mb-0">
+                                <strong>예상 수령액:</strong> ${formatNumber(payload.expected_proceeds)} ${position.market_type === 'US' ? 'USD' : 'KRW'}<br>
+                                <span class="x-small">${payload.message}</span>
+                            </div>
+                        `;
+                    } else {
+                        resultDiv.textContent = `실패: ${payload.error || "알 수 없는 오류"}`;
+                    }
+                } catch (error) {
+                    resultDiv.textContent = `오류: ${error.message}`;
+                } finally {
+                    btn.disabled = false;
+                }
+            });
         }
 
         async function fetchCashSummary() {
@@ -1298,6 +1398,34 @@
             fetchOverview();
             fetchCashSummary();
         });
+
+        // Sorting listeners
+        document.querySelectorAll("#portfolio-table th").forEach((th, index) => {
+            const keys = ["market_type", "symbol", "quantity", "avg_price", "current_price", "evaluation", "profit_loss"];
+            const key = keys[index];
+            if (!key) return;
+
+            th.style.cursor = "pointer";
+            th.addEventListener("click", () => {
+                if (state.sort.key === key) {
+                    state.sort.order = state.sort.order === "asc" ? "desc" : "asc";
+                } else {
+                    state.sort.key = key;
+                    state.sort.order = "desc";
+                }
+
+                // Visual feedback
+                document.querySelectorAll("#portfolio-table th").forEach(h => {
+                    h.innerHTML = h.innerHTML.replace(/ [↑↓]$/, "");
+                });
+                th.innerHTML += state.sort.order === "asc" ? " ↑" : " ↓";
+
+                if (state.overview && state.overview.positions) {
+                    renderPositions(state.overview.positions);
+                }
+            });
+        });
+
         marketSelect.addEventListener("change", fetchOverview);
         queryInput.addEventListener("keydown", (event) => {
             if (event.key !== "Enter") {

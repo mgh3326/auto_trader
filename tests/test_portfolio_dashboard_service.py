@@ -201,3 +201,48 @@ async def test_get_cash_snapshot_handles_missing_accounts(monkeypatch):
     assert accounts["upbit_krw"] is None
     assert result["manual_cash"] is None
     assert len(result["errors"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_calculate_allocation_metrics_adds_weight_and_warnings() -> None:
+    from app.services.portfolio_dashboard_service import PortfolioDashboardService
+
+    service = PortfolioDashboardService(MagicMock())
+    positions = [
+        {"symbol": "AAPL", "evaluation": 1000.0},
+        {"symbol": "TSLA", "evaluation": 3000.0},
+    ]
+    cash_summary = {"summary": {"total_available_krw": 6000.0}}
+
+    # total_capital = 1000 + 3000 + 6000 = 10000
+    # AAPL weight = 0.1 (10%)
+    # TSLA weight = 0.3 (30%) -> warning
+    result = await service.calculate_allocation_metrics(positions, cash_summary)
+
+    assert result[0]["symbol"] == "AAPL"
+    assert result[0]["weight"] == pytest.approx(0.1)
+    assert "weight_warning" not in result[0]
+
+    assert result[1]["symbol"] == "TSLA"
+    assert result[1]["weight"] == pytest.approx(0.3)
+    assert "weight_warning" in result[1]
+    assert "30.0%" in result[1]["weight_warning"]
+
+
+@pytest.mark.asyncio
+async def test_simulate_sell_order_returns_expected_structure() -> None:
+    from app.services.portfolio_dashboard_service import PortfolioDashboardService
+
+    service = PortfolioDashboardService(MagicMock())
+    result = await service.simulate_sell_order(
+        user_id=7,
+        symbol="AAPL",
+        market_type="US",
+        quantity=10.0,
+        price=150.0,
+    )
+
+    assert result["success"] is True
+    assert result["symbol"] == "AAPL"
+    assert result["expected_proceeds"] == 1500.0
+    assert result["status"] == "simulated"
