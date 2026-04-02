@@ -736,6 +736,52 @@ async def test_get_orders_payload_prefers_filled_timestamp_and_avg_price(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_get_orders_payload_surfaces_filled_kr_history_items(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = PortfolioPositionDetailService(
+        overview_service=MagicMock(),
+        dashboard_service=MagicMock(),
+    )
+
+    monkeypatch.setattr(
+        detail_service_module,
+        "get_order_history_impl",
+        AsyncMock(
+            side_effect=[
+                {
+                    "orders": [
+                        {
+                            "order_id": "0012345678",
+                            "symbol": "035720",
+                            "side": "buy",
+                            "status": "filled",
+                            "ordered_price": 47500,
+                            "filled_avg_price": 47250,
+                            "filled_qty": 10,
+                            "ordered_qty": 10,
+                            "ordered_at": "2026-04-01 095032",
+                            "filled_at": "",
+                            "currency": "KRW",
+                        }
+                    ],
+                    "errors": [],
+                },
+                {"orders": [], "errors": []},
+            ]
+        ),
+    )
+
+    payload = await service.get_orders_payload(market_type="kr", symbol="035720")
+
+    assert payload["summary"]["fill_count"] == 1
+    assert payload["summary"]["last_fill"]["order_id"] == "0012345678"
+    assert payload["recent_fills"][0]["price"] == 47250
+    assert payload["recent_fills"][0]["amount"] == 472500
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_get_orders_payload_returns_stable_empty_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
