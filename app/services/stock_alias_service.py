@@ -29,6 +29,21 @@ class StockAliasService:
         cleaned = re.sub(r"[^0-9A-Za-z가-힣.\s-]", "", cleaned)
         return cleaned[:50]
 
+    @staticmethod
+    def _get_default_ticker_by_alias(alias: str, market_type: MarketType) -> str | None:
+        normalized_alias = str(alias or "").strip()
+        if not normalized_alias:
+            return None
+
+        for item in TOSS_STOCK_ALIASES:
+            if (
+                item["market_type"] == market_type
+                and str(item["alias"]).strip() == normalized_alias
+            ):
+                return str(item["ticker"]).upper()
+
+        return None
+
     async def create_alias(
         self,
         ticker: str,
@@ -66,7 +81,10 @@ class StockAliasService:
             .where(StockAlias.market_type == market_type)
         )
         stock_alias = result.scalar_one_or_none()
-        return stock_alias.ticker if stock_alias else None
+        if stock_alias:
+            return stock_alias.ticker
+
+        return self._get_default_ticker_by_alias(alias, market_type)
 
     async def search_by_alias(
         self,
@@ -211,6 +229,13 @@ TOSS_STOCK_ALIASES = [
     {"ticker": "IVV", "alias": "IVV", "market_type": MarketType.US, "source": "toss"},
     {"ticker": "AAPL", "alias": "애플", "market_type": MarketType.US, "source": "toss"},
     {"ticker": "ETHU", "alias": "ETHU", "market_type": MarketType.US, "source": "toss"},
+    # Samsung overseas aliases
+    {
+        "ticker": "TSLL",
+        "alias": "DIREXION TESLA 2X",
+        "market_type": MarketType.US,
+        "source": "samsung",
+    },
     # 국내주식
     {
         "ticker": "068270",

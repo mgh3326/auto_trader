@@ -334,7 +334,7 @@ async def test_us_lookup_failure_raises_explicit_error(
     """US lookup failures should raise explicit errors instead of fallback ticker."""
     _setup_mocks(monkeypatch, mock_db, mock_broker_account, us_name_to_symbol={})
 
-    with pytest.raises(USSymbolUniverseLookupError, match="not found"):
+    with pytest.raises(ValueError, match="US ticker 매핑 실패"):
         await service.resolve_and_update(
             user_id=1,
             holdings_data=[
@@ -759,3 +759,104 @@ async def test_display_name_uses_symbol_when_no_stock_name(
 
     assert result["success"] is True
     assert result["holdings"][0]["stock_name"] == "KRW-ETH"
+
+
+@pytest.mark.asyncio
+async def test_us_name_like_input_raises_explicit_mapping_error(
+    service, mock_db, mock_broker_account, monkeypatch
+):
+    """US name-like input should raise explicit mapping error."""
+    _setup_mocks(monkeypatch, mock_db, mock_broker_account, us_name_to_symbol={})
+
+    with pytest.raises(
+        ValueError,
+        match=r"US ticker 매핑 실패: 'DIREXION TESLA 2X'",
+    ):
+        await service.resolve_and_update(
+            user_id=1,
+            holdings_data=[
+                {
+                    "stock_name": "DIREXION TESLA 2X",
+                    "quantity": 1,
+                    "eval_amount": 100,
+                    "market_section": "us",
+                }
+            ],
+            broker="samsung",
+            dry_run=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_us_avg_price_above_threshold_raises_usd_input_error(
+    service, mock_db, mock_broker_account, monkeypatch
+):
+    """US avg_buy_price above 1000 should raise USD input error."""
+    _setup_mocks(monkeypatch, mock_db, mock_broker_account)
+
+    with pytest.raises(
+        ValueError,
+        match=r"USD 단위로 입력해주세요 \(현재 값: 14966\.0, KRW로 의심됩니다\)",
+    ):
+        await service.resolve_and_update(
+            user_id=1,
+            holdings_data=[
+                {
+                    "symbol": "BRK.B",
+                    "quantity": 1,
+                    "avg_buy_price": 14966.0,
+                    "market_section": "us",
+                }
+            ],
+            broker="samsung",
+            dry_run=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_qty_zero_upsert_deletes_existing_holding(
+    service, mock_db, mock_broker_account, monkeypatch
+):
+    """Zero quantity upsert should delete existing holding."""
+    existing = MagicMock()
+    existing.id = 321
+    existing.ticker = "BITX"
+    existing.market_type = MagicMock()
+    existing.market_type.value = "US"
+    existing.quantity = Decimal("1")
+    existing.avg_price = Decimal("50")
+
+    _setup_mocks(
+        monkeypatch, mock_db, mock_broker_account, existing_holdings=[existing]
+    )
+
+    delete_calls = []
+
+    async def mock_delete_holding(self, holding_id):
+        delete_calls.append(holding_id)
+        return True
+
+    monkeypatch.setattr(
+        "app.services.screenshot_holdings_service.ManualHoldingsService.delete_holding",
+        mock_delete_holding,
+    )
+
+    result = await service.resolve_and_update(
+        user_id=1,
+        holdings_data=[
+            {
+                "symbol": "BITX",
+                "quantity": 0,
+                "avg_buy_price": 50,
+                "market_section": "us",
+            }
+        ],
+        broker="samsung",
+        dry_run=False,
+    )
+
+    assert result["success"] is True
+    assert result["removed_count"] == 1
+    assert {"action": "removed", "ticker": "BITX", "market_type": "US"} in result[
+        "diff"
+    ]
