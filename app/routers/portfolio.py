@@ -26,6 +26,7 @@ from app.schemas.portfolio_position_detail import (
     PositionIndicatorsResponse,
     PositionNewsResponse,
     PositionOpinionsResponse,
+    PositionOrdersResponse,
 )
 from app.services.brokers.kis.client import KISClient
 from app.services.kis_holdings_service import get_kis_holding_for_ticker
@@ -75,10 +76,11 @@ class EnrichRequest(BaseModel):
 
 
 def _merge_journal_snapshots(
-    payload: dict,
-    journal_map: dict[str, dict],
-) -> dict:
-    positions = payload.get("positions") or []
+    payload: dict[str, object],
+    journal_map: dict[str, dict[str, object]],
+) -> dict[str, object]:
+    raw_positions = payload.get("positions")
+    positions = raw_positions if isinstance(raw_positions, list) else []
     for position in positions:
         position["journal"] = journal_map.get(position.get("symbol"))
     return payload
@@ -199,8 +201,21 @@ async def get_merged_portfolio(
 
             # USD 잔고 조회
             try:
-                usd_info = await kis_client.inquire_overseas_balance()
-                usd_balance = float(usd_info.get("frcr_evlu_tota", 0))
+                overseas_margin_data = await kis_client.inquire_overseas_margin()
+                usd_row = next(
+                    (
+                        row
+                        for row in overseas_margin_data
+                        if str(row.get("currency") or "").upper() == "USD"
+                    ),
+                    None,
+                )
+                if usd_row is not None:
+                    usd_balance = float(
+                        usd_row.get("frcr_dncl_amt1")
+                        or usd_row.get("frcr_dncl_amt_2")
+                        or 0
+                    )
             except Exception as e:
                 logger.warning(f"Failed to get USD balance: {e}")
 
@@ -394,6 +409,23 @@ async def get_position_news(
     ),
 ):
     return await detail_service.get_news_payload(market_type=market_type, symbol=symbol)
+
+
+@router.get(
+    "/api/positions/{market_type}/{symbol}/orders",
+    response_model=PositionOrdersResponse,
+)
+async def get_position_orders(
+    market_type: str,
+    symbol: str,
+    detail_service: PortfolioPositionDetailService = Depends(
+        get_portfolio_position_detail_service
+    ),
+):
+    return await detail_service.get_orders_payload(
+        market_type=market_type,
+        symbol=symbol,
+    )
 
 
 @router.get(
