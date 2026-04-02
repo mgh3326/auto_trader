@@ -175,9 +175,11 @@ class TestContractDataclasses:
             backtest_seconds=1.23,
             trade_log=[],
             equity_curve=[100000.0, 105000.0],
+            equity_dates=["2025-04-01", "2025-04-02"],
         )
         assert result.win_rate_pct == 0.6
         assert result.backtest_seconds == 1.23
+        assert result.equity_dates == ["2025-04-01", "2025-04-02"]
 
 
 class TestContractStrategySignature:
@@ -844,6 +846,12 @@ class TestRunBacktest:
 
         assert len(result.equity_curve) == 4  # Initial + 3 days
         assert result.equity_curve[0] == 10_000_000.0  # Initial capital
+        assert result.equity_dates == [
+            "2025-04-01",
+            "2025-04-01",
+            "2025-04-02",
+            "2025-04-03",
+        ]
 
     def test_run_backtest_handles_missing_symbol_dates(self):
         """Test that missing symbol dates are handled gracefully."""
@@ -917,6 +925,7 @@ class TestRunBacktestInterval:
         lookback_called_with: list[str] = []
         captured_history_lengths: list[int] = []
         captured_build_interval: list[str] = []
+        captured_equity_dates: list[list[str]] = []
 
         def fake_lookback(interval_name: str) -> int:
             lookback_called_with.append(interval_name)
@@ -927,8 +936,10 @@ class TestRunBacktestInterval:
             equity_curve: list[float],
             backtest_seconds: float,
             bar_interval: str = "1d",
+            equity_dates: list[str] | None = None,
         ) -> prepare.BacktestResult:
             captured_build_interval.append(bar_interval)
+            captured_equity_dates.append(equity_dates or [])
             return prepare.BacktestResult(
                 total_return_pct=0.0,
                 sharpe=0.0,
@@ -940,6 +951,7 @@ class TestRunBacktestInterval:
                 backtest_seconds=backtest_seconds,
                 trade_log=state.trade_log,
                 equity_curve=equity_curve,
+                equity_dates=equity_dates or [],
             )
 
         monkeypatch.setattr(prepare, "lookback_bars_for_interval", fake_lookback)
@@ -956,6 +968,7 @@ class TestRunBacktestInterval:
         assert lookback_called_with == [interval]
         assert captured_history_lengths == [2]
         assert captured_build_interval == [interval]
+        assert captured_equity_dates == [["2025-04-01 02:00:00", "2025-04-01 02:00:00"]]
 
 
 class TestCVFolds:
