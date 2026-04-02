@@ -103,15 +103,24 @@ def _build_temp_kr_order_id(
     return f"TEMP_KR_{digest}"
 
 
-def _map_kis_status(filled: int, remaining: int, status_name: str) -> str:
-    if status_name in ("접수", "주문접수"):
+def _map_kis_status(filled: int, remaining: int, status_name: str | None) -> str:
+    normalized_name = str(status_name or "").strip()
+
+    if normalized_name in ("접수", "주문접수"):
         return "pending"
-    if status_name == "주문취소":
+    if normalized_name == "주문취소":
         return "cancelled"
-    if status_name in ("체결", "미체결"):
-        if remaining > 0:
+    if normalized_name == "체결":
+        if filled > 0 and remaining > 0:
             return "partial"
         return "filled"
+    if normalized_name == "미체결":
+        return "pending"
+
+    if filled > 0 and remaining <= 0:
+        return "filled"
+    if filled > 0 and remaining > 0:
+        return "partial"
     return "pending"
 
 
@@ -120,14 +129,39 @@ def _normalize_kis_domestic_order(order: dict[str, Any]) -> dict[str, Any]:
     side = "buy" if side_code == "02" else "sell"
 
     ordered = int(float(_get_kis_field(order, "ord_qty", "ORD_QTY", default=0) or 0))
-    filled = int(float(_get_kis_field(order, "ccld_qty", "CCLD_QTY", default=0) or 0))
-    remaining = ordered - filled
+    filled = int(
+        float(
+            _get_kis_field(
+                order,
+                "ccld_qty",
+                "CCLD_QTY",
+                "tot_ccld_qty",
+                "TOT_CCLD_QTY",
+                default=0,
+            )
+            or 0
+        )
+    )
+
+    remaining = int(
+        float(_get_kis_field(order, "rmn_qty", "RMN_QTY", default=ordered - filled) or 0)
+    )
 
     ordered_price = int(
         float(_get_kis_field(order, "ord_unpr", "ORD_UNPR", default=0) or 0)
     )
     filled_price = int(
-        float(_get_kis_field(order, "ccld_unpr", "CCLD_UNPR", default=0) or 0)
+        float(
+            _get_kis_field(
+                order,
+                "ccld_unpr",
+                "CCLD_UNPR",
+                "avg_prvs",
+                "AVG_PRVS",
+                default=0,
+            )
+            or 0
+        )
     )
 
     status = _map_kis_status(
