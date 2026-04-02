@@ -55,6 +55,15 @@ class _FakeDetailService:
                     "stop_distance_pct": -10.61,
                     "indicators_snapshot": {"rsi_14": 28.4},
                 },
+                "weights": {
+                    "portfolio_weight_pct": 9.8,
+                    "market_weight_pct": 24.5,
+                },
+                "action_summary": {
+                    "status": "관망",
+                    "tags": ["비중 보통", "목표가까지 여유", "RSI 중립"],
+                    "reason": "전체 비중 9.8%, 시장 내 비중 24.5%, 목표가까지 +9.85%, RSI 41.2",
+                },
             }
         )
         self.get_indicators_payload = AsyncMock(
@@ -76,9 +85,55 @@ class _FakeDetailService:
                         "published_at": "2026-04-02T09:00:00+09:00",
                         "url": "https://example.com/nvda",
                         "summary": "Demand remains strong",
+                        "excerpt": "Demand remains strong",
                         "sentiment": "positive",
+                        "relevance": "high",
                     }
                 ],
+            }
+        )
+        self.get_orders_payload = AsyncMock(
+            return_value={
+                "summary": {
+                    "last_fill": {
+                        "order_id": "fill-1",
+                        "side": "buy",
+                        "status": "filled",
+                        "ordered_at": "2026-04-01T09:19:00+09:00",
+                        "price": 455.5,
+                        "quantity": 1.0,
+                        "amount": 455.5,
+                        "currency": "USD",
+                    },
+                    "pending_count": 1,
+                    "fill_count": 1,
+                },
+                "recent_fills": [
+                    {
+                        "order_id": "fill-1",
+                        "side": "buy",
+                        "status": "filled",
+                        "ordered_at": "2026-04-01T09:19:00+09:00",
+                        "price": 455.5,
+                        "quantity": 1.0,
+                        "amount": 455.5,
+                        "currency": "USD",
+                    }
+                ],
+                "pending_orders": [
+                    {
+                        "order_id": "pending-1",
+                        "side": "sell",
+                        "status": "pending",
+                        "ordered_at": "2026-04-02T10:00:00+09:00",
+                        "price": 480.0,
+                        "quantity": 2.0,
+                        "remaining_quantity": 1.5,
+                        "amount": 960.0,
+                        "currency": "USD",
+                    }
+                ],
+                "errors": [],
             }
         )
         self.get_opinions_payload = AsyncMock(
@@ -91,6 +146,20 @@ class _FakeDetailService:
                 "buy_count": 8,
                 "hold_count": 3,
                 "sell_count": 1,
+                "summary_cards": [
+                    {"label": "Consensus", "value": "Buy", "tone": "positive"},
+                    {"label": "Avg Target", "value": "155.0", "tone": "neutral"},
+                ],
+                "distribution": {"buy": 8, "hold": 3, "sell": 1},
+                "top_opinions": [
+                    {
+                        "firm": "Alpha <Capital>",
+                        "rating": "Buy",
+                        "target_price": 155.0,
+                        "date": "2026-04-01",
+                    }
+                ],
+                "overflow_count": 2,
                 "opinions": [{"firm": "Alpha <Capital>", "rating": "Buy"}],
             }
         )
@@ -173,22 +242,44 @@ def test_position_detail_opinions_api_returns_crypto_fallback() -> None:
 
 
 @pytest.mark.unit
+def test_position_detail_orders_api_returns_payload() -> None:
+    client, detail = _create_client()
+
+    response = client.get("/portfolio/api/positions/us/NVDA/orders")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["summary"]["pending_count"] == 1
+    assert data["recent_fills"][0]["amount"] == 455.5
+    assert data["pending_orders"][0]["remaining_quantity"] == 1.5
+
+
+@pytest.mark.unit
 def test_position_detail_page_contains_lazy_section_hooks() -> None:
     client, _ = _create_client()
     response = client.get("/portfolio/positions/us/NVDA")
     body = response.text
 
     assert 'id="position-indicators-section"' in body
+    assert 'id="position-orders-section"' in body
     assert 'id="position-news-section"' in body
     assert 'id="position-opinions-section"' in body
     assert "loadLazySection(" in body
     assert "function escapeHtml(value)" in body
     assert "function sanitizeUrl(value)" in body
     assert "published_at" in body
+    assert "excerpt" in body
+    assert "recent_fills" in body
+    assert "pending_orders" in body
     assert "summary" in body
     assert "sentiment" in body
     assert "avg_target_price" in body
     assert "buy_count" in body
+    assert "summary_cards" in body
+    assert "distribution" in body
+    assert "top_opinions" in body
+    assert "overflow_count" in body
+    assert "filled_at || item.ordered_at" in body
 
 
 @pytest.mark.unit
