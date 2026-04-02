@@ -101,6 +101,10 @@ async def get_portfolio_overview(
             overview["positions"] = await dashboard_service.calculate_allocation_metrics(
                 overview["positions"], cash_summary
             )
+            # Also enrich with journal status for highlights
+            overview["positions"] = await dashboard_service.enrich_positions_with_journal_status(
+                overview["positions"]
+            )
 
         return overview
     except Exception as e:

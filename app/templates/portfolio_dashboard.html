@@ -864,6 +864,16 @@
                 const currentPrice = item.current_price ?? 0;
                 const weightWarning = item.weight_warning ? `<div class="text-danger small"><i class="bi bi-exclamation-triangle"></i> ${escapeHtml(item.weight_warning)}</div>` : "";
 
+                let highlights = "";
+                if (item.target_dist_pct !== undefined && item.target_dist_pct !== null) {
+                    const isNear = Math.abs(item.target_dist_pct) < 3;
+                    highlights += `<div class="${isNear ? 'text-success fw-bold' : 'subtle'} x-small">T: ${item.target_dist_pct > 0 ? '+' : ''}${item.target_dist_pct.toFixed(1)}%</div>`;
+                }
+                if (item.stop_dist_pct !== undefined && item.stop_dist_pct !== null) {
+                    const isNear = Math.abs(item.stop_dist_pct) < 3;
+                    highlights += `<div class="${isNear ? 'text-danger fw-bold' : 'subtle'} x-small">S: ${item.stop_dist_pct > 0 ? '+' : ''}${item.stop_dist_pct.toFixed(1)}%</div>`;
+                }
+
                 return `
                     <tr class="position-row" data-symbol="${symbol}" data-market-type="${marketType}" data-current-price="${currentPrice}" style="cursor: pointer;">
                         <td><span class="${marketBadgeClass(item.market_type)}">${marketType}</span></td>
@@ -874,7 +884,10 @@
                         </td>
                         <td>${formatNumber(item.quantity, 8)}</td>
                         <td>${formatNumber(item.avg_price)}</td>
-                        <td>${item.current_price === null ? '<span class="subtle">조회중...</span>' : formatNumber(item.current_price)}</td>
+                        <td>
+                            ${item.current_price === null ? '<span class="subtle">조회중...</span>' : formatNumber(item.current_price)}
+                            ${highlights}
+                        </td>
                         <td>${formatNumber(item.evaluation)}</td>
                         <td class="${pClass}">${formatProfit(item.profit_loss, item.profit_rate)}</td>
                     </tr>
@@ -889,6 +902,16 @@
                 const currentPrice = item.current_price ?? 0;
                 const weightWarning = item.weight_warning ? `<div class="text-danger small mt-1"><i class="bi bi-exclamation-triangle"></i> ${escapeHtml(item.weight_warning)}</div>` : "";
 
+                let highlights = "";
+                if (item.target_dist_pct !== undefined && item.target_dist_pct !== null) {
+                    const isNear = Math.abs(item.target_dist_pct) < 3;
+                    highlights += `<span class="badge ${isNear ? 'bg-success' : 'bg-light text-muted'} x-small me-1">T: ${item.target_dist_pct > 0 ? '+' : ''}${item.target_dist_pct.toFixed(1)}%</span>`;
+                }
+                if (item.stop_dist_pct !== undefined && item.stop_dist_pct !== null) {
+                    const isNear = Math.abs(item.stop_dist_pct) < 3;
+                    highlights += `<span class="badge ${isNear ? 'bg-danger' : 'bg-light text-muted'} x-small">S: ${item.stop_dist_pct > 0 ? '+' : ''}${item.stop_dist_pct.toFixed(1)}%</span>`;
+                }
+
                 return `
                     <article class="result-card position-card" data-symbol="${symbol}" data-market-type="${marketType}" data-current-price="${currentPrice}" style="cursor: pointer;">
                         <div class="d-flex justify-content-between align-items-center">
@@ -897,6 +920,7 @@
                         </div>
                         <div class="subtle">${name}</div>
                         ${weightWarning}
+                        <div class="mt-1">${highlights}</div>
                         <dl class="metric-grid">
                             <dt>수량</dt><dd>${formatNumber(item.quantity, 8)}</dd>
                             <dt>평균단가</dt><dd>${formatNumber(item.avg_price)}</dd>

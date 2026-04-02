@@ -62,21 +62,25 @@ class _FakeOverviewService:
         )
 
 
-def _create_client() -> tuple[TestClient, _FakeOverviewService]:
+def _create_client() -> tuple[TestClient, _FakeOverviewService, _FakeDashboardService]:
     app = FastAPI()
-    fake_service = _FakeOverviewService()
+    fake_overview = _FakeOverviewService()
+    fake_dashboard = _FakeDashboardService()
     app.include_router(portfolio.router)
     app.dependency_overrides[portfolio.get_authenticated_user] = lambda: (
         SimpleNamespace(id=7)
     )
     app.dependency_overrides[portfolio.get_portfolio_overview_service] = lambda: (
-        fake_service
+        fake_overview
     )
-    return TestClient(app), fake_service
+    app.dependency_overrides[portfolio.get_portfolio_dashboard_service] = lambda: (
+        fake_dashboard
+    )
+    return TestClient(app), fake_overview, fake_dashboard
 
 
 def test_portfolio_dashboard_page_renders_screener_style_shell() -> None:
-    client, _ = _create_client()
+    client, _, _ = _create_client()
     response = client.get("/portfolio/")
     assert response.status_code == 200
     assert "text/html" in response.headers.get("content-type", "")
@@ -108,7 +112,7 @@ def test_portfolio_dashboard_page_renders_full_width_results_layout() -> None:
 
 
 def test_portfolio_overview_api_passes_repeated_account_keys() -> None:
-    client, fake_service = _create_client()
+    client, fake_service, _ = _create_client()
     response = client.get(
         "/portfolio/api/overview",
         params=[
@@ -135,7 +139,7 @@ def test_portfolio_overview_api_passes_repeated_account_keys() -> None:
 
 
 def test_portfolio_overview_api_uses_default_filters() -> None:
-    client, fake_service = _create_client()
+    client, fake_service, _ = _create_client()
     response = client.get("/portfolio/api/overview")
 
     assert response.status_code == 200
@@ -149,7 +153,7 @@ def test_portfolio_overview_api_uses_default_filters() -> None:
 
 
 def test_portfolio_overview_api_forwards_skip_missing_prices_flag() -> None:
-    client, fake_service = _create_client()
+    client, fake_service, _ = _create_client()
     response = client.get(
         "/portfolio/api/overview",
         params={"skip_missing_prices": "true"},
@@ -166,7 +170,7 @@ def test_portfolio_overview_api_forwards_skip_missing_prices_flag() -> None:
 
 
 def test_portfolio_enrich_api_returns_only_requested_positions() -> None:
-    client, fake_service = _create_client()
+    client, fake_service, _ = _create_client()
     fake_service.enrich_manual_positions = AsyncMock(
         return_value={
             "success": True,
@@ -207,7 +211,7 @@ def test_portfolio_enrich_api_returns_only_requested_positions() -> None:
 
 
 def test_portfolio_overview_api_rejects_invalid_market() -> None:
-    client, fake_service = _create_client()
+    client, fake_service, _ = _create_client()
     response = client.get("/portfolio/api/overview", params={"market": "INVALID"})
 
     assert response.status_code == 422
@@ -280,6 +284,9 @@ class _FakeDashboardService:
                 "status": "simulated",
                 "message": "Success",
             }
+        )
+        self.enrich_positions_with_journal_status = AsyncMock(
+            side_effect=lambda positions: positions
         )
 
 

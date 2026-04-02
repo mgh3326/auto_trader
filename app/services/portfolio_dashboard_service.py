@@ -182,6 +182,43 @@ class PortfolioDashboardService:
 
         return positions
 
+    async def enrich_positions_with_journal_status(
+        self, positions: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Enrich positions with basic journal status (target/stop hits)."""
+        if not positions:
+            return positions
+
+        symbols = [p["symbol"] for p in positions]
+        stmt = select(TradeJournal).where(
+            TradeJournal.symbol.in_(symbols),
+            TradeJournal.status.in_([JournalStatus.draft, JournalStatus.active]),
+        )
+        result = await self.db.execute(stmt)
+        journals = result.scalars().all()
+
+        journal_map = {}
+        for j in journals:
+            # Prefer the latest one
+            if j.symbol not in journal_map or j.created_at > journal_map[j.symbol].created_at:
+                journal_map[j.symbol] = j
+
+        for p in positions:
+            j = journal_map.get(p["symbol"])
+            if j:
+                p["has_journal"] = True
+                p["target_price"] = float(j.target_price) if j.target_price else None
+                p["stop_loss"] = float(j.stop_loss) if j.stop_loss else None
+
+                current_price = p.get("current_price")
+                if current_price and current_price > 0:
+                    if p["target_price"]:
+                        p["target_dist_pct"] = (p["target_price"] - current_price) / current_price * 100
+                    if p["stop_loss"]:
+                        p["stop_dist_pct"] = (p["stop_loss"] - current_price) / current_price * 100
+
+        return positions
+
     async def simulate_sell_order(
         self,
         *,
