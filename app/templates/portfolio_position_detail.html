@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ page_payload.summary.symbol }} 상세</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+  {% set currency_symbol = '$' if page_payload.summary.market_type == 'US' else '₩' %}
+  <style>
+    :root {
+      --bg-page: #f5f3ef;
+      --bg-dark: #1a1a1a;
+      --accent: #c05a3c;
+      --success: #4a7c59;
+      --error: #b54a4a;
+      --border-light: #d1ccc4;
+      --text-primary: #242220;
+      --text-secondary: #4f4a44;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg-page);
+      color: var(--text-primary);
+      font-family: "Pretendard", "Noto Sans KR", "Apple SD Gothic Neo", sans-serif;
+    }
+
+    .detail-shell {
+      max-width: 1240px;
+      margin: 1.6rem auto;
+      border: 1px solid var(--border-light);
+      background: #fff;
+      border-radius: 1rem;
+      box-shadow: 0 18px 40px rgba(24, 19, 16, 0.08);
+      overflow: hidden;
+    }
+
+    .detail-hero {
+      background: linear-gradient(120deg, var(--bg-dark) 0%, #2f2b28 50%, #45352e 100%);
+      color: #f3ede5;
+      padding: 1.4rem;
+    }
+
+    .back-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      color: #f3ede5;
+      text-decoration: none;
+      opacity: 0.85;
+      margin-bottom: 1rem;
+    }
+
+    .back-link:hover {
+      opacity: 1;
+    }
+
+    .eyebrow {
+      color: #d9cec1;
+      font-size: 0.9rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .hero-summary h1 {
+      margin: 0 0 1rem;
+      font-size: 1.9rem;
+    }
+
+    .summary-metrics {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.8rem;
+    }
+
+    .summary-metrics article {
+      border: 1px solid rgba(243, 237, 229, 0.16);
+      border-radius: 0.8rem;
+      background: rgba(255, 255, 255, 0.08);
+      padding: 0.9rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+    }
+
+    .summary-metrics span {
+      font-size: 0.8rem;
+      color: #d9cec1;
+    }
+
+    .summary-metrics strong {
+      font-size: 1.1rem;
+      color: #fff;
+    }
+
+    .positive {
+      color: #8bd2a0 !important;
+    }
+
+    .negative {
+      color: #ffb0b0 !important;
+    }
+
+    .neutral {
+      color: #fff !important;
+    }
+
+    .target-stop-row {
+      margin-top: 1rem;
+      display: flex;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+    }
+
+    .target-stop-row span {
+      display: inline-flex;
+      padding: 0.4rem 0.7rem;
+      border-radius: 999px;
+      font-size: 0.84rem;
+      font-weight: 600;
+      background: rgba(255, 255, 255, 0.12);
+    }
+
+    .detail-content {
+      display: grid;
+      gap: 1rem;
+      padding: 1rem;
+    }
+
+    .section-card {
+      border: 1px solid var(--border-light);
+      border-radius: 0.85rem;
+      background: #fcfbf8;
+      padding: 1rem;
+    }
+
+    .section-card h2 {
+      margin: 0 0 0.85rem;
+      font-size: 1.05rem;
+    }
+
+    .components-table {
+      display: grid;
+      gap: 0.6rem;
+    }
+
+    .component-row {
+      display: grid;
+      grid-template-columns: repeat(9, minmax(0, 1fr));
+      gap: 0.55rem;
+      padding: 0.85rem;
+      background: #fff;
+      border: 1px solid var(--border-light);
+      border-radius: 0.7rem;
+      font-size: 0.85rem;
+    }
+
+    .component-row div {
+      display: grid;
+      gap: 0.2rem;
+    }
+
+    .label {
+      color: var(--text-secondary);
+      font-size: 0.74rem;
+    }
+
+    .journal-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.75rem;
+    }
+
+    .journal-block {
+      background: #fff;
+      border: 1px solid var(--border-light);
+      border-radius: 0.7rem;
+      padding: 0.85rem;
+    }
+
+    .snapshot-box {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #fff;
+      border: 1px solid var(--border-light);
+      border-radius: 0.7rem;
+      padding: 0.85rem;
+      font-size: 0.8rem;
+    }
+
+    .empty-note {
+      color: var(--text-secondary);
+      background: #fff;
+      border: 1px dashed var(--border-light);
+      border-radius: 0.7rem;
+      padding: 1rem;
+      text-align: center;
+    }
+
+    .lazy-content {
+      min-height: 100px;
+    }
+
+    .indicators-grid,
+    .opinions-summary {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.75rem;
+    }
+
+    .indicator-card,
+    .opinion-metric,
+    .news-item,
+    .opinion-item {
+      background: #fff;
+      border: 1px solid var(--border-light);
+      border-radius: 0.7rem;
+      padding: 0.85rem;
+    }
+
+    .indicator-card strong,
+    .opinion-metric strong {
+      display: block;
+      margin-top: 0.25rem;
+      font-size: 1rem;
+    }
+
+    .indicator-card small,
+    .news-item .meta,
+    .opinion-item .meta {
+      color: var(--text-secondary);
+    }
+
+    .news-list,
+    .opinions-list {
+      display: grid;
+      gap: 0.75rem;
+      margin-top: 0.75rem;
+    }
+
+    .news-item a {
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: 600;
+    }
+
+    @media (max-width: 900px) {
+      .summary-metrics,
+      .indicators-grid,
+      .opinions-summary,
+      .journal-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .component-row {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 760px) {
+      .detail-shell {
+        margin: 0;
+        border-radius: 0;
+        min-height: 100vh;
+      }
+
+      .summary-metrics,
+      .indicators-grid,
+      .opinions-summary,
+      .journal-grid,
+      .component-row {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  {% include 'nav.html' %}
+  <main class="detail-shell" id="position-detail-page">
+    <header class="detail-hero">
+      <a href="/portfolio/" class="back-link"><i class="bi bi-arrow-left"></i>포트폴리오로 돌아가기</a>
+      <div class="hero-summary" id="position-summary-card">
+        <div class="eyebrow">{{ page_payload.summary.market_type }} · {{ page_payload.summary.symbol }}</div>
+        <h1>{{ page_payload.summary.name }}</h1>
+        <div class="summary-metrics">
+          <article><span>현재가</span><strong>{{ currency_symbol }}{{ "{:,.2f}".format(page_payload.summary.current_price) if page_payload.summary.current_price is not none else '-' }}</strong></article>
+          <article><span>총 보유 수량</span><strong>{{ "{:,.4f}".format(page_payload.summary.quantity) if page_payload.summary.quantity < 1 else "{:,.2f}".format(page_payload.summary.quantity) }}</strong></article>
+          <article><span>합산 평단</span><strong>{{ currency_symbol }}{{ "{:,.2f}".format(page_payload.summary.avg_price) if page_payload.summary.avg_price is not none else '-' }}</strong></article>
+          <article><span>손익 / 수익률</span><strong class="{% if page_payload.summary.profit_loss is none %}neutral{% elif page_payload.summary.profit_loss > 0 %}positive{% elif page_payload.summary.profit_loss < 0 %}negative{% else %}neutral{% endif %}">{{ currency_symbol }}{{ "{:,.2f}".format(page_payload.summary.profit_loss) if page_payload.summary.profit_loss is not none else '-' }} ({{ "{:,.2f}".format(page_payload.summary.profit_rate * 100) if page_payload.summary.profit_rate is not none else '-' }}%)</strong></article>
+          <article><span>평가금액</span><strong>{{ currency_symbol }}{{ "{:,.2f}".format(page_payload.summary.evaluation) if page_payload.summary.evaluation is not none else '-' }}</strong></article>
+          <article><span>계좌 수</span><strong>{{ page_payload.summary.account_count }}</strong></article>
+        </div>
+        {% if page_payload.summary.target_distance_pct is not none or page_payload.summary.stop_distance_pct is not none %}
+        <div class="target-stop-row">
+          <span class="target">목표가 거리 {{ "{:+.2f}".format(page_payload.summary.target_distance_pct or 0) }}%</span>
+          <span class="stop">손절가 거리 {{ "{:+.2f}".format(page_payload.summary.stop_distance_pct or 0) }}%</span>
+        </div>
+        {% endif %}
+      </div>
+    </header>
+
+    <div class="detail-content">
+      <section id="position-components-section" class="section-card">
+        <h2>계좌별 보유 내역</h2>
+        {% if page_payload.components %}
+        <div class="components-table">
+          {% for component in page_payload.components %}
+          <div class="component-row">
+            <div><span class="label">broker</span><strong>{{ component.broker }}</strong></div>
+            <div><span class="label">account_name</span><strong>{{ component.account_name }}</strong></div>
+            <div><span class="label">source</span><strong>{{ component.source }}</strong></div>
+            <div><span class="label">quantity</span><strong>{{ "{:,.4f}".format(component.quantity) if component.quantity < 1 else "{:,.2f}".format(component.quantity) }}</strong></div>
+            <div><span class="label">avg_price</span><strong>{{ currency_symbol }}{{ "{:,.2f}".format(component.avg_price) if component.avg_price is not none else '-' }}</strong></div>
+            <div><span class="label">current_price</span><strong>{{ currency_symbol }}{{ "{:,.2f}".format(component.current_price) if component.current_price is not none else '-' }}</strong></div>
+            <div><span class="label">evaluation</span><strong>{{ currency_symbol }}{{ "{:,.2f}".format(component.evaluation) if component.evaluation is not none else '-' }}</strong></div>
+            <div><span class="label">profit_loss</span><strong class="{% if component.profit_loss is none %}neutral{% elif component.profit_loss > 0 %}positive{% elif component.profit_loss < 0 %}negative{% else %}neutral{% endif %}">{{ currency_symbol }}{{ "{:,.2f}".format(component.profit_loss) if component.profit_loss is not none else '-' }}</strong></div>
+            <div><span class="label">profit_rate</span><strong>{{ "{:,.2f}".format(component.profit_rate * 100) if component.profit_rate is not none else '-' }}%</strong></div>
+          </div>
+          {% endfor %}
+        </div>
+        {% else %}
+        <div class="empty-note">계좌별 보유 내역이 없습니다.</div>
+        {% endif %}
+      </section>
+
+      <section id="position-journal-section" class="section-card">
+        <h2>Trade Journal</h2>
+        {% if page_payload.journal %}
+        <div class="journal-grid">
+          <div class="journal-block"><span class="label">전략</span><strong>{{ page_payload.journal.strategy or '-' }}</strong></div>
+          <div class="journal-block"><span class="label">상태</span><strong>{{ page_payload.journal.status or '-' }}</strong></div>
+          <div class="journal-block"><span class="label">투자 논리</span><strong>{{ page_payload.journal.thesis or '-' }}</strong></div>
+          <div class="journal-block"><span class="label">보유 기한</span><strong>{{ page_payload.journal.hold_until or '-' }}</strong></div>
+          <div class="journal-block"><span class="label">목표가</span><strong>{{ currency_symbol }}{{ "{:,.2f}".format(page_payload.journal.target_price) if page_payload.journal.target_price is not none else '-' }}</strong></div>
+          <div class="journal-block"><span class="label">손절가</span><strong>{{ currency_symbol }}{{ "{:,.2f}".format(page_payload.journal.stop_loss) if page_payload.journal.stop_loss is not none else '-' }}</strong></div>
+          <div class="journal-block"><span class="label">목표가 거리</span><strong>{{ "{:+.2f}".format(page_payload.journal.target_distance_pct) if page_payload.journal.target_distance_pct is not none else '-' }}%</strong></div>
+          <div class="journal-block"><span class="label">손절가 거리</span><strong>{{ "{:+.2f}".format(page_payload.journal.stop_distance_pct) if page_payload.journal.stop_distance_pct is not none else '-' }}%</strong></div>
+          <div class="journal-block"><span class="label">생성</span><strong>{{ page_payload.journal.created_at or '-' }}</strong></div>
+          <div class="journal-block"><span class="label">수정</span><strong>{{ page_payload.journal.updated_at or '-' }}</strong></div>
+          <div class="journal-block" style="grid-column: 1 / -1;"><span class="label">메모</span><strong>{{ page_payload.journal.notes or '-' }}</strong></div>
+        </div>
+        {% if page_payload.journal.indicators_snapshot %}
+        <div class="mt-3">
+          <div class="label mb-2">indicators_snapshot</div>
+          <div class="snapshot-box">{{ page_payload.journal.indicators_snapshot | tojson(indent=2) }}</div>
+        </div>
+        {% endif %}
+        {% else %}
+        <div class="empty-note">등록된 trade journal이 없습니다</div>
+        {% endif %}
+      </section>
+
+      <section id="position-indicators-section" class="section-card" data-endpoint="/portfolio/api/positions/{{ page_payload.summary.market_type|lower }}/{{ page_payload.summary.symbol }}/indicators">
+        <h2>기술적 지표</h2>
+        <div class="lazy-content">불러오는 중...</div>
+      </section>
+
+      <section id="position-news-section" class="section-card" data-endpoint="/portfolio/api/positions/{{ page_payload.summary.market_type|lower }}/{{ page_payload.summary.symbol }}/news">
+        <h2>최근 뉴스</h2>
+        <div class="lazy-content">불러오는 중...</div>
+      </section>
+
+      <section id="position-opinions-section" class="section-card" data-endpoint="/portfolio/api/positions/{{ page_payload.summary.market_type|lower }}/{{ page_payload.summary.symbol }}/opinions">
+        <h2>애널리스트 의견</h2>
+        <div class="lazy-content">불러오는 중...</div>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    const detailPayload = {{ page_payload | tojson }};
+
+    function escapeHtml(value) {
+      const text = String(value ?? "");
+      return text
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    }
+
+    function sanitizeUrl(value) {
+      const text = String(value ?? "").trim();
+      if (text.startsWith("http://") || text.startsWith("https://")) {
+        return text;
+      }
+      return "#";
+    }
+
+    async function loadLazySection(sectionId, endpoint, renderFn) {
+      const section = document.getElementById(sectionId);
+      if (!section) return;
+      const contentDiv = section.querySelector(".lazy-content");
+      if (!contentDiv) return;
+
+      try {
+        const response = await fetch(endpoint, { headers: { Accept: "application/json" } });
+        if (!response.ok) throw new Error("Failed to load");
+        const payload = await response.json();
+        contentDiv.innerHTML = renderFn(payload);
+      } catch (_err) {
+        contentDiv.innerHTML = '<div class="empty-note">데이터를 불러올 수 없습니다</div>';
+      }
+    }
+
+    function toneClass(tone) {
+      if (tone === "oversold" || tone === "bullish") return "positive";
+      if (tone === "overbought" || tone === "bearish") return "negative";
+      return "neutral";
+    }
+
+    function renderIndicators(payload) {
+      if (!payload.summary_cards || payload.summary_cards.length === 0) {
+        return '<div class="empty-note">지표 데이터가 없습니다</div>';
+      }
+
+      return `<div class="indicators-grid">${payload.summary_cards.map((card) => `
+        <article class="indicator-card">
+          <span class="label">${escapeHtml(card.label)}</span>
+          <strong class="${toneClass(card.tone)}">${escapeHtml(card.value)}</strong>
+          <small>${escapeHtml(card.description || "")}</small>
+        </article>
+      `).join("")}</div>`;
+    }
+
+    function renderNews(payload) {
+      if (!payload.news || payload.news.length === 0) {
+        return '<div class="empty-note">최근 뉴스가 없습니다</div>';
+      }
+
+      return `<div class="news-list">${payload.news.map((item) => `
+        <article class="news-item">
+          <a href="${sanitizeUrl(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}</a>
+          <div class="meta">${escapeHtml(item.source || "-")} · ${escapeHtml(item.published_at || "-")}</div>
+          <div>${escapeHtml(item.summary || "-")}</div>
+          <div class="meta">sentiment: ${escapeHtml(item.sentiment || "-")}</div>
+        </article>
+      `).join("")}</div>`;
+    }
+
+    function renderOpinions(payload) {
+      if (!payload.supported) {
+        return `<div class="empty-note">${escapeHtml(payload.message || "애널리스트 의견이 제공되지 않는 시장입니다.")}</div>`;
+      }
+
+      const summaryHtml = `
+        <div class="opinions-summary">
+          <div class="opinion-metric"><span class="label">consensus</span><strong>${escapeHtml(payload.consensus || "-")}</strong></div>
+          <div class="opinion-metric"><span class="label">avg_target_price</span><strong>${payload.avg_target_price !== null && payload.avg_target_price !== undefined ? escapeHtml(String(payload.avg_target_price)) : "-"}</strong></div>
+          <div class="opinion-metric"><span class="label">upside_pct</span><strong>${payload.upside_pct !== null && payload.upside_pct !== undefined ? escapeHtml(String(payload.upside_pct)) + "%" : "-"}</strong></div>
+          <div class="opinion-metric"><span class="label">buy_count</span><strong>${payload.buy_count ?? "-"}</strong></div>
+          <div class="opinion-metric"><span class="label">hold_count</span><strong>${payload.hold_count ?? "-"}</strong></div>
+          <div class="opinion-metric"><span class="label">sell_count</span><strong>${payload.sell_count ?? "-"}</strong></div>
+        </div>
+      `;
+
+      if (!payload.opinions || payload.opinions.length === 0) {
+        return `${summaryHtml}<div class="empty-note mt-3">애널리스트 의견이 없습니다</div>`;
+      }
+
+      return `${summaryHtml}<div class="opinions-list">${payload.opinions.map((item) => `
+        <article class="opinion-item">
+          <strong>${escapeHtml(item.firm || item.source || "-")}</strong>
+          <div class="meta">${escapeHtml(item.rating || item.action || "-")}</div>
+          <div class="meta">${item.target_price !== null && item.target_price !== undefined ? `target ${escapeHtml(String(item.target_price))}` : ""}</div>
+        </article>
+      `).join("")}</div>`;
+    }
+
+    document.addEventListener("DOMContentLoaded", () => {
+      const indicatorsSection = document.getElementById("position-indicators-section");
+      const newsSection = document.getElementById("position-news-section");
+      const opinionsSection = document.getElementById("position-opinions-section");
+
+      if (indicatorsSection?.dataset.endpoint) {
+        loadLazySection("position-indicators-section", indicatorsSection.dataset.endpoint, renderIndicators);
+      }
+      if (newsSection?.dataset.endpoint) {
+        loadLazySection("position-news-section", newsSection.dataset.endpoint, renderNews);
+      }
+      if (opinionsSection?.dataset.endpoint) {
+        loadLazySection("position-opinions-section", opinionsSection.dataset.endpoint, renderOpinions);
+      }
+    });
+  </script>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+
+</html>

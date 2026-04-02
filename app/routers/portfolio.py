@@ -22,11 +22,20 @@ from app.schemas.manual_holdings import (
     MergedPortfolioResponse,
     ReferencePricesResponse,
 )
+from app.schemas.portfolio_position_detail import (
+    PositionIndicatorsResponse,
+    PositionNewsResponse,
+    PositionOpinionsResponse,
+)
 from app.services.brokers.kis.client import KISClient
 from app.services.kis_holdings_service import get_kis_holding_for_ticker
 from app.services.merged_portfolio_service import MergedPortfolioService
 from app.services.portfolio_dashboard_service import PortfolioDashboardService
 from app.services.portfolio_overview_service import PortfolioOverviewService
+from app.services.portfolio_position_detail_service import (
+    PortfolioPositionDetailNotFoundError,
+    PortfolioPositionDetailService,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/portfolio", tags=["Portfolio"])
@@ -305,3 +314,99 @@ async def get_portfolio_cash(
     ),
 ):
     return await dashboard_service.get_cash_snapshot()
+
+
+class PositionDetailNotFoundHTTPError(HTTPException):
+    def __init__(self, symbol: str):
+        super().__init__(status_code=404, detail=f"Position not found: {symbol}")
+
+
+def get_portfolio_position_detail_service(
+    overview_service: PortfolioOverviewService = Depends(
+        get_portfolio_overview_service
+    ),
+    dashboard_service: PortfolioDashboardService = Depends(
+        get_portfolio_dashboard_service
+    ),
+) -> PortfolioPositionDetailService:
+    return PortfolioPositionDetailService(
+        overview_service=overview_service,
+        dashboard_service=dashboard_service,
+    )
+
+
+@router.get("/positions/{market_type}/{symbol}", response_class=HTMLResponse)
+async def portfolio_position_detail_page(
+    request: Request,
+    market_type: str,
+    symbol: str,
+    current_user: User = Depends(get_authenticated_user),
+    detail_service: PortfolioPositionDetailService = Depends(
+        get_portfolio_position_detail_service
+    ),
+):
+    try:
+        payload = await detail_service.get_page_payload(
+            user_id=current_user.id,
+            market_type=market_type,
+            symbol=symbol,
+        )
+    except PortfolioPositionDetailNotFoundError as exc:
+        raise HTTPException(
+            status_code=404, detail=f"Position not found: {symbol}"
+        ) from exc
+
+    return templates.TemplateResponse(
+        request,
+        "portfolio_position_detail.html",
+        {
+            "user": current_user,
+            "page_payload": payload,
+        },
+    )
+
+
+@router.get(
+    "/api/positions/{market_type}/{symbol}/indicators",
+    response_model=PositionIndicatorsResponse,
+)
+async def get_position_indicators(
+    market_type: str,
+    symbol: str,
+    detail_service: PortfolioPositionDetailService = Depends(
+        get_portfolio_position_detail_service
+    ),
+):
+    return await detail_service.get_indicators_payload(
+        market_type=market_type, symbol=symbol
+    )
+
+
+@router.get(
+    "/api/positions/{market_type}/{symbol}/news",
+    response_model=PositionNewsResponse,
+)
+async def get_position_news(
+    market_type: str,
+    symbol: str,
+    detail_service: PortfolioPositionDetailService = Depends(
+        get_portfolio_position_detail_service
+    ),
+):
+    return await detail_service.get_news_payload(market_type=market_type, symbol=symbol)
+
+
+@router.get(
+    "/api/positions/{market_type}/{symbol}/opinions",
+    response_model=PositionOpinionsResponse,
+)
+async def get_position_opinions(
+    market_type: str,
+    symbol: str,
+    detail_service: PortfolioPositionDetailService = Depends(
+        get_portfolio_position_detail_service
+    ),
+):
+    return await detail_service.get_opinions_payload(
+        market_type=market_type, symbol=symbol
+    )

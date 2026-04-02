@@ -758,6 +758,100 @@ MARKET_DATA_TOOL_NAMES: set[str] = {
 }
 
 
+async def _get_indicators_impl(
+    symbol: str, indicators: list[str], market: str | None = None
+) -> dict[str, Any]:
+    """Calculate requested indicators for a symbol.
+
+    Supported indicators:
+    - adx: returns adx, plus_di, minus_di
+    - stoch_rsi: returns k, d
+    - obv: returns obv, signal, divergence
+    """
+    symbol = (symbol or "").strip()
+    if not symbol:
+        raise ValueError("symbol is required")
+
+    normalized_symbol = _normalize_symbol_input(symbol, market)
+    market_missing = market is None or not str(market).strip()
+    if market_missing and normalized_symbol.isalpha():
+        raise ValueError(
+            "market is required for plain alphabetic symbols. Use market='us' "
+            "for US equities, or provide KRW-/USDT- prefixed symbol for crypto."
+        )
+
+    if not indicators:
+        raise ValueError("indicators list is required and cannot be empty")
+
+    valid_indicators = {
+        "sma",
+        "ema",
+        "rsi",
+        "macd",
+        "bollinger",
+        "atr",
+        "pivot",
+        "adx",
+        "stoch_rsi",
+        "obv",
+    }
+    normalized_indicators: list[IndicatorType] = []
+    for ind in indicators:
+        ind_lower = ind.lower().strip()
+        if ind_lower not in valid_indicators:
+            raise ValueError(
+                f"Invalid indicator '{ind}'. Valid options: {', '.join(sorted(valid_indicators))}"
+            )
+        normalized_indicators.append(cast(IndicatorType, ind_lower))
+
+    market_type, symbol = _resolve_market_type(normalized_symbol, market)
+
+    source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
+    source = source_map[market_type]
+
+    try:
+        df = await _fetch_ohlcv_for_indicators(symbol, market_type, count=250)
+
+        if df.empty:
+            raise ValueError(f"No data available for symbol '{symbol}'")
+
+        close_fallback_price = (
+            float(df["close"].iloc[-1]) if "close" in df.columns else None
+        )
+        current_price = close_fallback_price
+        if market_type == "crypto":
+            try:
+                prices = await upbit_service.fetch_multiple_current_prices([symbol])
+                ticker_price = prices.get(symbol)
+                if ticker_price is not None:
+                    current_price = float(ticker_price)
+            except Exception:
+                current_price = close_fallback_price
+
+        indicator_results = _compute_indicators(df, normalized_indicators)
+
+        if market_type == "crypto" and "rsi" in normalized_indicators:
+            realtime_rsi = _compute_crypto_realtime_rsi_from_frame(df, current_price)
+            if realtime_rsi is not None:
+                indicator_results.setdefault("rsi", {})["14"] = realtime_rsi
+
+        return {
+            "symbol": symbol,
+            "price": current_price,
+            "instrument_type": market_type,
+            "source": source,
+            "indicators": indicator_results,
+        }
+
+    except Exception as exc:
+        return _error_payload_from_exception(
+            source=source,
+            exc=exc,
+            symbol=symbol,
+            instrument_type=market_type,
+        )
+
+
 def _register_market_data_tools_impl(mcp: FastMCP) -> None:
     @mcp.tool(
         name="search_symbol",
@@ -945,101 +1039,6 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
                 instrument_type=market_type,
             )
 
-    async def _get_indicators_impl(
-        symbol: str, indicators: list[str], market: str | None = None
-    ) -> dict[str, Any]:
-        """Calculate requested indicators for a symbol.
-
-        Supported indicators:
-        - adx: returns adx, plus_di, minus_di
-        - stoch_rsi: returns k, d
-        - obv: returns obv, signal, divergence
-        """
-        symbol = (symbol or "").strip()
-        if not symbol:
-            raise ValueError("symbol is required")
-
-        normalized_symbol = _normalize_symbol_input(symbol, market)
-        market_missing = market is None or not str(market).strip()
-        if market_missing and normalized_symbol.isalpha():
-            raise ValueError(
-                "market is required for plain alphabetic symbols. Use market='us' "
-                "for US equities, or provide KRW-/USDT- prefixed symbol for crypto."
-            )
-
-        if not indicators:
-            raise ValueError("indicators list is required and cannot be empty")
-
-        valid_indicators = {
-            "sma",
-            "ema",
-            "rsi",
-            "macd",
-            "bollinger",
-            "atr",
-            "pivot",
-            "adx",
-            "stoch_rsi",
-            "obv",
-        }
-        normalized_indicators: list[IndicatorType] = []
-        for ind in indicators:
-            ind_lower = ind.lower().strip()
-            if ind_lower not in valid_indicators:
-                raise ValueError(
-                    f"Invalid indicator '{ind}'. Valid options: {', '.join(sorted(valid_indicators))}"
-                )
-            normalized_indicators.append(cast(IndicatorType, ind_lower))
-
-        market_type, symbol = _resolve_market_type(normalized_symbol, market)
-
-        source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
-        source = source_map[market_type]
-
-        try:
-            df = await _fetch_ohlcv_for_indicators(symbol, market_type, count=250)
-
-            if df.empty:
-                raise ValueError(f"No data available for symbol '{symbol}'")
-
-            close_fallback_price = (
-                float(df["close"].iloc[-1]) if "close" in df.columns else None
-            )
-            current_price = close_fallback_price
-            if market_type == "crypto":
-                try:
-                    prices = await upbit_service.fetch_multiple_current_prices([symbol])
-                    ticker_price = prices.get(symbol)
-                    if ticker_price is not None:
-                        current_price = float(ticker_price)
-                except Exception:
-                    current_price = close_fallback_price
-
-            indicator_results = _compute_indicators(df, normalized_indicators)
-
-            if market_type == "crypto" and "rsi" in normalized_indicators:
-                realtime_rsi = _compute_crypto_realtime_rsi_from_frame(
-                    df, current_price
-                )
-                if realtime_rsi is not None:
-                    indicator_results.setdefault("rsi", {})["14"] = realtime_rsi
-
-            return {
-                "symbol": symbol,
-                "price": current_price,
-                "instrument_type": market_type,
-                "source": source,
-                "indicators": indicator_results,
-            }
-
-        except Exception as exc:
-            return _error_payload_from_exception(
-                source=source,
-                exc=exc,
-                symbol=symbol,
-                instrument_type=market_type,
-            )
-
     @mcp.tool(
         name="get_indicators",
         description=(
@@ -1070,6 +1069,7 @@ __all__ = [
     "_fetch_ohlcv_equity_kr",
     "_fetch_ohlcv_equity_us",
     "_build_orderbook_payload",
+    "_get_indicators_impl",
     "MARKET_DATA_TOOL_NAMES",
     "_register_market_data_tools_impl",
 ]

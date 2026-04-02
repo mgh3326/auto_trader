@@ -1062,6 +1062,38 @@ async def test_collect_kis_us_components_converts_percent_rate_to_decimal() -> N
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_position_detail_base_filters_exact_market_and_symbol() -> None:
+    service = PortfolioOverviewService(AsyncMock())
+    service.get_overview = AsyncMock(
+        return_value={
+            "positions": [
+                {
+                    "market_type": "US",
+                    "symbol": "NVDA",
+                    "name": "NVIDIA",
+                    "components": [],
+                },
+                {
+                    "market_type": "KR",
+                    "symbol": "035720",
+                    "name": "카카오",
+                    "components": [],
+                },
+            ]
+        }
+    )
+
+    result = await service.get_position_detail_base(
+        user_id=1, market_type="us", symbol="NVDA"
+    )
+
+    assert result is not None
+    assert result["symbol"] == "NVDA"
+    assert result["market_type"] == "US"
+
+
+@pytest.mark.unit
 class TestAggregatePositions:
     """Test _aggregate_positions handles mixed-currency US positions."""
 

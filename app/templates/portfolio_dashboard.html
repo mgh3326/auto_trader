@@ -1105,6 +1105,10 @@
             }
         }
 
+        function buildPositionDetailUrl(symbol, marketType) {
+            return `/portfolio/positions/${String(marketType || "").toLowerCase()}/${encodeURIComponent(symbol)}`;
+        }
+
         function renderDetailPanel(selectedPosition, journal, journalError = null) {
             const loadingState = document.getElementById("detail-loading-state");
             const emptyState = document.getElementById("detail-empty-state");
@@ -1169,6 +1173,14 @@
                     <p class="mb-1"><strong>종목명:</strong> ${escapeHtml(selectedPosition?.name || selectedPosition?.symbol || "-")}</p>
                     <p class="mb-1"><strong>총 수량:</strong> ${selectedPosition ? formatNumber(selectedPosition.quantity, 8) : "-"}</p>
                     <p class="mb-0"><strong>평가금액:</strong> ${selectedPosition ? formatNumber(selectedPosition.evaluation) : "-"}</p>
+                </section>
+                <section class="detail-section">
+                    <a
+                        class="btn btn-outline-dark w-100"
+                        href="${buildPositionDetailUrl(selectedPosition?.symbol, selectedPosition?.market_type)}"
+                    >
+                        상세 페이지 열기
+                    </a>
                 </section>
                 <section class="detail-section">
                     <h6>매도 시뮬레이션</h6>

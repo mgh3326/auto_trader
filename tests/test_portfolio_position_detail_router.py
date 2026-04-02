@@ -1,0 +1,245 @@
+from __future__ import annotations
+
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from app.routers import portfolio
+
+
+class _FakeDetailService:
+    def __init__(self) -> None:
+        self.get_page_payload = AsyncMock(
+            return_value={
+                "summary": {
+                    "market_type": "US",
+                    "symbol": "NVDA",
+                    "name": "NVIDIA Corp.",
+                    "current_price": 132.0,
+                    "quantity": 3.0,
+                    "avg_price": 120.0,
+                    "profit_loss": 36.0,
+                    "profit_rate": 0.1,
+                    "evaluation": 396.0,
+                    "account_count": 2,
+                    "target_distance_pct": 9.85,
+                    "stop_distance_pct": -10.61,
+                },
+                "components": [
+                    {
+                        "broker": "kis",
+                        "account_name": "ISA",
+                        "source": "live",
+                        "quantity": 2.0,
+                        "avg_price": 118.0,
+                        "current_price": 132.0,
+                        "evaluation": 264.0,
+                        "profit_loss": 28.0,
+                        "profit_rate": 0.1186,
+                    }
+                ],
+                "journal": {
+                    "strategy": "trend",
+                    "thesis": "AI capex leader",
+                    "status": "active",
+                    "notes": "keep position",
+                    "hold_until": "2026-04-30T00:00:00+00:00",
+                    "created_at": "2026-04-01T00:00:00+00:00",
+                    "updated_at": "2026-04-02T00:00:00+00:00",
+                    "target_price": 145.0,
+                    "stop_loss": 118.0,
+                    "target_distance_pct": 9.85,
+                    "stop_distance_pct": -10.61,
+                    "indicators_snapshot": {"rsi_14": 28.4},
+                },
+            }
+        )
+        self.get_indicators_payload = AsyncMock(
+            return_value={
+                "price": 132.0,
+                "summary_cards": [
+                    {"label": "RSI(14)", "value": "28.4", "tone": "oversold"},
+                    {"label": "MACD", "value": "Bullish", "tone": "bullish"},
+                ],
+            }
+        )
+        self.get_news_payload = AsyncMock(
+            return_value={
+                "count": 1,
+                "news": [
+                    {
+                        "title": "NVIDIA <script>alert(1)</script>",
+                        "source": "Reuters",
+                        "published_at": "2026-04-02T09:00:00+09:00",
+                        "url": "https://example.com/nvda",
+                        "summary": "Demand remains strong",
+                        "sentiment": "positive",
+                    }
+                ],
+            }
+        )
+        self.get_opinions_payload = AsyncMock(
+            return_value={
+                "supported": True,
+                "message": None,
+                "consensus": "Buy",
+                "avg_target_price": 155.0,
+                "upside_pct": 12.3,
+                "buy_count": 8,
+                "hold_count": 3,
+                "sell_count": 1,
+                "opinions": [{"firm": "Alpha <Capital>", "rating": "Buy"}],
+            }
+        )
+
+
+def _create_client() -> tuple[TestClient, _FakeDetailService]:
+    app = FastAPI()
+    detail = _FakeDetailService()
+    app.include_router(portfolio.router)
+    app.dependency_overrides[portfolio.get_authenticated_user] = lambda: (
+        SimpleNamespace(id=7)
+    )
+    app.dependency_overrides[portfolio.get_portfolio_position_detail_service] = lambda: (
+        detail
+    )
+    return TestClient(app), detail
+
+
+@pytest.mark.unit
+def test_position_detail_page_renders_summary_shell() -> None:
+    client, detail = _create_client()
+    response = client.get("/portfolio/positions/us/NVDA")
+
+    assert response.status_code == 200
+    body = response.text
+    assert 'id="position-detail-page"' in body
+    assert "Trade Journal" in body
+    assert "최근 뉴스" in body
+    assert "애널리스트 의견" in body
+    assert "보유 기한" in body
+    assert "상태" in body
+    assert "메모" in body
+    detail.get_page_payload.assert_awaited_once_with(
+        user_id=7, market_type="us", symbol="NVDA"
+    )
+
+
+@pytest.mark.unit
+def test_position_detail_page_returns_404_when_symbol_missing() -> None:
+    client, detail = _create_client()
+    detail.get_page_payload.side_effect = (
+        portfolio.PortfolioPositionDetailNotFoundError("NVDA")
+    )
+
+    response = client.get("/portfolio/positions/us/NVDA")
+
+    assert response.status_code == 404
+
+
+@pytest.mark.unit
+def test_position_detail_indicators_api_returns_payload() -> None:
+    client, detail = _create_client()
+    detail.get_indicators_payload = AsyncMock(
+        return_value={"price": 132.0, "indicators": {"rsi": {"14": 28.4}}}
+    )
+
+    response = client.get("/portfolio/api/positions/us/NVDA/indicators")
+
+    assert response.status_code == 200
+    assert response.json()["indicators"]["rsi"]["14"] == 28.4
+
+
+@pytest.mark.unit
+def test_position_detail_opinions_api_returns_crypto_fallback() -> None:
+    client, detail = _create_client()
+    detail.get_opinions_payload = AsyncMock(
+        return_value={
+            "supported": False,
+            "message": "애널리스트 의견이 제공되지 않는 시장입니다.",
+            "opinions": [],
+        }
+    )
+
+    response = client.get("/portfolio/api/positions/crypto/KRW-BTC/opinions")
+
+    assert response.status_code == 200
+    assert response.json()["supported"] is False
+
+
+@pytest.mark.unit
+def test_position_detail_page_contains_lazy_section_hooks() -> None:
+    client, _ = _create_client()
+    response = client.get("/portfolio/positions/us/NVDA")
+    body = response.text
+
+    assert 'id="position-indicators-section"' in body
+    assert 'id="position-news-section"' in body
+    assert 'id="position-opinions-section"' in body
+    assert "loadLazySection(" in body
+    assert "function escapeHtml(value)" in body
+    assert "function sanitizeUrl(value)" in body
+    assert "published_at" in body
+    assert "summary" in body
+    assert "sentiment" in body
+    assert "avg_target_price" in body
+    assert "buy_count" in body
+
+
+@pytest.mark.unit
+def test_position_detail_page_renders_non_us_currency_and_zero_values() -> None:
+    client, detail = _create_client()
+    detail.get_page_payload.return_value = {
+        "summary": {
+            "market_type": "KR",
+            "symbol": "035720",
+            "name": "카카오",
+            "current_price": 70000.0,
+            "quantity": 10.0,
+            "avg_price": 70000.0,
+            "profit_loss": 0.0,
+            "profit_rate": 0.0,
+            "evaluation": 700000.0,
+            "account_count": 1,
+            "target_distance_pct": 0.0,
+            "stop_distance_pct": 0.0,
+        },
+        "components": [
+            {
+                "broker": "kis",
+                "account_name": "종합",
+                "source": "live",
+                "quantity": 10.0,
+                "avg_price": 70000.0,
+                "current_price": 70000.0,
+                "evaluation": 700000.0,
+                "profit_loss": 0.0,
+                "profit_rate": 0.0,
+            }
+        ],
+        "journal": {
+            "strategy": "swing",
+            "thesis": "plateau",
+            "status": "active",
+            "notes": "",
+            "hold_until": None,
+            "created_at": "2026-04-01T00:00:00+00:00",
+            "updated_at": "2026-04-02T00:00:00+00:00",
+            "target_price": 70000.0,
+            "stop_loss": 70000.0,
+            "target_distance_pct": 0.0,
+            "stop_distance_pct": 0.0,
+            "indicators_snapshot": None,
+        },
+    }
+
+    response = client.get("/portfolio/positions/kr/035720")
+
+    assert response.status_code == 200
+    body = response.text
+    assert "₩70,000.00" in body
+    assert "$70,000.00" not in body
+    assert "0.00%" in body
