@@ -1070,6 +1070,7 @@ class TestRunBacktestInterval:
             backtest_seconds: float,
             bar_interval: str = "1d",
             equity_dates: list[str] | None = None,
+            time_in_market_pct: float = 0.0,
         ) -> prepare.BacktestResult:
             captured_build_interval.append(bar_interval)
             captured_equity_dates.append(equity_dates or [])
@@ -1081,6 +1082,7 @@ class TestRunBacktestInterval:
                 win_rate_pct=0.0,
                 profit_factor=0.0,
                 avg_holding_days=0.0,
+                time_in_market_pct=time_in_market_pct,
                 backtest_seconds=backtest_seconds,
                 trade_log=state.trade_log,
                 equity_curve=equity_curve,
