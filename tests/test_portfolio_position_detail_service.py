@@ -182,3 +182,25 @@ async def test_get_opinions_payload_flattens_consensus_fields(
     assert payload["upside_pct"] == 12.3
     assert payload["buy_count"] == 8
     assert payload["opinions"][0]["firm"] == "Alpha Research"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_opinions_payload_defaults_missing_consensus_fields(monkeypatch):
+    service = PortfolioPositionDetailService(
+        overview_service=MagicMock(),
+        dashboard_service=MagicMock(),
+    )
+
+    monkeypatch.setattr(
+        detail_service_module,
+        "handle_get_investment_opinions",
+        AsyncMock(return_value={"consensus": None, "opinions": []}),
+    )
+
+    payload = await service.get_opinions_payload(market_type="kr", symbol="035720")
+
+    assert payload["supported"] is True
+    assert payload["avg_target_price"] is None
+    assert payload["buy_count"] is None
+    assert payload["opinions"] == []

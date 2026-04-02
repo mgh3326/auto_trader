@@ -243,3 +243,57 @@ def test_position_detail_page_renders_non_us_currency_and_zero_values() -> None:
     assert "₩70,000.00" in body
     assert "$70,000.00" not in body
     assert "0.00%" in body
+
+
+@pytest.mark.unit
+def test_position_detail_page_renders_sparse_kr_payload_with_placeholders() -> None:
+    client, detail = _create_client()
+    detail.get_page_payload.return_value = {
+        "summary": {
+            "market_type": "KR",
+            "symbol": "035720",
+            "name": "카카오",
+            "current_price": 70000.0,
+            "quantity": None,
+            "avg_price": None,
+            "profit_loss": None,
+            "profit_rate": None,
+            "evaluation": None,
+            "account_count": 1,
+            "target_distance_pct": None,
+            "stop_distance_pct": None,
+        },
+        "components": [
+            {
+                "broker": "kis",
+                "account_name": "종합",
+                "source": "live",
+                "quantity": None,
+                "avg_price": None,
+                "current_price": 70000.0,
+                "evaluation": None,
+                "profit_loss": None,
+                "profit_rate": None,
+            }
+        ],
+        "journal": {
+            "strategy": None,
+            "status": None,
+            "thesis": None,
+            "hold_until": None,
+            "target_price": None,
+            "stop_loss": None,
+            "target_distance_pct": None,
+            "stop_distance_pct": None,
+            "created_at": None,
+            "updated_at": None,
+            "notes": None,
+            "indicators_snapshot": None,
+        },
+    }
+
+    response = client.get("/portfolio/positions/kr/035720")
+
+    assert response.status_code == 200
+    assert "-" in response.text
+    assert "카카오" in response.text
