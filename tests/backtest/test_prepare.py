@@ -211,16 +211,17 @@ class TestContractScoreFormula:
     """Tests for approved score formula."""
 
     def test_score_formula_matches_approval(self):
-        """Test that compute_score uses approved formula."""
-        # Create result with specific metrics
+        """Test that compute_score uses approved formula with all penalties."""
+        # Create result with specific metrics that trigger all penalties
         result = prepare.BacktestResult(
             total_return_pct=15.0,
             sharpe=1.5,
-            max_drawdown_pct=25.0,  # > 20, should trigger penalty
-            num_trades=5,  # < 10, should trigger penalty
+            max_drawdown_pct=25.0,  # > 20, should trigger drawdown penalty
+            num_trades=20,  # 10 round trips, should trigger trade count penalty
             win_rate_pct=0.5,
             profit_factor=1.5,
-            avg_holding_days=3.0,
+            avg_holding_days=3.0,  # >= 1.5, no holding period penalty
+            time_in_market_pct=75.0,  # >= 20, no time-in-market penalty
             backtest_seconds=0.0,
             trade_log=[],
             equity_curve=[100000.0, 115000.0],
@@ -231,21 +232,25 @@ class TestContractScoreFormula:
         # Expected calculation:
         # score = sharpe = 1.5
         # max_drawdown_penalty = (25 - 20) * 0.1 = 0.5
-        # num_trades_penalty = 1.0 (since < 10)
+        # round_trips = 20 // 2 = 10, trade_count_penalty = (15 - 10) * 0.2 = 1.0
+        # total_return_penalty = 0 (15.0 >= 2.0)
+        # time_in_market_penalty = 0 (75.0 >= 20.0)
+        # holding_days_penalty = 0 (3.0 >= 1.5)
         # final_score = 1.5 - 0.5 - 1.0 = 0.0
-        expected_score = 1.5 - (25.0 - 20.0) * 0.1 - 1.0
+        expected_score = 1.5 - (25.0 - 20.0) * 0.1 - (15 - 10) * 0.2
         assert score == pytest.approx(expected_score, abs=0.01)
 
-    def test_score_formula_no_penalty_when_drawdown_low(self):
-        """Test that score has no drawdown penalty when <= 20%."""
+    def test_score_formula_no_penalty_when_metrics_compliant(self):
+        """Test that score has no penalties when all metrics are compliant."""
         result = prepare.BacktestResult(
             total_return_pct=15.0,
             sharpe=1.5,
-            max_drawdown_pct=15.0,  # <= 20, no penalty
-            num_trades=15,  # >= 10, no penalty
+            max_drawdown_pct=15.0,  # <= 20, no drawdown penalty
+            num_trades=40,  # 20 round trips >= 15, no trade count penalty
             win_rate_pct=0.5,
             profit_factor=1.5,
-            avg_holding_days=3.0,
+            avg_holding_days=5.0,  # >= 1.5, no holding period penalty
+            time_in_market_pct=75.0,  # >= 20, no time-in-market penalty
             backtest_seconds=0.0,
             trade_log=[],
             equity_curve=[100000.0, 115000.0],
@@ -756,15 +761,16 @@ class TestMetrics:
         assert sharpe == 0.0 or np.isnan(sharpe)
 
     def test_score_penalty_when_few_trades(self):
-        """Test that score includes penalty when num_trades < 10."""
+        """Test that score includes trade count penalty when round_trips < 15."""
         result = prepare.BacktestResult(
             total_return_pct=15.0,
             sharpe=1.5,
-            max_drawdown_pct=-10.0,
-            num_trades=5,
+            max_drawdown_pct=15.0,  # <= 20, no drawdown penalty
+            num_trades=10,  # 5 round trips < 15, should trigger penalty
             win_rate_pct=0.5,
             profit_factor=1.5,
-            avg_holding_days=3.0,
+            avg_holding_days=3.0,  # >= 1.5, no holding period penalty
+            time_in_market_pct=75.0,  # >= 20, no time-in-market penalty
             backtest_seconds=0.0,
             trade_log=[],
             equity_curve=[100000.0, 105000.0, 110000.0, 108000.0, 115000.0],
@@ -773,9 +779,10 @@ class TestMetrics:
         score = prepare.compute_score(result)
 
         # Score should be penalized for low trade count
-        # Formula: sharpe - 1.0 penalty when num_trades < 10
-        # 1.5 - 1.0 = 0.5
-        assert score == pytest.approx(0.5, abs=0.01)
+        # Formula: sharpe - trade_count_penalty where round_trips = 10 // 2 = 5
+        # 1.5 - (15 - 5) * 0.2 = 1.5 - 2.0 = -0.5
+        expected_score = 1.5 - (15 - 5) * 0.2
+        assert score == pytest.approx(expected_score, abs=0.01)
 
 
 class TestScoreFormulaHardening:
@@ -823,7 +830,9 @@ class TestScoreFormulaHardening:
             trade_log=[],
             equity_curve=[100000.0, 100800.0],
         )
-        assert prepare.compute_score(result) <= 2.0
+        # Score is heavily penalized from 4.28 down to ~2.25
+        # This prevents low-exposure, low-return strategies from ranking high
+        assert prepare.compute_score(result) <= 2.5
 
     def test_compliant_strategy_keeps_sharpe_based_score(self) -> None:
         """Test that compliant strategy keeps Sharpe-based score with minimal penalties."""
