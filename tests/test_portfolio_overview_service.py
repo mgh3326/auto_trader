@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -10,6 +11,145 @@ import app.services.brokers.upbit.client as upbit_service
 from app.services import portfolio_overview_service as portfolio_overview_module
 from app.services.portfolio_overview_service import PortfolioOverviewService
 from app.services.us_symbol_universe_service import USSymbolNotRegisteredError
+
+
+@pytest.mark.asyncio
+async def test_get_overview_collects_sources_concurrently(monkeypatch) -> None:
+    service = PortfolioOverviewService(AsyncMock())
+    release = asyncio.Event()
+    started: set[str] = set()
+    active_count = 0
+    max_active = 0
+
+    async def gated(name: str):
+        nonlocal active_count, max_active
+        active_count += 1
+        max_active = max(max_active, active_count)
+        started.add(name)
+        if len(started) == 3:
+            release.set()
+        try:
+            await asyncio.wait_for(release.wait(), timeout=0.1)
+        except TimeoutError:
+            pass
+        active_count -= 1
+        return []
+
+    service._collect_kis_components = lambda *args, **kwargs: gated("kis")
+    service._collect_upbit_components = lambda *args, **kwargs: gated("upbit")
+    service._collect_manual_components = lambda *args, **kwargs: gated("manual")
+    service._fill_missing_prices = AsyncMock(return_value=None)
+
+    monkeypatch.setattr(
+        portfolio_overview_module,
+        "get_active_upbit_markets",
+        AsyncMock(return_value={"KRW-BTC"}),
+    )
+    monkeypatch.setattr(
+        portfolio_overview_module,
+        "get_usd_krw_rate",
+        AsyncMock(return_value=1350.0),
+    )
+
+    await service.get_overview(user_id=1)
+    assert max_active == 3, f"Only {max_active} tasks ran concurrently, expected 3"
+
+
+@pytest.mark.asyncio
+async def test_collect_kis_components_fetches_kr_and_us_concurrently() -> None:
+    service = PortfolioOverviewService(AsyncMock())
+    kis_client = AsyncMock()
+    release = asyncio.Event()
+    started: set[str] = set()
+    active_count = 0
+    max_active = 0
+
+    async def gated(name: str):
+        nonlocal active_count, max_active
+        active_count += 1
+        max_active = max(max_active, active_count)
+        started.add(name)
+        if len(started) == 2:
+            release.set()
+        try:
+            await asyncio.wait_for(release.wait(), timeout=0.1)
+        except TimeoutError:
+            pass
+        active_count -= 1
+        return []
+
+    kis_client.fetch_my_stocks = lambda: gated("kr")
+    kis_client.fetch_my_us_stocks = lambda: gated("us")
+
+    await service._collect_kis_components(kis_client, [])
+    assert max_active == 2, f"Only {max_active} KIS tasks ran concurrently, expected 2"
+
+
+@pytest.mark.asyncio
+async def test_fill_missing_prices_fetches_market_buckets_concurrently(
+    monkeypatch,
+) -> None:
+    service = PortfolioOverviewService(AsyncMock())
+    release = asyncio.Event()
+    started: set[str] = set()
+    active_count = 0
+    max_active = 0
+
+    async def gated(name: str):
+        nonlocal active_count, max_active
+        active_count += 1
+        max_active = max(max_active, active_count)
+        started.add(name)
+        if len(started) == 3:
+            release.set()
+        try:
+            await asyncio.wait_for(release.wait(), timeout=0.1)
+        except TimeoutError:
+            pass
+        active_count -= 1
+        if "kr_upstream" in name or "us_upstream" in name:
+            return pd.DataFrame([{"close": 100.0}])
+        if "crypto_upstream" in name:
+            return {"KRW-BTC": 100000000.0}
+        return {}
+
+    # Patch the classes directly
+    from app.services.brokers.kis.client import KISClient
+
+    monkeypatch.setattr(
+        KISClient, "inquire_price", lambda *args, **kwargs: gated("kr_upstream")
+    )
+    monkeypatch.setattr(
+        portfolio_overview_module.yahoo_service,
+        "fetch_price",
+        lambda *args, **kwargs: gated("us_upstream"),
+    )
+    monkeypatch.setattr(
+        service,
+        "_fetch_upbit_prices_resilient",
+        lambda *args, **kwargs: gated("crypto_upstream"),
+    )
+    monkeypatch.setattr(
+        portfolio_overview_module,
+        "get_us_exchange_by_symbol",
+        AsyncMock(return_value="NASD"),
+    )
+
+    components = [
+        {"market_type": "KR", "symbol": "005930", "current_price": None},
+        {"market_type": "US", "symbol": "AAPL", "current_price": None},
+        {
+            "market_type": "CRYPTO",
+            "symbol": "KRW-BTC",
+            "source": "manual",
+            "current_price": None,
+        },
+    ]
+
+    await service._fill_missing_prices(KISClient(), components, [])
+    assert max_active == 3, (
+        f"Only {max_active} market buckets ran concurrently, expected 3"
+    )
 
 
 def _sample_components() -> list[dict[str, object]]:
@@ -153,6 +293,8 @@ async def test_get_overview_includes_deduplicated_warnings(monkeypatch) -> None:
         warnings.append("KIS warning")
         return []
 
+    # Update: service methods are now called via _run_collection_task
+    # which injects 'warnings=local_warnings'
     service._collect_kis_components = collect_kis
     service._collect_upbit_components = collect_upbit
     service._collect_manual_components = collect_manual
@@ -162,6 +304,11 @@ async def test_get_overview_includes_deduplicated_warnings(monkeypatch) -> None:
         portfolio_overview_module,
         "get_active_upbit_markets",
         AsyncMock(return_value={"KRW-BTC"}),
+    )
+    monkeypatch.setattr(
+        portfolio_overview_module,
+        "get_usd_krw_rate",
+        AsyncMock(return_value=1350.0),
     )
 
     overview = await service.get_overview(user_id=1)
@@ -741,7 +888,7 @@ async def test_get_overview_keeps_crypto_when_universe_lookup_fails(
     service = PortfolioOverviewService(AsyncMock())
 
     async def collect_upbit(
-        _warnings,
+        warnings,
         active_upbit_markets=None,
         enforce_upbit_universe=True,
     ):

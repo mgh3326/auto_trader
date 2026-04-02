@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -104,12 +105,16 @@ class PortfolioOverviewService:
         selected_account_set = set(selected_account_keys)
         q_filter = (q or "").strip().lower() or None
 
-        components: list[dict[str, Any]] = []
         warnings: list[str] = []
         enforce_upbit_universe = True
 
+        active_upbit_markets_task = asyncio.create_task(
+            get_active_upbit_markets(quote_currency=None)
+        )
+        usd_krw_rate_task = asyncio.create_task(get_usd_krw_rate())
+
         try:
-            active_upbit_markets = await get_active_upbit_markets(quote_currency=None)
+            active_upbit_markets = await active_upbit_markets_task
         except Exception as exc:
             logger.warning("Failed to load active Upbit markets: %s", exc)
             warnings.append(f"Upbit universe lookup failed: {exc}")
@@ -124,22 +129,27 @@ class PortfolioOverviewService:
             }
 
         kis_client = KISClient()
-        components.extend(await self._collect_kis_components(kis_client, warnings))
-        components.extend(
-            await self._collect_upbit_components(
-                warnings,
+
+        # Run collectors concurrently with isolated warning lists
+        collection_results = await asyncio.gather(
+            self._run_collection_task(self._collect_kis_components, kis_client),
+            self._run_collection_task(
+                self._collect_upbit_components,
                 active_upbit_markets=active_upbit_markets,
                 enforce_upbit_universe=enforce_upbit_universe,
-            )
-        )
-        components.extend(
-            await self._collect_manual_components(
+            ),
+            self._run_collection_task(
+                self._collect_manual_components,
                 user_id,
-                warnings,
                 active_upbit_markets=active_upbit_markets,
                 enforce_upbit_universe=enforce_upbit_universe,
-            )
+            ),
         )
+
+        components: list[dict[str, Any]] = []
+        for result_components, result_warnings in collection_results:
+            components.extend(result_components)
+            warnings.extend(result_warnings)
 
         if enforce_upbit_universe and active_upbit_markets is not None:
             components = [
@@ -149,7 +159,7 @@ class PortfolioOverviewService:
                 or item["symbol"] in active_upbit_markets
             ]
 
-        usd_krw_rate = await get_usd_krw_rate()
+        usd_krw_rate = await usd_krw_rate_task
         await self._fill_missing_prices(
             kis_client,
             components,
@@ -206,8 +216,24 @@ class PortfolioOverviewService:
         kis_client: KISClient,
         warnings: list[str],
     ) -> list[dict[str, Any]]:
-        components: list[dict[str, Any]] = []
+        collection_results = await asyncio.gather(
+            self._collect_kis_kr_components(kis_client),
+            self._collect_kis_us_components(kis_client),
+        )
 
+        components: list[dict[str, Any]] = []
+        for result_components, result_warnings in collection_results:
+            components.extend(result_components)
+            warnings.extend(result_warnings)
+
+        return [item for item in components if item["symbol"]]
+
+    async def _collect_kis_kr_components(
+        self,
+        kis_client: KISClient,
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        components: list[dict[str, Any]] = []
+        warnings: list[str] = []
         try:
             kr_stocks = await kis_client.fetch_my_stocks()
             for stock in kr_stocks:
@@ -245,7 +271,14 @@ class PortfolioOverviewService:
         except Exception as exc:
             logger.warning("Failed to fetch KIS KR holdings: %s", exc)
             warnings.append(f"KIS KR holdings fetch failed: {exc}")
+        return components, warnings
 
+    async def _collect_kis_us_components(
+        self,
+        kis_client: KISClient,
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        components: list[dict[str, Any]] = []
+        warnings: list[str] = []
         try:
             us_stocks = await kis_client.fetch_my_us_stocks()
             for stock in us_stocks:
@@ -285,8 +318,7 @@ class PortfolioOverviewService:
         except Exception as exc:
             logger.warning("Failed to fetch KIS US holdings: %s", exc)
             warnings.append(f"KIS US holdings fetch failed: {exc}")
-
-        return [item for item in components if item["symbol"]]
+        return components, warnings
 
     async def _collect_upbit_components(
         self,
@@ -475,6 +507,33 @@ class PortfolioOverviewService:
             else None
         )
 
+        bucket_results = await asyncio.gather(
+            self._fill_missing_kr_prices(kis_client, components, usd_krw=usd_krw),
+            self._fill_missing_us_prices(components, usd_krw=usd_krw),
+            self._fill_missing_crypto_prices(
+                components,
+                usd_krw=usd_krw,
+                active_upbit_set=active_upbit_set,
+                enforce_upbit_universe=enforce_upbit_universe,
+            ),
+            return_exceptions=True,
+        )
+
+        for result in bucket_results:
+            if isinstance(result, list):
+                warnings.extend(result)
+            elif isinstance(result, Exception):
+                # Re-raise fatal exceptions if any
+                raise result
+
+    async def _fill_missing_kr_prices(
+        self,
+        kis_client: KISClient,
+        components: list[dict[str, Any]],
+        *,
+        usd_krw: float | None = None,
+    ) -> list[str]:
+        warnings: list[str] = []
         kr_symbols = sorted(
             {
                 item["symbol"]
@@ -482,6 +541,34 @@ class PortfolioOverviewService:
                 if item["market_type"] == _MARKET_KR and item["current_price"] is None
             }
         )
+        if not kr_symbols:
+            return []
+
+        async def fetch_and_apply(symbol: str):
+            try:
+                frame = await kis_client.inquire_price(symbol)
+                if frame.empty:
+                    return
+                price = _to_float(frame.iloc[-1].get("close"), default=0.0)
+                if price <= 0:
+                    return
+                self._apply_price(
+                    components, _MARKET_KR, symbol, price, usd_krw=usd_krw
+                )
+            except Exception as exc:
+                logger.warning("Failed to fetch KIS KR price for %s: %s", symbol, exc)
+                warnings.append(f"KIS KR price fetch failed for {symbol}: {exc}")
+
+        await asyncio.gather(*(fetch_and_apply(s) for s in kr_symbols))
+        return warnings
+
+    async def _fill_missing_us_prices(
+        self,
+        components: list[dict[str, Any]],
+        *,
+        usd_krw: float | None = None,
+    ) -> list[str]:
+        warnings: list[str] = []
         us_symbol_targets: dict[str, set[str]] = {}
         for item in components:
             if item["market_type"] != _MARKET_US or item["current_price"] is not None:
@@ -495,6 +582,54 @@ class PortfolioOverviewService:
             us_symbol_targets.setdefault(normalized_symbol, set()).add(raw_symbol)
 
         us_symbols = sorted(us_symbol_targets)
+        if not us_symbols:
+            return []
+
+        valid_us_symbols: list[str] = []
+        for normalized_symbol in us_symbols:
+            try:
+                await get_us_exchange_by_symbol(normalized_symbol, db=self.db)
+                valid_us_symbols.append(normalized_symbol)
+            except USSymbolUniverseLookupError as exc:
+                raw_symbols = sorted(
+                    us_symbol_targets.get(normalized_symbol, {normalized_symbol})
+                )
+                logger.info(
+                    "Skipping invalid US symbol before price fetch symbols=%s normalized=%s reason=%s",
+                    ",".join(raw_symbols),
+                    normalized_symbol,
+                    exc,
+                )
+
+        async def fetch_and_apply(symbol: str):
+            frame = await yahoo_service.fetch_price(symbol)
+            if frame.empty:
+                raise ValueError(f"US price fetch failed for {symbol}: empty response")
+
+            price = _to_float(frame.iloc[-1].get("close"), default=0.0)
+            if price <= 0:
+                raise ValueError(
+                    f"US price fetch failed for {symbol}: non-positive close price"
+                )
+
+            for target_symbol in us_symbol_targets.get(symbol, {symbol}):
+                self._apply_price(
+                    components, _MARKET_US, target_symbol, price, usd_krw=usd_krw
+                )
+
+        # Yahoo price fetches are also parallelized here
+        await asyncio.gather(*(fetch_and_apply(s) for s in valid_us_symbols))
+        return warnings
+
+    async def _fill_missing_crypto_prices(
+        self,
+        components: list[dict[str, Any]],
+        *,
+        usd_krw: float | None = None,
+        active_upbit_set: set[str] | None = None,
+        enforce_upbit_universe: bool = True,
+    ) -> list[str]:
+        warnings: list[str] = []
         crypto_symbols = sorted(
             {
                 item["symbol"]
@@ -509,73 +644,23 @@ class PortfolioOverviewService:
                 )
             }
         )
+        if not crypto_symbols:
+            return []
 
-        for symbol in kr_symbols:
-            try:
-                frame = await kis_client.inquire_price(symbol)
-                if frame.empty:
-                    continue
-                price = _to_float(frame.iloc[-1].get("close"), default=0.0)
-                if price <= 0:
-                    continue
-                self._apply_price(
-                    components, _MARKET_KR, symbol, price, usd_krw=usd_krw
-                )
-            except Exception as exc:
-                logger.warning("Failed to fetch KIS KR price for %s: %s", symbol, exc)
-                warnings.append(f"KIS KR price fetch failed for {symbol}: {exc}")
-
-        valid_us_symbols: list[str] = []
-        if us_symbols:
-            for normalized_symbol in us_symbols:
-                try:
-                    await get_us_exchange_by_symbol(normalized_symbol, db=self.db)
-                except USSymbolUniverseLookupError as exc:
-                    raw_symbols = sorted(
-                        us_symbol_targets.get(normalized_symbol, {normalized_symbol})
-                    )
-                    logger.info(
-                        "Skipping invalid US symbol before price fetch symbols=%s normalized=%s reason=%s",
-                        ",".join(raw_symbols),
-                        normalized_symbol,
-                        exc,
-                    )
-                    continue
-                valid_us_symbols.append(normalized_symbol)
-
-        if valid_us_symbols:
-            for symbol in valid_us_symbols:
-                frame = await yahoo_service.fetch_price(symbol)
-                if frame.empty:
-                    raise ValueError(
-                        f"US price fetch failed for {symbol}: empty response"
-                    )
-
-                price = _to_float(frame.iloc[-1].get("close"), default=0.0)
-                if price <= 0:
-                    raise ValueError(
-                        f"US price fetch failed for {symbol}: non-positive close price"
-                    )
-
-                for target_symbol in us_symbol_targets.get(symbol, {symbol}):
-                    self._apply_price(
-                        components, _MARKET_US, target_symbol, price, usd_krw=usd_krw
-                    )
-
-        if crypto_symbols:
-            price_map = await self._fetch_upbit_prices_resilient(
-                crypto_symbols,
-                warnings,
-                stage="manual_crypto",
-                active_upbit_markets=active_upbit_set,
-                enforce_upbit_universe=enforce_upbit_universe,
+        price_map = await self._fetch_upbit_prices_resilient(
+            crypto_symbols,
+            warnings,
+            stage="manual_crypto",
+            active_upbit_markets=active_upbit_set,
+            enforce_upbit_universe=enforce_upbit_universe,
+        )
+        for symbol, price in price_map.items():
+            if price is None:
+                continue
+            self._apply_price(
+                components, _MARKET_CRYPTO, symbol, float(price), usd_krw=usd_krw
             )
-            for symbol, price in price_map.items():
-                if price is None:
-                    continue
-                self._apply_price(
-                    components, _MARKET_CRYPTO, symbol, float(price), usd_krw=usd_krw
-                )
+        return warnings
 
     async def _fetch_upbit_prices_resilient(
         self,
@@ -995,3 +1080,20 @@ class PortfolioOverviewService:
             if item.get("current_price") is not None:
                 return float(item["current_price"])
         return None
+
+    async def _run_collection_task(
+        self,
+        func: Any,
+        *args: Any,
+        **kwargs: Any,
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        """Run a collection task and return its results and warnings."""
+        local_warnings: list[str] = []
+        try:
+            # Inject local_warnings as the warnings parameter
+            result = await func(*args, warnings=local_warnings, **kwargs)
+        except Exception as exc:
+            logger.warning("Collection task failed: %s", exc)
+            local_warnings.append(str(exc))
+            result = []
+        return result, local_warnings

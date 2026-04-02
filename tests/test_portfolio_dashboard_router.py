@@ -86,6 +86,19 @@ def test_portfolio_dashboard_page_renders_screener_style_shell() -> None:
     assert "외 ${omittedCount}건 생략" in body
 
 
+def test_portfolio_dashboard_page_renders_full_width_results_layout() -> None:
+    client, _, _ = _create_client_with_dashboard()
+    response = client.get("/portfolio/")
+
+    assert response.status_code == 200
+    body = response.text
+
+    assert 'id="portfolio-results-panel"' in body
+    assert 'id="portfolio-secondary-grid"' in body
+    assert "table-layout: fixed;" in body
+    assert "renderOverviewLoadingState" in body
+
+
 def test_portfolio_overview_api_passes_repeated_account_keys() -> None:
     client, fake_service = _create_client()
     response = client.get(
