@@ -40,17 +40,13 @@ def _to_float(value: Any, *, default: float = 0.0) -> float:
         return default
 
 
-def _normalize_rate(value: Any) -> float | None:
+def _kis_percent_to_decimal(value: Any) -> float | None:
     if value in (None, ""):
         return None
     try:
-        rate = float(value)
+        return float(value) / 100.0
     except (TypeError, ValueError):
         return None
-
-    if abs(rate) > 2:
-        return rate / 100.0
-    return rate
 
 
 def _normalize_market_type(value: Any) -> str | None:
@@ -245,7 +241,7 @@ class PortfolioOverviewService:
                 current_price = _to_float(stock.get("prpr"), default=0.0) or None
                 evaluation = _to_float(stock.get("evlu_amt"), default=0.0) or None
                 profit_loss = _to_float(stock.get("evlu_pfls_amt"), default=0.0)
-                profit_rate = _normalize_rate(stock.get("evlu_pfls_rt"))
+                profit_rate = _kis_percent_to_decimal(stock.get("evlu_pfls_rt"))
 
                 components.append(
                     {
@@ -292,7 +288,7 @@ class PortfolioOverviewService:
                     _to_float(stock.get("ovrs_stck_evlu_amt"), default=0.0) or None
                 )
                 profit_loss = _to_float(stock.get("frcr_evlu_pfls_amt"), default=0.0)
-                profit_rate = _normalize_rate(stock.get("evlu_pfls_rt"))
+                profit_rate = _kis_percent_to_decimal(stock.get("evlu_pfls_rt"))
 
                 components.append(
                     {
@@ -993,37 +989,10 @@ class PortfolioOverviewService:
                 for item in components_list
             )
 
-            # For multi-source US positions, use the live component's profit_rate
-            # to avoid mixing KRW (manual) and USD (KIS) avg_prices in cost_basis.
-            live_component = next(
-                (c for c in components_list if c.get("source") == "live"),
-                None,
-            )
-            is_mixed_us = (
-                row["market_type"] == _MARKET_US
-                and len(components_list) > 1
-                and live_component is not None
-            )
-
             # If a canonical current price is available, recalculate position totals from
             # full quantity to avoid undercount when some account components are missing
             # per-component evaluation/profit fields.
-            if is_mixed_us and current_price is not None:
-                # Use live component's profit_rate as authoritative
-                live_rate = live_component.get("profit_rate")
-                evaluation = quantity * current_price
-                if live_rate is not None:
-                    denominator = 1.0 + float(live_rate)
-                    if denominator > 0:
-                        cost_basis = evaluation / denominator
-                    else:
-                        cost_basis = evaluation
-                    profit_loss = evaluation - cost_basis
-                    profit_rate = float(live_rate)
-                else:
-                    profit_loss = evaluation - cost_basis
-                    profit_rate = (profit_loss / cost_basis) if cost_basis > 0 else 0.0
-            elif current_price is not None:
+            if current_price is not None:
                 evaluation = quantity * current_price
                 profit_loss = evaluation - cost_basis
                 profit_rate = (profit_loss / cost_basis) if cost_basis > 0 else 0.0
