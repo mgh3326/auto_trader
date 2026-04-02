@@ -184,6 +184,7 @@ class BacktestResult:
     backtest_seconds: float = 0.0  # Runtime measurement
     trade_log: list[dict[str, Any]] = field(default_factory=list)
     equity_curve: list[float] = field(default_factory=list)
+    equity_dates: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -512,6 +513,7 @@ def run_backtest(
             backtest_seconds=0.0,
             trade_log=[],
             equity_curve=[initial_capital],
+            equity_dates=[],
         )
 
     # Pre-index data by symbol for efficient lookup.
@@ -535,6 +537,7 @@ def run_backtest(
     )
 
     equity_curve = [initial_capital]
+    equity_dates = [dates[0]]
 
     # Iterate through dates
     for date in dates:
@@ -597,10 +600,17 @@ def run_backtest(
             if symbol in bar_data:
                 equity += qty * bar_data[symbol].close
         equity_curve.append(equity)
+        equity_dates.append(date)
 
     # Calculate metrics
     elapsed = time.time() - start_time
-    return _build_result(state, equity_curve, elapsed, bar_interval=bar_interval)
+    return _build_result(
+        state,
+        equity_curve,
+        elapsed,
+        bar_interval=bar_interval,
+        equity_dates=equity_dates,
+    )
 
 
 def _build_result(
@@ -608,6 +618,7 @@ def _build_result(
     equity_curve: list[float],
     backtest_seconds: float = 0.0,
     bar_interval: str = "1d",
+    equity_dates: list[str] | None = None,
 ) -> BacktestResult:
     """Build BacktestResult from final state."""
     total_return_pct = _calc_total_return(equity_curve)
@@ -640,6 +651,7 @@ def _build_result(
         backtest_seconds=backtest_seconds,
         trade_log=state.trade_log,
         equity_curve=equity_curve,
+        equity_dates=equity_dates or [],
     )
 
 
