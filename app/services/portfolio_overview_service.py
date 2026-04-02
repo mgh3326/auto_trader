@@ -1138,3 +1138,24 @@ class PortfolioOverviewService:
             local_warnings.append(str(exc))
             result = []
         return result, local_warnings
+
+    async def get_position_detail_base(
+        self,
+        *,
+        user_id: int,
+        market_type: str,
+        symbol: str,
+    ) -> dict[str, Any] | None:
+        overview = await self.get_overview(
+            user_id=user_id,
+            market=str(market_type).upper(),
+            q=symbol,
+            skip_missing_prices=False,
+        )
+        for row in overview.get("positions", []):
+            if (
+                row["market_type"] == str(market_type).upper()
+                and row["symbol"] == symbol
+            ):
+                return row
+        return None

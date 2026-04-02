@@ -29,6 +29,11 @@ from .n8n.pending_orders import (
     N8nPendingOrdersResponse,
     N8nPendingOrderSummary,
 )
+from .portfolio_position_detail import (
+    PositionDetailComponentResponse,
+    PositionDetailPageResponse,
+    PositionDetailSummaryResponse,
+)
 from .research_backtest import BacktestPairSummary, BacktestRunSummary
 
 __all__ = [
@@ -53,6 +58,10 @@ __all__ = [
     "ReferencePricesResponse",
     "MergedHoldingResponse",
     "MergedPortfolioResponse",
+    # Portfolio Position Detail
+    "PositionDetailComponentResponse",
+    "PositionDetailSummaryResponse",
+    "PositionDetailPageResponse",
     # Trading
     "BuyOrderRequest",
     "SellOrderRequest",
