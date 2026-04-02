@@ -9,6 +9,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
@@ -55,11 +56,21 @@ async def portfolio_dashboard_page(request: Request):
     )
 
 
+class EnrichSymbol(BaseModel):
+    symbol: str
+    market_type: Literal["KR", "US", "CRYPTO"]
+
+
+class EnrichRequest(BaseModel):
+    symbols: list[EnrichSymbol]
+
+
 @router.get("/api/overview")
 async def get_portfolio_overview(
     market: Literal["ALL", "KR", "US", "CRYPTO"] = "ALL",
     account_keys: Annotated[list[str] | None, Query()] = None,
     q: Annotated[str | None, Query(min_length=1)] = None,
+    skip_missing_prices: bool = False,
     current_user: User = Depends(get_authenticated_user),
     overview_service: PortfolioOverviewService = Depends(
         get_portfolio_overview_service
@@ -71,9 +82,31 @@ async def get_portfolio_overview(
             market=market,
             account_keys=account_keys,
             q=q,
+            skip_missing_prices=skip_missing_prices,
         )
     except Exception as e:
         logger.error("Error fetching portfolio overview: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.post("/api/overview/enrich")
+async def enrich_portfolio_overview(
+    request: EnrichRequest,
+    current_user: User = Depends(get_authenticated_user),
+    overview_service: PortfolioOverviewService = Depends(
+        get_portfolio_overview_service
+    ),
+):
+    try:
+        targets = [
+            {"symbol": t.symbol, "market_type": t.market_type} for t in request.symbols
+        ]
+        return await overview_service.enrich_manual_positions(
+            user_id=current_user.id,
+            targets=targets,
+        )
+    except Exception as e:
+        logger.error("Error enriching portfolio overview: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 

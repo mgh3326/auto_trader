@@ -85,6 +85,7 @@ class PortfolioOverviewService:
         market: str = _MARKET_ALL,
         account_keys: list[str] | None = None,
         q: str | None = None,
+        skip_missing_prices: bool = False,
     ) -> dict[str, Any]:
         market_filter = str(market or _MARKET_ALL).strip().upper()
         if market_filter not in {
@@ -156,14 +157,16 @@ class PortfolioOverviewService:
             ]
 
         usd_krw_rate = await usd_krw_rate_task
-        await self._fill_missing_prices(
-            kis_client,
-            components,
-            warnings,
-            usd_krw=usd_krw_rate,
-            active_upbit_markets=active_upbit_markets,
-            enforce_upbit_universe=enforce_upbit_universe,
-        )
+
+        if not skip_missing_prices:
+            await self._fill_missing_prices(
+                kis_client,
+                components,
+                warnings,
+                usd_krw=usd_krw_rate,
+                active_upbit_markets=active_upbit_markets,
+                enforce_upbit_universe=enforce_upbit_universe,
+            )
 
         facets = self._build_account_facets(components)
         filtered_components = self._filter_components(
@@ -200,11 +203,82 @@ class PortfolioOverviewService:
                 "market": market_filter,
                 "account_keys": selected_account_keys,
                 "q": q,
+                "skip_missing_prices": skip_missing_prices,
             },
             "summary": summary,
             "facets": {"accounts": facets},
             "positions": positions,
             "warnings": deduped_warnings,
+        }
+
+    async def enrich_manual_positions(
+        self,
+        *,
+        user_id: int,
+        targets: list[dict[str, str]],
+    ) -> dict[str, Any]:
+        """Enrich only requested manual positions with live prices."""
+        warnings: list[str] = []
+        enforce_upbit_universe = True
+
+        active_upbit_markets_task = asyncio.create_task(
+            get_active_upbit_markets(quote_currency=None)
+        )
+        usd_krw_rate_task = asyncio.create_task(get_usd_krw_rate())
+
+        try:
+            active_upbit_markets = await active_upbit_markets_task
+        except Exception as exc:
+            logger.warning("Failed to load active Upbit markets: %s", exc)
+            active_upbit_markets = None
+            enforce_upbit_universe = False
+
+        # Filter manual components for this user
+        manual_components, manual_warnings = await self._run_collection_task(
+            self._collect_manual_components,
+            user_id,
+            active_upbit_markets=active_upbit_markets,
+            enforce_upbit_universe=enforce_upbit_universe,
+        )
+        warnings.extend(manual_warnings)
+
+        target_set = {(t["market_type"], t["symbol"]) for t in targets}
+        filtered_components = [
+            c
+            for c in manual_components
+            if (c["market_type"], c["symbol"]) in target_set
+        ]
+
+        if not filtered_components:
+            return {
+                "success": True,
+                "as_of": datetime.now(UTC).isoformat(),
+                "positions": [],
+                "warnings": list(dict.fromkeys(warnings)),
+            }
+
+        kis_client = KISClient()
+        usd_krw_rate = await usd_krw_rate_task
+
+        await self._fill_missing_prices(
+            kis_client,
+            filtered_components,
+            warnings,
+            usd_krw=usd_krw_rate,
+            active_upbit_markets=active_upbit_markets,
+            enforce_upbit_universe=enforce_upbit_universe,
+        )
+
+        # Aggregate only these components
+        positions = self._aggregate_positions(
+            filtered_components, usd_krw=usd_krw_rate
+        )
+
+        return {
+            "success": True,
+            "as_of": datetime.now(UTC).isoformat(),
+            "positions": positions,
+            "warnings": list(dict.fromkeys(warnings)),
         }
 
     async def _collect_kis_components(

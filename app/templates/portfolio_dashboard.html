@@ -848,7 +848,7 @@
                         <td><strong>${symbol}</strong><br><span class="subtle">${name}</span></td>
                         <td>${formatNumber(item.quantity, 8)}</td>
                         <td>${formatNumber(item.avg_price)}</td>
-                        <td>${item.current_price === null ? "-" : formatNumber(item.current_price)}</td>
+                        <td>${item.current_price === null ? '<span class="subtle">조회중...</span>' : formatNumber(item.current_price)}</td>
                         <td>${formatNumber(item.evaluation)}</td>
                         <td class="${pClass}">${formatProfit(item.profit_loss, item.profit_rate)}</td>
                     </tr>
@@ -871,7 +871,7 @@
                         <dl class="metric-grid">
                             <dt>수량</dt><dd>${formatNumber(item.quantity, 8)}</dd>
                             <dt>평균단가</dt><dd>${formatNumber(item.avg_price)}</dd>
-                            <dt>현재가</dt><dd>${item.current_price === null ? "-" : formatNumber(item.current_price)}</dd>
+                            <dt>현재가</dt><dd>${item.current_price === null ? '<span class="subtle">조회중...</span>' : formatNumber(item.current_price)}</dd>
                             <dt>평가금액</dt><dd>${formatNumber(item.evaluation)}</dd>
                             <dt>손익/수익률</dt><dd class="${pClass}">${formatProfit(item.profit_loss, item.profit_rate)}</dd>
                         </dl>
@@ -1216,6 +1216,8 @@
 
         async function fetchOverview() {
             const params = buildQueryParams();
+            // Phase 1: Fast overview (skip manual price fills)
+            params.append("skip_missing_prices", "true");
             const url = `/portfolio/api/overview?${params.toString()}`;
             refreshButton.disabled = true;
             renderOverviewLoadingState();
@@ -1236,6 +1238,9 @@
                 if (payload.as_of) {
                     lastUpdated.textContent = `last updated: ${new Date(payload.as_of).toLocaleString("ko-KR")}`;
                 }
+
+                // Phase 2: Enrich manual positions
+                await fetchOverviewEnrich(payload.positions || []);
             } catch (error) {
                 statusMessage.textContent = `조회 실패: ${error}`;
                 warningsList.innerHTML = `<li>overview API 호출에 실패했습니다: ${escapeHtml(error)}</li>`;
@@ -1244,6 +1249,49 @@
             } finally {
                 refreshButton.disabled = false;
             }
+        }
+
+        async function fetchOverviewEnrich(positions) {
+            const targets = positions
+                .filter(p => p.current_price === null)
+                .map(p => ({ symbol: p.symbol, market_type: p.market_type }));
+
+            if (targets.length === 0) return;
+
+            try {
+                const response = await fetch("/portfolio/api/overview/enrich", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ symbols: targets }),
+                });
+
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const payload = await response.json();
+
+                if (payload.success && payload.positions) {
+                    mergeEnrichedPositions(state.overview.positions, payload.positions);
+                    renderPositions(state.overview.positions);
+                    if (payload.warnings && payload.warnings.length > 0) {
+                        const deduped = [...new Set([...(state.overview.warnings || []), ...payload.warnings])];
+                        renderWarnings(deduped);
+                    }
+                }
+            } catch (error) {
+                console.error("Enrichment failed:", error);
+            }
+        }
+
+        function mergeEnrichedPositions(existing, incoming) {
+            const incomingMap = new Map(
+                incoming.map(p => [`${p.market_type}:${p.symbol}`, p])
+            );
+
+            existing.forEach((p, index) => {
+                const match = incomingMap.get(`${p.market_type}:${p.symbol}`);
+                if (match) {
+                    existing[index] = { ...p, ...match };
+                }
+            });
         }
 
         refreshButton.addEventListener("click", () => {

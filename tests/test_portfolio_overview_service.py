@@ -994,6 +994,22 @@ async def test_get_overview_excludes_non_tradable_manual_crypto_everywhere(
 
 
 @pytest.mark.asyncio
+async def test_get_overview_skips_missing_price_fill_when_requested() -> None:
+    service = PortfolioOverviewService(AsyncMock())
+    service._collect_kis_components = AsyncMock(return_value=[])
+    service._collect_upbit_components = AsyncMock(return_value=[])
+    service._collect_manual_components = AsyncMock(return_value=[])
+    service._fill_missing_prices = AsyncMock()
+
+    await service.get_overview(user_id=1, skip_missing_prices=True)
+
+    service._fill_missing_prices.assert_not_awaited()
+
+    await service.get_overview(user_id=1, skip_missing_prices=False)
+    service._fill_missing_prices.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_collect_kis_kr_components_converts_percent_rate_to_decimal() -> None:
     service = PortfolioOverviewService(AsyncMock())
     kis_client = AsyncMock()

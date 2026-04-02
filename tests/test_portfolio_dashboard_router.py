@@ -52,6 +52,14 @@ class _FakeOverviewService:
                 "warnings": [],
             }
         )
+        self.enrich_manual_positions = AsyncMock(
+            return_value={
+                "success": True,
+                "as_of": "2026-02-20T00:00:00+00:00",
+                "positions": [],
+                "warnings": [],
+            }
+        )
 
 
 def _create_client() -> tuple[TestClient, _FakeOverviewService]:
@@ -122,6 +130,7 @@ def test_portfolio_overview_api_passes_repeated_account_keys() -> None:
         market="US",
         account_keys=["live:kis", "manual:1"],
         q="aapl",
+        skip_missing_prices=False,
     )
 
 
@@ -135,6 +144,65 @@ def test_portfolio_overview_api_uses_default_filters() -> None:
         market="ALL",
         account_keys=None,
         q=None,
+        skip_missing_prices=False,
+    )
+
+
+def test_portfolio_overview_api_forwards_skip_missing_prices_flag() -> None:
+    client, fake_service = _create_client()
+    response = client.get(
+        "/portfolio/api/overview",
+        params={"skip_missing_prices": "true"},
+    )
+
+    assert response.status_code == 200
+    fake_service.get_overview.assert_awaited_once_with(
+        user_id=7,
+        market="ALL",
+        account_keys=None,
+        q=None,
+        skip_missing_prices=True,
+    )
+
+
+def test_portfolio_enrich_api_returns_only_requested_positions() -> None:
+    client, fake_service = _create_client()
+    fake_service.enrich_manual_positions = AsyncMock(
+        return_value={
+            "success": True,
+            "as_of": "2026-02-20T00:00:00+00:00",
+            "positions": [
+                {
+                    "market_type": "US",
+                    "symbol": "AAPL",
+                    "current_price": 165.0,
+                    "evaluation": 330.0,
+                    "profit_loss": 30.0,
+                    "profit_rate": 0.1,
+                }
+            ],
+            "warnings": [],
+        }
+    )
+
+    response = client.post(
+        "/portfolio/api/overview/enrich",
+        json={
+            "symbols": [
+                {"symbol": "AAPL", "market_type": "US"},
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert len(payload["positions"]) == 1
+    assert payload["positions"][0]["symbol"] == "AAPL"
+
+    fake_service.enrich_manual_positions.assert_awaited_once_with(
+        user_id=7,
+        targets=[{"symbol": "AAPL", "market_type": "US"}],
     )
 
 
@@ -285,6 +353,10 @@ def test_portfolio_dashboard_page_renders_phase1_panels_and_scripts() -> None:
     assert "function fetchCashSummary()" in body
     assert "function openPositionDetail(" in body
     assert "function renderCharts(" in body
+    assert 'params.append("skip_missing_prices", "true");' in body
+    assert "function mergeEnrichedPositions(" in body
+    assert "/portfolio/api/overview/enrich" in body
+    assert "조회중..." in body
 
 
 def test_portfolio_dashboard_page_retains_filter_controls_and_component_detail_hooks() -> (
