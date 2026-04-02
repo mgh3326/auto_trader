@@ -449,3 +449,5 @@ def test_portfolio_dashboard_page_uses_guarded_delegated_navigation() -> None:
     assert 'target?.closest("a, button, input, select, textarea, label' in body
     assert 'event.key === "Enter" || event.key === " "' in body
     assert "window.location.assign(detailUrl)" in body
+    assert "if (state.positionInteractionsBound) return;" in body
+    assert "state.positionInteractionsBound = true;" in body

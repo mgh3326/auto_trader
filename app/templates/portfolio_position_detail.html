@@ -316,7 +316,7 @@
           <article><span>총 보유 수량</span><strong>{{ quantity_or_dash(summary.get("quantity")) }}</strong></article>
           <article><span>합산 평단</span><strong>{{ money_or_dash(summary.get("avg_price"), currency_symbol) }}</strong></article>
           {% set profit_loss = summary.get("profit_loss") %}
-          <article><span>손익 / 수익률</span><strong class="{% if profit_loss is none %}neutral{% elif profit_loss > 0 %}positive{% elif profit_loss < 0 %}negative{% else %}neutral{% endif %}">{{ money_or_dash(profit_loss, currency_symbol) }} ({{ percent_or_dash(summary.get("profit_rate"), signed=False) }}%)</strong></article>
+          <article><span>손익 / 수익률</span><strong class="{% if profit_loss is none %}neutral{% elif profit_loss > 0 %}positive{% elif profit_loss < 0 %}negative{% else %}neutral{% endif %}">{{ money_or_dash(profit_loss, currency_symbol) }} ({{ percent_or_dash((summary.get("profit_rate") * 100) if summary.get("profit_rate") is not none else none, signed=False) }}%)</strong></article>
           <article><span>평가금액</span><strong>{{ money_or_dash(summary.get("evaluation"), currency_symbol) }}</strong></article>
           <article><span>계좌 수</span><strong>{{ summary.get("account_count", 0) }}</strong></article>
         </div>
@@ -345,7 +345,7 @@
             <div><span class="label">current_price</span><strong>{{ money_or_dash(component.get("current_price"), currency_symbol) }}</strong></div>
             <div><span class="label">evaluation</span><strong>{{ money_or_dash(component.get("evaluation"), currency_symbol) }}</strong></div>
             <div><span class="label">profit_loss</span><strong class="{% if comp_profit_loss is none %}neutral{% elif comp_profit_loss > 0 %}positive{% elif comp_profit_loss < 0 %}negative{% else %}neutral{% endif %}">{{ money_or_dash(comp_profit_loss, currency_symbol) }}</strong></div>
-            <div><span class="label">profit_rate</span><strong>{{ percent_or_dash(component.get("profit_rate"), signed=False) }}%</strong></div>
+            <div><span class="label">profit_rate</span><strong>{{ percent_or_dash((component.get("profit_rate") * 100) if component.get("profit_rate") is not none else none, signed=False) }}%</strong></div>
           </div>
           {% endfor %}
         </div>

@@ -123,6 +123,8 @@ def test_position_detail_page_renders_summary_shell() -> None:
     assert "보유 기한" in body
     assert "상태" in body
     assert "메모" in body
+    assert "$36.00 (10.00%)" in body
+    assert "11.86%" in body
     detail.get_page_payload.assert_awaited_once_with(
         user_id=7, market_type="us", symbol="NVDA"
     )
