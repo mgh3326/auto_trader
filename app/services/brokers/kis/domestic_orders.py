@@ -647,7 +647,7 @@ class DomesticOrderClient:
                 logging.error(f"국내주식 체결조회 실패: {error_msg}")
                 raise RuntimeError(error_msg)
 
-            orders = js.get("output", [])
+            orders = js.get("output1", [])
 
             if not orders:
                 logging.info(f"페이지 {page}에서 더 이상 주문이 없음")
