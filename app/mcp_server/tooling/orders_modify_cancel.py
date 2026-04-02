@@ -112,6 +112,12 @@ def _map_kis_status(filled: int, remaining: int, status_name: str) -> str:
         if remaining > 0:
             return "partial"
         return "filled"
+    # output1 (inquire-daily-ccld) may not have prcs_stat_name;
+    # fall back to quantity-based detection.
+    if filled > 0 and remaining <= 0:
+        return "filled"
+    if filled > 0 and remaining > 0:
+        return "partial"
     return "pending"
 
 
@@ -120,15 +126,23 @@ def _normalize_kis_domestic_order(order: dict[str, Any]) -> dict[str, Any]:
     side = "buy" if side_code == "02" else "sell"
 
     ordered = int(float(_get_kis_field(order, "ord_qty", "ORD_QTY", default=0) or 0))
-    filled = int(float(_get_kis_field(order, "ccld_qty", "CCLD_QTY", default=0) or 0))
+    # output1 uses tot_ccld_qty instead of ccld_qty
+    filled = int(float(
+        _get_kis_field(order, "ccld_qty", "CCLD_QTY", default=0)
+        or _get_kis_field(order, "tot_ccld_qty", "TOT_CCLD_QTY", default=0)
+        or 0
+    ))
     remaining = ordered - filled
 
     ordered_price = int(
         float(_get_kis_field(order, "ord_unpr", "ORD_UNPR", default=0) or 0)
     )
-    filled_price = int(
-        float(_get_kis_field(order, "ccld_unpr", "CCLD_UNPR", default=0) or 0)
-    )
+    # output1 uses avg_prvs instead of ccld_unpr
+    filled_price = int(float(
+        _get_kis_field(order, "ccld_unpr", "CCLD_UNPR", default=0)
+        or _get_kis_field(order, "avg_prvs", "AVG_PRVS", default=0)
+        or 0
+    ))
 
     status = _map_kis_status(
         filled,
