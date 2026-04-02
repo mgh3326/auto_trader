@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import app.services.portfolio_position_detail_service as detail_service_module
 from app.services.portfolio_position_detail_service import (
     PortfolioPositionDetailNotFoundError,
     PortfolioPositionDetailService,
@@ -104,3 +105,80 @@ async def test_get_opinions_payload_returns_crypto_fallback() -> None:
 
     assert payload["supported"] is False
     assert payload["message"] == "애널리스트 의견이 제공되지 않는 시장입니다."
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_indicators_payload_builds_summary_cards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = PortfolioPositionDetailService(
+        overview_service=MagicMock(),
+        dashboard_service=MagicMock(),
+    )
+
+    monkeypatch.setattr(
+        detail_service_module,
+        "_get_indicators_impl",
+        AsyncMock(
+            return_value={
+                "price": 100.0,
+                "indicators": {
+                    "rsi": {"14": 28.4},
+                    "stoch_rsi": {"k": 17.2, "d": 22.1},
+                    "macd": {"macd": 1.5, "signal": 0.9, "histogram": 0.6},
+                    "bollinger": {
+                        "upper": 112.0,
+                        "middle": 100.0,
+                        "lower": 88.0,
+                    },
+                    "ema": {"20": 98.0, "60": 92.0, "200": 80.0},
+                    "sma": {"20": 97.0, "60": 91.0, "200": 78.0},
+                },
+            }
+        ),
+    )
+
+    payload = await service.get_indicators_payload(market_type="us", symbol="NVDA")
+
+    assert payload["price"] == 100.0
+    assert len(payload["summary_cards"]) >= 5
+    assert payload["summary_cards"][0]["label"] == "RSI(14)"
+    assert payload["summary_cards"][0]["tone"] == "oversold"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_opinions_payload_flattens_consensus_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = PortfolioPositionDetailService(
+        overview_service=MagicMock(),
+        dashboard_service=MagicMock(),
+    )
+
+    monkeypatch.setattr(
+        detail_service_module,
+        "handle_get_investment_opinions",
+        AsyncMock(
+            return_value={
+                "consensus": {
+                    "consensus": "Buy",
+                    "avg_target_price": 155.0,
+                    "upside_pct": 12.3,
+                    "buy_count": 8,
+                    "hold_count": 3,
+                    "sell_count": 1,
+                },
+                "opinions": [{"firm": "Alpha Research", "rating": "Buy"}],
+            }
+        ),
+    )
+
+    payload = await service.get_opinions_payload(market_type="us", symbol="NVDA")
+
+    assert payload["supported"] is True
+    assert payload["avg_target_price"] == 155.0
+    assert payload["upside_pct"] == 12.3
+    assert payload["buy_count"] == 8
+    assert payload["opinions"][0]["firm"] == "Alpha Research"

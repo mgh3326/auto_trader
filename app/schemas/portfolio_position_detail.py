@@ -41,6 +41,7 @@ class PositionDetailPageResponse(BaseModel):
 class PositionIndicatorsResponse(BaseModel):
     price: float | None = None
     indicators: dict[str, Any] = Field(default_factory=dict)
+    summary_cards: list[dict[str, str]] = Field(default_factory=list)
 
 
 class PositionNewsResponse(BaseModel):
@@ -51,5 +52,10 @@ class PositionNewsResponse(BaseModel):
 class PositionOpinionsResponse(BaseModel):
     supported: bool = True
     message: str | None = None
-    consensus: dict[str, Any] | None = None
+    consensus: dict[str, Any] | str | None = None
+    avg_target_price: float | None = None
+    upside_pct: float | None = None
+    buy_count: int | None = None
+    hold_count: int | None = None
+    sell_count: int | None = None
     opinions: list[dict[str, Any]] = Field(default_factory=list)

@@ -59,11 +59,16 @@ class PortfolioPositionDetailService:
     async def get_indicators_payload(
         self, *, market_type: str, symbol: str
     ) -> dict[str, Any]:
-        return await _get_indicators_impl(
+        payload = await _get_indicators_impl(
             symbol,
             ["rsi", "stoch_rsi", "macd", "bollinger", "ema", "sma"],
             market=market_type,
         )
+        return {
+            "price": payload.get("price"),
+            "indicators": payload.get("indicators") or {},
+            "summary_cards": self._build_indicator_summary_cards(payload),
+        }
 
     async def get_news_payload(
         self, *, market_type: str, symbol: str
@@ -85,5 +90,206 @@ class PortfolioPositionDetailService:
             market=market_type,
             limit=10,
         )
-        payload["supported"] = True
-        return payload
+        consensus = payload.get("consensus") or {}
+        return {
+            "supported": True,
+            "message": payload.get("message"),
+            "consensus": consensus.get("consensus"),
+            "avg_target_price": consensus.get("avg_target_price"),
+            "upside_pct": consensus.get("upside_pct"),
+            "buy_count": consensus.get("buy_count"),
+            "hold_count": consensus.get("hold_count"),
+            "sell_count": consensus.get("sell_count"),
+            "opinions": payload.get("opinions") or [],
+        }
+
+    def _build_indicator_summary_cards(
+        self, payload: dict[str, Any]
+    ) -> list[dict[str, str]]:
+        indicators = payload.get("indicators") or {}
+        price = payload.get("price")
+        cards: list[dict[str, str]] = []
+
+        rsi = (indicators.get("rsi") or {}).get("14")
+        if isinstance(rsi, (int, float)):
+            if rsi < 30:
+                tone = "oversold"
+                meaning = "과매도"
+            elif rsi > 70:
+                tone = "overbought"
+                meaning = "과매수"
+            else:
+                tone = "neutral"
+                meaning = "중립"
+            cards.append(
+                {
+                    "label": "RSI(14)",
+                    "value": f"{rsi:.1f}",
+                    "tone": tone,
+                    "description": meaning,
+                }
+            )
+
+        stoch = indicators.get("stoch_rsi") or {}
+        k_value = stoch.get("k")
+        d_value = stoch.get("d")
+        if isinstance(k_value, (int, float)) and isinstance(d_value, (int, float)):
+            if k_value < 20 and d_value < 20:
+                description = "과매도 구간"
+                tone = "oversold"
+            elif k_value > 80 and d_value > 80:
+                description = "과매수 구간"
+                tone = "overbought"
+            else:
+                description = "중립 구간"
+                tone = "neutral"
+            cards.append(
+                {
+                    "label": "Stoch RSI",
+                    "value": f"K {k_value:.1f} / D {d_value:.1f}",
+                    "tone": tone,
+                    "description": description,
+                }
+            )
+
+        macd = indicators.get("macd") or {}
+        macd_value = macd.get("macd")
+        signal_value = macd.get("signal")
+        histogram = macd.get("histogram")
+        if isinstance(macd_value, (int, float)) and isinstance(
+            signal_value, (int, float)
+        ):
+            bullish = macd_value >= signal_value
+            cards.append(
+                {
+                    "label": "MACD",
+                    "value": "Bullish" if bullish else "Bearish",
+                    "tone": "bullish" if bullish else "bearish",
+                    "description": (
+                        f"MACD {macd_value:.2f} / Signal {signal_value:.2f}"
+                        + (
+                            f" / Hist {histogram:.2f}"
+                            if isinstance(histogram, (int, float))
+                            else ""
+                        )
+                    ),
+                }
+            )
+
+        bollinger = indicators.get("bollinger") or {}
+        upper = bollinger.get("upper")
+        middle = bollinger.get("middle")
+        lower = bollinger.get("lower")
+        if (
+            isinstance(price, (int, float))
+            and isinstance(upper, (int, float))
+            and isinstance(middle, (int, float))
+            and isinstance(lower, (int, float))
+        ):
+            if abs(price - lower) <= abs(price - upper) and abs(price - lower) <= abs(
+                price - middle
+            ):
+                description = "하단 근처"
+                tone = "oversold"
+            elif abs(price - upper) < abs(price - middle):
+                description = "상단 근처"
+                tone = "overbought"
+            else:
+                description = "중단 근처"
+                tone = "neutral"
+            cards.append(
+                {
+                    "label": "Bollinger",
+                    "value": description,
+                    "tone": tone,
+                    "description": f"상단 {upper:.2f} / 중단 {middle:.2f} / 하단 {lower:.2f}",
+                }
+            )
+
+        ema = indicators.get("ema") or {}
+        ema20 = ema.get("20")
+        ema60 = ema.get("60")
+        ema200 = ema.get("200")
+        if isinstance(price, (int, float)) and isinstance(ema20, (int, float)):
+            if (
+                isinstance(ema60, (int, float))
+                and isinstance(ema200, (int, float))
+                and price > ema20 > ema60 > ema200
+            ):
+                tone = "bullish"
+                description = "상방 정렬"
+            elif (
+                isinstance(ema60, (int, float))
+                and isinstance(ema200, (int, float))
+                and price < ema20 < ema60 < ema200
+            ):
+                tone = "bearish"
+                description = "하방 정렬"
+            else:
+                tone = "neutral"
+                description = "혼조"
+            cards.append(
+                {
+                    "label": "EMA",
+                    "value": description,
+                    "tone": tone,
+                    "description": (
+                        f"20 {ema20:.2f}"
+                        + (
+                            f" / 60 {ema60:.2f}"
+                            if isinstance(ema60, (int, float))
+                            else ""
+                        )
+                        + (
+                            f" / 200 {ema200:.2f}"
+                            if isinstance(ema200, (int, float))
+                            else ""
+                        )
+                    ),
+                }
+            )
+
+        sma = indicators.get("sma") or {}
+        sma20 = sma.get("20")
+        sma60 = sma.get("60")
+        sma200 = sma.get("200")
+        if isinstance(price, (int, float)) and isinstance(sma20, (int, float)):
+            if (
+                isinstance(sma60, (int, float))
+                and isinstance(sma200, (int, float))
+                and price > sma20 > sma60 > sma200
+            ):
+                tone = "bullish"
+                description = "상방 정렬"
+            elif (
+                isinstance(sma60, (int, float))
+                and isinstance(sma200, (int, float))
+                and price < sma20 < sma60 < sma200
+            ):
+                tone = "bearish"
+                description = "하방 정렬"
+            else:
+                tone = "neutral"
+                description = "혼조"
+            cards.append(
+                {
+                    "label": "SMA",
+                    "value": description,
+                    "tone": tone,
+                    "description": (
+                        f"20 {sma20:.2f}"
+                        + (
+                            f" / 60 {sma60:.2f}"
+                            if isinstance(sma60, (int, float))
+                            else ""
+                        )
+                        + (
+                            f" / 200 {sma200:.2f}"
+                            if isinstance(sma200, (int, float))
+                            else ""
+                        )
+                    ),
+                }
+            )
+
+        return cards

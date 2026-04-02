@@ -357,9 +357,9 @@ async def portfolio_position_detail_page(
         ) from exc
 
     return templates.TemplateResponse(
+        request,
         "portfolio_position_detail.html",
         {
-            "request": request,
             "user": current_user,
             "page_payload": payload,
         },
