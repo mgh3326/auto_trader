@@ -540,3 +540,29 @@ async def test_update_manual_holdings_multiple_brokers(monkeypatch):
         assert result["broker"] == broker
 
     assert set(broker_calls) == {"toss", "samsung", "kis"}
+
+
+@pytest.mark.asyncio
+async def test_update_manual_holdings_returns_error_payload_on_validation_error(
+    monkeypatch,
+):
+    """Test wrapper returns error payload on validation error."""
+    tools = build_tools()
+
+    async def mock_resolve_and_update(self, **kwargs):
+        raise ValueError("USD 단위로 입력해주세요 (현재 값: 14966.0, KRW로 의심됩니다)")
+
+    monkeypatch.setattr(
+        ScreenshotHoldingsService,
+        "resolve_and_update",
+        mock_resolve_and_update,
+    )
+
+    result = await tools["update_manual_holdings"](
+        holdings=[{"symbol": "BRK.B", "quantity": 1, "market_section": "us"}],
+        broker="samsung",
+        dry_run=True,
+    )
+
+    assert result["success"] is False
+    assert "USD 단위로 입력해주세요" in result["error"]

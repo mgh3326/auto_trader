@@ -43,6 +43,18 @@ class ScreenshotHoldingsService:
         """Convert numeric input to Decimal for consistent precision."""
         return Decimal(str(value))
 
+    @staticmethod
+    def _looks_like_us_company_name(value: str) -> bool:
+        normalized = value.strip()
+        return (" " in normalized) or (len(normalized) > 6)
+
+    @staticmethod
+    def _validate_us_avg_price(avg_buy_price: float) -> None:
+        if avg_buy_price > 1000:
+            raise ValueError(
+                f"USD 단위로 입력해주세요 (현재 값: {avg_buy_price}, KRW로 의심됩니다)"
+            )
+
     async def _resolve_symbol(
         self,
         stock_name: str,
@@ -89,6 +101,11 @@ class ScreenshotHoldingsService:
                     broker,
                     exc,
                 )
+                if self._looks_like_us_company_name(stock_name):
+                    raise ValueError(
+                        f"US ticker 매핑 실패: '{stock_name}'. "
+                        "stock_alias 테이블에 매핑을 추가하거나 정확한 ticker를 직접 지정하세요."
+                    ) from exc
                 raise
         elif market_type == MarketType.CRYPTO:
             normalized_name = stock_name.strip()
@@ -303,12 +320,34 @@ class ScreenshotHoldingsService:
                     stock_name, market_section, broker
                 )
 
+            if quantity <= 0:
+                existing = old_map.get((ticker, market_type.value))
+                if existing:
+                    if not dry_run:
+                        await manual_holdings_service.delete_holding(existing.id)
+                        removed_count += 1
+                    diff.append(
+                        {
+                            "action": "removed",
+                            "ticker": ticker,
+                            "market_type": market_type.value,
+                        }
+                    )
+                else:
+                    warnings.append(
+                        f"Skipping holding with non-positive quantity: {ticker} ({quantity})"
+                    )
+                continue
+
             if input_avg_buy_price > 0:
                 avg_buy_price = input_avg_buy_price
             else:
                 avg_buy_price = await self._calculate_avg_buy_price(
                     eval_amount, profit_loss, quantity
                 )
+
+            if market_type == MarketType.US:
+                self._validate_us_avg_price(avg_buy_price)
 
             display_name = stock_name if stock_name else symbol
 

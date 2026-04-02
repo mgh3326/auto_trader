@@ -750,6 +750,61 @@ These tools provide a generic key-value storage for user preferences and setting
 Common settings:
 - `manual_cash`: Stores manually-managed cash amounts (e.g., `{"amount": 15000000}`) for accounts not backed by APIs (Toss, etc.)
 
+### `update_manual_holdings` spec
+
+Parameters:
+- `holdings`: List of holding objects to upsert/remove (required)
+- `broker`: Broker identifier - `"toss"`, `"samsung"`, `"kis"` (required)
+- `account_name`: Account name - `"기본 계좌"`, `"퇴직연금"`, `"ISA"` (default: `"기본 계좌"`)
+- `dry_run`: Preview mode without DB changes (default: `true`)
+
+Holding object fields:
+- `symbol`: Ticker/symbol (e.g., `"AAPL"`, `"005930"`, `"KRW-BTC"`). Takes precedence over `stock_name`.
+- `stock_name`: Company name or alias (e.g., `"삼성전자"`, `"애플"`). Used for symbol resolution when `symbol` is not provided.
+- `quantity`: Number of shares/coins (required for upsert)
+- `avg_buy_price`: Average purchase price (optional). If not provided, calculated from `eval_amount`, `profit_loss`, and `quantity`.
+- `eval_amount`: Current evaluation amount (optional, used for avg_price calculation)
+- `profit_loss`: Unrealized profit/loss (optional, used for avg_price calculation)
+- `profit_rate`: Profit rate percentage (optional, informational)
+- `market_section`: Market type - `"kr"`, `"us"`, `"crypto"` (required)
+- `action`: Operation - `"upsert"` or `"remove"` (default: `"upsert"`)
+
+Validation rules:
+- **US ticker resolution**: US holdings must use a real ticker or a pre-registered alias in `stock_alias` table.
+- **US name-like input**: If a US name-like string fails lookup, the tool raises an error asking to add `stock_alias` mapping or supply the ticker directly.
+- **US avg_buy_price**: Must be in USD. Values above `1000` are rejected with error: `"USD 단위로 입력해주세요 (현재 값: {value}, KRW로 의심됩니다)"`.
+- **Quantity zero/negative**: `qty <= 0` payloads are treated as delete/cleanup intent:
+  - If a matching holding exists, it is removed (same as `action="remove"`)
+  - If no matching holding exists, a warning is generated
+- **dry_run behavior**: When `dry_run=True`, no DB mutations occur; only preview data and warnings are returned.
+
+Response format:
+```json
+{
+  "success": true,
+  "dry_run": false,
+  "message": "Holdings updated successfully",
+  "broker": "samsung",
+  "account_name": "기본 계좌",
+  "parsed_count": 3,
+  "holdings": [...],
+  "warnings": [],
+  "added_count": 1,
+  "updated_count": 1,
+  "removed_count": 1,
+  "unchanged_count": 0,
+  "diff": [...]
+}
+```
+
+Error response format:
+```json
+{
+  "success": false,
+  "error": "USD 단위로 입력해주세요 (현재 값: 14966.0, KRW로 의심됩니다)"
+}
+```
+
 ### `get_user_setting` spec
 Parameters:
 - `key`: Setting key string (required)
