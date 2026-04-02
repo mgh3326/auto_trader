@@ -65,11 +65,14 @@ class EnrichRequest(BaseModel):
     symbols: list[EnrichSymbol]
 
 
-class SellSimulationRequest(BaseModel):
-    symbol: str
-    market_type: str
-    quantity: float
-    price: float
+def _merge_journal_snapshots(
+    payload: dict,
+    journal_map: dict[str, dict],
+) -> dict:
+    positions = payload.get("positions") or []
+    for position in positions:
+        position["journal"] = journal_map.get(position.get("symbol"))
+    return payload
 
 
 @router.get("/api/overview")
@@ -95,16 +98,15 @@ async def get_portfolio_overview(
             skip_missing_prices=skip_missing_prices,
         )
 
-        # Enrich with allocation metrics (weights and warnings)
         if overview.get("success") and overview.get("positions"):
-            cash_summary = await dashboard_service.get_cash_snapshot()
-            overview["positions"] = await dashboard_service.calculate_allocation_metrics(
-                overview["positions"], cash_summary
+            journal_map = await dashboard_service.get_journals_batch(
+                [position["symbol"] for position in overview["positions"]],
+                current_prices={
+                    position["symbol"]: position.get("current_price")
+                    for position in overview["positions"]
+                },
             )
-            # Also enrich with journal status for highlights
-            overview["positions"] = await dashboard_service.enrich_positions_with_journal_status(
-                overview["positions"]
-            )
+            overview = _merge_journal_snapshots(overview, journal_map)
 
         return overview
     except Exception as e:
@@ -119,36 +121,30 @@ async def enrich_portfolio_overview(
     overview_service: PortfolioOverviewService = Depends(
         get_portfolio_overview_service
     ),
-):
-    try:
-        targets = [
-            {"symbol": t.symbol, "market_type": t.market_type} for t in request.symbols
-        ]
-        return await overview_service.enrich_manual_positions(
-            user_id=current_user.id,
-            targets=targets,
-        )
-    except Exception as e:
-        logger.error("Error enriching portfolio overview: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e)) from e
-@router.post("/api/simulate-sell")
-async def simulate_sell(
-    request: SellSimulationRequest,
-    current_user: User = Depends(get_authenticated_user),
     dashboard_service: PortfolioDashboardService = Depends(
         get_portfolio_dashboard_service
     ),
 ):
     try:
-        return await dashboard_service.simulate_sell_order(
+        targets = [
+            {"symbol": t.symbol, "market_type": t.market_type} for t in request.symbols
+        ]
+        payload = await overview_service.enrich_manual_positions(
             user_id=current_user.id,
-            symbol=request.symbol,
-            market_type=request.market_type,
-            quantity=request.quantity,
-            price=request.price,
+            targets=targets,
         )
+        if payload.get("success") and payload.get("positions"):
+            journal_map = await dashboard_service.get_journals_batch(
+                [position["symbol"] for position in payload["positions"]],
+                current_prices={
+                    position["symbol"]: position.get("current_price")
+                    for position in payload["positions"]
+                },
+            )
+            payload = _merge_journal_snapshots(payload, journal_map)
+        return payload
     except Exception as e:
-        logger.error("Error simulating sell order: %s", e, exc_info=True)
+        logger.error("Error enriching portfolio overview: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 

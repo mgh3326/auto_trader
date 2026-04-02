@@ -270,9 +270,7 @@ class PortfolioOverviewService:
         )
 
         # Aggregate only these components
-        positions = self._aggregate_positions(
-            filtered_components, usd_krw=usd_krw_rate
-        )
+        positions = self._aggregate_positions(filtered_components, usd_krw=usd_krw_rate)
 
         return {
             "success": True,
