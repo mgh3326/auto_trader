@@ -22,11 +22,20 @@ from app.schemas.manual_holdings import (
     MergedPortfolioResponse,
     ReferencePricesResponse,
 )
+from app.schemas.portfolio_position_detail import (
+    PositionIndicatorsResponse,
+    PositionNewsResponse,
+    PositionOpinionsResponse,
+)
 from app.services.brokers.kis.client import KISClient
 from app.services.kis_holdings_service import get_kis_holding_for_ticker
 from app.services.merged_portfolio_service import MergedPortfolioService
 from app.services.portfolio_dashboard_service import PortfolioDashboardService
 from app.services.portfolio_overview_service import PortfolioOverviewService
+from app.services.portfolio_position_detail_service import (
+    PortfolioPositionDetailNotFoundError,
+    PortfolioPositionDetailService,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/portfolio", tags=["Portfolio"])
@@ -305,18 +314,6 @@ async def get_portfolio_cash(
     ),
 ):
     return await dashboard_service.get_cash_snapshot()
-
-
-from app.schemas.portfolio_position_detail import (
-    PositionDetailPageResponse,
-    PositionIndicatorsResponse,
-    PositionNewsResponse,
-    PositionOpinionsResponse,
-)
-from app.services.portfolio_position_detail_service import (
-    PortfolioPositionDetailNotFoundError,
-    PortfolioPositionDetailService,
-)
 
 
 class PositionDetailNotFoundHTTPError(HTTPException):
