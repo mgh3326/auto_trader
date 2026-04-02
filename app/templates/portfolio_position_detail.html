@@ -1,22 +1,175 @@
 <main class="detail-shell" id="position-detail-page">
   <header class="detail-hero">
     <a href="/portfolio/" class="back-link">포트폴리오로 돌아가기</a>
-    <div id="summary-card"></div>
+    <div class="hero-summary" id="position-summary-card">
+      <div class="eyebrow">{{ page_payload.summary.market_type }} · {{ page_payload.summary.symbol }}</div>
+      <h1>{{ page_payload.summary.name }}</h1>
+      <div class="summary-metrics">
+        <article><span>현재가</span><strong>${{ "%.2f"|format(page_payload.summary.current_price) if page_payload.summary.current_price else '-' }}</strong></article>
+        <article><span>총 보유 수량</span><strong>{{ "%.4f"|format(page_payload.summary.quantity) if page_payload.summary.quantity < 1 else "%.2f"|format(page_payload.summary.quantity) }}</strong></article>
+        <article><span>합산 평단</span><strong>${{ "%.2f"|format(page_payload.summary.avg_price) if page_payload.summary.avg_price else '-' }}</strong></article>
+        <article><span>손익 / 수익률</span><strong class="{% if page_payload.summary.profit_loss and page_payload.summary.profit_loss >= 0 %}positive{% else %}negative{% endif %}">${{ "%.2f"|format(page_payload.summary.profit_loss) if page_payload.summary.profit_loss else '-' }} ({{ "%.2f"|format(page_payload.summary.profit_rate * 100) if page_payload.summary.profit_rate else '-' }}%)</strong></article>
+        <article><span>평가금액</span><strong>${{ "%.2f"|format(page_payload.summary.evaluation) if page_payload.summary.evaluation else '-' }}</strong></article>
+        <article><span>계좌 수</span><strong>{{ page_payload.summary.account_count }}</strong></article>
+      </div>
+      {% if page_payload.summary.target_distance_pct %}
+      <div class="target-stop-row">
+        <span class="target">목표가 대비 +{{ "%.2f"|format(page_payload.summary.target_distance_pct) }}%</span>
+        <span class="stop">손절가 대비 {{ "%.2f"|format(page_payload.summary.stop_distance_pct) }}%</span>
+      </div>
+      {% endif %}
+    </div>
   </header>
 
-  <section id="position-components-section"></section>
+  <section id="position-components-section">
+    <h2>계좌별 보유 내역</h2>
+    <div class="components-table">
+      {% for component in page_payload.components %}
+      <div class="component-row">
+        <span class="broker">{{ component.broker }}</span>
+        <span class="account">{{ component.account_name }}</span>
+        <span class="source">{{ component.source }}</span>
+        <span class="quantity">{{ "%.4f"|format(component.quantity) if component.quantity < 1 else "%.2f"|format(component.quantity) }}</span>
+        <span class="avg-price">${{ "%.2f"|format(component.avg_price) }}</span>
+        <span class="current-price">${{ "%.2f"|format(component.current_price) if component.current_price else '-' }}</span>
+        <span class="evaluation">${{ "%.2f"|format(component.evaluation) if component.evaluation else '-' }}</span>
+        <span class="profit">${{ "%.2f"|format(component.profit_loss) if component.profit_loss else '-' }}</span>
+        <span class="profit-rate">{{ "%.2f"|format(component.profit_rate * 100) if component.profit_rate else '-' }}%</span>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
   <section id="position-journal-section">
     <h2>Trade Journal</h2>
+    {% if page_payload.journal %}
+    <div class="journal-card">
+      <div class="journal-row"><span>전략</span><strong>{{ page_payload.journal.strategy or '-' }}</strong></div>
+      <div class="journal-row"><span>투자 논리</span><strong>{{ page_payload.journal.thesis or '-' }}</strong></div>
+      <div class="journal-row"><span>목표가</span><strong>${{ "%.2f"|format(page_payload.journal.target_price) if page_payload.journal.target_price else '-' }}</strong></div>
+      <div class="journal-row"><span>손절가</span><strong>${{ "%.2f"|format(page_payload.journal.stop_loss) if page_payload.journal.stop_loss else '-' }}</strong></div>
+    </div>
+    {% else %}
+    <div class="empty-note">등록된 trade journal이 없습니다</div>
+    {% endif %}
   </section>
-  <section id="position-indicators-section" data-endpoint=""></section>
-  <section id="position-news-section">
+
+  <section id="position-indicators-section" data-endpoint="/portfolio/api/positions/{{ page_payload.summary.market_type|lower }}/{{ page_payload.summary.symbol }}/indicators">
+    <h2>기술적 지표</h2>
+    <div class="lazy-content">불러오는 중...</div>
+  </section>
+
+  <section id="position-news-section" data-endpoint="/portfolio/api/positions/{{ page_payload.summary.market_type|lower }}/{{ page_payload.summary.symbol }}/news">
     <h2>최근 뉴스</h2>
+    <div class="lazy-content">불러오는 중...</div>
   </section>
-  <section id="position-opinions-section">
+
+  <section id="position-opinions-section" data-endpoint="/portfolio/api/positions/{{ page_payload.summary.market_type|lower }}/{{ page_payload.summary.symbol }}/opinions">
     <h2>애널리스트 의견</h2>
+    <div class="lazy-content">불러오는 중...</div>
   </section>
 </main>
 
 <script>
   const detailPayload = {{ page_payload | tojson }};
+
+  async function loadLazySection(sectionId, endpoint, renderFn) {
+    const section = document.getElementById(sectionId);
+    if (!section) return;
+    const contentDiv = section.querySelector('.lazy-content');
+    if (!contentDiv) return;
+
+    try {
+      const response = await fetch(endpoint, { headers: { Accept: "application/json" } });
+      if (!response.ok) throw new Error('Failed to load');
+      const payload = await response.json();
+      contentDiv.innerHTML = renderFn(payload);
+    } catch (err) {
+      contentDiv.innerHTML = '<div class="empty-note">데이터를 불러올 수 없습니다</div>';
+    }
+  }
+
+  function renderIndicators(payload) {
+    if (!payload.indicators) return '<div class="empty-note">지표 데이터가 없습니다</div>';
+    const indicators = payload.indicators;
+    let html = '<div class="indicators-grid">';
+    if (indicators.rsi && indicators.rsi['14'] !== undefined) {
+      const rsi = indicators.rsi['14'];
+      const tone = rsi < 30 ? '과매도' : rsi > 70 ? '과매수' : '중립';
+      html += `<article><span>RSI(14)</span><strong class="${rsi < 30 ? 'positive' : rsi > 70 ? 'negative' : ''}">${rsi} (${tone})</strong></article>`;
+    }
+    if (indicators.macd) {
+      html += `<article><span>MACD</span><strong>${JSON.stringify(indicators.macd)}</strong></article>`;
+    }
+    if (indicators.bollinger) {
+      html += `<article><span>Bollinger</span><strong>${JSON.stringify(indicators.bollinger)}</strong></article>`;
+    }
+    html += '</div>';
+    return html;
+  }
+
+  function renderNews(payload) {
+    if (!payload.news || payload.news.length === 0) return '<div class="empty-note">최근 뉴스가 없습니다</div>';
+    return '<ul class="news-list">' + payload.news.map(n => `<li>${n.title || n}</li>`).join('') + '</ul>';
+  }
+
+  function renderOpinions(payload) {
+    if (!payload.supported) return '<div class="empty-note">' + (payload.message || '애널리스트 의견이 제공되지 않는 시장입니다.') + '</div>';
+    if (!payload.opinions || payload.opinions.length === 0) return '<div class="empty-note">애널리스트 의견이 없습니다</div>';
+    return '<ul class="opinions-list">' + payload.opinions.map(o => `<li>${o.firm || o.source || JSON.stringify(o)}</li>`).join('') + '</ul>';
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    const indicatorsSection = document.getElementById('position-indicators-section');
+    const newsSection = document.getElementById('position-news-section');
+    const opinionsSection = document.getElementById('position-opinions-section');
+
+    if (indicatorsSection) {
+      const endpoint = indicatorsSection.dataset.endpoint;
+      if (endpoint) loadLazySection('position-indicators-section', endpoint, renderIndicators);
+    }
+    if (newsSection) {
+      const endpoint = newsSection.dataset.endpoint;
+      if (endpoint) loadLazySection('position-news-section', endpoint, renderNews);
+    }
+    if (opinionsSection) {
+      const endpoint = opinionsSection.dataset.endpoint;
+      if (endpoint) loadLazySection('position-opinions-section', endpoint, renderOpinions);
+    }
+  });
 </script>
+
+<style>
+  .detail-shell { max-width: 1200px; margin: 0 auto; padding: 1rem; }
+  .back-link { display: inline-block; margin-bottom: 1rem; color: #666; text-decoration: none; }
+  .back-link:hover { color: #333; }
+  .hero-summary { background: #f8f9fa; border-radius: 0.75rem; padding: 1.5rem; margin-bottom: 1.5rem; }
+  .eyebrow { color: #666; font-size: 0.9rem; margin-bottom: 0.5rem; }
+  .hero-summary h1 { margin: 0 0 1rem 0; font-size: 1.8rem; }
+  .summary-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; }
+  .summary-metrics article { display: flex; flex-direction: column; }
+  .summary-metrics span { font-size: 0.8rem; color: #666; }
+  .summary-metrics strong { font-size: 1.1rem; color: #333; }
+  .summary-metrics .positive { color: #28a745; }
+  .summary-metrics .negative { color: #dc3545; }
+  .target-stop-row { margin-top: 1rem; display: flex; gap: 1rem; }
+  .target-stop-row .target { color: #28a745; }
+  .target-stop-row .stop { color: #dc3545; }
+  section { margin-bottom: 2rem; }
+  section h2 { font-size: 1.2rem; margin-bottom: 1rem; padding-bottom: 0.5rem; border-bottom: 2px solid #e9ecef; }
+  .components-table { display: grid; gap: 0.5rem; }
+  .component-row { display: grid; grid-template-columns: repeat(9, 1fr); gap: 0.5rem; padding: 0.75rem; background: #f8f9fa; border-radius: 0.5rem; font-size: 0.9rem; }
+  .component-row span { text-align: center; }
+  .journal-card { background: #f8f9fa; border-radius: 0.5rem; padding: 1rem; }
+  .journal-row { display: flex; justify-content: space-between; padding: 0.5rem 0; border-bottom: 1px solid #e9ecef; }
+  .journal-row:last-child { border-bottom: none; }
+  .empty-note { color: #666; font-style: italic; padding: 1rem; text-align: center; }
+  .lazy-content { min-height: 100px; }
+  .indicators-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
+  .indicators-grid article { background: #f8f9fa; padding: 1rem; border-radius: 0.5rem; text-align: center; }
+  @media (max-width: 760px) {
+    .summary-metrics { grid-template-columns: 1fr; }
+    .component-row { grid-template-columns: 1fr; }
+    .indicators-grid { grid-template-columns: 1fr; }
+  }
+</style>

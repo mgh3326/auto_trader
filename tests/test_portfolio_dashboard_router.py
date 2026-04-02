@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -415,3 +416,14 @@ def test_portfolio_dashboard_page_retains_filter_controls_and_component_detail_h
     assert "function renderComponentHoldings(" in body
     assert "selectedPosition.components" in body
     assert "계좌별 보유 내역" in body
+
+
+@pytest.mark.unit
+def test_portfolio_dashboard_offcanvas_contains_detail_page_link_hook() -> None:
+    client, _, _ = _create_client_with_dashboard()
+    response = client.get("/portfolio/")
+    body = response.text
+
+    assert "상세 페이지 열기" in body
+    assert "buildPositionDetailUrl(" in body
+    assert "/portfolio/positions/" in body

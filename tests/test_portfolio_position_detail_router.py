@@ -115,3 +115,15 @@ def test_position_detail_opinions_api_returns_crypto_fallback() -> None:
 
     assert response.status_code == 200
     assert response.json()["supported"] is False
+
+
+@pytest.mark.unit
+def test_position_detail_page_contains_lazy_section_hooks() -> None:
+    client, _ = _create_client()
+    response = client.get("/portfolio/positions/us/NVDA")
+    body = response.text
+
+    assert 'id="position-indicators-section"' in body
+    assert 'id="position-news-section"' in body
+    assert 'id="position-opinions-section"' in body
+    assert "loadLazySection(" in body
