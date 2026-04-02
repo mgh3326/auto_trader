@@ -181,6 +181,7 @@ class BacktestResult:
     win_rate_pct: float  # Changed from win_rate for clarity
     profit_factor: float
     avg_holding_days: float
+    time_in_market_pct: float = 0.0  # Percentage of days with open positions
     backtest_seconds: float = 0.0  # Runtime measurement
     trade_log: list[dict[str, Any]] = field(default_factory=list)
     equity_curve: list[float] = field(default_factory=list)
@@ -510,6 +511,7 @@ def run_backtest(
             win_rate_pct=0.0,
             profit_factor=0.0,
             avg_holding_days=0.0,
+            time_in_market_pct=0.0,
             backtest_seconds=0.0,
             trade_log=[],
             equity_curve=[initial_capital],
@@ -538,6 +540,7 @@ def run_backtest(
 
     equity_curve = [initial_capital]
     equity_dates = [dates[0]]
+    days_in_market = 0
 
     # Iterate through dates
     for date in dates:
@@ -602,14 +605,20 @@ def run_backtest(
         equity_curve.append(equity)
         equity_dates.append(date)
 
+        # Track days in market (after signal execution)
+        if state.positions:
+            days_in_market += 1
+
     # Calculate metrics
     elapsed = time.time() - start_time
+    time_in_market_pct = days_in_market / len(dates) * 100.0 if dates else 0.0
     return _build_result(
         state,
         equity_curve,
         elapsed,
         bar_interval=bar_interval,
         equity_dates=equity_dates,
+        time_in_market_pct=time_in_market_pct,
     )
 
 
@@ -619,6 +628,7 @@ def _build_result(
     backtest_seconds: float = 0.0,
     bar_interval: str = "1d",
     equity_dates: list[str] | None = None,
+    time_in_market_pct: float = 0.0,
 ) -> BacktestResult:
     """Build BacktestResult from final state."""
     total_return_pct = _calc_total_return(equity_curve)
@@ -648,6 +658,7 @@ def _build_result(
         win_rate_pct=win_rate_pct,
         profit_factor=profit_factor,
         avg_holding_days=avg_holding_days,
+        time_in_market_pct=time_in_market_pct,
         backtest_seconds=backtest_seconds,
         trade_log=state.trade_log,
         equity_curve=equity_curve,
@@ -823,7 +834,9 @@ def cross_validate(
             continue
 
         strat = strategy_class()
-        result = run_backtest(val_data, strat, initial_capital, bar_interval=bar_interval)
+        result = run_backtest(
+            val_data, strat, initial_capital, bar_interval=bar_interval
+        )
         score = compute_score(result)
 
         fold_scores.append(score)
