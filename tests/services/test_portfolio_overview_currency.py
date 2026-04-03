@@ -89,6 +89,95 @@ class TestUSPortfolioCurrencyConversion:
         # This would cause negative PnL like the reported bug
         assert position["avg_price"] > 1000  # Unconverted KRW price
 
+    def test_aggregate_positions_sets_evaluation_krw_for_us_positions(self):
+        """Test that US positions have KRW-normalized valuation fields."""
+        service = PortfolioOverviewService(db=None)
+        usd_krw = 1300.0
+        components = [
+            {
+                "market_type": _MARKET_US,
+                "symbol": "AAPL",
+                "name": "Apple Inc",
+                "account_key": "live:kis",
+                "broker": "kis",
+                "account_name": "KIS",
+                "source": "live",
+                "quantity": 10.0,
+                "avg_price": 150.0,
+                "current_price": 200.0,
+                "evaluation": 2000.0,
+                "profit_loss": 500.0,
+                "profit_rate": 0.333,
+            }
+        ]
+
+        positions = service._aggregate_positions(components, usd_krw=usd_krw)
+
+        assert len(positions) == 1
+        pos = positions[0]
+        assert pos["evaluation"] == 2000.0
+        assert pos["evaluation_krw"] == 2600000.0
+        assert pos["profit_loss"] == 500.0
+        assert pos["profit_loss_krw"] == 650000.0
+
+    def test_aggregate_positions_copies_evaluation_krw_for_kr_and_crypto_positions(
+        self,
+    ):
+        """Test that KR/CRYPTO positions have evaluation_krw mirroring evaluation."""
+        service = PortfolioOverviewService(db=None)
+        components = [
+            {
+                "market_type": "KR",
+                "symbol": "005930",
+                "name": "삼성전자",
+                "account_key": "live:kis",
+                "broker": "kis",
+                "account_name": "KIS",
+                "source": "live",
+                "quantity": 10.0,
+                "avg_price": 70000.0,
+                "current_price": 75000.0,
+                "evaluation": 750000.0,
+                "profit_loss": 50000.0,
+                "profit_rate": 0.071,
+            }
+        ]
+
+        positions = service._aggregate_positions(components, usd_krw=1300.0)
+
+        assert len(positions) == 1
+        pos = positions[0]
+        assert pos["evaluation"] == 750000.0
+        assert pos["evaluation_krw"] == 750000.0
+
+    def test_aggregate_positions_handles_missing_usd_krw_for_us_positions(self):
+        """Test that US positions have None for evaluation_krw when usd_krw is missing."""
+        service = PortfolioOverviewService(db=None)
+        components = [
+            {
+                "market_type": _MARKET_US,
+                "symbol": "AAPL",
+                "evaluation": 2000.0,
+                "profit_loss": 500.0,
+                "name": "Apple",
+                "account_key": "k",
+                "broker": "b",
+                "account_name": "an",
+                "source": "s",
+                "quantity": 10,
+                "avg_price": 150,
+                "current_price": 200,
+                "profit_rate": 0.33,
+            }
+        ]
+
+        positions = service._aggregate_positions(components, usd_krw=None)
+
+        assert len(positions) == 1
+        pos = positions[0]
+        assert pos["evaluation"] == 2000.0
+        assert pos["evaluation_krw"] is None
+
 
 class TestMergedPortfolioCurrencyConversion:
     """Test MergedPortfolioService currency conversion."""
