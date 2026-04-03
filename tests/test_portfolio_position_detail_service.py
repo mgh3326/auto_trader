@@ -287,7 +287,11 @@ async def test_get_page_payload_includes_weights_and_action_summary() -> None:
     assert "비중 큼" in payload["action_summary"]["tags"]
     assert "목표가까지 여유" in payload["action_summary"]["tags"]
     assert "RSI 중립" in payload["action_summary"]["tags"]
-    assert payload["action_summary"]["reason"] == "전체 비중 10.0% · 시장 내 22.5% · RSI 41.2"
+    assert (
+        payload["action_summary"]["reason"]
+        == "전체 비중 10.0% · 시장 내 22.5% · RSI 41.2"
+    )
+
 
 @pytest.mark.unit
 @pytest.mark.asyncio
@@ -1234,24 +1238,32 @@ async def test_get_page_payload_builds_compact_action_reason() -> None:
     )
     dashboard_service = MagicMock()
     dashboard_service.get_latest_journal_snapshot = AsyncMock(return_value=None)
-    
+
     service = PortfolioPositionDetailService(
         overview_service=overview_service,
         dashboard_service=dashboard_service,
     )
-    
-    with patch.object(
-        service,
-        "_fetch_action_inputs",
-        AsyncMock(return_value={"rsi": 36.0}),
-    ), patch.object(
-        service,
-        "_build_weights",
-        return_value={"portfolio_weight_pct": 6.8, "market_weight_pct": 10.6},
+
+    with (
+        patch.object(
+            service,
+            "_fetch_action_inputs",
+            AsyncMock(return_value={"rsi": 36.0}),
+        ),
+        patch.object(
+            service,
+            "_build_weights",
+            return_value={"portfolio_weight_pct": 6.8, "market_weight_pct": 10.6},
+        ),
     ):
-        payload = await service.get_page_payload(user_id=7, market_type="KR", symbol="035720")
-    
-    assert payload["action_summary"]["reason"] == "전체 비중 6.8% · 시장 내 10.6% · RSI 36.0"
+        payload = await service.get_page_payload(
+            user_id=7, market_type="KR", symbol="035720"
+        )
+
+    assert (
+        payload["action_summary"]["reason"]
+        == "전체 비중 6.8% · 시장 내 10.6% · RSI 36.0"
+    )
 
 
 @pytest.mark.unit
@@ -1263,7 +1275,7 @@ async def test_get_orders_payload_exposes_last_fill_summary_and_status_tones() -
         overview_service=overview_service,
         dashboard_service=dashboard_service,
     )
-    
+
     orders_mock = {
         "orders": [
             {
@@ -1273,9 +1285,9 @@ async def test_get_orders_payload_exposes_last_fill_summary_and_status_tones() -
                 "order_at": "2026-03-22T10:00:00",
             }
         ],
-        "count": 1
+        "count": 1,
     }
-    
+
     pending_mock = {
         "orders": [
             {
@@ -1285,13 +1297,15 @@ async def test_get_orders_payload_exposes_last_fill_summary_and_status_tones() -
                 "order_at": "2026-03-22T11:00:00",
             }
         ],
-        "count": 1
+        "count": 1,
     }
-    
-    with patch("app.services.portfolio_position_detail_service.get_order_history_impl") as mock_hist:
+
+    with patch(
+        "app.services.portfolio_position_detail_service.get_order_history_impl"
+    ) as mock_hist:
         mock_hist.side_effect = [orders_mock, pending_mock]
         payload = await service.get_orders_payload(market_type="us", symbol="NVDA")
-    
+
     assert payload["summary"]["last_fill_summary"] == "최근 체결 1건 · 마지막 매수"
     assert payload["recent_fills"][0]["status_tone"] == "filled"
     assert payload["pending_orders"][0]["status_tone"] == "pending"
