@@ -148,16 +148,20 @@ class PortfolioPositionDetailService:
         rsi = indicators.get("rsi")
 
         status = "관망"
+        status_tone = "neutral"
         tags: list[str] = []
 
         if portfolio_weight_pct is not None and portfolio_weight_pct >= 15:
             status = "비중 과다"
+            status_tone = "warning"
             tags.append("비중 과다")
         elif stop_distance_pct is not None and stop_distance_pct >= -5:
             status = "손절 주의"
+            status_tone = "danger"
             tags.append("손절 주의")
         elif target_distance_pct is not None and target_distance_pct <= 5:
             status = "목표가 근접"
+            status_tone = "success"
             tags.append("목표가 근접")
         elif (
             profit_rate is not None
@@ -166,12 +170,15 @@ class PortfolioPositionDetailService:
             and rsi <= 30
         ):
             status = "추가매수 검토"
+            status_tone = "accent"
             tags.append("추가매수 검토")
         elif journal is None:
             status = "저널 없음"
+            status_tone = "neutral"
             tags.append("저널 없음")
         elif self._journal_needs_enrichment(journal):
             status = "저널 보강 필요"
+            status_tone = "warning"
             tags.append("저널 보강 필요")
 
         status_tags = self._build_tags(
@@ -189,8 +196,10 @@ class PortfolioPositionDetailService:
 
         return {
             "status": status,
+            "status_tone": status_tone,
             "tags": tags,
             "reason": reason,
+            "short_reason": reason,
         }
 
     def _journal_needs_enrichment(self, journal: dict[str, Any]) -> bool:
@@ -247,13 +256,15 @@ class PortfolioPositionDetailService:
         if portfolio_weight_pct is not None:
             reason_parts.append(f"전체 비중 {portfolio_weight_pct}%")
         if market_weight_pct is not None:
-            reason_parts.append(f"시장 내 비중 {market_weight_pct}%")
-        if target_distance_pct is not None:
-            reason_parts.append(f"목표가까지 +{target_distance_pct}%")
+            reason_parts.append(f"시장 내 {market_weight_pct}%")
         if rsi is not None:
-            reason_parts.append(f"RSI {rsi}")
+            rsi_val = float(rsi) if isinstance(rsi, (int, float, str)) else rsi
+            if isinstance(rsi_val, (int, float)):
+                reason_parts.append(f"RSI {rsi_val:.1f}")
+            else:
+                reason_parts.append(f"RSI {rsi}")
 
-        return ", ".join(reason_parts) if reason_parts else None
+        return " · ".join(reason_parts) if reason_parts else None
 
     async def get_indicators_payload(
         self, *, market_type: str, symbol: str
@@ -348,10 +359,16 @@ class PortfolioPositionDetailService:
             self._normalize_position_order_item(order) for order in pending_orders
         ]
         last_fill = normalized_fills[0] if normalized_fills else None
+        last_fill_summary = None
+        if normalized_fills:
+            count = len(normalized_fills)
+            last_side = "매수" if normalized_fills[0]["side"] == "buy" else "매도"
+            last_fill_summary = f"최근 체결 {count}건 · 마지막 {last_side}"
 
         return {
             "summary": {
                 "last_fill": last_fill,
+                "last_fill_summary": last_fill_summary,
                 "pending_count": len(normalized_pending),
                 "fill_count": len(normalized_fills),
             },
@@ -787,10 +804,32 @@ class PortfolioPositionDetailService:
             if isinstance(remaining_quantity, (int, float))
             else None
         )
+        status = str(order.get("status") or "")
+        side = str(order.get("side") or "")
+
+        status_label = status
+        status_tone = "neutral"
+        if status == "filled":
+            status_label = "체결"
+            status_tone = "filled"
+        elif status == "pending":
+            status_label = "대기"
+            status_tone = "pending"
+        elif status == "partially_filled":
+            status_label = "부분체결"
+            status_tone = "partial"
+        elif status == "cancelled":
+            status_label = "취소"
+
+        side_label = "매수" if side == "buy" else "매도"
+
         return {
             "order_id": str(order.get("order_id") or ""),
-            "side": str(order.get("side") or ""),
-            "status": str(order.get("status") or ""),
+            "side": side,
+            "side_label": side_label,
+            "status": status,
+            "status_label": status_label,
+            "status_tone": status_tone,
             "ordered_at": ordered_at,
             "filled_at": filled_at,
             "price": price,
