@@ -512,6 +512,44 @@
             <p>KR / US / CRYPTO 통합 보유현황을 계좌별 토글로 조회합니다.</p>
         </header>
 
+        <!-- AI Markdown Export Section -->
+        <div class="panel" style="margin: 1rem 1rem 0; background: #fcfbf8; border: 1px solid var(--border-light); border-radius: 0.75rem; padding: 0.9rem;">
+            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem;">
+                <div>
+                    <h2 style="margin: 0; font-size: 1rem;">
+                        <i class="bi bi-robot"></i> AI 분석용 Markdown 생성
+                    </h2>
+                    <p class="subtle" style="margin: 0.25rem 0 0;">현재 포트폴리오 상태를 AI(ChatGPT, Gemini 등)에 질문하기 좋은 Markdown으로 추출합니다.</p>
+                </div>
+                <div style="display: flex; gap: 0.5rem;">
+                    <button class="btn-primary-soft" onclick="generatePortfolioMarkdown()">
+                        <i class="bi bi-file-markdown"></i> 포트폴리오 전체 스탠스
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Markdown Result Modal -->
+        <div id="markdownModal" class="modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 2000; align-items: center; justify-content: center;">
+            <div style="background: white; border-radius: 1rem; width: 90%; max-width: 800px; max-height: 85vh; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,0.3); overflow: hidden;">
+                <div style="padding: 1rem 1.25rem; border-bottom: 1px solid var(--border-light); display: flex; justify-content: space-between; align-items: center; background: #fcfbf8;">
+                    <h3 id="modalTitle" style="margin: 0; font-size: 1.1rem; color: var(--text-primary);">AI Markdown</h3>
+                    <button onclick="closeMarkdownModal()" style="background: none; border: none; font-size: 1.5rem; cursor: pointer; color: var(--text-secondary); line-height: 1;">&times;</button>
+                </div>
+                <div style="padding: 1.25rem; flex: 1; overflow: auto; background: #fff;">
+                    <textarea id="markdownContent" readonly style="width: 100%; height: 450px; font-family: 'Consolas', 'Monaco', 'Courier New', monospace; font-size: 0.85rem; border: 1px solid var(--border-light); border-radius: 0.5rem; padding: 1rem; resize: none; line-height: 1.5; background: #fafafa; color: #333;"></textarea>
+                </div>
+                <div style="padding: 1rem 1.25rem; border-top: 1px solid var(--border-light); display: flex; gap: 0.75rem; justify-content: flex-end; background: #fcfbf8;">
+                    <button class="btn-outline-soft" onclick="copyMarkdown()">
+                        <i class="bi bi-clipboard"></i> 복사
+                    </button>
+                    <button class="btn-primary-soft" onclick="downloadMarkdown()">
+                        <i class="bi bi-download"></i> .md 다운로드
+                    </button>
+                </div>
+            </div>
+        </div>
+
         <section class="page-grid">
             <section class="stack">
                 <article class="panel" id="portfolio-filters-panel">
@@ -1667,6 +1705,101 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+
+    <!-- AI Markdown Export Functions -->
+    <script>
+        let currentMarkdown = { content: '', filename: '' };
+
+        async function generatePortfolioMarkdown() {
+            const button = document.querySelector('button[onclick="generatePortfolioMarkdown()"]');
+            const originalHTML = button.innerHTML;
+            button.disabled = true;
+            button.innerHTML = '<i class="bi bi-hourglass-split"></i> 생성 중...';
+
+            try {
+                const response = await fetch('/api/ai-markdown/portfolio', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        preset: 'portfolio_stance',
+                        include_market: document.getElementById('market-select').value
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    currentMarkdown = {
+                        content: data.content,
+                        filename: data.filename
+                    };
+                    showMarkdownModal(data.title, data.content);
+                } else {
+                    alert('Markdown 생성 실패: ' + (data.error || '알 수 없는 오류'));
+                }
+            } catch (error) {
+                console.error('Error generating markdown:', error);
+                alert('Markdown 생성 중 오류가 발생했습니다.');
+            } finally {
+                button.disabled = false;
+                button.innerHTML = originalHTML;
+            }
+        }
+
+        function showMarkdownModal(title, content) {
+            document.getElementById('modalTitle').textContent = title;
+            document.getElementById('markdownContent').value = content;
+            document.getElementById('markdownModal').style.display = 'flex';
+            document.body.style.overflow = 'hidden'; // Prevent scroll
+        }
+
+        function closeMarkdownModal() {
+            document.getElementById('markdownModal').style.display = 'none';
+            document.body.style.overflow = ''; // Restore scroll
+        }
+
+        function copyMarkdown() {
+            const textarea = document.getElementById('markdownContent');
+            textarea.select();
+            document.execCommand('copy');
+
+            // Show feedback
+            const button = document.querySelector('button[onclick="copyMarkdown()"]');
+            const originalHTML = button.innerHTML;
+            button.innerHTML = '<i class="bi bi-check"></i> 복사됨!';
+            setTimeout(() => {
+                button.innerHTML = originalHTML;
+            }, 2000);
+        }
+
+        function downloadMarkdown() {
+            const blob = new Blob([currentMarkdown.content], { type: 'text/markdown' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = currentMarkdown.filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        // Close modal when clicking outside
+        document.getElementById('markdownModal').addEventListener('click', function(e) {
+            if (e.target === this) {
+                closeMarkdownModal();
+            }
+        });
+
+        // Close modal on Escape key
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape' && document.getElementById('markdownModal').style.display === 'flex') {
+                closeMarkdownModal();
+            }
+        });
+    </script>
 </body>
 
 </html>
