@@ -2,6 +2,7 @@
 
 포트폴리오 및 종목 데이터를 AI 질문용 Markdown으로 변환하는 서비스
 """
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -36,11 +37,11 @@ class AIMarkdownService:
 {self.investment_profile.to_markdown()}
 
 ## 현재 포트폴리오 요약
-- 총 평가금액: {summary['total_evaluation']:,}원
-- 총 손익: {summary['total_profit_loss']:+,.0f}원 ({summary['total_profit_rate']:+.2f}%)
-- 보유 종목 수: {summary['total_positions']}개
+- 총 평가금액: {summary["total_evaluation"]:,}원
+- 총 손익: {summary["total_profit_loss"]:+,.0f}원 ({summary["total_profit_rate"]:+.2f}%)
+- 보유 종목 수: {summary["total_positions"]}개
 - 자산군 분포:
-{self._format_asset_allocation(summary['allocation'])}
+{self._format_asset_allocation(summary["allocation"])}
 
 ## 상위 보유 종목
 {self._format_top_holdings(positions, limit=10)}
@@ -68,7 +69,7 @@ class AIMarkdownService:
             "metadata": {
                 "position_count": len(positions),
                 "generated_at": datetime.now().isoformat(),
-            }
+            },
         }
 
     def generate_stock_stance_markdown(
@@ -97,13 +98,13 @@ class AIMarkdownService:
 ## 현재 포지션 정보
 - 종목명: {name} ({symbol})
 - 시장: {market_type}
-- 현재가: {self._format_price(summary.get('current_price'), market_type)}
-- 평균단가: {self._format_price(summary.get('avg_price'), market_type)}
-- 보유수량: {summary.get('quantity', 0):,.4f}
-- 수익률: {summary.get('profit_rate', 0):+.2f}%
-- 평가금액: {self._format_price(summary.get('evaluation'), market_type)}
-- 포트폴리오 비중: {weights.get('portfolio_weight_pct', 'N/A')}%
-- 동일 시장 내 비중: {weights.get('market_weight_pct', 'N/A')}%
+- 현재가: {self._format_price(summary.get("current_price"), market_type)}
+- 평균단가: {self._format_price(summary.get("avg_price"), market_type)}
+- 보유수량: {summary.get("quantity", 0):,.4f}
+- 수익률: {summary.get("profit_rate", 0):+.2f}%
+- 평가금액: {self._format_price(summary.get("evaluation"), market_type)}
+- 포트폴리오 비중: {weights.get("portfolio_weight_pct", "N/A")}%
+- 동일 시장 내 비중: {weights.get("market_weight_pct", "N/A")}%
 
 ## 질문
 현재 보유 중인 {name}({symbol})에 대해 분석해주세요:
@@ -128,7 +129,7 @@ class AIMarkdownService:
                 "symbol": symbol,
                 "market_type": market_type,
                 "generated_at": datetime.now().isoformat(),
-            }
+            },
         }
 
     def generate_stock_add_or_hold_markdown(
@@ -166,9 +167,9 @@ class AIMarkdownService:
 - 현재가: {self._format_price(current_price, market_type)}
 - 평균단가: {self._format_price(avg_price, market_type)}
 - 현재가/평단가 비율: {price_ratio:.2%}
-- 보유수량: {summary.get('quantity', 0):,.4f}
-- 수익률: {summary.get('profit_rate', 0):+.2f}%
-- 포트폴리오 비중: {weights.get('portfolio_weight_pct', 'N/A')}%
+- 보유수량: {summary.get("quantity", 0):,.4f}
+- 수익률: {summary.get("profit_rate", 0):+.2f}%
+- 포트폴리오 비중: {weights.get("portfolio_weight_pct", "N/A")}%
 
 ## 매매 계획 정보
 {self._format_journal_info(journal)}
@@ -196,22 +197,17 @@ class AIMarkdownService:
                 "market_type": market_type,
                 "price_ratio": price_ratio,
                 "generated_at": datetime.now().isoformat(),
-            }
+            },
         }
 
     def _extract_portfolio_summary(
-        self,
-        portfolio_data: dict[str, Any]
+        self, portfolio_data: dict[str, Any]
     ) -> dict[str, Any]:
         """포트폴리오 요약 데이터 추출"""
         positions = portfolio_data.get("positions", [])
 
-        total_evaluation = sum(
-            p.get("evaluation", 0) or 0 for p in positions
-        )
-        total_profit_loss = sum(
-            p.get("profit_loss", 0) or 0 for p in positions
-        )
+        total_evaluation = sum(p.get("evaluation", 0) or 0 for p in positions)
+        total_profit_loss = sum(p.get("profit_loss", 0) or 0 for p in positions)
 
         # 자산군별 비중 계산
         allocation = {"KR": 0, "US": 0, "CRYPTO": 0}
@@ -250,16 +246,10 @@ class AIMarkdownService:
             lines.append(f"  - {name}: {pct:.1f}%")
         return "\n".join(lines) if lines else "  - 데이터 없음"
 
-    def _format_top_holdings(
-        self,
-        positions: list[dict],
-        limit: int = 10
-    ) -> str:
+    def _format_top_holdings(self, positions: list[dict], limit: int = 10) -> str:
         """상위 보유 종목 포맷팅"""
         sorted_positions = sorted(
-            positions,
-            key=lambda x: x.get("evaluation", 0) or 0,
-            reverse=True
+            positions, key=lambda x: x.get("evaluation", 0) or 0, reverse=True
         )[:limit]
 
         if not sorted_positions:

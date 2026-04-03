@@ -2,6 +2,7 @@
 
 포트폴리오 및 종목 데이터를 AI 질문용 Markdown으로 변환하는 API
 """
+
 from __future__ import annotations
 
 import logging

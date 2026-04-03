@@ -1,4 +1,5 @@
 """Tests for AI Markdown Router"""
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -25,13 +26,16 @@ def mock_user():
 
 @pytest.fixture
 def auth_headers(mock_user):
-    with patch(
-        "app.routers.ai_markdown.get_authenticated_user",
-        return_value=mock_user,
-    ), patch(
-        "app.middleware.auth.AuthMiddleware._load_user",
-        new_callable=AsyncMock,
-        return_value=mock_user,
+    with (
+        patch(
+            "app.routers.ai_markdown.get_authenticated_user",
+            return_value=mock_user,
+        ),
+        patch(
+            "app.middleware.auth.AuthMiddleware._load_user",
+            new_callable=AsyncMock,
+            return_value=mock_user,
+        ),
     ):
         yield {"Authorization": "Bearer test-token"}
 
@@ -41,9 +45,7 @@ class TestGeneratePortfolioMarkdown:
     async def test_success(self, client, auth_headers):
         mock_overview = {
             "success": True,
-            "positions": [
-                {"symbol": "AAPL", "evaluation": 5000000}
-            ],
+            "positions": [{"symbol": "AAPL", "evaluation": 5000000}],
         }
         mock_markdown = {
             "title": "Test Title",
@@ -52,13 +54,16 @@ class TestGeneratePortfolioMarkdown:
             "metadata": {"position_count": 1},
         }
 
-        with patch(
-            "app.routers.ai_markdown.PortfolioOverviewService.get_overview",
-            new_callable=AsyncMock,
-            return_value=mock_overview,
-        ), patch(
-            "app.routers.ai_markdown.AIMarkdownService.generate_portfolio_stance_markdown",
-            return_value=mock_markdown,
+        with (
+            patch(
+                "app.routers.ai_markdown.PortfolioOverviewService.get_overview",
+                new_callable=AsyncMock,
+                return_value=mock_overview,
+            ),
+            patch(
+                "app.routers.ai_markdown.AIMarkdownService.generate_portfolio_stance_markdown",
+                return_value=mock_markdown,
+            ),
         ):
             response = client.post(
                 "/api/ai-markdown/portfolio",
@@ -105,13 +110,16 @@ class TestGenerateStockMarkdown:
             "metadata": {"symbol": "AAPL"},
         }
 
-        with patch(
-            "app.routers.ai_markdown.PortfolioPositionDetailService.get_page_payload",
-            new_callable=AsyncMock,
-            return_value=mock_payload,
-        ), patch(
-            "app.routers.ai_markdown.AIMarkdownService.generate_stock_stance_markdown",
-            return_value=mock_markdown,
+        with (
+            patch(
+                "app.routers.ai_markdown.PortfolioPositionDetailService.get_page_payload",
+                new_callable=AsyncMock,
+                return_value=mock_payload,
+            ),
+            patch(
+                "app.routers.ai_markdown.AIMarkdownService.generate_stock_stance_markdown",
+                return_value=mock_markdown,
+            ),
         ):
             response = client.post(
                 "/api/ai-markdown/stock",

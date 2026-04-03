@@ -1,4 +1,5 @@
 """Tests for AI Markdown schemas"""
+
 import pytest
 
 from app.schemas.ai_markdown import (
@@ -24,8 +25,7 @@ class TestPortfolioMarkdownRequest:
 
     def test_custom_values(self):
         req = PortfolioMarkdownRequest(
-            preset=PresetType.PORTFOLIO_STANCE,
-            include_market="US"
+            preset=PresetType.PORTFOLIO_STANCE, include_market="US"
         )
         assert req.include_market == "US"
 
@@ -37,9 +37,7 @@ class TestStockMarkdownRequest:
 
     def test_valid_request(self):
         req = StockMarkdownRequest(
-            preset=PresetType.STOCK_STANCE,
-            symbol="AAPL",
-            market_type="US"
+            preset=PresetType.STOCK_STANCE, symbol="AAPL", market_type="US"
         )
         assert req.symbol == "AAPL"
         assert req.market_type == "US"

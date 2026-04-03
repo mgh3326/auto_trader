@@ -1,4 +1,5 @@
 """Tests for AI Markdown Service"""
+
 import pytest
 
 from app.services.ai_markdown_service import AIMarkdownService
