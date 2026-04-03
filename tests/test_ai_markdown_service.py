@@ -120,3 +120,108 @@ class TestAIMarkdownService:
         result = service.generate_stock_stance_markdown(minimal_data)
         assert "TEST" in result["content"]
         assert "N/A" in result["content"]  # Missing price fields
+
+    def test_extract_portfolio_summary_prefers_evaluation_krw_for_totals_and_allocation(
+        self, service
+    ):
+        portfolio_data = {
+            "positions": [
+                {
+                    "symbol": "005930",
+                    "market_type": "KR",
+                    "evaluation": 10_000_000,
+                    "evaluation_krw": 10_000_000,
+                    "profit_loss": 500_000,
+                    "profit_loss_krw": 500_000,
+                },
+                {
+                    "symbol": "AAPL",
+                    "market_type": "US",
+                    "evaluation": 2_000,  # USD raw
+                    "evaluation_krw": 2_600_000,  # normalized (rate 1300)
+                    "profit_loss": 300,
+                    "profit_loss_krw": 390_000,
+                },
+                {
+                    "symbol": "KRW-BTC",
+                    "market_type": "CRYPTO",
+                    "evaluation": 4_000_000,
+                    "evaluation_krw": 4_000_000,
+                    "profit_loss": -100_000,
+                    "profit_loss_krw": -100_000,
+                },
+            ]
+        }
+
+        summary = service._extract_portfolio_summary(portfolio_data)
+
+        # 10M + 2.6M + 4M = 16.6M
+        assert summary["total_evaluation"] == 16_600_000
+        # US weight: 2.6M / 16.6M * 100 = 15.66... -> 15.7
+        assert round(summary["allocation"]["US"], 1) == 15.7
+        assert round(sum(summary["allocation"].values()), 1) == 100.0
+
+    def test_format_top_holdings_uses_normalized_krw_for_sorting_and_display(
+        self, service
+    ):
+        positions = [
+            {
+                "symbol": "SMALL_KR",
+                "name": "작은국내",
+                "market_type": "KR",
+                "evaluation": 1_000_000,
+                "evaluation_krw": 1_000_000,
+            },
+            {
+                "symbol": "BIG_US",
+                "name": "큰미국",
+                "market_type": "US",
+                "evaluation": 2_000,  # Raw USD 2000 < KRW 1,000,000
+                "evaluation_krw": 2_600_000,  # Normalized KRW 2,600,000 > KRW 1,000,000
+            },
+        ]
+
+        formatted = service._format_top_holdings(positions, limit=10)
+
+        # BIG_US should come first because 2.6M > 1M
+        lines = formatted.split("\n")
+        assert "큰미국" in lines[0]
+        assert "2,600,000원" in lines[0]
+        assert "작은국내" in lines[1]
+        assert "1,000,000원" in lines[1]
+
+    def test_generate_portfolio_stance_markdown_surfaces_warning_when_us_krw_value_missing(
+        self, service
+    ):
+        portfolio_data = {
+            "positions": [
+                {
+                    "symbol": "005930",
+                    "name": "삼성전자",
+                    "market_type": "KR",
+                    "evaluation": 1_000_000,
+                    "evaluation_krw": 1_000_000,
+                },
+                {
+                    "symbol": "AAPL",
+                    "name": "Apple Inc",
+                    "market_type": "US",
+                    "evaluation": 2_000,
+                    "evaluation_krw": None,  # FX missing
+                },
+            ],
+            "warnings": [
+                "환율 정보를 가져올 수 없어 일부 해외 자산의 원화 환산이 정확하지 않을 수 있습니다."
+            ],
+        }
+
+        result = service.generate_portfolio_stance_markdown(portfolio_data)
+
+        # Result should contain the warning from the data
+        assert "환율 정보" in result["content"]
+        # KR totals/allocation must not be polluted by raw USD fallback
+        assert "- 총 평가금액: 1,000,000원" in result["content"]
+        assert "해외주식: 0.2%" not in result["content"]
+        # US holding should be shown without pretending the raw USD amount is KRW
+        assert "2,000원" not in result["content"]
+        assert "원화 환산 불가" in result["content"]

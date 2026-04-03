@@ -23,21 +23,27 @@ class AIMarkdownService:
     ) -> dict[str, Any]:
         """포트폴리오 전체 스탠스용 Markdown 생성"""
         positions = portfolio_data.get("positions", [])
+        warnings = portfolio_data.get("warnings", [])
         summary = self._extract_portfolio_summary(portfolio_data)
 
         title = f"포트폴리오 전체 스탠스 분석 - {datetime.now().strftime('%Y-%m-%d')}"
         filename = f"portfolio-stance-{datetime.now().strftime('%Y%m%d')}.md"
+
+        warning_section = ""
+        if warnings:
+            warning_list = "\n".join([f"- {w}" for w in warnings])
+            warning_section = f"## 경고 및 주의사항\n{warning_list}\n\n"
 
         content = f"""# {title}
 
 ## 역할 및 응답 방식
 당신은 투자 추천 봇이 아닙니다. 현재 포트폴리오를 보고 이후 스탠스를 정리해주는 분석 보조 역할을 수행합니다.
 
-## 투자 성향
+{warning_section}## 투자 성향
 {self.investment_profile.to_markdown()}
 
 ## 현재 포트폴리오 요약
-- 총 평가금액: {summary["total_evaluation"]:,}원
+- 총 평가금액: {summary["total_evaluation"]:,.0f}원
 - 총 손익: {summary["total_profit_loss"]:+,.0f}원 ({summary["total_profit_rate"]:+.2f}%)
 - 보유 종목 수: {summary["total_positions"]}개
 - 자산군 분포:
@@ -206,15 +212,24 @@ class AIMarkdownService:
         """포트폴리오 요약 데이터 추출"""
         positions = portfolio_data.get("positions", [])
 
-        total_evaluation = sum(p.get("evaluation", 0) or 0 for p in positions)
-        total_profit_loss = sum(p.get("profit_loss", 0) or 0 for p in positions)
+        total_evaluation = sum(
+            value
+            for p in positions
+            if (value := self._evaluation_krw_value(p)) is not None
+        )
+        total_profit_loss = sum(
+            value
+            for p in positions
+            if (value := self._profit_loss_krw_value(p)) is not None
+        )
 
         # 자산군별 비중 계산
         allocation = {"KR": 0, "US": 0, "CRYPTO": 0}
         for pos in positions:
             market = pos.get("market_type", "KR")
-            eval_val = pos.get("evaluation", 0) or 0
-            if market in allocation:
+            eval_val = self._evaluation_krw_value(pos)
+
+            if market in allocation and eval_val is not None:
                 allocation[market] += eval_val
 
         # 비율로 변환
@@ -237,6 +252,26 @@ class AIMarkdownService:
             "allocation": allocation,
         }
 
+    def _evaluation_krw_value(self, position: dict[str, Any]) -> float | None:
+        """Return a safe KRW valuation for cross-market comparisons."""
+        market_type = str(position.get("market_type") or "").upper()
+        evaluation_krw = position.get("evaluation_krw")
+        if evaluation_krw is not None:
+            return float(evaluation_krw)
+        if market_type == "US":
+            return None
+        return float(position.get("evaluation", 0) or 0)
+
+    def _profit_loss_krw_value(self, position: dict[str, Any]) -> float | None:
+        """Return a safe KRW profit/loss for portfolio-level totals."""
+        market_type = str(position.get("market_type") or "").upper()
+        profit_loss_krw = position.get("profit_loss_krw")
+        if profit_loss_krw is not None:
+            return float(profit_loss_krw)
+        if market_type == "US":
+            return None
+        return float(position.get("profit_loss", 0) or 0)
+
     def _format_asset_allocation(self, allocation: dict[str, float]) -> str:
         """자산군 비중을 Markdown 리스트로 포맷팅"""
         market_names = {"KR": "국내주식", "US": "해외주식", "CRYPTO": "암호화폐"}
@@ -248,9 +283,14 @@ class AIMarkdownService:
 
     def _format_top_holdings(self, positions: list[dict], limit: int = 10) -> str:
         """상위 보유 종목 포맷팅"""
-        sorted_positions = sorted(
-            positions, key=lambda x: x.get("evaluation", 0) or 0, reverse=True
-        )[:limit]
+
+        def sort_key(p: dict) -> tuple[int, float]:
+            value = self._evaluation_krw_value(p)
+            if value is None:
+                return (0, 0.0)
+            return (1, value)
+
+        sorted_positions = sorted(positions, key=sort_key, reverse=True)[:limit]
 
         if not sorted_positions:
             return "- 보유 종목 없음"
@@ -260,10 +300,15 @@ class AIMarkdownService:
             symbol = pos.get("symbol", "N/A")
             name = pos.get("name", symbol)
             profit_rate = pos.get("profit_rate", 0) or 0
-            eval_val = pos.get("evaluation", 0) or 0
-            lines.append(
-                f"- {name} ({symbol}): {eval_val:,.0f}원 ({profit_rate:+.2f}%)"
-            )
+            eval_val = self._evaluation_krw_value(pos)
+            if eval_val is None:
+                lines.append(
+                    f"- {name} ({symbol}): 원화 환산 불가 ({profit_rate:+.2f}%)"
+                )
+            else:
+                lines.append(
+                    f"- {name} ({symbol}): {eval_val:,.0f}원 ({profit_rate:+.2f}%)"
+                )
 
         return "\n".join(lines)
 

@@ -233,6 +233,7 @@ async def test_get_page_payload_includes_weights_and_action_summary() -> None:
                     "avg_price": 120.0,
                     "current_price": 132.0,
                     "evaluation": 180.0,
+                    "evaluation_krw": 180.0,
                     "profit_loss": 36.0,
                     "profit_rate": 0.10,
                     "components": [],
@@ -242,6 +243,7 @@ async def test_get_page_payload_includes_weights_and_action_summary() -> None:
                     "symbol": "MSFT",
                     "name": "Microsoft",
                     "evaluation": 620.0,
+                    "evaluation_krw": 620.0,
                     "quantity": 1.0,
                     "avg_price": 100.0,
                     "components": [],
@@ -251,6 +253,7 @@ async def test_get_page_payload_includes_weights_and_action_summary() -> None:
                     "symbol": "035720",
                     "name": "카카오",
                     "evaluation": 1000.0,
+                    "evaluation_krw": 1000.0,
                     "quantity": 1.0,
                     "avg_price": 100.0,
                     "components": [],
@@ -308,6 +311,7 @@ async def test_action_summary_target_near() -> None:
                     "avg_price": 120.0,
                     "current_price": 132.0,
                     "evaluation": 10.0,
+                    "evaluation_krw": 10.0,
                     "profit_loss": 12.0,
                     "profit_rate": 0.10,
                     "components": [],
@@ -317,6 +321,7 @@ async def test_action_summary_target_near() -> None:
                     "symbol": "035720",
                     "name": "카카오",
                     "evaluation": 1000.0,
+                    "evaluation_krw": 1000.0,
                     "quantity": 1.0,
                     "avg_price": 100.0,
                     "components": [],
@@ -365,6 +370,7 @@ async def test_action_summary_stop_warning() -> None:
                     "avg_price": 120.0,
                     "current_price": 132.0,
                     "evaluation": 10.0,
+                    "evaluation_krw": 10.0,
                     "profit_loss": 12.0,
                     "profit_rate": 0.10,
                     "components": [],
@@ -374,6 +380,7 @@ async def test_action_summary_stop_warning() -> None:
                     "symbol": "035720",
                     "name": "카카오",
                     "evaluation": 1000.0,
+                    "evaluation_krw": 1000.0,
                     "quantity": 1.0,
                     "avg_price": 100.0,
                     "components": [],
@@ -422,6 +429,7 @@ async def test_action_summary_weight_excessive() -> None:
                     "avg_price": 120.0,
                     "current_price": 132.0,
                     "evaluation": 2000.0,
+                    "evaluation_krw": 2000.0,
                     "profit_loss": 12.0,
                     "profit_rate": 0.10,
                     "components": [],
@@ -431,6 +439,7 @@ async def test_action_summary_weight_excessive() -> None:
                     "symbol": "035720",
                     "name": "카카오",
                     "evaluation": 500.0,
+                    "evaluation_krw": 500.0,
                     "quantity": 1.0,
                     "avg_price": 100.0,
                     "components": [],
@@ -479,6 +488,7 @@ async def test_action_summary_no_journal() -> None:
                     "avg_price": 120.0,
                     "current_price": 132.0,
                     "evaluation": 10.0,
+                    "evaluation_krw": 10.0,
                     "profit_loss": 12.0,
                     "profit_rate": 0.10,
                     "components": [],
@@ -488,6 +498,7 @@ async def test_action_summary_no_journal() -> None:
                     "symbol": "035720",
                     "name": "카카오",
                     "evaluation": 1000.0,
+                    "evaluation_krw": 1000.0,
                     "quantity": 1.0,
                     "avg_price": 100.0,
                     "components": [],
@@ -531,6 +542,7 @@ async def test_action_summary_journal_needs_enrichment() -> None:
                     "avg_price": 120.0,
                     "current_price": 132.0,
                     "evaluation": 10.0,
+                    "evaluation_krw": 10.0,
                     "profit_loss": 12.0,
                     "profit_rate": 0.10,
                     "components": [],
@@ -540,6 +552,7 @@ async def test_action_summary_journal_needs_enrichment() -> None:
                     "symbol": "035720",
                     "name": "카카오",
                     "evaluation": 1000.0,
+                    "evaluation_krw": 1000.0,
                     "quantity": 1.0,
                     "avg_price": 100.0,
                     "components": [],
@@ -590,6 +603,7 @@ async def test_action_summary_missing_rsi_fallback() -> None:
                     "avg_price": 120.0,
                     "current_price": 132.0,
                     "evaluation": 10.0,
+                    "evaluation_krw": 10.0,
                     "profit_loss": 12.0,
                     "profit_rate": 0.10,
                     "components": [],
@@ -599,6 +613,7 @@ async def test_action_summary_missing_rsi_fallback() -> None:
                     "symbol": "035720",
                     "name": "카카오",
                     "evaluation": 1000.0,
+                    "evaluation_krw": 1000.0,
                     "quantity": 1.0,
                     "avg_price": 100.0,
                     "components": [],
@@ -1309,3 +1324,38 @@ async def test_get_orders_payload_exposes_last_fill_summary_and_status_tones() -
     assert payload["summary"]["last_fill_summary"] == "최근 체결 1건 · 마지막 매수"
     assert payload["recent_fills"][0]["status_tone"] == "filled"
     assert payload["pending_orders"][0]["status_tone"] == "pending"
+
+
+def test_build_weights_prefers_evaluation_krw_for_portfolio_weight():
+    # US position with evaluation=2000 USD and evaluation_krw=2.6M KRW
+    # KR position with evaluation=10M KRW and evaluation_krw=10M KRW
+    positions = [
+        {"market_type": "KR", "evaluation": 10_000_000, "evaluation_krw": 10_000_000},
+        {"market_type": "US", "evaluation": 2_000, "evaluation_krw": 2_600_000},
+    ]
+    base = positions[1]  # The US position
+
+    # total = 10M + 2.6M = 12.6M
+    # weight = 2.6M / 12.6M * 100 = 20.63... -> 20.6
+    service = PortfolioPositionDetailService(
+        overview_service=MagicMock(), dashboard_service=MagicMock()
+    )
+    weights = service._build_weights(positions, base)
+
+    assert weights["portfolio_weight_pct"] == 20.6
+
+
+def test_build_weights_returns_none_when_us_position_lacks_krw_normalization():
+    positions = [
+        {"market_type": "KR", "evaluation": 10_000_000, "evaluation_krw": 10_000_000},
+        {"market_type": "US", "evaluation": 2_000, "evaluation_krw": None},
+    ]
+    base = positions[1]
+
+    service = PortfolioPositionDetailService(
+        overview_service=MagicMock(), dashboard_service=MagicMock()
+    )
+    weights = service._build_weights(positions, base)
+
+    assert weights["portfolio_weight_pct"] is None
+    assert weights["market_weight_pct"] is None

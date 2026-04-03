@@ -156,7 +156,12 @@ class PortfolioOverviewService:
                 or item["symbol"] in active_upbit_markets
             ]
 
-        usd_krw_rate = await usd_krw_rate_task
+        try:
+            usd_krw_rate = await usd_krw_rate_task
+        except Exception as exc:
+            logger.warning("Failed to fetch USD/KRW rate: %s", exc)
+            warnings.append(f"환율 정보를 가져올 수 없습니다: {exc}")
+            usd_krw_rate = None
 
         if not skip_missing_prices:
             await self._fill_missing_prices(
@@ -174,6 +179,15 @@ class PortfolioOverviewService:
             market_filter=market_filter,
             selected_account_keys=selected_account_set,
         )
+
+        # Check if US positions exist and warn if FX rate is missing
+        if usd_krw_rate is None and any(
+            c["market_type"] == _MARKET_US for c in filtered_components
+        ):
+            warnings.append(
+                "해외 주식이 포함되어 있으나 환율 정보를 가져올 수 없어 원화 환산이 불가능합니다."
+            )
+
         positions = self._aggregate_positions(filtered_components, usd_krw=usd_krw_rate)
 
         if q_filter:
@@ -258,7 +272,12 @@ class PortfolioOverviewService:
             }
 
         kis_client = KISClient()
-        usd_krw_rate = await usd_krw_rate_task
+        try:
+            usd_krw_rate = await usd_krw_rate_task
+        except Exception as exc:
+            logger.warning("Failed to fetch USD/KRW rate: %s", exc)
+            warnings.append(f"환율 정보를 가져올 수 없습니다: {exc}")
+            usd_krw_rate = None
 
         await self._fill_missing_prices(
             kis_client,
@@ -268,6 +287,14 @@ class PortfolioOverviewService:
             active_upbit_markets=active_upbit_markets,
             enforce_upbit_universe=enforce_upbit_universe,
         )
+
+        # Check if US positions exist and warn if FX rate is missing
+        if usd_krw_rate is None and any(
+            c["market_type"] == _MARKET_US for c in filtered_components
+        ):
+            warnings.append(
+                "해외 주식이 포함되어 있으나 환율 정보를 가져올 수 없어 원화 환산이 불가능합니다."
+            )
 
         # Aggregate only these components
         positions = self._aggregate_positions(filtered_components, usd_krw=usd_krw_rate)
@@ -1081,6 +1108,23 @@ class PortfolioOverviewService:
                 )
                 profit_rate = (profit_loss / cost_basis) if cost_basis > 0 else 0.0
 
+            # Calculate KRW-normalized values for cross-market aggregation
+            evaluation_krw = None
+            profit_loss_krw = None
+            market_type = row["market_type"]
+
+            if market_type in (_MARKET_KR, _MARKET_CRYPTO):
+                evaluation_krw = evaluation
+                profit_loss_krw = profit_loss
+            elif market_type == _MARKET_US:
+                if usd_krw:
+                    evaluation_krw = evaluation * usd_krw
+                    profit_loss_krw = profit_loss * usd_krw
+                else:
+                    # Explicitly None if USD/KRW missing for US market
+                    evaluation_krw = None
+                    profit_loss_krw = None
+
             rows.append(
                 {
                     "market_type": row["market_type"],
@@ -1092,6 +1136,8 @@ class PortfolioOverviewService:
                     "evaluation": evaluation,
                     "profit_loss": profit_loss,
                     "profit_rate": profit_rate,
+                    "evaluation_krw": evaluation_krw,
+                    "profit_loss_krw": profit_loss_krw,
                     "components": components_list,
                 }
             )
