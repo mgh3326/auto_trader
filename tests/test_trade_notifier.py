@@ -1748,6 +1748,7 @@ async def test_notify_toss_buy_recommendation_includes_detail_url(trade_notifier
         fields = {f["name"]: f["value"] for f in embed["fields"]}
         assert fields["상세"] == detail_url
 
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_notify_toss_sell_recommendation_requires_market_webhook(trade_notifier):

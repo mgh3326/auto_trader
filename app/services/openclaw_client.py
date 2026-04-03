@@ -14,6 +14,7 @@ from tenacity import (
 
 from app.core.config import settings
 from app.core.kr_symbols import KR_SYMBOLS
+from app.core.portfolio_links import build_position_detail_url
 from app.monitoring.trade_notifier import get_trade_notifier
 from app.services.fill_notification import (
     FillOrder,
@@ -21,8 +22,6 @@ from app.services.fill_notification import (
     coerce_fill_order,
     format_fill_message,
 )
-
-from app.core.portfolio_links import build_position_detail_url
 
 logger = logging.getLogger(__name__)
 

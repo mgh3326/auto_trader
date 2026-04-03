@@ -7,7 +7,7 @@ _KR_ALIASES = frozenset(
     {"kr", "krx", "korea", "kospi", "kosdaq", "kis", "equity_kr", "naver"}
 )
 _US_ALIASES = frozenset({"us", "usa", "nyse", "nasdaq", "yahoo", "equity_us"})
-_CRYPTO_ALIASES = frozenset({"crypto", "upbit", "krw", "usdt"})
+_CRYPTO_ALIASES = frozenset({"crypto", "upbit", "krw", "usdt", "btc"})
 
 
 def normalize_position_market_type(market_type: str | None) -> str | None:
@@ -24,7 +24,9 @@ def normalize_position_market_type(market_type: str | None) -> str | None:
     return None
 
 
-def build_position_detail_url(symbol: str | None, market_type: str | None) -> str | None:
+def build_position_detail_url(
+    symbol: str | None, market_type: str | None
+) -> str | None:
     """Build a URL to the position detail page in the portfolio web UI.
 
     Example: https://mgh3326.duckdns.org/portfolio/positions/kr/035720

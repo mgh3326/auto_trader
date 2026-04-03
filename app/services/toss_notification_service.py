@@ -9,9 +9,9 @@ from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.portfolio_links import build_position_detail_url
 from app.models.manual_holdings import MarketType
 from app.monitoring.trade_notifier import get_trade_notifier
-from app.core.portfolio_links import build_position_detail_url
 from app.services.merged_portfolio_service import (
     MergedPortfolioService,
     ReferencePrices,

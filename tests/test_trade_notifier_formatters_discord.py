@@ -213,7 +213,8 @@ class TestFormatTossBuyRecommendation:
         )
         fields = {f["name"]: f["value"] for f in embed["fields"]}
         assert (
-            fields["상세"] == "https://mgh3326.duckdns.org/portfolio/positions/kr/005930"
+            fields["상세"]
+            == "https://mgh3326.duckdns.org/portfolio/positions/kr/005930"
         )
 
     def test_with_kis(self):

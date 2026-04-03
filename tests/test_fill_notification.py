@@ -358,7 +358,8 @@ class TestFormatFillMessage:
             "수량: 0.015\n"
             "금액: 1,500,300원\n"
             "시간: 2026-02-14T17:30:45\n\n"
-            "계좌: upbit"
+            "계좌: upbit\n"
+            "상세: https://mgh3326.duckdns.org/portfolio/positions/crypto/KRW-BTC"
         )
         assert message == expected
 
@@ -386,7 +387,8 @@ class TestFormatFillMessage:
             "금액: 1,500,300원\n"
             "시간: 2026-02-14T17:30:45\n\n"
             "계좌: upbit\n"
-            "주문: a3f5d2e1..."
+            "주문: a3f5d2e1...\n"
+            "상세: https://mgh3326.duckdns.org/portfolio/positions/crypto/KRW-BTC"
         )
         assert message == expected
 
@@ -412,7 +414,8 @@ class TestFormatFillMessage:
             "수량: 0.5\n"
             "금액: 1,505,000원\n"
             "시간: 2026-02-14T18:15:22\n\n"
-            "계좌: upbit"
+            "계좌: upbit\n"
+            "상세: https://mgh3326.duckdns.org/portfolio/positions/crypto/KRW-ETH"
         )
         assert message == expected
 
@@ -483,4 +486,6 @@ class TestFormatFillMessage:
             market_type="us",
         )
         message = format_fill_message(order)
-        assert "상세: https://mgh3326.duckdns.org/portfolio/positions/us/AAPL" in message
+        assert (
+            "상세: https://mgh3326.duckdns.org/portfolio/positions/us/AAPL" in message
+        )

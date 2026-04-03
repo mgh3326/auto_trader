@@ -2,8 +2,8 @@ import asyncio
 import json
 import logging
 
-from app.core.symbol import to_db_symbol
 from app.core.portfolio_links import build_position_detail_url
+from app.core.symbol import to_db_symbol
 from app.monitoring.trade_notifier import get_trade_notifier
 from app.services.brokers.kis.client import KISClient
 from app.services.kis_trading_service import (

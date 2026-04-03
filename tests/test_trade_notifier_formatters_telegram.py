@@ -238,7 +238,10 @@ class TestFormatTossPriceRecommendationHtml:
             market_type="국내주식",
             detail_url="https://mgh3326.duckdns.org/portfolio/positions/kr/005930",
         )
-        assert "<b>상세:</b> https://mgh3326.duckdns.org/portfolio/positions/kr/005930" in html_msg
+        assert (
+            "<b>상세:</b> https://mgh3326.duckdns.org/portfolio/positions/kr/005930"
+            in html_msg
+        )
 
     def test_usd_currency(self):
         html_msg = format_toss_price_recommendation_html(
