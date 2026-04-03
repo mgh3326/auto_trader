@@ -39,8 +39,10 @@ class PositionDetailWeightsResponse(BaseModel):
 
 class PositionDetailActionSummaryResponse(BaseModel):
     status: str
+    status_tone: str = "neutral"
     tags: list[str] = Field(default_factory=list)
     reason: str | None = None
+    short_reason: str | None = None
 
 
 class PositionDetailPageResponse(BaseModel):
@@ -107,7 +109,10 @@ class PositionOpinionsResponse(BaseModel):
 class PositionOrderItemResponse(BaseModel):
     order_id: str
     side: str
+    side_label: str | None = None
     status: str
+    status_label: str | None = None
+    status_tone: str | None = None
     ordered_at: str | None = None
     filled_at: str | None = None
     price: float | None = None
@@ -119,6 +124,7 @@ class PositionOrderItemResponse(BaseModel):
 
 class PositionOrdersSummaryResponse(BaseModel):
     last_fill: dict[str, Any] | None = None
+    last_fill_summary: str | None = None
     pending_count: int = 0
     fill_count: int = 0
 
