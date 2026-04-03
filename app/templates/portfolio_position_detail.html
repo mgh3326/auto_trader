@@ -234,14 +234,6 @@
 
     .sentiment-badge.positive { background: #e8f5e9; color: var(--success); }
     .sentiment-badge.negative { background: #ffebee; color: var(--error); }
-      border-radius: 999px;
-      padding: 0.15rem 0.5rem;
-      font-size: 0.75rem;
-      font-weight: 600;
-      background: rgba(192, 90, 60, 0.14);
-      color: var(--accent);
-      white-space: nowrap;
-    }
 
     .opinion-distribution {
       display: flex;
@@ -250,6 +242,21 @@
       margin: 0.75rem 0;
     }
 
+    .distribution-pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 0.2rem 0.6rem;
+      border-radius: 999px;
+      font-size: 0.74rem;
+      font-weight: 700;
+      background: #eee;
+      color: var(--text-secondary);
+    }
+
+    .distribution-pill.buy { background: rgba(74, 124, 89, 0.12); color: var(--success); }
+    .distribution-pill.hold { background: #eee; color: var(--text-secondary); }
+    .distribution-pill.sell { background: rgba(181, 74, 74, 0.12); color: var(--error); }
+
     .overflow-note {
       margin-top: 0.75rem;
       color: var(--text-secondary);
@@ -257,7 +264,7 @@
     }
 
     @media (max-width: 900px) {
-      .summary-metrics,
+      .hero-metric-grid,
       .indicators-grid,
       .orders-summary,
       .orders-grid,
@@ -278,15 +285,22 @@
         min-height: 100vh;
       }
 
-      .summary-metrics,
+      .detail-hero { padding: 1.25rem 1rem; }
+
+      .hero-metric-grid,
       .indicators-grid,
       .orders-summary,
       .orders-grid,
       .opinions-summary,
       .journal-grid,
-      .component-row,
-      .hero-context-grid {
+      .component-row {
         grid-template-columns: 1fr;
+      }
+
+      .hero-status-strip {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.5rem;
       }
     }
   </style>
