@@ -21,6 +21,7 @@ from app.middleware.csrf import TemplateFormCSRFMiddleware
 from app.monitoring.sentry import capture_exception, init_sentry
 from app.monitoring.trade_notifier import get_trade_notifier
 from app.routers import (
+    ai_markdown,
     deprecated_pages,
     health,
     kospi200,
@@ -148,6 +149,7 @@ def create_app() -> FastAPI:
     app.include_router(openclaw_callback.router)
     app.include_router(symbol_settings.router)
     app.include_router(portfolio.router)
+    app.include_router(ai_markdown.router)
     app.include_router(deprecated_pages.router)
     app.include_router(trading.router)
     app.include_router(kospi200.router)
