@@ -159,197 +159,81 @@
       border: 1px solid var(--border-light);
       border-radius: 0.85rem;
       background: #fcfbf8;
-      padding: 1rem;
+      padding: 1.25rem;
     }
 
     .section-card h2 {
-      margin: 0 0 0.85rem;
-      font-size: 1.05rem;
-    }
-
-    .components-table {
-      display: grid;
-      gap: 0.6rem;
-    }
-
-    .component-row {
-      display: grid;
-      grid-template-columns: repeat(9, minmax(0, 1fr));
-      gap: 0.55rem;
-      padding: 0.85rem;
-      background: #fff;
-      border: 1px solid var(--border-light);
-      border-radius: 0.7rem;
-      font-size: 0.85rem;
-    }
-
-    .component-row div {
-      display: grid;
-      gap: 0.2rem;
-    }
-
-    .label {
-      color: var(--text-secondary);
-      font-size: 0.74rem;
-    }
-
-    .journal-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 0.75rem;
-    }
-
-    .journal-block {
-      background: #fff;
-      border: 1px solid var(--border-light);
-      border-radius: 0.7rem;
-      padding: 0.85rem;
-    }
-
-    .snapshot-box {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      white-space: pre-wrap;
-      word-break: break-word;
-      background: #fff;
-      border: 1px solid var(--border-light);
-      border-radius: 0.7rem;
-      padding: 0.85rem;
-      font-size: 0.8rem;
-    }
-
-    .empty-note {
-      color: var(--text-secondary);
-      background: #fff;
-      border: 1px dashed var(--border-light);
-      border-radius: 0.7rem;
-      padding: 1rem;
-      text-align: center;
-    }
-
-    .lazy-content {
-      min-height: 100px;
-    }
-
-    .indicators-grid,
-    .opinions-summary {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 0.75rem;
-    }
-
-    .indicator-card,
-    .opinion-metric,
-    .news-item,
-    .opinion-item {
-      background: #fff;
-      border: 1px solid var(--border-light);
-      border-radius: 0.7rem;
-      padding: 0.85rem;
-    }
-
-    .indicator-card strong,
-    .opinion-metric strong {
-      display: block;
-      margin-top: 0.25rem;
-      font-size: 1rem;
-    }
-
-    .indicator-card small,
-    .news-item .meta,
-    .opinion-item .meta {
-      color: var(--text-secondary);
-    }
-
-    .news-list,
-    .opinions-list {
-      display: grid;
-      gap: 0.75rem;
-      margin-top: 0.75rem;
-    }
-
-    .orders-summary {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 0.75rem;
-      margin-bottom: 0.75rem;
-    }
-
-    .orders-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 0.75rem;
-    }
-
-    .orders-list {
-      display: grid;
-      gap: 0.75rem;
-    }
-
-    .order-item,
-    .orders-summary-card {
-      background: #fff;
-      border: 1px solid var(--border-light);
-      border-radius: 0.7rem;
-      padding: 0.85rem;
-    }
-
-    .order-head,
-    .order-meta {
+      margin: 0 0 1rem;
+      font-size: 1.15rem;
+      font-weight: 700;
       display: flex;
-      flex-wrap: wrap;
-      gap: 0.4rem;
       align-items: center;
-      justify-content: space-between;
+      gap: 0.5rem;
+      color: var(--text-primary);
     }
 
-    .order-meta {
-      margin-top: 0.5rem;
-      color: var(--text-secondary);
-      font-size: 0.84rem;
+    .section-card h2 i {
+      color: var(--accent);
+      font-size: 1.2rem;
     }
 
-    .side-badge,
+    .news-item, .opinion-item, .order-item {
+      background: #fff;
+      border: 1px solid var(--border-light);
+      border-radius: 0.75rem;
+      padding: 1rem;
+      transition: transform 0.1s ease, border-color 0.1s ease;
+    }
+
+    .news-item:hover, .opinion-item:hover {
+      border-color: var(--accent);
+      transform: translateY(-1px);
+    }
+
     .status-badge {
       display: inline-flex;
       align-items: center;
       border-radius: 999px;
-      padding: 0.15rem 0.5rem;
+      padding: 0.15rem 0.6rem;
       font-size: 0.75rem;
-      font-weight: 600;
+      font-weight: 700;
+      text-transform: uppercase;
     }
 
-    .side-badge.buy {
-      background: rgba(74, 124, 89, 0.14);
-      color: var(--success);
-    }
-
-    .side-badge.sell {
-      background: rgba(181, 74, 74, 0.14);
-      color: var(--error);
-    }
-
-    .status-badge.pending {
-      background: rgba(192, 90, 60, 0.14);
-      color: var(--accent);
-    }
+    .status-badge.filled { background: rgba(74, 124, 89, 0.15); color: var(--success); }
+    .status-badge.pending { background: rgba(192, 90, 60, 0.15); color: var(--accent); }
+    .status-badge.partial { background: rgba(192, 90, 60, 0.1); color: var(--accent); }
 
     .news-item a {
-      color: var(--accent);
+      color: var(--text-primary);
       text-decoration: none;
-      font-weight: 600;
+      font-weight: 700;
+      font-size: 1.05rem;
+      line-height: 1.4;
+      display: block;
+      margin-bottom: 0.35rem;
     }
 
-    .news-topline {
-      display: flex;
-      justify-content: space-between;
-      gap: 0.5rem;
-      align-items: flex-start;
+    .news-item a:hover {
+      color: var(--accent);
     }
 
-    .sentiment-badge,
-    .distribution-pill {
-      display: inline-flex;
-      align-items: center;
+    .news-item .meta, .opinion-item .meta {
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+      margin-bottom: 0.5rem;
+    }
+
+    .sentiment-badge {
+      font-size: 0.7rem;
+      font-weight: 700;
+      padding: 0.1rem 0.4rem;
+      border-radius: 4px;
+      background: #eee;
+    }
+
+    .sentiment-badge.positive { background: #e8f5e9; color: var(--success); }
+    .sentiment-badge.negative { background: #ffebee; color: var(--error); }
       border-radius: 999px;
       padding: 0.15rem 0.5rem;
       font-size: 0.75rem;
@@ -503,23 +387,23 @@
       </section>
 
       <section id="position-indicators-section" class="section-card" data-endpoint="/portfolio/api/positions/{{ page_payload.summary.market_type|lower }}/{{ page_payload.summary.symbol }}/indicators">
-        <h2>기술적 지표</h2>
-        <div class="lazy-content">불러오는 중...</div>
+        <h2><i class="bi bi-graph-up"></i> 기술적 지표</h2>
+        <div class="lazy-content" id="indicators-lazy-content">불러오는 중...</div>
       </section>
 
       <section id="position-orders-section" class="section-card" data-endpoint="/portfolio/api/positions/{{ page_payload.summary.market_type|lower }}/{{ page_payload.summary.symbol }}/orders">
-        <h2>주문/체결 내역</h2>
-        <div class="lazy-content">불러오는 중...</div>
+        <h2><i class="bi bi-journal-text"></i> 주문/체결 내역</h2>
+        <div class="lazy-content" id="orders-lazy-content">불러오는 중...</div>
       </section>
 
       <section id="position-news-section" class="section-card" data-endpoint="/portfolio/api/positions/{{ page_payload.summary.market_type|lower }}/{{ page_payload.summary.symbol }}/news">
-        <h2>최근 뉴스</h2>
-        <div class="lazy-content">불러오는 중...</div>
+        <h2><i class="bi bi-newspaper"></i> 최근 뉴스</h2>
+        <div class="lazy-content" id="news-lazy-content">불러오는 중...</div>
       </section>
 
       <section id="position-opinions-section" class="section-card" data-endpoint="/portfolio/api/positions/{{ page_payload.summary.market_type|lower }}/{{ page_payload.summary.symbol }}/opinions">
-        <h2>애널리스트 의견</h2>
-        <div class="lazy-content">불러오는 중...</div>
+        <h2><i class="bi bi-chat-dots"></i> 애널리스트 의견</h2>
+        <div class="lazy-content" id="opinions-lazy-content">불러오는 중...</div>
       </section>
     </div>
   </main>
@@ -586,27 +470,24 @@
         return '<div class="empty-note">최근 뉴스가 없습니다</div>';
       }
 
-      return `<div class="news-list">${payload.news.map((item) => `
-        <article class="news-item">
-          <div class="news-topline">
-            <a href="${sanitizeUrl(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}</a>
-            <span class="sentiment-badge">${escapeHtml(item.sentiment || "-")}</span>
-          </div>
-          <div class="meta">${escapeHtml(item.source || "-")} · ${escapeHtml(item.published_at || "-")}</div>
-          <div>${escapeHtml(item.summary || item.excerpt || "-")}</div>
-        </article>
-      `).join("")}</div>`;
-    }
-
-    function formatOrderSide(side) {
-      if (side === "buy") return "매수";
-      if (side === "sell") return "매도";
-      return side || "-";
-    }
-
-    function formatOrderNumber(value) {
-      if (value === null || value === undefined) return "-";
-      return escapeHtml(String(value));
+      return `<div class="news-list">${payload.news.map((item) => {
+        let sentClass = "neutral";
+        if (item.sentiment === "positive") sentClass = "positive";
+        if (item.sentiment === "negative") sentClass = "negative";
+        
+        return `
+          <article class="news-item">
+            <div class="news-topline">
+              <a href="${sanitizeUrl(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}</a>
+              <span class="sentiment-badge ${sentClass}">${escapeHtml(item.sentiment || "-")}</span>
+            </div>
+            <div class="meta">
+              <strong>${escapeHtml(item.source || "-")}</strong> · ${escapeHtml(item.published_at || "-")}
+            </div>
+            <div class="excerpt">${escapeHtml(item.summary || item.excerpt || "-")}</div>
+          </article>
+        `;
+      }).join("")}</div>`;
     }
 
     function renderOrders(payload) {
@@ -618,18 +499,15 @@
         return '<div class="empty-note">최근 주문/체결 내역이 없습니다</div>';
       }
 
-      const lastFill = summary.last_fill;
       const summaryHtml = `
         <div class="orders-summary">
           <div class="orders-summary-card">
             <span class="label">마지막 체결</span>
-            <strong>${lastFill ? formatOrderSide(lastFill.side) : "-"}</strong>
-            <div class="meta">${lastFill ? escapeHtml(lastFill.filled_at || lastFill.ordered_at || "-") : "-"}</div>
+            <strong>${escapeHtml(summary.last_fill_summary || "-")}</strong>
           </div>
           <div class="orders-summary-card">
-            <span class="label">현재 미체결 주문 수</span>
-            <strong>${escapeHtml(String(summary.pending_count ?? 0))}</strong>
-            <div class="meta">최근 체결 ${escapeHtml(String(summary.fill_count ?? 0))}건</div>
+            <span class="label">미체결 주문</span>
+            <strong>${escapeHtml(String(summary.pending_count ?? 0))}건</strong>
           </div>
         </div>
       `;
@@ -639,13 +517,12 @@
         : `<div class="orders-list">${recentFills.map((item) => `
             <article class="order-item">
               <div class="order-head">
-                <strong>최근 체결</strong>
-                <span class="side-badge ${escapeHtml(item.side || "")}">${escapeHtml(formatOrderSide(item.side))}</span>
+                <span class="status-badge ${escapeHtml(item.status_tone || "neutral")}">${escapeHtml(item.status_label || item.status)}</span>
+                <span class="side-badge ${escapeHtml(item.side || "")}">${escapeHtml(item.side_label || item.side)}</span>
               </div>
               <div class="order-meta">
                 <span>${escapeHtml(item.filled_at || item.ordered_at || "-")}</span>
-                <span>수량 ${formatOrderNumber(item.quantity)}</span>
-                <span>금액 ${formatOrderNumber(item.amount)}</span>
+                <span>${formatOrderNumber(item.quantity)} @ ${formatOrderNumber(item.price)}</span>
               </div>
             </article>
           `).join("")}</div>`;
@@ -655,16 +532,12 @@
         : `<div class="orders-list">${pendingOrders.map((item) => `
             <article class="order-item">
               <div class="order-head">
-                <strong>미체결 주문</strong>
-                <div>
-                  <span class="side-badge ${escapeHtml(item.side || "")}">${escapeHtml(formatOrderSide(item.side))}</span>
-                  <span class="status-badge pending">대기</span>
-                </div>
+                <span class="status-badge ${escapeHtml(item.status_tone || "pending")}">${escapeHtml(item.status_label || item.status)}</span>
+                <span class="side-badge ${escapeHtml(item.side || "")}">${escapeHtml(item.side_label || item.side)}</span>
               </div>
               <div class="order-meta">
                 <span>${escapeHtml(item.ordered_at || "-")}</span>
-                <span>수량 ${formatOrderNumber(item.quantity)}</span>
-                <span>잔량 ${formatOrderNumber(item.remaining_quantity)}</span>
+                <span>${formatOrderNumber(item.quantity)} @ ${formatOrderNumber(item.price)}</span>
               </div>
             </article>
           `).join("")}</div>`;
@@ -677,47 +550,46 @@
         return `<div class="empty-note">${escapeHtml(payload.message || "애널리스트 의견이 제공되지 않는 시장입니다.")}</div>`;
       }
 
-      const avg_target_price = payload.avg_target_price;
-      const buy_count = payload.buy_count;
-      const hold_count = payload.hold_count;
-      const sell_count = payload.sell_count;
       const summaryCards = payload.summary_cards || [];
       const distribution = payload.distribution || {};
       const topOpinions = payload.top_opinions || [];
       const overflowCount = payload.overflow_count || 0;
 
-      const summaryHtml = summaryCards.length === 0
-        ? `<div class="opinions-summary">
-            <div class="opinion-metric"><span class="label">avg_target_price</span><strong>${avg_target_price !== null && avg_target_price !== undefined ? escapeHtml(String(avg_target_price)) : "-"}</strong></div>
-            <div class="opinion-metric"><span class="label">buy_count</span><strong>${escapeHtml(String(buy_count ?? 0))}</strong></div>
-            <div class="opinion-metric"><span class="label">hold_count</span><strong>${escapeHtml(String(hold_count ?? 0))}</strong></div>
-            <div class="opinion-metric"><span class="label">sell_count</span><strong>${escapeHtml(String(sell_count ?? 0))}</strong></div>
-          </div>`
-        : `<div class="opinions-summary">${summaryCards.map((card) => `
-            <div class="opinion-metric">
-              <span class="label">${escapeHtml(card.label)}</span>
-              <strong>${escapeHtml(card.value)}</strong>
-            </div>
-          `).join("")}</div>`;
+      const summaryHtml = `<div class="opinions-summary">${summaryCards.map((card) => `
+        <div class="opinion-metric">
+          <span class="label">${escapeHtml(card.label)}</span>
+          <strong>${escapeHtml(card.value)}</strong>
+        </div>
+      `).join("")}</div>`;
 
       const distributionHtml = `<div class="opinion-distribution">
-        <span class="distribution-pill">Buy ${escapeHtml(String(distribution.buy ?? 0))}</span>
-        <span class="distribution-pill">Hold ${escapeHtml(String(distribution.hold ?? 0))}</span>
-        <span class="distribution-pill">Sell ${escapeHtml(String(distribution.sell ?? 0))}</span>
+        <span class="distribution-pill buy">BUY ${escapeHtml(String(distribution.buy ?? 0))}</span>
+        <span class="distribution-pill hold">HOLD ${escapeHtml(String(distribution.hold ?? 0))}</span>
+        <span class="distribution-pill sell">SELL ${escapeHtml(String(distribution.sell ?? 0))}</span>
       </div>`;
 
       if (topOpinions.length === 0) {
         return `${summaryHtml}<div class="empty-note mt-3">애널리스트 의견이 없습니다</div>`;
       }
 
-      return `${summaryHtml}${distributionHtml}<div class="opinions-list">${topOpinions.map((item) => `
-        <article class="opinion-item">
-          <strong>${escapeHtml(item.firm || "-")}</strong>
-          <div class="meta">${escapeHtml(item.rating || "-")}</div>
-          <div class="meta">${item.target_price !== null && item.target_price !== undefined ? `target ${escapeHtml(String(item.target_price))}` : "-"}</div>
-          <div class="meta">${escapeHtml(item.date || "-")}</div>
-        </article>
-      `).join("")}</div>${overflowCount > 0 ? `<div class="overflow-note">+${escapeHtml(String(overflowCount))} more</div>` : ""}`;
+      return `
+        ${summaryHtml}
+        ${distributionHtml}
+        <div class="opinions-list">
+          ${topOpinions.map((item) => `
+            <article class="opinion-item">
+              <div class="news-topline">
+                <strong>${escapeHtml(item.firm || "-")}</strong>
+                <span class="sentiment-badge ${toneClass(item.rating?.toLowerCase() === 'buy' ? 'bullish' : (item.rating?.toLowerCase() === 'sell' ? 'bearish' : 'neutral'))}">
+                  ${escapeHtml(item.rating || "-")}
+                </span>
+              </div>
+              <div class="meta">${escapeHtml(item.date || "-")} · Target ${escapeHtml(String(item.target_price ?? "-"))}</div>
+            </article>
+          `).join("")}
+        </div>
+        ${overflowCount > 0 ? `<div class="overflow-note">+${escapeHtml(String(overflowCount))} more opinions hidden</div>` : ""}
+      `;
     }
 
     document.addEventListener("DOMContentLoaded", () => {

@@ -403,3 +403,16 @@ def test_position_detail_page_renders_compact_action_strip() -> None:
     assert "전체 비중 9.8%" in body
     assert "시장 내 24.5%" in body
     assert "status-badge" in body
+
+
+def test_position_detail_page_renders_rich_lazy_placeholders() -> None:
+    client, detail = _create_client()
+    response = client.get("/portfolio/positions/us/NVDA")
+    body = response.text
+    # These sections should have the new container classes and icons
+    assert 'id="orders-lazy-content"' in body
+    assert 'id="news-lazy-content"' in body
+    assert 'id="opinions-lazy-content"' in body
+    assert "bi-journal-text" in body
+    assert "bi-newspaper" in body
+    assert "bi-chat-dots" in body
