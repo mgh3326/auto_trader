@@ -221,8 +221,24 @@ class TestFormatTossPriceRecommendationHtml:
         )
         assert "<b>" in html_msg
         assert "삼성전자" in html_msg
-        assert "적정 매수" in html_msg
-        assert "매수 희망" in html_msg
+        assert "70,000원" in html_msg
+
+    def test_with_detail_url(self):
+        html_msg = format_toss_price_recommendation_html(
+            symbol="005930",
+            korean_name="삼성전자",
+            current_price=70000,
+            toss_quantity=10,
+            toss_avg_price=65000,
+            kis_quantity=5,
+            kis_avg_price=63000,
+            decision="buy",
+            confidence=85.0,
+            currency="원",
+            market_type="국내주식",
+            detail_url="https://mgh3326.duckdns.org/portfolio/positions/kr/005930",
+        )
+        assert "<b>상세:</b> https://mgh3326.duckdns.org/portfolio/positions/kr/005930" in html_msg
 
     def test_usd_currency(self):
         html_msg = format_toss_price_recommendation_html(

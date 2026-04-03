@@ -267,6 +267,7 @@ class TradeNotifier:
         recommended_quantity: int,
         currency: str = "원",
         market_type: str = "국내주식",
+        detail_url: str | None = None,
     ) -> DiscordEmbed:
         return fmt_discord.format_toss_buy_recommendation(
             symbol=symbol,
@@ -280,6 +281,7 @@ class TradeNotifier:
             recommended_quantity=recommended_quantity,
             currency=currency,
             market_type=market_type,
+            detail_url=detail_url,
         )
 
     def _format_toss_sell_recommendation(
@@ -297,6 +299,7 @@ class TradeNotifier:
         profit_percent: float,
         currency: str = "원",
         market_type: str = "국내주식",
+        detail_url: str | None = None,
     ) -> DiscordEmbed:
         return fmt_discord.format_toss_sell_recommendation(
             symbol=symbol,
@@ -312,6 +315,7 @@ class TradeNotifier:
             profit_percent=profit_percent,
             currency=currency,
             market_type=market_type,
+            detail_url=detail_url,
         )
 
     def _format_toss_price_recommendation_discord_embed(
@@ -334,6 +338,7 @@ class TradeNotifier:
         sell_target_max: float | None = None,
         currency: str = "원",
         market_type: str = "국내주식",
+        detail_url: str | None = None,
     ) -> DiscordEmbed:
         return fmt_discord.format_toss_price_recommendation(
             symbol=symbol,
@@ -354,6 +359,7 @@ class TradeNotifier:
             sell_target_max=sell_target_max,
             currency=currency,
             market_type=market_type,
+            detail_url=detail_url,
         )
 
     def _format_buy_notification_telegram(
@@ -484,6 +490,7 @@ class TradeNotifier:
         sell_target_max: float | None = None,
         currency: str = "원",
         market_type: str = "국내주식",
+        detail_url: str | None = None,
     ) -> str:
         return fmt_telegram.format_toss_price_recommendation_html(
             symbol=symbol,
@@ -504,6 +511,7 @@ class TradeNotifier:
             sell_target_max=sell_target_max,
             currency=currency,
             market_type=market_type,
+            detail_url=detail_url,
         )
 
     # ── transport wrappers (delegate to transports module) ──
@@ -836,6 +844,7 @@ class TradeNotifier:
         recommended_quantity: int,
         currency: str = "원",
         market_type: str = "국내주식",
+        detail_url: str | None = None,
     ) -> bool:
         """Send Toss manual buy recommendation notification."""
         if not self._enabled:
@@ -860,6 +869,7 @@ class TradeNotifier:
                 recommended_quantity=recommended_quantity,
                 currency=currency,
                 market_type=market_type,
+                detail_url=detail_url,
             )
             webhook_url = self._get_webhook_for_market_type(market_type)
             if not webhook_url:
@@ -884,6 +894,7 @@ class TradeNotifier:
         profit_percent: float,
         currency: str = "원",
         market_type: str = "국내주식",
+        detail_url: str | None = None,
     ) -> bool:
         """Send Toss manual sell recommendation notification."""
         if not self._enabled:
@@ -910,6 +921,7 @@ class TradeNotifier:
                 profit_percent=profit_percent,
                 currency=currency,
                 market_type=market_type,
+                detail_url=detail_url,
             )
             webhook_url = self._get_webhook_for_market_type(market_type)
             if not webhook_url:
@@ -939,6 +951,7 @@ class TradeNotifier:
         sell_target_max: float | None = None,
         currency: str = "원",
         market_type: str = "국내주식",
+        detail_url: str | None = None,
     ) -> bool:
         """Send Toss price recommendation notification with AI analysis."""
         if not self._enabled:
@@ -968,6 +981,7 @@ class TradeNotifier:
                 sell_target_max=sell_target_max,
                 currency=currency,
                 market_type=market_type,
+                detail_url=detail_url,
             )
             webhook_url = self._get_webhook_for_market_type(market_type)
             if not webhook_url:

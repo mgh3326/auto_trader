@@ -124,6 +124,29 @@ class TestTradeNotifierFormatting:
         assert fields["추천 수량"] == "5주"
         assert "한투 보유" not in fields  # KIS should not appear
 
+    def test_format_toss_buy_recommendation_with_detail_url(self):
+        """Test buy recommendation format with detail URL."""
+        notifier = TradeNotifier()
+        detail_url = "https://mgh3326.duckdns.org/portfolio/positions/kr/005930"
+        embed = notifier._format_toss_buy_recommendation(
+            symbol="005930",
+            korean_name="삼성전자",
+            current_price=70000,
+            toss_quantity=10,
+            toss_avg_price=65000,
+            kis_quantity=None,
+            kis_avg_price=None,
+            recommended_price=68000,
+            recommended_quantity=5,
+            currency="원",
+            market_type="국내주식",
+            detail_url=detail_url,
+        )
+
+        # Verify fields
+        fields = {field["name"]: field["value"] for field in embed["fields"]}
+        assert fields["상세"] == detail_url
+
     def test_format_toss_buy_recommendation_with_kis(self):
         """Test buy recommendation format with both KIS and Toss holdings."""
         notifier = TradeNotifier()
@@ -580,6 +603,11 @@ class TestTossNotificationService:
 
         assert result is True
         mock_trade_notifier.notify_toss_buy_recommendation.assert_called_once()
+        kwargs = mock_trade_notifier.notify_toss_buy_recommendation.call_args.kwargs
+        assert (
+            kwargs["detail_url"]
+            == "https://mgh3326.duckdns.org/portfolio/positions/kr/005930"
+        )
 
     @pytest.mark.asyncio
     async def test_process_analysis_result_sell_with_toss(

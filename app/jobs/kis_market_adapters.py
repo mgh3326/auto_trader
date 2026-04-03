@@ -250,6 +250,8 @@ class DomesticAutomationAdapter:
                             current_price=refreshed_current_price,
                             toss_quantity=refreshed_qty,
                             toss_avg_price=avg_price,
+                            market_type="kr",
+                            currency="원",
                         )
                         stock_steps.append(
                             {
@@ -641,6 +643,8 @@ class OverseasAutomationAdapter:
                             current_price=current_price,
                             toss_quantity=qty,
                             toss_avg_price=avg_price,
+                            market_type="us",
+                            currency="$",
                         )
                         stock_steps.append(
                             {

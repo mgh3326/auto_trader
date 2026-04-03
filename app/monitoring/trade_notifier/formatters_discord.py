@@ -247,6 +247,7 @@ def format_toss_buy_recommendation(
     recommended_quantity: int,
     currency: str = "원",
     market_type: str = "국내주식",
+    detail_url: str | None = None,
 ) -> DiscordEmbed:
     timestamp = format_datetime()
     is_usd = currency == "$"
@@ -289,6 +290,9 @@ def format_toss_buy_recommendation(
         ]
     )
 
+    if detail_url:
+        fields.append({"name": "상세", "value": detail_url, "inline": False})
+
     return {
         "title": "📈 [토스 수동매수]",
         "description": f"🕒 {timestamp}",
@@ -311,6 +315,7 @@ def format_toss_sell_recommendation(
     profit_percent: float,
     currency: str = "원",
     market_type: str = "국내주식",
+    detail_url: str | None = None,
 ) -> DiscordEmbed:
     timestamp = format_datetime()
     is_usd = currency == "$"
@@ -360,6 +365,9 @@ def format_toss_sell_recommendation(
         ]
     )
 
+    if detail_url:
+        fields.append({"name": "상세", "value": detail_url, "inline": False})
+
     return {
         "title": "📉 [토스 수동매도]",
         "description": f"🕒 {timestamp}",
@@ -387,6 +395,7 @@ def format_toss_price_recommendation(
     sell_target_max: float | None = None,
     currency: str = "원",
     market_type: str = "국내주식",
+    detail_url: str | None = None,
 ) -> DiscordEmbed:
     timestamp = format_datetime()
     is_usd = currency == "$"
@@ -470,6 +479,9 @@ def format_toss_price_recommendation(
                 "inline": False,
             }
         )
+
+    if detail_url:
+        fields.append({"name": "상세", "value": detail_url, "inline": False})
 
     return {
         "title": "📊 [토스] AI 분석",

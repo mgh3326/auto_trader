@@ -196,6 +196,26 @@ class TestFormatTossBuyRecommendation:
         assert fields["종목"] == "삼성전자 (005930)"
         assert "한투 보유" not in fields
 
+    def test_with_detail_url(self):
+        embed = format_toss_buy_recommendation(
+            symbol="005930",
+            korean_name="삼성전자",
+            current_price=70000,
+            toss_quantity=10,
+            toss_avg_price=65000,
+            kis_quantity=None,
+            kis_avg_price=None,
+            recommended_price=68000,
+            recommended_quantity=5,
+            currency="원",
+            market_type="국내주식",
+            detail_url="https://mgh3326.duckdns.org/portfolio/positions/kr/005930",
+        )
+        fields = {f["name"]: f["value"] for f in embed["fields"]}
+        assert (
+            fields["상세"] == "https://mgh3326.duckdns.org/portfolio/positions/kr/005930"
+        )
+
     def test_with_kis(self):
         embed = format_toss_buy_recommendation(
             symbol="005930",

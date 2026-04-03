@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.manual_holdings import MarketType
 from app.monitoring.trade_notifier import get_trade_notifier
+from app.core.portfolio_links import build_position_detail_url
 from app.services.merged_portfolio_service import (
     MergedPortfolioService,
     ReferencePrices,
@@ -36,6 +37,7 @@ class TossNotificationData:
     profit_percent: float = 0.0
     currency: str = "원"
     market_type: str = "국내주식"
+    detail_url: str | None = None
 
 
 class TossNotificationService:
@@ -110,6 +112,7 @@ class TossNotificationService:
                 recommended_quantity=data.recommended_quantity,
                 currency=data.currency,
                 market_type=data.market_type,
+                detail_url=data.detail_url,
             )
         except Exception as e:
             logger.error(f"Failed to send Toss buy notification: {e}")
@@ -149,6 +152,7 @@ class TossNotificationService:
                 profit_percent=data.profit_percent,
                 currency=data.currency,
                 market_type=data.market_type,
+                detail_url=data.detail_url,
             )
         except Exception as e:
             logger.error(f"Failed to send Toss sell notification: {e}")
@@ -200,6 +204,8 @@ class TossNotificationService:
         currency = "$" if market_type == MarketType.US else "원"
         market_type_str = "해외주식" if market_type == MarketType.US else "국내주식"
 
+        detail_url = build_position_detail_url(ticker, market_type.value)
+
         data = TossNotificationData(
             ticker=ticker,
             name=name,
@@ -211,6 +217,7 @@ class TossNotificationService:
             recommended_quantity=recommended_quantity,
             currency=currency,
             market_type=market_type_str,
+            detail_url=detail_url,
         )
 
         if decision.lower() == "buy" and recommended_buy_price:

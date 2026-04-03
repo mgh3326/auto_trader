@@ -1712,6 +1712,44 @@ async def test_notify_toss_buy_recommendation_requires_market_webhook(trade_noti
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_notify_toss_buy_recommendation_includes_detail_url(trade_notifier):
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=True,
+        discord_webhook_kr="https://discord.com/api/webhooks/kr",
+    )
+
+    with patch.object(
+        trade_notifier,
+        "_send_to_discord_embed_single",
+        new_callable=AsyncMock,
+        return_value=True,
+    ) as mock_send:
+        detail_url = "https://mgh3326.duckdns.org/portfolio/positions/kr/005930"
+        result = await trade_notifier.notify_toss_buy_recommendation(
+            symbol="005930",
+            korean_name="삼성전자",
+            current_price=70000,
+            toss_quantity=10,
+            toss_avg_price=65000,
+            kis_quantity=3,
+            kis_avg_price=64000,
+            recommended_price=68000,
+            recommended_quantity=5,
+            currency="원",
+            market_type="국내주식",
+            detail_url=detail_url,
+        )
+
+        assert result is True
+        mock_send.assert_called_once()
+        embed = mock_send.call_args[0][0]
+        fields = {f["name"]: f["value"] for f in embed["fields"]}
+        assert fields["상세"] == detail_url
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_notify_toss_sell_recommendation_requires_market_webhook(trade_notifier):
     trade_notifier.configure(
         bot_token="test_token",
