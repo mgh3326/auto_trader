@@ -470,3 +470,17 @@ class TestFormatFillMessage:
 
         assert "체결가: $47.90" in message
         assert "금액: $1,101.70" in message
+
+    def test_format_fill_message_appends_position_detail_url(self) -> None:
+        order = FillOrder(
+            symbol="AAPL",
+            side="bid",
+            filled_price=150.0,
+            filled_qty=10,
+            filled_amount=1500.0,
+            filled_at="2026-04-03T10:00:00",
+            account="kis",
+            market_type="us",
+        )
+        message = format_fill_message(order)
+        assert "상세: https://mgh3326.duckdns.org/portfolio/positions/us/AAPL" in message

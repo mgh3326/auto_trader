@@ -22,6 +22,8 @@ from app.services.fill_notification import (
     format_fill_message,
 )
 
+from app.core.portfolio_links import build_position_detail_url
+
 logger = logging.getLogger(__name__)
 
 OPENCLAW_RETRY_STOP = stop_after_attempt(4)
@@ -102,6 +104,7 @@ def _build_n8n_fill_payload(
         "order_price": order.order_price,
         "fill_status": order.fill_status or "filled",
         "currency": order.currency or ("KRW" if order.market_type == "kr" else "USD"),
+        "detail_url": build_position_detail_url(order.symbol, order.market_type),
         "correlation_id": correlation_id,
     }
 

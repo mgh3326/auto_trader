@@ -9,6 +9,8 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
+from app.core.portfolio_links import build_position_detail_url
+
 logger = logging.getLogger(__name__)
 
 _US_SYMBOL_RESERVED_TOKENS = {
@@ -449,4 +451,9 @@ def format_fill_message(order: FillOrderLike) -> str:
     )
     if normalized.order_id:
         message += f"\n주문: {normalized.order_id[:8]}..."
+
+    detail_url = build_position_detail_url(normalized.symbol, normalized.market_type)
+    if detail_url:
+        message += f"\n상세: {detail_url}"
+
     return message

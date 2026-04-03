@@ -17,6 +17,7 @@ from app.services.fill_notification import FillOrder, format_fill_message
 from app.services.openclaw_client import (
     FillNotificationDeliveryResult,
     OpenClawClient,
+    _build_n8n_fill_payload,
     _build_openclaw_message,
 )
 
@@ -60,6 +61,25 @@ def test_build_openclaw_message_can_omit_model_name() -> None:
     schema_json = message.split("RESPONSE_JSON_SCHEMA (example):\n", 1)[1].strip()
     schema = json.loads(schema_json)
     assert "model_name" not in schema
+
+
+def test_build_n8n_fill_payload_includes_detail_url() -> None:
+    order = FillOrder(
+        symbol="005930",
+        side="bid",
+        filled_price=70000.0,
+        filled_qty=10,
+        filled_amount=700000.0,
+        filled_at="2026-04-03T10:00:00",
+        account="kis",
+        market_type="kr",
+    )
+    payload = _build_n8n_fill_payload(order, correlation_id="corr-123")
+    assert (
+        payload["detail_url"]
+        == "https://mgh3326.duckdns.org/portfolio/positions/kr/005930"
+    )
+    assert payload["correlation_id"] == "corr-123"
 
 
 @pytest.fixture
