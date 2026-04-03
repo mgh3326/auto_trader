@@ -69,6 +69,26 @@
       padding: 1.4rem 1.6rem;
     }
 
+    .back-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      color: #f3ede5;
+      text-decoration: none;
+      opacity: 0.85;
+      margin-bottom: 1rem;
+    }
+
+    .back-link:hover {
+      opacity: 1;
+    }
+
+    .eyebrow {
+      color: #d9cec1;
+      font-size: 0.9rem;
+      margin-bottom: 0.5rem;
+    }
+
     .hero-summary h1 {
       margin: 0 0 1.25rem;
       font-size: 1.75rem;
@@ -141,6 +161,23 @@
       font-weight: 500;
     }
 
+    .positive,
+    .success {
+      color: #8bd2a0 !important;
+    }
+
+    .negative {
+      color: #ffb0b0 !important;
+    }
+
+    .warning {
+      color: #ffb0b0 !important;
+    }
+
+    .neutral {
+      color: #fff !important;
+    }
+
     @media (max-width: 760px) {
       .detail-shell { margin: 0; border-radius: 0; }
       .detail-hero { padding: 1rem 0.95rem; }
@@ -175,6 +212,168 @@
     .section-card h2 i {
       color: var(--accent);
       font-size: 1.2rem;
+    }
+
+    .components-table {
+      display: grid;
+      gap: 0.6rem;
+    }
+
+    .component-row {
+      display: grid;
+      grid-template-columns: repeat(9, minmax(0, 1fr));
+      gap: 0.55rem;
+      padding: 0.85rem;
+      background: #fff;
+      border: 1px solid var(--border-light);
+      border-radius: 0.7rem;
+      font-size: 0.85rem;
+    }
+
+    .component-row div {
+      display: grid;
+      gap: 0.2rem;
+    }
+
+    .label {
+      color: var(--text-secondary);
+      font-size: 0.74rem;
+    }
+
+    .journal-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.75rem;
+    }
+
+    .journal-block {
+      background: #fff;
+      border: 1px solid var(--border-light);
+      border-radius: 0.7rem;
+      padding: 0.85rem;
+    }
+
+    .snapshot-box {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #fff;
+      border: 1px solid var(--border-light);
+      border-radius: 0.7rem;
+      padding: 0.85rem;
+      font-size: 0.8rem;
+    }
+
+    .empty-note {
+      color: var(--text-secondary);
+      background: #fff;
+      border: 1px dashed var(--border-light);
+      border-radius: 0.7rem;
+      padding: 1rem;
+      text-align: center;
+    }
+
+    .lazy-content {
+      min-height: 100px;
+    }
+
+    .indicators-grid,
+    .opinions-summary {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.75rem;
+    }
+
+    .indicator-card,
+    .opinion-metric {
+      background: #fff;
+      border: 1px solid var(--border-light);
+      border-radius: 0.7rem;
+      padding: 0.85rem;
+    }
+
+    .indicator-card strong,
+    .opinion-metric strong {
+      display: block;
+      margin-top: 0.25rem;
+      font-size: 1rem;
+    }
+
+    .indicator-card small {
+      color: var(--text-secondary);
+    }
+
+    .news-list,
+    .opinions-list {
+      display: grid;
+      gap: 0.75rem;
+      margin-top: 0.75rem;
+    }
+
+    .orders-summary {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.75rem;
+      margin-bottom: 0.75rem;
+    }
+
+    .orders-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.75rem;
+    }
+
+    .orders-list {
+      display: grid;
+      gap: 0.75rem;
+    }
+
+    .orders-summary-card {
+      background: #fff;
+      border: 1px solid var(--border-light);
+      border-radius: 0.7rem;
+      padding: 0.85rem;
+    }
+
+    .order-head,
+    .order-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .order-meta {
+      margin-top: 0.5rem;
+      color: var(--text-secondary);
+      font-size: 0.84rem;
+    }
+
+    .side-badge {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 0.15rem 0.5rem;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+
+    .side-badge.buy {
+      background: rgba(74, 124, 89, 0.14);
+      color: var(--success);
+    }
+
+    .side-badge.sell {
+      background: rgba(181, 74, 74, 0.14);
+      color: var(--error);
+    }
+
+    .news-topline {
+      display: flex;
+      justify-content: space-between;
+      gap: 0.5rem;
+      align-items: flex-start;
     }
 
     .news-item, .opinion-item, .order-item {
@@ -502,6 +701,11 @@
           </article>
         `;
       }).join("")}</div>`;
+    }
+
+    function formatOrderNumber(value) {
+      if (value === null || value === undefined) return "-";
+      return escapeHtml(String(value));
     }
 
     function renderOrders(payload) {

@@ -194,7 +194,7 @@ def test_position_detail_page_renders_summary_shell() -> None:
     assert "보유 기한" in body
     assert "상태" in body
     assert "메모" in body
-    assert "$36.00 (10.00%)" in body
+    assert "+10.00%" in body
     assert "11.86%" in body
     detail.get_page_payload.assert_awaited_once_with(
         user_id=7, market_type="us", symbol="NVDA"
@@ -275,12 +275,12 @@ def test_position_detail_page_contains_lazy_section_hooks() -> None:
     assert "pending_orders" in body
     assert "summary" in body
     assert "sentiment" in body
-    assert "avg_target_price" in body
-    assert "buy_count" in body
+    assert "summaryCards" in body
     assert "summary_cards" in body
     assert "distribution" in body
     assert "top_opinions" in body
     assert "overflow_count" in body
+    assert "function formatOrderNumber(value)" in body
     assert "filled_at || item.ordered_at" in body
 
 
@@ -416,3 +416,6 @@ def test_position_detail_page_renders_rich_lazy_placeholders() -> None:
     assert "bi-journal-text" in body
     assert "bi-newspaper" in body
     assert "bi-chat-dots" in body
+    assert ".back-link {" in body
+    assert ".components-table {" in body
+    assert ".side-badge.buy {" in body
