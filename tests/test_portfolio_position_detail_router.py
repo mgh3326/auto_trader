@@ -61,8 +61,10 @@ class _FakeDetailService:
                 },
                 "action_summary": {
                     "status": "관망",
+                    "status_tone": "neutral",
                     "tags": ["비중 보통", "목표가까지 여유", "RSI 중립"],
-                    "reason": "전체 비중 9.8%, 시장 내 비중 24.5%, 목표가까지 +9.85%, RSI 41.2",
+                    "reason": "전체 비중 9.8% · 시장 내 24.5% · RSI 41.2",
+                    "short_reason": "전체 비중 9.8% · 시장 내 24.5% · RSI 41.2",
                 },
             }
         )
@@ -390,3 +392,14 @@ def test_position_detail_page_renders_sparse_kr_payload_with_placeholders() -> N
     assert response.status_code == 200
     assert "-" in response.text
     assert "카카오" in response.text
+
+
+def test_position_detail_page_renders_compact_action_strip() -> None:
+    client, detail = _create_client()
+    response = client.get("/portfolio/positions/us/NVDA")
+    body = response.text
+    # We expect these IDs and classes in the new hero summary structure
+    assert 'id="position-summary-card"' in body
+    assert "전체 비중 9.8%" in body
+    assert "시장 내 24.5%" in body
+    assert "status-badge" in body

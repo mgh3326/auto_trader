@@ -66,135 +66,87 @@
     .detail-hero {
       background: linear-gradient(120deg, var(--bg-dark) 0%, #2f2b28 50%, #45352e 100%);
       color: #f3ede5;
-      padding: 1.4rem;
-    }
-
-    .back-link {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.4rem;
-      color: #f3ede5;
-      text-decoration: none;
-      opacity: 0.85;
-      margin-bottom: 1rem;
-    }
-
-    .back-link:hover {
-      opacity: 1;
-    }
-
-    .eyebrow {
-      color: #d9cec1;
-      font-size: 0.9rem;
-      margin-bottom: 0.5rem;
+      padding: 1.4rem 1.6rem;
     }
 
     .hero-summary h1 {
-      margin: 0 0 1rem;
-      font-size: 1.9rem;
+      margin: 0 0 1.25rem;
+      font-size: 1.75rem;
+      letter-spacing: -0.02em;
     }
 
-    .summary-metrics {
+    .hero-metric-grid {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 0.8rem;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 0.75rem;
     }
 
-    .summary-metrics article {
-      border: 1px solid rgba(243, 237, 229, 0.16);
-      border-radius: 0.8rem;
-      background: rgba(255, 255, 255, 0.08);
-      padding: 0.9rem;
+    .hero-metric {
+      border: 1px solid rgba(243, 237, 229, 0.12);
+      border-radius: 0.75rem;
+      background: rgba(255, 255, 255, 0.06);
+      padding: 0.85rem;
       display: flex;
       flex-direction: column;
-      gap: 0.35rem;
+      gap: 0.25rem;
     }
 
-    .summary-metrics span {
-      font-size: 0.8rem;
+    .hero-metric-primary {
+      background: rgba(255, 255, 255, 0.1);
+      border-color: rgba(255, 255, 255, 0.2);
+    }
+
+    .hero-metric .label {
+      font-size: 0.75rem;
       color: #d9cec1;
+      font-weight: 500;
     }
 
-    .summary-metrics strong {
+    .hero-metric strong {
       font-size: 1.1rem;
       color: #fff;
+      font-weight: 700;
     }
 
-    .positive {
-      color: #8bd2a0 !important;
-    }
-
-    .negative {
-      color: #ffb0b0 !important;
-    }
-
-    .neutral {
-      color: #fff !important;
-    }
-
-    .target-stop-row {
-      margin-top: 1rem;
+    .hero-status-strip {
+      margin-top: 1.25rem;
       display: flex;
+      align-items: center;
       gap: 0.75rem;
-      flex-wrap: wrap;
+      padding: 0.75rem 1rem;
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 0.75rem;
+      border: 1px solid rgba(243, 237, 229, 0.08);
     }
 
-    .target-stop-row span {
+    .status-badge {
       display: inline-flex;
-      padding: 0.4rem 0.7rem;
+      padding: 0.25rem 0.7rem;
       border-radius: 999px;
       font-size: 0.84rem;
-      font-weight: 600;
-      background: rgba(255, 255, 255, 0.12);
+      font-weight: 700;
+      background: rgba(255, 255, 255, 0.15);
+      white-space: nowrap;
     }
 
-    .hero-context-grid {
-      margin-top: 1rem;
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 0.8rem;
-    }
+    .status-badge.neutral { background: rgba(255, 255, 255, 0.12); color: #fff; }
+    .status-badge.success { background: rgba(74, 124, 89, 0.25); color: #8bd2a0; }
+    .status-badge.warning { background: rgba(192, 90, 60, 0.25); color: #ffb0b0; }
+    .status-badge.danger { background: rgba(181, 74, 74, 0.25); color: #ffb0b0; }
+    .status-badge.accent { background: rgba(192, 90, 60, 0.25); color: #f3ede5; }
 
-    .hero-context-card {
-      border: 1px solid rgba(243, 237, 229, 0.16);
-      border-radius: 0.8rem;
-      background: rgba(255, 255, 255, 0.08);
-      padding: 0.9rem;
-      display: flex;
-      flex-direction: column;
-      gap: 0.35rem;
-    }
-
-    .hero-context-card .label {
-      font-size: 0.8rem;
+    .status-reason {
+      font-size: 0.88rem;
       color: #d9cec1;
+      font-weight: 500;
     }
 
-    .hero-context-card strong {
-      font-size: 1.1rem;
-      color: #fff;
-    }
-
-    .hero-context-card small {
-      font-size: 0.8rem;
-      color: #d9cec1;
-    }
-
-    .action-tags {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.4rem;
-      margin: 0.2rem 0;
-    }
-
-    .action-tag {
-      display: inline-flex;
-      padding: 0.2rem 0.5rem;
-      border-radius: 999px;
-      font-size: 0.75rem;
-      font-weight: 600;
-      background: rgba(255, 255, 255, 0.2);
-      color: #fff;
+    @media (max-width: 760px) {
+      .detail-shell { margin: 0; border-radius: 0; }
+      .detail-hero { padding: 1rem 0.95rem; }
+      .hero-metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .hero-metric strong { font-size: 1rem; line-break: anywhere; }
+      .hero-status-strip { align-items: flex-start; gap: 0.5rem; flex-direction: column; }
     }
 
     .detail-content {
@@ -464,40 +416,36 @@
       <div class="hero-summary" id="position-summary-card">
         <div class="eyebrow">{{ summary.get("market_type", "") }} · {{ summary.get("symbol", "") }}</div>
         <h1>{{ summary.get("name", "") }}</h1>
-        <div class="summary-metrics">
-          <article><span>현재가</span><strong>{{ money_or_dash(summary.get("current_price"), currency_symbol) }}</strong></article>
-          <article><span>총 보유 수량</span><strong>{{ quantity_or_dash(summary.get("quantity")) }}</strong></article>
-          <article><span>합산 평단</span><strong>{{ money_or_dash(summary.get("avg_price"), currency_symbol) }}</strong></article>
+        
+        <div class="hero-metric-grid">
+          <article class="hero-metric hero-metric-primary">
+            <span class="label">현재가</span>
+            <strong>{{ money_or_dash(summary.get("current_price"), currency_symbol) }}</strong>
+          </article>
+          <article class="hero-metric">
+            <span class="label">보유 수량</span>
+            <strong>{{ quantity_or_dash(summary.get("quantity")) }}</strong>
+          </article>
+          <article class="hero-metric">
+            <span class="label">평가 금액</span>
+            <strong>{{ money_or_dash(summary.get("evaluation"), currency_symbol) }}</strong>
+          </article>
           {% set profit_loss = summary.get("profit_loss") %}
-          <article><span>손익 / 수익률</span><strong class="{% if profit_loss is none %}neutral{% elif profit_loss > 0 %}positive{% elif profit_loss < 0 %}negative{% else %}neutral{% endif %}">{{ money_or_dash(profit_loss, currency_symbol) }} ({{ percent_or_dash((summary.get("profit_rate") * 100) if summary.get("profit_rate") is not none else none, signed=False) }}%)</strong></article>
-          <article><span>평가금액</span><strong>{{ money_or_dash(summary.get("evaluation"), currency_symbol) }}</strong></article>
-          <article><span>계좌 수</span><strong>{{ summary.get("account_count", 0) }}</strong></article>
+          <article class="hero-metric">
+            <span class="label">수익률</span>
+            <strong class="{% if profit_loss is none %}neutral{% elif profit_loss > 0 %}success{% elif profit_loss < 0 %}warning{% else %}neutral{% endif %}">
+              {{ percent_or_dash((summary.get("profit_rate") * 100) if summary.get("profit_rate") is not none else none, signed=True) }}%
+            </strong>
+          </article>
         </div>
-        {% if summary.get("target_distance_pct") is not none or summary.get("stop_distance_pct") is not none %}
-        <div class="target-stop-row">
-          <span class="target">목표가 거리 {{ percent_or_dash(summary.get("target_distance_pct"), signed=True) }}%</span>
-          <span class="stop">손절가 거리 {{ percent_or_dash(summary.get("stop_distance_pct"), signed=True) }}%</span>
-        </div>
-        {% endif %}
 
         {% set weights = page_payload.weights or {} %}
         {% set action_summary = page_payload.action_summary or {} %}
-        <div class="hero-context-grid">
-          <article class="hero-context-card">
-            <span class="label">전체 비중</span>
-            <strong>{{ percent_or_dash(weights.get("portfolio_weight_pct")) }}%</strong>
-            <small>시장 내 비중 {{ percent_or_dash(weights.get("market_weight_pct")) }}%</small>
-          </article>
-          <article class="hero-context-card">
-            <span class="label">상태</span>
-            <strong>{{ action_summary.get("status") or "-" }}</strong>
-            <div class="action-tags">
-              {% for tag in action_summary.get("tags") or [] %}
-              <span class="action-tag">{{ tag }}</span>
-              {% endfor %}
-            </div>
-            <small>{{ action_summary.get("reason") or "-" }}</small>
-          </article>
+        <div class="hero-status-strip">
+          <span class="status-badge {{ action_summary.get('status_tone', 'neutral') }}">
+            {{ action_summary.get("status") or "-" }}
+          </span>
+          <span class="status-reason">{{ action_summary.get("reason") or "-" }}</span>
         </div>
       </div>
     </header>
