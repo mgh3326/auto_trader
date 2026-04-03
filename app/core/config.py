@@ -334,6 +334,8 @@ class Settings(BaseSettings):
     N8N_API_KEY: str = ""
     PUBLIC_API_PATHS: list[str] = []
 
+    public_base_url: str = "https://mgh3326.duckdns.org"
+
     @field_validator("SECRET_KEY")
     @classmethod
     def validate_secret_key(cls, v: str) -> str:
