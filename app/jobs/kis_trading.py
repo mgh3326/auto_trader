@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 
+from app.core.portfolio_links import build_position_detail_url
 from app.core.symbol import to_db_symbol
 from app.monitoring.trade_notifier import get_trade_notifier
 from app.services.brokers.kis.client import KISClient
@@ -76,6 +77,8 @@ async def _send_toss_recommendation_async(
     toss_avg_price: float,
     kis_quantity: int | None = None,
     kis_avg_price: float | None = None,
+    market_type: str = "kr",
+    currency: str = "원",
 ) -> None:
     """수동 잔고(토스) 종목에 대해 AI 분석 결과와 가격 제안 알림 발송.
 
@@ -122,6 +125,7 @@ async def _send_toss_recommendation_async(
             reasons = []
 
         # AI 결정과 무관하게 항상 가격 제안 알림 발송
+        detail_url = build_position_detail_url(code, market_type)
         await notifier.notify_toss_price_recommendation(
             symbol=code,
             korean_name=name,
@@ -139,7 +143,8 @@ async def _send_toss_recommendation_async(
             buy_hope_max=analysis.buy_hope_max,
             sell_target_min=analysis.sell_target_min,
             sell_target_max=analysis.sell_target_max,
-            currency="원",
+            currency=currency,
+            detail_url=detail_url,
         )
         logger.info(
             f"[토스추천] {name}({code}) - 가격 제안 알림 발송 (AI 판단: {decision}, 신뢰도: {confidence}%)"

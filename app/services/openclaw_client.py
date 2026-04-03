@@ -14,6 +14,7 @@ from tenacity import (
 
 from app.core.config import settings
 from app.core.kr_symbols import KR_SYMBOLS
+from app.core.portfolio_links import build_position_detail_url
 from app.monitoring.trade_notifier import get_trade_notifier
 from app.services.fill_notification import (
     FillOrder,
@@ -102,6 +103,7 @@ def _build_n8n_fill_payload(
         "order_price": order.order_price,
         "fill_status": order.fill_status or "filled",
         "currency": order.currency or ("KRW" if order.market_type == "kr" else "USD"),
+        "detail_url": build_position_detail_url(order.symbol, order.market_type),
         "correlation_id": correlation_id,
     }
 

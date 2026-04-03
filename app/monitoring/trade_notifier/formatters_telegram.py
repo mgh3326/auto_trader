@@ -221,6 +221,7 @@ def format_toss_price_recommendation_html(
     sell_target_max: float | None = None,
     currency: str = "원",
     market_type: str = "국내주식",
+    detail_url: str | None = None,
 ) -> str:
     """Format Toss price recommendation notification with AI analysis as HTML for Telegram."""
     if reasons is None:
@@ -316,5 +317,9 @@ def format_toss_price_recommendation_html(
         lines.append("<b>가격 제안:</b>")
         for suggestion in price_suggestions:
             lines.append(html.escape(suggestion))
+
+    if detail_url:
+        lines.append("")
+        lines.append(f"<b>상세:</b> {detail_url}")
 
     return "\n".join(lines)
