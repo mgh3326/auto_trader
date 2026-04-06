@@ -1492,7 +1492,7 @@
         function buildAllocationSeries(positions) {
             const byMarket = { KR: 0, US: 0, CRYPTO: 0 };
             positions.forEach((p) => {
-                const evalValue = p.evaluation_krw || p.evaluation || 0;
+                const evalValue = (p.evaluation_krw ?? p.evaluation) ?? 0;
                 byMarket[p.market_type] = (byMarket[p.market_type] || 0) + evalValue;
             });
             return {
@@ -1503,11 +1503,11 @@
 
         function buildTopPositionsSeries(positions) {
             const sorted = [...positions]
-                .sort((a, b) => (b.evaluation_krw || b.evaluation || 0) - (a.evaluation_krw || a.evaluation || 0))
+                .sort((a, b) => ((b.evaluation_krw ?? b.evaluation) ?? 0) - ((a.evaluation_krw ?? a.evaluation) ?? 0))
                 .slice(0, 10);
             return {
                 labels: sorted.map((p) => p.symbol),
-                data: sorted.map((p) => p.evaluation_krw || p.evaluation || 0),
+                data: sorted.map((p) => (p.evaluation_krw ?? p.evaluation) ?? 0),
             };
         }
 

@@ -110,7 +110,6 @@ class AIMarkdownService:
 - 수익률: {summary.get("profit_rate", 0):+.2f}%
 - 평가금액: {self._format_evaluation(summary.get("evaluation"), summary.get("evaluation_krw"), market_type)}
 - 포트폴리오 비중: {weights.get("portfolio_weight_pct", "N/A")}%
-
 - 동일 시장 내 비중: {weights.get("market_weight_pct", "N/A")}%
 
 ## 질문
