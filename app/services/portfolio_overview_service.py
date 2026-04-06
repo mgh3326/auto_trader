@@ -220,6 +220,7 @@ class PortfolioOverviewService:
                 "skip_missing_prices": skip_missing_prices,
             },
             "summary": summary,
+            "exchange_rate": {"usd_krw": usd_krw_rate},
             "facets": {"accounts": facets},
             "positions": positions,
             "warnings": deduped_warnings,
