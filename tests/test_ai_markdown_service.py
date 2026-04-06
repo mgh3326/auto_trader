@@ -225,3 +225,32 @@ class TestAIMarkdownService:
         # US holding should be shown without pretending the raw USD amount is KRW
         assert "2,000원" not in result["content"]
         assert "원화 환산 불가" in result["content"]
+
+    def test_generate_stock_stance_markdown_shows_evaluation_in_krw_for_us(
+        self, service
+    ):
+        stock_data = {
+            "summary": {
+                "symbol": "AAPL",
+                "name": "Apple Inc.",
+                "market_type": "US",
+                "current_price": 170.0,
+                "avg_price": 150.0,
+                "quantity": 10.0,
+                "profit_rate": 0.1333,
+                "evaluation": 1700.0,
+                "evaluation_krw": 2_295_000.0,
+            },
+            "weights": {
+                "portfolio_weight_pct": 15.0,
+                "market_weight_pct": 30.0,
+            },
+        }
+
+        result = service.generate_stock_stance_markdown(stock_data)
+
+        # evaluation should show KRW, not USD
+        assert "₩2,295,000" in result["content"]
+        # current_price and avg_price should still show USD
+        assert "$170.00" in result["content"]
+        assert "$150.00" in result["content"]

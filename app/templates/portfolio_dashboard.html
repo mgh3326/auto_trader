@@ -627,7 +627,10 @@
                 <article class="panel" id="portfolio-summary-panel">
                     <div class="d-flex justify-content-between align-items-center">
                         <h2><i class="bi bi-bar-chart"></i> 요약</h2>
-                        <span class="subtle" id="summary-market">ALL</span>
+                        <span class="subtle">
+                            <span id="summary-market">ALL</span>
+                            <span id="exchange-rate-badge" class="badge bg-secondary ms-2" style="display:none;"></span>
+                        </span>
                     </div>
                     <div class="summary-list">
                         <div class="summary-row"><span>총 포지션</span><strong id="summary-total">0</strong></div>
@@ -686,6 +689,7 @@
         const state = {
             overview: null,
             cash: null,
+            exchangeRate: null,
             selectedAccounts: new Set(),
             charts: {
                 allocation: null,
@@ -802,16 +806,15 @@
                     return String(left.symbol || "").localeCompare(String(right.symbol || ""));
                 }
 
-                const leftValue = Number(
-                    mode.startsWith("profit_rate")
-                        ? left.profit_rate
-                        : left.evaluation
-                );
-                const rightValue = Number(
-                    mode.startsWith("profit_rate")
-                        ? right.profit_rate
-                        : right.evaluation
-                );
+                let leftValue, rightValue;
+                if (mode.startsWith("profit_rate")) {
+                    leftValue = Number(left.profit_rate);
+                    rightValue = Number(right.profit_rate);
+                } else {
+                    // evaluation_desc/asc: use evaluation_krw if available, else raw evaluation
+                    leftValue = Number(left.evaluation_krw ?? left.evaluation);
+                    rightValue = Number(right.evaluation_krw ?? right.evaluation);
+                }
 
                 const safeLeft = Number.isFinite(leftValue) ? leftValue : Number.NEGATIVE_INFINITY;
                 const safeRight = Number.isFinite(rightValue) ? rightValue : Number.NEGATIVE_INFINITY;
@@ -827,7 +830,7 @@
 
         function buildPortfolioWarnings(positions) {
             const totalEvaluation = positions.reduce(
-                (sum, position) => sum + (Number(position.evaluation) || 0),
+                (sum, position) => sum + (Number(position.evaluation_krw ?? position.evaluation) || 0),
                 0,
             );
             if (totalEvaluation <= 0) {
@@ -836,7 +839,7 @@
 
             const warnings = [];
             positions.forEach((position) => {
-                const weight = (Number(position.evaluation) || 0) / totalEvaluation;
+                const weight = (Number(position.evaluation_krw ?? position.evaluation) || 0) / totalEvaluation;
                 if (weight > 0.15) {
                     warnings.push(`${position.symbol} 비중 과다 (${(weight * 100).toFixed(1)}%)`);
                 }
@@ -844,7 +847,7 @@
 
             const marketTotals = positions.reduce((acc, position) => {
                 const marketType = position.market_type || "UNKNOWN";
-                acc[marketType] = (acc[marketType] || 0) + (Number(position.evaluation) || 0);
+                acc[marketType] = (acc[marketType] || 0) + (Number(position.evaluation_krw ?? position.evaluation) || 0);
                 return acc;
             }, {});
 
@@ -940,6 +943,14 @@
             document.getElementById("summary-kr").textContent = formatNumber(summary.by_market.KR, 0);
             document.getElementById("summary-us").textContent = formatNumber(summary.by_market.US, 0);
             document.getElementById("summary-crypto").textContent = formatNumber(summary.by_market.CRYPTO, 0);
+
+            const rateBadge = document.getElementById("exchange-rate-badge");
+            if (state.exchangeRate) {
+                rateBadge.textContent = `USD/KRW ${formatNumber(state.exchangeRate, 0)}`;
+                rateBadge.style.display = "inline";
+            } else {
+                rateBadge.style.display = "none";
+            }
         }
 
         function renderWarnings(warnings, positions = []) {
@@ -1025,7 +1036,7 @@
                         <td>
                             ${item.current_price === null ? '<span class="subtle">조회중...</span>' : formatNumber(item.current_price)}
                         </td>
-                        <td>${formatNumber(item.evaluation)}</td>
+                        <td>${item.evaluation_krw != null ? '₩' + formatNumber(item.evaluation_krw, 0) : formatNumber(item.evaluation)}</td>
                         <td class="${pClass}">
                             ${formatProfit(item.profit_loss, item.profit_rate)}
                             <a
@@ -1070,7 +1081,7 @@
                             <dt>수량</dt><dd>${formatNumber(item.quantity, 8)}</dd>
                             <dt>평균단가</dt><dd>${formatNumber(item.avg_price)}</dd>
                             <dt>현재가</dt><dd>${item.current_price === null ? '<span class="subtle">조회중...</span>' : formatNumber(item.current_price)}</dd>
-                            <dt>평가금액</dt><dd>${formatNumber(item.evaluation)}</dd>
+                            <dt>평가금액</dt><dd>${item.evaluation_krw != null ? '₩' + formatNumber(item.evaluation_krw, 0) : formatNumber(item.evaluation)}</dd>
                             <dt>손익/수익률</dt><dd class="${pClass}">${formatProfit(item.profit_loss, item.profit_rate)}</dd>
                         </dl>
                         <a
@@ -1481,7 +1492,7 @@
         function buildAllocationSeries(positions) {
             const byMarket = { KR: 0, US: 0, CRYPTO: 0 };
             positions.forEach((p) => {
-                const evalValue = p.evaluation || 0;
+                const evalValue = (p.evaluation_krw ?? p.evaluation) ?? 0;
                 byMarket[p.market_type] = (byMarket[p.market_type] || 0) + evalValue;
             });
             return {
@@ -1492,11 +1503,11 @@
 
         function buildTopPositionsSeries(positions) {
             const sorted = [...positions]
-                .sort((a, b) => (b.evaluation || 0) - (a.evaluation || 0))
+                .sort((a, b) => ((b.evaluation_krw ?? b.evaluation) ?? 0) - ((a.evaluation_krw ?? a.evaluation) ?? 0))
                 .slice(0, 10);
             return {
                 labels: sorted.map((p) => p.symbol),
-                data: sorted.map((p) => p.evaluation || 0),
+                data: sorted.map((p) => (p.evaluation_krw ?? p.evaluation) ?? 0),
             };
         }
 
@@ -1583,6 +1594,7 @@
                 }
                 const payload = await response.json();
                 state.overview = payload;
+                state.exchangeRate = (payload.exchange_rate || {}).usd_krw || null;
 
                 renderAccountFacets(payload.facets.accounts || []);
                 renderSummary(payload.summary, payload.filters);

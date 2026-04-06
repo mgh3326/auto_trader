@@ -1164,3 +1164,53 @@ class TestAggregatePositions:
         assert googl["profit_rate"] == pytest.approx(
             expected_profit_loss / expected_cost_basis, rel=1e-3
         )
+
+
+@pytest.mark.asyncio
+async def test_get_overview_includes_exchange_rate(monkeypatch) -> None:
+    service = PortfolioOverviewService(AsyncMock())
+
+    service._collect_kis_components = AsyncMock(return_value=[])
+    service._collect_upbit_components = AsyncMock(return_value=[])
+    service._collect_manual_components = AsyncMock(return_value=[])
+    service._fill_missing_prices = AsyncMock(return_value=None)
+
+    monkeypatch.setattr(
+        portfolio_overview_module,
+        "get_active_upbit_markets",
+        AsyncMock(return_value=set()),
+    )
+    monkeypatch.setattr(
+        portfolio_overview_module,
+        "get_usd_krw_rate",
+        AsyncMock(return_value=1350.0),
+    )
+
+    overview = await service.get_overview(user_id=1)
+
+    assert overview["exchange_rate"] == {"usd_krw": 1350.0}
+
+
+@pytest.mark.asyncio
+async def test_get_overview_exchange_rate_none_on_failure(monkeypatch) -> None:
+    service = PortfolioOverviewService(AsyncMock())
+
+    service._collect_kis_components = AsyncMock(return_value=[])
+    service._collect_upbit_components = AsyncMock(return_value=[])
+    service._collect_manual_components = AsyncMock(return_value=[])
+    service._fill_missing_prices = AsyncMock(return_value=None)
+
+    monkeypatch.setattr(
+        portfolio_overview_module,
+        "get_active_upbit_markets",
+        AsyncMock(return_value=set()),
+    )
+    monkeypatch.setattr(
+        portfolio_overview_module,
+        "get_usd_krw_rate",
+        AsyncMock(side_effect=Exception("FX fetch failed")),
+    )
+
+    overview = await service.get_overview(user_id=1)
+
+    assert overview["exchange_rate"] == {"usd_krw": None}

@@ -10,6 +10,10 @@
   {% set currency_symbol = '$' if page_payload.summary.market_type == 'US' else '₩' %}
   {% set summary = page_payload.summary or {} %}
   {% set journal = page_payload.journal or {} %}
+  {% set exchange_rate = page_payload.get("exchange_rate", {}) %}
+  {% set usd_krw = exchange_rate.get("usd_krw") %}
+  {% set evaluation_krw = summary.get("evaluation_krw") %}
+  {% set profit_loss_krw = summary.get("profit_loss_krw") %}
 
   {% macro money_or_dash(value, currency_symbol) -%}
     {%- if value is not none -%}
@@ -525,7 +529,11 @@
           </article>
           <article class="hero-metric">
             <span class="label">평가 금액</span>
-            <strong>{{ money_or_dash(summary.get("evaluation"), currency_symbol) }}</strong>
+            {% if evaluation_krw is not none %}
+              <strong>₩{{ "{:,.0f}".format(evaluation_krw) }}</strong>
+            {% else %}
+              <strong>{{ money_or_dash(summary.get("evaluation"), currency_symbol) }}</strong>
+            {% endif %}
           </article>
           {% set profit_loss = summary.get("profit_loss") %}
           <article class="hero-metric">
@@ -535,6 +543,12 @@
             </strong>
           </article>
         </div>
+
+        {% if summary.get("market_type") == "US" and usd_krw %}
+          <div class="exchange-rate-info" style="margin-top:0.5rem; font-size:0.85rem; color:var(--text-secondary);">
+            환율: 1 USD = ₩{{ "{:,.0f}".format(usd_krw) }}
+          </div>
+        {% endif %}
 
         {% set weights = page_payload.weights or {} %}
         {% set action_summary = page_payload.action_summary or {} %}
@@ -604,8 +618,14 @@
             <div><span class="label">quantity</span><strong>{{ quantity_or_dash(component.get("quantity")) }}</strong></div>
             <div><span class="label">avg_price</span><strong>{{ money_or_dash(component.get("avg_price"), currency_symbol) }}</strong></div>
             <div><span class="label">current_price</span><strong>{{ money_or_dash(component.get("current_price"), currency_symbol) }}</strong></div>
-            <div><span class="label">evaluation</span><strong>{{ money_or_dash(component.get("evaluation"), currency_symbol) }}</strong></div>
+            {% set comp_eval = component.get("evaluation") %}
+            {% if summary.get("market_type") == "US" and usd_krw and comp_eval is not none %}
+              <div><span class="label">evaluation</span><strong>₩{{ "{:,.0f}".format(comp_eval * usd_krw) }}</strong></div>
+            {% else %}
+              <div><span class="label">evaluation</span><strong>{{ money_or_dash(comp_eval, currency_symbol) }}</strong></div>
+            {% endif %}
             <div><span class="label">profit_loss</span><strong class="{% if comp_profit_loss is none %}neutral{% elif comp_profit_loss > 0 %}positive{% elif comp_profit_loss < 0 %}negative{% else %}neutral{% endif %}">{{ money_or_dash(comp_profit_loss, currency_symbol) }}</strong></div>
+
             <div><span class="label">profit_rate</span><strong>{{ percent_or_dash((component.get("profit_rate") * 100) if component.get("profit_rate") is not none else none, signed=False) }}%</strong></div>
           </div>
           {% endfor %}
