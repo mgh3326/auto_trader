@@ -1359,3 +1359,52 @@ def test_build_weights_returns_none_when_us_position_lacks_krw_normalization():
 
     assert weights["portfolio_weight_pct"] is None
     assert weights["market_weight_pct"] is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_page_payload_summary_includes_evaluation_krw() -> None:
+    overview_service = MagicMock()
+    overview_service.get_overview = AsyncMock(
+        return_value={
+            "exchange_rate": {"usd_krw": 1350.0},
+            "positions": [
+                {
+                    "market_type": "US",
+                    "symbol": "AAPL",
+                    "name": "Apple Inc.",
+                    "quantity": 10.0,
+                    "avg_price": 150.0,
+                    "current_price": 170.0,
+                    "evaluation": 1700.0,
+                    "evaluation_krw": 2_295_000.0,
+                    "profit_loss": 200.0,
+                    "profit_loss_krw": 270_000.0,
+                    "profit_rate": 0.1333,
+                    "components": [],
+                },
+            ],
+        }
+    )
+    dashboard_service = MagicMock()
+    dashboard_service.get_latest_journal_snapshot = AsyncMock(return_value=None)
+
+    service = PortfolioPositionDetailService(
+        overview_service=overview_service,
+        dashboard_service=dashboard_service,
+    )
+
+    with patch.object(
+        service,
+        "_fetch_action_inputs",
+        AsyncMock(return_value={"rsi": None}),
+    ):
+        payload = await service.get_page_payload(
+            user_id=1, market_type="us", symbol="AAPL"
+        )
+
+    summary = payload["summary"]
+    assert summary["evaluation"] == 1700.0
+    assert summary["evaluation_krw"] == 2_295_000.0
+    assert summary["profit_loss_krw"] == 270_000.0
+    assert payload["exchange_rate"] == {"usd_krw": 1350.0}
