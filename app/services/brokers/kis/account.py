@@ -190,9 +190,6 @@ class AccountClient:
         tr_cont = ""
         page = 1
         max_pages = 10
-        token_retry_count = 0
-        max_token_retries = 3
-        transient_retry_count = 0
 
         logging.info(
             f"{'해외' if is_overseas else '국내'}주식 잔고 조회 시작 - "
@@ -200,6 +197,9 @@ class AccountClient:
         )
 
         while page <= max_pages:
+            token_retry_count = 0
+            max_token_retries = 3
+            transient_retry_count = 0
             if is_overseas:
                 params = {
                     "CANO": cano,
