@@ -190,6 +190,9 @@ class AccountClient:
         tr_cont = ""
         page = 1
         max_pages = 10
+        token_retry_count = 0
+        max_token_retries = 3
+        transient_retry_count = 0
 
         logging.info(
             f"{'해외' if is_overseas else '국내'}주식 잔고 조회 시작 - "
@@ -251,9 +254,27 @@ class AccountClient:
                     "EGW00123",
                     "EGW00121",
                 ]:
+                    token_retry_count += 1
+                    if token_retry_count >= max_token_retries:
+                        error_msg = f"{js.get('msg_cd')} {js.get('msg1')} (token retry limit exceeded)"
+                        logging.error(
+                            f"{'해외' if is_overseas else '국내'}주식 잔고 조회 실패: {error_msg}"
+                        )
+                        raise RuntimeError(error_msg)
                     await self._parent._token_manager.clear_token()
                     await self._parent._ensure_token()
                     continue
+
+                if js.get("msg_cd") in constants.RETRYABLE_MSG_CODES:
+                    transient_retry_count += 1
+                    if transient_retry_count < constants.RETRYABLE_MAX_ATTEMPTS:
+                        logging.warning(
+                            f"{'해외' if is_overseas else '국내'}주식 잔고조회 transient 에러 (시도 {transient_retry_count}/{constants.RETRYABLE_MAX_ATTEMPTS}): {js.get('msg_cd')} {js.get('msg1')}"
+                        )
+                        await asyncio.sleep(
+                            constants.RETRYABLE_BASE_DELAY * transient_retry_count
+                        )
+                        continue
 
                 error_msg = f"{js.get('msg_cd')} {js.get('msg1')}"
                 logging.error(
