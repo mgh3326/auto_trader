@@ -200,87 +200,93 @@ class AccountClient:
             token_retry_count = 0
             max_token_retries = 3
             transient_retry_count = 0
-            if is_overseas:
-                params = {
-                    "CANO": cano,
-                    "ACNT_PRDT_CD": acnt_prdt_cd,
-                    "OVRS_EXCG_CD": exchange_code,
-                    "TR_CRCY_CD": currency_code,
-                    ctx_key_fk: ctx_area_fk,
-                    ctx_key_nk: ctx_area_nk,
+            page_fetched = False
+            js: dict = {}
+
+            while not page_fetched:
+                if is_overseas:
+                    params = {
+                        "CANO": cano,
+                        "ACNT_PRDT_CD": acnt_prdt_cd,
+                        "OVRS_EXCG_CD": exchange_code,
+                        "TR_CRCY_CD": currency_code,
+                        ctx_key_fk: ctx_area_fk,
+                        ctx_key_nk: ctx_area_nk,
+                    }
+                else:
+                    params = {
+                        "CANO": cano,
+                        "ACNT_PRDT_CD": acnt_prdt_cd,
+                        "AFHR_FLPR_YN": "N",
+                        "OFL_YN": "",
+                        "INQR_DVSN": "00",
+                        "UNPR_DVSN": "01",
+                        "FUND_STTL_ICLD_YN": "N",
+                        "FNCG_AMT_AUTO_RDPT_YN": "N",
+                        "PRCS_DVSN": "01",
+                        ctx_key_fk: ctx_area_fk,
+                        ctx_key_nk: ctx_area_nk,
+                    }
+
+                hdr = self._parent._hdr_base | {
+                    "authorization": f"Bearer {self._settings.kis_access_token}",
+                    "tr_id": tr_id,
+                    "tr_cont": tr_cont,
                 }
-            else:
-                params = {
-                    "CANO": cano,
-                    "ACNT_PRDT_CD": acnt_prdt_cd,
-                    "AFHR_FLPR_YN": "N",
-                    "OFL_YN": "",
-                    "INQR_DVSN": "00",
-                    "UNPR_DVSN": "01",
-                    "FUND_STTL_ICLD_YN": "N",
-                    "FNCG_AMT_AUTO_RDPT_YN": "N",
-                    "PRCS_DVSN": "01",
-                    ctx_key_fk: ctx_area_fk,
-                    ctx_key_nk: ctx_area_nk,
-                }
 
-            hdr = self._parent._hdr_base | {
-                "authorization": f"Bearer {self._settings.kis_access_token}",
-                "tr_id": tr_id,
-                "tr_cont": tr_cont,
-            }
+                logging.info(
+                    f"페이지 {page} 조회 (tr_cont: '{tr_cont}', "
+                    f"{ctx_key_nk}: '{ctx_area_nk[:20] if ctx_area_nk else 'empty'}...')"
+                )
 
-            logging.info(
-                f"페이지 {page} 조회 (tr_cont: '{tr_cont}', "
-                f"{ctx_key_nk}: '{ctx_area_nk[:20] if ctx_area_nk else 'empty'}...')"
-            )
+                js = await self._parent._request_with_rate_limit(
+                    "GET",
+                    f"{constants.BASE}{url}",
+                    headers=hdr,
+                    params=params,
+                    timeout=5,
+                    api_name=(
+                        "fetch_my_stocks_overseas"
+                        if is_overseas
+                        else "fetch_my_stocks_domestic"
+                    ),
+                    tr_id=tr_id,
+                )
 
-            js = await self._parent._request_with_rate_limit(
-                "GET",
-                f"{constants.BASE}{url}",
-                headers=hdr,
-                params=params,
-                timeout=5,
-                api_name=(
-                    "fetch_my_stocks_overseas"
-                    if is_overseas
-                    else "fetch_my_stocks_domestic"
-                ),
-                tr_id=tr_id,
-            )
-
-            if js.get("rt_cd") != "0":
-                if js.get("msg_cd") in [
-                    "EGW00123",
-                    "EGW00121",
-                ]:
-                    token_retry_count += 1
-                    if token_retry_count >= max_token_retries:
-                        error_msg = f"{js.get('msg_cd')} {js.get('msg1')} (token retry limit exceeded)"
-                        logging.error(
-                            f"{'해외' if is_overseas else '국내'}주식 잔고 조회 실패: {error_msg}"
-                        )
-                        raise RuntimeError(error_msg)
-                    await self._parent._token_manager.clear_token()
-                    await self._parent._ensure_token()
-                    continue
-
-                if js.get("msg_cd") in constants.RETRYABLE_MSG_CODES:
-                    transient_retry_count += 1
-                    if transient_retry_count < constants.RETRYABLE_MAX_ATTEMPTS:
-                        logging.warning(
-                            f"{'해외' if is_overseas else '국내'}주식 잔고조회 transient 에러 (시도 {transient_retry_count}/{constants.RETRYABLE_MAX_ATTEMPTS}): {js.get('msg_cd')} {js.get('msg1')}"
-                        )
-                        await asyncio.sleep(
-                            constants.RETRYABLE_BASE_DELAY * transient_retry_count
-                        )
+                if js.get("rt_cd") != "0":
+                    if js.get("msg_cd") in [
+                        "EGW00123",
+                        "EGW00121",
+                    ]:
+                        token_retry_count += 1
+                        if token_retry_count >= max_token_retries:
+                            error_msg = f"{js.get('msg_cd')} {js.get('msg1')} (token retry limit exceeded)"
+                            logging.error(
+                                f"{'해외' if is_overseas else '국내'}주식 잔고 조회 실패: {error_msg}"
+                            )
+                            raise RuntimeError(error_msg)
+                        await self._parent._token_manager.clear_token()
+                        await self._parent._ensure_token()
                         continue
 
-                error_msg = f"{js.get('msg_cd')} {js.get('msg1')}"
-                logging.error(
-                    f"{'해외' if is_overseas else '국내'}주식 잔고 조회 실패: {error_msg}"
-                )
-                raise RuntimeError(error_msg)
+                    if js.get("msg_cd") in constants.RETRYABLE_MSG_CODES:
+                        transient_retry_count += 1
+                        if transient_retry_count < constants.RETRYABLE_MAX_ATTEMPTS:
+                            logging.warning(
+                                f"{'해외' if is_overseas else '국내'}주식 잔고조회 transient 에러 (시도 {transient_retry_count}/{constants.RETRYABLE_MAX_ATTEMPTS}): {js.get('msg_cd')} {js.get('msg1')}"
+                            )
+                            await asyncio.sleep(
+                                constants.RETRYABLE_BASE_DELAY * transient_retry_count
+                            )
+                            continue
+
+                    error_msg = f"{js.get('msg_cd')} {js.get('msg1')}"
+                    logging.error(
+                        f"{'해외' if is_overseas else '국내'}주식 잔고 조회 실패: {error_msg}"
+                    )
+                    raise RuntimeError(error_msg)
+
+                page_fetched = True
 
             # output1: 종목별 보유 내역
             stocks = js.get("output1", [])
