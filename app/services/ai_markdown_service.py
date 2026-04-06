@@ -108,8 +108,9 @@ class AIMarkdownService:
 - 평균단가: {self._format_price(summary.get("avg_price"), market_type)}
 - 보유수량: {summary.get("quantity", 0):,.4f}
 - 수익률: {summary.get("profit_rate", 0):+.2f}%
-- 평가금액: {self._format_price(summary.get("evaluation"), market_type)}
+- 평가금액: {self._format_evaluation(summary.get("evaluation"), summary.get("evaluation_krw"), market_type)}
 - 포트폴리오 비중: {weights.get("portfolio_weight_pct", "N/A")}%
+
 - 동일 시장 내 비중: {weights.get("market_weight_pct", "N/A")}%
 
 ## 질문
@@ -318,6 +319,20 @@ class AIMarkdownService:
             return "N/A"
         currency = "$" if market_type == "US" else "₩"
         return f"{currency}{price:,.2f}"
+
+    def _format_evaluation(
+        self,
+        evaluation: float | None,
+        evaluation_krw: float | None,
+        market_type: str,
+    ) -> str:
+        """평가금액 포맷팅 — US 종목은 KRW 환산값 사용"""
+        if market_type == "US" and evaluation_krw is not None:
+            return f"₩{evaluation_krw:,.0f}"
+        if evaluation is None:
+            return "N/A"
+        currency = "$" if market_type == "US" else "₩"
+        return f"{currency}{evaluation:,.0f}"
 
     def _format_journal_info(self, journal: dict[str, Any]) -> str:
         """매매 계획 정보 포맷팅"""
