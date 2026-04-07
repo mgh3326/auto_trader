@@ -213,3 +213,76 @@ class TestGeminiProvider:
             await provider.ask(system_prompt="s", user_message="q")
 
         assert "실패" in exc_info.value.user_message
+
+
+from app.schemas.ai_markdown import PresetType
+
+
+class TestAiAdvisorSchemas:
+    def test_request_portfolio_scope(self):
+        from app.schemas.ai_advisor import AiAdviceRequest
+
+        req = AiAdviceRequest(
+            scope="portfolio",
+            preset=PresetType.PORTFOLIO_STANCE,
+            provider="gemini",
+            question="비중 조절 필요한 종목은?",
+        )
+        assert req.scope == "portfolio"
+        assert req.include_market == "ALL"
+
+    def test_request_position_scope(self):
+        from app.schemas.ai_advisor import AiAdviceRequest
+
+        req = AiAdviceRequest(
+            scope="position",
+            preset=PresetType.STOCK_STANCE,
+            provider="openai",
+            question="추가매수 조건 정리해줘",
+            market_type="US",
+            symbol="AAPL",
+        )
+        assert req.scope == "position"
+        assert req.market_type == "US"
+        assert req.symbol == "AAPL"
+
+    def test_response_success(self):
+        from app.schemas.ai_advisor import AiAdviceResponse
+
+        resp = AiAdviceResponse(
+            success=True,
+            answer="분석 결과",
+            provider="gemini",
+            model="gemini-2.5-flash",
+            elapsed_ms=3000,
+        )
+        assert resp.success is True
+        assert resp.error is None
+        assert resp.disclaimer == "AI 분석 보조 도구이며 투자 자문이 아닙니다."
+
+    def test_response_failure(self):
+        from app.schemas.ai_advisor import AiAdviceResponse
+
+        resp = AiAdviceResponse(
+            success=False,
+            answer="",
+            provider="openai",
+            model="",
+            elapsed_ms=100,
+            error="요청 한도 초과",
+        )
+        assert resp.success is False
+        assert resp.error == "요청 한도 초과"
+
+    def test_providers_response(self):
+        from app.schemas.ai_advisor import AiProvidersResponse, ProviderInfo
+
+        resp = AiProvidersResponse(
+            providers=[
+                ProviderInfo(name="gemini", default_model="gemini-2.5-flash"),
+                ProviderInfo(name="openai", default_model="gpt-4o"),
+            ],
+            default_provider="gemini",
+        )
+        assert len(resp.providers) == 2
+        assert resp.default_provider == "gemini"
