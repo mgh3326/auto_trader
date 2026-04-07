@@ -1,7 +1,11 @@
 """Tests for AI Advisor service and provider types."""
 
-import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+from fastapi.testclient import TestClient
+
+from app.schemas.ai_markdown import PresetType
 from app.services.ai_providers.base import AiProviderError, AiProviderResult
 
 
@@ -44,10 +48,6 @@ class TestAiProviderError:
     def test_error_without_detail(self):
         err = AiProviderError(user_message="일반 오류")
         assert err.detail == ""
-
-
-import time
-from unittest.mock import AsyncMock, MagicMock, patch
 
 
 class TestOpenAIProvider:
@@ -215,9 +215,6 @@ class TestGeminiProvider:
         assert "실패" in exc_info.value.user_message
 
 
-from app.schemas.ai_markdown import PresetType
-
-
 class TestAiAdvisorSchemas:
     def test_request_portfolio_scope(self):
         from app.schemas.ai_advisor import AiAdviceRequest
@@ -374,7 +371,6 @@ class TestAiAdvisorService:
     ):
         from app.services.ai_advisor_service import (
             AiAdvisorService,
-            get_configured_providers,
         )
         from app.services.ai_providers.openai_provider import OpenAIProvider
 
@@ -475,3 +471,72 @@ class TestAiAdvisorService:
             )
 
         assert "한도 초과" in exc_info.value.user_message
+
+
+class TestAiAdvisorEndpoints:
+    @pytest.fixture
+    def client(self):
+        from app.core.db import get_db
+        from app.main import api
+        from app.routers.dependencies import get_authenticated_user
+
+        mock_user = MagicMock()
+        mock_user.id = 1
+
+        async def override_get_db():
+            yield AsyncMock()
+
+        api.dependency_overrides[get_db] = override_get_db
+        api.dependency_overrides[get_authenticated_user] = lambda: mock_user
+
+        with patch(
+            "app.middleware.auth.AuthMiddleware._load_user", return_value=mock_user
+        ):
+            yield TestClient(api)
+
+        del api.dependency_overrides[get_db]
+        del api.dependency_overrides[get_authenticated_user]
+
+    def test_get_providers(self, client):
+        response = client.get("/portfolio/api/ai-advice/providers")
+        assert response.status_code == 200
+        data = response.json()
+        assert "providers" in data
+        assert "default_provider" in data
+        assert isinstance(data["providers"], list)
+
+    def test_post_advice_invalid_scope(self, client):
+        response = client.post(
+            "/portfolio/api/ai-advice",
+            json={
+                "scope": "invalid",
+                "preset": "portfolio_stance",
+                "provider": "gemini",
+                "question": "test",
+            },
+        )
+        assert response.status_code == 422
+
+    def test_post_advice_unknown_provider(self, client):
+        response = client.post(
+            "/portfolio/api/ai-advice",
+            json={
+                "scope": "portfolio",
+                "preset": "portfolio_stance",
+                "provider": "nonexistent",
+                "question": "test",
+            },
+        )
+        assert response.status_code == 400
+
+    def test_post_advice_empty_question(self, client):
+        response = client.post(
+            "/portfolio/api/ai-advice",
+            json={
+                "scope": "portfolio",
+                "preset": "portfolio_stance",
+                "provider": "gemini",
+                "question": "",
+            },
+        )
+        assert response.status_code == 422
