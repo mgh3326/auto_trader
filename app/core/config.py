@@ -403,6 +403,13 @@ class Settings(BaseSettings):
     # API Documentation
     DOCS_ENABLED: bool = True  # 개발 환경: True, 프로덕션: False
 
+    # AI Advisor
+    openai_api_key: str | None = None
+    gemini_advisor_api_key: str | None = None
+    grok_api_key: str | None = None
+    ai_advisor_timeout: float = 60.0
+    ai_advisor_default_provider: str = "gemini"
+
     model_config = SettingsConfigDict(
         env_file=os.getenv("ENV_FILE", ".env"),
         env_file_encoding="utf-8",
