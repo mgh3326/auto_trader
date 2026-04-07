@@ -155,3 +155,61 @@ class TestOpenAIProvider:
             await provider.ask(system_prompt="s", user_message="q")
 
         assert "인증 실패" in exc_info.value.user_message
+
+
+class TestGeminiProvider:
+    def test_init_defaults(self):
+        from app.services.ai_providers.gemini_provider import GeminiProvider
+
+        with patch("app.services.ai_providers.gemini_provider.genai") as mock_genai:
+            provider = GeminiProvider(api_key="test-key")
+            assert provider.provider_name == "gemini"
+            assert provider.default_model == "gemini-2.5-flash"
+            mock_genai.Client.assert_called_once_with(api_key="test-key")
+
+    @pytest.mark.asyncio
+    async def test_ask_success(self):
+        from app.services.ai_providers.gemini_provider import GeminiProvider
+
+        with patch("app.services.ai_providers.gemini_provider.genai"):
+            provider = GeminiProvider(api_key="test-key")
+
+        mock_usage = MagicMock()
+        mock_usage.prompt_token_count = 200
+        mock_usage.candidates_token_count = 100
+
+        mock_response = MagicMock()
+        mock_response.text = "Gemini 분석 결과입니다."
+        mock_response.usage_metadata = mock_usage
+        mock_response.model_version = "gemini-2.5-flash-preview-04-17"
+
+        provider.client = MagicMock()
+        provider.client.aio.models.generate_content = AsyncMock(
+            return_value=mock_response
+        )
+
+        result = await provider.ask(
+            system_prompt="system",
+            user_message="질문",
+        )
+
+        assert result.answer == "Gemini 분석 결과입니다."
+        assert result.provider == "gemini"
+        assert result.usage == {"input_tokens": 200, "output_tokens": 100}
+
+    @pytest.mark.asyncio
+    async def test_ask_error_maps_to_provider_error(self):
+        from app.services.ai_providers.gemini_provider import GeminiProvider
+
+        with patch("app.services.ai_providers.gemini_provider.genai"):
+            provider = GeminiProvider(api_key="test-key")
+
+        provider.client = MagicMock()
+        provider.client.aio.models.generate_content = AsyncMock(
+            side_effect=Exception("API error")
+        )
+
+        with pytest.raises(AiProviderError) as exc_info:
+            await provider.ask(system_prompt="s", user_message="q")
+
+        assert "실패" in exc_info.value.user_message
