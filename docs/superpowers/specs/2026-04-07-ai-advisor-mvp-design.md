@@ -275,7 +275,7 @@ async def _generate_context(self, *, user_id, scope, preset, **kwargs):
         return result["content"]
 ```
 
-**핵심:** `AIMarkdownService`가 이미 생성하는 markdown 문자열의 `content` 필드를 그대로 system prompt에 넣음. 별도 변환 없음.
+**핵심:** AIMarkdownService의 markdown 생성 로직은 그대로 재사용하고, advisor 쪽은 `## 질문` 섹션 분리 등 최소 전처리만 수행.
 
 ### System Prompt / User Prompt 경계
 
@@ -311,17 +311,23 @@ async def _generate_context(self, *, user_id, scope, preset, **kwargs):
 
 → **방법 A 채택.** `## 질문` 이전까지를 context로, 사용자 입력을 user message로 깔끔하게 분리.
 
-구현: `_generate_context()`에서 `result["content"]`를 `## 질문` 기준으로 split하여 앞부분만 사용.
+구현: `_generate_context()`에서 `result["content"]`를 `## 질문` 기준으로 split하여 앞부분만 사용. 이 로직은 fragile할 수 있으므로 전용 helper로 분리하고, marker가 없으면 전체 content를 fallback으로 사용.
 
 ```python
-def _extract_context_before_question(self, content: str) -> str:
-    """'## 질문' 섹션 이전까지만 추출."""
+def extract_context_before_question(content: str) -> str:
+    """'## 질문' 섹션 이전까지만 추출.
+
+    marker가 없으면 content 전체를 그대로 반환 (fallback).
+    AIMarkdownService의 출력 형식이 바뀌어도 안전하게 동작.
+    """
     marker = "\n## 질문"
     idx = content.find(marker)
     if idx != -1:
         return content[:idx].rstrip()
     return content
 ```
+
+이 함수는 `ai_advisor_service.py` 내 모듈 레벨 helper로 배치. `_generate_context()`에서 호출.
 
 ### System Prompt 래퍼
 
@@ -527,22 +533,33 @@ async function submitQuestion() {
 }
 ```
 
-markdown → HTML 변환: 프로젝트에 markdown 렌더러가 없으면 간단한 방법 사용. 선택지:
-1. CDN으로 `marked.js` 추가 (가볍고 널리 사용)
-2. 서버에서 HTML로 변환하여 응답 (추가 복잡도)
+markdown → HTML 변환: 기존 프로젝트에 markdown 렌더링 라이브러리가 이미 있으면 그것을 재사용. 없을 경우에만 CDN으로 `marked.js` 추가 (가볍고 기존 CDN 패턴과 일치).
 
-→ `marked.js` CDN 추천. 기존 프로젝트가 CDN 방식(Bootstrap, Bootstrap Icons)을 이미 사용 중.
+### 에러 처리 원칙
 
-### 에러/Fallback UX
+서버 에러와 외부 provider 에러를 구분하여 HTTP status를 다르게 사용:
+
+| 상황 | HTTP Status | 응답 형태 |
+|------|-------------|-----------|
+| Bad input (잘못된 scope/preset) | **400** | `{ "detail": "..." }` |
+| 존재하지 않는 provider 지정 | **400** | `{ "detail": "..." }` |
+| 인증 없이 호출 | **401** | `{ "detail": "..." }` |
+| Position not found | **404** | `{ "detail": "..." }` |
+| 외부 provider rate limit (429) | **200** | `{ "success": false, "error": "요청 한도 초과..." }` |
+| 외부 provider timeout | **200** | `{ "success": false, "error": "응답 시간 초과..." }` |
+| 외부 provider auth 실패 | **200** | `{ "success": false, "error": "API 인증 실패..." }` |
+| 외부 provider 기타 에러 | **200** | `{ "success": false, "error": "AI 응답 생성 실패..." }` |
+
+**원칙:** 클라이언트 잘못(bad input, auth)이나 서버 리소스 부재(position not found)는 4xx. 요청 자체는 올바르지만 외부 provider 호출이 실패한 경우는 200 + `success: false`로 일관 처리. 프론트에서는 `res.ok`이면 `data.success`를 추가 확인하는 2단계 체크.
+
+### Fallback UX
 
 | 상황 | UI 표시 |
 |------|---------|
 | Provider 0개 (키 미설정) | 패널에 "AI 상담을 사용하려면 API 키를 설정하세요" 안내. 입력 비활성화. |
-| Rate limit (429) | 경고 alert: "요청 한도 초과. 잠시 후 다시 시도해주세요." |
-| Timeout | 경고 alert: "응답 시간 초과. 다른 모델이나 짧은 질문으로 다시 시도해주세요." |
-| Auth error | 경고 alert: "API 인증 실패. 설정을 확인해주세요." |
-| Position not found | 경고 alert: "종목 정보를 찾을 수 없습니다." |
-| 네트워크 에러 | 경고 alert: "네트워크 오류. 연결을 확인해주세요." |
+| 4xx 에러 | 경고 alert: 서버 반환 메시지 표시 |
+| `success: false` (provider 실패) | 경고 alert: `error` 필드 메시지 표시 |
+| 네트워크 에러 (fetch 실패) | 경고 alert: "네트워크 오류. 연결을 확인해주세요." |
 
 ## 구현 순서
 
@@ -587,11 +604,16 @@ markdown → HTML 변환: 프로젝트에 markdown 렌더러가 없으면 간단
   - rate limit → `AiProviderError`
   - timeout → `AiProviderError`
   - auth error → `AiProviderError`
+- `extract_context_before_question()` helper:
+  - `## 질문` marker 있을 때 올바르게 분리
+  - marker 없을 때 전체 content fallback
 - API endpoint — `TestClient`로:
   - `GET /providers` 응답 형태
   - `POST /ai-advice` 정상 흐름
   - 잘못된 provider / scope → 400
   - 인증 없이 호출 → 401
+  - position not found → 404
+  - provider 실패 → 200 + `success: false`
 
 ### 수동 확인
 - `/portfolio/`에서 AI 질문 패널 열기 → provider 선택 → 질문 → 응답 표시
