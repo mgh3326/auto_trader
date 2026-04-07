@@ -286,3 +286,192 @@ class TestAiAdvisorSchemas:
         )
         assert len(resp.providers) == 2
         assert resp.default_provider == "gemini"
+
+
+class TestExtractContextBeforeQuestion:
+    def test_splits_at_question_marker(self):
+        from app.services.ai_advisor_service import extract_context_before_question
+
+        content = "# 제목\n\n## 투자 성향\n내용\n\n## 질문\n질문 내용\n\n## 원하는 답변 형식\n형식"
+        result = extract_context_before_question(content)
+        assert result == "# 제목\n\n## 투자 성향\n내용"
+        assert "## 질문" not in result
+
+    def test_returns_full_content_when_no_marker(self):
+        from app.services.ai_advisor_service import extract_context_before_question
+
+        content = "# 제목\n\n## 투자 성향\n내용만 있음"
+        result = extract_context_before_question(content)
+        assert result == content
+
+    def test_empty_content(self):
+        from app.services.ai_advisor_service import extract_context_before_question
+
+        assert extract_context_before_question("") == ""
+
+
+class TestAiAdvisorService:
+    @pytest.fixture
+    def mock_markdown_service(self):
+        service = MagicMock()
+        service.generate_portfolio_stance_markdown.return_value = {
+            "content": "# 포트폴리오\n\n## 투자 성향\n내용\n\n## 질문\n기존 질문",
+            "title": "test",
+            "filename": "test.md",
+            "metadata": {},
+        }
+        service.generate_stock_stance_markdown.return_value = {
+            "content": "# AAPL 스탠스\n\n## 현재 포지션\n내용\n\n## 질문\n기존 질문",
+            "title": "test",
+            "filename": "test.md",
+            "metadata": {},
+        }
+        service.generate_stock_add_or_hold_markdown.return_value = {
+            "content": "# AAPL 추가매수\n\n## 현재 포지션\n내용\n\n## 질문\n기존 질문",
+            "title": "test",
+            "filename": "test.md",
+            "metadata": {},
+        }
+        return service
+
+    @pytest.fixture
+    def mock_overview_service(self):
+        service = AsyncMock()
+        service.get_overview.return_value = {
+            "success": True,
+            "positions": [{"symbol": "AAPL", "name": "Apple"}],
+        }
+        return service
+
+    @pytest.fixture
+    def mock_detail_service(self):
+        service = AsyncMock()
+        service.get_page_payload.return_value = {
+            "summary": {"symbol": "AAPL", "name": "Apple", "market_type": "US"},
+            "weights": {},
+            "journal": {},
+        }
+        return service
+
+    @pytest.fixture
+    def advisor_service(
+        self, mock_markdown_service, mock_overview_service, mock_detail_service
+    ):
+        from app.services.ai_advisor_service import AiAdvisorService
+
+        service = AiAdvisorService(
+            markdown_service=mock_markdown_service,
+            overview_service=mock_overview_service,
+            detail_service=mock_detail_service,
+        )
+        return service
+
+    def test_no_providers_when_no_keys(self, advisor_service):
+        assert advisor_service.available_providers() == []
+
+    def test_registers_provider_when_key_set(
+        self, mock_markdown_service, mock_overview_service, mock_detail_service
+    ):
+        from app.services.ai_advisor_service import (
+            AiAdvisorService,
+            get_configured_providers,
+        )
+        from app.services.ai_providers.openai_provider import OpenAIProvider
+
+        fake_providers = {"openai": OpenAIProvider(api_key="sk-test")}
+        with patch(
+            "app.services.ai_advisor_service.get_configured_providers",
+            return_value=fake_providers,
+        ):
+            service = AiAdvisorService(
+                markdown_service=mock_markdown_service,
+                overview_service=mock_overview_service,
+                detail_service=mock_detail_service,
+            )
+            providers = service.available_providers()
+            assert len(providers) == 1
+            assert providers[0]["name"] == "openai"
+
+    @pytest.mark.asyncio
+    async def test_ask_portfolio_scope(self, advisor_service, mock_overview_service):
+        mock_provider = AsyncMock()
+        mock_provider.provider_name = "test"
+        mock_provider.default_model = "test-model"
+        mock_provider.ask.return_value = AiProviderResult(
+            answer="분석 결과",
+            provider="test",
+            model="test-model",
+            usage=None,
+            elapsed_ms=1000,
+        )
+        advisor_service.providers["test"] = mock_provider
+
+        result = await advisor_service.ask(
+            user_id=1,
+            scope="portfolio",
+            preset=PresetType.PORTFOLIO_STANCE,
+            provider="test",
+            question="비중 조절 필요한 종목?",
+        )
+
+        assert result.success is True
+        assert result.answer == "분석 결과"
+        mock_overview_service.get_overview.assert_awaited_once()
+
+        # Verify context was stripped of ## 질문
+        call_args = mock_provider.ask.call_args
+        system_prompt = call_args.kwargs.get("system_prompt") or call_args[0][0]
+        assert "## 질문" not in system_prompt
+        assert "투자 성향" in system_prompt
+
+    @pytest.mark.asyncio
+    async def test_ask_position_scope_add_or_hold(
+        self, advisor_service, mock_detail_service
+    ):
+        mock_provider = AsyncMock()
+        mock_provider.provider_name = "test"
+        mock_provider.default_model = "test-model"
+        mock_provider.ask.return_value = AiProviderResult(
+            answer="추가매수 분석",
+            provider="test",
+            model="test-model",
+            usage=None,
+            elapsed_ms=500,
+        )
+        advisor_service.providers["test"] = mock_provider
+
+        result = await advisor_service.ask(
+            user_id=1,
+            scope="position",
+            preset=PresetType.STOCK_ADD_OR_HOLD,
+            provider="test",
+            question="추가매수 해도 될까?",
+            market_type="US",
+            symbol="AAPL",
+        )
+
+        assert result.success is True
+        assert result.answer == "추가매수 분석"
+        mock_detail_service.get_page_payload.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_ask_provider_error_propagates(self, advisor_service):
+        mock_provider = AsyncMock()
+        mock_provider.provider_name = "test"
+        mock_provider.default_model = "test-model"
+        mock_provider.ask.side_effect = AiProviderError(
+            user_message="요청 한도 초과",
+            detail="429",
+        )
+        advisor_service.providers["test"] = mock_provider
+
+        with pytest.raises(AiProviderError) as exc_info:
+            await advisor_service.ask(
+                user_id=1,
+                scope="portfolio",
+                preset=PresetType.PORTFOLIO_STANCE,
+                provider="test",
+                question="질문",
+            )
+
+        assert "한도 초과" in exc_info.value.user_message
