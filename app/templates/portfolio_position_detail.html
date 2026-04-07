@@ -993,7 +993,151 @@
             closeMarkdownModal();
         }
     });
+
+    // --- AI Advisor ---
+    const ADVISOR_SCOPE = "position";
+    const ADVISOR_MARKET_TYPE = "{{ page_payload.summary.market_type }}";
+    const ADVISOR_SYMBOL = "{{ page_payload.summary.symbol }}";
+
+    let advisorPanelOpen = false;
+    let advisorProvidersLoaded = false;
+
+    function toggleAdvisorPanel() {
+        advisorPanelOpen = !advisorPanelOpen;
+        document.getElementById('advisorPanel').style.display = advisorPanelOpen ? 'block' : 'none';
+        if (advisorPanelOpen && !advisorProvidersLoaded) {
+            loadAdvisorProviders();
+        }
+    }
+
+    async function loadAdvisorProviders() {
+        try {
+            const res = await fetch('/portfolio/api/ai-advice/providers');
+            const data = await res.json();
+            const select = document.getElementById('advisorProvider');
+            select.innerHTML = '';
+            if (data.providers.length === 0) {
+                select.innerHTML = '<option disabled>API 키를 설정하세요</option>';
+                document.getElementById('advisorSubmit').disabled = true;
+                document.getElementById('advisorQuestion').disabled = true;
+                return;
+            }
+            data.providers.forEach(p => {
+                const opt = document.createElement('option');
+                opt.value = p.name;
+                opt.textContent = `${p.name} (${p.default_model})`;
+                if (p.name === data.default_provider) opt.selected = true;
+                select.appendChild(opt);
+            });
+            advisorProvidersLoaded = true;
+        } catch (e) {
+            document.getElementById('advisorProvider').innerHTML =
+                '<option disabled>로딩 실패</option>';
+        }
+    }
+
+    async function submitAdvisorQuestion() {
+        const question = document.getElementById('advisorQuestion').value.trim();
+        if (!question) return;
+
+        const btn = document.getElementById('advisorSubmit');
+        const loading = document.getElementById('advisorLoading');
+        const responseEl = document.getElementById('advisorResponse');
+
+        btn.disabled = true;
+        loading.style.display = 'block';
+
+        try {
+            const res = await fetch('/portfolio/api/ai-advice', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    scope: ADVISOR_SCOPE,
+                    preset: document.getElementById('advisorPreset').value,
+                    provider: document.getElementById('advisorProvider').value,
+                    model: null,
+                    question: question,
+                    market_type: ADVISOR_MARKET_TYPE,
+                    symbol: ADVISOR_SYMBOL,
+                }),
+            });
+
+            if (!res.ok) {
+                const err = await res.json();
+                responseEl.innerHTML = `<div class="alert alert-warning" style="font-size:0.85rem;">${err.detail || '요청 실패'}</div>`;
+                return;
+            }
+
+            const data = await res.json();
+            if (data.success) {
+                responseEl.innerHTML =
+                    '<div style="font-size:0.85rem;line-height:1.6;">' +
+                    marked.parse(data.answer) +
+                    '</div>' +
+                    '<small style="color:var(--text-secondary,#999);">' +
+                    data.provider + ' / ' + data.model +
+                    (data.elapsed_ms ? ' / ' + (data.elapsed_ms / 1000).toFixed(1) + 's' : '') +
+                    '</small>';
+            } else {
+                responseEl.innerHTML = `<div class="alert alert-warning" style="font-size:0.85rem;">${data.error}</div>`;
+            }
+        } catch (e) {
+            responseEl.innerHTML = '<div class="alert alert-warning" style="font-size:0.85rem;">네트워크 오류. 연결을 확인해주세요.</div>';
+        } finally {
+            btn.disabled = false;
+            loading.style.display = 'none';
+        }
+    }
+
+    // Submit on Ctrl+Enter
+    document.getElementById('advisorQuestion').addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault();
+            submitAdvisorQuestion();
+        }
+    });
   </script>
+
+  <!-- AI Advisor Panel -->
+  <div class="ai-advisor-fab" id="advisorFab" onclick="toggleAdvisorPanel()" title="AI 상담"
+       style="position:fixed;bottom:2rem;right:2rem;width:56px;height:56px;border-radius:50%;background:var(--accent,#c05a3c);color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 4px 12px rgba(0,0,0,0.2);z-index:1050;font-size:1.5rem;">
+    <i class="bi bi-robot"></i>
+  </div>
+
+  <div class="ai-advisor-panel" id="advisorPanel"
+       style="display:none;position:fixed;bottom:6rem;right:2rem;width:420px;max-height:70vh;background:var(--bg-card,#fff);border-radius:1rem;box-shadow:0 12px 40px rgba(0,0,0,0.15);z-index:1049;overflow:hidden;font-family:inherit;">
+    <div style="padding:1rem 1.25rem;border-bottom:1px solid var(--border,#e5e0db);">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <strong>AI 상담</strong>
+        <button onclick="toggleAdvisorPanel()" style="background:none;border:none;font-size:1.2rem;cursor:pointer;color:var(--text-secondary,#888);">&times;</button>
+      </div>
+      <div style="display:flex;gap:0.5rem;margin-top:0.75rem;">
+        <select id="advisorProvider" style="flex:1;padding:0.4rem;border:1px solid var(--border,#ddd);border-radius:0.5rem;font-size:0.85rem;background:var(--bg-page,#fff);">
+        </select>
+        <select id="advisorPreset" style="flex:1;padding:0.4rem;border:1px solid var(--border,#ddd);border-radius:0.5rem;font-size:0.85rem;background:var(--bg-page,#fff);">
+          <option value="stock_stance">스탠스 분석</option>
+          <option value="stock_add_or_hold">추가매수 vs 유지</option>
+        </select>
+      </div>
+    </div>
+    <div style="padding:1rem 1.25rem;max-height:calc(70vh - 200px);overflow-y:auto;" id="advisorResponseArea">
+      <div id="advisorResponse"></div>
+    </div>
+    <div style="padding:0.75rem 1.25rem;border-top:1px solid var(--border,#e5e0db);">
+      <div style="display:flex;gap:0.5rem;">
+        <textarea id="advisorQuestion" rows="2" placeholder="질문을 입력하세요..."
+                  style="flex:1;padding:0.5rem;border:1px solid var(--border,#ddd);border-radius:0.5rem;font-size:0.85rem;resize:none;font-family:inherit;"></textarea>
+        <button id="advisorSubmit" onclick="submitAdvisorQuestion()"
+                style="padding:0.5rem 1rem;background:var(--accent,#c05a3c);color:#fff;border:none;border-radius:0.5rem;cursor:pointer;font-size:0.85rem;white-space:nowrap;">
+          질문하기
+        </button>
+      </div>
+      <div id="advisorLoading" style="display:none;text-align:center;padding:0.5rem;color:var(--text-secondary,#888);font-size:0.85rem;">
+        <span class="spinner-border spinner-border-sm"></span> 분석 중...
+      </div>
+      <small style="display:block;margin-top:0.5rem;color:var(--text-secondary,#999);font-size:0.75rem;">AI 분석 보조 도구이며 투자 자문이 아닙니다.</small>
+    </div>
+  </div>
 </body>
 
 </html>
