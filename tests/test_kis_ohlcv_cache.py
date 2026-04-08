@@ -7,137 +7,7 @@ import pytest
 
 from app.core.timezone import KST
 from app.services import kis_ohlcv_cache
-
-
-class _FakePipeline:
-    def __init__(self, redis_client):
-        self.redis_client = redis_client
-        self.commands: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
-
-    def zremrangebyrank(self, *args, **kwargs):
-        self.commands.append(("zremrangebyrank", args, kwargs))
-        return self
-
-    def hdel(self, *args, **kwargs):
-        self.commands.append(("hdel", args, kwargs))
-        return self
-
-    def zadd(self, *args, **kwargs):
-        self.commands.append(("zadd", args, kwargs))
-        return self
-
-    def hset(self, *args, **kwargs):
-        self.commands.append(("hset", args, kwargs))
-        return self
-
-    async def execute(self):
-        results = []
-        for method_name, args, kwargs in self.commands:
-            method = getattr(self.redis_client, method_name)
-            results.append(await method(*args, **kwargs))
-        self.commands.clear()
-        return results
-
-
-class _FakeRedis:
-    def __init__(self):
-        self.zsets: dict[str, dict[str, float]] = {}
-        self.hashes: dict[str, dict[str, str]] = {}
-        self.strings: dict[str, str] = {}
-
-    def pipeline(self, transaction: bool = True):
-        del transaction
-        return _FakePipeline(self)
-
-    async def set(self, key: str, value: str, nx: bool = False, ex: int | None = None):
-        del ex
-        if nx and key in self.strings:
-            return False
-        self.strings[key] = value
-        return True
-
-    async def eval(self, script: str, key_count: int, key: str, token: str):
-        del script, key_count
-        if self.strings.get(key) == token:
-            self.strings.pop(key, None)
-            return 1
-        return 0
-
-    async def zadd(self, key: str, mapping: dict[str, int | float]):
-        zset = self.zsets.setdefault(key, {})
-        inserted = 0
-        for member, score in mapping.items():
-            if member not in zset:
-                inserted += 1
-            zset[member] = float(score)
-        return inserted
-
-    async def zcard(self, key: str):
-        return len(self.zsets.get(key, {}))
-
-    async def zrange(self, key: str, start: int, end: int):
-        items = sorted(
-            self.zsets.get(key, {}).items(), key=lambda item: (item[1], item[0])
-        )
-        members = [member for member, _ in items]
-        if not members:
-            return []
-        if end < 0:
-            end = len(members) + end
-        if end < start:
-            return []
-        return members[start : end + 1]
-
-    async def zrevrange(self, key: str, start: int, end: int):
-        items = sorted(
-            self.zsets.get(key, {}).items(),
-            key=lambda item: (item[1], item[0]),
-            reverse=True,
-        )
-        members = [member for member, _ in items]
-        if not members:
-            return []
-        if end < 0:
-            end = len(members) + end
-        if end < start:
-            return []
-        return members[start : end + 1]
-
-    async def zremrangebyrank(self, key: str, start: int, end: int):
-        members = await self.zrange(key, 0, -1)
-        if not members:
-            return 0
-        if end < 0:
-            end = len(members) + end
-        if end < start:
-            return 0
-        removable = members[start : end + 1]
-        zset = self.zsets.get(key, {})
-        for member in removable:
-            zset.pop(member, None)
-        return len(removable)
-
-    async def hset(self, key: str, mapping: dict[str, str]):
-        target = self.hashes.setdefault(key, {})
-        inserted = 0
-        for field, value in mapping.items():
-            if field not in target:
-                inserted += 1
-            target[field] = value
-        return inserted
-
-    async def hmget(self, key: str, fields: list[str]):
-        target = self.hashes.get(key, {})
-        return [target.get(field) for field in fields]
-
-    async def hdel(self, key: str, *fields: str):
-        target = self.hashes.get(key, {})
-        removed = 0
-        for field in fields:
-            if field in target:
-                removed += 1
-                target.pop(field, None)
-        return removed
+from tests.ohlcv_cache_fakes import FakeRedis
 
 
 def _build_daily_frame(rows: int = 2) -> pd.DataFrame:
@@ -201,7 +71,7 @@ def test_is_session_day_kst_uses_xkrx_calendar() -> None:
 
 
 def _configure_cache_runtime(
-    monkeypatch, fake_redis: _FakeRedis, now: datetime
+    monkeypatch, fake_redis: FakeRedis, now: datetime
 ) -> None:
     async def mock_get_redis_client():
         return fake_redis
@@ -238,7 +108,7 @@ def test_keys_include_route_segment_for_same_symbol_period():
 
 @pytest.mark.asyncio
 async def test_get_candles_returns_cached_when_sufficient(monkeypatch):
-    fake_redis = _FakeRedis()
+    fake_redis = FakeRedis()
     symbol = "005930"
     dates_key, rows_key, _, _ = kis_ohlcv_cache._keys(symbol, "day")
     now = _kst_datetime(2026, 3, 13, 15, 35)
@@ -270,7 +140,7 @@ async def test_get_candles_returns_cached_when_sufficient(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_get_candles_refreshes_when_cached_rows_are_stale(monkeypatch):
-    fake_redis = _FakeRedis()
+    fake_redis = FakeRedis()
     symbol = "005930"
     dates_key, rows_key, _, _ = kis_ohlcv_cache._keys(symbol, "day")
     now = _kst_datetime(2026, 3, 13, 15, 0)
@@ -310,7 +180,7 @@ async def test_get_candles_refreshes_when_cached_rows_are_stale(monkeypatch):
 async def test_get_candles_refreshes_intraday_when_only_yesterday_is_cached(
     monkeypatch,
 ):
-    fake_redis = _FakeRedis()
+    fake_redis = FakeRedis()
     symbol = "005930"
     dates_key, rows_key, _, _ = kis_ohlcv_cache._keys(symbol, "day")
     now = _kst_datetime(2026, 3, 13, 15, 0)
@@ -343,7 +213,7 @@ async def test_get_candles_refreshes_intraday_when_only_yesterday_is_cached(
 
 @pytest.mark.asyncio
 async def test_get_candles_reuses_yesterday_before_open(monkeypatch):
-    fake_redis = _FakeRedis()
+    fake_redis = FakeRedis()
     symbol = "005930"
     dates_key, rows_key, _, _ = kis_ohlcv_cache._keys(symbol, "day")
     now = _kst_datetime(2026, 3, 13, 8, 59)
@@ -378,7 +248,7 @@ async def test_get_candles_reuses_yesterday_before_open(monkeypatch):
 async def test_get_candles_refreshes_before_open_when_previous_session_missing(
     monkeypatch,
 ):
-    fake_redis = _FakeRedis()
+    fake_redis = FakeRedis()
     symbol = "005930"
     dates_key, rows_key, _, _ = kis_ohlcv_cache._keys(symbol, "day")
     now = _kst_datetime(2026, 3, 13, 8, 59)
@@ -410,7 +280,7 @@ async def test_get_candles_refreshes_before_open_when_previous_session_missing(
 
 @pytest.mark.asyncio
 async def test_get_candles_reuses_today_after_cutoff(monkeypatch):
-    fake_redis = _FakeRedis()
+    fake_redis = FakeRedis()
     symbol = "005930"
     dates_key, rows_key, _, _ = kis_ohlcv_cache._keys(symbol, "day")
     now = _kst_datetime(2026, 3, 13, 15, 35)
@@ -443,7 +313,7 @@ async def test_get_candles_reuses_today_after_cutoff(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_get_candles_refreshes_after_cutoff_when_today_row_missing(monkeypatch):
-    fake_redis = _FakeRedis()
+    fake_redis = FakeRedis()
     symbol = "005930"
     dates_key, rows_key, _, _ = kis_ohlcv_cache._keys(symbol, "day")
     now = _kst_datetime(2026, 3, 13, 15, 35)

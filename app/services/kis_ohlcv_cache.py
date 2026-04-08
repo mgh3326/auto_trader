@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime, time, timedelta
 from functools import lru_cache
@@ -12,6 +11,12 @@ import redis.asyncio as redis
 
 from app.core.config import settings
 from app.core.timezone import KST, now_kst
+from app.services.ohlcv_cache_common import (
+    _acquire_lock,
+    _enforce_retention_limit,
+    _release_lock,
+    _to_json_value,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,14 +59,6 @@ def _keys(
 ) -> tuple[str, str, str, str]:
     base = _base_key(symbol, period, route)
     return f"{base}:dates", f"{base}:rows", f"{base}:meta", f"{base}:lock"
-
-
-def _to_json_value(value: object) -> object:
-    if pd.isna(value):
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    return value
 
 
 def _empty_dataframe(period: str) -> pd.DataFrame:
@@ -318,59 +315,6 @@ async def _read_cached_rows(
         if col not in out.columns:
             out[col] = None
     return out.loc[:, _DAY_COLUMNS].sort_values("date").reset_index(drop=True)
-
-
-async def _acquire_lock(
-    redis_client: redis.Redis,
-    lock_key: str,
-    ttl_seconds: int,
-) -> str | None:
-    token = f"{uuid.uuid4()}"
-    acquired = await redis_client.set(
-        lock_key,
-        token,
-        nx=True,
-        ex=max(int(ttl_seconds), 1),
-    )
-    if acquired:
-        return token
-    return None
-
-
-async def _release_lock(redis_client: redis.Redis, lock_key: str, token: str) -> None:
-    script = """
-    if redis.call('GET', KEYS[1]) == ARGV[1] then
-        return redis.call('DEL', KEYS[1])
-    else
-        return 0
-    end
-    """
-    try:
-        await redis_client.eval(script, 1, lock_key, token)
-    except Exception:
-        return
-
-
-async def _enforce_retention_limit(
-    redis_client: redis.Redis,
-    dates_key: str,
-    rows_key: str,
-    max_items: int,
-) -> int:
-    total_count = int(await redis_client.zcard(dates_key))
-    overflow = total_count - max_items
-    if overflow <= 0:
-        return 0
-
-    stale_fields = await redis_client.zrange(dates_key, 0, overflow - 1)
-    if not stale_fields:
-        return 0
-
-    pipe = redis_client.pipeline(transaction=True)
-    pipe.zremrangebyrank(dates_key, 0, overflow - 1)
-    pipe.hdel(rows_key, *stale_fields)
-    await pipe.execute()
-    return len(stale_fields)
 
 
 async def _upsert_rows(
