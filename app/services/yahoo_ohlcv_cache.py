@@ -1,7 +1,5 @@
 import asyncio
-import json
 import logging
-import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime, time, timedelta
 
@@ -10,10 +8,22 @@ import pandas as pd
 import redis.asyncio as redis
 
 from app.core.config import settings
+from app.services.ohlcv_cache_common import (
+    _acquire_lock,
+    _empty_dataframe,
+    _enforce_retention_limit,
+    _normalize_bool,
+    _read_cache_status,
+    _read_cached_rows,
+    _read_latest_date,
+    _read_oldest_date,
+    _refresh_meta,
+    _release_lock,
+    _upsert_rows,
+)
 
 logger = logging.getLogger(__name__)
 
-_EMPTY_COLUMNS = ["date", "open", "high", "low", "close", "volume", "value"]
 _SUPPORTED_PERIODS = {"day", "week", "month"}
 
 _REDIS_CLIENT: redis.Redis | None = None
@@ -134,12 +144,6 @@ def _bucket_gap_count(period: str, earlier: date, later: date) -> int:
     return max(month_gap, 0)
 
 
-def _epoch_day(value: date) -> int:
-    return int(
-        datetime(value.year, value.month, value.day, tzinfo=UTC).timestamp() // 86400
-    )
-
-
 def _base_key(ticker: str, period: str = "day") -> str:
     normalized_period = str(period or "day").strip().lower()
     normalized_ticker = str(ticker or "").strip().upper()
@@ -149,26 +153,6 @@ def _base_key(ticker: str, period: str = "day") -> str:
 def _keys(ticker: str, period: str = "day") -> tuple[str, str, str, str]:
     base = _base_key(ticker, period)
     return f"{base}:dates", f"{base}:rows", f"{base}:meta", f"{base}:lock"
-
-
-def _normalize_bool(value: str | bool | None) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return False
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _empty_dataframe() -> pd.DataFrame:
-    return pd.DataFrame(columns=_EMPTY_COLUMNS)
-
-
-def _to_json_value(value: object) -> object:
-    if pd.isna(value):
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    return value
 
 
 async def _get_redis_client() -> redis.Redis:
@@ -191,201 +175,6 @@ async def close_ohlcv_cache_redis() -> None:
         _REDIS_CLIENT = None
 
 
-async def _read_cached_rows(
-    redis_client: redis.Redis,
-    dates_key: str,
-    rows_key: str,
-    target_closed_date: date,
-    count: int,
-) -> pd.DataFrame:
-    if count <= 0:
-        return _empty_dataframe()
-
-    date_fields = await redis_client.zrevrangebyscore(
-        dates_key,
-        _epoch_day(target_closed_date),
-        "-inf",
-        start=0,
-        num=count,
-    )
-    if not date_fields:
-        return _empty_dataframe()
-
-    row_payloads = await redis_client.hmget(rows_key, date_fields)
-    rows: list[dict[str, object]] = []
-    for field, payload in zip(date_fields, row_payloads, strict=False):
-        if not payload:
-            continue
-        try:
-            parsed = json.loads(payload)
-        except (TypeError, json.JSONDecodeError):
-            continue
-        if not isinstance(parsed, dict):
-            continue
-        date_value = parsed.get("date", field)
-        try:
-            parsed["date"] = date.fromisoformat(str(date_value))
-        except ValueError:
-            continue
-        rows.append(parsed)
-
-    if not rows:
-        return _empty_dataframe()
-
-    frame = pd.DataFrame(rows)
-    for column in _EMPTY_COLUMNS:
-        if column not in frame.columns:
-            frame[column] = None
-
-    return frame.loc[:, _EMPTY_COLUMNS].sort_values("date").reset_index(drop=True)
-
-
-async def _acquire_lock(
-    redis_client: redis.Redis,
-    lock_key: str,
-    ttl_seconds: int,
-) -> str | None:
-    lock_token = f"{uuid.uuid4()}"
-    acquired = await redis_client.set(
-        lock_key,
-        lock_token,
-        nx=True,
-        ex=max(int(ttl_seconds), 1),
-    )
-    if acquired:
-        return lock_token
-    return None
-
-
-async def _release_lock(
-    redis_client: redis.Redis,
-    lock_key: str,
-    lock_token: str,
-) -> None:
-    release_script = """
-    if redis.call('GET', KEYS[1]) == ARGV[1] then
-        return redis.call('DEL', KEYS[1])
-    else
-        return 0
-    end
-    """
-    try:
-        await redis_client.eval(release_script, 1, lock_key, lock_token)
-    except Exception:
-        return
-
-
-async def _enforce_retention_limit(
-    redis_client: redis.Redis,
-    dates_key: str,
-    rows_key: str,
-    max_days: int,
-) -> int:
-    if max_days <= 0:
-        return 0
-
-    total_count = int(await redis_client.zcard(dates_key))
-    overflow = total_count - max_days
-    if overflow <= 0:
-        return 0
-
-    stale_dates = await redis_client.zrange(dates_key, 0, overflow - 1)
-    if not stale_dates:
-        return 0
-
-    pipeline = redis_client.pipeline(transaction=True)
-    pipeline.zremrangebyrank(dates_key, 0, overflow - 1)
-    pipeline.hdel(rows_key, *stale_dates)
-    await pipeline.execute()
-    return len(stale_dates)
-
-
-async def _upsert_rows(
-    redis_client: redis.Redis,
-    dates_key: str,
-    rows_key: str,
-    frame: pd.DataFrame,
-) -> int:
-    if frame.empty:
-        return 0
-
-    zadd_mapping: dict[str, int] = {}
-    hset_mapping: dict[str, str] = {}
-
-    for row in frame.itertuples(index=False):
-        row_date = getattr(row, "date", None)
-        if row_date is None:
-            continue
-        if not isinstance(row_date, date):
-            try:
-                row_date = pd.to_datetime(row_date).date()
-            except Exception:
-                continue
-
-        field = row_date.isoformat()
-        zadd_mapping[field] = _epoch_day(row_date)
-        payload = {
-            "date": field,
-            "open": _to_json_value(getattr(row, "open", None)),
-            "high": _to_json_value(getattr(row, "high", None)),
-            "low": _to_json_value(getattr(row, "low", None)),
-            "close": _to_json_value(getattr(row, "close", None)),
-            "volume": _to_json_value(getattr(row, "volume", None)),
-            "value": _to_json_value(getattr(row, "value", None)),
-        }
-        hset_mapping[field] = json.dumps(payload)
-
-    if not zadd_mapping or not hset_mapping:
-        return 0
-
-    pipeline = redis_client.pipeline(transaction=True)
-    pipeline.zadd(dates_key, zadd_mapping)
-    pipeline.hset(rows_key, mapping=hset_mapping)
-    await pipeline.execute()
-    return len(zadd_mapping)
-
-
-async def _read_oldest_date(redis_client: redis.Redis, dates_key: str) -> date | None:
-    oldest_dates = await redis_client.zrange(dates_key, 0, 0)
-    if not oldest_dates:
-        return None
-    try:
-        return date.fromisoformat(oldest_dates[0])
-    except ValueError:
-        return None
-
-
-async def _read_latest_date(redis_client: redis.Redis, dates_key: str) -> date | None:
-    latest_dates = await redis_client.zrevrangebyscore(
-        dates_key,
-        "+inf",
-        "-inf",
-        start=0,
-        num=1,
-    )
-    if not latest_dates:
-        return None
-    try:
-        return date.fromisoformat(latest_dates[0])
-    except ValueError:
-        return None
-
-
-async def _read_cache_status(
-    redis_client: redis.Redis,
-    dates_key: str,
-    meta_key: str,
-    target_closed_date: date,
-) -> tuple[int, date | None, bool]:
-    cached_count = int(
-        await redis_client.zcount(dates_key, "-inf", _epoch_day(target_closed_date))
-    )
-    latest_cached_date = await _read_latest_date(redis_client, dates_key)
-    meta = await redis_client.hgetall(meta_key)
-    oldest_confirmed = _normalize_bool(meta.get("oldest_confirmed"))
-    return cached_count, latest_cached_date, oldest_confirmed
-
-
 def _is_cache_sufficient(
     period: str,
     cached_count: int,
@@ -402,23 +191,6 @@ def _is_cache_sufficient(
     if cached_count >= requested_count:
         return True
     return oldest_confirmed
-
-
-async def _refresh_meta(
-    redis_client: redis.Redis,
-    dates_key: str,
-    meta_key: str,
-    target_closed_date: date,
-    oldest_confirmed: bool,
-) -> None:
-    oldest_date = await _read_oldest_date(redis_client, dates_key)
-    mapping = {
-        "last_closed_bucket": target_closed_date.isoformat(),
-        "oldest_date": oldest_date.isoformat() if oldest_date else "",
-        "oldest_confirmed": "true" if oldest_confirmed else "false",
-        "last_sync_ts": str(int(datetime.now(UTC).timestamp())),
-    }
-    await redis_client.hset(meta_key, mapping=mapping)
 
 
 async def _backfill_until_satisfied(
@@ -503,6 +275,7 @@ async def _backfill_until_satisfied(
                 meta_key,
                 target_closed_date,
                 oldest_confirmed,
+                meta_date_field="last_closed_bucket",
             )
             return
         if oldest_confirmed:
@@ -552,6 +325,7 @@ async def _backfill_until_satisfied(
         meta_key,
         target_closed_date,
         oldest_confirmed,
+        meta_date_field="last_closed_bucket",
     )
 
 
@@ -618,6 +392,7 @@ async def get_closed_candles(
                 meta_key,
                 target_closed_date,
                 oldest_confirmed,
+                meta_date_field="last_closed_bucket",
             )
             return cached.tail(requested_count).reset_index(drop=True)
 
