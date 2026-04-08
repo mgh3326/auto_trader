@@ -77,25 +77,32 @@ New test `test_all_flags_are_native_bool`:
   — `isinstance(numpy.bool_, bool)` is `False` on current numpy, but strict
   checking is more future-proof and documents the intent clearly
 
-**Layer 2: MCP structured output test** in `tests/test_mcp_portfolio_tools.py`
+**Layer 2: Pre-FastMCP Python payload test** in `tests/test_mcp_portfolio_tools.py`
+
+Validates the plain Python dict returned by the handler *before* FastMCP
+serialization touches it.
 
 New test `test_get_holdings_crypto_strategy_signal_native_types`:
 - Set up a crypto position with `profit_rate < 0` and mock OHLCV data producing
   voting results with sell_signal (to trigger the `bear_vote_exit` path that
   exposes `bear_flags` in the response)
-- Call `get_holdings(account="upbit", market="crypto")` via the handler
+- Call `get_holdings(account="upbit", market="crypto")` via the handler directly
 - Assert `strategy_signal` exists and `bear_flags` values are `type(v) is bool`
 - Assert `json.dumps(result)` succeeds (supplementary — catches any other
   non-serializable types)
 
-**Layer 3: FastMCP structured output test** in `tests/test_mcp_portfolio_tools.py`
+**Layer 3: FastMCP end-to-end structured output test** in `tests/test_mcp_portfolio_tools.py`
+
+Validates that the full FastMCP serialization pipeline produces usable
+structured output — the exact path that broke in production.
 
 New test `test_get_holdings_crypto_structured_output_survives_fastmcp`:
 - Register `get_holdings` on a real `FastMCP` instance (not `DummyMCP`)
 - Mock dependencies so the handler returns a crypto position with strategy signals
 - Call `mcp.call_tool("get_holdings", {"account": "upbit", "market": "crypto"})`
-- Assert `result.structured_content is not None`
-- This validates the actual serialization path that broke in production
+- Assert that the tool result carries structured output (not text-only fallback)
+- This catches any non-JSON-safe type that survives the handler but breaks
+  during FastMCP's serialization step
 
 ## Out of scope
 
