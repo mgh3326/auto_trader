@@ -2813,3 +2813,148 @@ async def test_get_holdings_crypto_strategy_signal_includes_voting(monkeypatch):
     # Either it's a stop_loss (with bear_votes) or some other signal
     if signal.get("reason") in ("stop_loss", "mean_reversion_exit", "bear_vote_exit"):
         assert "bear_votes" in signal
+
+
+@pytest.mark.asyncio
+async def test_get_holdings_crypto_strategy_signal_native_types(monkeypatch):
+    """Regression #463: strategy_signal values must be native JSON-safe types."""
+    import json
+
+    tools = build_tools()
+
+    # profit_rate = -2.0 (loss, but not stop-loss at -4.5)
+    # This + sell_signal=True triggers bear_vote_exit, which exposes bear_flags
+    mocked_positions = [
+        {
+            "symbol": "KRW-BTC",
+            "name": "Bitcoin",
+            "instrument_type": "crypto",
+            "market": "crypto",
+            "account": "upbit",
+            "broker": "upbit",
+            "account_name": "Upbit Main",
+            "quantity": 0.1,
+            "avg_buy_price": 50000000.0,
+            "current_price": 49000000.0,
+            "evaluation_amount": 4900000.0,
+            "profit_loss": -100000.0,
+            "profit_rate": -2.0,
+        }
+    ]
+
+    _patch_runtime_attr(
+        monkeypatch,
+        "_collect_portfolio_positions",
+        AsyncMock(return_value=(mocked_positions, [], "crypto", None)),
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "_get_indicators_impl",
+        AsyncMock(
+            return_value={"symbol": "KRW-BTC", "indicators": {"rsi": {"14": 55.0}}}
+        ),
+    )
+
+    # OHLCV: uptrend then sharp reversal -> produces sell_signal=True (bear_votes >= 2)
+    import numpy as np
+
+    closes = list(np.linspace(100, 200, 40)) + list(np.linspace(200, 130, 10))
+    df = pd.DataFrame(
+        {
+            "open": closes,
+            "high": [c * 1.01 for c in closes],
+            "low": [c * 0.99 for c in closes],
+            "close": closes,
+            "volume": [1000.0] * 50,
+        }
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "_fetch_ohlcv_for_indicators",
+        AsyncMock(return_value=df),
+    )
+
+    result = await tools["get_holdings"](account="upbit", market="crypto")
+    btc_position = result["accounts"][0]["positions"][0]
+
+    signal = btc_position.get("strategy_signal")
+    assert signal is not None, "strategy_signal missing from crypto position"
+    assert signal["reason"] == "bear_vote_exit"
+
+    # Core assertion: all bear_flags values must be native bool
+    for key, value in signal["bear_flags"].items():
+        assert type(value) is bool, f"bear_flags[{key}] is {type(value)}, not bool"
+
+    # Supplementary: entire result must be JSON-serializable
+    json.dumps(result)
+
+
+@pytest.mark.asyncio
+async def test_get_holdings_crypto_structured_output_survives_fastmcp(monkeypatch):
+    """Regression #463: FastMCP must produce structured output, not text-only fallback."""
+    from fastmcp import FastMCP
+
+    from app.mcp_server.tooling.registry import register_all_tools
+
+    mcp = FastMCP("test")
+    register_all_tools(mcp)
+
+    # Same setup as Layer 2: loss position + reversal OHLCV -> bear_vote_exit
+    mocked_positions = [
+        {
+            "symbol": "KRW-BTC",
+            "name": "Bitcoin",
+            "instrument_type": "crypto",
+            "market": "crypto",
+            "account": "upbit",
+            "broker": "upbit",
+            "account_name": "Upbit Main",
+            "quantity": 0.1,
+            "avg_buy_price": 50000000.0,
+            "current_price": 49000000.0,
+            "evaluation_amount": 4900000.0,
+            "profit_loss": -100000.0,
+            "profit_rate": -2.0,
+        }
+    ]
+
+    _patch_runtime_attr(
+        monkeypatch,
+        "_collect_portfolio_positions",
+        AsyncMock(return_value=(mocked_positions, [], "crypto", None)),
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "_get_indicators_impl",
+        AsyncMock(
+            return_value={"symbol": "KRW-BTC", "indicators": {"rsi": {"14": 55.0}}}
+        ),
+    )
+
+    import numpy as np
+
+    closes = list(np.linspace(100, 200, 40)) + list(np.linspace(200, 130, 10))
+    df = pd.DataFrame(
+        {
+            "open": closes,
+            "high": [c * 1.01 for c in closes],
+            "low": [c * 0.99 for c in closes],
+            "close": closes,
+            "volume": [1000.0] * 50,
+        }
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "_fetch_ohlcv_for_indicators",
+        AsyncMock(return_value=df),
+    )
+
+    tool_result = await mcp.call_tool(
+        "get_holdings", {"account": "upbit", "market": "crypto"}
+    )
+
+    # Core assertion: structured output must survive FastMCP serialization
+    assert tool_result.structured_content is not None, (
+        "structured_content is None — FastMCP failed to serialize the response. "
+        "This likely means a non-JSON-safe type (e.g. numpy.bool_) leaked through."
+    )

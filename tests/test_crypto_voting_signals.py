@@ -69,3 +69,17 @@ class TestCryptoVotingSignals:
         result = evaluator.evaluate(df)
         assert result is not None
         assert result.buy_signal is False  # uptrend won't trigger enough bull signals
+
+    def test_all_flags_are_native_bool(self, evaluator):
+        """Regression #463: numpy.bool_ breaks FastMCP structured output."""
+        # Uptrend then reversal — activates most indicators
+        closes = list(np.linspace(100, 200, 40)) + list(np.linspace(200, 130, 10))
+        df = _make_ohlcv_df(closes)
+        result = evaluator.evaluate(df)
+        assert result is not None
+        for key, value in result.bull_flags.items():
+            assert type(value) is bool, f"bull_flags[{key}] is {type(value)}, not bool"
+        for key, value in result.bear_flags.items():
+            assert type(value) is bool, f"bear_flags[{key}] is {type(value)}, not bool"
+        assert type(result.buy_signal) is bool, "buy_signal is not native bool"
+        assert type(result.sell_signal) is bool, "sell_signal is not native bool"
