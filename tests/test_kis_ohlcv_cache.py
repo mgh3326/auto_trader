@@ -70,9 +70,7 @@ def test_is_session_day_kst_uses_xkrx_calendar() -> None:
     assert kis_ohlcv_cache._is_session_day_kst(date(2026, 1, 2)) is True
 
 
-def _configure_cache_runtime(
-    monkeypatch, fake_redis: FakeRedis, now: datetime
-) -> None:
+def _configure_cache_runtime(monkeypatch, fake_redis: FakeRedis, now: datetime) -> None:
     async def mock_get_redis_client():
         return fake_redis
 

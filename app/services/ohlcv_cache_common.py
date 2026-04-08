@@ -4,6 +4,7 @@
 Upbit, Yahoo, KIS 캐시 모듈이 공유하는 순수 함수 모음.
 각 서비스 모듈에서 `from app.services.ohlcv_cache_common import ...` 로 사용.
 """
+
 import json
 import uuid
 from datetime import UTC, date, datetime
@@ -17,6 +18,7 @@ _EMPTY_COLUMNS = ["date", "open", "high", "low", "close", "volume", "value"]
 # ---------------------------------------------------------------------------
 # Pure utilities
 # ---------------------------------------------------------------------------
+
 
 def _to_json_value(value: object) -> object:
     if pd.isna(value):
@@ -36,8 +38,7 @@ def _normalize_bool(value: str | bool | None) -> bool:
 
 def _epoch_day(value: date) -> int:
     return int(
-        datetime(value.year, value.month, value.day, tzinfo=UTC).timestamp()
-        // 86400
+        datetime(value.year, value.month, value.day, tzinfo=UTC).timestamp() // 86400
     )
 
 
@@ -48,6 +49,7 @@ def _empty_dataframe() -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 # Redis lock
 # ---------------------------------------------------------------------------
+
 
 async def _acquire_lock(
     redis_client: redis.Redis,
@@ -88,6 +90,7 @@ async def _release_lock(
 # Retention
 # ---------------------------------------------------------------------------
 
+
 async def _enforce_retention_limit(
     redis_client: redis.Redis,
     dates_key: str,
@@ -117,9 +120,8 @@ async def _enforce_retention_limit(
 # Date helpers (upbit/yahoo shared)
 # ---------------------------------------------------------------------------
 
-async def _read_oldest_date(
-    redis_client: redis.Redis, dates_key: str
-) -> date | None:
+
+async def _read_oldest_date(redis_client: redis.Redis, dates_key: str) -> date | None:
     oldest_dates = await redis_client.zrange(dates_key, 0, 0)
     if not oldest_dates:
         return None
@@ -129,11 +131,13 @@ async def _read_oldest_date(
         return None
 
 
-async def _read_latest_date(
-    redis_client: redis.Redis, dates_key: str
-) -> date | None:
+async def _read_latest_date(redis_client: redis.Redis, dates_key: str) -> date | None:
     latest_dates = await redis_client.zrevrangebyscore(
-        dates_key, "+inf", "-inf", start=0, num=1,
+        dates_key,
+        "+inf",
+        "-inf",
+        start=0,
+        num=1,
     )
     if not latest_dates:
         return None
@@ -150,9 +154,7 @@ async def _read_cache_status(
     target_closed_date: date,
 ) -> tuple[int, date | None, bool]:
     cached_count = int(
-        await redis_client.zcount(
-            dates_key, "-inf", _epoch_day(target_closed_date)
-        )
+        await redis_client.zcount(dates_key, "-inf", _epoch_day(target_closed_date))
     )
     latest_cached_date = await _read_latest_date(redis_client, dates_key)
     meta = await redis_client.hgetall(meta_key)
@@ -163,6 +165,7 @@ async def _read_cache_status(
 # ---------------------------------------------------------------------------
 # Daily read/write (upbit/yahoo shared)
 # ---------------------------------------------------------------------------
+
 
 async def _read_cached_rows(
     redis_client: redis.Redis,
@@ -210,9 +213,7 @@ async def _read_cached_rows(
         if column not in frame.columns:
             frame[column] = None
 
-    return frame.loc[:, _EMPTY_COLUMNS].sort_values("date").reset_index(
-        drop=True
-    )
+    return frame.loc[:, _EMPTY_COLUMNS].sort_values("date").reset_index(drop=True)
 
 
 async def _upsert_rows(
@@ -263,6 +264,7 @@ async def _upsert_rows(
 # ---------------------------------------------------------------------------
 # Meta refresh (upbit/yahoo shared, parameterized)
 # ---------------------------------------------------------------------------
+
 
 async def _refresh_meta(
     redis_client: redis.Redis,

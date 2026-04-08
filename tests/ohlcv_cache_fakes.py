@@ -1,5 +1,6 @@
 # tests/ohlcv_cache_fakes.py
 """Shared fake Redis implementation for OHLCV cache tests."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -71,9 +72,7 @@ class FakeRedis:
             return 1
         return 0
 
-    async def zadd(
-        self, key: str, mapping: dict[str, int | float]
-    ) -> int:
+    async def zadd(self, key: str, mapping: dict[str, int | float]) -> int:
         zset = self.zsets.setdefault(key, {})
         inserted = 0
         for member, score in mapping.items():
@@ -94,9 +93,7 @@ class FakeRedis:
         zset = self.zsets.get(key, {})
         min_score = self._normalize_score(minimum, is_min=True)
         max_score = self._normalize_score(maximum, is_min=False)
-        return sum(
-            1 for score in zset.values() if min_score <= score <= max_score
-        )
+        return sum(1 for score in zset.values() if min_score <= score <= max_score)
 
     async def zrange(self, key: str, start: int, end: int) -> list[str]:
         items = sorted(
@@ -149,9 +146,7 @@ class FakeRedis:
             return members[start:]
         return members[start : start + num]
 
-    async def zremrangebyrank(
-        self, key: str, start: int, end: int
-    ) -> int:
+    async def zremrangebyrank(self, key: str, start: int, end: int) -> int:
         members = await self.zrange(key, 0, -1)
         if not members:
             return 0
@@ -191,9 +186,7 @@ class FakeRedis:
         return removed
 
     @staticmethod
-    def _normalize_score(
-        value: str | int | float, is_min: bool
-    ) -> float:
+    def _normalize_score(value: str | int | float, is_min: bool) -> float:
         if isinstance(value, str):
             if value == "-inf":
                 return float("-inf")

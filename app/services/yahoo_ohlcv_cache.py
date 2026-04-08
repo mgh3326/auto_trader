@@ -9,11 +9,9 @@ import redis.asyncio as redis
 
 from app.core.config import settings
 from app.services.ohlcv_cache_common import (
-    _EMPTY_COLUMNS,
     _acquire_lock,
     _empty_dataframe,
     _enforce_retention_limit,
-    _epoch_day,
     _normalize_bool,
     _read_cache_status,
     _read_cached_rows,
@@ -21,7 +19,6 @@ from app.services.ohlcv_cache_common import (
     _read_oldest_date,
     _refresh_meta,
     _release_lock,
-    _to_json_value,
     _upsert_rows,
 )
 

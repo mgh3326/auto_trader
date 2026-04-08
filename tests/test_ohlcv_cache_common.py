@@ -1,10 +1,9 @@
 # tests/test_ohlcv_cache_common.py
 """Tests for the shared OHLCV cache utility module."""
-import json
+
 from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock
 
-import pandas as pd
 import pytest
 
 from app.services import ohlcv_cache_common as common
@@ -50,9 +49,7 @@ class TestNormalizeBool:
 class TestEpochDay:
     def test_known_date(self):
         result = common._epoch_day(date(2026, 2, 14))
-        expected = int(
-            datetime(2026, 2, 14, tzinfo=UTC).timestamp() // 86400
-        )
+        expected = int(datetime(2026, 2, 14, tzinfo=UTC).timestamp() // 86400)
         assert result == expected
 
     def test_epoch_origin(self):
@@ -63,7 +60,13 @@ class TestEmptyDataframe:
     def test_has_correct_columns(self):
         df = common._empty_dataframe()
         assert list(df.columns) == [
-            "date", "open", "high", "low", "close", "volume", "value"
+            "date",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "value",
         ]
         assert len(df) == 0
 
@@ -112,9 +115,7 @@ class TestEnforceRetentionLimit:
     @pytest.mark.asyncio
     async def test_zero_max_returns_zero(self):
         redis_client = AsyncMock()
-        result = await common._enforce_retention_limit(
-            redis_client, "dates", "rows", 0
-        )
+        result = await common._enforce_retention_limit(redis_client, "dates", "rows", 0)
         assert result == 0
 
 
@@ -126,8 +127,11 @@ class TestRefreshMeta:
         redis_client.hset = AsyncMock()
 
         await common._refresh_meta(
-            redis_client, "dates", "meta",
-            date(2026, 2, 14), True,
+            redis_client,
+            "dates",
+            "meta",
+            date(2026, 2, 14),
+            True,
             meta_date_field="last_closed_bucket",
         )
 
@@ -143,8 +147,11 @@ class TestRefreshMeta:
         redis_client.hset = AsyncMock()
 
         await common._refresh_meta(
-            redis_client, "dates", "meta",
-            date(2026, 2, 14), False,
+            redis_client,
+            "dates",
+            "meta",
+            date(2026, 2, 14),
+            False,
         )
 
         call_args = redis_client.hset.call_args
