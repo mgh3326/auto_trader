@@ -7,6 +7,62 @@ from typing import Any, Protocol
 AutomationResult = dict[str, object]
 StepResults = list[dict[str, object]]
 
+from app.core.symbol import to_db_symbol
+
+
+@dataclass(slots=True)
+class StockContext:
+    """Per-stock context for automation workflows."""
+
+    symbol: str
+    name: str
+    avg_price: float
+    current_price: float
+    qty: int
+    is_manual: bool
+    exchange_code: str | None  # None for domestic
+
+
+def extract_domestic_stock_info(stock: dict[str, Any]) -> StockContext:
+    return StockContext(
+        symbol=stock.get("pdno", ""),
+        name=stock.get("prdt_name", ""),
+        avg_price=float(stock.get("pchs_avg_pric", 0)),
+        current_price=float(stock.get("prpr", 0)),
+        qty=int(float(stock.get("ord_psbl_qty", stock.get("hldg_qty", 0)))),
+        is_manual=stock.get("_is_manual", False),
+        exchange_code=None,
+    )
+
+
+def extract_overseas_stock_info(stock: dict[str, Any]) -> StockContext:
+    return StockContext(
+        symbol=stock.get("ovrs_pdno", ""),
+        name=stock.get("ovrs_item_name", ""),
+        avg_price=float(stock.get("pchs_avg_pric", 0)),
+        current_price=float(stock.get("now_pric2", 0)),
+        qty=int(float(stock.get("ord_psbl_qty", stock.get("ovrs_cblc_qty", 0)))),
+        is_manual=stock.get("_is_manual", False),
+        exchange_code=stock.get("ovrs_excg_cd"),  # raw, resolved later
+    )
+
+
+def match_domestic_stock(
+    stocks: list[dict[str, Any]], symbol: str
+) -> dict[str, Any] | None:
+    return next((s for s in stocks if s.get("pdno") == symbol), None)
+
+
+def match_overseas_stock(
+    stocks: list[dict[str, Any]], symbol: str
+) -> dict[str, Any] | None:
+    normalized = to_db_symbol(symbol)
+    return next(
+        (s for s in stocks if to_db_symbol(s.get("ovrs_pdno", "")) == normalized),
+        None,
+    )
+
+
 logger = logging.getLogger(__name__)
 
 
