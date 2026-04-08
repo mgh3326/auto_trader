@@ -6,166 +6,7 @@ import pandas as pd
 import pytest
 
 from app.services import upbit_ohlcv_cache
-
-
-class _FakePipeline:
-    def __init__(self, redis_client):
-        self.redis_client = redis_client
-        self.commands: list[tuple[str, tuple, dict]] = []
-
-    def zremrangebyrank(self, *args, **kwargs):
-        self.commands.append(("zremrangebyrank", args, kwargs))
-        return self
-
-    def hdel(self, *args, **kwargs):
-        self.commands.append(("hdel", args, kwargs))
-        return self
-
-    def zadd(self, *args, **kwargs):
-        self.commands.append(("zadd", args, kwargs))
-        return self
-
-    def hset(self, *args, **kwargs):
-        self.commands.append(("hset", args, kwargs))
-        return self
-
-    async def execute(self):
-        results = []
-        for method_name, args, kwargs in self.commands:
-            method = getattr(self.redis_client, method_name)
-            results.append(await method(*args, **kwargs))
-        self.commands.clear()
-        return results
-
-
-class _FakeRedis:
-    def __init__(self):
-        self.zsets: dict[str, dict[str, float]] = {}
-        self.hashes: dict[str, dict[str, str]] = {}
-        self.strings: dict[str, str] = {}
-
-    def pipeline(self, transaction: bool = True):
-        return _FakePipeline(self)
-
-    async def set(self, key: str, value: str, nx: bool = False, ex: int | None = None):
-        if nx and key in self.strings:
-            return False
-        self.strings[key] = value
-        return True
-
-    async def eval(self, script: str, key_count: int, key: str, token: str):
-        if self.strings.get(key) == token:
-            self.strings.pop(key, None)
-            return 1
-        return 0
-
-    async def zadd(self, key: str, mapping: dict[str, int | float]):
-        zset = self.zsets.setdefault(key, {})
-        inserted = 0
-        for member, score in mapping.items():
-            if member not in zset:
-                inserted += 1
-            zset[member] = float(score)
-        return inserted
-
-    async def zcard(self, key: str):
-        return len(self.zsets.get(key, {}))
-
-    async def zcount(
-        self, key: str, minimum: str | int | float, maximum: str | int | float
-    ):
-        zset = self.zsets.get(key, {})
-        min_score = self._normalize_score(minimum, is_min=True)
-        max_score = self._normalize_score(maximum, is_min=False)
-        return sum(1 for score in zset.values() if min_score <= score <= max_score)
-
-    async def zrange(self, key: str, start: int, end: int):
-        items = sorted(
-            self.zsets.get(key, {}).items(), key=lambda item: (item[1], item[0])
-        )
-        members = [member for member, _ in items]
-        if not members:
-            return []
-        if end < 0:
-            end = len(members) + end
-        if end < start:
-            return []
-        return members[start : end + 1]
-
-    async def zrevrangebyscore(
-        self,
-        key: str,
-        maximum: str | int | float,
-        minimum: str | int | float,
-        start: int = 0,
-        num: int | None = None,
-    ):
-        zset = self.zsets.get(key, {})
-        min_score = self._normalize_score(minimum, is_min=True)
-        max_score = self._normalize_score(maximum, is_min=False)
-        items = [
-            (member, score)
-            for member, score in zset.items()
-            if min_score <= score <= max_score
-        ]
-        items.sort(key=lambda item: (item[1], item[0]), reverse=True)
-        members = [member for member, _ in items]
-        if num is None:
-            return members[start:]
-        return members[start : start + num]
-
-    async def zremrangebyrank(self, key: str, start: int, end: int):
-        members = await self.zrange(key, 0, -1)
-        if not members:
-            return 0
-        if end < 0:
-            end = len(members) + end
-        if end < start:
-            return 0
-        removable = members[start : end + 1]
-        zset = self.zsets.get(key, {})
-        for member in removable:
-            zset.pop(member, None)
-        return len(removable)
-
-    async def hset(self, key: str, mapping: dict[str, str]):
-        target = self.hashes.setdefault(key, {})
-        inserted = 0
-        for field, value in mapping.items():
-            if field not in target:
-                inserted += 1
-            target[field] = value
-        return inserted
-
-    async def hmget(self, key: str, fields: list[str]):
-        target = self.hashes.get(key, {})
-        return [target.get(field) for field in fields]
-
-    async def hgetall(self, key: str):
-        return dict(self.hashes.get(key, {}))
-
-    async def hdel(self, key: str, *fields: str):
-        target = self.hashes.get(key, {})
-        removed = 0
-        for field in fields:
-            if field in target:
-                removed += 1
-                target.pop(field, None)
-        return removed
-
-    @staticmethod
-    def _normalize_score(value: str | int | float, is_min: bool) -> float:
-        if isinstance(value, str):
-            if value == "-inf":
-                return float("-inf")
-            if value == "+inf":
-                return float("inf")
-        parsed = float(value)
-        if parsed == float("-inf") and not is_min:
-            return float("-inf")
-        if parsed == float("inf") and is_min:
-            return float("inf")
-        return parsed
+from tests.ohlcv_cache_fakes import FakeRedis
 
 
 def _build_daily_frame(end_date: date, rows: int) -> pd.DataFrame:
@@ -264,7 +105,7 @@ def _reset_cache_state():
 
 @pytest.mark.asyncio
 async def test_get_closed_daily_candles_cache_hit(monkeypatch):
-    fake_redis = _FakeRedis()
+    fake_redis = FakeRedis()
     target_closed_date = date(2026, 2, 14)
     market = "KRW-BTC"
     dates_key, rows_key, _, _ = upbit_ohlcv_cache._keys(market)
@@ -304,7 +145,7 @@ async def test_get_closed_daily_candles_cache_hit(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_get_closed_daily_candles_partial_hit_backfills_only_missing(monkeypatch):
-    fake_redis = _FakeRedis()
+    fake_redis = FakeRedis()
     target_closed_date = date(2026, 2, 14)
     market = "KRW-BTC"
     dates_key, rows_key, _, _ = upbit_ohlcv_cache._keys(market)
@@ -353,7 +194,7 @@ async def test_get_closed_daily_candles_partial_hit_backfills_only_missing(monke
 async def test_get_closed_daily_candles_marks_oldest_confirmed_for_new_listing(
     monkeypatch,
 ):
-    fake_redis = _FakeRedis()
+    fake_redis = FakeRedis()
     target_closed_date = date(2026, 2, 14)
     market = "KRW-NEW"
     _, _, meta_key, _ = upbit_ohlcv_cache._keys(market)
@@ -391,7 +232,7 @@ async def test_get_closed_daily_candles_marks_oldest_confirmed_for_new_listing(
 
 @pytest.mark.asyncio
 async def test_get_closed_daily_candles_trims_excess_rows(monkeypatch):
-    fake_redis = _FakeRedis()
+    fake_redis = FakeRedis()
     target_closed_date = date(2026, 2, 14)
     market = "KRW-TRIM"
     dates_key, rows_key, _, _ = upbit_ohlcv_cache._keys(market)
@@ -435,7 +276,7 @@ async def test_get_closed_daily_candles_trims_excess_rows(monkeypatch):
 async def test_get_closed_daily_candles_refreshes_latest_closed_even_when_count_satisfied(
     monkeypatch,
 ):
-    fake_redis = _FakeRedis()
+    fake_redis = FakeRedis()
     previous_target = date(2026, 2, 14)
     next_target = previous_target + timedelta(days=1)
     market = "KRW-BTC"
@@ -486,7 +327,7 @@ async def test_get_closed_daily_candles_refreshes_latest_closed_even_when_count_
 async def test_get_closed_daily_candles_oldest_confirmed_still_refreshes_latest(
     monkeypatch,
 ):
-    fake_redis = _FakeRedis()
+    fake_redis = FakeRedis()
     previous_target = date(2026, 2, 14)
     next_target = previous_target + timedelta(days=1)
     market = "KRW-NEW"
@@ -538,7 +379,7 @@ async def test_get_closed_daily_candles_oldest_confirmed_still_refreshes_latest(
 async def test_get_closed_daily_candles_returns_none_when_lock_contention_and_cache_insufficient(
     monkeypatch,
 ):
-    fake_redis = _FakeRedis()
+    fake_redis = FakeRedis()
     target_closed_date = date(2026, 2, 14)
     market = "KRW-LOCK-MISS"
     acquire_mock = AsyncMock(return_value=None)
@@ -572,7 +413,7 @@ async def test_get_closed_daily_candles_returns_none_when_lock_contention_and_ca
 async def test_get_closed_daily_candles_returns_cached_when_lock_contention_but_data_becomes_sufficient(
     monkeypatch,
 ):
-    fake_redis = _FakeRedis()
+    fake_redis = FakeRedis()
     previous_target = date(2026, 2, 14)
     next_target = previous_target + timedelta(days=1)
     market = "KRW-LOCK-CACHED"
