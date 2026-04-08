@@ -58,6 +58,7 @@ def get_portfolio_dashboard_service(
 async def portfolio_dashboard_page(request: Request):
     user = getattr(request.state, "user", None)
     return templates.TemplateResponse(
+        request,
         "portfolio_dashboard.html",
         {
             "request": request,
