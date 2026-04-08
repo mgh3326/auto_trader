@@ -101,22 +101,22 @@ class CryptoVotingSignals:
 
         # Bull signals (6)
         bull_flags = {
-            "dual_rsi_oversold": (
+            "dual_rsi_oversold": bool(
                 rsi_slow <= RSI_OVERSOLD
                 and rsi_fast is not None
                 and rsi_fast <= RSI_OVERSOLD
             ),
-            "macd_histogram_positive": (macd_result is not None and macd_result[2] > 0),
-            "close_below_bb_lower": (
+            "macd_histogram_positive": bool(macd_result is not None and macd_result[2] > 0),
+            "close_below_bb_lower": bool(
                 bb_result is not None and current_close < bb_result[2]
             ),
-            "ema_fast_above_slow": (
+            "ema_fast_above_slow": bool(
                 ema_fast is not None
                 and ema_slow is not None
                 and ema_fast[-1] > ema_slow[-1]
             ),
-            "momentum_positive": momentum is not None and momentum > 0,
-            "volume_above_avg": (
+            "momentum_positive": bool(momentum is not None and momentum > 0),
+            "volume_above_avg": bool(
                 avg_volume is not None
                 and current_volume > avg_volume * VOLUME_THRESHOLD
             ),
@@ -125,17 +125,17 @@ class CryptoVotingSignals:
 
         # Bear signals (5)
         bear_flags = {
-            "macd_histogram_negative": (macd_result is not None and macd_result[2] < 0),
-            "close_above_bb_upper": (
+            "macd_histogram_negative": bool(macd_result is not None and macd_result[2] < 0),
+            "close_above_bb_upper": bool(
                 bb_result is not None and current_close > bb_result[0]
             ),
-            "ema_fast_below_slow": (
+            "ema_fast_below_slow": bool(
                 ema_fast is not None
                 and ema_slow is not None
                 and ema_fast[-1] < ema_slow[-1]
             ),
-            "momentum_negative": momentum is not None and momentum < 0,
-            "rsi_slow_high": rsi_slow > RSI_EXIT,
+            "momentum_negative": bool(momentum is not None and momentum < 0),
+            "rsi_slow_high": bool(rsi_slow > RSI_EXIT),
         }
         bear_votes = sum(1 for v in bear_flags.values() if v)
 
@@ -146,8 +146,8 @@ class CryptoVotingSignals:
             bear_votes=bear_votes,
             bull_flags=bull_flags,
             bear_flags=bear_flags,
-            buy_signal=bull_votes >= MIN_VOTES,
-            sell_signal=bear_votes >= MIN_SELL_VOTES,
+            buy_signal=bool(bull_votes >= MIN_VOTES),
+            sell_signal=bool(bear_votes >= MIN_SELL_VOTES),
         )
 
 
