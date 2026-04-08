@@ -83,6 +83,7 @@ async def users_management_page(
     users = result.scalars().all()
 
     return templates.TemplateResponse(
+        request,
         "admin_users.html",
         {
             "request": request,
