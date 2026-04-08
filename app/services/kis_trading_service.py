@@ -12,7 +12,8 @@ Stage 1 Refactoring (2026-03):
 
 import asyncio
 import logging
-from typing import Any, cast
+from dataclasses import dataclass
+from typing import Any, Protocol, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -70,6 +71,102 @@ def _present_prices(*values: object) -> list[float]:
         if coerced is not None:
             prices.append(coerced)
     return prices
+
+
+class SupportsOrderExecution(Protocol):
+    """Market-specific order execution abstraction."""
+
+    market: str
+
+    async def place_order(
+        self,
+        kis: KISClient,
+        symbol: str,
+        order_type: str,
+        quantity: int,
+        price: float,
+        *,
+        exchange_code: str | None = None,
+    ) -> dict[str, Any]: ...
+
+    async def adjust_sell_qty(
+        self, kis: KISClient, symbol: str, balance_qty: int
+    ) -> int: ...
+
+    def resolve_exchange_code(
+        self, settings: Any, fallback: str | None
+    ) -> str | None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class DomesticOrderOps:
+    market: str = "domestic"
+
+    async def place_order(
+        self, kis, symbol, order_type, quantity, price, *, exchange_code=None
+    ):
+        return await kis.order_korea_stock(
+            stock_code=symbol,
+            order_type=order_type,
+            quantity=quantity,
+            price=int(price),
+        )
+
+    async def adjust_sell_qty(self, kis, symbol, balance_qty):
+        return balance_qty
+
+    def resolve_exchange_code(self, settings, fallback):
+        return None
+
+
+@dataclass(frozen=True, slots=True)
+class OverseasOrderOps:
+    market: str = "overseas"
+
+    async def place_order(
+        self, kis, symbol, order_type, quantity, price, *, exchange_code=None
+    ):
+        return await kis.order_overseas_stock(
+            symbol=symbol,
+            exchange_code=exchange_code,
+            order_type=order_type,
+            quantity=quantity,
+            price=price,
+        )
+
+    async def adjust_sell_qty(self, kis, symbol, balance_qty):
+        my_stocks = await kis.fetch_my_overseas_stocks()
+        normalized = to_db_symbol(symbol)
+        target = next(
+            (
+                s
+                for s in my_stocks
+                if to_db_symbol(s.get("ovrs_pdno", "")) == normalized
+            ),
+            None,
+        )
+        if target:
+            actual = _coerce_positive_int(
+                target.get("ord_psbl_qty", target.get("ovrs_cblc_qty", 0))
+            )
+            if actual < balance_qty:
+                logger.info(
+                    "[%s] 주문가능수량 조정: %s -> %s (KIS 계좌 기준)",
+                    symbol,
+                    balance_qty,
+                    actual,
+                )
+                balance_qty = actual
+        return balance_qty
+
+    def resolve_exchange_code(self, settings, fallback):
+        if settings and settings.exchange_code:
+            return settings.exchange_code
+        return fallback
+
+
+_DOMESTIC_OPS = DomesticOrderOps()
+_OVERSEAS_OPS = OverseasOrderOps()
 
 
 # =============================================================================
