@@ -475,13 +475,13 @@ def get_ai_advisor_service(
 @router.get("/api/ai-advice/providers", response_model=AiProvidersResponse)
 async def get_ai_providers(
     current_user: User = Depends(get_authenticated_user),
+    advisor_service: AiAdvisorService = Depends(get_ai_advisor_service),
 ):
     from app.core.config import settings
-    from app.services.ai_advisor_service import get_configured_providers
 
     providers = [
-        ProviderInfo(name=name, default_model=p.default_model)
-        for name, p in get_configured_providers().items()
+        ProviderInfo(name=p["name"], default_model=p["default_model"])
+        for p in advisor_service.available_providers()
     ]
     return AiProvidersResponse(
         providers=providers,

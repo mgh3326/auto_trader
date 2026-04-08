@@ -89,7 +89,9 @@ class OpenAIProvider:
             ) from e
         except Exception as e:
             elapsed_ms = int((time.monotonic() - start) * 1000)
-            logger.error("AI provider %s error: %s", self.provider_name, e, exc_info=True)
+            logger.error(
+                "AI provider %s error: %s", self.provider_name, e, exc_info=True
+            )
             raise AiProviderError(
                 user_message="AI 응답 생성 실패. 잠시 후 다시 시도해주세요.",
                 detail=str(e),

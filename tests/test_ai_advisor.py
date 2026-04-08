@@ -156,6 +156,24 @@ class TestOpenAIProvider:
 
         assert "인증 실패" in exc_info.value.user_message
 
+    @pytest.mark.asyncio
+    async def test_ask_timeout_error(self):
+        from openai import APITimeoutError
+
+        from app.services.ai_providers.openai_provider import OpenAIProvider
+
+        provider = OpenAIProvider(api_key="test-key")
+        provider.client = AsyncMock()
+
+        provider.client.chat.completions.create = AsyncMock(
+            side_effect=APITimeoutError(request=MagicMock())
+        )
+
+        with pytest.raises(AiProviderError) as exc_info:
+            await provider.ask(system_prompt="s", user_message="q")
+
+        assert "시간 초과" in exc_info.value.user_message
+
 
 class TestGeminiProvider:
     def test_init_defaults(self):
@@ -213,6 +231,57 @@ class TestGeminiProvider:
             await provider.ask(system_prompt="s", user_message="q")
 
         assert "실패" in exc_info.value.user_message
+
+    @pytest.mark.asyncio
+    async def test_ask_rate_limit_error(self):
+        from app.services.ai_providers.gemini_provider import GeminiProvider
+
+        with patch("app.services.ai_providers.gemini_provider.genai"):
+            provider = GeminiProvider(api_key="test-key")
+
+        provider.client = MagicMock()
+        provider.client.aio.models.generate_content = AsyncMock(
+            side_effect=Exception("429 RESOURCE_EXHAUSTED: quota exceeded")
+        )
+
+        with pytest.raises(AiProviderError) as exc_info:
+            await provider.ask(system_prompt="s", user_message="q")
+
+        assert "한도 초과" in exc_info.value.user_message
+
+    @pytest.mark.asyncio
+    async def test_ask_auth_error(self):
+        from app.services.ai_providers.gemini_provider import GeminiProvider
+
+        with patch("app.services.ai_providers.gemini_provider.genai"):
+            provider = GeminiProvider(api_key="bad-key")
+
+        provider.client = MagicMock()
+        provider.client.aio.models.generate_content = AsyncMock(
+            side_effect=Exception("403 Forbidden: invalid api_key")
+        )
+
+        with pytest.raises(AiProviderError) as exc_info:
+            await provider.ask(system_prompt="s", user_message="q")
+
+        assert "인증 실패" in exc_info.value.user_message
+
+    @pytest.mark.asyncio
+    async def test_ask_timeout_error(self):
+        from app.services.ai_providers.gemini_provider import GeminiProvider
+
+        with patch("app.services.ai_providers.gemini_provider.genai"):
+            provider = GeminiProvider(api_key="test-key")
+
+        provider.client = MagicMock()
+        provider.client.aio.models.generate_content = AsyncMock(
+            side_effect=Exception("Deadline exceeded: timeout waiting for response")
+        )
+
+        with pytest.raises(AiProviderError) as exc_info:
+            await provider.ask(system_prompt="s", user_message="q")
+
+        assert "시간 초과" in exc_info.value.user_message
 
 
 class TestAiAdvisorSchemas:
@@ -540,3 +609,61 @@ class TestAiAdvisorEndpoints:
             },
         )
         assert response.status_code == 422
+
+    def test_post_advice_provider_error_returns_200_success_false(self, client):
+        """Provider failure should return 200 with success=false, not a 5xx."""
+        with patch("app.routers.portfolio.AiAdvisorService") as MockService:
+            mock_instance = MagicMock()
+            mock_instance.available_providers.return_value = [
+                {"name": "openai", "default_model": "gpt-4o"}
+            ]
+            mock_instance.ask = AsyncMock(
+                side_effect=AiProviderError(
+                    user_message="요청 한도 초과. 잠시 후 다시 시도해주세요.",
+                    detail="429",
+                )
+            )
+            MockService.return_value = mock_instance
+
+            response = client.post(
+                "/portfolio/api/ai-advice",
+                json={
+                    "scope": "portfolio",
+                    "preset": "portfolio_stance",
+                    "provider": "openai",
+                    "question": "test question",
+                },
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["success"] is False
+            assert "한도 초과" in data["error"]
+
+    def test_post_advice_position_not_found_returns_404(self, client):
+        """Position not found should return 404."""
+        from app.services.portfolio_position_detail_service import (
+            PortfolioPositionDetailNotFoundError,
+        )
+
+        with patch("app.routers.portfolio.AiAdvisorService") as MockService:
+            mock_instance = MagicMock()
+            mock_instance.available_providers.return_value = [
+                {"name": "gemini", "default_model": "gemini-2.5-flash"}
+            ]
+            mock_instance.ask = AsyncMock(
+                side_effect=PortfolioPositionDetailNotFoundError("AAPL")
+            )
+            MockService.return_value = mock_instance
+
+            response = client.post(
+                "/portfolio/api/ai-advice",
+                json={
+                    "scope": "position",
+                    "preset": "stock_stance",
+                    "provider": "gemini",
+                    "question": "분석해줘",
+                    "market_type": "US",
+                    "symbol": "AAPL",
+                },
+            )
+            assert response.status_code == 404

@@ -7,6 +7,7 @@
   <title>{{ page_payload.summary.symbol }} 상세</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   {% set currency_symbol = '$' if page_payload.summary.market_type == 'US' else '₩' %}
   {% set summary = page_payload.summary or {} %}
   {% set journal = page_payload.journal or {} %}
