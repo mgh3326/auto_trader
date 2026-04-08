@@ -17,6 +17,12 @@ from app.core.templates import templates
 from app.models.manual_holdings import MarketType
 from app.models.trading import User
 from app.routers.dependencies import get_authenticated_user
+from app.schemas.ai_advisor import (
+    AiAdviceRequest,
+    AiAdviceResponse,
+    AiProvidersResponse,
+    ProviderInfo,
+)
 from app.schemas.manual_holdings import (
     MergedHoldingResponse,
     MergedPortfolioResponse,
@@ -28,6 +34,9 @@ from app.schemas.portfolio_position_detail import (
     PositionOpinionsResponse,
     PositionOrdersResponse,
 )
+from app.services.ai_advisor_service import AiAdvisorService
+from app.services.ai_markdown_service import AIMarkdownService
+from app.services.ai_providers.base import AiProviderError
 from app.services.brokers.kis.client import KISClient
 from app.services.kis_holdings_service import get_kis_holding_for_ticker
 from app.services.merged_portfolio_service import MergedPortfolioService
@@ -442,3 +451,104 @@ async def get_position_opinions(
     return await detail_service.get_opinions_payload(
         market_type=market_type, symbol=symbol
     )
+
+
+# --- AI Advisor ---
+
+
+def get_ai_advisor_service(
+    db: AsyncSession = Depends(get_db),
+) -> AiAdvisorService:
+    overview_service = PortfolioOverviewService(db)
+    dashboard_service = PortfolioDashboardService(db)
+    detail_service = PortfolioPositionDetailService(
+        overview_service=overview_service,
+        dashboard_service=dashboard_service,
+    )
+    return AiAdvisorService(
+        markdown_service=AIMarkdownService(),
+        overview_service=overview_service,
+        detail_service=detail_service,
+    )
+
+
+@router.get("/api/ai-advice/providers", response_model=AiProvidersResponse)
+async def get_ai_providers(
+    current_user: User = Depends(get_authenticated_user),
+    advisor_service: AiAdvisorService = Depends(get_ai_advisor_service),
+):
+    from app.core.config import settings
+
+    providers = [
+        ProviderInfo(name=p["name"], default_model=p["default_model"])
+        for p in advisor_service.available_providers()
+    ]
+    return AiProvidersResponse(
+        providers=providers,
+        default_provider=settings.ai_advisor_default_provider,
+    )
+
+
+@router.post("/api/ai-advice", response_model=AiAdviceResponse)
+async def post_ai_advice(
+    request: AiAdviceRequest,
+    current_user: User = Depends(get_authenticated_user),
+    advisor_service: AiAdvisorService = Depends(get_ai_advisor_service),
+):
+    import time
+
+    start = time.monotonic()
+
+    # Validate provider exists
+    available = {p["name"] for p in advisor_service.available_providers()}
+    if request.provider not in available:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Provider '{request.provider}' is not available. "
+            f"Available: {sorted(available) or 'none (no API keys configured)'}",
+        )
+
+    # Validate position scope has required fields
+    if request.scope == "position":
+        if not request.market_type or not request.symbol:
+            raise HTTPException(
+                status_code=400,
+                detail="market_type and symbol are required for position scope",
+            )
+
+    try:
+        return await advisor_service.ask(
+            user_id=current_user.id,
+            scope=request.scope,
+            preset=request.preset,
+            provider=request.provider,
+            question=request.question,
+            model=request.model,
+            market_type=request.market_type,
+            symbol=request.symbol,
+            include_market=request.include_market,
+        )
+    except AiProviderError as e:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        logger.warning("AI advisor provider error: %s | %s", e.user_message, e.detail)
+        return AiAdviceResponse(
+            success=False,
+            answer="",
+            provider=request.provider,
+            model=request.model or "",
+            elapsed_ms=elapsed_ms,
+            error=e.user_message,
+        )
+    except PortfolioPositionDetailNotFoundError:
+        raise HTTPException(status_code=404, detail="Position not found")
+    except Exception as e:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        logger.error("AI advisor unexpected error: %s", e, exc_info=True)
+        return AiAdviceResponse(
+            success=False,
+            answer="",
+            provider=request.provider,
+            model=request.model or "",
+            elapsed_ms=elapsed_ms,
+            error="AI 응답 생성 실패. 잠시 후 다시 시도해주세요.",
+        )

@@ -72,6 +72,11 @@ def _ensure_test_env() -> None:
         "MCP_AUTH_TOKEN": "",  # Empty to disable auth for tests
         "N8N_API_KEY": "",  # Empty = n8n auth disabled in tests by default
         "N8N_FILL_WEBHOOK_URL": "",  # Empty = n8n fill webhook disabled in tests by default
+        "OPENAI_API_KEY": "",
+        "GEMINI_ADVISOR_API_KEY": "",
+        "GROK_API_KEY": "",
+        "AI_ADVISOR_TIMEOUT": "60.0",
+        "AI_ADVISOR_DEFAULT_PROVIDER": "gemini",
     }
 
     for key, value in default_env_values.items():
