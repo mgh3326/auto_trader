@@ -356,36 +356,18 @@ async def process_kis_overseas_buy_orders_with_analysis(
 # =============================================================================
 
 
-async def process_kis_domestic_sell_orders_with_analysis(
+async def _process_sell_orders_impl(
+    ops: SupportsOrderExecution,
     kis_client: KISClient,
     symbol: str,
     current_price: float,
     avg_buy_price: float,
     balance_qty: int,
-) -> dict[str, Any]:
-    """분석 결과를 기반으로 KIS 국내 주식 매도 주문 처리.
-
-    Stage 1: 예외를 내부에서 흡수하여 structured error payload 반환.
-    """
-    try:
-        result = await _process_kis_domestic_sell_orders_impl(
-            kis_client, symbol, current_price, avg_buy_price, balance_qty
-        )
-        return result.to_payload()
-    except Exception as exc:
-        logger.exception(f"[{symbol}] Domestic sell order failed: {exc}")
-        return _map_exception_to_result(exc, f"domestic sell for {symbol}").to_payload()
-
-
-async def _process_kis_domestic_sell_orders_impl(
-    kis_client: KISClient,
-    symbol: str,
-    current_price: float,
-    avg_buy_price: float,
-    balance_qty: int,
+    exchange_code: str | None = None,
 ) -> OrderStepResult:
-    """국내 매도 주문 실제 구현. 예외를 호출부로 전파."""
+    """Unified sell order implementation. Market-specific behavior via ops."""
     from app.services.stock_info_service import StockAnalysisService
+    from app.services.symbol_trade_settings_service import SymbolTradeSettingsService
 
     async with _open_async_session() as db:
         service = StockAnalysisService(db)
@@ -393,6 +375,18 @@ async def _process_kis_domestic_sell_orders_impl(
 
         if not analysis:
             return OrderStepResult(success=False, message="분석 결과 없음")
+
+        # exchange_code resolution (overseas only — domestic returns None)
+        resolved_exchange = exchange_code
+        if exchange_code is not None:
+            settings_service = SymbolTradeSettingsService(db)
+            settings = await settings_service.get_by_symbol(symbol)
+            resolved_exchange = ops.resolve_exchange_code(settings, exchange_code)
+
+        # Overseas: verify actual orderable qty from KIS account
+        balance_qty = await ops.adjust_sell_qty(kis_client, symbol, balance_qty)
+        if balance_qty <= 0:
+            return OrderStepResult(success=False, message="주문가능수량 없음")
 
         sell_prices = _present_prices(
             getattr(analysis, "appropriate_sell_min", None),
@@ -402,10 +396,7 @@ async def _process_kis_domestic_sell_orders_impl(
         )
 
         if not sell_prices:
-            return OrderStepResult(
-                success=False,
-                message="매도 가격 정보 없음",
-            )
+            return OrderStepResult(success=False, message="매도 가격 정보 없음")
 
         min_sell_price = avg_buy_price * 1.01
         valid_prices = [
@@ -415,11 +406,13 @@ async def _process_kis_domestic_sell_orders_impl(
 
         if not valid_prices:
             if current_price >= min_sell_price:
-                res = await kis_client.order_korea_stock(
-                    stock_code=symbol,
-                    order_type="sell",
-                    quantity=balance_qty,
-                    price=int(current_price),
+                res = await ops.place_order(
+                    kis_client,
+                    symbol,
+                    "sell",
+                    balance_qty,
+                    current_price,
+                    exchange_code=resolved_exchange,
                 )
                 if res and res.get("odno"):
                     return OrderStepResult(
@@ -432,11 +425,7 @@ async def _process_kis_domestic_sell_orders_impl(
                         expected_amount=current_price * balance_qty,
                     )
                 else:
-                    return OrderStepResult(
-                        success=False,
-                        message="매도 주문 실패",
-                    )
-
+                    return OrderStepResult(success=False, message="매도 주문 실패")
             return OrderStepResult(success=False, message="매도 조건 미충족")
 
         split_count = len(valid_prices)
@@ -444,16 +433,20 @@ async def _process_kis_domestic_sell_orders_impl(
 
         if qty_per_order < 1:
             target_price = valid_prices[0]
-            res = await kis_client.order_korea_stock(
-                stock_code=symbol,
-                order_type="sell",
-                quantity=balance_qty,
-                price=int(target_price),
+            res = await ops.place_order(
+                kis_client,
+                symbol,
+                "sell",
+                balance_qty,
+                target_price,
+                exchange_code=resolved_exchange,
             )
             if res and res.get("odno"):
                 return OrderStepResult(
                     success=True,
-                    message="전량 매도 주문 (분할 불가)",
+                    message="전량 매도 주문 (분할 불가)"
+                    if ops.market == "domestic"
+                    else "전량 매도 주문",
                     orders_placed=1,
                     prices=[target_price],
                     quantities=[balance_qty],
@@ -476,8 +469,13 @@ async def _process_kis_domestic_sell_orders_impl(
             if qty < 1:
                 continue
 
-            res = await kis_client.order_korea_stock(
-                stock_code=symbol, order_type="sell", quantity=qty, price=int(price)
+            res = await ops.place_order(
+                kis_client,
+                symbol,
+                "sell",
+                qty,
+                price,
+                exchange_code=resolved_exchange,
             )
             if res and res.get("odno"):
                 success_count += 1
@@ -498,6 +496,24 @@ async def _process_kis_domestic_sell_orders_impl(
             total_volume=total_volume,
             expected_amount=expected_amount,
         )
+
+
+async def process_kis_domestic_sell_orders_with_analysis(
+    kis_client: KISClient,
+    symbol: str,
+    current_price: float,
+    avg_buy_price: float,
+    balance_qty: int,
+) -> dict[str, Any]:
+    """분석 결과를 기반으로 KIS 국내 주식 매도 주문 처리."""
+    try:
+        result = await _process_sell_orders_impl(
+            _DOMESTIC_OPS, kis_client, symbol, current_price, avg_buy_price, balance_qty
+        )
+        return result.to_payload()
+    except Exception as exc:
+        logger.exception(f"[{symbol}] Domestic sell order failed: {exc}")
+        return _map_exception_to_result(exc, f"domestic sell for {symbol}").to_payload()
 
 
 # =============================================================================
@@ -513,180 +529,18 @@ async def process_kis_overseas_sell_orders_with_analysis(
     balance_qty: int,
     exchange_code: str = "NASD",
 ) -> dict[str, Any]:
-    """분석 결과를 기반으로 KIS 해외 주식 매도 주문 처리.
-
-    Stage 1: 예외를 내부에서 흡수하여 structured error payload 반환.
-    """
+    """분석 결과를 기반으로 KIS 해외 주식 매도 주문 처리."""
     try:
-        result = await _process_kis_overseas_sell_orders_impl(
-            kis_client, symbol, current_price, avg_buy_price, balance_qty, exchange_code
+        result = await _process_sell_orders_impl(
+            _OVERSEAS_OPS,
+            kis_client,
+            symbol,
+            current_price,
+            avg_buy_price,
+            balance_qty,
+            exchange_code,
         )
         return result.to_payload()
     except Exception as exc:
         logger.exception(f"[{symbol}] Overseas sell order failed: {exc}")
         return _map_exception_to_result(exc, f"overseas sell for {symbol}").to_payload()
-
-
-async def _process_kis_overseas_sell_orders_impl(
-    kis_client: KISClient,
-    symbol: str,
-    current_price: float,
-    avg_buy_price: float,
-    balance_qty: int,
-    exchange_code: str = "NASD",
-) -> OrderStepResult:
-    """해외 매도 주문 실제 구현. 예외를 호출부로 전파."""
-    from app.services.stock_info_service import StockAnalysisService
-    from app.services.symbol_trade_settings_service import SymbolTradeSettingsService
-
-    async with _open_async_session() as db:
-        service = StockAnalysisService(db)
-        analysis = await service.get_latest_analysis_by_symbol(symbol)
-
-        if not analysis:
-            return OrderStepResult(success=False, message="분석 결과 없음")
-
-        settings_service = SymbolTradeSettingsService(db)
-        settings = await settings_service.get_by_symbol(symbol)
-        actual_exchange_code = (
-            settings.exchange_code
-            if settings and settings.exchange_code
-            else exchange_code
-        )
-
-        # KIS 계좌의 실제 주문가능수량 조회
-        my_stocks = await kis_client.fetch_my_overseas_stocks()
-        normalized_symbol = to_db_symbol(symbol)
-        target_stock = next(
-            (
-                s
-                for s in my_stocks
-                if to_db_symbol(s.get("ovrs_pdno", "")) == normalized_symbol
-            ),
-            None,
-        )
-        if target_stock:
-            actual_qty = _coerce_positive_int(
-                target_stock.get("ord_psbl_qty", target_stock.get("ovrs_cblc_qty", 0))
-            )
-            if actual_qty < balance_qty:
-                logger.info(
-                    f"[{symbol}] 주문가능수량 조정: {balance_qty} -> {actual_qty} (KIS 계좌 기준)"
-                )
-                balance_qty = actual_qty
-
-        if balance_qty <= 0:
-            return OrderStepResult(
-                success=False,
-                message="주문가능수량 없음",
-            )
-
-        sell_prices = _present_prices(
-            getattr(analysis, "appropriate_sell_min", None),
-            getattr(analysis, "appropriate_sell_max", None),
-            getattr(analysis, "sell_target_min", None),
-            getattr(analysis, "sell_target_max", None),
-        )
-
-        if not sell_prices:
-            return OrderStepResult(
-                success=False,
-                message="매도 가격 정보 없음",
-            )
-
-        min_sell_price = avg_buy_price * 1.01
-        valid_prices = [
-            p for p in sell_prices if p >= min_sell_price and p >= current_price
-        ]
-        valid_prices.sort()
-
-        if not valid_prices:
-            if current_price >= min_sell_price:
-                res = await kis_client.order_overseas_stock(
-                    symbol=symbol,
-                    exchange_code=actual_exchange_code,
-                    order_type="sell",
-                    quantity=balance_qty,
-                    price=current_price,
-                )
-                if res and res.get("odno"):
-                    return OrderStepResult(
-                        success=True,
-                        message="목표가 도달로 전량 매도",
-                        orders_placed=1,
-                        prices=[current_price],
-                        quantities=[balance_qty],
-                        total_volume=balance_qty,
-                        expected_amount=current_price * balance_qty,
-                    )
-                else:
-                    return OrderStepResult(
-                        success=False,
-                        message="매도 주문 실패",
-                    )
-            return OrderStepResult(success=False, message="매도 조건 미충족")
-
-        split_count = len(valid_prices)
-        qty_per_order = balance_qty // split_count
-
-        if qty_per_order < 1:
-            target_price = valid_prices[0]
-            res = await kis_client.order_overseas_stock(
-                symbol=symbol,
-                exchange_code=actual_exchange_code,
-                order_type="sell",
-                quantity=balance_qty,
-                price=target_price,
-            )
-            if res and res.get("odno"):
-                return OrderStepResult(
-                    success=True,
-                    message="전량 매도 주문",
-                    orders_placed=1,
-                    prices=[target_price],
-                    quantities=[balance_qty],
-                    total_volume=balance_qty,
-                    expected_amount=target_price * balance_qty,
-                )
-            return OrderStepResult(success=False, message="매도 주문 실패")
-
-        success_count = 0
-        remaining_qty = balance_qty
-        ordered_prices: list[float] = []
-        ordered_quantities: list[int] = []
-        total_volume = 0
-        expected_amount = 0.0
-
-        for i, price in enumerate(valid_prices):
-            is_last = i == len(valid_prices) - 1
-            qty = remaining_qty if is_last else qty_per_order
-
-            if qty < 1:
-                continue
-
-            res = await kis_client.order_overseas_stock(
-                symbol=symbol,
-                exchange_code=actual_exchange_code,
-                order_type="sell",
-                quantity=qty,
-                price=price,
-            )
-            if res and res.get("odno"):
-                success_count += 1
-                remaining_qty -= qty
-                ordered_prices.append(price)
-                ordered_quantities.append(qty)
-                total_volume += qty
-                expected_amount += price * qty
-
-            await asyncio.sleep(0.2)
-
-        return OrderStepResult(
-            success=success_count > 0,
-            message=f"{success_count}건 분할 매도 주문 완료",
-            orders_placed=success_count,
-            prices=ordered_prices,
-            quantities=ordered_quantities,
-            total_volume=total_volume,
-            expected_amount=expected_amount,
-        )
