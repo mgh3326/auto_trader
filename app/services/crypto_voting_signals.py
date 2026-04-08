@@ -106,7 +106,9 @@ class CryptoVotingSignals:
                 and rsi_fast is not None
                 and rsi_fast <= RSI_OVERSOLD
             ),
-            "macd_histogram_positive": bool(macd_result is not None and macd_result[2] > 0),
+            "macd_histogram_positive": bool(
+                macd_result is not None and macd_result[2] > 0
+            ),
             "close_below_bb_lower": bool(
                 bb_result is not None and current_close < bb_result[2]
             ),
@@ -125,7 +127,9 @@ class CryptoVotingSignals:
 
         # Bear signals (5)
         bear_flags = {
-            "macd_histogram_negative": bool(macd_result is not None and macd_result[2] < 0),
+            "macd_histogram_negative": bool(
+                macd_result is not None and macd_result[2] < 0
+            ),
             "close_above_bb_upper": bool(
                 bb_result is not None and current_close > bb_result[0]
             ),
