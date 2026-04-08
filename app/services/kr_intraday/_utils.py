@@ -6,10 +6,10 @@ from typing import Any, cast
 import pandas as pd
 
 from app.services.kr_intraday._types import (
-    SessionType,
-    VenueType,
     _INTRADAY_FRAME_COLUMNS,
     _KST,
+    SessionType,
+    VenueType,
     _MinuteRow,
     logger,
 )
@@ -307,3 +307,134 @@ def _store_minute_row(
     minute_by_key[(minute_time, venue)] = minute_row
     if api_minute_rows is not None:
         api_minute_rows.append(minute_row)
+
+
+def _should_call_api(
+    *, now_kst: datetime.datetime, end_date: datetime.datetime | None
+) -> bool:
+    if end_date is not None:
+        end_day = (
+            _ensure_kst_aware(end_date).date() if end_date.tzinfo else end_date.date()
+        )
+        if end_day < now_kst.date():
+            return False
+
+    now_clock = now_kst.time()
+    if now_clock < datetime.time(8, 0, 0):
+        return False
+    if now_clock >= datetime.time(20, 0, 0):
+        return False
+    return True
+
+
+def _api_markets_for_now(
+    *,
+    now_kst: datetime.datetime,
+    nxt_eligible: bool,
+    end_date: datetime.datetime | None,
+) -> list[str]:
+    if not _should_call_api(now_kst=now_kst, end_date=end_date):
+        return []
+
+    now_clock = now_kst.time()
+    if datetime.time(8, 0, 0) <= now_clock < datetime.time(9, 0, 0):
+        return ["NX"] if nxt_eligible else []
+    if datetime.time(9, 0, 0) <= now_clock < datetime.time(15, 35, 0):
+        return ["J", "NX"] if nxt_eligible else ["J"]
+    if datetime.time(15, 35, 0) <= now_clock < datetime.time(20, 0, 0):
+        return ["NX"] if nxt_eligible else []
+    return []
+
+
+def _history_rows_to_frame(
+    *,
+    config: Any,
+    rows: list[dict[str, object]],
+) -> pd.DataFrame:
+    if not rows:
+        return _empty_intraday_frame()
+
+    if config.period == "1m":
+        minute_rows: list[_MinuteRow] = []
+        for row in rows:
+            time_raw = row.get("time")
+            venue = _to_venue(row.get("venue"))
+            if not isinstance(time_raw, datetime.datetime) or venue is None:
+                continue
+            minute_rows.append(
+                _MinuteRow(
+                    minute_time=_to_kst_naive(time_raw).replace(
+                        second=0, microsecond=0
+                    ),
+                    venue=venue,
+                    open=_to_float(row.get("open")),
+                    high=_to_float(row.get("high")),
+                    low=_to_float(row.get("low")),
+                    close=_to_float(row.get("close")),
+                    volume=_to_float(row.get("volume")),
+                    value=_to_float(row.get("value")),
+                )
+            )
+        return _merge_minute_rows(minute_rows)
+
+    frame_rows: list[dict[str, object]] = []
+    for row in rows:
+        bucket_raw = row.get("bucket")
+        if not isinstance(bucket_raw, datetime.datetime):
+            continue
+        bucket_naive = _to_kst_naive(bucket_raw)
+        session = _session_for_bucket_start(bucket_naive)
+        if session is None:
+            continue
+        frame_rows.append(
+            {
+                "datetime": bucket_naive,
+                "date": bucket_naive.date(),
+                "time": bucket_naive.time(),
+                "open": _to_float(row.get("open")),
+                "high": _to_float(row.get("high")),
+                "low": _to_float(row.get("low")),
+                "close": _to_float(row.get("close")),
+                "volume": _to_float(row.get("volume")),
+                "value": _to_float(row.get("value")),
+                "session": session,
+                "venues": _normalize_venues(row.get("venues")),
+            }
+        )
+
+    if not frame_rows:
+        return _empty_intraday_frame()
+
+    out = (
+        pd.DataFrame(frame_rows, columns=_INTRADAY_FRAME_COLUMNS)
+        .sort_values("datetime")
+        .reset_index(drop=True)
+    )
+    out["datetime"] = _to_kst_naive_series(out["datetime"])
+    return out
+
+
+def _merge_overlay_into_intraday_frame(
+    *,
+    out: pd.DataFrame,
+    overlay_frame: pd.DataFrame,
+    bucket_minutes: int,
+) -> pd.DataFrame:
+    if overlay_frame.empty:
+        return out
+
+    merged_overlay = overlay_frame
+    if bucket_minutes > 1:
+        merged_overlay = _aggregate_minutes_to_buckets(
+            merged_overlay,
+            bucket_minutes=bucket_minutes,
+        )
+
+    merged_overlay = merged_overlay.copy()
+    merged_overlay["datetime"] = _to_kst_naive_series(merged_overlay["datetime"])
+    touched = set(merged_overlay["datetime"].tolist())
+    if not out.empty:
+        out = out.copy()
+        out["datetime"] = _to_kst_naive_series(out["datetime"])
+        out = out.loc[~out["datetime"].isin(touched)]
+    return pd.concat([out, merged_overlay], ignore_index=True)

@@ -11,11 +11,10 @@ import pandas as pd
 
 from app.services.brokers.kis.client import KISClient
 from app.services.kr_intraday._types import (
-    VenueType,
-    _KST,
     _MAX_PAGE_CALLS_PER_DAY,
-    _MinuteRow,
     _VENUE_CONFIGS,
+    VenueType,
+    _MinuteRow,
     _VenueConfig,
 )
 from app.services.kr_intraday._utils import (
@@ -25,7 +24,6 @@ from app.services.kr_intraday._utils import (
     _parse_float,
     _resolve_window_minute_time,
     _store_minute_row,
-    _to_float,
     _to_kst_naive,
 )
 
@@ -421,3 +419,60 @@ async def _fetch_historical_minutes_via_kis(
     # Return both hourly aggregated data and original minute candles
     minute_rows_list = list(all_minute_rows.values())
     return hour_rows, minute_rows_list
+
+
+async def _load_recent_overlay_frame(
+    *,
+    symbol: str,
+    start_time_kst: datetime.datetime,
+    end_time_kst: datetime.datetime,
+    now_kst: datetime.datetime,
+    nxt_eligible: bool,
+    end_date: datetime.datetime | None,
+) -> tuple[pd.DataFrame, list[Any]]:
+    from app.services.kr_intraday._repository import (
+        _fetch_minute_rows,
+        _load_db_minute_rows_into_map,
+    )
+    from app.services.kr_intraday._utils import (
+        _api_markets_for_now,
+        _merge_minute_rows,
+    )
+
+    start_naive = start_time_kst.replace(tzinfo=None)
+    end_naive = end_time_kst.replace(tzinfo=None)
+
+    db_rows = await _fetch_minute_rows(
+        symbol=symbol,
+        start_time_kst=start_time_kst,
+        end_time_kst=end_time_kst,
+    )
+    minute_by_key = _load_db_minute_rows_into_map(
+        rows=db_rows,
+        start_naive=start_naive,
+        end_naive=end_naive,
+    )
+    api_minute_rows: list[Any] = []
+
+    markets = _api_markets_for_now(
+        now_kst=now_kst,
+        nxt_eligible=nxt_eligible,
+        end_date=end_date,
+    )
+    frames = await _fetch_kis_minute_frames(
+        symbol=symbol,
+        markets=markets,
+        end_time_kst=end_time_kst,
+        log_context="Recent overlay",
+    )
+    for venue, frame in frames:
+        _load_api_minute_frame_into_map(
+            frame=frame,
+            venue=venue,
+            start_naive=start_naive,
+            end_naive=end_naive,
+            minute_by_key=minute_by_key,
+            api_minute_rows=api_minute_rows,
+        )
+
+    return _merge_minute_rows(list(minute_by_key.values())), api_minute_rows

@@ -243,7 +243,11 @@ async def test_api_prefetch_plan_time_boundaries_for_nxt_eligible(monkeypatch):
             raise AssertionError(f"unexpected sql: {sql}")
 
     db = DummyDB()
-    monkeypatch.setattr(svc, "AsyncSessionLocal", lambda: DummySessionManager(db))
+    from app.services.kr_intraday import _repository as _repo_module
+
+    monkeypatch.setattr(
+        _repo_module, "AsyncSessionLocal", lambda: DummySessionManager(db)
+    )
 
     class DummyKIS:
         def __init__(self):
@@ -269,7 +273,9 @@ async def test_api_prefetch_plan_time_boundaries_for_nxt_eligible(monkeypatch):
             )
 
     kis = DummyKIS()
-    monkeypatch.setattr(svc, "KISClient", lambda: kis)
+    from app.services.kr_intraday import _kis_api as _kis_module
+
+    monkeypatch.setattr(_kis_module, "KISClient", lambda: kis)
 
     await svc.read_kr_hourly_candles_1h(
         symbol=symbol,

@@ -12,11 +12,10 @@ from app.core.db import AsyncSessionLocal
 from app.services.kr_intraday._types import (
     VenueType,
     _IntradayPeriodConfig,
-    _KST,
+    _kr_universe_sync_hint,
     _MinuteRow,
     _UniverseError,
     _UniverseRow,
-    _kr_universe_sync_hint,
 )
 from app.services.kr_intraday._utils import (
     _convert_kis_datetime_to_utc,
