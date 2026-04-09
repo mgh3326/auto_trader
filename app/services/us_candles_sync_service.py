@@ -2,11 +2,10 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
-from typing import Literal, Protocol, cast
+from typing import Protocol, cast
 from zoneinfo import ZoneInfo
 
 import exchange_calendars as xcals
@@ -18,6 +17,15 @@ from app.core.db import AsyncSessionLocal
 from app.core.symbol import to_db_symbol
 from app.models.manual_holdings import MarketType
 from app.services.brokers.kis.client import KISClient
+from app.services.candles_sync_common import (
+    SyncTableConfig,
+    build_cursor_sql,
+    build_symbol_union,
+    build_upsert_sql,
+    normalize_mode,
+    parse_float,
+    read_cursor_utc,
+)
 from app.services.manual_holdings_service import ManualHoldingsService
 from app.services.us_symbol_universe_service import (
     USSymbolInactiveError,
@@ -61,38 +69,9 @@ class MinuteChartSource(Protocol):
     ) -> MinuteChartPage: ...
 
 
-_CURSOR_SQL = text(
-    """
-    SELECT MAX(time)
-    FROM public.us_candles_1m
-    WHERE symbol = :symbol
-      AND exchange = :exchange
-    """
-)
-
-_UPSERT_SQL = text(
-    """
-    INSERT INTO public.us_candles_1m
-        (time, symbol, exchange, open, high, low, close, volume, value)
-    VALUES
-        (:time, :symbol, :exchange, :open, :high, :low, :close, :volume, :value)
-    ON CONFLICT (time, symbol, exchange)
-    DO UPDATE SET
-        open = EXCLUDED.open,
-        high = EXCLUDED.high,
-        low = EXCLUDED.low,
-        close = EXCLUDED.close,
-        volume = EXCLUDED.volume,
-        value = EXCLUDED.value
-    WHERE
-        us_candles_1m.open IS DISTINCT FROM EXCLUDED.open
-        OR us_candles_1m.high IS DISTINCT FROM EXCLUDED.high
-        OR us_candles_1m.low IS DISTINCT FROM EXCLUDED.low
-        OR us_candles_1m.close IS DISTINCT FROM EXCLUDED.close
-        OR us_candles_1m.volume IS DISTINCT FROM EXCLUDED.volume
-        OR us_candles_1m.value IS DISTINCT FROM EXCLUDED.value
-    """
-)
+_TABLE_CFG = SyncTableConfig(table_name="us_candles_1m", partition_col="exchange")
+_CURSOR_SQL = build_cursor_sql(_TABLE_CFG)
+_UPSERT_SQL = build_upsert_sql(_TABLE_CFG)
 
 _EXISTING_ROWS_SQL = text(
     """
@@ -160,25 +139,9 @@ def _utc_now_floor_minute() -> pd.Timestamp:
     return pd.Timestamp(datetime.now(UTC)).floor("min")
 
 
-def _normalize_mode(mode: str) -> Literal["incremental", "backfill"]:
-    normalized = str(mode or "").strip().lower()
-    if normalized not in {"incremental", "backfill"}:
-        raise ValueError("mode must be 'incremental' or 'backfill'")
-    return cast(Literal["incremental", "backfill"], normalized)
-
-
 def _normalize_symbol(value: object) -> str | None:
     normalized = to_db_symbol(str(value or "").strip().upper())
     return normalized or None
-
-
-def _parse_float(value: object) -> float | None:
-    try:
-        if value is None:
-            return None
-        return float(str(value))
-    except (TypeError, ValueError):
-        return None
 
 
 def _to_utc_datetime(value: datetime | pd.Timestamp | str) -> datetime:
@@ -203,30 +166,6 @@ def _to_local_minute(value: datetime | pd.Timestamp | str | None) -> datetime | 
         timestamp = timestamp.tz_convert(_NY)
     local_dt = timestamp.to_pydatetime().astimezone(_NY)
     return local_dt.replace(second=0, microsecond=0)
-
-
-def _build_symbol_union(
-    kis_holdings: Sequence[object],
-    manual_holdings: Sequence[object],
-) -> set[str]:
-    symbols: set[str] = set()
-
-    for item in kis_holdings:
-        raw_symbol = (
-            cast(dict[str, object], item).get("ovrs_pdno")
-            if isinstance(item, dict)
-            else getattr(item, "ovrs_pdno", None)
-        )
-        symbol = _normalize_symbol(raw_symbol)
-        if symbol is not None:
-            symbols.add(symbol)
-
-    for holding in manual_holdings:
-        symbol = _normalize_symbol(getattr(holding, "ticker", None))
-        if symbol is not None:
-            symbols.add(symbol)
-
-    return symbols
 
 
 async def _resolve_symbol_pairs(
@@ -335,12 +274,12 @@ def _normalize_minute_page(
         if time_utc < lower_bound_utc or time_utc > upper_bound_utc:
             continue
 
-        open_value = _parse_float(item.get("open"))
-        high_value = _parse_float(item.get("high"))
-        low_value = _parse_float(item.get("low"))
-        close_value = _parse_float(item.get("close"))
-        volume_value = _parse_float(item.get("volume"))
-        value_value = _parse_float(item.get("value"))
+        open_value = parse_float(item.get("open"))
+        high_value = parse_float(item.get("high"))
+        low_value = parse_float(item.get("low"))
+        close_value = parse_float(item.get("close"))
+        volume_value = parse_float(item.get("volume"))
+        value_value = parse_float(item.get("value"))
         if (
             open_value is None
             or high_value is None
@@ -398,19 +337,6 @@ def _parse_keyb_to_utc(keyb: str) -> datetime | None:
         return None
     timestamp = pd.Timestamp(parsed).tz_localize(_NY).tz_convert(UTC)
     return timestamp.to_pydatetime().astimezone(UTC).replace(second=0, microsecond=0)
-
-
-async def _read_cursor_utc(
-    session: AsyncSession,
-    *,
-    symbol: str,
-    exchange: str,
-) -> datetime | None:
-    result = await session.execute(
-        _CURSOR_SQL, {"symbol": symbol, "exchange": exchange}
-    )
-    value = result.scalar_one_or_none()
-    return value if isinstance(value, datetime) else None
 
 
 async def _upsert_rows(session: AsyncSession, rows: list[MinuteCandleRow]) -> int:
@@ -533,7 +459,7 @@ async def sync_us_candles(
     sessions: int = 10,
     user_id: int = 1,
 ) -> dict[str, object]:
-    normalized_mode = _normalize_mode(mode)
+    normalized_mode = normalize_mode(mode)
     session_count = max(int(sessions), 1)
     now_utc = _utc_now_floor_minute().to_pydatetime().astimezone(UTC)
     calendar = _get_xnys_calendar()
@@ -547,7 +473,12 @@ async def sync_us_candles(
             user_id=user_id,
             market_type=MarketType.US,
         )
-        target_symbols = _build_symbol_union(kis_holdings, manual_holdings)
+        target_symbols = build_symbol_union(
+            kis_holdings,
+            manual_holdings,
+            holdings_field="ovrs_pdno",
+            normalize_fn=_normalize_symbol,
+        )
         if not target_symbols:
             return {
                 "mode": normalized_mode,
@@ -627,10 +558,10 @@ async def sync_us_candles(
             for window in windows:
                 lower_bound_utc = window.open_utc
                 if normalized_mode == "incremental":
-                    cursor_utc = await _read_cursor_utc(
+                    cursor_utc = await read_cursor_utc(
                         session,
-                        symbol=symbol,
-                        exchange=exchange,
+                        _CURSOR_SQL,
+                        {"symbol": symbol, "exchange": exchange},
                     )
                     lower_bound_utc = _compute_incremental_lower_bound(
                         cursor_utc,

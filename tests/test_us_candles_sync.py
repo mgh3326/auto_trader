@@ -442,6 +442,7 @@ class _KISStub:
 
 def test_build_symbol_union_combines_kis_and_manual_us_symbols() -> None:
     import app.services.us_candles_sync_service as svc
+    from app.services.candles_sync_common import build_symbol_union
 
     kis_holdings = [
         {"ovrs_pdno": "aapl"},
@@ -454,7 +455,12 @@ def test_build_symbol_union_combines_kis_and_manual_us_symbols() -> None:
         SimpleNamespace(ticker="nvda", market_type=MarketType.US),
     ]
 
-    assert svc._build_symbol_union(kis_holdings, manual_holdings) == {
+    assert build_symbol_union(
+        kis_holdings,
+        manual_holdings,
+        holdings_field="ovrs_pdno",
+        normalize_fn=svc._normalize_symbol,
+    ) == {
         "AAPL",
         "BRK.B",
         "MSFT",
