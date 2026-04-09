@@ -210,6 +210,52 @@ class MarketDataClient:
     def _settings(self):
         return self._parent._settings
 
+    async def _request_with_token_retry(
+        self,
+        tr_id: str,
+        url: str,
+        params: dict[str, Any] | None = None,
+        *,
+        method: str = "GET",
+        json_body: dict[str, Any] | None = None,
+        timeout: float = 5.0,
+        api_name: str = "unknown",
+    ) -> dict[str, Any]:
+        """KIS API 요청 + 토큰 만료 시 1회 재시도.
+
+        토큰 만료 코드(EGW00123, EGW00121) 수신 시 토큰을 갱신하고
+        동일 요청을 최대 1회 재시도한다.
+        """
+        for attempt in range(2):
+            await self._parent._ensure_token()
+            hdr = self._parent._hdr_base | {
+                "authorization": f"Bearer {self._settings.kis_access_token}",
+                "tr_id": tr_id,
+            }
+            js = await self._parent._request_with_rate_limit(
+                method,
+                url,
+                headers=hdr,
+                params=params,
+                json_body=json_body,
+                timeout=timeout,
+                api_name=api_name,
+                tr_id=tr_id,
+            )
+
+            if js.get("rt_cd") == "0":
+                return js
+
+            if attempt == 0 and js.get("msg_cd") in constants.TOKEN_EXPIRED_CODES:
+                await self._parent._token_manager.clear_token()
+                continue
+
+            raise RuntimeError(
+                js.get("msg1") or f"KIS API error (msg_cd={js.get('msg_cd', 'unknown')})"
+            )
+
+        raise RuntimeError("KIS API token retry exhausted")
+
     async def volume_rank(self, market: str = "J", limit: int = 30) -> list[dict]:
         await self._parent._ensure_token()
         hdr = self._parent._hdr_base | {

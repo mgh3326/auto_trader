@@ -1,6 +1,6 @@
 import logging
 from datetime import date
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 import httpx
 import pandas as pd
@@ -1189,3 +1189,146 @@ class TestKISRateLimitLookup:
             if record.levelno == logging.WARNING and api_key in record.message
         ]
         assert len(warnings) == 1
+
+
+
+
+class TestRequestWithTokenRetry:
+    """Tests for MarketDataClient._request_with_token_retry"""
+
+    @pytest.mark.asyncio
+    async def test_returns_json_on_success(self, monkeypatch):
+        from app.services.brokers.kis.client import KISClient
+
+        client = KISClient()
+        monkeypatch.setattr(client, "_ensure_token", AsyncMock())
+        request_mock = AsyncMock(
+            return_value={"rt_cd": "0", "output": [{"foo": "bar"}]}
+        )
+        monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
+        
+        mock_settings = MagicMock()
+        mock_settings.kis_access_token = "test_token"
+        monkeypatch.setattr(KISClient, "_settings", PropertyMock(return_value=mock_settings))
+
+        js = await client._market_data._request_with_token_retry(
+            tr_id="FHKST01010100",
+            url="https://example.com/api",
+            params={"code": "005930"},
+            api_name="test_api",
+        )
+
+        assert js["rt_cd"] == "0"
+        request_mock.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error_code", ["EGW00123", "EGW00121"])
+    async def test_retries_once_on_token_expired(self, monkeypatch, error_code):
+        from app.services.brokers.kis.client import KISClient
+
+        client = KISClient()
+        ensure_token = AsyncMock()
+        monkeypatch.setattr(client, "_ensure_token", ensure_token)
+        request_mock = AsyncMock(
+            side_effect=[
+                {"rt_cd": "1", "msg_cd": error_code, "msg1": "token expired"},
+                {"rt_cd": "0", "output": [{"foo": "bar"}]},
+            ]
+        )
+        monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
+        client._token_manager = AsyncMock()
+        client._token_manager.clear_token = AsyncMock(return_value=None)
+        
+        mock_settings = MagicMock()
+        mock_settings.kis_access_token = "test_token"
+        monkeypatch.setattr(KISClient, "_settings", PropertyMock(return_value=mock_settings))
+
+        js = await client._market_data._request_with_token_retry(
+            tr_id="FHKST01010100",
+            url="https://example.com/api",
+            params={"code": "005930"},
+            api_name="test_api",
+        )
+
+        assert js["rt_cd"] == "0"
+        assert request_mock.await_count == 2
+        client._token_manager.clear_token.assert_awaited_once()
+        # ensure_token: 1 (initial) + 1 (after clear) = 2
+        assert ensure_token.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_raises_on_non_token_error(self, monkeypatch):
+        from app.services.brokers.kis.client import KISClient
+
+        client = KISClient()
+        monkeypatch.setattr(client, "_ensure_token", AsyncMock())
+        request_mock = AsyncMock(
+            return_value={"rt_cd": "1", "msg_cd": "OTHER_ERROR", "msg1": "bad request"}
+        )
+        monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
+        
+        mock_settings = MagicMock()
+        mock_settings.kis_access_token = "test_token"
+        monkeypatch.setattr(KISClient, "_settings", PropertyMock(return_value=mock_settings))
+
+        with pytest.raises(RuntimeError, match="bad request"):
+            await client._market_data._request_with_token_retry(
+                tr_id="FHKST01010100",
+                url="https://example.com/api",
+                params={"code": "005930"},
+                api_name="test_api",
+            )
+
+    @pytest.mark.asyncio
+    async def test_raises_after_second_token_failure(self, monkeypatch):
+        from app.services.brokers.kis.client import KISClient
+
+        client = KISClient()
+        monkeypatch.setattr(client, "_ensure_token", AsyncMock())
+        request_mock = AsyncMock(
+            side_effect=[
+                {"rt_cd": "1", "msg_cd": "EGW00123", "msg1": "token expired"},
+                {"rt_cd": "1", "msg_cd": "EGW00123", "msg1": "token still expired"},
+            ]
+        )
+        monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
+        client._token_manager = AsyncMock()
+        client._token_manager.clear_token = AsyncMock(return_value=None)
+        
+        mock_settings = MagicMock()
+        mock_settings.kis_access_token = "test_token"
+        monkeypatch.setattr(KISClient, "_settings", PropertyMock(return_value=mock_settings))
+
+        with pytest.raises(RuntimeError, match="token still expired"):
+            await client._market_data._request_with_token_retry(
+                tr_id="FHKST01010100",
+                url="https://example.com/api",
+                params={"code": "005930"},
+                api_name="test_api",
+            )
+
+    @pytest.mark.asyncio
+    async def test_passes_timeout_and_method(self, monkeypatch):
+        from app.services.brokers.kis.client import KISClient
+
+        client = KISClient()
+        monkeypatch.setattr(client, "_ensure_token", AsyncMock())
+        request_mock = AsyncMock(
+            return_value={"rt_cd": "0", "output": []}
+        )
+        monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
+        
+        mock_settings = MagicMock()
+        mock_settings.kis_access_token = "test_token"
+        monkeypatch.setattr(KISClient, "_settings", PropertyMock(return_value=mock_settings))
+
+        await client._market_data._request_with_token_retry(
+            tr_id="FHKST01010100",
+            url="https://example.com/api",
+            params={"code": "005930"},
+            api_name="test_api",
+            timeout=10,
+        )
+
+        call_kwargs = request_mock.await_args.kwargs
+        assert call_kwargs["timeout"] == 10
