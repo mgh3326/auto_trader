@@ -6,10 +6,12 @@ import pytest
 
 from app.monitoring.trade_notifier import (
     TradeNotifier,
+    get_trade_notifier,
+)
+from app.monitoring.trade_notifier import (
     formatters_discord as fmt_discord,
 )
 from app.monitoring.trade_notifier import formatters_telegram as fmt_telegram
-from app.monitoring.trade_notifier import get_trade_notifier
 
 
 @pytest.fixture
@@ -127,17 +129,20 @@ async def test_dispatch_telegram_fallback(trade_notifier):
         discord_webhook_crypto="https://discord.com/api/webhooks/crypto",
     )
 
-    with patch.object(
-        trade_notifier,
-        "_send_to_discord_embed_single",
-        new_callable=AsyncMock,
-        return_value=False,
-    ), patch.object(
-        trade_notifier,
-        "_send_to_telegram",
-        new_callable=AsyncMock,
-        return_value=True,
-    ) as mock_telegram:
+    with (
+        patch.object(
+            trade_notifier,
+            "_send_to_discord_embed_single",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch.object(
+            trade_notifier,
+            "_send_to_telegram",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as mock_telegram,
+    ):
         result = await trade_notifier._dispatch(
             discord_embed={"title": "t", "description": "", "color": 0, "fields": []},
             telegram_message="fallback text",
@@ -242,7 +247,6 @@ def test_format_buy_notification():
         market_type="암호화폐",
     )
 
-
     # Verify embed structure
     assert embed["title"] == "💰 매수 주문 접수"
     assert embed["color"] == 0x00FF00  # Green for buy
@@ -276,7 +280,6 @@ def test_format_buy_notification_without_details():
         market_type="암호화폐",
     )
 
-
     # Verify embed structure
     assert embed["title"] == "💰 매수 주문 접수"
     assert embed["color"] == 0x00FF00  # Green for buy
@@ -303,7 +306,6 @@ def test_format_sell_notification():
         expected_amount=1025000.0,
         market_type="암호화폐",
     )
-
 
     # Verify embed structure
     assert embed["title"] == "💸 매도 주문 접수"

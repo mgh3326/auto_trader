@@ -14,6 +14,8 @@ import pytest
 from app.models.manual_holdings import MarketType
 from app.monitoring.trade_notifier import (
     TradeNotifier,
+)
+from app.monitoring.trade_notifier import (
     formatters_discord as fmt_discord,
 )
 from app.services.merged_portfolio_service import ReferencePrices

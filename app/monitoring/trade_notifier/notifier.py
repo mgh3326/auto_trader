@@ -209,7 +209,9 @@ class TradeNotifier:
             if market_type and discord_embed:
                 webhook_url = self._get_webhook_for_market_type(market_type)
                 if webhook_url:
-                    if await self._send_to_discord_embed_single(discord_embed, webhook_url):
+                    if await self._send_to_discord_embed_single(
+                        discord_embed, webhook_url
+                    ):
                         return True
 
             if telegram_message:
