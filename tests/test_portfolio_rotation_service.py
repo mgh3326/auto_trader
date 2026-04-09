@@ -255,3 +255,96 @@ class TestClassifyPositions:
         assert len(result["sell_candidates"]) == 0
         assert len(result["locked_positions"]) == 0
         assert len(result["ignored_positions"]) == 0
+
+
+class TestBuyCandidates:
+
+    @pytest.fixture()
+    def service(self) -> PortfolioRotationService:
+        return PortfolioRotationService()
+
+    @pytest.mark.asyncio
+    @patch(
+        "app.services.portfolio_rotation_service._fetch_crypto_positions",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "app.services.portfolio_rotation_service._fetch_active_journals",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "app.services.portfolio_rotation_service._fetch_buy_candidates",
+        new_callable=AsyncMock,
+    )
+    async def test_buy_candidates_exclude_held(
+        self,
+        mock_buy: AsyncMock,
+        mock_journals: AsyncMock,
+        mock_positions: AsyncMock,
+        service: PortfolioRotationService,
+    ):
+        """Buy candidates that match held symbols should already be filtered."""
+        mock_positions.return_value = (
+            [_make_position(symbol="KRW-BTC")],
+            [],
+        )
+        mock_journals.return_value = {}
+        # _fetch_buy_candidates receives held_symbols, verify it was called with them
+        mock_buy.return_value = [
+            {"symbol": "KRW-BARD", "name": "롬바드", "price": 100, "trade_amount_24h": 5e9, "screen_reason": ["RSI oversold"]},
+        ]
+
+        result = await service.build_rotation_plan(market="crypto")
+        mock_buy.assert_called_once()
+        call_args = mock_buy.call_args
+        assert "KRW-BTC" in call_args[1].get("held_symbols", call_args[0][0] if call_args[0] else set())
+        assert len(result["buy_candidates"]) == 1
+        assert result["buy_candidates"][0]["symbol"] == "KRW-BARD"
+
+
+class TestResponseShape:
+
+    @pytest.fixture()
+    def service(self) -> PortfolioRotationService:
+        return PortfolioRotationService()
+
+    @pytest.mark.asyncio
+    @patch(
+        "app.services.portfolio_rotation_service._fetch_crypto_positions",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "app.services.portfolio_rotation_service._fetch_active_journals",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "app.services.portfolio_rotation_service._fetch_buy_candidates",
+        new_callable=AsyncMock,
+    )
+    async def test_response_has_all_required_keys(
+        self,
+        mock_buy: AsyncMock,
+        mock_journals: AsyncMock,
+        mock_positions: AsyncMock,
+        service: PortfolioRotationService,
+    ):
+        mock_positions.return_value = ([], [])
+        mock_journals.return_value = {}
+        mock_buy.return_value = []
+
+        result = await service.build_rotation_plan(market="crypto")
+
+        required_keys = {
+            "supported", "market", "account", "generated_at",
+            "summary", "sell_candidates", "buy_candidates",
+            "locked_positions", "ignored_positions", "warnings",
+        }
+        assert required_keys <= set(result.keys())
+
+        summary_keys = {
+            "total_positions", "actionable_positions",
+            "locked_positions", "ignored_positions", "buy_candidates",
+        }
+        assert summary_keys <= set(result["summary"].keys())
+        assert result["supported"] is True
+        assert result["generated_at"] is not None
