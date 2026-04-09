@@ -341,6 +341,16 @@ async def get_portfolio_cash(
     return await dashboard_service.get_cash_snapshot()
 
 
+@router.get("/api/rotation-plan")
+async def get_rotation_plan(
+    _current_user: User = Depends(get_authenticated_user),
+):
+    from app.services.portfolio_rotation_service import PortfolioRotationService
+
+    service = PortfolioRotationService()
+    return await service.build_rotation_plan(market="crypto")
+
+
 class PositionDetailNotFoundHTTPError(HTTPException):
     def __init__(self, symbol: str):
         super().__init__(status_code=404, detail=f"Position not found: {symbol}")

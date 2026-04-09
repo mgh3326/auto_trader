@@ -123,11 +123,13 @@ def register_analysis_tools(mcp: FastMCP) -> None:
         symbols: list[str | int],
         market: str | None = None,
         include_peers: bool = False,
+        include_rotation_plan: bool = False,
     ) -> dict[str, Any]:
         return await analyze_portfolio_impl(
             symbols=symbols,
             market=market,
             include_peers=include_peers,
+            include_rotation_plan=include_rotation_plan,
         )
 
     @mcp.tool(
