@@ -477,7 +477,9 @@ async def _fetch_with_date_fallback(
                 logger.info(f"Cache hit for {cache_prefix} on {actual_date}")
                 return cached
             else:
-                logger.warning(f"Cache hit but validation failed for {cache_prefix} on {actual_date}")
+                logger.warning(
+                    f"Cache hit but validation failed for {cache_prefix} on {actual_date}"
+                )
 
         # Fetch from KRX API
         logger.info(f"Fetching KRX data for {cache_prefix}, date={actual_date}")
@@ -501,7 +503,9 @@ async def _fetch_with_date_fallback(
     return []
 
 
-def _normalize_stock_row(item: dict[str, Any], actual_date: str) -> dict[str, Any] | None:
+def _normalize_stock_row(
+    item: dict[str, Any], actual_date: str
+) -> dict[str, Any] | None:
     """Normalize a single KRX stock row."""
     raw_market_cap = _parse_korean_number(item.get("MKTCAP"))
     market_cap_in_100m_won = (
@@ -557,7 +561,9 @@ async def fetch_stock_all(
         - close, market_cap (억원), volume, value, change_rate, change_price
     """
 
-    def normalize(raw_data: list[dict[str, Any]], actual_date: str) -> list[dict[str, Any]]:
+    def normalize(
+        raw_data: list[dict[str, Any]], actual_date: str
+    ) -> list[dict[str, Any]]:
         stocks = []
         for item in raw_data:
             stock = _normalize_stock_row(item, actual_date)
@@ -638,7 +644,9 @@ async def fetch_etf_all(
     if idx_ind_clss_cd:
         cache_suffix += f":{idx_ind_clss_cd}"
 
-    def normalize(raw_data: list[dict[str, Any]], actual_date: str) -> list[dict[str, Any]]:
+    def normalize(
+        raw_data: list[dict[str, Any]], actual_date: str
+    ) -> list[dict[str, Any]]:
         etfs = []
         for item in raw_data:
             etf = _normalize_etf_row(item, actual_date)
@@ -751,7 +759,9 @@ async def fetch_valuation_all(
         - per, pbr, eps, bps, dividend_yield (decimal, 0.0256 = 2.56%)
     """
 
-    def normalize(raw_data: list[dict[str, Any]], actual_date: str) -> list[dict[str, Any]]:
+    def normalize(
+        raw_data: list[dict[str, Any]], actual_date: str
+    ) -> list[dict[str, Any]]:
         results = []
         for item in raw_data:
             parsed = _normalize_valuation_row(item)
@@ -776,11 +786,7 @@ async def fetch_valuation_all(
     )
 
     # Convert list → dict keyed by ISU_SRT_CD
-    return {
-        item["ISU_SRT_CD"]: item
-        for item in cached_list
-        if item.get("ISU_SRT_CD")
-    }
+    return {item["ISU_SRT_CD"]: item for item in cached_list if item.get("ISU_SRT_CD")}
 
 
 async def fetch_valuation_all_cached(
@@ -865,5 +871,3 @@ def classify_etf_category(
         categories.append("기타")
 
     return categories
-
-

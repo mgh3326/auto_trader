@@ -1311,6 +1311,7 @@ class TestKRXSessionManager:
         assert manager._authenticated is False
         assert manager._auth_failed is False
 
+
 class TestFetchWithDateFallback:
     """Test the _fetch_with_date_fallback common helper."""
 
@@ -1333,7 +1334,10 @@ class TestFetchWithDateFallback:
         monkeypatch.setattr(krx, "_set_cached_data", mock_set_cached_data)
 
         def normalize(raw_data, actual_date):
-            return [{"normalized": item["RAW_FIELD"], "date": actual_date} for item in raw_data]
+            return [
+                {"normalized": item["RAW_FIELD"], "date": actual_date}
+                for item in raw_data
+            ]
 
         result = await krx._fetch_with_date_fallback(
             cache_prefix="test:prefix",
@@ -1351,6 +1355,7 @@ class TestFetchWithDateFallback:
     async def test_cache_hit_returns_cached(self, monkeypatch):
         """Cache hit → returns cached data without calling API."""
         from app.services import krx
+
         cached = [{"from": "cache"}]
 
         async def mock_get_cached_data(cache_key):
@@ -1381,6 +1386,7 @@ class TestFetchWithDateFallback:
     async def test_fallback_to_next_date_on_empty(self, monkeypatch):
         """Empty response → tries next date candidate."""
         from app.services import krx
+
         call_dates = []
 
         async def mock_get_cached_data(cache_key):
