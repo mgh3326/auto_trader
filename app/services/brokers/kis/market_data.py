@@ -250,9 +250,7 @@ class MarketDataClient:
                 await self._parent._token_manager.clear_token()
                 continue
 
-            raise RuntimeError(
-                js.get("msg1") or f"KIS API error (msg_cd={js.get('msg_cd', 'unknown')})"
-            )
+            raise RuntimeError(f"{js.get('msg_cd', 'unknown')} {js.get('msg1', 'No message')}")
 
         raise RuntimeError("KIS API token retry exhausted")
 
@@ -479,32 +477,12 @@ class MarketDataClient:
             "FID_INPUT_DATE_2": end_date.strftime("%Y%m%d"),
         }
 
-        for attempt in range(2):
-            await self._parent._ensure_token()
-            hdr = self._parent._hdr_base | {
-                "authorization": f"Bearer {self._settings.kis_access_token}",
-                "tr_id": constants.DOMESTIC_SHORT_SELLING_TR,
-            }
-            js = await self._parent._request_with_rate_limit(
-                "GET",
-                f"{constants.BASE}{constants.DOMESTIC_SHORT_SELLING_URL}",
-                headers=hdr,
-                params=params,
-                timeout=5,
-                api_name="inquire_short_selling",
-                tr_id=constants.DOMESTIC_SHORT_SELLING_TR,
-            )
-
-            if js.get("rt_cd") == "0":
-                break
-
-            if attempt == 0 and js.get("msg_cd") in ["EGW00123", "EGW00121"]:
-                await self._parent._token_manager.clear_token()
-                continue
-
-            raise RuntimeError(f"{js.get('msg_cd')} {js.get('msg1')}")
-        else:
-            raise RuntimeError("Failed to fetch KIS daily short selling data")
+        js = await self._request_with_token_retry(
+            tr_id=constants.DOMESTIC_SHORT_SELLING_TR,
+            url=f"{constants.BASE}{constants.DOMESTIC_SHORT_SELLING_URL}",
+            params=params,
+            api_name="inquire_short_selling",
+        )
 
         output1 = js.get("output1")
         if not isinstance(output1, dict):
@@ -581,12 +559,6 @@ class MarketDataClient:
         컬럼: date • open • high • low • close • volume • value
         """
         n = normalize_daily_chart_lookback(n)
-        await self._parent._ensure_token()
-        hdr = self._parent._hdr_base | {
-            "authorization": f"Bearer {self._settings.kis_access_token}",
-            "tr_id": constants.DOMESTIC_DAILY_CHART_TR,
-        }
-
         end = end_date or datetime.date.today()
         rows: list[dict] = []
 
@@ -601,26 +573,12 @@ class MarketDataClient:
                 "FID_INPUT_DATE_2": end.strftime("%Y%m%d"),
             }
 
-            js = await self._parent._request_with_rate_limit(
-                "GET",
-                f"{constants.BASE}{constants.DOMESTIC_DAILY_CHART_URL}",
-                headers=hdr,
-                params=params,
-                timeout=5,
-                api_name="inquire_daily_itemchartprice",
+            js = await self._request_with_token_retry(
                 tr_id=constants.DOMESTIC_DAILY_CHART_TR,
+                url=f"{constants.BASE}{constants.DOMESTIC_DAILY_CHART_URL}",
+                params=params,
+                api_name="inquire_daily_itemchartprice",
             )
-
-            if js.get("rt_cd") != "0":
-                if js.get("msg_cd") in [
-                    "EGW00123",
-                    "EGW00121",
-                ]:  # 토큰 만료 또는 유효하지 않은 토큰
-                    # Redis에서 토큰 삭제 후 새로 발급
-                    await self._parent._token_manager.clear_token()
-                    await self._parent._ensure_token()
-                    continue
-                raise RuntimeError(f"{js.get('msg_cd')} {js.get('msg1')}")
 
             chunk = js.get("output2") or js.get("output") or []
             if not chunk:
@@ -685,13 +643,6 @@ class MarketDataClient:
         end_date: datetime.date | None = None,
         end_time: str | None = None,
     ) -> pd.DataFrame:
-        await self._parent._ensure_token()
-
-        hdr = self._parent._hdr_base | {
-            "authorization": f"Bearer {self._settings.kis_access_token}",
-            "tr_id": constants.DOMESTIC_TIME_DAILY_CHART_TR,
-        }
-
         base_date = end_date or datetime.date.today()
         current_time = end_time or datetime.datetime.now().strftime("%H%M%S")
         params = {
@@ -704,20 +655,15 @@ class MarketDataClient:
             "FID_ETC_CLS_CODE": "",
         }
 
-        js = await self._parent._request_with_rate_limit(
-            "GET",
-            f"{constants.BASE}{constants.DOMESTIC_TIME_DAILY_CHART_URL}",
-            headers=hdr,
-            params=params,
-            timeout=5,
-            api_name="inquire_time_dailychartprice",
+        js = await self._request_with_token_retry(
             tr_id=constants.DOMESTIC_TIME_DAILY_CHART_TR,
+            url=f"{constants.BASE}{constants.DOMESTIC_TIME_DAILY_CHART_URL}",
+            params=params,
+            api_name="inquire_time_dailychartprice",
         )
 
         rows = js.get("output2") or js.get("output") or []
         if not rows:
-            if js.get("rt_cd") != "0":
-                raise RuntimeError(f"{js.get('msg_cd')} {js.get('msg1')}")
             return pd.DataFrame(
                 columns=[
                     "datetime",
@@ -817,17 +763,6 @@ class MarketDataClient:
         end_date : datetime.date, optional
             종료 날짜 (None이면 오늘까지)
         """
-        await self._parent._ensure_token()
-
-        hdr = self._parent._hdr_base | {
-            "authorization": f"Bearer {self._settings.kis_access_token}",
-            "tr_id": constants.DOMESTIC_MINUTE_CHART_TR,
-        }
-
-        # KIS 분봉 API는 time_unit 파라미터를 제대로 인식하지 못하는 문제가 있음
-        # 현재로서는 모든 시간대에서 동일한 데이터가 반환됨
-        # 향후 API 문서 업데이트나 기술지원을 통해 해결 필요
-
         # 현재 시간을 시분초로 설정 (장 시간 내에만 작동)
         current_time = datetime.datetime.now().strftime("%H%M%S")
 
@@ -843,14 +778,11 @@ class MarketDataClient:
             "FID_ETC_CLS_CODE": "",
         }
 
-        js = await self._parent._request_with_rate_limit(
-            "GET",
-            f"{constants.BASE}{constants.DOMESTIC_MINUTE_CHART_URL}",
-            headers=hdr,
-            params=params,
-            timeout=5,
-            api_name="inquire_minute_chart",
+        js = await self._request_with_token_retry(
             tr_id=constants.DOMESTIC_MINUTE_CHART_TR,
+            url=f"{constants.BASE}{constants.DOMESTIC_MINUTE_CHART_URL}",
+            params=params,
+            api_name="inquire_minute_chart",
         )
 
         # 디버깅을 위한 로깅 추가
@@ -1018,16 +950,9 @@ class MarketDataClient:
         Returns:
             DataFrame with columns: date, open, high, low, close, volume
         """
-        await self._parent._ensure_token()
-
         # KIS API는 거래소 코드를 3자리로 사용: NASD -> NAS, NYSE -> NYS, AMEX -> AMS
         excd_map = {"NASD": "NAS", "NYSE": "NYS", "AMEX": "AMS"}
         excd = excd_map.get(exchange_code, exchange_code[:3])
-
-        hdr = self._parent._hdr_base | {
-            "authorization": f"Bearer {self._settings.kis_access_token}",
-            "tr_id": constants.OVERSEAS_DAILY_CHART_TR,
-        }
 
         rows: list[dict] = []
         max_iterations = 5  # 최대 5번 반복 (충분한 데이터 확보)
@@ -1061,22 +986,13 @@ class MarketDataClient:
                 f"해외주식 일봉 조회 요청 (반복 {iteration + 1}/{max_iterations}) - symbol: {symbol}, exchange: {excd}, bymd: {bymd}"
             )
 
-            js = await self._parent._request_with_rate_limit(
-                "GET",
-                f"{constants.BASE}{constants.OVERSEAS_DAILY_CHART_URL}",
-                headers=hdr,
+            js = await self._request_with_token_retry(
+                tr_id=constants.OVERSEAS_DAILY_CHART_TR,
+                url=f"{constants.BASE}{constants.OVERSEAS_DAILY_CHART_URL}",
                 params=params,
                 timeout=10,
                 api_name="inquire_overseas_daily_price",
-                tr_id=constants.OVERSEAS_DAILY_CHART_TR,
             )
-
-            if js.get("rt_cd") != "0":
-                if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
-                    await self._parent._token_manager.clear_token()
-                    await self._parent._ensure_token()
-                    continue
-                raise RuntimeError(f"{js.get('msg_cd')} {js.get('msg1')}")
 
             chunk = js.get("output2") or js.get("output") or []
             if not chunk:
@@ -1133,8 +1049,6 @@ class MarketDataClient:
         n: int = 120,
         keyb: str = "",
     ) -> OverseasMinuteChartPage:
-        await self._parent._ensure_token()
-
         excd = constants.OVERSEAS_EXCHANGE_MAP.get(exchange_code, exchange_code[:3])
         requested_rows = min(max(int(n), 1), 120)
         next_flag = "1" if keyb else ""
@@ -1151,36 +1065,18 @@ class MarketDataClient:
             "KEYB": keyb,
         }
 
-        for attempt in range(2):
-            hdr = self._parent._hdr_base | {
-                "authorization": f"Bearer {self._settings.kis_access_token}",
-                "tr_id": constants.OVERSEAS_MINUTE_CHART_TR,
-            }
-            js = await self._parent._request_with_rate_limit(
-                "GET",
-                f"{constants.BASE}{constants.OVERSEAS_MINUTE_CHART_URL}",
-                headers=hdr,
-                params=params,
-                timeout=10,
-                api_name="inquire_overseas_minute_chart",
-                tr_id=constants.OVERSEAS_MINUTE_CHART_TR,
-            )
-
-            if js.get("rt_cd") == "0":
-                break
-
-            if attempt == 0 and js.get("msg_cd") in ["EGW00123", "EGW00121"]:
-                await self._parent._token_manager.clear_token()
-                await self._parent._ensure_token()
-                continue
-
-            raise RuntimeError(f"{js.get('msg_cd')} {js.get('msg1')}")
-        else:
-            raise RuntimeError("Failed to fetch overseas minute chart")
+        js = await self._request_with_token_retry(
+            tr_id=constants.OVERSEAS_MINUTE_CHART_TR,
+            url=f"{constants.BASE}{constants.OVERSEAS_MINUTE_CHART_URL}",
+            params=params,
+            timeout=10,
+            api_name="inquire_overseas_minute_chart",
+        )
 
         chunk = js.get("output2")
         if chunk is None:
             chunk = js.get("output")
+
         if chunk is None or chunk == []:
             return _empty_overseas_minute_chart_page()
 
