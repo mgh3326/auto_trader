@@ -852,6 +852,180 @@ async def _get_indicators_impl(
         )
 
 
+async def _search_symbol_impl(
+    query: str,
+    limit: int = 20,
+    market: str | None = None,
+) -> list[dict[str, Any]]:
+    """Implementation for search_symbol tool."""
+    query = (query or "").strip()
+    if not query:
+        return []
+
+    instrument_type = _normalize_market(market)
+
+    try:
+        capped_limit = min(max(limit, 1), 100)
+        return await _search_master_data(query, capped_limit, instrument_type)
+    except Exception as exc:
+        return [_error_payload(source="master", message=str(exc), query=query)]
+
+
+async def _get_quote_impl(
+    symbol: str | int,
+    market: str | None = None,
+) -> dict[str, Any]:
+    """Implementation for get_quote tool."""
+    symbol = _normalize_symbol_input(symbol, market)
+    if not symbol:
+        raise ValueError("symbol is required")
+
+    market_type, symbol = _resolve_market_type(symbol, market)
+
+    if market_type == "equity_us":
+        return await _fetch_quote_equity_us(symbol)
+
+    source_map = {"crypto": "upbit", "equity_kr": "kis"}
+    source = source_map[market_type]
+
+    try:
+        if market_type == "crypto":
+            return await _fetch_quote_crypto(symbol)
+        return await _fetch_quote_equity_kr(symbol)
+    except Exception as exc:
+        return _error_payload_from_exception(
+            source=source,
+            exc=exc,
+            symbol=symbol,
+            instrument_type=market_type,
+        )
+
+
+async def _get_orderbook_impl(
+    symbol: str | int,
+    market: str = "kr",
+) -> dict[str, Any]:
+    """Implementation for get_orderbook tool."""
+    requested_market = str(market or "kr").strip() or "kr"
+    market_type = _normalize_market(requested_market)
+    if market_type is None:
+        raise ValueError(f"Unsupported market: {market}")
+
+    source = "kis"
+    instrument_type = "equity_kr"
+
+    if market_type == "equity_kr":
+        symbol = _normalize_symbol_input(symbol, "kr")
+        if not symbol:
+            raise ValueError("symbol is required")
+        _, symbol = _resolve_market_type(symbol, "kr")
+    elif market_type == "crypto":
+        symbol = _validate_crypto_orderbook_symbol_input(symbol)
+        source = "upbit"
+        instrument_type = "crypto"
+    else:
+        raise ValueError("get_orderbook only supports KR equity and KRW crypto markets")
+
+    try:
+        snapshot = await market_data_service.get_orderbook(
+            symbol,
+            "crypto" if market_type == "crypto" else "kr",
+        )
+        return _build_orderbook_payload(snapshot)
+    except Exception as exc:
+        return _error_payload_from_exception(
+            source=source,
+            exc=exc,
+            symbol=symbol,
+            instrument_type=instrument_type,
+        )
+
+
+async def _get_ohlcv_impl(
+    symbol: str,
+    count: int = 100,
+    period: str = "day",
+    end_date: str | None = None,
+    market: str | None = None,
+    include_indicators: bool = False,
+) -> dict[str, Any]:
+    """Implementation for get_ohlcv tool."""
+    symbol = (symbol or "").strip()
+    if not symbol:
+        raise ValueError("symbol is required")
+    count = int(count)
+    if count <= 0:
+        raise ValueError("count must be > 0")
+
+    period = (period or "day").strip().lower()
+
+    market_type, symbol = _resolve_market_type(symbol, market)
+    period = validate_ohlcv_period(period, market_type)
+
+    parsed_end_date: datetime.datetime | None = None
+    end_date_is_date_only = False
+    if end_date:
+        try:
+            is_date_only = len(end_date) == 10  # "YYYY-MM-DD"
+            if (
+                market_type == "equity_us"
+                and period in US_INTRADAY_OHLCV_PERIODS
+                and is_date_only
+            ):
+                end_date_is_date_only = True
+                parsed_end_date = datetime.datetime.combine(
+                    datetime.date.fromisoformat(end_date),
+                    datetime.time(20, 0),  # 20:00 ET = post-market close
+                )
+            else:
+                parsed_end_date = datetime.datetime.fromisoformat(end_date)
+        except ValueError as exc:
+            raise ValueError(
+                "end_date must be ISO format (e.g., '2024-01-15')"
+            ) from exc
+
+    # Period-aware source mapping
+    if market_type == "equity_us" and period in US_INTRADAY_OHLCV_PERIODS:
+        source = "kis"
+    else:
+        source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
+        source = source_map[market_type]
+    try:
+        if market_type == "crypto":
+            return await _fetch_ohlcv_crypto(
+                symbol,
+                count,
+                period,
+                parsed_end_date,
+                include_indicators=include_indicators,
+            )
+        if market_type == "equity_kr":
+            return await _fetch_ohlcv_equity_kr(
+                symbol,
+                count,
+                period,
+                parsed_end_date,
+                include_indicators=include_indicators,
+            )
+        return await _fetch_ohlcv_equity_us(
+            symbol,
+            count,
+            period,
+            parsed_end_date,
+            include_indicators=include_indicators,
+            end_date_is_date_only=end_date_is_date_only,
+        )
+    except Exception as exc:
+        if str(exc).startswith("Crypto minute OHLCV response missing columns:"):
+            raise
+        return _error_payload_from_exception(
+            source=source,
+            exc=exc,
+            symbol=symbol,
+            instrument_type=market_type,
+        )
+
+
 def _register_market_data_tools_impl(mcp: FastMCP) -> None:
     @mcp.tool(
         name="search_symbol",
@@ -864,46 +1038,14 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
     async def search_symbol(
         query: str, limit: int = 20, market: str | None = None
     ) -> list[dict[str, Any]]:
-        query = (query or "").strip()
-        if not query:
-            return []
-
-        instrument_type = _normalize_market(market)
-
-        try:
-            capped_limit = min(max(limit, 1), 100)
-            return await _search_master_data(query, capped_limit, instrument_type)
-        except Exception as exc:
-            return [_error_payload(source="master", message=str(exc), query=query)]
+        return await _search_symbol_impl(query, limit, market)
 
     @mcp.tool(
         name="get_quote",
         description="Get latest quote/last price for a symbol (KR equity / US equity / crypto).",
     )
     async def get_quote(symbol: str | int, market: str | None = None) -> dict[str, Any]:
-        symbol = _normalize_symbol_input(symbol, market)
-        if not symbol:
-            raise ValueError("symbol is required")
-
-        market_type, symbol = _resolve_market_type(symbol, market)
-
-        if market_type == "equity_us":
-            return await _fetch_quote_equity_us(symbol)
-
-        source_map = {"crypto": "upbit", "equity_kr": "kis"}
-        source = source_map[market_type]
-
-        try:
-            if market_type == "crypto":
-                return await _fetch_quote_crypto(symbol)
-            return await _fetch_quote_equity_kr(symbol)
-        except Exception as exc:
-            return _error_payload_from_exception(
-                source=source,
-                exc=exc,
-                symbol=symbol,
-                instrument_type=market_type,
-            )
+        return await _get_quote_impl(symbol, market)
 
     @mcp.tool(
         name="get_orderbook",
@@ -913,41 +1055,7 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
         ),
     )
     async def get_orderbook(symbol: str | int, market: str = "kr") -> dict[str, Any]:
-        requested_market = str(market or "kr").strip() or "kr"
-        market_type = _normalize_market(requested_market)
-        if market_type is None:
-            raise ValueError(f"Unsupported market: {market}")
-
-        source = "kis"
-        instrument_type = "equity_kr"
-
-        if market_type == "equity_kr":
-            symbol = _normalize_symbol_input(symbol, "kr")
-            if not symbol:
-                raise ValueError("symbol is required")
-            _, symbol = _resolve_market_type(symbol, "kr")
-        elif market_type == "crypto":
-            symbol = _validate_crypto_orderbook_symbol_input(symbol)
-            source = "upbit"
-            instrument_type = "crypto"
-        else:
-            raise ValueError(
-                "get_orderbook only supports KR equity and KRW crypto markets"
-            )
-
-        try:
-            snapshot = await market_data_service.get_orderbook(
-                symbol,
-                "crypto" if market_type == "crypto" else "kr",
-            )
-            return _build_orderbook_payload(snapshot)
-        except Exception as exc:
-            return _error_payload_from_exception(
-                source=source,
-                exc=exc,
-                symbol=symbol,
-                instrument_type=instrument_type,
-            )
+        return await _get_orderbook_impl(symbol, market)
 
     @mcp.tool(
         name="get_ohlcv",
@@ -964,80 +1072,14 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
         market: str | None = None,
         include_indicators: bool = False,
     ) -> dict[str, Any]:
-        symbol = (symbol or "").strip()
-        if not symbol:
-            raise ValueError("symbol is required")
-        count = int(count)
-        if count <= 0:
-            raise ValueError("count must be > 0")
-
-        period = (period or "day").strip().lower()
-
-        market_type, symbol = _resolve_market_type(symbol, market)
-        period = validate_ohlcv_period(period, market_type)
-
-        parsed_end_date: datetime.datetime | None = None
-        end_date_is_date_only = False
-        if end_date:
-            try:
-                is_date_only = len(end_date) == 10  # "YYYY-MM-DD"
-                if (
-                    market_type == "equity_us"
-                    and period in US_INTRADAY_OHLCV_PERIODS
-                    and is_date_only
-                ):
-                    end_date_is_date_only = True
-                    parsed_end_date = datetime.datetime.combine(
-                        datetime.date.fromisoformat(end_date),
-                        datetime.time(20, 0),  # 20:00 ET = post-market close
-                    )
-                else:
-                    parsed_end_date = datetime.datetime.fromisoformat(end_date)
-            except ValueError as exc:
-                raise ValueError(
-                    "end_date must be ISO format (e.g., '2024-01-15')"
-                ) from exc
-
-        # Period-aware source mapping
-        if market_type == "equity_us" and period in US_INTRADAY_OHLCV_PERIODS:
-            source = "kis"
-        else:
-            source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
-            source = source_map[market_type]
-        try:
-            if market_type == "crypto":
-                return await _fetch_ohlcv_crypto(
-                    symbol,
-                    count,
-                    period,
-                    parsed_end_date,
-                    include_indicators=include_indicators,
-                )
-            if market_type == "equity_kr":
-                return await _fetch_ohlcv_equity_kr(
-                    symbol,
-                    count,
-                    period,
-                    parsed_end_date,
-                    include_indicators=include_indicators,
-                )
-            return await _fetch_ohlcv_equity_us(
-                symbol,
-                count,
-                period,
-                parsed_end_date,
-                include_indicators=include_indicators,
-                end_date_is_date_only=end_date_is_date_only,
-            )
-        except Exception as exc:
-            if str(exc).startswith("Crypto minute OHLCV response missing columns:"):
-                raise
-            return _error_payload_from_exception(
-                source=source,
-                exc=exc,
-                symbol=symbol,
-                instrument_type=market_type,
-            )
+        return await _get_ohlcv_impl(
+            symbol=symbol,
+            count=count,
+            period=period,
+            end_date=end_date,
+            market=market,
+            include_indicators=include_indicators,
+        )
 
     @mcp.tool(
         name="get_indicators",
@@ -1070,6 +1112,10 @@ __all__ = [
     "_fetch_ohlcv_equity_us",
     "_build_orderbook_payload",
     "_get_indicators_impl",
+    "_search_symbol_impl",
+    "_get_quote_impl",
+    "_get_orderbook_impl",
+    "_get_ohlcv_impl",
     "MARKET_DATA_TOOL_NAMES",
     "_register_market_data_tools_impl",
 ]
