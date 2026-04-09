@@ -1,6 +1,6 @@
 import logging
 from datetime import date
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import httpx
 import pandas as pd
@@ -1191,8 +1191,6 @@ class TestKISRateLimitLookup:
         assert len(warnings) == 1
 
 
-
-
 class TestRequestWithTokenRetry:
     """Tests for MarketDataClient._request_with_token_retry"""
 
@@ -1206,10 +1204,12 @@ class TestRequestWithTokenRetry:
             return_value={"rt_cd": "0", "output": [{"foo": "bar"}]}
         )
         monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
-        
+
         mock_settings = MagicMock()
         mock_settings.kis_access_token = "test_token"
-        monkeypatch.setattr(KISClient, "_settings", PropertyMock(return_value=mock_settings))
+        monkeypatch.setattr(
+            KISClient, "_settings", PropertyMock(return_value=mock_settings)
+        )
 
         js = await client._market_data._request_with_token_retry(
             tr_id="FHKST01010100",
@@ -1238,10 +1238,12 @@ class TestRequestWithTokenRetry:
         monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
         client._token_manager = AsyncMock()
         client._token_manager.clear_token = AsyncMock(return_value=None)
-        
+
         mock_settings = MagicMock()
         mock_settings.kis_access_token = "test_token"
-        monkeypatch.setattr(KISClient, "_settings", PropertyMock(return_value=mock_settings))
+        monkeypatch.setattr(
+            KISClient, "_settings", PropertyMock(return_value=mock_settings)
+        )
 
         js = await client._market_data._request_with_token_retry(
             tr_id="FHKST01010100",
@@ -1266,10 +1268,12 @@ class TestRequestWithTokenRetry:
             return_value={"rt_cd": "1", "msg_cd": "OTHER_ERROR", "msg1": "bad request"}
         )
         monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
-        
+
         mock_settings = MagicMock()
         mock_settings.kis_access_token = "test_token"
-        monkeypatch.setattr(KISClient, "_settings", PropertyMock(return_value=mock_settings))
+        monkeypatch.setattr(
+            KISClient, "_settings", PropertyMock(return_value=mock_settings)
+        )
 
         with pytest.raises(RuntimeError, match="bad request"):
             await client._market_data._request_with_token_retry(
@@ -1294,10 +1298,12 @@ class TestRequestWithTokenRetry:
         monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
         client._token_manager = AsyncMock()
         client._token_manager.clear_token = AsyncMock(return_value=None)
-        
+
         mock_settings = MagicMock()
         mock_settings.kis_access_token = "test_token"
-        monkeypatch.setattr(KISClient, "_settings", PropertyMock(return_value=mock_settings))
+        monkeypatch.setattr(
+            KISClient, "_settings", PropertyMock(return_value=mock_settings)
+        )
 
         with pytest.raises(RuntimeError, match="token still expired"):
             await client._market_data._request_with_token_retry(
@@ -1313,14 +1319,14 @@ class TestRequestWithTokenRetry:
 
         client = KISClient()
         monkeypatch.setattr(client, "_ensure_token", AsyncMock())
-        request_mock = AsyncMock(
-            return_value={"rt_cd": "0", "output": []}
-        )
+        request_mock = AsyncMock(return_value={"rt_cd": "0", "output": []})
         monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
-        
+
         mock_settings = MagicMock()
         mock_settings.kis_access_token = "test_token"
-        monkeypatch.setattr(KISClient, "_settings", PropertyMock(return_value=mock_settings))
+        monkeypatch.setattr(
+            KISClient, "_settings", PropertyMock(return_value=mock_settings)
+        )
 
         await client._market_data._request_with_token_retry(
             tr_id="FHKST01010100",
@@ -1383,9 +1389,15 @@ class TestBuildOhlcvDataframe:
 
         assert len(df) == 2
         assert list(df.columns) == [
-            "datetime", "date", "time",
-            "open", "high", "low", "close",
-            "volume", "value",
+            "datetime",
+            "date",
+            "time",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "value",
         ]
         assert df.iloc[0]["datetime"] == pd.Timestamp("2026-02-19 10:00:00")
         assert df.iloc[0]["close"] == 70100.0

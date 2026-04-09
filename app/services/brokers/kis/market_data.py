@@ -250,7 +250,9 @@ class MarketDataClient:
                 await self._parent._token_manager.clear_token()
                 continue
 
-            raise RuntimeError(f"{js.get('msg_cd', 'unknown')} {js.get('msg1', 'No message')}")
+            raise RuntimeError(
+                f"{js.get('msg_cd', 'unknown')} {js.get('msg1', 'No message')}"
+            )
 
         raise RuntimeError("KIS API token retry exhausted")
 
@@ -398,9 +400,7 @@ class MarketDataClient:
             results.sort(key=lambda x: float(x.get("prdy_ctrt", 0)), reverse=True)
             return results[:limit]
 
-        negatives = [
-            item for item in results if float(item.get("prdy_ctrt", 0)) < 0
-        ]
+        negatives = [item for item in results if float(item.get("prdy_ctrt", 0)) < 0]
         negatives.sort(key=lambda x: float(x.get("prdy_ctrt", 0)))
         return negatives[:limit]
 
