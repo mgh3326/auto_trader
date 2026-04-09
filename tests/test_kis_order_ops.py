@@ -1,12 +1,9 @@
 # tests/test_kis_order_ops.py
-import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
 
 from app.services.kis_trading_service import (
-    DomesticOrderOps,
-    OverseasOrderOps,
     _DOMESTIC_OPS,
     _OVERSEAS_OPS,
 )

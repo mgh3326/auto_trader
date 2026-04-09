@@ -1,18 +1,12 @@
-import asyncio
+import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from app.core.symbol import to_db_symbol
+from app.core.portfolio_links import build_position_detail_url
 from app.monitoring.trade_notifier import get_trade_notifier
 from app.services.brokers.kis.client import KISClient
-from app.services.kis_trading_service import (
-    process_kis_domestic_buy_orders_with_analysis,
-    process_kis_domestic_sell_orders_with_analysis,
-    process_kis_overseas_buy_orders_with_analysis,
-    process_kis_overseas_sell_orders_with_analysis,
-)
 from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
 
 from .kis_market_adapters import (
@@ -564,6 +558,7 @@ async def run_per_domestic_stock_automation() -> dict:
     from app.core.db import AsyncSessionLocal
     from app.models.manual_holdings import MarketType
     from app.services.manual_holdings_service import ManualHoldingsService
+
     from . import kis_automation_runner
 
     adapter = DomesticAutomationAdapter(
@@ -585,6 +580,7 @@ async def run_per_overseas_stock_automation() -> dict:
     from app.core.db import AsyncSessionLocal
     from app.models.manual_holdings import MarketType
     from app.services.manual_holdings_service import ManualHoldingsService
+
     from . import kis_automation_runner
 
     adapter = OverseasAutomationAdapter(

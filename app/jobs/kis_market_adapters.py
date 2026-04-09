@@ -4,10 +4,10 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from app.core.symbol import to_db_symbol
+
 AutomationResult = dict[str, object]
 StepResults = list[dict[str, object]]
-
-from app.core.symbol import to_db_symbol
 
 
 @dataclass(slots=True)
@@ -128,9 +128,7 @@ class BaseAutomationAdapter:
 
     # --- Hook methods: subclass MAY override (have defaults) ---
 
-    async def resolve_exchange(
-        self, symbol: str, stock: dict[str, Any]
-    ) -> str | None:
+    async def resolve_exchange(self, symbol: str, stock: dict[str, Any]) -> str | None:
         return None
 
     async def refresh_after_buy(
@@ -203,7 +201,11 @@ class BaseAutomationAdapter:
 
             results: list[AutomationResult] = []
             all_open_orders = await self.fetch_open_orders(kis)
-            logger.info("%s 미체결 주문 조회 완료: %s건", self.market_type_label, len(all_open_orders))
+            logger.info(
+                "%s 미체결 주문 조회 완료: %s건",
+                self.market_type_label,
+                len(all_open_orders),
+            )
 
             for stock in my_stocks:
                 ctx = self.extract_stock_info(stock)
@@ -211,30 +213,44 @@ class BaseAutomationAdapter:
 
                 if ctx.is_manual:
                     try:
-                        ctx.current_price = await self.fetch_manual_price(kis, ctx.symbol)
+                        ctx.current_price = await self.fetch_manual_price(
+                            kis, ctx.symbol
+                        )
                         logger.info(
                             "[수동잔고] %s(%s) 현재가 조회: %s",
-                            ctx.name, ctx.symbol, ctx.current_price,
+                            ctx.name,
+                            ctx.symbol,
+                            ctx.current_price,
                         )
                     except Exception as exc:
                         logger.warning(
                             "[수동잔고] %s(%s) 현재가 조회 실패, 평단가 사용: %s",
-                            ctx.name, ctx.symbol, exc,
+                            ctx.name,
+                            ctx.symbol,
+                            exc,
                         )
                         ctx.current_price = ctx.avg_price
 
                 stock_steps: StepResults = []
 
                 # Analysis step skipped
-                stock_steps.append({
-                    "step": "분석",
-                    "result": {"success": True, "message": "분석 스킵 (대체 분석기 준비 중)"},
-                })
+                stock_steps.append(
+                    {
+                        "step": "분석",
+                        "result": {
+                            "success": True,
+                            "message": "분석 스킵 (대체 분석기 준비 중)",
+                        },
+                    }
+                )
 
                 # --- Cancel pending buy orders ---
                 try:
                     cancel_result = await self.cancel_pending(
-                        kis, ctx.symbol, "buy", all_open_orders,
+                        kis,
+                        ctx.symbol,
+                        "buy",
+                        all_open_orders,
                         exchange_code=ctx.exchange_code,
                     )
                     if cancel_result["total"] > 0:
@@ -244,24 +260,31 @@ class BaseAutomationAdapter:
                             cancel_result["cancelled"],
                             cancel_result["total"],
                         )
-                        stock_steps.append({
-                            "step": "매수취소",
-                            "result": {"success": True, **cancel_result},
-                        })
+                        stock_steps.append(
+                            {
+                                "step": "매수취소",
+                                "result": {"success": True, **cancel_result},
+                            }
+                        )
                         await asyncio.sleep(0.5)
                 except Exception as exc:
                     logger.warning(
                         "%s 미체결 매수 주문 취소 실패: %s", ctx.name or ctx.symbol, exc
                     )
-                    stock_steps.append({
-                        "step": "매수취소",
-                        "result": {"success": False, "error": str(exc)},
-                    })
+                    stock_steps.append(
+                        {
+                            "step": "매수취소",
+                            "result": {"success": False, "error": str(exc)},
+                        }
+                    )
 
                 # --- Buy ---
                 try:
                     buy_result = await self.buy_handler(
-                        kis, ctx.symbol, ctx.current_price, ctx.avg_price,
+                        kis,
+                        ctx.symbol,
+                        ctx.current_price,
+                        ctx.avg_price,
                         exchange_code=ctx.exchange_code,
                     )
                     stock_steps.append({"step": "매수", "result": buy_result})
@@ -285,25 +308,39 @@ class BaseAutomationAdapter:
                             logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
                 except Exception as exc:
                     error_msg = str(exc)
-                    stock_steps.append({
-                        "step": "매수",
-                        "result": {"success": False, "error": error_msg},
-                    })
+                    stock_steps.append(
+                        {
+                            "step": "매수",
+                            "result": {"success": False, "error": error_msg},
+                        }
+                    )
                     logger.error(
-                        "[매수 실패] %s(%s): %s", ctx.name, ctx.symbol, error_msg,
+                        "[매수 실패] %s(%s): %s",
+                        ctx.name,
+                        ctx.symbol,
+                        error_msg,
                     )
                     await self.on_trade_exception(ctx.symbol, ctx.name, exc, "매수")
 
                 # --- Refresh after buy ---
-                ctx.qty, ctx.avg_price, ctx.current_price = await self.refresh_after_buy(
-                    kis, ctx.symbol, ctx.qty, ctx.avg_price, ctx.current_price,
+                (
+                    ctx.qty,
+                    ctx.avg_price,
+                    ctx.current_price,
+                ) = await self.refresh_after_buy(
+                    kis,
+                    ctx.symbol,
+                    ctx.qty,
+                    ctx.avg_price,
+                    ctx.current_price,
                 )
 
                 # --- Manual holdings: toss recommendation, then continue ---
                 if ctx.is_manual:
                     logger.info(
                         "[수동잔고] %s(%s) - KIS 매도 불가, 토스 추천 알림 발송",
-                        ctx.name, ctx.symbol,
+                        ctx.name,
+                        ctx.symbol,
                     )
                     try:
                         await self.send_toss_recommendation(
@@ -315,30 +352,38 @@ class BaseAutomationAdapter:
                             market_type=self.toss_market_type,
                             currency=self.toss_currency,
                         )
-                        stock_steps.append({
-                            "step": "매도",
-                            "result": {
-                                "success": True,
-                                "message": "수동잔고 - 토스 추천 알림 발송",
-                                "orders_placed": 0,
-                            },
-                        })
+                        stock_steps.append(
+                            {
+                                "step": "매도",
+                                "result": {
+                                    "success": True,
+                                    "message": "수동잔고 - 토스 추천 알림 발송",
+                                    "orders_placed": 0,
+                                },
+                            }
+                        )
                     except Exception as exc:
                         logger.warning(
                             "[수동잔고] %s(%s) 토스 추천 알림 발송 실패: %s",
-                            ctx.name, ctx.symbol, exc,
+                            ctx.name,
+                            ctx.symbol,
+                            exc,
                         )
-                        stock_steps.append({
-                            "step": "매도",
-                            "result": {
-                                "success": True,
-                                "message": "수동잔고 - 매도 스킵",
-                                "orders_placed": 0,
-                            },
-                        })
+                        stock_steps.append(
+                            {
+                                "step": "매도",
+                                "result": {
+                                    "success": True,
+                                    "message": "수동잔고 - 매도 스킵",
+                                    "orders_placed": 0,
+                                },
+                            }
+                        )
                     results.append(
                         self.build_result_entry(
-                            name=ctx.name, symbol=ctx.symbol, steps=stock_steps,
+                            name=ctx.name,
+                            symbol=ctx.symbol,
+                            steps=stock_steps,
                         )
                     )
                     continue
@@ -347,7 +392,10 @@ class BaseAutomationAdapter:
                 sell_orders_cancelled = False
                 try:
                     cancel_result = await self.cancel_pending(
-                        kis, ctx.symbol, "sell", all_open_orders,
+                        kis,
+                        ctx.symbol,
+                        "sell",
+                        all_open_orders,
                         exchange_code=ctx.exchange_code,
                     )
                     if cancel_result["total"] > 0:
@@ -357,31 +405,42 @@ class BaseAutomationAdapter:
                             cancel_result["cancelled"],
                             cancel_result["total"],
                         )
-                        stock_steps.append({
-                            "step": "매도취소",
-                            "result": {"success": True, **cancel_result},
-                        })
+                        stock_steps.append(
+                            {
+                                "step": "매도취소",
+                                "result": {"success": True, **cancel_result},
+                            }
+                        )
                         sell_orders_cancelled = cancel_result["cancelled"] > 0
                         await asyncio.sleep(0.5)
                 except Exception as exc:
                     logger.warning(
                         "%s 미체결 매도 주문 취소 실패: %s", ctx.name or ctx.symbol, exc
                     )
-                    stock_steps.append({
-                        "step": "매도취소",
-                        "result": {"success": False, "error": str(exc)},
-                    })
+                    stock_steps.append(
+                        {
+                            "step": "매도취소",
+                            "result": {"success": False, "error": str(exc)},
+                        }
+                    )
 
                 # --- Refresh after sell cancel ---
                 if sell_orders_cancelled and self.refresh_holdings_after_sell_cancel:
                     ctx.qty, ctx.current_price = await self.refresh_after_sell_cancel(
-                        kis, ctx.symbol, ctx.qty, ctx.current_price,
+                        kis,
+                        ctx.symbol,
+                        ctx.qty,
+                        ctx.current_price,
                     )
 
                 # --- Sell ---
                 try:
                     sell_result = await self.sell_handler(
-                        kis, ctx.symbol, ctx.current_price, ctx.avg_price, ctx.qty,
+                        kis,
+                        ctx.symbol,
+                        ctx.current_price,
+                        ctx.avg_price,
+                        ctx.qty,
                         exchange_code=ctx.exchange_code,
                     )
                     stock_steps.append({"step": "매도", "result": sell_result})
@@ -405,18 +464,25 @@ class BaseAutomationAdapter:
                             logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
                 except Exception as exc:
                     error_msg = str(exc)
-                    stock_steps.append({
-                        "step": "매도",
-                        "result": {"success": False, "error": error_msg},
-                    })
+                    stock_steps.append(
+                        {
+                            "step": "매도",
+                            "result": {"success": False, "error": error_msg},
+                        }
+                    )
                     logger.error(
-                        "[매도 실패] %s(%s): %s", ctx.name, ctx.symbol, error_msg,
+                        "[매도 실패] %s(%s): %s",
+                        ctx.name,
+                        ctx.symbol,
+                        error_msg,
                     )
                     await self.on_trade_exception(ctx.symbol, ctx.name, exc, "매도")
 
                 results.append(
                     self.build_result_entry(
-                        name=ctx.name, symbol=ctx.symbol, steps=stock_steps,
+                        name=ctx.name,
+                        symbol=ctx.symbol,
+                        steps=stock_steps,
                     )
                 )
 
@@ -427,7 +493,10 @@ class BaseAutomationAdapter:
             }
         except Exception as exc:
             logger.error(
-                "[태스크 실패] %s: %s", self.market_type_label, exc, exc_info=True,
+                "[태스크 실패] %s: %s",
+                self.market_type_label,
+                exc,
+                exc_info=True,
             )
             return {"status": "failed", "error": str(exc)}
 
@@ -469,13 +538,16 @@ class DomesticAutomationAdapter(BaseAutomationAdapter):
         info = await kis.fetch_fundamental_info(symbol)
         return float(info.get("현재가", 0))
 
-    async def cancel_pending(self, kis, symbol, order_type, all_open_orders, *, exchange_code=None):
+    async def cancel_pending(
+        self, kis, symbol, order_type, all_open_orders, *, exchange_code=None
+    ):
         target_code = "02" if order_type == "buy" else "01"
         target_orders = [
             order
             for order in all_open_orders
             if (order.get("pdno") or order.get("PDNO")) == symbol
-            and (order.get("sll_buy_dvsn_cd") or order.get("SLL_BUY_DVSN_CD")) == target_code
+            and (order.get("sll_buy_dvsn_cd") or order.get("SLL_BUY_DVSN_CD"))
+            == target_code
         ]
         if not target_orders:
             return {"cancelled": 0, "failed": 0, "total": 0}
@@ -486,14 +558,20 @@ class DomesticAutomationAdapter(BaseAutomationAdapter):
             order_number = None
             try:
                 order_number = (
-                    order.get("odno") or order.get("ODNO")
-                    or order.get("ord_no") or order.get("ORD_NO")
+                    order.get("odno")
+                    or order.get("ODNO")
+                    or order.get("ord_no")
+                    or order.get("ORD_NO")
                 )
                 order_qty = int(order.get("ord_qty") or order.get("ORD_QTY") or 0)
-                order_price = int(float(order.get("ord_unpr") or order.get("ORD_UNPR") or 0))
+                order_price = int(
+                    float(order.get("ord_unpr") or order.get("ORD_UNPR") or 0)
+                )
                 order_orgno = (
-                    order.get("ord_gno_brno") or order.get("ORD_GNO_BRNO")
-                    or order.get("krx_fwdg_ord_orgno") or order.get("KRX_FWDG_ORD_ORGNO")
+                    order.get("ord_gno_brno")
+                    or order.get("ORD_GNO_BRNO")
+                    or order.get("krx_fwdg_ord_orgno")
+                    or order.get("KRX_FWDG_ORD_ORGNO")
                 )
                 if not order_number:
                     logger.warning("주문번호 없음 (%s): order=%s", symbol, order)
@@ -506,12 +584,16 @@ class DomesticAutomationAdapter(BaseAutomationAdapter):
                     price=order_price,
                     order_type=order_type,
                     is_mock=False,
-                    krx_fwdg_ord_orgno=str(order_orgno).strip() if order_orgno else None,
+                    krx_fwdg_ord_orgno=str(order_orgno).strip()
+                    if order_orgno
+                    else None,
                 )
                 cancelled += 1
                 await asyncio.sleep(0.2)
             except Exception as e:
-                logger.warning("주문 취소 실패 (%s, %s): %s", symbol, order_number or "unknown", e)
+                logger.warning(
+                    "주문 취소 실패 (%s, %s): %s", symbol, order_number or "unknown", e
+                )
                 failed += 1
         return {"cancelled": cancelled, "failed": failed, "total": len(target_orders)}
 
@@ -549,7 +631,9 @@ class DomesticAutomationAdapter(BaseAutomationAdapter):
         if result.get("error"):
             logger.error(
                 "[매수 에러] %s(%s): %s",
-                name, symbol, result["error"],
+                name,
+                symbol,
+                result["error"],
                 extra={"task": "kis.run_per_domestic_stock_automation"},
             )
 
@@ -572,7 +656,8 @@ class OverseasAutomationAdapter(BaseAutomationAdapter):
         for exchange in ("NASD", "NYSE", "AMEX"):
             try:
                 open_orders = await kis.inquire_overseas_orders(
-                    exchange_code=exchange, is_mock=False,
+                    exchange_code=exchange,
+                    is_mock=False,
                 )
             except Exception as exc:
                 logger.warning("미체결 주문 조회 실패 (exchange=%s): %s", exchange, exc)
@@ -588,7 +673,7 @@ class OverseasAutomationAdapter(BaseAutomationAdapter):
     @staticmethod
     def _extract_order_id(order: dict) -> str:
         for key in ("odno", "ODNO", "ord_no", "ORD_NO"):
-            if (v := order.get(key)):
+            if v := order.get(key):
                 return str(v).strip()
         return ""
 
@@ -625,14 +710,18 @@ class OverseasAutomationAdapter(BaseAutomationAdapter):
             return normalized
         return await get_us_exchange_by_symbol(symbol)
 
-    async def cancel_pending(self, kis, symbol, order_type, all_open_orders, *, exchange_code=None):
+    async def cancel_pending(
+        self, kis, symbol, order_type, all_open_orders, *, exchange_code=None
+    ):
         target_code = "02" if order_type == "buy" else "01"
         normalized_symbol = to_db_symbol(symbol)
         target_orders = [
             order
             for order in all_open_orders
-            if to_db_symbol(order.get("pdno") or order.get("PDNO") or "") == normalized_symbol
-            and (order.get("sll_buy_dvsn_cd") or order.get("SLL_BUY_DVSN_CD")) == target_code
+            if to_db_symbol(order.get("pdno") or order.get("PDNO") or "")
+            == normalized_symbol
+            and (order.get("sll_buy_dvsn_cd") or order.get("SLL_BUY_DVSN_CD"))
+            == target_code
         ]
         if not target_orders:
             return {"cancelled": 0, "failed": 0, "total": 0}
@@ -643,8 +732,10 @@ class OverseasAutomationAdapter(BaseAutomationAdapter):
             order_number = None
             try:
                 order_number = (
-                    order.get("odno") or order.get("ODNO")
-                    or order.get("ord_no") or order.get("ORD_NO")
+                    order.get("odno")
+                    or order.get("ODNO")
+                    or order.get("ord_no")
+                    or order.get("ORD_NO")
                 )
                 order_qty = int(order.get("ft_ord_qty") or order.get("FT_ORD_QTY") or 0)
                 if not order_number:
@@ -661,7 +752,9 @@ class OverseasAutomationAdapter(BaseAutomationAdapter):
                 cancelled += 1
                 await asyncio.sleep(0.2)
             except Exception as e:
-                logger.warning("주문 취소 실패 (%s, %s): %s", symbol, order_number or "unknown", e)
+                logger.warning(
+                    "주문 취소 실패 (%s, %s): %s", symbol, order_number or "unknown", e
+                )
                 failed += 1
         return {"cancelled": cancelled, "failed": failed, "total": len(target_orders)}
 

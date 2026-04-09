@@ -1,8 +1,5 @@
 # tests/test_kis_market_adapters_helpers.py
-import pytest
-
 from app.jobs.kis_market_adapters import (
-    StockContext,
     extract_domestic_stock_info,
     extract_overseas_stock_info,
     match_domestic_stock,

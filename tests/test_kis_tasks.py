@@ -195,7 +195,9 @@ def test_run_per_domestic_stock_automation_executes_all_steps(monkeypatch):
             "orders_placed": 0,
         }
 
-    async def fake_sell(kis, symbol, current_price, avg_price, qty, *, exchange_code=None):
+    async def fake_sell(
+        kis, symbol, current_price, avg_price, qty, *, exchange_code=None
+    ):
         sell_calls.append(
             {
                 "symbol": symbol,
@@ -454,7 +456,9 @@ def test_run_per_domestic_stock_automation_handles_buy_exception(monkeypatch):
     async def fake_buy(*_, **__):
         raise Exception("DB connection error")
 
-    async def fake_sell(kis, symbol, current_price, avg_price, qty, *, exchange_code=None):
+    async def fake_sell(
+        kis, symbol, current_price, avg_price, qty, *, exchange_code=None
+    ):
         sell_calls.append({"symbol": symbol, "qty": qty})
         return {"success": True, "message": "매도 완료", "orders_placed": 1}
 
@@ -631,7 +635,9 @@ def test_run_per_domestic_stock_automation_refreshes_holdings(monkeypatch):
     async def fake_buy(*_, **__):
         return {"success": True}
 
-    async def fake_sell(_kis, symbol, current_price, avg_price, qty, *, exchange_code=None):
+    async def fake_sell(
+        _kis, symbol, current_price, avg_price, qty, *, exchange_code=None
+    ):
         sell_calls.append(
             {
                 "symbol": symbol,
@@ -684,7 +690,9 @@ def test_execute_overseas_buy_order_fetches_price_for_new_symbol(monkeypatch):
 
     captured: dict[str, Any] = {}
 
-    async def fake_buy_handler(kis, symbol, current_price, avg_price, *, exchange_code=None):
+    async def fake_buy_handler(
+        kis, symbol, current_price, avg_price, *, exchange_code=None
+    ):
         captured.update(
             {
                 "symbol": symbol,
@@ -1186,7 +1194,9 @@ class TestOrderableQuantityUsage:
                 "orders_placed": 0,
             }
 
-        async def fake_sell(kis, symbol, current_price, avg_price, qty, *, exchange_code=None):
+        async def fake_sell(
+            kis, symbol, current_price, avg_price, qty, *, exchange_code=None
+        ):
             sell_qty_received.append(qty)
             return {"success": True, "message": "매도 완료", "orders_placed": 1}
 
@@ -1271,7 +1281,9 @@ class TestOrderableQuantityUsage:
         async def fake_buy(*_, **__):
             return {"success": True, "message": "매수 완료", "orders_placed": 2}
 
-        async def fake_sell(kis, symbol, current_price, avg_price, qty, *, exchange_code=None):
+        async def fake_sell(
+            kis, symbol, current_price, avg_price, qty, *, exchange_code=None
+        ):
             sell_qty_received.append(qty)
             return {"success": True, "message": "매도 완료", "orders_placed": 1}
 
@@ -1372,7 +1384,9 @@ class TestOrderableQuantityUsage:
                 "orders_placed": 0,
             }
 
-        async def fake_sell(kis, symbol, current_price, avg_price, qty, *, exchange_code=None):
+        async def fake_sell(
+            kis, symbol, current_price, avg_price, qty, *, exchange_code=None
+        ):
             sell_qty_received.append(qty)
             return {"success": True, "message": "매도 완료", "orders_placed": 1}
 
@@ -1469,7 +1483,9 @@ class TestOverseasManualHoldings:
             async def notify_trade_failure(self, **kwargs):
                 return True
 
-        async def fake_buy(kis, symbol, current_price, avg_price, *, exchange_code=None):
+        async def fake_buy(
+            kis, symbol, current_price, avg_price, *, exchange_code=None
+        ):
             buy_calls.append({"symbol": symbol, "current_price": current_price})
             return {
                 "success": True,
@@ -1590,7 +1606,9 @@ class TestOverseasManualHoldings:
         async def fake_buy(*_, **__):
             return {"success": False, "message": "매수 조건 미충족", "orders_placed": 0}
 
-        async def fake_sell(kis, symbol, current_price, avg_price, qty, *, exchange_code=None):
+        async def fake_sell(
+            kis, symbol, current_price, avg_price, qty, *, exchange_code=None
+        ):
             sell_calls.append({"symbol": symbol})
             return {"success": True, "orders_placed": 1}
 

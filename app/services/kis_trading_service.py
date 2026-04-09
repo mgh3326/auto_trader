@@ -221,12 +221,8 @@ async def _process_buy_orders_impl(
         appropriate_buy_max = _coerce_optional_float(
             getattr(analysis, "appropriate_buy_max", None)
         )
-        buy_hope_min = _coerce_optional_float(
-            getattr(analysis, "buy_hope_min", None)
-        )
-        buy_hope_max = _coerce_optional_float(
-            getattr(analysis, "buy_hope_max", None)
-        )
+        buy_hope_min = _coerce_optional_float(getattr(analysis, "buy_hope_min", None))
+        buy_hope_max = _coerce_optional_float(getattr(analysis, "buy_hope_max", None))
 
         # 3. 가격 정보 확인 (스마트 선택 로직)
         if buy_price_levels == 1:
@@ -343,7 +339,12 @@ async def process_kis_overseas_buy_orders_with_analysis(
     """분석 결과를 기반으로 KIS 해외 주식 매수 주문 처리."""
     try:
         result = await _process_buy_orders_impl(
-            _OVERSEAS_OPS, kis_client, symbol, current_price, avg_buy_price, exchange_code
+            _OVERSEAS_OPS,
+            kis_client,
+            symbol,
+            current_price,
+            avg_buy_price,
+            exchange_code,
         )
         return result.to_payload()
     except Exception as exc:
