@@ -778,35 +778,27 @@ class TradeNotifier:
         """Send Toss manual buy recommendation notification."""
         if not self._enabled:
             return False
-
         if toss_quantity <= 0:
             logger.debug(
                 f"Skipping Toss buy notification for {symbol}: no Toss holdings"
             )
             return False
 
-        try:
-            embed = self._format_toss_buy_recommendation(
-                symbol=symbol,
-                korean_name=korean_name,
-                current_price=current_price,
-                toss_quantity=toss_quantity,
-                toss_avg_price=toss_avg_price,
-                kis_quantity=kis_quantity,
-                kis_avg_price=kis_avg_price,
-                recommended_price=recommended_price,
-                recommended_quantity=recommended_quantity,
-                currency=currency,
-                market_type=market_type,
-                detail_url=detail_url,
-            )
-            webhook_url = self._get_webhook_for_market_type(market_type)
-            if not webhook_url:
-                return False
-            return await self._send_to_discord_embed_single(embed, webhook_url)
-        except Exception as e:
-            logger.error(f"Failed to send Toss buy recommendation: {e}")
-            return False
+        embed = fmt_discord.format_toss_buy_recommendation(
+            symbol=symbol,
+            korean_name=korean_name,
+            current_price=current_price,
+            toss_quantity=toss_quantity,
+            toss_avg_price=toss_avg_price,
+            kis_quantity=kis_quantity,
+            kis_avg_price=kis_avg_price,
+            recommended_price=recommended_price,
+            recommended_quantity=recommended_quantity,
+            currency=currency,
+            market_type=market_type,
+            detail_url=detail_url,
+        )
+        return await self._dispatch(embed, "", market_type)
 
     async def notify_toss_sell_recommendation(
         self,
@@ -828,37 +820,29 @@ class TradeNotifier:
         """Send Toss manual sell recommendation notification."""
         if not self._enabled:
             return False
-
         if toss_quantity <= 0:
             logger.debug(
                 f"Skipping Toss sell notification for {symbol}: no Toss holdings"
             )
             return False
 
-        try:
-            embed = self._format_toss_sell_recommendation(
-                symbol=symbol,
-                korean_name=korean_name,
-                current_price=current_price,
-                toss_quantity=toss_quantity,
-                toss_avg_price=toss_avg_price,
-                kis_quantity=kis_quantity,
-                kis_avg_price=kis_avg_price,
-                recommended_price=recommended_price,
-                recommended_quantity=recommended_quantity,
-                expected_profit=expected_profit,
-                profit_percent=profit_percent,
-                currency=currency,
-                market_type=market_type,
-                detail_url=detail_url,
-            )
-            webhook_url = self._get_webhook_for_market_type(market_type)
-            if not webhook_url:
-                return False
-            return await self._send_to_discord_embed_single(embed, webhook_url)
-        except Exception as e:
-            logger.error(f"Failed to send Toss sell recommendation: {e}")
-            return False
+        embed = fmt_discord.format_toss_sell_recommendation(
+            symbol=symbol,
+            korean_name=korean_name,
+            current_price=current_price,
+            toss_quantity=toss_quantity,
+            toss_avg_price=toss_avg_price,
+            kis_quantity=kis_quantity,
+            kis_avg_price=kis_avg_price,
+            recommended_price=recommended_price,
+            recommended_quantity=recommended_quantity,
+            expected_profit=expected_profit,
+            profit_percent=profit_percent,
+            currency=currency,
+            market_type=market_type,
+            detail_url=detail_url,
+        )
+        return await self._dispatch(embed, "", market_type)
 
     async def notify_toss_price_recommendation(
         self,
@@ -885,40 +869,32 @@ class TradeNotifier:
         """Send Toss price recommendation notification with AI analysis."""
         if not self._enabled:
             return False
-
         if toss_quantity <= 0:
             logger.debug(f"Skipping Toss notification for {symbol}: no Toss holdings")
             return False
 
-        try:
-            embed = self._format_toss_price_recommendation_discord_embed(
-                symbol=symbol,
-                korean_name=korean_name,
-                current_price=current_price,
-                toss_quantity=toss_quantity,
-                toss_avg_price=toss_avg_price,
-                decision=decision,
-                confidence=confidence,
-                reasons=reasons,
-                appropriate_buy_min=appropriate_buy_min,
-                appropriate_buy_max=appropriate_buy_max,
-                appropriate_sell_min=appropriate_sell_min,
-                appropriate_sell_max=appropriate_sell_max,
-                buy_hope_min=buy_hope_min,
-                buy_hope_max=buy_hope_max,
-                sell_target_min=sell_target_min,
-                sell_target_max=sell_target_max,
-                currency=currency,
-                market_type=market_type,
-                detail_url=detail_url,
-            )
-            webhook_url = self._get_webhook_for_market_type(market_type)
-            if not webhook_url:
-                return False
-            return await self._send_to_discord_embed_single(embed, webhook_url)
-        except Exception as e:
-            logger.error(f"Failed to send Toss price recommendation: {e}")
-            return False
+        embed = fmt_discord.format_toss_price_recommendation(
+            symbol=symbol,
+            korean_name=korean_name,
+            current_price=current_price,
+            toss_quantity=toss_quantity,
+            toss_avg_price=toss_avg_price,
+            decision=decision,
+            confidence=confidence,
+            reasons=reasons,
+            appropriate_buy_min=appropriate_buy_min,
+            appropriate_buy_max=appropriate_buy_max,
+            appropriate_sell_min=appropriate_sell_min,
+            appropriate_sell_max=appropriate_sell_max,
+            buy_hope_min=buy_hope_min,
+            buy_hope_max=buy_hope_max,
+            sell_target_min=sell_target_min,
+            sell_target_max=sell_target_max,
+            currency=currency,
+            market_type=market_type,
+            detail_url=detail_url,
+        )
+        return await self._dispatch(embed, "", market_type)
 
     async def notify_openclaw_message(
         self,
