@@ -1067,7 +1067,7 @@ async def test_kis_inquire_short_selling_propagates_non_token_api_failures(monke
     client._token_manager = AsyncMock()
     client._token_manager.clear_token = AsyncMock(return_value=None)
 
-    with pytest.raises(RuntimeError, match="ERROR123 bad request"):
+    with pytest.raises(RuntimeError, match="bad request"):
         await client.inquire_short_selling(
             "005930",
             date(2026, 2, 1),
@@ -1339,6 +1339,34 @@ class TestRequestWithTokenRetry:
         call_kwargs = request_mock.await_args.kwargs
         assert call_kwargs["timeout"] == 10
 
+    @pytest.mark.asyncio
+    async def test_passes_method_post(self, monkeypatch):
+        from app.services.brokers.kis.client import KISClient
+
+        client = KISClient()
+        monkeypatch.setattr(client, "_ensure_token", AsyncMock())
+        request_mock = AsyncMock(return_value={"rt_cd": "0", "output": []})
+        monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
+
+        mock_settings = MagicMock()
+        mock_settings.kis_access_token = "test_token"
+        monkeypatch.setattr(
+            KISClient, "_settings", PropertyMock(return_value=mock_settings)
+        )
+
+        await client._market_data._request_with_token_retry(
+            tr_id="FHKST01010100",
+            url="https://example.com/api",
+            params=None,
+            method="POST",
+            json_body={"key": "value"},
+            api_name="test_api",
+        )
+
+        call_args = request_mock.await_args
+        assert call_args.args[0] == "POST"
+        assert call_args.kwargs["json_body"] == {"key": "value"}
+
 
 class TestBuildOhlcvDataframe:
     """Tests for MarketDataClient._build_ohlcv_dataframe"""
@@ -1531,3 +1559,52 @@ class TestBuildOhlcvDataframe:
         )
 
         assert df.iloc[0]["datetime"] < df.iloc[1]["datetime"]
+
+    def test_overseas_column_mapping(self):
+        from app.services.brokers.kis.market_data import MarketDataClient
+
+        rows = [
+            {
+                "xymd": "20260219",
+                "xhms": "093000",
+                "open": 180.1,
+                "high": 181.0,
+                "low": 179.8,
+                "close": 180.5,
+                "volume": 100,
+                "value": 18050,
+            },
+            {
+                "xymd": "20260219",
+                "xhms": "093100",
+                "open": 180.5,
+                "high": 180.7,
+                "low": 180.2,
+                "close": 180.4,
+                "volume": 80,
+                "value": 14432,
+            },
+        ]
+
+        column_mapping = {
+            "xymd": "date",
+            "xhms": "time",
+            "open": "open",
+            "high": "high",
+            "low": "low",
+            "close": "close",
+            "volume": "volume",
+            "value": "value",
+        }
+
+        df = MarketDataClient._build_ohlcv_dataframe(
+            rows=rows,
+            column_mapping=column_mapping,
+            datetime_format="%Y%m%d%H%M%S",
+            limit=200,
+        )
+
+        assert len(df) == 2
+        assert df.iloc[0]["datetime"] == pd.Timestamp("2026-02-19 09:30:00")
+        assert df.iloc[0]["close"] == 180.5
+        assert df.iloc[1]["volume"] == 80

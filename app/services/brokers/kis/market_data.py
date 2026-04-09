@@ -250,9 +250,9 @@ class MarketDataClient:
                 await self._parent._token_manager.clear_token()
                 continue
 
-            raise RuntimeError(
-                f"{js.get('msg_cd', 'unknown')} {js.get('msg1', 'No message')}"
-            )
+            msg1 = js.get("msg1")
+            msg_cd = js.get("msg_cd", "unknown")
+            raise RuntimeError(msg1 or f"KIS API error (msg_cd={msg_cd})")
 
         raise RuntimeError("KIS API token retry exhausted")
 
@@ -364,7 +364,9 @@ class MarketDataClient:
     async def fluctuation_rank(
         self, market: str = "J", direction: str = "up", limit: int = 30
     ) -> list[dict]:
+        # FID_PRC_CLS_CODE: "0"=전체 (공식 API 문서 기준)
         prc_cls_code = "0"
+        # FID_RANK_SORT_CLS_CODE: "0"=상승률, "3"=하락율 (공식 API 문서 기준)
         rank_sort_cls_code = "3" if direction == "down" else "0"
 
         logging.debug(
@@ -776,6 +778,9 @@ class MarketDataClient:
         end_date : datetime.date, optional
             종료 날짜 (None이면 오늘까지)
         """
+        # KIS 분봉 API는 time_unit 파라미터를 제대로 인식하지 못하는 알려진 이슈가 있음
+        # 모든 시간대에서 동일한 데이터가 반환되므로 1분봉으로 고정 후 자체 집계
+
         # 현재 시간을 시분초로 설정 (장 시간 내에만 작동)
         current_time = datetime.datetime.now().strftime("%H%M%S")
 
