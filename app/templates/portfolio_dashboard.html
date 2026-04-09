@@ -681,6 +681,22 @@
                     <div class="subtle mt-2" id="status-message">초기 조회를 준비 중입니다.</div>
                     <ul id="warnings-list" class="warning-list"></ul>
                 </article>
+
+                <article class="panel" id="portfolio-rotation-panel" style="grid-column: 1 / -1; display: none;">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <h2><i class="bi bi-arrow-repeat"></i> 로테이션 제안</h2>
+                        <div>
+                            <span class="subtle" id="rotation-summary-badge">-</span>
+                            <button class="btn btn-sm btn-outline-secondary ms-2"
+                                    id="rotation-refresh-btn" title="새로고침">
+                                <i class="bi bi-arrow-clockwise"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div id="rotation-content" class="mt-2">
+                        <div class="subtle">로딩 중...</div>
+                    </div>
+                </article>
                 </section>
             </section>
         </section>
@@ -699,6 +715,7 @@
             detailRequestId: 0,
             positionInteractionsBound: false,
             sortMode: "evaluation_desc",
+            rotationPlan: null,
         };
 
         const marketSelect = document.getElementById("market-select");
@@ -1608,6 +1625,7 @@
 
                 // Phase 2: Enrich manual positions
                 await fetchOverviewEnrich(payload.positions || []);
+                fetchRotationPlan();
             } catch (error) {
                 statusMessage.textContent = `조회 실패: ${error}`;
                 warningsList.innerHTML = `<li>overview API 호출에 실패했습니다: ${escapeHtml(error)}</li>`;
@@ -1674,7 +1692,10 @@
             }
         });
 
-        marketSelect.addEventListener("change", fetchOverview);
+        marketSelect.addEventListener("change", () => {
+            fetchOverview();
+            fetchRotationPlan();
+        });
         queryInput.addEventListener("keydown", (event) => {
             if (event.key !== "Enter") {
                 return;
@@ -1687,9 +1708,117 @@
             fetchOverview();
         });
 
+        /* ── Rotation Plan ─────────────────────────────────────── */
+        const rotationPanel = document.getElementById("portfolio-rotation-panel");
+        const rotationContent = document.getElementById("rotation-content");
+        const rotationSummaryBadge = document.getElementById("rotation-summary-badge");
+        const rotationRefreshBtn = document.getElementById("rotation-refresh-btn");
+
+        async function fetchRotationPlan() {
+            const market = marketSelect.value;
+            if (market !== "ALL" && market !== "CRYPTO") {
+                rotationPanel.style.display = "none";
+                return;
+            }
+            rotationPanel.style.display = "";
+            rotationContent.innerHTML = '<div class="subtle">로딩 중...</div>';
+            try {
+                const resp = await fetch("/portfolio/api/rotation-plan");
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                state.rotationPlan = await resp.json();
+                renderRotationPlan(state.rotationPlan);
+            } catch (err) {
+                rotationContent.innerHTML = `<div class="subtle">로테이션 정보를 가져올 수 없습니다: ${escapeHtml(err.message)}</div>`;
+            }
+        }
+
+        function renderRotationPlan(plan) {
+            if (!plan || !plan.supported) {
+                rotationContent.innerHTML = '<div class="subtle">지원되지 않는 마켓입니다.</div>';
+                rotationPanel.style.display = "none";
+                return;
+            }
+            const s = plan.summary;
+            rotationSummaryBadge.textContent =
+                `축소 ${s.actionable_positions} · 매수후보 ${s.buy_candidates} · 잠금 ${s.locked_positions}`;
+
+            let html = "";
+
+            // Sell candidates
+            if (plan.sell_candidates.length) {
+                html += `<h3 class="subtle mt-2">축소/매도 후보</h3><div class="summary-list">`;
+                for (const c of plan.sell_candidates) {
+                    const profitClass = (c.profit_rate || 0) < 0 ? "profit-negative" : "profit-positive";
+                    const badge = c.action === "reduce_full"
+                        ? '<span class="badge bg-danger ms-1">전량 매도</span>'
+                        : `<span class="badge bg-warning text-dark ms-1">부분 축소 ${c.reduce_pct}%</span>`;
+                    html += `<div class="summary-row">
+                        <span><strong>${escapeHtml(c.name)}</strong> <span class="subtle">${escapeHtml(c.symbol)}</span>${badge}</span>
+                        <span class="${profitClass}">${(c.profit_rate || 0).toFixed(1)}%</span>
+                    </div>`;
+                    if (c.reason && c.reason.length) {
+                        html += `<div class="subtle" style="padding-left:1rem;font-size:0.82rem;">${c.reason.map(r => escapeHtml(r)).join(" · ")}</div>`;
+                    }
+                }
+                html += `</div>`;
+            }
+
+            // Buy candidates
+            if (plan.buy_candidates.length) {
+                html += `<h3 class="subtle mt-3">매수 후보 (oversold)</h3><div class="summary-list">`;
+                for (const c of plan.buy_candidates) {
+                    html += `<div class="summary-row">
+                        <span><strong>${escapeHtml(c.name)}</strong> <span class="subtle">${escapeHtml(c.symbol)}</span></span>
+                        <span class="subtle">${c.trade_amount_24h ? formatNumber(c.trade_amount_24h, 0) + '원' : '-'}</span>
+                    </div>`;
+                }
+                html += `</div>`;
+            }
+
+            // Locked
+            if (plan.locked_positions.length) {
+                html += `<h3 class="subtle mt-3"><i class="bi bi-lock"></i> 잠금</h3><div class="summary-list">`;
+                for (const c of plan.locked_positions) {
+                    html += `<div class="summary-row">
+                        <span>${escapeHtml(c.name)} <span class="subtle">${escapeHtml(c.symbol)}</span></span>
+                        <span class="subtle">${escapeHtml(c.lock_reason || c.journal_strategy || '')}</span>
+                    </div>`;
+                }
+                html += `</div>`;
+            }
+
+            // Ignored (collapsed)
+            if (plan.ignored_positions.length) {
+                html += `<details class="mt-3"><summary class="subtle" style="cursor:pointer;">무시됨 (${plan.ignored_positions.length})</summary><div class="summary-list">`;
+                for (const c of plan.ignored_positions) {
+                    html += `<div class="summary-row">
+                        <span class="subtle">${escapeHtml(c.name)} ${escapeHtml(c.symbol)}</span>
+                        <span class="subtle">${formatNumber(c.evaluation_amount || 0, 0)}원</span>
+                    </div>`;
+                }
+                html += `</div></details>`;
+            }
+
+            // Warnings
+            if (plan.warnings && plan.warnings.length) {
+                html += `<div class="subtle mt-2" style="color:var(--bs-warning);">${plan.warnings.map(w => escapeHtml(w)).join("<br>")}</div>`;
+            }
+
+            if (!html) {
+                html = '<div class="subtle">로테이션 제안 없음</div>';
+            }
+
+            rotationContent.innerHTML = html;
+        }
+
+        if (rotationRefreshBtn) {
+            rotationRefreshBtn.addEventListener("click", () => fetchRotationPlan());
+        }
+
         window.addEventListener("DOMContentLoaded", () => {
             fetchOverview();
             fetchCashSummary();
+            fetchRotationPlan();
         }, { once: true });
     </script>
 
