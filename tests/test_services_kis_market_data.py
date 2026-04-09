@@ -1,6 +1,6 @@
 import logging
 from datetime import date
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import httpx
 import pandas as pd
@@ -1067,7 +1067,7 @@ async def test_kis_inquire_short_selling_propagates_non_token_api_failures(monke
     client._token_manager = AsyncMock()
     client._token_manager.clear_token = AsyncMock(return_value=None)
 
-    with pytest.raises(RuntimeError, match="ERROR123 bad request"):
+    with pytest.raises(RuntimeError, match="bad request"):
         await client.inquire_short_selling(
             "005930",
             date(2026, 2, 1),
@@ -1189,3 +1189,422 @@ class TestKISRateLimitLookup:
             if record.levelno == logging.WARNING and api_key in record.message
         ]
         assert len(warnings) == 1
+
+
+class TestRequestWithTokenRetry:
+    """Tests for MarketDataClient._request_with_token_retry"""
+
+    @pytest.mark.asyncio
+    async def test_returns_json_on_success(self, monkeypatch):
+        from app.services.brokers.kis.client import KISClient
+
+        client = KISClient()
+        monkeypatch.setattr(client, "_ensure_token", AsyncMock())
+        request_mock = AsyncMock(
+            return_value={"rt_cd": "0", "output": [{"foo": "bar"}]}
+        )
+        monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
+
+        mock_settings = MagicMock()
+        mock_settings.kis_access_token = "test_token"
+        monkeypatch.setattr(
+            KISClient, "_settings", PropertyMock(return_value=mock_settings)
+        )
+
+        js = await client._market_data._request_with_token_retry(
+            tr_id="FHKST01010100",
+            url="https://example.com/api",
+            params={"code": "005930"},
+            api_name="test_api",
+        )
+
+        assert js["rt_cd"] == "0"
+        request_mock.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error_code", ["EGW00123", "EGW00121"])
+    async def test_retries_once_on_token_expired(self, monkeypatch, error_code):
+        from app.services.brokers.kis.client import KISClient
+
+        client = KISClient()
+        ensure_token = AsyncMock()
+        monkeypatch.setattr(client, "_ensure_token", ensure_token)
+        request_mock = AsyncMock(
+            side_effect=[
+                {"rt_cd": "1", "msg_cd": error_code, "msg1": "token expired"},
+                {"rt_cd": "0", "output": [{"foo": "bar"}]},
+            ]
+        )
+        monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
+        client._token_manager = AsyncMock()
+        client._token_manager.clear_token = AsyncMock(return_value=None)
+
+        mock_settings = MagicMock()
+        mock_settings.kis_access_token = "test_token"
+        monkeypatch.setattr(
+            KISClient, "_settings", PropertyMock(return_value=mock_settings)
+        )
+
+        js = await client._market_data._request_with_token_retry(
+            tr_id="FHKST01010100",
+            url="https://example.com/api",
+            params={"code": "005930"},
+            api_name="test_api",
+        )
+
+        assert js["rt_cd"] == "0"
+        assert request_mock.await_count == 2
+        client._token_manager.clear_token.assert_awaited_once()
+        # ensure_token: 1 (initial) + 1 (after clear) = 2
+        assert ensure_token.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_raises_on_non_token_error(self, monkeypatch):
+        from app.services.brokers.kis.client import KISClient
+
+        client = KISClient()
+        monkeypatch.setattr(client, "_ensure_token", AsyncMock())
+        request_mock = AsyncMock(
+            return_value={"rt_cd": "1", "msg_cd": "OTHER_ERROR", "msg1": "bad request"}
+        )
+        monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
+
+        mock_settings = MagicMock()
+        mock_settings.kis_access_token = "test_token"
+        monkeypatch.setattr(
+            KISClient, "_settings", PropertyMock(return_value=mock_settings)
+        )
+
+        with pytest.raises(RuntimeError, match="bad request"):
+            await client._market_data._request_with_token_retry(
+                tr_id="FHKST01010100",
+                url="https://example.com/api",
+                params={"code": "005930"},
+                api_name="test_api",
+            )
+
+    @pytest.mark.asyncio
+    async def test_raises_after_second_token_failure(self, monkeypatch):
+        from app.services.brokers.kis.client import KISClient
+
+        client = KISClient()
+        monkeypatch.setattr(client, "_ensure_token", AsyncMock())
+        request_mock = AsyncMock(
+            side_effect=[
+                {"rt_cd": "1", "msg_cd": "EGW00123", "msg1": "token expired"},
+                {"rt_cd": "1", "msg_cd": "EGW00123", "msg1": "token still expired"},
+            ]
+        )
+        monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
+        client._token_manager = AsyncMock()
+        client._token_manager.clear_token = AsyncMock(return_value=None)
+
+        mock_settings = MagicMock()
+        mock_settings.kis_access_token = "test_token"
+        monkeypatch.setattr(
+            KISClient, "_settings", PropertyMock(return_value=mock_settings)
+        )
+
+        with pytest.raises(RuntimeError, match="token still expired"):
+            await client._market_data._request_with_token_retry(
+                tr_id="FHKST01010100",
+                url="https://example.com/api",
+                params={"code": "005930"},
+                api_name="test_api",
+            )
+
+    @pytest.mark.asyncio
+    async def test_passes_timeout_and_method(self, monkeypatch):
+        from app.services.brokers.kis.client import KISClient
+
+        client = KISClient()
+        monkeypatch.setattr(client, "_ensure_token", AsyncMock())
+        request_mock = AsyncMock(return_value={"rt_cd": "0", "output": []})
+        monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
+
+        mock_settings = MagicMock()
+        mock_settings.kis_access_token = "test_token"
+        monkeypatch.setattr(
+            KISClient, "_settings", PropertyMock(return_value=mock_settings)
+        )
+
+        await client._market_data._request_with_token_retry(
+            tr_id="FHKST01010100",
+            url="https://example.com/api",
+            params={"code": "005930"},
+            api_name="test_api",
+            timeout=10,
+        )
+
+        call_kwargs = request_mock.await_args.kwargs
+        assert call_kwargs["timeout"] == 10
+
+    @pytest.mark.asyncio
+    async def test_passes_method_post(self, monkeypatch):
+        from app.services.brokers.kis.client import KISClient
+
+        client = KISClient()
+        monkeypatch.setattr(client, "_ensure_token", AsyncMock())
+        request_mock = AsyncMock(return_value={"rt_cd": "0", "output": []})
+        monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
+
+        mock_settings = MagicMock()
+        mock_settings.kis_access_token = "test_token"
+        monkeypatch.setattr(
+            KISClient, "_settings", PropertyMock(return_value=mock_settings)
+        )
+
+        await client._market_data._request_with_token_retry(
+            tr_id="FHKST01010100",
+            url="https://example.com/api",
+            params=None,
+            method="POST",
+            json_body={"key": "value"},
+            api_name="test_api",
+        )
+
+        call_args = request_mock.await_args
+        assert call_args.args[0] == "POST"
+        assert call_args.kwargs["json_body"] == {"key": "value"}
+
+
+class TestBuildOhlcvDataframe:
+    """Tests for MarketDataClient._build_ohlcv_dataframe"""
+
+    def test_builds_dataframe_with_datetime_columns(self):
+        from app.services.brokers.kis.market_data import MarketDataClient
+
+        rows = [
+            {
+                "stck_bsop_date": "20260219",
+                "stck_cntg_hour": "100000",
+                "stck_oprc": "70000",
+                "stck_hgpr": "70200",
+                "stck_lwpr": "69900",
+                "stck_prpr": "70100",
+                "cntg_vol": "100",
+                "acml_tr_pbmn": "7010000",
+            },
+            {
+                "stck_bsop_date": "20260219",
+                "stck_cntg_hour": "100100",
+                "stck_oprc": "70100",
+                "stck_hgpr": "70300",
+                "stck_lwpr": "70000",
+                "stck_prpr": "70200",
+                "cntg_vol": "200",
+                "acml_tr_pbmn": "14040000",
+            },
+        ]
+
+        column_mapping = {
+            "stck_bsop_date": "date",
+            "stck_cntg_hour": "time",
+            "stck_oprc": "open",
+            "stck_hgpr": "high",
+            "stck_lwpr": "low",
+            "stck_prpr": "close",
+            "cntg_vol": "volume",
+            "acml_tr_pbmn": "value",
+        }
+
+        df = MarketDataClient._build_ohlcv_dataframe(
+            rows=rows,
+            column_mapping=column_mapping,
+            datetime_format="%Y%m%d%H%M%S",
+            limit=200,
+        )
+
+        assert len(df) == 2
+        assert list(df.columns) == [
+            "datetime",
+            "date",
+            "time",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "value",
+        ]
+        assert df.iloc[0]["datetime"] == pd.Timestamp("2026-02-19 10:00:00")
+        assert df.iloc[0]["close"] == 70100.0
+        assert df.iloc[0]["volume"] == 100
+
+    def test_deduplicates_by_datetime(self):
+        from app.services.brokers.kis.market_data import MarketDataClient
+
+        rows = [
+            {
+                "stck_bsop_date": "20260219",
+                "stck_cntg_hour": "100000",
+                "stck_oprc": "70000",
+                "stck_hgpr": "70200",
+                "stck_lwpr": "69900",
+                "stck_prpr": "70100",
+                "cntg_vol": "100",
+                "acml_tr_pbmn": "7010000",
+            },
+            {
+                "stck_bsop_date": "20260219",
+                "stck_cntg_hour": "100000",
+                "stck_oprc": "70100",
+                "stck_hgpr": "70300",
+                "stck_lwpr": "70000",
+                "stck_prpr": "70200",
+                "cntg_vol": "200",
+                "acml_tr_pbmn": "14040000",
+            },
+        ]
+
+        column_mapping = {
+            "stck_bsop_date": "date",
+            "stck_cntg_hour": "time",
+            "stck_oprc": "open",
+            "stck_hgpr": "high",
+            "stck_lwpr": "low",
+            "stck_prpr": "close",
+            "cntg_vol": "volume",
+            "acml_tr_pbmn": "value",
+        }
+
+        df = MarketDataClient._build_ohlcv_dataframe(
+            rows=rows,
+            column_mapping=column_mapping,
+            datetime_format="%Y%m%d%H%M%S",
+            limit=200,
+        )
+
+        assert len(df) == 1  # 중복 제거
+
+    def test_respects_limit(self):
+        from app.services.brokers.kis.market_data import MarketDataClient
+
+        rows = [
+            {
+                "stck_bsop_date": "20260219",
+                "stck_cntg_hour": f"10{i:02d}00",
+                "stck_oprc": "70000",
+                "stck_hgpr": "70200",
+                "stck_lwpr": "69900",
+                "stck_prpr": "70100",
+                "cntg_vol": "100",
+                "acml_tr_pbmn": "7010000",
+            }
+            for i in range(10)
+        ]
+
+        column_mapping = {
+            "stck_bsop_date": "date",
+            "stck_cntg_hour": "time",
+            "stck_oprc": "open",
+            "stck_hgpr": "high",
+            "stck_lwpr": "low",
+            "stck_prpr": "close",
+            "cntg_vol": "volume",
+            "acml_tr_pbmn": "value",
+        }
+
+        df = MarketDataClient._build_ohlcv_dataframe(
+            rows=rows,
+            column_mapping=column_mapping,
+            datetime_format="%Y%m%d%H%M%S",
+            limit=3,
+        )
+
+        assert len(df) == 3
+
+    def test_sorts_by_datetime_ascending(self):
+        from app.services.brokers.kis.market_data import MarketDataClient
+
+        rows = [
+            {
+                "stck_bsop_date": "20260219",
+                "stck_cntg_hour": "110000",
+                "stck_oprc": "71000",
+                "stck_hgpr": "71200",
+                "stck_lwpr": "70900",
+                "stck_prpr": "71100",
+                "cntg_vol": "100",
+                "acml_tr_pbmn": "7110000",
+            },
+            {
+                "stck_bsop_date": "20260219",
+                "stck_cntg_hour": "100000",
+                "stck_oprc": "70000",
+                "stck_hgpr": "70200",
+                "stck_lwpr": "69900",
+                "stck_prpr": "70100",
+                "cntg_vol": "100",
+                "acml_tr_pbmn": "7010000",
+            },
+        ]
+
+        column_mapping = {
+            "stck_bsop_date": "date",
+            "stck_cntg_hour": "time",
+            "stck_oprc": "open",
+            "stck_hgpr": "high",
+            "stck_lwpr": "low",
+            "stck_prpr": "close",
+            "cntg_vol": "volume",
+            "acml_tr_pbmn": "value",
+        }
+
+        df = MarketDataClient._build_ohlcv_dataframe(
+            rows=rows,
+            column_mapping=column_mapping,
+            datetime_format="%Y%m%d%H%M%S",
+            limit=200,
+        )
+
+        assert df.iloc[0]["datetime"] < df.iloc[1]["datetime"]
+
+    def test_overseas_column_mapping(self):
+        from app.services.brokers.kis.market_data import MarketDataClient
+
+        rows = [
+            {
+                "xymd": "20260219",
+                "xhms": "093000",
+                "open": 180.1,
+                "high": 181.0,
+                "low": 179.8,
+                "close": 180.5,
+                "volume": 100,
+                "value": 18050,
+            },
+            {
+                "xymd": "20260219",
+                "xhms": "093100",
+                "open": 180.5,
+                "high": 180.7,
+                "low": 180.2,
+                "close": 180.4,
+                "volume": 80,
+                "value": 14432,
+            },
+        ]
+
+        column_mapping = {
+            "xymd": "date",
+            "xhms": "time",
+            "open": "open",
+            "high": "high",
+            "low": "low",
+            "close": "close",
+            "volume": "volume",
+            "value": "value",
+        }
+
+        df = MarketDataClient._build_ohlcv_dataframe(
+            rows=rows,
+            column_mapping=column_mapping,
+            datetime_format="%Y%m%d%H%M%S",
+            limit=200,
+        )
+
+        assert len(df) == 2
+        assert df.iloc[0]["datetime"] == pd.Timestamp("2026-02-19 09:30:00")
+        assert df.iloc[0]["close"] == 180.5
+        assert df.iloc[1]["volume"] == 80

@@ -210,69 +210,142 @@ class MarketDataClient:
     def _settings(self):
         return self._parent._settings
 
-    async def volume_rank(self, market: str = "J", limit: int = 30) -> list[dict]:
-        await self._parent._ensure_token()
-        hdr = self._parent._hdr_base | {
-            "authorization": f"Bearer {self._settings.kis_access_token}",
-            "tr_id": constants.DOMESTIC_VOLUME_TR,
-        }
+    async def _request_with_token_retry(
+        self,
+        tr_id: str,
+        url: str,
+        params: dict[str, Any] | None = None,
+        *,
+        method: str = "GET",
+        json_body: dict[str, Any] | None = None,
+        timeout: float = 5.0,
+        api_name: str = "unknown",
+    ) -> dict[str, Any]:
+        """KIS API 요청 + 토큰 만료 시 1회 재시도.
 
-        params = {
-            "FID_COND_MRKT_DIV_CODE": market,
-            "FID_COND_SCR_DIV_CODE": "20171",
-            "FID_INPUT_ISCD": "0000",
-            "FID_DIV_CLS_CODE": "0",
-            "FID_BLNG_CLS_CODE": "1",
-            "FID_TRGT_CLS_CODE": "11111111",
-            "FID_TRGT_EXLS_CLS_CODE": "0000001100",
-            "FID_INPUT_PRICE_1": "0",
-            "FID_INPUT_PRICE_2": "1000000",
-            "FID_VOL_CNT": "100000",
-            "FID_INPUT_DATE_1": "",
-        }
-
-        js = await self._parent._request_with_rate_limit(
-            "GET",
-            f"{constants.BASE}{constants.DOMESTIC_VOLUME_URL}",
-            headers=hdr,
-            params=params,
-            timeout=5,
-            api_name="volume_rank",
-            tr_id=constants.DOMESTIC_VOLUME_TR,
-        )
-        if js["rt_cd"] == "0":
-            results = js["output"][:limit]
-            # Safe debug sample without float conversion that could fail
-            sample_data = [
-                (r.get("hts_kor_isnm", ""), r.get("acml_vol", "0")) for r in results[:3]
-            ]
-            logging.debug(
-                f"volume_rank: Received {len(js['output'])} results, "
-                f"returning {len(results)}. Sample: {sample_data}"
+        토큰 만료 코드(EGW00123, EGW00121) 수신 시 토큰을 갱신하고
+        동일 요청을 최대 1회 재시도한다.
+        """
+        for attempt in range(2):
+            await self._parent._ensure_token()
+            hdr = self._parent._hdr_base | {
+                "authorization": f"Bearer {self._settings.kis_access_token}",
+                "tr_id": tr_id,
+            }
+            js = await self._parent._request_with_rate_limit(
+                method,
+                url,
+                headers=hdr,
+                params=params,
+                json_body=json_body,
+                timeout=timeout,
+                api_name=api_name,
+                tr_id=tr_id,
             )
-            return results
-        if js["msg_cd"] == "EGW00123":
-            await self._parent._token_manager.clear_token()
-            await self._parent._ensure_token()
-            return await self.volume_rank(market, limit)
-        elif js["msg_cd"] == "EGW00121":
-            await self._parent._token_manager.clear_token()
-            await self._parent._ensure_token()
-            return await self.volume_rank(market, limit)
-        raise RuntimeError(
-            js.get("msg1") or f"KIS API error (msg_cd={js.get('msg_cd', 'unknown')})"
+
+            if js.get("rt_cd") == "0":
+                return js
+
+            if attempt == 0 and js.get("msg_cd") in constants.TOKEN_EXPIRED_CODES:
+                await self._parent._token_manager.clear_token()
+                continue
+
+            msg1 = js.get("msg1")
+            msg_cd = js.get("msg_cd", "unknown")
+            raise RuntimeError(msg1 or f"KIS API error (msg_cd={msg_cd})")
+
+        raise RuntimeError("KIS API token retry exhausted")
+
+    @staticmethod
+    def _build_ohlcv_dataframe(
+        rows: list[dict[str, Any]],
+        column_mapping: dict[str, str],
+        datetime_format: str,
+        limit: int,
+    ) -> pd.DataFrame:
+        """원시 API rows를 표준 OHLCV DataFrame으로 변환.
+
+        Parameters
+        ----------
+        rows : list[dict]
+            KIS API 응답의 원시 행 목록
+        column_mapping : dict
+            KIS 컬럼명 → 표준 컬럼명 매핑.
+            date + time 결합: ``{"date_col": "date", "time_col": "time", ...}``
+        datetime_format : str
+            date + time 문자열 결합 후 파싱할 strftime 포맷 (예: "%Y%m%d%H%M%S")
+        limit : int
+            반환할 최대 행 수 (tail 적용)
+        """
+        frame = (
+            pd.DataFrame(rows)
+            .rename(columns=column_mapping)
+            .astype(
+                {
+                    "date": "str",
+                    "time": "str",
+                    "open": "float",
+                    "high": "float",
+                    "low": "float",
+                    "close": "float",
+                    "volume": "int",
+                    "value": "int",
+                },
+                errors="ignore",
+            )
+            .assign(
+                datetime=lambda d: pd.to_datetime(
+                    d["date"] + d["time"],
+                    format=datetime_format,
+                    errors="coerce",
+                )
+            )
+            .dropna(subset=["datetime"])
+            .assign(
+                date=lambda d: d["datetime"].dt.date,
+                time=lambda d: d["datetime"].dt.time,
+            )
+            .loc[:, _MINUTE_FRAME_COLUMNS]
+            .drop_duplicates(subset=["datetime"], keep="first")
+            .sort_values("datetime")
+            .tail(max(int(limit), 1))
+            .reset_index(drop=True)
         )
+        return frame
+
+    async def volume_rank(self, market: str = "J", limit: int = 30) -> list[dict]:
+        js = await self._request_with_token_retry(
+            tr_id=constants.DOMESTIC_VOLUME_TR,
+            url=f"{constants.BASE}{constants.DOMESTIC_VOLUME_URL}",
+            params={
+                "FID_COND_MRKT_DIV_CODE": market,
+                "FID_COND_SCR_DIV_CODE": "20171",
+                "FID_INPUT_ISCD": "0000",
+                "FID_DIV_CLS_CODE": "0",
+                "FID_BLNG_CLS_CODE": "1",
+                "FID_TRGT_CLS_CODE": "11111111",
+                "FID_TRGT_EXLS_CLS_CODE": "0000001100",
+                "FID_INPUT_PRICE_1": "0",
+                "FID_INPUT_PRICE_2": "1000000",
+                "FID_VOL_CNT": "100000",
+                "FID_INPUT_DATE_1": "",
+            },
+            api_name="volume_rank",
+        )
+        results = js["output"][:limit]
+        sample_data = [
+            (r.get("hts_kor_isnm", ""), r.get("acml_vol", "0")) for r in results[:3]
+        ]
+        logging.debug(
+            f"volume_rank: Received {len(js['output'])} results, "
+            f"returning {len(results)}. Sample: {sample_data}"
+        )
+        return results
 
     async def market_cap_rank(self, market: str = "J", limit: int = 30) -> list[dict]:
-        await self._parent._ensure_token()
-        hdr = self._parent._hdr_base | {
-            "authorization": f"Bearer {self._settings.kis_access_token}",
-            "tr_id": constants.MARKET_CAP_RANK_TR,
-        }
-        js = await self._parent._request_with_rate_limit(
-            "GET",
-            f"{constants.BASE}{constants.MARKET_CAP_RANK_URL}",
-            headers=hdr,
+        js = await self._request_with_token_retry(
+            tr_id=constants.MARKET_CAP_RANK_TR,
+            url=f"{constants.BASE}{constants.MARKET_CAP_RANK_URL}",
             params={
                 "FID_COND_MRKT_DIV_CODE": market,
                 "FID_COND_SCR_DIV_CODE": "20174",
@@ -284,33 +357,13 @@ class MarketDataClient:
                 "FID_INPUT_PRICE_2": "",
                 "FID_VOL_CNT": "",
             },
-            timeout=5,
             api_name="market_cap_rank",
-            tr_id=constants.MARKET_CAP_RANK_TR,
         )
-        if js["rt_cd"] == "0":
-            return js["output"][:limit]
-        if js["msg_cd"] == "EGW00123":
-            await self._parent._token_manager.clear_token()
-            await self._parent._ensure_token()
-            return await self.market_cap_rank(market, limit)
-        elif js["msg_cd"] == "EGW00121":
-            await self._parent._token_manager.clear_token()
-            await self._parent._ensure_token()
-            return await self.market_cap_rank(market, limit)
-        raise RuntimeError(
-            js.get("msg1") or f"KIS API error (msg_cd={js.get('msg_cd', 'unknown')})"
-        )
+        return js["output"][:limit]
 
     async def fluctuation_rank(
         self, market: str = "J", direction: str = "up", limit: int = 30
     ) -> list[dict]:
-        await self._parent._ensure_token()
-        hdr = self._parent._hdr_base | {
-            "authorization": f"Bearer {self._settings.kis_access_token}",
-            "tr_id": constants.FLUCTUATION_RANK_TR,
-        }
-
         # FID_PRC_CLS_CODE: "0"=전체 (공식 API 문서 기준)
         prc_cls_code = "0"
         # FID_RANK_SORT_CLS_CODE: "0"=상승률, "3"=하락율 (공식 API 문서 기준)
@@ -322,10 +375,9 @@ class MarketDataClient:
             f"FID_RANK_SORT_CLS_CODE={rank_sort_cls_code}"
         )
 
-        js = await self._parent._request_with_rate_limit(
-            "GET",
-            f"{constants.BASE}{constants.FLUCTUATION_RANK_URL}",
-            headers=hdr,
+        js = await self._request_with_token_retry(
+            tr_id=constants.FLUCTUATION_RANK_TR,
+            url=f"{constants.BASE}{constants.FLUCTUATION_RANK_URL}",
             params={
                 "FID_COND_MRKT_DIV_CODE": market,
                 "FID_COND_SCR_DIV_CODE": "20170",
@@ -342,45 +394,24 @@ class MarketDataClient:
                 "FID_RSFL_RATE1": "",
                 "FID_RSFL_RATE2": "",
             },
-            timeout=5,
             api_name="fluctuation_rank",
-            tr_id=constants.FLUCTUATION_RANK_TR,
         )
 
-        if js["rt_cd"] == "0":
-            results = js["output"]
-            # Sort: up → descending (highest first), down → ascending (lowest first).
-            if direction == "up":
-                results.sort(key=lambda x: float(x.get("prdy_ctrt", 0)), reverse=True)
-                return results[:limit]
+        results = js["output"]
+        if direction == "up":
+            results.sort(key=lambda x: float(x.get("prdy_ctrt", 0)), reverse=True)
+            return results[:limit]
 
-            negatives = [
-                item for item in results if float(item.get("prdy_ctrt", 0)) < 0
-            ]
-            negatives.sort(key=lambda x: float(x.get("prdy_ctrt", 0)))
-            return negatives[:limit]
-
-        if js["msg_cd"] in ("EGW00123", "EGW00121"):
-            await self._parent._token_manager.clear_token()
-            await self._parent._ensure_token()
-            return await self.fluctuation_rank(market, direction, limit)
-
-        raise RuntimeError(
-            js.get("msg1") or f"KIS API error (msg_cd={js.get('msg_cd', 'unknown')})"
-        )
+        negatives = [item for item in results if float(item.get("prdy_ctrt", 0)) < 0]
+        negatives.sort(key=lambda x: float(x.get("prdy_ctrt", 0)))
+        return negatives[:limit]
 
     async def foreign_buying_rank(
         self, market: str = "J", limit: int = 30
     ) -> list[dict]:
-        await self._parent._ensure_token()
-        hdr = self._parent._hdr_base | {
-            "authorization": f"Bearer {self._settings.kis_access_token}",
-            "tr_id": constants.FOREIGN_BUYING_RANK_TR,
-        }
-        js = await self._parent._request_with_rate_limit(
-            "GET",
-            f"{constants.BASE}{constants.FOREIGN_BUYING_RANK_URL}",
-            headers=hdr,
+        js = await self._request_with_token_retry(
+            tr_id=constants.FOREIGN_BUYING_RANK_TR,
+            url=f"{constants.BASE}{constants.FOREIGN_BUYING_RANK_URL}",
             params={
                 "FID_COND_MRKT_DIV_CODE": "V",
                 "FID_COND_SCR_DIV_CODE": "16449",
@@ -389,23 +420,9 @@ class MarketDataClient:
                 "FID_RANK_SORT_CLS_CODE": "0",
                 "FID_ETC_CLS_CODE": "1",
             },
-            timeout=5,
             api_name="foreign_buying_rank",
-            tr_id=constants.FOREIGN_BUYING_RANK_TR,
         )
-        if js["rt_cd"] == "0":
-            return js["output"][:limit]
-        if js["msg_cd"] == "EGW00123":
-            await self._parent._token_manager.clear_token()
-            await self._parent._ensure_token()
-            return await self.foreign_buying_rank(market, limit)
-        elif js["msg_cd"] == "EGW00121":
-            await self._parent._token_manager.clear_token()
-            await self._parent._ensure_token()
-            return await self.foreign_buying_rank(market, limit)
-        raise RuntimeError(
-            js.get("msg1") or f"KIS API error (msg_cd={js.get('msg_cd', 'unknown')})"
-        )
+        return js["output"][:limit]
 
     async def inquire_price(self, code: str, market: str = "UN") -> DataFrame:
         """
@@ -414,39 +431,15 @@ class MarketDataClient:
         :param market: K(코스피)/Q(코스닥)/UN(통합)
         :return: API output 딕셔너리
         """
-        await self._parent._ensure_token()
-
-        # 요청 헤더
-        hdr = self._parent._hdr_base | {
-            "authorization": f"Bearer {self._settings.kis_access_token}",
-            "tr_id": constants.DOMESTIC_PRICE_TR,
-        }
-
-        params = {
-            "FID_COND_MRKT_DIV_CODE": market,
-            "FID_INPUT_ISCD": code.zfill(6),  # 000000 형태도 OK
-        }
-
-        js = await self._parent._request_with_rate_limit(
-            "GET",
-            f"{constants.BASE}{constants.DOMESTIC_PRICE_URL}",
-            headers=hdr,
-            params=params,
-            timeout=5,
-            api_name="inquire_price",
+        js = await self._request_with_token_retry(
             tr_id=constants.DOMESTIC_PRICE_TR,
+            url=f"{constants.BASE}{constants.DOMESTIC_PRICE_URL}",
+            params={
+                "FID_COND_MRKT_DIV_CODE": market,
+                "FID_INPUT_ISCD": code.zfill(6),
+            },
+            api_name="inquire_price",
         )
-        if js["rt_cd"] != "0":
-            if js.get("msg_cd") in [
-                "EGW00123",
-                "EGW00121",
-            ]:  # 토큰 만료 또는 유효하지 않은 토큰
-                # Redis에서 토큰 삭제 후 새로 발급
-                await self._parent._token_manager.clear_token()
-                await self._parent._ensure_token()
-                # 재시도 1회
-                return await self.inquire_price(code, market)
-            raise RuntimeError(f"{js['msg_cd']} {js['msg1']}")
         out = js["output"]  # 단일 dict
         trade_date_str = out.get("stck_bsop_date")  # 예: '20250805'
         if trade_date_str:
@@ -474,37 +467,15 @@ class MarketDataClient:
         return pd.DataFrame([row]).set_index("code")  # index = 종목코드
 
     async def _request_orderbook_snapshot(self, code: str, market: str = "UN") -> dict:
-        await self._parent._ensure_token()
-
-        hdr = self._parent._hdr_base | {
-            "authorization": f"Bearer {self._settings.kis_access_token}",
-            "tr_id": constants.DOMESTIC_ORDERBOOK_TR,
-        }
-
-        params = {
-            "FID_COND_MRKT_DIV_CODE": market,
-            "FID_INPUT_ISCD": code.zfill(6),
-        }
-
-        js = await self._parent._request_with_rate_limit(
-            "GET",
-            f"{constants.BASE}{constants.DOMESTIC_ORDERBOOK_URL}",
-            headers=hdr,
-            params=params,
-            timeout=5,
-            api_name="inquire_orderbook",
+        return await self._request_with_token_retry(
             tr_id=constants.DOMESTIC_ORDERBOOK_TR,
+            url=f"{constants.BASE}{constants.DOMESTIC_ORDERBOOK_URL}",
+            params={
+                "FID_COND_MRKT_DIV_CODE": market,
+                "FID_INPUT_ISCD": code.zfill(6),
+            },
+            api_name="inquire_orderbook",
         )
-        if js["rt_cd"] != "0":
-            if js.get("msg_cd") in [
-                "EGW00123",
-                "EGW00121",
-            ]:
-                await self._parent._token_manager.clear_token()
-                await self._parent._ensure_token()
-                return await self._request_orderbook_snapshot(code, market)
-            raise RuntimeError(f"{js['msg_cd']} {js['msg1']}")
-        return js
 
     async def inquire_orderbook(self, code: str, market: str = "UN") -> dict:
         """
@@ -565,32 +536,12 @@ class MarketDataClient:
             "FID_INPUT_DATE_2": end_date.strftime("%Y%m%d"),
         }
 
-        for attempt in range(2):
-            await self._parent._ensure_token()
-            hdr = self._parent._hdr_base | {
-                "authorization": f"Bearer {self._settings.kis_access_token}",
-                "tr_id": constants.DOMESTIC_SHORT_SELLING_TR,
-            }
-            js = await self._parent._request_with_rate_limit(
-                "GET",
-                f"{constants.BASE}{constants.DOMESTIC_SHORT_SELLING_URL}",
-                headers=hdr,
-                params=params,
-                timeout=5,
-                api_name="inquire_short_selling",
-                tr_id=constants.DOMESTIC_SHORT_SELLING_TR,
-            )
-
-            if js.get("rt_cd") == "0":
-                break
-
-            if attempt == 0 and js.get("msg_cd") in ["EGW00123", "EGW00121"]:
-                await self._parent._token_manager.clear_token()
-                continue
-
-            raise RuntimeError(f"{js.get('msg_cd')} {js.get('msg1')}")
-        else:
-            raise RuntimeError("Failed to fetch KIS daily short selling data")
+        js = await self._request_with_token_retry(
+            tr_id=constants.DOMESTIC_SHORT_SELLING_TR,
+            url=f"{constants.BASE}{constants.DOMESTIC_SHORT_SELLING_URL}",
+            params=params,
+            api_name="inquire_short_selling",
+        )
 
         output1 = js.get("output1")
         if not isinstance(output1, dict):
@@ -621,39 +572,15 @@ class MarketDataClient:
         :param market: K(코스피)/Q(코스닥)/UN(통합)
         :return: 기본 정보 딕셔너리
         """
-        await self._parent._ensure_token()
-
-        # 요청 헤더
-        hdr = self._parent._hdr_base | {
-            "authorization": f"Bearer {self._settings.kis_access_token}",
-            "tr_id": constants.DOMESTIC_PRICE_TR,
-        }
-
-        params = {
-            "FID_COND_MRKT_DIV_CODE": market,
-            "FID_INPUT_ISCD": code.zfill(6),  # 000000 형태도 OK
-        }
-
-        js = await self._parent._request_with_rate_limit(
-            "GET",
-            f"{constants.BASE}{constants.DOMESTIC_PRICE_URL}",
-            headers=hdr,
-            params=params,
-            timeout=5,
-            api_name="fetch_fundamental_info",
+        js = await self._request_with_token_retry(
             tr_id=constants.DOMESTIC_PRICE_TR,
+            url=f"{constants.BASE}{constants.DOMESTIC_PRICE_URL}",
+            params={
+                "FID_COND_MRKT_DIV_CODE": market,
+                "FID_INPUT_ISCD": code.zfill(6),
+            },
+            api_name="fetch_fundamental_info",
         )
-        if js["rt_cd"] != "0":
-            if js.get("msg_cd") in [
-                "EGW00123",
-                "EGW00121",
-            ]:  # 토큰 만료 또는 유효하지 않은 토큰
-                # Redis에서 토큰 삭제 후 새로 발급
-                await self._parent._token_manager.clear_token()
-                await self._parent._ensure_token()
-                # 재시도 1회
-                return await self.fetch_fundamental_info(code, market)
-            raise RuntimeError(f"{js['msg_cd']} {js['msg1']}")
         out = js["output"]  # 단일 dict
 
         # 기본 정보 구성
@@ -691,12 +618,6 @@ class MarketDataClient:
         컬럼: date • open • high • low • close • volume • value
         """
         n = normalize_daily_chart_lookback(n)
-        await self._parent._ensure_token()
-        hdr = self._parent._hdr_base | {
-            "authorization": f"Bearer {self._settings.kis_access_token}",
-            "tr_id": constants.DOMESTIC_DAILY_CHART_TR,
-        }
-
         end = end_date or datetime.date.today()
         rows: list[dict] = []
 
@@ -711,26 +632,12 @@ class MarketDataClient:
                 "FID_INPUT_DATE_2": end.strftime("%Y%m%d"),
             }
 
-            js = await self._parent._request_with_rate_limit(
-                "GET",
-                f"{constants.BASE}{constants.DOMESTIC_DAILY_CHART_URL}",
-                headers=hdr,
-                params=params,
-                timeout=5,
-                api_name="inquire_daily_itemchartprice",
+            js = await self._request_with_token_retry(
                 tr_id=constants.DOMESTIC_DAILY_CHART_TR,
+                url=f"{constants.BASE}{constants.DOMESTIC_DAILY_CHART_URL}",
+                params=params,
+                api_name="inquire_daily_itemchartprice",
             )
-
-            if js.get("rt_cd") != "0":
-                if js.get("msg_cd") in [
-                    "EGW00123",
-                    "EGW00121",
-                ]:  # 토큰 만료 또는 유효하지 않은 토큰
-                    # Redis에서 토큰 삭제 후 새로 발급
-                    await self._parent._token_manager.clear_token()
-                    await self._parent._ensure_token()
-                    continue
-                raise RuntimeError(f"{js.get('msg_cd')} {js.get('msg1')}")
 
             chunk = js.get("output2") or js.get("output") or []
             if not chunk:
@@ -795,13 +702,6 @@ class MarketDataClient:
         end_date: datetime.date | None = None,
         end_time: str | None = None,
     ) -> pd.DataFrame:
-        await self._parent._ensure_token()
-
-        hdr = self._parent._hdr_base | {
-            "authorization": f"Bearer {self._settings.kis_access_token}",
-            "tr_id": constants.DOMESTIC_TIME_DAILY_CHART_TR,
-        }
-
         base_date = end_date or datetime.date.today()
         current_time = end_time or datetime.datetime.now().strftime("%H%M%S")
         params = {
@@ -814,20 +714,15 @@ class MarketDataClient:
             "FID_ETC_CLS_CODE": "",
         }
 
-        js = await self._parent._request_with_rate_limit(
-            "GET",
-            f"{constants.BASE}{constants.DOMESTIC_TIME_DAILY_CHART_URL}",
-            headers=hdr,
-            params=params,
-            timeout=5,
-            api_name="inquire_time_dailychartprice",
+        js = await self._request_with_token_retry(
             tr_id=constants.DOMESTIC_TIME_DAILY_CHART_TR,
+            url=f"{constants.BASE}{constants.DOMESTIC_TIME_DAILY_CHART_URL}",
+            params=params,
+            api_name="inquire_time_dailychartprice",
         )
 
         rows = js.get("output2") or js.get("output") or []
         if not rows:
-            if js.get("rt_cd") != "0":
-                raise RuntimeError(f"{js.get('msg_cd')} {js.get('msg1')}")
             return pd.DataFrame(
                 columns=[
                     "datetime",
@@ -842,65 +737,21 @@ class MarketDataClient:
                 ]
             )
 
-        frame = (
-            pd.DataFrame(rows)
-            .rename(
-                columns={
-                    "stck_bsop_date": "date",
-                    "stck_cntg_hour": "time",
-                    "stck_oprc": "open",
-                    "stck_hgpr": "high",
-                    "stck_lwpr": "low",
-                    "stck_prpr": "close",
-                    "cntg_vol": "volume",
-                    "acml_tr_pbmn": "value",
-                }
-            )
-            .astype(
-                {
-                    "date": "str",
-                    "time": "str",
-                    "open": "float",
-                    "high": "float",
-                    "low": "float",
-                    "close": "float",
-                    "volume": "int",
-                    "value": "int",
-                },
-                errors="ignore",
-            )
-            .assign(
-                datetime=lambda d: pd.to_datetime(
-                    d["date"] + d["time"],
-                    format="%Y%m%d%H%M%S",
-                    errors="coerce",
-                )
-            )
-            .dropna(subset=["datetime"])
-            .assign(
-                date=lambda d: pd.to_datetime(d["datetime"]).dt.date,
-                time=lambda d: pd.to_datetime(d["datetime"]).dt.time,
-            )
-            .loc[
-                :,
-                [
-                    "datetime",
-                    "date",
-                    "time",
-                    "open",
-                    "high",
-                    "low",
-                    "close",
-                    "volume",
-                    "value",
-                ],
-            ]
-            .drop_duplicates(subset=["datetime"], keep="first")
-            .sort_values("datetime")
-            .tail(max(int(n), 1))
-            .reset_index(drop=True)
+        return self._build_ohlcv_dataframe(
+            rows=rows,
+            column_mapping={
+                "stck_bsop_date": "date",
+                "stck_cntg_hour": "time",
+                "stck_oprc": "open",
+                "stck_hgpr": "high",
+                "stck_lwpr": "low",
+                "stck_prpr": "close",
+                "cntg_vol": "volume",
+                "acml_tr_pbmn": "value",
+            },
+            datetime_format="%Y%m%d%H%M%S",
+            limit=n,
         )
-        return frame
 
     async def inquire_minute_chart(
         self,
@@ -927,16 +778,8 @@ class MarketDataClient:
         end_date : datetime.date, optional
             종료 날짜 (None이면 오늘까지)
         """
-        await self._parent._ensure_token()
-
-        hdr = self._parent._hdr_base | {
-            "authorization": f"Bearer {self._settings.kis_access_token}",
-            "tr_id": constants.DOMESTIC_MINUTE_CHART_TR,
-        }
-
-        # KIS 분봉 API는 time_unit 파라미터를 제대로 인식하지 못하는 문제가 있음
-        # 현재로서는 모든 시간대에서 동일한 데이터가 반환됨
-        # 향후 API 문서 업데이트나 기술지원을 통해 해결 필요
+        # KIS 분봉 API는 time_unit 파라미터를 제대로 인식하지 못하는 알려진 이슈가 있음
+        # 모든 시간대에서 동일한 데이터가 반환되므로 1분봉으로 고정 후 자체 집계
 
         # 현재 시간을 시분초로 설정 (장 시간 내에만 작동)
         current_time = datetime.datetime.now().strftime("%H%M%S")
@@ -953,14 +796,11 @@ class MarketDataClient:
             "FID_ETC_CLS_CODE": "",
         }
 
-        js = await self._parent._request_with_rate_limit(
-            "GET",
-            f"{constants.BASE}{constants.DOMESTIC_MINUTE_CHART_URL}",
-            headers=hdr,
-            params=params,
-            timeout=5,
-            api_name="inquire_minute_chart",
+        js = await self._request_with_token_retry(
             tr_id=constants.DOMESTIC_MINUTE_CHART_TR,
+            url=f"{constants.BASE}{constants.DOMESTIC_MINUTE_CHART_URL}",
+            params=params,
+            api_name="inquire_minute_chart",
         )
 
         # 디버깅을 위한 로깅 추가
@@ -989,63 +829,21 @@ class MarketDataClient:
         # 데이터가 있으면 성공으로 처리 (rt_cd가 비어있어도)
         logging.info(f"KIS 분봉 API에서 {len(rows)}개 데이터 수집 성공")
 
-        # DataFrame 변환
-        df = (
-            pd.DataFrame(rows)
-            .rename(
-                columns={
-                    "stck_bsop_date": "date",
-                    "stck_cntg_hour": "time",
-                    "stck_oprc": "open",
-                    "stck_hgpr": "high",
-                    "stck_lwpr": "low",
-                    "stck_prpr": "close",
-                    "cntg_vol": "volume",
-                    "acml_tr_pbmn": "value",
-                }
-            )
-            .astype(
-                {
-                    "date": "str",
-                    "time": "str",
-                    "open": "float",
-                    "high": "float",
-                    "low": "float",
-                    "close": "float",
-                    "volume": "int",
-                    "value": "int",
-                },
-                errors="ignore",
-            )
-            .assign(
-                # 날짜와 시간을 결합하여 datetime 생성
-                datetime=lambda d: pd.to_datetime(
-                    d["date"] + d["time"], format="%Y%m%d%H%M%S"
-                ),
-                date=lambda d: pd.to_datetime(d["datetime"]).dt.date,
-                time=lambda d: pd.to_datetime(d["datetime"]).dt.time,
-            )
-            .loc[
-                :,
-                [
-                    "datetime",
-                    "date",
-                    "time",
-                    "open",
-                    "high",
-                    "low",
-                    "close",
-                    "volume",
-                    "value",
-                ],
-            ]
-            .drop_duplicates(subset=["datetime"], keep="first")
-            .sort_values("datetime")
-            .tail(n)  # 요청한 개수만
-            .reset_index(drop=True)
+        return self._build_ohlcv_dataframe(
+            rows=rows,
+            column_mapping={
+                "stck_bsop_date": "date",
+                "stck_cntg_hour": "time",
+                "stck_oprc": "open",
+                "stck_hgpr": "high",
+                "stck_lwpr": "low",
+                "stck_prpr": "close",
+                "cntg_vol": "volume",
+                "acml_tr_pbmn": "value",
+            },
+            datetime_format="%Y%m%d%H%M%S",
+            limit=n,
         )
-
-        return df
 
     async def fetch_minute_candles(
         self,
@@ -1128,16 +926,9 @@ class MarketDataClient:
         Returns:
             DataFrame with columns: date, open, high, low, close, volume
         """
-        await self._parent._ensure_token()
-
         # KIS API는 거래소 코드를 3자리로 사용: NASD -> NAS, NYSE -> NYS, AMEX -> AMS
         excd_map = {"NASD": "NAS", "NYSE": "NYS", "AMEX": "AMS"}
         excd = excd_map.get(exchange_code, exchange_code[:3])
-
-        hdr = self._parent._hdr_base | {
-            "authorization": f"Bearer {self._settings.kis_access_token}",
-            "tr_id": constants.OVERSEAS_DAILY_CHART_TR,
-        }
 
         rows: list[dict] = []
         max_iterations = 5  # 최대 5번 반복 (충분한 데이터 확보)
@@ -1171,22 +962,13 @@ class MarketDataClient:
                 f"해외주식 일봉 조회 요청 (반복 {iteration + 1}/{max_iterations}) - symbol: {symbol}, exchange: {excd}, bymd: {bymd}"
             )
 
-            js = await self._parent._request_with_rate_limit(
-                "GET",
-                f"{constants.BASE}{constants.OVERSEAS_DAILY_CHART_URL}",
-                headers=hdr,
+            js = await self._request_with_token_retry(
+                tr_id=constants.OVERSEAS_DAILY_CHART_TR,
+                url=f"{constants.BASE}{constants.OVERSEAS_DAILY_CHART_URL}",
                 params=params,
                 timeout=10,
                 api_name="inquire_overseas_daily_price",
-                tr_id=constants.OVERSEAS_DAILY_CHART_TR,
             )
-
-            if js.get("rt_cd") != "0":
-                if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
-                    await self._parent._token_manager.clear_token()
-                    await self._parent._ensure_token()
-                    continue
-                raise RuntimeError(f"{js.get('msg_cd')} {js.get('msg1')}")
 
             chunk = js.get("output2") or js.get("output") or []
             if not chunk:
@@ -1243,8 +1025,6 @@ class MarketDataClient:
         n: int = 120,
         keyb: str = "",
     ) -> OverseasMinuteChartPage:
-        await self._parent._ensure_token()
-
         excd = constants.OVERSEAS_EXCHANGE_MAP.get(exchange_code, exchange_code[:3])
         requested_rows = min(max(int(n), 1), 120)
         next_flag = "1" if keyb else ""
@@ -1261,42 +1041,30 @@ class MarketDataClient:
             "KEYB": keyb,
         }
 
-        for attempt in range(2):
-            hdr = self._parent._hdr_base | {
-                "authorization": f"Bearer {self._settings.kis_access_token}",
-                "tr_id": constants.OVERSEAS_MINUTE_CHART_TR,
-            }
-            js = await self._parent._request_with_rate_limit(
-                "GET",
-                f"{constants.BASE}{constants.OVERSEAS_MINUTE_CHART_URL}",
-                headers=hdr,
-                params=params,
-                timeout=10,
-                api_name="inquire_overseas_minute_chart",
-                tr_id=constants.OVERSEAS_MINUTE_CHART_TR,
-            )
-
-            if js.get("rt_cd") == "0":
-                break
-
-            if attempt == 0 and js.get("msg_cd") in ["EGW00123", "EGW00121"]:
-                await self._parent._token_manager.clear_token()
-                await self._parent._ensure_token()
-                continue
-
-            raise RuntimeError(f"{js.get('msg_cd')} {js.get('msg1')}")
-        else:
-            raise RuntimeError("Failed to fetch overseas minute chart")
+        js = await self._request_with_token_retry(
+            tr_id=constants.OVERSEAS_MINUTE_CHART_TR,
+            url=f"{constants.BASE}{constants.OVERSEAS_MINUTE_CHART_URL}",
+            params=params,
+            timeout=10,
+            api_name="inquire_overseas_minute_chart",
+        )
 
         chunk = js.get("output2")
         if chunk is None:
             chunk = js.get("output")
+
         if chunk is None or chunk == []:
             return _empty_overseas_minute_chart_page()
 
         validated_rows = _validate_overseas_minute_chart_chunk(chunk)
-        frame = pd.DataFrame(validated_rows).rename(
-            columns={
+
+        # time 필드에 zfill(6)이 필요하므로 전처리
+        for row in validated_rows:
+            row["xhms"] = str(row["xhms"]).zfill(6)
+
+        frame = self._build_ohlcv_dataframe(
+            rows=validated_rows,
+            column_mapping={
                 "xymd": "date",
                 "xhms": "time",
                 "open": "open",
@@ -1305,30 +1073,15 @@ class MarketDataClient:
                 "close": "close",
                 "volume": "volume",
                 "value": "value",
-            }
+            },
+            datetime_format="%Y%m%d%H%M%S",
+            limit=len(validated_rows),  # 전체 반환 (pagination이 limit 역할)
         )
-        frame["date"] = frame["date"].astype("string")
-        frame["time"] = frame["time"].astype("string").str.zfill(6)
-        frame["datetime"] = pd.to_datetime(
-            frame["date"] + frame["time"],
-            format="%Y%m%d%H%M%S",
-            errors="coerce",
-        )
-        if frame["datetime"].isna().any():
+
+        if frame.empty and validated_rows:
             raise RuntimeError(
                 "Malformed KIS overseas minute chart payload: invalid xymd/xhms format"
             )
-
-        frame = (
-            frame.assign(
-                date=lambda d: pd.to_datetime(d["datetime"]).dt.date,
-                time=lambda d: pd.to_datetime(d["datetime"]).dt.time,
-            )
-            .loc[:, _MINUTE_FRAME_COLUMNS]
-            .drop_duplicates(subset=["datetime"], keep="first")
-            .sort_values("datetime")
-            .reset_index(drop=True)
-        )
 
         has_more = _has_overseas_minute_pagination(js.get("output1"))
         next_keyb = None
