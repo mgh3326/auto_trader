@@ -103,3 +103,123 @@ class TestBuildUpsertSql:
         assert ":exchange" in sql_text
         assert "ON CONFLICT (time, symbol, exchange)" in sql_text
         assert "us_candles_1m.close IS DISTINCT FROM EXCLUDED.close" in sql_text
+
+from types import SimpleNamespace
+
+
+class TestBuildSymbolUnion:
+    @staticmethod
+    def _identity_normalize(value: object) -> str | None:
+        s = str(value or "").strip().upper()
+        return s or None
+
+    def test_combines_kis_and_manual(self) -> None:
+        from app.services.candles_sync_common import build_symbol_union
+
+        kis = [{"pdno": "005930"}, {"pdno": "035420"}]
+        manual = [SimpleNamespace(ticker="000660")]
+
+        result = build_symbol_union(
+            kis, manual, holdings_field="pdno", normalize_fn=self._identity_normalize,
+        )
+
+        assert result == {"005930", "035420", "000660"}
+
+    def test_skips_none_values(self) -> None:
+        from app.services.candles_sync_common import build_symbol_union
+
+        kis = [{"pdno": None}, {"pdno": ""}]
+        manual = [SimpleNamespace(ticker=None)]
+
+        result = build_symbol_union(
+            kis, manual, holdings_field="pdno", normalize_fn=self._identity_normalize,
+        )
+
+        assert result == set()
+
+    def test_uses_ovrs_pdno_for_us(self) -> None:
+        from app.services.candles_sync_common import build_symbol_union
+
+        kis = [{"ovrs_pdno": "AAPL"}, {"ovrs_pdno": "MSFT"}]
+        manual = [SimpleNamespace(ticker="NVDA")]
+
+        result = build_symbol_union(
+            kis, manual, holdings_field="ovrs_pdno", normalize_fn=self._identity_normalize,
+        )
+
+        assert result == {"AAPL", "MSFT", "NVDA"}
+
+    def test_handles_object_attrs(self) -> None:
+        from app.services.candles_sync_common import build_symbol_union
+
+        kis = [SimpleNamespace(pdno="005930")]
+        manual = [SimpleNamespace(ticker="000660")]
+
+        result = build_symbol_union(
+            kis, manual, holdings_field="pdno", normalize_fn=self._identity_normalize,
+        )
+
+        assert result == {"005930", "000660"}
+
+    def test_deduplicates(self) -> None:
+        from app.services.candles_sync_common import build_symbol_union
+
+        kis = [{"pdno": "005930"}]
+        manual = [SimpleNamespace(ticker="005930")]
+
+        result = build_symbol_union(
+            kis, manual, holdings_field="pdno", normalize_fn=self._identity_normalize,
+        )
+
+        assert result == {"005930"}
+
+
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock
+
+
+class TestReadCursorUtc:
+    @pytest.mark.asyncio
+    async def test_returns_datetime_when_present(self) -> None:
+        from app.services.candles_sync_common import read_cursor_utc
+
+        expected = datetime(2026, 1, 15, 10, 30, tzinfo=UTC)
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = expected
+
+        mock_session = AsyncMock()
+        mock_session.execute.return_value = mock_result
+
+        sql = MagicMock()
+        result = await read_cursor_utc(mock_session, sql, {"symbol": "005930", "venue": "KRX"})
+
+        assert result == expected
+        mock_session.execute.assert_awaited_once_with(sql, {"symbol": "005930", "venue": "KRX"})
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_no_rows(self) -> None:
+        from app.services.candles_sync_common import read_cursor_utc
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = None
+
+        mock_session = AsyncMock()
+        mock_session.execute.return_value = mock_result
+
+        result = await read_cursor_utc(mock_session, MagicMock(), {"symbol": "X"})
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_non_datetime(self) -> None:
+        from app.services.candles_sync_common import read_cursor_utc
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = "not-a-datetime"
+
+        mock_session = AsyncMock()
+        mock_session.execute.return_value = mock_result
+
+        result = await read_cursor_utc(mock_session, MagicMock(), {"symbol": "X"})
+
+        assert result is None

@@ -6,10 +6,13 @@ ohlcv_cache_common.py 와 동일한 패턴으로 사용.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Literal, cast
 
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,3 +72,39 @@ def build_upsert_sql(cfg: SyncTableConfig) -> text:
         OR {t}.volume IS DISTINCT FROM EXCLUDED.volume
         OR {t}.value IS DISTINCT FROM EXCLUDED.value
     """)
+
+def build_symbol_union(
+    kis_holdings: Sequence[object],
+    manual_holdings: Sequence[object],
+    *,
+    holdings_field: str,
+    normalize_fn: Callable[[object], str | None],
+) -> set[str]:
+    symbols: set[str] = set()
+
+    for item in kis_holdings:
+        raw = (
+            cast(dict[str, object], item).get(holdings_field)
+            if isinstance(item, dict)
+            else getattr(item, holdings_field, None)
+        )
+        symbol = normalize_fn(raw)
+        if symbol is not None:
+            symbols.add(symbol)
+
+    for holding in manual_holdings:
+        symbol = normalize_fn(getattr(holding, "ticker", None))
+        if symbol is not None:
+            symbols.add(symbol)
+
+    return symbols
+
+
+async def read_cursor_utc(
+    session: AsyncSession,
+    cursor_sql: object,
+    params: dict[str, object],
+) -> datetime | None:
+    result = await session.execute(cursor_sql, params)
+    value = result.scalar_one_or_none()
+    return value if isinstance(value, datetime) else None
