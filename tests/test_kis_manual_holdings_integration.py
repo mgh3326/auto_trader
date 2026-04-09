@@ -847,12 +847,10 @@ class TestTossRecommendationNotification:
 
     def test_format_toss_price_recommendation_html_escapes_special_chars(self):
         """HTML 포맷 메시지가 특수문자를 올바르게 이스케이프하는지 확인"""
-        from app.monitoring.trade_notifier import TradeNotifier
-
-        notifier = TradeNotifier()
+        from app.monitoring.trade_notifier import formatters_telegram as fmt_telegram
 
         # 특수문자가 포함된 데이터로 테스트
-        message = notifier._format_toss_price_recommendation_html(
+        message = fmt_telegram.format_toss_price_recommendation_html(
             symbol="005930",
             korean_name="삼성전자 <테스트>",  # HTML 특수문자 포함
             current_price=72000.0,
@@ -890,11 +888,9 @@ class TestTossRecommendationNotification:
 
     def test_format_toss_price_recommendation_html_with_parentheses(self):
         """괄호, 퍼센트 등이 포함된 메시지가 정상적으로 생성되는지 확인"""
-        from app.monitoring.trade_notifier import TradeNotifier
+        from app.monitoring.trade_notifier import formatters_telegram as fmt_telegram
 
-        notifier = TradeNotifier()
-
-        message = notifier._format_toss_price_recommendation_html(
+        message = fmt_telegram.format_toss_price_recommendation_html(
             symbol="015760",
             korean_name="한국전력",
             current_price=25000.0,
