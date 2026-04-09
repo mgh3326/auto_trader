@@ -496,6 +496,7 @@ async def analyze_portfolio_impl(
     symbols: list[str | int],
     market: str | None = None,
     include_peers: bool = False,
+    include_rotation_plan: bool = False,
 ) -> dict[str, Any]:
     """Analyze a portfolio of symbols.
 
@@ -503,16 +504,27 @@ async def analyze_portfolio_impl(
         symbols: List of symbol inputs (1-10 entries)
         market: Optional market override
         include_peers: Whether to include peer analysis
+        include_rotation_plan: Whether to append rotation plan for crypto
 
     Returns:
         Dict with 'results' (symbol -> analysis_result) and 'summary' keys
     """
-    return await _run_batch_analysis(
+    result = await _run_batch_analysis(
         symbols,
         market=market,
         include_peers=include_peers,
         formatter=lambda _sym, result: result,
     )
+
+    if include_rotation_plan:
+        from app.services.portfolio_rotation_service import PortfolioRotationService
+
+        rotation_service = PortfolioRotationService()
+        result["rotation_plan"] = await rotation_service.build_rotation_plan(
+            market=market or "crypto",
+        )
+
+    return result
 
 
 async def screen_stocks_impl(

@@ -348,3 +348,65 @@ class TestResponseShape:
         assert summary_keys <= set(result["summary"].keys())
         assert result["supported"] is True
         assert result["generated_at"] is not None
+
+
+class TestAnalyzePortfolioRotation:
+
+    @pytest.mark.asyncio
+    @patch(
+        "app.mcp_server.tooling.analysis_tool_handlers._run_batch_analysis",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "app.services.portfolio_rotation_service.PortfolioRotationService.build_rotation_plan",
+        new_callable=AsyncMock,
+    )
+    async def test_analyze_portfolio_with_rotation_plan(
+        self,
+        mock_rotation: AsyncMock,
+        mock_batch: AsyncMock,
+    ):
+        from app.mcp_server.tooling.analysis_tool_handlers import (
+            analyze_portfolio_impl,
+        )
+
+        mock_batch.return_value = {
+            "results": {"KRW-BTC": {"price": 50000000}},
+            "summary": {"total_symbols": 1, "successful": 1, "failed": 0, "errors": []},
+        }
+        mock_rotation.return_value = {
+            "supported": True,
+            "market": "crypto",
+            "sell_candidates": [],
+            "buy_candidates": [],
+        }
+
+        result = await analyze_portfolio_impl(
+            symbols=["KRW-BTC"],
+            market="crypto",
+            include_rotation_plan=True,
+        )
+        assert "rotation_plan" in result
+        assert result["rotation_plan"]["supported"] is True
+        mock_rotation.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch(
+        "app.mcp_server.tooling.analysis_tool_handlers._run_batch_analysis",
+        new_callable=AsyncMock,
+    )
+    async def test_analyze_portfolio_without_rotation_unchanged(
+        self,
+        mock_batch: AsyncMock,
+    ):
+        from app.mcp_server.tooling.analysis_tool_handlers import (
+            analyze_portfolio_impl,
+        )
+
+        mock_batch.return_value = {
+            "results": {},
+            "summary": {"total_symbols": 0, "successful": 0, "failed": 0, "errors": []},
+        }
+
+        result = await analyze_portfolio_impl(symbols=[], market="crypto")
+        assert "rotation_plan" not in result
