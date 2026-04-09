@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.mcp_server.tooling.fundamentals_sources_naver import _coerce_optional_number
+from app.mcp_server.tooling.fundamentals_sources_common import _coerce_optional_number
 
 pytestmark = pytest.mark.unit
 

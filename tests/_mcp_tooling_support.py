@@ -31,9 +31,11 @@ from app.mcp_server.tooling import (
     fundamentals_handlers,
     fundamentals_sources_binance,
     fundamentals_sources_coingecko,
+    fundamentals_sources_common,
     fundamentals_sources_finnhub,
     fundamentals_sources_indices,
     fundamentals_sources_naver,
+    fundamentals_sources_yfinance,
     market_data_indicators,
     market_data_quotes,
     order_execution,
@@ -170,9 +172,11 @@ _PATCH_MODULES = (
     fundamentals_valuation,
     fundamentals_sources_binance,
     fundamentals_sources_coingecko,
+    fundamentals_sources_common,
     fundamentals_sources_finnhub,
     fundamentals_sources_indices,
     fundamentals_sources_naver,
+    fundamentals_sources_yfinance,
     market_data_indicators,
     market_data_quotes,
     order_execution,
@@ -449,7 +453,7 @@ def _patch_yf_ticker(
         assert session is not None
         return ticker_factory(symbol)
 
-    monkeypatch.setattr(fundamentals_sources_naver.yf, "Ticker", wrapped_ticker)
+    monkeypatch.setattr(fundamentals_sources_yfinance.yf, "Ticker", wrapped_ticker)
     monkeypatch.setattr(fundamentals_sources_indices.yf, "Ticker", wrapped_ticker)
 
 
