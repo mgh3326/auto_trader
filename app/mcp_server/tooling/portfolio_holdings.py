@@ -757,6 +757,250 @@ async def _get_indicators_impl(
         }
 
 
+async def _get_holdings_impl(
+    *,
+    account: str | None = None,
+    market: str | None = None,
+    include_current_price: bool = True,
+    minimum_value: float | None = None,
+    account_name: str | None = None,
+) -> dict[str, Any]:
+    """Implementation for get_holdings tool."""
+    if minimum_value is not None and minimum_value < 0:
+        raise ValueError("minimum_value must be >= 0")
+
+    (
+        positions,
+        errors,
+        resolved_market_filter,
+        resolved_account_filter,
+    ) = await _collect_portfolio_positions(
+        account=account,
+        market=market,
+        include_current_price=include_current_price,
+        account_name=account_name,
+    )
+
+    filtered_count = 0
+    filter_reason: str | None = None
+
+    if include_current_price and minimum_value is not None:
+        threshold = float(minimum_value)
+        filter_reason = f"minimum_value < {_format_filter_threshold(threshold)}"
+        filtered_positions: list[dict[str, Any]] = []
+        for position in positions:
+            value = _value_for_minimum_filter(position)
+            if value < threshold:
+                filtered_count += 1
+                continue
+            filtered_positions.append(position)
+        positions = filtered_positions
+    elif include_current_price and minimum_value is None:
+        threshold_map = _DEFAULT_MINIMUM_VALUES.copy()
+        filter_reason_parts = []
+        for instrument_type, threshold in threshold_map.items():
+            filter_reason_parts.append(
+                f"{instrument_type} < {_format_filter_threshold(threshold)}"
+            )
+        filter_reason = ", ".join(filter_reason_parts)
+        filtered_positions = []
+        for position in positions:
+            value = _value_for_minimum_filter(position)
+            instrument_type = position.get("instrument_type")
+            threshold = threshold_map.get(instrument_type, 0.0)
+            if value < threshold:
+                filtered_count += 1
+                continue
+            filtered_positions.append(position)
+        positions = filtered_positions
+    elif not include_current_price:
+        filter_reason = "minimum_value filter skipped (include_current_price=False)"
+    else:
+        filter_reason = "minimum_value filter disabled"
+
+    # Compute Phase 2 strategy signals for crypto positions
+    if include_current_price:
+        crypto_positions = [
+            p
+            for p in positions
+            if p.get("instrument_type") == "crypto"
+            and p.get("current_price") is not None
+        ]
+        if crypto_positions:
+            try:
+                signal_results = await asyncio.gather(
+                    *[
+                        _compute_crypto_signals_for_position(position)
+                        for position in crypto_positions
+                    ],
+                    return_exceptions=True,
+                )
+                for position, signal_result in zip(
+                    crypto_positions, signal_results, strict=False
+                ):
+                    if isinstance(signal_result, Exception):
+                        rsi_14 = None
+                        voting_result = None
+                    else:
+                        rsi_14, voting_result = signal_result
+                    signal = _build_crypto_strategy_signal(
+                        position, rsi_14=rsi_14, voting_result=voting_result
+                    )
+                    if signal:
+                        position["strategy_signal"] = signal
+            except Exception as exc:
+                logger.debug("Failed to compute crypto strategy signals: %s", exc)
+
+    grouped_accounts: dict[str, dict[str, Any]] = {}
+    for position in positions:
+        account_id = position["account"]
+        grouped = grouped_accounts.setdefault(
+            account_id,
+            {
+                "account": account_id,
+                "broker": position["broker"],
+                "account_name": position["account_name"],
+                "positions": [],
+            },
+        )
+        grouped["positions"].append(_position_to_output(position))
+
+    accounts = [grouped_accounts[key] for key in sorted(grouped_accounts.keys())]
+    summary = _build_holdings_summary(positions, include_current_price)
+    reported_minimum_value = (
+        _DEFAULT_MINIMUM_VALUES.copy() if minimum_value is None else minimum_value
+    )
+
+    return {
+        "filters": {
+            "account": resolved_account_filter,
+            "account_name": account_name,
+            "market": _INSTRUMENT_TO_MARKET.get(resolved_market_filter),
+            "include_current_price": include_current_price,
+            "minimum_value": reported_minimum_value,
+        },
+        "filtered_count": filtered_count,
+        "filter_reason": filter_reason,
+        "total_accounts": len(accounts),
+        "total_positions": len(positions),
+        "summary": summary,
+        "accounts": accounts,
+        "errors": errors,
+    }
+
+
+async def _get_position_impl(
+    *,
+    symbol: str,
+    market: str | None = None,
+) -> dict[str, Any]:
+    """Implementation for get_position tool."""
+    symbol = (symbol or "").strip()
+    if not symbol:
+        raise ValueError("symbol is required")
+
+    parsed_market = _parse_holdings_market_filter(market)
+    if parsed_market == "equity_us":
+        query_symbol = _normalize_position_symbol(symbol, "equity_us")
+    elif parsed_market == "equity_kr":
+        query_symbol = _normalize_position_symbol(symbol, "equity_kr")
+    elif parsed_market == "crypto":
+        query_symbol = _normalize_position_symbol(symbol, "crypto")
+    else:
+        query_symbol = symbol.strip().upper()
+
+    positions, errors, _, _ = await _collect_portfolio_positions(
+        account=None,
+        market=market,
+        include_current_price=True,
+    )
+
+    matched_positions = [
+        position
+        for position in positions
+        if _is_position_symbol_match(
+            position_symbol=position["symbol"],
+            query_symbol=query_symbol,
+            instrument_type=position["instrument_type"],
+        )
+    ]
+
+    if not matched_positions:
+        return {
+            "symbol": query_symbol,
+            "market": _INSTRUMENT_TO_MARKET.get(parsed_market),
+            "has_position": False,
+            "status": "미보유",
+            "position_count": 0,
+            "positions": [],
+            "errors": errors,
+        }
+
+    matched_positions.sort(
+        key=lambda position: (
+            position["account"],
+            position["market"],
+            position["symbol"],
+        )
+    )
+
+    return {
+        "symbol": query_symbol,
+        "market": _INSTRUMENT_TO_MARKET.get(parsed_market),
+        "has_position": True,
+        "status": "보유",
+        "position_count": len(matched_positions),
+        "accounts": sorted({position["account"] for position in matched_positions}),
+        "positions": [
+            {
+                "account": position["account"],
+                "broker": position["broker"],
+                "account_name": position["account_name"],
+                **_position_to_output(position),
+            }
+            for position in matched_positions
+        ],
+        "errors": errors,
+    }
+
+
+async def _update_manual_holdings_impl(
+    *,
+    holdings: list[dict[str, Any]],
+    broker: str = "toss",
+    account_name: str = "기본 계좌",
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    """Implementation for update_manual_holdings tool."""
+    if not holdings:
+        return {
+            "success": False,
+            "error": "holdings list is required",
+            "dry_run": dry_run,
+        }
+
+    try:
+        async with AsyncSessionLocal() as db:
+            service = ScreenshotHoldingsService(db)
+            user_id = _env_int("MCP_USER_ID", 1)
+            result = await service.resolve_and_update(
+                user_id=user_id,
+                holdings_data=holdings,
+                broker=broker,
+                account_name=account_name,
+                dry_run=dry_run,
+            )
+            return result
+    except Exception as exc:
+        return {
+            "success": False,
+            "error": str(exc),
+            "dry_run": dry_run,
+            "broker": broker,
+            "account_name": account_name,
+        }
+
+
 def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
     @mcp.tool(
         name="get_holdings",
@@ -774,130 +1018,16 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
         account: str | None = None,
         market: str | None = None,
         include_current_price: bool = True,
-        minimum_value: float | None = None,  # None = per-currency defaults
+        minimum_value: float | None = None,
         account_name: str | None = None,
     ) -> dict[str, Any]:
-        if minimum_value is not None and minimum_value < 0:
-            raise ValueError("minimum_value must be >= 0")
-
-        (
-            positions,
-            errors,
-            resolved_market_filter,
-            resolved_account_filter,
-        ) = await _collect_portfolio_positions(
+        return await _get_holdings_impl(
             account=account,
             market=market,
             include_current_price=include_current_price,
+            minimum_value=minimum_value,
             account_name=account_name,
         )
-
-        filtered_count = 0
-        filter_reason: str | None = None
-
-        if include_current_price and minimum_value is not None:
-            threshold = float(minimum_value)
-            filter_reason = f"minimum_value < {_format_filter_threshold(threshold)}"
-            filtered_positions: list[dict[str, Any]] = []
-            for position in positions:
-                value = _value_for_minimum_filter(position)
-                if value < threshold:
-                    filtered_count += 1
-                    continue
-                filtered_positions.append(position)
-            positions = filtered_positions
-        elif include_current_price and minimum_value is None:
-            threshold_map = _DEFAULT_MINIMUM_VALUES.copy()
-            filter_reason_parts = []
-            for instrument_type, threshold in threshold_map.items():
-                filter_reason_parts.append(
-                    f"{instrument_type} < {_format_filter_threshold(threshold)}"
-                )
-            filter_reason = ", ".join(filter_reason_parts)
-            filtered_positions = []
-            for position in positions:
-                value = _value_for_minimum_filter(position)
-                instrument_type = position.get("instrument_type")
-                threshold = threshold_map.get(instrument_type, 0.0)
-                if value < threshold:
-                    filtered_count += 1
-                    continue
-                filtered_positions.append(position)
-            positions = filtered_positions
-        elif not include_current_price:
-            filter_reason = "minimum_value filter skipped (include_current_price=False)"
-        else:
-            filter_reason = "minimum_value filter disabled"
-
-        # Compute Phase 2 strategy signals for crypto positions
-        if include_current_price:
-            crypto_positions = [
-                p
-                for p in positions
-                if p.get("instrument_type") == "crypto"
-                and p.get("current_price") is not None
-            ]
-            if crypto_positions:
-                try:
-                    signal_results = await asyncio.gather(
-                        *[
-                            _compute_crypto_signals_for_position(position)
-                            for position in crypto_positions
-                        ],
-                        return_exceptions=True,
-                    )
-                    for position, signal_result in zip(
-                        crypto_positions, signal_results, strict=False
-                    ):
-                        if isinstance(signal_result, Exception):
-                            rsi_14 = None
-                            voting_result = None
-                        else:
-                            rsi_14, voting_result = signal_result
-                        signal = _build_crypto_strategy_signal(
-                            position, rsi_14=rsi_14, voting_result=voting_result
-                        )
-                        if signal:
-                            position["strategy_signal"] = signal
-                except Exception as exc:
-                    logger.debug("Failed to compute crypto strategy signals: %s", exc)
-
-        grouped_accounts: dict[str, dict[str, Any]] = {}
-        for position in positions:
-            account_id = position["account"]
-            grouped = grouped_accounts.setdefault(
-                account_id,
-                {
-                    "account": account_id,
-                    "broker": position["broker"],
-                    "account_name": position["account_name"],
-                    "positions": [],
-                },
-            )
-            grouped["positions"].append(_position_to_output(position))
-
-        accounts = [grouped_accounts[key] for key in sorted(grouped_accounts.keys())]
-        summary = _build_holdings_summary(positions, include_current_price)
-        reported_minimum_value = (
-            _DEFAULT_MINIMUM_VALUES.copy() if minimum_value is None else minimum_value
-        )
-
-        return {
-            "filters": {
-                "account": resolved_account_filter,
-                "account_name": account_name,
-                "market": _INSTRUMENT_TO_MARKET.get(resolved_market_filter),
-                "include_current_price": include_current_price,
-                "minimum_value": reported_minimum_value,
-            },
-            "filtered_count": filtered_count,
-            "filter_reason": filter_reason,
-            "total_accounts": len(accounts),
-            "total_positions": len(positions),
-            "summary": summary,
-            "accounts": accounts,
-            "errors": errors,
-        }
 
     @mcp.tool(
         name="get_position",
@@ -910,73 +1040,7 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
         symbol: str,
         market: str | None = None,
     ) -> dict[str, Any]:
-        symbol = (symbol or "").strip()
-        if not symbol:
-            raise ValueError("symbol is required")
-
-        parsed_market = _parse_holdings_market_filter(market)
-        if parsed_market == "equity_us":
-            query_symbol = _normalize_position_symbol(symbol, "equity_us")
-        elif parsed_market == "equity_kr":
-            query_symbol = _normalize_position_symbol(symbol, "equity_kr")
-        elif parsed_market == "crypto":
-            query_symbol = _normalize_position_symbol(symbol, "crypto")
-        else:
-            query_symbol = symbol.strip().upper()
-
-        positions, errors, _, _ = await _collect_portfolio_positions(
-            account=None,
-            market=market,
-            include_current_price=True,
-        )
-
-        matched_positions = [
-            position
-            for position in positions
-            if _is_position_symbol_match(
-                position_symbol=position["symbol"],
-                query_symbol=query_symbol,
-                instrument_type=position["instrument_type"],
-            )
-        ]
-
-        if not matched_positions:
-            return {
-                "symbol": query_symbol,
-                "market": _INSTRUMENT_TO_MARKET.get(parsed_market),
-                "has_position": False,
-                "status": "미보유",
-                "position_count": 0,
-                "positions": [],
-                "errors": errors,
-            }
-
-        matched_positions.sort(
-            key=lambda position: (
-                position["account"],
-                position["market"],
-                position["symbol"],
-            )
-        )
-
-        return {
-            "symbol": query_symbol,
-            "market": _INSTRUMENT_TO_MARKET.get(parsed_market),
-            "has_position": True,
-            "status": "보유",
-            "position_count": len(matched_positions),
-            "accounts": sorted({position["account"] for position in matched_positions}),
-            "positions": [
-                {
-                    "account": position["account"],
-                    "broker": position["broker"],
-                    "account_name": position["account_name"],
-                    **_position_to_output(position),
-                }
-                for position in matched_positions
-            ],
-            "errors": errors,
-        }
+        return await _get_position_impl(symbol=symbol, market=market)
 
     @mcp.tool(
         name="simulate_avg_cost",
@@ -1012,33 +1076,12 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
         account_name: str = "기본 계좌",
         dry_run: bool = True,
     ) -> dict[str, Any]:
-        if not holdings:
-            return {
-                "success": False,
-                "error": "holdings list is required",
-                "dry_run": dry_run,
-            }
-
-        try:
-            async with AsyncSessionLocal() as db:
-                service = ScreenshotHoldingsService(db)
-                user_id = _env_int("MCP_USER_ID", 1)
-                result = await service.resolve_and_update(
-                    user_id=user_id,
-                    holdings_data=holdings,
-                    broker=broker,
-                    account_name=account_name,
-                    dry_run=dry_run,
-                )
-                return result
-        except Exception as exc:
-            return {
-                "success": False,
-                "error": str(exc),
-                "dry_run": dry_run,
-                "broker": broker,
-                "account_name": account_name,
-            }
+        return await _update_manual_holdings_impl(
+            holdings=holdings,
+            broker=broker,
+            account_name=account_name,
+            dry_run=dry_run,
+        )
 
     @mcp.tool(
         name="get_cash_balance",
@@ -1073,4 +1116,7 @@ __all__ = [
     "_register_portfolio_tools_impl",
     "_collect_portfolio_positions",
     "_get_indicators_impl",
+    "_get_holdings_impl",
+    "_get_position_impl",
+    "_update_manual_holdings_impl",
 ]
