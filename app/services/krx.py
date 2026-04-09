@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -426,6 +427,74 @@ async def _get_recent_trading_date(trd_date: str | None = None) -> str:
         if candidates
         else (datetime.now(UTC) + timedelta(hours=9)).strftime("%Y%m%d")
     )
+
+
+async def _fetch_with_date_fallback(
+    cache_prefix: str,
+    bld: str,
+    extra_params: dict[str, str] | None,
+    normalize_fn: Callable[[list[dict[str, Any]], str], list[dict[str, Any]]],
+    trd_date: str | None = None,
+) -> list[dict[str, Any]]:
+    """Fetch KRX data with date fallback, caching, and normalization.
+
+    Common pattern shared by fetch_stock_all, fetch_etf_all, fetch_valuation_all:
+    1. Resolve date candidates (KRX resource bundle + weekday fallback)
+    2. For each date: check cache → call API → normalize → cache → return
+    3. On empty response: try next date
+
+    Args:
+        cache_prefix: Cache key prefix (e.g. "stock:all:STK")
+        bld: KRX API bld parameter
+        extra_params: Additional params for _fetch_krx_data (e.g. {"mktId": "STK"})
+        normalize_fn: Function(raw_data, actual_date) → normalized list
+        trd_date: Specific date in YYYYMMDD format, or None for auto-detect
+
+    Returns:
+        Normalized data list, or empty list if all dates exhausted
+    """
+    # Resolve date candidates
+    if trd_date:
+        date_candidates = [trd_date]
+    else:
+        fallback = _generate_date_candidates(None, KRX_MAX_RETRY_DATES)
+        try:
+            max_date = await _fetch_max_working_date()
+            logger.info(f"KRX max working date: {max_date}")
+            date_candidates = [max_date] + [d for d in fallback if d != max_date]
+        except Exception as e:
+            logger.warning(f"Failed to fetch max working date: {e}, using fallback")
+            date_candidates = fallback
+
+    for actual_date in date_candidates:
+        cache_key = await _get_cache_key(cache_prefix, actual_date)
+
+        # Try cache
+        cached = await _get_cached_data(cache_key)
+        if cached:
+            logger.info(f"Cache hit for {cache_prefix} on {actual_date}")
+            return cached
+
+        # Fetch from KRX API
+        logger.info(f"Fetching KRX data for {cache_prefix}, date={actual_date}")
+        raw_data = await _fetch_krx_data(
+            bld=bld, trdDd=actual_date, **(extra_params or {})
+        )
+
+        if raw_data:
+            normalized = normalize_fn(raw_data, actual_date)
+            await _set_cached_data(cache_key, normalized)
+            return normalized
+        else:
+            logger.warning(
+                f"Empty KRX response for {cache_prefix} on {actual_date}, trying next date"
+            )
+            continue
+
+    logger.error(
+        f"Failed to fetch {cache_prefix} data after trying {len(date_candidates)} dates"
+    )
+    return []
 
 
 async def fetch_stock_all(
