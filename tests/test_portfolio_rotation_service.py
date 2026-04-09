@@ -27,11 +27,10 @@ class TestBuildRotationPlan:
         assert "warning" in result
 
     @pytest.mark.asyncio
-    async def test_unsupported_market_us(
-        self, service: PortfolioRotationService
-    ):
+    async def test_unsupported_market_us(self, service: PortfolioRotationService):
         result = await service.build_rotation_plan(market="us")
         assert result["supported"] is False
+
 
 def _make_position(
     symbol: str = "KRW-BTC",
@@ -134,7 +133,11 @@ class TestClassifyPositions:
         service: PortfolioRotationService,
     ):
         mock_positions.return_value = (
-            [_make_position(symbol="KRW-SHIB", name="시바이누", evaluation_amount=1_200)],
+            [
+                _make_position(
+                    symbol="KRW-SHIB", name="시바이누", evaluation_amount=1_200
+                )
+            ],
             [],
         )
         mock_journals.return_value = {}
@@ -257,7 +260,6 @@ class TestClassifyPositions:
 
 
 class TestBuyCandidates:
-
     @pytest.fixture()
     def service(self) -> PortfolioRotationService:
         return PortfolioRotationService()
@@ -290,19 +292,26 @@ class TestBuyCandidates:
         mock_journals.return_value = {}
         # _fetch_buy_candidates receives held_symbols, verify it was called with them
         mock_buy.return_value = [
-            {"symbol": "KRW-BARD", "name": "롬바드", "price": 100, "trade_amount_24h": 5e9, "screen_reason": ["RSI oversold"]},
+            {
+                "symbol": "KRW-BARD",
+                "name": "롬바드",
+                "price": 100,
+                "trade_amount_24h": 5e9,
+                "screen_reason": ["RSI oversold"],
+            },
         ]
 
         result = await service.build_rotation_plan(market="crypto")
         mock_buy.assert_called_once()
         call_args = mock_buy.call_args
-        assert "KRW-BTC" in call_args[1].get("held_symbols", call_args[0][0] if call_args[0] else set())
+        assert "KRW-BTC" in call_args[1].get(
+            "held_symbols", call_args[0][0] if call_args[0] else set()
+        )
         assert len(result["buy_candidates"]) == 1
         assert result["buy_candidates"][0]["symbol"] == "KRW-BARD"
 
 
 class TestResponseShape:
-
     @pytest.fixture()
     def service(self) -> PortfolioRotationService:
         return PortfolioRotationService()
@@ -334,15 +343,25 @@ class TestResponseShape:
         result = await service.build_rotation_plan(market="crypto")
 
         required_keys = {
-            "supported", "market", "account", "generated_at",
-            "summary", "sell_candidates", "buy_candidates",
-            "locked_positions", "ignored_positions", "warnings",
+            "supported",
+            "market",
+            "account",
+            "generated_at",
+            "summary",
+            "sell_candidates",
+            "buy_candidates",
+            "locked_positions",
+            "ignored_positions",
+            "warnings",
         }
         assert required_keys <= set(result.keys())
 
         summary_keys = {
-            "total_positions", "actionable_positions",
-            "locked_positions", "ignored_positions", "buy_candidates",
+            "total_positions",
+            "actionable_positions",
+            "locked_positions",
+            "ignored_positions",
+            "buy_candidates",
         }
         assert summary_keys <= set(result["summary"].keys())
         assert result["supported"] is True
@@ -350,7 +369,6 @@ class TestResponseShape:
 
 
 class TestAnalyzePortfolioRotation:
-
     @pytest.mark.asyncio
     @patch(
         "app.mcp_server.tooling.analysis_tool_handlers._run_batch_analysis",

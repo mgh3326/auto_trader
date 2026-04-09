@@ -21,11 +21,13 @@ from app.models.trading import InstrumentType
 
 logger = logging.getLogger(__name__)
 
-LOCKED_STRATEGIES: frozenset[str] = frozenset({
-    "coinmoogi_dca",
-    "staking_hold",
-    "index_dca",
-})
+LOCKED_STRATEGIES: frozenset[str] = frozenset(
+    {
+        "coinmoogi_dca",
+        "staking_hold",
+        "index_dca",
+    }
+)
 DUST_THRESHOLD_KRW: float = 5_000
 PARTIAL_REDUCE_PCT: int = 30
 DCA_OVERSOLD_LOSS_THRESHOLD: float = -3.0
@@ -43,12 +45,15 @@ async def _fetch_crypto_positions(
         _collect_portfolio_positions,
     )
 
-    positions, errors, _market_filter, _account_filter = (
-        await _collect_portfolio_positions(
-            account=account,
-            market="crypto",
-            include_current_price=True,
-        )
+    (
+        positions,
+        errors,
+        _market_filter,
+        _account_filter,
+    ) = await _collect_portfolio_positions(
+        account=account,
+        market="crypto",
+        include_current_price=True,
     )
     return positions, errors
 
@@ -104,15 +109,17 @@ async def _fetch_buy_candidates(
         symbol = row.get("symbol", "")
         if symbol in held_symbols:
             continue
-        candidates.append({
-            "symbol": symbol,
-            "name": row.get("name", ""),
-            "price": row.get("price"),
-            "rsi": row.get("rsi"),
-            "change_rate": row.get("change_rate"),
-            "trade_amount_24h": row.get("trade_amount"),
-            "screen_reason": ["RSI oversold", "sufficient liquidity"],
-        })
+        candidates.append(
+            {
+                "symbol": symbol,
+                "name": row.get("name", ""),
+                "price": row.get("price"),
+                "rsi": row.get("rsi"),
+                "change_rate": row.get("change_rate"),
+                "trade_amount_24h": row.get("trade_amount"),
+                "screen_reason": ["RSI oversold", "sufficient liquidity"],
+            }
+        )
         if len(candidates) >= 10:
             break
     return candidates
