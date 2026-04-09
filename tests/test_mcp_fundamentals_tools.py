@@ -33,8 +33,10 @@ from app.mcp_server.tooling import (
     analysis_screening,
     analysis_tool_handlers,
     fundamentals_sources_coingecko,
+    fundamentals_sources_common,
     fundamentals_sources_indices,
     fundamentals_sources_naver,
+    fundamentals_sources_yfinance,
     market_data_indicators,
     shared,
 )
@@ -458,8 +460,10 @@ class TestAnalyzeStock:
             mock_fetch,
         )
 
-        result = await fundamentals_sources_naver._fetch_investment_opinions_yfinance(
-            "AAPL", 10
+        result = (
+            await fundamentals_sources_yfinance._fetch_investment_opinions_yfinance(
+                "AAPL", 10
+            )
         )
 
         # Only opinions key should exist
@@ -2164,7 +2168,7 @@ async def test_sector_peers_us_dedupes_before_network_call(monkeypatch):
             return ["AAPL", "BRK.B", "BRK.A", "MSFT"]
 
     monkeypatch.setattr(
-        fundamentals_sources_naver,
+        fundamentals_sources_yfinance,
         "_get_finnhub_client",
         MockFinnhubClient,
     )
@@ -2186,7 +2190,7 @@ async def test_sector_peers_us_dedupes_before_network_call(monkeypatch):
 
         return MockTicker()
 
-    monkeypatch.setattr(fundamentals_sources_naver.yf, "Ticker", mock_yf_ticker)
+    monkeypatch.setattr(fundamentals_sources_yfinance.yf, "Ticker", mock_yf_ticker)
 
     await tools["get_sector_peers"]("TEST", market="us", limit=5)
 
@@ -2816,8 +2820,10 @@ class TestGetInvestmentOpinions:
 
         monkeypatch.setattr(yf, "Ticker", MockTicker)
 
-        result = await fundamentals_sources_naver._fetch_investment_opinions_yfinance(
-            "AAPL", 10
+        result = (
+            await fundamentals_sources_yfinance._fetch_investment_opinions_yfinance(
+                "AAPL", 10
+            )
         )
 
         assert result["consensus"]["avg_target_price"] is None
@@ -2863,8 +2869,10 @@ class TestGetInvestmentOpinions:
 
         monkeypatch.setattr(yf, "Ticker", MockTicker)
 
-        result = await fundamentals_sources_naver._fetch_investment_opinions_yfinance(
-            "AAPL", 10
+        result = (
+            await fundamentals_sources_yfinance._fetch_investment_opinions_yfinance(
+                "AAPL", 10
+            )
         )
 
         assert result["count"] == 0
@@ -2912,8 +2920,10 @@ class TestGetInvestmentOpinions:
 
         monkeypatch.setattr(yf, "Ticker", MockTicker)
 
-        result = await fundamentals_sources_naver._fetch_investment_opinions_yfinance(
-            "AAPL", 10
+        result = (
+            await fundamentals_sources_yfinance._fetch_investment_opinions_yfinance(
+                "AAPL", 10
+            )
         )
 
         assert result["count"] == 0
@@ -2960,8 +2970,10 @@ class TestGetInvestmentOpinions:
 
         monkeypatch.setattr(yf, "Ticker", MockTicker)
 
-        result = await fundamentals_sources_naver._fetch_investment_opinions_yfinance(
-            "AAPL", 10
+        result = (
+            await fundamentals_sources_yfinance._fetch_investment_opinions_yfinance(
+                "AAPL", 10
+            )
         )
 
         assert result["consensus"]["avg_target_price"] == 200.0
@@ -3002,8 +3014,10 @@ class TestGetInvestmentOpinions:
 
         monkeypatch.setattr(yf, "Ticker", MockTicker)
 
-        result = await fundamentals_sources_naver._fetch_investment_opinions_yfinance(
-            "AAPL", 10
+        result = (
+            await fundamentals_sources_yfinance._fetch_investment_opinions_yfinance(
+                "AAPL", 10
+            )
         )
 
         assert result["consensus"]["buy_count"] is None
@@ -3086,19 +3100,19 @@ class TestScreenEnrichmentHelpers:
             return {"sector": "Technology"}
 
         monkeypatch.setattr(
-            fundamentals_sources_naver,
+            fundamentals_sources_yfinance,
             "_fetch_investment_opinions_yfinance",
             mock_opinions,
             raising=False,
         )
         monkeypatch.setattr(
-            fundamentals_sources_naver,
+            fundamentals_sources_yfinance,
             "_fetch_company_profile_finnhub",
             mock_profile,
             raising=False,
         )
 
-        result = await fundamentals_sources_naver._fetch_screen_enrichment_us("AAPL")
+        result = await fundamentals_sources_yfinance._fetch_screen_enrichment_us("AAPL")
 
         assert result == {
             "sector": "Technology",
@@ -3119,19 +3133,19 @@ class TestScreenEnrichmentHelpers:
             return {"sector": None}
 
         monkeypatch.setattr(
-            fundamentals_sources_naver,
+            fundamentals_sources_yfinance,
             "_fetch_investment_opinions_yfinance",
             mock_opinions,
             raising=False,
         )
         monkeypatch.setattr(
-            fundamentals_sources_naver,
+            fundamentals_sources_yfinance,
             "_fetch_company_profile_finnhub",
             mock_profile,
             raising=False,
         )
 
-        result = await fundamentals_sources_naver._fetch_screen_enrichment_us("MSFT")
+        result = await fundamentals_sources_yfinance._fetch_screen_enrichment_us("MSFT")
 
         assert result == {
             "sector": None,
@@ -3203,20 +3217,20 @@ class TestScreenEnrichmentHelpers:
             raise RuntimeError("opinions unavailable")
 
         monkeypatch.setattr(
-            fundamentals_sources_naver,
+            fundamentals_sources_yfinance,
             "_fetch_company_profile_finnhub",
             mock_profile,
             raising=False,
         )
         monkeypatch.setattr(
-            fundamentals_sources_naver,
+            fundamentals_sources_yfinance,
             "_fetch_investment_opinions_yfinance",
             mock_opinions,
             raising=False,
         )
         caplog.set_level("WARNING")
 
-        result = await fundamentals_sources_naver._fetch_screen_enrichment_us("AAPL")
+        result = await fundamentals_sources_yfinance._fetch_screen_enrichment_us("AAPL")
 
         assert result == {
             "sector": "Technology",
@@ -3241,13 +3255,13 @@ class TestScreenEnrichmentHelpers:
             raise RuntimeError("opinions unavailable")
 
         monkeypatch.setattr(
-            fundamentals_sources_naver,
+            fundamentals_sources_yfinance,
             "_fetch_company_profile_finnhub",
             mock_profile,
             raising=False,
         )
         monkeypatch.setattr(
-            fundamentals_sources_naver,
+            fundamentals_sources_yfinance,
             "_fetch_investment_opinions_yfinance",
             mock_opinions,
             raising=False,
@@ -3256,7 +3270,7 @@ class TestScreenEnrichmentHelpers:
         with pytest.raises(
             RuntimeError, match="profile unavailable|opinions unavailable"
         ):
-            await fundamentals_sources_naver._fetch_screen_enrichment_us("MSFT")
+            await fundamentals_sources_yfinance._fetch_screen_enrichment_us("MSFT")
 
     async def test_row_decoration_enriches_only_equities_and_collects_warnings(
         self, monkeypatch
@@ -3500,7 +3514,7 @@ async def test_analyze_stock_us_reuses_preloaded_yfinance_analyst_snapshot(
 
         return MockTicker()
 
-    monkeypatch.setattr(fundamentals_sources_naver.yf, "Ticker", mock_yf_ticker)
+    monkeypatch.setattr(fundamentals_sources_yfinance.yf, "Ticker", mock_yf_ticker)
 
     class MockFinnhubClient:
         def company_profile2(self, symbol):
@@ -3513,11 +3527,10 @@ async def test_analyze_stock_us_reuses_preloaded_yfinance_analyst_snapshot(
             return []
 
     monkeypatch.setattr(
-        fundamentals_sources_naver,
+        fundamentals_sources_yfinance,
         "_get_finnhub_client",
         MockFinnhubClient,
     )
-
     result = await tools["analyze_stock"]("AAPL", market="us")
 
     assert yf_calls == {"info": 1, "targets": 1, "recommendations": 1, "ud": 1}
@@ -4003,22 +4016,22 @@ class TestParseNaverNum:
     """Tests for _parse_naver_num and _parse_naver_int."""
 
     def test_none(self):
-        assert fundamentals_sources_naver._parse_naver_num(None) is None
-        assert fundamentals_sources_naver._parse_naver_int(None) is None
+        assert fundamentals_sources_common._parse_naver_num(None) is None
+        assert fundamentals_sources_common._parse_naver_int(None) is None
 
     def test_numeric(self):
-        assert fundamentals_sources_naver._parse_naver_num(1234.5) == 1234.5
-        assert fundamentals_sources_naver._parse_naver_num(100) == 100.0
-        assert fundamentals_sources_naver._parse_naver_int(42) == 42
+        assert fundamentals_sources_common._parse_naver_num(1234.5) == 1234.5
+        assert fundamentals_sources_common._parse_naver_num(100) == 100.0
+        assert fundamentals_sources_common._parse_naver_int(42) == 42
 
     def test_string_with_commas(self):
-        assert fundamentals_sources_naver._parse_naver_num("2,450.50") == 2450.50
-        assert fundamentals_sources_naver._parse_naver_num("-45.30") == -45.30
-        assert fundamentals_sources_naver._parse_naver_int("450,000,000") == 450000000
+        assert fundamentals_sources_common._parse_naver_num("2,450.50") == 2450.50
+        assert fundamentals_sources_common._parse_naver_num("-45.30") == -45.30
+        assert fundamentals_sources_common._parse_naver_int("450,000,000") == 450000000
 
     def test_invalid_string(self):
-        assert fundamentals_sources_naver._parse_naver_num("abc") is None
-        assert fundamentals_sources_naver._parse_naver_int("abc") is None
+        assert fundamentals_sources_common._parse_naver_num("abc") is None
+        assert fundamentals_sources_common._parse_naver_int("abc") is None
 
 
 # ---------------------------------------------------------------------------
