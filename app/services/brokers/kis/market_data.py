@@ -257,68 +257,38 @@ class MarketDataClient:
         raise RuntimeError("KIS API token retry exhausted")
 
     async def volume_rank(self, market: str = "J", limit: int = 30) -> list[dict]:
-        await self._parent._ensure_token()
-        hdr = self._parent._hdr_base | {
-            "authorization": f"Bearer {self._settings.kis_access_token}",
-            "tr_id": constants.DOMESTIC_VOLUME_TR,
-        }
-
-        params = {
-            "FID_COND_MRKT_DIV_CODE": market,
-            "FID_COND_SCR_DIV_CODE": "20171",
-            "FID_INPUT_ISCD": "0000",
-            "FID_DIV_CLS_CODE": "0",
-            "FID_BLNG_CLS_CODE": "1",
-            "FID_TRGT_CLS_CODE": "11111111",
-            "FID_TRGT_EXLS_CLS_CODE": "0000001100",
-            "FID_INPUT_PRICE_1": "0",
-            "FID_INPUT_PRICE_2": "1000000",
-            "FID_VOL_CNT": "100000",
-            "FID_INPUT_DATE_1": "",
-        }
-
-        js = await self._parent._request_with_rate_limit(
-            "GET",
-            f"{constants.BASE}{constants.DOMESTIC_VOLUME_URL}",
-            headers=hdr,
-            params=params,
-            timeout=5,
-            api_name="volume_rank",
+        js = await self._request_with_token_retry(
             tr_id=constants.DOMESTIC_VOLUME_TR,
+            url=f"{constants.BASE}{constants.DOMESTIC_VOLUME_URL}",
+            params={
+                "FID_COND_MRKT_DIV_CODE": market,
+                "FID_COND_SCR_DIV_CODE": "20171",
+                "FID_INPUT_ISCD": "0000",
+                "FID_DIV_CLS_CODE": "0",
+                "FID_BLNG_CLS_CODE": "1",
+                "FID_TRGT_CLS_CODE": "11111111",
+                "FID_TRGT_EXLS_CLS_CODE": "0000001100",
+                "FID_INPUT_PRICE_1": "0",
+                "FID_INPUT_PRICE_2": "1000000",
+                "FID_VOL_CNT": "100000",
+                "FID_INPUT_DATE_1": "",
+            },
+            api_name="volume_rank",
         )
-        if js["rt_cd"] == "0":
-            results = js["output"][:limit]
-            # Safe debug sample without float conversion that could fail
-            sample_data = [
-                (r.get("hts_kor_isnm", ""), r.get("acml_vol", "0")) for r in results[:3]
-            ]
-            logging.debug(
-                f"volume_rank: Received {len(js['output'])} results, "
-                f"returning {len(results)}. Sample: {sample_data}"
-            )
-            return results
-        if js["msg_cd"] == "EGW00123":
-            await self._parent._token_manager.clear_token()
-            await self._parent._ensure_token()
-            return await self.volume_rank(market, limit)
-        elif js["msg_cd"] == "EGW00121":
-            await self._parent._token_manager.clear_token()
-            await self._parent._ensure_token()
-            return await self.volume_rank(market, limit)
-        raise RuntimeError(
-            js.get("msg1") or f"KIS API error (msg_cd={js.get('msg_cd', 'unknown')})"
+        results = js["output"][:limit]
+        sample_data = [
+            (r.get("hts_kor_isnm", ""), r.get("acml_vol", "0")) for r in results[:3]
+        ]
+        logging.debug(
+            f"volume_rank: Received {len(js['output'])} results, "
+            f"returning {len(results)}. Sample: {sample_data}"
         )
+        return results
 
     async def market_cap_rank(self, market: str = "J", limit: int = 30) -> list[dict]:
-        await self._parent._ensure_token()
-        hdr = self._parent._hdr_base | {
-            "authorization": f"Bearer {self._settings.kis_access_token}",
-            "tr_id": constants.MARKET_CAP_RANK_TR,
-        }
-        js = await self._parent._request_with_rate_limit(
-            "GET",
-            f"{constants.BASE}{constants.MARKET_CAP_RANK_URL}",
-            headers=hdr,
+        js = await self._request_with_token_retry(
+            tr_id=constants.MARKET_CAP_RANK_TR,
+            url=f"{constants.BASE}{constants.MARKET_CAP_RANK_URL}",
             params={
                 "FID_COND_MRKT_DIV_CODE": market,
                 "FID_COND_SCR_DIV_CODE": "20174",
@@ -330,36 +300,14 @@ class MarketDataClient:
                 "FID_INPUT_PRICE_2": "",
                 "FID_VOL_CNT": "",
             },
-            timeout=5,
             api_name="market_cap_rank",
-            tr_id=constants.MARKET_CAP_RANK_TR,
         )
-        if js["rt_cd"] == "0":
-            return js["output"][:limit]
-        if js["msg_cd"] == "EGW00123":
-            await self._parent._token_manager.clear_token()
-            await self._parent._ensure_token()
-            return await self.market_cap_rank(market, limit)
-        elif js["msg_cd"] == "EGW00121":
-            await self._parent._token_manager.clear_token()
-            await self._parent._ensure_token()
-            return await self.market_cap_rank(market, limit)
-        raise RuntimeError(
-            js.get("msg1") or f"KIS API error (msg_cd={js.get('msg_cd', 'unknown')})"
-        )
+        return js["output"][:limit]
 
     async def fluctuation_rank(
         self, market: str = "J", direction: str = "up", limit: int = 30
     ) -> list[dict]:
-        await self._parent._ensure_token()
-        hdr = self._parent._hdr_base | {
-            "authorization": f"Bearer {self._settings.kis_access_token}",
-            "tr_id": constants.FLUCTUATION_RANK_TR,
-        }
-
-        # FID_PRC_CLS_CODE: "0"=전체 (공식 API 문서 기준)
         prc_cls_code = "0"
-        # FID_RANK_SORT_CLS_CODE: "0"=상승률, "3"=하락율 (공식 API 문서 기준)
         rank_sort_cls_code = "3" if direction == "down" else "0"
 
         logging.debug(
@@ -368,10 +316,9 @@ class MarketDataClient:
             f"FID_RANK_SORT_CLS_CODE={rank_sort_cls_code}"
         )
 
-        js = await self._parent._request_with_rate_limit(
-            "GET",
-            f"{constants.BASE}{constants.FLUCTUATION_RANK_URL}",
-            headers=hdr,
+        js = await self._request_with_token_retry(
+            tr_id=constants.FLUCTUATION_RANK_TR,
+            url=f"{constants.BASE}{constants.FLUCTUATION_RANK_URL}",
             params={
                 "FID_COND_MRKT_DIV_CODE": market,
                 "FID_COND_SCR_DIV_CODE": "20170",
@@ -388,45 +335,26 @@ class MarketDataClient:
                 "FID_RSFL_RATE1": "",
                 "FID_RSFL_RATE2": "",
             },
-            timeout=5,
             api_name="fluctuation_rank",
-            tr_id=constants.FLUCTUATION_RANK_TR,
         )
 
-        if js["rt_cd"] == "0":
-            results = js["output"]
-            # Sort: up → descending (highest first), down → ascending (lowest first).
-            if direction == "up":
-                results.sort(key=lambda x: float(x.get("prdy_ctrt", 0)), reverse=True)
-                return results[:limit]
+        results = js["output"]
+        if direction == "up":
+            results.sort(key=lambda x: float(x.get("prdy_ctrt", 0)), reverse=True)
+            return results[:limit]
 
-            negatives = [
-                item for item in results if float(item.get("prdy_ctrt", 0)) < 0
-            ]
-            negatives.sort(key=lambda x: float(x.get("prdy_ctrt", 0)))
-            return negatives[:limit]
-
-        if js["msg_cd"] in ("EGW00123", "EGW00121"):
-            await self._parent._token_manager.clear_token()
-            await self._parent._ensure_token()
-            return await self.fluctuation_rank(market, direction, limit)
-
-        raise RuntimeError(
-            js.get("msg1") or f"KIS API error (msg_cd={js.get('msg_cd', 'unknown')})"
-        )
+        negatives = [
+            item for item in results if float(item.get("prdy_ctrt", 0)) < 0
+        ]
+        negatives.sort(key=lambda x: float(x.get("prdy_ctrt", 0)))
+        return negatives[:limit]
 
     async def foreign_buying_rank(
         self, market: str = "J", limit: int = 30
     ) -> list[dict]:
-        await self._parent._ensure_token()
-        hdr = self._parent._hdr_base | {
-            "authorization": f"Bearer {self._settings.kis_access_token}",
-            "tr_id": constants.FOREIGN_BUYING_RANK_TR,
-        }
-        js = await self._parent._request_with_rate_limit(
-            "GET",
-            f"{constants.BASE}{constants.FOREIGN_BUYING_RANK_URL}",
-            headers=hdr,
+        js = await self._request_with_token_retry(
+            tr_id=constants.FOREIGN_BUYING_RANK_TR,
+            url=f"{constants.BASE}{constants.FOREIGN_BUYING_RANK_URL}",
             params={
                 "FID_COND_MRKT_DIV_CODE": "V",
                 "FID_COND_SCR_DIV_CODE": "16449",
@@ -435,23 +363,9 @@ class MarketDataClient:
                 "FID_RANK_SORT_CLS_CODE": "0",
                 "FID_ETC_CLS_CODE": "1",
             },
-            timeout=5,
             api_name="foreign_buying_rank",
-            tr_id=constants.FOREIGN_BUYING_RANK_TR,
         )
-        if js["rt_cd"] == "0":
-            return js["output"][:limit]
-        if js["msg_cd"] == "EGW00123":
-            await self._parent._token_manager.clear_token()
-            await self._parent._ensure_token()
-            return await self.foreign_buying_rank(market, limit)
-        elif js["msg_cd"] == "EGW00121":
-            await self._parent._token_manager.clear_token()
-            await self._parent._ensure_token()
-            return await self.foreign_buying_rank(market, limit)
-        raise RuntimeError(
-            js.get("msg1") or f"KIS API error (msg_cd={js.get('msg_cd', 'unknown')})"
-        )
+        return js["output"][:limit]
 
     async def inquire_price(self, code: str, market: str = "UN") -> DataFrame:
         """

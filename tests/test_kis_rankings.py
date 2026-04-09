@@ -454,8 +454,8 @@ class TestKISRankingAPIParams:
         assert call_count["get"] == 2
         # 토큰 초기화 확인
         assert call_count["clear_token"] == 1
-        # 새 토큰 확보 확인 (market_cap_rank는 3회 호출, 다른 메서드와 동작 차이)
-        assert call_count["ensure_token"] == 3
+        # 새 토큰 확보 확인
+        assert call_count["ensure_token"] == 2
         # 정상 결과 반환 확인
         assert len(result) == 1
         assert result[0]["stck_shrn_iscd"] == "005930"
@@ -519,8 +519,8 @@ class TestKISRankingAPIParams:
         assert call_count["get"] == 2
         # 토큰 초기화 확인
         assert call_count["clear_token"] == 1
-        # 새 토큰 확보 확인 (초기 호출 + 에러 후 재시도 + 재귀 호출 = 3회)
-        assert call_count["ensure_token"] == 3
+        # 새 토큰 확보 확인 (초기 호출 + 에러 후 재시도 = 2회)
+        assert call_count["ensure_token"] == 2
         # 정상 결과 반환 확인
         assert len(result) == 1
         assert result[0]["stck_shrn_iscd"] == "005380"
