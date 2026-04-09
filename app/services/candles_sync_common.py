@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, cast
 
-from sqlalchemy import text
+from sqlalchemy import TextClause, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -39,19 +39,22 @@ def parse_float(value: object) -> float | None:
         return None
 
 
-def build_cursor_sql(cfg: SyncTableConfig) -> text:
-    return text(f"""
+def build_cursor_sql(cfg: SyncTableConfig) -> TextClause:
+    return text(
+        f"""
     SELECT MAX(time)
     FROM public.{cfg.table_name}
     WHERE symbol = :symbol
       AND {cfg.partition_col} = :{cfg.partition_col}
-    """)
+    """
+    )
 
 
-def build_upsert_sql(cfg: SyncTableConfig) -> text:
+def build_upsert_sql(cfg: SyncTableConfig) -> TextClause:
     t = cfg.table_name
     p = cfg.partition_col
-    return text(f"""
+    return text(
+        f"""
     INSERT INTO public.{t}
         (time, symbol, {p}, open, high, low, close, volume, value)
     VALUES
@@ -71,7 +74,9 @@ def build_upsert_sql(cfg: SyncTableConfig) -> text:
         OR {t}.close IS DISTINCT FROM EXCLUDED.close
         OR {t}.volume IS DISTINCT FROM EXCLUDED.volume
         OR {t}.value IS DISTINCT FROM EXCLUDED.value
-    """)
+    """
+    )
+
 
 def build_symbol_union(
     kis_holdings: Sequence[object],

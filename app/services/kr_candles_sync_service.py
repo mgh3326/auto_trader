@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from functools import lru_cache
@@ -10,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 import exchange_calendars as xcals
 import pandas as pd
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import AsyncSessionLocal
@@ -396,7 +395,9 @@ async def _sync_symbol_venue(
     now_kst: datetime,
     backfill_days: list[date] | None,
 ) -> dict[str, int | bool | str]:
-    cursor_utc = await read_cursor_utc(session, _CURSOR_SQL, {"symbol": symbol, "venue": venue.venue})
+    cursor_utc = await read_cursor_utc(
+        session, _CURSOR_SQL, {"symbol": symbol, "venue": venue.venue}
+    )
     cutoff_kst = _compute_incremental_cutoff_kst(cursor_utc)
 
     if mode == "backfill":

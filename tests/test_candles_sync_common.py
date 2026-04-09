@@ -1,6 +1,10 @@
 # tests/test_candles_sync_common.py
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
 
@@ -59,6 +63,7 @@ class TestParseFloat:
 
         assert parse_float("") is None
 
+
 class TestBuildCursorSql:
     def test_kr_cursor_sql_contains_table_and_partition(self) -> None:
         from app.services.candles_sync_common import SyncTableConfig, build_cursor_sql
@@ -104,8 +109,6 @@ class TestBuildUpsertSql:
         assert "ON CONFLICT (time, symbol, exchange)" in sql_text
         assert "us_candles_1m.close IS DISTINCT FROM EXCLUDED.close" in sql_text
 
-from types import SimpleNamespace
-
 
 class TestBuildSymbolUnion:
     @staticmethod
@@ -120,7 +123,10 @@ class TestBuildSymbolUnion:
         manual = [SimpleNamespace(ticker="000660")]
 
         result = build_symbol_union(
-            kis, manual, holdings_field="pdno", normalize_fn=self._identity_normalize,
+            kis,
+            manual,
+            holdings_field="pdno",
+            normalize_fn=self._identity_normalize,
         )
 
         assert result == {"005930", "035420", "000660"}
@@ -132,7 +138,10 @@ class TestBuildSymbolUnion:
         manual = [SimpleNamespace(ticker=None)]
 
         result = build_symbol_union(
-            kis, manual, holdings_field="pdno", normalize_fn=self._identity_normalize,
+            kis,
+            manual,
+            holdings_field="pdno",
+            normalize_fn=self._identity_normalize,
         )
 
         assert result == set()
@@ -144,7 +153,10 @@ class TestBuildSymbolUnion:
         manual = [SimpleNamespace(ticker="NVDA")]
 
         result = build_symbol_union(
-            kis, manual, holdings_field="ovrs_pdno", normalize_fn=self._identity_normalize,
+            kis,
+            manual,
+            holdings_field="ovrs_pdno",
+            normalize_fn=self._identity_normalize,
         )
 
         assert result == {"AAPL", "MSFT", "NVDA"}
@@ -156,7 +168,10 @@ class TestBuildSymbolUnion:
         manual = [SimpleNamespace(ticker="000660")]
 
         result = build_symbol_union(
-            kis, manual, holdings_field="pdno", normalize_fn=self._identity_normalize,
+            kis,
+            manual,
+            holdings_field="pdno",
+            normalize_fn=self._identity_normalize,
         )
 
         assert result == {"005930", "000660"}
@@ -168,14 +183,13 @@ class TestBuildSymbolUnion:
         manual = [SimpleNamespace(ticker="005930")]
 
         result = build_symbol_union(
-            kis, manual, holdings_field="pdno", normalize_fn=self._identity_normalize,
+            kis,
+            manual,
+            holdings_field="pdno",
+            normalize_fn=self._identity_normalize,
         )
 
         assert result == {"005930"}
-
-
-from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock
 
 
 class TestReadCursorUtc:
@@ -191,10 +205,14 @@ class TestReadCursorUtc:
         mock_session.execute.return_value = mock_result
 
         sql = MagicMock()
-        result = await read_cursor_utc(mock_session, sql, {"symbol": "005930", "venue": "KRX"})
+        result = await read_cursor_utc(
+            mock_session, sql, {"symbol": "005930", "venue": "KRX"}
+        )
 
         assert result == expected
-        mock_session.execute.assert_awaited_once_with(sql, {"symbol": "005930", "venue": "KRX"})
+        mock_session.execute.assert_awaited_once_with(
+            sql, {"symbol": "005930", "venue": "KRX"}
+        )
 
     @pytest.mark.asyncio
     async def test_returns_none_when_no_rows(self) -> None:
