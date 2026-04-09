@@ -4,7 +4,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.monitoring.trade_notifier import TradeNotifier, get_trade_notifier
+from app.monitoring.trade_notifier import (
+    TradeNotifier,
+    formatters_discord as fmt_discord,
+)
+from app.monitoring.trade_notifier import formatters_telegram as fmt_telegram
+from app.monitoring.trade_notifier import get_trade_notifier
 
 
 @pytest.fixture
@@ -225,9 +230,9 @@ def test_market_type_routing_alerts(trade_notifier):
 
 
 @pytest.mark.unit
-def test_format_buy_notification(trade_notifier):
+def test_format_buy_notification():
     """Test buy notification formatting as Discord embed."""
-    embed = trade_notifier._format_buy_notification(
+    embed = fmt_discord.format_buy_notification(
         symbol="BTC",
         korean_name="비트코인",
         order_count=3,
@@ -236,6 +241,7 @@ def test_format_buy_notification(trade_notifier):
         volumes=[0.001, 0.001, 0.001],
         market_type="암호화폐",
     )
+
 
     # Verify embed structure
     assert embed["title"] == "💰 매수 주문 접수"
@@ -258,9 +264,9 @@ def test_format_buy_notification(trade_notifier):
 
 
 @pytest.mark.unit
-def test_format_buy_notification_without_details(trade_notifier):
+def test_format_buy_notification_without_details():
     """Test buy notification formatting without price/volume details."""
-    embed = trade_notifier._format_buy_notification(
+    embed = fmt_discord.format_buy_notification(
         symbol="BTC",
         korean_name="비트코인",
         order_count=2,
@@ -269,6 +275,7 @@ def test_format_buy_notification_without_details(trade_notifier):
         volumes=[],
         market_type="암호화폐",
     )
+
 
     # Verify embed structure
     assert embed["title"] == "💰 매수 주문 접수"
@@ -284,9 +291,9 @@ def test_format_buy_notification_without_details(trade_notifier):
 
 
 @pytest.mark.unit
-def test_format_sell_notification(trade_notifier):
+def test_format_sell_notification():
     """Test sell notification formatting as Discord embed."""
-    embed = trade_notifier._format_sell_notification(
+    embed = fmt_discord.format_sell_notification(
         symbol="ETH",
         korean_name="이더리움",
         order_count=2,
@@ -296,6 +303,7 @@ def test_format_sell_notification(trade_notifier):
         expected_amount=1025000.0,
         market_type="암호화폐",
     )
+
 
     # Verify embed structure
     assert embed["title"] == "💸 매도 주문 접수"
@@ -318,9 +326,9 @@ def test_format_sell_notification(trade_notifier):
 
 
 @pytest.mark.unit
-def test_format_sell_notification_without_volumes(trade_notifier):
+def test_format_sell_notification_without_volumes():
     """Test sell notification formatting as Discord embed with prices but no volumes."""
-    embed = trade_notifier._format_sell_notification(
+    embed = fmt_discord.format_sell_notification(
         symbol="ETH",
         korean_name="이더리움",
         order_count=2,
@@ -352,9 +360,9 @@ def test_format_sell_notification_without_volumes(trade_notifier):
 
 
 @pytest.mark.unit
-def test_format_cancel_notification(trade_notifier):
+def test_format_cancel_notification():
     """Test cancel notification formatting as Discord embed."""
-    embed = trade_notifier._format_cancel_notification(
+    embed = fmt_discord.format_cancel_notification(
         symbol="XRP",
         korean_name="리플",
         cancel_count=5,
@@ -377,9 +385,9 @@ def test_format_cancel_notification(trade_notifier):
 
 
 @pytest.mark.unit
-def test_format_analysis_notification(trade_notifier):
+def test_format_analysis_notification():
     """Test analysis notification formatting as Discord embed."""
-    embed = trade_notifier._format_analysis_notification(
+    embed = fmt_discord.format_analysis_notification(
         symbol="BTC",
         korean_name="비트코인",
         decision="buy",
@@ -413,9 +421,9 @@ def test_format_analysis_notification(trade_notifier):
 
 
 @pytest.mark.unit
-def test_format_analysis_notification_hold(trade_notifier):
+def test_format_analysis_notification_hold():
     """Test analysis notification formatting for hold decision as Discord embed."""
-    embed = trade_notifier._format_analysis_notification(
+    embed = fmt_discord.format_analysis_notification(
         symbol="ETH",
         korean_name="이더리움",
         decision="hold",
@@ -438,9 +446,9 @@ def test_format_analysis_notification_hold(trade_notifier):
 
 
 @pytest.mark.unit
-def test_format_analysis_notification_sell(trade_notifier):
+def test_format_analysis_notification_sell():
     """Test analysis notification formatting for sell decision as Discord embed."""
-    embed = trade_notifier._format_analysis_notification(
+    embed = fmt_discord.format_analysis_notification(
         symbol="XRP",
         korean_name="리플",
         decision="sell",
@@ -463,9 +471,9 @@ def test_format_analysis_notification_sell(trade_notifier):
 
 
 @pytest.mark.unit
-def test_format_automation_summary(trade_notifier):
+def test_format_automation_summary():
     """Test automation summary notification formatting as Discord embed."""
-    embed = trade_notifier._format_automation_summary(
+    embed = fmt_discord.format_automation_summary(
         total_coins=10,
         analyzed=10,
         bought=3,
@@ -489,9 +497,9 @@ def test_format_automation_summary(trade_notifier):
 
 
 @pytest.mark.unit
-def test_format_automation_summary_with_errors(trade_notifier):
+def test_format_automation_summary_with_errors():
     """Test automation summary notification with errors as Discord embed."""
-    embed = trade_notifier._format_automation_summary(
+    embed = fmt_discord.format_automation_summary(
         total_coins=5,
         analyzed=5,
         bought=1,
@@ -717,9 +725,9 @@ def test_market_type_routing(trade_notifier):
 
 
 @pytest.mark.unit
-def test_format_failure_notification(trade_notifier):
+def test_format_failure_notification():
     """Test failure notification formatting as Discord embed."""
-    embed = trade_notifier._format_failure_notification(
+    embed = fmt_discord.format_failure_notification(
         symbol="AAPL",
         korean_name="애플",
         reason="APBK0656 해당종목정보가 없습니다.",
@@ -1719,9 +1727,9 @@ async def test_notify_automation_summary_telegram_only(trade_notifier):
 
 
 @pytest.mark.unit
-def test_format_automation_summary_telegram(trade_notifier):
+def test_format_automation_summary_telegram():
     """Test automation summary formatting for Telegram."""
-    message = trade_notifier._format_automation_summary_telegram(
+    message = fmt_telegram.format_automation_summary_telegram(
         total_coins=10,
         analyzed=10,
         bought=3,
@@ -1741,9 +1749,9 @@ def test_format_automation_summary_telegram(trade_notifier):
 
 
 @pytest.mark.unit
-def test_format_automation_summary_telegram_with_errors(trade_notifier):
+def test_format_automation_summary_telegram_with_errors():
     """Test automation summary formatting for Telegram with errors."""
-    message = trade_notifier._format_automation_summary_telegram(
+    message = fmt_telegram.format_automation_summary_telegram(
         total_coins=5,
         analyzed=5,
         bought=1,

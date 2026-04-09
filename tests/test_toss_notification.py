@@ -12,7 +12,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.models.manual_holdings import MarketType
-from app.monitoring.trade_notifier import TradeNotifier
+from app.monitoring.trade_notifier import (
+    TradeNotifier,
+    formatters_discord as fmt_discord,
+)
 from app.services.merged_portfolio_service import ReferencePrices
 from app.services.toss_notification_service import (
     TossNotificationData,
@@ -92,8 +95,7 @@ class TestTradeNotifierFormatting:
 
     def test_format_toss_buy_recommendation_toss_only(self):
         """Test buy recommendation format with only Toss holdings."""
-        notifier = TradeNotifier()
-        embed = notifier._format_toss_buy_recommendation(
+        embed = fmt_discord.format_toss_buy_recommendation(
             symbol="005930",
             korean_name="삼성전자",
             current_price=70000,
@@ -126,9 +128,8 @@ class TestTradeNotifierFormatting:
 
     def test_format_toss_buy_recommendation_with_detail_url(self):
         """Test buy recommendation format with detail URL."""
-        notifier = TradeNotifier()
         detail_url = "https://mgh3326.duckdns.org/portfolio/positions/kr/005930"
-        embed = notifier._format_toss_buy_recommendation(
+        embed = fmt_discord.format_toss_buy_recommendation(
             symbol="005930",
             korean_name="삼성전자",
             current_price=70000,
@@ -149,8 +150,7 @@ class TestTradeNotifierFormatting:
 
     def test_format_toss_buy_recommendation_with_kis(self):
         """Test buy recommendation format with both KIS and Toss holdings."""
-        notifier = TradeNotifier()
-        embed = notifier._format_toss_buy_recommendation(
+        embed = fmt_discord.format_toss_buy_recommendation(
             symbol="005930",
             korean_name="삼성전자",
             current_price=70000,
@@ -174,8 +174,7 @@ class TestTradeNotifierFormatting:
 
     def test_format_toss_sell_recommendation_toss_only(self):
         """Test sell recommendation format with only Toss holdings."""
-        notifier = TradeNotifier()
-        embed = notifier._format_toss_sell_recommendation(
+        embed = fmt_discord.format_toss_sell_recommendation(
             symbol="005930",
             korean_name="삼성전자",
             current_price=70000,
@@ -206,8 +205,7 @@ class TestTradeNotifierFormatting:
 
     def test_format_toss_sell_recommendation_with_kis(self):
         """Test sell recommendation format with both KIS and Toss holdings."""
-        notifier = TradeNotifier()
-        embed = notifier._format_toss_sell_recommendation(
+        embed = fmt_discord.format_toss_sell_recommendation(
             symbol="005930",
             korean_name="삼성전자",
             current_price=70000,
@@ -231,8 +229,7 @@ class TestTradeNotifierFormatting:
 
     def test_format_toss_buy_recommendation_usd(self):
         """Test buy recommendation format for US stocks (USD)."""
-        notifier = TradeNotifier()
-        embed = notifier._format_toss_buy_recommendation(
+        embed = fmt_discord.format_toss_buy_recommendation(
             symbol="AAPL",
             korean_name="애플",
             current_price=175.50,
@@ -255,8 +252,7 @@ class TestTradeNotifierFormatting:
 
     def test_format_toss_sell_recommendation_negative_profit(self):
         """Test sell recommendation format with negative profit."""
-        notifier = TradeNotifier()
-        embed = notifier._format_toss_sell_recommendation(
+        embed = fmt_discord.format_toss_sell_recommendation(
             symbol="005930",
             korean_name="삼성전자",
             current_price=60000,
