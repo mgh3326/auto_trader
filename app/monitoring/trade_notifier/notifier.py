@@ -137,6 +137,8 @@ class TradeNotifier:
             return self._discord_webhook_kr
         elif market_type_normalized in {"crypto", "cryptocurrency", "coin", "암호화폐"}:
             return self._discord_webhook_crypto
+        elif market_type_normalized in {"alerts", "alert"}:
+            return self._discord_webhook_alerts
         else:
             logger.warning(f"Unknown market type: {market_type}")
             return None
@@ -553,6 +555,40 @@ class TradeNotifier:
             webhook_url=webhook_url,
             content=content,
         )
+
+    async def _dispatch(
+        self,
+        discord_embed: DiscordEmbed | None,
+        telegram_message: str,
+        market_type: str | None = None,
+    ) -> bool:
+        """Discord-first, Telegram-fallback dispatch.
+
+        Args:
+            discord_embed: Discord embed to send. Skipped if None.
+            telegram_message: Telegram fallback text. Skipped if empty.
+            market_type: Market type for webhook routing. None skips Discord.
+
+        Returns:
+            True if notification was delivered via any channel.
+        """
+        if not self._enabled:
+            return False
+
+        try:
+            if market_type and discord_embed:
+                webhook_url = self._get_webhook_for_market_type(market_type)
+                if webhook_url:
+                    if await self._send_to_discord_embed_single(discord_embed, webhook_url):
+                        return True
+
+            if telegram_message:
+                return await self._send_to_telegram(telegram_message)
+
+            return False
+        except Exception:
+            logger.exception("Notification dispatch failed")
+            return False
 
     # ── public notify methods ──────────────────────────────────────────
 

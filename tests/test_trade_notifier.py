@@ -82,6 +82,149 @@ async def test_shutdown(trade_notifier):
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_dispatch_discord_success(trade_notifier):
+    """_dispatch sends embed to Discord and returns True on success."""
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=True,
+        discord_webhook_crypto="https://discord.com/api/webhooks/crypto",
+    )
+
+    with patch.object(
+        trade_notifier,
+        "_send_to_discord_embed_single",
+        new_callable=AsyncMock,
+        return_value=True,
+    ) as mock_discord:
+        embed = {"title": "test", "description": "", "color": 0, "fields": []}
+        result = await trade_notifier._dispatch(
+            discord_embed=embed,
+            telegram_message="fallback text",
+            market_type="crypto",
+        )
+
+        assert result is True
+        mock_discord.assert_called_once_with(
+            embed, "https://discord.com/api/webhooks/crypto"
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_dispatch_telegram_fallback(trade_notifier):
+    """_dispatch falls back to Telegram when Discord fails."""
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=True,
+        discord_webhook_crypto="https://discord.com/api/webhooks/crypto",
+    )
+
+    with patch.object(
+        trade_notifier,
+        "_send_to_discord_embed_single",
+        new_callable=AsyncMock,
+        return_value=False,
+    ), patch.object(
+        trade_notifier,
+        "_send_to_telegram",
+        new_callable=AsyncMock,
+        return_value=True,
+    ) as mock_telegram:
+        result = await trade_notifier._dispatch(
+            discord_embed={"title": "t", "description": "", "color": 0, "fields": []},
+            telegram_message="fallback text",
+            market_type="crypto",
+        )
+
+        assert result is True
+        mock_telegram.assert_called_once_with("fallback text")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_dispatch_disabled(trade_notifier):
+    """_dispatch returns False when notifier is disabled."""
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=False,
+    )
+
+    result = await trade_notifier._dispatch(
+        discord_embed={"title": "t", "description": "", "color": 0, "fields": []},
+        telegram_message="text",
+        market_type="crypto",
+    )
+
+    assert result is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_dispatch_no_webhook_no_telegram(trade_notifier):
+    """_dispatch returns False when no webhook and telegram_message is empty."""
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=True,
+        # no crypto webhook configured
+    )
+
+    result = await trade_notifier._dispatch(
+        discord_embed={"title": "t", "description": "", "color": 0, "fields": []},
+        telegram_message="",
+        market_type="crypto",
+    )
+
+    assert result is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_dispatch_exception_returns_false(trade_notifier):
+    """_dispatch catches exceptions and returns False."""
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=True,
+        discord_webhook_crypto="https://discord.com/api/webhooks/crypto",
+    )
+
+    with patch.object(
+        trade_notifier,
+        "_send_to_discord_embed_single",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("boom"),
+    ):
+        result = await trade_notifier._dispatch(
+            discord_embed={"title": "t", "description": "", "color": 0, "fields": []},
+            telegram_message="text",
+            market_type="crypto",
+        )
+
+        assert result is False
+
+
+@pytest.mark.unit
+def test_market_type_routing_alerts(trade_notifier):
+    """_get_webhook_for_market_type returns alerts webhook for 'alerts' market type."""
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=True,
+        discord_webhook_alerts="https://discord.com/api/webhooks/alerts",
+    )
+
+    assert (
+        trade_notifier._get_webhook_for_market_type("alerts")
+        == "https://discord.com/api/webhooks/alerts"
+    )
+
+
+@pytest.mark.unit
 def test_format_buy_notification(trade_notifier):
     """Test buy notification formatting as Discord embed."""
     embed = trade_notifier._format_buy_notification(
