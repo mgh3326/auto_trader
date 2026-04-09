@@ -17,6 +17,15 @@ from app.core.db import AsyncSessionLocal
 from app.models.kr_symbol_universe import KRSymbolUniverse
 from app.models.manual_holdings import MarketType
 from app.services.brokers.kis.client import KISClient
+from app.services.candles_sync_common import (
+    SyncTableConfig,
+    build_cursor_sql,
+    build_symbol_union,
+    build_upsert_sql,
+    normalize_mode,
+    parse_float,
+    read_cursor_utc,
+)
 from app.services.manual_holdings_service import ManualHoldingsService
 
 logger = logging.getLogger(__name__)
@@ -64,50 +73,14 @@ _VENUE_CONFIG: dict[str, VenueConfig] = {
     ),
 }
 
-_CURSOR_SQL = text(
-    """
-    SELECT MAX(time)
-    FROM public.kr_candles_1m
-    WHERE symbol = :symbol
-      AND venue = :venue
-    """
-)
-
-_UPSERT_SQL = text(
-    """
-    INSERT INTO public.kr_candles_1m
-        (time, symbol, venue, open, high, low, close, volume, value)
-    VALUES
-        (:time, :symbol, :venue, :open, :high, :low, :close, :volume, :value)
-    ON CONFLICT (time, symbol, venue)
-    DO UPDATE SET
-        open = EXCLUDED.open,
-        high = EXCLUDED.high,
-        low = EXCLUDED.low,
-        close = EXCLUDED.close,
-        volume = EXCLUDED.volume,
-        value = EXCLUDED.value
-    WHERE
-        kr_candles_1m.open IS DISTINCT FROM EXCLUDED.open
-        OR kr_candles_1m.high IS DISTINCT FROM EXCLUDED.high
-        OR kr_candles_1m.low IS DISTINCT FROM EXCLUDED.low
-        OR kr_candles_1m.close IS DISTINCT FROM EXCLUDED.close
-        OR kr_candles_1m.volume IS DISTINCT FROM EXCLUDED.volume
-        OR kr_candles_1m.value IS DISTINCT FROM EXCLUDED.value
-    """
-)
+_TABLE_CFG = SyncTableConfig(table_name="kr_candles_1m", partition_col="venue")
+_CURSOR_SQL = build_cursor_sql(_TABLE_CFG)
+_UPSERT_SQL = build_upsert_sql(_TABLE_CFG)
 
 
 @lru_cache(maxsize=1)
 def _get_xkrx_calendar():
     return xcals.get_calendar("XKRX")
-
-
-def _normalize_mode(mode: str) -> Literal["incremental", "backfill"]:
-    normalized = str(mode or "").strip().lower()
-    if normalized not in {"incremental", "backfill"}:
-        raise ValueError("mode must be 'incremental' or 'backfill'")
-    return cast(Literal["incremental", "backfill"], normalized)
 
 
 def _normalize_symbol(value: object) -> str | None:
@@ -119,39 +92,6 @@ def _normalize_symbol(value: object) -> str | None:
     if len(text_value) == 6 and text_value.isalnum():
         return text_value
     return None
-
-
-def _parse_float(value: object) -> float | None:
-    try:
-        if value is None:
-            return None
-        return float(str(value))
-    except (TypeError, ValueError):
-        return None
-
-
-def _build_symbol_union(
-    kis_holdings: Sequence[object],
-    manual_holdings: Sequence[object],
-) -> set[str]:
-    symbols: set[str] = set()
-
-    for item in kis_holdings:
-        if isinstance(item, dict):
-            raw_symbol = cast(object | None, item.get("pdno"))
-        else:
-            raw_symbol = getattr(item, "pdno", None)
-        symbol = _normalize_symbol(raw_symbol)
-        if symbol is not None:
-            symbols.add(symbol)
-
-    for holding in manual_holdings:
-        ticker = getattr(holding, "ticker", None)
-        symbol = _normalize_symbol(ticker)
-        if symbol is not None:
-            symbols.add(symbol)
-
-    return symbols
 
 
 def _validate_universe_rows(
@@ -318,12 +258,12 @@ def _normalize_intraday_rows(
         if local_clock < venue.session_start or local_clock > venue.session_end:
             continue
 
-        open_value = _parse_float(item.get("open"))
-        high_value = _parse_float(item.get("high"))
-        low_value = _parse_float(item.get("low"))
-        close_value = _parse_float(item.get("close"))
-        volume_value = _parse_float(item.get("volume"))
-        value_value = _parse_float(item.get("value"))
+        open_value = parse_float(item.get("open"))
+        high_value = parse_float(item.get("high"))
+        low_value = parse_float(item.get("low"))
+        close_value = parse_float(item.get("close"))
+        volume_value = parse_float(item.get("volume"))
+        value_value = parse_float(item.get("value"))
 
         if (
             open_value is None
@@ -354,19 +294,6 @@ def _normalize_intraday_rows(
     for row in rows:
         deduped[row.time_utc] = row
     return [deduped[key] for key in sorted(deduped)]
-
-
-async def _read_cursor_utc(
-    session: AsyncSession,
-    *,
-    symbol: str,
-    venue: str,
-) -> datetime | None:
-    result = await session.execute(_CURSOR_SQL, {"symbol": symbol, "venue": venue})
-    value = result.scalar_one_or_none()
-    if isinstance(value, datetime):
-        return value
-    return None
 
 
 async def _upsert_rows(session: AsyncSession, rows: list[MinuteCandleRow]) -> int:
@@ -469,7 +396,7 @@ async def _sync_symbol_venue(
     now_kst: datetime,
     backfill_days: list[date] | None,
 ) -> dict[str, int | bool | str]:
-    cursor_utc = await _read_cursor_utc(session, symbol=symbol, venue=venue.venue)
+    cursor_utc = await read_cursor_utc(session, _CURSOR_SQL, {"symbol": symbol, "venue": venue.venue})
     cutoff_kst = _compute_incremental_cutoff_kst(cursor_utc)
 
     if mode == "backfill":
@@ -588,7 +515,7 @@ async def sync_kr_candles(
     sessions: int = 10,
     user_id: int = 1,
 ) -> dict[str, object]:
-    normalized_mode = _normalize_mode(mode)
+    normalized_mode = normalize_mode(mode)
     session_count = max(int(sessions), 1)
     now_kst = datetime.now(_KST)
     session_day_today = _is_session_day_kst(now_kst.date())
@@ -603,7 +530,12 @@ async def sync_kr_candles(
             user_id=user_id,
             market_type=MarketType.KR,
         )
-        target_symbols = _build_symbol_union(kis_holdings, manual_holdings)
+        target_symbols = build_symbol_union(
+            kis_holdings,
+            manual_holdings,
+            holdings_field="pdno",
+            normalize_fn=_normalize_symbol,
+        )
         if not target_symbols:
             return {
                 "mode": normalized_mode,
