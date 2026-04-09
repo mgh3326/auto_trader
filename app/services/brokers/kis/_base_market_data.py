@@ -1,7 +1,6 @@
 # pyright: reportAttributeAccessIssue=false, reportMissingTypeArgument=false
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING, Any, cast
 
 import pandas as pd
