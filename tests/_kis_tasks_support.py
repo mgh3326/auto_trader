@@ -3,6 +3,8 @@ from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from app.jobs import kis_market_adapters
+
 
 async def _noop_sleep(_delay: float) -> None:
     return None
@@ -24,15 +26,15 @@ class AutomationScenario:
         monkeypatch.setattr(kis_tasks, "KISClient", self.client_factory)
         monkeypatch.setattr(
             kis_tasks,
-            "process_kis_domestic_buy_orders_with_analysis",
+            "_domestic_buy",
             self.buy_handler,
         )
         monkeypatch.setattr(
             kis_tasks,
-            "process_kis_domestic_sell_orders_with_analysis",
+            "_domestic_sell",
             self.sell_handler,
         )
-        monkeypatch.setattr(kis_tasks.asyncio, "sleep", _noop_sleep)
+        monkeypatch.setattr(kis_market_adapters.asyncio, "sleep", _noop_sleep)
 
         stack = ExitStack()
         stack.enter_context(
@@ -141,18 +143,18 @@ class OverseasNotificationScenario:
         monkeypatch.setattr(kis_tasks, "KISClient", self.client_factory)
         monkeypatch.setattr(
             kis_tasks,
-            "process_kis_overseas_buy_orders_with_analysis",
+            "_overseas_buy",
             self.buy_handler,
         )
         monkeypatch.setattr(
             kis_tasks,
-            "process_kis_overseas_sell_orders_with_analysis",
+            "_overseas_sell",
             self.sell_handler,
         )
         monkeypatch.setattr(
             kis_tasks, "get_trade_notifier", lambda: self.notifier_factory()
         )
-        monkeypatch.setattr(kis_tasks.asyncio, "sleep", _noop_sleep)
+        monkeypatch.setattr(kis_market_adapters.asyncio, "sleep", _noop_sleep)
 
         stack = ExitStack()
         stack.enter_context(

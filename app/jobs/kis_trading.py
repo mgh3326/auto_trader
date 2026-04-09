@@ -1,27 +1,104 @@
-import asyncio
 import json
 import logging
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from typing import Any
 
 from app.core.portfolio_links import build_position_detail_url
-from app.core.symbol import to_db_symbol
 from app.monitoring.trade_notifier import get_trade_notifier
 from app.services.brokers.kis.client import KISClient
-from app.services.kis_trading_service import (
-    process_kis_domestic_buy_orders_with_analysis,
-    process_kis_domestic_sell_orders_with_analysis,
-    process_kis_overseas_buy_orders_with_analysis,
-    process_kis_overseas_sell_orders_with_analysis,
-)
 from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
 
-from . import kis_automation_runner
-from .kis_market_adapters import DomesticAutomationAdapter, OverseasAutomationAdapter
+from .kis_market_adapters import (
+    DomesticAutomationAdapter,
+    OverseasAutomationAdapter,
+    StockContext,
+    extract_domestic_stock_info,
+    extract_overseas_stock_info,
+    match_domestic_stock,
+    match_overseas_stock,
+)
 
 logger = logging.getLogger(__name__)
 
 STATUS_FETCHING_HOLDINGS = "보유 주식 조회 중..."
 NO_DOMESTIC_STOCKS_MESSAGE = "보유 중인 국내 주식이 없습니다."
 NO_OVERSEAS_STOCKS_MESSAGE = "보유 중인 해외 주식이 없습니다."
+
+
+# === Handler wrappers (unified signature for adapter + config) ===
+
+
+async def _domestic_buy(kis, symbol, price, avg, *, exchange_code=None):
+    from app.services.kis_trading_service import (
+        process_kis_domestic_buy_orders_with_analysis,
+    )
+
+    return await process_kis_domestic_buy_orders_with_analysis(kis, symbol, price, avg)
+
+
+async def _domestic_sell(kis, symbol, price, avg, qty, *, exchange_code=None):
+    from app.services.kis_trading_service import (
+        process_kis_domestic_sell_orders_with_analysis,
+    )
+
+    return await process_kis_domestic_sell_orders_with_analysis(
+        kis, symbol, price, avg, qty
+    )
+
+
+async def _overseas_buy(kis, symbol, price, avg, *, exchange_code=None):
+    from app.services.kis_trading_service import (
+        process_kis_overseas_buy_orders_with_analysis,
+    )
+
+    return await process_kis_overseas_buy_orders_with_analysis(
+        kis, symbol, price, avg, exchange_code or "NASD"
+    )
+
+
+async def _overseas_sell(kis, symbol, price, avg, qty, *, exchange_code=None):
+    from app.services.kis_trading_service import (
+        process_kis_overseas_sell_orders_with_analysis,
+    )
+
+    return await process_kis_overseas_sell_orders_with_analysis(
+        kis, symbol, price, avg, qty, exchange_code or "NASD"
+    )
+
+
+# === Price fetch helpers ===
+
+
+async def _fetch_domestic_new_price(kis: KISClient, symbol: str) -> float:
+    info = await kis.fetch_price(symbol)
+    return float(info["output"]["stck_prpr"])
+
+
+async def _fetch_overseas_new_price(kis: KISClient, symbol: str) -> float:
+    df = await kis.inquire_overseas_price(symbol)
+    if not df.empty:
+        return float(df.iloc[0]["close"])
+    return 0.0
+
+
+# === MarketHoldingsConfig ===
+
+
+@dataclass(frozen=True, slots=True)
+class MarketHoldingsConfig:
+    """Market-specific configuration for bulk and single-stock operations."""
+
+    fetch_holdings: Callable[..., Awaitable[list[dict[str, Any]]]]
+    extract_info: Callable[[dict[str, Any]], StockContext]
+    match_stock: Callable[[list[dict[str, Any]], str], dict[str, Any] | None]
+    resolve_exchange: Callable[..., Awaitable[str]] | None
+    process_buy_name: str
+    process_sell_name: str
+    fetch_new_price: Callable[..., Awaitable[float]]
+    no_stocks_message: str
+    result_symbol_key: str
+    market_type_label: str | None  # None = no Telegram notifications
 
 
 async def _resolve_overseas_exchange_code(
@@ -34,39 +111,31 @@ async def _resolve_overseas_exchange_code(
     return await get_us_exchange_by_symbol(symbol)
 
 
-def _extract_overseas_order_id(order: dict) -> str:
-    for key in ("odno", "ODNO", "ord_no", "ORD_NO"):
-        value = order.get(key)
-        if value:
-            return str(value).strip()
-    return ""
+_DOMESTIC_CFG = MarketHoldingsConfig(
+    fetch_holdings=lambda kis: kis.fetch_my_stocks(),
+    extract_info=extract_domestic_stock_info,
+    match_stock=match_domestic_stock,
+    resolve_exchange=None,
+    process_buy_name="_domestic_buy",
+    process_sell_name="_domestic_sell",
+    fetch_new_price=_fetch_domestic_new_price,
+    no_stocks_message=NO_DOMESTIC_STOCKS_MESSAGE,
+    result_symbol_key="code",
+    market_type_label=None,
+)
 
-
-async def _load_overseas_open_orders_all_exchanges(kis: KISClient) -> list[dict]:
-    orders_by_id: dict[str, dict] = {}
-    anonymous_orders: list[dict] = []
-    for exchange_code in ("NASD", "NYSE", "AMEX"):
-        try:
-            open_orders = await kis.inquire_overseas_orders(
-                exchange_code=exchange_code,
-                is_mock=False,
-            )
-        except Exception as exc:
-            logger.warning(
-                "미체결 주문 조회 실패 (exchange=%s): %s",
-                exchange_code,
-                exc,
-            )
-            continue
-
-        for order in open_orders:
-            order_id = _extract_overseas_order_id(order)
-            if order_id:
-                orders_by_id[order_id] = order
-            else:
-                anonymous_orders.append(order)
-
-    return list(orders_by_id.values()) + anonymous_orders
+_OVERSEAS_CFG = MarketHoldingsConfig(
+    fetch_holdings=lambda kis: kis.fetch_my_overseas_stocks(),
+    extract_info=extract_overseas_stock_info,
+    match_stock=match_overseas_stock,
+    resolve_exchange=_resolve_overseas_exchange_code,
+    process_buy_name="_overseas_buy",
+    process_sell_name="_overseas_sell",
+    fetch_new_price=_fetch_overseas_new_price,
+    no_stocks_message=NO_OVERSEAS_STOCKS_MESSAGE,
+    result_symbol_key="symbol",
+    market_type_label="해외주식",
+)
 
 
 async def _send_toss_recommendation_async(
@@ -151,238 +220,337 @@ async def _send_toss_recommendation_async(
         )
 
 
-# --- Domestic Stocks Tasks ---
+# === Unified Bulk and Task Implementations ===
 
 
-async def _analyze_domestic_stock_async(code: str) -> dict[str, object]:
-    """단일 국내 주식 분석 비동기 헬퍼"""
-    if not code:
-        return {"status": "failed", "error": "종목 코드가 필요합니다."}
+async def _execute_bulk_buy_orders(cfg: MarketHoldingsConfig) -> dict:
+    kis = KISClient()
+    try:
+        my_stocks = await cfg.fetch_holdings(kis)
+        if not my_stocks:
+            return {
+                "status": "completed",
+                "success_count": 0,
+                "total_count": 0,
+                "message": cfg.no_stocks_message,
+                "results": [],
+            }
 
+        results = []
+        for stock in my_stocks:
+            ctx = cfg.extract_info(stock)
+            if cfg.resolve_exchange:
+                ctx.exchange_code = await cfg.resolve_exchange(
+                    ctx.symbol, ctx.exchange_code
+                )
+
+            try:
+                process_buy = globals()[cfg.process_buy_name]
+                res = await process_buy(
+                    kis,
+                    ctx.symbol,
+                    ctx.current_price,
+                    ctx.avg_price,
+                    exchange_code=ctx.exchange_code,
+                )
+                results.append(
+                    {
+                        "name": ctx.name,
+                        cfg.result_symbol_key: ctx.symbol,
+                        "success": res["success"],
+                        "message": res["message"],
+                    }
+                )
+                if (
+                    cfg.market_type_label
+                    and res.get("success")
+                    and res.get("orders_placed", 0) > 0
+                ):
+                    try:
+                        notifier = get_trade_notifier()
+                        await notifier.notify_buy_order(
+                            symbol=ctx.symbol,
+                            korean_name=ctx.name or ctx.symbol,
+                            order_count=res.get("orders_placed", 0),
+                            total_amount=res.get("total_amount", 0.0),
+                            prices=res.get("prices", []),
+                            volumes=res.get("quantities", []),
+                            market_type=cfg.market_type_label,
+                        )
+                    except Exception as notify_error:
+                        logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
+            except Exception as e:
+                results.append(
+                    {
+                        "name": ctx.name,
+                        cfg.result_symbol_key: ctx.symbol,
+                        "success": False,
+                        "error": str(e),
+                    }
+                )
+                if cfg.market_type_label:
+                    try:
+                        notifier = get_trade_notifier()
+                        await notifier.notify_trade_failure(
+                            symbol=ctx.symbol,
+                            korean_name=ctx.name or ctx.symbol,
+                            reason=f"매수 주문 실패: {e}",
+                            market_type=cfg.market_type_label,
+                        )
+                    except Exception as notify_error:
+                        logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
+
+        success_count = sum(1 for r in results if r.get("success"))
+        return {
+            "status": "completed",
+            "success_count": success_count,
+            "total_count": len(my_stocks),
+            "message": f"{success_count}/{len(my_stocks)}개 종목 매수 주문 완료",
+            "results": results,
+        }
+    except Exception as e:
+        return {"status": "failed", "error": str(e)}
+
+
+async def _execute_bulk_sell_orders(cfg: MarketHoldingsConfig) -> dict:
+    kis = KISClient()
+    try:
+        my_stocks = await cfg.fetch_holdings(kis)
+        if not my_stocks:
+            return {
+                "status": "completed",
+                "success_count": 0,
+                "total_count": 0,
+                "message": cfg.no_stocks_message,
+                "results": [],
+            }
+
+        results = []
+        for stock in my_stocks:
+            ctx = cfg.extract_info(stock)
+            if cfg.resolve_exchange:
+                ctx.exchange_code = await cfg.resolve_exchange(
+                    ctx.symbol, ctx.exchange_code
+                )
+
+            try:
+                process_sell = globals()[cfg.process_sell_name]
+                res = await process_sell(
+                    kis,
+                    ctx.symbol,
+                    ctx.current_price,
+                    ctx.avg_price,
+                    ctx.qty,
+                    exchange_code=ctx.exchange_code,
+                )
+                results.append(
+                    {
+                        "name": ctx.name,
+                        cfg.result_symbol_key: ctx.symbol,
+                        "success": res["success"],
+                        "message": res["message"],
+                    }
+                )
+                if (
+                    cfg.market_type_label
+                    and res.get("success")
+                    and res.get("orders_placed", 0) > 0
+                ):
+                    try:
+                        notifier = get_trade_notifier()
+                        await notifier.notify_sell_order(
+                            symbol=ctx.symbol,
+                            korean_name=ctx.name or ctx.symbol,
+                            order_count=res.get("orders_placed", 0),
+                            total_volume=res.get("total_volume", 0),
+                            prices=res.get("prices", []),
+                            volumes=res.get("quantities", []),
+                            expected_amount=res.get("expected_amount", 0.0),
+                            market_type=cfg.market_type_label,
+                        )
+                    except Exception as notify_error:
+                        logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
+            except Exception as e:
+                results.append(
+                    {
+                        "name": ctx.name,
+                        cfg.result_symbol_key: ctx.symbol,
+                        "success": False,
+                        "error": str(e),
+                    }
+                )
+                if cfg.market_type_label:
+                    try:
+                        notifier = get_trade_notifier()
+                        await notifier.notify_trade_failure(
+                            symbol=ctx.symbol,
+                            korean_name=ctx.name or ctx.symbol,
+                            reason=f"매도 주문 실패: {e}",
+                            market_type=cfg.market_type_label,
+                        )
+                    except Exception as notify_error:
+                        logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
+
+        success_count = sum(1 for r in results if r.get("success"))
+        return {
+            "status": "completed",
+            "success_count": success_count,
+            "total_count": len(my_stocks),
+            "message": f"{success_count}/{len(my_stocks)}개 종목 매도 주문 완료",
+            "results": results,
+        }
+    except Exception as e:
+        return {"status": "failed", "error": str(e)}
+
+
+async def _execute_single_buy_task(cfg: MarketHoldingsConfig, symbol: str) -> dict:
+    kis = KISClient()
+    try:
+        my_stocks = await cfg.fetch_holdings(kis)
+        target = cfg.match_stock(my_stocks, symbol)
+
+        if target:
+            ctx = cfg.extract_info(target)
+            if cfg.resolve_exchange:
+                ctx.exchange_code = await cfg.resolve_exchange(
+                    ctx.symbol, ctx.exchange_code
+                )
+        else:
+            try:
+                current_price = await cfg.fetch_new_price(kis, symbol)
+            except Exception as price_error:
+                return {"success": False, "message": f"현재가 조회 실패: {price_error}"}
+            exchange_code = (
+                await cfg.resolve_exchange(symbol, None)
+                if cfg.resolve_exchange
+                else None
+            )
+            ctx = StockContext(
+                symbol=symbol,
+                name="",
+                avg_price=0.0,
+                current_price=current_price,
+                qty=0,
+                is_manual=False,
+                exchange_code=exchange_code,
+            )
+
+        process_buy = globals()[cfg.process_buy_name]
+        return await process_buy(
+            kis,
+            ctx.symbol,
+            ctx.current_price,
+            ctx.avg_price,
+            exchange_code=ctx.exchange_code,
+        )
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+async def _execute_single_sell_task(cfg: MarketHoldingsConfig, symbol: str) -> dict:
+    kis = KISClient()
+    try:
+        my_stocks = await cfg.fetch_holdings(kis)
+        target = cfg.match_stock(my_stocks, symbol)
+
+        if not target:
+            return {"success": False, "message": "보유 중인 주식이 아닙니다."}
+
+        ctx = cfg.extract_info(target)
+        if cfg.resolve_exchange:
+            ctx.exchange_code = await cfg.resolve_exchange(
+                ctx.symbol, ctx.exchange_code
+            )
+
+        process_sell = globals()[cfg.process_sell_name]
+        return await process_sell(
+            kis,
+            ctx.symbol,
+            ctx.current_price,
+            ctx.avg_price,
+            ctx.qty,
+            exchange_code=ctx.exchange_code,
+        )
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# === Analysis (dead code) ===
+
+
+def _analyze_stock_ignored(symbol: str) -> dict:
+    if not symbol:
+        return {"status": "failed", "error": "종목 코드/심볼이 필요합니다."}
     return {
         "status": "ignored",
-        "symbol": code,
+        "symbol": symbol,
         "message": "Gemini analyzer removed. OpenClaw-based analysis coming soon.",
     }
 
 
 async def run_analysis_for_my_domestic_stocks() -> dict:
-    """보유 국내 주식 AI 분석 실행"""
+    return {
+        "status": "ignored",
+        "message": "Gemini analyzer removed. OpenClaw-based analysis coming soon.",
+        "results": [],
+    }
 
-    async def _run() -> dict:
-        return {
-            "status": "ignored",
-            "message": "Gemini analyzer removed. OpenClaw-based analysis coming soon.",
-            "results": [],
-        }
 
-    return await _run()
+async def run_analysis_for_my_overseas_stocks() -> dict:
+    return {
+        "status": "ignored",
+        "message": "Gemini analyzer removed. OpenClaw-based analysis coming soon.",
+        "results": [],
+    }
+
+
+async def analyze_domestic_stock_task(symbol: str) -> dict:
+    return _analyze_stock_ignored(symbol)
+
+
+async def analyze_overseas_stock_task(symbol: str) -> dict:
+    return _analyze_stock_ignored(symbol)
+
+
+# === Bulk orders ===
 
 
 async def execute_domestic_buy_orders() -> dict:
-    """국내 주식 자동 매수 주문 실행"""
+    return await _execute_bulk_buy_orders(_DOMESTIC_CFG)
 
-    async def _run() -> dict:
-        kis = KISClient()
-        try:
-            # 보유 주식 조회 (평단가 확인용)
-            my_stocks = await kis.fetch_my_stocks()
 
-            # 분석된 종목이 있어야 매수 가능 (DB에서 최근 분석 조회 필요)
-            # 여기서는 보유 종목에 대해서만 매수 시도 (추가 매수)
-            # 신규 매수는 별도 로직 필요 (관심 종목 등). 현재는 보유 종목 추가 매수만 구현.
-
-            if not my_stocks:
-                return {
-                    "status": "completed",
-                    "success_count": 0,
-                    "total_count": 0,
-                    "message": NO_DOMESTIC_STOCKS_MESSAGE,
-                    "results": [],
-                }
-
-            total_count = len(my_stocks)
-            results = []
-
-            for _index, stock in enumerate(my_stocks, 1):
-                code = stock.get("pdno")
-                name = stock.get("prdt_name")
-                avg_price = float(stock.get("pchs_avg_pric", 0))
-                current_price = float(
-                    stock.get("prpr", 0)
-                )  # 현재가 (fetch_my_stocks에서 가져옴)
-
-                try:
-                    res = await process_kis_domestic_buy_orders_with_analysis(
-                        kis, code, current_price, avg_price
-                    )
-                    results.append(
-                        {
-                            "name": name,
-                            "code": code,
-                            "success": res["success"],
-                            "message": res["message"],
-                        }
-                    )
-                except Exception as e:
-                    results.append(
-                        {"name": name, "code": code, "success": False, "error": str(e)}
-                    )
-
-            success_count = sum(1 for r in results if r["success"])
-            return {
-                "status": "completed",
-                "success_count": success_count,
-                "total_count": total_count,
-                "message": f"{success_count}/{total_count}개 종목 매수 주문 완료",
-                "results": results,
-            }
-        except Exception as e:
-            return {"status": "failed", "error": str(e)}
-
-    return await _run()
+async def execute_overseas_buy_orders() -> dict:
+    return await _execute_bulk_buy_orders(_OVERSEAS_CFG)
 
 
 async def execute_domestic_sell_orders() -> dict:
-    """국내 주식 자동 매도 주문 실행"""
-
-    async def _run() -> dict:
-        kis = KISClient()
-        try:
-            my_stocks = await kis.fetch_my_stocks()
-            if not my_stocks:
-                return {
-                    "status": "completed",
-                    "success_count": 0,
-                    "total_count": 0,
-                    "message": NO_DOMESTIC_STOCKS_MESSAGE,
-                    "results": [],
-                }
-
-            total_count = len(my_stocks)
-            results = []
-
-            for _index, stock in enumerate(my_stocks, 1):
-                code = stock.get("pdno")
-                name = stock.get("prdt_name")
-                avg_price = float(stock.get("pchs_avg_pric", 0))
-                current_price = float(stock.get("prpr", 0))
-                qty = int(stock.get("hldg_qty", 0))
-
-                try:
-                    res = await process_kis_domestic_sell_orders_with_analysis(
-                        kis, code, current_price, avg_price, qty
-                    )
-                    results.append(
-                        {
-                            "name": name,
-                            "code": code,
-                            "success": res["success"],
-                            "message": res["message"],
-                        }
-                    )
-                except Exception as e:
-                    results.append(
-                        {"name": name, "code": code, "success": False, "error": str(e)}
-                    )
-
-            success_count = sum(1 for r in results if r["success"])
-            return {
-                "status": "completed",
-                "success_count": success_count,
-                "total_count": total_count,
-                "message": f"{success_count}/{total_count}개 종목 매도 주문 완료",
-                "results": results,
-            }
-        except Exception as e:
-            return {"status": "failed", "error": str(e)}
-
-    return await _run()
+    return await _execute_bulk_sell_orders(_DOMESTIC_CFG)
 
 
-async def _cancel_domestic_pending_orders(
-    kis: KISClient,
-    stock_code: str,
-    order_type: str,
-    all_open_orders: list[dict],
-) -> dict:
-    """
-    특정 종목의 기존 국내 미체결 주문들을 취소합니다.
+async def execute_overseas_sell_orders() -> dict:
+    return await _execute_bulk_sell_orders(_OVERSEAS_CFG)
 
-    Args:
-        kis: KIS 클라이언트
-        stock_code: 종목코드
-        order_type: "buy" 또는 "sell"
-        all_open_orders: 미리 조회한 전체 미체결 주문 목록
 
-    Returns:
-        취소 결과 딕셔너리 {'cancelled': int, 'failed': int, 'total': int}
-    """
-    # sll_buy_dvsn_cd: 01=매도, 02=매수
-    target_code = "02" if order_type == "buy" else "01"
+# === Single stock tasks ===
 
-    # 해당 종목의 주문만 필터링 (필드명 대소문자 모두 확인)
-    target_orders = [
-        order
-        for order in all_open_orders
-        if (order.get("pdno") or order.get("PDNO")) == stock_code
-        and (order.get("sll_buy_dvsn_cd") or order.get("SLL_BUY_DVSN_CD"))
-        == target_code
-    ]
 
-    if not target_orders:
-        return {"cancelled": 0, "failed": 0, "total": 0}
+async def execute_domestic_buy_order_task(symbol: str) -> dict:
+    return await _execute_single_buy_task(_DOMESTIC_CFG, symbol)
 
-    cancelled = 0
-    failed = 0
 
-    for order in target_orders:
-        order_number: str | None = None
-        try:
-            # API 응답 필드명이 소문자 또는 대문자일 수 있음
-            order_number = (
-                order.get("odno")
-                or order.get("ODNO")
-                or order.get("ord_no")
-                or order.get("ORD_NO")
-            )
-            order_qty = int(order.get("ord_qty") or order.get("ORD_QTY") or 0)
-            order_price = int(
-                float(order.get("ord_unpr") or order.get("ORD_UNPR") or 0)
-            )
-            order_orgno = (
-                order.get("ord_gno_brno")
-                or order.get("ORD_GNO_BRNO")
-                or order.get("krx_fwdg_ord_orgno")
-                or order.get("KRX_FWDG_ORD_ORGNO")
-            )
+async def execute_overseas_buy_order_task(symbol: str) -> dict:
+    return await _execute_single_buy_task(_OVERSEAS_CFG, symbol)
 
-            if not order_number:
-                logger.warning(f"주문번호 없음 ({stock_code}): order={order}")
-                failed += 1
-                continue
 
-            await kis.cancel_korea_order(
-                order_number=order_number,
-                stock_code=stock_code,
-                quantity=order_qty,
-                price=order_price,
-                order_type=order_type,
-                is_mock=False,
-                krx_fwdg_ord_orgno=str(order_orgno).strip() if order_orgno else None,
-            )
-            cancelled += 1
-            await asyncio.sleep(0.2)  # API 호출 제한 방지
-        except Exception as e:
-            logger.warning(
-                "주문 취소 실패 (%s, %s): %s",
-                stock_code,
-                order_number or "unknown",
-                e,
-            )
-            failed += 1
+async def execute_domestic_sell_order_task(symbol: str) -> dict:
+    return await _execute_single_sell_task(_DOMESTIC_CFG, symbol)
 
-    return {"cancelled": cancelled, "failed": failed, "total": len(target_orders)}
+
+async def execute_overseas_sell_order_task(symbol: str) -> dict:
+    return await _execute_single_sell_task(_OVERSEAS_CFG, symbol)
+
+
+# === Per-stock automation ===
 
 
 async def run_per_domestic_stock_automation() -> dict:
@@ -391,470 +559,20 @@ async def run_per_domestic_stock_automation() -> dict:
     from app.models.manual_holdings import MarketType
     from app.services.manual_holdings_service import ManualHoldingsService
 
+    from . import kis_automation_runner
+
     adapter = DomesticAutomationAdapter(
         kis_client_factory=KISClient,
         async_session_factory=AsyncSessionLocal,
         manual_holdings_service_factory=ManualHoldingsService,
         manual_market_type=MarketType.KR,
-        buy_handler=process_kis_domestic_buy_orders_with_analysis,
-        sell_handler=process_kis_domestic_sell_orders_with_analysis,
-        cancel_pending_orders=_cancel_domestic_pending_orders,
+        buy_handler=_domestic_buy,
+        sell_handler=_domestic_sell,
         send_toss_recommendation=_send_toss_recommendation_async,
         notifier_factory=get_trade_notifier,
         no_stocks_message=NO_DOMESTIC_STOCKS_MESSAGE,
     )
     return await kis_automation_runner.run_market_automation(adapter=adapter)
-
-
-async def analyze_domestic_stock_task(symbol: str) -> dict:
-    """단일 국내 주식 분석 실행"""
-    return await _analyze_domestic_stock_async(symbol)
-
-
-async def execute_domestic_buy_order_task(symbol: str) -> dict:
-    """단일 국내 주식 매수 주문 실행"""
-
-    async def _run() -> dict:
-        kis = KISClient()
-        try:
-            # 현재가 및 평단가 조회
-            my_stocks = await kis.fetch_my_stocks()
-            target_stock = next((s for s in my_stocks if s["pdno"] == symbol), None)
-
-            if target_stock:
-                avg_price = float(target_stock["pchs_avg_pric"])
-                current_price = float(target_stock["prpr"])
-            else:
-                # 보유 중이 아니면 현재가 조회 필요
-                price_info = await kis.fetch_price(symbol)
-                current_price = float(price_info["output"]["stck_prpr"])
-                avg_price = 0  # 신규 매수
-
-            res = await process_kis_domestic_buy_orders_with_analysis(
-                kis, symbol, current_price, avg_price
-            )
-            return res
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    return await _run()
-
-
-async def execute_domestic_sell_order_task(symbol: str) -> dict:
-    """단일 국내 주식 매도 주문 실행"""
-
-    async def _run() -> dict:
-        kis = KISClient()
-        try:
-            my_stocks = await kis.fetch_my_stocks()
-            target_stock = next((s for s in my_stocks if s["pdno"] == symbol), None)
-
-            if not target_stock:
-                return {"success": False, "message": "보유 중인 주식이 아닙니다."}
-
-            avg_price = float(target_stock["pchs_avg_pric"])
-            current_price = float(target_stock["prpr"])
-            qty = int(target_stock["hldg_qty"])
-
-            res = await process_kis_domestic_sell_orders_with_analysis(
-                kis, symbol, current_price, avg_price, qty
-            )
-            return res
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    return await _run()
-
-
-async def analyze_overseas_stock_task(symbol: str) -> dict:
-    """단일 해외 주식 분석 실행"""
-    return await _analyze_overseas_stock_async(symbol)
-
-
-async def execute_overseas_buy_order_task(symbol: str) -> dict:
-    """단일 해외 주식 매수 주문 실행"""
-
-    async def _run() -> dict:
-        kis = KISClient()
-        try:
-            my_stocks = await kis.fetch_my_overseas_stocks()
-            # 심볼 형식 정규화하여 비교
-            normalized_symbol = to_db_symbol(symbol)
-            target_stock = next(
-                (
-                    s
-                    for s in my_stocks
-                    if to_db_symbol(s.get("ovrs_pdno", "")) == normalized_symbol
-                ),
-                None,
-            )
-
-            if target_stock:
-                avg_price = float(target_stock["pchs_avg_pric"])
-                current_price = float(target_stock["now_pric2"])
-                exchange_code = await _resolve_overseas_exchange_code(
-                    symbol,
-                    target_stock.get("ovrs_excg_cd"),
-                )
-            else:
-                try:
-                    current_price = await kis.fetch_overseas_price(symbol)
-                    avg_price = 0.0  # 신규 매수이므로 평단 없음
-                except Exception as price_error:
-                    return {
-                        "success": False,
-                        "message": f"현재가 조회 실패: {price_error}",
-                    }
-                exchange_code = await _resolve_overseas_exchange_code(symbol, None)
-
-            res = await process_kis_overseas_buy_orders_with_analysis(
-                kis, symbol, current_price, avg_price, exchange_code
-            )
-            return res
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    return await _run()
-
-
-async def execute_overseas_sell_order_task(symbol: str) -> dict:
-    """단일 해외 주식 매도 주문 실행"""
-
-    async def _run() -> dict:
-        kis = KISClient()
-        try:
-            my_stocks = await kis.fetch_my_overseas_stocks()
-            # 심볼 형식 정규화하여 비교
-            normalized_symbol = to_db_symbol(symbol)
-            target_stock = next(
-                (
-                    s
-                    for s in my_stocks
-                    if to_db_symbol(s.get("ovrs_pdno", "")) == normalized_symbol
-                ),
-                None,
-            )
-
-            if not target_stock:
-                return {"success": False, "message": "보유 중인 주식이 아닙니다."}
-
-            avg_price = float(target_stock["pchs_avg_pric"])
-            current_price = float(target_stock["now_pric2"])
-            # 매도 시 미체결 주문을 제외한 주문 가능 수량(ord_psbl_qty)을 사용
-            qty = int(
-                float(
-                    target_stock.get(
-                        "ord_psbl_qty", target_stock.get("ovrs_cblc_qty", 0)
-                    )
-                )
-            )
-            exchange_code = await _resolve_overseas_exchange_code(
-                symbol,
-                target_stock.get("ovrs_excg_cd"),
-            )
-
-            res = await process_kis_overseas_sell_orders_with_analysis(
-                kis, symbol, current_price, avg_price, qty, exchange_code
-            )
-            return res
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    return await _run()
-
-
-# --- Overseas Stocks Tasks ---
-
-
-async def _analyze_overseas_stock_async(symbol: str) -> dict[str, object]:
-    """단일 해외 주식 분석 비동기 헬퍼"""
-    if not symbol:
-        return {"status": "failed", "error": "심볼이 필요합니다."}
-
-    return {
-        "status": "ignored",
-        "symbol": symbol,
-        "message": "Gemini analyzer removed. OpenClaw-based analysis coming soon.",
-    }
-
-
-async def run_analysis_for_my_overseas_stocks() -> dict:
-    """보유 해외 주식 AI 분석 실행"""
-
-    async def _run() -> dict:
-        return {
-            "status": "ignored",
-            "message": "Gemini analyzer removed. OpenClaw-based analysis coming soon.",
-            "results": [],
-        }
-
-    return await _run()
-
-
-async def execute_overseas_buy_orders() -> dict:
-    """해외 주식 자동 매수 주문 실행"""
-
-    async def _run() -> dict:
-        kis = KISClient()
-        try:
-            my_stocks = await kis.fetch_my_overseas_stocks()
-            if not my_stocks:
-                return {
-                    "status": "completed",
-                    "success_count": 0,
-                    "total_count": 0,
-                    "message": NO_OVERSEAS_STOCKS_MESSAGE,
-                    "results": [],
-                }
-
-            total_count = len(my_stocks)
-            results = []
-
-            for _index, stock in enumerate(my_stocks, 1):
-                symbol = stock.get("ovrs_pdno")
-                name = stock.get("ovrs_item_name")
-                avg_price = float(stock.get("pchs_avg_pric", 0))
-                current_price = float(stock.get("now_pric2", 0))
-                exchange_code = await _resolve_overseas_exchange_code(
-                    symbol,
-                    stock.get("ovrs_excg_cd"),
-                )
-
-                try:
-                    res = await process_kis_overseas_buy_orders_with_analysis(
-                        kis, symbol, current_price, avg_price, exchange_code
-                    )
-                    results.append(
-                        {
-                            "name": name,
-                            "symbol": symbol,
-                            "success": res["success"],
-                            "message": res["message"],
-                        }
-                    )
-                    # 매수 성공 시 텔레그램 알림
-                    if res.get("success") and res.get("orders_placed", 0) > 0:
-                        try:
-                            notifier = get_trade_notifier()
-                            await notifier.notify_buy_order(
-                                symbol=symbol,
-                                korean_name=name or symbol,
-                                order_count=res.get("orders_placed", 0),
-                                total_amount=res.get("total_amount", 0.0),
-                                prices=res.get("prices", []),
-                                volumes=res.get("quantities", []),
-                                market_type="해외주식",
-                            )
-                        except Exception as notify_error:
-                            logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
-                except Exception as e:
-                    results.append(
-                        {
-                            "name": name,
-                            "symbol": symbol,
-                            "success": False,
-                            "error": str(e),
-                        }
-                    )
-                    # 매수 실패 시 텔레그램 알림
-                    try:
-                        notifier = get_trade_notifier()
-                        await notifier.notify_trade_failure(
-                            symbol=symbol,
-                            korean_name=name or symbol,
-                            reason=f"매수 주문 실패: {str(e)}",
-                            market_type="해외주식",
-                        )
-                    except Exception as notify_error:
-                        logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
-
-            success_count = sum(1 for r in results if r["success"])
-            return {
-                "status": "completed",
-                "success_count": success_count,
-                "total_count": total_count,
-                "message": f"{success_count}/{total_count}개 종목 매수 주문 완료",
-                "results": results,
-            }
-        except Exception as e:
-            return {"status": "failed", "error": str(e)}
-
-    return await _run()
-
-
-async def execute_overseas_sell_orders() -> dict:
-    """해외 주식 자동 매도 주문 실행"""
-
-    async def _run() -> dict:
-        kis = KISClient()
-        try:
-            my_stocks = await kis.fetch_my_overseas_stocks()
-            if not my_stocks:
-                return {
-                    "status": "completed",
-                    "success_count": 0,
-                    "total_count": 0,
-                    "message": NO_OVERSEAS_STOCKS_MESSAGE,
-                    "results": [],
-                }
-
-            total_count = len(my_stocks)
-            results = []
-
-            for _index, stock in enumerate(my_stocks, 1):
-                symbol = stock.get("ovrs_pdno")
-                name = stock.get("ovrs_item_name")
-                avg_price = float(stock.get("pchs_avg_pric", 0))
-                current_price = float(stock.get("now_pric2", 0))
-                # 매도 시 미체결 주문을 제외한 주문 가능 수량(ord_psbl_qty)을 사용
-                # ord_psbl_qty가 없으면 ovrs_cblc_qty를 fallback으로 사용
-                qty = int(
-                    float(stock.get("ord_psbl_qty", stock.get("ovrs_cblc_qty", 0)))
-                )
-                exchange_code = await _resolve_overseas_exchange_code(
-                    symbol,
-                    stock.get("ovrs_excg_cd"),
-                )
-
-                try:
-                    res = await process_kis_overseas_sell_orders_with_analysis(
-                        kis, symbol, current_price, avg_price, qty, exchange_code
-                    )
-                    results.append(
-                        {
-                            "name": name,
-                            "symbol": symbol,
-                            "success": res["success"],
-                            "message": res["message"],
-                        }
-                    )
-                    # 매도 성공 시 텔레그램 알림
-                    if res.get("success") and res.get("orders_placed", 0) > 0:
-                        try:
-                            notifier = get_trade_notifier()
-                            await notifier.notify_sell_order(
-                                symbol=symbol,
-                                korean_name=name or symbol,
-                                order_count=res.get("orders_placed", 0),
-                                total_volume=res.get("total_volume", 0),
-                                prices=res.get("prices", []),
-                                volumes=res.get("quantities", []),
-                                expected_amount=res.get("expected_amount", 0.0),
-                                market_type="해외주식",
-                            )
-                        except Exception as notify_error:
-                            logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
-                except Exception as e:
-                    results.append(
-                        {
-                            "name": name,
-                            "symbol": symbol,
-                            "success": False,
-                            "error": str(e),
-                        }
-                    )
-                    # 매도 실패 시 텔레그램 알림
-                    try:
-                        notifier = get_trade_notifier()
-                        await notifier.notify_trade_failure(
-                            symbol=symbol,
-                            korean_name=name or symbol,
-                            reason=f"매도 주문 실패: {str(e)}",
-                            market_type="해외주식",
-                        )
-                    except Exception as notify_error:
-                        logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
-
-            success_count = sum(1 for r in results if r["success"])
-            return {
-                "status": "completed",
-                "success_count": success_count,
-                "total_count": total_count,
-                "message": f"{success_count}/{total_count}개 종목 매도 주문 완료",
-                "results": results,
-            }
-        except Exception as e:
-            return {"status": "failed", "error": str(e)}
-
-    return await _run()
-
-
-async def _cancel_overseas_pending_orders(
-    kis: KISClient,
-    symbol: str,
-    exchange_code: str,
-    order_type: str,
-    all_open_orders: list[dict],
-) -> dict:
-    """
-    특정 종목의 기존 미체결 주문들을 취소합니다.
-
-    Args:
-        kis: KIS 클라이언트
-        symbol: 종목 심볼
-        exchange_code: 거래소 코드
-        order_type: "buy" 또는 "sell"
-        all_open_orders: 미리 조회한 전체 미체결 주문 목록
-
-    Returns:
-        취소 결과 딕셔너리 {'cancelled': int, 'failed': int, 'total': int}
-    """
-    # sll_buy_dvsn_cd: 01=매도, 02=매수
-    target_code = "02" if order_type == "buy" else "01"
-
-    # 해당 종목의 주문만 필터링 (필드명 대소문자 모두 확인, 심볼 형식 정규화)
-    normalized_symbol = to_db_symbol(symbol)
-    target_orders = [
-        order
-        for order in all_open_orders
-        if to_db_symbol(order.get("pdno") or order.get("PDNO") or "")
-        == normalized_symbol
-        and (order.get("sll_buy_dvsn_cd") or order.get("SLL_BUY_DVSN_CD"))
-        == target_code
-    ]
-
-    if not target_orders:
-        return {"cancelled": 0, "failed": 0, "total": 0}
-
-    cancelled = 0
-    failed = 0
-
-    for order in target_orders:
-        order_number: str | None = None
-        try:
-            # API 응답 필드명이 소문자 또는 대문자일 수 있음
-            order_number = (
-                order.get("odno")
-                or order.get("ODNO")
-                or order.get("ord_no")
-                or order.get("ORD_NO")
-            )
-            order_qty = int(order.get("ft_ord_qty") or order.get("FT_ORD_QTY") or 0)
-
-            if not order_number:
-                logger.warning(f"주문번호 없음 ({symbol}): order={order}")
-                failed += 1
-                continue
-
-            await kis.cancel_overseas_order(
-                order_number=order_number,
-                symbol=symbol,
-                exchange_code=exchange_code,
-                quantity=order_qty,
-                is_mock=False,
-            )
-            cancelled += 1
-            await asyncio.sleep(0.2)  # API 호출 제한 방지
-        except Exception as e:
-            logger.warning(
-                "주문 취소 실패 (%s, %s): %s",
-                symbol,
-                order_number or "unknown",
-                e,
-            )
-            failed += 1
-
-    return {"cancelled": cancelled, "failed": failed, "total": len(target_orders)}
 
 
 async def run_per_overseas_stock_automation() -> dict:
@@ -863,19 +581,17 @@ async def run_per_overseas_stock_automation() -> dict:
     from app.models.manual_holdings import MarketType
     from app.services.manual_holdings_service import ManualHoldingsService
 
+    from . import kis_automation_runner
+
     adapter = OverseasAutomationAdapter(
         kis_client_factory=KISClient,
         async_session_factory=AsyncSessionLocal,
         manual_holdings_service_factory=ManualHoldingsService,
         manual_market_type=MarketType.US,
-        buy_handler=process_kis_overseas_buy_orders_with_analysis,
-        sell_handler=process_kis_overseas_sell_orders_with_analysis,
-        resolve_exchange_code=_resolve_overseas_exchange_code,
-        load_open_orders=_load_overseas_open_orders_all_exchanges,
-        cancel_pending_orders=_cancel_overseas_pending_orders,
+        buy_handler=_overseas_buy,
+        sell_handler=_overseas_sell,
         send_toss_recommendation=_send_toss_recommendation_async,
         notifier_factory=get_trade_notifier,
-        normalize_symbol=to_db_symbol,
         no_stocks_message=NO_OVERSEAS_STOCKS_MESSAGE,
     )
     return await kis_automation_runner.run_market_automation(adapter=adapter)
