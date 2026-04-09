@@ -27,6 +27,7 @@ def _make_universe_row(
 
 def test_build_symbol_union_combines_kis_and_manual_symbols() -> None:
     from app.services import kr_candles_sync_service as svc
+    from app.services.candles_sync_common import build_symbol_union
 
     kis_holdings = [
         {"pdno": "5930"},
@@ -38,7 +39,12 @@ def test_build_symbol_union_combines_kis_and_manual_symbols() -> None:
         SimpleNamespace(ticker="000660"),
     ]
 
-    symbols = svc._build_symbol_union(kis_holdings, manual_holdings)
+    symbols = build_symbol_union(
+        kis_holdings,
+        manual_holdings,
+        holdings_field="pdno",
+        normalize_fn=svc._normalize_symbol,
+    )
 
     assert symbols == {"005930", "035420", "000660"}
 
