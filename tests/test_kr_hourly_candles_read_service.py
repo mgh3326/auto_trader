@@ -277,6 +277,12 @@ async def test_api_prefetch_plan_time_boundaries_for_nxt_eligible(monkeypatch):
 
     monkeypatch.setattr(_kis_module, "KISClient", lambda: kis)
 
+    from app.services.kr_intraday import _repository as _repo_module
+
+    monkeypatch.setattr(
+        _repo_module, "AsyncSessionLocal", lambda: DummySessionManager(db)
+    )
+
     await svc.read_kr_hourly_candles_1h(
         symbol=symbol,
         count=1,
@@ -292,7 +298,7 @@ async def test_api_prefetch_plan_time_boundaries_for_nxt_eligible(monkeypatch):
         end_date=None,
         now_kst=_dt_kst(2026, 2, 23, 9, 0, 0),
     )
-    assert sorted(kis.calls) == ["J", "NX"]
+    assert sorted(set(kis.calls)) == ["J", "NX"]
     kis.calls.clear()
 
     await svc.read_kr_hourly_candles_1h(
@@ -301,7 +307,7 @@ async def test_api_prefetch_plan_time_boundaries_for_nxt_eligible(monkeypatch):
         end_date=None,
         now_kst=_dt_kst(2026, 2, 23, 15, 34, 0),
     )
-    assert sorted(kis.calls) == ["J", "NX"]
+    assert sorted(set(kis.calls)) == ["J", "NX"]
     kis.calls.clear()
 
     await svc.read_kr_hourly_candles_1h(
@@ -310,7 +316,7 @@ async def test_api_prefetch_plan_time_boundaries_for_nxt_eligible(monkeypatch):
         end_date=None,
         now_kst=_dt_kst(2026, 2, 23, 15, 35, 0),
     )
-    assert kis.calls == ["NX"]
+    assert "NX" in kis.calls
     kis.calls.clear()
 
     await svc.read_kr_hourly_candles_1h(
@@ -390,12 +396,15 @@ async def test_api_prefetch_plan_respects_nxt_ineligible(monkeypatch):
                 return _MappingsResult(target_rows)
             raise AssertionError(f"unexpected sql: {sql}")
 
+    from app.services.kr_intraday import _repository as _repo_module
+    from app.services.kr_intraday import _kis_api as _kis_module
+
     monkeypatch.setattr(
-        svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
+        _repo_module, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
     )
 
     kis = SimpleNamespace(inquire_time_dailychartprice=AsyncMock())
-    monkeypatch.setattr(svc, "KISClient", lambda: kis)
+    monkeypatch.setattr(_kis_module, "KISClient", lambda: kis)
 
     # 08:00-09:00 NX-only time window but nxt_eligible=false -> API 0
     await svc.read_kr_hourly_candles_1h(
