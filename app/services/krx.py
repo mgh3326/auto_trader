@@ -20,6 +20,7 @@ import httpx
 import redis.asyncio as redis
 
 from app.core.config import settings
+from app.core.number_utils import parse_korean_number as _parse_korean_number
 from app.models.kospi200 import Kospi200Constituent
 
 if TYPE_CHECKING:
@@ -281,32 +282,6 @@ async def _get_redis_client() -> Redis:
         settings.get_redis_url(),
         decode_responses=True,
     )
-
-
-def _parse_korean_number(value_str: str | None) -> int | float | None:
-    """Parse Korean number formats.
-
-    Handles formats like:
-    - "1,234" → 1234
-    - "-" → None
-    - "" → None
-    """
-    if value_str is None:
-        return None
-
-    value_str = str(value_str).strip()
-    if not value_str or value_str == "-":
-        return None
-
-    # Remove commas
-    value_str = value_str.replace(",", "")
-
-    try:
-        # Try to parse as float first
-        value = float(value_str)
-        return int(value) if value.is_integer() else value
-    except ValueError:
-        return None
 
 
 async def _fetch_max_working_date() -> str:
