@@ -36,22 +36,38 @@ NO_OVERSEAS_STOCKS_MESSAGE = "보유 중인 해외 주식이 없습니다."
 
 
 async def _domestic_buy(kis, symbol, price, avg, *, exchange_code=None):
+    from app.services.kis_trading_service import (
+        process_kis_domestic_buy_orders_with_analysis,
+    )
+
     return await process_kis_domestic_buy_orders_with_analysis(kis, symbol, price, avg)
 
 
 async def _domestic_sell(kis, symbol, price, avg, qty, *, exchange_code=None):
+    from app.services.kis_trading_service import (
+        process_kis_domestic_sell_orders_with_analysis,
+    )
+
     return await process_kis_domestic_sell_orders_with_analysis(
         kis, symbol, price, avg, qty
     )
 
 
 async def _overseas_buy(kis, symbol, price, avg, *, exchange_code=None):
+    from app.services.kis_trading_service import (
+        process_kis_overseas_buy_orders_with_analysis,
+    )
+
     return await process_kis_overseas_buy_orders_with_analysis(
         kis, symbol, price, avg, exchange_code or "NASD"
     )
 
 
 async def _overseas_sell(kis, symbol, price, avg, qty, *, exchange_code=None):
+    from app.services.kis_trading_service import (
+        process_kis_overseas_sell_orders_with_analysis,
+    )
+
     return await process_kis_overseas_sell_orders_with_analysis(
         kis, symbol, price, avg, qty, exchange_code or "NASD"
     )
@@ -83,8 +99,8 @@ class MarketHoldingsConfig:
     extract_info: Callable[[dict[str, Any]], StockContext]
     match_stock: Callable[[list[dict[str, Any]], str], dict[str, Any] | None]
     resolve_exchange: Callable[..., Awaitable[str]] | None
-    process_buy: Callable[..., Awaitable[dict[str, Any]]]
-    process_sell: Callable[..., Awaitable[dict[str, Any]]]
+    process_buy_name: str
+    process_sell_name: str
     fetch_new_price: Callable[..., Awaitable[float]]
     no_stocks_message: str
     result_symbol_key: str
@@ -106,8 +122,8 @@ _DOMESTIC_CFG = MarketHoldingsConfig(
     extract_info=extract_domestic_stock_info,
     match_stock=match_domestic_stock,
     resolve_exchange=None,
-    process_buy=_domestic_buy,
-    process_sell=_domestic_sell,
+    process_buy_name="_domestic_buy",
+    process_sell_name="_domestic_sell",
     fetch_new_price=_fetch_domestic_new_price,
     no_stocks_message=NO_DOMESTIC_STOCKS_MESSAGE,
     result_symbol_key="code",
@@ -119,8 +135,8 @@ _OVERSEAS_CFG = MarketHoldingsConfig(
     extract_info=extract_overseas_stock_info,
     match_stock=match_overseas_stock,
     resolve_exchange=_resolve_overseas_exchange_code,
-    process_buy=_overseas_buy,
-    process_sell=_overseas_sell,
+    process_buy_name="_overseas_buy",
+    process_sell_name="_overseas_sell",
     fetch_new_price=_fetch_overseas_new_price,
     no_stocks_message=NO_OVERSEAS_STOCKS_MESSAGE,
     result_symbol_key="symbol",
@@ -235,7 +251,8 @@ async def _execute_bulk_buy_orders(cfg: MarketHoldingsConfig) -> dict:
                 )
 
             try:
-                res = await cfg.process_buy(
+                process_buy = globals()[cfg.process_buy_name]
+                res = await process_buy(
                     kis,
                     ctx.symbol,
                     ctx.current_price,
@@ -323,7 +340,8 @@ async def _execute_bulk_sell_orders(cfg: MarketHoldingsConfig) -> dict:
                 )
 
             try:
-                res = await cfg.process_sell(
+                process_sell = globals()[cfg.process_sell_name]
+                res = await process_sell(
                     kis,
                     ctx.symbol,
                     ctx.current_price,
@@ -423,7 +441,8 @@ async def _execute_single_buy_task(cfg: MarketHoldingsConfig, symbol: str) -> di
                 exchange_code=exchange_code,
             )
 
-        return await cfg.process_buy(
+        process_buy = globals()[cfg.process_buy_name]
+        return await process_buy(
             kis,
             ctx.symbol,
             ctx.current_price,
@@ -449,7 +468,8 @@ async def _execute_single_sell_task(cfg: MarketHoldingsConfig, symbol: str) -> d
                 ctx.symbol, ctx.exchange_code
             )
 
-        return await cfg.process_sell(
+        process_sell = globals()[cfg.process_sell_name]
+        return await process_sell(
             kis,
             ctx.symbol,
             ctx.current_price,

@@ -24,12 +24,12 @@ class AutomationScenario:
         monkeypatch.setattr(kis_tasks, "KISClient", self.client_factory)
         monkeypatch.setattr(
             kis_tasks,
-            "process_kis_domestic_buy_orders_with_analysis",
+            "_domestic_buy",
             self.buy_handler,
         )
         monkeypatch.setattr(
             kis_tasks,
-            "process_kis_domestic_sell_orders_with_analysis",
+            "_domestic_sell",
             self.sell_handler,
         )
         monkeypatch.setattr(kis_tasks.asyncio, "sleep", _noop_sleep)
@@ -141,12 +141,12 @@ class OverseasNotificationScenario:
         monkeypatch.setattr(kis_tasks, "KISClient", self.client_factory)
         monkeypatch.setattr(
             kis_tasks,
-            "process_kis_overseas_buy_orders_with_analysis",
+            "_overseas_buy",
             self.buy_handler,
         )
         monkeypatch.setattr(
             kis_tasks,
-            "process_kis_overseas_sell_orders_with_analysis",
+            "_overseas_sell",
             self.sell_handler,
         )
         monkeypatch.setattr(

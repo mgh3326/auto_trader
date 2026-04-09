@@ -40,9 +40,6 @@ def test_domestic_adapter_uses_name_and_refreshes_after_sell_cancel():
     async def fake_sell(*args: Any, **kwargs: Any) -> dict[str, Any]:
         return {"success": True}
 
-    async def fake_cancel(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        return {"cancelled": 0, "failed": 0, "total": 0}
-
     async def fake_toss(*args: Any, **kwargs: Any) -> None:
         return None
 
@@ -53,7 +50,6 @@ def test_domestic_adapter_uses_name_and_refreshes_after_sell_cancel():
         manual_market_type="KR",
         buy_handler=fake_buy,
         sell_handler=fake_sell,
-        cancel_pending_orders=fake_cancel,
         send_toss_recommendation=fake_toss,
         notifier_factory=lambda: None,
         no_stocks_message="none",
@@ -77,15 +73,6 @@ def test_overseas_adapter_uses_symbol_without_sell_cancel_refresh():
     async def fake_sell(*args: Any, **kwargs: Any) -> dict[str, Any]:
         return {"success": True}
 
-    async def fake_resolve(*args: Any, **kwargs: Any) -> str:
-        return "NASD"
-
-    async def fake_open_orders(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
-        return []
-
-    async def fake_cancel(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        return {"cancelled": 0, "failed": 0, "total": 0}
-
     async def fake_toss(*args: Any, **kwargs: Any) -> None:
         return None
 
@@ -96,12 +83,8 @@ def test_overseas_adapter_uses_symbol_without_sell_cancel_refresh():
         manual_market_type="US",
         buy_handler=fake_buy,
         sell_handler=fake_sell,
-        resolve_exchange_code=fake_resolve,
-        load_open_orders=fake_open_orders,
-        cancel_pending_orders=fake_cancel,
         send_toss_recommendation=fake_toss,
         notifier_factory=lambda: None,
-        normalize_symbol=lambda symbol: symbol,
         no_stocks_message="none",
     )
 
@@ -115,6 +98,7 @@ def test_overseas_adapter_uses_symbol_without_sell_cancel_refresh():
 
 
 def test_run_per_domestic_stock_automation_uses_shared_runner(monkeypatch):
+    from app.jobs import kis_automation_runner
     from app.jobs import kis_trading as kis_tasks
     from app.jobs.kis_market_adapters import DomesticAutomationAdapter
 
@@ -124,9 +108,7 @@ def test_run_per_domestic_stock_automation_uses_shared_runner(monkeypatch):
         called["adapter"] = adapter
         return {"status": "completed", "results": []}
 
-    monkeypatch.setattr(
-        kis_tasks.kis_automation_runner, "run_market_automation", fake_runner
-    )
+    monkeypatch.setattr(kis_automation_runner, "run_market_automation", fake_runner)
 
     result = asyncio.run(kis_tasks.run_per_domestic_stock_automation())
 
@@ -135,6 +117,7 @@ def test_run_per_domestic_stock_automation_uses_shared_runner(monkeypatch):
 
 
 def test_run_per_overseas_stock_automation_uses_shared_runner(monkeypatch):
+    from app.jobs import kis_automation_runner
     from app.jobs import kis_trading as kis_tasks
     from app.jobs.kis_market_adapters import OverseasAutomationAdapter
 
@@ -144,9 +127,7 @@ def test_run_per_overseas_stock_automation_uses_shared_runner(monkeypatch):
         called["adapter"] = adapter
         return {"status": "completed", "results": []}
 
-    monkeypatch.setattr(
-        kis_tasks.kis_automation_runner, "run_market_automation", fake_runner
-    )
+    monkeypatch.setattr(kis_automation_runner, "run_market_automation", fake_runner)
 
     result = asyncio.run(kis_tasks.run_per_overseas_stock_automation())
 
@@ -192,7 +173,7 @@ def test_run_per_domestic_stock_automation_executes_all_steps(monkeypatch):
     # Mock ManualHoldingsService to return empty list
     class MockManualService:
         def __init__(self, db):
-            pass
+            self.db = db
 
         async def get_holdings_by_user(self, user_id, market_type):
             return []  # No manual holdings
@@ -200,7 +181,7 @@ def test_run_per_domestic_stock_automation_executes_all_steps(monkeypatch):
     buy_calls = []
     sell_calls = []
 
-    async def fake_buy(kis, symbol, current_price, avg_price):
+    async def fake_buy(kis, symbol, current_price, avg_price, *, exchange_code=None):
         buy_calls.append(
             {
                 "symbol": symbol,
@@ -214,7 +195,7 @@ def test_run_per_domestic_stock_automation_executes_all_steps(monkeypatch):
             "orders_placed": 0,
         }
 
-    async def fake_sell(kis, symbol, current_price, avg_price, qty):
+    async def fake_sell(kis, symbol, current_price, avg_price, qty, *, exchange_code=None):
         sell_calls.append(
             {
                 "symbol": symbol,
@@ -238,12 +219,8 @@ def test_run_per_domestic_stock_automation_executes_all_steps(monkeypatch):
         ),
     ):
         monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-        monkeypatch.setattr(
-            kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy
-        )
-        monkeypatch.setattr(
-            kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell
-        )
+        monkeypatch.setattr(kis_tasks, "_domestic_buy", fake_buy)
+        monkeypatch.setattr(kis_tasks, "_domestic_sell", fake_sell)
 
         result = asyncio.run(kis_tasks.run_per_domestic_stock_automation())
 
@@ -371,7 +348,7 @@ def test_run_per_domestic_stock_automation_with_real_trading_service(monkeypatch
     # Mock ManualHoldingsService to return empty list
     class MockManualService:
         def __init__(self, db):
-            pass
+            self.db = db
 
         async def get_holdings_by_user(self, user_id, market_type):
             return []  # No manual holdings
@@ -467,7 +444,7 @@ def test_run_per_domestic_stock_automation_handles_buy_exception(monkeypatch):
     # Mock ManualHoldingsService to return empty list
     class MockManualService:
         def __init__(self, db):
-            pass
+            self.db = db
 
         async def get_holdings_by_user(self, user_id, market_type):
             return []
@@ -477,7 +454,7 @@ def test_run_per_domestic_stock_automation_handles_buy_exception(monkeypatch):
     async def fake_buy(*_, **__):
         raise Exception("DB connection error")
 
-    async def fake_sell(kis, symbol, current_price, avg_price, qty):
+    async def fake_sell(kis, symbol, current_price, avg_price, qty, *, exchange_code=None):
         sell_calls.append({"symbol": symbol, "qty": qty})
         return {"success": True, "message": "매도 완료", "orders_placed": 1}
 
@@ -494,12 +471,8 @@ def test_run_per_domestic_stock_automation_handles_buy_exception(monkeypatch):
         ),
     ):
         monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-        monkeypatch.setattr(
-            kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy
-        )
-        monkeypatch.setattr(
-            kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell
-        )
+        monkeypatch.setattr(kis_tasks, "_domestic_buy", fake_buy)
+        monkeypatch.setattr(kis_tasks, "_domestic_sell", fake_sell)
 
         result = asyncio.run(kis_tasks.run_per_domestic_stock_automation())
 
@@ -557,7 +530,7 @@ def test_run_per_domestic_stock_automation_handles_sell_exception(monkeypatch):
     # Mock ManualHoldingsService to return empty list
     class MockManualService:
         def __init__(self, db):
-            pass
+            self.db = db
 
         async def get_holdings_by_user(self, user_id, market_type):
             return []
@@ -581,12 +554,8 @@ def test_run_per_domestic_stock_automation_handles_sell_exception(monkeypatch):
         ),
     ):
         monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-        monkeypatch.setattr(
-            kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy
-        )
-        monkeypatch.setattr(
-            kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell
-        )
+        monkeypatch.setattr(kis_tasks, "_domestic_buy", fake_buy)
+        monkeypatch.setattr(kis_tasks, "_domestic_sell", fake_sell)
 
         result = asyncio.run(kis_tasks.run_per_domestic_stock_automation())
 
@@ -652,7 +621,7 @@ def test_run_per_domestic_stock_automation_refreshes_holdings(monkeypatch):
     # Mock ManualHoldingsService to return empty list
     class MockManualService:
         def __init__(self, db):
-            pass
+            self.db = db
 
         async def get_holdings_by_user(self, user_id, market_type):
             return []
@@ -662,7 +631,7 @@ def test_run_per_domestic_stock_automation_refreshes_holdings(monkeypatch):
     async def fake_buy(*_, **__):
         return {"success": True}
 
-    async def fake_sell(_kis, symbol, current_price, avg_price, qty):
+    async def fake_sell(_kis, symbol, current_price, avg_price, qty, *, exchange_code=None):
         sell_calls.append(
             {
                 "symbol": symbol,
@@ -686,12 +655,8 @@ def test_run_per_domestic_stock_automation_refreshes_holdings(monkeypatch):
         ),
     ):
         monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-        monkeypatch.setattr(
-            kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy
-        )
-        monkeypatch.setattr(
-            kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell
-        )
+        monkeypatch.setattr(kis_tasks, "_domestic_buy", fake_buy)
+        monkeypatch.setattr(kis_tasks, "_domestic_sell", fake_sell)
 
         result = asyncio.run(kis_tasks.run_per_domestic_stock_automation())
 
@@ -711,16 +676,15 @@ def test_execute_overseas_buy_order_fetches_price_for_new_symbol(monkeypatch):
         async def fetch_my_overseas_stocks(self):
             return []
 
-        async def fetch_overseas_price(self, symbol, exchange_code="NASD"):
+        async def inquire_overseas_price(self, symbol):
             assert symbol == "AAPL"
-            assert exchange_code == "NASD"
-            return 123.45
+            import pandas as pd
+
+            return pd.DataFrame([{"close": 123.45}])
 
     captured: dict[str, Any] = {}
 
-    async def fake_process(
-        _kis, symbol, current_price, avg_price, exchange_code="NASD"
-    ):
+    async def fake_buy_handler(kis, symbol, current_price, avg_price, *, exchange_code=None):
         captured.update(
             {
                 "symbol": symbol,
@@ -731,9 +695,7 @@ def test_execute_overseas_buy_order_fetches_price_for_new_symbol(monkeypatch):
         return {"success": True}
 
     monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-    monkeypatch.setattr(
-        kis_tasks, "process_kis_overseas_buy_orders_with_analysis", fake_process
-    )
+    monkeypatch.setattr(kis_tasks, "_overseas_buy", fake_buy_handler)
 
     async def fake_get_us_exchange_by_symbol(symbol: str) -> str:
         assert symbol == "AAPL"
@@ -998,7 +960,7 @@ def test_run_per_overseas_stock_automation_cancels_pending_orders(monkeypatch):
     # Mock ManualHoldingsService to return empty list
     class MockManualService:
         def __init__(self, db):
-            pass
+            self.db = db
 
         async def get_holdings_by_user(self, user_id, market_type):
             return []
@@ -1016,12 +978,8 @@ def test_run_per_overseas_stock_automation_cancels_pending_orders(monkeypatch):
         ),
     ):
         monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-        monkeypatch.setattr(
-            kis_tasks, "process_kis_overseas_buy_orders_with_analysis", fake_buy
-        )
-        monkeypatch.setattr(
-            kis_tasks, "process_kis_overseas_sell_orders_with_analysis", fake_sell
-        )
+        monkeypatch.setattr(kis_tasks, "_overseas_buy", fake_buy)
+        monkeypatch.setattr(kis_tasks, "_overseas_sell", fake_sell)
         monkeypatch.setattr(kis_tasks, "get_trade_notifier", lambda: MockNotifier())
         monkeypatch.setattr(kis_market_adapters.asyncio, "sleep", settle_sleep)
 
@@ -1052,13 +1010,6 @@ class TestDomesticStockPendingOrderCancel:
 
         from app.jobs import kis_market_adapters
         from app.jobs import kis_trading as kis_tasks
-
-        class DummyAnalyzer:
-            async def analyze_stock_json(self, name):
-                return {"decision": "buy", "confidence": 80}, "gemini-2.5-pro"
-
-            async def close(self):
-                return None
 
         cancelled_orders = []
 
@@ -1119,7 +1070,7 @@ class TestDomesticStockPendingOrderCancel:
         # Mock ManualHoldingsService to return empty list
         class MockManualService:
             def __init__(self, db):
-                pass
+                self.db = db
 
             async def get_holdings_by_user(self, user_id, market_type):
                 return []
@@ -1157,12 +1108,8 @@ class TestDomesticStockPendingOrderCancel:
             ),
         ):
             monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-            monkeypatch.setattr(
-                kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy
-            )
-            monkeypatch.setattr(
-                kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell
-            )
+            monkeypatch.setattr(kis_tasks, "_domestic_buy", fake_buy)
+            monkeypatch.setattr(kis_tasks, "_domestic_sell", fake_sell)
             monkeypatch.setattr(kis_market_adapters.asyncio, "sleep", settle_sleep)
 
             result = asyncio.run(kis_tasks.run_per_domestic_stock_automation())
@@ -1198,13 +1145,6 @@ class TestOrderableQuantityUsage:
 
         from app.jobs import kis_trading as kis_tasks
 
-        class DummyAnalyzer:
-            async def analyze_stock_json(self, name):
-                return {"decision": "hold", "confidence": 65}, "gemini-2.5-pro"
-
-            async def close(self):
-                return None
-
         sell_qty_received = []
 
         class DummyKIS:
@@ -1234,7 +1174,7 @@ class TestOrderableQuantityUsage:
 
         class MockManualService:
             def __init__(self, db):
-                pass
+                self.db = db
 
             async def get_holdings_by_user(self, user_id, market_type):
                 return []
@@ -1246,7 +1186,7 @@ class TestOrderableQuantityUsage:
                 "orders_placed": 0,
             }
 
-        async def fake_sell(kis, symbol, current_price, avg_price, qty):
+        async def fake_sell(kis, symbol, current_price, avg_price, qty, *, exchange_code=None):
             sell_qty_received.append(qty)
             return {"success": True, "message": "매도 완료", "orders_placed": 1}
 
@@ -1262,12 +1202,8 @@ class TestOrderableQuantityUsage:
             ),
         ):
             monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-            monkeypatch.setattr(
-                kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy
-            )
-            monkeypatch.setattr(
-                kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell
-            )
+            monkeypatch.setattr(kis_tasks, "_domestic_buy", fake_buy)
+            monkeypatch.setattr(kis_tasks, "_domestic_sell", fake_sell)
 
             result = asyncio.run(kis_tasks.run_per_domestic_stock_automation())
 
@@ -1285,13 +1221,6 @@ class TestOrderableQuantityUsage:
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from app.jobs import kis_trading as kis_tasks
-
-        class DummyAnalyzer:
-            async def analyze_stock_json(self, name):
-                return {"decision": "buy", "confidence": 80}, "gemini-2.5-pro"
-
-            async def close(self):
-                return None
 
         sell_qty_received = []
 
@@ -1334,7 +1263,7 @@ class TestOrderableQuantityUsage:
 
         class MockManualService:
             def __init__(self, db):
-                pass
+                self.db = db
 
             async def get_holdings_by_user(self, user_id, market_type):
                 return []
@@ -1342,7 +1271,7 @@ class TestOrderableQuantityUsage:
         async def fake_buy(*_, **__):
             return {"success": True, "message": "매수 완료", "orders_placed": 2}
 
-        async def fake_sell(kis, symbol, current_price, avg_price, qty):
+        async def fake_sell(kis, symbol, current_price, avg_price, qty, *, exchange_code=None):
             sell_qty_received.append(qty)
             return {"success": True, "message": "매도 완료", "orders_placed": 1}
 
@@ -1358,12 +1287,8 @@ class TestOrderableQuantityUsage:
             ),
         ):
             monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-            monkeypatch.setattr(
-                kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy
-            )
-            monkeypatch.setattr(
-                kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell
-            )
+            monkeypatch.setattr(kis_tasks, "_domestic_buy", fake_buy)
+            monkeypatch.setattr(kis_tasks, "_domestic_sell", fake_sell)
 
             result = asyncio.run(kis_tasks.run_per_domestic_stock_automation())
 
@@ -1378,25 +1303,10 @@ class TestOrderableQuantityUsage:
     def test_domestic_automation_refreshes_qty_after_sell_order_cancel(
         self, monkeypatch
     ):
-        """미체결 매도 주문 취소 후 잔고를 재조회하여 ord_psbl_qty를 갱신해야 함.
-
-        실제 버그 시나리오 (APBK0986 에러):
-        - 보유 8주, 미체결 매도 3주 → ord_psbl_qty=5
-        - 매수 후 잔고 재조회 → ord_psbl_qty=5 (미체결 매도 3주 여전히 존재)
-        - 미체결 매도 3주 취소 → 실제로는 ord_psbl_qty=8이 되어야 함
-        - 기존 코드: 취소 후 재조회 없이 5주로 매도 시도
-        - 수정 후: 취소 후 재조회하여 8주로 매도 시도
-        """
+        """미체결 매도 주문 취소 후 잔고를 재조회하여 ord_psbl_qty를 갱신해야 함."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from app.jobs import kis_trading as kis_tasks
-
-        class DummyAnalyzer:
-            async def analyze_stock_json(self, name):
-                return {"decision": "hold", "confidence": 65}, "gemini-2.5-pro"
-
-            async def close(self):
-                return None
 
         sell_qty_received = []
 
@@ -1450,7 +1360,7 @@ class TestOrderableQuantityUsage:
 
         class MockManualService:
             def __init__(self, db):
-                pass
+                self.db = db
 
             async def get_holdings_by_user(self, user_id, market_type):
                 return []
@@ -1462,7 +1372,7 @@ class TestOrderableQuantityUsage:
                 "orders_placed": 0,
             }
 
-        async def fake_sell(kis, symbol, current_price, avg_price, qty):
+        async def fake_sell(kis, symbol, current_price, avg_price, qty, *, exchange_code=None):
             sell_qty_received.append(qty)
             return {"success": True, "message": "매도 완료", "orders_placed": 1}
 
@@ -1478,12 +1388,8 @@ class TestOrderableQuantityUsage:
             ),
         ):
             monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-            monkeypatch.setattr(
-                kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy
-            )
-            monkeypatch.setattr(
-                kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell
-            )
+            monkeypatch.setattr(kis_tasks, "_domestic_buy", fake_buy)
+            monkeypatch.setattr(kis_tasks, "_domestic_sell", fake_sell)
 
             result = asyncio.run(kis_tasks.run_per_domestic_stock_automation())
 
@@ -1491,10 +1397,7 @@ class TestOrderableQuantityUsage:
         assert len(sell_qty_received) == 1
 
         # 핵심 검증: 미체결 매도 취소 후 잔고를 재조회하여 ord_psbl_qty(8)가 전달되어야 함
-        # 재조회 없이 기존 ord_psbl_qty(5)가 전달되면 버그가 있는 것임
-        assert sell_qty_received[0] == 8, (
-            f"미체결 매도 취소 후 재조회하여 ord_psbl_qty(8)를 사용해야 하는데 {sell_qty_received[0]}가 전달됨"
-        )
+        assert sell_qty_received[0] == 8
 
 
 class TestOverseasManualHoldings:
@@ -1551,7 +1454,7 @@ class TestOverseasManualHoldings:
 
         class MockManualService:
             def __init__(self, db):
-                pass
+                self.db = db
 
             async def get_holdings_by_user(self, user_id, market_type):
                 return [MockManualHolding()]
@@ -1566,7 +1469,7 @@ class TestOverseasManualHoldings:
             async def notify_trade_failure(self, **kwargs):
                 return True
 
-        async def fake_buy(kis, symbol, current_price, avg_price, exchange_code):
+        async def fake_buy(kis, symbol, current_price, avg_price, *, exchange_code=None):
             buy_calls.append({"symbol": symbol, "current_price": current_price})
             return {
                 "success": True,
@@ -1597,12 +1500,8 @@ class TestOverseasManualHoldings:
             ),
         ):
             monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-            monkeypatch.setattr(
-                kis_tasks, "process_kis_overseas_buy_orders_with_analysis", fake_buy
-            )
-            monkeypatch.setattr(
-                kis_tasks, "process_kis_overseas_sell_orders_with_analysis", fake_sell
-            )
+            monkeypatch.setattr(kis_tasks, "_overseas_buy", fake_buy)
+            monkeypatch.setattr(kis_tasks, "_overseas_sell", fake_sell)
             monkeypatch.setattr(kis_tasks, "get_trade_notifier", lambda: MockNotifier())
             monkeypatch.setattr(
                 kis_tasks, "_send_toss_recommendation_async", mock_toss_recommendation
@@ -1614,8 +1513,7 @@ class TestOverseasManualHoldings:
                 return "NASD"
 
             monkeypatch.setattr(
-                kis_tasks,
-                "get_us_exchange_by_symbol",
+                "app.services.us_symbol_universe_service.get_us_exchange_by_symbol",
                 fake_get_us_exchange_by_symbol,
             )
 
@@ -1674,7 +1572,7 @@ class TestOverseasManualHoldings:
 
         class MockManualService:
             def __init__(self, db):
-                pass
+                self.db = db
 
             async def get_holdings_by_user(self, user_id, market_type):
                 return [MockManualHolding()]
@@ -1692,7 +1590,7 @@ class TestOverseasManualHoldings:
         async def fake_buy(*_, **__):
             return {"success": False, "message": "매수 조건 미충족", "orders_placed": 0}
 
-        async def fake_sell(kis, symbol, current_price, avg_price, qty, exchange_code):
+        async def fake_sell(kis, symbol, current_price, avg_price, qty, *, exchange_code=None):
             sell_calls.append({"symbol": symbol})
             return {"success": True, "orders_placed": 1}
 
@@ -1711,12 +1609,8 @@ class TestOverseasManualHoldings:
             ),
         ):
             monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-            monkeypatch.setattr(
-                kis_tasks, "process_kis_overseas_buy_orders_with_analysis", fake_buy
-            )
-            monkeypatch.setattr(
-                kis_tasks, "process_kis_overseas_sell_orders_with_analysis", fake_sell
-            )
+            monkeypatch.setattr(kis_tasks, "_overseas_buy", fake_buy)
+            monkeypatch.setattr(kis_tasks, "_overseas_sell", fake_sell)
             monkeypatch.setattr(kis_tasks, "get_trade_notifier", lambda: MockNotifier())
             monkeypatch.setattr(
                 kis_tasks, "_send_toss_recommendation_async", mock_toss_recommendation
@@ -1727,8 +1621,7 @@ class TestOverseasManualHoldings:
                 return "NASD"
 
             monkeypatch.setattr(
-                kis_tasks,
-                "get_us_exchange_by_symbol",
+                "app.services.us_symbol_universe_service.get_us_exchange_by_symbol",
                 fake_get_us_exchange_by_symbol,
             )
 
@@ -1800,7 +1693,7 @@ class TestOverseasManualHoldings:
 
         class MockManualService:
             def __init__(self, db):
-                pass
+                self.db = db
 
             async def get_holdings_by_user(self, user_id, market_type):
                 return [MockManualHolding()]
@@ -1833,12 +1726,8 @@ class TestOverseasManualHoldings:
             ),
         ):
             monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-            monkeypatch.setattr(
-                kis_tasks, "process_kis_overseas_buy_orders_with_analysis", fake_buy
-            )
-            monkeypatch.setattr(
-                kis_tasks, "process_kis_overseas_sell_orders_with_analysis", fake_sell
-            )
+            monkeypatch.setattr(kis_tasks, "_overseas_buy", fake_buy)
+            monkeypatch.setattr(kis_tasks, "_overseas_sell", fake_sell)
             monkeypatch.setattr(kis_tasks, "get_trade_notifier", lambda: MockNotifier())
 
             result = asyncio.run(kis_tasks.run_per_overseas_stock_automation())
