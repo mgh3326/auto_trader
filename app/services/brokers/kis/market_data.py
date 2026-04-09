@@ -374,39 +374,15 @@ class MarketDataClient:
         :param market: K(코스피)/Q(코스닥)/UN(통합)
         :return: API output 딕셔너리
         """
-        await self._parent._ensure_token()
-
-        # 요청 헤더
-        hdr = self._parent._hdr_base | {
-            "authorization": f"Bearer {self._settings.kis_access_token}",
-            "tr_id": constants.DOMESTIC_PRICE_TR,
-        }
-
-        params = {
-            "FID_COND_MRKT_DIV_CODE": market,
-            "FID_INPUT_ISCD": code.zfill(6),  # 000000 형태도 OK
-        }
-
-        js = await self._parent._request_with_rate_limit(
-            "GET",
-            f"{constants.BASE}{constants.DOMESTIC_PRICE_URL}",
-            headers=hdr,
-            params=params,
-            timeout=5,
-            api_name="inquire_price",
+        js = await self._request_with_token_retry(
             tr_id=constants.DOMESTIC_PRICE_TR,
+            url=f"{constants.BASE}{constants.DOMESTIC_PRICE_URL}",
+            params={
+                "FID_COND_MRKT_DIV_CODE": market,
+                "FID_INPUT_ISCD": code.zfill(6),
+            },
+            api_name="inquire_price",
         )
-        if js["rt_cd"] != "0":
-            if js.get("msg_cd") in [
-                "EGW00123",
-                "EGW00121",
-            ]:  # 토큰 만료 또는 유효하지 않은 토큰
-                # Redis에서 토큰 삭제 후 새로 발급
-                await self._parent._token_manager.clear_token()
-                await self._parent._ensure_token()
-                # 재시도 1회
-                return await self.inquire_price(code, market)
-            raise RuntimeError(f"{js['msg_cd']} {js['msg1']}")
         out = js["output"]  # 단일 dict
         trade_date_str = out.get("stck_bsop_date")  # 예: '20250805'
         if trade_date_str:
@@ -434,37 +410,15 @@ class MarketDataClient:
         return pd.DataFrame([row]).set_index("code")  # index = 종목코드
 
     async def _request_orderbook_snapshot(self, code: str, market: str = "UN") -> dict:
-        await self._parent._ensure_token()
-
-        hdr = self._parent._hdr_base | {
-            "authorization": f"Bearer {self._settings.kis_access_token}",
-            "tr_id": constants.DOMESTIC_ORDERBOOK_TR,
-        }
-
-        params = {
-            "FID_COND_MRKT_DIV_CODE": market,
-            "FID_INPUT_ISCD": code.zfill(6),
-        }
-
-        js = await self._parent._request_with_rate_limit(
-            "GET",
-            f"{constants.BASE}{constants.DOMESTIC_ORDERBOOK_URL}",
-            headers=hdr,
-            params=params,
-            timeout=5,
-            api_name="inquire_orderbook",
+        return await self._request_with_token_retry(
             tr_id=constants.DOMESTIC_ORDERBOOK_TR,
+            url=f"{constants.BASE}{constants.DOMESTIC_ORDERBOOK_URL}",
+            params={
+                "FID_COND_MRKT_DIV_CODE": market,
+                "FID_INPUT_ISCD": code.zfill(6),
+            },
+            api_name="inquire_orderbook",
         )
-        if js["rt_cd"] != "0":
-            if js.get("msg_cd") in [
-                "EGW00123",
-                "EGW00121",
-            ]:
-                await self._parent._token_manager.clear_token()
-                await self._parent._ensure_token()
-                return await self._request_orderbook_snapshot(code, market)
-            raise RuntimeError(f"{js['msg_cd']} {js['msg1']}")
-        return js
 
     async def inquire_orderbook(self, code: str, market: str = "UN") -> dict:
         """
@@ -581,39 +535,15 @@ class MarketDataClient:
         :param market: K(코스피)/Q(코스닥)/UN(통합)
         :return: 기본 정보 딕셔너리
         """
-        await self._parent._ensure_token()
-
-        # 요청 헤더
-        hdr = self._parent._hdr_base | {
-            "authorization": f"Bearer {self._settings.kis_access_token}",
-            "tr_id": constants.DOMESTIC_PRICE_TR,
-        }
-
-        params = {
-            "FID_COND_MRKT_DIV_CODE": market,
-            "FID_INPUT_ISCD": code.zfill(6),  # 000000 형태도 OK
-        }
-
-        js = await self._parent._request_with_rate_limit(
-            "GET",
-            f"{constants.BASE}{constants.DOMESTIC_PRICE_URL}",
-            headers=hdr,
-            params=params,
-            timeout=5,
-            api_name="fetch_fundamental_info",
+        js = await self._request_with_token_retry(
             tr_id=constants.DOMESTIC_PRICE_TR,
+            url=f"{constants.BASE}{constants.DOMESTIC_PRICE_URL}",
+            params={
+                "FID_COND_MRKT_DIV_CODE": market,
+                "FID_INPUT_ISCD": code.zfill(6),
+            },
+            api_name="fetch_fundamental_info",
         )
-        if js["rt_cd"] != "0":
-            if js.get("msg_cd") in [
-                "EGW00123",
-                "EGW00121",
-            ]:  # 토큰 만료 또는 유효하지 않은 토큰
-                # Redis에서 토큰 삭제 후 새로 발급
-                await self._parent._token_manager.clear_token()
-                await self._parent._ensure_token()
-                # 재시도 1회
-                return await self.fetch_fundamental_info(code, market)
-            raise RuntimeError(f"{js['msg_cd']} {js['msg1']}")
         out = js["output"]  # 단일 dict
 
         # 기본 정보 구성
