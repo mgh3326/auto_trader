@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 import app.services.brokers.upbit.client as upbit
+import app.services.brokers.upbit.orders as upbit_orders
 
 
 @pytest.mark.asyncio
@@ -12,7 +13,7 @@ async def test_fetch_closed_orders_builds_query(monkeypatch):
     request_mock = AsyncMock(return_value=[])
     monkeypatch.setattr(upbit, "_request_with_auth", request_mock)
 
-    await upbit.fetch_closed_orders(market="KRW-BTC", limit=15)
+    await upbit_orders.fetch_closed_orders(market="KRW-BTC", limit=15)
 
     request_mock.assert_awaited_once()
     method, url = request_mock.await_args.args[:2]
@@ -30,7 +31,7 @@ async def test_fetch_order_detail_builds_query(monkeypatch):
     request_mock = AsyncMock(return_value={"uuid": "order-1"})
     monkeypatch.setattr(upbit, "_request_with_auth", request_mock)
 
-    result = await upbit.fetch_order_detail("order-1")
+    result = await upbit_orders.fetch_order_detail("order-1")
 
     assert result["uuid"] == "order-1"
     request_mock.assert_awaited_once_with(
@@ -43,7 +44,7 @@ async def test_fetch_order_detail_builds_query(monkeypatch):
 @pytest.mark.asyncio
 async def test_cancel_and_reorder_bid_success(monkeypatch):
     monkeypatch.setattr(
-        upbit,
+        upbit_orders,
         "fetch_order_detail",
         AsyncMock(
             return_value={
@@ -57,15 +58,15 @@ async def test_cancel_and_reorder_bid_success(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        upbit, "cancel_orders", AsyncMock(return_value=[{"uuid": "order-1"}])
+        upbit_orders, "cancel_orders", AsyncMock(return_value=[{"uuid": "order-1"}])
     )
 
     place_buy_mock = AsyncMock(return_value={"uuid": "order-2"})
     place_sell_mock = AsyncMock()
-    monkeypatch.setattr(upbit, "place_buy_order", place_buy_mock)
-    monkeypatch.setattr(upbit, "place_sell_order", place_sell_mock)
+    monkeypatch.setattr(upbit_orders, "place_buy_order", place_buy_mock)
+    monkeypatch.setattr(upbit_orders, "place_sell_order", place_sell_mock)
 
-    result = await upbit.cancel_and_reorder(
+    result = await upbit_orders.cancel_and_reorder(
         order_uuid="order-1",
         new_price=56000000,
         new_quantity=0.0015,
@@ -81,7 +82,7 @@ async def test_cancel_and_reorder_bid_success(monkeypatch):
 @pytest.mark.asyncio
 async def test_cancel_and_reorder_ask_success(monkeypatch):
     monkeypatch.setattr(
-        upbit,
+        upbit_orders,
         "fetch_order_detail",
         AsyncMock(
             return_value={
@@ -95,15 +96,15 @@ async def test_cancel_and_reorder_ask_success(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        upbit, "cancel_orders", AsyncMock(return_value=[{"uuid": "order-1"}])
+        upbit_orders, "cancel_orders", AsyncMock(return_value=[{"uuid": "order-1"}])
     )
 
     place_buy_mock = AsyncMock()
     place_sell_mock = AsyncMock(return_value={"uuid": "order-3"})
-    monkeypatch.setattr(upbit, "place_buy_order", place_buy_mock)
-    monkeypatch.setattr(upbit, "place_sell_order", place_sell_mock)
+    monkeypatch.setattr(upbit_orders, "place_buy_order", place_buy_mock)
+    monkeypatch.setattr(upbit_orders, "place_sell_order", place_sell_mock)
 
-    result = await upbit.cancel_and_reorder(
+    result = await upbit_orders.cancel_and_reorder(
         order_uuid="order-1",
         new_price=56000000,
         new_quantity=0.0015,
@@ -117,7 +118,7 @@ async def test_cancel_and_reorder_ask_success(monkeypatch):
 @pytest.mark.asyncio
 async def test_cancel_and_reorder_rejects_non_wait(monkeypatch):
     monkeypatch.setattr(
-        upbit,
+        upbit_orders,
         "fetch_order_detail",
         AsyncMock(
             return_value={
@@ -128,7 +129,9 @@ async def test_cancel_and_reorder_rejects_non_wait(monkeypatch):
         ),
     )
 
-    result = await upbit.cancel_and_reorder(order_uuid="order-1", new_price=56000000)
+    result = await upbit_orders.cancel_and_reorder(
+        order_uuid="order-1", new_price=56000000
+    )
 
     assert result["new_order"] is None
     assert "wait-state" in result["cancel_result"]["error"]
@@ -137,7 +140,7 @@ async def test_cancel_and_reorder_rejects_non_wait(monkeypatch):
 @pytest.mark.asyncio
 async def test_cancel_and_reorder_rejects_non_limit(monkeypatch):
     monkeypatch.setattr(
-        upbit,
+        upbit_orders,
         "fetch_order_detail",
         AsyncMock(
             return_value={
@@ -148,7 +151,9 @@ async def test_cancel_and_reorder_rejects_non_limit(monkeypatch):
         ),
     )
 
-    result = await upbit.cancel_and_reorder(order_uuid="order-1", new_price=56000000)
+    result = await upbit_orders.cancel_and_reorder(
+        order_uuid="order-1", new_price=56000000
+    )
 
     assert result["new_order"] is None
     assert "limit" in result["cancel_result"]["error"]
@@ -157,7 +162,7 @@ async def test_cancel_and_reorder_rejects_non_limit(monkeypatch):
 @pytest.mark.asyncio
 async def test_cancel_and_reorder_rejects_invalid_quantity(monkeypatch):
     monkeypatch.setattr(
-        upbit,
+        upbit_orders,
         "fetch_order_detail",
         AsyncMock(
             return_value={
@@ -169,7 +174,9 @@ async def test_cancel_and_reorder_rejects_invalid_quantity(monkeypatch):
         ),
     )
 
-    result = await upbit.cancel_and_reorder(order_uuid="order-1", new_price=56000000)
+    result = await upbit_orders.cancel_and_reorder(
+        order_uuid="order-1", new_price=56000000
+    )
 
     assert result["new_order"] is None
     assert "must be positive" in result["cancel_result"]["error"]
@@ -178,7 +185,7 @@ async def test_cancel_and_reorder_rejects_invalid_quantity(monkeypatch):
 @pytest.mark.asyncio
 async def test_cancel_and_reorder_handles_cancel_failure(monkeypatch):
     monkeypatch.setattr(
-        upbit,
+        upbit_orders,
         "fetch_order_detail",
         AsyncMock(
             return_value={
@@ -192,12 +199,12 @@ async def test_cancel_and_reorder_handles_cancel_failure(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        upbit,
+        upbit_orders,
         "cancel_orders",
         AsyncMock(return_value=[{"uuid": "order-1", "error": "cancel failed"}]),
     )
 
-    result = await upbit.cancel_and_reorder(
+    result = await upbit_orders.cancel_and_reorder(
         order_uuid="order-1",
         new_price=56000000,
         new_quantity=0.001,
