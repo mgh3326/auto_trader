@@ -93,22 +93,32 @@ def _get_upbit_rate_limit(api_key: str) -> tuple[int, float]:
     return settings.upbit_rate_limit_rate, settings.upbit_rate_limit_period
 
 
-async def _request_json(
-    url: str, params: dict[str, Any] | None = None
-) -> list[dict[str, Any]]:
-    # Extract path from URL for per-API rate limiting
-    from urllib.parse import urlparse
+async def _retry_with_backoff(
+    limiter: Any,
+    send_fn: Any,
+    *,
+    url: str,
+    max_retries: int | None = None,
+    base_delay: float | None = None,
+) -> Any:
+    """Common retry-with-backoff loop for Upbit API requests.
 
-    parsed_url = urlparse(url)
-    api_path = parsed_url.path or "/unknown"
-    api_key = _get_upbit_get_api_key(api_path)
-
-    # Get rate limit for this specific API
-    rate, period = _get_upbit_rate_limit(api_key)
-    limiter = await get_limiter("upbit", api_key, rate=rate, period=period)
-
-    max_retries = settings.api_rate_limit_retry_429_max
-    base_delay = settings.api_rate_limit_retry_429_base_delay
+    Parameters
+    ----------
+    limiter
+        Rate limiter with an ``acquire`` coroutine.
+    send_fn
+        Zero-arg async callable returning ``httpx.Response``.
+    url
+        For logging only.
+    max_retries / base_delay
+        Override ``settings.api_rate_limit_retry_429_max`` /
+        ``settings.api_rate_limit_retry_429_base_delay``.
+    """
+    if max_retries is None:
+        max_retries = settings.api_rate_limit_retry_429_max
+    if base_delay is None:
+        base_delay = settings.api_rate_limit_retry_429_base_delay
 
     for attempt in range(max_retries + 1):
         await limiter.acquire(
@@ -118,11 +128,12 @@ async def _request_json(
         )
 
         try:
-            async with httpx.AsyncClient(timeout=5) as cli:
-                r = await cli.get(url, params=params)
+            response = await send_fn()
 
-            if r.status_code == 429:
-                retry_after = _safe_parse_retry_after(r.headers.get("Retry-After"))
+            if response.status_code == 429:
+                retry_after = _safe_parse_retry_after(
+                    response.headers.get("Retry-After")
+                )
                 wait_time = (
                     retry_after
                     if retry_after > 0
@@ -138,8 +149,8 @@ async def _request_json(
                 await asyncio.sleep(wait_time)
                 continue
 
-            r.raise_for_status()
-            return r.json()
+            response.raise_for_status()
+            return response.json()
 
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 429 and attempt < max_retries:
@@ -170,6 +181,24 @@ async def _request_json(
             raise
 
     raise RateLimitExceededError(f"Upbit rate limit retries exhausted for {url}")
+
+
+async def _request_json(
+    url: str, params: dict[str, Any] | None = None
+) -> list[dict[str, Any]]:
+    from urllib.parse import urlparse
+
+    parsed_url = urlparse(url)
+    api_path = parsed_url.path or "/unknown"
+    api_key = _get_upbit_get_api_key(api_path)
+    rate, period = _get_upbit_rate_limit(api_key)
+    limiter = await get_limiter("upbit", api_key, rate=rate, period=period)
+
+    async def send() -> httpx.Response:
+        async with httpx.AsyncClient(timeout=5) as cli:
+            return await cli.get(url, params=params)
+
+    return await _retry_with_backoff(limiter, send, url=url)
 
 
 async def fetch_my_coins() -> list[dict[str, Any]]:
@@ -806,7 +835,6 @@ async def _request_with_auth(
     import hashlib
     from urllib.parse import unquote, urlencode, urlparse
 
-    # Extract path from URL for per-API rate limiting
     parsed_url = urlparse(url)
     api_path = parsed_url.path or "/unknown"
     api_key = f"{method.upper()} {api_path}"
@@ -814,10 +842,7 @@ async def _request_with_auth(
     rate, period = _get_upbit_rate_limit(api_key)
     limiter = await get_limiter("upbit", api_key, rate=rate, period=period)
 
-    max_retries = settings.api_rate_limit_retry_429_max
-    base_delay = settings.api_rate_limit_retry_429_base_delay
-
-    payload = {
+    payload: dict[str, Any] = {
         "access_key": settings.upbit_access_key,
         "nonce": str(uuid.uuid4()),
     }
@@ -826,7 +851,6 @@ async def _request_with_auth(
         query_string = unquote(urlencode(query_params, doseq=True))
         payload["query_hash"] = hashlib.sha512(query_string.encode()).hexdigest()
         payload["query_hash_alg"] = "SHA512"
-
     elif method.upper() == "POST" and body_params:
         query_string = unquote(urlencode(body_params, doseq=True))
         payload["query_hash"] = hashlib.sha512(query_string.encode()).hexdigest()
@@ -834,74 +858,23 @@ async def _request_with_auth(
 
     jwt_token = jwt.encode(payload, settings.upbit_secret_key)
     authorize_token = f"Bearer {jwt_token}"
-    headers = {"Authorization": authorize_token}
+    headers: dict[str, str] = {"Authorization": authorize_token}
 
     if method.upper() == "POST":
         headers["Content-Type"] = "application/json"
 
-    for attempt in range(max_retries + 1):
-        await limiter.acquire(
-            blocking_callback=lambda w: logger.warning(
-                "[upbit] Rate limit wait: %.3fs (url=%s)", w, url
-            )
-        )
+    async def send() -> httpx.Response:
+        async with httpx.AsyncClient(timeout=10) as cli:
+            if method.upper() == "GET":
+                return await cli.get(url, headers=headers, params=query_params)
+            elif method.upper() == "POST":
+                return await cli.post(url, headers=headers, json=body_params)
+            elif method.upper() == "DELETE":
+                return await cli.delete(url, headers=headers, params=query_params)
+            else:
+                raise ValueError(f"지원하지 않는 HTTP 메서드: {method}")
 
-        try:
-            async with httpx.AsyncClient(timeout=10) as cli:
-                if method.upper() == "GET":
-                    response = await cli.get(url, headers=headers, params=query_params)
-                elif method.upper() == "POST":
-                    response = await cli.post(url, headers=headers, json=body_params)
-                elif method.upper() == "DELETE":
-                    response = await cli.delete(
-                        url, headers=headers, params=query_params
-                    )
-                else:
-                    raise ValueError(f"지원하지 않는 HTTP 메서드: {method}")
-
-                if response.status_code == 429:
-                    retry_after = _safe_parse_retry_after(
-                        response.headers.get("Retry-After")
-                    )
-                    wait_time = (
-                        retry_after
-                        if retry_after > 0
-                        else base_delay * (2**attempt) + random.uniform(0, 0.1)
-                    )
-                    logger.warning(
-                        "[upbit] 429 received, attempt %d/%d, waiting %.3fs (url=%s)",
-                        attempt + 1,
-                        max_retries + 1,
-                        wait_time,
-                        url,
-                    )
-                    await asyncio.sleep(wait_time)
-                    continue
-
-                response.raise_for_status()
-                return response.json()
-
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 429 and attempt < max_retries:
-                wait_time = base_delay * (2**attempt) + random.uniform(0, 0.1)
-                await asyncio.sleep(wait_time)
-                continue
-            raise
-        except httpx.RequestError as e:
-            if attempt < max_retries:
-                wait_time = base_delay * (2**attempt) + random.uniform(0, 0.1)
-                logger.warning(
-                    "[upbit] Request error: %s, attempt %d/%d, retrying in %.3fs",
-                    e,
-                    attempt + 1,
-                    max_retries + 1,
-                    wait_time,
-                )
-                await asyncio.sleep(wait_time)
-                continue
-            raise
-
-    raise RateLimitExceededError(f"Upbit rate limit retries exhausted for {url}")
+    return await _retry_with_backoff(limiter, send, url=url)
 
 
 async def fetch_open_orders(market: str | None = None) -> list[dict[str, Any]]:
