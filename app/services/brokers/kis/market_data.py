@@ -254,6 +254,63 @@ class MarketDataClient:
 
         raise RuntimeError("KIS API token retry exhausted")
 
+    @staticmethod
+    def _build_ohlcv_dataframe(
+        rows: list[dict[str, Any]],
+        column_mapping: dict[str, str],
+        datetime_format: str,
+        limit: int,
+    ) -> pd.DataFrame:
+        """원시 API rows를 표준 OHLCV DataFrame으로 변환.
+
+        Parameters
+        ----------
+        rows : list[dict]
+            KIS API 응답의 원시 행 목록
+        column_mapping : dict
+            KIS 컬럼명 → 표준 컬럼명 매핑.
+            date + time 결합: ``{"date_col": "date", "time_col": "time", ...}``
+        datetime_format : str
+            date + time 문자열 결합 후 파싱할 strftime 포맷 (예: "%Y%m%d%H%M%S")
+        limit : int
+            반환할 최대 행 수 (tail 적용)
+        """
+        frame = (
+            pd.DataFrame(rows)
+            .rename(columns=column_mapping)
+            .astype(
+                {
+                    "date": "str",
+                    "time": "str",
+                    "open": "float",
+                    "high": "float",
+                    "low": "float",
+                    "close": "float",
+                    "volume": "int",
+                    "value": "int",
+                },
+                errors="ignore",
+            )
+            .assign(
+                datetime=lambda d: pd.to_datetime(
+                    d["date"] + d["time"],
+                    format=datetime_format,
+                    errors="coerce",
+                )
+            )
+            .dropna(subset=["datetime"])
+            .assign(
+                date=lambda d: d["datetime"].dt.date,
+                time=lambda d: d["datetime"].dt.time,
+            )
+            .loc[:, _MINUTE_FRAME_COLUMNS]
+            .drop_duplicates(subset=["datetime"], keep="first")
+            .sort_values("datetime")
+            .tail(max(int(limit), 1))
+            .reset_index(drop=True)
+        )
+        return frame
+
     async def volume_rank(self, market: str = "J", limit: int = 30) -> list[dict]:
         js = await self._request_with_token_retry(
             tr_id=constants.DOMESTIC_VOLUME_TR,

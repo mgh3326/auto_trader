@@ -1332,3 +1332,190 @@ class TestRequestWithTokenRetry:
 
         call_kwargs = request_mock.await_args.kwargs
         assert call_kwargs["timeout"] == 10
+
+
+class TestBuildOhlcvDataframe:
+    """Tests for MarketDataClient._build_ohlcv_dataframe"""
+
+    def test_builds_dataframe_with_datetime_columns(self):
+        from app.services.brokers.kis.market_data import MarketDataClient
+
+        rows = [
+            {
+                "stck_bsop_date": "20260219",
+                "stck_cntg_hour": "100000",
+                "stck_oprc": "70000",
+                "stck_hgpr": "70200",
+                "stck_lwpr": "69900",
+                "stck_prpr": "70100",
+                "cntg_vol": "100",
+                "acml_tr_pbmn": "7010000",
+            },
+            {
+                "stck_bsop_date": "20260219",
+                "stck_cntg_hour": "100100",
+                "stck_oprc": "70100",
+                "stck_hgpr": "70300",
+                "stck_lwpr": "70000",
+                "stck_prpr": "70200",
+                "cntg_vol": "200",
+                "acml_tr_pbmn": "14040000",
+            },
+        ]
+
+        column_mapping = {
+            "stck_bsop_date": "date",
+            "stck_cntg_hour": "time",
+            "stck_oprc": "open",
+            "stck_hgpr": "high",
+            "stck_lwpr": "low",
+            "stck_prpr": "close",
+            "cntg_vol": "volume",
+            "acml_tr_pbmn": "value",
+        }
+
+        df = MarketDataClient._build_ohlcv_dataframe(
+            rows=rows,
+            column_mapping=column_mapping,
+            datetime_format="%Y%m%d%H%M%S",
+            limit=200,
+        )
+
+        assert len(df) == 2
+        assert list(df.columns) == [
+            "datetime", "date", "time",
+            "open", "high", "low", "close",
+            "volume", "value",
+        ]
+        assert df.iloc[0]["datetime"] == pd.Timestamp("2026-02-19 10:00:00")
+        assert df.iloc[0]["close"] == 70100.0
+        assert df.iloc[0]["volume"] == 100
+
+    def test_deduplicates_by_datetime(self):
+        from app.services.brokers.kis.market_data import MarketDataClient
+
+        rows = [
+            {
+                "stck_bsop_date": "20260219",
+                "stck_cntg_hour": "100000",
+                "stck_oprc": "70000",
+                "stck_hgpr": "70200",
+                "stck_lwpr": "69900",
+                "stck_prpr": "70100",
+                "cntg_vol": "100",
+                "acml_tr_pbmn": "7010000",
+            },
+            {
+                "stck_bsop_date": "20260219",
+                "stck_cntg_hour": "100000",
+                "stck_oprc": "70100",
+                "stck_hgpr": "70300",
+                "stck_lwpr": "70000",
+                "stck_prpr": "70200",
+                "cntg_vol": "200",
+                "acml_tr_pbmn": "14040000",
+            },
+        ]
+
+        column_mapping = {
+            "stck_bsop_date": "date",
+            "stck_cntg_hour": "time",
+            "stck_oprc": "open",
+            "stck_hgpr": "high",
+            "stck_lwpr": "low",
+            "stck_prpr": "close",
+            "cntg_vol": "volume",
+            "acml_tr_pbmn": "value",
+        }
+
+        df = MarketDataClient._build_ohlcv_dataframe(
+            rows=rows,
+            column_mapping=column_mapping,
+            datetime_format="%Y%m%d%H%M%S",
+            limit=200,
+        )
+
+        assert len(df) == 1  # 중복 제거
+
+    def test_respects_limit(self):
+        from app.services.brokers.kis.market_data import MarketDataClient
+
+        rows = [
+            {
+                "stck_bsop_date": "20260219",
+                "stck_cntg_hour": f"10{i:02d}00",
+                "stck_oprc": "70000",
+                "stck_hgpr": "70200",
+                "stck_lwpr": "69900",
+                "stck_prpr": "70100",
+                "cntg_vol": "100",
+                "acml_tr_pbmn": "7010000",
+            }
+            for i in range(10)
+        ]
+
+        column_mapping = {
+            "stck_bsop_date": "date",
+            "stck_cntg_hour": "time",
+            "stck_oprc": "open",
+            "stck_hgpr": "high",
+            "stck_lwpr": "low",
+            "stck_prpr": "close",
+            "cntg_vol": "volume",
+            "acml_tr_pbmn": "value",
+        }
+
+        df = MarketDataClient._build_ohlcv_dataframe(
+            rows=rows,
+            column_mapping=column_mapping,
+            datetime_format="%Y%m%d%H%M%S",
+            limit=3,
+        )
+
+        assert len(df) == 3
+
+    def test_sorts_by_datetime_ascending(self):
+        from app.services.brokers.kis.market_data import MarketDataClient
+
+        rows = [
+            {
+                "stck_bsop_date": "20260219",
+                "stck_cntg_hour": "110000",
+                "stck_oprc": "71000",
+                "stck_hgpr": "71200",
+                "stck_lwpr": "70900",
+                "stck_prpr": "71100",
+                "cntg_vol": "100",
+                "acml_tr_pbmn": "7110000",
+            },
+            {
+                "stck_bsop_date": "20260219",
+                "stck_cntg_hour": "100000",
+                "stck_oprc": "70000",
+                "stck_hgpr": "70200",
+                "stck_lwpr": "69900",
+                "stck_prpr": "70100",
+                "cntg_vol": "100",
+                "acml_tr_pbmn": "7010000",
+            },
+        ]
+
+        column_mapping = {
+            "stck_bsop_date": "date",
+            "stck_cntg_hour": "time",
+            "stck_oprc": "open",
+            "stck_hgpr": "high",
+            "stck_lwpr": "low",
+            "stck_prpr": "close",
+            "cntg_vol": "volume",
+            "acml_tr_pbmn": "value",
+        }
+
+        df = MarketDataClient._build_ohlcv_dataframe(
+            rows=rows,
+            column_mapping=column_mapping,
+            datetime_format="%Y%m%d%H%M%S",
+            limit=200,
+        )
+
+        assert df.iloc[0]["datetime"] < df.iloc[1]["datetime"]
