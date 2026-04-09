@@ -735,65 +735,21 @@ class MarketDataClient:
                 ]
             )
 
-        frame = (
-            pd.DataFrame(rows)
-            .rename(
-                columns={
-                    "stck_bsop_date": "date",
-                    "stck_cntg_hour": "time",
-                    "stck_oprc": "open",
-                    "stck_hgpr": "high",
-                    "stck_lwpr": "low",
-                    "stck_prpr": "close",
-                    "cntg_vol": "volume",
-                    "acml_tr_pbmn": "value",
-                }
-            )
-            .astype(
-                {
-                    "date": "str",
-                    "time": "str",
-                    "open": "float",
-                    "high": "float",
-                    "low": "float",
-                    "close": "float",
-                    "volume": "int",
-                    "value": "int",
-                },
-                errors="ignore",
-            )
-            .assign(
-                datetime=lambda d: pd.to_datetime(
-                    d["date"] + d["time"],
-                    format="%Y%m%d%H%M%S",
-                    errors="coerce",
-                )
-            )
-            .dropna(subset=["datetime"])
-            .assign(
-                date=lambda d: pd.to_datetime(d["datetime"]).dt.date,
-                time=lambda d: pd.to_datetime(d["datetime"]).dt.time,
-            )
-            .loc[
-                :,
-                [
-                    "datetime",
-                    "date",
-                    "time",
-                    "open",
-                    "high",
-                    "low",
-                    "close",
-                    "volume",
-                    "value",
-                ],
-            ]
-            .drop_duplicates(subset=["datetime"], keep="first")
-            .sort_values("datetime")
-            .tail(max(int(n), 1))
-            .reset_index(drop=True)
+        return self._build_ohlcv_dataframe(
+            rows=rows,
+            column_mapping={
+                "stck_bsop_date": "date",
+                "stck_cntg_hour": "time",
+                "stck_oprc": "open",
+                "stck_hgpr": "high",
+                "stck_lwpr": "low",
+                "stck_prpr": "close",
+                "cntg_vol": "volume",
+                "acml_tr_pbmn": "value",
+            },
+            datetime_format="%Y%m%d%H%M%S",
+            limit=n,
         )
-        return frame
 
     async def inquire_minute_chart(
         self,
@@ -868,63 +824,21 @@ class MarketDataClient:
         # 데이터가 있으면 성공으로 처리 (rt_cd가 비어있어도)
         logging.info(f"KIS 분봉 API에서 {len(rows)}개 데이터 수집 성공")
 
-        # DataFrame 변환
-        df = (
-            pd.DataFrame(rows)
-            .rename(
-                columns={
-                    "stck_bsop_date": "date",
-                    "stck_cntg_hour": "time",
-                    "stck_oprc": "open",
-                    "stck_hgpr": "high",
-                    "stck_lwpr": "low",
-                    "stck_prpr": "close",
-                    "cntg_vol": "volume",
-                    "acml_tr_pbmn": "value",
-                }
-            )
-            .astype(
-                {
-                    "date": "str",
-                    "time": "str",
-                    "open": "float",
-                    "high": "float",
-                    "low": "float",
-                    "close": "float",
-                    "volume": "int",
-                    "value": "int",
-                },
-                errors="ignore",
-            )
-            .assign(
-                # 날짜와 시간을 결합하여 datetime 생성
-                datetime=lambda d: pd.to_datetime(
-                    d["date"] + d["time"], format="%Y%m%d%H%M%S"
-                ),
-                date=lambda d: pd.to_datetime(d["datetime"]).dt.date,
-                time=lambda d: pd.to_datetime(d["datetime"]).dt.time,
-            )
-            .loc[
-                :,
-                [
-                    "datetime",
-                    "date",
-                    "time",
-                    "open",
-                    "high",
-                    "low",
-                    "close",
-                    "volume",
-                    "value",
-                ],
-            ]
-            .drop_duplicates(subset=["datetime"], keep="first")
-            .sort_values("datetime")
-            .tail(n)  # 요청한 개수만
-            .reset_index(drop=True)
+        return self._build_ohlcv_dataframe(
+            rows=rows,
+            column_mapping={
+                "stck_bsop_date": "date",
+                "stck_cntg_hour": "time",
+                "stck_oprc": "open",
+                "stck_hgpr": "high",
+                "stck_lwpr": "low",
+                "stck_prpr": "close",
+                "cntg_vol": "volume",
+                "acml_tr_pbmn": "value",
+            },
+            datetime_format="%Y%m%d%H%M%S",
+            limit=n,
         )
-
-        return df
 
     async def fetch_minute_candles(
         self,
@@ -1138,8 +1052,14 @@ class MarketDataClient:
             return _empty_overseas_minute_chart_page()
 
         validated_rows = _validate_overseas_minute_chart_chunk(chunk)
-        frame = pd.DataFrame(validated_rows).rename(
-            columns={
+
+        # time 필드에 zfill(6)이 필요하므로 전처리
+        for row in validated_rows:
+            row["xhms"] = str(row["xhms"]).zfill(6)
+
+        frame = self._build_ohlcv_dataframe(
+            rows=validated_rows,
+            column_mapping={
                 "xymd": "date",
                 "xhms": "time",
                 "open": "open",
@@ -1148,30 +1068,15 @@ class MarketDataClient:
                 "close": "close",
                 "volume": "volume",
                 "value": "value",
-            }
+            },
+            datetime_format="%Y%m%d%H%M%S",
+            limit=len(validated_rows),  # 전체 반환 (pagination이 limit 역할)
         )
-        frame["date"] = frame["date"].astype("string")
-        frame["time"] = frame["time"].astype("string").str.zfill(6)
-        frame["datetime"] = pd.to_datetime(
-            frame["date"] + frame["time"],
-            format="%Y%m%d%H%M%S",
-            errors="coerce",
-        )
-        if frame["datetime"].isna().any():
+
+        if frame.empty and validated_rows:
             raise RuntimeError(
                 "Malformed KIS overseas minute chart payload: invalid xymd/xhms format"
             )
-
-        frame = (
-            frame.assign(
-                date=lambda d: pd.to_datetime(d["datetime"]).dt.date,
-                time=lambda d: pd.to_datetime(d["datetime"]).dt.time,
-            )
-            .loc[:, _MINUTE_FRAME_COLUMNS]
-            .drop_duplicates(subset=["datetime"], keep="first")
-            .sort_values("datetime")
-            .reset_index(drop=True)
-        )
 
         has_more = _has_overseas_minute_pagination(js.get("output1"))
         next_keyb = None
