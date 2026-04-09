@@ -137,382 +137,14 @@ class TradeNotifier:
             return self._discord_webhook_kr
         elif market_type_normalized in {"crypto", "cryptocurrency", "coin", "암호화폐"}:
             return self._discord_webhook_crypto
+        elif market_type_normalized in {"alerts", "alert"}:
+            return self._discord_webhook_alerts
         else:
             logger.warning(f"Unknown market type: {market_type}")
             return None
 
     def _has_telegram_delivery_config(self) -> bool:
         return bool(self._http_client and self._bot_token and self._chat_ids)
-
-    # ── format wrappers (delegate to formatter modules) ────────────────
-
-    def _format_buy_notification(
-        self,
-        symbol: str,
-        korean_name: str,
-        order_count: int,
-        total_amount: float,
-        prices: list[float],
-        volumes: list[float],
-        market_type: str = "암호화폐",
-    ) -> DiscordEmbed:
-        return fmt_discord.format_buy_notification(
-            symbol=symbol,
-            korean_name=korean_name,
-            order_count=order_count,
-            total_amount=total_amount,
-            prices=prices,
-            volumes=volumes,
-            market_type=market_type,
-        )
-
-    def _format_sell_notification(
-        self,
-        symbol: str,
-        korean_name: str,
-        order_count: int,
-        total_volume: float,
-        prices: list[float],
-        volumes: list[float],
-        expected_amount: float,
-        market_type: str = "암호화폐",
-    ) -> DiscordEmbed:
-        return fmt_discord.format_sell_notification(
-            symbol=symbol,
-            korean_name=korean_name,
-            order_count=order_count,
-            total_volume=total_volume,
-            prices=prices,
-            volumes=volumes,
-            expected_amount=expected_amount,
-            market_type=market_type,
-        )
-
-    def _format_cancel_notification(
-        self,
-        symbol: str,
-        korean_name: str,
-        cancel_count: int,
-        order_type: str,
-        market_type: str = "암호화폐",
-    ) -> DiscordEmbed:
-        return fmt_discord.format_cancel_notification(
-            symbol=symbol,
-            korean_name=korean_name,
-            cancel_count=cancel_count,
-            order_type=order_type,
-            market_type=market_type,
-        )
-
-    def _format_analysis_notification(
-        self,
-        symbol: str,
-        korean_name: str,
-        decision: str,
-        confidence: float,
-        reasons: list[str],
-        market_type: str = "암호화폐",
-    ) -> DiscordEmbed:
-        return fmt_discord.format_analysis_notification(
-            symbol=symbol,
-            korean_name=korean_name,
-            decision=decision,
-            confidence=confidence,
-            reasons=reasons,
-            market_type=market_type,
-        )
-
-    def _format_automation_summary(
-        self,
-        total_coins: int,
-        analyzed: int,
-        bought: int,
-        sold: int,
-        errors: int,
-        duration_seconds: float,
-    ) -> DiscordEmbed:
-        return fmt_discord.format_automation_summary(
-            total_coins=total_coins,
-            analyzed=analyzed,
-            bought=bought,
-            sold=sold,
-            errors=errors,
-            duration_seconds=duration_seconds,
-        )
-
-    def _format_failure_notification(
-        self,
-        symbol: str,
-        korean_name: str,
-        reason: str,
-        market_type: str = "암호화폐",
-    ) -> DiscordEmbed:
-        return fmt_discord.format_failure_notification(
-            symbol=symbol,
-            korean_name=korean_name,
-            reason=reason,
-            market_type=market_type,
-        )
-
-    def _format_toss_buy_recommendation(
-        self,
-        symbol: str,
-        korean_name: str,
-        current_price: float,
-        toss_quantity: int,
-        toss_avg_price: float,
-        kis_quantity: int | None,
-        kis_avg_price: float | None,
-        recommended_price: float,
-        recommended_quantity: int,
-        currency: str = "원",
-        market_type: str = "국내주식",
-        detail_url: str | None = None,
-    ) -> DiscordEmbed:
-        return fmt_discord.format_toss_buy_recommendation(
-            symbol=symbol,
-            korean_name=korean_name,
-            current_price=current_price,
-            toss_quantity=toss_quantity,
-            toss_avg_price=toss_avg_price,
-            kis_quantity=kis_quantity,
-            kis_avg_price=kis_avg_price,
-            recommended_price=recommended_price,
-            recommended_quantity=recommended_quantity,
-            currency=currency,
-            market_type=market_type,
-            detail_url=detail_url,
-        )
-
-    def _format_toss_sell_recommendation(
-        self,
-        symbol: str,
-        korean_name: str,
-        current_price: float,
-        toss_quantity: int,
-        toss_avg_price: float,
-        kis_quantity: int | None,
-        kis_avg_price: float | None,
-        recommended_price: float,
-        recommended_quantity: int,
-        expected_profit: float,
-        profit_percent: float,
-        currency: str = "원",
-        market_type: str = "국내주식",
-        detail_url: str | None = None,
-    ) -> DiscordEmbed:
-        return fmt_discord.format_toss_sell_recommendation(
-            symbol=symbol,
-            korean_name=korean_name,
-            current_price=current_price,
-            toss_quantity=toss_quantity,
-            toss_avg_price=toss_avg_price,
-            kis_quantity=kis_quantity,
-            kis_avg_price=kis_avg_price,
-            recommended_price=recommended_price,
-            recommended_quantity=recommended_quantity,
-            expected_profit=expected_profit,
-            profit_percent=profit_percent,
-            currency=currency,
-            market_type=market_type,
-            detail_url=detail_url,
-        )
-
-    def _format_toss_price_recommendation_discord_embed(
-        self,
-        symbol: str,
-        korean_name: str,
-        current_price: float,
-        toss_quantity: int,
-        toss_avg_price: float,
-        decision: str,
-        confidence: float,
-        reasons: list[str],
-        appropriate_buy_min: float | None,
-        appropriate_buy_max: float | None,
-        appropriate_sell_min: float | None,
-        appropriate_sell_max: float | None,
-        buy_hope_min: float | None = None,
-        buy_hope_max: float | None = None,
-        sell_target_min: float | None = None,
-        sell_target_max: float | None = None,
-        currency: str = "원",
-        market_type: str = "국내주식",
-        detail_url: str | None = None,
-    ) -> DiscordEmbed:
-        return fmt_discord.format_toss_price_recommendation(
-            symbol=symbol,
-            korean_name=korean_name,
-            current_price=current_price,
-            toss_quantity=toss_quantity,
-            toss_avg_price=toss_avg_price,
-            decision=decision,
-            confidence=confidence,
-            reasons=reasons,
-            appropriate_buy_min=appropriate_buy_min,
-            appropriate_buy_max=appropriate_buy_max,
-            appropriate_sell_min=appropriate_sell_min,
-            appropriate_sell_max=appropriate_sell_max,
-            buy_hope_min=buy_hope_min,
-            buy_hope_max=buy_hope_max,
-            sell_target_min=sell_target_min,
-            sell_target_max=sell_target_max,
-            currency=currency,
-            market_type=market_type,
-            detail_url=detail_url,
-        )
-
-    def _format_buy_notification_telegram(
-        self,
-        symbol: str,
-        korean_name: str,
-        order_count: int,
-        total_amount: float,
-        prices: list[float],
-        volumes: list[float],
-        market_type: str = "암호화폐",
-    ) -> str:
-        return fmt_telegram.format_buy_notification_telegram(
-            symbol=symbol,
-            korean_name=korean_name,
-            order_count=order_count,
-            total_amount=total_amount,
-            prices=prices,
-            volumes=volumes,
-            market_type=market_type,
-        )
-
-    def _format_sell_notification_telegram(
-        self,
-        symbol: str,
-        korean_name: str,
-        order_count: int,
-        total_volume: float,
-        prices: list[float],
-        volumes: list[float],
-        expected_amount: float,
-        market_type: str = "암호화폐",
-    ) -> str:
-        return fmt_telegram.format_sell_notification_telegram(
-            symbol=symbol,
-            korean_name=korean_name,
-            order_count=order_count,
-            total_volume=total_volume,
-            prices=prices,
-            volumes=volumes,
-            expected_amount=expected_amount,
-            market_type=market_type,
-        )
-
-    def _format_cancel_notification_telegram(
-        self,
-        symbol: str,
-        korean_name: str,
-        cancel_count: int,
-        order_type: str,
-        market_type: str = "암호화폐",
-    ) -> str:
-        return fmt_telegram.format_cancel_notification_telegram(
-            symbol=symbol,
-            korean_name=korean_name,
-            cancel_count=cancel_count,
-            order_type=order_type,
-            market_type=market_type,
-        )
-
-    def _format_analysis_notification_telegram(
-        self,
-        symbol: str,
-        korean_name: str,
-        decision: str,
-        confidence: float,
-        reasons: list[str],
-        market_type: str = "암호화폐",
-    ) -> str:
-        return fmt_telegram.format_analysis_notification_telegram(
-            symbol=symbol,
-            korean_name=korean_name,
-            decision=decision,
-            confidence=confidence,
-            reasons=reasons,
-            market_type=market_type,
-        )
-
-    def _format_automation_summary_telegram(
-        self,
-        total_coins: int,
-        analyzed: int,
-        bought: int,
-        sold: int,
-        errors: int,
-        duration_seconds: float,
-    ) -> str:
-        return fmt_telegram.format_automation_summary_telegram(
-            total_coins=total_coins,
-            analyzed=analyzed,
-            bought=bought,
-            sold=sold,
-            errors=errors,
-            duration_seconds=duration_seconds,
-        )
-
-    def _format_failure_notification_telegram(
-        self,
-        symbol: str,
-        korean_name: str,
-        reason: str,
-        market_type: str = "암호화폐",
-    ) -> str:
-        return fmt_telegram.format_failure_notification_telegram(
-            symbol=symbol,
-            korean_name=korean_name,
-            reason=reason,
-            market_type=market_type,
-        )
-
-    def _format_toss_price_recommendation_html(
-        self,
-        symbol: str,
-        korean_name: str,
-        current_price: float,
-        toss_quantity: int,
-        toss_avg_price: float,
-        decision: str,
-        confidence: float,
-        reasons: list[str],
-        appropriate_buy_min: float | None,
-        appropriate_buy_max: float | None,
-        appropriate_sell_min: float | None,
-        appropriate_sell_max: float | None,
-        buy_hope_min: float | None = None,
-        buy_hope_max: float | None = None,
-        sell_target_min: float | None = None,
-        sell_target_max: float | None = None,
-        currency: str = "원",
-        market_type: str = "국내주식",
-        detail_url: str | None = None,
-    ) -> str:
-        return fmt_telegram.format_toss_price_recommendation_html(
-            symbol=symbol,
-            korean_name=korean_name,
-            current_price=current_price,
-            toss_quantity=toss_quantity,
-            toss_avg_price=toss_avg_price,
-            decision=decision,
-            confidence=confidence,
-            reasons=reasons,
-            appropriate_buy_min=appropriate_buy_min,
-            appropriate_buy_max=appropriate_buy_max,
-            appropriate_sell_min=appropriate_sell_min,
-            appropriate_sell_max=appropriate_sell_max,
-            buy_hope_min=buy_hope_min,
-            buy_hope_max=buy_hope_max,
-            sell_target_min=sell_target_min,
-            sell_target_max=sell_target_max,
-            currency=currency,
-            market_type=market_type,
-            detail_url=detail_url,
-        )
 
     # ── transport wrappers (delegate to transports module) ──
 
@@ -554,6 +186,42 @@ class TradeNotifier:
             content=content,
         )
 
+    async def _dispatch(
+        self,
+        discord_embed: DiscordEmbed | None,
+        telegram_message: str,
+        market_type: str | None = None,
+    ) -> bool:
+        """Discord-first, Telegram-fallback dispatch.
+
+        Args:
+            discord_embed: Discord embed to send. Skipped if None.
+            telegram_message: Telegram fallback text. Skipped if empty.
+            market_type: Market type for webhook routing. None skips Discord.
+
+        Returns:
+            True if notification was delivered via any channel.
+        """
+        if not self._enabled:
+            return False
+
+        try:
+            if market_type and discord_embed:
+                webhook_url = self._get_webhook_for_market_type(market_type)
+                if webhook_url:
+                    if await self._send_to_discord_embed_single(
+                        discord_embed, webhook_url
+                    ):
+                        return True
+
+            if telegram_message:
+                return await self._send_to_telegram(telegram_message)
+
+            return False
+        except Exception:
+            logger.exception("Notification dispatch failed")
+            return False
+
     # ── public notify methods ──────────────────────────────────────────
 
     async def notify_buy_order(
@@ -567,49 +235,25 @@ class TradeNotifier:
         market_type: str = "암호화폐",
     ) -> bool:
         """Send buy order notification. Discord first, Telegram fallback."""
-        if not self._enabled:
-            return False
-
-        try:
-            embed = self._format_buy_notification(
-                symbol,
-                korean_name,
-                order_count,
-                total_amount,
-                prices,
-                volumes,
-                market_type,
-            )
-
-            webhook_url = self._get_webhook_for_market_type(market_type)
-
-            if webhook_url:
-                discord_success = await self._send_to_discord_embed_single(
-                    embed, webhook_url
-                )
-                if discord_success:
-                    return True
-                logger.info("Discord send failed, falling back to Telegram")
-
-            telegram_message = self._format_buy_notification_telegram(
-                symbol,
-                korean_name,
-                order_count,
-                total_amount,
-                prices,
-                volumes,
-                market_type,
-            )
-            telegram_success = await self._send_to_telegram(telegram_message)
-            if telegram_success:
-                return True
-
-            logger.warning("Failed to send buy notification via Discord or Telegram")
-            return False
-
-        except Exception as e:
-            logger.error(f"Failed to send buy notification: {e}")
-            return False
+        embed = fmt_discord.format_buy_notification(
+            symbol=symbol,
+            korean_name=korean_name,
+            order_count=order_count,
+            total_amount=total_amount,
+            prices=prices,
+            volumes=volumes,
+            market_type=market_type,
+        )
+        telegram_msg = fmt_telegram.format_buy_notification_telegram(
+            symbol=symbol,
+            korean_name=korean_name,
+            order_count=order_count,
+            total_amount=total_amount,
+            prices=prices,
+            volumes=volumes,
+            market_type=market_type,
+        )
+        return await self._dispatch(embed, telegram_msg, market_type)
 
     async def notify_sell_order(
         self,
@@ -623,51 +267,27 @@ class TradeNotifier:
         market_type: str = "암호화폐",
     ) -> bool:
         """Send sell order notification. Discord first, Telegram fallback."""
-        if not self._enabled:
-            return False
-
-        try:
-            embed = self._format_sell_notification(
-                symbol,
-                korean_name,
-                order_count,
-                total_volume,
-                prices,
-                volumes,
-                expected_amount,
-                market_type,
-            )
-
-            webhook_url = self._get_webhook_for_market_type(market_type)
-
-            if webhook_url:
-                discord_success = await self._send_to_discord_embed_single(
-                    embed, webhook_url
-                )
-                if discord_success:
-                    return True
-                logger.info("Discord send failed, falling back to Telegram")
-
-            telegram_message = self._format_sell_notification_telegram(
-                symbol,
-                korean_name,
-                order_count,
-                total_volume,
-                prices,
-                volumes,
-                expected_amount,
-                market_type,
-            )
-            telegram_success = await self._send_to_telegram(telegram_message)
-            if telegram_success:
-                return True
-
-            logger.warning("Failed to send sell notification via Discord or Telegram")
-            return False
-
-        except Exception as e:
-            logger.error(f"Failed to send sell notification: {e}")
-            return False
+        embed = fmt_discord.format_sell_notification(
+            symbol=symbol,
+            korean_name=korean_name,
+            order_count=order_count,
+            total_volume=total_volume,
+            prices=prices,
+            volumes=volumes,
+            expected_amount=expected_amount,
+            market_type=market_type,
+        )
+        telegram_msg = fmt_telegram.format_sell_notification_telegram(
+            symbol=symbol,
+            korean_name=korean_name,
+            order_count=order_count,
+            total_volume=total_volume,
+            prices=prices,
+            volumes=volumes,
+            expected_amount=expected_amount,
+            market_type=market_type,
+        )
+        return await self._dispatch(embed, telegram_msg, market_type)
 
     async def notify_cancel_orders(
         self,
@@ -678,37 +298,21 @@ class TradeNotifier:
         market_type: str = "암호화폐",
     ) -> bool:
         """Send order cancellation notification. Discord first, Telegram fallback."""
-        if not self._enabled:
-            return False
-
-        try:
-            embed = self._format_cancel_notification(
-                symbol, korean_name, cancel_count, order_type, market_type
-            )
-
-            webhook_url = self._get_webhook_for_market_type(market_type)
-
-            if webhook_url:
-                discord_success = await self._send_to_discord_embed_single(
-                    embed, webhook_url
-                )
-                if discord_success:
-                    return True
-                logger.info("Discord send failed, falling back to Telegram")
-
-            telegram_message = self._format_cancel_notification_telegram(
-                symbol, korean_name, cancel_count, order_type, market_type
-            )
-            telegram_success = await self._send_to_telegram(telegram_message)
-            if telegram_success:
-                return True
-
-            logger.warning("Failed to send cancel notification via Discord or Telegram")
-            return False
-
-        except Exception as e:
-            logger.error(f"Failed to send cancel notification: {e}")
-            return False
+        embed = fmt_discord.format_cancel_notification(
+            symbol=symbol,
+            korean_name=korean_name,
+            cancel_count=cancel_count,
+            order_type=order_type,
+            market_type=market_type,
+        )
+        telegram_msg = fmt_telegram.format_cancel_notification_telegram(
+            symbol=symbol,
+            korean_name=korean_name,
+            cancel_count=cancel_count,
+            order_type=order_type,
+            market_type=market_type,
+        )
+        return await self._dispatch(embed, telegram_msg, market_type)
 
     async def notify_analysis_complete(
         self,
@@ -720,39 +324,23 @@ class TradeNotifier:
         market_type: str = "암호화폐",
     ) -> bool:
         """Send AI analysis completion notification. Discord first, Telegram fallback."""
-        if not self._enabled:
-            return False
-
-        try:
-            embed = self._format_analysis_notification(
-                symbol, korean_name, decision, confidence, reasons, market_type
-            )
-
-            webhook_url = self._get_webhook_for_market_type(market_type)
-
-            if webhook_url:
-                discord_success = await self._send_to_discord_embed_single(
-                    embed, webhook_url
-                )
-                if discord_success:
-                    return True
-                logger.info("Discord send failed, falling back to Telegram")
-
-            telegram_message = self._format_analysis_notification_telegram(
-                symbol, korean_name, decision, confidence, reasons, market_type
-            )
-            telegram_success = await self._send_to_telegram(telegram_message)
-            if telegram_success:
-                return True
-
-            logger.warning(
-                "Failed to send analysis notification via Discord or Telegram"
-            )
-            return False
-
-        except Exception as e:
-            logger.error(f"Failed to send analysis notification: {e}")
-            return False
+        embed = fmt_discord.format_analysis_notification(
+            symbol=symbol,
+            korean_name=korean_name,
+            decision=decision,
+            confidence=confidence,
+            reasons=reasons,
+            market_type=market_type,
+        )
+        telegram_msg = fmt_telegram.format_analysis_notification_telegram(
+            symbol=symbol,
+            korean_name=korean_name,
+            decision=decision,
+            confidence=confidence,
+            reasons=reasons,
+            market_type=market_type,
+        )
+        return await self._dispatch(embed, telegram_msg, market_type)
 
     async def notify_automation_summary(
         self,
@@ -764,30 +352,23 @@ class TradeNotifier:
         duration_seconds: float,
     ) -> bool:
         """Send automation execution summary notification."""
-        if not self._enabled:
-            return False
-
-        try:
-            # Try Discord first
-            if self._discord_webhook_alerts:
-                embed = self._format_automation_summary(
-                    total_coins, analyzed, bought, sold, errors, duration_seconds
-                )
-                discord_success = await self._send_to_discord_embed_single(
-                    embed, self._discord_webhook_alerts
-                )
-                if discord_success:
-                    return True
-                logger.info("Discord send failed, falling back to Telegram")
-
-            # Fall back to Telegram
-            telegram_message = self._format_automation_summary_telegram(
-                total_coins, analyzed, bought, sold, errors, duration_seconds
-            )
-            return await self._send_to_telegram(telegram_message)
-        except Exception as e:
-            logger.error(f"Failed to send summary notification: {e}")
-            return False
+        embed = fmt_discord.format_automation_summary(
+            total_coins=total_coins,
+            analyzed=analyzed,
+            bought=bought,
+            sold=sold,
+            errors=errors,
+            duration_seconds=duration_seconds,
+        )
+        telegram_msg = fmt_telegram.format_automation_summary_telegram(
+            total_coins=total_coins,
+            analyzed=analyzed,
+            bought=bought,
+            sold=sold,
+            errors=errors,
+            duration_seconds=duration_seconds,
+        )
+        return await self._dispatch(embed, telegram_msg, "alerts")
 
     async def notify_trade_failure(
         self,
@@ -797,39 +378,19 @@ class TradeNotifier:
         market_type: str = "암호화폐",
     ) -> bool:
         """Send trade failure notification. Discord first, Telegram fallback."""
-        if not self._enabled:
-            return False
-
-        try:
-            embed = self._format_failure_notification(
-                symbol, korean_name, reason, market_type
-            )
-
-            webhook_url = self._get_webhook_for_market_type(market_type)
-
-            if webhook_url:
-                discord_success = await self._send_to_discord_embed_single(
-                    embed, webhook_url
-                )
-                if discord_success:
-                    return True
-                logger.info("Discord send failed, falling back to Telegram")
-
-            telegram_message = self._format_failure_notification_telegram(
-                symbol, korean_name, reason, market_type
-            )
-            telegram_success = await self._send_to_telegram(telegram_message)
-            if telegram_success:
-                return True
-
-            logger.warning(
-                "Failed to send failure notification via Discord or Telegram"
-            )
-            return False
-
-        except Exception as e:
-            logger.error(f"Failed to send failure notification: {e}")
-            return False
+        embed = fmt_discord.format_failure_notification(
+            symbol=symbol,
+            korean_name=korean_name,
+            reason=reason,
+            market_type=market_type,
+        )
+        telegram_msg = fmt_telegram.format_failure_notification_telegram(
+            symbol=symbol,
+            korean_name=korean_name,
+            reason=reason,
+            market_type=market_type,
+        )
+        return await self._dispatch(embed, telegram_msg, market_type)
 
     async def notify_toss_buy_recommendation(
         self,
@@ -849,35 +410,27 @@ class TradeNotifier:
         """Send Toss manual buy recommendation notification."""
         if not self._enabled:
             return False
-
         if toss_quantity <= 0:
             logger.debug(
                 f"Skipping Toss buy notification for {symbol}: no Toss holdings"
             )
             return False
 
-        try:
-            embed = self._format_toss_buy_recommendation(
-                symbol=symbol,
-                korean_name=korean_name,
-                current_price=current_price,
-                toss_quantity=toss_quantity,
-                toss_avg_price=toss_avg_price,
-                kis_quantity=kis_quantity,
-                kis_avg_price=kis_avg_price,
-                recommended_price=recommended_price,
-                recommended_quantity=recommended_quantity,
-                currency=currency,
-                market_type=market_type,
-                detail_url=detail_url,
-            )
-            webhook_url = self._get_webhook_for_market_type(market_type)
-            if not webhook_url:
-                return False
-            return await self._send_to_discord_embed_single(embed, webhook_url)
-        except Exception as e:
-            logger.error(f"Failed to send Toss buy recommendation: {e}")
-            return False
+        embed = fmt_discord.format_toss_buy_recommendation(
+            symbol=symbol,
+            korean_name=korean_name,
+            current_price=current_price,
+            toss_quantity=toss_quantity,
+            toss_avg_price=toss_avg_price,
+            kis_quantity=kis_quantity,
+            kis_avg_price=kis_avg_price,
+            recommended_price=recommended_price,
+            recommended_quantity=recommended_quantity,
+            currency=currency,
+            market_type=market_type,
+            detail_url=detail_url,
+        )
+        return await self._dispatch(embed, "", market_type)
 
     async def notify_toss_sell_recommendation(
         self,
@@ -899,37 +452,29 @@ class TradeNotifier:
         """Send Toss manual sell recommendation notification."""
         if not self._enabled:
             return False
-
         if toss_quantity <= 0:
             logger.debug(
                 f"Skipping Toss sell notification for {symbol}: no Toss holdings"
             )
             return False
 
-        try:
-            embed = self._format_toss_sell_recommendation(
-                symbol=symbol,
-                korean_name=korean_name,
-                current_price=current_price,
-                toss_quantity=toss_quantity,
-                toss_avg_price=toss_avg_price,
-                kis_quantity=kis_quantity,
-                kis_avg_price=kis_avg_price,
-                recommended_price=recommended_price,
-                recommended_quantity=recommended_quantity,
-                expected_profit=expected_profit,
-                profit_percent=profit_percent,
-                currency=currency,
-                market_type=market_type,
-                detail_url=detail_url,
-            )
-            webhook_url = self._get_webhook_for_market_type(market_type)
-            if not webhook_url:
-                return False
-            return await self._send_to_discord_embed_single(embed, webhook_url)
-        except Exception as e:
-            logger.error(f"Failed to send Toss sell recommendation: {e}")
-            return False
+        embed = fmt_discord.format_toss_sell_recommendation(
+            symbol=symbol,
+            korean_name=korean_name,
+            current_price=current_price,
+            toss_quantity=toss_quantity,
+            toss_avg_price=toss_avg_price,
+            kis_quantity=kis_quantity,
+            kis_avg_price=kis_avg_price,
+            recommended_price=recommended_price,
+            recommended_quantity=recommended_quantity,
+            expected_profit=expected_profit,
+            profit_percent=profit_percent,
+            currency=currency,
+            market_type=market_type,
+            detail_url=detail_url,
+        )
+        return await self._dispatch(embed, "", market_type)
 
     async def notify_toss_price_recommendation(
         self,
@@ -956,40 +501,32 @@ class TradeNotifier:
         """Send Toss price recommendation notification with AI analysis."""
         if not self._enabled:
             return False
-
         if toss_quantity <= 0:
             logger.debug(f"Skipping Toss notification for {symbol}: no Toss holdings")
             return False
 
-        try:
-            embed = self._format_toss_price_recommendation_discord_embed(
-                symbol=symbol,
-                korean_name=korean_name,
-                current_price=current_price,
-                toss_quantity=toss_quantity,
-                toss_avg_price=toss_avg_price,
-                decision=decision,
-                confidence=confidence,
-                reasons=reasons,
-                appropriate_buy_min=appropriate_buy_min,
-                appropriate_buy_max=appropriate_buy_max,
-                appropriate_sell_min=appropriate_sell_min,
-                appropriate_sell_max=appropriate_sell_max,
-                buy_hope_min=buy_hope_min,
-                buy_hope_max=buy_hope_max,
-                sell_target_min=sell_target_min,
-                sell_target_max=sell_target_max,
-                currency=currency,
-                market_type=market_type,
-                detail_url=detail_url,
-            )
-            webhook_url = self._get_webhook_for_market_type(market_type)
-            if not webhook_url:
-                return False
-            return await self._send_to_discord_embed_single(embed, webhook_url)
-        except Exception as e:
-            logger.error(f"Failed to send Toss price recommendation: {e}")
-            return False
+        embed = fmt_discord.format_toss_price_recommendation(
+            symbol=symbol,
+            korean_name=korean_name,
+            current_price=current_price,
+            toss_quantity=toss_quantity,
+            toss_avg_price=toss_avg_price,
+            decision=decision,
+            confidence=confidence,
+            reasons=reasons,
+            appropriate_buy_min=appropriate_buy_min,
+            appropriate_buy_max=appropriate_buy_max,
+            appropriate_sell_min=appropriate_sell_min,
+            appropriate_sell_max=appropriate_sell_max,
+            buy_hope_min=buy_hope_min,
+            buy_hope_max=buy_hope_max,
+            sell_target_min=sell_target_min,
+            sell_target_max=sell_target_max,
+            currency=currency,
+            market_type=market_type,
+            detail_url=detail_url,
+        )
+        return await self._dispatch(embed, "", market_type)
 
     async def notify_openclaw_message(
         self,
