@@ -692,39 +692,23 @@ class TradeNotifier:
         market_type: str = "암호화폐",
     ) -> bool:
         """Send AI analysis completion notification. Discord first, Telegram fallback."""
-        if not self._enabled:
-            return False
-
-        try:
-            embed = self._format_analysis_notification(
-                symbol, korean_name, decision, confidence, reasons, market_type
-            )
-
-            webhook_url = self._get_webhook_for_market_type(market_type)
-
-            if webhook_url:
-                discord_success = await self._send_to_discord_embed_single(
-                    embed, webhook_url
-                )
-                if discord_success:
-                    return True
-                logger.info("Discord send failed, falling back to Telegram")
-
-            telegram_message = self._format_analysis_notification_telegram(
-                symbol, korean_name, decision, confidence, reasons, market_type
-            )
-            telegram_success = await self._send_to_telegram(telegram_message)
-            if telegram_success:
-                return True
-
-            logger.warning(
-                "Failed to send analysis notification via Discord or Telegram"
-            )
-            return False
-
-        except Exception as e:
-            logger.error(f"Failed to send analysis notification: {e}")
-            return False
+        embed = fmt_discord.format_analysis_notification(
+            symbol=symbol,
+            korean_name=korean_name,
+            decision=decision,
+            confidence=confidence,
+            reasons=reasons,
+            market_type=market_type,
+        )
+        telegram_msg = fmt_telegram.format_analysis_notification_telegram(
+            symbol=symbol,
+            korean_name=korean_name,
+            decision=decision,
+            confidence=confidence,
+            reasons=reasons,
+            market_type=market_type,
+        )
+        return await self._dispatch(embed, telegram_msg, market_type)
 
     async def notify_automation_summary(
         self,
@@ -736,30 +720,23 @@ class TradeNotifier:
         duration_seconds: float,
     ) -> bool:
         """Send automation execution summary notification."""
-        if not self._enabled:
-            return False
-
-        try:
-            # Try Discord first
-            if self._discord_webhook_alerts:
-                embed = self._format_automation_summary(
-                    total_coins, analyzed, bought, sold, errors, duration_seconds
-                )
-                discord_success = await self._send_to_discord_embed_single(
-                    embed, self._discord_webhook_alerts
-                )
-                if discord_success:
-                    return True
-                logger.info("Discord send failed, falling back to Telegram")
-
-            # Fall back to Telegram
-            telegram_message = self._format_automation_summary_telegram(
-                total_coins, analyzed, bought, sold, errors, duration_seconds
-            )
-            return await self._send_to_telegram(telegram_message)
-        except Exception as e:
-            logger.error(f"Failed to send summary notification: {e}")
-            return False
+        embed = fmt_discord.format_automation_summary(
+            total_coins=total_coins,
+            analyzed=analyzed,
+            bought=bought,
+            sold=sold,
+            errors=errors,
+            duration_seconds=duration_seconds,
+        )
+        telegram_msg = fmt_telegram.format_automation_summary_telegram(
+            total_coins=total_coins,
+            analyzed=analyzed,
+            bought=bought,
+            sold=sold,
+            errors=errors,
+            duration_seconds=duration_seconds,
+        )
+        return await self._dispatch(embed, telegram_msg, "alerts")
 
     async def notify_trade_failure(
         self,
@@ -769,39 +746,19 @@ class TradeNotifier:
         market_type: str = "암호화폐",
     ) -> bool:
         """Send trade failure notification. Discord first, Telegram fallback."""
-        if not self._enabled:
-            return False
-
-        try:
-            embed = self._format_failure_notification(
-                symbol, korean_name, reason, market_type
-            )
-
-            webhook_url = self._get_webhook_for_market_type(market_type)
-
-            if webhook_url:
-                discord_success = await self._send_to_discord_embed_single(
-                    embed, webhook_url
-                )
-                if discord_success:
-                    return True
-                logger.info("Discord send failed, falling back to Telegram")
-
-            telegram_message = self._format_failure_notification_telegram(
-                symbol, korean_name, reason, market_type
-            )
-            telegram_success = await self._send_to_telegram(telegram_message)
-            if telegram_success:
-                return True
-
-            logger.warning(
-                "Failed to send failure notification via Discord or Telegram"
-            )
-            return False
-
-        except Exception as e:
-            logger.error(f"Failed to send failure notification: {e}")
-            return False
+        embed = fmt_discord.format_failure_notification(
+            symbol=symbol,
+            korean_name=korean_name,
+            reason=reason,
+            market_type=market_type,
+        )
+        telegram_msg = fmt_telegram.format_failure_notification_telegram(
+            symbol=symbol,
+            korean_name=korean_name,
+            reason=reason,
+            market_type=market_type,
+        )
+        return await self._dispatch(embed, telegram_msg, market_type)
 
     async def notify_toss_buy_recommendation(
         self,
