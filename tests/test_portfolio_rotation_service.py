@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from typing import Any
+from unittest.mock import AsyncMock, patch
+
 import pytest
 
 from app.services.portfolio_rotation_service import PortfolioRotationService
@@ -29,10 +32,6 @@ class TestBuildRotationPlan:
     ):
         result = await service.build_rotation_plan(market="us")
         assert result["supported"] is False
-
-from typing import Any
-from unittest.mock import AsyncMock, patch
-
 
 def _make_position(
     symbol: str = "KRW-BTC",

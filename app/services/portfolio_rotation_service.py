@@ -89,6 +89,7 @@ async def _fetch_buy_candidates(
     from app.mcp_server.tooling.analysis_tool_handlers import screen_stocks_impl
 
     try:
+        # Over-fetch to compensate for held-symbol filtering
         result = await screen_stocks_impl(
             market="crypto",
             strategy="oversold",
@@ -107,6 +108,7 @@ async def _fetch_buy_candidates(
             "symbol": symbol,
             "name": row.get("name", ""),
             "price": row.get("price"),
+            "rsi": row.get("rsi"),
             "change_rate": row.get("change_rate"),
             "trade_amount_24h": row.get("trade_amount"),
             "screen_reason": ["RSI oversold", "sufficient liquidity"],
@@ -157,6 +159,8 @@ def _classify_position(
         if hold_until_str:
             try:
                 hold_until = datetime.fromisoformat(hold_until_str)
+                if hold_until.tzinfo is None:
+                    hold_until = hold_until.replace(tzinfo=now_kst().tzinfo)
                 if hold_until > now_kst():
                     return "locked", {
                         "symbol": symbol,
