@@ -15,11 +15,13 @@ from app.mcp_server.tooling.fundamentals_sources_finnhub import (
 from app.mcp_server.tooling.fundamentals_sources_naver import (
     _fetch_analysis_snapshot_naver,
     _fetch_investment_opinions_naver,
-    _fetch_investment_opinions_yfinance,
     _fetch_news_naver,
     _fetch_sector_peers_naver,
-    _fetch_sector_peers_us,
     _fetch_valuation_naver,
+)
+from app.mcp_server.tooling.fundamentals_sources_yfinance import (
+    _fetch_investment_opinions_yfinance,
+    _fetch_sector_peers_us,
     _fetch_valuation_yfinance,
     _YFinanceSnapshot,
 )

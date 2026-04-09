@@ -10,9 +10,11 @@ from typing import Any
 from app.mcp_server.tooling.fundamentals._helpers import normalize_equity_market
 from app.mcp_server.tooling.fundamentals_sources_naver import (
     _fetch_investment_opinions_naver,
-    _fetch_investment_opinions_yfinance,
     _fetch_investor_trends_naver,
     _fetch_valuation_naver,
+)
+from app.mcp_server.tooling.fundamentals_sources_yfinance import (
+    _fetch_investment_opinions_yfinance,
     _fetch_valuation_yfinance,
 )
 from app.mcp_server.tooling.shared import (

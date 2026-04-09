@@ -6,6 +6,8 @@ from typing import Any
 
 from app.mcp_server.tooling.fundamentals_sources_naver import (
     _fetch_sector_peers_naver,
+)
+from app.mcp_server.tooling.fundamentals_sources_yfinance import (
     _fetch_sector_peers_us,
 )
 from app.mcp_server.tooling.shared import (

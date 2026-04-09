@@ -13,6 +13,8 @@ from app.mcp_server.tooling.fundamentals_sources_finnhub import (
 )
 from app.mcp_server.tooling.fundamentals_sources_naver import (
     _fetch_financials_naver,
+)
+from app.mcp_server.tooling.fundamentals_sources_yfinance import (
     _fetch_financials_yfinance,
 )
 from app.mcp_server.tooling.shared import (
