@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -20,7 +21,7 @@ import httpx
 import redis.asyncio as redis
 
 from app.core.config import settings
-from app.models.kospi200 import Kospi200Constituent
+from app.core.number_utils import parse_korean_number as _parse_korean_number
 
 if TYPE_CHECKING:
     from redis.asyncio import Redis
@@ -283,32 +284,6 @@ async def _get_redis_client() -> Redis:
     )
 
 
-def _parse_korean_number(value_str: str | None) -> int | float | None:
-    """Parse Korean number formats.
-
-    Handles formats like:
-    - "1,234" → 1234
-    - "-" → None
-    - "" → None
-    """
-    if value_str is None:
-        return None
-
-    value_str = str(value_str).strip()
-    if not value_str or value_str == "-":
-        return None
-
-    # Remove commas
-    value_str = value_str.replace(",", "")
-
-    try:
-        # Try to parse as float first
-        value = float(value_str)
-        return int(value) if value.is_integer() else value
-    except ValueError:
-        return None
-
-
 async def _fetch_max_working_date() -> str:
     """Fetch the most recent trading date from KRX resource bundle.
 
@@ -453,6 +428,123 @@ async def _get_recent_trading_date(trd_date: str | None = None) -> str:
     )
 
 
+async def _fetch_with_date_fallback(
+    cache_prefix: str,
+    bld: str,
+    extra_params: dict[str, str] | None,
+    normalize_fn: Callable[[list[dict[str, Any]], str], list[dict[str, Any]]],
+    trd_date: str | None = None,
+    validator_fn: Callable[[list[dict[str, Any]]], bool] | None = None,
+) -> list[dict[str, Any]]:
+    """Fetch KRX data with date fallback, caching, and normalization.
+
+    Common pattern shared by fetch_stock_all, fetch_etf_all, fetch_valuation_all:
+    1. Resolve date candidates (KRX resource bundle + weekday fallback)
+    2. For each date: check cache → call API → normalize → cache → return
+    3. On empty response: try next date
+
+    Args:
+        cache_prefix: Cache key prefix (e.g. "stock:all:STK")
+        bld: KRX API bld parameter
+        extra_params: Additional params for _fetch_krx_data (e.g. {"mktId": "STK"})
+        normalize_fn: Function(raw_data, actual_date) → normalized list
+        trd_date: Specific date in YYYYMMDD format, or None for auto-detect
+        validator_fn: Optional function to validate cached data
+
+    Returns:
+        Normalized data list, or empty list if all dates exhausted
+    """
+    # Resolve date candidates
+    if trd_date:
+        date_candidates = [trd_date]
+    else:
+        fallback = _generate_date_candidates(None, KRX_MAX_RETRY_DATES)
+        try:
+            max_date = await _fetch_max_working_date()
+            logger.info(f"KRX max working date: {max_date}")
+            date_candidates = [max_date] + [d for d in fallback if d != max_date]
+        except Exception as e:
+            logger.warning(f"Failed to fetch max working date: {e}, using fallback")
+            date_candidates = fallback
+
+    for actual_date in date_candidates:
+        cache_key = await _get_cache_key(cache_prefix, actual_date)
+
+        # Try cache
+        cached = await _get_cached_data(cache_key)
+        if cached:
+            if validator_fn is None or validator_fn(cached):
+                logger.info(f"Cache hit for {cache_prefix} on {actual_date}")
+                return cached
+            else:
+                logger.warning(
+                    f"Cache hit but validation failed for {cache_prefix} on {actual_date}"
+                )
+
+        # Fetch from KRX API
+        logger.info(f"Fetching KRX data for {cache_prefix}, date={actual_date}")
+        raw_data = await _fetch_krx_data(
+            bld=bld, trdDd=actual_date, **(extra_params or {})
+        )
+
+        if raw_data:
+            normalized = normalize_fn(raw_data, actual_date)
+            await _set_cached_data(cache_key, normalized)
+            return normalized
+        else:
+            logger.warning(
+                f"Empty KRX response for {cache_prefix} on {actual_date}, trying next date"
+            )
+            continue
+
+    logger.error(
+        f"Failed to fetch {cache_prefix} data after trying {len(date_candidates)} dates"
+    )
+    return []
+
+
+def _normalize_stock_row(
+    item: dict[str, Any], actual_date: str
+) -> dict[str, Any] | None:
+    """Normalize a single KRX stock row."""
+    raw_market_cap = _parse_korean_number(item.get("MKTCAP"))
+    market_cap_in_100m_won = (
+        raw_market_cap / 1_0000_0000 if raw_market_cap is not None else None
+    )
+
+    close = _parse_korean_number(item.get("TDD_CLSPRC") or item.get("CLSPRC"))
+    volume = _parse_korean_number(item.get("ACC_TRDVOL") or item.get("TRDVOL"))
+    value = _parse_korean_number(item.get("ACC_TRDVAL") or item.get("TRDVAL"))
+
+    change_rate = _parse_korean_number(item.get("FLUC_RT"))
+    change_price = _parse_korean_number(item.get("CMPPREVDD_PRC"))
+    if item.get("FLUC_TP_CD") == "2":
+        if change_rate is not None:
+            change_rate = -change_rate
+        if change_price is not None:
+            change_price = -change_price
+
+    name = item.get("ISU_ABBRV", "").strip() or item.get("ISU_NM", "").strip()
+    code = item.get("ISU_CD", "").strip()
+    if not code or not name:
+        return None
+
+    return {
+        "code": code,
+        "short_code": item.get("ISU_SRT_CD", "").strip(),
+        "abbreviation": item.get("ISU_ABBRV", "").strip(),
+        "name": name,
+        "market": item.get("MKT_NM", "").strip(),
+        "date": actual_date,
+        "close": close,
+        "market_cap": market_cap_in_100m_won,
+        "volume": volume,
+        "value": value,
+        "change_rate": change_rate,
+        "change_price": change_price,
+    }
+
+
 async def fetch_stock_all(
     market: str = "STK",
     trd_date: str | None = None,
@@ -465,115 +557,71 @@ async def fetch_stock_all(
 
     Returns:
         List of stock dictionaries with keys:
-        - code: Stock code (6-digit)
-        - short_code: Short code
-        - abbreviation: Abbreviation
-        - name: Stock name
-        - market: Market name
-        - date: Trading date
-        - close: Closing price
-        - market_cap: Market cap in 억원 (100 million KRW)
-        - volume: Trading volume
-        - value: Trading value
+        - code, short_code, abbreviation, name, market, date
+        - close, market_cap (억원), volume, value, change_rate, change_price
     """
-    # Resolve trading date: use KRX resource bundle, then fall back to date candidates
-    if trd_date:
-        date_candidates = [trd_date]
-    else:
-        fallback = _generate_date_candidates(None, KRX_MAX_RETRY_DATES)
-        try:
-            max_date = await _fetch_max_working_date()
-            logger.info(f"KRX max working date: {max_date}")
-            # Put max_date first, then add fallback dates (deduped)
-            date_candidates = [max_date] + [d for d in fallback if d != max_date]
-        except Exception as e:
-            logger.warning(f"Failed to fetch max working date: {e}, using fallback")
-            date_candidates = fallback
 
-    for actual_date in date_candidates:
-        # Build cache key
-        cache_key = await _get_cache_key(f"stock:all:{market}", actual_date)
+    def normalize(
+        raw_data: list[dict[str, Any]], actual_date: str
+    ) -> list[dict[str, Any]]:
+        stocks = []
+        for item in raw_data:
+            stock = _normalize_stock_row(item, actual_date)
+            if stock is not None:
+                stocks.append(stock)
+        return stocks
 
-        # Try cache
-        cached = await _get_cached_data(cache_key)
-        if cached:
-            logger.info(f"Cache hit for {market} on {actual_date}")
-            return cached
-
-        # Fetch from KRX API
-        logger.info(f"Fetching KRX stock data for market={market}, date={actual_date}")
-        raw_data = await _fetch_krx_data(
-            bld="dbms/MDC/STAT/standard/MDCSTAT01501",
-            mktId=market,
-            trdDd=actual_date,
-        )
-
-        if raw_data:
-            # Normalize data
-            # Column names with share=1&money=1: TDD_CLSPRC, ACC_TRDVOL, ACC_TRDVAL
-            stocks = []
-            for item in raw_data:
-                # Parse market cap (with money=1, KRX returns in 원; convert to 억원)
-                raw_market_cap = _parse_korean_number(item.get("MKTCAP"))
-                market_cap_in_100m_won = (
-                    raw_market_cap / 1_0000_0000 if raw_market_cap is not None else None
-                )
-
-                close = _parse_korean_number(
-                    item.get("TDD_CLSPRC") or item.get("CLSPRC")
-                )
-                volume = _parse_korean_number(
-                    item.get("ACC_TRDVOL") or item.get("TRDVOL")
-                )
-                value = _parse_korean_number(
-                    item.get("ACC_TRDVAL") or item.get("TRDVAL")
-                )
-
-                change_rate = _parse_korean_number(item.get("FLUC_RT"))
-                change_price = _parse_korean_number(item.get("CMPPREVDD_PRC"))
-                # FLUC_TP_CD: "1"=rise, "2"=fall, "3"=unchanged — negate for falls
-                if item.get("FLUC_TP_CD") == "2":
-                    if change_rate is not None:
-                        change_rate = -change_rate
-                    if change_price is not None:
-                        change_price = -change_price
-
-                name = (
-                    item.get("ISU_ABBRV", "").strip() or item.get("ISU_NM", "").strip()
-                )
-                stock = {
-                    "code": item.get("ISU_CD", "").strip(),
-                    "short_code": item.get("ISU_SRT_CD", "").strip(),
-                    "abbreviation": item.get("ISU_ABBRV", "").strip(),
-                    "name": name,
-                    "market": item.get("MKT_NM", "").strip(),
-                    "date": actual_date,
-                    "close": close,
-                    "market_cap": market_cap_in_100m_won,  # 억원 단위
-                    "volume": volume,
-                    "value": value,
-                    "change_rate": change_rate,
-                    "change_price": change_price,
-                }
-                if stock["code"] and stock["name"]:
-                    stocks.append(stock)
-
-            # Cache result
-            await _set_cached_data(cache_key, stocks)
-
-            return stocks
-        else:
-            # Empty response, try next date
-            logger.warning(
-                f"Empty KRX response for {market} on {actual_date}, trying previous day"
-            )
-            continue
-
-    # All dates exhausted
-    logger.error(
-        f"Failed to fetch {market} data after trying {len(date_candidates)} dates"
+    return await _fetch_with_date_fallback(
+        cache_prefix=f"stock:all:{market}",
+        bld="dbms/MDC/STAT/standard/MDCSTAT01501",
+        extra_params={"mktId": market},
+        normalize_fn=normalize,
+        trd_date=trd_date,
     )
-    return []
+
+
+def _normalize_etf_row(item: dict[str, Any], actual_date: str) -> dict[str, Any] | None:
+    """Normalize a single KRX ETF row."""
+    raw_market_cap = _parse_korean_number(item.get("MKTCAP"))
+    market_cap_in_100m_won = (
+        raw_market_cap / 1_0000_0000 if raw_market_cap is not None else None
+    )
+
+    close = _parse_korean_number(item.get("TDD_CLSPRC") or item.get("CLSPRC"))
+    volume = _parse_korean_number(item.get("ACC_TRDVOL") or item.get("TRDVOL"))
+    value = _parse_korean_number(item.get("ACC_TRDVAL") or item.get("TRDVAL"))
+
+    change_rate = _parse_korean_number(item.get("FLUC_RT"))
+    change_price = _parse_korean_number(item.get("CMPPREVDD_PRC"))
+    if item.get("FLUC_TP_CD") == "2":
+        if change_rate is not None:
+            change_rate = -change_rate
+        if change_price is not None:
+            change_price = -change_price
+
+    name = item.get("ISU_ABBRV", "").strip() or item.get("ISU_NM", "").strip()
+    code = item.get("ISU_CD", "").strip()
+    if not code or not name:
+        return None
+
+    index_name = item.get("IDX_IND_NM", "").strip() or item.get("IDX_NM", "").strip()
+
+    return {
+        "code": code,
+        "short_code": item.get("ISU_SRT_CD", "").strip(),
+        "abbreviation": item.get("ISU_ABBRV", "").strip(),
+        "name": name,
+        "index_name": index_name,
+        "index_class_code": item.get("IDX_IND_CLSS_CD", "").strip(),
+        "index_class_name": item.get("IDX_IND_CLSS_NM", "").strip(),
+        "date": actual_date,
+        "close": close,
+        "market_cap": market_cap_in_100m_won,
+        "volume": volume,
+        "value": value,
+        "change_rate": change_rate,
+        "change_price": change_price,
+    }
 
 
 async def fetch_etf_all(
@@ -588,122 +636,31 @@ async def fetch_etf_all(
 
     Returns:
         List of ETF dictionaries with keys:
-        - code: ETF code
-        - short_code: Short code
-        - abbreviation: Abbreviation
-        - name: ETF name
-        - index_name: Index name (tracking index)
-        - index_class_code: Index classification code
-        - index_class_name: Index classification name
-        - date: Trading date
-        - close: Closing price
-        - market_cap: Market cap in 억원 (100 million KRW)
-        - volume: Trading volume
-        - value: Trading value
+        - code, short_code, abbreviation, name, index_name
+        - index_class_code, index_class_name, date
+        - close, market_cap (억원), volume, value, change_rate, change_price
     """
-    # Resolve trading date
-    if trd_date:
-        date_candidates = [trd_date]
-    else:
-        fallback = _generate_date_candidates(None, KRX_MAX_RETRY_DATES)
-        try:
-            max_date = await _fetch_max_working_date()
-            logger.info(f"KRX max working date for ETF: {max_date}")
-            date_candidates = [max_date] + [d for d in fallback if d != max_date]
-        except Exception as e:
-            logger.warning(f"Failed to fetch max working date: {e}, using fallback")
-            date_candidates = fallback
+    cache_suffix = "etf:all"
+    if idx_ind_clss_cd:
+        cache_suffix += f":{idx_ind_clss_cd}"
 
-    for actual_date in date_candidates:
-        # Build cache key
-        cache_suffix = "etf:all"
-        if idx_ind_clss_cd:
-            cache_suffix += f":{idx_ind_clss_cd}"
-        cache_key = await _get_cache_key(cache_suffix, actual_date)
+    def normalize(
+        raw_data: list[dict[str, Any]], actual_date: str
+    ) -> list[dict[str, Any]]:
+        etfs = []
+        for item in raw_data:
+            etf = _normalize_etf_row(item, actual_date)
+            if etf is not None:
+                etfs.append(etf)
+        return etfs
 
-        # Try cache
-        cached = await _get_cached_data(cache_key)
-        if cached:
-            logger.info(f"Cache hit for ETFs on {actual_date}")
-            return cached
-
-        # Fetch from KRX API
-        logger.info(
-            f"Fetching KRX ETF data for date={actual_date}, idx_ind_clss_cd={idx_ind_clss_cd}"
-        )
-        raw_data = await _fetch_krx_data(
-            bld="dbms/MDC/STAT/standard/MDCSTAT04301",
-            trdDd=actual_date,
-        )
-
-        if raw_data:
-            # Normalize data
-            etfs = []
-            for item in raw_data:
-                # Parse market cap (with money=1, KRX returns in 원; convert to 억원)
-                raw_market_cap = _parse_korean_number(item.get("MKTCAP"))
-                market_cap_in_100m_won = (
-                    raw_market_cap / 1_0000_0000 if raw_market_cap is not None else None
-                )
-
-                close = _parse_korean_number(
-                    item.get("TDD_CLSPRC") or item.get("CLSPRC")
-                )
-                volume = _parse_korean_number(
-                    item.get("ACC_TRDVOL") or item.get("TRDVOL")
-                )
-                value = _parse_korean_number(
-                    item.get("ACC_TRDVAL") or item.get("TRDVAL")
-                )
-
-                change_rate = _parse_korean_number(item.get("FLUC_RT"))
-                change_price = _parse_korean_number(item.get("CMPPREVDD_PRC"))
-                # FLUC_TP_CD: "1"=rise, "2"=fall, "3"=unchanged — negate for falls
-                if item.get("FLUC_TP_CD") == "2":
-                    if change_rate is not None:
-                        change_rate = -change_rate
-                    if change_price is not None:
-                        change_price = -change_price
-
-                name = (
-                    item.get("ISU_ABBRV", "").strip() or item.get("ISU_NM", "").strip()
-                )
-                index_name = (
-                    item.get("IDX_IND_NM", "").strip() or item.get("IDX_NM", "").strip()
-                )
-                etf = {
-                    "code": item.get("ISU_CD", "").strip(),
-                    "short_code": item.get("ISU_SRT_CD", "").strip(),
-                    "abbreviation": item.get("ISU_ABBRV", "").strip(),
-                    "name": name,
-                    "index_name": index_name,
-                    "index_class_code": item.get("IDX_IND_CLSS_CD", "").strip(),
-                    "index_class_name": item.get("IDX_IND_CLSS_NM", "").strip(),
-                    "date": actual_date,
-                    "close": close,
-                    "market_cap": market_cap_in_100m_won,  # 억원 단위
-                    "volume": volume,
-                    "value": value,
-                    "change_rate": change_rate,
-                    "change_price": change_price,
-                }
-                if etf["code"] and etf["name"]:
-                    etfs.append(etf)
-
-            # Cache result
-            await _set_cached_data(cache_key, etfs)
-
-            return etfs
-        else:
-            # Empty response, try next date
-            logger.warning(
-                f"Empty KRX response for ETFs on {actual_date}, trying previous day"
-            )
-            continue
-
-    # All dates exhausted
-    logger.error(f"Failed to fetch ETF data after trying {len(date_candidates)} dates")
-    return []
+    return await _fetch_with_date_fallback(
+        cache_prefix=cache_suffix,
+        bld="dbms/MDC/STAT/standard/MDCSTAT04301",
+        extra_params=None,
+        normalize_fn=normalize,
+        trd_date=trd_date,
+    )
 
 
 async def fetch_stock_all_cached(
@@ -757,6 +714,36 @@ async def fetch_etf_all_cached(
     return await fetch_etf_all(trd_date, idx_ind_clss_cd)
 
 
+def _normalize_valuation_row(item: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
+    """Normalize a single KRX valuation row. Returns (code, valuation_dict) or None."""
+    code = item.get("ISU_SRT_CD", "").strip()
+    if not code:
+        return None
+
+    per = _parse_korean_number(item.get("PER"))
+    pbr = _parse_korean_number(item.get("PBR"))
+    eps = _parse_korean_number(item.get("EPS"))
+    bps = _parse_korean_number(item.get("BPS"))
+    dividend_yield_raw = _parse_korean_number(item.get("DVD_YLD"))
+
+    dividend_yield = (
+        dividend_yield_raw / 100.0 if dividend_yield_raw is not None else None
+    )
+
+    # Set PER/PBR to None for 0 values
+    per = None if per == 0 else per
+    pbr = None if pbr == 0 else pbr
+
+    return code, {
+        "ISU_SRT_CD": code,
+        "per": per,
+        "pbr": pbr,
+        "eps": eps,
+        "bps": bps,
+        "dividend_yield": dividend_yield,
+    }
+
+
 async def fetch_valuation_all(
     market: str = "ALL",
     trd_date: str | None = None,
@@ -769,112 +756,37 @@ async def fetch_valuation_all(
 
     Returns:
         Dictionary keyed by ISU_SRT_CD (6-digit short code) with values:
-        - per: P/E ratio
-        - pbr: P/B ratio
-        - eps: Earnings per share
-        - bps: Book value per share
-        - dividend_yield: Dividend yield (decimal, 0.0256 = 2.56%)
+        - per, pbr, eps, bps, dividend_yield (decimal, 0.0256 = 2.56%)
     """
-    # Resolve trading date
-    if trd_date:
-        date_candidates = [trd_date]
-    else:
-        fallback = _generate_date_candidates(None, KRX_MAX_RETRY_DATES)
-        try:
-            max_date = await _fetch_max_working_date()
-            logger.info(f"KRX max working date for valuation: {max_date}")
-            date_candidates = [max_date] + [d for d in fallback if d != max_date]
-        except Exception as e:
-            logger.warning(f"Failed to fetch max working date: {e}, using fallback")
-            date_candidates = fallback
 
-    for actual_date in date_candidates:
-        # Build cache key
-        cache_key = await _get_cache_key(f"valuation:{market}", actual_date)
+    def normalize(
+        raw_data: list[dict[str, Any]], actual_date: str
+    ) -> list[dict[str, Any]]:
+        results = []
+        for item in raw_data:
+            parsed = _normalize_valuation_row(item)
+            if parsed is not None:
+                _, val_dict = parsed
+                results.append(val_dict)
+        return results
 
-        # Try cache
-        cached = await _get_cached_data(cache_key)
-        if cached:
-            logger.info(f"Cache hit for valuation {market} on {actual_date}")
-            # Handle both new cache format (with ISU_SRT_CD) and old format (without)
-            valuations: dict[str, dict[str, Any]] = {}
-            invalid_rows = 0
-            for item in cached:
-                code = item.get("ISU_SRT_CD")
-                if code and isinstance(code, str) and code.strip():
-                    valuations[code.strip()] = item
-                else:
-                    invalid_rows += 1
-            if invalid_rows > 0:
-                logger.warning(
-                    f"Valuation cache invalid rows (missing ISU_SRT_CD): {invalid_rows}"
-                )
-            # If all rows are invalid, fall through to API re-fetch
-            if not valuations:
-                logger.warning(
-                    "Valuation cache entirely invalid, falling back to API re-fetch"
-                )
-            else:
-                return valuations
+    def validator(cached: list[dict[str, Any]]) -> bool:
+        if not cached:
+            return True
+        # Ensure at least some items have ISU_SRT_CD
+        return any(item.get("ISU_SRT_CD") for item in cached)
 
-        # Fetch from KRX API
-        logger.info(
-            f"Fetching KRX valuation data for market={market}, date={actual_date}"
-        )
-        raw_data = await _fetch_krx_data(
-            bld="dbms/MDC/STAT/standard/MDCSTAT03501",
-            mktId=market,
-            trdDd=actual_date,
-        )
-
-        if raw_data:
-            # Normalize data into dict keyed by ISU_SRT_CD
-            valuations = {}
-            for item in raw_data:
-                code = item.get("ISU_SRT_CD", "").strip()
-                per = _parse_korean_number(item.get("PER"))
-                pbr = _parse_korean_number(item.get("PBR"))
-                eps = _parse_korean_number(item.get("EPS"))
-                bps = _parse_korean_number(item.get("BPS"))
-                dividend_yield_raw = _parse_korean_number(item.get("DVD_YLD"))
-
-                # Convert dividend yield from percentage to decimal (e.g., 2.56 -> 0.0256)
-                dividend_yield = (
-                    dividend_yield_raw / 100.0
-                    if dividend_yield_raw is not None
-                    else None
-                )
-
-                # Set PER/PBR to None for 0 or "-" values
-                per = None if per == 0 else per
-                pbr = None if pbr == 0 else pbr
-
-                if code:
-                    valuations[code] = {
-                        "ISU_SRT_CD": code,
-                        "per": per,
-                        "pbr": pbr,
-                        "eps": eps,
-                        "bps": bps,
-                        "dividend_yield": dividend_yield,
-                    }
-
-            # Cache result (include ISU_SRT_CD for proper deserialization)
-            await _set_cached_data(cache_key, list(valuations.values()))
-
-            return valuations
-        else:
-            # Empty response, try next date
-            logger.warning(
-                f"Empty KRX valuation response for {market} on {actual_date}, trying previous day"
-            )
-            continue
-
-    # All dates exhausted
-    logger.error(
-        f"Failed to fetch {market} valuation data after trying {len(date_candidates)} dates"
+    cached_list = await _fetch_with_date_fallback(
+        cache_prefix=f"valuation:{market}",
+        bld="dbms/MDC/STAT/standard/MDCSTAT03501",
+        extra_params={"mktId": market},
+        normalize_fn=normalize,
+        trd_date=trd_date,
+        validator_fn=validator,
     )
-    return {}
+
+    # Convert list → dict keyed by ISU_SRT_CD
+    return {item["ISU_SRT_CD"]: item for item in cached_list if item.get("ISU_SRT_CD")}
 
 
 async def fetch_valuation_all_cached(
@@ -959,249 +871,3 @@ def classify_etf_category(
         categories.append("기타")
 
     return categories
-
-
-class KRXMarketDataService:
-    """KRX 마켓 데이터 서비스"""
-
-    KRX_DOWNLOAD_URL = "https://data.krx.co.kr/comm/fileDn/DownloadOfFileService"
-
-    async def fetch_kospi200_constituents(self) -> list[dict[str, Any]]:
-        """KRX에서 KOSPI200 구성종목 데이터를 가져옵니다.
-
-        Returns:
-            List[Dict]: 종목 정보 목록
-            {
-                "종목코드": "005930",
-                "종목명": "삼성전자",
-                "시가총액": 1234567890,
-                "지수비중": 1.23,
-                "섹터": "전기전자"
-            }
-        """
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            params = {
-                "mktId": "STK",
-                "trdDd": datetime.now().strftime("%Y%m%d"),
-                "share": "1",
-                "money": "1",
-                "csvxls_isNo": "false",
-            }
-
-            try:
-                response = await client.post(
-                    self.KRX_DOWNLOAD_URL,
-                    data=params,
-                    headers={
-                        "Content-Type": "application/x-www-form-urlencoded",
-                        "User-Agent": "Mozilla/5.0",
-                    },
-                )
-
-                if response.status_code == 200:
-                    content = response.text
-                    return self._parse_krx_csv_content(content)
-                else:
-                    logger.error(
-                        "KRX API 호출 실패: status_code=%d", response.status_code
-                    )
-                    return []
-
-            except Exception as e:
-                logger.error("KRX 데이터 수집 중 오류 발생: %s", e)
-                return []
-
-    def _parse_krx_csv_content(self, content: str) -> list[dict[str, Any]]:
-        """KRX에서 반환된 CSV 형식의 데이터를 파싱합니다."""
-        if not content or len(content) < 100:
-            logger.warning("KRX 응답 데이터가 비어있거나 너무 짧습니다")
-            return []
-
-        lines = content.split("\n")
-        if len(lines) < 2:
-            return []
-
-        headers = lines[0].split("\t")
-        constituents = []
-
-        for line in lines[1:]:
-            if not line.strip():
-                continue
-
-            values = line.split("\t")
-            if len(values) < len(headers):
-                continue
-
-            row = dict(zip(headers, values, strict=False))
-
-            # 종목코드 형식: 'KR70684000' 또는 '005930'
-            stock_code = row.get("종목코드", "")
-            if stock_code.startswith("KR7"):
-                stock_code = stock_code[4:]
-
-            # 시가총액 파싱 (숫자로 변환)
-            market_cap_str = row.get("시가총액", "0").replace(",", "")
-            try:
-                market_cap = float(market_cap_str) if market_cap_str else 0.0
-            except ValueError:
-                market_cap = 0.0
-
-            # 지수비중 파싱
-            weight_str = row.get("지수비중", "0").replace(",", "")
-            try:
-                weight = float(weight_str) if weight_str else 0.0
-            except ValueError:
-                weight = 0.0
-
-            constituents.append(
-                {
-                    "stock_code": stock_code,
-                    "stock_name": row.get("종목명", ""),
-                    "market_cap": market_cap,
-                    "weight": weight,
-                    "sector": row.get("섹터", ""),
-                }
-            )
-
-        return constituents
-
-
-class Kospi200Service:
-    """KOSPI200 구성종목 관리 서비스"""
-
-    def __init__(self, db_session):
-        self.db = db_session
-
-    async def get_all_constituents(
-        self, active_only: bool = True
-    ) -> list[Kospi200Constituent]:
-        """KOSPI200 구성종목 목록 조회"""
-        from sqlalchemy import select
-
-        query = select(Kospi200Constituent)
-
-        if active_only:
-            query = query.where(Kospi200Constituent.is_active == True)
-
-        result = await self.db.execute(query)
-        return list(result.scalars().all())
-
-    async def get_constituent_by_code(
-        self, stock_code: str
-    ) -> Kospi200Constituent | None:
-        """종목코드로 구성종목 조회"""
-        from sqlalchemy import select
-
-        query = select(Kospi200Constituent).where(
-            Kospi200Constituent.stock_code == stock_code
-        )
-        result = await self.db.execute(query)
-        return result.scalar_one_or_none()
-
-    async def update_constituents(
-        self, constituents_data: list[dict[str, Any]]
-    ) -> dict[str, int]:
-        """KOSPI200 구성종목 정보를 업데이트합니다.
-
-        Args:
-            constituents_data: KRX에서 가져온 종목 데이터 목록
-
-        Returns:
-            Dict: 업데이트 결과 통계
-            {
-                "added": 10,
-                "updated": 180,
-                "removed": 5
-            }
-        """
-        from datetime import datetime as dt
-
-        from sqlalchemy import select, update
-
-        added = 0
-        updated = 0
-        removed = 0
-
-        now = dt.now()
-
-        # 현재 DB에 있는 모든 구성종목의 코드를 가져옴
-        existing_codes_query = select(Kospi200Constituent.stock_code).where(
-            Kospi200Constituent.is_active == True
-        )
-        existing_codes_result = await self.db.execute(existing_codes_query)
-        existing_codes = {row[0] for row in existing_codes_result.fetchall()}
-
-        new_codes = set()
-
-        for data in constituents_data:
-            stock_code = data["stock_code"]
-            new_codes.add(stock_code)
-
-            existing = await self.get_constituent_by_code(stock_code)
-
-            if existing:
-                # 기존 종목 업데이트
-                if existing.is_active is True:
-                    await self.db.execute(
-                        update(Kospi200Constituent)
-                        .where(Kospi200Constituent.id == existing.id)
-                        .values(
-                            stock_name=data["stock_name"],
-                            market_cap=data["market_cap"],
-                            weight=data["weight"],
-                            sector=data["sector"],
-                            updated_at=now,
-                        )
-                    )
-                    updated += 1
-                else:
-                    # 이전에 제외되었던 종목이 다시 포함됨
-                    await self.db.execute(
-                        update(Kospi200Constituent)
-                        .where(Kospi200Constituent.id == existing.id)
-                        .values(
-                            stock_name=data["stock_name"],
-                            market_cap=data["market_cap"],
-                            weight=data["weight"],
-                            sector=data["sector"],
-                            is_active=True,
-                            removed_at=None,
-                            added_at=now,
-                            updated_at=now,
-                        )
-                    )
-                    added += 1
-            else:
-                # 새로운 종목 추가
-                new_constituent = Kospi200Constituent(
-                    stock_code=stock_code,
-                    stock_name=data["stock_name"],
-                    market_cap=data["market_cap"],
-                    weight=data["weight"],
-                    sector=data["sector"],
-                    is_active=True,
-                    added_at=now,
-                )
-                self.db.add(new_constituent)
-                added += 1
-
-        # KRX 목록에 없는 종목들은 구성종목에서 제외 처리
-        removed_codes = existing_codes - new_codes
-        if removed_codes:
-            await self.db.execute(
-                update(Kospi200Constituent)
-                .where(Kospi200Constituent.stock_code.in_(removed_codes))
-                .values(is_active=False, removed_at=now, updated_at=now)
-            )
-            removed = len(removed_codes)
-
-        await self.db.commit()
-
-        logger.info(
-            "KOSPI200 구성종목 업데이트 완료: 추가=%d, 업데이트=%d, 제외=%d",
-            added,
-            updated,
-            removed,
-        )
-
-        return {"added": added, "updated": updated, "removed": removed}

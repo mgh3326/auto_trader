@@ -1310,3 +1310,132 @@ class TestKRXSessionManager:
         assert manager._client is None
         assert manager._authenticated is False
         assert manager._auth_failed is False
+
+
+class TestFetchWithDateFallback:
+    """Test the _fetch_with_date_fallback common helper."""
+
+    @pytest.mark.asyncio
+    async def test_returns_normalized_data_on_success(self, monkeypatch):
+        """First date succeeds → returns normalized data."""
+        from app.services import krx
+
+        async def mock_get_cached_data(cache_key):
+            return None
+
+        async def mock_fetch_krx_data(**kwargs):
+            return [{"RAW_FIELD": "value1"}]
+
+        async def mock_set_cached_data(cache_key, data):
+            pass
+
+        monkeypatch.setattr(krx, "_get_cached_data", mock_get_cached_data)
+        monkeypatch.setattr(krx, "_fetch_krx_data", mock_fetch_krx_data)
+        monkeypatch.setattr(krx, "_set_cached_data", mock_set_cached_data)
+
+        def normalize(raw_data, actual_date):
+            return [
+                {"normalized": item["RAW_FIELD"], "date": actual_date}
+                for item in raw_data
+            ]
+
+        result = await krx._fetch_with_date_fallback(
+            cache_prefix="test:prefix",
+            bld="dbms/TEST/bld",
+            extra_params=None,
+            normalize_fn=normalize,
+            trd_date="20250401",
+        )
+
+        assert len(result) == 1
+        assert result[0]["normalized"] == "value1"
+        assert result[0]["date"] == "20250401"
+
+    @pytest.mark.asyncio
+    async def test_cache_hit_returns_cached(self, monkeypatch):
+        """Cache hit → returns cached data without calling API."""
+        from app.services import krx
+
+        cached = [{"from": "cache"}]
+
+        async def mock_get_cached_data(cache_key):
+            return cached
+
+        fetch_called = False
+
+        async def mock_fetch_krx_data(**kwargs):
+            nonlocal fetch_called
+            fetch_called = True
+            return []
+
+        monkeypatch.setattr(krx, "_get_cached_data", mock_get_cached_data)
+        monkeypatch.setattr(krx, "_fetch_krx_data", mock_fetch_krx_data)
+
+        result = await krx._fetch_with_date_fallback(
+            cache_prefix="test:prefix",
+            bld="dbms/TEST/bld",
+            extra_params=None,
+            normalize_fn=lambda raw, dt: raw,
+            trd_date="20250401",
+        )
+
+        assert result == cached
+        assert not fetch_called
+
+    @pytest.mark.asyncio
+    async def test_fallback_to_next_date_on_empty(self, monkeypatch):
+        """Empty response → tries next date candidate."""
+        from app.services import krx
+
+        call_dates = []
+
+        async def mock_get_cached_data(cache_key):
+            return None
+
+        async def mock_fetch_krx_data(**kwargs):
+            call_dates.append(kwargs.get("trdDd"))
+            if len(call_dates) == 1:
+                return []  # first date empty
+            return [{"RAW": "ok"}]
+
+        async def mock_set_cached_data(cache_key, data):
+            pass
+
+        monkeypatch.setattr(krx, "_get_cached_data", mock_get_cached_data)
+        monkeypatch.setattr(krx, "_fetch_krx_data", mock_fetch_krx_data)
+        monkeypatch.setattr(krx, "_set_cached_data", mock_set_cached_data)
+
+        result = await krx._fetch_with_date_fallback(
+            cache_prefix="test:prefix",
+            bld="dbms/TEST/bld",
+            extra_params=None,
+            normalize_fn=lambda raw, dt: [{"done": True}],
+            trd_date=None,  # auto-detect → multiple date candidates
+        )
+
+        assert len(call_dates) >= 2
+        assert result == [{"done": True}]
+
+    @pytest.mark.asyncio
+    async def test_all_dates_exhausted_returns_empty(self, monkeypatch):
+        """All dates return empty → returns []."""
+        from app.services import krx
+
+        async def mock_get_cached_data(cache_key):
+            return None
+
+        async def mock_fetch_krx_data(**kwargs):
+            return []
+
+        monkeypatch.setattr(krx, "_get_cached_data", mock_get_cached_data)
+        monkeypatch.setattr(krx, "_fetch_krx_data", mock_fetch_krx_data)
+
+        result = await krx._fetch_with_date_fallback(
+            cache_prefix="test:prefix",
+            bld="dbms/TEST/bld",
+            extra_params=None,
+            normalize_fn=lambda raw, dt: raw,
+            trd_date="20250101",
+        )
+
+        assert result == []

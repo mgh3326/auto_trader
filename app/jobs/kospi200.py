@@ -1,7 +1,8 @@
 import logging
 
 from app.core.db import AsyncSessionLocal
-from app.services.krx import Kospi200Service, KRXMarketDataService
+from app.services.kospi200_service import Kospi200Service
+from app.services.krx_market_data_service import KRXMarketDataService
 
 logger = logging.getLogger(__name__)
 
