@@ -603,49 +603,25 @@ class TradeNotifier:
         market_type: str = "암호화폐",
     ) -> bool:
         """Send buy order notification. Discord first, Telegram fallback."""
-        if not self._enabled:
-            return False
-
-        try:
-            embed = self._format_buy_notification(
-                symbol,
-                korean_name,
-                order_count,
-                total_amount,
-                prices,
-                volumes,
-                market_type,
-            )
-
-            webhook_url = self._get_webhook_for_market_type(market_type)
-
-            if webhook_url:
-                discord_success = await self._send_to_discord_embed_single(
-                    embed, webhook_url
-                )
-                if discord_success:
-                    return True
-                logger.info("Discord send failed, falling back to Telegram")
-
-            telegram_message = self._format_buy_notification_telegram(
-                symbol,
-                korean_name,
-                order_count,
-                total_amount,
-                prices,
-                volumes,
-                market_type,
-            )
-            telegram_success = await self._send_to_telegram(telegram_message)
-            if telegram_success:
-                return True
-
-            logger.warning("Failed to send buy notification via Discord or Telegram")
-            return False
-
-        except Exception as e:
-            logger.error(f"Failed to send buy notification: {e}")
-            return False
+        embed = fmt_discord.format_buy_notification(
+            symbol=symbol,
+            korean_name=korean_name,
+            order_count=order_count,
+            total_amount=total_amount,
+            prices=prices,
+            volumes=volumes,
+            market_type=market_type,
+        )
+        telegram_msg = fmt_telegram.format_buy_notification_telegram(
+            symbol=symbol,
+            korean_name=korean_name,
+            order_count=order_count,
+            total_amount=total_amount,
+            prices=prices,
+            volumes=volumes,
+            market_type=market_type,
+        )
+        return await self._dispatch(embed, telegram_msg, market_type)
 
     async def notify_sell_order(
         self,
@@ -659,51 +635,27 @@ class TradeNotifier:
         market_type: str = "암호화폐",
     ) -> bool:
         """Send sell order notification. Discord first, Telegram fallback."""
-        if not self._enabled:
-            return False
-
-        try:
-            embed = self._format_sell_notification(
-                symbol,
-                korean_name,
-                order_count,
-                total_volume,
-                prices,
-                volumes,
-                expected_amount,
-                market_type,
-            )
-
-            webhook_url = self._get_webhook_for_market_type(market_type)
-
-            if webhook_url:
-                discord_success = await self._send_to_discord_embed_single(
-                    embed, webhook_url
-                )
-                if discord_success:
-                    return True
-                logger.info("Discord send failed, falling back to Telegram")
-
-            telegram_message = self._format_sell_notification_telegram(
-                symbol,
-                korean_name,
-                order_count,
-                total_volume,
-                prices,
-                volumes,
-                expected_amount,
-                market_type,
-            )
-            telegram_success = await self._send_to_telegram(telegram_message)
-            if telegram_success:
-                return True
-
-            logger.warning("Failed to send sell notification via Discord or Telegram")
-            return False
-
-        except Exception as e:
-            logger.error(f"Failed to send sell notification: {e}")
-            return False
+        embed = fmt_discord.format_sell_notification(
+            symbol=symbol,
+            korean_name=korean_name,
+            order_count=order_count,
+            total_volume=total_volume,
+            prices=prices,
+            volumes=volumes,
+            expected_amount=expected_amount,
+            market_type=market_type,
+        )
+        telegram_msg = fmt_telegram.format_sell_notification_telegram(
+            symbol=symbol,
+            korean_name=korean_name,
+            order_count=order_count,
+            total_volume=total_volume,
+            prices=prices,
+            volumes=volumes,
+            expected_amount=expected_amount,
+            market_type=market_type,
+        )
+        return await self._dispatch(embed, telegram_msg, market_type)
 
     async def notify_cancel_orders(
         self,
@@ -714,37 +666,21 @@ class TradeNotifier:
         market_type: str = "암호화폐",
     ) -> bool:
         """Send order cancellation notification. Discord first, Telegram fallback."""
-        if not self._enabled:
-            return False
-
-        try:
-            embed = self._format_cancel_notification(
-                symbol, korean_name, cancel_count, order_type, market_type
-            )
-
-            webhook_url = self._get_webhook_for_market_type(market_type)
-
-            if webhook_url:
-                discord_success = await self._send_to_discord_embed_single(
-                    embed, webhook_url
-                )
-                if discord_success:
-                    return True
-                logger.info("Discord send failed, falling back to Telegram")
-
-            telegram_message = self._format_cancel_notification_telegram(
-                symbol, korean_name, cancel_count, order_type, market_type
-            )
-            telegram_success = await self._send_to_telegram(telegram_message)
-            if telegram_success:
-                return True
-
-            logger.warning("Failed to send cancel notification via Discord or Telegram")
-            return False
-
-        except Exception as e:
-            logger.error(f"Failed to send cancel notification: {e}")
-            return False
+        embed = fmt_discord.format_cancel_notification(
+            symbol=symbol,
+            korean_name=korean_name,
+            cancel_count=cancel_count,
+            order_type=order_type,
+            market_type=market_type,
+        )
+        telegram_msg = fmt_telegram.format_cancel_notification_telegram(
+            symbol=symbol,
+            korean_name=korean_name,
+            cancel_count=cancel_count,
+            order_type=order_type,
+            market_type=market_type,
+        )
+        return await self._dispatch(embed, telegram_msg, market_type)
 
     async def notify_analysis_complete(
         self,
