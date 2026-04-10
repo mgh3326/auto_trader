@@ -92,28 +92,28 @@ class KISClient(BaseKISClient):
     ) -> list[dict[str, Any]]:
         return await self._market_data.foreign_buying_rank(market, limit)
 
-    async def inquire_price(self, code: str, market: str = "UN") -> DataFrame:
+    async def inquire_price(self, code: str, market: str = "J") -> DataFrame:
         return await self._market_data.inquire_price(code, market)
 
-    async def inquire_orderbook(self, code: str, market: str = "UN") -> dict[str, Any]:
+    async def inquire_orderbook(self, code: str, market: str = "J") -> dict[str, Any]:
         return await self._market_data.inquire_orderbook(code, market)
 
     async def inquire_orderbook_snapshot(
         self,
         code: str,
-        market: str = "UN",
+        market: str = "J",
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         return await self._market_data.inquire_orderbook_snapshot(code, market)
 
     async def fetch_fundamental_info(
-        self, code: str, market: str = "UN"
+        self, code: str, market: str = "J"
     ) -> dict[str, Any]:
         return await self._market_data.fetch_fundamental_info(code, market)
 
     async def inquire_daily_itemchartprice(
         self,
         code: str,
-        market: str = "UN",
+        market: str = "J",
         n: int = 200,
         adj: bool = True,
         period: str = "D",
@@ -141,7 +141,7 @@ class KISClient(BaseKISClient):
     async def inquire_time_dailychartprice(
         self,
         code: str,
-        market: str = "UN",
+        market: str = "J",
         n: int = 200,
         end_date: pd.Timestamp | None = None,
         end_time: str | None = None,
@@ -153,7 +153,7 @@ class KISClient(BaseKISClient):
     async def inquire_minute_chart(
         self,
         code: str,
-        market: str = "UN",
+        market: str = "J",
         time_unit: int = 1,
         n: int = 200,
         end_date: pd.Timestamp | None = None,
@@ -165,7 +165,7 @@ class KISClient(BaseKISClient):
     async def fetch_minute_candles(
         self,
         code: str,
-        market: str = "UN",
+        market: str = "J",
         end_date: pd.Timestamp | None = None,
     ) -> dict[str, DataFrame]:
         return await self._market_data.fetch_minute_candles(code, market, end_date)
