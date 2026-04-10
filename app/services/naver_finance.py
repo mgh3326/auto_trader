@@ -418,61 +418,18 @@ def _parse_valuation_from_soups(
     main_soup: BeautifulSoup,
     sise_soup: BeautifulSoup,
 ) -> dict[str, Any]:
+    basic = _parse_basic_info(main_soup)
+    metrics = _parse_financial_metrics(main_soup)
+
     valuation: dict[str, Any] = {
         "symbol": code,
-        "name": None,
-        "current_price": None,
-        "per": None,
-        "pbr": None,
-        "roe": None,
-        "roe_controlling": None,
-        "dividend_yield": None,
+        "name": basic["name"],
+        "current_price": basic["current_price"],
+        **metrics,
         "high_52w": None,
         "low_52w": None,
         "current_position_52w": None,
     }
-
-    name_elem = main_soup.select_one("div.wrap_company h2 a")
-    if name_elem:
-        valuation["name"] = name_elem.get_text(strip=True)
-
-    valuation["current_price"] = _extract_current_price_from_main_soup(main_soup)
-
-    per_elem = main_soup.select_one("em#_per")
-    if per_elem:
-        per_val = _parse_korean_number(per_elem.get_text(strip=True))
-        if per_val is not None and per_val != 0:
-            valuation["per"] = per_val
-
-    pbr_elem = main_soup.select_one("em#_pbr")
-    if pbr_elem:
-        pbr_val = _parse_korean_number(pbr_elem.get_text(strip=True))
-        if pbr_val is not None and pbr_val != 0:
-            valuation["pbr"] = pbr_val
-
-    dvr_elem = main_soup.select_one("em#_dvr")
-    if dvr_elem:
-        dvr_val = _parse_korean_number(dvr_elem.get_text(strip=True))
-        if dvr_val is not None:
-            valuation["dividend_yield"] = dvr_val / 100
-
-    for row in main_soup.select("tr"):
-        th = row.select_one("th")
-        if not th:
-            continue
-        th_text = th.get_text(strip=True)
-        if not th_text.startswith("ROE"):
-            continue
-        tds = row.select("td")
-        if not tds:
-            continue
-        roe_val = _parse_korean_number(tds[0].get_text(strip=True))
-        if roe_val is None:
-            continue
-        if "ROE(%)" in th_text:
-            valuation["roe"] = roe_val
-        elif "지배" in th_text:
-            valuation["roe_controlling"] = roe_val
 
     for row in sise_soup.select("tr"):
         cells = row.select("th, td")
