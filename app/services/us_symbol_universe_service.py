@@ -16,6 +16,7 @@ from sqlalchemy.sql.elements import ColumnElement
 from app.core.db import AsyncSessionLocal
 from app.core.symbol import to_db_symbol
 from app.models.us_symbol_universe import USSymbolUniverse
+from app.services.symbol_universe_common import has_any_rows, normalize_name, sync_hint
 
 logger = logging.getLogger(__name__)
 
@@ -56,16 +57,8 @@ class _UniverseRow:
     name_en: str
 
 
-def _sync_hint() -> str:
-    return f"Sync required: {_US_UNIVERSE_SYNC_COMMAND}"
-
-
 def _normalize_symbol(value: str) -> str:
     return str(value or "").strip().upper()
-
-
-def _normalize_name(value: str) -> str:
-    return str(value or "").strip()
 
 
 async def _download_cod_lines(zip_name: str) -> list[str]:
@@ -107,8 +100,8 @@ def _parse_cod_rows(lines: list[str], exchange: str) -> tuple[list[_UniverseRow]
             _UniverseRow(
                 symbol=symbol,
                 exchange=exchange,
-                name_kr=_normalize_name(columns[6]),
-                name_en=_normalize_name(columns[7]),
+                name_kr=normalize_name(columns[6]),
+                name_en=normalize_name(columns[7]),
             )
         )
 
@@ -140,7 +133,9 @@ async def build_us_symbol_universe_snapshot() -> dict[str, _UniverseRow]:
             snapshot[row.symbol] = row
 
     if not snapshot:
-        raise ValueError(f"us_symbol_universe source is empty. {_sync_hint()}")
+        raise ValueError(
+            f"us_symbol_universe source is empty. {sync_hint(_US_UNIVERSE_SYNC_COMMAND)}"
+        )
 
     if duplicate_overwrites > 0:
         logger.warning(
@@ -215,7 +210,7 @@ async def sync_us_symbol_universe(db: AsyncSession | None = None) -> dict[str, i
     if db is not None:
         return await _apply_snapshot(db, snapshot)
 
-    async with AsyncSessionLocal() as session:
+    async with AsyncSessionLocal() as session:  # pyright: ignore[reportGeneralTypeIssues]
         async with session.begin():
             result = await _apply_snapshot(session, snapshot)
 
@@ -229,11 +224,6 @@ async def sync_us_symbol_universe(db: AsyncSession | None = None) -> dict[str, i
     return result
 
 
-async def _has_any_rows(db: AsyncSession) -> bool:
-    result = await db.execute(select(USSymbolUniverse.symbol).limit(1))
-    return result.scalar_one_or_none() is not None
-
-
 async def _resolve_active_symbol_row(db: AsyncSession, symbol: str) -> USSymbolUniverse:
     normalized_symbol = to_db_symbol(_normalize_symbol(symbol))
     if not normalized_symbol:
@@ -244,18 +234,18 @@ async def _resolve_active_symbol_row(db: AsyncSession, symbol: str) -> USSymbolU
     )
     row = result.scalar_one_or_none()
     if row is None:
-        if not await _has_any_rows(db):
+        if not await has_any_rows(db, USSymbolUniverse.symbol):
             raise USSymbolUniverseEmptyError(
-                f"us_symbol_universe is empty. {_sync_hint()}"
+                f"us_symbol_universe is empty. {sync_hint(_US_UNIVERSE_SYNC_COMMAND)}"
             )
         raise USSymbolNotRegisteredError(
             f"US symbol '{normalized_symbol}' is not registered in us_symbol_universe. "
-            f"{_sync_hint()}"
+            f"{sync_hint(_US_UNIVERSE_SYNC_COMMAND)}"
         )
     if not row.is_active:
         raise USSymbolInactiveError(
             f"US symbol '{normalized_symbol}' is inactive in us_symbol_universe. "
-            f"{_sync_hint()}"
+            f"{sync_hint(_US_UNIVERSE_SYNC_COMMAND)}"
         )
 
     return row
@@ -269,13 +259,13 @@ async def get_us_exchange_by_symbol(
         row = await _resolve_active_symbol_row(db, symbol)
         return row.exchange
 
-    async with AsyncSessionLocal() as session:
+    async with AsyncSessionLocal() as session:  # pyright: ignore[reportGeneralTypeIssues]
         row = await _resolve_active_symbol_row(session, symbol)
         return row.exchange
 
 
 async def _resolve_active_symbol_by_name(db: AsyncSession, name: str) -> str:
-    normalized_name = _normalize_name(name)
+    normalized_name = normalize_name(name)
     if not normalized_name:
         raise ValueError("name is required")
 
@@ -288,13 +278,13 @@ async def _resolve_active_symbol_by_name(db: AsyncSession, name: str) -> str:
     rows = list((await db.execute(stmt)).scalars().all())
 
     if not rows:
-        if not await _has_any_rows(db):
+        if not await has_any_rows(db, USSymbolUniverse.symbol):
             raise USSymbolUniverseEmptyError(
-                f"us_symbol_universe is empty. {_sync_hint()}"
+                f"us_symbol_universe is empty. {sync_hint(_US_UNIVERSE_SYNC_COMMAND)}"
             )
         raise USSymbolNotRegisteredError(
             f"US name '{normalized_name}' is not registered in us_symbol_universe. "
-            f"{_sync_hint()}"
+            f"{sync_hint(_US_UNIVERSE_SYNC_COMMAND)}"
         )
 
     active_rows = [row for row in rows if row.is_active]
@@ -303,7 +293,7 @@ async def _resolve_active_symbol_by_name(db: AsyncSession, name: str) -> str:
         preview = ", ".join(symbols[:10])
         raise USSymbolInactiveError(
             f"US name '{normalized_name}' is inactive in us_symbol_universe. "
-            f"matched_symbols=[{preview}]. {_sync_hint()}"
+            f"matched_symbols=[{preview}]. {sync_hint(_US_UNIVERSE_SYNC_COMMAND)}"
         )
 
     unique_symbols = sorted({row.symbol for row in active_rows})
@@ -311,7 +301,7 @@ async def _resolve_active_symbol_by_name(db: AsyncSession, name: str) -> str:
         preview = ", ".join(unique_symbols[:10])
         raise USSymbolNameAmbiguousError(
             f"US name '{normalized_name}' is ambiguous in us_symbol_universe. "
-            f"matched_symbols=[{preview}] count={len(unique_symbols)}. {_sync_hint()}"
+            f"matched_symbols=[{preview}] count={len(unique_symbols)}. {sync_hint(_US_UNIVERSE_SYNC_COMMAND)}"
         )
 
     return unique_symbols[0]
@@ -324,7 +314,7 @@ async def get_us_symbol_by_name(
     if db is not None:
         return await _resolve_active_symbol_by_name(db, name)
 
-    async with AsyncSessionLocal() as session:
+    async with AsyncSessionLocal() as session:  # pyright: ignore[reportGeneralTypeIssues]
         return await _resolve_active_symbol_by_name(session, name)
 
 
@@ -333,7 +323,7 @@ async def _search_us_symbols_impl(
     query: str,
     limit: int,
 ) -> list[dict[str, Any]]:
-    normalized_query = _normalize_name(query)
+    normalized_query = normalize_name(query)
     if not normalized_query:
         return []
 
@@ -364,8 +354,10 @@ async def _search_us_symbols_impl(
     )
     rows = list((await db.execute(stmt)).scalars().all())
 
-    if not rows and not await _has_any_rows(db):
-        raise USSymbolUniverseEmptyError(f"us_symbol_universe is empty. {_sync_hint()}")
+    if not rows and not await has_any_rows(db, USSymbolUniverse.symbol):
+        raise USSymbolUniverseEmptyError(
+            f"us_symbol_universe is empty. {sync_hint(_US_UNIVERSE_SYNC_COMMAND)}"
+        )
 
     return [
         {
@@ -388,7 +380,7 @@ async def search_us_symbols(
     if db is not None:
         return await _search_us_symbols_impl(db, query, capped_limit)
 
-    async with AsyncSessionLocal() as session:
+    async with AsyncSessionLocal() as session:  # pyright: ignore[reportGeneralTypeIssues]
         return await _search_us_symbols_impl(session, query, capped_limit)
 
 
