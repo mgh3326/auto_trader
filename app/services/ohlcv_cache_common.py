@@ -5,12 +5,19 @@ Upbit, Yahoo, KIS 캐시 모듈이 공유하는 순수 함수 모음.
 각 서비스 모듈에서 `from app.services.ohlcv_cache_common import ...` 로 사용.
 """
 
+import asyncio
 import json
+import logging
 import uuid
-from datetime import UTC, date, datetime
+from collections.abc import Awaitable, Callable
+from datetime import UTC, date, datetime, time, timedelta
 
 import pandas as pd
 import redis.asyncio as redis
+
+from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 _EMPTY_COLUMNS = ["date", "open", "high", "low", "close", "volume", "value"]
 
@@ -44,6 +51,57 @@ def _epoch_day(value: date) -> int:
 
 def _empty_dataframe() -> pd.DataFrame:
     return pd.DataFrame(columns=_EMPTY_COLUMNS)
+
+
+# ---------------------------------------------------------------------------
+# Generic parameterized utilities
+# ---------------------------------------------------------------------------
+
+
+def normalize_period(period: str, supported: set[str]) -> str:
+    """Validate and normalize a period string against a set of supported values."""
+    normalized = str(period or "").strip().lower()
+    if normalized not in supported:
+        raise ValueError(f"period must be one of {sorted(supported)}")
+    return normalized
+
+
+def make_base_key(
+    prefix: str,
+    identifier: str,
+    period: str,
+    extra: str | None = None,
+) -> str:
+    """Build a Redis base key: '{prefix}:ohlcv:{period}:v1:{ID}[:EXTRA]'."""
+    norm_id = str(identifier or "").strip().upper()
+    norm_period = str(period or "").strip().lower()
+    base = f"{prefix}:ohlcv:{norm_period}:v1:{norm_id}"
+    norm_extra = str(extra or "").strip().upper()
+    if norm_extra:
+        return f"{base}:{norm_extra}"
+    return base
+
+
+def make_keys(
+    prefix: str,
+    identifier: str,
+    period: str,
+    extra: str | None = None,
+) -> tuple[str, str, str, str]:
+    """Return (dates_key, rows_key, meta_key, lock_key) for a cache entry."""
+    base = make_base_key(prefix, identifier, period, extra)
+    return f"{base}:dates", f"{base}:rows", f"{base}:meta", f"{base}:lock"
+
+
+async def create_redis_client() -> redis.Redis:
+    """Create an async Redis client using application settings."""
+    return redis.from_url(
+        settings.get_redis_url(),
+        max_connections=settings.redis_max_connections,
+        socket_timeout=settings.redis_socket_timeout,
+        socket_connect_timeout=settings.redis_socket_connect_timeout,
+        decode_responses=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +142,27 @@ async def _release_lock(
         await redis_client.eval(release_script, 1, lock_key, lock_token)
     except Exception:
         return
+
+
+async def acquire_lock_with_retry(
+    redis_client: redis.Redis,
+    lock_key: str,
+    ttl_seconds: int,
+    acquire_fn: Callable[..., Awaitable[str | None]],
+    sleep_fn: Callable[..., Awaitable[None]],
+    retries: int = 2,
+    delay: float = 0.1,
+) -> str | None:
+    """Try to acquire a distributed lock, retrying up to *retries* times."""
+    token = await acquire_fn(redis_client, lock_key, ttl_seconds)
+    if token is not None:
+        return token
+    for _ in range(retries):
+        await sleep_fn(delay)
+        token = await acquire_fn(redis_client, lock_key, ttl_seconds)
+        if token is not None:
+            return token
+    return None
 
 
 # ---------------------------------------------------------------------------
