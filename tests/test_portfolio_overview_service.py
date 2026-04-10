@@ -1321,6 +1321,16 @@ class TestNormalizeUsCurrency:
         result = service._normalize_us_currency(components, usd_krw=None)
         assert result[0]["avg_price"] == 200000.0
 
+    def test_falls_back_to_canonical_price_when_component_has_none(self):
+        service = PortfolioOverviewService(AsyncMock())
+        components = [
+            {"avg_price": 195000.0, "current_price": None, "quantity": 5.0},
+        ]
+        result = service._normalize_us_currency(
+            components, usd_krw=1300.0, canonical_price=200.0
+        )
+        assert abs(result[0]["avg_price"] - (195000.0 / 1300.0)) < 0.01
+
 
 class TestCalculatePositionTotals:
     def test_calculates_from_current_price(self):

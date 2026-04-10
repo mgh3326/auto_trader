@@ -1047,6 +1047,7 @@ class PortfolioOverviewService:
         self,
         components_list: list[dict[str, Any]],
         usd_krw: float | None,
+        canonical_price: float | None = None,
     ) -> list[dict[str, Any]]:
         """Convert KRW-denominated avg_price to USD for US positions."""
         if not usd_krw:
@@ -1056,7 +1057,9 @@ class PortfolioOverviewService:
         for item in components_list:
             item_copy = dict(item)
             avg_price = _to_float(item.get("avg_price"))
-            ref_price = _to_float(item.get("current_price")) or _to_float(None)
+            ref_price = _to_float(item.get("current_price")) or _to_float(
+                canonical_price
+            )
             if avg_price > 1000 and ref_price > 0 and (avg_price / ref_price) > 100:
                 item_copy["avg_price"] = avg_price / usd_krw
             normalized.append(item_copy)
@@ -1136,7 +1139,9 @@ class PortfolioOverviewService:
             current_price = self._pick_current_price(components_list)
 
             if row["market_type"] == _MARKET_US:
-                components_list = self._normalize_us_currency(components_list, usd_krw)
+                components_list = self._normalize_us_currency(
+                    components_list, usd_krw, canonical_price=current_price
+                )
 
             totals = self._calculate_position_totals(
                 components_list=components_list,
