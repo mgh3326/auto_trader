@@ -121,9 +121,7 @@ async def get_domestic_estimated_costs(
     )
 
 
-@router.get(
-    "/symbols/overseas/estimated-cost", response_model=AllEstimatedCostResponse
-)
+@router.get("/symbols/overseas/estimated-cost", response_model=AllEstimatedCostResponse)
 async def get_overseas_estimated_costs(
     request: Request,
     db: AsyncSession = Depends(get_db),
@@ -312,9 +310,7 @@ async def get_crypto_estimated_costs(
     )
 
 
-@router.get(
-    "/symbols/{symbol}/estimated-cost", response_model=EstimatedCostResponse
-)
+@router.get("/symbols/{symbol}/estimated-cost", response_model=EstimatedCostResponse)
 async def get_estimated_cost(
     symbol: str,
     request: Request,

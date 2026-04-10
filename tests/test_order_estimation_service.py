@@ -119,9 +119,7 @@ class TestCalculateEstimatedOrderCost:
         assert result["total_orders"] == 2
         assert result["total_cost"] == 20000  # 10000 * 2 prices
         assert result["buy_prices"][0]["cost"] == 10000
-        assert result["buy_prices"][0]["quantity"] == pytest.approx(
-            10000 / 50_000_000
-        )
+        assert result["buy_prices"][0]["quantity"] == pytest.approx(10000 / 50_000_000)
 
     def test_amount_based_zero_price(self):
         """금액 기반에서 가격이 0일 때 수량 0"""
@@ -148,9 +146,7 @@ class TestFetchPendingBuyCost:
             {"sll_buy_dvsn_cd": "01", "ord_qty": "5", "ord_unpr": "60000"},
             {"sll_buy_dvsn_cd": "02", "ord_qty": "3", "ord_unpr": "48000"},
         ]
-        with patch(
-            "app.services.brokers.kis.client.KISClient"
-        ) as MockKIS:
+        with patch("app.services.brokers.kis.client.KISClient") as MockKIS:
             mock_instance = AsyncMock()
             mock_instance.inquire_korea_orders.return_value = mock_orders
             MockKIS.return_value = mock_instance
@@ -162,9 +158,7 @@ class TestFetchPendingBuyCost:
     @pytest.mark.asyncio
     async def test_fetch_pending_domestic_buy_cost_error(self):
         """국내 미체결 조회 실패 시 0 반환"""
-        with patch(
-            "app.services.brokers.kis.client.KISClient"
-        ) as MockKIS:
+        with patch("app.services.brokers.kis.client.KISClient") as MockKIS:
             mock_instance = AsyncMock()
             mock_instance.inquire_korea_orders.side_effect = Exception("API Error")
             MockKIS.return_value = mock_instance
@@ -180,9 +174,7 @@ class TestFetchPendingBuyCost:
             {"sll_buy_dvsn_cd": "02", "ft_ord_qty": "5", "ft_ord_unpr3": "150.50"},
             {"sll_buy_dvsn_cd": "01", "ft_ord_qty": "3", "ft_ord_unpr3": "200.00"},
         ]
-        with patch(
-            "app.services.brokers.kis.client.KISClient"
-        ) as MockKIS:
+        with patch("app.services.brokers.kis.client.KISClient") as MockKIS:
             mock_instance = AsyncMock()
             mock_instance.inquire_overseas_orders.return_value = mock_orders
             MockKIS.return_value = mock_instance
