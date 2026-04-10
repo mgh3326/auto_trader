@@ -123,9 +123,7 @@ async def _execute_crypto_order(
         return await upbit_service.place_market_sell_order(symbol, volume_str)
 
     adjusted_price = upbit_service.adjust_price_to_upbit_unit(price)
-    return await upbit_service.place_sell_order(
-        symbol, volume_str, f"{adjusted_price}"
-    )
+    return await upbit_service.place_sell_order(symbol, volume_str, f"{adjusted_price}")
 
 
 async def _execute_kr_order(
@@ -217,8 +215,12 @@ _MAX_ORDERS_PER_DAY = 20
 
 
 def _validate_inputs(
-    symbol: str, side: str, order_type: str, price: float | None,
-    amount: float | None, quantity: float | None,
+    symbol: str,
+    side: str,
+    order_type: str,
+    price: float | None,
+    amount: float | None,
+    quantity: float | None,
 ) -> tuple[str, str, str]:
     """Validate and normalize basic inputs. Returns (symbol, side, order_type)."""
     symbol = (symbol or "").strip()
@@ -251,7 +253,10 @@ def _validate_inputs(
 
 
 async def _fetch_current_price(
-    normalized_symbol: str, market_type: str, order_type: str, price: float | None,
+    normalized_symbol: str,
+    market_type: str,
+    order_type: str,
+    price: float | None,
 ) -> float:
     """Fetch current price, falling back to limit price when available."""
     try:
@@ -310,9 +315,7 @@ async def _build_preview(
     dry_run_result.setdefault("side", side)
     dry_run_result.setdefault("order_type", order_type)
     if dry_run_result.get("price") is None:
-        dry_run_result["price"] = (
-            current_price if order_type == "market" else price
-        )
+        dry_run_result["price"] = current_price if order_type == "market" else price
     return dry_run_result
 
 
@@ -360,7 +363,9 @@ async def _record_fill_and_journals(
             journal_id = journal_result["journal_id"]
             journal_status = journal_result["journal_status"]
         except Exception as journal_exc:
-            journal_warning = f"trade journal creation failed after order execution: {journal_exc}"
+            journal_warning = (
+                f"trade journal creation failed after order execution: {journal_exc}"
+            )
             logger.warning(journal_warning)
 
     # Record stop-loss cooldown for crypto sells below threshold
@@ -406,7 +411,9 @@ async def _record_fill_and_journals(
             if journal_created:
                 journal_status = "active"
         elif journal_created:
-            journal_warning = "trade journal created but fill was not recorded; journal remains draft"
+            journal_warning = (
+                "trade journal created but fill was not recorded; journal remains draft"
+            )
     except Exception as db_exc:
         logger.warning("Failed to record fill to DB: %s", db_exc)
 
@@ -478,7 +485,12 @@ async def _place_order_impl(
     indicators_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     symbol, side_lower, order_type_lower = _validate_inputs(
-        symbol, side, order_type, price, amount, quantity,
+        symbol,
+        side,
+        order_type,
+        price,
+        amount,
+        quantity,
     )
 
     market_type, normalized_symbol = _resolve_market_type(symbol, market)
@@ -522,7 +534,10 @@ async def _place_order_impl(
 
     try:
         current_price = await _fetch_current_price(
-            normalized_symbol, market_type, order_type_lower, price,
+            normalized_symbol,
+            market_type,
+            order_type_lower,
+            price,
         )
 
         # Resolve amount -> quantity for buy orders

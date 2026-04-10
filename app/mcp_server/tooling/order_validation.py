@@ -214,9 +214,7 @@ async def _preview_buy(
             else:
                 min_market_buy_amount = 0.0
             estimated_value = (
-                balance
-                if balance >= min_market_buy_amount
-                else min_market_buy_amount
+                balance if balance >= min_market_buy_amount else min_market_buy_amount
             )
 
         if estimated_value <= 0:
@@ -407,9 +405,13 @@ async def _validate_sell_side(
     locked_quantity = _to_float(holdings.get("locked"), default=0.0)
 
     if quantity is not None and quantity > available_quantity:
-        return 0.0, 0.0, order_error_fn(
-            f"Requested sell quantity {quantity} exceeds orderable balance {available_quantity}. "
-            f"locked={locked_quantity} (in open orders, not sellable)."
+        return (
+            0.0,
+            0.0,
+            order_error_fn(
+                f"Requested sell quantity {quantity} exceeds orderable balance {available_quantity}. "
+                f"locked={locked_quantity} (in open orders, not sellable)."
+            ),
         )
 
     order_quantity = available_quantity if quantity is None else quantity
@@ -418,13 +420,21 @@ async def _validate_sell_side(
     if order_type == "limit" and price is not None:
         min_sell_price = avg_price * 1.01
         if price < min_sell_price:
-            return 0.0, 0.0, order_error_fn(
-                f"Sell price {price} below minimum "
-                f"(avg_buy_price * 1.01 = {min_sell_price:.0f})"
+            return (
+                0.0,
+                0.0,
+                order_error_fn(
+                    f"Sell price {price} below minimum "
+                    f"(avg_buy_price * 1.01 = {min_sell_price:.0f})"
+                ),
             )
         if price < current_price:
-            return 0.0, 0.0, order_error_fn(
-                f"Sell price {price} below current price {current_price}"
+            return (
+                0.0,
+                0.0,
+                order_error_fn(
+                    f"Sell price {price} below current price {current_price}"
+                ),
             )
 
     return order_quantity, avg_price, None
