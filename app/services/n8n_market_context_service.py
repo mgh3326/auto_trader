@@ -15,11 +15,13 @@ from app.mcp_server.tooling.market_data_indicators import (
     _calculate_stoch_rsi,
     _fetch_ohlcv_for_indicators,
 )
-from app.schemas.n8n import (
+from app.schemas.n8n.common import (
     N8nEconomicEvent,
     N8nFearGreedData,
-    N8nMarketContextSummary,
     N8nMarketOverview,
+)
+from app.schemas.n8n.market_context import (
+    N8nMarketContextSummary,
     N8nSymbolContext,
 )
 from app.services.brokers.upbit.client import fetch_multiple_tickers

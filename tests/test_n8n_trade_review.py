@@ -443,7 +443,7 @@ class TestPendingSnapshotService:
 @pytest.mark.unit
 class TestTradeReviewListSchema:
     def test_list_item_schema_accepts_valid_data(self):
-        from app.schemas.n8n import N8nTradeReviewListItem
+        from app.schemas.n8n.trade_review import N8nTradeReviewListItem
 
         item = N8nTradeReviewListItem(
             order_id="test-001",
@@ -467,7 +467,7 @@ class TestTradeReviewListSchema:
         assert item.market == "crypto"
 
     def test_list_response_schema(self):
-        from app.schemas.n8n import N8nTradeReviewListResponse
+        from app.schemas.n8n.trade_review import N8nTradeReviewListResponse
 
         resp = N8nTradeReviewListResponse(
             success=True,

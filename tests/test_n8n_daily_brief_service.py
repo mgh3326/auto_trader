@@ -29,11 +29,11 @@ def _fake_pending_result(market: str, orders: list | None = None) -> dict:
 
 
 def _fake_market_context() -> dict:
-    from app.schemas.n8n import (
+    from app.schemas.n8n.common import (
         N8nFearGreedData,
-        N8nMarketContextSummary,
         N8nMarketOverview,
     )
+    from app.schemas.n8n.market_context import N8nMarketContextSummary
 
     return {
         "market_overview": N8nMarketOverview(
