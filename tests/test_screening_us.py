@@ -17,3 +17,20 @@ class TestUsScreeningImports:
         from app.mcp_server.tooling.screening.us import _screen_us_with_fallback
 
         assert callable(_screen_us_with_fallback)
+
+
+class TestUsScreeningPhases:
+    def test_build_us_filters_importable(self):
+        from app.mcp_server.tooling.screening.us import _build_us_filters
+
+        assert callable(_build_us_filters)
+
+    def test_execute_us_query_importable(self):
+        from app.mcp_server.tooling.screening.us import _execute_us_query
+
+        assert callable(_execute_us_query)
+
+    def test_normalize_us_results_importable(self):
+        from app.mcp_server.tooling.screening.us import _normalize_us_results
+
+        assert callable(_normalize_us_results)
