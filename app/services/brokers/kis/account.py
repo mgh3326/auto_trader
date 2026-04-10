@@ -87,6 +87,102 @@ class AccountClient:
     def _settings(self) -> Any:
         return self._parent._settings
 
+    def _resolve_account_parts(self) -> tuple[str, str]:
+        """Parse account number into CANO (8-digit) and ACNT_PRDT_CD (2-digit)."""
+        if not self._settings.kis_account_no:
+            raise ValueError(
+                "KIS_ACCOUNT_NO 환경변수가 설정되지 않았습니다. 계좌번호를 .env 파일에 추가해주세요."
+            )
+        account_no = self._settings.kis_account_no.replace("-", "")
+        if len(account_no) < 10:
+            raise ValueError(
+                f"계좌번호 형식이 올바르지 않습니다: {self._settings.kis_account_no}"
+            )
+        return account_no[:8], account_no[8:10]
+
+    def _build_balance_request_config(
+        self, *, is_overseas: bool, is_mock: bool
+    ) -> dict[str, str]:
+        if is_overseas:
+            tr_id = (
+                constants.OVERSEAS_BALANCE_TR_MOCK
+                if is_mock
+                else constants.OVERSEAS_BALANCE_TR
+            )
+            return {
+                "tr_id": tr_id,
+                "url": constants.OVERSEAS_BALANCE_URL,
+                "ctx_key_fk": "CTX_AREA_FK200",
+                "ctx_key_nk": "CTX_AREA_NK200",
+            }
+        tr_id = (
+            constants.DOMESTIC_BALANCE_TR_MOCK
+            if is_mock
+            else constants.DOMESTIC_BALANCE_TR
+        )
+        return {
+            "tr_id": tr_id,
+            "url": constants.DOMESTIC_BALANCE_URL,
+            "ctx_key_fk": "CTX_AREA_FK100",
+            "ctx_key_nk": "CTX_AREA_NK100",
+        }
+
+    def _filter_nonzero_holdings(
+        self, stocks: list[dict], *, is_overseas: bool
+    ) -> list[dict]:
+        qty_key = "ovrs_cblc_qty" if is_overseas else "hldg_qty"
+        return [s for s in stocks if int(s.get(qty_key, 0)) > 0]
+
+    def _parse_margin_response(self, output: dict[str, Any]) -> dict[str, Any]:
+        """Parse raw integrated margin API output into a normalized dict."""
+
+        def safe_float(val: Any, default: float = 0.0) -> float:
+            if val in ("", None):
+                return default
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                return default
+
+        dnca_tot_amt = safe_float(
+            output.get("dnca_tot_amt") or output.get("stck_cash_objt_amt")
+        )
+        stck_cash_objt_amt = safe_float(output.get("stck_cash_objt_amt"))
+        stck_cash100_max_ord_psbl_amt = safe_float(
+            output.get("stck_cash100_max_ord_psbl_amt")
+        )
+        stck_itgr_cash100_ord_psbl_amt = safe_float(
+            output.get("stck_itgr_cash100_ord_psbl_amt")
+        )
+        stck_cash_ord_psbl_amt = safe_float(
+            output.get("stck_cash_ord_psbl_amt")
+            or output.get("stck_itgr_cash100_ord_psbl_amt")
+            or output.get("ord_psbl_cash")
+            or output.get("dnca_tot_amt")
+        )
+        usd_ord_psbl_amt = safe_float(
+            output.get("usd_ord_psbl_amt")
+            or output.get("frcr_ord_psbl_amt")
+            or output.get("USD_ORD_PSBL_AMT")
+            or output.get("FRCR_ORD_PSBL_AMT")
+        )
+        usd_balance = safe_float(
+            output.get("usd_balance")
+            or output.get("frcr_dncl_amt_2")
+            or output.get("FRCR_DNCL_AMT_2")
+        )
+
+        return {
+            "dnca_tot_amt": dnca_tot_amt,
+            "stck_cash_objt_amt": stck_cash_objt_amt,
+            "stck_cash100_max_ord_psbl_amt": stck_cash100_max_ord_psbl_amt,
+            "stck_itgr_cash100_ord_psbl_amt": stck_itgr_cash100_ord_psbl_amt,
+            "stck_cash_ord_psbl_amt": stck_cash_ord_psbl_amt,
+            "usd_ord_psbl_amt": usd_ord_psbl_amt,
+            "usd_balance": usd_balance,
+            "raw": output,
+        }
+
     async def fetch_my_stocks(
         self,
         is_mock: bool = False,
@@ -146,43 +242,13 @@ class AccountClient:
         """
         await self._parent._ensure_token()
 
-        # 계좌번호 확인
-        if not self._settings.kis_account_no:
-            raise ValueError(
-                "KIS_ACCOUNT_NO 환경변수가 설정되지 않았습니다. 계좌번호를 .env 파일에 추가해주세요."
-            )
+        cano, acnt_prdt_cd = self._resolve_account_parts()
 
-        # 계좌번호를 CANO(앞 8자리)와 ACNT_PRDT_CD(뒤 2자리)로 분리
-        # 형식: "12345678-01" 또는 "1234567801"
-        account_no = self._settings.kis_account_no.replace("-", "")
-        if len(account_no) < 10:
-            raise ValueError(
-                f"계좌번호 형식이 올바르지 않습니다: {self._settings.kis_account_no}"
-            )
-
-        cano = account_no[:8]  # 계좌번호 앞 8자리
-        acnt_prdt_cd = account_no[8:10]  # 계좌상품코드 뒤 2자리
-
-        if is_overseas:
-            # 해외주식 잔고조회
-            tr_id = (
-                constants.OVERSEAS_BALANCE_TR_MOCK
-                if is_mock
-                else constants.OVERSEAS_BALANCE_TR
-            )
-            url = constants.OVERSEAS_BALANCE_URL
-            ctx_key_fk = "CTX_AREA_FK200"
-            ctx_key_nk = "CTX_AREA_NK200"
-        else:
-            # 국내주식 잔고조회
-            tr_id = (
-                constants.DOMESTIC_BALANCE_TR_MOCK
-                if is_mock
-                else constants.DOMESTIC_BALANCE_TR
-            )
-            url = constants.DOMESTIC_BALANCE_URL
-            ctx_key_fk = "CTX_AREA_FK100"
-            ctx_key_nk = "CTX_AREA_NK100"
+        config = self._build_balance_request_config(is_overseas=is_overseas, is_mock=is_mock)
+        tr_id = config["tr_id"]
+        url = config["url"]
+        ctx_key_fk = config["ctx_key_fk"]
+        ctx_key_nk = config["ctx_key_nk"]
 
         all_stocks = []
         ctx_area_fk = ""
@@ -295,16 +361,7 @@ class AccountClient:
 
             await asyncio.sleep(0.1)
 
-        if is_overseas:
-            # 해외주식: 보유수량이 0인 종목 제외
-            all_stocks = [
-                stock for stock in all_stocks if int(stock.get("ovrs_cblc_qty", 0)) > 0
-            ]
-        else:
-            # 국내주식: 보유수량이 0인 종목 제외
-            all_stocks = [
-                stock for stock in all_stocks if int(stock.get("hldg_qty", 0)) > 0
-            ]
+        all_stocks = self._filter_nonzero_holdings(all_stocks, is_overseas=is_overseas)
 
         logging.info(
             f"{'해외' if is_overseas else '국내'}주식 잔고 조회 완료: "
@@ -328,17 +385,7 @@ class AccountClient:
         """
         await self._parent._ensure_token()
 
-        if not self._settings.kis_account_no:
-            raise ValueError("KIS_ACCOUNT_NO 환경변수가 설정되지 않았습니다.")
-
-        account_no = self._settings.kis_account_no.replace("-", "")
-        if len(account_no) < 10:
-            raise ValueError(
-                f"계좌번호 형식이 올바르지 않습니다: {self._settings.kis_account_no}"
-            )
-
-        cano = account_no[:8]
-        acnt_prdt_cd = account_no[8:10]
+        cano, acnt_prdt_cd = self._resolve_account_parts()
 
         tr_id = (
             constants.DOMESTIC_BALANCE_TR_MOCK
@@ -449,17 +496,7 @@ class AccountClient:
         """
         await self._parent._ensure_token()
 
-        if not self._settings.kis_account_no:
-            raise ValueError("KIS_ACCOUNT_NO 환경변수가 설정되지 않았습니다.")
-
-        account_no = self._settings.kis_account_no.replace("-", "")
-        if len(account_no) < 10:
-            raise ValueError(
-                f"계좌번호 형식이 올바르지 않습니다: {self._settings.kis_account_no}"
-            )
-
-        cano = account_no[:8]
-        acnt_prdt_cd = account_no[8:10]
+        cano, acnt_prdt_cd = self._resolve_account_parts()
 
         tr_id = (
             constants.OVERSEAS_MARGIN_TR_MOCK
@@ -577,17 +614,7 @@ class AccountClient:
         """
         await self._parent._ensure_token()
 
-        if not self._settings.kis_account_no:
-            raise ValueError("KIS_ACCOUNT_NO 환경변수가 설정되지 않았습니다.")
-
-        account_no = self._settings.kis_account_no.replace("-", "")
-        if len(account_no) < 10:
-            raise ValueError(
-                f"계좌번호 형식이 올바르지 않습니다: {self._settings.kis_account_no}"
-            )
-
-        cano = account_no[:8]
-        acnt_prdt_cd = account_no[8:10]
+        cano, acnt_prdt_cd = self._resolve_account_parts()
 
         tr_id = (
             constants.INTEGRATED_MARGIN_TR_MOCK
@@ -659,52 +686,7 @@ class AccountClient:
         if isinstance(output, list):
             output = output[0] if output else {}
 
-        def safe_float(val: Any, default: float = 0.0) -> float:
-            if val in ("", None):
-                return default
-            try:
-                return float(val)
-            except (ValueError, TypeError):
-                return default
-
-        dnca_tot_amt = safe_float(
-            output.get("dnca_tot_amt") or output.get("stck_cash_objt_amt")
-        )
-        stck_cash_objt_amt = safe_float(output.get("stck_cash_objt_amt"))
-        stck_cash100_max_ord_psbl_amt = safe_float(
-            output.get("stck_cash100_max_ord_psbl_amt")
-        )
-        stck_itgr_cash100_ord_psbl_amt = safe_float(
-            output.get("stck_itgr_cash100_ord_psbl_amt")
-        )
-        stck_cash_ord_psbl_amt = safe_float(
-            output.get("stck_cash_ord_psbl_amt")
-            or output.get("stck_itgr_cash100_ord_psbl_amt")
-            or output.get("ord_psbl_cash")
-            or output.get("dnca_tot_amt")
-        )
-        usd_ord_psbl_amt = safe_float(
-            output.get("usd_ord_psbl_amt")
-            or output.get("frcr_ord_psbl_amt")
-            or output.get("USD_ORD_PSBL_AMT")
-            or output.get("FRCR_ORD_PSBL_AMT")
-        )
-        usd_balance = safe_float(
-            output.get("usd_balance")
-            or output.get("frcr_dncl_amt_2")
-            or output.get("FRCR_DNCL_AMT_2")
-        )
-
-        return {
-            "dnca_tot_amt": dnca_tot_amt,
-            "stck_cash_objt_amt": stck_cash_objt_amt,
-            "stck_cash100_max_ord_psbl_amt": stck_cash100_max_ord_psbl_amt,
-            "stck_itgr_cash100_ord_psbl_amt": stck_itgr_cash100_ord_psbl_amt,
-            "stck_cash_ord_psbl_amt": stck_cash_ord_psbl_amt,
-            "usd_ord_psbl_amt": usd_ord_psbl_amt,
-            "usd_balance": usd_balance,
-            "raw": output,
-        }
+        return self._parse_margin_response(output)
 
     async def fetch_my_overseas_stocks(
         self,
