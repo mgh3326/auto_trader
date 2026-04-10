@@ -172,7 +172,7 @@ class DomesticMarketDataMixin(MarketDataBase):
 
     # ── Price & Orderbook ──
 
-    async def inquire_price(self, code: str, market: str = "UN") -> DataFrame:
+    async def inquire_price(self, code: str, market: str = "J") -> DataFrame:
         """
         단일 종목 현재가·기본정보 조회
         :param code: 6자리 종목코드(005930)
@@ -214,7 +214,7 @@ class DomesticMarketDataMixin(MarketDataBase):
         }
         return pd.DataFrame([row]).set_index("code")  # index = 종목코드
 
-    async def _request_orderbook_snapshot(self, code: str, market: str = "UN") -> dict:
+    async def _request_orderbook_snapshot(self, code: str, market: str = "J") -> dict:
         return await self._request_with_token_retry(
             tr_id=constants.DOMESTIC_ORDERBOOK_TR,
             url=f"{constants.BASE}{constants.DOMESTIC_ORDERBOOK_URL}",
@@ -225,7 +225,7 @@ class DomesticMarketDataMixin(MarketDataBase):
             api_name="inquire_orderbook",
         )
 
-    async def inquire_orderbook(self, code: str, market: str = "UN") -> dict:
+    async def inquire_orderbook(self, code: str, market: str = "J") -> dict:
         """
         주식 호가(orderbook) 조회 - 10단계 매수/매도 호가
         :param code: 6자리 종목코드(005930)
@@ -243,7 +243,7 @@ class DomesticMarketDataMixin(MarketDataBase):
     async def inquire_orderbook_snapshot(
         self,
         code: str,
-        market: str = "UN",
+        market: str = "J",
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         js = await self._request_orderbook_snapshot(code, market)
         output1 = js.get("output1")
@@ -315,7 +315,7 @@ class DomesticMarketDataMixin(MarketDataBase):
 
         return output1, output2
 
-    async def fetch_fundamental_info(self, code: str, market: str = "UN") -> dict:
+    async def fetch_fundamental_info(self, code: str, market: str = "J") -> dict:
         """
         종목의 기본 정보를 가져와 딕셔너리로 반환합니다.
         :param code: 6자리 종목코드(005930)
@@ -396,7 +396,7 @@ class DomesticMarketDataMixin(MarketDataBase):
     async def inquire_daily_itemchartprice(
         self,
         code: str,
-        market: str = "UN",
+        market: str = "J",
         n: int = 200,
         adj: bool = True,
         period: str = "D",
@@ -453,7 +453,7 @@ class DomesticMarketDataMixin(MarketDataBase):
     async def inquire_time_dailychartprice(
         self,
         code: str,
-        market: str = "UN",
+        market: str = "J",
         n: int = 200,
         end_date: datetime.date | None = None,
         end_time: str | None = None,
@@ -512,7 +512,7 @@ class DomesticMarketDataMixin(MarketDataBase):
     async def inquire_minute_chart(
         self,
         code: str,
-        market: str = "UN",
+        market: str = "J",
         time_unit: int = 1,
         n: int = 200,
         end_date: datetime.date | None = None,
@@ -586,7 +586,7 @@ class DomesticMarketDataMixin(MarketDataBase):
     async def fetch_minute_candles(
         self,
         code: str,
-        market: str = "UN",
+        market: str = "J",
         end_date: datetime.date | None = None,
     ) -> dict:
         """분봉 데이터를 가져와서 60분, 5분, 1분 캔들로 반환."""
