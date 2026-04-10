@@ -55,6 +55,28 @@ class TestParseNaverDate:
         assert naver_finance._parse_naver_date("invalid") == "invalid"
 
 
+class TestParseBasicInfo:
+    """Tests for _parse_basic_info sub-parser."""
+
+    def test_extracts_name_and_price(self) -> None:
+        soup = BeautifulSoup(SAMPLE_VALUATION_MAIN_HTML, "lxml")
+        result = naver_finance._parse_basic_info(soup)
+        assert result["name"] == "삼성전자"
+        assert result["current_price"] == 75000
+
+    def test_missing_name(self) -> None:
+        soup = BeautifulSoup("<html></html>", "lxml")
+        result = naver_finance._parse_basic_info(soup)
+        assert result["name"] is None
+        assert result["current_price"] is None
+
+    def test_fallback_price_parsing(self) -> None:
+        soup = BeautifulSoup(SAMPLE_VALUATION_MINIMAL_MAIN_HTML, "lxml")
+        result = naver_finance._parse_basic_info(soup)
+        assert result["name"] == "효성중공업"
+        assert result["current_price"] == 450000
+
+
 # ---------------------------------------------------------------------------
 # HTML Fixtures
 # ---------------------------------------------------------------------------

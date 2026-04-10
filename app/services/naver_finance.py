@@ -151,6 +151,16 @@ def _extract_current_price_from_main_soup(main_soup: BeautifulSoup) -> int | Non
     return None
 
 
+def _parse_basic_info(main_soup: BeautifulSoup) -> dict[str, Any]:
+    """Extract company name and current price from the main page soup."""
+    info: dict[str, Any] = {"name": None, "current_price": None}
+    name_elem = main_soup.select_one("div.wrap_company h2 a")
+    if name_elem:
+        info["name"] = name_elem.get_text(strip=True)
+    info["current_price"] = _extract_current_price_from_main_soup(main_soup)
+    return info
+
+
 def _parse_news_soup(soup: BeautifulSoup, limit: int) -> list[dict[str, Any]]:
     news_items: list[dict[str, Any]] = []
     table = soup.select_one("table.type5")
