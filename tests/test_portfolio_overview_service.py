@@ -1214,3 +1214,190 @@ async def test_get_overview_exchange_rate_none_on_failure(monkeypatch) -> None:
     overview = await service.get_overview(user_id=1)
 
     assert overview["exchange_rate"] == {"usd_krw": None}
+
+
+class TestGroupComponentsByPosition:
+    def test_groups_by_market_type_and_symbol(self):
+        service = PortfolioOverviewService(AsyncMock())
+        components = [
+            {
+                "market_type": "US",
+                "symbol": "AAPL",
+                "name": "Apple",
+                "account_key": "kis:main",
+                "broker": "kis",
+                "account_name": "main",
+                "source": "live",
+                "quantity": 5.0,
+                "avg_price": 150.0,
+                "current_price": 170.0,
+                "evaluation": 850.0,
+                "profit_loss": 100.0,
+                "profit_rate": 0.13,
+            },
+            {
+                "market_type": "US",
+                "symbol": "AAPL",
+                "name": "",
+                "account_key": "toss:mini",
+                "broker": "toss",
+                "account_name": "mini",
+                "source": "manual",
+                "quantity": 2.0,
+                "avg_price": 155.0,
+                "current_price": 170.0,
+                "evaluation": 340.0,
+                "profit_loss": 30.0,
+                "profit_rate": 0.097,
+            },
+        ]
+        grouped = service._group_components_by_position(components)
+        assert len(grouped) == 1
+        key = ("US", "AAPL")
+        assert key in grouped
+        assert grouped[key]["name"] == "Apple"
+        assert len(grouped[key]["components"]) == 2
+
+    def test_empty_name_inherits_from_nonempty(self):
+        service = PortfolioOverviewService(AsyncMock())
+        components = [
+            {
+                "market_type": "KR",
+                "symbol": "005930",
+                "name": "",
+                "account_key": "a",
+                "broker": "kis",
+                "account_name": "a",
+                "source": "live",
+                "quantity": 10,
+                "avg_price": 70000,
+                "current_price": 72000,
+                "evaluation": 720000,
+                "profit_loss": 20000,
+                "profit_rate": 0.028,
+            },
+            {
+                "market_type": "KR",
+                "symbol": "005930",
+                "name": "삼성전자",
+                "account_key": "b",
+                "broker": "toss",
+                "account_name": "b",
+                "source": "manual",
+                "quantity": 5,
+                "avg_price": 71000,
+                "current_price": 72000,
+                "evaluation": 360000,
+                "profit_loss": 5000,
+                "profit_rate": 0.014,
+            },
+        ]
+        grouped = service._group_components_by_position(components)
+        assert grouped[("KR", "005930")]["name"] == "삼성전자"
+
+
+class TestNormalizeUsCurrency:
+    def test_converts_krw_avg_price_to_usd(self):
+        service = PortfolioOverviewService(AsyncMock())
+        components = [
+            {"avg_price": 200000.0, "current_price": 150.0, "quantity": 3.0},
+        ]
+        result = service._normalize_us_currency(components, usd_krw=1350.0)
+        assert abs(result[0]["avg_price"] - (200000.0 / 1350.0)) < 0.01
+
+    def test_leaves_usd_avg_price_unchanged(self):
+        service = PortfolioOverviewService(AsyncMock())
+        components = [
+            {"avg_price": 145.0, "current_price": 150.0, "quantity": 3.0},
+        ]
+        result = service._normalize_us_currency(components, usd_krw=1350.0)
+        assert result[0]["avg_price"] == 145.0
+
+    def test_noop_when_usd_krw_is_none(self):
+        service = PortfolioOverviewService(AsyncMock())
+        components = [
+            {"avg_price": 200000.0, "current_price": 150.0, "quantity": 3.0},
+        ]
+        result = service._normalize_us_currency(components, usd_krw=None)
+        assert result[0]["avg_price"] == 200000.0
+
+    def test_falls_back_to_canonical_price_when_component_has_none(self):
+        service = PortfolioOverviewService(AsyncMock())
+        components = [
+            {"avg_price": 195000.0, "current_price": None, "quantity": 5.0},
+        ]
+        result = service._normalize_us_currency(
+            components, usd_krw=1300.0, canonical_price=200.0
+        )
+        assert abs(result[0]["avg_price"] - (195000.0 / 1300.0)) < 0.01
+
+
+class TestCalculatePositionTotals:
+    def test_calculates_from_current_price(self):
+        service = PortfolioOverviewService(AsyncMock())
+        components = [
+            {"quantity": 10, "avg_price": 100.0},
+            {"quantity": 5, "avg_price": 110.0},
+        ]
+        result = service._calculate_position_totals(
+            components_list=components,
+            current_price=120.0,
+            market_type="KR",
+            usd_krw=None,
+        )
+        assert result["quantity"] == 15
+        assert result["evaluation"] == 15 * 120.0
+        cost_basis = 10 * 100.0 + 5 * 110.0
+        assert abs(result["profit_loss"] - (15 * 120.0 - cost_basis)) < 0.01
+        assert result["evaluation_krw"] == result["evaluation"]
+
+    def test_us_market_converts_to_krw(self):
+        service = PortfolioOverviewService(AsyncMock())
+        components = [
+            {"quantity": 3, "avg_price": 150.0},
+        ]
+        result = service._calculate_position_totals(
+            components_list=components,
+            current_price=170.0,
+            market_type="US",
+            usd_krw=1350.0,
+        )
+        assert result["evaluation_krw"] == 3 * 170.0 * 1350.0
+
+    def test_us_market_no_fx_rate_gives_none_krw(self):
+        service = PortfolioOverviewService(AsyncMock())
+        components = [
+            {"quantity": 3, "avg_price": 150.0},
+        ]
+        result = service._calculate_position_totals(
+            components_list=components,
+            current_price=170.0,
+            market_type="US",
+            usd_krw=None,
+        )
+        assert result["evaluation_krw"] is None
+        assert result["profit_loss_krw"] is None
+
+    def test_fallback_when_no_current_price(self):
+        service = PortfolioOverviewService(AsyncMock())
+        components = [
+            {
+                "quantity": 10,
+                "avg_price": 100.0,
+                "evaluation": 1100.0,
+                "profit_loss": 100.0,
+            },
+            {
+                "quantity": 5,
+                "avg_price": 110.0,
+                "evaluation": None,
+                "profit_loss": None,
+            },
+        ]
+        result = service._calculate_position_totals(
+            components_list=components,
+            current_price=None,
+            market_type="KR",
+            usd_krw=None,
+        )
+        assert result["evaluation"] == 1100.0  # only item with non-None evaluation

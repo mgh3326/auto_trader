@@ -303,6 +303,71 @@ class BaseKISClient:
         )
         logging.info("KIS access token refreshed and applied")
 
+    def _calculate_retry_delay(self, *, attempt: int, retry_after: float) -> float:
+        """Calculate wait time for retry: use Retry-After if positive, else exponential backoff."""
+        if retry_after > 0:
+            return retry_after
+        base_delay = self._settings.api_rate_limit_retry_429_base_delay
+        return base_delay * (2**attempt) + random.uniform(0, 0.1)
+
+    async def _execute_http_request(
+        self,
+        client: httpx.AsyncClient,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str],
+        params: dict[str, Any] | None,
+        json_body: dict[str, Any] | None,
+        timeout: float,
+    ) -> httpx.Response:
+        """Dispatch a single HTTP request (GET or POST)."""
+        if method.upper() == "GET":
+            return await client.get(
+                url, headers=headers, params=params, timeout=timeout
+            )
+        return await client.post(url, headers=headers, json=json_body, timeout=timeout)
+
+    def _parse_kis_response(
+        self,
+        response: httpx.Response,
+        api_name: str,
+    ) -> tuple[dict[str, Any], bool]:
+        """Parse and validate KIS API response.
+
+        Returns:
+            Tuple of (parsed_data, is_rate_limited).
+        """
+        status_code = _safe_status_code(response)
+
+        try:
+            data = response.json()
+        except ValueError as exc:
+            if status_code >= 400:
+                response.raise_for_status()
+            raise RuntimeError(f"KIS API non-JSON response: {api_name}") from exc
+
+        if not isinstance(data, dict):
+            if status_code >= 400:
+                response.raise_for_status()
+            raise RuntimeError(f"KIS API non-JSON response: {api_name}")
+
+        if status_code >= 400 and status_code != 500:
+            response.raise_for_status()
+
+        rt_cd = data.get("rt_cd")
+        msg_cd = str(data.get("msg_cd", ""))
+        msg1 = str(data.get("msg1", ""))
+
+        is_rate_limited = False
+        if rt_cd != "0":
+            rate_limit_heuristics = ["RATE", "LIMIT", "요청제한", "초과"]
+            is_rate_limited = any(
+                h in msg_cd.upper() or h in msg1.upper() for h in rate_limit_heuristics
+            )
+
+        return data, is_rate_limited
+
     async def _request_with_rate_limit(
         self,
         method: str,
@@ -342,7 +407,6 @@ class BaseKISClient:
         rate, period = self._get_rate_limit_for_api(api_key)
         limiter = await self._get_limiter(api_key, rate=rate, period=period)
         max_retries = self._settings.api_rate_limit_retry_429_max
-        base_delay = self._settings.api_rate_limit_retry_429_base_delay
 
         last_error: Exception | None = None
 
@@ -358,30 +422,23 @@ class BaseKISClient:
 
             try:
                 client = await self._ensure_client(timeout=timeout)
-                if method.upper() == "GET":
-                    response = await client.get(
-                        url,
-                        headers=headers,
-                        params=params,
-                        timeout=timeout,
-                    )
-                else:
-                    response = await client.post(
-                        url,
-                        headers=headers,
-                        json=json_body,
-                        timeout=timeout,
-                    )
+                response = await self._execute_http_request(
+                    client,
+                    method,
+                    url,
+                    headers=headers,
+                    params=params,
+                    json_body=json_body,
+                    timeout=timeout,
+                )
                 status_code = _safe_status_code(response)
 
                 if status_code == 429:
                     retry_after = _safe_parse_retry_after(
                         response.headers.get("Retry-After")
                     )
-                    wait_time = (
-                        retry_after
-                        if retry_after > 0
-                        else base_delay * (2**attempt) + random.uniform(0, 0.1)
+                    wait_time = self._calculate_retry_delay(
+                        attempt=attempt, retry_after=retry_after
                     )
                     logging.warning(
                         "[%s] 429 received for %s, attempt %d/%d, waiting %.3fs",
@@ -394,60 +451,35 @@ class BaseKISClient:
                     await asyncio.sleep(wait_time)
                     continue
 
-                try:
-                    data = response.json()
-                except ValueError as exc:
-                    if status_code >= 400:
-                        response.raise_for_status()
-                    raise RuntimeError(
-                        f"KIS API non-JSON response: {api_name}"
-                    ) from exc
+                data, is_rate_limited = self._parse_kis_response(response, api_name)
 
-                if not isinstance(data, dict):
-                    if status_code >= 400:
-                        response.raise_for_status()
-                    raise RuntimeError(f"KIS API non-JSON response: {api_name}")
-
-                if status_code >= 400 and status_code != 500:
-                    response.raise_for_status()
-
-                rt_cd = data.get("rt_cd")
-                msg_cd = str(data.get("msg_cd", ""))
-                msg1 = str(data.get("msg1", ""))
-
-                if rt_cd != "0":
-                    rate_limit_heuristics = [
-                        "RATE",
-                        "LIMIT",
-                        "요청제한",
-                        "초과",
-                    ]
-                    is_rate_limit = any(
-                        h in msg_cd.upper() or h in msg1.upper()
-                        for h in rate_limit_heuristics
+                if is_rate_limited and attempt < max_retries:
+                    wait_time = self._calculate_retry_delay(
+                        attempt=attempt, retry_after=0
                     )
-
-                    if is_rate_limit and attempt < max_retries:
-                        wait_time = base_delay * (2**attempt) + random.uniform(0, 0.1)
-                        logging.warning(
-                            "[%s] Rate limit heuristic triggered for %s: %s %s, attempt %d/%d, waiting %.3fs",
-                            "kis",
-                            api_name,
-                            msg_cd,
-                            msg1,
-                            attempt + 1,
-                            max_retries + 1,
-                            wait_time,
-                        )
-                        await asyncio.sleep(wait_time)
-                        continue
+                    msg_cd = str(data.get("msg_cd", ""))
+                    msg1 = str(data.get("msg1", ""))
+                    logging.warning(
+                        "[%s] Rate limit heuristic triggered for %s: %s %s, attempt %d/%d, waiting %.3fs",
+                        "kis",
+                        api_name,
+                        msg_cd,
+                        msg1,
+                        attempt + 1,
+                        max_retries + 1,
+                        wait_time,
+                    )
+                    await asyncio.sleep(wait_time)
+                    continue
 
                 return data
 
             except httpx.HTTPStatusError as e:
                 last_error = e
                 if e.response.status_code == 429 and attempt < max_retries:
-                    wait_time = base_delay * (2**attempt) + random.uniform(0, 0.1)
+                    wait_time = self._calculate_retry_delay(
+                        attempt=attempt, retry_after=0
+                    )
                     logging.warning(
                         "[%s] HTTP 429 for %s, attempt %d/%d, waiting %.3fs",
                         "kis",
@@ -462,7 +494,9 @@ class BaseKISClient:
             except httpx.RequestError as e:
                 last_error = e
                 if attempt < max_retries:
-                    wait_time = base_delay * (2**attempt) + random.uniform(0, 0.1)
+                    wait_time = self._calculate_retry_delay(
+                        attempt=attempt, retry_after=0
+                    )
                     logging.warning(
                         "[%s] Request error for %s: %s, attempt %d/%d, retrying in %.3fs",
                         "kis",

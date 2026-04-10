@@ -20,6 +20,101 @@ from app.mcp_server.tooling.screening.us import _screen_us_with_fallback
 logger = logging.getLogger(__name__)
 
 
+async def _dispatch_kr_screen(
+    normalized_request: dict[str, Any],
+    *,
+    min_market_cap: float | None,
+    max_per: float | None,
+    max_pbr: float | None,
+    normalized_min_dividend_yield: float | None,
+    max_rsi: float | None,
+    query_limit: int,
+) -> dict[str, Any]:
+    """Dispatch screening to the KR market implementation."""
+    return await _screen_kr_with_fallback(
+        market=normalized_request["market"],
+        asset_type=normalized_request["asset_type"],
+        category=normalized_request["effective_category"],
+        sector=normalized_request["sector"],
+        min_market_cap=min_market_cap,
+        max_per=max_per,
+        max_pbr=max_pbr,
+        min_dividend_yield=normalized_min_dividend_yield,
+        min_analyst_buy=normalized_request["min_analyst_buy"],
+        max_rsi=max_rsi,
+        sort_by=normalized_request["sort_by"],
+        sort_order=normalized_request["sort_order"],
+        limit=query_limit,
+    )
+
+
+async def _dispatch_us_screen(
+    normalized_request: dict[str, Any],
+    *,
+    min_market_cap: float | None,
+    max_per: float | None,
+    normalized_min_dividend_yield: float | None,
+    max_rsi: float | None,
+    query_limit: int,
+) -> dict[str, Any]:
+    """Dispatch screening to the US market implementation."""
+    return await _screen_us_with_fallback(
+        market=normalized_request["market"],
+        asset_type=normalized_request["asset_type"],
+        category=normalized_request["effective_category"],
+        min_market_cap=min_market_cap,
+        max_per=max_per,
+        min_dividend_yield=normalized_min_dividend_yield,
+        min_analyst_buy=normalized_request["min_analyst_buy"],
+        max_rsi=max_rsi,
+        sort_by=normalized_request["sort_by"],
+        sort_order=normalized_request["sort_order"],
+        limit=query_limit,
+    )
+
+
+async def _dispatch_crypto_screen(
+    normalized_request: dict[str, Any],
+    *,
+    min_market_cap: float | None,
+    max_per: float | None,
+    normalized_min_dividend_yield: float | None,
+    max_rsi: float | None,
+    limit: int,
+) -> dict[str, Any]:
+    """Dispatch screening to the crypto market implementation."""
+    return await _screen_crypto_with_fallback(
+        market=normalized_request["market"],
+        asset_type=normalized_request["asset_type"],
+        category=normalized_request["effective_category"],
+        min_market_cap=min_market_cap,
+        max_per=max_per,
+        min_dividend_yield=normalized_min_dividend_yield,
+        max_rsi=max_rsi,
+        sort_by=normalized_request["sort_by"],
+        sort_order=normalized_request["sort_order"],
+        limit=limit,
+    )
+
+
+def _dispatch_unsupported_market(
+    normalized_request: dict[str, Any],
+) -> dict[str, Any]:
+    """Return an empty response for unsupported markets."""
+    return _build_screen_response(
+        results=[],
+        total_count=0,
+        filters_applied={
+            "market": normalized_request["market"],
+            "asset_type": normalized_request["asset_type"],
+            "category": normalized_request["category_for_filters"],
+            "sector": normalized_request["sector"],
+        },
+        market=normalized_request["market"],
+        warnings=[f"Unsupported market: {normalized_request['market']}"],
+    )
+
+
 async def screen_stocks_unified(
     market: str,
     asset_type: str | None,
@@ -115,63 +210,37 @@ async def screen_stocks_unified(
         sort_by=normalized_sort_by,
     )
 
-    # Route to appropriate implementation based on market and capabilities
+    # Route to appropriate implementation based on market
     if normalized_market in ("kr", "kospi", "kosdaq"):
-        response = await _screen_kr_with_fallback(
-            market=normalized_market,
-            asset_type=normalized_asset_type,
-            category=normalized_request["effective_category"],
-            sector=normalized_request["sector"],
+        response = await _dispatch_kr_screen(
+            normalized_request,
             min_market_cap=min_market_cap,
             max_per=max_per,
             max_pbr=max_pbr,
-            min_dividend_yield=normalized_min_dividend_yield,
-            min_analyst_buy=normalized_request["min_analyst_buy"],
+            normalized_min_dividend_yield=normalized_min_dividend_yield,
             max_rsi=max_rsi,
-            sort_by=normalized_sort_by,
-            sort_order=normalized_sort_order,
-            limit=query_limit,
+            query_limit=query_limit,
         )
     elif normalized_market == "us":
-        response = await _screen_us_with_fallback(
-            market=normalized_market,
-            asset_type=normalized_asset_type,
-            category=normalized_request["effective_category"],
+        response = await _dispatch_us_screen(
+            normalized_request,
             min_market_cap=min_market_cap,
             max_per=max_per,
-            min_dividend_yield=normalized_min_dividend_yield,
-            min_analyst_buy=normalized_request["min_analyst_buy"],
+            normalized_min_dividend_yield=normalized_min_dividend_yield,
             max_rsi=max_rsi,
-            sort_by=normalized_sort_by,
-            sort_order=normalized_sort_order,
-            limit=query_limit,
+            query_limit=query_limit,
         )
     elif normalized_market == "crypto":
-        response = await _screen_crypto_with_fallback(
-            market=normalized_market,
-            asset_type=normalized_asset_type,
-            category=normalized_request["effective_category"],
+        response = await _dispatch_crypto_screen(
+            normalized_request,
             min_market_cap=min_market_cap,
             max_per=max_per,
-            min_dividend_yield=normalized_min_dividend_yield,
+            normalized_min_dividend_yield=normalized_min_dividend_yield,
             max_rsi=max_rsi,
-            sort_by=normalized_sort_by,
-            sort_order=normalized_sort_order,
             limit=limit,
         )
     else:
-        response = _build_screen_response(
-            results=[],
-            total_count=0,
-            filters_applied={
-                "market": normalized_market,
-                "asset_type": normalized_asset_type,
-                "category": normalized_request["category_for_filters"],
-                "sector": normalized_request["sector"],
-            },
-            market=normalized_market,
-            warnings=[f"Unsupported market: {normalized_market}"],
-        )
+        response = _dispatch_unsupported_market(normalized_request)
 
     response = await _decorate_screen_response_with_equity_enrichment(
         response,

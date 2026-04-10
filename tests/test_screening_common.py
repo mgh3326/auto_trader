@@ -137,3 +137,144 @@ class TestCommonReExports:
         assert DROP_THRESHOLD == -0.30
         assert "tvscreener" in DEFAULT_TIMEOUTS
         assert CRYPTO_TOP_BY_VOLUME == 100
+
+
+class TestInitTvscreenerResult:
+    def test_basic_structure(self):
+        from app.mcp_server.tooling.screening.common import _init_tvscreener_result
+
+        result = _init_tvscreener_result({"market": "us"})
+        assert result == {
+            "stocks": [],
+            "source": "tvscreener",
+            "count": 0,
+            "filters_applied": {"market": "us"},
+            "error": None,
+        }
+
+
+class TestAggregateAnalystRecommendations:
+    def test_all_present(self):
+        from app.mcp_server.tooling.screening.common import (
+            _aggregate_analyst_recommendations,
+        )
+
+        row = {
+            "recommendation_buy": 5,
+            "recommendation_over": 3,
+            "recommendation_hold": 2,
+            "recommendation_sell": 1,
+            "recommendation_under": 1,
+        }
+        agg = _aggregate_analyst_recommendations(row)
+        assert agg == {"analyst_buy": 8, "analyst_hold": 2, "analyst_sell": 2}
+
+    def test_partial_none(self):
+        from app.mcp_server.tooling.screening.common import (
+            _aggregate_analyst_recommendations,
+        )
+
+        row = {"recommendation_buy": 5}
+        agg = _aggregate_analyst_recommendations(row)
+        assert agg == {"analyst_buy": 5}
+        assert "analyst_hold" not in agg
+        assert "analyst_sell" not in agg
+
+    def test_all_none(self):
+        from app.mcp_server.tooling.screening.common import (
+            _aggregate_analyst_recommendations,
+        )
+
+        agg = _aggregate_analyst_recommendations({})
+        assert agg == {}
+
+
+class TestFilterByMinAnalystBuy:
+    def test_none_threshold_returns_all(self):
+        from app.mcp_server.tooling.screening.common import _filter_by_min_analyst_buy
+
+        stocks = [{"analyst_buy": 5}, {"analyst_buy": 1}]
+        assert _filter_by_min_analyst_buy(stocks, None) is stocks
+
+    def test_filters_below_threshold(self):
+        from app.mcp_server.tooling.screening.common import _filter_by_min_analyst_buy
+
+        stocks = [
+            {"analyst_buy": 5, "name": "A"},
+            {"analyst_buy": 1, "name": "B"},
+            {"name": "C"},
+        ]
+        result = _filter_by_min_analyst_buy(stocks, 3)
+        assert len(result) == 1
+        assert result[0]["name"] == "A"
+
+
+class TestBuildRsiAdxConditions:
+    def test_no_filters_returns_empty(self):
+        from app.mcp_server.tooling.screening.common import _build_rsi_adx_conditions
+
+        conditions = _build_rsi_adx_conditions(min_rsi=None, max_rsi=None, min_adx=None)
+        assert conditions == []
+
+    def test_all_filters_returns_three(self):
+        from app.mcp_server.tooling.screening.common import _build_rsi_adx_conditions
+
+        # Mocking fields for testing
+        class MockField:
+            def __init__(self, name):
+                self.name = name
+
+            def __ge__(self, other):
+                return f"{self.name} >= {other}"
+
+            def __le__(self, other):
+                return f"{self.name} <= {other}"
+
+        rsi_field = MockField("RSI")
+        adx_field = MockField("ADX")
+
+        conditions = _build_rsi_adx_conditions(
+            min_rsi=30,
+            max_rsi=70,
+            min_adx=25,
+            rsi_field=rsi_field,
+            adx_field=adx_field,
+        )
+        assert len(conditions) == 3
+        assert "RSI >= 30" in conditions
+        assert "RSI <= 70" in conditions
+        assert "ADX >= 25" in conditions
+
+
+class TestComputeAvgTargetAndUpside:
+    def test_with_delta(self):
+        from app.mcp_server.tooling.screening.common import (
+            _compute_avg_target_and_upside,
+        )
+
+        row = {
+            "price_target_1y": 150.0,
+            "price_target_1y_delta": 10.5,
+        }
+        avg, upside = _compute_avg_target_and_upside(row, current_price=100.0)
+        assert avg == 150.0
+        assert upside == 10.5
+
+    def test_fallback_computed(self):
+        from app.mcp_server.tooling.screening.common import (
+            _compute_avg_target_and_upside,
+        )
+
+        row = {"price_target_1y": 120.0}
+        avg, upside = _compute_avg_target_and_upside(row, current_price=100.0)
+        assert avg == 120.0
+        assert upside == 20.0
+
+    def test_no_target(self):
+        from app.mcp_server.tooling.screening.common import (
+            _compute_avg_target_and_upside,
+        )
+
+        avg, upside = _compute_avg_target_and_upside({}, current_price=100.0)
+        assert avg is None
+        assert upside is None

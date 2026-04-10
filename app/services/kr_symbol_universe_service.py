@@ -4,7 +4,7 @@ import io
 import logging
 import zipfile
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import httpx
 from sqlalchemy import case, func, or_, select
@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import AsyncSessionLocal
 from app.models.kr_symbol_universe import KRSymbolUniverse
+from app.services.symbol_universe_common import has_any_rows, normalize_name, sync_hint
 
 logger = logging.getLogger(__name__)
 
@@ -68,14 +69,6 @@ def _normalize_symbol_or_none(value: str) -> str | None:
     if len(symbol) == 6 and symbol.isalnum():
         return symbol
     return None
-
-
-def _normalize_name(value: str) -> str:
-    return str(value or "").strip()
-
-
-def _sync_hint() -> str:
-    return f"Sync required: {_KR_UNIVERSE_SYNC_COMMAND}"
 
 
 async def _download_mst_lines(zip_name: str) -> list[str]:
@@ -303,13 +296,8 @@ async def _apply_snapshot(
     }
 
 
-async def _has_any_rows(db: AsyncSession) -> bool:
-    result = await db.execute(select(KRSymbolUniverse.symbol).limit(1))
-    return result.scalar_one_or_none() is not None
-
-
 async def _resolve_active_symbol_by_name(db: AsyncSession, name: str) -> str:
-    normalized_name = _normalize_name(name)
+    normalized_name = normalize_name(name)
     if not normalized_name:
         raise ValueError("name is required")
 
@@ -319,13 +307,13 @@ async def _resolve_active_symbol_by_name(db: AsyncSession, name: str) -> str:
     rows = list((await db.execute(stmt)).scalars().all())
 
     if not rows:
-        if not await _has_any_rows(db):
+        if not await has_any_rows(db, KRSymbolUniverse.symbol):
             raise KRSymbolUniverseEmptyError(
-                f"kr_symbol_universe is empty. {_sync_hint()}"
+                f"kr_symbol_universe is empty. {sync_hint(_KR_UNIVERSE_SYNC_COMMAND)}"
             )
         raise KRSymbolNotRegisteredError(
             f"KR name '{normalized_name}' is not registered in kr_symbol_universe. "
-            f"{_sync_hint()}"
+            f"{sync_hint(_KR_UNIVERSE_SYNC_COMMAND)}"
         )
 
     active_rows = [row for row in rows if row.is_active]
@@ -334,7 +322,7 @@ async def _resolve_active_symbol_by_name(db: AsyncSession, name: str) -> str:
         preview = ", ".join(symbols[:10])
         raise KRSymbolInactiveError(
             f"KR name '{normalized_name}' is inactive in kr_symbol_universe. "
-            f"matched_symbols=[{preview}]. {_sync_hint()}"
+            f"matched_symbols=[{preview}]. {sync_hint(_KR_UNIVERSE_SYNC_COMMAND)}"
         )
 
     unique_symbols = sorted({row.symbol for row in active_rows})
@@ -342,7 +330,7 @@ async def _resolve_active_symbol_by_name(db: AsyncSession, name: str) -> str:
         preview = ", ".join(unique_symbols[:10])
         raise KRSymbolNameAmbiguousError(
             f"KR name '{normalized_name}' is ambiguous in kr_symbol_universe. "
-            f"matched_symbols=[{preview}] count={len(unique_symbols)}. {_sync_hint()}"
+            f"matched_symbols=[{preview}] count={len(unique_symbols)}. {sync_hint(_KR_UNIVERSE_SYNC_COMMAND)}"
         )
 
     return unique_symbols[0]
@@ -355,8 +343,11 @@ async def get_kr_symbol_by_name(
     if db is not None:
         return await _resolve_active_symbol_by_name(db, name)
 
-    async with AsyncSessionLocal() as session:
+    session = cast(AsyncSession, cast(object, AsyncSessionLocal()))
+    try:
         return await _resolve_active_symbol_by_name(session, name)
+    finally:
+        await session.close()
 
 
 async def _check_nxt_eligible(db: AsyncSession, symbol: str) -> bool:
@@ -381,8 +372,11 @@ async def is_nxt_eligible(
     if db is not None:
         return await _check_nxt_eligible(db, symbol)
 
-    async with AsyncSessionLocal() as session:
+    session = cast(AsyncSession, cast(object, AsyncSessionLocal()))
+    try:
         return await _check_nxt_eligible(session, symbol)
+    finally:
+        await session.close()
 
 
 async def _search_kr_symbols_impl(
@@ -390,7 +384,7 @@ async def _search_kr_symbols_impl(
     query: str,
     limit: int,
 ) -> list[dict[str, Any]]:
-    normalized_query = _normalize_name(query)
+    normalized_query = normalize_name(query)
     if not normalized_query:
         return []
 
@@ -418,8 +412,10 @@ async def _search_kr_symbols_impl(
     )
 
     rows = list((await db.execute(stmt)).scalars().all())
-    if not rows and not await _has_any_rows(db):
-        raise KRSymbolUniverseEmptyError(f"kr_symbol_universe is empty. {_sync_hint()}")
+    if not rows and not await has_any_rows(db, KRSymbolUniverse.symbol):
+        raise KRSymbolUniverseEmptyError(
+            f"kr_symbol_universe is empty. {sync_hint(_KR_UNIVERSE_SYNC_COMMAND)}"
+        )
 
     return [
         {
@@ -442,8 +438,11 @@ async def search_kr_symbols(
     if db is not None:
         return await _search_kr_symbols_impl(db, query, capped_limit)
 
-    async with AsyncSessionLocal() as session:
+    session = cast(AsyncSession, cast(object, AsyncSessionLocal()))
+    try:
         return await _search_kr_symbols_impl(session, query, capped_limit)
+    finally:
+        await session.close()
 
 
 async def sync_kr_symbol_universe(db: AsyncSession | None = None) -> dict[str, int]:
@@ -451,9 +450,12 @@ async def sync_kr_symbol_universe(db: AsyncSession | None = None) -> dict[str, i
     if db is not None:
         return await _apply_snapshot(db, snapshot)
 
-    async with AsyncSessionLocal() as session:
+    session = cast(AsyncSession, cast(object, AsyncSessionLocal()))
+    try:
         async with session.begin():
             result = await _apply_snapshot(session, snapshot)
+    finally:
+        await session.close()
     logger.info(
         "KR symbol universe synced total=%d inserted=%d updated=%d deactivated=%d",
         result["total"],
@@ -491,8 +493,11 @@ async def get_kr_names_by_symbols(
         return {}
     if db is not None:
         return await _get_kr_names_impl(db, symbols)
-    async with AsyncSessionLocal() as session:
+    session = cast(AsyncSession, cast(object, AsyncSessionLocal()))
+    try:
         return await _get_kr_names_impl(session, symbols)
+    finally:
+        await session.close()
 
 
 __all__ = [

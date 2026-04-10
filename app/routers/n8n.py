@@ -9,25 +9,33 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
 from app.core.timezone import now_kst
-from app.schemas.n8n import (
+from app.schemas.n8n.common import N8nMarketOverview
+from app.schemas.n8n.crypto_scan import (
     N8nBtcContext,
     N8nCryptoScanParams,
     N8nCryptoScanResponse,
     N8nCryptoScanSummary,
-    N8nDailyBriefResponse,
-    N8nFilledOrdersResponse,
-    N8nKrMorningReportResponse,
+)
+from app.schemas.n8n.daily_brief import N8nDailyBriefResponse
+from app.schemas.n8n.filled_orders import N8nFilledOrdersResponse
+from app.schemas.n8n.kr_morning_report import N8nKrMorningReportResponse
+from app.schemas.n8n.market_context import (
     N8nMarketContextResponse,
     N8nMarketContextSummary,
-    N8nMarketOverview,
-    N8nNewsResponse,
+)
+from app.schemas.n8n.news import N8nNewsResponse
+from app.schemas.n8n.pending_orders import (
     N8nPendingOrdersResponse,
     N8nPendingOrderSummary,
+)
+from app.schemas.n8n.pending_review import N8nPendingReviewResponse
+from app.schemas.n8n.pending_snapshot import (
     N8nPendingResolveRequest,
     N8nPendingResolveResponse,
-    N8nPendingReviewResponse,
     N8nPendingSnapshotsRequest,
     N8nPendingSnapshotsResponse,
+)
+from app.schemas.n8n.trade_review import (
     N8nTradeReviewListResponse,
     N8nTradeReviewsRequest,
     N8nTradeReviewsResponse,
@@ -217,10 +225,10 @@ async def get_daily_brief(
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to build daily brief")
-        from app.schemas.n8n import (
+        from app.schemas.n8n.common import N8nMarketOverview
+        from app.schemas.n8n.daily_brief import (
             N8nDailyBriefPendingOrders,
             N8nDailyBriefPortfolio,
-            N8nMarketOverview,
             N8nYesterdayFills,
         )
 
