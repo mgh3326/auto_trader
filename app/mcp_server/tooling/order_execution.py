@@ -289,8 +289,7 @@ async def _build_preview(
     market_type: str,
 ) -> dict[str, Any]:
     """Run preview and enrich result with defaults."""
-    preview_fn = globals().get("_preview_order", _preview_order)
-    dry_run_result = await preview_fn(
+    dry_run_result = await _preview_order(
         symbol=normalized_symbol,
         side=side,
         order_type=order_type,
@@ -668,6 +667,21 @@ async def _execute_and_record(
     }
 
 
+def _build_order_error(
+    message: str,
+    source: str,
+    symbol: str,
+    market_type: str,
+) -> dict[str, Any]:
+    return {
+        "success": False,
+        "error": message,
+        "source": source,
+        "symbol": symbol,
+        "instrument_type": market_type,
+    }
+
+
 async def _place_order_impl(
     symbol: str,
     side: Literal["buy", "sell"],
@@ -719,13 +733,7 @@ async def _place_order_impl(
     source = source_map[market_type]
 
     def _order_error(message: str) -> dict[str, Any]:
-        return {
-            "success": False,
-            "error": message,
-            "source": source,
-            "symbol": normalized_symbol,
-            "instrument_type": market_type,
-        }
+        return _build_order_error(message, source, normalized_symbol, market_type)
 
     # Check stop-loss cooldown for crypto buys
     if side_lower == "buy" and market_type == "crypto":
