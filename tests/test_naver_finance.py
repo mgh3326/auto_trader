@@ -77,6 +77,42 @@ class TestParseBasicInfo:
         assert result["current_price"] == 450000
 
 
+class TestParseFinancialMetrics:
+    """Tests for _parse_financial_metrics sub-parser."""
+
+    def test_extracts_all_metrics(self) -> None:
+        soup = BeautifulSoup(SAMPLE_VALUATION_MAIN_HTML, "lxml")
+        result = naver_finance._parse_financial_metrics(soup)
+        assert result["per"] == 12.5
+        assert result["pbr"] == 1.2
+        assert result["roe"] == 18.5
+        assert result["roe_controlling"] == 17.2
+        assert abs(result["dividend_yield"] - 0.02) < 0.001
+
+    def test_skips_zero_per(self) -> None:
+        html = '<html><body><em id="_per">0</em></body></html>'
+        soup = BeautifulSoup(html, "lxml")
+        result = naver_finance._parse_financial_metrics(soup)
+        assert result["per"] is None
+
+    def test_skips_na_per(self) -> None:
+        soup = BeautifulSoup(SAMPLE_VALUATION_MINIMAL_MAIN_HTML, "lxml")
+        result = naver_finance._parse_financial_metrics(soup)
+        assert result["per"] is None
+        assert result["pbr"] == 2.1
+        assert result["roe"] is None
+        assert result["dividend_yield"] is None
+
+    def test_empty_html(self) -> None:
+        soup = BeautifulSoup("<html></html>", "lxml")
+        result = naver_finance._parse_financial_metrics(soup)
+        assert result["per"] is None
+        assert result["pbr"] is None
+        assert result["roe"] is None
+        assert result["roe_controlling"] is None
+        assert result["dividend_yield"] is None
+
+
 # ---------------------------------------------------------------------------
 # HTML Fixtures
 # ---------------------------------------------------------------------------

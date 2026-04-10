@@ -161,6 +161,55 @@ def _parse_basic_info(main_soup: BeautifulSoup) -> dict[str, Any]:
     return info
 
 
+def _parse_financial_metrics(main_soup: BeautifulSoup) -> dict[str, Any]:
+    """Extract PER, PBR, ROE, and dividend yield from the main page soup."""
+    metrics: dict[str, Any] = {
+        "per": None,
+        "pbr": None,
+        "roe": None,
+        "roe_controlling": None,
+        "dividend_yield": None,
+    }
+
+    per_elem = main_soup.select_one("em#_per")
+    if per_elem:
+        per_val = _parse_korean_number(per_elem.get_text(strip=True))
+        if per_val is not None and per_val != 0:
+            metrics["per"] = per_val
+
+    pbr_elem = main_soup.select_one("em#_pbr")
+    if pbr_elem:
+        pbr_val = _parse_korean_number(pbr_elem.get_text(strip=True))
+        if pbr_val is not None and pbr_val != 0:
+            metrics["pbr"] = pbr_val
+
+    dvr_elem = main_soup.select_one("em#_dvr")
+    if dvr_elem:
+        dvr_val = _parse_korean_number(dvr_elem.get_text(strip=True))
+        if dvr_val is not None:
+            metrics["dividend_yield"] = dvr_val / 100
+
+    for row in main_soup.select("tr"):
+        th = row.select_one("th")
+        if not th:
+            continue
+        th_text = th.get_text(strip=True)
+        if not th_text.startswith("ROE"):
+            continue
+        tds = row.select("td")
+        if not tds:
+            continue
+        roe_val = _parse_korean_number(tds[0].get_text(strip=True))
+        if roe_val is None:
+            continue
+        if "ROE(%)" in th_text:
+            metrics["roe"] = roe_val
+        elif "지배" in th_text:
+            metrics["roe_controlling"] = roe_val
+
+    return metrics
+
+
 def _parse_news_soup(soup: BeautifulSoup, limit: int) -> list[dict[str, Any]]:
     news_items: list[dict[str, Any]] = []
     table = soup.select_one("table.type5")
