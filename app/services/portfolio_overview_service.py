@@ -1009,11 +1009,11 @@ class PortfolioOverviewService:
             ]
         return filtered
 
-    def _aggregate_positions(
-        self, components: list[dict[str, Any]], *, usd_krw: float | None = None
-    ) -> list[dict[str, Any]]:
+    def _group_components_by_position(
+        self, components: list[dict[str, Any]]
+    ) -> dict[tuple[str, str], dict[str, Any]]:
+        """Group flat component list into {(market_type, symbol): row_dict}."""
         by_key: dict[tuple[str, str], dict[str, Any]] = {}
-
         for item in components:
             key = (item["market_type"], item["symbol"])
             row = by_key.setdefault(
@@ -1025,10 +1025,8 @@ class PortfolioOverviewService:
                     "components": [],
                 },
             )
-
             if not row["name"] and item["name"]:
                 row["name"] = item["name"]
-
             row["components"].append(
                 {
                     "account_key": item["account_key"],
@@ -1043,6 +1041,90 @@ class PortfolioOverviewService:
                     "profit_rate": item["profit_rate"],
                 }
             )
+        return by_key
+
+    def _normalize_us_currency(
+        self,
+        components_list: list[dict[str, Any]],
+        usd_krw: float | None,
+    ) -> list[dict[str, Any]]:
+        """Convert KRW-denominated avg_price to USD for US positions."""
+        if not usd_krw:
+            return components_list
+
+        normalized = []
+        for item in components_list:
+            item_copy = dict(item)
+            avg_price = _to_float(item.get("avg_price"))
+            ref_price = _to_float(item.get("current_price")) or _to_float(None)
+            if avg_price > 1000 and ref_price > 0 and (avg_price / ref_price) > 100:
+                item_copy["avg_price"] = avg_price / usd_krw
+            normalized.append(item_copy)
+        return normalized
+
+    def _calculate_position_totals(
+        self,
+        *,
+        components_list: list[dict[str, Any]],
+        current_price: float | None,
+        market_type: str,
+        usd_krw: float | None,
+    ) -> dict[str, Any]:
+        """Calculate aggregated quantity, avg_price, evaluation, profit/loss, and KRW values."""
+        quantity = sum(_to_float(item.get("quantity")) for item in components_list)
+
+        avg_numerator = sum(
+            _to_float(item.get("quantity")) * _to_float(item.get("avg_price"))
+            for item in components_list
+        )
+        avg_price = avg_numerator / quantity if quantity > 0 else 0.0
+
+        cost_basis = sum(
+            _to_float(item.get("quantity")) * _to_float(item.get("avg_price"))
+            for item in components_list
+        )
+
+        if current_price is not None:
+            evaluation = quantity * current_price
+            profit_loss = evaluation - cost_basis
+            profit_rate = (profit_loss / cost_basis) if cost_basis > 0 else 0.0
+        else:
+            evaluation = sum(
+                _to_float(item.get("evaluation"), default=0.0)
+                for item in components_list
+                if item.get("evaluation") is not None
+            )
+            profit_loss = sum(
+                _to_float(item.get("profit_loss"), default=0.0)
+                for item in components_list
+                if item.get("profit_loss") is not None
+            )
+            profit_rate = (profit_loss / cost_basis) if cost_basis > 0 else 0.0
+
+        evaluation_krw = None
+        profit_loss_krw = None
+        if market_type in (_MARKET_KR, _MARKET_CRYPTO):
+            evaluation_krw = evaluation
+            profit_loss_krw = profit_loss
+        elif market_type == _MARKET_US:
+            if usd_krw:
+                evaluation_krw = evaluation * usd_krw
+                profit_loss_krw = profit_loss * usd_krw
+
+        return {
+            "quantity": quantity,
+            "avg_price": avg_price,
+            "evaluation": evaluation,
+            "profit_loss": profit_loss,
+            "profit_rate": profit_rate,
+            "evaluation_krw": evaluation_krw,
+            "profit_loss_krw": profit_loss_krw,
+        }
+
+    def _aggregate_positions(
+        self, components: list[dict[str, Any]], *, usd_krw: float | None = None
+    ) -> list[dict[str, Any]]:
+        by_key = self._group_components_by_position(components)
 
         rows: list[dict[str, Any]] = []
         for row in by_key.values():
@@ -1051,94 +1133,31 @@ class PortfolioOverviewService:
             if quantity <= 0:
                 continue
 
-            # Pick a reference current_price for currency detection
             current_price = self._pick_current_price(components_list)
 
-            # Normalize currency for US positions with mixed sources
-            if row["market_type"] == _MARKET_US and usd_krw:
-                normalized_components = []
-                for item in components_list:
-                    item_copy = dict(item)
-                    avg_price = _to_float(item.get("avg_price"))
+            if row["market_type"] == _MARKET_US:
+                components_list = self._normalize_us_currency(components_list, usd_krw)
 
-                    # Use item's current_price if available, otherwise use row's current_price
-                    ref_price = _to_float(item.get("current_price")) or _to_float(
-                        current_price
-                    )
-
-                    # Detect KRW-denominated avg_price and convert to USD
-                    # Heuristic: if avg_price > 1000 and ratio to current_price > 100, it's likely KRW
-                    if (
-                        avg_price > 1000
-                        and ref_price > 0
-                        and (avg_price / ref_price) > 100
-                    ):
-                        item_copy["avg_price"] = avg_price / usd_krw
-
-                    normalized_components.append(item_copy)
-                components_list = normalized_components
-
-            avg_numerator = sum(
-                _to_float(item.get("quantity")) * _to_float(item.get("avg_price"))
-                for item in components_list
+            totals = self._calculate_position_totals(
+                components_list=components_list,
+                current_price=current_price,
+                market_type=row["market_type"],
+                usd_krw=usd_krw,
             )
-            avg_price = avg_numerator / quantity if quantity > 0 else 0.0
-
-            cost_basis = sum(
-                _to_float(item.get("quantity")) * _to_float(item.get("avg_price"))
-                for item in components_list
-            )
-
-            # If a canonical current price is available, recalculate position totals from
-            # full quantity to avoid undercount when some account components are missing
-            # per-component evaluation/profit fields.
-            if current_price is not None:
-                evaluation = quantity * current_price
-                profit_loss = evaluation - cost_basis
-                profit_rate = (profit_loss / cost_basis) if cost_basis > 0 else 0.0
-            else:
-                evaluation = sum(
-                    _to_float(item.get("evaluation"), default=0.0)
-                    for item in components_list
-                    if item.get("evaluation") is not None
-                )
-                profit_loss = sum(
-                    _to_float(item.get("profit_loss"), default=0.0)
-                    for item in components_list
-                    if item.get("profit_loss") is not None
-                )
-                profit_rate = (profit_loss / cost_basis) if cost_basis > 0 else 0.0
-
-            # Calculate KRW-normalized values for cross-market aggregation
-            evaluation_krw = None
-            profit_loss_krw = None
-            market_type = row["market_type"]
-
-            if market_type in (_MARKET_KR, _MARKET_CRYPTO):
-                evaluation_krw = evaluation
-                profit_loss_krw = profit_loss
-            elif market_type == _MARKET_US:
-                if usd_krw:
-                    evaluation_krw = evaluation * usd_krw
-                    profit_loss_krw = profit_loss * usd_krw
-                else:
-                    # Explicitly None if USD/KRW missing for US market
-                    evaluation_krw = None
-                    profit_loss_krw = None
 
             rows.append(
                 {
                     "market_type": row["market_type"],
                     "symbol": row["symbol"],
                     "name": row["name"] or row["symbol"],
-                    "quantity": quantity,
-                    "avg_price": avg_price,
+                    "quantity": totals["quantity"],
+                    "avg_price": totals["avg_price"],
                     "current_price": current_price,
-                    "evaluation": evaluation,
-                    "profit_loss": profit_loss,
-                    "profit_rate": profit_rate,
-                    "evaluation_krw": evaluation_krw,
-                    "profit_loss_krw": profit_loss_krw,
+                    "evaluation": totals["evaluation"],
+                    "profit_loss": totals["profit_loss"],
+                    "profit_rate": totals["profit_rate"],
+                    "evaluation_krw": totals["evaluation_krw"],
+                    "profit_loss_krw": totals["profit_loss_krw"],
                     "components": components_list,
                 }
             )
