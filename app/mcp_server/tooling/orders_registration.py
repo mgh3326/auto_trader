@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
-from app.mcp_server.tooling import orders_history
+from app.mcp_server.tooling import order_execution, orders_history
 from app.mcp_server.tooling.orders_modify_cancel import (
     cancel_order_impl,
     modify_order_impl,
@@ -79,9 +79,9 @@ def register_order_tools(mcp: FastMCP) -> None:
         stop_loss: float | None = None,
         min_hold_days: int | None = None,
         notes: str | None = None,
-        indicators_snapshot: dict | None = None,
+        indicators_snapshot: dict[str, Any] | None = None,
     ):
-        return await orders_history._place_order_impl(
+        return await order_execution._place_order_impl(
             symbol=symbol,
             side=side,
             order_type=order_type,

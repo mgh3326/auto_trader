@@ -5,7 +5,10 @@ from __future__ import annotations
 from typing import Any, Literal
 
 import app.services.brokers.upbit.client as upbit_service
-from app.mcp_server.tooling import order_execution as _order_execution
+from app.mcp_server.tooling.order_execution import (
+    _calculate_date_range,
+    _normalize_market_type_to_external,
+)
 from app.mcp_server.tooling.orders_modify_cancel import (
     _extract_kis_order_number,
     _get_kis_field,
@@ -24,17 +27,6 @@ from app.mcp_server.tooling.shared import (
 )
 from app.services.brokers.kis.client import KISClient
 from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
-
-_calculate_date_range = _order_execution._calculate_date_range
-_normalize_market_type_to_external = _order_execution._normalize_market_type_to_external
-_get_current_price_for_order = _order_execution._get_current_price_for_order
-_get_holdings_for_order = _order_execution._get_holdings_for_order
-_get_balance_for_order = _order_execution._get_balance_for_order
-_check_daily_order_limit = _order_execution._check_daily_order_limit
-_record_order_history = _order_execution._record_order_history
-_preview_order = _order_execution._preview_order
-_execute_order = _order_execution._execute_order
-_place_order_impl = _order_execution._place_order_impl
 
 
 def _calculate_order_summary(orders: list[dict[str, Any]]) -> dict[str, Any]:
@@ -104,9 +96,7 @@ def _validate_history_inputs(
     normalized_symbol: str | None = None
 
     if symbol:
-        market_type, normalized_symbol = _resolve_market_type(
-            symbol, market_hint
-        )
+        market_type, normalized_symbol = _resolve_market_type(symbol, market_hint)
         market_types = [market_type]
     elif market_hint:
         norm = _normalize_market(market_hint)
@@ -144,15 +134,11 @@ async def _fetch_crypto_orders(
     fetched: list[dict[str, Any]] = []
 
     if status in ("all", "pending"):
-        open_ops = await upbit_service.fetch_open_orders(
-            market=normalized_symbol
-        )
+        open_ops = await upbit_service.fetch_open_orders(market=normalized_symbol)
         fetched.extend([_normalize_upbit_order(o) for o in open_ops])
 
     if status in ("all", "filled", "cancelled") and normalized_symbol:
-        fetch_limit = (
-            100 if limit_val == float("inf") else max(limit, 20)
-        )
+        fetch_limit = 100 if limit_val == float("inf") else max(limit, 20)
         closed_ops = await upbit_service.fetch_closed_orders(
             market=normalized_symbol,
             limit=fetch_limit,
@@ -172,14 +158,10 @@ async def _fetch_kr_orders(
     kis = KISClient()
 
     if status in ("all", "pending"):
-        logger.debug(
-            "Fetching KR pending orders, symbol=%s", normalized_symbol
-        )
+        logger.debug("Fetching KR pending orders, symbol=%s", normalized_symbol)
         open_ops = await kis.inquire_korea_orders()
         if open_ops:
-            logger.debug(
-                "Raw API response keys: %s", list(open_ops[0].keys())
-            )
+            logger.debug("Raw API response keys: %s", list(open_ops[0].keys()))
         for o in open_ops:
             o_sym = str(_get_kis_field(o, "pdno", "PDNO"))
             if normalized_symbol and o_sym != normalized_symbol:
@@ -187,9 +169,7 @@ async def _fetch_kr_orders(
             fetched.append(_normalize_kis_domestic_order(o))
 
     if status in ("all", "filled", "cancelled") and normalized_symbol:
-        lookup_days = (
-            effective_days if effective_days is not None else 30
-        )
+        lookup_days = effective_days if effective_days is not None else 30
         start_dt, end_dt = _calculate_date_range(lookup_days)
         hist_ops = await kis.inquire_daily_order_domestic(
             start_date=start_dt,
@@ -197,9 +177,7 @@ async def _fetch_kr_orders(
             stock_code=normalized_symbol,
             side="00",
         )
-        fetched.extend(
-            [_normalize_kis_domestic_order(o) for o in hist_ops]
-        )
+        fetched.extend([_normalize_kis_domestic_order(o) for o in hist_ops])
 
     return fetched
 
@@ -216,9 +194,7 @@ async def _fetch_us_orders(
     if status in ("all", "pending"):
         target_exchanges = ["NASD", "NYSE", "AMEX"]
         if normalized_symbol:
-            target_exchanges = [
-                await get_us_exchange_by_symbol(normalized_symbol)
-            ]
+            target_exchanges = [await get_us_exchange_by_symbol(normalized_symbol)]
 
         seen_oids: set[str] = set()
         for ex in target_exchanges:
@@ -238,9 +214,7 @@ async def _fetch_us_orders(
                 pass
 
     if status in ("all", "filled", "cancelled") and normalized_symbol:
-        lookup_days = (
-            effective_days if effective_days is not None else 30
-        )
+        lookup_days = effective_days if effective_days is not None else 30
         start_dt, end_dt = _calculate_date_range(lookup_days)
         ex = await get_us_exchange_by_symbol(normalized_symbol)
         hist_ops = await kis.inquire_daily_order_overseas(
@@ -250,9 +224,7 @@ async def _fetch_us_orders(
             exchange_code=ex,
             side="00",
         )
-        fetched.extend(
-            [_normalize_kis_overseas_order(o) for o in hist_ops]
-        )
+        fetched.extend([_normalize_kis_overseas_order(o) for o in hist_ops])
 
     return fetched
 
@@ -265,9 +237,7 @@ def _dedupe_orders(
     unique_orders: dict[tuple[Any, ...], dict[str, Any]] = {}
     for o in orders:
         oid = str(o.get("order_id") or "").strip()
-        source_market = (
-            o.get("_source_market") or o.get("market") or "unknown"
-        )
+        source_market = o.get("_source_market") or o.get("market") or "unknown"
         if oid:
             key = (source_market, oid)
             unique_orders[key] = o
@@ -411,9 +381,7 @@ async def get_order_history_impl(
         limit_val,
         market_types,
         normalized_symbol,
-    ) = _validate_history_inputs(
-        symbol, status, order_id, market, side, days, limit
-    )
+    ) = _validate_history_inputs(symbol, status, order_id, market, side, days, limit)
 
     _broker_fetchers = {
         "crypto": lambda: _fetch_crypto_orders(
@@ -445,7 +413,11 @@ async def get_order_history_impl(
 
     orders = _dedupe_orders(orders)
     response_orders, total_available, truncated = _filter_and_sort_orders(
-        orders, status, order_id, side, limit_val,
+        orders,
+        status,
+        order_id,
+        side,
+        limit_val,
     )
 
     return _build_history_response(
@@ -465,17 +437,6 @@ async def get_order_history_impl(
     )
 
 
-
 __all__ = [
     "get_order_history_impl",
-    "_place_order_impl",
-    "_calculate_date_range",
-    "_normalize_market_type_to_external",
-    "_get_current_price_for_order",
-    "_get_holdings_for_order",
-    "_get_balance_for_order",
-    "_check_daily_order_limit",
-    "_record_order_history",
-    "_preview_order",
-    "_execute_order",
 ]
