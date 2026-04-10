@@ -170,8 +170,12 @@ class AuthMiddleware:
 
             # If not authenticated, redirect to login
             if not user:
-                # Save the original URL to redirect back after login
-                next_url = str(request.url)
+                # Use relative path to avoid scheme mismatch behind reverse proxy
+                next_url = (
+                    f"{request.url.path}?{request.url.query}"
+                    if request.url.query
+                    else request.url.path
+                )
                 return RedirectResponse(
                     url=f"/web-auth/login?next={next_url}",
                     status_code=303,
