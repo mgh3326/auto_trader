@@ -53,19 +53,35 @@ def _calculate_order_summary(orders: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-async def get_order_history_impl(
-    symbol: str | None = None,
-    status: Literal["all", "pending", "filled", "cancelled"] = "all",
-    order_id: str | None = None,
-    market: str | None = None,
-    side: str | None = None,
-    days: int | None = None,
-    limit: int | None = 50,
-) -> dict[str, Any]:
+def _validate_history_inputs(
+    symbol: str | None,
+    status: str,
+    order_id: str | None,
+    market: str | None,
+    side: str | None,
+    days: int | None,
+    limit: int | None,
+) -> tuple[
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+    int | None,
+    float,
+    list[str],
+    str | None,
+]:
+    """Validate and normalize history query inputs.
+
+    Returns:
+        (symbol, order_id, market_hint, side, effective_days,
+         limit_val, market_types, normalized_symbol)
+    """
     if status != "pending" and not symbol:
         raise ValueError(
             f"symbol is required when status='{status}'. "
-            "Use status='pending' for symbol-free queries, or provide a symbol (e.g. symbol='KRW-BTC')."
+            "Use status='pending' for symbol-free queries, "
+            "or provide a symbol (e.g. symbol='KRW-BTC')."
         )
 
     symbol = (symbol or "").strip() or None
@@ -88,7 +104,9 @@ async def get_order_history_impl(
     normalized_symbol: str | None = None
 
     if symbol:
-        market_type, normalized_symbol = _resolve_market_type(symbol, market_hint)
+        market_type, normalized_symbol = _resolve_market_type(
+            symbol, market_hint
+        )
         market_types = [market_type]
     elif market_hint:
         norm = _normalize_market(market_hint)
@@ -104,108 +122,152 @@ async def get_order_history_impl(
         else:
             market_types = ["crypto", "equity_kr", "equity_us"]
 
-    orders: list[dict[str, Any]] = []
-    errors: list[dict[str, Any]] = []
+    return (
+        symbol,
+        order_id,
+        market_hint,
+        side,
+        effective_days,
+        limit_val,
+        market_types,
+        normalized_symbol,
+    )
 
-    for m_type in market_types:
-        try:
-            fetched: list[dict[str, Any]] = []
 
-            if m_type == "crypto":
-                if status in ("all", "pending"):
-                    open_ops = await upbit_service.fetch_open_orders(
-                        market=normalized_symbol
-                    )
-                    fetched.extend([_normalize_upbit_order(o) for o in open_ops])
+async def _fetch_crypto_orders(
+    normalized_symbol: str | None,
+    status: str,
+    limit_val: float,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Fetch and normalize Upbit (crypto) orders."""
+    fetched: list[dict[str, Any]] = []
 
-                if status in ("all", "filled", "cancelled") and normalized_symbol:
-                    fetch_limit = 100 if limit_val == float("inf") else max(limit, 20)
-                    closed_ops = await upbit_service.fetch_closed_orders(
-                        market=normalized_symbol,
-                        limit=fetch_limit,
-                    )
-                    fetched.extend([_normalize_upbit_order(o) for o in closed_ops])
+    if status in ("all", "pending"):
+        open_ops = await upbit_service.fetch_open_orders(
+            market=normalized_symbol
+        )
+        fetched.extend([_normalize_upbit_order(o) for o in open_ops])
 
-            elif m_type == "equity_kr":
-                kis = KISClient()
-                if status in ("all", "pending"):
-                    logger.debug(
-                        "Fetching KR pending orders, symbol=%s", normalized_symbol
-                    )
-                    open_ops = await kis.inquire_korea_orders()
-                    if open_ops:
-                        logger.debug(
-                            "Raw API response keys: %s", list(open_ops[0].keys())
-                        )
-                    for o in open_ops:
-                        o_sym = str(_get_kis_field(o, "pdno", "PDNO"))
-                        if normalized_symbol and o_sym != normalized_symbol:
-                            continue
-                        fetched.append(_normalize_kis_domestic_order(o))
+    if status in ("all", "filled", "cancelled") and normalized_symbol:
+        fetch_limit = (
+            100 if limit_val == float("inf") else max(limit, 20)
+        )
+        closed_ops = await upbit_service.fetch_closed_orders(
+            market=normalized_symbol,
+            limit=fetch_limit,
+        )
+        fetched.extend([_normalize_upbit_order(o) for o in closed_ops])
 
-                if status in ("all", "filled", "cancelled") and normalized_symbol:
-                    lookup_days = effective_days if effective_days is not None else 30
-                    start_dt, end_dt = _calculate_date_range(lookup_days)
-                    hist_ops = await kis.inquire_daily_order_domestic(
-                        start_date=start_dt,
-                        end_date=end_dt,
-                        stock_code=normalized_symbol,
-                        side="00",
-                    )
-                    fetched.extend([_normalize_kis_domestic_order(o) for o in hist_ops])
+    return fetched
 
-            elif m_type == "equity_us":
-                kis = KISClient()
-                if status in ("all", "pending"):
-                    target_exchanges = ["NASD", "NYSE", "AMEX"]
-                    if normalized_symbol:
-                        target_exchanges = [
-                            await get_us_exchange_by_symbol(normalized_symbol)
-                        ]
 
-                    seen_oids = set()
-                    for ex in target_exchanges:
-                        try:
-                            ops = await kis.inquire_overseas_orders(ex)
-                            for o in ops:
-                                oid = _extract_kis_order_number(o)
-                                if oid in seen_oids:
-                                    continue
-                                seen_oids.add(oid)
+async def _fetch_kr_orders(
+    normalized_symbol: str | None,
+    status: str,
+    effective_days: int | None,
+) -> list[dict[str, Any]]:
+    """Fetch and normalize KIS domestic (Korean equity) orders."""
+    fetched: list[dict[str, Any]] = []
+    kis = KISClient()
 
-                                o_sym = str(_get_kis_field(o, "pdno", "PDNO"))
-                                if normalized_symbol and o_sym != normalized_symbol:
-                                    continue
-                                fetched.append(_normalize_kis_overseas_order(o))
-                        except Exception:
-                            pass
+    if status in ("all", "pending"):
+        logger.debug(
+            "Fetching KR pending orders, symbol=%s", normalized_symbol
+        )
+        open_ops = await kis.inquire_korea_orders()
+        if open_ops:
+            logger.debug(
+                "Raw API response keys: %s", list(open_ops[0].keys())
+            )
+        for o in open_ops:
+            o_sym = str(_get_kis_field(o, "pdno", "PDNO"))
+            if normalized_symbol and o_sym != normalized_symbol:
+                continue
+            fetched.append(_normalize_kis_domestic_order(o))
 
-                if status in ("all", "filled", "cancelled") and normalized_symbol:
-                    lookup_days = effective_days if effective_days is not None else 30
-                    start_dt, end_dt = _calculate_date_range(lookup_days)
-                    ex = await get_us_exchange_by_symbol(normalized_symbol)
-                    hist_ops = await kis.inquire_daily_order_overseas(
-                        start_date=start_dt,
-                        end_date=end_dt,
-                        symbol=normalized_symbol,
-                        exchange_code=ex,
-                        side="00",
-                    )
-                    fetched.extend([_normalize_kis_overseas_order(o) for o in hist_ops])
+    if status in ("all", "filled", "cancelled") and normalized_symbol:
+        lookup_days = (
+            effective_days if effective_days is not None else 30
+        )
+        start_dt, end_dt = _calculate_date_range(lookup_days)
+        hist_ops = await kis.inquire_daily_order_domestic(
+            start_date=start_dt,
+            end_date=end_dt,
+            stock_code=normalized_symbol,
+            side="00",
+        )
+        fetched.extend(
+            [_normalize_kis_domestic_order(o) for o in hist_ops]
+        )
 
-            source_market = _normalize_market_type_to_external(m_type)
-            for f in fetched:
-                f["_source_market"] = source_market
-            orders.extend(fetched)
+    return fetched
 
-        except Exception as e:
-            errors.append({"market": m_type, "error": str(e)})
 
-    original_order_count = len(orders)
+async def _fetch_us_orders(
+    normalized_symbol: str | None,
+    status: str,
+    effective_days: int | None,
+) -> list[dict[str, Any]]:
+    """Fetch and normalize KIS overseas (US equity) orders."""
+    fetched: list[dict[str, Any]] = []
+    kis = KISClient()
+
+    if status in ("all", "pending"):
+        target_exchanges = ["NASD", "NYSE", "AMEX"]
+        if normalized_symbol:
+            target_exchanges = [
+                await get_us_exchange_by_symbol(normalized_symbol)
+            ]
+
+        seen_oids: set[str] = set()
+        for ex in target_exchanges:
+            try:
+                ops = await kis.inquire_overseas_orders(ex)
+                for o in ops:
+                    oid = _extract_kis_order_number(o)
+                    if oid in seen_oids:
+                        continue
+                    seen_oids.add(oid)
+
+                    o_sym = str(_get_kis_field(o, "pdno", "PDNO"))
+                    if normalized_symbol and o_sym != normalized_symbol:
+                        continue
+                    fetched.append(_normalize_kis_overseas_order(o))
+            except Exception:
+                pass
+
+    if status in ("all", "filled", "cancelled") and normalized_symbol:
+        lookup_days = (
+            effective_days if effective_days is not None else 30
+        )
+        start_dt, end_dt = _calculate_date_range(lookup_days)
+        ex = await get_us_exchange_by_symbol(normalized_symbol)
+        hist_ops = await kis.inquire_daily_order_overseas(
+            start_date=start_dt,
+            end_date=end_dt,
+            symbol=normalized_symbol,
+            exchange_code=ex,
+            side="00",
+        )
+        fetched.extend(
+            [_normalize_kis_overseas_order(o) for o in hist_ops]
+        )
+
+    return fetched
+
+
+def _dedupe_orders(
+    orders: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Remove duplicate orders, preserving last occurrence."""
+    original_count = len(orders)
     unique_orders: dict[tuple[Any, ...], dict[str, Any]] = {}
     for o in orders:
         oid = str(o.get("order_id") or "").strip()
-        source_market = o.get("_source_market") or o.get("market") or "unknown"
+        source_market = (
+            o.get("_source_market") or o.get("market") or "unknown"
+        )
         if oid:
             key = (source_market, oid)
             unique_orders[key] = o
@@ -222,12 +284,26 @@ async def get_order_history_impl(
             )
             unique_orders[key] = o
 
-    orders = list(unique_orders.values())
-    removed_duplicates = original_order_count - len(orders)
-    if removed_duplicates > 0:
-        logger.info("Removed %s duplicate orders", removed_duplicates)
+    result = list(unique_orders.values())
+    removed = original_count - len(result)
+    if removed > 0:
+        logger.info("Removed %s duplicate orders", removed)
+    return result
 
-    filtered_orders: list[dict[str, Any]] = []
+
+def _filter_and_sort_orders(
+    orders: list[dict[str, Any]],
+    status: str,
+    order_id: str | None,
+    side: str | None,
+    limit_val: float,
+) -> tuple[list[dict[str, Any]], int, bool]:
+    """Filter, sort, and truncate orders.
+
+    Returns:
+        (response_orders, total_available, truncated)
+    """
+    filtered: list[dict[str, Any]] = []
     for o in orders:
         o_status = o.get("status")
         if status == "pending":
@@ -246,26 +322,46 @@ async def get_order_history_impl(
         if side and o.get("side") != side:
             continue
 
-        filtered_orders.append(o)
+        filtered.append(o)
 
     def _get_sort_key(o: dict[str, Any]) -> str:
         val = o.get("ordered_at") or o.get("created_at") or ""
         return str(val)
 
-    filtered_orders.sort(key=_get_sort_key, reverse=True)
+    filtered.sort(key=_get_sort_key, reverse=True)
 
-    total_available = len(filtered_orders)
+    total_available = len(filtered)
     truncated = False
     if limit_val != float("inf") and total_available > limit_val:
-        filtered_orders = filtered_orders[: int(limit_val)]
+        filtered = filtered[: int(limit_val)]
         truncated = True
 
     response_orders: list[dict[str, Any]] = []
-    for o in filtered_orders:
+    for o in filtered:
         cleaned = dict(o)
         cleaned.pop("_source_market", None)
         response_orders.append(cleaned)
 
+    return response_orders, total_available, truncated
+
+
+def _build_history_response(
+    *,
+    response_orders: list[dict[str, Any]],
+    errors: list[dict[str, Any]],
+    market_types: list[str],
+    normalized_symbol: str | None,
+    symbol: str | None,
+    status: str,
+    order_id: str | None,
+    market_hint: str | None,
+    side: str | None,
+    days: int | None,
+    limit: int | None,
+    truncated: bool,
+    total_available: int,
+) -> dict[str, Any]:
+    """Build the final order history response dict."""
     summary = _calculate_order_summary(response_orders)
 
     ret_market = "mixed"
@@ -295,6 +391,79 @@ async def get_order_history_impl(
         "total_available": total_available,
         "errors": errors,
     }
+
+
+async def get_order_history_impl(
+    symbol: str | None = None,
+    status: Literal["all", "pending", "filled", "cancelled"] = "all",
+    order_id: str | None = None,
+    market: str | None = None,
+    side: str | None = None,
+    days: int | None = None,
+    limit: int | None = 50,
+) -> dict[str, Any]:
+    (
+        symbol,
+        order_id,
+        market_hint,
+        side,
+        effective_days,
+        limit_val,
+        market_types,
+        normalized_symbol,
+    ) = _validate_history_inputs(
+        symbol, status, order_id, market, side, days, limit
+    )
+
+    _broker_fetchers = {
+        "crypto": lambda: _fetch_crypto_orders(
+            normalized_symbol, status, limit_val, limit or 50
+        ),
+        "equity_kr": lambda: _fetch_kr_orders(
+            normalized_symbol, status, effective_days
+        ),
+        "equity_us": lambda: _fetch_us_orders(
+            normalized_symbol, status, effective_days
+        ),
+    }
+
+    orders: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+
+    for m_type in market_types:
+        try:
+            fetcher = _broker_fetchers.get(m_type)
+            if fetcher is None:
+                continue
+            fetched = await fetcher()
+            source_market = _normalize_market_type_to_external(m_type)
+            for f in fetched:
+                f["_source_market"] = source_market
+            orders.extend(fetched)
+        except Exception as e:
+            errors.append({"market": m_type, "error": str(e)})
+
+    orders = _dedupe_orders(orders)
+    response_orders, total_available, truncated = _filter_and_sort_orders(
+        orders, status, order_id, side, limit_val,
+    )
+
+    return _build_history_response(
+        response_orders=response_orders,
+        errors=errors,
+        market_types=market_types,
+        normalized_symbol=normalized_symbol,
+        symbol=symbol,
+        status=status,
+        order_id=order_id,
+        market_hint=market_hint,
+        side=side,
+        days=days,
+        limit=limit,
+        truncated=truncated,
+        total_available=total_available,
+    )
+
 
 
 __all__ = [
