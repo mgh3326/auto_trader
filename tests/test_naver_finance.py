@@ -342,7 +342,7 @@ class TestFetchNews:
         ) -> BeautifulSoup:
             return BeautifulSoup(SAMPLE_NEWS_HTML, "lxml")
 
-        monkeypatch.setattr(naver_finance, "_fetch_html", mock_fetch_html)
+        monkeypatch.setattr(naver_finance.news, "_fetch_html", mock_fetch_html)
 
         result = await naver_finance.fetch_news("005930", limit=10)
 
@@ -358,7 +358,7 @@ class TestFetchNews:
         ) -> BeautifulSoup:
             return BeautifulSoup(SAMPLE_NEWS_HTML, "lxml")
 
-        monkeypatch.setattr(naver_finance, "_fetch_html", mock_fetch_html)
+        monkeypatch.setattr(naver_finance.news, "_fetch_html", mock_fetch_html)
 
         result = await naver_finance.fetch_news("005930", limit=1)
 
@@ -370,7 +370,7 @@ class TestFetchNews:
         ) -> BeautifulSoup:
             return BeautifulSoup("<html></html>", "lxml")
 
-        monkeypatch.setattr(naver_finance, "_fetch_html", mock_fetch_html)
+        monkeypatch.setattr(naver_finance.news, "_fetch_html", mock_fetch_html)
 
         result = await naver_finance.fetch_news("005930")
         assert result == []
@@ -387,7 +387,7 @@ class TestFetchCompanyProfile:
         ) -> BeautifulSoup:
             return BeautifulSoup(SAMPLE_PROFILE_HTML, "lxml")
 
-        monkeypatch.setattr(naver_finance, "_fetch_html", mock_fetch_html)
+        monkeypatch.setattr(naver_finance.company, "_fetch_html", mock_fetch_html)
 
         result = await naver_finance.fetch_company_profile("005930")
 
@@ -411,7 +411,7 @@ class TestFetchCompanyProfile:
                 "lxml",
             )
 
-        monkeypatch.setattr(naver_finance, "_fetch_html", mock_fetch_html)
+        monkeypatch.setattr(naver_finance.company, "_fetch_html", mock_fetch_html)
 
         result = await naver_finance.fetch_company_profile("000000")
 
@@ -432,7 +432,7 @@ class TestFetchInvestorTrends:
         ) -> BeautifulSoup:
             return BeautifulSoup(SAMPLE_INVESTOR_TRENDS_HTML, "lxml")
 
-        monkeypatch.setattr(naver_finance, "_fetch_html", mock_fetch_html)
+        monkeypatch.setattr(naver_finance.investor, "_fetch_html", mock_fetch_html)
 
         result = await naver_finance.fetch_investor_trends("005930", days=20)
 
@@ -458,7 +458,7 @@ class TestFetchInvestorTrends:
         ) -> BeautifulSoup:
             return BeautifulSoup(SAMPLE_INVESTOR_TRENDS_HTML, "lxml")
 
-        monkeypatch.setattr(naver_finance, "_fetch_html", mock_fetch_html)
+        monkeypatch.setattr(naver_finance.investor, "_fetch_html", mock_fetch_html)
 
         result = await naver_finance.fetch_investor_trends("005930", days=1)
 
@@ -491,7 +491,7 @@ class TestFetchInvestmentOpinions:
                 return BeautifulSoup(SAMPLE_CURRENT_PRICE_HTML, "lxml")
             return BeautifulSoup("<html></html>", "lxml")
 
-        monkeypatch.setattr(naver_finance, "_fetch_html", mock_fetch_html)
+        monkeypatch.setattr(naver_finance.investor, "_fetch_html", mock_fetch_html)
 
         result = await naver_finance.fetch_investment_opinions("005930", limit=10)
 
@@ -540,7 +540,7 @@ class TestFetchInvestmentOpinions:
                 return BeautifulSoup(SAMPLE_CURRENT_PRICE_HTML, "lxml")
             return BeautifulSoup("<html></html>", "lxml")
 
-        monkeypatch.setattr(naver_finance, "_fetch_html", mock_fetch_html)
+        monkeypatch.setattr(naver_finance.investor, "_fetch_html", mock_fetch_html)
 
         result = await naver_finance.fetch_investment_opinions("005930", limit=1)
 
@@ -554,7 +554,7 @@ class TestFetchInvestmentOpinions:
         ) -> BeautifulSoup:
             return BeautifulSoup("<html><table class='type_1'></table></html>", "lxml")
 
-        monkeypatch.setattr(naver_finance, "_fetch_html", mock_fetch_html)
+        monkeypatch.setattr(naver_finance.investor, "_fetch_html", mock_fetch_html)
 
         result = await naver_finance.fetch_investment_opinions("005930", limit=10)
 
@@ -589,7 +589,7 @@ class TestFetchInvestmentOpinions:
                 return BeautifulSoup(SAMPLE_CURRENT_PRICE_HTML, "lxml")
             return BeautifulSoup("<html></html>", "lxml")
 
-        monkeypatch.setattr(naver_finance, "_fetch_html", mock_fetch_html)
+        monkeypatch.setattr(naver_finance.investor, "_fetch_html", mock_fetch_html)
 
         result = await naver_finance.fetch_investment_opinions("005930", limit=10)
 
@@ -629,7 +629,7 @@ class TestFetchInvestmentOpinions:
                 return BeautifulSoup(SAMPLE_CURRENT_PRICE_HTML, "lxml")
             return BeautifulSoup("<html></html>", "lxml")
 
-        monkeypatch.setattr(naver_finance, "_fetch_html", mock_fetch_html)
+        monkeypatch.setattr(naver_finance.investor, "_fetch_html", mock_fetch_html)
 
         result = await naver_finance.fetch_investment_opinions("005930", limit=10)
 
@@ -694,7 +694,7 @@ class TestFetchKrSnapshot:
 
         monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: mock_client)
         monkeypatch.setattr(
-            naver_finance,
+            naver_finance.investor,
             "_fetch_html_with_client",
             mock_fetch_html_with_client,
             raising=False,
@@ -755,7 +755,7 @@ class TestFetchKrSnapshot:
 
         monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: mock_client)
         monkeypatch.setattr(
-            naver_finance,
+            naver_finance.investor,
             "_fetch_html_with_client",
             mock_fetch_html_with_client,
             raising=False,
@@ -831,7 +831,7 @@ class TestFetchValuation:
             else:  # sise.naver
                 return BeautifulSoup(SAMPLE_VALUATION_SISE_HTML, "lxml")
 
-        monkeypatch.setattr(naver_finance, "_fetch_html", mock_fetch_html)
+        monkeypatch.setattr(naver_finance.valuation, "_fetch_html", mock_fetch_html)
 
         result = await naver_finance.fetch_valuation("005930")
 
@@ -859,7 +859,7 @@ class TestFetchValuation:
             else:
                 return BeautifulSoup(SAMPLE_VALUATION_MINIMAL_SISE_HTML, "lxml")
 
-        monkeypatch.setattr(naver_finance, "_fetch_html", mock_fetch_html)
+        monkeypatch.setattr(naver_finance.valuation, "_fetch_html", mock_fetch_html)
 
         result = await naver_finance.fetch_valuation("298040")
 
@@ -901,7 +901,7 @@ class TestFetchValuation:
                 return BeautifulSoup(main_html, "lxml")
             return BeautifulSoup(sise_html, "lxml")
 
-        monkeypatch.setattr(naver_finance, "_fetch_html", mock_fetch_html)
+        monkeypatch.setattr(naver_finance.valuation, "_fetch_html", mock_fetch_html)
 
         result = await naver_finance.fetch_valuation("000000")
 
@@ -932,7 +932,7 @@ class TestFetchValuation:
                 return BeautifulSoup(main_html, "lxml")
             return BeautifulSoup(sise_html, "lxml")
 
-        monkeypatch.setattr(naver_finance, "_fetch_html", mock_fetch_html)
+        monkeypatch.setattr(naver_finance.valuation, "_fetch_html", mock_fetch_html)
 
         result = await naver_finance.fetch_valuation("000000")
 
@@ -946,7 +946,7 @@ class TestFetchValuation:
         ) -> BeautifulSoup:
             return BeautifulSoup("<html></html>", "lxml")
 
-        monkeypatch.setattr(naver_finance, "_fetch_html", mock_fetch_html)
+        monkeypatch.setattr(naver_finance.valuation, "_fetch_html", mock_fetch_html)
 
         result = await naver_finance.fetch_valuation("000000")
 
