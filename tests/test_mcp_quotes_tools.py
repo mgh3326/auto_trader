@@ -195,7 +195,7 @@ async def test_get_quote_korean_equity(monkeypatch):
     assert result["price"] == 105.0  # price = close
     assert result["open"] == 100.0
     assert called["code"] == "005930"
-    assert called["market"] == "UN"
+    assert called["market"] == "J"
     assert called["n"] == 1
 
 
@@ -254,6 +254,38 @@ async def test_get_quote_korean_etf_with_explicit_market(monkeypatch):
 
     assert result["instrument_type"] == "equity_kr"
     assert result["source"] == "kis"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "symbol,label",
+    [
+        ("005930", "stock"),  # 삼성전자 — 일반 주식
+        ("133690", "etf"),  # TIGER 은행TOP10 — ETF
+    ],
+)
+async def test_fetch_quote_equity_kr_passes_market_j(monkeypatch, symbol, label):
+    """Regression: market='J' is passed to KIS API for both stocks and ETFs (#487)."""
+    tools = build_tools()
+    df = _single_row_df()
+    called: dict[str, object] = {}
+
+    class DummyKISClient:
+        async def inquire_daily_itemchartprice(self, code, market, n):
+            called["code"] = code
+            called["market"] = market
+            called["n"] = n
+            return df
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+
+    result = await tools["get_quote"](symbol)
+
+    assert called["market"] == "J", f"Expected market='J' for {label} symbol {symbol}"
+    assert result["instrument_type"] == "equity_kr"
+    assert result["source"] == "kis"
+    assert result["price"] == 105.0
+    assert result["symbol"] == symbol
 
 
 # ---------------------------------------------------------------------------

@@ -87,7 +87,7 @@ async def test_get_orderbook_falls_back_to_legacy_quantity_keys(monkeypatch):
 async def test_get_ohlcv_rejects_non_positive_days(monkeypatch):
     class DummyKISClient:
         async def inquire_daily_itemchartprice(
-            self, code: str, market: str = "UN", n: int = 200, period: str = "D"
+            self, code: str, market: str = "J", n: int = 200, period: str = "D"
         ):
             await asyncio.sleep(0)
             raise AssertionError("KIS client should not be called for invalid days")
@@ -112,7 +112,7 @@ async def test_get_ohlcv_clamps_requested_days_before_kis_call(monkeypatch):
 
     class DummyKISClient:
         async def inquire_daily_itemchartprice(
-            self, code: str, market: str = "UN", n: int = 200, period: str = "D"
+            self, code: str, market: str = "J", n: int = 200, period: str = "D"
         ):
             captured["n"] = n
             return pd.DataFrame(
@@ -156,7 +156,7 @@ def test_get_ohlcv_route_documents_400_response() -> None:
 @pytest.mark.asyncio
 async def test_get_current_price_uses_kis_inquire_price_for_kr():
     class DummyKISClient:
-        async def inquire_price(self, code: str, market: str = "UN") -> pd.DataFrame:
+        async def inquire_price(self, code: str, market: str = "J") -> pd.DataFrame:
             return await asyncio.sleep(0, result=pd.DataFrame([{"close": 70123.0}]))
 
         async def inquire_overseas_daily_price(
@@ -184,7 +184,7 @@ async def test_get_current_price_fails_closed_for_us_without_live_quote(monkeypa
     called = False
 
     class DummyKISClient:
-        async def inquire_price(self, code: str, market: str = "UN") -> pd.DataFrame:
+        async def inquire_price(self, code: str, market: str = "J") -> pd.DataFrame:
             await asyncio.sleep(0)
             raise AssertionError("KR price path should not be used for US")
 

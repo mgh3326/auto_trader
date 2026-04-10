@@ -402,7 +402,7 @@ async def _fetch_quote_equity_kr(symbol: str) -> dict[str, Any]:
     kis = KISClient()
     df = await kis.inquire_daily_itemchartprice(
         code=symbol,
-        market="UN",
+        market="J",
         n=1,
     )
     if df.empty:
@@ -650,7 +650,7 @@ async def _fetch_ohlcv_equity_kr(
         async def _raw_fetch_day(requested_count: int):
             return await kis.inquire_daily_itemchartprice(
                 code=symbol,
-                market="UN",
+                market="J",
                 n=requested_count,
                 period="D",
                 end_date=_kis_end_date(end_date),
@@ -683,7 +683,7 @@ async def _fetch_ohlcv_equity_kr(
         kis_period_map = {"week": "W", "month": "M"}
         df = await kis.inquire_daily_itemchartprice(
             code=symbol,
-            market="UN",
+            market="J",
             n=capped_count,
             period=kis_period_map.get(period, "D"),
             end_date=_kis_end_date(end_date),

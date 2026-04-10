@@ -213,7 +213,7 @@ EXCHANGE_MAP: dict[str, str] = {
 
 
 class _PriceLookupClient(Protocol):
-    async def inquire_price(self, code: str, market: str = "UN") -> DataFrame: ...
+    async def inquire_price(self, code: str, market: str = "J") -> DataFrame: ...
 
     async def inquire_overseas_daily_price(
         self,
@@ -551,7 +551,7 @@ async def get_ohlcv(
         normalized_days = _normalize_ohlcv_days(days)
         kis_client = KISClient()
         df = await kis_client.inquire_daily_itemchartprice(
-            code=ticker, market="UN", n=normalized_days, period="D"
+            code=ticker, market="J", n=normalized_days, period="D"
         )
 
         ohlcv_data = [
