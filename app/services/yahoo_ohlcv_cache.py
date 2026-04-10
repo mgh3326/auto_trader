@@ -11,15 +11,12 @@ from app.core.config import settings
 from app.services.ohlcv_cache_common import (
     _acquire_lock,
     _empty_dataframe,
-    _enforce_retention_limit,
-    _normalize_bool,
-    _read_cache_status,
-    _read_cached_rows,
-    _read_latest_date,
-    _read_oldest_date,
-    _refresh_meta,
     _release_lock,
     _upsert_rows,
+    create_redis_client,
+    get_closed_candles_flow,
+    make_keys,
+    normalize_period,
 )
 
 logger = logging.getLogger(__name__)
@@ -30,11 +27,13 @@ _REDIS_CLIENT: redis.Redis | None = None
 _FALLBACK_COUNT = 0
 
 
-def _normalize_period(period: str) -> str:
-    normalized = str(period or "").strip().lower()
-    if normalized not in _SUPPORTED_PERIODS:
-        raise ValueError(f"period must be one of {sorted(_SUPPORTED_PERIODS)}")
-    return normalized
+# ---------------------------------------------------------------------------
+# Service-specific helpers
+# ---------------------------------------------------------------------------
+
+
+def _normalize_period_local(period: str) -> str:
+    return normalize_period(period, _SUPPORTED_PERIODS)
 
 
 def _normalize_now_utc(now: datetime | None) -> datetime:
@@ -107,7 +106,7 @@ def _resolve_bucket_date(
 
 
 def get_last_closed_bucket_nyse(period: str, now: datetime | None = None) -> date:
-    normalized = _normalize_period(period)
+    normalized = _normalize_period_local(period)
     now_utc = _normalize_now_utc(now)
     sessions = _recent_sessions(now_utc, lookback_days=120)
     if not sessions:
@@ -116,7 +115,7 @@ def get_last_closed_bucket_nyse(period: str, now: datetime | None = None) -> dat
 
 
 def _bucket_key(period: str, bucket_date: date) -> tuple[int, int, int]:
-    normalized_period = _normalize_period(period)
+    normalized_period = _normalize_period_local(period)
     if normalized_period == "day":
         return (bucket_date.year, bucket_date.month, bucket_date.day)
     if normalized_period == "week":
@@ -126,7 +125,7 @@ def _bucket_key(period: str, bucket_date: date) -> tuple[int, int, int]:
 
 
 def _bucket_gap_count(period: str, earlier: date, later: date) -> int:
-    normalized_period = _normalize_period(period)
+    normalized_period = _normalize_period_local(period)
     if later <= earlier:
         return 0
 
@@ -144,27 +143,52 @@ def _bucket_gap_count(period: str, earlier: date, later: date) -> int:
     return max(month_gap, 0)
 
 
-def _base_key(ticker: str, period: str = "day") -> str:
-    normalized_period = str(period or "day").strip().lower()
-    normalized_ticker = str(ticker or "").strip().upper()
-    return f"yahoo:ohlcv:{normalized_period}:v1:{normalized_ticker}"
+def _make_is_cache_sufficient(period: str):
+    """Create a period-aware cache-sufficiency checker (captures period via closure)."""
+
+    def _is_cache_sufficient(
+        cached_count: int,
+        latest_cached_date: date | None,
+        oldest_confirmed: bool,
+        requested_count: int,
+        target_closed_date: date,
+    ) -> bool:
+        has_latest_closed = latest_cached_date is not None and _bucket_key(
+            period, latest_cached_date
+        ) >= _bucket_key(period, target_closed_date)
+        if not has_latest_closed:
+            return False
+        if cached_count >= requested_count:
+            return True
+        return oldest_confirmed
+
+    return _is_cache_sufficient
+
+
+def _make_is_latest_fresh(period: str):
+    """Create a period-aware freshness checker (captures period via closure)."""
+
+    def _is_latest_fresh(latest: date | None, target: date) -> bool:
+        if latest is None:
+            return False
+        return _bucket_key(period, latest) >= _bucket_key(period, target)
+
+    return _is_latest_fresh
 
 
 def _keys(ticker: str, period: str = "day") -> tuple[str, str, str, str]:
-    base = _base_key(ticker, period)
-    return f"{base}:dates", f"{base}:rows", f"{base}:meta", f"{base}:lock"
+    return make_keys("yahoo", ticker, period)
+
+
+# ---------------------------------------------------------------------------
+# Redis client management
+# ---------------------------------------------------------------------------
 
 
 async def _get_redis_client() -> redis.Redis:
     global _REDIS_CLIENT
     if _REDIS_CLIENT is None:
-        _REDIS_CLIENT = redis.from_url(
-            settings.get_redis_url(),
-            max_connections=settings.redis_max_connections,
-            socket_timeout=settings.redis_socket_timeout,
-            socket_connect_timeout=settings.redis_socket_connect_timeout,
-            decode_responses=True,
-        )
+        _REDIS_CLIENT = await create_redis_client()
     return _REDIS_CLIENT
 
 
@@ -175,158 +199,9 @@ async def close_ohlcv_cache_redis() -> None:
         _REDIS_CLIENT = None
 
 
-def _is_cache_sufficient(
-    period: str,
-    cached_count: int,
-    latest_cached_date: date | None,
-    oldest_confirmed: bool,
-    requested_count: int,
-    target_closed_date: date,
-) -> bool:
-    has_latest_closed = latest_cached_date is not None and _bucket_key(
-        period, latest_cached_date
-    ) >= _bucket_key(period, target_closed_date)
-    if not has_latest_closed:
-        return False
-    if cached_count >= requested_count:
-        return True
-    return oldest_confirmed
-
-
-async def _backfill_until_satisfied(
-    redis_client: redis.Redis,
-    ticker: str,
-    period: str,
-    raw_fetcher: Callable[
-        [str, int, str, datetime | None],
-        Awaitable[pd.DataFrame],
-    ],
-    requested_count: int,
-    target_closed_date: date,
-    dates_key: str,
-    rows_key: str,
-    meta_key: str,
-    max_days: int,
-) -> None:
-    meta = await redis_client.hgetall(meta_key)
-    oldest_confirmed = _normalize_bool(meta.get("oldest_confirmed"))
-
-    while True:
-        latest_cached_date = await _read_latest_date(redis_client, dates_key)
-        if latest_cached_date is not None and _bucket_key(
-            period,
-            latest_cached_date,
-        ) >= _bucket_key(period, target_closed_date):
-            break
-
-        if latest_cached_date is None:
-            batch_size = min(max(requested_count, 1), 200)
-        else:
-            missing_latest_buckets = _bucket_gap_count(
-                period,
-                latest_cached_date,
-                target_closed_date,
-            )
-            batch_size = min(max(missing_latest_buckets, 1), 200)
-
-        fetched = await raw_fetcher(
-            ticker=ticker,
-            days=batch_size,
-            period=period,
-            end_date=datetime.combine(target_closed_date, time(23, 59, 59)),
-        )
-        if fetched.empty or "date" not in fetched.columns:
-            break
-
-        fetched = fetched[fetched["date"] <= target_closed_date]
-        if fetched.empty:
-            break
-
-        await _upsert_rows(redis_client, dates_key, rows_key, fetched)
-        await _enforce_retention_limit(redis_client, dates_key, rows_key, max_days)
-
-        latest_after = await _read_latest_date(redis_client, dates_key)
-        if latest_cached_date is not None and (
-            latest_after is None or latest_after <= latest_cached_date
-        ):
-            break
-
-        if len(fetched) < batch_size:
-            break
-
-    while True:
-        cached_count, latest_cached_date, oldest_confirmed = await _read_cache_status(
-            redis_client,
-            dates_key,
-            meta_key,
-            target_closed_date,
-        )
-        if _is_cache_sufficient(
-            period,
-            cached_count,
-            latest_cached_date,
-            oldest_confirmed,
-            requested_count,
-            target_closed_date,
-        ):
-            await _refresh_meta(
-                redis_client,
-                dates_key,
-                meta_key,
-                target_closed_date,
-                oldest_confirmed,
-                meta_date_field="last_closed_bucket",
-            )
-            return
-        if oldest_confirmed:
-            break
-
-        earliest_cached_date = await _read_oldest_date(redis_client, dates_key)
-        batch_end_date = (
-            earliest_cached_date - timedelta(days=1)
-            if earliest_cached_date is not None
-            else target_closed_date
-        )
-        if batch_end_date > target_closed_date:
-            batch_end_date = target_closed_date
-
-        remaining = requested_count - cached_count
-        batch_size = min(max(remaining, 1), 200)
-
-        fetched = await raw_fetcher(
-            ticker=ticker,
-            days=batch_size,
-            period=period,
-            end_date=datetime.combine(batch_end_date, time(23, 59, 59)),
-        )
-        if fetched.empty or "date" not in fetched.columns:
-            oldest_confirmed = True
-            break
-
-        fetched = fetched[fetched["date"] <= batch_end_date]
-        if fetched.empty:
-            oldest_confirmed = True
-            break
-
-        inserted_count = await _upsert_rows(redis_client, dates_key, rows_key, fetched)
-        await _enforce_retention_limit(redis_client, dates_key, rows_key, max_days)
-
-        if inserted_count <= 0:
-            oldest_confirmed = True
-            break
-
-        if len(fetched) < batch_size:
-            oldest_confirmed = True
-            break
-
-    await _refresh_meta(
-        redis_client,
-        dates_key,
-        meta_key,
-        target_closed_date,
-        oldest_confirmed,
-        meta_date_field="last_closed_bucket",
-    )
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 
 async def get_closed_candles(
@@ -335,7 +210,7 @@ async def get_closed_candles(
     period: str,
     raw_fetcher: Callable[[str, int, str, datetime | None], Awaitable[pd.DataFrame]],
 ) -> pd.DataFrame | None:
-    normalized_period = _normalize_period(period)
+    normalized_period = _normalize_period_local(period)
     if not settings.yahoo_ohlcv_cache_enabled:
         return None
 
@@ -353,119 +228,33 @@ async def get_closed_candles(
     try:
         redis_client = await _get_redis_client()
         dates_key, rows_key, meta_key, lock_key = _keys(
-            normalized_ticker,
-            normalized_period,
+            normalized_ticker, normalized_period
         )
         target_closed_date = get_last_closed_bucket_nyse(normalized_period)
 
-        await _enforce_retention_limit(
-            redis_client,
-            dates_key,
-            rows_key,
-            max_days,
+        return await get_closed_candles_flow(
+            redis_client=redis_client,
+            dates_key=dates_key,
+            rows_key=rows_key,
+            meta_key=meta_key,
+            lock_key=lock_key,
+            symbol=normalized_ticker,
+            period=normalized_period,
+            requested_count=requested_count,
+            max_days=max_days,
+            lock_ttl=settings.yahoo_ohlcv_cache_lock_ttl_seconds,
+            target_closed_date=target_closed_date,
+            raw_fetcher=raw_fetcher,
+            fetcher_symbol_kwarg="ticker",
+            is_latest_fresh_fn=_make_is_latest_fresh(normalized_period),
+            bucket_gap_fn=_bucket_gap_count,
+            is_sufficient_fn=_make_is_cache_sufficient(normalized_period),
+            acquire_lock_fn=_acquire_lock,
+            release_lock_fn=_release_lock,
+            sleep_fn=asyncio.sleep,
+            log_prefix="yahoo_ohlcv_cache",
+            meta_date_field="last_closed_bucket",
         )
-
-        cached = await _read_cached_rows(
-            redis_client,
-            dates_key,
-            rows_key,
-            target_closed_date,
-            requested_count,
-        )
-        cached_count, latest_cached_date, oldest_confirmed = await _read_cache_status(
-            redis_client,
-            dates_key,
-            meta_key,
-            target_closed_date,
-        )
-        if _is_cache_sufficient(
-            normalized_period,
-            cached_count,
-            latest_cached_date,
-            oldest_confirmed,
-            requested_count,
-            target_closed_date,
-        ):
-            await _refresh_meta(
-                redis_client,
-                dates_key,
-                meta_key,
-                target_closed_date,
-                oldest_confirmed,
-                meta_date_field="last_closed_bucket",
-            )
-            return cached.tail(requested_count).reset_index(drop=True)
-
-        lock_token = await _acquire_lock(
-            redis_client,
-            lock_key,
-            settings.yahoo_ohlcv_cache_lock_ttl_seconds,
-        )
-        if lock_token is None:
-            for _ in range(2):
-                await asyncio.sleep(0.1)
-                lock_token = await _acquire_lock(
-                    redis_client,
-                    lock_key,
-                    settings.yahoo_ohlcv_cache_lock_ttl_seconds,
-                )
-                if lock_token is not None:
-                    break
-
-            if lock_token is None:
-                refreshed_cached = await _read_cached_rows(
-                    redis_client,
-                    dates_key,
-                    rows_key,
-                    target_closed_date,
-                    requested_count,
-                )
-                (
-                    refreshed_count,
-                    refreshed_latest_date,
-                    refreshed_oldest_confirmed,
-                ) = await _read_cache_status(
-                    redis_client,
-                    dates_key,
-                    meta_key,
-                    target_closed_date,
-                )
-                if _is_cache_sufficient(
-                    normalized_period,
-                    refreshed_count,
-                    refreshed_latest_date,
-                    refreshed_oldest_confirmed,
-                    requested_count,
-                    target_closed_date,
-                ):
-                    return refreshed_cached.tail(requested_count).reset_index(drop=True)
-                return None
-
-        try:
-            await _backfill_until_satisfied(
-                redis_client,
-                normalized_ticker,
-                normalized_period,
-                raw_fetcher,
-                requested_count,
-                target_closed_date,
-                dates_key,
-                rows_key,
-                meta_key,
-                max_days,
-            )
-        finally:
-            await _release_lock(redis_client, lock_key, lock_token)
-
-        final_rows = await _read_cached_rows(
-            redis_client,
-            dates_key,
-            rows_key,
-            target_closed_date,
-            requested_count,
-        )
-        return final_rows.tail(requested_count).reset_index(drop=True)
-
     except Exception as exc:
         global _FALLBACK_COUNT
         _FALLBACK_COUNT += 1
