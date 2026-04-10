@@ -86,39 +86,18 @@ async def _run_crypto_coingecko_fetch() -> dict[str, Any]:
         return coingecko_payload
 
 
-async def _screen_crypto_via_tvscreener(
-    market: str,
-    asset_type: str | None,
-    category: str | None,
-    min_market_cap: float | None,
-    max_per: float | None,
-    min_dividend_yield: float | None,
+def _build_crypto_filters(
+    *,
     max_rsi: float | None,
     sort_by: str,
     sort_order: str,
     limit: int,
 ) -> dict[str, Any]:
-    (
-        min_dividend_yield_input,
-        min_dividend_yield_normalized,
-    ) = _normalize_dividend_yield_threshold(min_dividend_yield)
+    """Build tvscreener columns, where-conditions, and sort config for crypto screening.
 
-    filters_applied: dict[str, Any] = {
-        "market": market,
-        "asset_type": asset_type,
-        "category": category,
-        "min_market_cap": min_market_cap,
-        "max_per": max_per,
-        "min_dividend_yield": min_dividend_yield_normalized,
-        "max_rsi": max_rsi,
-        "sort_by": sort_by,
-        "sort_order": sort_order,
-    }
-    if min_dividend_yield_input is not None:
-        filters_applied["min_dividend_yield_input"] = min_dividend_yield_input
-    if min_dividend_yield_normalized is not None:
-        filters_applied["min_dividend_yield_normalized"] = min_dividend_yield_normalized
-
+    Returns a dict with keys: columns, where_conditions, sort_field,
+    dispatch_sort_order, query_limit.
+    """
     tvscreener = _import_tvscreener()
     CryptoField = tvscreener.CryptoField
 
@@ -156,8 +135,29 @@ async def _screen_crypto_via_tvscreener(
     dispatch_sort_order = "asc" if sort_by == "rsi" else sort_order
     query_limit = max(limit * 5, 50)
 
+    return {
+        "columns": columns,
+        "where_conditions": where_conditions,
+        "sort_field": sort_field,
+        "dispatch_sort_order": dispatch_sort_order,
+        "query_limit": query_limit,
+    }
+
+
+async def _execute_crypto_query(
+    *,
+    columns: list[Any],
+    where_conditions: list[Any],
+    sort_field: Any,
+    dispatch_sort_order: str,
+    query_limit: int,
+) -> Any:
+    """Execute the tvscreener CryptoScreener query.
+
+    Returns a pandas DataFrame. Raises TvScreenerError or TimeoutError on failure.
+    """
     tvscreener_service = TvScreenerService(timeout=_timeout_seconds("tvscreener"))
-    df = await tvscreener_service.query_crypto_screener(
+    return await tvscreener_service.query_crypto_screener(
         columns=columns,
         where_clause=where_conditions,
         sort_by=sort_field,
@@ -165,12 +165,26 @@ async def _screen_crypto_via_tvscreener(
         limit=query_limit,
     )
 
+
+async def _normalize_crypto_results(
+    df: Any,
+    *,
+    market: str,
+    max_rsi: float | None,
+    min_market_cap: float | None,
+    filters_applied: dict[str, Any],
+    limit: int,
+) -> dict[str, Any]:
+    """Map tvscreener crypto DataFrame to filtered candidate list and finalize.
+
+    Applies Upbit symbol mapping, warning-market filter, crash filter,
+    cooldown filter, RSI filter, and delegates to finalize_crypto_screen.
+    """
     warnings: list[str] = []
     if min_market_cap is not None:
-        warnings.append(
-            "min_market_cap filter is not supported for crypto market; ignored"
-        )
+        warnings.append("min_market_cap filter is not supported for crypto market; ignored")
 
+    # Map raw rows
     raw_results: list[dict[str, Any]] = []
     for _, row in df.iterrows():
         tradingview_symbol = _clean_text(row.get("symbol")).upper()
@@ -194,15 +208,12 @@ async def _screen_crypto_via_tvscreener(
                 "tv_market_cap": _to_optional_float(row.get("market_cap")),
                 "rsi": _to_optional_float(row.get("relative_strength_index_14")),
                 "adx": _to_optional_float(row.get("average_directional_index_14")),
-                "tv_volume_24h_in_usd": _to_optional_float(
-                    row.get("volume_24h_in_usd")
-                ),
+                "tv_volume_24h_in_usd": _to_optional_float(row.get("volume_24h_in_usd")),
             }
         )
 
-    market_codes = [
-        str(item.get("symbol") or "").strip().upper() for item in raw_results
-    ]
+    # Fetch Upbit display names and warning markets
+    market_codes = [str(item.get("symbol") or "").strip().upper() for item in raw_results]
     _db: AsyncSession = cast(AsyncSession, cast(object, AsyncSessionLocal()))
     try:
         try:
@@ -216,17 +227,15 @@ async def _screen_crypto_via_tvscreener(
 
         warning_markets: set[str] = set()
         try:
-            warning_markets = await get_upbit_warning_markets(
-                quote_currency="KRW", db=_db
-            )
+            warning_markets = await get_upbit_warning_markets(quote_currency="KRW", db=_db)
         except Exception as exc:
             warnings.append(
-                "market warning details unavailable; warning filter skipped "
-                f"({type(exc).__name__}: {exc})"
+                "market warning details unavailable; warning filter skipped " f"({type(exc).__name__}: {exc})"
             )
     finally:
         await _db.close()
 
+    # Fetch Upbit 24h volumes
     ticker_volume_map: dict[str, float] = {}
     if market_codes:
         try:
@@ -244,29 +253,21 @@ async def _screen_crypto_via_tvscreener(
                 f"({type(exc).__name__}: {exc})"
             )
 
+    # BTC reference for crash filter
     btc_item = next(
-        (
-            item
-            for item in raw_results
-            if str(item.get("symbol") or "").upper() == "KRW-BTC"
-        ),
+        (item for item in raw_results if str(item.get("symbol") or "").upper() == "KRW-BTC"),
         None,
     )
     btc_change_24h: float | None = None
     if btc_item is None:
-        warnings.append(
-            "KRW-BTC ticker not found; crash filter uses btc_change_24h=0.0 fallback."
-        )
+        warnings.append("KRW-BTC ticker not found; crash filter uses btc_change_24h=0.0 fallback.")
     else:
-        btc_change_24h = _to_optional_float(
-            btc_item.get("signed_change_rate") or btc_item.get("change_rate")
-        )
+        btc_change_24h = _to_optional_float(btc_item.get("signed_change_rate") or btc_item.get("change_rate"))
         if btc_change_24h is None:
             btc_change_24h = 0.0
-            warnings.append(
-                "KRW-BTC change rate is missing; crash filter uses btc_change_24h=0.0 fallback."
-            )
+            warnings.append("KRW-BTC change rate is missing; crash filter uses btc_change_24h=0.0 fallback.")
 
+    # Apply warning + crash filters, build candidates
     filtered_by_warning = 0
     filtered_by_crash = 0
     candidates: list[dict[str, Any]] = []
@@ -283,9 +284,7 @@ async def _screen_crypto_via_tvscreener(
             filtered_by_crash += 1
             continue
 
-        trade_amount_24h = _to_optional_float(
-            raw_item.get("acc_trade_price_24h") or raw_item.get("trade_amount_24h")
-        )
+        trade_amount_24h = _to_optional_float(raw_item.get("acc_trade_price_24h") or raw_item.get("trade_amount_24h"))
         item = {
             "symbol": market_code,
             "original_market": market_code,
@@ -315,14 +314,12 @@ async def _screen_crypto_via_tvscreener(
 
     if max_rsi is not None:
         candidates = [
-            item
-            for item in candidates
-            if item.get("rsi") is not None and float(item["rsi"]) <= max_rsi
+            item for item in candidates if item.get("rsi") is not None and float(item["rsi"]) <= max_rsi
         ]
 
+    # Cooldown filter + coingecko fetch
     coingecko_fetch_task = asyncio.create_task(_run_crypto_coingecko_fetch())
     try:
-        # Filter out symbols in stop-loss cooldown
         filtered_by_cooldown = 0
         try:
             cooldown_service = _get_crypto_trade_cooldown_service()
@@ -333,8 +330,7 @@ async def _screen_crypto_via_tvscreener(
                 candidates = [
                     item
                     for item in candidates
-                    if str(item.get("symbol") or "").strip().upper()
-                    not in blocked_symbols
+                    if str(item.get("symbol") or "").strip().upper() not in blocked_symbols
                 ]
                 filtered_by_cooldown = len(blocked_symbols)
         except Exception as exc:
@@ -344,9 +340,7 @@ async def _screen_crypto_via_tvscreener(
 
         if max_rsi is not None:
             candidates = [
-                item
-                for item in candidates
-                if item.get("rsi") is not None and float(item["rsi"]) <= max_rsi
+                item for item in candidates if item.get("rsi") is not None and float(item["rsi"]) <= max_rsi
             ]
 
         metric_diagnostics = _empty_rsi_enrichment_diagnostics()
@@ -372,6 +366,67 @@ async def _screen_crypto_via_tvscreener(
         filtered_by_crash=filtered_by_crash,
         filtered_by_stop_loss_cooldown=filtered_by_cooldown,
         source="tvscreener",
+    )
+
+
+async def _screen_crypto_via_tvscreener(
+    market: str,
+    asset_type: str | None,
+    category: str | None,
+    min_market_cap: float | None,
+    max_per: float | None,
+    min_dividend_yield: float | None,
+    max_rsi: float | None,
+    sort_by: str,
+    sort_order: str,
+    limit: int,
+) -> dict[str, Any]:
+    (
+        min_dividend_yield_input,
+        min_dividend_yield_normalized,
+    ) = _normalize_dividend_yield_threshold(min_dividend_yield)
+
+    filters_applied: dict[str, Any] = {
+        "market": market,
+        "asset_type": asset_type,
+        "category": category,
+        "min_market_cap": min_market_cap,
+        "max_per": max_per,
+        "min_dividend_yield": min_dividend_yield_normalized,
+        "max_rsi": max_rsi,
+        "sort_by": sort_by,
+        "sort_order": sort_order,
+    }
+    if min_dividend_yield_input is not None:
+        filters_applied["min_dividend_yield_input"] = min_dividend_yield_input
+    if min_dividend_yield_normalized is not None:
+        filters_applied["min_dividend_yield_normalized"] = min_dividend_yield_normalized
+
+    # Phase 1: Build filters
+    filter_config = _build_crypto_filters(
+        max_rsi=max_rsi,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        limit=limit,
+    )
+
+    # Phase 2: Execute query
+    df = await _execute_crypto_query(
+        columns=filter_config["columns"],
+        where_conditions=filter_config["where_conditions"],
+        sort_field=filter_config["sort_field"],
+        dispatch_sort_order=filter_config["dispatch_sort_order"],
+        query_limit=filter_config["query_limit"],
+    )
+
+    # Phase 3: Normalize results
+    return await _normalize_crypto_results(
+        df,
+        market=market,
+        max_rsi=max_rsi,
+        min_market_cap=min_market_cap,
+        filters_applied=filters_applied,
+        limit=limit,
     )
 
 
