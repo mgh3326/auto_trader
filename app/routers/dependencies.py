@@ -27,3 +27,21 @@ async def get_authenticated_user(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail=AUTH_REQUIRED_MESSAGE,
     )
+
+
+async def get_user_from_request(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """웹 세션 또는 API 토큰에서 사용자 조회 (symbol-settings 전용)"""
+    if hasattr(request.state, "user") and request.state.user:
+        return request.state.user
+
+    user = await get_current_user_from_session(request, db)
+    if user:
+        return user
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Authentication required",
+    )

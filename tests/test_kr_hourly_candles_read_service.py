@@ -396,8 +396,8 @@ async def test_api_prefetch_plan_respects_nxt_ineligible(monkeypatch):
                 return _MappingsResult(target_rows)
             raise AssertionError(f"unexpected sql: {sql}")
 
-    from app.services.kr_intraday import _repository as _repo_module
     from app.services.kr_intraday import _kis_api as _kis_module
+    from app.services.kr_intraday import _repository as _repo_module
 
     monkeypatch.setattr(
         _repo_module, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
