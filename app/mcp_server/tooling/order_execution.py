@@ -458,6 +458,115 @@ async def _record_fill_and_journals(
 # ---------------------------------------------------------------------------
 
 
+def _build_dry_run_response(
+    dry_run_result: dict[str, Any],
+    balance_warning: str | None,
+) -> dict[str, Any]:
+    """Build the dry-run preview response."""
+    result = {
+        "success": True,
+        "dry_run": True,
+        **dry_run_result,
+        "message": "Order preview (dry_run=True)",
+    }
+    if balance_warning:
+        result["warning"] = balance_warning
+    return result
+
+
+async def _execute_and_record(
+    *,
+    normalized_symbol: str,
+    side: str,
+    order_type: str,
+    order_quantity: float | None,
+    price: float | None,
+    market_type: str,
+    current_price: float,
+    avg_price: float,
+    dry_run_result: dict[str, Any],
+    order_amount: float,
+    reason: str,
+    exit_reason: str | None,
+    thesis: str | None,
+    strategy: str | None,
+    target_price: float | None,
+    stop_loss: float | None,
+    min_hold_days: int | None,
+    notes: str | None,
+    indicators_snapshot: dict[str, Any] | None,
+    order_error_fn: Any,
+) -> dict[str, Any]:
+    """Execute a live order, record history, fills, and journals."""
+    if not await _check_daily_order_limit(_MAX_ORDERS_PER_DAY):
+        return order_error_fn(
+            f"Daily order limit ({_MAX_ORDERS_PER_DAY}) exceeded"
+        )
+
+    try:
+        execution_result = await _execute_order(
+            symbol=normalized_symbol,
+            side=side,
+            order_type=order_type,
+            quantity=order_quantity,
+            price=price,
+            market_type=market_type,
+        )
+    except Exception as exec_exc:
+        logger.error(
+            "execute_order 실패: stage=execute_order, market_type=%s, "
+            "symbol=%s, side=%s, error=%s",
+            market_type,
+            normalized_symbol,
+            side,
+            exec_exc,
+        )
+        raise
+
+    await _record_order_history(
+        symbol=normalized_symbol,
+        side=side,
+        order_type=order_type,
+        quantity=order_quantity,
+        price=price,
+        amount=order_amount,
+        reason=reason,
+        dry_run=False,
+    )
+
+    # Record phase: fills + journals
+    record_result = await _record_fill_and_journals(
+        side=side,
+        normalized_symbol=normalized_symbol,
+        market_type=market_type,
+        execution_result=execution_result,
+        dry_run_result=dry_run_result,
+        order_quantity=order_quantity,
+        current_price=current_price,
+        avg_price=avg_price,
+        reason=reason,
+        exit_reason=exit_reason,
+        thesis=thesis,
+        strategy=strategy,
+        target_price=target_price,
+        stop_loss=stop_loss,
+        min_hold_days=min_hold_days,
+        notes=notes,
+        indicators_snapshot=indicators_snapshot,
+    )
+
+    return {
+        "success": True,
+        "dry_run": False,
+        "preview": dry_run_result,
+        "execution": execution_result,
+        **record_result,
+        "message": "Order placed and fill recorded successfully"
+        if record_result["fill_recorded"]
+        else "Order placed successfully",
+    }
+
+
 async def _place_order_impl(
     symbol: str,
     side: Literal["buy", "sell"],
@@ -568,7 +677,9 @@ async def _place_order_impl(
         except ValueError as preview_exc:
             return _order_error(str(preview_exc))
 
-        order_amount = _to_float(dry_run_result.get("estimated_value"), default=0.0)
+        order_amount = _to_float(
+            dry_run_result.get("estimated_value"), default=0.0
+        )
 
         # Balance pre-check for buy orders
         balance_warning: str | None = None
@@ -586,60 +697,20 @@ async def _place_order_impl(
 
         # Dry-run exit
         if dry_run:
-            result = {
-                "success": True,
-                "dry_run": True,
-                **dry_run_result,
-                "message": "Order preview (dry_run=True)",
-            }
-            if balance_warning:
-                result["warning"] = balance_warning
-            return result
+            return _build_dry_run_response(dry_run_result, balance_warning)
 
         # Real execution
-        if not await _check_daily_order_limit(_MAX_ORDERS_PER_DAY):
-            return _order_error(f"Daily order limit ({_MAX_ORDERS_PER_DAY}) exceeded")
-
-        try:
-            execution_result = await _execute_order(
-                symbol=normalized_symbol,
-                side=side_lower,
-                order_type=order_type_lower,
-                quantity=order_quantity,
-                price=price,
-                market_type=market_type,
-            )
-        except Exception as exec_exc:
-            logger.error(
-                "execute_order 실패: stage=execute_order, market_type=%s, symbol=%s, side=%s, error=%s",
-                market_type,
-                normalized_symbol,
-                side_lower,
-                exec_exc,
-            )
-            raise
-
-        await _record_order_history(
-            symbol=normalized_symbol,
+        return await _execute_and_record(
+            normalized_symbol=normalized_symbol,
             side=side_lower,
             order_type=order_type_lower,
-            quantity=order_quantity,
-            price=price,
-            amount=order_amount,
-            reason=reason,
-            dry_run=False,
-        )
-
-        # Record phase: fills + journals
-        record_result = await _record_fill_and_journals(
-            side=side_lower,
-            normalized_symbol=normalized_symbol,
-            market_type=market_type,
-            execution_result=execution_result,
-            dry_run_result=dry_run_result,
             order_quantity=order_quantity,
+            price=price,
+            market_type=market_type,
             current_price=current_price,
             avg_price=avg_price,
+            dry_run_result=dry_run_result,
+            order_amount=order_amount,
             reason=reason,
             exit_reason=exit_reason,
             thesis=thesis,
@@ -649,19 +720,8 @@ async def _place_order_impl(
             min_hold_days=min_hold_days,
             notes=notes,
             indicators_snapshot=indicators_snapshot,
+            order_error_fn=_order_error,
         )
-
-        response: dict[str, Any] = {
-            "success": True,
-            "dry_run": False,
-            "preview": dry_run_result,
-            "execution": execution_result,
-            **record_result,
-            "message": "Order placed and fill recorded successfully"
-            if record_result["fill_recorded"]
-            else "Order placed successfully",
-        }
-        return response
     except Exception as exc:
         await _record_order_history(
             symbol=normalized_symbol,
@@ -675,6 +735,7 @@ async def _place_order_impl(
             error=str(exc),
         )
         return _order_error(str(exc))
+
 
 
 __all__ = [
