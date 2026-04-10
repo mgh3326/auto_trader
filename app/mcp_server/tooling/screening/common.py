@@ -743,3 +743,110 @@ def _build_screen_response(
         response["warnings"] = warnings
 
     return response
+
+
+# ---------------------------------------------------------------------------
+# Tvscreener shared helpers
+# ---------------------------------------------------------------------------
+
+
+def _init_tvscreener_result(filters_applied: dict[str, Any]) -> dict[str, Any]:
+    """Create the standard tvscreener result dict."""
+    return {
+        "stocks": [],
+        "source": "tvscreener",
+        "count": 0,
+        "filters_applied": dict(filters_applied),
+        "error": None,
+    }
+
+
+def _aggregate_analyst_recommendations(row: Any) -> dict[str, Any]:
+    """Compute analyst_buy/hold/sell from recommendation_buy/over/hold/sell/under.
+
+    Returns a dict with only the keys that have non-None source values.
+    """
+    recommendation_buy = _to_optional_int(_get_first_present(row, "recommendation_buy"))
+    recommendation_over = _to_optional_int(_get_first_present(row, "recommendation_over"))
+    recommendation_hold = _to_optional_int(_get_first_present(row, "recommendation_hold"))
+    recommendation_sell = _to_optional_int(_get_first_present(row, "recommendation_sell"))
+    recommendation_under = _to_optional_int(_get_first_present(row, "recommendation_under"))
+
+    result: dict[str, Any] = {}
+    if recommendation_buy is not None or recommendation_over is not None:
+        result["analyst_buy"] = (recommendation_buy or 0) + (recommendation_over or 0)
+    if recommendation_hold is not None:
+        result["analyst_hold"] = recommendation_hold
+    if recommendation_sell is not None or recommendation_under is not None:
+        result["analyst_sell"] = (recommendation_sell or 0) + (recommendation_under or 0)
+    return result
+
+
+def _filter_by_min_analyst_buy(
+    stocks: list[dict[str, Any]],
+    min_analyst_buy: float | None,
+) -> list[dict[str, Any]]:
+    """Filter stocks by min_analyst_buy threshold. Returns input list if threshold is None."""
+    if min_analyst_buy is None:
+        return stocks
+    return [
+        stock
+        for stock in stocks
+        if _to_optional_float(stock.get("analyst_buy")) is not None
+        and float(stock["analyst_buy"]) >= min_analyst_buy
+    ]
+
+
+def _build_rsi_adx_conditions(
+    *,
+    min_rsi: float | None,
+    max_rsi: float | None,
+    min_adx: float | None,
+    rsi_field: Any = None,
+    adx_field: Any = None,
+) -> list[Any]:
+    """Build RSI/ADX where-clause conditions for tvscreener queries.
+
+    If rsi_field/adx_field are not provided, callers must use the returned
+    condition *callables* with their own field references — but the typical
+    usage is to pass StockField / CryptoField constants directly.
+    """
+    conditions: list[Any] = []
+    if rsi_field is not None:
+        if min_rsi is not None:
+            conditions.append(rsi_field >= min_rsi)
+        if max_rsi is not None:
+            conditions.append(rsi_field <= max_rsi)
+    if adx_field is not None and min_adx is not None:
+        conditions.append(adx_field >= min_adx)
+    return conditions
+
+
+def _compute_avg_target_and_upside(
+    row: Any,
+    *,
+    current_price: float | None,
+) -> tuple[float | None, float | None]:
+    """Extract avg_target and upside_pct from a tvscreener row.
+
+    Tries price_target_1y first, then price_target_average / target_price_average.
+    If upside_pct (price_target_1y_delta) is missing, computes it from avg_target
+    and current_price.
+    """
+    from app.mcp_server.tooling.screening.enrichment import _compute_target_upside_pct
+
+    avg_target = _to_optional_float(
+        _get_first_present(
+            row,
+            "price_target_1y",
+            "price_target_average",
+            "target_price_average",
+        )
+    )
+    upside_pct = _to_optional_float(_get_first_present(row, "price_target_1y_delta"))
+    if upside_pct is None:
+        upside_pct = _compute_target_upside_pct(
+            avg_target=avg_target,
+            current_price=current_price,
+        )
+    return avg_target, upside_pct
