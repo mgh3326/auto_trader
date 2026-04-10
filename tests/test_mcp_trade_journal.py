@@ -410,7 +410,7 @@ class TestCreateTradeJournalForBuy:
         factory = _mock_session_factory(mock_session)
 
         with patch(
-            "app.mcp_server.tooling.order_execution._order_session_factory",
+            "app.mcp_server.tooling.order_journal._order_session_factory",
             return_value=factory,
         ):
             result = await _create_trade_journal_for_buy(
@@ -454,7 +454,7 @@ class TestCreateTradeJournalForBuy:
         factory = _mock_session_factory(mock_session)
 
         with patch(
-            "app.mcp_server.tooling.order_execution._order_session_factory",
+            "app.mcp_server.tooling.order_journal._order_session_factory",
             return_value=factory,
         ):
             result = await _create_trade_journal_for_buy(
@@ -511,7 +511,7 @@ class TestJournalFillIntegration:
 
         factory = _mock_session_factory(mock_session)
         with patch(
-            "app.mcp_server.tooling.order_execution._order_session_factory",
+            "app.mcp_server.tooling.order_journal._order_session_factory",
             return_value=factory,
         ):
             await _link_journal_to_fill("KRW-BTC", trade_id=123)
@@ -537,7 +537,7 @@ class TestJournalFillIntegration:
 
         factory = _mock_session_factory(mock_session)
         with patch(
-            "app.mcp_server.tooling.order_execution._order_session_factory",
+            "app.mcp_server.tooling.order_journal._order_session_factory",
             return_value=factory,
         ):
             await _link_journal_to_fill("KRW-BTC", trade_id=123)
@@ -570,7 +570,7 @@ class TestJournalFillIntegration:
 
         factory = _mock_session_factory(mock_session)
         with patch(
-            "app.mcp_server.tooling.order_execution._order_session_factory",
+            "app.mcp_server.tooling.order_journal._order_session_factory",
             return_value=factory,
         ):
             await _link_journal_to_fill("KRW-BTC", trade_id=321)
@@ -614,7 +614,7 @@ class TestCloseJournalsOnSell:
 
         factory = _mock_session_factory(mock_session)
         with patch(
-            "app.mcp_server.tooling.order_execution._order_session_factory",
+            "app.mcp_server.tooling.order_journal._order_session_factory",
             return_value=factory,
         ):
             result = await _close_journals_on_sell(
@@ -672,7 +672,7 @@ class TestCloseJournalsOnSell:
 
         factory = _mock_session_factory(mock_session)
         with patch(
-            "app.mcp_server.tooling.order_execution._order_session_factory",
+            "app.mcp_server.tooling.order_journal._order_session_factory",
             return_value=factory,
         ):
             result = await _close_journals_on_sell(
@@ -737,7 +737,7 @@ class TestCloseJournalsOnSell:
 
         factory = _mock_session_factory(mock_session)
         with patch(
-            "app.mcp_server.tooling.order_execution._order_session_factory",
+            "app.mcp_server.tooling.order_journal._order_session_factory",
             return_value=factory,
         ):
             result = await _close_journals_on_sell(
@@ -789,7 +789,7 @@ class TestCloseJournalsOnSell:
 
         factory = _mock_session_factory(mock_session)
         with patch(
-            "app.mcp_server.tooling.order_execution._order_session_factory",
+            "app.mcp_server.tooling.order_journal._order_session_factory",
             return_value=factory,
         ):
             result = await _close_journals_on_sell(
@@ -844,7 +844,7 @@ class TestCloseJournalsOnSell:
 
         factory = _mock_session_factory(mock_session)
         with patch(
-            "app.mcp_server.tooling.order_execution._order_session_factory",
+            "app.mcp_server.tooling.order_journal._order_session_factory",
             return_value=factory,
         ):
             result = await _close_journals_on_sell(
@@ -874,7 +874,7 @@ class TestCloseJournalsOnSell:
 
         factory = _mock_session_factory(mock_session)
         with patch(
-            "app.mcp_server.tooling.order_execution._order_session_factory",
+            "app.mcp_server.tooling.order_journal._order_session_factory",
             return_value=factory,
         ):
             result = await _close_journals_on_sell(
@@ -906,7 +906,7 @@ class TestCloseJournalsOnSell:
 
         factory = _mock_session_factory(mock_session)
         with patch(
-            "app.mcp_server.tooling.order_execution._order_session_factory",
+            "app.mcp_server.tooling.order_journal._order_session_factory",
             return_value=factory,
         ):
             await _close_journals_on_sell(

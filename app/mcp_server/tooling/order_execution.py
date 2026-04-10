@@ -17,6 +17,7 @@ from app.mcp_server.tooling.order_journal import (
     _close_journals_on_sell,
     _create_trade_journal_for_buy,
     _link_journal_to_fill,
+    _order_session_factory,
     _save_order_fill,
     _validate_buy_journal_requirements,
 )
@@ -690,6 +691,7 @@ __all__ = [
     "_close_journals_on_sell",
     "_create_trade_journal_for_buy",
     "_link_journal_to_fill",
+    "_order_session_factory",
     "_save_order_fill",
     "_validate_buy_journal_requirements",
     "_append_journal_warning",
