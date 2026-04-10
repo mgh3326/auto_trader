@@ -373,13 +373,13 @@ async def test_fetch_ohlcv_for_indicators_kr_uses_un_market(monkeypatch):
     assert cache_called["count"] == 250
     assert cache_called["period"] == "day"
     assert called["code"] == "005930"
-    assert called["market"] == "UN"
+    assert called["market"] == "J"
     assert called["n"] == 250
     assert called["period"] == "D"
 
 
 @pytest.mark.asyncio
-async def test_fetch_ohlcv_for_volume_profile_kr_uses_un_market(monkeypatch):
+async def test_fetch_ohlcv_for_volume_profile_kr_uses_j_market(monkeypatch):
     service_df = _single_row_df()
     called: dict[str, object] = {}
     cache_called: dict[str, object] = {}
@@ -412,7 +412,7 @@ async def test_fetch_ohlcv_for_volume_profile_kr_uses_un_market(monkeypatch):
     assert cache_called["count"] == 60
     assert cache_called["period"] == "day"
     assert called["code"] == "005930"
-    assert called["market"] == "UN"
+    assert called["market"] == "J"
     assert called["n"] == 60
     assert called["period"] == "D"
 

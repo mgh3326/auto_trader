@@ -195,7 +195,7 @@ async def test_get_quote_korean_equity(monkeypatch):
     assert result["price"] == 105.0  # price = close
     assert result["open"] == 100.0
     assert called["code"] == "005930"
-    assert called["market"] == "UN"
+    assert called["market"] == "J"
     assert called["n"] == 1
 
 

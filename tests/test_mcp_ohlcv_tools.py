@@ -595,7 +595,7 @@ async def test_get_ohlcv_korean_equity(monkeypatch):
     assert result["period"] == "day"
     assert len(result["rows"]) == 1
     assert called["code"] == "005930"
-    assert called["market"] == "UN"
+    assert called["market"] == "J"
     assert called["n"] == 10
     assert called["period"] == "D"
     assert called["end_date"] is None
