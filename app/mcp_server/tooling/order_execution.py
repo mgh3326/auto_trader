@@ -123,9 +123,7 @@ async def _execute_crypto_order(
         return await upbit_service.place_market_sell_order(symbol, volume_str)
 
     adjusted_price = upbit_service.adjust_price_to_upbit_unit(price)
-    return await upbit_service.place_sell_order(
-        symbol, volume_str, f"{adjusted_price}"
-    )
+    return await upbit_service.place_sell_order(symbol, volume_str, f"{adjusted_price}")
 
 
 async def _execute_kr_order(
@@ -217,8 +215,12 @@ _MAX_ORDERS_PER_DAY = 20
 
 
 def _validate_inputs(
-    symbol: str, side: str, order_type: str, price: float | None,
-    amount: float | None, quantity: float | None,
+    symbol: str,
+    side: str,
+    order_type: str,
+    price: float | None,
+    amount: float | None,
+    quantity: float | None,
 ) -> tuple[str, str, str]:
     """Validate and normalize basic inputs. Returns (symbol, side, order_type)."""
     symbol = (symbol or "").strip()
@@ -251,7 +253,10 @@ def _validate_inputs(
 
 
 async def _fetch_current_price(
-    normalized_symbol: str, market_type: str, order_type: str, price: float | None,
+    normalized_symbol: str,
+    market_type: str,
+    order_type: str,
+    price: float | None,
 ) -> float:
     """Fetch current price, falling back to limit price when available."""
     try:
@@ -284,8 +289,7 @@ async def _build_preview(
     market_type: str,
 ) -> dict[str, Any]:
     """Run preview and enrich result with defaults."""
-    preview_fn = globals().get("_preview_order", _preview_order)
-    dry_run_result = await preview_fn(
+    dry_run_result = await _preview_order(
         symbol=normalized_symbol,
         side=side,
         order_type=order_type,
@@ -310,10 +314,145 @@ async def _build_preview(
     dry_run_result.setdefault("side", side)
     dry_run_result.setdefault("order_type", order_type)
     if dry_run_result.get("price") is None:
-        dry_run_result["price"] = (
-            current_price if order_type == "market" else price
-        )
+        dry_run_result["price"] = current_price if order_type == "market" else price
     return dry_run_result
+
+
+async def _handle_buy_journal(
+    *,
+    normalized_symbol: str,
+    market_type: str,
+    dry_run_result: dict[str, Any],
+    thesis: str | None,
+    strategy: str | None,
+    target_price: float | None,
+    stop_loss: float | None,
+    min_hold_days: int | None,
+    notes: str | None,
+    indicators_snapshot: dict[str, Any] | None,
+) -> tuple[bool, int | None, str | None, str | None]:
+    """Create trade journal for buy orders.
+
+    Returns:
+        (journal_created, journal_id, journal_status, journal_warning)
+    """
+    try:
+        journal_result = await _create_trade_journal_for_buy(
+            symbol=normalized_symbol,
+            market_type=market_type,
+            preview=dry_run_result,
+            thesis=typing_cast(str, thesis),
+            strategy=typing_cast(str, strategy),
+            target_price=target_price,
+            stop_loss=stop_loss,
+            min_hold_days=min_hold_days,
+            notes=notes,
+            indicators_snapshot=indicators_snapshot,
+        )
+        return (
+            journal_result["journal_created"],
+            journal_result["journal_id"],
+            journal_result["journal_status"],
+            None,
+        )
+    except Exception as journal_exc:
+        warning = f"trade journal creation failed after order execution: {journal_exc}"
+        logger.warning(warning)
+        return False, None, None, warning
+
+
+async def _handle_sell_journal(
+    *,
+    normalized_symbol: str,
+    dry_run_result: dict[str, Any],
+    order_quantity: float | None,
+    current_price: float,
+    exit_reason: str | None,
+    reason: str,
+    journal_warning: str | None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Close journals for sell orders.
+
+    Returns:
+        (journal_close_result, updated_journal_warning)
+    """
+    try:
+        preview_qty = _to_float(dry_run_result.get("quantity"), default=0.0)
+        preview_price = _to_float(dry_run_result.get("price"), default=0.0)
+        resolved_sell_qty = (
+            preview_qty if preview_qty > 0 else _to_float(order_quantity, default=0.0)
+        )
+        resolved_sell_price = (
+            preview_price
+            if preview_price > 0
+            else _to_float(current_price, default=0.0)
+        )
+        journal_close_result = await _close_journals_on_sell(
+            symbol=normalized_symbol,
+            sell_quantity=resolved_sell_qty,
+            sell_price=resolved_sell_price,
+            exit_reason=exit_reason or reason,
+        )
+        return journal_close_result, journal_warning
+    except Exception as journal_exc:
+        updated_warning = _append_journal_warning(
+            journal_warning, f"journal close failed after sell: {journal_exc}"
+        )
+        logger.warning("Failed to close journals on sell: %s", journal_exc)
+        return None, updated_warning
+
+
+async def _save_and_link_fill(
+    *,
+    normalized_symbol: str,
+    market_type: str,
+    side: str,
+    execution_result: dict[str, Any],
+    dry_run_result: dict[str, Any],
+    journal_created: bool,
+) -> tuple[bool, str | None, str | None]:
+    """Save order fill to DB and link to journal.
+
+    Returns:
+        (fill_recorded, journal_status, journal_warning)
+    """
+    order_id = execution_result.get("uuid") or execution_result.get("odno")
+    price_val = _to_float(dry_run_result.get("price"), default=0.0)
+    qty_val = _to_float(dry_run_result.get("quantity"), default=0.0)
+    amt_val = _to_float(dry_run_result.get("estimated_value"), default=0.0)
+    fee_val = _to_float(dry_run_result.get("fee"), default=0.0)
+    currency = "KRW" if market_type != "equity_us" else "USD"
+    account_name = "upbit" if market_type == "crypto" else "kis"
+
+    try:
+        trade_id = await _save_order_fill(
+            symbol=normalized_symbol,
+            instrument_type=market_type,
+            side=side,
+            price=price_val,
+            quantity=qty_val,
+            total_amount=amt_val,
+            fee=fee_val,
+            currency=currency,
+            account=account_name,
+            order_id=str(order_id) if order_id else None,
+        )
+
+        if trade_id:
+            await _link_journal_to_fill(normalized_symbol, trade_id)
+            if journal_created:
+                return True, "active", None
+            return True, None, None
+        elif journal_created:
+            return (
+                False,
+                None,
+                "trade journal created but fill was not recorded; journal remains draft",
+            )
+        return False, None, None
+    except Exception as db_exc:
+        logger.warning("Failed to record fill to DB: %s", db_exc)
+        return False, None, None
 
 
 async def _record_fill_and_journals(
@@ -343,25 +482,23 @@ async def _record_fill_and_journals(
     journal_warning: str | None = None
 
     if side == "buy":
-        try:
-            journal_result = await _create_trade_journal_for_buy(
-                symbol=normalized_symbol,
-                market_type=market_type,
-                preview=dry_run_result,
-                thesis=typing_cast(str, thesis),
-                strategy=typing_cast(str, strategy),
-                target_price=target_price,
-                stop_loss=stop_loss,
-                min_hold_days=min_hold_days,
-                notes=notes,
-                indicators_snapshot=indicators_snapshot,
-            )
-            journal_created = journal_result["journal_created"]
-            journal_id = journal_result["journal_id"]
-            journal_status = journal_result["journal_status"]
-        except Exception as journal_exc:
-            journal_warning = f"trade journal creation failed after order execution: {journal_exc}"
-            logger.warning(journal_warning)
+        (
+            journal_created,
+            journal_id,
+            journal_status,
+            journal_warning,
+        ) = await _handle_buy_journal(
+            normalized_symbol=normalized_symbol,
+            market_type=market_type,
+            dry_run_result=dry_run_result,
+            thesis=thesis,
+            strategy=strategy,
+            target_price=target_price,
+            stop_loss=stop_loss,
+            min_hold_days=min_hold_days,
+            notes=notes,
+            indicators_snapshot=indicators_snapshot,
+        )
 
     # Record stop-loss cooldown for crypto sells below threshold
     if (
@@ -377,66 +514,31 @@ async def _record_fill_and_journals(
             logger.warning("Failed to record stop-loss cooldown: %s", cooldown_exc)
 
     # Save fill to DB
-    fill_recorded = False
-    order_id = execution_result.get("uuid") or execution_result.get("odno")
-    price_val = _to_float(dry_run_result.get("price"), default=0.0)
-    qty_val = _to_float(dry_run_result.get("quantity"), default=0.0)
-    amt_val = _to_float(dry_run_result.get("estimated_value"), default=0.0)
-    fee_val = _to_float(dry_run_result.get("fee"), default=0.0)
-    currency = "KRW" if market_type != "equity_us" else "USD"
-    account_name = "upbit" if market_type == "crypto" else "kis"
-
-    try:
-        trade_id = await _save_order_fill(
-            symbol=normalized_symbol,
-            instrument_type=market_type,
-            side=side,
-            price=price_val,
-            quantity=qty_val,
-            total_amount=amt_val,
-            fee=fee_val,
-            currency=currency,
-            account=account_name,
-            order_id=str(order_id) if order_id else None,
-        )
-
-        if trade_id:
-            fill_recorded = True
-            await _link_journal_to_fill(normalized_symbol, trade_id)
-            if journal_created:
-                journal_status = "active"
-        elif journal_created:
-            journal_warning = "trade journal created but fill was not recorded; journal remains draft"
-    except Exception as db_exc:
-        logger.warning("Failed to record fill to DB: %s", db_exc)
+    fill_recorded, fill_journal_status, fill_warning = await _save_and_link_fill(
+        normalized_symbol=normalized_symbol,
+        market_type=market_type,
+        side=side,
+        execution_result=execution_result,
+        dry_run_result=dry_run_result,
+        journal_created=journal_created,
+    )
+    if fill_journal_status:
+        journal_status = fill_journal_status
+    if fill_warning:
+        journal_warning = _append_journal_warning(journal_warning, fill_warning)
 
     # Close journals for sell orders
     journal_close_result: dict[str, Any] | None = None
     if side == "sell":
-        try:
-            preview_qty = _to_float(dry_run_result.get("quantity"), default=0.0)
-            preview_price = _to_float(dry_run_result.get("price"), default=0.0)
-            resolved_sell_qty = (
-                preview_qty
-                if preview_qty > 0
-                else _to_float(order_quantity, default=0.0)
-            )
-            resolved_sell_price = (
-                preview_price
-                if preview_price > 0
-                else _to_float(current_price, default=0.0)
-            )
-            journal_close_result = await _close_journals_on_sell(
-                symbol=normalized_symbol,
-                sell_quantity=resolved_sell_qty,
-                sell_price=resolved_sell_price,
-                exit_reason=exit_reason or reason,
-            )
-        except Exception as journal_exc:
-            journal_warning = _append_journal_warning(
-                journal_warning, f"journal close failed after sell: {journal_exc}"
-            )
-            logger.warning("Failed to close journals on sell: %s", journal_exc)
+        journal_close_result, journal_warning = await _handle_sell_journal(
+            normalized_symbol=normalized_symbol,
+            dry_run_result=dry_run_result,
+            order_quantity=order_quantity,
+            current_price=current_price,
+            exit_reason=exit_reason,
+            reason=reason,
+            journal_warning=journal_warning,
+        )
 
     result: dict[str, Any] = {
         "fill_recorded": fill_recorded,
@@ -456,6 +558,128 @@ async def _record_fill_and_journals(
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
+
+
+def _build_dry_run_response(
+    dry_run_result: dict[str, Any],
+    balance_warning: str | None,
+) -> dict[str, Any]:
+    """Build the dry-run preview response."""
+    result = {
+        "success": True,
+        "dry_run": True,
+        **dry_run_result,
+        "message": "Order preview (dry_run=True)",
+    }
+    if balance_warning:
+        result["warning"] = balance_warning
+    return result
+
+
+async def _execute_and_record(
+    *,
+    normalized_symbol: str,
+    side: str,
+    order_type: str,
+    order_quantity: float | None,
+    price: float | None,
+    market_type: str,
+    current_price: float,
+    avg_price: float,
+    dry_run_result: dict[str, Any],
+    order_amount: float,
+    reason: str,
+    exit_reason: str | None,
+    thesis: str | None,
+    strategy: str | None,
+    target_price: float | None,
+    stop_loss: float | None,
+    min_hold_days: int | None,
+    notes: str | None,
+    indicators_snapshot: dict[str, Any] | None,
+    order_error_fn: Any,
+) -> dict[str, Any]:
+    """Execute a live order, record history, fills, and journals."""
+    if not await _check_daily_order_limit(_MAX_ORDERS_PER_DAY):
+        return order_error_fn(f"Daily order limit ({_MAX_ORDERS_PER_DAY}) exceeded")
+
+    try:
+        execution_result = await _execute_order(
+            symbol=normalized_symbol,
+            side=side,
+            order_type=order_type,
+            quantity=order_quantity,
+            price=price,
+            market_type=market_type,
+        )
+    except Exception as exec_exc:
+        logger.error(
+            "execute_order 실패: stage=execute_order, market_type=%s, "
+            "symbol=%s, side=%s, error=%s",
+            market_type,
+            normalized_symbol,
+            side,
+            exec_exc,
+        )
+        raise
+
+    await _record_order_history(
+        symbol=normalized_symbol,
+        side=side,
+        order_type=order_type,
+        quantity=order_quantity,
+        price=price,
+        amount=order_amount,
+        reason=reason,
+        dry_run=False,
+    )
+
+    # Record phase: fills + journals
+    record_result = await _record_fill_and_journals(
+        side=side,
+        normalized_symbol=normalized_symbol,
+        market_type=market_type,
+        execution_result=execution_result,
+        dry_run_result=dry_run_result,
+        order_quantity=order_quantity,
+        current_price=current_price,
+        avg_price=avg_price,
+        reason=reason,
+        exit_reason=exit_reason,
+        thesis=thesis,
+        strategy=strategy,
+        target_price=target_price,
+        stop_loss=stop_loss,
+        min_hold_days=min_hold_days,
+        notes=notes,
+        indicators_snapshot=indicators_snapshot,
+    )
+
+    return {
+        "success": True,
+        "dry_run": False,
+        "preview": dry_run_result,
+        "execution": execution_result,
+        **record_result,
+        "message": "Order placed and fill recorded successfully"
+        if record_result["fill_recorded"]
+        else "Order placed successfully",
+    }
+
+
+def _build_order_error(
+    message: str,
+    source: str,
+    symbol: str,
+    market_type: str,
+) -> dict[str, Any]:
+    return {
+        "success": False,
+        "error": message,
+        "source": source,
+        "symbol": symbol,
+        "instrument_type": market_type,
+    }
 
 
 async def _place_order_impl(
@@ -478,7 +702,12 @@ async def _place_order_impl(
     indicators_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     symbol, side_lower, order_type_lower = _validate_inputs(
-        symbol, side, order_type, price, amount, quantity,
+        symbol,
+        side,
+        order_type,
+        price,
+        amount,
+        quantity,
     )
 
     market_type, normalized_symbol = _resolve_market_type(symbol, market)
@@ -504,13 +733,7 @@ async def _place_order_impl(
     source = source_map[market_type]
 
     def _order_error(message: str) -> dict[str, Any]:
-        return {
-            "success": False,
-            "error": message,
-            "source": source,
-            "symbol": normalized_symbol,
-            "instrument_type": market_type,
-        }
+        return _build_order_error(message, source, normalized_symbol, market_type)
 
     # Check stop-loss cooldown for crypto buys
     if side_lower == "buy" and market_type == "crypto":
@@ -522,7 +745,10 @@ async def _place_order_impl(
 
     try:
         current_price = await _fetch_current_price(
-            normalized_symbol, market_type, order_type_lower, price,
+            normalized_symbol,
+            market_type,
+            order_type_lower,
+            price,
         )
 
         # Resolve amount -> quantity for buy orders
@@ -586,60 +812,20 @@ async def _place_order_impl(
 
         # Dry-run exit
         if dry_run:
-            result = {
-                "success": True,
-                "dry_run": True,
-                **dry_run_result,
-                "message": "Order preview (dry_run=True)",
-            }
-            if balance_warning:
-                result["warning"] = balance_warning
-            return result
+            return _build_dry_run_response(dry_run_result, balance_warning)
 
         # Real execution
-        if not await _check_daily_order_limit(_MAX_ORDERS_PER_DAY):
-            return _order_error(f"Daily order limit ({_MAX_ORDERS_PER_DAY}) exceeded")
-
-        try:
-            execution_result = await _execute_order(
-                symbol=normalized_symbol,
-                side=side_lower,
-                order_type=order_type_lower,
-                quantity=order_quantity,
-                price=price,
-                market_type=market_type,
-            )
-        except Exception as exec_exc:
-            logger.error(
-                "execute_order 실패: stage=execute_order, market_type=%s, symbol=%s, side=%s, error=%s",
-                market_type,
-                normalized_symbol,
-                side_lower,
-                exec_exc,
-            )
-            raise
-
-        await _record_order_history(
-            symbol=normalized_symbol,
+        return await _execute_and_record(
+            normalized_symbol=normalized_symbol,
             side=side_lower,
             order_type=order_type_lower,
-            quantity=order_quantity,
-            price=price,
-            amount=order_amount,
-            reason=reason,
-            dry_run=False,
-        )
-
-        # Record phase: fills + journals
-        record_result = await _record_fill_and_journals(
-            side=side_lower,
-            normalized_symbol=normalized_symbol,
-            market_type=market_type,
-            execution_result=execution_result,
-            dry_run_result=dry_run_result,
             order_quantity=order_quantity,
+            price=price,
+            market_type=market_type,
             current_price=current_price,
             avg_price=avg_price,
+            dry_run_result=dry_run_result,
+            order_amount=order_amount,
             reason=reason,
             exit_reason=exit_reason,
             thesis=thesis,
@@ -649,19 +835,8 @@ async def _place_order_impl(
             min_hold_days=min_hold_days,
             notes=notes,
             indicators_snapshot=indicators_snapshot,
+            order_error_fn=_order_error,
         )
-
-        response: dict[str, Any] = {
-            "success": True,
-            "dry_run": False,
-            "preview": dry_run_result,
-            "execution": execution_result,
-            **record_result,
-            "message": "Order placed and fill recorded successfully"
-            if record_result["fill_recorded"]
-            else "Order placed successfully",
-        }
-        return response
     except Exception as exc:
         await _record_order_history(
             symbol=normalized_symbol,
