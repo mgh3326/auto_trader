@@ -27,7 +27,6 @@ from app.mcp_server.tooling.screening.common import (
     _to_optional_int,
 )
 from app.mcp_server.tooling.screening.enrichment import (
-    _compute_target_upside_pct,
     _pick_display_name,
 )
 from app.mcp_server.tooling.screening.tvscreener_support import (
@@ -281,9 +280,7 @@ def _build_us_filters(
         StockField, "PRICE_TARGET_AVERAGE"
     )
     price_target_field = _get_tvscreener_attr(StockField, "PRICE_TARGET_1Y")
-    price_target_delta_field = _get_tvscreener_attr(
-        StockField, "PRICE_TARGET_1Y_DELTA"
-    )
+    price_target_delta_field = _get_tvscreener_attr(StockField, "PRICE_TARGET_1Y_DELTA")
 
     # Validate that required fields are available
     if sort_by == "market_cap" and market_cap_field is None:
@@ -444,9 +441,7 @@ def _normalize_us_results(
                 _get_first_present(row, "recommendation_under")
             ),
             "price_target_average": _to_optional_float(
-                _get_first_present(
-                    row, "price_target_average", "target_price_average"
-                )
+                _get_first_present(row, "price_target_average", "target_price_average")
             ),
             "price_target_1y": _to_optional_float(
                 _get_first_present(row, "price_target_1y")
@@ -519,9 +514,7 @@ async def _screen_us_via_tvscreener(
     if min_dividend_yield_input is not None:
         filters_applied["min_dividend_yield_input"] = min_dividend_yield_input
     if min_dividend_yield_normalized is not None:
-        filters_applied["min_dividend_yield_normalized"] = (
-            min_dividend_yield_normalized
-        )
+        filters_applied["min_dividend_yield_normalized"] = min_dividend_yield_normalized
 
     result = _init_tvscreener_result(filters_applied)
 

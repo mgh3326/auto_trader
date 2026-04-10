@@ -182,7 +182,9 @@ async def _normalize_crypto_results(
     """
     warnings: list[str] = []
     if min_market_cap is not None:
-        warnings.append("min_market_cap filter is not supported for crypto market; ignored")
+        warnings.append(
+            "min_market_cap filter is not supported for crypto market; ignored"
+        )
 
     # Map raw rows
     raw_results: list[dict[str, Any]] = []
@@ -208,12 +210,16 @@ async def _normalize_crypto_results(
                 "tv_market_cap": _to_optional_float(row.get("market_cap")),
                 "rsi": _to_optional_float(row.get("relative_strength_index_14")),
                 "adx": _to_optional_float(row.get("average_directional_index_14")),
-                "tv_volume_24h_in_usd": _to_optional_float(row.get("volume_24h_in_usd")),
+                "tv_volume_24h_in_usd": _to_optional_float(
+                    row.get("volume_24h_in_usd")
+                ),
             }
         )
 
     # Fetch Upbit display names and warning markets
-    market_codes = [str(item.get("symbol") or "").strip().upper() for item in raw_results]
+    market_codes = [
+        str(item.get("symbol") or "").strip().upper() for item in raw_results
+    ]
     _db: AsyncSession = cast(AsyncSession, cast(object, AsyncSessionLocal()))
     try:
         try:
@@ -227,10 +233,13 @@ async def _normalize_crypto_results(
 
         warning_markets: set[str] = set()
         try:
-            warning_markets = await get_upbit_warning_markets(quote_currency="KRW", db=_db)
+            warning_markets = await get_upbit_warning_markets(
+                quote_currency="KRW", db=_db
+            )
         except Exception as exc:
             warnings.append(
-                "market warning details unavailable; warning filter skipped " f"({type(exc).__name__}: {exc})"
+                "market warning details unavailable; warning filter skipped "
+                f"({type(exc).__name__}: {exc})"
             )
     finally:
         await _db.close()
@@ -255,17 +264,27 @@ async def _normalize_crypto_results(
 
     # BTC reference for crash filter
     btc_item = next(
-        (item for item in raw_results if str(item.get("symbol") or "").upper() == "KRW-BTC"),
+        (
+            item
+            for item in raw_results
+            if str(item.get("symbol") or "").upper() == "KRW-BTC"
+        ),
         None,
     )
     btc_change_24h: float | None = None
     if btc_item is None:
-        warnings.append("KRW-BTC ticker not found; crash filter uses btc_change_24h=0.0 fallback.")
+        warnings.append(
+            "KRW-BTC ticker not found; crash filter uses btc_change_24h=0.0 fallback."
+        )
     else:
-        btc_change_24h = _to_optional_float(btc_item.get("signed_change_rate") or btc_item.get("change_rate"))
+        btc_change_24h = _to_optional_float(
+            btc_item.get("signed_change_rate") or btc_item.get("change_rate")
+        )
         if btc_change_24h is None:
             btc_change_24h = 0.0
-            warnings.append("KRW-BTC change rate is missing; crash filter uses btc_change_24h=0.0 fallback.")
+            warnings.append(
+                "KRW-BTC change rate is missing; crash filter uses btc_change_24h=0.0 fallback."
+            )
 
     # Apply warning + crash filters, build candidates
     filtered_by_warning = 0
@@ -284,7 +303,9 @@ async def _normalize_crypto_results(
             filtered_by_crash += 1
             continue
 
-        trade_amount_24h = _to_optional_float(raw_item.get("acc_trade_price_24h") or raw_item.get("trade_amount_24h"))
+        trade_amount_24h = _to_optional_float(
+            raw_item.get("acc_trade_price_24h") or raw_item.get("trade_amount_24h")
+        )
         item = {
             "symbol": market_code,
             "original_market": market_code,
@@ -314,7 +335,9 @@ async def _normalize_crypto_results(
 
     if max_rsi is not None:
         candidates = [
-            item for item in candidates if item.get("rsi") is not None and float(item["rsi"]) <= max_rsi
+            item
+            for item in candidates
+            if item.get("rsi") is not None and float(item["rsi"]) <= max_rsi
         ]
 
     # Cooldown filter + coingecko fetch
@@ -330,7 +353,8 @@ async def _normalize_crypto_results(
                 candidates = [
                     item
                     for item in candidates
-                    if str(item.get("symbol") or "").strip().upper() not in blocked_symbols
+                    if str(item.get("symbol") or "").strip().upper()
+                    not in blocked_symbols
                 ]
                 filtered_by_cooldown = len(blocked_symbols)
         except Exception as exc:
@@ -340,7 +364,9 @@ async def _normalize_crypto_results(
 
         if max_rsi is not None:
             candidates = [
-                item for item in candidates if item.get("rsi") is not None and float(item["rsi"]) <= max_rsi
+                item
+                for item in candidates
+                if item.get("rsi") is not None and float(item["rsi"]) <= max_rsi
             ]
 
         metric_diagnostics = _empty_rsi_enrichment_diagnostics()

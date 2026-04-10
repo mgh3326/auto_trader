@@ -22,7 +22,6 @@ from app.mcp_server.tooling.screening.common import (
     _sort_and_limit,
     _timeout_seconds,
     _to_optional_float,
-    _to_optional_int,
 )
 from app.mcp_server.tooling.screening.enrichment import _pick_display_name
 from app.mcp_server.tooling.screening.tvscreener_support import (
@@ -217,9 +216,7 @@ def _build_kr_filters(
         StockField, "RECOMMENDATION_UNDER"
     )
     price_target_field = _get_tvscreener_attr(StockField, "PRICE_TARGET_1Y")
-    price_target_delta_field = _get_tvscreener_attr(
-        StockField, "PRICE_TARGET_1Y_DELTA"
-    )
+    price_target_delta_field = _get_tvscreener_attr(StockField, "PRICE_TARGET_1Y_DELTA")
 
     columns = [
         StockField.ACTIVE_SYMBOL,
@@ -453,9 +450,7 @@ async def _screen_kr_via_tvscreener(
     if min_dividend_yield_input is not None:
         filters_applied["min_dividend_yield_input"] = min_dividend_yield_input
     if min_dividend_yield_normalized is not None:
-        filters_applied["min_dividend_yield_normalized"] = (
-            min_dividend_yield_normalized
-        )
+        filters_applied["min_dividend_yield_normalized"] = min_dividend_yield_normalized
 
     result = _init_tvscreener_result(filters_applied)
 

@@ -767,10 +767,18 @@ def _aggregate_analyst_recommendations(row: Any) -> dict[str, Any]:
     Returns a dict with only the keys that have non-None source values.
     """
     recommendation_buy = _to_optional_int(_get_first_present(row, "recommendation_buy"))
-    recommendation_over = _to_optional_int(_get_first_present(row, "recommendation_over"))
-    recommendation_hold = _to_optional_int(_get_first_present(row, "recommendation_hold"))
-    recommendation_sell = _to_optional_int(_get_first_present(row, "recommendation_sell"))
-    recommendation_under = _to_optional_int(_get_first_present(row, "recommendation_under"))
+    recommendation_over = _to_optional_int(
+        _get_first_present(row, "recommendation_over")
+    )
+    recommendation_hold = _to_optional_int(
+        _get_first_present(row, "recommendation_hold")
+    )
+    recommendation_sell = _to_optional_int(
+        _get_first_present(row, "recommendation_sell")
+    )
+    recommendation_under = _to_optional_int(
+        _get_first_present(row, "recommendation_under")
+    )
 
     result: dict[str, Any] = {}
     if recommendation_buy is not None or recommendation_over is not None:
@@ -778,7 +786,9 @@ def _aggregate_analyst_recommendations(row: Any) -> dict[str, Any]:
     if recommendation_hold is not None:
         result["analyst_hold"] = recommendation_hold
     if recommendation_sell is not None or recommendation_under is not None:
-        result["analyst_sell"] = (recommendation_sell or 0) + (recommendation_under or 0)
+        result["analyst_sell"] = (recommendation_sell or 0) + (
+            recommendation_under or 0
+        )
     return result
 
 
