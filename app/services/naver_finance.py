@@ -1055,26 +1055,7 @@ async def fetch_sector_peers(
         if industry_code:
             sector_name = await _fetch_sector_name(str(industry_code), client)
 
-    # ---- Build peer list ----
-    peers: list[dict[str, Any]] = []
-    for pr in peer_results:
-        if pr is None:
-            continue
-        peers.append(
-            {
-                "symbol": pr["symbol"],
-                "name": pr["name"],
-                "current_price": pr["current_price"],
-                "change_pct": pr["change_pct"],
-                "per": pr["per"],
-                "pbr": pr["pbr"],
-                "market_cap": pr["market_cap"],
-            }
-        )
-
-    # Sort by market_cap desc (None last)
-    peers.sort(key=lambda x: x.get("market_cap") or 0, reverse=True)
-    peers = peers[:limit]
+    peers = _parse_peer_comparison(peer_results, limit)
 
     return {
         "symbol": code,
