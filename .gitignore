@@ -275,3 +275,10 @@ blog/images/screenshot_*.png
 backtest/data/
 backtest/output/
 .omc/.env.prod
+# graphify cache only
+graphify-out/cache/
+app/graphify-out/cache/
+
+# optional heavy visualization artifacts
+graphify-out/graph.html
+app/graphify-out/graph.html

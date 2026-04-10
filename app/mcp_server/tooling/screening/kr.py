@@ -306,6 +306,10 @@ async def _normalize_kr_results(
     """Map tvscreener DataFrame rows to normalized KR stock dicts.
 
     Cross-references with KRX stock universe and enriches with valuation data.
+
+    Note: This is ``async`` (unlike ``_normalize_us_results``) because KR
+    normalization requires I/O to fetch the KRX stock universe and valuation
+    data for cross-referencing and fallback enrichment.
     """
     market_codes, valuation_market = _kr_market_codes(market)
     universe_rows: list[dict[str, Any]] = []
