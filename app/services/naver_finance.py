@@ -502,10 +502,13 @@ async def fetch_company_profile(code: str) -> dict[str, Any]:
     url = f"{NAVER_FINANCE_ITEM}/main.naver"
     soup = await _fetch_html(url, params={"code": code})
 
+    basic = _parse_basic_info(soup)
+    industry = _parse_industry_info(soup)
+
     profile: dict[str, Any] = {
         "symbol": code,
-        "name": None,
-        "sector": None,
+        "name": basic["name"],
+        "sector": industry["sector"],
         "industry": None,
         "market_cap": None,
         "shares_outstanding": None,
@@ -514,26 +517,11 @@ async def fetch_company_profile(code: str) -> dict[str, Any]:
         "eps": None,
         "bps": None,
         "dividend_yield": None,
-        "exchange": None,
+        "exchange": industry["exchange"],
         "website": None,
     }
 
-    # Company name from <div class="wrap_company">
-    name_elem = soup.select_one("div.wrap_company h2 a")
-    if name_elem:
-        profile["name"] = name_elem.get_text(strip=True)
-
-    # Market/exchange detection from code_info section
-    code_info = soup.select_one("div.code")
-    if code_info:
-        code_text = code_info.get_text(strip=True)
-        if "코스피" in code_text:
-            profile["exchange"] = "KOSPI"
-        elif "코스닥" in code_text:
-            profile["exchange"] = "KOSDAQ"
-
     # Parse summary table with key metrics
-    # Look for tables in the aside section
     for table in soup.select("table.no_info, table.tb_type1"):
         for row in table.select("tr"):
             cells = row.select("th, td")
@@ -541,7 +529,6 @@ async def fetch_company_profile(code: str) -> dict[str, Any]:
                 label = cells[0].get_text(strip=True)
                 value_elem = cells[1]
 
-                # Handle em element inside td
                 em = value_elem.select_one("em")
                 value = (
                     em.get_text(strip=True) if em else value_elem.get_text(strip=True)
@@ -568,11 +555,6 @@ async def fetch_company_profile(code: str) -> dict[str, Any]:
         profile["market_cap"] = _parse_korean_number(
             market_sum_elem.get_text(strip=True)
         )
-
-    # Get sector from tab_con1 section
-    sector_elem = soup.select_one("div.tab_con1 em a")
-    if sector_elem:
-        profile["sector"] = sector_elem.get_text(strip=True)
 
     # Filter out None values
     return {k: v for k, v in profile.items() if v is not None}
