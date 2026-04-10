@@ -13,7 +13,7 @@ from typing import Any
 
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
-from app.schemas.n8n import N8nMarketOverview
+from app.schemas.n8n.common import N8nMarketOverview
 from app.services.n8n_formatting import (
     fmt_amount,
     fmt_date_with_weekday,
@@ -499,7 +499,7 @@ async def fetch_daily_brief(
     portfolio_by_market = _build_portfolio_summary(portfolio_result)
 
     # Market overview with fallback
-    from app.schemas.n8n import N8nMarketOverview
+    from app.schemas.n8n.common import N8nMarketOverview
 
     market_overview = context_result.get(
         "market_overview",
