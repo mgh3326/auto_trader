@@ -136,6 +136,97 @@ class TestParseIndustryInfo:
         assert result["sector"] is None
 
 
+class TestParsePeerComparison:
+    """Tests for _parse_peer_comparison sub-parser."""
+
+    def test_builds_sorted_peer_list(self) -> None:
+        raw = [
+            {
+                "symbol": "AAA",
+                "name": "Small",
+                "current_price": 1000,
+                "change_pct": 1.0,
+                "per": 10.0,
+                "pbr": 1.0,
+                "market_cap": 100,
+            },
+            {
+                "symbol": "BBB",
+                "name": "Big",
+                "current_price": 5000,
+                "change_pct": -0.5,
+                "per": 15.0,
+                "pbr": 2.0,
+                "market_cap": 999,
+            },
+        ]
+        result = naver_finance._parse_peer_comparison(raw, limit=5)
+        assert len(result) == 2
+        assert result[0]["symbol"] == "BBB"  # market_cap 999 first
+        assert result[1]["symbol"] == "AAA"
+
+    def test_none_entries_skipped(self) -> None:
+        raw = [
+            None,
+            {
+                "symbol": "CCC",
+                "name": "Only",
+                "current_price": 2000,
+                "change_pct": 0.0,
+                "per": 8.0,
+                "pbr": 0.5,
+                "market_cap": 50,
+            },
+            None,
+        ]
+        result = naver_finance._parse_peer_comparison(raw, limit=5)
+        assert len(result) == 1
+        assert result[0]["symbol"] == "CCC"
+
+    def test_limit_applied(self) -> None:
+        raw = [
+            {
+                "symbol": f"S{i}",
+                "name": f"Stock{i}",
+                "current_price": 1000 * i,
+                "change_pct": 0.0,
+                "per": 10.0,
+                "pbr": 1.0,
+                "market_cap": 100 * i,
+            }
+            for i in range(1, 6)
+        ]
+        result = naver_finance._parse_peer_comparison(raw, limit=3)
+        assert len(result) == 3
+        # Top 3 by market_cap: S5(500), S4(400), S3(300)
+        assert [p["symbol"] for p in result] == ["S5", "S4", "S3"]
+
+    def test_none_market_cap_sorted_last(self) -> None:
+        raw = [
+            {
+                "symbol": "X",
+                "name": "NoMcap",
+                "current_price": 1000,
+                "change_pct": 0.0,
+                "per": None,
+                "pbr": None,
+                "market_cap": None,
+            },
+            {
+                "symbol": "Y",
+                "name": "HasMcap",
+                "current_price": 2000,
+                "change_pct": 0.0,
+                "per": 5.0,
+                "pbr": 1.0,
+                "market_cap": 200,
+            },
+        ]
+        result = naver_finance._parse_peer_comparison(raw, limit=5)
+        assert result[0]["symbol"] == "Y"
+        assert result[1]["symbol"] == "X"
+
+
 # ---------------------------------------------------------------------------
 # HTML Fixtures
 # ---------------------------------------------------------------------------

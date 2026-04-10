@@ -229,6 +229,34 @@ def _parse_industry_info(soup: BeautifulSoup) -> dict[str, Any]:
     return info
 
 
+def _parse_peer_comparison(
+    peer_results: list[dict[str, Any] | None],
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Build a sorted peer list from raw integration fetch results.
+
+    Filters out ``None`` entries, picks the display fields, sorts by
+    market-cap descending (``None`` last), and trims to *limit*.
+    """
+    peers: list[dict[str, Any]] = []
+    for pr in peer_results:
+        if pr is None:
+            continue
+        peers.append(
+            {
+                "symbol": pr["symbol"],
+                "name": pr["name"],
+                "current_price": pr["current_price"],
+                "change_pct": pr["change_pct"],
+                "per": pr["per"],
+                "pbr": pr["pbr"],
+                "market_cap": pr["market_cap"],
+            }
+        )
+    peers.sort(key=lambda x: x.get("market_cap") or 0, reverse=True)
+    return peers[:limit]
+
+
 def _parse_news_soup(soup: BeautifulSoup, limit: int) -> list[dict[str, Any]]:
     news_items: list[dict[str, Any]] = []
     table = soup.select_one("table.type5")
