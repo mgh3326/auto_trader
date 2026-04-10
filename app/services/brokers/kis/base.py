@@ -326,9 +326,7 @@ class BaseKISClient:
             return await client.get(
                 url, headers=headers, params=params, timeout=timeout
             )
-        return await client.post(
-            url, headers=headers, json=json_body, timeout=timeout
-        )
+        return await client.post(url, headers=headers, json=json_body, timeout=timeout)
 
     def _parse_kis_response(
         self,
@@ -347,9 +345,7 @@ class BaseKISClient:
         except ValueError as exc:
             if status_code >= 400:
                 response.raise_for_status()
-            raise RuntimeError(
-                f"KIS API non-JSON response: {api_name}"
-            ) from exc
+            raise RuntimeError(f"KIS API non-JSON response: {api_name}") from exc
 
         if not isinstance(data, dict):
             if status_code >= 400:
@@ -367,8 +363,7 @@ class BaseKISClient:
         if rt_cd != "0":
             rate_limit_heuristics = ["RATE", "LIMIT", "요청제한", "초과"]
             is_rate_limited = any(
-                h in msg_cd.upper() or h in msg1.upper()
-                for h in rate_limit_heuristics
+                h in msg_cd.upper() or h in msg1.upper() for h in rate_limit_heuristics
             )
 
         return data, is_rate_limited

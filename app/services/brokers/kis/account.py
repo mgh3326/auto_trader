@@ -244,7 +244,9 @@ class AccountClient:
 
         cano, acnt_prdt_cd = self._resolve_account_parts()
 
-        config = self._build_balance_request_config(is_overseas=is_overseas, is_mock=is_mock)
+        config = self._build_balance_request_config(
+            is_overseas=is_overseas, is_mock=is_mock
+        )
         tr_id = config["tr_id"]
         url = config["url"]
         ctx_key_fk = config["ctx_key_fk"]

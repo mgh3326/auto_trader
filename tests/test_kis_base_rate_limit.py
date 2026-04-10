@@ -93,7 +93,11 @@ class TestParseKisResponse:
         client = _make_client()
         response = MagicMock()
         response.status_code = 200
-        response.json.return_value = {"rt_cd": "1", "msg_cd": "NORMAL_ERROR", "msg1": "some error"}
+        response.json.return_value = {
+            "rt_cd": "1",
+            "msg_cd": "NORMAL_ERROR",
+            "msg1": "some error",
+        }
 
         data, is_rate_limited = client._parse_kis_response(response, api_name="test")
         assert is_rate_limited is False
