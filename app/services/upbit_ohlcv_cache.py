@@ -12,8 +12,8 @@ from app.services.ohlcv_cache_common import (
     _acquire_lock,
     _empty_dataframe,
     _release_lock,
-    _upsert_rows,
-    acquire_lock_with_retry,
+    _upsert_rows,  # noqa: F401
+    acquire_lock_with_retry,  # noqa: F401
     create_redis_client,
     get_closed_candles_flow,
     make_keys,

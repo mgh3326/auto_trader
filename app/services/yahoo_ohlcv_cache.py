@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import exchange_calendars as xcals
 import pandas as pd
@@ -12,7 +12,7 @@ from app.services.ohlcv_cache_common import (
     _acquire_lock,
     _empty_dataframe,
     _release_lock,
-    _upsert_rows,
+    _upsert_rows,  # noqa: F401
     create_redis_client,
     get_closed_candles_flow,
     make_keys,

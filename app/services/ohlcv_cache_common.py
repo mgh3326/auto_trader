@@ -5,7 +5,6 @@ Upbit, Yahoo, KIS 캐시 모듈이 공유하는 순수 함수 모음.
 각 서비스 모듈에서 `from app.services.ohlcv_cache_common import ...` 로 사용.
 """
 
-import asyncio
 import json
 import logging
 import uuid
