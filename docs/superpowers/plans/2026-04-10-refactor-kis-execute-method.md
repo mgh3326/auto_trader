@@ -1,245 +1,60 @@
-import asyncio
-import logging
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
-from typing import Any, Protocol
+# Refactor `BaseAutomationAdapter.execute()` Implementation Plan
 
-from app.core.symbol import to_db_symbol
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-AutomationResult = dict[str, object]
-StepResults = list[dict[str, object]]
+**Goal:** Split the 327-line `execute()` method and 58-line `cancel_pending` methods in `app/jobs/kis_market_adapters.py` into focused private methods (each under 50 lines), and pull up duplicated `cancel_pending` logic from both subclasses into the base class.
 
+**Architecture:** Extract Method refactoring on `BaseAutomationAdapter.execute()` into 6 private methods (`_prepare_holdings`, `_resolve_manual_price`, `_execute_buy_orders`, `_execute_sell_orders`, `_handle_manual_sell`, `_aggregate_results`). Pull up `cancel_pending` loop from both subclasses into base class with two new hooks (`_filter_pending_orders`, `_cancel_single_order`). Existing tests remain unchanged — they validate behavioral equivalence.
 
-@dataclass(slots=True)
-class StockContext:
-    """Per-stock context for automation workflows."""
+**Tech Stack:** Python 3.13, dataclasses, asyncio
 
-    symbol: str
-    name: str
-    avg_price: float
-    current_price: float
-    qty: int
-    is_manual: bool
-    exchange_code: str | None  # None for domestic
+**Constraints:**
+- `app/mcp_server/tooling/` is off-limits
+- `AutomationResult`, `SupportsMarketAutomation`, and external import paths must not change
+- `kis_automation_runner.py` must work without modification
 
+---
 
-def extract_domestic_stock_info(stock: dict[str, Any]) -> StockContext:
-    return StockContext(
-        symbol=stock.get("pdno", ""),
-        name=stock.get("prdt_name", ""),
-        avg_price=float(stock.get("pchs_avg_pric", 0)),
-        current_price=float(stock.get("prpr", 0)),
-        qty=int(float(stock.get("ord_psbl_qty", stock.get("hldg_qty", 0)))),
-        is_manual=stock.get("_is_manual", False),
-        exchange_code=None,
-    )
+## File Structure
 
+Only one file is modified:
 
-def extract_overseas_stock_info(stock: dict[str, Any]) -> StockContext:
-    return StockContext(
-        symbol=stock.get("ovrs_pdno", ""),
-        name=stock.get("ovrs_item_name", ""),
-        avg_price=float(stock.get("pchs_avg_pric", 0)),
-        current_price=float(stock.get("now_pric2", 0)),
-        qty=int(float(stock.get("ord_psbl_qty", stock.get("ovrs_cblc_qty", 0)))),
-        is_manual=stock.get("_is_manual", False),
-        exchange_code=stock.get("ovrs_excg_cd"),  # raw, resolved later
-    )
+- **Modify:** `app/jobs/kis_market_adapters.py`
+  - `BaseAutomationAdapter`: add 7 new private methods, rewrite `execute()`, make `cancel_pending` concrete
+  - `DomesticAutomationAdapter`: replace `cancel_pending` with `_filter_pending_orders` + `_cancel_single_order`
+  - `OverseasAutomationAdapter`: replace `cancel_pending` with `_filter_pending_orders` + `_cancel_single_order`
+- **Test:** `tests/test_kis_tasks.py` (existing, no changes)
+- **Test:** `tests/test_kis_market_adapters_helpers.py` (existing, no changes)
 
+---
 
-def match_domestic_stock(
-    stocks: list[dict[str, Any]], symbol: str
-) -> dict[str, Any] | None:
-    return next((s for s in stocks if s.get("pdno") == symbol), None)
+### Task 1: Baseline Verification
 
+**Files:**
+- Read: `app/jobs/kis_market_adapters.py`
 
-def match_overseas_stock(
-    stocks: list[dict[str, Any]], symbol: str
-) -> dict[str, Any] | None:
-    normalized = to_db_symbol(symbol)
-    return next(
-        (s for s in stocks if to_db_symbol(s.get("ovrs_pdno", "")) == normalized),
-        None,
-    )
+- [ ] **Step 1: Run existing tests to establish baseline**
 
+Run: `uv run pytest tests/test_kis_tasks.py tests/test_kis_market_adapters_helpers.py -v`
+Expected: All tests PASS
 
-logger = logging.getLogger(__name__)
+- [ ] **Step 2: Run lint to establish baseline**
 
+Run: `make lint`
+Expected: No errors
 
-class SupportsMarketAutomation(Protocol):
-    market: str
+---
 
-    async def execute(self) -> AutomationResult: ...
+### Task 2: Extract `_prepare_holdings()` and `_resolve_manual_price()`
 
+**Files:**
+- Modify: `app/jobs/kis_market_adapters.py:76-501` (BaseAutomationAdapter)
 
-@dataclass(slots=True)
-class BaseAutomationAdapter:
-    """Common per-stock automation workflow. Market-specific behavior via hook methods."""
+- [ ] **Step 1: Add `_prepare_holdings` method to `BaseAutomationAdapter`**
 
-    # Injected dependencies
-    kis_client_factory: Callable[[], Any]
-    async_session_factory: Callable[[], Any]
-    manual_holdings_service_factory: Callable[[Any], Any]
-    manual_market_type: Any
-    buy_handler: Callable[..., Awaitable[dict[str, Any]]]
-    sell_handler: Callable[..., Awaitable[dict[str, Any]]]
-    send_toss_recommendation: Callable[..., Awaitable[None]]
-    notifier_factory: Callable[[], Any]
-    no_stocks_message: str
+Insert this method right before `execute()` (after the `build_result_entry` method, around line 172):
 
-    # Market attributes (subclass sets defaults)
-    market: str = ""
-    market_type_label: str = ""
-    result_symbol_key: str = ""
-    toss_market_type: str = ""
-    toss_currency: str = ""
-    refresh_holdings_after_sell_cancel: bool = False
-
-    # --- Hook methods: subclass MUST override ---
-
-    async def fetch_holdings(self, kis: Any) -> list[dict[str, Any]]:
-        raise NotImplementedError
-
-    async def fetch_open_orders(self, kis: Any) -> list[dict[str, Any]]:
-        raise NotImplementedError
-
-    def extract_stock_info(self, stock: dict[str, Any]) -> StockContext:
-        raise NotImplementedError
-
-    def build_manual_entry(self, holding: Any) -> dict[str, Any]:
-        raise NotImplementedError
-
-    def is_same_symbol(self, stock: dict[str, Any], ticker: str) -> bool:
-        raise NotImplementedError
-
-    async def fetch_manual_price(self, kis: Any, symbol: str) -> float:
-        raise NotImplementedError
-
-    async def cancel_pending(
-        self,
-        kis: Any,
-        symbol: str,
-        order_type: str,
-        all_open_orders: list[dict[str, Any]],
-        *,
-        exchange_code: str | None = None,
-    ) -> dict[str, Any]:
-        """Cancel pending orders matching symbol and type."""
-        target_code = "02" if order_type == "buy" else "01"
-        target_orders = self._filter_pending_orders(
-            all_open_orders, symbol, target_code
-        )
-        if not target_orders:
-            return {"cancelled": 0, "failed": 0, "total": 0}
-
-        cancelled = 0
-        failed = 0
-        for order in target_orders:
-            order_number = self._extract_order_number(order)
-            if not order_number:
-                logger.warning("주문번호 없음 (%s): order=%s", symbol, order)
-                failed += 1
-                continue
-            try:
-                await self._cancel_single_order(
-                    kis,
-                    symbol,
-                    order,
-                    order_number,
-                    order_type,
-                    exchange_code=exchange_code,
-                )
-                cancelled += 1
-                await asyncio.sleep(0.2)
-            except Exception as e:
-                logger.warning(
-                    "주문 취소 실패 (%s, %s): %s",
-                    symbol,
-                    order_number,
-                    e,
-                )
-                failed += 1
-        return {
-            "cancelled": cancelled,
-            "failed": failed,
-            "total": len(target_orders),
-        }
-
-    @staticmethod
-    def _extract_order_number(order: dict[str, Any]) -> str | None:
-        return (
-            order.get("odno")
-            or order.get("ODNO")
-            or order.get("ord_no")
-            or order.get("ORD_NO")
-        )
-
-    def _filter_pending_orders(
-        self,
-        orders: list[dict[str, Any]],
-        symbol: str,
-        target_code: str,
-    ) -> list[dict[str, Any]]:
-        raise NotImplementedError
-
-    async def _cancel_single_order(
-        self,
-        kis: Any,
-        symbol: str,
-        order: dict[str, Any],
-        order_number: str,
-        order_type: str,
-        *,
-        exchange_code: str | None = None,
-    ) -> None:
-        raise NotImplementedError
-
-    # --- Hook methods: subclass MAY override (have defaults) ---
-
-    async def resolve_exchange(self, symbol: str, stock: dict[str, Any]) -> str | None:
-        return None
-
-    async def refresh_after_buy(
-        self,
-        kis: Any,
-        symbol: str,
-        qty: int,
-        avg_price: float,
-        current_price: float,
-    ) -> tuple[int, float, float]:
-        return qty, avg_price, current_price
-
-    async def refresh_after_sell_cancel(
-        self, kis: Any, symbol: str, qty: int, current_price: float
-    ) -> tuple[int, float]:
-        return qty, current_price
-
-    async def on_buy_error_result(
-        self, name: str, symbol: str, result: dict[str, Any]
-    ) -> None:
-        pass
-
-    async def on_trade_exception(
-        self, symbol: str, name: str, exc: Exception, trade_type: str
-    ) -> None:
-        pass
-
-    def analysis_target(self, *, name: str | None, symbol: str | None) -> str:
-        raise NotImplementedError
-
-    def build_result_entry(
-        self, *, name: str | None, symbol: str | None, steps: StepResults
-    ) -> AutomationResult:
-        resolved_name = name or symbol or ""
-        resolved_symbol = symbol or ""
-        return {
-            "name": resolved_name,
-            self.result_symbol_key: resolved_symbol,
-            "steps": steps,
-        }
-
-    # --- Main workflow ---
-
+```python
     async def _prepare_holdings(
         self, kis: Any
     ) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]]]:
@@ -272,7 +87,13 @@ class BaseAutomationAdapter:
             len(all_open_orders),
         )
         return my_stocks, all_open_orders
+```
 
+- [ ] **Step 2: Add `_resolve_manual_price` method to `BaseAutomationAdapter`**
+
+Insert right after `_prepare_holdings`:
+
+```python
     async def _resolve_manual_price(self, kis: Any, ctx: StockContext) -> None:
         """Fetch live price for manual holdings; fall back to avg_price on failure."""
         try:
@@ -291,7 +112,75 @@ class BaseAutomationAdapter:
                 exc,
             )
             ctx.current_price = ctx.avg_price
+```
 
+- [ ] **Step 3: Replace the top of `execute()` to call `_prepare_holdings` and `_resolve_manual_price`**
+
+Replace lines 175-234 of `execute()` (from `async def execute` through the manual price fetch block) with:
+
+```python
+    async def execute(self) -> AutomationResult:
+        """Unified per-stock automation: cancel -> buy -> refresh -> sell."""
+        kis = self.kis_client_factory()
+
+        try:
+            my_stocks, all_open_orders = await self._prepare_holdings(kis)
+            if my_stocks is None:
+                return {
+                    "status": "completed",
+                    "message": self.no_stocks_message,
+                    "results": [],
+                }
+
+            results: list[AutomationResult] = []
+
+            for stock in my_stocks:
+                ctx = self.extract_stock_info(stock)
+                ctx.exchange_code = await self.resolve_exchange(ctx.symbol, stock)
+
+                if ctx.is_manual:
+                    await self._resolve_manual_price(kis, ctx)
+
+                stock_steps: StepResults = []
+
+                # Analysis step skipped
+                stock_steps.append(
+                    {
+                        "step": "분석",
+                        "result": {
+                            "success": True,
+                            "message": "분석 스킵 (대체 분석기 준비 중)",
+                        },
+                    }
+                )
+```
+
+Keep the rest of the per-stock loop (cancel buy, buy, refresh, sell, etc.) unchanged for now.
+
+- [ ] **Step 4: Run tests to verify**
+
+Run: `uv run pytest tests/test_kis_tasks.py tests/test_kis_market_adapters_helpers.py -v`
+Expected: All tests PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add app/jobs/kis_market_adapters.py
+git commit -m "refactor(kis): extract _prepare_holdings and _resolve_manual_price from execute()"
+```
+
+---
+
+### Task 3: Extract `_execute_buy_orders()`
+
+**Files:**
+- Modify: `app/jobs/kis_market_adapters.py` (BaseAutomationAdapter)
+
+- [ ] **Step 1: Add `_execute_buy_orders` method to `BaseAutomationAdapter`**
+
+Insert after `_resolve_manual_price`:
+
+```python
     async def _execute_buy_orders(
         self,
         kis: Any,
@@ -345,7 +234,10 @@ class BaseAutomationAdapter:
             )
             stock_steps.append({"step": "매수", "result": buy_result})
             await self.on_buy_error_result(ctx.name, ctx.symbol, buy_result)
-            if buy_result.get("success") and buy_result.get("orders_placed", 0) > 0:
+            if (
+                buy_result.get("success")
+                and buy_result.get("orders_placed", 0) > 0
+            ):
                 try:
                     notifier = self.notifier_factory()
                     await notifier.notify_buy_order(
@@ -387,7 +279,44 @@ class BaseAutomationAdapter:
             ctx.avg_price,
             ctx.current_price,
         )
+```
 
+- [ ] **Step 2: Replace inline buy code in `execute()` with method call**
+
+In `execute()`, replace the cancel-buy / buy / refresh-after-buy block (the section after the analysis step append through `refresh_after_buy`) with:
+
+```python
+                await self._execute_buy_orders(
+                    kis, ctx, all_open_orders, stock_steps
+                )
+```
+
+Keep the manual sell / regular sell / results.append code unchanged for now.
+
+- [ ] **Step 3: Run tests to verify**
+
+Run: `uv run pytest tests/test_kis_tasks.py tests/test_kis_market_adapters_helpers.py -v`
+Expected: All tests PASS
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add app/jobs/kis_market_adapters.py
+git commit -m "refactor(kis): extract _execute_buy_orders from execute()"
+```
+
+---
+
+### Task 4: Extract `_execute_sell_orders()`, `_handle_manual_sell()`, `_aggregate_results()`
+
+**Files:**
+- Modify: `app/jobs/kis_market_adapters.py` (BaseAutomationAdapter)
+
+- [ ] **Step 1: Add `_handle_manual_sell` method**
+
+Insert after `_execute_buy_orders`:
+
+```python
     async def _handle_manual_sell(
         self, kis: Any, ctx: StockContext, stock_steps: StepResults
     ) -> None:
@@ -434,7 +363,13 @@ class BaseAutomationAdapter:
                     },
                 }
             )
+```
 
+- [ ] **Step 2: Add `_execute_sell_orders` method**
+
+Insert after `_handle_manual_sell`:
+
+```python
     async def _execute_sell_orders(
         self,
         kis: Any,
@@ -506,7 +441,10 @@ class BaseAutomationAdapter:
                 exchange_code=ctx.exchange_code,
             )
             stock_steps.append({"step": "매도", "result": sell_result})
-            if sell_result.get("success") and sell_result.get("orders_placed", 0) > 0:
+            if (
+                sell_result.get("success")
+                and sell_result.get("orders_placed", 0) > 0
+            ):
                 try:
                     notifier = self.notifier_factory()
                     await notifier.notify_sell_order(
@@ -516,7 +454,9 @@ class BaseAutomationAdapter:
                         total_volume=sell_result.get("total_volume", 0),
                         prices=sell_result.get("prices", []),
                         volumes=sell_result.get("quantities", []),
-                        expected_amount=sell_result.get("expected_amount", 0.0),
+                        expected_amount=sell_result.get(
+                            "expected_amount", 0.0
+                        ),
                         market_type=self.market_type_label,
                     )
                 except Exception as notify_error:
@@ -536,14 +476,28 @@ class BaseAutomationAdapter:
                 error_msg,
             )
             await self.on_trade_exception(ctx.symbol, ctx.name, exc, "매도")
+```
 
-    def _aggregate_results(self, results: list[AutomationResult]) -> AutomationResult:
+- [ ] **Step 3: Add `_aggregate_results` method**
+
+Insert after `_execute_sell_orders`:
+
+```python
+    def _aggregate_results(
+        self, results: list[AutomationResult]
+    ) -> AutomationResult:
         return {
             "status": "completed",
             "message": "종목별 자동 실행 완료",
             "results": results,
         }
+```
 
+- [ ] **Step 4: Rewrite `execute()` to use all extracted methods**
+
+Replace the entire `execute()` method with:
+
+```python
     async def execute(self) -> AutomationResult:
         """Unified per-stock automation: cancel -> buy -> refresh -> sell."""
         kis = self.kis_client_factory()
@@ -561,7 +515,9 @@ class BaseAutomationAdapter:
 
             for stock in my_stocks:
                 ctx = self.extract_stock_info(stock)
-                ctx.exchange_code = await self.resolve_exchange(ctx.symbol, stock)
+                ctx.exchange_code = await self.resolve_exchange(
+                    ctx.symbol, stock
+                )
 
                 if ctx.is_manual:
                     await self._resolve_manual_price(kis, ctx)
@@ -576,8 +532,12 @@ class BaseAutomationAdapter:
                     },
                 ]
 
-                await self._execute_buy_orders(kis, ctx, all_open_orders, stock_steps)
-                await self._execute_sell_orders(kis, ctx, all_open_orders, stock_steps)
+                await self._execute_buy_orders(
+                    kis, ctx, all_open_orders, stock_steps
+                )
+                await self._execute_sell_orders(
+                    kis, ctx, all_open_orders, stock_steps
+                )
 
                 results.append(
                     self.build_result_entry(
@@ -596,45 +556,121 @@ class BaseAutomationAdapter:
                 exc_info=True,
             )
             return {"status": "failed", "error": str(exc)}
+```
 
+- [ ] **Step 5: Run tests to verify**
 
-@dataclass(slots=True)
-class DomesticAutomationAdapter(BaseAutomationAdapter):
-    market: str = "domestic"
-    market_type_label: str = "국내주식"
-    result_symbol_key: str = "code"
-    toss_market_type: str = "kr"
-    toss_currency: str = "원"
-    refresh_holdings_after_sell_cancel: bool = True
+Run: `uv run pytest tests/test_kis_tasks.py tests/test_kis_market_adapters_helpers.py -v`
+Expected: All tests PASS
 
-    async def fetch_holdings(self, kis):
-        return await kis.fetch_my_stocks()
+- [ ] **Step 6: Commit**
 
-    async def fetch_open_orders(self, kis):
-        return await kis.inquire_korea_orders(is_mock=False)
+```bash
+git add app/jobs/kis_market_adapters.py
+git commit -m "refactor(kis): extract _execute_sell_orders, _handle_manual_sell, _aggregate_results and rewrite execute()"
+```
 
-    def extract_stock_info(self, stock):
-        return extract_domestic_stock_info(stock)
+---
 
-    def build_manual_entry(self, holding):
-        qty_str = str(holding.quantity)
+### Task 5: Pull Up `cancel_pending` to Base Class
+
+Both `DomesticAutomationAdapter.cancel_pending` (58 lines) and `OverseasAutomationAdapter.cancel_pending` (47 lines) share identical loop structure. The only differences are symbol matching and the cancel API call.
+
+**Files:**
+- Modify: `app/jobs/kis_market_adapters.py:76-775`
+
+- [ ] **Step 1: Replace base class `cancel_pending` with concrete implementation**
+
+Replace the `cancel_pending` method in `BaseAutomationAdapter` (currently `raise NotImplementedError` at line ~118-127) with the shared loop logic, and add two new hook methods:
+
+```python
+    async def cancel_pending(
+        self,
+        kis: Any,
+        symbol: str,
+        order_type: str,
+        all_open_orders: list[dict[str, Any]],
+        *,
+        exchange_code: str | None = None,
+    ) -> dict[str, Any]:
+        """Cancel pending orders matching symbol and type."""
+        target_code = "02" if order_type == "buy" else "01"
+        target_orders = self._filter_pending_orders(
+            all_open_orders, symbol, target_code
+        )
+        if not target_orders:
+            return {"cancelled": 0, "failed": 0, "total": 0}
+
+        cancelled = 0
+        failed = 0
+        for order in target_orders:
+            order_number = self._extract_order_number(order)
+            if not order_number:
+                logger.warning(
+                    "주문번호 없음 (%s): order=%s", symbol, order
+                )
+                failed += 1
+                continue
+            try:
+                await self._cancel_single_order(
+                    kis,
+                    symbol,
+                    order,
+                    order_number,
+                    order_type,
+                    exchange_code=exchange_code,
+                )
+                cancelled += 1
+                await asyncio.sleep(0.2)
+            except Exception as e:
+                logger.warning(
+                    "주문 취소 실패 (%s, %s): %s",
+                    symbol,
+                    order_number,
+                    e,
+                )
+                failed += 1
         return {
-            "pdno": holding.ticker,
-            "prdt_name": holding.display_name or holding.ticker,
-            "hldg_qty": qty_str,
-            "ord_psbl_qty": qty_str,
-            "pchs_avg_pric": str(holding.avg_price),
-            "prpr": str(holding.avg_price),
-            "_is_manual": True,
+            "cancelled": cancelled,
+            "failed": failed,
+            "total": len(target_orders),
         }
 
-    def is_same_symbol(self, stock, ticker):
-        return stock.get("pdno") == ticker
+    @staticmethod
+    def _extract_order_number(order: dict[str, Any]) -> str | None:
+        return (
+            order.get("odno")
+            or order.get("ODNO")
+            or order.get("ord_no")
+            or order.get("ORD_NO")
+        )
 
-    async def fetch_manual_price(self, kis, symbol):
-        info = await kis.fetch_fundamental_info(symbol)
-        return float(info.get("현재가", 0))
+    def _filter_pending_orders(
+        self,
+        orders: list[dict[str, Any]],
+        symbol: str,
+        target_code: str,
+    ) -> list[dict[str, Any]]:
+        raise NotImplementedError
 
+    async def _cancel_single_order(
+        self,
+        kis: Any,
+        symbol: str,
+        order: dict[str, Any],
+        order_number: str,
+        order_type: str,
+        *,
+        exchange_code: str | None = None,
+    ) -> None:
+        raise NotImplementedError
+```
+
+- [ ] **Step 2: Replace `DomesticAutomationAdapter.cancel_pending` with hook implementations**
+
+Delete the entire `cancel_pending` method from `DomesticAutomationAdapter` and replace with:
+
+```python
     def _filter_pending_orders(self, orders, symbol, target_code):
         return [
             order
@@ -648,7 +684,9 @@ class DomesticAutomationAdapter(BaseAutomationAdapter):
         self, kis, symbol, order, order_number, order_type, *, exchange_code=None
     ):
         order_qty = int(order.get("ord_qty") or order.get("ORD_QTY") or 0)
-        order_price = int(float(order.get("ord_unpr") or order.get("ORD_UNPR") or 0))
+        order_price = int(
+            float(order.get("ord_unpr") or order.get("ORD_UNPR") or 0)
+        )
         order_orgno = (
             order.get("ord_gno_brno")
             or order.get("ORD_GNO_BRNO")
@@ -662,122 +700,17 @@ class DomesticAutomationAdapter(BaseAutomationAdapter):
             price=order_price,
             order_type=order_type,
             is_mock=False,
-            krx_fwdg_ord_orgno=str(order_orgno).strip() if order_orgno else None,
+            krx_fwdg_ord_orgno=str(order_orgno).strip()
+            if order_orgno
+            else None,
         )
+```
 
-    def analysis_target(self, *, name=None, symbol=None):
-        return name or symbol or ""
+- [ ] **Step 3: Replace `OverseasAutomationAdapter.cancel_pending` with hook implementations**
 
-    async def refresh_after_buy(self, kis, symbol, qty, avg_price, current_price):
-        try:
-            latest = await kis.fetch_my_stocks()
-            target = next((s for s in latest if s.get("pdno") == symbol), None)
-            if target:
-                return (
-                    int(target.get("ord_psbl_qty", target.get("hldg_qty", qty))),
-                    float(target.get("pchs_avg_pric", avg_price)),
-                    float(target.get("prpr", current_price)),
-                )
-        except Exception:
-            pass
-        return qty, avg_price, current_price
+Delete the entire `cancel_pending` method from `OverseasAutomationAdapter` and replace with:
 
-    async def refresh_after_sell_cancel(self, kis, symbol, qty, current_price):
-        try:
-            latest = await kis.fetch_my_stocks()
-            target = next((s for s in latest if s.get("pdno") == symbol), None)
-            if target:
-                return (
-                    int(target.get("ord_psbl_qty", target.get("hldg_qty", qty))),
-                    float(target.get("prpr", current_price)),
-                )
-        except Exception:
-            pass
-        return qty, current_price
-
-    async def on_buy_error_result(self, name, symbol, result):
-        if result.get("error"):
-            logger.error(
-                "[매수 에러] %s(%s): %s",
-                name,
-                symbol,
-                result["error"],
-                extra={"task": "kis.run_per_domestic_stock_automation"},
-            )
-
-
-@dataclass(slots=True)
-class OverseasAutomationAdapter(BaseAutomationAdapter):
-    market: str = "overseas"
-    market_type_label: str = "해외주식"
-    result_symbol_key: str = "symbol"
-    toss_market_type: str = "us"
-    toss_currency: str = "$"
-    refresh_holdings_after_sell_cancel: bool = False
-
-    async def fetch_holdings(self, kis):
-        return await kis.fetch_my_overseas_stocks()
-
-    async def fetch_open_orders(self, kis):
-        orders_by_id: dict[str, dict] = {}
-        anonymous: list[dict] = []
-        for exchange in ("NASD", "NYSE", "AMEX"):
-            try:
-                open_orders = await kis.inquire_overseas_orders(
-                    exchange_code=exchange,
-                    is_mock=False,
-                )
-            except Exception as exc:
-                logger.warning("미체결 주문 조회 실패 (exchange=%s): %s", exchange, exc)
-                continue
-            for order in open_orders:
-                oid = self._extract_order_id(order)
-                if oid:
-                    orders_by_id[oid] = order
-                else:
-                    anonymous.append(order)
-        return list(orders_by_id.values()) + anonymous
-
-    @staticmethod
-    def _extract_order_id(order: dict) -> str:
-        for key in ("odno", "ODNO", "ord_no", "ORD_NO"):
-            if v := order.get(key):
-                return str(v).strip()
-        return ""
-
-    def extract_stock_info(self, stock):
-        return extract_overseas_stock_info(stock)
-
-    def build_manual_entry(self, holding):
-        qty_str = str(holding.quantity)
-        return {
-            "ovrs_pdno": holding.ticker,
-            "ovrs_item_name": holding.display_name or holding.ticker,
-            "ovrs_cblc_qty": qty_str,
-            "ord_psbl_qty": qty_str,
-            "pchs_avg_pric": str(holding.avg_price),
-            "now_pric2": "0",
-            "_is_manual": True,
-        }
-
-    def is_same_symbol(self, stock, ticker):
-        return to_db_symbol(stock.get("ovrs_pdno", "")) == to_db_symbol(ticker)
-
-    async def fetch_manual_price(self, kis, symbol):
-        df = await kis.inquire_overseas_price(symbol)
-        if not df.empty:
-            return float(df.iloc[0]["close"])
-        return 0.0
-
-    async def resolve_exchange(self, symbol, stock):
-        from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
-
-        preferred = stock.get("ovrs_excg_cd") if isinstance(stock, dict) else None
-        normalized = str(preferred or "").strip().upper()
-        if normalized:
-            return normalized
-        return await get_us_exchange_by_symbol(symbol)
-
+```python
     def _filter_pending_orders(self, orders, symbol, target_code):
         normalized_symbol = to_db_symbol(symbol)
         return [
@@ -792,7 +725,9 @@ class OverseasAutomationAdapter(BaseAutomationAdapter):
     async def _cancel_single_order(
         self, kis, symbol, order, order_number, order_type, *, exchange_code=None
     ):
-        order_qty = int(order.get("ft_ord_qty") or order.get("FT_ORD_QTY") or 0)
+        order_qty = int(
+            order.get("ft_ord_qty") or order.get("FT_ORD_QTY") or 0
+        )
         await kis.cancel_overseas_order(
             order_number=order_number,
             symbol=symbol,
@@ -800,18 +735,53 @@ class OverseasAutomationAdapter(BaseAutomationAdapter):
             quantity=order_qty,
             is_mock=False,
         )
+```
 
-    def analysis_target(self, *, name=None, symbol=None):
-        return symbol or name or ""
+- [ ] **Step 4: Run tests to verify**
 
-    async def on_trade_exception(self, symbol, name, exc, trade_type):
-        try:
-            notifier = self.notifier_factory()
-            await notifier.notify_trade_failure(
-                symbol=symbol,
-                korean_name=name or symbol,
-                reason=f"{trade_type} 주문 실패: {exc}",
-                market_type=self.market_type_label,
-            )
-        except Exception as notify_error:
-            logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
+Run: `uv run pytest tests/test_kis_tasks.py tests/test_kis_market_adapters_helpers.py -v`
+Expected: All tests PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add app/jobs/kis_market_adapters.py
+git commit -m "refactor(kis): pull up cancel_pending loop to base class with hook methods"
+```
+
+---
+
+### Task 6: Final Verification
+
+- [ ] **Step 1: Run lint**
+
+Run: `make lint`
+Expected: No errors
+
+- [ ] **Step 2: Run full test suite**
+
+Run: `uv run pytest tests/test_kis_tasks.py tests/test_kis_market_adapters_helpers.py -v`
+Expected: All tests PASS
+
+- [ ] **Step 3: Verify method sizes**
+
+Run: `grep -n 'async def \|def ' app/jobs/kis_market_adapters.py` and manually verify each new method is under 50 lines.
+
+Expected method line counts (approximate):
+| Method | Lines |
+|--------|-------|
+| `execute()` | ~25 |
+| `_prepare_holdings()` | ~25 |
+| `_resolve_manual_price()` | ~14 |
+| `_execute_buy_orders()` | ~48 |
+| `_execute_sell_orders()` | ~50 |
+| `_handle_manual_sell()` | ~30 |
+| `_aggregate_results()` | ~5 |
+| `cancel_pending()` (base) | ~30 |
+
+- [ ] **Step 4: Commit (if any formatting fixes were needed)**
+
+```bash
+git add app/jobs/kis_market_adapters.py
+git commit -m "style: fix formatting after execute() refactor"
+```
