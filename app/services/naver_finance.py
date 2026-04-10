@@ -210,6 +210,25 @@ def _parse_financial_metrics(main_soup: BeautifulSoup) -> dict[str, Any]:
     return metrics
 
 
+def _parse_industry_info(soup: BeautifulSoup) -> dict[str, Any]:
+    """Extract exchange type and sector from the main page soup."""
+    info: dict[str, Any] = {"exchange": None, "sector": None}
+
+    code_info = soup.select_one("div.code")
+    if code_info:
+        code_text = code_info.get_text(strip=True)
+        if "코스피" in code_text:
+            info["exchange"] = "KOSPI"
+        elif "코스닥" in code_text:
+            info["exchange"] = "KOSDAQ"
+
+    sector_elem = soup.select_one("div.tab_con1 em a")
+    if sector_elem:
+        info["sector"] = sector_elem.get_text(strip=True)
+
+    return info
+
+
 def _parse_news_soup(soup: BeautifulSoup, limit: int) -> list[dict[str, Any]]:
     news_items: list[dict[str, Any]] = []
     table = soup.select_one("table.type5")

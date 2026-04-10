@@ -113,6 +113,29 @@ class TestParseFinancialMetrics:
         assert result["dividend_yield"] is None
 
 
+class TestParseIndustryInfo:
+    """Tests for _parse_industry_info sub-parser."""
+
+    def test_extracts_exchange_and_sector(self) -> None:
+        soup = BeautifulSoup(SAMPLE_PROFILE_HTML, "lxml")
+        result = naver_finance._parse_industry_info(soup)
+        assert result["exchange"] == "KOSPI"
+        assert result["sector"] == "전기전자"
+
+    def test_kosdaq_exchange(self) -> None:
+        html = '<html><body><div class="code">123456 코스닥</div></body></html>'
+        soup = BeautifulSoup(html, "lxml")
+        result = naver_finance._parse_industry_info(soup)
+        assert result["exchange"] == "KOSDAQ"
+        assert result["sector"] is None
+
+    def test_empty_html(self) -> None:
+        soup = BeautifulSoup("<html></html>", "lxml")
+        result = naver_finance._parse_industry_info(soup)
+        assert result["exchange"] is None
+        assert result["sector"] is None
+
+
 # ---------------------------------------------------------------------------
 # HTML Fixtures
 # ---------------------------------------------------------------------------
