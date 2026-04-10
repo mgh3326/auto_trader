@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import AsyncSessionLocal
 from app.models.upbit_symbol_universe import UpbitSymbolUniverse
+from app.services.symbol_universe_common import has_any_rows, normalize_name, sync_hint
 
 logger = logging.getLogger(__name__)
 
@@ -47,14 +48,6 @@ class _UniverseRow:
     korean_name: str
     english_name: str
     market_warning: str
-
-
-def _sync_hint() -> str:
-    return f"Sync required: {_UPBIT_UNIVERSE_SYNC_COMMAND}"
-
-
-def _normalize_name(value: str) -> str:
-    return str(value or "").strip()
 
 
 def _normalize_symbol(value: str) -> str:
@@ -101,8 +94,8 @@ async def build_upbit_symbol_universe_snapshot() -> dict[str, _UniverseRow]:
             continue
 
         quote_currency, base_currency = split
-        korean_name = _normalize_name(item.get("korean_name", ""))
-        english_name = _normalize_name(item.get("english_name", ""))
+        korean_name = normalize_name(item.get("korean_name", ""))
+        english_name = normalize_name(item.get("english_name", ""))
         if not korean_name or not english_name:
             skipped += 1
             continue
@@ -119,7 +112,9 @@ async def build_upbit_symbol_universe_snapshot() -> dict[str, _UniverseRow]:
         )
 
     if not snapshot:
-        raise ValueError(f"upbit_symbol_universe source is empty. {_sync_hint()}")
+        raise ValueError(
+            f"upbit_symbol_universe source is empty. {sync_hint(_UPBIT_UNIVERSE_SYNC_COMMAND)}"
+        )
 
     if skipped > 0:
         logger.warning("Upbit symbol universe parse skipped invalid rows=%d", skipped)
@@ -213,11 +208,6 @@ async def sync_upbit_symbol_universe(db: AsyncSession | None = None) -> dict[str
     return result
 
 
-async def _has_any_rows(db: AsyncSession) -> bool:
-    result = await db.execute(select(UpbitSymbolUniverse.market).limit(1))
-    return result.scalar_one_or_none() is not None
-
-
 @asynccontextmanager
 async def _internal_session() -> AsyncIterator[AsyncSession]:
     session = cast(AsyncSession, cast(object, AsyncSessionLocal()))
@@ -248,19 +238,19 @@ async def _resolve_active_row_by_market(
     row = (await db.execute(stmt)).scalar_one_or_none()
 
     if row is None:
-        if not await _has_any_rows(db):
+        if not await has_any_rows(db, UpbitSymbolUniverse.market):
             raise UpbitSymbolUniverseEmptyError(
-                f"upbit_symbol_universe is empty. {_sync_hint()}"
+                f"upbit_symbol_universe is empty. {sync_hint(_UPBIT_UNIVERSE_SYNC_COMMAND)}"
             )
         raise UpbitSymbolNotRegisteredError(
             f"Upbit market '{normalized_market}' is not registered in upbit_symbol_universe. "
-            f"{_sync_hint()}"
+            f"{sync_hint(_UPBIT_UNIVERSE_SYNC_COMMAND)}"
         )
 
     if not row.is_active:
         raise UpbitSymbolInactiveError(
             f"Upbit market '{normalized_market}' is inactive in upbit_symbol_universe. "
-            f"{_sync_hint()}"
+            f"{sync_hint(_UPBIT_UNIVERSE_SYNC_COMMAND)}"
         )
 
     return row
@@ -287,13 +277,13 @@ async def _resolve_active_row_by_coin(
     rows = list((await db.execute(stmt)).scalars().all())
 
     if not rows:
-        if not await _has_any_rows(db):
+        if not await has_any_rows(db, UpbitSymbolUniverse.market):
             raise UpbitSymbolUniverseEmptyError(
-                f"upbit_symbol_universe is empty. {_sync_hint()}"
+                f"upbit_symbol_universe is empty. {sync_hint(_UPBIT_UNIVERSE_SYNC_COMMAND)}"
             )
         raise UpbitSymbolNotRegisteredError(
             f"Upbit coin '{normalized_currency}' is not registered for quote '{normalized_quote_currency}' "
-            f"in upbit_symbol_universe. {_sync_hint()}"
+            f"in upbit_symbol_universe. {sync_hint(_UPBIT_UNIVERSE_SYNC_COMMAND)}"
         )
 
     active_rows = [row for row in rows if row.is_active]
@@ -302,14 +292,14 @@ async def _resolve_active_row_by_coin(
         preview = ", ".join(markets[:10])
         raise UpbitSymbolInactiveError(
             f"Upbit coin '{normalized_currency}' for quote '{normalized_quote_currency}' is inactive "
-            f"in upbit_symbol_universe. matched_symbols=[{preview}]. {_sync_hint()}"
+            f"in upbit_symbol_universe. matched_symbols=[{preview}]. {sync_hint(_UPBIT_UNIVERSE_SYNC_COMMAND)}"
         )
 
     return active_rows[0]
 
 
 async def _resolve_active_symbol_by_name(db: AsyncSession, name: str) -> str:
-    normalized_name = _normalize_name(name)
+    normalized_name = normalize_name(name)
     if not normalized_name:
         raise ValueError("name is required")
 
@@ -322,13 +312,13 @@ async def _resolve_active_symbol_by_name(db: AsyncSession, name: str) -> str:
     rows = list((await db.execute(stmt)).scalars().all())
 
     if not rows:
-        if not await _has_any_rows(db):
+        if not await has_any_rows(db, UpbitSymbolUniverse.market):
             raise UpbitSymbolUniverseEmptyError(
-                f"upbit_symbol_universe is empty. {_sync_hint()}"
+                f"upbit_symbol_universe is empty. {sync_hint(_UPBIT_UNIVERSE_SYNC_COMMAND)}"
             )
         raise UpbitSymbolNotRegisteredError(
             f"Upbit name '{normalized_name}' is not registered in upbit_symbol_universe. "
-            f"{_sync_hint()}"
+            f"{sync_hint(_UPBIT_UNIVERSE_SYNC_COMMAND)}"
         )
 
     active_rows = [row for row in rows if row.is_active]
@@ -337,7 +327,7 @@ async def _resolve_active_symbol_by_name(db: AsyncSession, name: str) -> str:
         preview = ", ".join(markets[:10])
         raise UpbitSymbolInactiveError(
             f"Upbit name '{normalized_name}' is inactive in upbit_symbol_universe. "
-            f"matched_symbols=[{preview}]. {_sync_hint()}"
+            f"matched_symbols=[{preview}]. {sync_hint(_UPBIT_UNIVERSE_SYNC_COMMAND)}"
         )
 
     unique_symbols = sorted({row.market for row in active_rows})
@@ -345,7 +335,7 @@ async def _resolve_active_symbol_by_name(db: AsyncSession, name: str) -> str:
         preview = ", ".join(unique_symbols[:10])
         raise UpbitSymbolNameAmbiguousError(
             f"Upbit name '{normalized_name}' is ambiguous in upbit_symbol_universe. "
-            f"matched_symbols=[{preview}] count={len(unique_symbols)}. {_sync_hint()}"
+            f"matched_symbols=[{preview}] count={len(unique_symbols)}. {sync_hint(_UPBIT_UNIVERSE_SYNC_COMMAND)}"
         )
 
     return unique_symbols[0]
@@ -420,9 +410,9 @@ async def _get_upbit_market_display_names_impl(
         UpbitSymbolUniverse.is_active.is_(True),
     )
     rows = list((await db.execute(stmt)).scalars().all())
-    if not rows and not await _has_any_rows(db):
+    if not rows and not await has_any_rows(db, UpbitSymbolUniverse.market):
         raise UpbitSymbolUniverseEmptyError(
-            f"upbit_symbol_universe is empty. {_sync_hint()}"
+            f"upbit_symbol_universe is empty. {sync_hint(_UPBIT_UNIVERSE_SYNC_COMMAND)}"
         )
 
     return {
@@ -463,7 +453,7 @@ async def _search_upbit_symbols_impl(
     query: str,
     limit: int,
 ) -> list[dict[str, Any]]:
-    normalized_query = _normalize_name(query)
+    normalized_query = normalize_name(query)
     if not normalized_query:
         return []
 
@@ -483,9 +473,9 @@ async def _search_upbit_symbols_impl(
     )
     rows = list((await db.execute(stmt)).scalars().all())
 
-    if not rows and not await _has_any_rows(db):
+    if not rows and not await has_any_rows(db, UpbitSymbolUniverse.market):
         raise UpbitSymbolUniverseEmptyError(
-            f"upbit_symbol_universe is empty. {_sync_hint()}"
+            f"upbit_symbol_universe is empty. {sync_hint(_UPBIT_UNIVERSE_SYNC_COMMAND)}"
         )
 
     return [
@@ -533,9 +523,9 @@ async def _get_active_upbit_markets_impl(
         if str(market).strip()
     }
 
-    if not markets and not await _has_any_rows(db):
+    if not markets and not await has_any_rows(db, UpbitSymbolUniverse.market):
         raise UpbitSymbolUniverseEmptyError(
-            f"upbit_symbol_universe is empty. {_sync_hint()}"
+            f"upbit_symbol_universe is empty. {sync_hint(_UPBIT_UNIVERSE_SYNC_COMMAND)}"
         )
     return markets
 
@@ -560,9 +550,9 @@ async def _get_upbit_warning_markets_impl(
         if str(symbol).strip()
     }
 
-    if not warning_markets and not await _has_any_rows(db):
+    if not warning_markets and not await has_any_rows(db, UpbitSymbolUniverse.market):
         raise UpbitSymbolUniverseEmptyError(
-            f"upbit_symbol_universe is empty. {_sync_hint()}"
+            f"upbit_symbol_universe is empty. {sync_hint(_UPBIT_UNIVERSE_SYNC_COMMAND)}"
         )
     return warning_markets
 
@@ -604,9 +594,11 @@ async def get_active_upbit_base_currencies(
             for base_currency in (await session.execute(stmt)).scalars().all()
             if str(base_currency).strip()
         }
-        if not base_currencies and not await _has_any_rows(session):
+        if not base_currencies and not await has_any_rows(
+            session, UpbitSymbolUniverse.market
+        ):
             raise UpbitSymbolUniverseEmptyError(
-                f"upbit_symbol_universe is empty. {_sync_hint()}"
+                f"upbit_symbol_universe is empty. {sync_hint(_UPBIT_UNIVERSE_SYNC_COMMAND)}"
             )
         return base_currencies
 
