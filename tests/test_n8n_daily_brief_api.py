@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 
 def _make_brief_result() -> dict:
-    from app.schemas.n8n import N8nMarketOverview
+    from app.schemas.n8n.common import N8nMarketOverview
 
     return {
         "success": True,

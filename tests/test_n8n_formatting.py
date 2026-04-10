@@ -267,7 +267,7 @@ class TestSchemaFmtFields:
     """Verify _fmt fields exist on the Pydantic schemas."""
 
     def test_order_item_has_fmt_fields(self) -> None:
-        from app.schemas.n8n import N8nPendingOrderItem
+        from app.schemas.n8n.pending_orders import N8nPendingOrderItem
 
         item = N8nPendingOrderItem(
             order_id="test",
@@ -293,7 +293,7 @@ class TestSchemaFmtFields:
         assert item.summary_line is None
 
     def test_order_item_accepts_fmt_values(self) -> None:
-        from app.schemas.n8n import N8nPendingOrderItem
+        from app.schemas.n8n.pending_orders import N8nPendingOrderItem
 
         item = N8nPendingOrderItem(
             order_id="test",
@@ -320,7 +320,7 @@ class TestSchemaFmtFields:
         assert item.summary_line.startswith("BTC buy")
 
     def test_summary_has_fmt_fields(self) -> None:
-        from app.schemas.n8n import N8nPendingOrderSummary
+        from app.schemas.n8n.pending_orders import N8nPendingOrderSummary
 
         summary = N8nPendingOrderSummary(
             total=2,
@@ -334,7 +334,7 @@ class TestSchemaFmtFields:
         assert summary.title is None
 
     def test_summary_accepts_fmt_values(self) -> None:
-        from app.schemas.n8n import N8nPendingOrderSummary
+        from app.schemas.n8n.pending_orders import N8nPendingOrderSummary
 
         summary = N8nPendingOrderSummary(
             total=13,

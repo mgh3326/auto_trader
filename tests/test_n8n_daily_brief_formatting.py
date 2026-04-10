@@ -52,7 +52,7 @@ class TestDailyBriefFormatting:
 @pytest.mark.unit
 class TestBuildBriefText:
     def test_contains_header(self):
-        from app.schemas.n8n import N8nMarketOverview
+        from app.schemas.n8n.common import N8nMarketOverview
         from app.services.n8n_daily_brief_service import _build_brief_text
 
         text = _build_brief_text(
@@ -73,7 +73,7 @@ class TestBuildBriefText:
         assert "📊 포트폴리오" in text
 
     def test_includes_pending_counts(self):
-        from app.schemas.n8n import N8nMarketOverview
+        from app.schemas.n8n.common import N8nMarketOverview
         from app.services.n8n_daily_brief_service import _build_brief_text
 
         text = _build_brief_text(
@@ -99,7 +99,7 @@ class TestBuildBriefText:
         assert "[크립토] 11건 (매수 4 / 매도 7)" in text
 
     def test_includes_fills(self):
-        from app.schemas.n8n import N8nMarketOverview
+        from app.schemas.n8n.common import N8nMarketOverview
         from app.services.n8n_daily_brief_service import _build_brief_text
 
         text = _build_brief_text(
