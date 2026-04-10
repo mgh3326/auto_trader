@@ -1408,3 +1408,171 @@ async def test_get_page_payload_summary_includes_evaluation_krw() -> None:
     assert summary["evaluation_krw"] == 2_295_000.0
     assert summary["profit_loss_krw"] == 270_000.0
     assert payload["exchange_rate"] == {"usd_krw": 1350.0}
+
+
+class TestBuildRsiCard:
+    def test_oversold(self):
+        service = PortfolioPositionDetailService(
+            overview_service=MagicMock(), dashboard_service=MagicMock()
+        )
+        card = service._build_rsi_card(rsi_14=25.0)
+        assert card is not None
+        assert card["tone"] == "oversold"
+        assert card["label"] == "RSI(14)"
+
+    def test_overbought(self):
+        service = PortfolioPositionDetailService(
+            overview_service=MagicMock(), dashboard_service=MagicMock()
+        )
+        card = service._build_rsi_card(rsi_14=75.0)
+        assert card is not None
+        assert card["tone"] == "overbought"
+
+    def test_neutral(self):
+        service = PortfolioPositionDetailService(
+            overview_service=MagicMock(), dashboard_service=MagicMock()
+        )
+        card = service._build_rsi_card(rsi_14=50.0)
+        assert card is not None
+        assert card["tone"] == "neutral"
+
+    def test_none_when_not_numeric(self):
+        service = PortfolioPositionDetailService(
+            overview_service=MagicMock(), dashboard_service=MagicMock()
+        )
+        assert service._build_rsi_card(rsi_14=None) is None
+        assert service._build_rsi_card(rsi_14="bad") is None
+
+
+class TestBuildStochRsiCard:
+    def test_oversold(self):
+        service = PortfolioPositionDetailService(
+            overview_service=MagicMock(), dashboard_service=MagicMock()
+        )
+        card = service._build_stoch_rsi_card(k=15.0, d=10.0)
+        assert card is not None
+        assert card["tone"] == "oversold"
+
+    def test_overbought(self):
+        service = PortfolioPositionDetailService(
+            overview_service=MagicMock(), dashboard_service=MagicMock()
+        )
+        card = service._build_stoch_rsi_card(k=85.0, d=90.0)
+        assert card is not None
+        assert card["tone"] == "overbought"
+
+    def test_none_when_incomplete(self):
+        service = PortfolioPositionDetailService(
+            overview_service=MagicMock(), dashboard_service=MagicMock()
+        )
+        assert service._build_stoch_rsi_card(k=50.0, d=None) is None
+
+
+class TestBuildMacdCard:
+    def test_bullish(self):
+        service = PortfolioPositionDetailService(
+            overview_service=MagicMock(), dashboard_service=MagicMock()
+        )
+        card = service._build_macd_card(macd=1.5, signal=1.0, histogram=0.5)
+        assert card is not None
+        assert card["tone"] == "bullish"
+
+    def test_bearish(self):
+        service = PortfolioPositionDetailService(
+            overview_service=MagicMock(), dashboard_service=MagicMock()
+        )
+        card = service._build_macd_card(macd=0.5, signal=1.0, histogram=-0.5)
+        assert card is not None
+        assert card["tone"] == "bearish"
+
+    def test_none_when_missing(self):
+        service = PortfolioPositionDetailService(
+            overview_service=MagicMock(), dashboard_service=MagicMock()
+        )
+        assert service._build_macd_card(macd=None, signal=1.0, histogram=0.5) is None
+
+
+class TestBuildBollingerCard:
+    def test_near_lower(self):
+        service = PortfolioPositionDetailService(
+            overview_service=MagicMock(), dashboard_service=MagicMock()
+        )
+        card = service._build_bollinger_card(
+            price=101.0, upper=120.0, middle=110.0, lower=100.0
+        )
+        assert card is not None
+        assert card["tone"] == "oversold"
+
+    def test_near_upper(self):
+        service = PortfolioPositionDetailService(
+            overview_service=MagicMock(), dashboard_service=MagicMock()
+        )
+        card = service._build_bollinger_card(
+            price=119.0, upper=120.0, middle=110.0, lower=100.0
+        )
+        assert card is not None
+        assert card["tone"] == "overbought"
+
+    def test_none_when_missing(self):
+        service = PortfolioPositionDetailService(
+            overview_service=MagicMock(), dashboard_service=MagicMock()
+        )
+        assert (
+            service._build_bollinger_card(
+                price=110.0, upper=None, middle=110.0, lower=100.0
+            )
+            is None
+        )
+
+
+class TestBuildEmaCard:
+    def test_bullish_alignment(self):
+        service = PortfolioPositionDetailService(
+            overview_service=MagicMock(), dashboard_service=MagicMock()
+        )
+        card = service._build_ema_card(
+            price=210.0, ema20=200.0, ema60=180.0, ema200=150.0
+        )
+        assert card is not None
+        assert card["tone"] == "bullish"
+        assert card["value"] == "상방 정렬"
+
+    def test_bearish_alignment(self):
+        service = PortfolioPositionDetailService(
+            overview_service=MagicMock(), dashboard_service=MagicMock()
+        )
+        card = service._build_ema_card(
+            price=100.0, ema20=120.0, ema60=150.0, ema200=180.0
+        )
+        assert card is not None
+        assert card["tone"] == "bearish"
+
+    def test_none_when_price_missing(self):
+        service = PortfolioPositionDetailService(
+            overview_service=MagicMock(), dashboard_service=MagicMock()
+        )
+        assert (
+            service._build_ema_card(price=None, ema20=100.0, ema60=90.0, ema200=80.0)
+            is None
+        )
+
+
+class TestBuildSmaCard:
+    def test_bullish_alignment(self):
+        service = PortfolioPositionDetailService(
+            overview_service=MagicMock(), dashboard_service=MagicMock()
+        )
+        card = service._build_sma_card(
+            price=210.0, sma20=200.0, sma60=180.0, sma200=150.0
+        )
+        assert card is not None
+        assert card["tone"] == "bullish"
+
+    def test_none_when_sma20_missing(self):
+        service = PortfolioPositionDetailService(
+            overview_service=MagicMock(), dashboard_service=MagicMock()
+        )
+        assert (
+            service._build_sma_card(price=100.0, sma20=None, sma60=90.0, sma200=80.0)
+            is None
+        )
