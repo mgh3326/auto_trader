@@ -1,0 +1,33 @@
+# Refactor naver_finance into Package Structure
+
+- [x] **Task 1: Create `parser.py` — shared constants and HTTP helpers**
+    - [x] Create `app/services/naver_finance/parser.py`
+    - [x] Verify syntax
+    - [x] Commit
+- [x] **Task 2: Create `news.py`**
+    - [x] Create `app/services/naver_finance/news.py`
+    - [x] Verify syntax
+    - [x] Commit
+- [x] **Task 3: Create `company.py`**
+    - [x] Create `app/services/naver_finance/company.py`
+    - [x] Verify syntax
+    - [x] Commit
+- [x] **Task 4: Create `investor.py`**
+    - [x] Create `app/services/naver_finance/investor.py`
+    - [x] Verify syntax
+    - [x] Commit
+- [x] **Task 5: Create `valuation.py`**
+    - [x] Create `app/services/naver_finance/valuation.py`
+    - [x] Verify syntax
+    - [x] Commit
+- [x] **Task 6: Create `__init__.py` and delete old file**
+    - [x] Create `app/services/naver_finance/__init__.py`
+    - [x] Delete `app/services/naver_finance.py`
+    - [x] Verify import compatibility
+    - [x] Commit
+- [x] **Task 7: Verify — lint and tests**
+    - [x] Run linter (`make lint`)
+    - [x] Run `tests/test_naver_finance.py`
+    - [x] Run `tests/test_mcp_fundamentals_tools.py`
+    - [x] Run full test suite (`make test`)
+    - [x] Commit any test fixes

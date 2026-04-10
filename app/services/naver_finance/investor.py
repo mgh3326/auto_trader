@@ -18,7 +18,6 @@ from app.services.analyst_normalizer import (
 )
 from app.services.naver_finance.news import _parse_news_soup
 from app.services.naver_finance.parser import (
-    DEFAULT_HEADERS,
     NAVER_FINANCE_BASE,
     NAVER_FINANCE_ITEM,
     _extract_current_price_from_main_soup,

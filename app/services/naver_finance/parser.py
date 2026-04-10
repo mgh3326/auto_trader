@@ -50,13 +50,13 @@ def _parse_naver_date(date_str: str | None) -> str | None:
         return None
 
     # Full date format with 4-digit year: 2024.01.15 or 2024-01-15 or 2024/01/15
-    match = re.match(r"(\d{4})[.\\-/](\d{1,2})[.\\-/](\d{1,2})", date_str)
+    match = re.match(r"(\d{4})[./-](\d{1,2})[./-](\d{1,2})", date_str)
     if match:
         year, month, day = match.groups()
         return f"{year}-{int(month):02d}-{int(day):02d}"
 
     # Short year format: YY.MM.DD (e.g., "26.01.30" → "2026-01-30")
-    match = re.match(r"(\d{2})[.\\-/](\d{1,2})[.\\-/](\d{1,2})", date_str)
+    match = re.match(r"(\d{2})[./-](\d{1,2})[./-](\d{1,2})", date_str)
     if match:
         yy, month, day = match.groups()
         # Convert 2-digit year to 4-digit (00-99 → 2000-2099)
@@ -64,7 +64,7 @@ def _parse_naver_date(date_str: str | None) -> str | None:
         return f"{year}-{int(month):02d}-{int(day):02d}"
 
     # Month.day only format (assumes current year): 01.15 or 01-15
-    match = re.match(r"(\d{1,2})[.\\-/](\d{1,2})$", date_str)
+    match = re.match(r"(\d{1,2})[./-](\d{1,2})$", date_str)
     if match:
         year = date.today().year
         month, day = match.groups()
