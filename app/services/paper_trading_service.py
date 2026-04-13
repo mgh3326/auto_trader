@@ -170,9 +170,7 @@ class PaperTradingService:
     # ------------------------------------------------------------------ #
     # Price fetch
     # ------------------------------------------------------------------ #
-    async def _fetch_current_price(
-        self, symbol: str, instrument_type: str
-    ) -> Decimal:
+    async def _fetch_current_price(self, symbol: str, instrument_type: str) -> Decimal:
         if instrument_type == "equity_kr":
             quote = await _fetch_quote_equity_kr(symbol)
             price = quote.get("price")
@@ -277,9 +275,7 @@ class PaperTradingService:
     # ------------------------------------------------------------------ #
     # Internal position lookup
     # ------------------------------------------------------------------ #
-    async def _get_position(
-        self, account_id: int, symbol: str
-    ) -> PaperPosition | None:
+    async def _get_position(self, account_id: int, symbol: str) -> PaperPosition | None:
         result = await self.db.execute(
             select(PaperPosition).where(
                 PaperPosition.account_id == account_id,
@@ -359,7 +355,9 @@ class PaperTradingService:
             else:
                 new_qty = position.quantity + qty
                 new_invested = position.total_invested + gross
-                position.avg_price = (new_invested / new_qty) if new_qty > 0 else Decimal("0")
+                position.avg_price = (
+                    (new_invested / new_qty) if new_qty > 0 else Decimal("0")
+                )
                 position.quantity = new_qty
                 position.total_invested = _q_money(new_invested)
         else:  # sell
@@ -481,9 +479,7 @@ class PaperTradingService:
             output.append(item)
         return output
 
-    async def get_position(
-        self, account_id: int, symbol: str
-    ) -> dict[str, Any] | None:
+    async def get_position(self, account_id: int, symbol: str) -> dict[str, Any] | None:
         resolved_symbol = resolve_market_type(symbol, None)[1]
         pos = await self._get_position(account_id, resolved_symbol)
         if pos is None:
