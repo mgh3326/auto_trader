@@ -610,7 +610,53 @@ async def _collect_portfolio_positions(
     account_name: str | None = None,
     user_id: int = _MCP_USER_ID,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None, str | None]:
+    # Short-circuit to paper handler when the caller asked for a paper account.
+    from app.mcp_server.tooling.paper_portfolio_handler import (
+        collect_paper_positions,
+        is_paper_account_token,
+        parse_paper_account_token,
+    )
+
     market_filter = _parse_holdings_market_filter(market)
+    if is_paper_account_token(account):
+        selector = parse_paper_account_token(account)
+        positions, errors = await collect_paper_positions(
+            selector=selector,
+            market_filter=market_filter,
+        )
+
+        if account_name:
+            account_name_filter = account_name.strip().lower()
+            positions = [
+                p
+                for p in positions
+                if account_name_filter in str(p.get("account_name", "")).lower()
+            ]
+
+        if include_current_price and positions:
+            price_map, price_errors, error_map = await _fetch_price_map_for_positions(
+                positions
+            )
+            errors.extend(price_errors)
+            for position in positions:
+                key = (position["instrument_type"], position["symbol"])
+                needs_refresh = _position_needs_current_price_refresh(position)
+                price = price_map.get(key)
+                if price is not None and needs_refresh:
+                    position["current_price"] = price
+                    _recalculate_profit_fields(position)
+                elif (error := error_map.get(key)) is not None and needs_refresh:
+                    position["price_error"] = error
+        else:
+            for position in positions:
+                position["current_price"] = None
+                position["evaluation_amount"] = None
+                position["profit_loss"] = None
+                position["profit_rate"] = None
+
+        positions.sort(key=lambda p: (p["account"], p["market"], p["symbol"]))
+        return positions, errors, market_filter, account
+
     account_filter = _normalize_account_filter(account)
 
     tasks: list[Any] = []
@@ -893,11 +939,22 @@ async def _get_position_impl(
     *,
     symbol: str,
     market: str | None = None,
+    account_type: str = "real",
+    paper_account: str | None = None,
 ) -> dict[str, Any]:
-    """Implementation for get_position tool."""
+    """Implementation for get_position tool.
+
+    ``account_type``:
+        - "real": existing behaviour — scan live brokerage + manual holdings.
+        - "paper": scan paper trading accounts only. ``paper_account`` selects
+          a specific named paper account; None means all active paper accounts.
+    """
     symbol = (symbol or "").strip()
     if not symbol:
         raise ValueError("symbol is required")
+
+    if account_type not in ("real", "paper"):
+        raise ValueError("account_type must be 'real' or 'paper'")
 
     parsed_market = _parse_holdings_market_filter(market)
     if parsed_market == "equity_us":
@@ -909,11 +966,19 @@ async def _get_position_impl(
     else:
         query_symbol = symbol.strip().upper()
 
-    positions, errors, _, _ = await _collect_portfolio_positions(
-        account=None,
-        market=market,
-        include_current_price=True,
-    )
+    if account_type == "paper":
+        token = "paper" if not paper_account else f"paper:{paper_account}"
+        positions, errors, _, _ = await _collect_portfolio_positions(
+            account=token,
+            market=market,
+            include_current_price=True,
+        )
+    else:
+        positions, errors, _, _ = await _collect_portfolio_positions(
+            account=None,
+            market=market,
+            include_current_price=True,
+        )
 
     matched_positions = [
         position
@@ -1006,12 +1071,13 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
         name="get_holdings",
         description=(
             "Get holdings grouped by account. Supports account filter "
-            "(kis/upbit/toss/samsung_pension/isa) and market filter (kr/us/crypto). "
-            "Cash balances are excluded. minimum_value filters out low-value positions "
-            "when include_current_price=True. When minimum_value is None (default), "
-            "per-currency thresholds are applied: KRW=5000, USD=10. "
-            "Explicit number uses uniform threshold. Response includes filtered_count, "
-            "filter_reason, and per-symbol price lookup errors."
+            "(kis/upbit/toss/samsung_pension/isa/paper/paper:<이름>) and market "
+            "filter (kr/us/crypto). Cash balances are excluded. minimum_value "
+            "filters out low-value positions when include_current_price=True. "
+            "When minimum_value is None (default), per-currency thresholds are "
+            "applied: KRW=5000, USD=10. Explicit number uses uniform threshold. "
+            "Response includes filtered_count, filter_reason, and per-symbol "
+            "price lookup errors."
         ),
     )
     async def get_holdings(
@@ -1032,15 +1098,25 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
     @mcp.tool(
         name="get_position",
         description=(
-            "Check whether a symbol is currently held and return detailed positions "
-            "across all accounts. If no position exists, returns status='미보유'."
+            "Check whether a symbol is currently held and return detailed "
+            "positions across all accounts. account_type='real' (default) scans "
+            "live brokerage and manual holdings; account_type='paper' scans "
+            "paper trading accounts, optionally scoped by paper_account. "
+            "Returns status='미보유' when no position exists."
         ),
     )
     async def get_position(
         symbol: str,
         market: str | None = None,
+        account_type: str = "real",
+        paper_account: str | None = None,
     ) -> dict[str, Any]:
-        return await _get_position_impl(symbol=symbol, market=market)
+        return await _get_position_impl(
+            symbol=symbol,
+            market=market,
+            account_type=account_type,
+            paper_account=paper_account,
+        )
 
     @mcp.tool(
         name="simulate_avg_cost",
@@ -1087,7 +1163,8 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
         name="get_cash_balance",
         description=(
             "Query available cash balances from all accounts. "
-            "Supports Upbit (KRW), KIS domestic (KRW), and KIS overseas (USD). "
+            "Supports Upbit (KRW), KIS domestic (KRW), KIS overseas (USD), "
+            "and paper trading accounts (account='paper' or 'paper:<name>'). "
             "Returns detailed balance information including orderable amounts."
         ),
     )
@@ -1097,9 +1174,12 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
     @mcp.tool(
         name="get_available_capital",
         description=(
-            "Query orderable capital across KIS, Upbit, and manual cash. "
-            "Converts USD orderable cash to KRW and can optionally exclude manual cash. "
-            "Manual cash is stored via set_user_setting/get_user_setting with key='manual_cash'."
+            "Query orderable capital across KIS, Upbit, manual cash, and "
+            "paper trading accounts (account='paper' or 'paper:<name>'). "
+            "Converts USD orderable cash to KRW and can optionally exclude "
+            "manual cash. Manual cash is stored via set_user_setting/"
+            "get_user_setting with key='manual_cash'; it is not added for "
+            "paper account queries."
         ),
     )
     async def get_available_capital(

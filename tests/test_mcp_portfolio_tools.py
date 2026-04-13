@@ -5,12 +5,14 @@ These tests cover portfolio-related MCP tools including cash balance queries,
 holdings management, position tracking, and average cost simulation.
 """
 
+from decimal import Decimal
 from unittest.mock import AsyncMock
 
 import pandas as pd
 import pytest
 
 import app.services.brokers.upbit.client as upbit_service
+from app.mcp_server.tooling import paper_portfolio_handler
 from app.services.upbit_symbol_universe_service import (
     UpbitSymbolInactiveError,
     UpbitSymbolNotRegisteredError,
@@ -2958,3 +2960,280 @@ async def test_get_holdings_crypto_structured_output_survives_fastmcp(monkeypatc
         "structured_content is None — FastMCP failed to serialize the response. "
         "This likely means a non-JSON-safe type (e.g. numpy.bool_) leaked through."
     )
+
+
+# ---------------------------------------------------------------------------
+# Paper trading account filter tests
+# ---------------------------------------------------------------------------
+
+
+class _StubAcc:
+    def __init__(self, id_, name, is_active=True):
+        self.id, self.name, self.is_active = id_, name, is_active
+
+
+class _StubPaperService:
+    def __init__(self, accounts, positions, cash=None):
+        self._a, self._p, self._c = accounts, positions, cash or {}
+
+    async def list_accounts(self, is_active=True):
+        return [a for a in self._a if (is_active is None or a.is_active == is_active)]
+
+    async def get_account_by_name(self, name):
+        return next((a for a in self._a if a.name == name), None)
+
+    async def get_positions(self, account_id, market=None):
+        return self._p.get(account_id, [])
+
+    async def get_cash_balance(self, account_id):
+        return self._c.get(account_id, {"krw": Decimal("0"), "usd": Decimal("0")})
+
+
+@pytest.mark.asyncio
+async def test_get_holdings_with_paper_account_filter(monkeypatch):
+    tools = build_tools()
+
+    svc = _StubPaperService(
+        accounts=[_StubAcc(1, "default")],
+        positions={
+            1: [
+                {
+                    "symbol": "005930",
+                    "instrument_type": "equity_kr",
+                    "quantity": Decimal("10"),
+                    "avg_price": Decimal("72000"),
+                    "total_invested": Decimal("720000"),
+                    "current_price": Decimal("73500"),
+                    "evaluation_amount": Decimal("735000"),
+                    "unrealized_pnl": Decimal("15000"),
+                    "pnl_pct": Decimal("2.08"),
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(paper_portfolio_handler, "_build_service", lambda db: svc)
+    monkeypatch.setattr(
+        paper_portfolio_handler,
+        "resolve_paper_position_name",
+        AsyncMock(return_value="삼성전자"),
+    )
+    # Avoid real live-broker calls leaking in if the guard regresses
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.portfolio_holdings._collect_kis_positions",
+        AsyncMock(side_effect=AssertionError("KIS must not be called for paper")),
+    )
+
+    result = await tools["get_holdings"](account="paper", include_current_price=False)
+
+    assert result["total_positions"] == 1
+    assert result["accounts"][0]["account"] == "paper:default"
+    pos = result["accounts"][0]["positions"][0]
+    assert pos["symbol"] == "005930"
+    assert pos["name"] == "삼성전자"
+    assert pos["quantity"] == 10.0
+    assert pos["avg_buy_price"] == 72000.0
+
+
+@pytest.mark.asyncio
+async def test_get_holdings_with_named_paper_account(monkeypatch):
+    tools = build_tools()
+    svc = _StubPaperService(
+        accounts=[_StubAcc(1, "default"), _StubAcc(2, "데이트레이딩")],
+        positions={
+            1: [],
+            2: [
+                {
+                    "symbol": "AAPL",
+                    "instrument_type": "equity_us",
+                    "quantity": Decimal("5"),
+                    "avg_price": Decimal("150"),
+                    "total_invested": Decimal("750"),
+                    "current_price": None,
+                    "evaluation_amount": None,
+                    "unrealized_pnl": None,
+                    "pnl_pct": None,
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(paper_portfolio_handler, "_build_service", lambda db: svc)
+    monkeypatch.setattr(
+        paper_portfolio_handler,
+        "resolve_paper_position_name",
+        AsyncMock(return_value="Apple Inc."),
+    )
+
+    result = await tools["get_holdings"](
+        account="paper:데이트레이딩", include_current_price=False
+    )
+
+    assert result["total_positions"] == 1
+    assert result["accounts"][0]["account"] == "paper:데이트레이딩"
+    assert result["accounts"][0]["positions"][0]["symbol"] == "AAPL"
+
+
+@pytest.mark.asyncio
+async def test_get_position_paper_hit(monkeypatch):
+    tools = build_tools()
+    svc = _StubPaperService(
+        accounts=[_StubAcc(1, "default")],
+        positions={
+            1: [
+                {
+                    "symbol": "005930",
+                    "instrument_type": "equity_kr",
+                    "quantity": Decimal("10"),
+                    "avg_price": Decimal("72000"),
+                    "total_invested": Decimal("720000"),
+                    "current_price": Decimal("73500"),
+                    "evaluation_amount": Decimal("735000"),
+                    "unrealized_pnl": Decimal("15000"),
+                    "pnl_pct": Decimal("2.08"),
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(paper_portfolio_handler, "_build_service", lambda db: svc)
+    monkeypatch.setattr(
+        paper_portfolio_handler,
+        "resolve_paper_position_name",
+        AsyncMock(return_value="삼성전자"),
+    )
+    # Make live-broker gatherers explode if accidentally called
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.portfolio_holdings._collect_kis_positions",
+        AsyncMock(side_effect=AssertionError("live brokers must not be called")),
+    )
+
+    result = await tools["get_position"](symbol="005930", account_type="paper")
+
+    assert result["has_position"] is True
+    assert result["accounts"] == ["paper:default"]
+    assert result["positions"][0]["symbol"] == "005930"
+
+
+@pytest.mark.asyncio
+async def test_get_position_paper_named(monkeypatch):
+    tools = build_tools()
+    svc = _StubPaperService(
+        accounts=[_StubAcc(1, "default"), _StubAcc(2, "데이트레이딩")],
+        positions={
+            1: [],
+            2: [
+                {
+                    "symbol": "005930",
+                    "instrument_type": "equity_kr",
+                    "quantity": Decimal("5"),
+                    "avg_price": Decimal("70000"),
+                    "total_invested": Decimal("350000"),
+                    "current_price": None,
+                    "evaluation_amount": None,
+                    "unrealized_pnl": None,
+                    "pnl_pct": None,
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(paper_portfolio_handler, "_build_service", lambda db: svc)
+    monkeypatch.setattr(
+        paper_portfolio_handler,
+        "resolve_paper_position_name",
+        AsyncMock(return_value="삼성전자"),
+    )
+
+    result = await tools["get_position"](
+        symbol="005930", account_type="paper", paper_account="데이트레이딩"
+    )
+
+    assert result["has_position"] is True
+    assert result["accounts"] == ["paper:데이트레이딩"]
+
+
+@pytest.mark.asyncio
+async def test_get_position_paper_miss(monkeypatch):
+    tools = build_tools()
+    svc = _StubPaperService(
+        accounts=[_StubAcc(1, "default")],
+        positions={1: []},
+    )
+    monkeypatch.setattr(paper_portfolio_handler, "_build_service", lambda db: svc)
+
+    result = await tools["get_position"](symbol="005930", account_type="paper")
+
+    assert result["has_position"] is False
+    assert result["status"] == "미보유"
+
+
+@pytest.mark.asyncio
+async def test_get_position_invalid_account_type_raises(monkeypatch):
+    tools = build_tools()
+    with pytest.raises(ValueError, match="account_type must be"):
+        await tools["get_position"](symbol="005930", account_type="bogus")
+
+
+@pytest.mark.asyncio
+async def test_get_cash_balance_paper_all(monkeypatch):
+    tools = build_tools()
+    svc = _StubPaperService(
+        accounts=[_StubAcc(1, "default")],
+        positions={},
+        cash={1: {"krw": Decimal("10000000"), "usd": Decimal("500")}},
+    )
+    monkeypatch.setattr(paper_portfolio_handler, "_build_service", lambda db: svc)
+
+    result = await tools["get_cash_balance"](account="paper")
+
+    assert {r["currency"] for r in result["accounts"]} == {"KRW", "USD"}
+    assert result["summary"]["total_krw"] == 10_000_000.0
+    assert result["summary"]["total_usd"] == 500.0
+    assert result["errors"] == []
+
+
+@pytest.mark.asyncio
+async def test_get_cash_balance_paper_named(monkeypatch):
+    tools = build_tools()
+    svc = _StubPaperService(
+        accounts=[_StubAcc(1, "default"), _StubAcc(2, "day")],
+        positions={},
+        cash={
+            1: {"krw": Decimal("10000000"), "usd": Decimal("0")},
+            2: {"krw": Decimal("1000000"), "usd": Decimal("0")},
+        },
+    )
+    monkeypatch.setattr(paper_portfolio_handler, "_build_service", lambda db: svc)
+
+    result = await tools["get_cash_balance"](account="paper:day")
+
+    assert all(r["account"] == "paper:day" for r in result["accounts"])
+    assert result["summary"]["total_krw"] == 1_000_000.0
+
+
+@pytest.mark.asyncio
+async def test_get_available_capital_paper(monkeypatch):
+    tools = build_tools()
+    svc = _StubPaperService(
+        accounts=[_StubAcc(1, "default")],
+        positions={},
+        cash={1: {"krw": Decimal("10000000"), "usd": Decimal("500")}},
+    )
+    monkeypatch.setattr(paper_portfolio_handler, "_build_service", lambda db: svc)
+    # Exchange-rate fetch — stub to a deterministic value.
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.portfolio_cash.get_usd_krw_rate",
+        AsyncMock(return_value=1400.0),
+    )
+    # Manual cash must not be added for paper queries.
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.portfolio_cash.get_manual_cash_setting",
+        AsyncMock(side_effect=AssertionError("manual cash must not be queried")),
+    )
+
+    result = await tools["get_available_capital"](account="paper")
+
+    assert result["manual_cash"] is None
+    # 10,000,000 KRW + 500 USD * 1400 = 10,700,000
+    assert result["summary"]["total_orderable_krw"] == 10_700_000.0
+    assert result["summary"]["exchange_rate_usd_krw"] == 1400.0
+    # paper USD row must have krw_equivalent injected
+    usd_row = next(r for r in result["accounts"] if r["currency"] == "USD")
+    assert usd_row["krw_equivalent"] == 700_000.0
