@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from unittest.mock import AsyncMock
 
 import pytest
 
 from app.mcp_server.tooling.paper_portfolio_handler import (
     PaperAccountSelector,
+    collect_paper_cash_balances,
+    collect_paper_positions,
     is_paper_account_token,
     parse_paper_account_token,
     resolve_paper_position_name,
@@ -31,7 +34,9 @@ class TestIsPaperAccountToken:
     def test_non_paper(self):
         assert is_paper_account_token("kis") is False
         assert is_paper_account_token("upbit") is False
-        assert is_paper_account_token("paperless") is False  # prefix-only match forbidden
+        assert (
+            is_paper_account_token("paperless") is False
+        )  # prefix-only match forbidden
         assert is_paper_account_token(None) is False
         assert is_paper_account_token("") is False
 
@@ -126,11 +131,6 @@ class TestResolvePaperPositionName:
         )
         name = await resolve_paper_position_name("KRW-XYZ", "crypto", db=AsyncMock())
         assert name == "KRW-XYZ"
-
-
-from decimal import Decimal
-
-from app.mcp_server.tooling.paper_portfolio_handler import collect_paper_positions
 
 
 class _FakePaperAccount:
@@ -237,16 +237,32 @@ async def test_collect_paper_positions_named_account(monkeypatch):
             _FakePaperAccount(2, "데이트레이딩"),
         ],
         positions_by_account={
-            1: [{"symbol": "AAPL", "instrument_type": "equity_us",
-                 "quantity": Decimal("1"), "avg_price": Decimal("100"),
-                 "total_invested": Decimal("100"), "current_price": None,
-                 "evaluation_amount": None, "unrealized_pnl": None,
-                 "pnl_pct": None}],
-            2: [{"symbol": "KRW-BTC", "instrument_type": "crypto",
-                 "quantity": Decimal("0.5"), "avg_price": Decimal("50000000"),
-                 "total_invested": Decimal("25000000"), "current_price": None,
-                 "evaluation_amount": None, "unrealized_pnl": None,
-                 "pnl_pct": None}],
+            1: [
+                {
+                    "symbol": "AAPL",
+                    "instrument_type": "equity_us",
+                    "quantity": Decimal("1"),
+                    "avg_price": Decimal("100"),
+                    "total_invested": Decimal("100"),
+                    "current_price": None,
+                    "evaluation_amount": None,
+                    "unrealized_pnl": None,
+                    "pnl_pct": None,
+                }
+            ],
+            2: [
+                {
+                    "symbol": "KRW-BTC",
+                    "instrument_type": "crypto",
+                    "quantity": Decimal("0.5"),
+                    "avg_price": Decimal("50000000"),
+                    "total_invested": Decimal("25000000"),
+                    "current_price": None,
+                    "evaluation_amount": None,
+                    "unrealized_pnl": None,
+                    "pnl_pct": None,
+                }
+            ],
         },
     )
     monkeypatch.setattr(
@@ -295,16 +311,28 @@ async def test_collect_paper_positions_applies_market_filter(monkeypatch):
         accounts=[_FakePaperAccount(1, "default")],
         positions_by_account={
             1: [
-                {"symbol": "005930", "instrument_type": "equity_kr",
-                 "quantity": Decimal("1"), "avg_price": Decimal("70000"),
-                 "total_invested": Decimal("70000"), "current_price": None,
-                 "evaluation_amount": None, "unrealized_pnl": None,
-                 "pnl_pct": None},
-                {"symbol": "AAPL", "instrument_type": "equity_us",
-                 "quantity": Decimal("1"), "avg_price": Decimal("100"),
-                 "total_invested": Decimal("100"), "current_price": None,
-                 "evaluation_amount": None, "unrealized_pnl": None,
-                 "pnl_pct": None},
+                {
+                    "symbol": "005930",
+                    "instrument_type": "equity_kr",
+                    "quantity": Decimal("1"),
+                    "avg_price": Decimal("70000"),
+                    "total_invested": Decimal("70000"),
+                    "current_price": None,
+                    "evaluation_amount": None,
+                    "unrealized_pnl": None,
+                    "pnl_pct": None,
+                },
+                {
+                    "symbol": "AAPL",
+                    "instrument_type": "equity_us",
+                    "quantity": Decimal("1"),
+                    "avg_price": Decimal("100"),
+                    "total_invested": Decimal("100"),
+                    "current_price": None,
+                    "evaluation_amount": None,
+                    "unrealized_pnl": None,
+                    "pnl_pct": None,
+                },
             ],
         },
     )
@@ -324,11 +352,6 @@ async def test_collect_paper_positions_applies_market_filter(monkeypatch):
 
     assert errors == []
     assert [p["symbol"] for p in positions] == ["AAPL"]
-
-
-from app.mcp_server.tooling.paper_portfolio_handler import (
-    collect_paper_cash_balances,
-)
 
 
 @pytest.mark.asyncio
@@ -353,14 +376,16 @@ async def test_collect_paper_cash_balances_all_accounts(monkeypatch):
     assert errors == []
     # 2 accounts × 2 currencies, but USD=0 rows are still emitted for symmetry
     assert len(rows) == 4
-    d_krw = next(r for r in rows if r["account"] == "paper:default"
-                 and r["currency"] == "KRW")
+    d_krw = next(
+        r for r in rows if r["account"] == "paper:default" and r["currency"] == "KRW"
+    )
     assert d_krw["balance"] == 10_000_000.0
     assert d_krw["orderable"] == 10_000_000.0
     assert d_krw["broker"] == "paper"
     assert d_krw["formatted"] == "10,000,000 KRW"
-    d_usd = next(r for r in rows if r["account"] == "paper:default"
-                 and r["currency"] == "USD")
+    d_usd = next(
+        r for r in rows if r["account"] == "paper:default" and r["currency"] == "USD"
+    )
     assert d_usd["balance"] == 500.0
     assert d_usd["exchange_rate"] is None
     assert d_usd["formatted"] == "$500.00 USD"

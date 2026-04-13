@@ -5,12 +5,14 @@ These tests cover portfolio-related MCP tools including cash balance queries,
 holdings management, position tracking, and average cost simulation.
 """
 
+from decimal import Decimal
 from unittest.mock import AsyncMock
 
 import pandas as pd
 import pytest
 
 import app.services.brokers.upbit.client as upbit_service
+from app.mcp_server.tooling import paper_portfolio_handler
 from app.services.upbit_symbol_universe_service import (
     UpbitSymbolInactiveError,
     UpbitSymbolNotRegisteredError,
@@ -2964,10 +2966,6 @@ async def test_get_holdings_crypto_structured_output_survives_fastmcp(monkeypatc
 # Paper trading account filter tests
 # ---------------------------------------------------------------------------
 
-from decimal import Decimal
-
-from app.mcp_server.tooling import paper_portfolio_handler
-
 
 class _StubAcc:
     def __init__(self, id_, name, is_active=True):
@@ -3107,9 +3105,7 @@ async def test_get_position_paper_hit(monkeypatch):
         AsyncMock(side_effect=AssertionError("live brokers must not be called")),
     )
 
-    result = await tools["get_position"](
-        symbol="005930", account_type="paper"
-    )
+    result = await tools["get_position"](symbol="005930", account_type="paper")
 
     assert result["has_position"] is True
     assert result["accounts"] == ["paper:default"]
@@ -3124,11 +3120,17 @@ async def test_get_position_paper_named(monkeypatch):
         positions={
             1: [],
             2: [
-                {"symbol": "005930", "instrument_type": "equity_kr",
-                 "quantity": Decimal("5"), "avg_price": Decimal("70000"),
-                 "total_invested": Decimal("350000"), "current_price": None,
-                 "evaluation_amount": None, "unrealized_pnl": None,
-                 "pnl_pct": None}
+                {
+                    "symbol": "005930",
+                    "instrument_type": "equity_kr",
+                    "quantity": Decimal("5"),
+                    "avg_price": Decimal("70000"),
+                    "total_invested": Decimal("350000"),
+                    "current_price": None,
+                    "evaluation_amount": None,
+                    "unrealized_pnl": None,
+                    "pnl_pct": None,
+                }
             ],
         },
     )
