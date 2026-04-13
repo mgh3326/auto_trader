@@ -543,3 +543,103 @@ class TestExecuteOrderSell:
                 quantity=Decimal("10"),
             )
         mock_db.commit.assert_not_awaited()
+
+
+class TestQueries:
+    @pytest.fixture
+    def service(self, mock_db):
+        return PaperTradingService(mock_db)
+
+    def _make_execute_mock(self, rows):
+        """Helper: wire mock_db.execute to return a result whose scalars() yields rows."""
+        scalars = MagicMock()
+        scalars.all.return_value = rows
+        result = MagicMock()
+        result.scalars.return_value = scalars
+        return AsyncMock(return_value=result)
+
+    @pytest.mark.asyncio
+    async def test_get_positions_enriches_with_current_price(
+        self, service, mock_db, monkeypatch
+    ):
+        position = PaperPosition(
+            id=1, account_id=1, symbol="005930",
+            instrument_type=InstrumentType.equity_kr,
+            quantity=Decimal("10"),
+            avg_price=Decimal("60000"),
+            total_invested=Decimal("600000"),
+        )
+        mock_db.execute = self._make_execute_mock([position])
+        monkeypatch.setattr(
+            service, "_fetch_current_price",
+            AsyncMock(return_value=Decimal("70000")),
+        )
+
+        positions = await service.get_positions(account_id=1)
+        assert len(positions) == 1
+        p = positions[0]
+        assert p["symbol"] == "005930"
+        assert p["quantity"] == Decimal("10")
+        assert p["avg_price"] == Decimal("60000")
+        assert p["current_price"] == Decimal("70000")
+        assert p["evaluation_amount"] == Decimal("700000.0000")
+        assert p["unrealized_pnl"] == Decimal("100000.0000")
+        # (70000 - 60000) / 60000 * 100 = 16.6666...
+        assert p["pnl_pct"] == Decimal("16.67")
+
+    @pytest.mark.asyncio
+    async def test_get_positions_swallows_price_errors(
+        self, service, mock_db, monkeypatch
+    ):
+        position = PaperPosition(
+            id=1, account_id=1, symbol="005930",
+            instrument_type=InstrumentType.equity_kr,
+            quantity=Decimal("10"),
+            avg_price=Decimal("60000"),
+            total_invested=Decimal("600000"),
+        )
+        mock_db.execute = self._make_execute_mock([position])
+        monkeypatch.setattr(
+            service, "_fetch_current_price",
+            AsyncMock(side_effect=RuntimeError("net down")),
+        )
+        positions = await service.get_positions(account_id=1)
+        assert positions[0]["current_price"] is None
+        assert positions[0]["evaluation_amount"] is None
+        assert positions[0]["price_error"] == "net down"
+
+    @pytest.mark.asyncio
+    async def test_get_cash_balance(self, service, monkeypatch):
+        account = PaperAccount(
+            id=1, name="A", initial_capital=Decimal("10000000"),
+            cash_krw=Decimal("8000000"), cash_usd=Decimal("1234.5"),
+            is_active=True,
+        )
+        monkeypatch.setattr(service, "get_account", AsyncMock(return_value=account))
+        balance = await service.get_cash_balance(account_id=1)
+        assert balance == {"krw": Decimal("8000000"), "usd": Decimal("1234.5")}
+
+    @pytest.mark.asyncio
+    async def test_get_cash_balance_missing_raises(self, service, monkeypatch):
+        monkeypatch.setattr(service, "get_account", AsyncMock(return_value=None))
+        with pytest.raises(ValueError, match="Account 99 not found"):
+            await service.get_cash_balance(account_id=99)
+
+    @pytest.mark.asyncio
+    async def test_get_trade_history_filters(self, service, mock_db):
+        trade = PaperTrade(
+            id=1, account_id=1, symbol="005930",
+            instrument_type=InstrumentType.equity_kr,
+            side="buy", order_type="market",
+            quantity=Decimal("10"), price=Decimal("70000"),
+            total_amount=Decimal("700000"), fee=Decimal("105"),
+            currency="KRW", reason="test",
+        )
+        mock_db.execute = self._make_execute_mock([trade])
+        history = await service.get_trade_history(
+            account_id=1, symbol="005930", side="buy", limit=10
+        )
+        assert len(history) == 1
+        assert history[0]["symbol"] == "005930"
+        assert history[0]["side"] == "buy"
+        assert history[0]["quantity"] == Decimal("10")

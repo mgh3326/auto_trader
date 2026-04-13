@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -430,6 +431,113 @@ class PaperTradingService:
                 "executed_at": trade.executed_at,
             },
         }
+
+    # ------------------------------------------------------------------ #
+    # Queries
+    # ------------------------------------------------------------------ #
+    async def get_positions(
+        self,
+        account_id: int,
+        market: str | None = None,
+    ) -> list[dict[str, Any]]:
+        stmt = select(PaperPosition).where(PaperPosition.account_id == account_id)
+        if market is not None:
+            stmt = stmt.where(PaperPosition.instrument_type == InstrumentType(market))
+        stmt = stmt.order_by(PaperPosition.symbol)
+        result = await self.db.execute(stmt)
+        rows = list(result.scalars().all())
+
+        output: list[dict[str, Any]] = []
+        for pos in rows:
+            item: dict[str, Any] = {
+                "symbol": pos.symbol,
+                "instrument_type": pos.instrument_type.value,
+                "quantity": pos.quantity,
+                "avg_price": pos.avg_price,
+                "total_invested": pos.total_invested,
+                "current_price": None,
+                "evaluation_amount": None,
+                "unrealized_pnl": None,
+                "pnl_pct": None,
+            }
+            try:
+                current_price = await self._fetch_current_price(
+                    pos.symbol, pos.instrument_type.value
+                )
+                item["current_price"] = current_price
+                evaluation = _q_money(current_price * pos.quantity)
+                item["evaluation_amount"] = evaluation
+                pnl = _q_money(evaluation - pos.total_invested)
+                item["unrealized_pnl"] = pnl
+                if pos.avg_price > 0:
+                    pnl_pct = (
+                        (current_price - pos.avg_price) / pos.avg_price * Decimal("100")
+                    )
+                    item["pnl_pct"] = pnl_pct.quantize(
+                        Decimal("0.01"), rounding=ROUND_HALF_UP
+                    )
+            except Exception as exc:
+                item["price_error"] = str(exc)
+            output.append(item)
+        return output
+
+    async def get_position(
+        self, account_id: int, symbol: str
+    ) -> dict[str, Any] | None:
+        resolved_symbol = resolve_market_type(symbol, None)[1]
+        pos = await self._get_position(account_id, resolved_symbol)
+        if pos is None:
+            return None
+        positions = await self.get_positions(account_id=account_id)
+        for item in positions:
+            if item["symbol"] == resolved_symbol:
+                return item
+        return None
+
+    async def get_cash_balance(self, account_id: int) -> dict[str, Decimal]:
+        account = await self.get_account(account_id)
+        if account is None:
+            raise ValueError(f"Account {account_id} not found")
+        return {"krw": account.cash_krw, "usd": account.cash_usd}
+
+    async def get_trade_history(
+        self,
+        account_id: int,
+        symbol: str | None = None,
+        side: str | None = None,
+        days: int | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        stmt = select(PaperTrade).where(PaperTrade.account_id == account_id)
+        if symbol is not None:
+            stmt = stmt.where(PaperTrade.symbol == symbol)
+        if side is not None:
+            stmt = stmt.where(PaperTrade.side == side.lower())
+        if days is not None:
+            cutoff = now_kst() - timedelta(days=days)
+            stmt = stmt.where(PaperTrade.executed_at >= cutoff)
+        stmt = stmt.order_by(PaperTrade.executed_at.desc()).limit(limit)
+
+        result = await self.db.execute(stmt)
+        rows = list(result.scalars().all())
+        return [
+            {
+                "id": t.id,
+                "symbol": t.symbol,
+                "instrument_type": t.instrument_type.value,
+                "side": t.side,
+                "order_type": t.order_type,
+                "quantity": t.quantity,
+                "price": t.price,
+                "total_amount": t.total_amount,
+                "fee": t.fee,
+                "currency": t.currency,
+                "reason": t.reason,
+                "realized_pnl": t.realized_pnl,
+                "executed_at": t.executed_at,
+            }
+            for t in rows
+        ]
 
 
 __all__ = [
