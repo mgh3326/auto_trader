@@ -1174,9 +1174,12 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
     @mcp.tool(
         name="get_available_capital",
         description=(
-            "Query orderable capital across KIS, Upbit, and manual cash. "
-            "Converts USD orderable cash to KRW and can optionally exclude manual cash. "
-            "Manual cash is stored via set_user_setting/get_user_setting with key='manual_cash'."
+            "Query orderable capital across KIS, Upbit, manual cash, and "
+            "paper trading accounts (account='paper' or 'paper:<name>'). "
+            "Converts USD orderable cash to KRW and can optionally exclude "
+            "manual cash. Manual cash is stored via set_user_setting/"
+            "get_user_setting with key='manual_cash'; it is not added for "
+            "paper account queries."
         ),
     )
     async def get_available_capital(

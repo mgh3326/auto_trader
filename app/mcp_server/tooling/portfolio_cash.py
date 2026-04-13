@@ -312,8 +312,11 @@ async def get_available_capital_impl(
 
         processed_accounts.append(processed_acc)
 
+    from app.mcp_server.tooling.paper_portfolio_handler import (
+        is_paper_account_token,
+    )
     manual_cash_result: dict[str, Any] | None = None
-    if include_manual:
+    if include_manual and not is_paper_account_token(account):
         try:
             manual_setting = await get_manual_cash_setting()
             if manual_setting is not None:

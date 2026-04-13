@@ -3204,3 +3204,34 @@ async def test_get_cash_balance_paper_named(monkeypatch):
 
     assert all(r["account"] == "paper:day" for r in result["accounts"])
     assert result["summary"]["total_krw"] == 1_000_000.0
+
+
+@pytest.mark.asyncio
+async def test_get_available_capital_paper(monkeypatch):
+    tools = build_tools()
+    svc = _StubPaperService(
+        accounts=[_StubAcc(1, "default")],
+        positions={},
+        cash={1: {"krw": Decimal("10000000"), "usd": Decimal("500")}},
+    )
+    monkeypatch.setattr(paper_portfolio_handler, "_build_service", lambda db: svc)
+    # Exchange-rate fetch — stub to a deterministic value.
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.portfolio_cash.get_usd_krw_rate",
+        AsyncMock(return_value=1400.0),
+    )
+    # Manual cash must not be added for paper queries.
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.portfolio_cash.get_manual_cash_setting",
+        AsyncMock(side_effect=AssertionError("manual cash must not be queried")),
+    )
+
+    result = await tools["get_available_capital"](account="paper")
+
+    assert result["manual_cash"] is None
+    # 10,000,000 KRW + 500 USD * 1400 = 10,700,000
+    assert result["summary"]["total_orderable_krw"] == 10_700_000.0
+    assert result["summary"]["exchange_rate_usd_krw"] == 1400.0
+    # paper USD row must have krw_equivalent injected
+    usd_row = next(r for r in result["accounts"] if r["currency"] == "USD")
+    assert usd_row["krw_equivalent"] == 700_000.0
