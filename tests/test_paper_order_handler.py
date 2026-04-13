@@ -412,3 +412,99 @@ class TestGetPaperOrderHistory:
         assert result["success"] is False
         assert result["error"].startswith("[Paper] ")
         assert "ghost" in result["error"]
+
+
+class TestPlaceOrderRegistration:
+    @pytest.mark.asyncio
+    async def test_account_type_paper_routes_to_paper_handler(self):
+        """register_order_tools must expose account_type and route paper calls."""
+        from app.mcp_server.tooling import orders_registration
+
+        registered: dict[str, Any] = {}
+
+        class DummyMCP:
+            def tool(self, name: str, description: str):
+                def _wrap(fn):
+                    registered[name] = fn
+                    return fn
+
+                return _wrap
+
+        orders_registration.register_order_tools(DummyMCP())
+        place_order = registered["place_order"]
+
+        paper_stub = AsyncMock(
+            return_value={"success": True, "account_type": "paper", "dry_run": True}
+        )
+        live_stub = AsyncMock(return_value={"success": True, "dry_run": True})
+
+        with (
+            patch.object(
+                orders_registration, "_place_paper_order", paper_stub
+            ),
+            patch.object(
+                orders_registration.order_execution,
+                "_place_order_impl",
+                live_stub,
+            ),
+        ):
+            result = await place_order(
+                symbol="005930",
+                side="buy",
+                order_type="limit",
+                quantity=10,
+                price=70000,
+                account_type="paper",
+                paper_account="swing",
+            )
+
+        assert result["account_type"] == "paper"
+        paper_stub.assert_awaited_once()
+        kwargs = paper_stub.await_args.kwargs
+        assert kwargs["symbol"] == "005930"
+        assert kwargs["side"] == "buy"
+        assert kwargs["paper_account_name"] == "swing"
+        assert kwargs["dry_run"] is True
+        live_stub.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_account_type_real_still_calls_live_impl(self):
+        from app.mcp_server.tooling import orders_registration
+
+        registered: dict[str, Any] = {}
+
+        class DummyMCP:
+            def tool(self, name: str, description: str):
+                def _wrap(fn):
+                    registered[name] = fn
+                    return fn
+
+                return _wrap
+
+        orders_registration.register_order_tools(DummyMCP())
+        place_order = registered["place_order"]
+
+        paper_stub = AsyncMock()
+        live_stub = AsyncMock(return_value={"success": True, "dry_run": True})
+
+        with (
+            patch.object(
+                orders_registration, "_place_paper_order", paper_stub
+            ),
+            patch.object(
+                orders_registration.order_execution,
+                "_place_order_impl",
+                live_stub,
+            ),
+        ):
+            result = await place_order(
+                symbol="005930",
+                side="buy",
+                order_type="limit",
+                quantity=10,
+                price=70000,
+            )
+
+        assert result["success"] is True
+        live_stub.assert_awaited_once()
+        paper_stub.assert_not_called()
