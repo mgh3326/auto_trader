@@ -184,3 +184,127 @@ class TestPlacePaperOrderDryRun:
         assert result["error"].startswith("[Paper]")
         assert "ghost" in result["error"]
         service.create_account.assert_not_called()
+
+
+class TestPlacePaperOrderExecute:
+    @pytest.mark.asyncio
+    async def test_execute_returns_preview_and_execution(self):
+        account = _make_account()
+        service = MagicMock()
+        service.get_account_by_name = AsyncMock(return_value=account)
+        service.create_account = AsyncMock()
+        service.execute_order = AsyncMock(
+            return_value={
+                "success": True,
+                "dry_run": False,
+                "account_id": 1,
+                "preview": {
+                    "symbol": "005930",
+                    "instrument_type": "equity_kr",
+                    "side": "buy",
+                    "order_type": "limit",
+                    "quantity": Decimal("10"),
+                    "price": Decimal("70000"),
+                    "gross": Decimal("700000"),
+                    "fee": Decimal("105"),
+                    "total_cost": Decimal("700105"),
+                    "currency": "KRW",
+                },
+                "execution": {
+                    "symbol": "005930",
+                    "instrument_type": "equity_kr",
+                    "side": "buy",
+                    "order_type": "limit",
+                    "quantity": Decimal("10"),
+                    "price": Decimal("70000"),
+                    "gross": Decimal("700000"),
+                    "fee": Decimal("105"),
+                    "total_cost": Decimal("700105"),
+                    "currency": "KRW",
+                    "realized_pnl": None,
+                    "executed_at": None,
+                },
+            }
+        )
+
+        fake_session_cm = AsyncMock()
+        fake_session_cm.__aenter__.return_value = MagicMock()
+        fake_session_cm.__aexit__.return_value = None
+
+        with (
+            patch.object(
+                paper_order_handler,
+                "AsyncSessionLocal",
+                return_value=fake_session_cm,
+            ),
+            patch.object(
+                paper_order_handler,
+                "PaperTradingService",
+                return_value=service,
+            ),
+        ):
+            result = await paper_order_handler._place_paper_order(
+                symbol="005930",
+                side="buy",
+                order_type="limit",
+                quantity=10,
+                price=70000,
+                amount=None,
+                dry_run=False,
+                reason="demo",
+                paper_account_name=None,
+            )
+
+        assert result["success"] is True
+        assert result["dry_run"] is False
+        assert result["account_type"] == "paper"
+        assert result["paper_account"] == "default"
+        assert result["preview"]["symbol"] == "005930"
+        assert result["execution"]["quantity"] == Decimal("10")
+        assert result["message"] == "[Paper] Order placed successfully"
+        service.execute_order.assert_awaited_once()
+        kwargs = service.execute_order.await_args.kwargs
+        assert kwargs["account_id"] == 1
+        assert kwargs["reason"] == "demo"
+
+    @pytest.mark.asyncio
+    async def test_execute_insufficient_balance_returns_prefixed_error(self):
+        account = _make_account()
+        service = MagicMock()
+        service.get_account_by_name = AsyncMock(return_value=account)
+        service.execute_order = AsyncMock(
+            side_effect=ValueError("Insufficient KRW balance: have 0, need 700105")
+        )
+
+        fake_session_cm = AsyncMock()
+        fake_session_cm.__aenter__.return_value = MagicMock()
+        fake_session_cm.__aexit__.return_value = None
+
+        with (
+            patch.object(
+                paper_order_handler,
+                "AsyncSessionLocal",
+                return_value=fake_session_cm,
+            ),
+            patch.object(
+                paper_order_handler,
+                "PaperTradingService",
+                return_value=service,
+            ),
+        ):
+            result = await paper_order_handler._place_paper_order(
+                symbol="005930",
+                side="buy",
+                order_type="limit",
+                quantity=10,
+                price=70000,
+                amount=None,
+                dry_run=False,
+                reason="",
+                paper_account_name=None,
+            )
+
+        assert result["success"] is False
+        assert result["account_type"] == "paper"
+        assert result["error"].startswith("[Paper] ")
+        assert "Insufficient KRW balance" in result["error"]

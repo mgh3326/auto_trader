@@ -95,8 +95,26 @@ async def _place_paper_order(
                     "message": "[Paper] Order preview (dry_run=True)",
                 }
 
-            # Real execution wired up in a later task.
-            raise NotImplementedError("paper execute path not yet implemented")
+            execution = await service.execute_order(
+                account_id=account.id,
+                symbol=symbol,
+                side=side,
+                order_type=order_type,
+                quantity=quantity,
+                price=price,
+                amount=amount,
+                reason=reason or "",
+            )
+            return {
+                "success": True,
+                "dry_run": False,
+                "account_type": "paper",
+                "paper_account": account.name,
+                "account_id": account.id,
+                "preview": execution["preview"],
+                "execution": execution["execution"],
+                "message": "[Paper] Order placed successfully",
+            }
     except ValueError as exc:
         return _paper_error(str(exc), symbol=symbol)
     except Exception as exc:  # pragma: no cover — unexpected failure
