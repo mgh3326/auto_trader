@@ -31,7 +31,10 @@ def register_order_tools(mcp: FastMCP) -> None:
         description=(
             "Get order history for a symbol. Supports Upbit (crypto) and KIS "
             "(KR/US equities). Pending orders can be queried without a symbol, "
-            "but filled/cancelled/all queries require symbol."
+            "but filled/cancelled/all queries require symbol. "
+            "Set account_type='paper' to query the virtual paper-trading "
+            "account's trade history instead; pass paper_account to target a "
+            "named paper account (defaults to 'default')."
         ),
     )
     async def get_order_history(
@@ -42,7 +45,20 @@ def register_order_tools(mcp: FastMCP) -> None:
         side: str | None = None,
         days: int | None = None,
         limit: int | None = 50,
+        account_type: Literal["real", "paper"] = "real",
+        paper_account: str | None = None,
     ):
+        if account_type == "paper":
+            return await _get_paper_order_history(
+                symbol=symbol,
+                status=status,
+                order_id=order_id,
+                market=market,
+                side=side,
+                days=days,
+                limit=limit,
+                paper_account_name=paper_account,
+            )
         return await orders_history.get_order_history_impl(
             symbol=symbol,
             status=status,

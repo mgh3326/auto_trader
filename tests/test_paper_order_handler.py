@@ -508,3 +508,86 @@ class TestPlaceOrderRegistration:
         assert result["success"] is True
         live_stub.assert_awaited_once()
         paper_stub.assert_not_called()
+
+
+class TestGetOrderHistoryRegistration:
+    @pytest.mark.asyncio
+    async def test_account_type_paper_routes_to_paper_history(self):
+        from app.mcp_server.tooling import orders_registration
+
+        registered: dict[str, Any] = {}
+
+        class DummyMCP:
+            def tool(self, name: str, description: str):
+                def _wrap(fn):
+                    registered[name] = fn
+                    return fn
+
+                return _wrap
+
+        orders_registration.register_order_tools(DummyMCP())
+        get_order_history = registered["get_order_history"]
+
+        paper_stub = AsyncMock(
+            return_value={"success": True, "account_type": "paper", "orders": []}
+        )
+        live_stub = AsyncMock(return_value={"success": True, "orders": []})
+
+        with (
+            patch.object(
+                orders_registration, "_get_paper_order_history", paper_stub
+            ),
+            patch.object(
+                orders_registration.orders_history,
+                "get_order_history_impl",
+                live_stub,
+            ),
+        ):
+            result = await get_order_history(
+                symbol="005930",
+                account_type="paper",
+                paper_account="swing",
+            )
+
+        assert result["account_type"] == "paper"
+        paper_stub.assert_awaited_once()
+        kwargs = paper_stub.await_args.kwargs
+        assert kwargs["symbol"] == "005930"
+        assert kwargs["paper_account_name"] == "swing"
+        live_stub.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_account_type_real_still_calls_live_history(self):
+        from app.mcp_server.tooling import orders_registration
+
+        registered: dict[str, Any] = {}
+
+        class DummyMCP:
+            def tool(self, name: str, description: str):
+                def _wrap(fn):
+                    registered[name] = fn
+                    return fn
+
+                return _wrap
+
+        orders_registration.register_order_tools(DummyMCP())
+        get_order_history = registered["get_order_history"]
+
+        paper_stub = AsyncMock()
+        live_stub = AsyncMock(return_value={"success": True, "orders": []})
+
+        with (
+            patch.object(
+                orders_registration, "_get_paper_order_history", paper_stub
+            ),
+            patch.object(
+                orders_registration.orders_history,
+                "get_order_history_impl",
+                live_stub,
+            ),
+        ):
+            result = await get_order_history(symbol="005930")
+
+        assert result["success"] is True
+        live_stub.assert_awaited_once()
+        paper_stub.assert_not_called()
