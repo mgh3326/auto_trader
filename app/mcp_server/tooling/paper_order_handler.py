@@ -122,8 +122,61 @@ async def _place_paper_order(
         return _paper_error(f"unexpected error: {exc}", symbol=symbol)
 
 
+async def _get_paper_order_history(
+    *,
+    symbol: str | None,
+    status: str,
+    order_id: str | None,
+    market: str | None,
+    side: str | None,
+    days: int | None,
+    limit: int | None,
+    paper_account_name: str | None,
+) -> dict[str, Any]:
+    """Return paper trade history in a shape compatible with the live tool.
+
+    `status`, `order_id`, and `market` are accepted for signature parity with
+    the live tool but are not meaningful for paper trades (all paper trades
+    are immediate fills). They are echoed back in the response for tracing.
+    """
+    del order_id, market  # signature parity only
+    limit_val = limit if limit is not None else 50
+
+    try:
+        async with AsyncSessionLocal() as db:
+            service = PaperTradingService(db)
+            try:
+                account = await _resolve_paper_account(service, paper_account_name)
+            except ValueError as exc:
+                return _paper_error(str(exc), symbol=symbol)
+
+            rows = await service.get_trade_history(
+                account_id=account.id,
+                symbol=symbol,
+                side=side,
+                days=days,
+                limit=limit_val,
+            )
+
+            return {
+                "success": True,
+                "account_type": "paper",
+                "paper_account": account.name,
+                "account_id": account.id,
+                "orders": rows,
+                "total_available": len(rows),
+                "truncated": False,
+                "status": status,
+                "errors": [],
+            }
+    except Exception as exc:  # pragma: no cover — unexpected failure
+        logger.exception("Paper history failed: %s", exc)
+        return _paper_error(f"unexpected error: {exc}", symbol=symbol)
+
+
 __all__ = [
     "DEFAULT_PAPER_ACCOUNT_NAME",
     "DEFAULT_PAPER_INITIAL_CAPITAL_KRW",
     "_place_paper_order",
+    "_get_paper_order_history",
 ]

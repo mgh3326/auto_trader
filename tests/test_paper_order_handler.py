@@ -308,3 +308,107 @@ class TestPlacePaperOrderExecute:
         assert result["account_type"] == "paper"
         assert result["error"].startswith("[Paper] ")
         assert "Insufficient KRW balance" in result["error"]
+
+
+class TestGetPaperOrderHistory:
+    @pytest.mark.asyncio
+    async def test_history_returns_service_rows(self):
+        account = _make_account()
+        service = MagicMock()
+        service.get_account_by_name = AsyncMock(return_value=account)
+        service.get_trade_history = AsyncMock(
+            return_value=[
+                {
+                    "id": 1,
+                    "symbol": "005930",
+                    "instrument_type": "equity_kr",
+                    "side": "buy",
+                    "order_type": "limit",
+                    "quantity": Decimal("10"),
+                    "price": Decimal("70000"),
+                    "total_amount": Decimal("700000"),
+                    "fee": Decimal("105"),
+                    "currency": "KRW",
+                    "reason": None,
+                    "realized_pnl": None,
+                    "executed_at": None,
+                }
+            ]
+        )
+
+        fake_session_cm = AsyncMock()
+        fake_session_cm.__aenter__.return_value = MagicMock()
+        fake_session_cm.__aexit__.return_value = None
+
+        with (
+            patch.object(
+                paper_order_handler,
+                "AsyncSessionLocal",
+                return_value=fake_session_cm,
+            ),
+            patch.object(
+                paper_order_handler,
+                "PaperTradingService",
+                return_value=service,
+            ),
+        ):
+            result = await paper_order_handler._get_paper_order_history(
+                symbol="005930",
+                status="all",
+                order_id=None,
+                market=None,
+                side=None,
+                days=None,
+                limit=50,
+                paper_account_name=None,
+            )
+
+        assert result["success"] is True
+        assert result["account_type"] == "paper"
+        assert result["paper_account"] == "default"
+        assert result["total_available"] == 1
+        assert result["truncated"] is False
+        assert result["orders"][0]["symbol"] == "005930"
+        service.get_trade_history.assert_awaited_once_with(
+            account_id=1,
+            symbol="005930",
+            side=None,
+            days=None,
+            limit=50,
+        )
+
+    @pytest.mark.asyncio
+    async def test_history_unknown_named_account_errors(self):
+        service = MagicMock()
+        service.get_account_by_name = AsyncMock(return_value=None)
+
+        fake_session_cm = AsyncMock()
+        fake_session_cm.__aenter__.return_value = MagicMock()
+        fake_session_cm.__aexit__.return_value = None
+
+        with (
+            patch.object(
+                paper_order_handler,
+                "AsyncSessionLocal",
+                return_value=fake_session_cm,
+            ),
+            patch.object(
+                paper_order_handler,
+                "PaperTradingService",
+                return_value=service,
+            ),
+        ):
+            result = await paper_order_handler._get_paper_order_history(
+                symbol=None,
+                status="all",
+                order_id=None,
+                market=None,
+                side=None,
+                days=None,
+                limit=50,
+                paper_account_name="ghost",
+            )
+
+        assert result["success"] is False
+        assert result["error"].startswith("[Paper] ")
+        assert "ghost" in result["error"]
