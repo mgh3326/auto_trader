@@ -10,6 +10,7 @@ from .manual_holdings import (
     StockAlias,
 )
 from .news import NewsAnalysisResult, NewsArticle, Sentiment
+from .paper_trading import PaperAccount, PaperPosition, PaperTrade
 from .prompt import PromptResult
 from .research_backtest import (
     ResearchBacktestPair,
@@ -81,6 +82,9 @@ __all__ = [
     "TradeJournal",
     "JournalStatus",
     "PendingSnapshot",
+    "PaperAccount",
+    "PaperPosition",
+    "PaperTrade",
     # "AlertRule", "AlertEvent",
     # "PricesLatest", "PricesOHLCV", "FxRate",
 ]
