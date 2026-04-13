@@ -3167,3 +3167,40 @@ async def test_get_position_invalid_account_type_raises(monkeypatch):
     tools = build_tools()
     with pytest.raises(ValueError, match="account_type must be"):
         await tools["get_position"](symbol="005930", account_type="bogus")
+
+
+@pytest.mark.asyncio
+async def test_get_cash_balance_paper_all(monkeypatch):
+    tools = build_tools()
+    svc = _StubPaperService(
+        accounts=[_StubAcc(1, "default")],
+        positions={},
+        cash={1: {"krw": Decimal("10000000"), "usd": Decimal("500")}},
+    )
+    monkeypatch.setattr(paper_portfolio_handler, "_build_service", lambda db: svc)
+
+    result = await tools["get_cash_balance"](account="paper")
+
+    assert {r["currency"] for r in result["accounts"]} == {"KRW", "USD"}
+    assert result["summary"]["total_krw"] == 10_000_000.0
+    assert result["summary"]["total_usd"] == 500.0
+    assert result["errors"] == []
+
+
+@pytest.mark.asyncio
+async def test_get_cash_balance_paper_named(monkeypatch):
+    tools = build_tools()
+    svc = _StubPaperService(
+        accounts=[_StubAcc(1, "default"), _StubAcc(2, "day")],
+        positions={},
+        cash={
+            1: {"krw": Decimal("10000000"), "usd": Decimal("0")},
+            2: {"krw": Decimal("1000000"), "usd": Decimal("0")},
+        },
+    )
+    monkeypatch.setattr(paper_portfolio_handler, "_build_service", lambda db: svc)
+
+    result = await tools["get_cash_balance"](account="paper:day")
+
+    assert all(r["account"] == "paper:day" for r in result["accounts"])
+    assert result["summary"]["total_krw"] == 1_000_000.0

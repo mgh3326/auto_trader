@@ -93,6 +93,27 @@ def select_usd_row_for_us_order(
 
 
 async def get_cash_balance_impl(account: str | None = None) -> dict[str, Any]:
+    from app.mcp_server.tooling.paper_portfolio_handler import (
+        collect_paper_cash_balances,
+        is_paper_account_token,
+        parse_paper_account_token,
+    )
+
+    if is_paper_account_token(account):
+        selector = parse_paper_account_token(account)
+        rows, errors = await collect_paper_cash_balances(selector=selector)
+        total_krw = sum(
+            float(r.get("balance", 0) or 0) for r in rows if r.get("currency") == "KRW"
+        )
+        total_usd = sum(
+            float(r.get("balance", 0) or 0) for r in rows if r.get("currency") == "USD"
+        )
+        return {
+            "accounts": rows,
+            "summary": {"total_krw": total_krw, "total_usd": total_usd},
+            "errors": errors,
+        }
+
     accounts: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     total_krw = 0.0

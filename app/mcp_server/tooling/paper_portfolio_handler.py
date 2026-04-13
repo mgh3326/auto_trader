@@ -254,11 +254,75 @@ async def collect_paper_positions(
     return positions, errors
 
 
+async def collect_paper_cash_balances(
+    *,
+    selector: PaperAccountSelector,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Collect paper cash balances in the canonical cash-row shape.
+
+    Emits one row per (account, currency) pair for KRW and USD, even when the
+    balance is zero. Paper has no pending-orders concept, so ``orderable``
+    always mirrors ``balance``.
+    """
+    rows: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+
+    async with AsyncSessionLocal() as db:
+        service = _build_service(db)
+        target_accounts, lookup_errors = await _resolve_target_accounts(
+            service, selector
+        )
+        errors.extend(lookup_errors)
+
+        for account in target_accounts:
+            try:
+                cash = await service.get_cash_balance(account.id)
+            except Exception as exc:
+                errors.append(
+                    {
+                        "source": "paper",
+                        "account": f"paper:{account.name}",
+                        "error": str(exc),
+                    }
+                )
+                continue
+
+            krw = float(cash.get("krw", 0) or 0)
+            usd = float(cash.get("usd", 0) or 0)
+
+            rows.append(
+                {
+                    "account": f"paper:{account.name}",
+                    "account_name": account.name,
+                    "broker": "paper",
+                    "currency": "KRW",
+                    "balance": krw,
+                    "orderable": krw,
+                    "formatted": f"{int(krw):,} KRW",
+                }
+            )
+            rows.append(
+                {
+                    "account": f"paper:{account.name}",
+                    "account_name": account.name,
+                    "broker": "paper",
+                    "currency": "USD",
+                    "balance": usd,
+                    "orderable": usd,
+                    "exchange_rate": None,
+                    "formatted": f"${usd:.2f} USD",
+                }
+            )
+
+    return rows, errors
+
+
 __all__ = [
     "PaperAccountSelector",
     "is_paper_account_token",
     "parse_paper_account_token",
     "resolve_paper_position_name",
     "collect_paper_positions",
+    "collect_paper_cash_balances",
     "_build_service",
 ]

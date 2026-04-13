@@ -324,3 +324,58 @@ async def test_collect_paper_positions_applies_market_filter(monkeypatch):
 
     assert errors == []
     assert [p["symbol"] for p in positions] == ["AAPL"]
+
+
+from app.mcp_server.tooling.paper_portfolio_handler import (
+    collect_paper_cash_balances,
+)
+
+
+@pytest.mark.asyncio
+async def test_collect_paper_cash_balances_all_accounts(monkeypatch):
+    svc = _FakePaperService(
+        accounts=[_FakePaperAccount(1, "default"), _FakePaperAccount(2, "day")],
+        positions_by_account={},
+        cash_by_account={
+            1: {"krw": Decimal("10000000"), "usd": Decimal("500")},
+            2: {"krw": Decimal("5000000"), "usd": Decimal("0")},
+        },
+    )
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.paper_portfolio_handler._build_service",
+        lambda db: svc,
+    )
+
+    rows, errors = await collect_paper_cash_balances(
+        selector=PaperAccountSelector(account_name=None),
+    )
+
+    assert errors == []
+    # 2 accounts × 2 currencies, but USD=0 rows are still emitted for symmetry
+    assert len(rows) == 4
+    d_krw = next(r for r in rows if r["account"] == "paper:default"
+                 and r["currency"] == "KRW")
+    assert d_krw["balance"] == 10_000_000.0
+    assert d_krw["orderable"] == 10_000_000.0
+    assert d_krw["broker"] == "paper"
+    assert d_krw["formatted"] == "10,000,000 KRW"
+    d_usd = next(r for r in rows if r["account"] == "paper:default"
+                 and r["currency"] == "USD")
+    assert d_usd["balance"] == 500.0
+    assert d_usd["exchange_rate"] is None
+    assert d_usd["formatted"] == "$500.00 USD"
+
+
+@pytest.mark.asyncio
+async def test_collect_paper_cash_balances_missing_named_account(monkeypatch):
+    svc = _FakePaperService(accounts=[], positions_by_account={})
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.paper_portfolio_handler._build_service",
+        lambda db: svc,
+    )
+
+    rows, errors = await collect_paper_cash_balances(
+        selector=PaperAccountSelector(account_name="ghost"),
+    )
+    assert rows == []
+    assert errors and "ghost" in errors[0]["error"]

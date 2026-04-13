@@ -1163,7 +1163,8 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
         name="get_cash_balance",
         description=(
             "Query available cash balances from all accounts. "
-            "Supports Upbit (KRW), KIS domestic (KRW), and KIS overseas (USD). "
+            "Supports Upbit (KRW), KIS domestic (KRW), KIS overseas (USD), "
+            "and paper trading accounts (account='paper' or 'paper:<name>'). "
             "Returns detailed balance information including orderable amounts."
         ),
     )
