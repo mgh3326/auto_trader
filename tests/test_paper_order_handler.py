@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -439,9 +440,7 @@ class TestPlaceOrderRegistration:
         live_stub = AsyncMock(return_value={"success": True, "dry_run": True})
 
         with (
-            patch.object(
-                orders_registration, "_place_paper_order", paper_stub
-            ),
+            patch.object(orders_registration, "_place_paper_order", paper_stub),
             patch.object(
                 orders_registration.order_execution,
                 "_place_order_impl",
@@ -488,9 +487,7 @@ class TestPlaceOrderRegistration:
         live_stub = AsyncMock(return_value={"success": True, "dry_run": True})
 
         with (
-            patch.object(
-                orders_registration, "_place_paper_order", paper_stub
-            ),
+            patch.object(orders_registration, "_place_paper_order", paper_stub),
             patch.object(
                 orders_registration.order_execution,
                 "_place_order_impl",
@@ -534,9 +531,7 @@ class TestGetOrderHistoryRegistration:
         live_stub = AsyncMock(return_value={"success": True, "orders": []})
 
         with (
-            patch.object(
-                orders_registration, "_get_paper_order_history", paper_stub
-            ),
+            patch.object(orders_registration, "_get_paper_order_history", paper_stub),
             patch.object(
                 orders_registration.orders_history,
                 "get_order_history_impl",
@@ -577,9 +572,7 @@ class TestGetOrderHistoryRegistration:
         live_stub = AsyncMock(return_value={"success": True, "orders": []})
 
         with (
-            patch.object(
-                orders_registration, "_get_paper_order_history", paper_stub
-            ),
+            patch.object(orders_registration, "_get_paper_order_history", paper_stub),
             patch.object(
                 orders_registration.orders_history,
                 "get_order_history_impl",
