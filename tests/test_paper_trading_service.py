@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.models.paper_trading import PaperAccount, PaperDailySnapshot, PaperPosition, PaperTrade
+from app.models.paper_trading import (
+    PaperAccount,
+    PaperDailySnapshot,
+    PaperPosition,
+    PaperTrade,
+)
 from app.models.trading import InstrumentType
 from app.services.paper_trading_service import (
     FEE_RATES,
@@ -869,7 +874,7 @@ class TestRoundTrips:
         return PaperTradingService(mock_db)
 
     def _trade(self, **kw):
-        from datetime import datetime, timezone
+        from datetime import datetime
         defaults = {
             "id": 0, "account_id": 1, "symbol": "005930",
             "instrument_type": InstrumentType.equity_kr,
@@ -877,25 +882,25 @@ class TestRoundTrips:
             "quantity": Decimal("10"), "price": Decimal("60000"),
             "total_amount": Decimal("600000"), "fee": Decimal("0"),
             "currency": "KRW", "reason": None, "realized_pnl": None,
-            "executed_at": datetime(2026, 4, 1, tzinfo=timezone.utc),
+            "executed_at": datetime(2026, 4, 1, tzinfo=UTC),
         }
         defaults.update(kw)
         return PaperTrade(**defaults)
 
     def test_closed_round_trip_computes_holding_days_and_pnl(self, service):
-        from datetime import datetime, timezone
+        from datetime import datetime
         trades = [
             self._trade(
                 id=1, side="buy", quantity=Decimal("10"),
                 price=Decimal("60000"), fee=Decimal("90"),
-                executed_at=datetime(2026, 4, 1, 9, 0, tzinfo=timezone.utc),
+                executed_at=datetime(2026, 4, 1, 9, 0, tzinfo=UTC),
                 reason="entry",
             ),
             self._trade(
                 id=2, side="sell", quantity=Decimal("10"),
                 price=Decimal("70000"), fee=Decimal("1365"),
                 realized_pnl=Decimal("98635"),
-                executed_at=datetime(2026, 4, 6, 9, 0, tzinfo=timezone.utc),
+                executed_at=datetime(2026, 4, 6, 9, 0, tzinfo=UTC),
                 reason="exit",
             ),
         ]
@@ -910,29 +915,29 @@ class TestRoundTrips:
         assert trip["exit_reason"] == "exit"
 
     def test_unclosed_position_excluded(self, service):
-        from datetime import datetime, timezone
+        from datetime import datetime
         trades = [
             self._trade(id=1, side="buy", quantity=Decimal("10"),
-                        executed_at=datetime(2026, 4, 1, tzinfo=timezone.utc)),
+                        executed_at=datetime(2026, 4, 1, tzinfo=UTC)),
             self._trade(id=2, side="sell", quantity=Decimal("4"),
                         realized_pnl=Decimal("40000"),
-                        executed_at=datetime(2026, 4, 3, tzinfo=timezone.utc)),
+                        executed_at=datetime(2026, 4, 3, tzinfo=UTC)),
         ]
         assert service._build_round_trips(trades) == []
 
     def test_multiple_symbols_grouped_independently(self, service):
-        from datetime import datetime, timezone
+        from datetime import datetime
         trades = [
             self._trade(id=1, symbol="A", side="buy",
-                        executed_at=datetime(2026, 4, 1, tzinfo=timezone.utc)),
+                        executed_at=datetime(2026, 4, 1, tzinfo=UTC)),
             self._trade(id=2, symbol="B", side="buy",
-                        executed_at=datetime(2026, 4, 1, tzinfo=timezone.utc)),
+                        executed_at=datetime(2026, 4, 1, tzinfo=UTC)),
             self._trade(id=3, symbol="A", side="sell",
                         realized_pnl=Decimal("100"),
-                        executed_at=datetime(2026, 4, 2, tzinfo=timezone.utc)),
+                        executed_at=datetime(2026, 4, 2, tzinfo=UTC)),
             self._trade(id=4, symbol="B", side="sell",
                         realized_pnl=Decimal("-50"),
-                        executed_at=datetime(2026, 4, 3, tzinfo=timezone.utc)),
+                        executed_at=datetime(2026, 4, 3, tzinfo=UTC)),
         ]
         trips = service._build_round_trips(trades)
         assert {t["symbol"] for t in trips} == {"A", "B"}
@@ -971,7 +976,6 @@ class TestCalculatePerformance:
 
     @pytest.mark.asyncio
     async def test_full_performance_all_period(self, service, mock_db, monkeypatch):
-        from datetime import timezone
         account = PaperAccount(
             id=1, name="A",
             initial_capital=Decimal("10000000"),
@@ -999,7 +1003,7 @@ class TestCalculatePerformance:
                 quantity=Decimal("10"), price=Decimal("60000"),
                 total_amount=Decimal("600000"), fee=Decimal("90"),
                 currency="KRW", reason=None, realized_pnl=None,
-                executed_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
+                executed_at=datetime(2026, 4, 1, tzinfo=UTC),
             ),
             PaperTrade(
                 id=2, account_id=1, symbol="A",
@@ -1009,7 +1013,7 @@ class TestCalculatePerformance:
                 total_amount=Decimal("700000"), fee=Decimal("1365"),
                 currency="KRW", reason=None,
                 realized_pnl=Decimal("98635"),
-                executed_at=datetime(2026, 4, 6, tzinfo=timezone.utc),
+                executed_at=datetime(2026, 4, 6, tzinfo=UTC),
             ),
         ]
         scalars_trades = MagicMock()

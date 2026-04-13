@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -183,7 +183,7 @@ async def test_get_paper_trade_log_basic(monkeypatch):
             "quantity": Decimal("10"), "price": Decimal("60000"),
             "total_amount": Decimal("600000"), "fee": Decimal("90"),
             "currency": "KRW", "reason": "entry", "realized_pnl": None,
-            "executed_at": datetime(2026, 4, 1, 9, 0, tzinfo=timezone.utc),
+            "executed_at": datetime(2026, 4, 1, 9, 0, tzinfo=UTC),
         },
     ]
 

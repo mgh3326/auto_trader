@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -11,7 +11,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.timezone import now_kst
-from app.models.paper_trading import PaperAccount, PaperDailySnapshot, PaperPosition, PaperTrade
+from app.models.paper_trading import (
+    PaperAccount,
+    PaperDailySnapshot,
+    PaperPosition,
+    PaperTrade,
+)
 from app.models.trading import InstrumentType
 from app.services.brokers.upbit.client import fetch_multiple_current_prices
 
@@ -796,14 +801,12 @@ class PaperTradingService:
         # Trades in period
         trade_stmt = select(PaperTrade).where(PaperTrade.account_id == account_id)
         if start_date is not None:
-            from datetime import timezone as _tz
             trade_stmt = trade_stmt.where(
-                PaperTrade.executed_at >= datetime.combine(start_date, datetime.min.time(), tzinfo=_tz.utc)
+                PaperTrade.executed_at >= datetime.combine(start_date, datetime.min.time(), tzinfo=UTC)
             )
         if end_date is not None:
-            from datetime import timezone as _tz
             trade_stmt = trade_stmt.where(
-                PaperTrade.executed_at <= datetime.combine(end_date, datetime.max.time(), tzinfo=_tz.utc)
+                PaperTrade.executed_at <= datetime.combine(end_date, datetime.max.time(), tzinfo=UTC)
             )
         trade_stmt = trade_stmt.order_by(PaperTrade.executed_at.asc())
         trades = list((await self.db.execute(trade_stmt)).scalars().all())
