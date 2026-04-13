@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import logging
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, cast
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
 from app.models.paper_trading import PaperAccount
+from app.services.paper_trading_service import PaperTradingService
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
+
+logger = logging.getLogger(__name__)
 
 PAPER_ACCOUNT_TOOL_NAMES: set[str] = {
     "create_paper_account",
@@ -58,7 +63,12 @@ def _serialize_account(
 def register_paper_account_tools(mcp: FastMCP) -> None:
     @mcp.tool(
         name="create_paper_account",
-        description="Create a new paper trading account (stub).",
+        description=(
+            "Create a new paper trading (모의투자) account. "
+            "initial_capital is the KRW opening balance (default 100,000,000 KRW = 1억). "
+            "initial_capital_usd adds a separate USD cash balance for US equity simulation. "
+            "Account name must be unique."
+        ),
     )
     async def create_paper_account(
         name: str,
@@ -66,7 +76,23 @@ def register_paper_account_tools(mcp: FastMCP) -> None:
         initial_capital_usd: float = 0.0,
         description: str | None = None,
     ) -> dict[str, Any]:
-        raise NotImplementedError
+        try:
+            async with _session_factory()() as db:
+                service = PaperTradingService(db)
+                account = await service.create_account(
+                    name=name,
+                    initial_capital_krw=Decimal(str(initial_capital)),
+                    initial_capital_usd=Decimal(str(initial_capital_usd)),
+                    description=description,
+                )
+                return {"success": True, "account": _serialize_account(account)}
+        except IntegrityError:
+            return {
+                "success": False,
+                "error": f"Paper account '{name}' already exists",
+            }
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
 
     @mcp.tool(
         name="list_paper_accounts",
