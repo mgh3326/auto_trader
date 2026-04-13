@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
@@ -10,6 +10,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    Date,
     Enum,
     ForeignKey,
     Index,
@@ -134,5 +135,36 @@ class PaperTrade(Base):
     reason: Mapped[str | None] = mapped_column(Text)
     realized_pnl: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
     executed_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+# ---------------------------------------------------------------------------
+# paper.paper_daily_snapshots — daily portfolio equity snapshots
+# ---------------------------------------------------------------------------
+class PaperDailySnapshot(Base):
+    __tablename__ = "paper_daily_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "account_id", "snapshot_date",
+            name="uq_paper_daily_snapshots_account_date",
+        ),
+        Index("ix_paper_daily_snapshots_account_date", "account_id", "snapshot_date"),
+        {"schema": "paper"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    account_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("paper.paper_accounts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    snapshot_date: Mapped[date] = mapped_column(Date, nullable=False)
+    cash_krw: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    cash_usd: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    positions_value: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    total_equity: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
+    daily_return_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
     )
