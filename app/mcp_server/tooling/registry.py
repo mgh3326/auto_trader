@@ -12,6 +12,9 @@ from app.mcp_server.tooling.orders_registration import register_order_tools
 from app.mcp_server.tooling.paper_account_registration import (
     register_paper_account_tools,
 )
+from app.mcp_server.tooling.paper_analytics_registration import (
+    register_paper_analytics_tools,
+)
 from app.mcp_server.tooling.paper_journal_registration import (
     register_paper_journal_tools,
 )
@@ -45,6 +48,7 @@ def register_all_tools(mcp: FastMCP) -> None:
     register_news_tools(mcp)
     register_trade_journal_tools(mcp)
     register_paper_account_tools(mcp)
+    register_paper_analytics_tools(mcp)
     register_paper_journal_tools(mcp)
 
 

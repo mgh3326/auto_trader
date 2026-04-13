@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -11,7 +11,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.timezone import now_kst
-from app.models.paper_trading import PaperAccount, PaperPosition, PaperTrade
+from app.models.paper_trading import (
+    PaperAccount,
+    PaperDailySnapshot,
+    PaperPosition,
+    PaperTrade,
+)
 from app.models.trading import InstrumentType
 from app.services.brokers.upbit.client import fetch_multiple_current_prices
 
@@ -169,6 +174,7 @@ class PaperTradingService:
             from app.mcp_server.tooling.market_data_quotes import (
                 _fetch_quote_equity_us,
             )
+
 
             quote = await _fetch_quote_equity_us(symbol)
             price = quote.get("price")
@@ -468,6 +474,19 @@ class PaperTradingService:
             out.append(item)
         return out
 
+    async def get_position(self, account_id: int, symbol: str) -> dict[str, Any] | None:
+        from app.mcp_server.tooling.shared import resolve_market_type
+
+        resolved_symbol = resolve_market_type(symbol, None)[1]
+        pos = await self._get_position(account_id, resolved_symbol)
+        if pos is None:
+            return None
+        positions = await self.get_positions(account_id=account_id)
+        for item in positions:
+            if item["symbol"] == resolved_symbol:
+                return item
+        return None
+
     async def get_cash_balance(self, account_id: int) -> dict[str, Decimal]:
         account = await self.get_account(account_id)
         if account is None:
@@ -546,3 +565,292 @@ class PaperTradingService:
             "total_pnl_pct": total_pnl_pct,
             "positions_count": len(positions),
         }
+
+
+    # ------------------------------------------------------------------ #
+    # Daily snapshot
+    # ------------------------------------------------------------------ #
+    async def _evaluate_positions_value(self, account_id: int) -> Decimal:
+        """Sum evaluation_amount across live positions (raw KRW+USD)."""
+        positions = await self.get_positions(account_id=account_id)
+        total = Decimal("0")
+        for p in positions:
+            eval_amt = p.get("evaluation_amount")
+            if eval_amt is not None:
+                total += Decimal(str(eval_amt))
+        return _q_money(total)
+
+    async def record_daily_snapshot(self, account_id: int) -> PaperDailySnapshot:
+        account = await self.get_account(account_id)
+        if account is None:
+            raise ValueError(f"Account {account_id} not found")
+
+        today = now_kst().date()
+
+        existing_today = (
+            await self.db.execute(
+                select(PaperDailySnapshot).where(
+                    PaperDailySnapshot.account_id == account_id,
+                    PaperDailySnapshot.snapshot_date == today,
+                )
+            )
+        ).scalar_one_or_none()
+
+        positions_value = await self._evaluate_positions_value(account_id)
+        total_equity = _q_money(account.cash_krw + account.cash_usd + positions_value)
+
+        prior = (
+            await self.db.execute(
+                select(PaperDailySnapshot)
+                .where(
+                    PaperDailySnapshot.account_id == account_id,
+                    PaperDailySnapshot.snapshot_date < today,
+                )
+                .order_by(PaperDailySnapshot.snapshot_date.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
+        daily_return_pct: Decimal | None = None
+        if prior is not None and prior.total_equity > 0:
+            daily_return_pct = (
+                (total_equity / prior.total_equity - Decimal("1")) * Decimal("100")
+            ).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+
+        if existing_today is None:
+            snapshot = PaperDailySnapshot(
+                account_id=account_id,
+                snapshot_date=today,
+                cash_krw=account.cash_krw,
+                cash_usd=account.cash_usd,
+                positions_value=positions_value,
+                total_equity=total_equity,
+                daily_return_pct=daily_return_pct,
+            )
+            self.db.add(snapshot)
+        else:
+            existing_today.cash_krw = account.cash_krw
+            existing_today.cash_usd = account.cash_usd
+            existing_today.positions_value = positions_value
+            existing_today.total_equity = total_equity
+            existing_today.daily_return_pct = daily_return_pct
+            snapshot = existing_today
+
+        await self.db.commit()
+        return snapshot
+
+    async def calculate_daily_returns(
+        self,
+        account_id: int,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> list[dict[str, Any]]:
+        stmt = select(PaperDailySnapshot).where(
+            PaperDailySnapshot.account_id == account_id
+        )
+        if start_date is not None:
+            stmt = stmt.where(PaperDailySnapshot.snapshot_date >= start_date)
+        if end_date is not None:
+            stmt = stmt.where(PaperDailySnapshot.snapshot_date <= end_date)
+        stmt = stmt.order_by(PaperDailySnapshot.snapshot_date.asc())
+
+        result = await self.db.execute(stmt)
+        snaps = list(result.scalars().all())
+        return [
+            {
+                "date": s.snapshot_date.isoformat(),
+                "total_equity": s.total_equity,
+                "daily_return_pct": s.daily_return_pct,
+            }
+            for s in snaps
+        ]
+
+    # ------------------------------------------------------------------ #
+    # Performance analytics helpers
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _build_round_trips(trades: list[PaperTrade]) -> list[dict[str, Any]]:
+        """Group raw trades into round trips per symbol until position is flat.
+        Excludes open (unclosed) trips."""
+        from collections import defaultdict
+
+        grouped: dict[str, list[tuple[int, PaperTrade]]] = defaultdict(list)
+        for idx, t in enumerate(trades):
+            grouped[t.symbol].append((idx, t))
+
+        round_trips: list[dict[str, Any]] = []
+        for symbol, indexed in grouped.items():
+            indexed.sort(key=lambda item: (item[1].executed_at, item[0]))
+            position_qty = Decimal("0")
+            buy_cost = Decimal("0")
+            total_pnl = Decimal("0")
+            entry_date: datetime | None = None
+            entry_reason = ""
+            last_exit_date: datetime | None = None
+            last_sell_reason = ""
+
+            for _, t in indexed:
+                qty = Decimal(t.quantity)
+                if t.side == "buy":
+                    if position_qty <= 0:
+                        entry_date = t.executed_at
+                        entry_reason = t.reason or ""
+                        buy_cost = Decimal("0")
+                        total_pnl = Decimal("0")
+                    position_qty += qty
+                    buy_cost += qty * Decimal(t.price) + Decimal(t.fee)
+                elif t.side == "sell" and position_qty > 0:
+                    position_qty -= qty
+                    total_pnl += Decimal(t.realized_pnl or 0)
+                    last_exit_date = t.executed_at
+                    last_sell_reason = t.reason or ""
+
+                    if position_qty <= 0 and entry_date is not None and last_exit_date is not None:
+                        holding_days = (last_exit_date.date() - entry_date.date()).days
+                        return_pct = (
+                            float(total_pnl / buy_cost * Decimal("100"))
+                            if buy_cost > 0 else 0.0
+                        )
+                        round_trips.append({
+                            "symbol": symbol,
+                            "entry_date": entry_date.isoformat(),
+                            "exit_date": last_exit_date.isoformat(),
+                            "holding_days": max(holding_days, 0),
+                            "pnl": float(total_pnl),
+                            "return_pct": return_pct,
+                            "entry_reason": entry_reason,
+                            "exit_reason": last_sell_reason,
+                        })
+                        position_qty = Decimal("0")
+                        buy_cost = Decimal("0")
+                        total_pnl = Decimal("0")
+                        entry_date = None
+                        entry_reason = ""
+                        last_exit_date = None
+                        last_sell_reason = ""
+
+        round_trips.sort(key=lambda trip: (trip["exit_date"], trip["symbol"]))
+        return round_trips
+
+    @staticmethod
+    def _calc_max_drawdown_pct(equity_curve: list[Decimal]) -> float | None:
+        if not equity_curve:
+            return None
+        peak = equity_curve[0]
+        max_dd = Decimal("0")
+        for v in equity_curve:
+            if v > peak:
+                peak = v
+            if peak > 0:
+                dd = (peak - v) / peak
+                if dd > max_dd:
+                    max_dd = dd
+        return float(max_dd * Decimal("100"))
+
+    @staticmethod
+    def _calc_sharpe_ratio(daily_returns_pct: list[Decimal]) -> float | None:
+        """Annualised Sharpe ratio (252 trading days). Assumes 0% risk-free rate."""
+        import math
+        values = [float(r) for r in daily_returns_pct if r is not None]
+        if len(values) < 2:
+            return None
+        mean = sum(values) / len(values)
+        variance = sum((v - mean) ** 2 for v in values) / (len(values) - 1)
+        stdev = math.sqrt(variance)
+        if stdev == 0:
+            return None
+        return (mean / stdev) * math.sqrt(252)
+
+
+    async def calculate_performance(
+        self,
+        account_id: int,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> dict[str, Any]:
+        account = await self.get_account(account_id)
+        if account is None:
+            raise ValueError(f"Account {account_id} not found")
+
+        # Current equity (always "now")
+        positions_value = await self._evaluate_positions_value(account_id)
+        total_equity = account.cash_krw + account.cash_usd + positions_value
+        initial = Decimal(account.initial_capital)
+        total_return_pct = (
+            float((total_equity - initial) / initial * Decimal("100"))
+            if initial > 0
+            else 0.0
+        )
+
+        # Unrealized pnl — sum across live positions
+        positions = await self.get_positions(account_id=account_id)
+        unrealized = Decimal("0")
+        for p in positions:
+            val = p.get("unrealized_pnl")
+            if val is not None:
+                unrealized += Decimal(str(val))
+
+        # Trades in period
+        trade_stmt = select(PaperTrade).where(PaperTrade.account_id == account_id)
+        if start_date is not None:
+            trade_stmt = trade_stmt.where(
+                PaperTrade.executed_at >= datetime.combine(start_date, datetime.min.time(), tzinfo=UTC)
+            )
+        if end_date is not None:
+            trade_stmt = trade_stmt.where(
+                PaperTrade.executed_at <= datetime.combine(end_date, datetime.max.time(), tzinfo=UTC)
+            )
+        trade_stmt = trade_stmt.order_by(PaperTrade.executed_at.asc())
+        trades = list((await self.db.execute(trade_stmt)).scalars().all())
+
+        realized = sum(
+            (Decimal(t.realized_pnl) for t in trades if t.realized_pnl is not None),
+            Decimal("0"),
+        )
+
+        round_trips = self._build_round_trips(trades)
+        total_trips = len(round_trips)
+        wins = sum(1 for trip in round_trips if trip["pnl"] > 0)
+        win_rate = (wins / total_trips * 100.0) if total_trips > 0 else 0.0
+        avg_holding_days = (
+            sum(trip["holding_days"] for trip in round_trips) / total_trips
+            if total_trips > 0 else 0.0
+        )
+        best_trip = max(round_trips, key=lambda t: t["return_pct"]) if round_trips else None
+        worst_trip = min(round_trips, key=lambda t: t["return_pct"]) if round_trips else None
+
+        # Snapshots in period → sharpe + max drawdown
+        snap_stmt = select(PaperDailySnapshot).where(
+            PaperDailySnapshot.account_id == account_id
+        )
+        if start_date is not None:
+            snap_stmt = snap_stmt.where(PaperDailySnapshot.snapshot_date >= start_date)
+        if end_date is not None:
+            snap_stmt = snap_stmt.where(PaperDailySnapshot.snapshot_date <= end_date)
+        snap_stmt = snap_stmt.order_by(PaperDailySnapshot.snapshot_date.asc())
+        snaps = list((await self.db.execute(snap_stmt)).scalars().all())
+
+        equity_curve = [s.total_equity for s in snaps]
+        daily_returns = [s.daily_return_pct for s in snaps if s.daily_return_pct is not None]
+        max_dd = self._calc_max_drawdown_pct(equity_curve) if equity_curve else None
+        sharpe = self._calc_sharpe_ratio(daily_returns) if daily_returns else None
+
+        return {
+            "total_return_pct": round(total_return_pct, 4),
+            "realized_pnl": float(realized),
+            "unrealized_pnl": float(unrealized),
+            "total_trades": total_trips,
+            "win_rate": round(win_rate, 2),
+            "avg_holding_days": round(avg_holding_days, 2),
+            "max_drawdown_pct": round(max_dd, 4) if max_dd is not None else None,
+            "sharpe_ratio": round(sharpe, 4) if sharpe is not None else None,
+            "best_trade": best_trip,
+            "worst_trade": worst_trip,
+        }
+
+
+__all__ = [
+    "FEE_RATES",
+    "calculate_fee",
+    "PaperTradingService",
+]

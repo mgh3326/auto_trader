@@ -100,3 +100,23 @@ class TestPaperTradeModel:
     def test_table_args(self) -> None:
         assert PaperTrade.__table_args__[-1] == {"schema": "paper"}
         assert PaperTrade.__tablename__ == "paper_trades"
+
+
+def test_paper_daily_snapshot_constructor() -> None:
+    from datetime import date
+    from decimal import Decimal
+
+    from app.models.paper_trading import PaperDailySnapshot
+
+    snap = PaperDailySnapshot(
+        account_id=1,
+        snapshot_date=date(2026, 4, 13),
+        cash_krw=Decimal("1000000"),
+        cash_usd=Decimal("0"),
+        positions_value=Decimal("500000"),
+        total_equity=Decimal("1500000"),
+        daily_return_pct=Decimal("0.25"),
+    )
+    assert snap.account_id == 1
+    assert snap.total_equity == Decimal("1500000")
+    assert snap.daily_return_pct == Decimal("0.25")
