@@ -138,6 +138,62 @@ def register_paper_analytics_tools(mcp: FastMCP) -> None:
             ]
             return {"success": True, "account_name": name, "trades": trades}
 
+    @mcp.tool(
+        name="compare_paper_accounts",
+        description=(
+            "Side-by-side performance comparison for multiple paper accounts. "
+            "Runs calculate_performance against each name and returns a list. "
+            "Missing accounts appear with performance=null and an error message. "
+            "period ∈ {1d, 1w, 1m, 3m, all}, defaults to 'all'."
+        ),
+    )
+    async def compare_paper_accounts(
+        names: list[str],
+        period: str = "all",
+    ) -> dict[str, Any]:
+        if not names:
+            return {
+                "success": False,
+                "error": "Provide at least one account name",
+            }
+
+        try:
+            today = now_kst().date()
+            start = _parse_period(period, today)
+            end = None if period == "all" else today
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
+
+        comparison: list[dict[str, Any]] = []
+        async with _session_factory()() as db:
+            service = PaperTradingService(db)
+            for account_name in names:
+                account = await service.get_account_by_name(account_name)
+                if account is None:
+                    comparison.append({
+                        "account_name": account_name,
+                        "performance": None,
+                        "error": f"Paper account '{account_name}' not found",
+                    })
+                    continue
+                try:
+                    perf = await service.calculate_performance(
+                        account_id=account.id, start_date=start, end_date=end
+                    )
+                    comparison.append({
+                        "account_name": account_name,
+                        "performance": perf,
+                        "error": None,
+                    })
+                except ValueError as exc:
+                    comparison.append({
+                        "account_name": account_name,
+                        "performance": None,
+                        "error": str(exc),
+                    })
+
+        return {"success": True, "period": period, "comparison": comparison}
+
 
 __all__ = [
     "PAPER_ANALYTICS_TOOL_NAMES",
