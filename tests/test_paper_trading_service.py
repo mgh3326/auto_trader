@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
@@ -962,4 +962,141 @@ class TestRiskMetrics:
 
     def test_sharpe_requires_at_least_two(self):
         assert PaperTradingService._calc_sharpe_ratio([Decimal("1.0")]) is None
+
+
+class TestCalculatePerformance:
+    @pytest.fixture
+    def service(self, mock_db):
+        return PaperTradingService(mock_db)
+
+    @pytest.mark.asyncio
+    async def test_full_performance_all_period(self, service, mock_db, monkeypatch):
+        from datetime import timezone
+        account = PaperAccount(
+            id=1, name="A",
+            initial_capital=Decimal("10000000"),
+            cash_krw=Decimal("5000000"),
+            cash_usd=Decimal("0"),
+            is_active=True,
+        )
+        monkeypatch.setattr(service, "get_account", AsyncMock(return_value=account))
+        monkeypatch.setattr(
+            service, "_evaluate_positions_value", AsyncMock(return_value=Decimal("6000000"))
+        )
+        monkeypatch.setattr(
+            service, "get_positions",
+            AsyncMock(return_value=[
+                {"unrealized_pnl": Decimal("500000")},
+                {"unrealized_pnl": Decimal("-100000")},
+            ]),
+        )
+
+        trades = [
+            PaperTrade(
+                id=1, account_id=1, symbol="A",
+                instrument_type=InstrumentType.equity_kr,
+                side="buy", order_type="market",
+                quantity=Decimal("10"), price=Decimal("60000"),
+                total_amount=Decimal("600000"), fee=Decimal("90"),
+                currency="KRW", reason=None, realized_pnl=None,
+                executed_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
+            ),
+            PaperTrade(
+                id=2, account_id=1, symbol="A",
+                instrument_type=InstrumentType.equity_kr,
+                side="sell", order_type="market",
+                quantity=Decimal("10"), price=Decimal("70000"),
+                total_amount=Decimal("700000"), fee=Decimal("1365"),
+                currency="KRW", reason=None,
+                realized_pnl=Decimal("98635"),
+                executed_at=datetime(2026, 4, 6, tzinfo=timezone.utc),
+            ),
+        ]
+        scalars_trades = MagicMock()
+        scalars_trades.all.return_value = trades
+        trade_result = MagicMock()
+        trade_result.scalars.return_value = scalars_trades
+
+        snaps = [
+            PaperDailySnapshot(
+                id=1, account_id=1, snapshot_date=date(2026, 4, 1),
+                cash_krw=Decimal("0"), cash_usd=Decimal("0"),
+                positions_value=Decimal("0"),
+                total_equity=Decimal("10000000"), daily_return_pct=None,
+            ),
+            PaperDailySnapshot(
+                id=2, account_id=1, snapshot_date=date(2026, 4, 2),
+                cash_krw=Decimal("0"), cash_usd=Decimal("0"),
+                positions_value=Decimal("0"),
+                total_equity=Decimal("10100000"),
+                daily_return_pct=Decimal("1.0"),
+            ),
+            PaperDailySnapshot(
+                id=3, account_id=1, snapshot_date=date(2026, 4, 3),
+                cash_krw=Decimal("0"), cash_usd=Decimal("0"),
+                positions_value=Decimal("0"),
+                total_equity=Decimal("9950000"),
+                daily_return_pct=Decimal("-1.49"),
+            ),
+        ]
+        snap_scalars = MagicMock()
+        snap_scalars.all.return_value = snaps
+        snap_result = MagicMock()
+        snap_result.scalars.return_value = snap_scalars
+
+        mock_db.execute = AsyncMock(side_effect=[trade_result, snap_result])
+
+        perf = await service.calculate_performance(account_id=1)
+
+        assert perf["total_return_pct"] == 10.0
+        assert perf["realized_pnl"] == 98635.0
+        assert perf["unrealized_pnl"] == 400000.0
+        assert perf["total_trades"] == 1
+        assert perf["win_rate"] == 100.0
+        assert perf["avg_holding_days"] == 5.0
+        assert perf["max_drawdown_pct"] is not None
+        assert round(perf["max_drawdown_pct"], 2) == 1.49
+        assert perf["sharpe_ratio"] is not None
+        assert perf["best_trade"] is not None
+        assert perf["best_trade"]["symbol"] == "A"
+        assert perf["worst_trade"] is not None
+
+    @pytest.mark.asyncio
+    async def test_performance_no_trades_returns_zero_rates(
+        self, service, mock_db, monkeypatch
+    ):
+        account = PaperAccount(
+            id=1, name="A",
+            initial_capital=Decimal("10000000"),
+            cash_krw=Decimal("10000000"),
+            cash_usd=Decimal("0"),
+            is_active=True,
+        )
+        monkeypatch.setattr(service, "get_account", AsyncMock(return_value=account))
+        monkeypatch.setattr(
+            service, "_evaluate_positions_value", AsyncMock(return_value=Decimal("0"))
+        )
+        monkeypatch.setattr(service, "get_positions", AsyncMock(return_value=[]))
+
+        empty = MagicMock()
+        empty.scalars.return_value = MagicMock(all=MagicMock(return_value=[]))
+        mock_db.execute = AsyncMock(return_value=empty)
+
+        perf = await service.calculate_performance(account_id=1)
+        assert perf["total_return_pct"] == 0.0
+        assert perf["realized_pnl"] == 0.0
+        assert perf["unrealized_pnl"] == 0.0
+        assert perf["total_trades"] == 0
+        assert perf["win_rate"] == 0.0
+        assert perf["avg_holding_days"] == 0.0
+        assert perf["max_drawdown_pct"] is None
+        assert perf["sharpe_ratio"] is None
+        assert perf["best_trade"] is None
+        assert perf["worst_trade"] is None
+
+    @pytest.mark.asyncio
+    async def test_performance_missing_account_raises(self, service, monkeypatch):
+        monkeypatch.setattr(service, "get_account", AsyncMock(return_value=None))
+        with pytest.raises(ValueError, match="Account 99 not found"):
+            await service.calculate_performance(account_id=99)
         assert PaperTradingService._calc_sharpe_ratio([]) is None

@@ -765,6 +765,95 @@ class PaperTradingService:
         return (mean / stdev) * math.sqrt(252)
 
 
+    async def calculate_performance(
+        self,
+        account_id: int,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> dict[str, Any]:
+        account = await self.get_account(account_id)
+        if account is None:
+            raise ValueError(f"Account {account_id} not found")
+
+        # Current equity (always "now")
+        positions_value = await self._evaluate_positions_value(account_id)
+        total_equity = account.cash_krw + account.cash_usd + positions_value
+        initial = Decimal(account.initial_capital)
+        total_return_pct = (
+            float((total_equity - initial) / initial * Decimal("100"))
+            if initial > 0
+            else 0.0
+        )
+
+        # Unrealized pnl — sum across live positions
+        positions = await self.get_positions(account_id=account_id)
+        unrealized = Decimal("0")
+        for p in positions:
+            val = p.get("unrealized_pnl")
+            if val is not None:
+                unrealized += Decimal(str(val))
+
+        # Trades in period
+        trade_stmt = select(PaperTrade).where(PaperTrade.account_id == account_id)
+        if start_date is not None:
+            from datetime import timezone as _tz
+            trade_stmt = trade_stmt.where(
+                PaperTrade.executed_at >= datetime.combine(start_date, datetime.min.time(), tzinfo=_tz.utc)
+            )
+        if end_date is not None:
+            from datetime import timezone as _tz
+            trade_stmt = trade_stmt.where(
+                PaperTrade.executed_at <= datetime.combine(end_date, datetime.max.time(), tzinfo=_tz.utc)
+            )
+        trade_stmt = trade_stmt.order_by(PaperTrade.executed_at.asc())
+        trades = list((await self.db.execute(trade_stmt)).scalars().all())
+
+        realized = sum(
+            (Decimal(t.realized_pnl) for t in trades if t.realized_pnl is not None),
+            Decimal("0"),
+        )
+
+        round_trips = self._build_round_trips(trades)
+        total_trips = len(round_trips)
+        wins = sum(1 for trip in round_trips if trip["pnl"] > 0)
+        win_rate = (wins / total_trips * 100.0) if total_trips > 0 else 0.0
+        avg_holding_days = (
+            sum(trip["holding_days"] for trip in round_trips) / total_trips
+            if total_trips > 0 else 0.0
+        )
+        best_trip = max(round_trips, key=lambda t: t["return_pct"]) if round_trips else None
+        worst_trip = min(round_trips, key=lambda t: t["return_pct"]) if round_trips else None
+
+        # Snapshots in period → sharpe + max drawdown
+        snap_stmt = select(PaperDailySnapshot).where(
+            PaperDailySnapshot.account_id == account_id
+        )
+        if start_date is not None:
+            snap_stmt = snap_stmt.where(PaperDailySnapshot.snapshot_date >= start_date)
+        if end_date is not None:
+            snap_stmt = snap_stmt.where(PaperDailySnapshot.snapshot_date <= end_date)
+        snap_stmt = snap_stmt.order_by(PaperDailySnapshot.snapshot_date.asc())
+        snaps = list((await self.db.execute(snap_stmt)).scalars().all())
+
+        equity_curve = [s.total_equity for s in snaps]
+        daily_returns = [s.daily_return_pct for s in snaps if s.daily_return_pct is not None]
+        max_dd = self._calc_max_drawdown_pct(equity_curve) if equity_curve else None
+        sharpe = self._calc_sharpe_ratio(daily_returns) if daily_returns else None
+
+        return {
+            "total_return_pct": round(total_return_pct, 4),
+            "realized_pnl": float(realized),
+            "unrealized_pnl": float(unrealized),
+            "total_trades": total_trips,
+            "win_rate": round(win_rate, 2),
+            "avg_holding_days": round(avg_holding_days, 2),
+            "max_drawdown_pct": round(max_dd, 4) if max_dd is not None else None,
+            "sharpe_ratio": round(sharpe, 4) if sharpe is not None else None,
+            "best_trade": best_trip,
+            "worst_trade": worst_trip,
+        }
+
+
 __all__ = [
     "FEE_RATES",
     "calculate_fee",
