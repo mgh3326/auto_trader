@@ -299,3 +299,129 @@ class TestPreviewOrder:
                 account_id=1, symbol="005930",
                 side="buy", order_type="limit", quantity=Decimal("1"),
             )
+
+
+class TestExecuteOrderBuy:
+    @pytest.fixture
+    def account(self):
+        return PaperAccount(
+            id=1, name="A",
+            initial_capital=Decimal("10000000"),
+            cash_krw=Decimal("10000000"),
+            cash_usd=Decimal("0"),
+            is_active=True,
+        )
+
+    @pytest.fixture
+    def service(self, mock_db, account, monkeypatch):
+        svc = PaperTradingService(mock_db)
+        monkeypatch.setattr(svc, "get_account", AsyncMock(return_value=account))
+        monkeypatch.setattr(
+            svc, "_fetch_current_price", AsyncMock(return_value=Decimal("70000"))
+        )
+        return svc
+
+    @pytest.mark.asyncio
+    async def test_buy_creates_position_and_debits_cash(
+        self, service, account, mock_db, monkeypatch
+    ):
+        # No existing position
+        monkeypatch.setattr(
+            service, "_get_position", AsyncMock(return_value=None)
+        )
+
+        result = await service.execute_order(
+            account_id=1, symbol="005930",
+            side="buy", order_type="market",
+            amount=Decimal("1400000"),
+            reason="test buy",
+        )
+
+        assert result["success"] is True
+        assert result["dry_run"] is False
+        exec_ = result["execution"]
+        assert exec_["quantity"] == Decimal("20")
+        assert exec_["price"] == Decimal("70000")
+        # cash after: 10,000,000 - (1,400,000 + 210)
+        assert account.cash_krw == Decimal("8599790.0000")
+        # PaperPosition + PaperTrade were added
+        assert mock_db.add.call_count == 2
+        added = [c.args[0] for c in mock_db.add.call_args_list]
+        assert any(isinstance(x, PaperPosition) for x in added)
+        trade = next(x for x in added if isinstance(x, PaperTrade))
+        assert trade.side == "buy"
+        assert trade.quantity == Decimal("20")
+        assert trade.total_amount == Decimal("1400000.0000")
+        assert trade.fee == Decimal("210.0000")
+        assert trade.reason == "test buy"
+        mock_db.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_buy_insufficient_cash_raises_no_commit(
+        self, service, account, mock_db, monkeypatch
+    ):
+        account.cash_krw = Decimal("100000")  # not enough
+        monkeypatch.setattr(
+            service, "_get_position", AsyncMock(return_value=None)
+        )
+
+        with pytest.raises(ValueError, match="Insufficient KRW balance"):
+            await service.execute_order(
+                account_id=1, symbol="005930",
+                side="buy", order_type="market",
+                amount=Decimal("1400000"),
+            )
+        mock_db.commit.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_buy_additional_updates_weighted_avg(
+        self, service, account, mock_db, monkeypatch
+    ):
+        existing = PaperPosition(
+            id=10, account_id=1, symbol="005930",
+            instrument_type=InstrumentType.equity_kr,
+            quantity=Decimal("10"),
+            avg_price=Decimal("60000"),
+            total_invested=Decimal("600000"),
+        )
+        monkeypatch.setattr(
+            service, "_get_position", AsyncMock(return_value=existing)
+        )
+
+        await service.execute_order(
+            account_id=1, symbol="005930",
+            side="buy", order_type="limit",
+            quantity=Decimal("10"), price=Decimal("70000"),
+        )
+
+        # weighted avg: (10*60000 + 10*70000) / 20 = 65000
+        assert existing.quantity == Decimal("20")
+        assert existing.avg_price == Decimal("65000")
+        assert existing.total_invested == Decimal("1300000.0000")
+        # Only PaperTrade appended (position already existed)
+        added = [c.args[0] for c in mock_db.add.call_args_list]
+        assert sum(1 for x in added if isinstance(x, PaperTrade)) == 1
+        assert sum(1 for x in added if isinstance(x, PaperPosition)) == 0
+
+    @pytest.mark.asyncio
+    async def test_buy_usd_debits_usd_cash(self, mock_db, monkeypatch):
+        account = PaperAccount(
+            id=1, name="US", initial_capital=Decimal("10000"),
+            cash_krw=Decimal("0"), cash_usd=Decimal("10000"),
+            is_active=True,
+        )
+        svc = PaperTradingService(mock_db)
+        monkeypatch.setattr(svc, "get_account", AsyncMock(return_value=account))
+        monkeypatch.setattr(
+            svc, "_fetch_current_price", AsyncMock(return_value=Decimal("100"))
+        )
+        monkeypatch.setattr(svc, "_get_position", AsyncMock(return_value=None))
+
+        await svc.execute_order(
+            account_id=1, symbol="AAPL",
+            side="buy", order_type="market",
+            quantity=Decimal("10"),
+        )
+        # gross 1000, fee = max(1000*0.0007, 1) = 1.0
+        assert account.cash_usd == Decimal("8999.0000")
+        assert account.cash_krw == Decimal("0")

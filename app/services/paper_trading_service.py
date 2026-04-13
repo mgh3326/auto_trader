@@ -273,6 +273,138 @@ class PaperTradingService:
             },
         }
 
+    # ------------------------------------------------------------------ #
+    # Internal position lookup
+    # ------------------------------------------------------------------ #
+    async def _get_position(
+        self, account_id: int, symbol: str
+    ) -> PaperPosition | None:
+        result = await self.db.execute(
+            select(PaperPosition).where(
+                PaperPosition.account_id == account_id,
+                PaperPosition.symbol == symbol,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    # ------------------------------------------------------------------ #
+    # Order execution
+    # ------------------------------------------------------------------ #
+    async def execute_order(
+        self,
+        *,
+        account_id: int,
+        symbol: str,
+        side: str,
+        order_type: str,
+        quantity: Decimal | float | int | None = None,
+        price: Decimal | float | int | None = None,
+        amount: Decimal | float | int | None = None,
+        reason: str = "",
+    ) -> dict[str, Any]:
+        preview = await self.preview_order(
+            account_id=account_id,
+            symbol=symbol,
+            side=side,
+            order_type=order_type,
+            quantity=quantity,
+            price=price,
+            amount=amount,
+        )
+        p = preview["preview"]
+        account = await self.get_account(account_id)  # refresh (same row)
+        assert account is not None  # preview_order already validated
+
+        resolved_symbol = p["symbol"]
+        instrument_type = p["instrument_type"]
+        qty = p["quantity"]
+        fill_price = p["price"]
+        gross = p["gross"]
+        fee = p["fee"]
+        total_cost = p["total_cost"]
+        currency = p["currency"]
+
+        realized_pnl: Decimal | None = None
+
+        if side.lower() == "buy":
+            # Balance check
+            if currency == "USD":
+                if account.cash_usd < total_cost:
+                    raise ValueError(
+                        f"Insufficient USD balance: have {account.cash_usd}, "
+                        f"need {total_cost}"
+                    )
+                account.cash_usd = _q_money(account.cash_usd - total_cost)
+            else:
+                if account.cash_krw < total_cost:
+                    raise ValueError(
+                        f"Insufficient KRW balance: have {account.cash_krw}, "
+                        f"need {total_cost}"
+                    )
+                account.cash_krw = _q_money(account.cash_krw - total_cost)
+
+            # Upsert position with weighted-average cost (fee excluded from avg)
+            position = await self._get_position(account_id, resolved_symbol)
+            if position is None:
+                position = PaperPosition(
+                    account_id=account_id,
+                    symbol=resolved_symbol,
+                    instrument_type=InstrumentType(instrument_type),
+                    quantity=qty,
+                    avg_price=fill_price,
+                    total_invested=gross,
+                )
+                self.db.add(position)
+            else:
+                new_qty = position.quantity + qty
+                new_invested = position.total_invested + gross
+                position.avg_price = (new_invested / new_qty) if new_qty > 0 else Decimal("0")
+                position.quantity = new_qty
+                position.total_invested = _q_money(new_invested)
+        else:
+            # Sell path — implemented in Task 6
+            raise NotImplementedError("sell path implemented in Task 6")
+
+        trade = PaperTrade(
+            account_id=account_id,
+            symbol=resolved_symbol,
+            instrument_type=InstrumentType(instrument_type),
+            side=side.lower(),
+            order_type=order_type.lower(),
+            quantity=qty,
+            price=fill_price,
+            total_amount=gross,
+            fee=fee,
+            currency=currency,
+            reason=reason or None,
+            realized_pnl=realized_pnl,
+            executed_at=now_kst(),
+        )
+        self.db.add(trade)
+
+        await self.db.commit()
+
+        return {
+            "success": True,
+            "dry_run": False,
+            "account_id": account_id,
+            "preview": preview["preview"],
+            "execution": {
+                "symbol": resolved_symbol,
+                "instrument_type": instrument_type,
+                "side": side.lower(),
+                "order_type": order_type.lower(),
+                "quantity": qty,
+                "price": fill_price,
+                "gross": gross,
+                "fee": fee,
+                "total_cost": total_cost,
+                "currency": currency,
+                "realized_pnl": realized_pnl,
+                "executed_at": trade.executed_at,
+            },
+        }
+
 
 __all__ = [
     "FEE_RATES",
