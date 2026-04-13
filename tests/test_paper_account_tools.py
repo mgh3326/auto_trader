@@ -239,3 +239,47 @@ async def test_list_paper_accounts_is_active_false(monkeypatch) -> None:
 
     assert captured["is_active"] is False
     assert result == {"success": True, "accounts": []}
+
+
+@pytest.mark.asyncio
+async def test_reset_paper_account_success(monkeypatch) -> None:
+    db = AsyncMock()
+    _patch_session(monkeypatch, db)
+
+    acc = _make_account(id=7, name="reset-me")
+    reset_acc = _make_account(
+        id=7, name="reset-me", cash_krw=Decimal("100000000"), cash_usd=Decimal("0")
+    )
+
+    with patch(
+        "app.mcp_server.tooling.paper_account_registration.PaperTradingService"
+    ) as svc_cls:
+        svc = svc_cls.return_value
+        svc.get_account_by_name = AsyncMock(return_value=acc)
+        svc.reset_account = AsyncMock(return_value=reset_acc)
+
+        tools = build_tools()
+        result = await tools["reset_paper_account"](name="reset-me")
+
+    svc.reset_account.assert_awaited_once_with(7)
+    assert result["success"] is True
+    assert result["account"]["id"] == 7
+    assert result["account"]["cash_krw"] == 100_000_000.0
+
+
+@pytest.mark.asyncio
+async def test_reset_paper_account_missing(monkeypatch) -> None:
+    db = AsyncMock()
+    _patch_session(monkeypatch, db)
+
+    with patch(
+        "app.mcp_server.tooling.paper_account_registration.PaperTradingService"
+    ) as svc_cls:
+        svc = svc_cls.return_value
+        svc.get_account_by_name = AsyncMock(return_value=None)
+
+        tools = build_tools()
+        result = await tools["reset_paper_account"](name="ghost")
+
+    assert result["success"] is False
+    assert "not found" in result["error"].lower()

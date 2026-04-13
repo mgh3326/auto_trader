@@ -132,10 +132,26 @@ def register_paper_account_tools(mcp: FastMCP) -> None:
 
     @mcp.tool(
         name="reset_paper_account",
-        description="Reset a paper trading account (stub).",
+        description=(
+            "Reset a paper trading account: deletes ALL positions and restores "
+            "cash_krw to initial_capital (cash_usd goes to 0). Irreversible. "
+            "Account is looked up by unique name."
+        ),
     )
     async def reset_paper_account(name: str) -> dict[str, Any]:
-        raise NotImplementedError
+        async with _session_factory()() as db:
+            service = PaperTradingService(db)
+            account = await service.get_account_by_name(name)
+            if account is None:
+                return {
+                    "success": False,
+                    "error": f"Paper account '{name}' not found",
+                }
+            try:
+                refreshed = await service.reset_account(account.id)
+            except ValueError as exc:
+                return {"success": False, "error": str(exc)}
+            return {"success": True, "account": _serialize_account(refreshed)}
 
     @mcp.tool(
         name="delete_paper_account",
