@@ -9,9 +9,24 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.db import AsyncSessionLocal
+from app.mcp_server.tooling.shared import (
+    INSTRUMENT_TO_MARKET as _INSTRUMENT_TO_MARKET,
+)
+from app.mcp_server.tooling.shared import (
+    normalize_position_symbol as _normalize_position_symbol,
+)
+from app.mcp_server.tooling.shared import (
+    to_float as _to_float,
+)
+from app.mcp_server.tooling.shared import (
+    to_optional_float as _to_optional_float,
+)
+from app.services.paper_trading_service import PaperTradingService
 from app.services.stock_info_service import StockInfoService
 from app.services.upbit_symbol_universe_service import (
     UpbitSymbolInactiveError,
@@ -112,9 +127,138 @@ async def resolve_paper_position_name(
     return symbol
 
 
+def _build_service(db: AsyncSession) -> PaperTradingService:
+    """Construction seam so tests can swap in a fake service."""
+    return PaperTradingService(db)
+
+
+async def _resolve_target_accounts(
+    service: PaperTradingService,
+    selector: PaperAccountSelector,
+) -> tuple[list[Any], list[dict[str, Any]]]:
+    errors: list[dict[str, Any]] = []
+
+    if selector.account_name is None:
+        accounts = await service.list_accounts(is_active=True)
+        return list(accounts), errors
+
+    account = await service.get_account_by_name(selector.account_name)
+    if account is None or not account.is_active:
+        errors.append(
+            {
+                "source": "paper",
+                "error": f"paper account not found: {selector.account_name}",
+            }
+        )
+        return [], errors
+    return [account], errors
+
+
+def _paper_position_to_canonical(
+    *,
+    account_name: str,
+    raw_position: dict[str, Any],
+    display_name: str,
+) -> dict[str, Any]:
+    instrument_type = str(raw_position["instrument_type"])
+    symbol = _normalize_position_symbol(str(raw_position["symbol"]), instrument_type)
+
+    return {
+        "account": f"paper:{account_name}",
+        "account_name": account_name,
+        "broker": "paper",
+        "source": "paper",
+        "instrument_type": instrument_type,
+        "market": _INSTRUMENT_TO_MARKET.get(instrument_type, instrument_type),
+        "symbol": symbol,
+        "name": display_name or symbol,
+        "quantity": _to_float(raw_position.get("quantity")),
+        "avg_buy_price": _to_float(raw_position.get("avg_price")),
+        "current_price": _to_optional_float(raw_position.get("current_price")),
+        "evaluation_amount": _to_optional_float(raw_position.get("evaluation_amount")),
+        "profit_loss": _to_optional_float(raw_position.get("unrealized_pnl")),
+        "profit_rate": _to_optional_float(raw_position.get("pnl_pct")),
+    }
+
+
+async def collect_paper_positions(
+    *,
+    selector: PaperAccountSelector,
+    market_filter: str | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Collect paper positions in the canonical portfolio shape.
+
+    Parameters
+    ----------
+    selector
+        PaperAccountSelector from ``parse_paper_account_token``.
+    market_filter
+        One of ``equity_kr`` / ``equity_us`` / ``crypto`` / ``None`` (all).
+    """
+    positions: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+
+    async with AsyncSessionLocal() as db:
+        service = _build_service(db)
+
+        target_accounts, lookup_errors = await _resolve_target_accounts(
+            service, selector
+        )
+        errors.extend(lookup_errors)
+
+        for account in target_accounts:
+            try:
+                raw_positions = await service.get_positions(
+                    account_id=account.id, market=market_filter
+                )
+            except Exception as exc:
+                errors.append(
+                    {
+                        "source": "paper",
+                        "account": f"paper:{account.name}",
+                        "error": str(exc),
+                    }
+                )
+                continue
+
+            for raw in raw_positions:
+                # Defensive post-filter: the service is expected to filter by
+                # market at the query layer, but we also filter here so the
+                # canonical shape is guaranteed regardless of the service impl.
+                if (
+                    market_filter is not None
+                    and str(raw.get("instrument_type")) != market_filter
+                ):
+                    continue
+                try:
+                    display_name = await resolve_paper_position_name(
+                        str(raw["symbol"]),
+                        str(raw["instrument_type"]),
+                        db=db,
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        "name resolution failed for paper %s: %s",
+                        raw["symbol"],
+                        exc,
+                    )
+                    display_name = str(raw["symbol"])
+                positions.append(
+                    _paper_position_to_canonical(
+                        account_name=account.name,
+                        raw_position=raw,
+                        display_name=display_name,
+                    )
+                )
+
+    return positions, errors
+
+
 __all__ = [
     "PaperAccountSelector",
     "is_paper_account_token",
     "parse_paper_account_token",
     "resolve_paper_position_name",
+    "collect_paper_positions",
+    "_build_service",
 ]
