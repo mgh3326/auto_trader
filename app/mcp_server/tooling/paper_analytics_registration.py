@@ -46,7 +46,47 @@ def _to_float(v: Any) -> float | None:
 
 
 def register_paper_analytics_tools(mcp: FastMCP) -> None:
-    pass  # Tools added in subsequent steps
+    @mcp.tool(
+        name="get_paper_performance",
+        description=(
+            "Return paper trading account performance: total_return_pct, realized/unrealized PnL, "
+            "total_trades (closed round trips), win_rate, avg_holding_days, max_drawdown_pct, "
+            "sharpe_ratio (annualised, 252 trading days), best_trade, worst_trade. "
+            "period ∈ {1d, 1w, 1m, 3m, all}. "
+            "Drawdown/Sharpe require PaperDailySnapshot rows in the period; otherwise null."
+        ),
+    )
+    async def get_paper_performance(
+        name: str,
+        period: str = "all",
+    ) -> dict[str, Any]:
+        try:
+            today = now_kst().date()
+            start = _parse_period(period, today)
+            end = None if period == "all" else today
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
+
+        async with _session_factory()() as db:
+            service = PaperTradingService(db)
+            account = await service.get_account_by_name(name)
+            if account is None:
+                return {
+                    "success": False,
+                    "error": f"Paper account '{name}' not found",
+                }
+            try:
+                perf = await service.calculate_performance(
+                    account_id=account.id, start_date=start, end_date=end
+                )
+            except ValueError as exc:
+                return {"success": False, "error": str(exc)}
+            return {
+                "success": True,
+                "account_name": name,
+                "period": period,
+                "performance": perf,
+            }
 
 
 __all__ = [
