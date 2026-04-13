@@ -81,12 +81,20 @@ class TestCompareStrategies:
         from app.mcp_server.tooling import paper_journal_bridge
 
         closed_win = _make_closed_journal(
-            symbol="005930", account="paper-m", strategy="momentum",
-            entry_price=72000, pnl_pct=5.0, journal_id=1,
+            symbol="005930",
+            account="paper-m",
+            strategy="momentum",
+            entry_price=72000,
+            pnl_pct=5.0,
+            journal_id=1,
         )
         closed_loss = _make_closed_journal(
-            symbol="AAPL", account="paper-m", strategy="momentum",
-            entry_price=150, pnl_pct=-3.0, journal_id=2,
+            symbol="AAPL",
+            account="paper-m",
+            strategy="momentum",
+            entry_price=150,
+            pnl_pct=-3.0,
+            journal_id=2,
         )
         # active journal — must be excluded from aggregation
         active_journal = TradeJournal(
@@ -107,11 +115,16 @@ class TestCompareStrategies:
         mock_account.name = "paper-m"
         mock_account.strategy_name = "momentum"
 
-        _mock_bridge_session(monkeypatch, [
-            _scalars_result([mock_account]),                          # accounts
-            _scalars_result([closed_win, closed_loss, active_journal]),  # paper journals
-            _scalars_result([]),                                      # live journals
-        ])
+        _mock_bridge_session(
+            monkeypatch,
+            [
+                _scalars_result([mock_account]),  # accounts
+                _scalars_result(
+                    [closed_win, closed_loss, active_journal]
+                ),  # paper journals
+                _scalars_result([]),  # live journals
+            ],
+        )
 
         result = await paper_journal_bridge.compare_strategies(days=30)
 
@@ -133,19 +146,26 @@ class TestCompareStrategies:
 
         # Only momentum journals returned (filtered by query)
         momentum_j = _make_closed_journal(
-            symbol="005930", account="paper-m", strategy="momentum",
-            entry_price=72000, pnl_pct=5.0, journal_id=1,
+            symbol="005930",
+            account="paper-m",
+            strategy="momentum",
+            entry_price=72000,
+            pnl_pct=5.0,
+            journal_id=1,
         )
         mock_account = MagicMock()
         mock_account.id = 1
         mock_account.name = "paper-m"
         mock_account.strategy_name = "momentum"
 
-        _mock_bridge_session(monkeypatch, [
-            _scalars_result([mock_account]),
-            _scalars_result([momentum_j]),
-            _scalars_result([]),
-        ])
+        _mock_bridge_session(
+            monkeypatch,
+            [
+                _scalars_result([mock_account]),
+                _scalars_result([momentum_j]),
+                _scalars_result([]),
+            ],
+        )
 
         result = await paper_journal_bridge.compare_strategies(
             days=30, strategy_name="momentum"
@@ -159,11 +179,14 @@ class TestCompareStrategies:
         """include_live_comparison=False → live_vs_paper 빈 배열."""
         from app.mcp_server.tooling import paper_journal_bridge
 
-        _mock_bridge_session(monkeypatch, [
-            _scalars_result([]),  # accounts
-            _scalars_result([]),  # paper journals
-            # no live query issued
-        ])
+        _mock_bridge_session(
+            monkeypatch,
+            [
+                _scalars_result([]),  # accounts
+                _scalars_result([]),  # paper journals
+                # no live query issued
+            ],
+        )
 
         result = await paper_journal_bridge.compare_strategies(
             days=30, include_live_comparison=False
@@ -177,12 +200,22 @@ class TestCompareStrategies:
         from app.mcp_server.tooling import paper_journal_bridge
 
         paper_j = _make_closed_journal(
-            symbol="005930", account="paper-m", strategy="momentum",
-            account_type="paper", entry_price=72000, pnl_pct=5.0, journal_id=1,
+            symbol="005930",
+            account="paper-m",
+            strategy="momentum",
+            account_type="paper",
+            entry_price=72000,
+            pnl_pct=5.0,
+            journal_id=1,
         )
         live_j = _make_closed_journal(
-            symbol="005930", account="kis-main", strategy=None,
-            account_type="live", entry_price=71000, pnl_pct=3.0, journal_id=2,
+            symbol="005930",
+            account="kis-main",
+            strategy=None,
+            account_type="live",
+            entry_price=71000,
+            pnl_pct=3.0,
+            journal_id=2,
         )
 
         mock_account = MagicMock()
@@ -190,11 +223,14 @@ class TestCompareStrategies:
         mock_account.name = "paper-m"
         mock_account.strategy_name = "momentum"
 
-        _mock_bridge_session(monkeypatch, [
-            _scalars_result([mock_account]),
-            _scalars_result([paper_j]),
-            _scalars_result([live_j]),
-        ])
+        _mock_bridge_session(
+            monkeypatch,
+            [
+                _scalars_result([mock_account]),
+                _scalars_result([paper_j]),
+                _scalars_result([live_j]),
+            ],
+        )
 
         result = await paper_journal_bridge.compare_strategies(
             days=30, include_live_comparison=True
@@ -213,15 +249,23 @@ class TestCompareStrategies:
         from app.mcp_server.tooling import paper_journal_bridge
 
         live_j = _make_closed_journal(
-            symbol="TSLA", account="kis-main", strategy=None,
-            account_type="live", entry_price=200, pnl_pct=10.0, journal_id=1,
+            symbol="TSLA",
+            account="kis-main",
+            strategy=None,
+            account_type="live",
+            entry_price=200,
+            pnl_pct=10.0,
+            journal_id=1,
         )
 
-        _mock_bridge_session(monkeypatch, [
-            _scalars_result([]),
-            _scalars_result([]),
-            _scalars_result([live_j]),
-        ])
+        _mock_bridge_session(
+            monkeypatch,
+            [
+                _scalars_result([]),
+                _scalars_result([]),
+                _scalars_result([live_j]),
+            ],
+        )
 
         result = await paper_journal_bridge.compare_strategies(days=30)
         assert result["live_vs_paper"] == []
@@ -231,11 +275,14 @@ class TestCompareStrategies:
         """paper journal 없으면 빈 strategies 반환."""
         from app.mcp_server.tooling import paper_journal_bridge
 
-        _mock_bridge_session(monkeypatch, [
-            _scalars_result([]),
-            _scalars_result([]),
-            _scalars_result([]),
-        ])
+        _mock_bridge_session(
+            monkeypatch,
+            [
+                _scalars_result([]),
+                _scalars_result([]),
+                _scalars_result([]),
+            ],
+        )
 
         result = await paper_journal_bridge.compare_strategies(days=30)
         assert result["success"] is True
@@ -287,15 +334,16 @@ class TestRecommendGoLive:
         account_result = MagicMock()
         account_result.scalars.return_value = mock_scalars_account
 
-        _mock_bridge_session(monkeypatch, [
-            account_result,
-            _scalars_result(journals),
-            _scalar_one_result(2),  # active_positions count
-        ])
-
-        result = await paper_journal_bridge.recommend_go_live(
-            account_name="paper-test"
+        _mock_bridge_session(
+            monkeypatch,
+            [
+                account_result,
+                _scalars_result(journals),
+                _scalar_one_result(2),  # active_positions count
+            ],
         )
+
+        result = await paper_journal_bridge.recommend_go_live(account_name="paper-test")
         assert result["success"] is True
         assert result["recommendation"] == "go_live"
         assert result["all_passed"] is True
@@ -324,15 +372,16 @@ class TestRecommendGoLive:
         account_result = MagicMock()
         account_result.scalars.return_value = mock_scalars_account
 
-        _mock_bridge_session(monkeypatch, [
-            account_result,
-            _scalars_result(journals),
-            _scalar_one_result(0),
-        ])
-
-        result = await paper_journal_bridge.recommend_go_live(
-            account_name="paper-test"
+        _mock_bridge_session(
+            monkeypatch,
+            [
+                account_result,
+                _scalars_result(journals),
+                _scalar_one_result(0),
+            ],
         )
+
+        result = await paper_journal_bridge.recommend_go_live(account_name="paper-test")
         assert result["recommendation"] == "not_ready"
         assert result["criteria"]["min_trades"]["passed"] is False
         assert result["criteria"]["min_trades"]["actual"] == 10
@@ -349,8 +398,7 @@ class TestRecommendGoLive:
 
         # 20 trades, 5 wins → 25%
         journals = [
-            _make_simple_closed_journal(pnl_pct=2.0, journal_id=i + 1)
-            for i in range(5)
+            _make_simple_closed_journal(pnl_pct=2.0, journal_id=i + 1) for i in range(5)
         ] + [
             _make_simple_closed_journal(pnl_pct=-1.0, journal_id=i + 6)
             for i in range(15)
@@ -361,15 +409,16 @@ class TestRecommendGoLive:
         account_result = MagicMock()
         account_result.scalars.return_value = mock_scalars_account
 
-        _mock_bridge_session(monkeypatch, [
-            account_result,
-            _scalars_result(journals),
-            _scalar_one_result(0),
-        ])
-
-        result = await paper_journal_bridge.recommend_go_live(
-            account_name="paper-test"
+        _mock_bridge_session(
+            monkeypatch,
+            [
+                account_result,
+                _scalars_result(journals),
+                _scalar_one_result(0),
+            ],
         )
+
+        result = await paper_journal_bridge.recommend_go_live(account_name="paper-test")
         assert result["recommendation"] == "not_ready"
         assert result["criteria"]["min_win_rate"]["passed"] is False
 
@@ -396,15 +445,16 @@ class TestRecommendGoLive:
         account_result = MagicMock()
         account_result.scalars.return_value = mock_scalars_account
 
-        _mock_bridge_session(monkeypatch, [
-            account_result,
-            _scalars_result(journals),
-            _scalar_one_result(0),
-        ])
-
-        result = await paper_journal_bridge.recommend_go_live(
-            account_name="paper-test"
+        _mock_bridge_session(
+            monkeypatch,
+            [
+                account_result,
+                _scalars_result(journals),
+                _scalar_one_result(0),
+            ],
         )
+
+        result = await paper_journal_bridge.recommend_go_live(account_name="paper-test")
         assert result["recommendation"] == "not_ready"
         assert result["criteria"]["min_return_pct"]["passed"] is False
 
@@ -427,11 +477,14 @@ class TestRecommendGoLive:
         account_result = MagicMock()
         account_result.scalars.return_value = mock_scalars_account
 
-        _mock_bridge_session(monkeypatch, [
-            account_result,
-            _scalars_result(journals),
-            _scalar_one_result(0),
-        ])
+        _mock_bridge_session(
+            monkeypatch,
+            [
+                account_result,
+                _scalars_result(journals),
+                _scalar_one_result(0),
+            ],
+        )
 
         result = await paper_journal_bridge.recommend_go_live(
             account_name="paper-test",
@@ -481,15 +534,16 @@ class TestRecommendGoLive:
         account_result = MagicMock()
         account_result.scalars.return_value = mock_scalars_account
 
-        _mock_bridge_session(monkeypatch, [
-            account_result,
-            _scalars_result(journals),
-            _scalar_one_result(5),  # 5 active positions
-        ])
-
-        result = await paper_journal_bridge.recommend_go_live(
-            account_name="paper-test"
+        _mock_bridge_session(
+            monkeypatch,
+            [
+                account_result,
+                _scalars_result(journals),
+                _scalar_one_result(5),  # 5 active positions
+            ],
         )
+
+        result = await paper_journal_bridge.recommend_go_live(account_name="paper-test")
         assert result["summary"]["total_trades"] == 20
         assert result["summary"]["active_positions"] == 5
 

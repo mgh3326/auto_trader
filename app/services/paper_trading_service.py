@@ -229,7 +229,9 @@ class PaperTradingService:
                 raise ValueError("price is required for limit orders")
             fill_price = Decimal(str(price))
         else:
-            fill_price = await self._fetch_current_price(resolved_symbol, instrument_type)
+            fill_price = await self._fetch_current_price(
+                resolved_symbol, instrument_type
+            )
 
         # Determine quantity
         if quantity is not None:
@@ -387,9 +389,7 @@ class PaperTradingService:
                 await self.db.delete(position)
             else:
                 position.quantity -= qty
-                position.total_invested = _q_money(
-                    position.total_invested - cost_basis
-                )
+                position.total_invested = _q_money(position.total_invested - cost_basis)
                 position.updated_at = now_kst()
 
         # 3. Create Trade record

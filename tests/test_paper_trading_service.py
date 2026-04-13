@@ -778,9 +778,7 @@ class TestListAccountsStrategyFilter:
         mock_result.scalars.return_value = mock_scalars
         mock_db.execute = AsyncMock(return_value=mock_result)
 
-        accounts = await service.list_accounts(
-            is_active=True, strategy_name="momentum"
-        )
+        accounts = await service.list_accounts(is_active=True, strategy_name="momentum")
         assert len(accounts) == 1
         assert accounts[0].strategy_name == "momentum"
 

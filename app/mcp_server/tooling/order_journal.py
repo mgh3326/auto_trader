@@ -83,13 +83,10 @@ async def _link_journal_to_fill(
     """Link a draft journal to a fill: draft -> active, set trade_id, recalculate hold_until."""
     try:
         async with _order_session_factory()() as db:
-            stmt = (
-                select(TradeJournal)
-                .where(
-                    TradeJournal.symbol == symbol,
-                    TradeJournal.status == JournalStatus.draft,
-                    TradeJournal.account_type == account_type,
-                )
+            stmt = select(TradeJournal).where(
+                TradeJournal.symbol == symbol,
+                TradeJournal.status == JournalStatus.draft,
+                TradeJournal.account_type == account_type,
             )
             if account:
                 stmt = stmt.where(TradeJournal.account == account)
@@ -223,13 +220,10 @@ async def _close_journals_on_sell(
     resolved_reason = (exit_reason or "").strip() or "sold_via_place_order"
 
     async with _order_session_factory()() as db:
-        stmt = (
-            select(TradeJournal)
-            .where(
-                TradeJournal.symbol == symbol,
-                TradeJournal.status == JournalStatus.active,
-                TradeJournal.account_type == account_type,
-            )
+        stmt = select(TradeJournal).where(
+            TradeJournal.symbol == symbol,
+            TradeJournal.status == JournalStatus.active,
+            TradeJournal.account_type == account_type,
         )
         if account:
             stmt = stmt.where(TradeJournal.account == account)

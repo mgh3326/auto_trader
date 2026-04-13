@@ -17,10 +17,10 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from datetime import timedelta
-from decimal import Decimal
 from typing import Any, cast
 
-from sqlalchemy import desc, func as sa_func, select
+from sqlalchemy import desc, select
+from sqlalchemy import func as sa_func
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
@@ -96,25 +96,27 @@ async def compare_strategies(
                 best = max(journals, key=lambda j: float(j.pnl_pct or 0))
                 worst = min(journals, key=lambda j: float(j.pnl_pct or 0))
 
-                strategies_out.append({
-                    "strategy_name": acct.strategy_name if acct else None,
-                    "account_name": account_name,
-                    "account_id": acct.id if acct else None,
-                    "total_trades": total,
-                    "win_count": win_count,
-                    "loss_count": loss_count,
-                    "win_rate": win_rate,
-                    "total_return_pct": total_return_pct,
-                    "avg_pnl_pct": avg_pnl_pct,
-                    "best_trade": {
-                        "symbol": best.symbol,
-                        "pnl_pct": float(best.pnl_pct) if best.pnl_pct else 0.0,
-                    },
-                    "worst_trade": {
-                        "symbol": worst.symbol,
-                        "pnl_pct": float(worst.pnl_pct) if worst.pnl_pct else 0.0,
-                    },
-                })
+                strategies_out.append(
+                    {
+                        "strategy_name": acct.strategy_name if acct else None,
+                        "account_name": account_name,
+                        "account_id": acct.id if acct else None,
+                        "total_trades": total,
+                        "win_count": win_count,
+                        "loss_count": loss_count,
+                        "win_rate": win_rate,
+                        "total_return_pct": total_return_pct,
+                        "avg_pnl_pct": avg_pnl_pct,
+                        "best_trade": {
+                            "symbol": best.symbol,
+                            "pnl_pct": float(best.pnl_pct) if best.pnl_pct else 0.0,
+                        },
+                        "worst_trade": {
+                            "symbol": worst.symbol,
+                            "pnl_pct": float(worst.pnl_pct) if worst.pnl_pct else 0.0,
+                        },
+                    }
+                )
 
             # 4. Live vs paper comparison (most recent closed per symbol)
             live_vs_paper: list[dict[str, Any]] = []
@@ -150,19 +152,21 @@ async def compare_strategies(
                     pj = paper_by_symbol[sym]
                     l_pnl = float(lj.pnl_pct) if lj.pnl_pct is not None else 0.0
                     p_pnl = float(pj.pnl_pct) if pj.pnl_pct is not None else 0.0
-                    live_vs_paper.append({
-                        "symbol": sym,
-                        "live_entry_price": (
-                            float(lj.entry_price) if lj.entry_price else None
-                        ),
-                        "live_pnl_pct": l_pnl,
-                        "paper_entry_price": (
-                            float(pj.entry_price) if pj.entry_price else None
-                        ),
-                        "paper_pnl_pct": p_pnl,
-                        "paper_strategy": pj.strategy,
-                        "delta_pnl_pct": round(p_pnl - l_pnl, 4),
-                    })
+                    live_vs_paper.append(
+                        {
+                            "symbol": sym,
+                            "live_entry_price": (
+                                float(lj.entry_price) if lj.entry_price else None
+                            ),
+                            "live_pnl_pct": l_pnl,
+                            "paper_entry_price": (
+                                float(pj.entry_price) if pj.entry_price else None
+                            ),
+                            "paper_pnl_pct": p_pnl,
+                            "paper_strategy": pj.strategy,
+                            "delta_pnl_pct": round(p_pnl - l_pnl, 4),
+                        }
+                    )
 
             return {
                 "success": True,
@@ -189,9 +193,7 @@ async def recommend_go_live(
     try:
         async with _session_factory()() as db:
             # 1. Account lookup
-            acct_stmt = select(PaperAccount).where(
-                PaperAccount.name == account_name
-            )
+            acct_stmt = select(PaperAccount).where(PaperAccount.name == account_name)
             acct_result = await db.execute(acct_stmt)
             account = acct_result.scalars().one_or_none()
             if account is None:
@@ -229,9 +231,7 @@ async def recommend_go_live(
             # 4. Calculate metrics
             total_trades = len(closed_journals)
             pnl_values = [
-                float(j.pnl_pct)
-                for j in closed_journals
-                if j.pnl_pct is not None
+                float(j.pnl_pct) for j in closed_journals if j.pnl_pct is not None
             ]
             win_count = sum(1 for v in pnl_values if v > 0)
             loss_count = total_trades - win_count

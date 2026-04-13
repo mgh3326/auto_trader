@@ -407,9 +407,7 @@ class TestGetTradeJournalAccountType:
             lambda: factory,
         )
 
-        result = await get_trade_journal(
-            account_type="paper", account="paper-momentum"
-        )
+        result = await get_trade_journal(account_type="paper", account="paper-momentum")
         assert result["success"] is True
         assert len(result["entries"]) == 1
         assert result["entries"][0]["account"] == "paper-momentum"
@@ -418,7 +416,6 @@ class TestGetTradeJournalAccountType:
 class TestUpdateTradeJournal:
     @pytest.mark.asyncio
     async def test_update_draft_to_active(self) -> None:
-        from app.mcp_server.tooling.trade_journal_tools import update_trade_journal
 
         now = datetime.now(UTC)
         journal = TradeJournal(
@@ -453,7 +450,6 @@ class TestUpdateTradeJournal:
 
     @pytest.mark.asyncio
     async def test_update_close_with_pnl(self) -> None:
-        from app.mcp_server.tooling.trade_journal_tools import update_trade_journal
 
         now = datetime.now(UTC)
         journal = TradeJournal(
@@ -493,7 +489,6 @@ class TestUpdateTradeJournal:
 
     @pytest.mark.asyncio
     async def test_update_by_symbol_finds_latest_active(self) -> None:
-        from app.mcp_server.tooling.trade_journal_tools import update_trade_journal
 
         now = datetime.now(UTC)
         journal = TradeJournal(
@@ -530,7 +525,6 @@ class TestUpdateTradeJournal:
 
     @pytest.mark.asyncio
     async def test_update_not_found(self) -> None:
-        from app.mcp_server.tooling.trade_journal_tools import update_trade_journal
 
         mock_session = AsyncMock()
         mock_session.get.return_value = None
