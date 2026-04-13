@@ -75,9 +75,9 @@ def register_order_tools(mcp: FastMCP) -> None:
             "Place buy/sell orders for stocks or crypto. "
             "Supports Upbit (crypto) and KIS (KR/US equities). "
             "Always returns dry_run preview unless explicitly set to False. "
-            "For real buy orders (dry_run=False), thesis and strategy are required "
+            "For buy orders (dry_run=False), thesis and strategy are required "
             "so a trade journal can be created automatically. "
-            "For real sell orders, active trade journals are auto-closed in FIFO order. "
+            "For sell orders, active trade journals are auto-closed in FIFO order. "
             "Use exit_reason to record the sell thesis in the journal. "
             "Safety limit: max 20 orders/day. "
             "dry_run=True by default for safety. "
@@ -85,7 +85,7 @@ def register_order_tools(mcp: FastMCP) -> None:
             "(no real broker calls, uses PaperTradingService). In paper mode, the "
             "default account is auto-created with 100,000,000 KRW on first use; "
             "pass paper_account to target a named paper account. "
-            "In paper mode, thesis/strategy/journal parameters are ignored."
+            "Journal features (thesis/strategy/FIFO close) ARE supported in paper mode."
         ),
     )
     async def place_order(
@@ -118,6 +118,14 @@ def register_order_tools(mcp: FastMCP) -> None:
                 amount=amount,
                 dry_run=dry_run,
                 reason=reason,
+                exit_reason=exit_reason,
+                thesis=thesis,
+                strategy=strategy,
+                target_price=target_price,
+                stop_loss=stop_loss,
+                min_hold_days=min_hold_days,
+                notes=notes,
+                indicators_snapshot=indicators_snapshot,
                 paper_account_name=paper_account,
             )
         return await order_execution._place_order_impl(

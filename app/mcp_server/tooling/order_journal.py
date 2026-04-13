@@ -74,7 +74,12 @@ async def _save_order_fill(
         return None
 
 
-async def _link_journal_to_fill(symbol: str, trade_id: int) -> None:
+async def _link_journal_to_fill(
+    symbol: str,
+    trade_id: int,
+    account_type: str = "live",
+    account: str | None = None,
+) -> None:
     """Link a draft journal to a fill: draft -> active, set trade_id, recalculate hold_until."""
     try:
         async with _order_session_factory()() as db:
@@ -83,10 +88,13 @@ async def _link_journal_to_fill(symbol: str, trade_id: int) -> None:
                 .where(
                     TradeJournal.symbol == symbol,
                     TradeJournal.status == JournalStatus.draft,
+                    TradeJournal.account_type == account_type,
                 )
-                .order_by(desc(TradeJournal.created_at))
-                .limit(1)
             )
+            if account:
+                stmt = stmt.where(TradeJournal.account == account)
+
+            stmt = stmt.order_by(desc(TradeJournal.created_at)).limit(1)
             result = await db.execute(stmt)
             journal = result.scalars().first()
 
@@ -102,10 +110,12 @@ async def _link_journal_to_fill(symbol: str, trade_id: int) -> None:
 
             await db.commit()
             logger.info(
-                "Linked journal id=%s to trade id=%s for %s",
+                "Linked journal id=%s to trade id=%s for %s (account_type=%s, account=%s)",
                 journal.id,
                 trade_id,
                 symbol,
+                account_type,
+                account,
             )
     except Exception as exc:
         logger.warning("Failed to link journal to fill: %s", exc)
@@ -139,6 +149,8 @@ async def _create_trade_journal_for_buy(
     min_hold_days: int | None,
     notes: str | None,
     indicators_snapshot: dict[str, Any] | None,
+    account_type: str = "live",
+    account: str | None = None,
 ) -> dict[str, Any]:
     """Create a draft trade journal entry for a buy order.
 
@@ -150,7 +162,11 @@ async def _create_trade_journal_for_buy(
         if min_hold_days and min_hold_days > 0
         else None
     )
-    account_name = "upbit" if market_type == "crypto" else "kis"
+
+    if account:
+        account_name = account
+    else:
+        account_name = "upbit" if market_type == "crypto" else "kis"
 
     journal = TradeJournal(
         symbol=symbol,
@@ -168,6 +184,7 @@ async def _create_trade_journal_for_buy(
         indicators_snapshot=indicators_snapshot,
         notes=notes,
         account=account_name,
+        account_type=account_type,
         status=JournalStatus.draft,
     )
 
@@ -189,6 +206,8 @@ async def _close_journals_on_sell(
     sell_quantity: float,
     sell_price: float,
     exit_reason: str | None = None,
+    account_type: str = "live",
+    account: str | None = None,
 ) -> dict[str, Any]:
     """Close active trade journals in FIFO order when a sell order succeeds.
 
@@ -209,9 +228,13 @@ async def _close_journals_on_sell(
             .where(
                 TradeJournal.symbol == symbol,
                 TradeJournal.status == JournalStatus.active,
+                TradeJournal.account_type == account_type,
             )
-            .order_by(TradeJournal.created_at.asc())
         )
+        if account:
+            stmt = stmt.where(TradeJournal.account == account)
+
+        stmt = stmt.order_by(TradeJournal.created_at.asc())
         result = await db.execute(stmt)
         journals = list(result.scalars().all())
 
