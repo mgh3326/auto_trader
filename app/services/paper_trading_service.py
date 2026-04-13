@@ -84,6 +84,83 @@ class PaperTradingService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
+    # ------------------------------------------------------------------ #
+    # Account management
+    # ------------------------------------------------------------------ #
+    async def create_account(
+        self,
+        *,
+        name: str,
+        initial_capital_krw: Decimal,
+        initial_capital_usd: Decimal = Decimal("0"),
+        description: str | None = None,
+        strategy_name: str | None = None,
+    ) -> PaperAccount:
+        initial_total = Decimal(initial_capital_krw) + Decimal(initial_capital_usd)
+        account = PaperAccount(
+            name=name,
+            initial_capital=initial_total,
+            cash_krw=Decimal(initial_capital_krw),
+            cash_usd=Decimal(initial_capital_usd),
+            description=description,
+            strategy_name=strategy_name,
+            is_active=True,
+        )
+        self.db.add(account)
+        await self.db.commit()
+        await self.db.refresh(account)
+        return account
+
+    async def get_account(self, account_id: int) -> PaperAccount | None:
+        result = await self.db.execute(
+            select(PaperAccount).where(PaperAccount.id == account_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_account_by_name(self, name: str) -> PaperAccount | None:
+        result = await self.db.execute(
+            select(PaperAccount).where(PaperAccount.name == name)
+        )
+        return result.scalar_one_or_none()
+
+    async def list_accounts(self, is_active: bool | None = True) -> list[PaperAccount]:
+        stmt = select(PaperAccount)
+        if is_active is not None:
+            stmt = stmt.where(PaperAccount.is_active == is_active)
+        stmt = stmt.order_by(PaperAccount.created_at.desc())
+        result = await self.db.execute(stmt)
+        return list(result.scalars().all())
+
+    async def reset_account(self, account_id: int) -> PaperAccount:
+        from sqlalchemy import delete as sa_delete
+
+        account = await self.get_account(account_id)
+        if account is None:
+            raise ValueError(f"Account {account_id} not found")
+
+        # Wipe positions for this account.
+        await self.db.execute(
+            sa_delete(PaperPosition).where(PaperPosition.account_id == account_id)
+        )
+
+        # Restore cash balances. The model only stores a combined
+        # ``initial_capital``, so reset puts everything back into KRW and zeroes
+        # USD.
+        account.cash_krw = account.initial_capital
+        account.cash_usd = Decimal("0")
+
+        await self.db.commit()
+        await self.db.refresh(account)
+        return account
+
+    async def delete_account(self, account_id: int) -> bool:
+        account = await self.get_account(account_id)
+        if account is None:
+            return False
+        await self.db.delete(account)
+        await self.db.commit()
+        return True
+
 
 __all__ = [
     "FEE_RATES",

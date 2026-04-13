@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.models.paper_trading import PaperAccount, PaperPosition, PaperTrade
+from app.models.trading import InstrumentType
 from app.services.paper_trading_service import (
     FEE_RATES,
     PaperTradingService,
@@ -53,3 +55,97 @@ class TestCalculateFee:
         assert FEE_RATES["equity_kr"]["tax_sell"] == 0.0018
         assert FEE_RATES["equity_us"]["min_fee_usd"] == 1.0
         assert FEE_RATES["crypto"]["sell"] == 0.0005
+
+
+class TestAccountManagement:
+    @pytest.fixture
+    def service(self, mock_db):
+        return PaperTradingService(mock_db)
+
+    @pytest.mark.asyncio
+    async def test_create_account_defaults(self, service, mock_db):
+        account = await service.create_account(
+            name="Test",
+            initial_capital_krw=Decimal("10000000"),
+        )
+        assert account.name == "Test"
+        assert account.initial_capital == Decimal("10000000")
+        assert account.cash_krw == Decimal("10000000")
+        assert account.cash_usd == Decimal("0")
+        assert account.is_active is True
+        mock_db.add.assert_called_once_with(account)
+        mock_db.commit.assert_awaited_once()
+        mock_db.refresh.assert_awaited_once_with(account)
+
+    @pytest.mark.asyncio
+    async def test_create_account_with_usd_and_meta(self, service, mock_db):
+        account = await service.create_account(
+            name="US Bot",
+            initial_capital_krw=Decimal("0"),
+            initial_capital_usd=Decimal("5000"),
+            description="dollar-cost averaging",
+            strategy_name="dca-us",
+        )
+        assert account.cash_usd == Decimal("5000")
+        assert account.description == "dollar-cost averaging"
+        assert account.strategy_name == "dca-us"
+
+    @pytest.mark.asyncio
+    async def test_reset_account_restores_cash_and_deletes_positions(
+        self, service, mock_db, monkeypatch
+    ):
+        account = PaperAccount(
+            id=1,
+            name="Test",
+            initial_capital=Decimal("10000000"),
+            cash_krw=Decimal("3000000"),
+            cash_usd=Decimal("100"),
+            is_active=True,
+        )
+
+        async def fake_get(account_id):
+            assert account_id == 1
+            return account
+
+        monkeypatch.setattr(service, "get_account", fake_get)
+
+        mock_db.execute = AsyncMock()
+        result = await service.reset_account(1)
+
+        assert result.cash_krw == Decimal("10000000")
+        assert result.cash_usd == Decimal("0")
+        # DELETE FROM paper_positions WHERE account_id = 1
+        mock_db.execute.assert_awaited_once()
+        mock_db.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_reset_account_missing_raises(
+        self, service, mock_db, monkeypatch
+    ):
+        monkeypatch.setattr(service, "get_account", AsyncMock(return_value=None))
+        with pytest.raises(ValueError, match="Account 99 not found"):
+            await service.reset_account(99)
+
+    @pytest.mark.asyncio
+    async def test_delete_account_returns_true_when_found(
+        self, service, mock_db, monkeypatch
+    ):
+        account = PaperAccount(id=1, name="x", initial_capital=Decimal("0"),
+                               cash_krw=Decimal("0"), cash_usd=Decimal("0"),
+                               is_active=True)
+        monkeypatch.setattr(service, "get_account", AsyncMock(return_value=account))
+        mock_db.delete = AsyncMock()
+
+        ok = await service.delete_account(1)
+
+        assert ok is True
+        mock_db.delete.assert_awaited_once_with(account)
+        mock_db.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_delete_account_returns_false_when_missing(
+        self, service, monkeypatch
+    ):
+        monkeypatch.setattr(service, "get_account", AsyncMock(return_value=None))
+        ok = await service.delete_account(42)
+        assert ok is False
