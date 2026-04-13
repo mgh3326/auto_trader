@@ -162,7 +162,7 @@ class TestFetchCurrentPrice:
     @pytest.mark.asyncio
     async def test_fetch_equity_kr_uses_kis_quote(self, service, monkeypatch):
         monkeypatch.setattr(
-            "app.services.paper_trading_service._fetch_quote_equity_kr",
+            "app.mcp_server.tooling.market_data_quotes._fetch_quote_equity_kr",
             AsyncMock(return_value={"price": 70000.0}),
         )
         price = await service._fetch_current_price("005930", "equity_kr")
@@ -171,7 +171,7 @@ class TestFetchCurrentPrice:
     @pytest.mark.asyncio
     async def test_fetch_equity_us_uses_yahoo_quote(self, service, monkeypatch):
         monkeypatch.setattr(
-            "app.services.paper_trading_service._fetch_quote_equity_us",
+            "app.mcp_server.tooling.market_data_quotes._fetch_quote_equity_us",
             AsyncMock(return_value={"price": 190.5}),
         )
         price = await service._fetch_current_price("AAPL", "equity_us")
