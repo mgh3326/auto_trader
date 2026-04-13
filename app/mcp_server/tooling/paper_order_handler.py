@@ -5,19 +5,23 @@ Keeps paper-only code isolated from the live order execution path.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from decimal import Decimal
 from typing import Any
 
+from sqlalchemy import desc, select
+
 from app.core.db import AsyncSessionLocal
+from app.core.timezone import now_kst
 from app.mcp_server.tooling.order_journal import (
     _append_journal_warning,
     _close_journals_on_sell,
     _create_trade_journal_for_buy,
-    _link_journal_to_fill,
-    _validate_buy_journal_requirements,
+    _order_session_factory,
 )
 from app.mcp_server.tooling.shared import logger
 from app.models.paper_trading import PaperAccount
+from app.models.trade_journal import JournalStatus, TradeJournal
 from app.services.paper_trading_service import PaperTradingService
 
 DEFAULT_PAPER_ACCOUNT_NAME = "default"
@@ -61,6 +65,52 @@ async def _resolve_paper_account(
     )
 
 
+async def _activate_paper_journal(
+    *,
+    symbol: str,
+    account_name: str,
+) -> None:
+    """Activate the most recent draft paper journal for a symbol.
+
+    Paper trades fill immediately, so draft→active happens right after creation.
+    Unlike live orders, paper journals do NOT set trade_id (no real trade exists).
+    hold_until is recalculated from now if min_hold_days is set.
+    """
+    try:
+        async with _order_session_factory()() as db:
+            stmt = (
+                select(TradeJournal)
+                .where(
+                    TradeJournal.symbol == symbol,
+                    TradeJournal.status == JournalStatus.draft,
+                    TradeJournal.account_type == "paper",
+                    TradeJournal.account == account_name,
+                )
+                .order_by(desc(TradeJournal.created_at))
+                .limit(1)
+            )
+            result = await db.execute(stmt)
+            journal = result.scalars().first()
+
+            if journal is None:
+                return
+
+            journal.status = JournalStatus.active
+            # trade_id stays None — no real trade to link
+            if journal.min_hold_days:
+                journal.hold_until = now_kst() + timedelta(days=journal.min_hold_days)
+
+            await db.commit()
+            logger.info(
+                "Activated paper journal id=%s for %s (account=%s)",
+                journal.id,
+                symbol,
+                account_name,
+            )
+    except Exception as exc:
+        logger.warning("Failed to activate paper journal: %s", exc)
+
+
 async def _place_paper_order(
     *,
     symbol: str,
@@ -81,16 +131,13 @@ async def _place_paper_order(
     indicators_snapshot: dict[str, Any] | None = None,
     paper_account_name: str | None = None,
 ) -> dict[str, Any]:
-    """Route a `place_order` call to the paper trading engine."""
-    try:
-        # 1. Validate journal requirements for buy orders
-        _validate_buy_journal_requirements(
-            side=side,
-            dry_run=dry_run,
-            thesis=thesis,
-            strategy=strategy,
-        )
+    """Route a `place_order` call to the paper trading engine.
 
+    Unlike live orders, thesis/strategy are optional for paper buys.
+    If provided, a trade journal is auto-created; if omitted, the order
+    executes without journal creation.
+    """
+    try:
         async with AsyncSessionLocal() as db:
             service = PaperTradingService(db)
             try:
@@ -139,14 +186,14 @@ async def _place_paper_order(
             journal_status: str | None = None
             journal_warning: str | None = None
 
-            # 3. Journal Integration (Buy)
-            if side == "buy":
+            # 3. Journal Integration (Buy) — only if thesis provided
+            if side == "buy" and thesis:
                 try:
                     journal_res = await _create_trade_journal_for_buy(
                         symbol=normalized_symbol,
                         market_type=market_type,
                         preview=p,
-                        thesis=thesis or "",
+                        thesis=thesis,
                         strategy=strategy or "",
                         target_price=target_price,
                         stop_loss=stop_loss,
@@ -159,12 +206,10 @@ async def _place_paper_order(
                     journal_id = journal_res["journal_id"]
                     journal_status = journal_res["journal_status"]
 
-                    # Paper trades fill immediately, link right away
-                    await _link_journal_to_fill(
+                    # Paper trades fill immediately — activate directly
+                    await _activate_paper_journal(
                         symbol=normalized_symbol,
-                        trade_id=0,  # placeholder for paper
-                        account_type="paper",
-                        account=account.name,
+                        account_name=account.name,
                     )
                     journal_status = "active"
                 except Exception as exc:
