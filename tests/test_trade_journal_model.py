@@ -71,3 +71,35 @@ class TestTradeJournalModel:
     def test_table_args(self) -> None:
         assert TradeJournal.__table_args__[-1] == {"schema": "review"}
         assert TradeJournal.__tablename__ == "trade_journals"
+
+
+class TestAccountTypeField:
+    """account_type 및 paper_trade_id 필드 테스트."""
+
+    def test_default_account_type_is_live(self) -> None:
+        journal = TradeJournal(
+            symbol="005930",
+            instrument_type=InstrumentType.equity_kr,
+            thesis="Test thesis",
+        )
+        assert journal.account_type == "live"
+
+    def test_paper_account_type(self) -> None:
+        journal = TradeJournal(
+            symbol="005930",
+            instrument_type=InstrumentType.equity_kr,
+            thesis="Test thesis",
+            account_type="paper",
+            paper_trade_id=42,
+            account="paper-momentum",
+        )
+        assert journal.account_type == "paper"
+        assert journal.paper_trade_id == 42
+
+    def test_live_journal_paper_trade_id_is_none(self) -> None:
+        journal = TradeJournal(
+            symbol="005930",
+            instrument_type=InstrumentType.equity_kr,
+            thesis="Test thesis",
+        )
+        assert journal.paper_trade_id is None
