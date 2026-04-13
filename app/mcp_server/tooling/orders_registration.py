@@ -9,6 +9,10 @@ from app.mcp_server.tooling.orders_modify_cancel import (
     cancel_order_impl,
     modify_order_impl,
 )
+from app.mcp_server.tooling.paper_order_handler import (
+    _get_paper_order_history,
+    _place_paper_order,
+)
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -27,7 +31,10 @@ def register_order_tools(mcp: FastMCP) -> None:
         description=(
             "Get order history for a symbol. Supports Upbit (crypto) and KIS "
             "(KR/US equities). Pending orders can be queried without a symbol, "
-            "but filled/cancelled/all queries require symbol."
+            "but filled/cancelled/all queries require symbol. "
+            "Set account_type='paper' to query the virtual paper-trading "
+            "account's trade history instead; pass paper_account to target a "
+            "named paper account (defaults to 'default')."
         ),
     )
     async def get_order_history(
@@ -38,7 +45,20 @@ def register_order_tools(mcp: FastMCP) -> None:
         side: str | None = None,
         days: int | None = None,
         limit: int | None = 50,
+        account_type: Literal["real", "paper"] = "real",
+        paper_account: str | None = None,
     ):
+        if account_type == "paper":
+            return await _get_paper_order_history(
+                symbol=symbol,
+                status=status,
+                order_id=order_id,
+                market=market,
+                side=side,
+                days=days,
+                limit=limit,
+                paper_account_name=paper_account,
+            )
         return await orders_history.get_order_history_impl(
             symbol=symbol,
             status=status,
@@ -60,7 +80,12 @@ def register_order_tools(mcp: FastMCP) -> None:
             "For real sell orders, active trade journals are auto-closed in FIFO order. "
             "Use exit_reason to record the sell thesis in the journal. "
             "Safety limit: max 20 orders/day. "
-            "dry_run=True by default for safety."
+            "dry_run=True by default for safety. "
+            "Set account_type='paper' to route to the virtual paper-trading engine "
+            "(no real broker calls, uses PaperTradingService). In paper mode, the "
+            "default account is auto-created with 100,000,000 KRW on first use; "
+            "pass paper_account to target a named paper account. "
+            "In paper mode, thesis/strategy/journal parameters are ignored."
         ),
     )
     async def place_order(
@@ -80,7 +105,21 @@ def register_order_tools(mcp: FastMCP) -> None:
         min_hold_days: int | None = None,
         notes: str | None = None,
         indicators_snapshot: dict[str, Any] | None = None,
+        account_type: Literal["real", "paper"] = "real",
+        paper_account: str | None = None,
     ):
+        if account_type == "paper":
+            return await _place_paper_order(
+                symbol=symbol,
+                side=side,
+                order_type=order_type,
+                quantity=quantity,
+                price=price,
+                amount=amount,
+                dry_run=dry_run,
+                reason=reason,
+                paper_account_name=paper_account,
+            )
         return await order_execution._place_order_impl(
             symbol=symbol,
             side=side,
