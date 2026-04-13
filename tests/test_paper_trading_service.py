@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import date, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.models.paper_trading import PaperAccount, PaperPosition, PaperTrade
+from app.models.paper_trading import PaperAccount, PaperDailySnapshot, PaperPosition, PaperTrade
 from app.models.trading import InstrumentType
 from app.services.paper_trading_service import (
     FEE_RATES,
@@ -162,7 +163,7 @@ class TestFetchCurrentPrice:
     @pytest.mark.asyncio
     async def test_fetch_equity_kr_uses_kis_quote(self, service, monkeypatch):
         monkeypatch.setattr(
-            "app.services.paper_trading_service._fetch_quote_equity_kr",
+            "app.mcp_server.tooling.market_data_quotes._fetch_quote_equity_kr",
             AsyncMock(return_value={"price": 70000.0}),
         )
         price = await service._fetch_current_price("005930", "equity_kr")
@@ -171,7 +172,7 @@ class TestFetchCurrentPrice:
     @pytest.mark.asyncio
     async def test_fetch_equity_us_uses_yahoo_quote(self, service, monkeypatch):
         monkeypatch.setattr(
-            "app.services.paper_trading_service._fetch_quote_equity_us",
+            "app.mcp_server.tooling.market_data_quotes._fetch_quote_equity_us",
             AsyncMock(return_value={"price": 190.5}),
         )
         price = await service._fetch_current_price("AAPL", "equity_us")
@@ -756,3 +757,209 @@ class TestPortfolioSummary:
         assert summary["total_pnl"] == Decimal("0")
         assert summary["total_pnl_pct"] is None
         assert summary["positions_count"] == 0
+
+
+class TestDailySnapshots:
+    @pytest.fixture
+    def service(self, mock_db):
+        return PaperTradingService(mock_db)
+
+    @pytest.mark.asyncio
+    async def test_record_snapshot_creates_row_with_return_from_prior(
+        self, service, mock_db, monkeypatch
+    ):
+        account = PaperAccount(
+            id=1, name="A",
+            initial_capital=Decimal("10000000"),
+            cash_krw=Decimal("5000000"),
+            cash_usd=Decimal("0"),
+            is_active=True,
+        )
+        monkeypatch.setattr(service, "get_account", AsyncMock(return_value=account))
+        monkeypatch.setattr(
+            service, "get_positions",
+            AsyncMock(return_value=[{"evaluation_amount": Decimal("6000000")}]),
+        )
+
+        prior = PaperDailySnapshot(
+            id=10, account_id=1,
+            snapshot_date=date(2026, 4, 12),
+            cash_krw=Decimal("5000000"), cash_usd=Decimal("0"),
+            positions_value=Decimal("5000000"),
+            total_equity=Decimal("10000000"),
+            daily_return_pct=None,
+        )
+
+        scalars_none = MagicMock()
+        scalars_none.scalar_one_or_none = MagicMock(return_value=None)
+        scalars_prior = MagicMock()
+        scalars_prior.scalar_one_or_none = MagicMock(return_value=prior)
+        mock_db.execute = AsyncMock(side_effect=[scalars_none, scalars_prior])
+
+        snapshot = await service.record_daily_snapshot(account_id=1)
+
+        assert snapshot.cash_krw == Decimal("5000000")
+        assert snapshot.positions_value == Decimal("6000000")
+        assert snapshot.total_equity == Decimal("11000000")
+        assert snapshot.daily_return_pct == Decimal("10.0000")
+        mock_db.add.assert_called_once()
+        mock_db.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_record_snapshot_first_ever_has_null_return(
+        self, service, mock_db, monkeypatch
+    ):
+        account = PaperAccount(
+            id=1, name="A",
+            initial_capital=Decimal("10000000"),
+            cash_krw=Decimal("10000000"),
+            cash_usd=Decimal("0"),
+            is_active=True,
+        )
+        monkeypatch.setattr(service, "get_account", AsyncMock(return_value=account))
+        monkeypatch.setattr(service, "get_positions", AsyncMock(return_value=[]))
+
+        scalars_none1 = MagicMock()
+        scalars_none1.scalar_one_or_none = MagicMock(return_value=None)
+        scalars_none2 = MagicMock()
+        scalars_none2.scalar_one_or_none = MagicMock(return_value=None)
+        mock_db.execute = AsyncMock(side_effect=[scalars_none1, scalars_none2])
+
+        snapshot = await service.record_daily_snapshot(account_id=1)
+        assert snapshot.daily_return_pct is None
+        assert snapshot.total_equity == Decimal("10000000")
+
+    @pytest.mark.asyncio
+    async def test_calculate_daily_returns_filters_by_date_range(
+        self, service, mock_db
+    ):
+        snaps = [
+            PaperDailySnapshot(
+                id=1, account_id=1, snapshot_date=date(2026, 4, 10),
+                cash_krw=Decimal("0"), cash_usd=Decimal("0"),
+                positions_value=Decimal("0"),
+                total_equity=Decimal("10000000"), daily_return_pct=None,
+            ),
+            PaperDailySnapshot(
+                id=2, account_id=1, snapshot_date=date(2026, 4, 11),
+                cash_krw=Decimal("0"), cash_usd=Decimal("0"),
+                positions_value=Decimal("0"),
+                total_equity=Decimal("10100000"),
+                daily_return_pct=Decimal("1.0000"),
+            ),
+        ]
+        scalars = MagicMock()
+        scalars.all.return_value = snaps
+        result = MagicMock()
+        result.scalars.return_value = scalars
+        mock_db.execute = AsyncMock(return_value=result)
+
+        rows = await service.calculate_daily_returns(
+            account_id=1, start_date=date(2026, 4, 10), end_date=date(2026, 4, 11),
+        )
+        assert rows == [
+            {"date": "2026-04-10", "total_equity": Decimal("10000000"), "daily_return_pct": None},
+            {"date": "2026-04-11", "total_equity": Decimal("10100000"), "daily_return_pct": Decimal("1.0000")},
+        ]
+
+
+class TestRoundTrips:
+    @pytest.fixture
+    def service(self, mock_db):
+        return PaperTradingService(mock_db)
+
+    def _trade(self, **kw):
+        from datetime import datetime, timezone
+        defaults = {
+            "id": 0, "account_id": 1, "symbol": "005930",
+            "instrument_type": InstrumentType.equity_kr,
+            "side": "buy", "order_type": "market",
+            "quantity": Decimal("10"), "price": Decimal("60000"),
+            "total_amount": Decimal("600000"), "fee": Decimal("0"),
+            "currency": "KRW", "reason": None, "realized_pnl": None,
+            "executed_at": datetime(2026, 4, 1, tzinfo=timezone.utc),
+        }
+        defaults.update(kw)
+        return PaperTrade(**defaults)
+
+    def test_closed_round_trip_computes_holding_days_and_pnl(self, service):
+        from datetime import datetime, timezone
+        trades = [
+            self._trade(
+                id=1, side="buy", quantity=Decimal("10"),
+                price=Decimal("60000"), fee=Decimal("90"),
+                executed_at=datetime(2026, 4, 1, 9, 0, tzinfo=timezone.utc),
+                reason="entry",
+            ),
+            self._trade(
+                id=2, side="sell", quantity=Decimal("10"),
+                price=Decimal("70000"), fee=Decimal("1365"),
+                realized_pnl=Decimal("98635"),
+                executed_at=datetime(2026, 4, 6, 9, 0, tzinfo=timezone.utc),
+                reason="exit",
+            ),
+        ]
+        trips = service._build_round_trips(trades)
+        assert len(trips) == 1
+        trip = trips[0]
+        assert trip["symbol"] == "005930"
+        assert trip["holding_days"] == 5
+        assert trip["pnl"] == 98635.0
+        assert round(trip["return_pct"], 2) == 16.44
+        assert trip["entry_reason"] == "entry"
+        assert trip["exit_reason"] == "exit"
+
+    def test_unclosed_position_excluded(self, service):
+        from datetime import datetime, timezone
+        trades = [
+            self._trade(id=1, side="buy", quantity=Decimal("10"),
+                        executed_at=datetime(2026, 4, 1, tzinfo=timezone.utc)),
+            self._trade(id=2, side="sell", quantity=Decimal("4"),
+                        realized_pnl=Decimal("40000"),
+                        executed_at=datetime(2026, 4, 3, tzinfo=timezone.utc)),
+        ]
+        assert service._build_round_trips(trades) == []
+
+    def test_multiple_symbols_grouped_independently(self, service):
+        from datetime import datetime, timezone
+        trades = [
+            self._trade(id=1, symbol="A", side="buy",
+                        executed_at=datetime(2026, 4, 1, tzinfo=timezone.utc)),
+            self._trade(id=2, symbol="B", side="buy",
+                        executed_at=datetime(2026, 4, 1, tzinfo=timezone.utc)),
+            self._trade(id=3, symbol="A", side="sell",
+                        realized_pnl=Decimal("100"),
+                        executed_at=datetime(2026, 4, 2, tzinfo=timezone.utc)),
+            self._trade(id=4, symbol="B", side="sell",
+                        realized_pnl=Decimal("-50"),
+                        executed_at=datetime(2026, 4, 3, tzinfo=timezone.utc)),
+        ]
+        trips = service._build_round_trips(trades)
+        assert {t["symbol"] for t in trips} == {"A", "B"}
+
+
+class TestRiskMetrics:
+    def test_max_drawdown_pct_basic(self):
+        equities = [Decimal("100"), Decimal("120"), Decimal("90"), Decimal("110"), Decimal("80")]
+        dd = PaperTradingService._calc_max_drawdown_pct(equities)
+        assert round(dd, 2) == 33.33
+
+    def test_max_drawdown_empty_returns_none(self):
+        assert PaperTradingService._calc_max_drawdown_pct([]) is None
+
+    def test_max_drawdown_monotonic_returns_zero(self):
+        equities = [Decimal("100"), Decimal("110"), Decimal("120")]
+        assert PaperTradingService._calc_max_drawdown_pct(equities) == 0.0
+
+    def test_sharpe_ratio_with_uniform_returns(self):
+        rets = [Decimal("1.0"), Decimal("1.0"), Decimal("1.0")]
+        assert PaperTradingService._calc_sharpe_ratio(rets) is None
+
+    def test_sharpe_ratio_mixed(self):
+        rets = [Decimal("1.0"), Decimal("-0.5"), Decimal("2.0"), Decimal("0.5")]
+        sharpe = PaperTradingService._calc_sharpe_ratio(rets)
+        assert sharpe is not None and sharpe > 0
+
+    def test_sharpe_requires_at_least_two(self):
+        assert PaperTradingService._calc_sharpe_ratio([Decimal("1.0")]) is None
+        assert PaperTradingService._calc_sharpe_ratio([]) is None
