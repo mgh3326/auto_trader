@@ -7,7 +7,20 @@ single delegation point.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.services.stock_info_service import StockInfoService
+from app.services.upbit_symbol_universe_service import (
+    UpbitSymbolInactiveError,
+    UpbitSymbolNotRegisteredError,
+    UpbitSymbolUniverseLookupError,
+    get_upbit_korean_name_by_coin,
+)
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -56,8 +69,52 @@ def parse_paper_account_token(account: str | None) -> PaperAccountSelector:
     return PaperAccountSelector(account_name=name or None)
 
 
+async def resolve_paper_position_name(
+    symbol: str,
+    instrument_type: str,
+    *,
+    db: AsyncSession,
+) -> str:
+    """Resolve a human-readable name for a paper position.
+
+    Falls back to ``symbol`` when lookup fails or the symbol is unknown, so
+    callers always receive a non-empty string.
+    """
+    if instrument_type in ("equity_kr", "equity_us"):
+        try:
+            service = StockInfoService(db)
+            info = await service.get_stock_info_by_symbol(symbol)
+            if info is not None and info.name:
+                return str(info.name)
+        except Exception as exc:
+            logger.debug("Failed to resolve stock_info name for %s: %s", symbol, exc)
+        return symbol
+
+    if instrument_type == "crypto":
+        # symbol is in "KRW-BTC" form; extract quote currency + coin
+        quote, _, coin = symbol.partition("-")
+        if not coin:
+            return symbol
+        try:
+            return await get_upbit_korean_name_by_coin(
+                coin, quote_currency=quote or "KRW"
+            )
+        except (
+            UpbitSymbolNotRegisteredError,
+            UpbitSymbolInactiveError,
+            UpbitSymbolUniverseLookupError,
+        ):
+            return symbol
+        except Exception as exc:
+            logger.debug("Failed to resolve upbit name for %s: %s", symbol, exc)
+            return symbol
+
+    return symbol
+
+
 __all__ = [
     "PaperAccountSelector",
     "is_paper_account_token",
     "parse_paper_account_token",
+    "resolve_paper_position_name",
 ]
