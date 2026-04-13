@@ -155,10 +155,27 @@ def register_paper_account_tools(mcp: FastMCP) -> None:
 
     @mcp.tool(
         name="delete_paper_account",
-        description="Delete a paper trading account (stub).",
+        description=(
+            "Delete a paper trading account and all associated positions/trades "
+            "(FK cascade). Irreversible. Account is looked up by unique name."
+        ),
     )
     async def delete_paper_account(name: str) -> dict[str, Any]:
-        raise NotImplementedError
+        async with _session_factory()() as db:
+            service = PaperTradingService(db)
+            account = await service.get_account_by_name(name)
+            if account is None:
+                return {
+                    "success": False,
+                    "error": f"Paper account '{name}' not found",
+                }
+            deleted = await service.delete_account(account.id)
+            return {
+                "success": True,
+                "deleted": bool(deleted),
+                "name": name,
+                "id": account.id,
+            }
 
 
 __all__ = ["PAPER_ACCOUNT_TOOL_NAMES", "register_paper_account_tools"]

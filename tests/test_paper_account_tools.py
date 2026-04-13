@@ -283,3 +283,42 @@ async def test_reset_paper_account_missing(monkeypatch) -> None:
 
     assert result["success"] is False
     assert "not found" in result["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_delete_paper_account_success(monkeypatch) -> None:
+    db = AsyncMock()
+    _patch_session(monkeypatch, db)
+
+    acc = _make_account(id=9, name="goodbye")
+
+    with patch(
+        "app.mcp_server.tooling.paper_account_registration.PaperTradingService"
+    ) as svc_cls:
+        svc = svc_cls.return_value
+        svc.get_account_by_name = AsyncMock(return_value=acc)
+        svc.delete_account = AsyncMock(return_value=True)
+
+        tools = build_tools()
+        result = await tools["delete_paper_account"](name="goodbye")
+
+    svc.delete_account.assert_awaited_once_with(9)
+    assert result == {"success": True, "deleted": True, "name": "goodbye", "id": 9}
+
+
+@pytest.mark.asyncio
+async def test_delete_paper_account_missing(monkeypatch) -> None:
+    db = AsyncMock()
+    _patch_session(monkeypatch, db)
+
+    with patch(
+        "app.mcp_server.tooling.paper_account_registration.PaperTradingService"
+    ) as svc_cls:
+        svc = svc_cls.return_value
+        svc.get_account_by_name = AsyncMock(return_value=None)
+
+        tools = build_tools()
+        result = await tools["delete_paper_account"](name="ghost")
+
+    assert result["success"] is False
+    assert "not found" in result["error"].lower()
