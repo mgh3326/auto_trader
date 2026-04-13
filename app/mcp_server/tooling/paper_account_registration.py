@@ -96,10 +96,39 @@ def register_paper_account_tools(mcp: FastMCP) -> None:
 
     @mcp.tool(
         name="list_paper_accounts",
-        description="List paper trading accounts (stub).",
+        description=(
+            "List paper trading accounts with per-account summary "
+            "(positions_count, total_evaluated_krw, total_pnl_pct). "
+            "Note: total_evaluated_krw sums KRW and USD position values verbatim "
+            "— it does not convert USD to KRW. "
+            "is_active=True (default) filters to active accounts only."
+        ),
     )
     async def list_paper_accounts(is_active: bool = True) -> dict[str, Any]:
-        raise NotImplementedError
+        async with _session_factory()() as db:
+            service = PaperTradingService(db)
+            accounts = await service.list_accounts(is_active=is_active)
+
+            out: list[dict[str, Any]] = []
+            for account in accounts:
+                try:
+                    summary = await service.get_portfolio_summary(account.id)
+                    out.append(
+                        _serialize_account(
+                            account,
+                            positions_count=summary["positions_count"],
+                            total_evaluated=summary.get("total_evaluated"),
+                            total_pnl_pct=summary.get("total_pnl_pct"),
+                        )
+                    )
+                except Exception as exc:  # summary is best-effort
+                    logger.warning(
+                        "get_portfolio_summary failed for account %s: %s",
+                        account.id,
+                        exc,
+                    )
+                    out.append(_serialize_account(account, positions_count=0))
+            return {"success": True, "accounts": out}
 
     @mcp.tool(
         name="reset_paper_account",

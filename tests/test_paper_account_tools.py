@@ -155,3 +155,87 @@ async def test_create_paper_account_duplicate_name(monkeypatch) -> None:
 
     assert result["success"] is False
     assert "already exists" in result["error"].lower() or "duplicate" in result["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_list_paper_accounts_returns_enriched(monkeypatch) -> None:
+    db = AsyncMock()
+    _patch_session(monkeypatch, db)
+
+    acc1 = _make_account(id=1, name="default")
+    acc2 = _make_account(
+        id=2, name="us-bot", cash_krw=Decimal("0"), cash_usd=Decimal("5000")
+    )
+
+    async def _list(is_active):
+        assert is_active is True
+        return [acc1, acc2]
+
+    summaries = {
+        1: {
+            "total_invested": Decimal("0"),
+            "total_evaluated": Decimal("98500000"),
+            "total_pnl": Decimal("-1500000"),
+            "total_pnl_pct": Decimal("-1.50"),
+            "cash_krw": acc1.cash_krw,
+            "cash_usd": acc1.cash_usd,
+            "positions_count": 3,
+        },
+        2: {
+            "total_invested": Decimal("0"),
+            "total_evaluated": Decimal("5100"),
+            "total_pnl": Decimal("100"),
+            "total_pnl_pct": Decimal("2.00"),
+            "cash_krw": acc2.cash_krw,
+            "cash_usd": acc2.cash_usd,
+            "positions_count": 1,
+        },
+    }
+
+    async def _summary(account_id):
+        return summaries[account_id]
+
+    with patch(
+        "app.mcp_server.tooling.paper_account_registration.PaperTradingService"
+    ) as svc_cls:
+        svc = svc_cls.return_value
+        svc.list_accounts = AsyncMock(side_effect=_list)
+        svc.get_portfolio_summary = AsyncMock(side_effect=_summary)
+
+        tools = build_tools()
+        result = await tools["list_paper_accounts"]()
+
+    assert result["success"] is True
+    assert len(result["accounts"]) == 2
+    first = result["accounts"][0]
+    assert first["id"] == 1
+    assert first["positions_count"] == 3
+    assert first["total_evaluated_krw"] == 98_500_000.0
+    assert first["total_pnl_pct"] == -1.5
+    second = result["accounts"][1]
+    assert second["id"] == 2
+    assert second["cash_usd"] == 5000.0
+
+
+@pytest.mark.asyncio
+async def test_list_paper_accounts_is_active_false(monkeypatch) -> None:
+    db = AsyncMock()
+    _patch_session(monkeypatch, db)
+
+    captured: dict[str, object] = {}
+
+    async def _list(is_active):
+        captured["is_active"] = is_active
+        return []
+
+    with patch(
+        "app.mcp_server.tooling.paper_account_registration.PaperTradingService"
+    ) as svc_cls:
+        svc = svc_cls.return_value
+        svc.list_accounts = AsyncMock(side_effect=_list)
+
+        tools = build_tools()
+        result = await tools["list_paper_accounts"](is_active=False)
+
+    assert captured["is_active"] is False
+    assert result == {"success": True, "accounts": []}
