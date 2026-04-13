@@ -67,6 +67,7 @@ def register_paper_account_tools(mcp: FastMCP) -> None:
             "Create a new paper trading (모의투자) account. "
             "initial_capital is the KRW opening balance (default 100,000,000 KRW = 1억). "
             "initial_capital_usd adds a separate USD cash balance for US equity simulation. "
+            "strategy_name (optional) tags the account with a strategy slug (e.g. 'momentum'). "
             "Account name must be unique."
         ),
     )
@@ -75,6 +76,7 @@ def register_paper_account_tools(mcp: FastMCP) -> None:
         initial_capital: float = 100_000_000.0,
         initial_capital_usd: float = 0.0,
         description: str | None = None,
+        strategy_name: str | None = None,
     ) -> dict[str, Any]:
         try:
             async with _session_factory()() as db:
@@ -84,6 +86,7 @@ def register_paper_account_tools(mcp: FastMCP) -> None:
                     initial_capital_krw=Decimal(str(initial_capital)),
                     initial_capital_usd=Decimal(str(initial_capital_usd)),
                     description=description,
+                    strategy_name=strategy_name,
                 )
                 return {"success": True, "account": _serialize_account(account)}
         except IntegrityError:
@@ -101,13 +104,20 @@ def register_paper_account_tools(mcp: FastMCP) -> None:
             "(positions_count, total_evaluated_krw, total_pnl_pct). "
             "Note: total_evaluated_krw sums KRW and USD position values verbatim "
             "— it does not convert USD to KRW. "
-            "is_active=True (default) filters to active accounts only."
+            "is_active=True (default) filters to active accounts only. "
+            "strategy_name (optional) filters to accounts with a matching strategy slug."
         ),
     )
-    async def list_paper_accounts(is_active: bool = True) -> dict[str, Any]:
+    async def list_paper_accounts(
+        is_active: bool = True,
+        strategy_name: str | None = None,
+    ) -> dict[str, Any]:
         async with _session_factory()() as db:
             service = PaperTradingService(db)
-            accounts = await service.list_accounts(is_active=is_active)
+            accounts = await service.list_accounts(
+                is_active=is_active,
+                strategy_name=strategy_name,
+            )
 
             out: list[dict[str, Any]] = []
             for account in accounts:

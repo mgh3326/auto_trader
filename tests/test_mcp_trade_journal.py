@@ -9,6 +9,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.core.timezone import now_kst
+from app.mcp_server.tooling.trade_journal_tools import (
+    _serialize_journal,
+    get_trade_journal,
+    save_trade_journal,
+    update_trade_journal,
+)
 from app.models.trade_journal import TradeJournal
 from app.models.trading import InstrumentType
 
@@ -240,10 +247,175 @@ class TestGetTradeJournal:
         assert result["summary"]["total_active"] == 0
 
 
+class TestSerializeJournalNewFields:
+    """account_type, paper_trade_id 직렬화 테스트."""
+
+    def test_serialize_live_journal(self) -> None:
+        journal = TradeJournal(
+            symbol="005930",
+            instrument_type=InstrumentType.equity_kr,
+            thesis="Test",
+            account_type="live",
+        )
+        journal.id = 1
+        journal.created_at = now_kst()
+        journal.updated_at = now_kst()
+        result = _serialize_journal(journal)
+        assert result["account_type"] == "live"
+        assert result["paper_trade_id"] is None
+
+    def test_serialize_paper_journal(self) -> None:
+        journal = TradeJournal(
+            symbol="005930",
+            instrument_type=InstrumentType.equity_kr,
+            thesis="Test",
+            account_type="paper",
+            paper_trade_id=42,
+            account="paper-momentum",
+        )
+        journal.id = 2
+        journal.created_at = now_kst()
+        journal.updated_at = now_kst()
+        result = _serialize_journal(journal)
+        assert result["account_type"] == "paper"
+        assert result["paper_trade_id"] == 42
+
+
+class TestSaveTradeJournalAccountType:
+    """save_trade_journal account_type 검증 테스트."""
+
+    @pytest.mark.asyncio
+    async def test_save_with_default_account_type(self, monkeypatch) -> None:
+        """기본 account_type은 'live'."""
+        mock_session = AsyncMock()
+        mock_session.add = MagicMock()
+        mock_session.commit = AsyncMock()
+        mock_session.refresh = AsyncMock()
+        mock_scalars = MagicMock()
+        mock_scalars.first.return_value = None
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute = AsyncMock(return_value=mock_result)
+
+        cm = AsyncMock()
+        cm.__aenter__.return_value = mock_session
+        cm.__aexit__.return_value = None
+        factory = MagicMock(return_value=cm)
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.trade_journal_tools._session_factory",
+            lambda: factory,
+        )
+
+        result = await save_trade_journal(
+            symbol="005930",
+            thesis="Test thesis",
+        )
+        assert result["success"] is True
+        added_obj = mock_session.add.call_args[0][0]
+        assert added_obj.account_type == "live"
+
+    @pytest.mark.asyncio
+    async def test_save_live_with_paper_trade_id_errors(self, monkeypatch) -> None:
+        """account_type='live' + paper_trade_id 지정 시 오류."""
+        result = await save_trade_journal(
+            symbol="005930",
+            thesis="Test thesis",
+            account_type="live",
+            paper_trade_id=42,
+        )
+        assert result["success"] is False
+        assert "paper_trade_id" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_save_paper_without_account_errors(self, monkeypatch) -> None:
+        """account_type='paper' + account 비어있으면 오류."""
+        result = await save_trade_journal(
+            symbol="005930",
+            thesis="Test thesis",
+            account_type="paper",
+        )
+        assert result["success"] is False
+        assert "account" in result["error"]
+
+
+class TestGetTradeJournalAccountType:
+    """get_trade_journal account_type 필터 테스트."""
+
+    @pytest.mark.asyncio
+    async def test_default_returns_live_only(self, monkeypatch) -> None:
+        """기본 account_type='live' — 기존 동작 유지."""
+        live_journal = TradeJournal(
+            symbol="005930",
+            instrument_type=InstrumentType.equity_kr,
+            thesis="Live",
+            account_type="live",
+            status="active",
+        )
+        live_journal.id = 1
+        live_journal.created_at = now_kst()
+        live_journal.updated_at = now_kst()
+
+        mock_session = AsyncMock()
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = [live_journal]
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute = AsyncMock(return_value=mock_result)
+
+        cm = AsyncMock()
+        cm.__aenter__.return_value = mock_session
+        cm.__aexit__.return_value = None
+        factory = MagicMock(return_value=cm)
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.trade_journal_tools._session_factory",
+            lambda: factory,
+        )
+
+        result = await get_trade_journal()
+        assert result["success"] is True
+        assert len(result["entries"]) == 1
+        assert result["entries"][0]["account_type"] == "live"
+
+    @pytest.mark.asyncio
+    async def test_filter_by_account_name(self, monkeypatch) -> None:
+        """account 필터 검증."""
+        acc_journal = TradeJournal(
+            symbol="005930",
+            instrument_type=InstrumentType.equity_kr,
+            thesis="Paper",
+            account_type="paper",
+            account="paper-momentum",
+            status="active",
+        )
+        acc_journal.id = 1
+        acc_journal.created_at = now_kst()
+        acc_journal.updated_at = now_kst()
+
+        mock_session = AsyncMock()
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = [acc_journal]
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute = AsyncMock(return_value=mock_result)
+
+        cm = AsyncMock()
+        cm.__aenter__.return_value = mock_session
+        cm.__aexit__.return_value = None
+        factory = MagicMock(return_value=cm)
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.trade_journal_tools._session_factory",
+            lambda: factory,
+        )
+
+        result = await get_trade_journal(account_type="paper", account="paper-momentum")
+        assert result["success"] is True
+        assert len(result["entries"]) == 1
+        assert result["entries"][0]["account"] == "paper-momentum"
+
+
 class TestUpdateTradeJournal:
     @pytest.mark.asyncio
     async def test_update_draft_to_active(self) -> None:
-        from app.mcp_server.tooling.trade_journal_tools import update_trade_journal
 
         now = datetime.now(UTC)
         journal = TradeJournal(
@@ -278,7 +450,6 @@ class TestUpdateTradeJournal:
 
     @pytest.mark.asyncio
     async def test_update_close_with_pnl(self) -> None:
-        from app.mcp_server.tooling.trade_journal_tools import update_trade_journal
 
         now = datetime.now(UTC)
         journal = TradeJournal(
@@ -318,7 +489,6 @@ class TestUpdateTradeJournal:
 
     @pytest.mark.asyncio
     async def test_update_by_symbol_finds_latest_active(self) -> None:
-        from app.mcp_server.tooling.trade_journal_tools import update_trade_journal
 
         now = datetime.now(UTC)
         journal = TradeJournal(
@@ -355,7 +525,6 @@ class TestUpdateTradeJournal:
 
     @pytest.mark.asyncio
     async def test_update_not_found(self) -> None:
-        from app.mcp_server.tooling.trade_journal_tools import update_trade_journal
 
         mock_session = AsyncMock()
         mock_session.get.return_value = None

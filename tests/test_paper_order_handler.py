@@ -253,6 +253,8 @@ class TestPlacePaperOrderExecute:
                 amount=None,
                 dry_run=False,
                 reason="demo",
+                thesis="Test thesis",
+                strategy="Test strategy",
                 paper_account_name=None,
             )
 
@@ -302,6 +304,8 @@ class TestPlacePaperOrderExecute:
                 amount=None,
                 dry_run=False,
                 reason="",
+                thesis="Test thesis",
+                strategy="Test strategy",
                 paper_account_name=None,
             )
 

@@ -46,8 +46,17 @@ class TradeJournal(Base):
             "side IN ('buy','sell')",
             name="trade_journals_side",
         ),
+        CheckConstraint(
+            "account_type IN ('live','paper')",
+            name="trade_journals_account_type",
+        ),
+        CheckConstraint(
+            "NOT (account_type = 'live' AND paper_trade_id IS NOT NULL)",
+            name="trade_journals_no_paper_trade_on_live",
+        ),
         Index("ix_trade_journals_symbol_status", "symbol", "status"),
         Index("ix_trade_journals_created", "created_at"),
+        Index("ix_trade_journals_account_type", "account_type"),
         {"schema": "review"},
     )
 
@@ -93,6 +102,10 @@ class TradeJournal(Base):
 
     # Meta
     account: Mapped[str | None] = mapped_column(Text)
+    account_type: Mapped[str] = mapped_column(
+        Text, nullable=False, default="live", server_default="live"
+    )
+    paper_trade_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
@@ -109,4 +122,5 @@ class TradeJournal(Base):
     def __init__(self, **kwargs: Any) -> None:
         kwargs.setdefault("side", "buy")
         kwargs.setdefault("status", "draft")
+        kwargs.setdefault("account_type", "live")
         super().__init__(**kwargs)
