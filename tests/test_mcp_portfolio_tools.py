@@ -3072,3 +3072,98 @@ async def test_get_holdings_with_named_paper_account(monkeypatch):
     assert result["total_positions"] == 1
     assert result["accounts"][0]["account"] == "paper:데이트레이딩"
     assert result["accounts"][0]["positions"][0]["symbol"] == "AAPL"
+
+
+@pytest.mark.asyncio
+async def test_get_position_paper_hit(monkeypatch):
+    tools = build_tools()
+    svc = _StubPaperService(
+        accounts=[_StubAcc(1, "default")],
+        positions={
+            1: [
+                {
+                    "symbol": "005930",
+                    "instrument_type": "equity_kr",
+                    "quantity": Decimal("10"),
+                    "avg_price": Decimal("72000"),
+                    "total_invested": Decimal("720000"),
+                    "current_price": Decimal("73500"),
+                    "evaluation_amount": Decimal("735000"),
+                    "unrealized_pnl": Decimal("15000"),
+                    "pnl_pct": Decimal("2.08"),
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(paper_portfolio_handler, "_build_service", lambda db: svc)
+    monkeypatch.setattr(
+        paper_portfolio_handler,
+        "resolve_paper_position_name",
+        AsyncMock(return_value="삼성전자"),
+    )
+    # Make live-broker gatherers explode if accidentally called
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.portfolio_holdings._collect_kis_positions",
+        AsyncMock(side_effect=AssertionError("live brokers must not be called")),
+    )
+
+    result = await tools["get_position"](
+        symbol="005930", account_type="paper"
+    )
+
+    assert result["has_position"] is True
+    assert result["accounts"] == ["paper:default"]
+    assert result["positions"][0]["symbol"] == "005930"
+
+
+@pytest.mark.asyncio
+async def test_get_position_paper_named(monkeypatch):
+    tools = build_tools()
+    svc = _StubPaperService(
+        accounts=[_StubAcc(1, "default"), _StubAcc(2, "데이트레이딩")],
+        positions={
+            1: [],
+            2: [
+                {"symbol": "005930", "instrument_type": "equity_kr",
+                 "quantity": Decimal("5"), "avg_price": Decimal("70000"),
+                 "total_invested": Decimal("350000"), "current_price": None,
+                 "evaluation_amount": None, "unrealized_pnl": None,
+                 "pnl_pct": None}
+            ],
+        },
+    )
+    monkeypatch.setattr(paper_portfolio_handler, "_build_service", lambda db: svc)
+    monkeypatch.setattr(
+        paper_portfolio_handler,
+        "resolve_paper_position_name",
+        AsyncMock(return_value="삼성전자"),
+    )
+
+    result = await tools["get_position"](
+        symbol="005930", account_type="paper", paper_account="데이트레이딩"
+    )
+
+    assert result["has_position"] is True
+    assert result["accounts"] == ["paper:데이트레이딩"]
+
+
+@pytest.mark.asyncio
+async def test_get_position_paper_miss(monkeypatch):
+    tools = build_tools()
+    svc = _StubPaperService(
+        accounts=[_StubAcc(1, "default")],
+        positions={1: []},
+    )
+    monkeypatch.setattr(paper_portfolio_handler, "_build_service", lambda db: svc)
+
+    result = await tools["get_position"](symbol="005930", account_type="paper")
+
+    assert result["has_position"] is False
+    assert result["status"] == "미보유"
+
+
+@pytest.mark.asyncio
+async def test_get_position_invalid_account_type_raises(monkeypatch):
+    tools = build_tools()
+    with pytest.raises(ValueError, match="account_type must be"):
+        await tools["get_position"](symbol="005930", account_type="bogus")

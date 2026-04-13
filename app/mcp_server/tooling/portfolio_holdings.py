@@ -939,11 +939,22 @@ async def _get_position_impl(
     *,
     symbol: str,
     market: str | None = None,
+    account_type: str = "real",
+    paper_account: str | None = None,
 ) -> dict[str, Any]:
-    """Implementation for get_position tool."""
+    """Implementation for get_position tool.
+
+    ``account_type``:
+        - "real": existing behaviour — scan live brokerage + manual holdings.
+        - "paper": scan paper trading accounts only. ``paper_account`` selects
+          a specific named paper account; None means all active paper accounts.
+    """
     symbol = (symbol or "").strip()
     if not symbol:
         raise ValueError("symbol is required")
+
+    if account_type not in ("real", "paper"):
+        raise ValueError("account_type must be 'real' or 'paper'")
 
     parsed_market = _parse_holdings_market_filter(market)
     if parsed_market == "equity_us":
@@ -955,11 +966,19 @@ async def _get_position_impl(
     else:
         query_symbol = symbol.strip().upper()
 
-    positions, errors, _, _ = await _collect_portfolio_positions(
-        account=None,
-        market=market,
-        include_current_price=True,
-    )
+    if account_type == "paper":
+        token = "paper" if not paper_account else f"paper:{paper_account}"
+        positions, errors, _, _ = await _collect_portfolio_positions(
+            account=token,
+            market=market,
+            include_current_price=True,
+        )
+    else:
+        positions, errors, _, _ = await _collect_portfolio_positions(
+            account=None,
+            market=market,
+            include_current_price=True,
+        )
 
     matched_positions = [
         position
@@ -1079,15 +1098,25 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
     @mcp.tool(
         name="get_position",
         description=(
-            "Check whether a symbol is currently held and return detailed positions "
-            "across all accounts. If no position exists, returns status='미보유'."
+            "Check whether a symbol is currently held and return detailed "
+            "positions across all accounts. account_type='real' (default) scans "
+            "live brokerage and manual holdings; account_type='paper' scans "
+            "paper trading accounts, optionally scoped by paper_account. "
+            "Returns status='미보유' when no position exists."
         ),
     )
     async def get_position(
         symbol: str,
         market: str | None = None,
+        account_type: str = "real",
+        paper_account: str | None = None,
     ) -> dict[str, Any]:
-        return await _get_position_impl(symbol=symbol, market=market)
+        return await _get_position_impl(
+            symbol=symbol,
+            market=market,
+            account_type=account_type,
+            paper_account=paper_account,
+        )
 
     @mcp.tool(
         name="simulate_avg_cost",
