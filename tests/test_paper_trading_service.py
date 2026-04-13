@@ -149,3 +149,45 @@ class TestAccountManagement:
         monkeypatch.setattr(service, "get_account", AsyncMock(return_value=None))
         ok = await service.delete_account(42)
         assert ok is False
+
+
+class TestFetchCurrentPrice:
+    @pytest.fixture
+    def service(self, mock_db):
+        return PaperTradingService(mock_db)
+
+    @pytest.mark.asyncio
+    async def test_fetch_equity_kr_uses_kis_quote(self, service, monkeypatch):
+        monkeypatch.setattr(
+            "app.services.paper_trading_service._fetch_quote_equity_kr",
+            AsyncMock(return_value={"price": 70000.0}),
+        )
+        price = await service._fetch_current_price("005930", "equity_kr")
+        assert price == Decimal("70000.0")
+
+    @pytest.mark.asyncio
+    async def test_fetch_equity_us_uses_yahoo_quote(self, service, monkeypatch):
+        monkeypatch.setattr(
+            "app.services.paper_trading_service._fetch_quote_equity_us",
+            AsyncMock(return_value={"price": 190.5}),
+        )
+        price = await service._fetch_current_price("AAPL", "equity_us")
+        assert price == Decimal("190.5")
+
+    @pytest.mark.asyncio
+    async def test_fetch_crypto_uses_upbit_batch(self, service, monkeypatch):
+        monkeypatch.setattr(
+            "app.services.paper_trading_service.fetch_multiple_current_prices",
+            AsyncMock(return_value={"KRW-BTC": 95000000.0}),
+        )
+        price = await service._fetch_current_price("KRW-BTC", "crypto")
+        assert price == Decimal("95000000.0")
+
+    @pytest.mark.asyncio
+    async def test_fetch_crypto_missing_raises(self, service, monkeypatch):
+        monkeypatch.setattr(
+            "app.services.paper_trading_service.fetch_multiple_current_prices",
+            AsyncMock(return_value={}),
+        )
+        with pytest.raises(ValueError, match="No price for KRW-BTC"):
+            await service._fetch_current_price("KRW-BTC", "crypto")

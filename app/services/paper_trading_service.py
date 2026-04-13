@@ -10,9 +10,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.timezone import now_kst
+from app.mcp_server.tooling.market_data_quotes import (
+    _fetch_quote_equity_kr,
+    _fetch_quote_equity_us,
+)
 from app.mcp_server.tooling.shared import resolve_market_type
 from app.models.paper_trading import PaperAccount, PaperPosition, PaperTrade
 from app.models.trading import InstrumentType
+from app.services.brokers.upbit.client import fetch_multiple_current_prices
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +165,30 @@ class PaperTradingService:
         await self.db.delete(account)
         await self.db.commit()
         return True
+
+    # ------------------------------------------------------------------ #
+    # Price fetch
+    # ------------------------------------------------------------------ #
+    async def _fetch_current_price(
+        self, symbol: str, instrument_type: str
+    ) -> Decimal:
+        if instrument_type == "equity_kr":
+            quote = await _fetch_quote_equity_kr(symbol)
+            price = quote.get("price")
+        elif instrument_type == "equity_us":
+            quote = await _fetch_quote_equity_us(symbol)
+            price = quote.get("price")
+        elif instrument_type == "crypto":
+            prices = await fetch_multiple_current_prices([symbol])
+            price = prices.get(symbol)
+            if price is None:
+                raise ValueError(f"No price for {symbol}")
+        else:
+            raise ValueError(f"Unsupported instrument_type: {instrument_type}")
+
+        if price is None:
+            raise ValueError(f"Failed to fetch price for {symbol}")
+        return Decimal(str(price))
 
 
 __all__ = [
