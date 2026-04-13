@@ -9,6 +9,9 @@ from app.mcp_server.tooling.fundamentals_registration import register_fundamenta
 from app.mcp_server.tooling.market_data_registration import register_market_data_tools
 from app.mcp_server.tooling.news_registration import register_news_tools
 from app.mcp_server.tooling.orders_registration import register_order_tools
+from app.mcp_server.tooling.paper_account_registration import (
+    register_paper_account_tools,
+)
 from app.mcp_server.tooling.portfolio_registration import register_portfolio_tools
 from app.mcp_server.tooling.trade_journal_registration import (
     register_trade_journal_tools,
@@ -38,6 +41,7 @@ def register_all_tools(mcp: FastMCP) -> None:
     register_user_settings_tools(mcp)
     register_news_tools(mcp)
     register_trade_journal_tools(mcp)
+    register_paper_account_tools(mcp)
 
 
 __all__ = ["register_all_tools"]
