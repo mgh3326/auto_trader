@@ -433,8 +433,12 @@ class PaperTradingService:
     # ------------------------------------------------------------------ #
     # Query tools
     # ------------------------------------------------------------------ #
-    async def get_positions(self, account_id: int) -> list[dict[str, Any]]:
+    async def get_positions(
+        self, account_id: int, *, market: str | None = None
+    ) -> list[dict[str, Any]]:
         stmt = select(PaperPosition).where(PaperPosition.account_id == account_id)
+        if market is not None:
+            stmt = stmt.where(PaperPosition.instrument_type == market)
         result = await self.db.execute(stmt)
         positions = result.scalars().all()
 
