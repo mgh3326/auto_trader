@@ -643,3 +643,68 @@ class TestQueries:
         assert history[0]["symbol"] == "005930"
         assert history[0]["side"] == "buy"
         assert history[0]["quantity"] == Decimal("10")
+
+
+class TestPortfolioSummary:
+    @pytest.fixture
+    def service(self, mock_db):
+        return PaperTradingService(mock_db)
+
+    @pytest.mark.asyncio
+    async def test_summary_aggregates_invested_and_evaluated(
+        self, service, monkeypatch
+    ):
+        account = PaperAccount(
+            id=1, name="A", initial_capital=Decimal("10000000"),
+            cash_krw=Decimal("1000000"), cash_usd=Decimal("200"),
+            is_active=True,
+        )
+        monkeypatch.setattr(service, "get_account", AsyncMock(return_value=account))
+        monkeypatch.setattr(
+            service,
+            "get_positions",
+            AsyncMock(return_value=[
+                {
+                    "symbol": "005930",
+                    "total_invested": Decimal("600000"),
+                    "evaluation_amount": Decimal("700000"),
+                    "unrealized_pnl": Decimal("100000"),
+                },
+                {
+                    "symbol": "KRW-BTC",
+                    "total_invested": Decimal("300000"),
+                    "evaluation_amount": Decimal("280000"),
+                    "unrealized_pnl": Decimal("-20000"),
+                },
+            ]),
+        )
+
+        summary = await service.get_portfolio_summary(account_id=1)
+
+        assert summary["total_invested"] == Decimal("900000")
+        assert summary["total_evaluated"] == Decimal("980000")
+        assert summary["total_pnl"] == Decimal("80000")
+        # 80000 / 900000 * 100 = 8.8888...
+        assert summary["total_pnl_pct"] == Decimal("8.89")
+        assert summary["cash_krw"] == Decimal("1000000")
+        assert summary["cash_usd"] == Decimal("200")
+        assert summary["positions_count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_summary_handles_empty_positions(
+        self, service, monkeypatch
+    ):
+        account = PaperAccount(
+            id=1, name="A", initial_capital=Decimal("1000000"),
+            cash_krw=Decimal("1000000"), cash_usd=Decimal("0"),
+            is_active=True,
+        )
+        monkeypatch.setattr(service, "get_account", AsyncMock(return_value=account))
+        monkeypatch.setattr(service, "get_positions", AsyncMock(return_value=[]))
+
+        summary = await service.get_portfolio_summary(account_id=1)
+        assert summary["total_invested"] == Decimal("0")
+        assert summary["total_evaluated"] == Decimal("0")
+        assert summary["total_pnl"] == Decimal("0")
+        assert summary["total_pnl_pct"] is None
+        assert summary["positions_count"] == 0

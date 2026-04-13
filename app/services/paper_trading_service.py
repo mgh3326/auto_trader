@@ -539,6 +539,41 @@ class PaperTradingService:
             for t in rows
         ]
 
+    async def get_portfolio_summary(self, account_id: int) -> dict[str, Any]:
+        account = await self.get_account(account_id)
+        if account is None:
+            raise ValueError(f"Account {account_id} not found")
+
+        positions = await self.get_positions(account_id=account_id)
+
+        total_invested = Decimal("0")
+        total_evaluated = Decimal("0")
+        total_pnl = Decimal("0")
+        for p in positions:
+            total_invested += Decimal(str(p.get("total_invested") or "0"))
+            eval_amt = p.get("evaluation_amount")
+            pnl = p.get("unrealized_pnl")
+            if eval_amt is not None:
+                total_evaluated += Decimal(str(eval_amt))
+            if pnl is not None:
+                total_pnl += Decimal(str(pnl))
+
+        total_pnl_pct: Decimal | None = None
+        if total_invested > 0:
+            total_pnl_pct = (total_pnl / total_invested * Decimal("100")).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+
+        return {
+            "total_invested": total_invested,
+            "total_evaluated": total_evaluated,
+            "total_pnl": total_pnl,
+            "total_pnl_pct": total_pnl_pct,
+            "cash_krw": account.cash_krw,
+            "cash_usd": account.cash_usd,
+            "positions_count": len(positions),
+        }
+
 
 __all__ = [
     "FEE_RATES",
