@@ -425,3 +425,121 @@ class TestExecuteOrderBuy:
         # gross 1000, fee = max(1000*0.0007, 1) = 1.0
         assert account.cash_usd == Decimal("8999.0000")
         assert account.cash_krw == Decimal("0")
+
+
+class TestExecuteOrderSell:
+    @pytest.fixture
+    def account(self):
+        return PaperAccount(
+            id=1, name="A",
+            initial_capital=Decimal("10000000"),
+            cash_krw=Decimal("1000000"),
+            cash_usd=Decimal("0"),
+            is_active=True,
+        )
+
+    @pytest.fixture
+    def service(self, mock_db, account, monkeypatch):
+        svc = PaperTradingService(mock_db)
+        monkeypatch.setattr(svc, "get_account", AsyncMock(return_value=account))
+        monkeypatch.setattr(
+            svc, "_fetch_current_price", AsyncMock(return_value=Decimal("80000"))
+        )
+        return svc
+
+    @pytest.mark.asyncio
+    async def test_sell_partial_realized_pnl_credits_cash(
+        self, service, account, mock_db, monkeypatch
+    ):
+        position = PaperPosition(
+            id=1, account_id=1, symbol="005930",
+            instrument_type=InstrumentType.equity_kr,
+            quantity=Decimal("20"),
+            avg_price=Decimal("60000"),
+            total_invested=Decimal("1200000"),
+        )
+        monkeypatch.setattr(
+            service, "_get_position", AsyncMock(return_value=position)
+        )
+
+        result = await service.execute_order(
+            account_id=1, symbol="005930",
+            side="sell", order_type="market",
+            quantity=Decimal("10"),
+        )
+
+        # proceeds: 10 * 80,000 = 800,000
+        # fee: 800,000 * (0.00015 + 0.0018) = 1,560
+        # net proceeds: 798,440
+        # realized pnl: (80,000 - 60,000) * 10 - 1,560 = 198,440
+        assert result["success"] is True
+        assert account.cash_krw == Decimal("1798440.0000")
+        assert position.quantity == Decimal("10")
+        # avg_price unchanged on sell; total_invested drops proportionally
+        assert position.avg_price == Decimal("60000")
+        assert position.total_invested == Decimal("600000.0000")
+
+        added = [c.args[0] for c in mock_db.add.call_args_list]
+        trade = next(x for x in added if isinstance(x, PaperTrade))
+        assert trade.realized_pnl == Decimal("198440.0000")
+
+    @pytest.mark.asyncio
+    async def test_sell_full_quantity_deletes_position(
+        self, service, account, mock_db, monkeypatch
+    ):
+        position = PaperPosition(
+            id=1, account_id=1, symbol="005930",
+            instrument_type=InstrumentType.equity_kr,
+            quantity=Decimal("10"),
+            avg_price=Decimal("60000"),
+            total_invested=Decimal("600000"),
+        )
+        monkeypatch.setattr(
+            service, "_get_position", AsyncMock(return_value=position)
+        )
+        mock_db.delete = AsyncMock()
+
+        await service.execute_order(
+            account_id=1, symbol="005930",
+            side="sell", order_type="market",
+            quantity=Decimal("10"),
+        )
+
+        mock_db.delete.assert_awaited_once_with(position)
+
+    @pytest.mark.asyncio
+    async def test_sell_without_position_raises(
+        self, service, monkeypatch, mock_db
+    ):
+        monkeypatch.setattr(
+            service, "_get_position", AsyncMock(return_value=None)
+        )
+        with pytest.raises(ValueError, match="No position to sell"):
+            await service.execute_order(
+                account_id=1, symbol="005930",
+                side="sell", order_type="market",
+                quantity=Decimal("1"),
+            )
+        mock_db.commit.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sell_more_than_held_raises(
+        self, service, monkeypatch, mock_db
+    ):
+        position = PaperPosition(
+            id=1, account_id=1, symbol="005930",
+            instrument_type=InstrumentType.equity_kr,
+            quantity=Decimal("5"),
+            avg_price=Decimal("60000"),
+            total_invested=Decimal("300000"),
+        )
+        monkeypatch.setattr(
+            service, "_get_position", AsyncMock(return_value=position)
+        )
+        with pytest.raises(ValueError, match="Insufficient quantity"):
+            await service.execute_order(
+                account_id=1, symbol="005930",
+                side="sell", order_type="market",
+                quantity=Decimal("10"),
+            )
+        mock_db.commit.assert_not_awaited()

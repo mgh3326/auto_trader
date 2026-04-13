@@ -361,9 +361,35 @@ class PaperTradingService:
                 position.avg_price = (new_invested / new_qty) if new_qty > 0 else Decimal("0")
                 position.quantity = new_qty
                 position.total_invested = _q_money(new_invested)
-        else:
-            # Sell path — implemented in Task 6
-            raise NotImplementedError("sell path implemented in Task 6")
+        else:  # sell
+            position = await self._get_position(account_id, resolved_symbol)
+            if position is None:
+                raise ValueError(
+                    f"No position to sell for account {account_id} symbol {resolved_symbol}"
+                )
+            if position.quantity < qty:
+                raise ValueError(
+                    f"Insufficient quantity: have {position.quantity}, sell {qty}"
+                )
+
+            avg_price = position.avg_price
+            proceeds_net = total_cost  # gross - fee (from preview)
+            realized_pnl = _q_money(((fill_price - avg_price) * qty) - fee)
+
+            # Credit cash
+            if currency == "USD":
+                account.cash_usd = _q_money(account.cash_usd + proceeds_net)
+            else:
+                account.cash_krw = _q_money(account.cash_krw + proceeds_net)
+
+            # Update or delete position
+            new_qty = position.quantity - qty
+            if new_qty == 0:
+                await self.db.delete(position)
+            else:
+                # Keep avg_price fixed on sell; reduce total_invested proportionally
+                position.quantity = new_qty
+                position.total_invested = _q_money(avg_price * new_qty)
 
         trade = PaperTrade(
             account_id=account_id,
