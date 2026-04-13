@@ -191,3 +191,111 @@ class TestFetchCurrentPrice:
         )
         with pytest.raises(ValueError, match="No price for KRW-BTC"):
             await service._fetch_current_price("KRW-BTC", "crypto")
+
+
+class TestPreviewOrder:
+    @pytest.fixture
+    def service_with_account(self, mock_db, monkeypatch):
+        svc = PaperTradingService(mock_db)
+        account = PaperAccount(
+            id=1, name="A",
+            initial_capital=Decimal("10000000"),
+            cash_krw=Decimal("10000000"),
+            cash_usd=Decimal("0"),
+            is_active=True,
+        )
+        monkeypatch.setattr(svc, "get_account", AsyncMock(return_value=account))
+        monkeypatch.setattr(
+            svc,
+            "_fetch_current_price",
+            AsyncMock(return_value=Decimal("70000")),
+        )
+        return svc
+
+    @pytest.mark.asyncio
+    async def test_preview_kr_market_buy_by_amount(self, service_with_account):
+        preview = await service_with_account.preview_order(
+            account_id=1,
+            symbol="005930",
+            side="buy",
+            order_type="market",
+            amount=Decimal("1400000"),
+        )
+        # 1,400,000 / 70,000 = 20 shares (integer for equity_kr)
+        assert preview["success"] is True
+        assert preview["dry_run"] is True
+        ex = preview["preview"]
+        assert ex["instrument_type"] == "equity_kr"
+        assert ex["side"] == "buy"
+        assert ex["quantity"] == Decimal("20")
+        assert ex["price"] == Decimal("70000")
+        assert ex["gross"] == Decimal("1400000")
+        # fee: 1,400,000 * 0.00015 = 210
+        assert ex["fee"] == Decimal("210.0000")
+        assert ex["total_cost"] == Decimal("1400210.0000")
+        assert ex["currency"] == "KRW"
+
+    @pytest.mark.asyncio
+    async def test_preview_crypto_limit_buy_by_quantity(self, mock_db, monkeypatch):
+        svc = PaperTradingService(mock_db)
+        account = PaperAccount(
+            id=1, name="A",
+            initial_capital=Decimal("10000000"),
+            cash_krw=Decimal("10000000"),
+            cash_usd=Decimal("0"),
+            is_active=True,
+        )
+        monkeypatch.setattr(svc, "get_account", AsyncMock(return_value=account))
+        # limit order uses provided price, not live quote
+        monkeypatch.setattr(
+            svc, "_fetch_current_price", AsyncMock(return_value=Decimal("999"))
+        )
+
+        preview = await svc.preview_order(
+            account_id=1,
+            symbol="KRW-BTC",
+            side="buy",
+            order_type="limit",
+            quantity=Decimal("0.01"),
+            price=Decimal("95000000"),
+        )
+        ex = preview["preview"]
+        assert ex["instrument_type"] == "crypto"
+        assert ex["quantity"] == Decimal("0.01000000")
+        assert ex["price"] == Decimal("95000000")
+        assert ex["gross"] == Decimal("950000")
+        # fee: 950,000 * 0.0005 = 475
+        assert ex["fee"] == Decimal("475.0000")
+
+    @pytest.mark.asyncio
+    async def test_preview_rejects_inactive_account(
+        self, mock_db, monkeypatch
+    ):
+        svc = PaperTradingService(mock_db)
+        account = PaperAccount(
+            id=1, name="A", initial_capital=Decimal("0"),
+            cash_krw=Decimal("0"), cash_usd=Decimal("0"), is_active=False,
+        )
+        monkeypatch.setattr(svc, "get_account", AsyncMock(return_value=account))
+
+        with pytest.raises(ValueError, match="Account 1 is inactive"):
+            await svc.preview_order(
+                account_id=1, symbol="005930",
+                side="buy", order_type="market", amount=Decimal("100000"),
+            )
+
+    @pytest.mark.asyncio
+    async def test_preview_requires_quantity_or_amount(self, service_with_account):
+        with pytest.raises(ValueError, match="quantity or amount"):
+            await service_with_account.preview_order(
+                account_id=1, symbol="005930",
+                side="buy", order_type="market",
+            )
+
+    @pytest.mark.asyncio
+    async def test_preview_limit_requires_price(self, service_with_account):
+        with pytest.raises(ValueError, match="price is required"):
+            await service_with_account.preview_order(
+                account_id=1, symbol="005930",
+                side="buy", order_type="limit", quantity=Decimal("1"),
+            )

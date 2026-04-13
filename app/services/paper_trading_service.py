@@ -190,6 +190,89 @@ class PaperTradingService:
             raise ValueError(f"Failed to fetch price for {symbol}")
         return Decimal(str(price))
 
+    # ------------------------------------------------------------------ #
+    # Order preview (shared with execute_order)
+    # ------------------------------------------------------------------ #
+    async def preview_order(
+        self,
+        *,
+        account_id: int,
+        symbol: str,
+        side: str,
+        order_type: str,
+        quantity: Decimal | float | int | None = None,
+        price: Decimal | float | int | None = None,
+        amount: Decimal | float | int | None = None,
+    ) -> dict[str, Any]:
+        side = side.lower()
+        order_type = order_type.lower()
+        if side not in ("buy", "sell"):
+            raise ValueError("side must be 'buy' or 'sell'")
+        if order_type not in ("limit", "market"):
+            raise ValueError("order_type must be 'limit' or 'market'")
+
+        account = await self.get_account(account_id)
+        if account is None:
+            raise ValueError(f"Account {account_id} not found")
+        if not account.is_active:
+            raise ValueError(f"Account {account_id} is inactive")
+
+        instrument_type, resolved_symbol = resolve_market_type(symbol, None)
+        currency = "USD" if instrument_type == "equity_us" else "KRW"
+
+        # Resolve fill price
+        if order_type == "market":
+            fill_price = await self._fetch_current_price(
+                resolved_symbol, instrument_type
+            )
+        else:
+            if price is None:
+                raise ValueError("price is required for limit orders")
+            fill_price = Decimal(str(price))
+
+        if fill_price <= 0:
+            raise ValueError(f"Invalid fill price: {fill_price}")
+
+        # Resolve quantity
+        if quantity is None and amount is None:
+            raise ValueError("quantity or amount must be provided")
+
+        if quantity is not None:
+            qty = Decimal(str(quantity))
+        else:
+            qty = Decimal(str(amount)) / fill_price
+
+        if instrument_type == "crypto":
+            qty = _q_crypto_qty(qty)
+        else:
+            # integer shares for equities
+            qty = Decimal(int(qty))
+
+        if qty <= 0:
+            raise ValueError(f"Computed quantity is not positive: {qty}")
+
+        gross = _q_money(qty * fill_price)
+        fee = calculate_fee(instrument_type, side, gross)
+        total_cost = _q_money(gross + fee) if side == "buy" else _q_money(gross - fee)
+
+        return {
+            "success": True,
+            "dry_run": True,
+            "account_id": account_id,
+            "preview": {
+                "symbol": resolved_symbol,
+                "instrument_type": instrument_type,
+                "side": side,
+                "order_type": order_type,
+                "quantity": qty,
+                "price": fill_price,
+                "gross": gross,
+                "fee": fee,
+                "total_cost": total_cost,
+                "currency": currency,
+            },
+        }
+
 
 __all__ = [
     "FEE_RATES",
