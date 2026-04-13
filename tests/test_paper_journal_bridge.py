@@ -241,3 +241,254 @@ class TestCompareStrategies:
         assert result["success"] is True
         assert result["strategies"] == []
         assert result["live_vs_paper"] == []
+
+
+def _make_simple_closed_journal(*, pnl_pct: float, journal_id: int) -> TradeJournal:
+    j = TradeJournal(
+        symbol=f"SYM{journal_id:03d}",
+        instrument_type=InstrumentType.equity_kr,
+        thesis="Test",
+        entry_price=Decimal("10000"),
+        account_type="paper",
+        account="paper-test",
+        status="closed",
+        pnl_pct=Decimal(str(pnl_pct)),
+    )
+    j.id = journal_id
+    j.created_at = now_kst()
+    j.updated_at = now_kst()
+    return j
+
+
+class TestRecommendGoLive:
+    """recommend_go_live 판정 테스트."""
+
+    @pytest.mark.asyncio
+    async def test_all_criteria_met_go_live(self, monkeypatch):
+        """세 기준 모두 충족 → go_live."""
+        from app.mcp_server.tooling import paper_journal_bridge
+
+        mock_account = MagicMock()
+        mock_account.name = "paper-test"
+        mock_account.strategy_name = "momentum"
+
+        # 25 trades: 16 wins (3.0%), 9 losses (-2.0%)
+        # win_rate = 64%, total_return = 16*3 + 9*(-2) = 30.0
+        journals = [
+            _make_simple_closed_journal(pnl_pct=3.0, journal_id=i + 1)
+            for i in range(16)
+        ] + [
+            _make_simple_closed_journal(pnl_pct=-2.0, journal_id=i + 17)
+            for i in range(9)
+        ]
+
+        mock_scalars_account = MagicMock()
+        mock_scalars_account.one_or_none.return_value = mock_account
+        account_result = MagicMock()
+        account_result.scalars.return_value = mock_scalars_account
+
+        _mock_bridge_session(monkeypatch, [
+            account_result,
+            _scalars_result(journals),
+            _scalar_one_result(2),  # active_positions count
+        ])
+
+        result = await paper_journal_bridge.recommend_go_live(
+            account_name="paper-test"
+        )
+        assert result["success"] is True
+        assert result["recommendation"] == "go_live"
+        assert result["all_passed"] is True
+        assert result["criteria"]["min_trades"]["passed"] is True
+        assert result["criteria"]["min_win_rate"]["passed"] is True
+        assert result["criteria"]["min_return_pct"]["passed"] is True
+        assert result["summary"]["total_trades"] == 25
+        assert result["summary"]["active_positions"] == 2
+
+    @pytest.mark.asyncio
+    async def test_insufficient_trades_not_ready(self, monkeypatch):
+        """거래 수 미달 → not_ready."""
+        from app.mcp_server.tooling import paper_journal_bridge
+
+        mock_account = MagicMock()
+        mock_account.name = "paper-test"
+        mock_account.strategy_name = "test"
+
+        journals = [
+            _make_simple_closed_journal(pnl_pct=5.0, journal_id=i + 1)
+            for i in range(10)
+        ]
+
+        mock_scalars_account = MagicMock()
+        mock_scalars_account.one_or_none.return_value = mock_account
+        account_result = MagicMock()
+        account_result.scalars.return_value = mock_scalars_account
+
+        _mock_bridge_session(monkeypatch, [
+            account_result,
+            _scalars_result(journals),
+            _scalar_one_result(0),
+        ])
+
+        result = await paper_journal_bridge.recommend_go_live(
+            account_name="paper-test"
+        )
+        assert result["recommendation"] == "not_ready"
+        assert result["criteria"]["min_trades"]["passed"] is False
+        assert result["criteria"]["min_trades"]["actual"] == 10
+        assert result["criteria"]["min_trades"]["required"] == 20
+
+    @pytest.mark.asyncio
+    async def test_low_win_rate_not_ready(self, monkeypatch):
+        """승률 미달 → not_ready."""
+        from app.mcp_server.tooling import paper_journal_bridge
+
+        mock_account = MagicMock()
+        mock_account.name = "paper-test"
+        mock_account.strategy_name = "test"
+
+        # 20 trades, 5 wins → 25%
+        journals = [
+            _make_simple_closed_journal(pnl_pct=2.0, journal_id=i + 1)
+            for i in range(5)
+        ] + [
+            _make_simple_closed_journal(pnl_pct=-1.0, journal_id=i + 6)
+            for i in range(15)
+        ]
+
+        mock_scalars_account = MagicMock()
+        mock_scalars_account.one_or_none.return_value = mock_account
+        account_result = MagicMock()
+        account_result.scalars.return_value = mock_scalars_account
+
+        _mock_bridge_session(monkeypatch, [
+            account_result,
+            _scalars_result(journals),
+            _scalar_one_result(0),
+        ])
+
+        result = await paper_journal_bridge.recommend_go_live(
+            account_name="paper-test"
+        )
+        assert result["recommendation"] == "not_ready"
+        assert result["criteria"]["min_win_rate"]["passed"] is False
+
+    @pytest.mark.asyncio
+    async def test_negative_return_not_ready(self, monkeypatch):
+        """수익률 미달 → not_ready."""
+        from app.mcp_server.tooling import paper_journal_bridge
+
+        mock_account = MagicMock()
+        mock_account.name = "paper-test"
+        mock_account.strategy_name = "test"
+
+        # 20 trades, 11 wins at 1%, 9 losses at -3% → total = 11 - 27 = -16
+        journals = [
+            _make_simple_closed_journal(pnl_pct=1.0, journal_id=i + 1)
+            for i in range(11)
+        ] + [
+            _make_simple_closed_journal(pnl_pct=-3.0, journal_id=i + 12)
+            for i in range(9)
+        ]
+
+        mock_scalars_account = MagicMock()
+        mock_scalars_account.one_or_none.return_value = mock_account
+        account_result = MagicMock()
+        account_result.scalars.return_value = mock_scalars_account
+
+        _mock_bridge_session(monkeypatch, [
+            account_result,
+            _scalars_result(journals),
+            _scalar_one_result(0),
+        ])
+
+        result = await paper_journal_bridge.recommend_go_live(
+            account_name="paper-test"
+        )
+        assert result["recommendation"] == "not_ready"
+        assert result["criteria"]["min_return_pct"]["passed"] is False
+
+    @pytest.mark.asyncio
+    async def test_custom_thresholds(self, monkeypatch):
+        """커스텀 기준값 override."""
+        from app.mcp_server.tooling import paper_journal_bridge
+
+        mock_account = MagicMock()
+        mock_account.name = "paper-test"
+        mock_account.strategy_name = "test"
+
+        journals = [
+            _make_simple_closed_journal(pnl_pct=1.0, journal_id=i + 1)
+            for i in range(10)
+        ]
+
+        mock_scalars_account = MagicMock()
+        mock_scalars_account.one_or_none.return_value = mock_account
+        account_result = MagicMock()
+        account_result.scalars.return_value = mock_scalars_account
+
+        _mock_bridge_session(monkeypatch, [
+            account_result,
+            _scalars_result(journals),
+            _scalar_one_result(0),
+        ])
+
+        result = await paper_journal_bridge.recommend_go_live(
+            account_name="paper-test",
+            min_trades=5,
+            min_win_rate=80.0,
+            min_return_pct=5.0,
+        )
+        assert result["recommendation"] == "go_live"
+        assert result["criteria"]["min_trades"]["required"] == 5
+
+    @pytest.mark.asyncio
+    async def test_account_not_found(self, monkeypatch):
+        """존재하지 않는 account → 에러."""
+        from app.mcp_server.tooling import paper_journal_bridge
+
+        mock_scalars_account = MagicMock()
+        mock_scalars_account.one_or_none.return_value = None
+        account_result = MagicMock()
+        account_result.scalars.return_value = mock_scalars_account
+
+        _mock_bridge_session(monkeypatch, [account_result])
+
+        result = await paper_journal_bridge.recommend_go_live(
+            account_name="nonexistent"
+        )
+        assert result["success"] is False
+        assert "not found" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_active_journals_excluded_from_metrics(self, monkeypatch):
+        """active journal은 집계에서 제외 — closed만 계산."""
+        from app.mcp_server.tooling import paper_journal_bridge
+
+        mock_account = MagicMock()
+        mock_account.name = "paper-test"
+        mock_account.strategy_name = "test"
+
+        # Query returns closed only (the function queries closed only)
+        # but we verify the count is correct
+        journals = [
+            _make_simple_closed_journal(pnl_pct=5.0, journal_id=i + 1)
+            for i in range(20)
+        ]
+
+        mock_scalars_account = MagicMock()
+        mock_scalars_account.one_or_none.return_value = mock_account
+        account_result = MagicMock()
+        account_result.scalars.return_value = mock_scalars_account
+
+        _mock_bridge_session(monkeypatch, [
+            account_result,
+            _scalars_result(journals),
+            _scalar_one_result(5),  # 5 active positions
+        ])
+
+        result = await paper_journal_bridge.recommend_go_live(
+            account_name="paper-test"
+        )
+        assert result["summary"]["total_trades"] == 20
+        assert result["summary"]["active_positions"] == 5

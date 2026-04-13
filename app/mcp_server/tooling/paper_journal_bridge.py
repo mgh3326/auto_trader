@@ -173,3 +173,131 @@ async def compare_strategies(
     except Exception as exc:
         logger.exception("compare_strategies failed")
         return {"success": False, "error": f"compare_strategies failed: {exc}"}
+
+
+async def recommend_go_live(
+    account_name: str,
+    min_trades: int = 20,
+    min_win_rate: float = 50.0,
+    min_return_pct: float = 0.0,
+) -> dict[str, Any]:
+    """Evaluate whether a paper trading account meets go-live criteria.
+
+    All metrics are based on **closed** journals only (realized performance).
+    Active positions are shown in summary for reference but excluded from judgment.
+    """
+    try:
+        async with _session_factory()() as db:
+            # 1. Account lookup
+            acct_stmt = select(PaperAccount).where(
+                PaperAccount.name == account_name
+            )
+            acct_result = await db.execute(acct_stmt)
+            account = acct_result.scalars().one_or_none()
+            if account is None:
+                return {
+                    "success": False,
+                    "error": f"Paper account '{account_name}' not found",
+                }
+
+            # 2. Closed journals
+            closed_stmt = (
+                select(TradeJournal)
+                .where(
+                    TradeJournal.account_type == "paper",
+                    TradeJournal.account == account_name,
+                    TradeJournal.status == JournalStatus.closed,
+                )
+                .order_by(desc(TradeJournal.created_at))
+            )
+            closed_result = await db.execute(closed_stmt)
+            closed_journals = list(closed_result.scalars().all())
+
+            # 3. Active positions count (reference only)
+            active_stmt = (
+                select(sa_func.count())
+                .select_from(TradeJournal)
+                .where(
+                    TradeJournal.account_type == "paper",
+                    TradeJournal.account == account_name,
+                    TradeJournal.status == JournalStatus.active,
+                )
+            )
+            active_result = await db.execute(active_stmt)
+            active_positions = active_result.scalar_one()
+
+            # 4. Calculate metrics
+            total_trades = len(closed_journals)
+            pnl_values = [
+                float(j.pnl_pct)
+                for j in closed_journals
+                if j.pnl_pct is not None
+            ]
+            win_count = sum(1 for v in pnl_values if v > 0)
+            loss_count = total_trades - win_count
+            total_return_pct = round(sum(pnl_values), 2) if pnl_values else 0.0
+            win_rate = (
+                round(win_count / total_trades * 100, 1) if total_trades > 0 else 0.0
+            )
+            avg_pnl_pct = (
+                round(total_return_pct / len(pnl_values), 2) if pnl_values else 0.0
+            )
+
+            best_trade = None
+            worst_trade = None
+            if closed_journals:
+                best = max(closed_journals, key=lambda j: float(j.pnl_pct or 0))
+                worst = min(closed_journals, key=lambda j: float(j.pnl_pct or 0))
+                best_trade = {
+                    "symbol": best.symbol,
+                    "pnl_pct": float(best.pnl_pct) if best.pnl_pct else 0.0,
+                }
+                worst_trade = {
+                    "symbol": worst.symbol,
+                    "pnl_pct": float(worst.pnl_pct) if worst.pnl_pct else 0.0,
+                }
+
+            # 5. Criteria check
+            trades_passed = total_trades >= min_trades
+            wr_passed = win_rate >= min_win_rate
+            return_passed = total_return_pct >= min_return_pct
+            all_passed = trades_passed and wr_passed and return_passed
+
+            return {
+                "success": True,
+                "account_name": account_name,
+                "strategy_name": account.strategy_name,
+                "recommendation": "go_live" if all_passed else "not_ready",
+                "criteria": {
+                    "min_trades": {
+                        "required": min_trades,
+                        "actual": total_trades,
+                        "passed": trades_passed,
+                    },
+                    "min_win_rate": {
+                        "required": min_win_rate,
+                        "actual": win_rate,
+                        "passed": wr_passed,
+                    },
+                    "min_return_pct": {
+                        "required": min_return_pct,
+                        "actual": total_return_pct,
+                        "passed": return_passed,
+                    },
+                },
+                "all_passed": all_passed,
+                "summary": {
+                    "total_trades": total_trades,
+                    "win_count": win_count,
+                    "loss_count": loss_count,
+                    "win_rate": win_rate,
+                    "total_return_pct": total_return_pct,
+                    "avg_pnl_pct": avg_pnl_pct,
+                    "best_trade": best_trade,
+                    "worst_trade": worst_trade,
+                    "active_positions": active_positions,
+                },
+            }
+    except Exception as exc:
+        logger.exception("recommend_go_live failed")
+        return {"success": False, "error": f"recommend_go_live failed: {exc}"}
