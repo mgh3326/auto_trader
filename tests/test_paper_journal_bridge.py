@@ -492,3 +492,25 @@ class TestRecommendGoLive:
         )
         assert result["summary"]["total_trades"] == 20
         assert result["summary"]["active_positions"] == 5
+
+
+class TestPaperJournalRegistration:
+    """MCP 도구 등록 확인."""
+
+    def test_tool_names_defined(self):
+        from app.mcp_server.tooling.paper_journal_registration import (
+            PAPER_JOURNAL_TOOL_NAMES,
+        )
+
+        assert "compare_strategies" in PAPER_JOURNAL_TOOL_NAMES
+        assert "recommend_go_live" in PAPER_JOURNAL_TOOL_NAMES
+
+    def test_register_does_not_raise(self):
+        from app.mcp_server.tooling.paper_journal_registration import (
+            register_paper_journal_tools,
+        )
+
+        mock_mcp = MagicMock()
+        mock_mcp.tool.return_value = lambda fn: fn
+        register_paper_journal_tools(mock_mcp)
+        assert mock_mcp.tool.call_count == 2
