@@ -2958,3 +2958,117 @@ async def test_get_holdings_crypto_structured_output_survives_fastmcp(monkeypatc
         "structured_content is None — FastMCP failed to serialize the response. "
         "This likely means a non-JSON-safe type (e.g. numpy.bool_) leaked through."
     )
+
+
+# ---------------------------------------------------------------------------
+# Paper trading account filter tests
+# ---------------------------------------------------------------------------
+
+from decimal import Decimal
+
+from app.mcp_server.tooling import paper_portfolio_handler
+
+
+class _StubAcc:
+    def __init__(self, id_, name, is_active=True):
+        self.id, self.name, self.is_active = id_, name, is_active
+
+
+class _StubPaperService:
+    def __init__(self, accounts, positions, cash=None):
+        self._a, self._p, self._c = accounts, positions, cash or {}
+
+    async def list_accounts(self, is_active=True):
+        return [a for a in self._a if (is_active is None or a.is_active == is_active)]
+
+    async def get_account_by_name(self, name):
+        return next((a for a in self._a if a.name == name), None)
+
+    async def get_positions(self, account_id, market=None):
+        return self._p.get(account_id, [])
+
+    async def get_cash_balance(self, account_id):
+        return self._c.get(account_id, {"krw": Decimal("0"), "usd": Decimal("0")})
+
+
+@pytest.mark.asyncio
+async def test_get_holdings_with_paper_account_filter(monkeypatch):
+    tools = build_tools()
+
+    svc = _StubPaperService(
+        accounts=[_StubAcc(1, "default")],
+        positions={
+            1: [
+                {
+                    "symbol": "005930",
+                    "instrument_type": "equity_kr",
+                    "quantity": Decimal("10"),
+                    "avg_price": Decimal("72000"),
+                    "total_invested": Decimal("720000"),
+                    "current_price": Decimal("73500"),
+                    "evaluation_amount": Decimal("735000"),
+                    "unrealized_pnl": Decimal("15000"),
+                    "pnl_pct": Decimal("2.08"),
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(paper_portfolio_handler, "_build_service", lambda db: svc)
+    monkeypatch.setattr(
+        paper_portfolio_handler,
+        "resolve_paper_position_name",
+        AsyncMock(return_value="삼성전자"),
+    )
+    # Avoid real live-broker calls leaking in if the guard regresses
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.portfolio_holdings._collect_kis_positions",
+        AsyncMock(side_effect=AssertionError("KIS must not be called for paper")),
+    )
+
+    result = await tools["get_holdings"](account="paper", include_current_price=False)
+
+    assert result["total_positions"] == 1
+    assert result["accounts"][0]["account"] == "paper:default"
+    pos = result["accounts"][0]["positions"][0]
+    assert pos["symbol"] == "005930"
+    assert pos["name"] == "삼성전자"
+    assert pos["quantity"] == 10.0
+    assert pos["avg_buy_price"] == 72000.0
+
+
+@pytest.mark.asyncio
+async def test_get_holdings_with_named_paper_account(monkeypatch):
+    tools = build_tools()
+    svc = _StubPaperService(
+        accounts=[_StubAcc(1, "default"), _StubAcc(2, "데이트레이딩")],
+        positions={
+            1: [],
+            2: [
+                {
+                    "symbol": "AAPL",
+                    "instrument_type": "equity_us",
+                    "quantity": Decimal("5"),
+                    "avg_price": Decimal("150"),
+                    "total_invested": Decimal("750"),
+                    "current_price": None,
+                    "evaluation_amount": None,
+                    "unrealized_pnl": None,
+                    "pnl_pct": None,
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(paper_portfolio_handler, "_build_service", lambda db: svc)
+    monkeypatch.setattr(
+        paper_portfolio_handler,
+        "resolve_paper_position_name",
+        AsyncMock(return_value="Apple Inc."),
+    )
+
+    result = await tools["get_holdings"](
+        account="paper:데이트레이딩", include_current_price=False
+    )
+
+    assert result["total_positions"] == 1
+    assert result["accounts"][0]["account"] == "paper:데이트레이딩"
+    assert result["accounts"][0]["positions"][0]["symbol"] == "AAPL"

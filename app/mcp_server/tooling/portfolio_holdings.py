@@ -610,7 +610,53 @@ async def _collect_portfolio_positions(
     account_name: str | None = None,
     user_id: int = _MCP_USER_ID,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None, str | None]:
+    # Short-circuit to paper handler when the caller asked for a paper account.
+    from app.mcp_server.tooling.paper_portfolio_handler import (
+        collect_paper_positions,
+        is_paper_account_token,
+        parse_paper_account_token,
+    )
+
     market_filter = _parse_holdings_market_filter(market)
+    if is_paper_account_token(account):
+        selector = parse_paper_account_token(account)
+        positions, errors = await collect_paper_positions(
+            selector=selector,
+            market_filter=market_filter,
+        )
+
+        if account_name:
+            account_name_filter = account_name.strip().lower()
+            positions = [
+                p
+                for p in positions
+                if account_name_filter in str(p.get("account_name", "")).lower()
+            ]
+
+        if include_current_price and positions:
+            price_map, price_errors, error_map = await _fetch_price_map_for_positions(
+                positions
+            )
+            errors.extend(price_errors)
+            for position in positions:
+                key = (position["instrument_type"], position["symbol"])
+                needs_refresh = _position_needs_current_price_refresh(position)
+                price = price_map.get(key)
+                if price is not None and needs_refresh:
+                    position["current_price"] = price
+                    _recalculate_profit_fields(position)
+                elif (error := error_map.get(key)) is not None and needs_refresh:
+                    position["price_error"] = error
+        else:
+            for position in positions:
+                position["current_price"] = None
+                position["evaluation_amount"] = None
+                position["profit_loss"] = None
+                position["profit_rate"] = None
+
+        positions.sort(key=lambda p: (p["account"], p["market"], p["symbol"]))
+        return positions, errors, market_filter, account
+
     account_filter = _normalize_account_filter(account)
 
     tasks: list[Any] = []
@@ -1006,12 +1052,13 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
         name="get_holdings",
         description=(
             "Get holdings grouped by account. Supports account filter "
-            "(kis/upbit/toss/samsung_pension/isa) and market filter (kr/us/crypto). "
-            "Cash balances are excluded. minimum_value filters out low-value positions "
-            "when include_current_price=True. When minimum_value is None (default), "
-            "per-currency thresholds are applied: KRW=5000, USD=10. "
-            "Explicit number uses uniform threshold. Response includes filtered_count, "
-            "filter_reason, and per-symbol price lookup errors."
+            "(kis/upbit/toss/samsung_pension/isa/paper/paper:<이름>) and market "
+            "filter (kr/us/crypto). Cash balances are excluded. minimum_value "
+            "filters out low-value positions when include_current_price=True. "
+            "When minimum_value is None (default), per-currency thresholds are "
+            "applied: KRW=5000, USD=10. Explicit number uses uniform threshold. "
+            "Response includes filtered_count, filter_reason, and per-symbol "
+            "price lookup errors."
         ),
     )
     async def get_holdings(
