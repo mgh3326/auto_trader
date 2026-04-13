@@ -162,7 +162,7 @@ class TestFetchCurrentPrice:
     @pytest.mark.asyncio
     async def test_fetch_equity_kr_uses_kis_quote(self, service, monkeypatch):
         monkeypatch.setattr(
-            "app.services.paper_trading_service._fetch_quote_equity_kr",
+            "app.mcp_server.tooling.market_data_quotes._fetch_quote_equity_kr",
             AsyncMock(return_value={"price": 70000.0}),
         )
         price = await service._fetch_current_price("005930", "equity_kr")
@@ -171,7 +171,7 @@ class TestFetchCurrentPrice:
     @pytest.mark.asyncio
     async def test_fetch_equity_us_uses_yahoo_quote(self, service, monkeypatch):
         monkeypatch.setattr(
-            "app.services.paper_trading_service._fetch_quote_equity_us",
+            "app.mcp_server.tooling.market_data_quotes._fetch_quote_equity_us",
             AsyncMock(return_value={"price": 190.5}),
         )
         price = await service._fetch_current_price("AAPL", "equity_us")
@@ -756,3 +756,57 @@ class TestPortfolioSummary:
         assert summary["total_pnl"] == Decimal("0")
         assert summary["total_pnl_pct"] is None
         assert summary["positions_count"] == 0
+
+
+class TestListAccountsStrategyFilter:
+    """list_accounts strategy_name 필터 테스트."""
+
+    @pytest.mark.asyncio
+    async def test_filter_by_strategy_name(self, mock_db) -> None:
+        service = PaperTradingService(mock_db)
+        momentum_account = PaperAccount(
+            name="paper-momentum",
+            initial_capital=Decimal("100000000"),
+            cash_krw=Decimal("100000000"),
+            strategy_name="momentum",
+            is_active=True,
+        )
+
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = [momentum_account]
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_db.execute = AsyncMock(return_value=mock_result)
+
+        accounts = await service.list_accounts(is_active=True, strategy_name="momentum")
+        assert len(accounts) == 1
+        assert accounts[0].strategy_name == "momentum"
+
+    @pytest.mark.asyncio
+    async def test_no_filter_returns_all(self, mock_db) -> None:
+        service = PaperTradingService(mock_db)
+        accounts_data = [
+            PaperAccount(
+                name="a",
+                initial_capital=Decimal("100000000"),
+                cash_krw=Decimal("100000000"),
+                strategy_name="momentum",
+                is_active=True,
+            ),
+            PaperAccount(
+                name="b",
+                initial_capital=Decimal("100000000"),
+                cash_krw=Decimal("100000000"),
+                strategy_name=None,
+                is_active=True,
+            ),
+        ]
+
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = accounts_data
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_db.execute = AsyncMock(return_value=mock_result)
+
+        accounts = await service.list_accounts(is_active=True)
+        assert len(accounts) == 2

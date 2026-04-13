@@ -28,7 +28,9 @@ def register_trade_journal_tools(mcp: FastMCP) -> None:
             "Save a trade journal entry with investment thesis and strategy metadata. "
             "Call this when recommending a buy/sell to record WHY. "
             "symbol auto-detects instrument_type. min_hold_days sets hold_until. "
-            "status defaults to 'draft' — set to 'active' after fill confirmation."
+            "status defaults to 'draft' — set to 'active' after fill confirmation. "
+            "account_type='paper' for paper trading journals (requires account name). "
+            "paper_trade_id links to the paper trade record."
         ),
     )(save_trade_journal)
     _ = mcp.tool(
@@ -37,7 +39,10 @@ def register_trade_journal_tools(mcp: FastMCP) -> None:
             "Query trade journals. MUST call before any sell recommendation to check "
             "thesis, hold period, target/stop prices. "
             "Returns active journals by default. "
-            "Each entry includes hold_remaining_days and hold_expired."
+            "Each entry includes hold_remaining_days and hold_expired. "
+            "account_type defaults to 'live'; set to 'paper' for paper journals, "
+            "or None to query both. "
+            "account (optional) filters to a specific account name."
         ),
     )(get_trade_journal)
     _ = mcp.tool(

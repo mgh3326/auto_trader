@@ -106,9 +106,7 @@ class PaperTrade(Base):
         CheckConstraint(
             "order_type IN ('limit','market')", name="paper_trades_order_type"
         ),
-        CheckConstraint(
-            "currency IN ('KRW','USD')", name="paper_trades_currency"
-        ),
+        CheckConstraint("currency IN ('KRW','USD')", name="paper_trades_currency"),
         Index("ix_paper_trades_account_symbol", "account_id", "symbol"),
         Index("ix_paper_trades_account_executed_at", "account_id", "executed_at"),
         {"schema": "paper"},

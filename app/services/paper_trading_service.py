@@ -11,11 +11,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.timezone import now_kst
-from app.mcp_server.tooling.market_data_quotes import (
-    _fetch_quote_equity_kr,
-    _fetch_quote_equity_us,
-)
-from app.mcp_server.tooling.shared import resolve_market_type
 from app.models.paper_trading import PaperAccount, PaperPosition, PaperTrade
 from app.models.trading import InstrumentType
 from app.services.brokers.upbit.client import fetch_multiple_current_prices
@@ -32,60 +27,52 @@ FEE_RATES: dict[str, dict[str, float]] = {
     "crypto": {"buy": 0.0005, "sell": 0.0005},
 }
 
-# Quantize targets matching Numeric(20, 4) for money fields
-_MONEY_Q = Decimal("0.0001")
-# Numeric(20, 8) for crypto quantity; equity quantities are whole shares
-_CRYPTO_QTY_Q = Decimal("0.00000001")
 
-
-def _q_money(value: Decimal) -> Decimal:
-    return value.quantize(_MONEY_Q, rounding=ROUND_HALF_UP)
-
-
-def _q_crypto_qty(value: Decimal) -> Decimal:
-    return value.quantize(_CRYPTO_QTY_Q, rounding=ROUND_HALF_UP)
-
-
-def calculate_fee(
-    instrument_type: str,
-    side: str,
-    gross_amount: Decimal,
-) -> Decimal:
-    """Calculate commission + tax for a simulated fill.
-
-    Parameters
-    ----------
-    instrument_type : "equity_kr" | "equity_us" | "crypto"
-    side : "buy" | "sell"
-    gross_amount : quantity * price (in the instrument's currency)
-    """
+def calculate_fee(instrument_type: str, side: str, amount: Decimal) -> Decimal:
+    """Calculate paper trading fee based on instrument type and amount."""
     rates = FEE_RATES.get(instrument_type)
-    if rates is None:
+    if not rates:
         raise ValueError(f"Unsupported instrument_type: {instrument_type}")
 
-    gross = Decimal(gross_amount)
-
     if instrument_type == "equity_kr":
-        commission = gross * Decimal(str(rates["buy" if side == "buy" else "sell"]))
+        fee_rate = rates["buy"] if side == "buy" else rates["sell"]
+        fee = amount * Decimal(str(fee_rate))
         if side == "sell":
-            commission += gross * Decimal(str(rates["tax_sell"]))
-        return _q_money(commission)
+            fee += amount * Decimal(str(rates["tax_sell"]))
+        return _q_money(fee)
 
     if instrument_type == "equity_us":
-        commission = gross * Decimal(str(rates["buy" if side == "buy" else "sell"]))
+        fee = amount * Decimal(str(rates["buy"]))
         min_fee = Decimal(str(rates["min_fee_usd"]))
-        return _q_money(max(commission, min_fee))
+        return _q_money(max(fee, min_fee))
 
-    # crypto
-    commission = gross * Decimal(str(rates["buy" if side == "buy" else "sell"]))
-    return _q_money(commission)
+    if instrument_type == "crypto":
+        fee_rate = rates["buy"] if side == "buy" else rates["sell"]
+        return _q_money(amount * Decimal(str(fee_rate)))
+
+    raise ValueError(f"Unsupported instrument_type: {instrument_type}")
 
 
 # ---------------------------------------------------------------------------
-# Service
+# Formatting helpers
+# ---------------------------------------------------------------------------
+def _q_money(val: Decimal | float) -> Decimal:
+    return Decimal(str(val)).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+
+
+def _q_crypto_qty(val: Decimal | float) -> Decimal:
+    return Decimal(str(val)).quantize(Decimal("0.00000001"), rounding=ROUND_HALF_UP)
+
+
+def _q_pct(val: Decimal | float) -> Decimal:
+    return Decimal(str(val)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+# ---------------------------------------------------------------------------
+# Paper Trading Service
 # ---------------------------------------------------------------------------
 class PaperTradingService:
-    """모의투자 계좌/주문/포지션 관리 서비스."""
+    """Manage paper trading accounts, orders, and positions."""
 
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
@@ -95,19 +82,17 @@ class PaperTradingService:
     # ------------------------------------------------------------------ #
     async def create_account(
         self,
-        *,
         name: str,
-        initial_capital_krw: Decimal,
+        initial_capital_krw: Decimal = Decimal("100000000"),
         initial_capital_usd: Decimal = Decimal("0"),
         description: str | None = None,
         strategy_name: str | None = None,
     ) -> PaperAccount:
-        initial_total = Decimal(initial_capital_krw) + Decimal(initial_capital_usd)
         account = PaperAccount(
             name=name,
-            initial_capital=initial_total,
-            cash_krw=Decimal(initial_capital_krw),
-            cash_usd=Decimal(initial_capital_usd),
+            initial_capital=initial_capital_krw,
+            cash_krw=initial_capital_krw,
+            cash_usd=initial_capital_usd,
             description=description,
             strategy_name=strategy_name,
             is_active=True,
@@ -129,10 +114,16 @@ class PaperTradingService:
         )
         return result.scalar_one_or_none()
 
-    async def list_accounts(self, is_active: bool | None = True) -> list[PaperAccount]:
+    async def list_accounts(
+        self,
+        is_active: bool | None = True,
+        strategy_name: str | None = None,
+    ) -> list[PaperAccount]:
         stmt = select(PaperAccount)
         if is_active is not None:
             stmt = stmt.where(PaperAccount.is_active == is_active)
+        if strategy_name is not None:
+            stmt = stmt.where(PaperAccount.strategy_name == strategy_name)
         stmt = stmt.order_by(PaperAccount.created_at.desc())
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
@@ -148,13 +139,9 @@ class PaperTradingService:
         await self.db.execute(
             sa_delete(PaperPosition).where(PaperPosition.account_id == account_id)
         )
-
-        # Restore cash balances. The model only stores a combined
-        # ``initial_capital``, so reset puts everything back into KRW and zeroes
-        # USD.
+        # Reset cash to initial.
         account.cash_krw = account.initial_capital
         account.cash_usd = Decimal("0")
-
         await self.db.commit()
         await self.db.refresh(account)
         return account
@@ -172,9 +159,17 @@ class PaperTradingService:
     # ------------------------------------------------------------------ #
     async def _fetch_current_price(self, symbol: str, instrument_type: str) -> Decimal:
         if instrument_type == "equity_kr":
+            from app.mcp_server.tooling.market_data_quotes import (
+                _fetch_quote_equity_kr,
+            )
+
             quote = await _fetch_quote_equity_kr(symbol)
             price = quote.get("price")
         elif instrument_type == "equity_us":
+            from app.mcp_server.tooling.market_data_quotes import (
+                _fetch_quote_equity_us,
+            )
+
             quote = await _fetch_quote_equity_us(symbol)
             price = quote.get("price")
         elif instrument_type == "crypto":
@@ -186,11 +181,11 @@ class PaperTradingService:
             raise ValueError(f"Unsupported instrument_type: {instrument_type}")
 
         if price is None:
-            raise ValueError(f"Failed to fetch price for {symbol}")
+            raise ValueError(f"Could not fetch current price for {symbol}")
         return Decimal(str(price))
 
     # ------------------------------------------------------------------ #
-    # Order preview (shared with execute_order)
+    # Preview order
     # ------------------------------------------------------------------ #
     async def preview_order(
         self,
@@ -210,36 +205,41 @@ class PaperTradingService:
         if order_type not in ("limit", "market"):
             raise ValueError("order_type must be 'limit' or 'market'")
 
+        from app.mcp_server.tooling.shared import resolve_market_type
+
         account = await self.get_account(account_id)
         if account is None:
             raise ValueError(f"Account {account_id} not found")
         if not account.is_active:
             raise ValueError(f"Account {account_id} is inactive")
 
+        # Resolve market type and normalized symbol
         instrument_type, resolved_symbol = resolve_market_type(symbol, None)
-        currency = "USD" if instrument_type == "equity_us" else "KRW"
 
-        # Resolve fill price
-        if order_type == "market":
-            fill_price = await self._fetch_current_price(
-                resolved_symbol, instrument_type
-            )
-        else:
+        # Currency detection
+        currency = "KRW"
+        if instrument_type == "equity_us":
+            currency = "USD"
+        elif instrument_type == "crypto" and resolved_symbol.startswith("USDT-"):
+            currency = "USDT"
+
+        # Determine price
+        if order_type == "limit":
             if price is None:
                 raise ValueError("price is required for limit orders")
             fill_price = Decimal(str(price))
+        else:
+            fill_price = await self._fetch_current_price(
+                resolved_symbol, instrument_type
+            )
 
-        if fill_price <= 0:
-            raise ValueError(f"Invalid fill price: {fill_price}")
-
-        # Resolve quantity
-        if quantity is None and amount is None:
-            raise ValueError("quantity or amount must be provided")
-
+        # Determine quantity
         if quantity is not None:
             qty = Decimal(str(quantity))
-        else:
+        elif amount is not None:
             qty = Decimal(str(amount)) / fill_price
+        else:
+            raise ValueError("Either quantity or amount must be provided")
 
         if instrument_type == "crypto":
             qty = _q_crypto_qty(qty)
@@ -299,6 +299,7 @@ class PaperTradingService:
         amount: Decimal | float | int | None = None,
         reason: str = "",
     ) -> dict[str, Any]:
+        # 1. Preview order to get finalized quantity/price/costs
         preview = await self.preview_order(
             account_id=account_id,
             symbol=symbol,
@@ -340,9 +341,18 @@ class PaperTradingService:
                     )
                 account.cash_krw = _q_money(account.cash_krw - total_cost)
 
-            # Upsert position with weighted-average cost (fee excluded from avg)
+            # Update/Create position
             position = await self._get_position(account_id, resolved_symbol)
-            if position is None:
+            if position:
+                # Weighted average calculation
+                old_total = position.total_invested
+                new_total = old_total + gross
+                new_qty = position.quantity + qty
+                position.avg_price = _q_money(new_total / new_qty)
+                position.quantity = new_qty
+                position.total_invested = new_total
+                position.updated_at = now_kst()
+            else:
                 position = PaperPosition(
                     account_id=account_id,
                     symbol=resolved_symbol,
@@ -352,143 +362,111 @@ class PaperTradingService:
                     total_invested=gross,
                 )
                 self.db.add(position)
-            else:
-                new_qty = position.quantity + qty
-                new_invested = position.total_invested + gross
-                position.avg_price = (
-                    (new_invested / new_qty) if new_qty > 0 else Decimal("0")
-                )
-                position.quantity = new_qty
-                position.total_invested = _q_money(new_invested)
+
         else:  # sell
             position = await self._get_position(account_id, resolved_symbol)
-            if position is None:
-                raise ValueError(
-                    f"No position to sell for account {account_id} symbol {resolved_symbol}"
-                )
+            if not position:
+                raise ValueError(f"No position to sell for {resolved_symbol}")
             if position.quantity < qty:
                 raise ValueError(
-                    f"Insufficient quantity: have {position.quantity}, sell {qty}"
+                    f"Insufficient quantity to sell: have {position.quantity}, "
+                    f"need {qty}"
                 )
 
-            avg_price = position.avg_price
-            proceeds_net = total_cost  # gross - fee (from preview)
-            realized_pnl = _q_money(((fill_price - avg_price) * qty) - fee)
-
-            # Credit cash
+            # Proceeds credit
             if currency == "USD":
-                account.cash_usd = _q_money(account.cash_usd + proceeds_net)
+                account.cash_usd = _q_money(account.cash_usd + total_cost)
             else:
-                account.cash_krw = _q_money(account.cash_krw + proceeds_net)
+                account.cash_krw = _q_money(account.cash_krw + total_cost)
 
-            # Update or delete position
-            new_qty = position.quantity - qty
-            if new_qty == 0:
+            # Realized PnL calculation
+            # PnL = (sell_price - avg_buy_price) * quantity - fee
+            cost_basis = position.avg_price * qty
+            realized_pnl = _q_money(gross - cost_basis - fee)
+
+            # Update/Delete position
+            if position.quantity == qty:
                 await self.db.delete(position)
             else:
-                # Keep avg_price fixed on sell; reduce total_invested proportionally
-                position.quantity = new_qty
-                position.total_invested = _q_money(avg_price * new_qty)
+                position.quantity -= qty
+                position.total_invested = _q_money(position.total_invested - cost_basis)
+                position.updated_at = now_kst()
 
+        # 3. Create Trade record
         trade = PaperTrade(
             account_id=account_id,
             symbol=resolved_symbol,
             instrument_type=InstrumentType(instrument_type),
-            side=side.lower(),
-            order_type=order_type.lower(),
+            side=side,
+            order_type=order_type,
             quantity=qty,
             price=fill_price,
             total_amount=gross,
             fee=fee,
             currency=currency,
-            reason=reason or None,
+            reason=reason,
             realized_pnl=realized_pnl,
-            executed_at=now_kst(),
         )
         self.db.add(trade)
 
         await self.db.commit()
 
-        return {
+        # 4. Prepare result
+        res = {
             "success": True,
             "dry_run": False,
             "account_id": account_id,
-            "preview": preview["preview"],
+            "preview": p,
             "execution": {
-                "symbol": resolved_symbol,
-                "instrument_type": instrument_type,
-                "side": side.lower(),
-                "order_type": order_type.lower(),
-                "quantity": qty,
-                "price": fill_price,
-                "gross": gross,
-                "fee": fee,
-                "total_cost": total_cost,
-                "currency": currency,
+                **p,
                 "realized_pnl": realized_pnl,
-                "executed_at": trade.executed_at,
+                "executed_at": now_kst(),
             },
         }
+        return res
 
     # ------------------------------------------------------------------ #
-    # Queries
+    # Query tools
     # ------------------------------------------------------------------ #
-    async def get_positions(
-        self,
-        account_id: int,
-        market: str | None = None,
-    ) -> list[dict[str, Any]]:
+    async def get_positions(self, account_id: int) -> list[dict[str, Any]]:
         stmt = select(PaperPosition).where(PaperPosition.account_id == account_id)
-        if market is not None:
-            stmt = stmt.where(PaperPosition.instrument_type == InstrumentType(market))
-        stmt = stmt.order_by(PaperPosition.symbol)
         result = await self.db.execute(stmt)
-        rows = list(result.scalars().all())
+        positions = result.scalars().all()
 
-        output: list[dict[str, Any]] = []
-        for pos in rows:
-            item: dict[str, Any] = {
-                "symbol": pos.symbol,
-                "instrument_type": pos.instrument_type.value,
-                "quantity": pos.quantity,
-                "avg_price": pos.avg_price,
-                "total_invested": pos.total_invested,
+        out = []
+        for p in positions:
+            item = {
+                "symbol": p.symbol,
+                "instrument_type": p.instrument_type.value,
+                "quantity": p.quantity,
+                "avg_price": p.avg_price,
+                "total_invested": p.total_invested,
                 "current_price": None,
                 "evaluation_amount": None,
                 "unrealized_pnl": None,
                 "pnl_pct": None,
             }
             try:
-                current_price = await self._fetch_current_price(
-                    pos.symbol, pos.instrument_type.value
+                cur_price = await self._fetch_current_price(
+                    p.symbol, p.instrument_type.value
                 )
-                item["current_price"] = current_price
-                evaluation = _q_money(current_price * pos.quantity)
-                item["evaluation_amount"] = evaluation
-                pnl = _q_money(evaluation - pos.total_invested)
-                item["unrealized_pnl"] = pnl
-                if pos.avg_price > 0:
-                    pnl_pct = (
-                        (current_price - pos.avg_price) / pos.avg_price * Decimal("100")
-                    )
-                    item["pnl_pct"] = pnl_pct.quantize(
-                        Decimal("0.01"), rounding=ROUND_HALF_UP
-                    )
+                eval_amt = _q_money(cur_price * p.quantity)
+                pnl = _q_money(eval_amt - p.total_invested)
+                pnl_pct = _q_pct((eval_amt / p.total_invested - 1) * 100)
+
+                item.update(
+                    {
+                        "current_price": cur_price,
+                        "evaluation_amount": eval_amt,
+                        "unrealized_pnl": pnl,
+                        "pnl_pct": pnl_pct,
+                    }
+                )
             except Exception as exc:
                 item["price_error"] = str(exc)
-            output.append(item)
-        return output
 
-    async def get_position(self, account_id: int, symbol: str) -> dict[str, Any] | None:
-        resolved_symbol = resolve_market_type(symbol, None)[1]
-        pos = await self._get_position(account_id, resolved_symbol)
-        if pos is None:
-            return None
-        positions = await self.get_positions(account_id=account_id)
-        for item in positions:
-            if item["symbol"] == resolved_symbol:
-                return item
-        return None
+            out.append(item)
+        return out
 
     async def get_cash_balance(self, account_id: int) -> dict[str, Decimal]:
         account = await self.get_account(account_id)
@@ -505,17 +483,18 @@ class PaperTradingService:
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         stmt = select(PaperTrade).where(PaperTrade.account_id == account_id)
-        if symbol is not None:
+        if symbol:
             stmt = stmt.where(PaperTrade.symbol == symbol)
-        if side is not None:
-            stmt = stmt.where(PaperTrade.side == side.lower())
-        if days is not None:
+        if side:
+            stmt = stmt.where(PaperTrade.side == side)
+        if days:
             cutoff = now_kst() - timedelta(days=days)
             stmt = stmt.where(PaperTrade.executed_at >= cutoff)
-        stmt = stmt.order_by(PaperTrade.executed_at.desc()).limit(limit)
 
+        stmt = stmt.order_by(PaperTrade.executed_at.desc()).limit(limit)
         result = await self.db.execute(stmt)
-        rows = list(result.scalars().all())
+        trades = result.scalars().all()
+
         return [
             {
                 "id": t.id,
@@ -528,51 +507,42 @@ class PaperTradingService:
                 "total_amount": t.total_amount,
                 "fee": t.fee,
                 "currency": t.currency,
-                "reason": t.reason,
                 "realized_pnl": t.realized_pnl,
+                "reason": t.reason,
                 "executed_at": t.executed_at,
             }
-            for t in rows
+            for t in trades
         ]
 
     async def get_portfolio_summary(self, account_id: int) -> dict[str, Any]:
+        """Summarize entire portfolio performance."""
         account = await self.get_account(account_id)
         if account is None:
             raise ValueError(f"Account {account_id} not found")
 
-        positions = await self.get_positions(account_id=account_id)
+        positions = await self.get_positions(account_id)
 
         total_invested = Decimal("0")
         total_evaluated = Decimal("0")
         total_pnl = Decimal("0")
-        for p in positions:
-            total_invested += Decimal(str(p.get("total_invested") or "0"))
-            eval_amt = p.get("evaluation_amount")
-            pnl = p.get("unrealized_pnl")
-            if eval_amt is not None:
-                total_evaluated += Decimal(str(eval_amt))
-            if pnl is not None:
-                total_pnl += Decimal(str(pnl))
 
-        total_pnl_pct: Decimal | None = None
+        for p in positions:
+            if p["evaluation_amount"] is not None:
+                total_invested += p["total_invested"]
+                total_evaluated += p["evaluation_amount"]
+                total_pnl += p["unrealized_pnl"]
+
+        total_pnl_pct = None
         if total_invested > 0:
-            total_pnl_pct = (total_pnl / total_invested * Decimal("100")).quantize(
-                Decimal("0.01"), rounding=ROUND_HALF_UP
-            )
+            total_pnl_pct = _q_pct((total_evaluated / total_invested - 1) * 100)
 
         return {
+            "account_name": account.name,
+            "cash_krw": account.cash_krw,
+            "cash_usd": account.cash_usd,
             "total_invested": total_invested,
             "total_evaluated": total_evaluated,
             "total_pnl": total_pnl,
             "total_pnl_pct": total_pnl_pct,
-            "cash_krw": account.cash_krw,
-            "cash_usd": account.cash_usd,
             "positions_count": len(positions),
         }
-
-
-__all__ = [
-    "FEE_RATES",
-    "calculate_fee",
-    "PaperTradingService",
-]

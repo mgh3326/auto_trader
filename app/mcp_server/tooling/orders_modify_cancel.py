@@ -448,9 +448,7 @@ async def _cancel_kis_domestic(
             open_orders = await kis.inquire_korea_orders()
             for order in open_orders:
                 if (
-                    str(
-                        _get_kis_field(order, "odno", "ODNO", "ord_no", "ORD_NO")
-                    )
+                    str(_get_kis_field(order, "odno", "ODNO", "ord_no", "ORD_NO"))
                     == order_id
                 ):
                     symbol = str(_get_kis_field(order, "pdno", "PDNO"))
@@ -489,16 +487,10 @@ async def _cancel_kis_domestic(
                     default="02",
                 )
                 price = int(
-                    float(
-                        _get_kis_field(order, "ord_unpr", "ORD_UNPR", default=0)
-                        or 0
-                    )
+                    float(_get_kis_field(order, "ord_unpr", "ORD_UNPR", default=0) or 0)
                 )
                 quantity = int(
-                    float(
-                        _get_kis_field(order, "ord_qty", "ORD_QTY", default=0)
-                        or 0
-                    )
+                    float(_get_kis_field(order, "ord_qty", "ORD_QTY", default=0) or 0)
                 )
                 orgno_value = _get_kis_field(
                     order,
@@ -586,10 +578,7 @@ async def _cancel_kis_overseas(
 
         # Try to get remaining quantity from open order fields first
         remaining_quantity = int(
-            float(
-                _get_kis_field(target_order, "nccs_qty", "NCCS_QTY", default=0)
-                or 0
-            )
+            float(_get_kis_field(target_order, "nccs_qty", "NCCS_QTY", default=0) or 0)
         )
 
         if remaining_quantity > 0:
@@ -598,9 +587,7 @@ async def _cancel_kis_overseas(
             # Calculate remaining from ordered - filled
             ordered = int(
                 float(
-                    _get_kis_field(
-                        target_order, "ft_ord_qty", "FT_ORD_QTY", default=0
-                    )
+                    _get_kis_field(target_order, "ft_ord_qty", "FT_ORD_QTY", default=0)
                     or 0
                 )
             )
@@ -694,7 +681,6 @@ async def cancel_order_impl(
         }
 
 
-
 def _validate_modify_inputs(
     order_id: str,
     symbol: str,
@@ -708,9 +694,7 @@ def _validate_modify_inputs(
         (order_id, symbol, market_type, normalized_symbol)
     """
     if new_price is None and new_quantity is None:
-        raise ValueError(
-            "At least one of new_price or new_quantity must be specified"
-        )
+        raise ValueError("At least one of new_price or new_quantity must be specified")
     if new_price is not None and new_price <= 0:
         raise ValueError("new_price must be a positive number")
     if new_quantity is not None and new_quantity <= 0:
@@ -733,9 +717,7 @@ def _build_modify_dry_run_response(
     """Build dry-run preview response for modify order."""
     changes: dict[str, Any] = {
         "price": {"from": None, "to": new_price} if new_price else None,
-        "quantity": (
-            {"from": None, "to": new_quantity} if new_quantity else None
-        ),
+        "quantity": ({"from": None, "to": new_quantity} if new_quantity else None),
     }
     return {
         "success": True,
@@ -784,13 +766,9 @@ async def _modify_upbit(
             }
 
         original_price = float(original_order.get("price", 0) or 0)
-        original_quantity = float(
-            original_order.get("remaining_volume", 0) or 0
-        )
+        original_quantity = float(original_order.get("remaining_volume", 0) or 0)
         final_price = new_price if new_price is not None else original_price
-        final_quantity = (
-            new_quantity if new_quantity is not None else original_quantity
-        )
+        final_quantity = new_quantity if new_quantity is not None else original_quantity
 
         result = await upbit_service.cancel_and_reorder(
             order_id, final_price, final_quantity
@@ -823,9 +801,7 @@ async def _modify_upbit(
             "order_id": order_id,
             "symbol": normalized_symbol,
             "market": _normalize_market_type_to_external(market_type),
-            "error": result.get("cancel_result", {}).get(
-                "error", "Unknown error"
-            ),
+            "error": result.get("cancel_result", {}).get("error", "Unknown error"),
             "changes": changes,
             "method": "cancel_reorder",
             "dry_run": dry_run,
@@ -859,11 +835,7 @@ async def _modify_kis_domestic(
         target_order = None
         for order in open_orders:
             if (
-                str(
-                    _get_kis_field(
-                        order, "odno", "ODNO", "ord_no", "ORD_NO"
-                    )
-                )
+                str(_get_kis_field(order, "odno", "ODNO", "ord_no", "ORD_NO"))
                 == order_id
             ):
                 target_order = order
@@ -881,29 +853,15 @@ async def _modify_kis_domestic(
             }
 
         original_price = int(
-            float(
-                _get_kis_field(
-                    target_order, "ord_unpr", "ORD_UNPR", default=0
-                )
-                or 0
-            )
+            float(_get_kis_field(target_order, "ord_unpr", "ORD_UNPR", default=0) or 0)
         )
         original_quantity = int(
-            float(
-                _get_kis_field(
-                    target_order, "ord_qty", "ORD_QTY", default=0
-                )
-                or 0
-            )
+            float(_get_kis_field(target_order, "ord_qty", "ORD_QTY", default=0) or 0)
         )
-        side_code = _get_kis_field(
-            target_order, "sll_buy_dvsn_cd", "SLL_BUY_DVSN_CD"
-        )
+        side_code = _get_kis_field(target_order, "sll_buy_dvsn_cd", "SLL_BUY_DVSN_CD")
         side = "buy" if side_code == "02" else "sell"
 
-        final_price_raw = (
-            int(new_price) if new_price is not None else original_price
-        )
+        final_price_raw = int(new_price) if new_price is not None else original_price
         final_price = int(adjust_tick_size_kr(float(final_price_raw), side))
         final_quantity = (
             int(new_quantity) if new_quantity is not None else original_quantity
@@ -989,9 +947,7 @@ async def _modify_kis_overseas(
             target_order,
             target_exchange,
             exchange_candidates,
-        ) = await _find_us_open_order_by_id(
-            kis, order_id, normalized_symbol
-        )
+        ) = await _find_us_open_order_by_id(kis, order_id, normalized_symbol)
         logger.debug(
             "US modify lookup: order_id=%s symbol=%s checked_exchanges=%s",
             order_id,
@@ -1011,17 +967,11 @@ async def _modify_kis_overseas(
             }
 
         original_price = float(
-            _get_kis_field(
-                target_order, "ft_ord_unpr3", "FT_ORD_UNPR3", default=0
-            )
-            or 0
+            _get_kis_field(target_order, "ft_ord_unpr3", "FT_ORD_UNPR3", default=0) or 0
         )
         original_quantity = int(
             float(
-                _get_kis_field(
-                    target_order, "ft_ord_qty", "FT_ORD_QTY", default=0
-                )
-                or 0
+                _get_kis_field(target_order, "ft_ord_qty", "FT_ORD_QTY", default=0) or 0
             )
         )
 
@@ -1034,13 +984,9 @@ async def _modify_kis_overseas(
             ", ".join(exchange_candidates),
             exchange_code,
         )
-        final_price = (
-            float(new_price) if new_price is not None else original_price
-        )
+        final_price = float(new_price) if new_price is not None else original_price
         final_quantity = (
-            int(new_quantity)
-            if new_quantity is not None
-            else original_quantity
+            int(new_quantity) if new_quantity is not None else original_quantity
         )
 
         result = await kis.modify_overseas_order(
@@ -1107,10 +1053,8 @@ async def modify_order_impl(
     new_quantity: float | None = None,
     dry_run: bool = True,
 ) -> dict[str, Any]:
-    order_id, symbol, market_type, normalized_symbol = (
-        _validate_modify_inputs(
-            order_id, symbol, market, new_price, new_quantity
-        )
+    order_id, symbol, market_type, normalized_symbol = _validate_modify_inputs(
+        order_id, symbol, market, new_price, new_quantity
     )
 
     if dry_run:
@@ -1160,7 +1104,6 @@ async def modify_order_impl(
         "error": f"modify_order is not supported for market '{market_type}'",
         "dry_run": dry_run,
     }
-
 
 
 __all__ = [

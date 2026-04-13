@@ -135,6 +135,65 @@ async def test_create_paper_account_success(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_paper_account_with_strategy_name(monkeypatch) -> None:
+    db = AsyncMock()
+    db.add = MagicMock()
+
+    async def _refresh(instance):
+        instance.id = 55
+        instance.created_at = None
+        instance.updated_at = None
+
+    db.refresh = AsyncMock(side_effect=_refresh)
+    _patch_session(monkeypatch, db)
+
+    tools = build_tools()
+    result = await tools["create_paper_account"](
+        name="momentum-bot",
+        strategy_name="momentum",
+    )
+
+    assert result["success"] is True
+    assert result["account"]["strategy_name"] == "momentum"
+
+
+@pytest.mark.asyncio
+async def test_list_paper_accounts_with_strategy_filter(monkeypatch) -> None:
+    db = AsyncMock()
+    _patch_session(monkeypatch, db)
+
+    acc = _make_account(id=1, name="momentum-bot", strategy_name="momentum")
+
+    async def _list(is_active, strategy_name):
+        assert strategy_name == "momentum"
+        return [acc]
+
+    with patch(
+        "app.mcp_server.tooling.paper_account_registration.PaperTradingService"
+    ) as svc_cls:
+        svc = svc_cls.return_value
+        svc.list_accounts = AsyncMock(side_effect=_list)
+        svc.get_portfolio_summary = AsyncMock(
+            return_value={
+                "total_invested": Decimal("0"),
+                "total_evaluated": Decimal("100000000"),
+                "total_pnl": Decimal("0"),
+                "total_pnl_pct": Decimal("0.00"),
+                "cash_krw": acc.cash_krw,
+                "cash_usd": acc.cash_usd,
+                "positions_count": 0,
+            }
+        )
+
+        tools = build_tools()
+        result = await tools["list_paper_accounts"](strategy_name="momentum")
+
+    assert result["success"] is True
+    assert len(result["accounts"]) == 1
+    assert result["accounts"][0]["strategy_name"] == "momentum"
+
+
+@pytest.mark.asyncio
 async def test_create_paper_account_duplicate_name(monkeypatch) -> None:
     db = AsyncMock()
     db.add = MagicMock()
@@ -161,7 +220,7 @@ async def test_list_paper_accounts_returns_enriched(monkeypatch) -> None:
         id=2, name="us-bot", cash_krw=Decimal("0"), cash_usd=Decimal("5000")
     )
 
-    async def _list(is_active):
+    async def _list(is_active, strategy_name=None):
         assert is_active is True
         return [acc1, acc2]
 
@@ -218,7 +277,7 @@ async def test_list_paper_accounts_is_active_false(monkeypatch) -> None:
 
     captured: dict[str, object] = {}
 
-    async def _list(is_active):
+    async def _list(is_active, strategy_name=None):
         captured["is_active"] = is_active
         return []
 
