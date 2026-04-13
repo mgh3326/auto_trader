@@ -88,6 +88,56 @@ def register_paper_analytics_tools(mcp: FastMCP) -> None:
                 "performance": perf,
             }
 
+    @mcp.tool(
+        name="get_paper_trade_log",
+        description=(
+            "Return paper trading execution history (most recent first) for a given account. "
+            "Optional filters: symbol, days (look-back window), limit (default 50). "
+            "Each row includes symbol, side, quantity, price, fee, realized_pnl, executed_at."
+        ),
+    )
+    async def get_paper_trade_log(
+        name: str,
+        symbol: str | None = None,
+        days: int | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        async with _session_factory()() as db:
+            service = PaperTradingService(db)
+            account = await service.get_account_by_name(name)
+            if account is None:
+                return {
+                    "success": False,
+                    "error": f"Paper account '{name}' not found",
+                }
+
+            rows = await service.get_trade_history(
+                account_id=account.id, symbol=symbol, days=days, limit=limit
+            )
+            trades = [
+                {
+                    "id": r["id"],
+                    "symbol": r["symbol"],
+                    "instrument_type": r["instrument_type"],
+                    "side": r["side"],
+                    "order_type": r["order_type"],
+                    "quantity": _to_float(r.get("quantity")),
+                    "price": _to_float(r.get("price")),
+                    "total_amount": _to_float(r.get("total_amount")),
+                    "fee": _to_float(r.get("fee")),
+                    "currency": r["currency"],
+                    "reason": r.get("reason"),
+                    "realized_pnl": _to_float(r.get("realized_pnl")),
+                    "executed_at": (
+                        r["executed_at"].isoformat()
+                        if r.get("executed_at") is not None
+                        else None
+                    ),
+                }
+                for r in rows
+            ]
+            return {"success": True, "account_name": name, "trades": trades}
+
 
 __all__ = [
     "PAPER_ANALYTICS_TOOL_NAMES",
