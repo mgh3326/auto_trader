@@ -52,6 +52,8 @@ def _serialize_journal(j: TradeJournal) -> dict[str, Any]:
         "exit_reason": j.exit_reason,
         "pnl_pct": float(j.pnl_pct) if j.pnl_pct is not None else None,
         "account": j.account,
+        "account_type": j.account_type,
+        "paper_trade_id": j.paper_trade_id,
         "notes": j.notes,
         "created_at": j.created_at.isoformat() if j.created_at else None,
         "updated_at": j.updated_at.isoformat() if j.updated_at else None,
@@ -73,12 +75,16 @@ async def save_trade_journal(
     account: str | None = None,
     notes: str | None = None,
     status: str = "draft",
+    account_type: str = "live",
+    paper_trade_id: int | None = None,
 ) -> dict[str, Any]:
     """Save a trade journal entry with investment thesis and strategy metadata.
 
     symbol is auto-detected for instrument_type (KRW-BTC -> crypto, AAPL -> equity_us, 005930 -> equity_kr).
     min_hold_days auto-calculates hold_until from now.
     Warns if an active journal already exists for the same symbol.
+    account_type='paper' for paper trading journals (requires account name).
+    paper_trade_id links to the paper trade record.
     """
     symbol = (symbol or "").strip()
     thesis = (thesis or "").strip()
@@ -91,6 +97,20 @@ async def save_trade_journal(
         return {"success": False, "error": "side must be 'buy' or 'sell'"}
     if status not in {s.value for s in JournalStatus}:
         return {"success": False, "error": f"Invalid status: {status}"}
+
+    # account_type 검증
+    if account_type not in ("live", "paper"):
+        return {"success": False, "error": f"Invalid account_type: {account_type}"}
+    if account_type == "live" and paper_trade_id is not None:
+        return {
+            "success": False,
+            "error": "paper_trade_id cannot be set for live account_type",
+        }
+    if account_type == "paper" and not account:
+        return {
+            "success": False,
+            "error": "account is required for paper account_type",
+        }
 
     try:
         market_type, normalized_symbol = _resolve_market_type(symbol, None)
@@ -112,6 +132,7 @@ async def save_trade_journal(
                 .where(
                     TradeJournal.symbol == normalized_symbol,
                     TradeJournal.status == JournalStatus.active,
+                    TradeJournal.account_type == account_type,
                 )
                 .order_by(desc(TradeJournal.created_at))
                 .limit(1)
@@ -121,7 +142,8 @@ async def save_trade_journal(
             if existing:
                 warning = (
                     f"Active journal already exists for {normalized_symbol} "
-                    f"(id={existing.id}, thesis='{existing.thesis[:50]}...'). "
+                    f"(id={existing.id}, thesis='{existing.thesis[:50]}...', "
+                    f"account_type={account_type}). "
                     "Creating new journal anyway."
                 )
 
@@ -145,6 +167,8 @@ async def save_trade_journal(
                 indicators_snapshot=indicators_snapshot,
                 status=status,
                 account=account,
+                account_type=account_type,
+                paper_trade_id=paper_trade_id,
                 notes=notes,
             )
             db.add(journal)
@@ -173,11 +197,13 @@ async def get_trade_journal(
     days: int | None = None,
     include_closed: bool = False,
     limit: int = 50,
+    account_type: str | None = "live",
 ) -> dict[str, Any]:
     """Query trade journals. Call before any sell decision to check thesis and hold periods.
 
     Returns active journals by default. Set include_closed=True for closed/stopped.
     Each entry includes hold_remaining_days, hold_expired for hold period checks.
+    account_type defaults to 'live'; set to 'paper' for paper journals, or None to query both.
     """
     try:
         async with _session_factory()() as db:
@@ -204,6 +230,9 @@ async def get_trade_journal(
                         ]
                     )
                 )
+
+            if account_type is not None:
+                filters.append(TradeJournal.account_type == account_type)
 
             if market:
                 market_map = {
