@@ -41,7 +41,8 @@ def register_trade_journal_tools(mcp: FastMCP) -> None:
             "Returns active journals by default. "
             "Each entry includes hold_remaining_days and hold_expired. "
             "account_type defaults to 'live'; set to 'paper' for paper journals, "
-            "or None to query both."
+            "or None to query both. "
+            "account (optional) filters to a specific account name."
         ),
     )(get_trade_journal)
     _ = mcp.tool(

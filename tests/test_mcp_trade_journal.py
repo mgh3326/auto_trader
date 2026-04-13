@@ -376,6 +376,44 @@ class TestGetTradeJournalAccountType:
         assert len(result["entries"]) == 1
         assert result["entries"][0]["account_type"] == "live"
 
+    @pytest.mark.asyncio
+    async def test_filter_by_account_name(self, monkeypatch) -> None:
+        """account 필터 검증."""
+        acc_journal = TradeJournal(
+            symbol="005930",
+            instrument_type=InstrumentType.equity_kr,
+            thesis="Paper",
+            account_type="paper",
+            account="paper-momentum",
+            status="active",
+        )
+        acc_journal.id = 1
+        acc_journal.created_at = now_kst()
+        acc_journal.updated_at = now_kst()
+
+        mock_session = AsyncMock()
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = [acc_journal]
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute = AsyncMock(return_value=mock_result)
+
+        cm = AsyncMock()
+        cm.__aenter__.return_value = mock_session
+        cm.__aexit__.return_value = None
+        factory = MagicMock(return_value=cm)
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.trade_journal_tools._session_factory",
+            lambda: factory,
+        )
+
+        result = await get_trade_journal(
+            account_type="paper", account="paper-momentum"
+        )
+        assert result["success"] is True
+        assert len(result["entries"]) == 1
+        assert result["entries"][0]["account"] == "paper-momentum"
+
 
 class TestUpdateTradeJournal:
     @pytest.mark.asyncio

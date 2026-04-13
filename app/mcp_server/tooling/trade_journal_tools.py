@@ -198,12 +198,14 @@ async def get_trade_journal(
     include_closed: bool = False,
     limit: int = 50,
     account_type: str | None = "live",
+    account: str | None = None,
 ) -> dict[str, Any]:
     """Query trade journals. Call before any sell decision to check thesis and hold periods.
 
     Returns active journals by default. Set include_closed=True for closed/stopped.
     Each entry includes hold_remaining_days, hold_expired for hold period checks.
     account_type defaults to 'live'; set to 'paper' for paper journals, or None to query both.
+    account (optional) filters to a specific account name.
     """
     try:
         async with _session_factory()() as db:
@@ -233,6 +235,9 @@ async def get_trade_journal(
 
             if account_type is not None:
                 filters.append(TradeJournal.account_type == account_type)
+
+            if account is not None:
+                filters.append(TradeJournal.account == account)
 
             if market:
                 market_map = {
