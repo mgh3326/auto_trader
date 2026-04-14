@@ -2982,8 +2982,11 @@ class _StubPaperService:
     async def get_account_by_name(self, name):
         return next((a for a in self._a if a.name == name), None)
 
-    async def get_positions(self, account_id, market=None):
-        return self._p.get(account_id, [])
+    async def get_positions(self, account_id, *, market=None):
+        positions = self._p.get(account_id, [])
+        if market is not None:
+            positions = [p for p in positions if p.get("instrument_type") == market]
+        return positions
 
     async def get_cash_balance(self, account_id):
         return self._c.get(account_id, {"krw": Decimal("0"), "usd": Decimal("0")})
