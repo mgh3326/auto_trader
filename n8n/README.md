@@ -58,6 +58,19 @@ docker exec auto_trader_n8n_prod n8n import:workflow \
   --input=/home/node/.n8n/workflows/
 ```
 
+## 워크플로우 목록
+
+### Paperclip Review/Blocked Notify
+- **ID**: `paperclip-review-notify`
+- **주기**: 3분 간격 polling
+- **동작**: Paperclip API에서 `in_review`, `blocked` 상태 태스크를 조회하고 새로운 상태 변경을 감지하면 Telegram으로 알림 전송
+- **중복 방지**: n8n static data로 이미 알린 태스크 ID+상태 추적. 상태 변경 시에만 재알림
+- **환경 변수**: `PAPERCLIP_COMPANY_ID`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
+
+### WebSocket Container Monitor
+- **주기**: 15분 간격
+- **동작**: Upbit/KIS WebSocket heartbeat 파일을 읽어 비정상 상태 시 Discord 알림
+
 ## 런타임 계약
 
 n8n은 낮부 전용으로 `127.0.0.1:5678`에 고정 바인딩됩니다.
