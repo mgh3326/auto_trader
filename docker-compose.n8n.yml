@@ -20,8 +20,7 @@ services:
       - NODES_EXCLUDE=[]  # executeCommand 노드 허용 (내부 전용)
       # Paperclip Review Notify workflow
       - PAPERCLIP_COMPANY_ID=${PAPERCLIP_COMPANY_ID:-6a41f388-ff8d-4b65-82dc-38a9b66fa69e}
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_TOKEN}
-      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - PAPERCLIP_DISCORD_WEBHOOK_URL=${PAPERCLIP_DISCORD_WEBHOOK_URL}
     volumes:
       - ./n8n/data:/home/node/.n8n
       - ws-heartbeat:/shared/heartbeat:ro

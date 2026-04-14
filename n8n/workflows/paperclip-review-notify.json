@@ -37,7 +37,7 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Dedup: track already-notified issue IDs + statuses using workflow static data.\n// Only notify when a task is NEWLY in_review or blocked (or changes status).\n\nconst staticData = $getWorkflowStaticData('global');\nif (!staticData.notifiedMap) staticData.notifiedMap = {};\n\nconst issues = $input.first()?.json ?? [];\nconst now = Date.now();\nconst newAlerts = [];\n\n// Build current set of issue IDs for cleanup\nconst currentIds = new Set();\n\nfor (const issue of issues) {\n  if (!issue?.id) continue;\n  currentIds.add(issue.id);\n\n  const key = issue.id;\n  const prevStatus = staticData.notifiedMap[key];\n\n  // Notify if: never seen before, or status changed\n  if (!prevStatus || prevStatus !== issue.status) {\n    const agentName = issue.assigneeAgentId ? (issue.executionAgentNameKey || 'agent') : 'unassigned';\n    const statusEmoji = issue.status === 'blocked' ? '🚫' : '👀';\n\n    newAlerts.push({\n      id: issue.id,\n      identifier: issue.identifier || 'unknown',\n      title: issue.title || 'Untitled',\n      status: issue.status,\n      statusEmoji,\n      agentName,\n      priority: issue.priority || 'medium',\n      updatedAt: issue.updatedAt || new Date().toISOString()\n    });\n\n    staticData.notifiedMap[key] = issue.status;\n  }\n}\n\n// Clean up stale entries (issues no longer in_review/blocked)\nfor (const id of Object.keys(staticData.notifiedMap)) {\n  if (!currentIds.has(id)) {\n    delete staticData.notifiedMap[id];\n  }\n}\n\nreturn [{ json: { hasAlerts: newAlerts.length > 0, alerts: newAlerts, totalActive: issues.length } }];"
+        "jsCode": "// Dedup: track already-notified issue IDs + statuses using workflow static data.\n// Only notify when a task is NEWLY in_review or blocked (or changes status).\n\nconst staticData = $getWorkflowStaticData('global');\nif (!staticData.notifiedMap) staticData.notifiedMap = {};\n\nconst issues = $input.first()?.json ?? [];\nconst now = Date.now();\nconst newAlerts = [];\n\n// Build current set of issue IDs for cleanup\nconst currentIds = new Set();\n\nfor (const issue of issues) {\n  if (!issue?.id) continue;\n  currentIds.add(issue.id);\n\n  const key = issue.id;\n  const prevStatus = staticData.notifiedMap[key];\n\n  // Notify if: never seen before, or status changed\n  if (!prevStatus || prevStatus !== issue.status) {\n    const agentName = issue.assigneeAgentId ? (issue.executionAgentNameKey || 'agent') : 'unassigned';\n    const statusEmoji = issue.status === 'blocked' ? '\\uD83D\\uDEAB' : '\\uD83D\\uDC40';\n\n    newAlerts.push({\n      id: issue.id,\n      identifier: issue.identifier || 'unknown',\n      title: issue.title || 'Untitled',\n      status: issue.status,\n      statusEmoji,\n      agentName,\n      priority: issue.priority || 'medium',\n      updatedAt: issue.updatedAt || new Date().toISOString()\n    });\n\n    staticData.notifiedMap[key] = issue.status;\n  }\n}\n\n// Clean up stale entries (issues no longer in_review/blocked)\nfor (const id of Object.keys(staticData.notifiedMap)) {\n  if (!currentIds.has(id)) {\n    delete staticData.notifiedMap[id];\n  }\n}\n\nreturn [{ json: { hasAlerts: newAlerts.length > 0, alerts: newAlerts, totalActive: issues.length } }];"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -63,21 +63,21 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Build Telegram message from alerts\nconst data = $input.first().json;\nconst alerts = data.alerts;\n\nconst PAPERCLIP_UI = 'http://127.0.0.1:3100';\nconst PREFIX = 'ROB';\n\nlet lines = ['📋 *Paperclip 리뷰 알림*\\n'];\n\nfor (const a of alerts) {\n  const link = `${PAPERCLIP_UI}/${PREFIX}/issues/${a.identifier}`;\n  lines.push(`${a.statusEmoji} *${a.identifier}*: ${a.title}`);\n  lines.push(`   상태: \\`${a.status}\\` | 담당: \\`${a.agentName}\\` | 우선순위: \\`${a.priority}\\``);\n  lines.push(`   🔗 ${link}`);\n  lines.push('');\n}\n\nlines.push(`_총 ${data.totalActive}개 태스크가 리뷰/blocked 대기 중_`);\n\nconst text = lines.join('\\n');\n\nreturn [{ json: { text, chatId: $env.TELEGRAM_CHAT_ID || '' } }];"
+        "jsCode": "// Build Discord embed from alerts\nconst data = $input.first().json;\nconst alerts = data.alerts;\n\nconst PAPERCLIP_UI = 'http://127.0.0.1:3100';\nconst PREFIX = 'ROB';\n\nconst embeds = alerts.map(a => {\n  const link = `${PAPERCLIP_UI}/${PREFIX}/issues/${a.identifier}`;\n  const color = a.status === 'blocked' ? 0xFF0000 : 0xFFA500;\n  return {\n    title: `${a.statusEmoji} ${a.identifier}: ${a.title}`,\n    url: link,\n    color,\n    fields: [\n      { name: 'Status', value: `\\`${a.status}\\``, inline: true },\n      { name: 'Agent', value: `\\`${a.agentName}\\``, inline: true },\n      { name: 'Priority', value: `\\`${a.priority}\\``, inline: true }\n    ],\n    timestamp: a.updatedAt\n  };\n});\n\nconst payload = {\n  content: `**Paperclip Review Alert** - ${data.totalActive} task(s) awaiting review/unblock`,\n  embeds: embeds.slice(0, 10)\n};\n\nreturn [{ json: payload }];"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [960, 0],
       "id": "pc-msg",
-      "name": "Build Message"
+      "name": "Build Discord Message"
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "url": "={{ $env.PAPERCLIP_DISCORD_WEBHOOK_URL }}",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={\n  \"chat_id\": \"{{ $json.chatId }}\",\n  \"text\": {{ JSON.stringify($json.text) }},\n  \"parse_mode\": \"Markdown\"\n}",
+        "jsonBody": "={{ JSON.stringify($json) }}",
         "options": {
           "timeout": 10000
         }
@@ -85,8 +85,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [1200, 0],
-      "id": "pc-telegram",
-      "name": "Send Telegram"
+      "id": "pc-discord",
+      "name": "Send Discord"
     }
   ],
   "connections": {
@@ -100,10 +100,10 @@
       "main": [[{ "node": "Has New Alerts?", "type": "main", "index": 0 }]]
     },
     "Has New Alerts?": {
-      "main": [[{ "node": "Build Message", "type": "main", "index": 0 }]]
+      "main": [[{ "node": "Build Discord Message", "type": "main", "index": 0 }]]
     },
-    "Build Message": {
-      "main": [[{ "node": "Send Telegram", "type": "main", "index": 0 }]]
+    "Build Discord Message": {
+      "main": [[{ "node": "Send Discord", "type": "main", "index": 0 }]]
     }
   }
 }
