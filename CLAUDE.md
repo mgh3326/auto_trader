@@ -87,6 +87,26 @@ python kis_websocket_monitor.py             # KIS WebSocket 모니터링
 python upbit_websocket_monitor.py           # Upbit WebSocket 모니터링
 ```
 
+## 브랜치 & PR 워크플로우
+
+### 브랜치 보호
+- **main**, **develop** 브랜치는 보호됨 — 직접 push 금지
+- 모든 코드 변경은 Pull Request를 통해 머지
+
+### 브랜치 네이밍
+```
+feature/<task-id>-<설명>     # 새 기능 (예: feature/ROB-16-branch-protection)
+fix/<task-id>-<설명>         # 버그 수정
+chore/<설명>                 # 유지보수
+```
+
+### 워크플로우
+1. `develop` 브랜치에서 feature branch 생성
+2. 코드 변경 후 커밋 (`Co-Authored-By: Paperclip <noreply@paperclip.ing>`)
+3. PR 생성 (base: `develop`)
+4. 리뷰 후 머지
+5. 필요 시 `develop` → `main` 릴리스 머지
+
 ## 아키텍처
 
 ### 분석 시스템 아키텍처
