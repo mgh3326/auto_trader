@@ -29,6 +29,7 @@ async def async_db():
         execution_options={"schema_translate_map": {"paper": None}},
     )
     from sqlalchemy import Integer
+
     for table in [PaperAccount.__table__, PaperPosition.__table__]:
         for column in table.columns:
             if column.primary_key:
@@ -82,7 +83,9 @@ async def test_get_positions_no_market_returns_all(async_db: AsyncSession):
     account_id = await _seed_positions(async_db)
     service = PaperTradingService(async_db)
 
-    with patch.object(service, "_fetch_current_price", new_callable=AsyncMock) as mock_price:
+    with patch.object(
+        service, "_fetch_current_price", new_callable=AsyncMock
+    ) as mock_price:
         mock_price.side_effect = Exception("skip price")
         positions = await service.get_positions(account_id)
 
@@ -94,7 +97,9 @@ async def test_get_positions_market_equity_kr(async_db: AsyncSession):
     account_id = await _seed_positions(async_db)
     service = PaperTradingService(async_db)
 
-    with patch.object(service, "_fetch_current_price", new_callable=AsyncMock) as mock_price:
+    with patch.object(
+        service, "_fetch_current_price", new_callable=AsyncMock
+    ) as mock_price:
         mock_price.side_effect = Exception("skip price")
         positions = await service.get_positions(account_id, market="equity_kr")
 
@@ -108,7 +113,9 @@ async def test_get_positions_market_equity_us(async_db: AsyncSession):
     account_id = await _seed_positions(async_db)
     service = PaperTradingService(async_db)
 
-    with patch.object(service, "_fetch_current_price", new_callable=AsyncMock) as mock_price:
+    with patch.object(
+        service, "_fetch_current_price", new_callable=AsyncMock
+    ) as mock_price:
         mock_price.side_effect = Exception("skip price")
         positions = await service.get_positions(account_id, market="equity_us")
 
@@ -121,7 +128,9 @@ async def test_get_positions_market_crypto(async_db: AsyncSession):
     account_id = await _seed_positions(async_db)
     service = PaperTradingService(async_db)
 
-    with patch.object(service, "_fetch_current_price", new_callable=AsyncMock) as mock_price:
+    with patch.object(
+        service, "_fetch_current_price", new_callable=AsyncMock
+    ) as mock_price:
         mock_price.side_effect = Exception("skip price")
         positions = await service.get_positions(account_id, market="crypto")
 
