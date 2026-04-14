@@ -90,8 +90,12 @@ python upbit_websocket_monitor.py           # Upbit WebSocket 모니터링
 ## 브랜치 & PR 워크플로우
 
 ### 브랜치 보호
-- **main**, **develop** 브랜치는 보호됨 — 직접 push 금지
+- **main**, **production** 브랜치는 보호됨 — 직접 push 금지
 - 모든 코드 변경은 Pull Request를 통해 머지
+
+### 브랜치 역할
+- **main**: 개발 브랜치 (모든 PR의 base)
+- **production**: 배포 브랜치 (GHCR 이미지 빌드 트리거)
 
 ### 브랜치 네이밍
 ```
@@ -101,11 +105,11 @@ chore/<설명>                 # 유지보수
 ```
 
 ### 워크플로우
-1. `develop` 브랜치에서 feature branch 생성
+1. `main` 브랜치에서 feature branch 생성
 2. 코드 변경 후 커밋 (`Co-Authored-By: Paperclip <noreply@paperclip.ing>`)
-3. PR 생성 (base: `develop`)
+3. PR 생성 (base: `main`)
 4. 리뷰 후 머지
-5. 필요 시 `develop` → `main` 릴리스 머지
+5. 배포 시 `main` → `production` 머지
 
 ## 아키텍처
 

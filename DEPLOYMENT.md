@@ -5,12 +5,15 @@
 ## 배포 파이프라인 개요
 
 ```
-develop → (PR) → main → (merge) → production → (CI: deploy.yml) → GHCR → (서버) → deploy.sh
+feature branch → (PR) → main → (merge) → production → (CI: deploy.yml) → GHCR → (서버) → deploy.sh
 ```
+
+- **main**: 개발 브랜치 (모든 PR의 base)
+- **production**: 배포 브랜치 (GHCR 이미지 빌드 트리거)
 
 | 단계 | 트리거 | 자동화 |
 |------|--------|--------|
-| develop → main | PR 머지 | 수동 (리뷰 필수) |
+| feature → main | PR 머지 | 수동 (리뷰 필수) |
 | main → production | 브랜치 머지 | 수동 (`git merge main`) |
 | production → GHCR | push to `production` | **자동** (GitHub Actions `deploy.yml`) |
 | GHCR → 서버 배포 | 이미지 pull + restart | 수동 (`scripts/deploy.sh`) |
