@@ -238,6 +238,30 @@ DB Tables:
 - Upbit 심볼/마켓 해석도 DB 테이블(`upbit_symbol_universe`)을 단일 소스로 사용
 - 배포/마이그레이션 직후 심볼 유니버스 sync 스크립트 실행이 필요
 
+## 브랜치 & PR 워크플로우
+
+### 브랜치 보호
+- **main**, **production** 브랜치는 보호됨 — 직접 push 금지
+- 모든 코드 변경은 Pull Request를 통해 머지
+
+### 브랜치 역할
+- **main**: 개발 브랜치 (모든 PR의 base)
+- **production**: 배포 브랜치 (GHCR 이미지 빌드 트리거)
+
+### 브랜치 네이밍
+```
+feature/<task-id>-<설명>     # 새 기능 (예: feature/ROB-16-branch-protection)
+fix/<task-id>-<설명>         # 버그 수정
+chore/<설명>                 # 유지보수
+```
+
+### 워크플로우
+1. `main` 브랜치에서 feature branch 생성
+2. 코드 변경 후 커밋 (`Co-Authored-By: Paperclip <noreply@paperclip.ing>`)
+3. PR 생성 (base: `main`)
+4. 리뷰 후 머지
+5. 배포 시 `main` → `production` 머지
+
 ## 주요 워크플로우
 
 ### 1. 새로운 서비스 분석기 추가
