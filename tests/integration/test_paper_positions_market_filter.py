@@ -6,6 +6,7 @@ from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 
 import pytest
+import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.models.base import Base
@@ -14,7 +15,7 @@ from app.models.trading import InstrumentType
 from app.services.paper_trading_service import PaperTradingService
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def async_db():
     """In-memory SQLite async session with schema translation.
 
