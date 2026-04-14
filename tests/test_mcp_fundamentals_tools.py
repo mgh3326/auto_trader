@@ -4295,3 +4295,152 @@ class TestAnalyzeStockInvalidInput:
 
         with pytest.raises(ValueError, match="symbol is required"):
             await analyze_stock_impl(symbol="", market=None)
+
+
+# ---------------------------------------------------------------------------
+# get_investor_trends Tool
+# ---------------------------------------------------------------------------
+
+
+def _make_daily_investor_data(days: int = 10) -> dict:
+    """Build mock daily investor trend data from Naver source."""
+    data = []
+    import datetime as _dt
+
+    base = _dt.date(2024, 3, 15)
+    for i in range(days):
+        d = base - _dt.timedelta(days=i)
+        # Skip weekends to simulate trading days
+        if d.weekday() >= 5:
+            continue
+        data.append(
+            {
+                "date": d.isoformat(),
+                "close": 75000 + i * 100,
+                "change": 100 * (1 if i % 2 == 0 else -1),
+                "change_pct": 0.13 * (1 if i % 2 == 0 else -1),
+                "volume": 10_000_000 + i * 500_000,
+                "institutional_net": 500_000 * (1 if i % 3 == 0 else -1),
+                "foreign_net": 300_000 * (1 if i % 2 == 0 else -1),
+            }
+        )
+    return {
+        "symbol": "005930",
+        "days": len(data),
+        "data": data,
+    }
+
+
+@pytest.mark.asyncio
+class TestGetInvestorTrends:
+    """Test get_investor_trends tool."""
+
+    async def test_daily_default(self, monkeypatch):
+        """Test daily investor trends returns data with individual_net added."""
+        tools = build_tools()
+        mock = _make_daily_investor_data(10)
+
+        async def mock_fetch(code, days):
+            return {
+                "instrument_type": "equity_kr",
+                "source": "naver",
+                **mock,
+            }
+
+        _patch_runtime_attr(
+            monkeypatch, "_fetch_investor_trends_naver", mock_fetch
+        )
+
+        result = await tools["get_investor_trends"]("005930")
+
+        assert result["source"] == "naver"
+        assert result["period"] == "day"
+        assert len(result["data"]) > 0
+        # Every row should have individual_net
+        for row in result["data"]:
+            assert "individual_net" in row
+            inst = row.get("institutional_net") or 0
+            frgn = row.get("foreign_net") or 0
+            assert row["individual_net"] == -(inst + frgn)
+
+    async def test_weekly_aggregation(self, monkeypatch):
+        """Test weekly aggregation sums investor flows."""
+        tools = build_tools()
+        mock = _make_daily_investor_data(20)
+
+        async def mock_fetch(code, days):
+            return {
+                "instrument_type": "equity_kr",
+                "source": "naver",
+                **mock,
+            }
+
+        _patch_runtime_attr(
+            monkeypatch, "_fetch_investor_trends_naver", mock_fetch
+        )
+
+        result = await tools["get_investor_trends"]("005930", period="week")
+
+        assert result["period"] == "week"
+        for row in result["data"]:
+            assert "period_key" in row
+            assert "date_start" in row
+            assert "date_end" in row
+            assert "trading_days" in row
+            assert "institutional_net" in row
+            assert "foreign_net" in row
+            assert "individual_net" in row
+
+    async def test_monthly_aggregation(self, monkeypatch):
+        """Test monthly aggregation sums investor flows."""
+        tools = build_tools()
+        mock = _make_daily_investor_data(30)
+
+        async def mock_fetch(code, days):
+            return {
+                "instrument_type": "equity_kr",
+                "source": "naver",
+                **mock,
+            }
+
+        _patch_runtime_attr(
+            monkeypatch, "_fetch_investor_trends_naver", mock_fetch
+        )
+
+        result = await tools["get_investor_trends"]("005930", period="month")
+
+        assert result["period"] == "month"
+        assert len(result["data"]) > 0
+        for row in result["data"]:
+            assert "period_key" in row
+            # Month key format: YYYY-MM
+            assert len(row["period_key"].split("-")) == 2
+
+    async def test_rejects_non_kr_symbol(self, monkeypatch):
+        """Test that non-Korean symbols raise ValueError."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="Korean stocks"):
+            await tools["get_investor_trends"]("AAPL")
+
+    async def test_rejects_invalid_period(self, monkeypatch):
+        """Test that invalid period raises ValueError."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="period must be"):
+            await tools["get_investor_trends"]("005930", period="quarter")
+
+    async def test_error_returns_error_payload(self, monkeypatch):
+        """Test that fetch errors return error payload instead of raising."""
+        tools = build_tools()
+
+        async def mock_fetch(code, days):
+            raise RuntimeError("Naver down")
+
+        _patch_runtime_attr(
+            monkeypatch, "_fetch_investor_trends_naver", mock_fetch
+        )
+
+        result = await tools["get_investor_trends"]("005930")
+
+        assert "error" in result or "message" in result
