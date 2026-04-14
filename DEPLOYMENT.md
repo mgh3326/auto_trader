@@ -2,6 +2,41 @@
 
 이 문서는 `docker-compose.prod.yml` 기반 프로덕션 배포 절차를 설명합니다.
 
+## 배포 파이프라인 개요
+
+```
+develop → (PR) → main → (merge) → production → (CI: deploy.yml) → GHCR → (서버) → deploy.sh
+```
+
+| 단계 | 트리거 | 자동화 |
+|------|--------|--------|
+| develop → main | PR 머지 | 수동 (리뷰 필수) |
+| main → production | 브랜치 머지 | 수동 (`git merge main`) |
+| production → GHCR | push to `production` | **자동** (GitHub Actions `deploy.yml`) |
+| GHCR → 서버 배포 | 이미지 pull + restart | 수동 (`scripts/deploy.sh`) |
+
+### 전체 배포 절차 (main 머지 후)
+
+```bash
+# 1. production 브랜치에 main 머지
+git checkout production
+git pull origin production
+git merge main
+git push origin production
+
+# 2. GitHub Actions 빌드 완료 대기 (약 5-10분)
+#    확인: https://github.com/<repo>/actions/workflows/deploy.yml
+
+# 3. 서버에서 배포 실행
+cd /home/mgh3326/auto_trader
+scripts/deploy.sh --auto-migrate
+
+# 4. 서비스 상태 확인
+docker compose --env-file .env.prod -f docker-compose.prod.yml ps
+curl http://localhost:8000/healthz
+curl http://localhost:8765/mcp
+```
+
 ## 1. 사전 준비
 
 - Docker / Docker Compose 설치
@@ -91,7 +126,12 @@ docker compose -f docker-compose.n8n.yml logs -f  # n8n
 ## 6. 업데이트 절차
 
 ```bash
-git pull origin production
+# 권장: 배포 스크립트 사용
+scripts/deploy.sh                    # 마이그레이션 없이 빠른 배포
+scripts/deploy.sh --auto-migrate     # 마이그레이션 포함
+scripts/deploy.sh --auto-migrate --backup  # 백업 + 마이그레이션
+
+# 수동 실행
 docker compose --env-file .env.prod -f docker-compose.prod.yml pull
 docker compose --env-file .env.prod -f docker-compose.prod.yml up -d
 ```
