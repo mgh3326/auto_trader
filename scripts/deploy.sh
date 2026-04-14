@@ -17,6 +17,7 @@ NC='\033[0m'
 COMPOSE_FILE="docker-compose.prod.yml"
 ENV_FILE=".env.prod"
 HEALTH_URL="http://localhost:8000/healthz"
+MCP_URL="http://localhost:${MCP_PORT:-8765}/mcp"
 HEALTH_RETRIES=15
 HEALTH_INTERVAL=3
 
@@ -165,9 +166,27 @@ if [ "$HEALTH_CHECK" = true ]; then
     echo -e "${YELLOW}🏥 Running health check...${NC}"
     for i in $(seq 1 $HEALTH_RETRIES); do
         if curl -sf "$HEALTH_URL" > /dev/null 2>&1; then
+            echo -e "${GREEN}✅ API health check passed!${NC}"
+
+            # MCP 서버 헬스체크
+            MCP_OK=false
+            for j in $(seq 1 5); do
+                if curl -sf "$MCP_URL" > /dev/null 2>&1 || curl -s "$MCP_URL" 2>/dev/null | grep -q 'error\|method\|session'; then
+                    MCP_OK=true
+                    break
+                fi
+                echo -e "  ⏳ Waiting for MCP server... ($j/5)"
+                sleep 2
+            done
+
+            if [ "$MCP_OK" = true ]; then
+                echo -e "${GREEN}✅ MCP server health check passed!${NC}"
+            else
+                echo -e "${YELLOW}⚠️  MCP server not responding on $MCP_URL (non-fatal)${NC}"
+            fi
+
             DEPLOY_END=$(date +%s)
             DEPLOY_DURATION=$((DEPLOY_END - DEPLOY_START))
-            echo -e "${GREEN}✅ API health check passed!${NC}"
             echo ""
             echo -e "${GREEN}🎉 Deployment completed in ${DEPLOY_DURATION}s${NC}"
             echo ""
