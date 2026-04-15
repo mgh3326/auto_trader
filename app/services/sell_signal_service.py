@@ -356,9 +356,7 @@ async def evaluate_sell_signal(
     rsi_cond, errs = await _check_rsi_momentum(symbol, rsi_high_mark, rsi_low_mark)
     all_errors.extend(errs)
 
-    bb_cond, errs = await _check_bollinger_reentry(
-        symbol, current_price, bb_upper_ref
-    )
+    bb_cond, errs = await _check_bollinger_reentry(symbol, current_price, bb_upper_ref)
     all_errors.extend(errs)
 
     conditions = [trailing_cond, stoch_cond, foreign_cond, rsi_cond, bb_cond]

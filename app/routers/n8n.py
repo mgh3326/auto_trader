@@ -595,10 +595,14 @@ async def get_sell_signal(
     symbol: str,
     price_threshold: float = Query(1_152_000, description="Trailing stop price (KRW)"),
     stoch_rsi_threshold: float = Query(80, description="StochRSI K threshold"),
-    foreign_days: int = Query(2, ge=1, le=5, description="Foreign consecutive sell days"),
+    foreign_days: int = Query(
+        2, ge=1, le=5, description="Foreign consecutive sell days"
+    ),
     rsi_high: float = Query(70, description="RSI high watermark"),
     rsi_low: float = Query(65, description="RSI low trigger"),
-    bb_upper_ref: float = Query(1_142_000, description="Bollinger upper reference (KRW)"),
+    bb_upper_ref: float = Query(
+        1_142_000, description="Bollinger upper reference (KRW)"
+    ),
 ) -> N8nSellSignalResponse | JSONResponse:
     as_of = now_kst().replace(microsecond=0).isoformat()
 

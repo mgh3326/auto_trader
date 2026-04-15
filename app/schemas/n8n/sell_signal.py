@@ -16,9 +16,7 @@ class N8nSellSignalResponse(BaseModel):
     as_of: str = Field(..., description="Response timestamp in KST ISO8601")
     symbol: str = Field(..., description="Stock code (e.g. 000660)")
     name: str = Field(..., description="Stock name")
-    triggered: bool = Field(
-        ..., description="True if 2+ conditions met simultaneously"
-    )
+    triggered: bool = Field(..., description="True if 2+ conditions met simultaneously")
     conditions_met: int = Field(..., description="Number of conditions currently met")
     conditions: list[N8nSellCondition] = Field(
         default_factory=list, description="Individual condition evaluations"
