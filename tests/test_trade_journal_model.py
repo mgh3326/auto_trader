@@ -103,3 +103,42 @@ class TestAccountTypeField:
             thesis="Test thesis",
         )
         assert journal.paper_trade_id is None
+
+
+class TestMetadataJSONBField:
+    """extra_metadata (JSONB 'metadata' column) 테스트."""
+
+    def test_create_with_metadata_dict(self) -> None:
+        journal = TradeJournal(
+            symbol="KRW-BTC",
+            instrument_type=InstrumentType.crypto,
+            thesis="RSI oversold",
+            extra_metadata={"paperclip_issue_id": "ROB-51"},
+        )
+        assert journal.extra_metadata == {"paperclip_issue_id": "ROB-51"}
+
+    def test_create_with_none_metadata(self) -> None:
+        journal = TradeJournal(
+            symbol="KRW-BTC",
+            instrument_type=InstrumentType.crypto,
+            thesis="RSI oversold",
+        )
+        assert journal.extra_metadata is None
+
+    def test_metadata_stores_complex_nested_json(self) -> None:
+        nested = {
+            "paperclip_issue_id": "ROB-51",
+            "tags": ["momentum", "oversold"],
+            "scores": {"technical": 85, "fundamental": 70},
+            "nested": {"deep": {"value": True}},
+        }
+        journal = TradeJournal(
+            symbol="AAPL",
+            instrument_type=InstrumentType.equity_us,
+            thesis="Earnings play",
+            extra_metadata=nested,
+        )
+        assert journal.extra_metadata == nested
+        assert journal.extra_metadata["tags"] == ["momentum", "oversold"]
+        assert journal.extra_metadata["scores"]["technical"] == 85
+        assert journal.extra_metadata["nested"]["deep"]["value"] is True

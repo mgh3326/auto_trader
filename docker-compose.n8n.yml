@@ -16,6 +16,8 @@ services:
       - TZ=Asia/Seoul
       - N8N_DIAGNOSTICS_ENABLED=false
       - N8N_VERSION_NOTIFICATIONS_ENABLED=false
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
+      - N8N_DISCORD_BOT_TOKEN_ALFRED=${N8N_DISCORD_BOT_TOKEN_ALFRED}
       - QUEUE_HEALTH_CHECK_ACTIVE=true
       - NODES_EXCLUDE=[]  # executeCommand 노드 허용 (내부 전용)
       # Paperclip Review Notify workflow
