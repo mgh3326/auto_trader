@@ -247,6 +247,168 @@ class TestGetTradeJournal:
         assert result["summary"]["total_active"] == 0
 
 
+class TestSaveTradeJournalMetadata:
+    """save_trade_journal metadata 파라미터 테스트."""
+
+    @pytest.mark.asyncio
+    async def test_save_with_metadata_stores_correctly(self) -> None:
+        mock_session = AsyncMock()
+        mock_scalars = MagicMock()
+        mock_scalars.first.return_value = None
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute.return_value = mock_result
+
+        factory = _mock_session_factory(mock_session)
+        with patch(
+            "app.mcp_server.tooling.trade_journal_tools._session_factory",
+            return_value=factory,
+        ):
+            result = await save_trade_journal(
+                symbol="KRW-BTC",
+                thesis="RSI oversold bounce play",
+                metadata={"paperclip_issue_id": "ROB-51", "source": "auto"},
+            )
+
+        assert result["success"] is True
+        added_obj = mock_session.add.call_args[0][0]
+        assert isinstance(added_obj, TradeJournal)
+        assert added_obj.extra_metadata == {
+            "paperclip_issue_id": "ROB-51",
+            "source": "auto",
+        }
+
+    @pytest.mark.asyncio
+    async def test_save_without_metadata_no_regression(self) -> None:
+        mock_session = AsyncMock()
+        mock_scalars = MagicMock()
+        mock_scalars.first.return_value = None
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute.return_value = mock_result
+
+        factory = _mock_session_factory(mock_session)
+        with patch(
+            "app.mcp_server.tooling.trade_journal_tools._session_factory",
+            return_value=factory,
+        ):
+            result = await save_trade_journal(
+                symbol="KRW-BTC",
+                thesis="RSI oversold bounce play",
+            )
+
+        assert result["success"] is True
+        added_obj = mock_session.add.call_args[0][0]
+        assert added_obj.extra_metadata is None
+
+
+class TestGetTradeJournalPaperclipIssueId:
+    """get_trade_journal paperclip_issue_id 필터 테스트."""
+
+    @pytest.mark.asyncio
+    async def test_filter_by_paperclip_issue_id_returns_matching(self) -> None:
+        now = datetime.now(UTC)
+        journal = TradeJournal(
+            id=10,
+            symbol="KRW-BTC",
+            instrument_type=InstrumentType.crypto,
+            thesis="RSI oversold",
+            status="active",
+            side="buy",
+            extra_metadata={"paperclip_issue_id": "ROB-51"},
+            created_at=now,
+            updated_at=now,
+        )
+
+        mock_session = AsyncMock()
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = [journal]
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute.return_value = mock_result
+
+        factory = _mock_session_factory(mock_session)
+        with patch(
+            "app.mcp_server.tooling.trade_journal_tools._session_factory",
+            return_value=factory,
+        ):
+            result = await get_trade_journal(paperclip_issue_id="ROB-51")
+
+        assert result["success"] is True
+        assert len(result["entries"]) == 1
+        assert result["entries"][0]["metadata"] == {"paperclip_issue_id": "ROB-51"}
+
+    @pytest.mark.asyncio
+    async def test_filter_by_paperclip_issue_id_no_matches(self) -> None:
+        mock_session = AsyncMock()
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = []
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute.return_value = mock_result
+
+        factory = _mock_session_factory(mock_session)
+        with patch(
+            "app.mcp_server.tooling.trade_journal_tools._session_factory",
+            return_value=factory,
+        ):
+            result = await get_trade_journal(paperclip_issue_id="ROB-999")
+
+        assert result["success"] is True
+        assert result["entries"] == []
+        assert result["summary"]["total_active"] == 0
+
+    @pytest.mark.asyncio
+    async def test_paperclip_issue_id_filter_builds_correct_query(self) -> None:
+        mock_session = AsyncMock()
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = []
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute.return_value = mock_result
+
+        factory = _mock_session_factory(mock_session)
+        with patch(
+            "app.mcp_server.tooling.trade_journal_tools._session_factory",
+            return_value=factory,
+        ):
+            await get_trade_journal(paperclip_issue_id="ROB-51")
+
+        stmt = mock_session.execute.call_args[0][0]
+        compiled_sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+        assert "metadata" in compiled_sql.lower()
+        assert "paperclip_issue_id" in compiled_sql
+
+
+class TestSerializeJournalMetadata:
+    """_serialize_journal metadata 필드 직렬화 테스트."""
+
+    def test_serialize_includes_metadata(self) -> None:
+        journal = TradeJournal(
+            symbol="KRW-BTC",
+            instrument_type=InstrumentType.crypto,
+            thesis="Test",
+            extra_metadata={"paperclip_issue_id": "ROB-51"},
+        )
+        journal.id = 1
+        journal.created_at = now_kst()
+        journal.updated_at = now_kst()
+        result = _serialize_journal(journal)
+        assert result["metadata"] == {"paperclip_issue_id": "ROB-51"}
+
+    def test_serialize_metadata_none(self) -> None:
+        journal = TradeJournal(
+            symbol="KRW-BTC",
+            instrument_type=InstrumentType.crypto,
+            thesis="Test",
+        )
+        journal.id = 2
+        journal.created_at = now_kst()
+        journal.updated_at = now_kst()
+        result = _serialize_journal(journal)
+        assert result["metadata"] is None
+
+
 class TestSerializeJournalNewFields:
     """account_type, paper_trade_id 직렬화 테스트."""
 
