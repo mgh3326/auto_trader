@@ -124,6 +124,11 @@ class KISClient(BaseKISClient):
             code, market, n, adj, period, end_date, per_call_days
         )
 
+    async def inquire_investor(
+        self, code: str, market: str = "J"
+    ) -> list[dict[str, Any]]:
+        return await self._market_data.inquire_investor(code, market)
+
     async def inquire_short_selling(
         self,
         code: str,
