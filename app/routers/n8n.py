@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Literal
 
@@ -41,6 +42,11 @@ from app.schemas.n8n.trade_review import (
     N8nTradeReviewsResponse,
     N8nTradeReviewStats,
     N8nTradeReviewStatsResponse,
+)
+from app.services.market_report_service import (
+    save_crypto_scan_report,
+    save_daily_brief_report,
+    save_kr_morning_report,
 )
 from app.services.n8n_crypto_scan_service import fetch_crypto_scan
 from app.services.n8n_daily_brief_service import fetch_daily_brief
@@ -250,6 +256,7 @@ async def get_daily_brief(
         )
         return JSONResponse(status_code=500, content=payload.model_dump())
 
+    asyncio.ensure_future(save_daily_brief_report(result))
     return N8nDailyBriefResponse(**result)
 
 
@@ -501,6 +508,7 @@ async def get_crypto_scan(
         )
         return JSONResponse(status_code=500, content=payload.model_dump())
 
+    asyncio.ensure_future(save_crypto_scan_report(result))
     return N8nCryptoScanResponse(
         success=result.get("success", True),
         as_of=as_of,
@@ -543,6 +551,7 @@ async def get_kr_morning_report(
         )
         return JSONResponse(status_code=500, content=payload.model_dump())
 
+    asyncio.ensure_future(save_kr_morning_report(result))
     return N8nKrMorningReportResponse(**result)
 
 

@@ -9,6 +9,7 @@ from .manual_holdings import (
     MarketType,
     StockAlias,
 )
+from .market_report import MarketReport
 from .news import NewsAnalysisResult, NewsArticle, Sentiment
 from .paper_trading import PaperAccount, PaperPosition, PaperTrade
 from .prompt import PromptResult
@@ -76,6 +77,7 @@ __all__ = [
     "BrokerAccount",
     "StockAlias",
     "ManualHolding",
+    "MarketReport",
     "Trade",
     "TradeSnapshot",
     "TradeReview",
