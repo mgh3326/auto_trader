@@ -20,6 +20,7 @@ from .research_backtest import (
     ResearchSyncJob,
 )
 from .review import PendingSnapshot, Trade, TradeReview, TradeSnapshot
+from .sell_condition import SellCondition
 from .symbol_trade_settings import SymbolTradeSettings
 from .trade_journal import JournalStatus, TradeJournal
 from .trade_profile import (
@@ -87,6 +88,7 @@ __all__ = [
     "PaperAccount",
     "PaperPosition",
     "PaperTrade",
+    "SellCondition",
     # "AlertRule", "AlertEvent",
     # "PricesLatest", "PricesOHLCV", "FxRate",
 ]
