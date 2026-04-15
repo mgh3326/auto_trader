@@ -1,0 +1,129 @@
+{
+  "id": "sell-alert",
+  "name": "Sell Signal Alert (Generic)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "minutes", "minutesInterval": 5 }]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [0, 0],
+      "id": "sell-trigger",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.AUTO_TRADER_API_URL }}/api/n8n/sell-signal/batch",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [240, 0],
+      "id": "sell-fetch",
+      "name": "Fetch Batch Sell Signals",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "auto_trader_api_token",
+          "name": "Auto Trader API Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const body = $input.first().json;\nif (!body.success || !body.results) {\n  return [{ json: { hasTriggered: false, items: [], message: 'batch request failed' } }];\n}\n\nconst triggered = body.results.filter(r => r.triggered);\nif (triggered.length === 0) {\n  return [{ json: { hasTriggered: false, items: [], message: 'no sell signals' } }];\n}\n\nconst items = triggered.map(r => {\n  const metConditions = r.conditions.filter(c => c.met).map(c => c.name).join(', ');\n  return {\n    symbol: r.symbol,\n    name: r.name,\n    conditions_met: r.conditions_met,\n    met_names: metConditions,\n    message: r.message,\n    details: r.conditions.filter(c => c.met).map(c => `${c.name}: ${c.detail}`).join('\\n')\n  };\n});\n\nreturn [{ json: { hasTriggered: true, items, message: `${triggered.length}개 종목 매도 신호` } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 0],
+      "id": "sell-filter",
+      "name": "Filter Triggered"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "triggered-check",
+              "leftValue": "={{ $json.hasTriggered }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [720, 0],
+      "id": "sell-if",
+      "name": "Has Triggered?"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const data = $input.first().json;\nconst items = data.items || [];\n\nlet text = `\\uD83D\\uDEA8 **매도 신호 알림** (${items.length}개 종목)\\n\\n`;\n\nfor (const item of items) {\n  text += `**${item.name} (${item.symbol})**\\n`;\n  text += `\\u2022 조건 충족: ${item.conditions_met}/5 (${item.met_names})\\n`;\n  text += `${item.details}\\n\\n`;\n}\n\nreturn [{ json: { text } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 0],
+      "id": "sell-format",
+      "name": "Format Message"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.HERMES_WEBHOOK_URL }}",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "text", "value": "={{ $json.text }}" }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1200, 0],
+      "id": "sell-notify",
+      "name": "Send to Hermes"
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [[{ "node": "Fetch Batch Sell Signals", "type": "main", "index": 0 }]]
+    },
+    "Fetch Batch Sell Signals": {
+      "main": [[{ "node": "Filter Triggered", "type": "main", "index": 0 }]]
+    },
+    "Filter Triggered": {
+      "main": [[{ "node": "Has Triggered?", "type": "main", "index": 0 }]]
+    },
+    "Has Triggered?": {
+      "main": [
+        [{ "node": "Format Message", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "Format Message": {
+      "main": [[{ "node": "Send to Hermes", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true
+  }
+}

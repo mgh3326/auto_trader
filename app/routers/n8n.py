@@ -36,7 +36,10 @@ from app.schemas.n8n.pending_snapshot import (
     N8nPendingSnapshotsRequest,
     N8nPendingSnapshotsResponse,
 )
-from app.schemas.n8n.sell_signal import N8nSellSignalResponse
+from app.schemas.n8n.sell_signal import (
+    N8nSellSignalBatchResponse,
+    N8nSellSignalResponse,
+)
 from app.schemas.n8n.trade_review import (
     N8nTradeReviewListResponse,
     N8nTradeReviewsRequest,
@@ -66,6 +69,10 @@ from app.services.n8n_trade_review_service import (
     get_trade_review_stats,
     get_trade_reviews,
     save_trade_reviews,
+)
+from app.services.sell_conditions_service import (
+    get_active_sell_conditions,
+    get_sell_condition,
 )
 from app.services.sell_signal_service import evaluate_sell_signal
 
@@ -599,31 +606,121 @@ async def get_n8n_news(
     return result
 
 
+@router.get("/sell-signal/batch", response_model=N8nSellSignalBatchResponse)
+async def get_sell_signal_batch(
+    db: AsyncSession = Depends(get_db),
+) -> N8nSellSignalBatchResponse | JSONResponse:
+    as_of = now_kst().replace(microsecond=0).isoformat()
+
+    try:
+        conditions = await get_active_sell_conditions(db)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to load active sell conditions")
+        payload = N8nSellSignalBatchResponse(
+            success=False,
+            as_of=as_of,
+            total=0,
+            triggered_count=0,
+            results=[],
+            errors=[{"error": str(exc)}],
+        )
+        return JSONResponse(status_code=500, content=payload.model_dump())
+
+    results: list[N8nSellSignalResponse] = []
+    top_errors: list[dict[str, object]] = []
+
+    for cond in conditions:
+        try:
+            result = await evaluate_sell_signal(
+                symbol=cond.symbol,
+                price_threshold=float(cond.price_threshold),
+                stoch_rsi_threshold=float(cond.stoch_rsi_threshold),
+                foreign_consecutive_days=cond.foreign_days,
+                rsi_high_mark=float(cond.rsi_high),
+                rsi_low_mark=float(cond.rsi_low),
+                bb_upper_ref=float(cond.bb_upper_ref),
+            )
+            results.append(N8nSellSignalResponse(success=True, as_of=as_of, **result))
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Batch sell signal failed for %s", cond.symbol)
+            top_errors.append({"symbol": cond.symbol, "error": str(exc)})
+
+    triggered_count = sum(1 for r in results if r.triggered)
+    return N8nSellSignalBatchResponse(
+        success=True,
+        as_of=as_of,
+        total=len(results),
+        triggered_count=triggered_count,
+        results=results,
+        errors=top_errors,
+    )
+
+
 @router.get("/sell-signal/{symbol}", response_model=N8nSellSignalResponse)
 async def get_sell_signal(
     symbol: str,
-    price_threshold: float = Query(1_152_000, description="Trailing stop price (KRW)"),
-    stoch_rsi_threshold: float = Query(80, description="StochRSI K threshold"),
-    foreign_days: int = Query(
-        2, ge=1, le=5, description="Foreign consecutive sell days"
+    price_threshold: float | None = Query(
+        None, description="Trailing stop price (KRW). Loaded from DB if omitted."
     ),
-    rsi_high: float = Query(70, description="RSI high watermark"),
-    rsi_low: float = Query(65, description="RSI low trigger"),
-    bb_upper_ref: float = Query(
-        1_142_000, description="Bollinger upper reference (KRW)"
+    stoch_rsi_threshold: float | None = Query(
+        None, description="StochRSI K threshold. Loaded from DB if omitted."
     ),
+    foreign_days: int | None = Query(
+        None, ge=1, le=5, description="Foreign consecutive sell days"
+    ),
+    rsi_high: float | None = Query(
+        None, description="RSI high watermark. Loaded from DB if omitted."
+    ),
+    rsi_low: float | None = Query(
+        None, description="RSI low trigger. Loaded from DB if omitted."
+    ),
+    bb_upper_ref: float | None = Query(
+        None, description="Bollinger upper reference (KRW). Loaded from DB if omitted."
+    ),
+    db: AsyncSession = Depends(get_db),
 ) -> N8nSellSignalResponse | JSONResponse:
     as_of = now_kst().replace(microsecond=0).isoformat()
+
+    db_cond = await get_sell_condition(db, symbol)
+
+    final_price_threshold = (
+        price_threshold
+        if price_threshold is not None
+        else (float(db_cond.price_threshold) if db_cond else 1_152_000)
+    )
+    final_stoch_rsi = (
+        stoch_rsi_threshold
+        if stoch_rsi_threshold is not None
+        else (float(db_cond.stoch_rsi_threshold) if db_cond else 80)
+    )
+    final_foreign_days = (
+        foreign_days
+        if foreign_days is not None
+        else (db_cond.foreign_days if db_cond else 2)
+    )
+    final_rsi_high = (
+        rsi_high
+        if rsi_high is not None
+        else (float(db_cond.rsi_high) if db_cond else 70)
+    )
+    final_rsi_low = (
+        rsi_low if rsi_low is not None else (float(db_cond.rsi_low) if db_cond else 65)
+    )
+    final_bb_upper_ref = (
+        bb_upper_ref
+        if bb_upper_ref is not None
+        else (float(db_cond.bb_upper_ref) if db_cond else 1_142_000)
+    )
 
     try:
         result = await evaluate_sell_signal(
             symbol=symbol,
-            price_threshold=price_threshold,
-            stoch_rsi_threshold=stoch_rsi_threshold,
-            foreign_consecutive_days=foreign_days,
-            rsi_high_mark=rsi_high,
-            rsi_low_mark=rsi_low,
-            bb_upper_ref=bb_upper_ref,
+            price_threshold=final_price_threshold,
+            stoch_rsi_threshold=final_stoch_rsi,
+            foreign_consecutive_days=final_foreign_days,
+            rsi_high_mark=final_rsi_high,
+            rsi_low_mark=final_rsi_low,
+            bb_upper_ref=final_bb_upper_ref,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to evaluate sell signal for %s", symbol)
