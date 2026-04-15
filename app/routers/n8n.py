@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Literal
 
@@ -35,12 +36,18 @@ from app.schemas.n8n.pending_snapshot import (
     N8nPendingSnapshotsRequest,
     N8nPendingSnapshotsResponse,
 )
+from app.schemas.n8n.sell_signal import N8nSellSignalResponse
 from app.schemas.n8n.trade_review import (
     N8nTradeReviewListResponse,
     N8nTradeReviewsRequest,
     N8nTradeReviewsResponse,
     N8nTradeReviewStats,
     N8nTradeReviewStatsResponse,
+)
+from app.services.market_report_service import (
+    save_crypto_scan_report,
+    save_daily_brief_report,
+    save_kr_morning_report,
 )
 from app.services.n8n_crypto_scan_service import fetch_crypto_scan
 from app.services.n8n_daily_brief_service import fetch_daily_brief
@@ -60,6 +67,7 @@ from app.services.n8n_trade_review_service import (
     get_trade_reviews,
     save_trade_reviews,
 )
+from app.services.sell_signal_service import evaluate_sell_signal
 
 logger = logging.getLogger(__name__)
 
@@ -250,6 +258,7 @@ async def get_daily_brief(
         )
         return JSONResponse(status_code=500, content=payload.model_dump())
 
+    asyncio.ensure_future(save_daily_brief_report(result))
     return N8nDailyBriefResponse(**result)
 
 
@@ -501,6 +510,7 @@ async def get_crypto_scan(
         )
         return JSONResponse(status_code=500, content=payload.model_dump())
 
+    asyncio.ensure_future(save_crypto_scan_report(result))
     return N8nCryptoScanResponse(
         success=result.get("success", True),
         as_of=as_of,
@@ -543,6 +553,7 @@ async def get_kr_morning_report(
         )
         return JSONResponse(status_code=500, content=payload.model_dump())
 
+    asyncio.ensure_future(save_kr_morning_report(result))
     return N8nKrMorningReportResponse(**result)
 
 
@@ -586,3 +597,51 @@ async def get_n8n_news(
         return JSONResponse(status_code=500, content=payload.model_dump())
 
     return result
+
+
+@router.get("/sell-signal/{symbol}", response_model=N8nSellSignalResponse)
+async def get_sell_signal(
+    symbol: str,
+    price_threshold: float = Query(1_152_000, description="Trailing stop price (KRW)"),
+    stoch_rsi_threshold: float = Query(80, description="StochRSI K threshold"),
+    foreign_days: int = Query(
+        2, ge=1, le=5, description="Foreign consecutive sell days"
+    ),
+    rsi_high: float = Query(70, description="RSI high watermark"),
+    rsi_low: float = Query(65, description="RSI low trigger"),
+    bb_upper_ref: float = Query(
+        1_142_000, description="Bollinger upper reference (KRW)"
+    ),
+) -> N8nSellSignalResponse | JSONResponse:
+    as_of = now_kst().replace(microsecond=0).isoformat()
+
+    try:
+        result = await evaluate_sell_signal(
+            symbol=symbol,
+            price_threshold=price_threshold,
+            stoch_rsi_threshold=stoch_rsi_threshold,
+            foreign_consecutive_days=foreign_days,
+            rsi_high_mark=rsi_high,
+            rsi_low_mark=rsi_low,
+            bb_upper_ref=bb_upper_ref,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to evaluate sell signal for %s", symbol)
+        payload = N8nSellSignalResponse(
+            success=False,
+            as_of=as_of,
+            symbol=symbol,
+            name=symbol,
+            triggered=False,
+            conditions_met=0,
+            conditions=[],
+            message="",
+            errors=[{"error": str(exc)}],
+        )
+        return JSONResponse(status_code=500, content=payload.model_dump())
+
+    return N8nSellSignalResponse(
+        success=True,
+        as_of=as_of,
+        **result,
+    )

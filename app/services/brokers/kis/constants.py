@@ -50,6 +50,9 @@ FLUCTUATION_RANK_TR = "FHPST01700000"
 FOREIGN_BUYING_RANK_URL = "/uapi/domestic-stock/v1/quotations/foreign-institution-total"
 FOREIGN_BUYING_RANK_TR = "FHPTJ04400000"
 
+INVESTOR_TRADING_URL = "/uapi/domestic-stock/v1/quotations/inquire-investor"
+INVESTOR_TRADING_TR = "FHKST01010900"
+
 # Domestic Stock - Balance & Orders
 DOMESTIC_BALANCE_URL = "/uapi/domestic-stock/v1/trading/inquire-balance"
 DOMESTIC_BALANCE_TR = "TTTC8434R"  # 실전투자 주식잔고조회

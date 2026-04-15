@@ -86,6 +86,12 @@ def _ensure_test_env() -> None:
     # regardless of what's in env.example or .env
     os.environ["SECRET_KEY"] = "Test_Secret_Key_12345_Test_Secret_Key_12345"
 
+    # Force overwrite DATABASE_URL to ensure tests use the correct test database
+    # regardless of what's in env.example (which may contain placeholder values)
+    os.environ["DATABASE_URL"] = (
+        "postgresql+asyncpg://postgres:postgres@localhost:5432/test_db"
+    )
+
     # Force disable Sentry during tests — prevent test-originated errors
     # from leaking to the real Sentry project (developer shell may have SENTRY_DSN set)
     os.environ["SENTRY_DSN"] = ""

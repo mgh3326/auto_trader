@@ -30,7 +30,9 @@ def register_trade_journal_tools(mcp: FastMCP) -> None:
             "symbol auto-detects instrument_type. min_hold_days sets hold_until. "
             "status defaults to 'draft' — set to 'active' after fill confirmation. "
             "account_type='paper' for paper trading journals (requires account name). "
-            "paper_trade_id links to the paper trade record."
+            "paper_trade_id links to the paper trade record. "
+            "metadata is an optional JSON dict for extensible fields "
+            '(e.g. {"paperclip_issue_id": "ROB-XX"} for Paperclip linkage).'
         ),
     )(save_trade_journal)
     _ = mcp.tool(
@@ -42,7 +44,9 @@ def register_trade_journal_tools(mcp: FastMCP) -> None:
             "Each entry includes hold_remaining_days and hold_expired. "
             "account_type defaults to 'live'; set to 'paper' for paper journals, "
             "or None to query both. "
-            "account (optional) filters to a specific account name."
+            "account (optional) filters to a specific account name. "
+            "paperclip_issue_id (optional) filters by metadata.paperclip_issue_id "
+            "for reverse lookup from Paperclip issue to trade journal."
         ),
     )(get_trade_journal)
     _ = mcp.tool(

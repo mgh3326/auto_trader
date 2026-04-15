@@ -29,7 +29,7 @@ class TestDomesticStockTossNotification:
         with patch(
             "app.services.toss_notification_service.send_toss_notification_if_needed"
         ) as mock_send_toss:
-            result = await kis_tasks._analyze_domestic_stock_async("005930")
+            result = await kis_tasks.analyze_domestic_stock_task("005930")
 
             assert result["status"] == "ignored"
             assert result["symbol"] == "005930"
@@ -45,20 +45,20 @@ class TestDomesticStockTossNotification:
         with patch(
             "app.services.toss_notification_service.send_toss_notification_if_needed"
         ) as mock_send_toss:
-            result = await kis_tasks._analyze_domestic_stock_async("035720")
+            result = await kis_tasks.analyze_domestic_stock_task("035720")
 
             assert result["status"] == "ignored"
             mock_send_toss.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_analyze_domestic_stock_no_toss_notification_on_hold(self, mock_db):
-        """국내 주식 분석 함수는 no-op이므로 토스 알림을 보내지 않아야 함"""
+        """국내 주식 분석 함수는 no-op이므로 토스 알림을 별내지 않아야 함"""
         from app.jobs import kis_trading as kis_tasks
 
         with patch(
             "app.services.toss_notification_service.send_toss_notification_if_needed"
         ) as mock_send_toss:
-            result = await kis_tasks._analyze_domestic_stock_async("035420")
+            result = await kis_tasks.analyze_domestic_stock_task("035420")
 
             assert result["status"] == "ignored"
             mock_send_toss.assert_not_called()
@@ -77,7 +77,7 @@ class TestOverseasStockTossNotification:
         with patch(
             "app.services.toss_notification_service.send_toss_notification_if_needed"
         ) as mock_send_toss:
-            result = await kis_tasks._analyze_overseas_stock_async("AAPL")
+            result = await kis_tasks.analyze_overseas_stock_task("AAPL")
 
             assert result["status"] == "ignored"
             assert result["symbol"] == "AAPL"
@@ -93,7 +93,7 @@ class TestOverseasStockTossNotification:
         with patch(
             "app.services.toss_notification_service.send_toss_notification_if_needed"
         ) as mock_send_toss:
-            result = await kis_tasks._analyze_overseas_stock_async("TSLA")
+            result = await kis_tasks.analyze_overseas_stock_task("TSLA")
 
             assert result["status"] == "ignored"
             mock_send_toss.assert_not_called()
@@ -110,7 +110,7 @@ class TestTossNotificationIntegration:
         with patch(
             "app.services.toss_notification_service.send_toss_notification_if_needed"
         ) as mock_send_toss:
-            analysis_result = await kis_tasks._analyze_domestic_stock_async("005930")
+            analysis_result = await kis_tasks.analyze_domestic_stock_task("005930")
 
             assert analysis_result["status"] == "ignored"
             mock_send_toss.assert_not_called()

@@ -315,6 +315,25 @@ class DomesticMarketDataMixin(MarketDataBase):
 
         return output1, output2
 
+    async def inquire_investor(
+        self,
+        code: str,
+        market: str = "J",
+    ) -> list[dict[str, Any]]:
+        js = await self._request_with_token_retry(
+            tr_id=constants.INVESTOR_TRADING_TR,
+            url=f"{constants.BASE}{constants.INVESTOR_TRADING_URL}",
+            params={
+                "FID_COND_MRKT_DIV_CODE": market,
+                "FID_INPUT_ISCD": code.zfill(6),
+            },
+            api_name="inquire_investor",
+        )
+        output = js.get("output") or []
+        if not isinstance(output, list):
+            return []
+        return output
+
     async def fetch_fundamental_info(self, code: str, market: str = "J") -> dict:
         """
         종목의 기본 정보를 가져와 딕셔너리로 반환합니다.
