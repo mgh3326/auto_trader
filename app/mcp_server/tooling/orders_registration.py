@@ -72,8 +72,10 @@ def register_order_tools(mcp: FastMCP) -> None:
     @mcp.tool(
         name="place_order",
         description=(
-            "Place buy/sell orders for stocks or crypto. "
+            "Place buy/sell LIMIT orders for stocks or crypto. "
             "Supports Upbit (crypto) and KIS (KR/US equities). "
+            "Only limit orders are supported via MCP — market orders are not allowed. "
+            "`order_type` must be 'limit' and `price` is required. "
             "Always returns dry_run preview unless explicitly set to False. "
             "For buy orders (dry_run=False), thesis and strategy are required "
             "so a trade journal can be created automatically. "
@@ -91,7 +93,7 @@ def register_order_tools(mcp: FastMCP) -> None:
     async def place_order(
         symbol: str,
         side: Literal["buy", "sell"],
-        order_type: Literal["limit", "market"] = "limit",
+        order_type: Literal["limit"] = "limit",
         quantity: float | None = None,
         price: float | None = None,
         amount: float | None = None,
@@ -108,6 +110,19 @@ def register_order_tools(mcp: FastMCP) -> None:
         account_type: Literal["real", "paper"] = "real",
         paper_account: str | None = None,
     ):
+        # Defense in depth: reject market orders even if a stale client
+        # bypasses the tightened schema and still sends order_type="market".
+        if str(order_type).lower().strip() != "limit":
+            return {
+                "success": False,
+                "error": (
+                    "MCP place_order only supports limit orders; "
+                    "market orders are not allowed."
+                ),
+                "source": "mcp",
+                "symbol": symbol,
+                "order_type": order_type,
+            }
         if account_type == "paper":
             return await _place_paper_order(
                 symbol=symbol,
