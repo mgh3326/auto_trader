@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import numpy as np
 import pandas as pd
@@ -11,7 +11,6 @@ import pytest
 
 from app.schemas.n8n.sell_signal import N8nSellCondition, N8nSellSignalResponse
 from app.services.sell_signal_service import (
-    REDIS_RSI_PREFIX,
     TRIGGER_THRESHOLD,
     _check_bollinger_reentry,
     _check_foreign_selling,
@@ -421,7 +420,7 @@ class TestCheckRsiMomentum:
     @pytest.mark.asyncio
     async def test_rsi_none_returns_not_met(self):
         df = _make_large_ohlcv(200)
-        mock_r = self._mock_redis()
+        self._mock_redis()
 
         with (
             patch(
