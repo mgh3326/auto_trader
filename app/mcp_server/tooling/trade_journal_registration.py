@@ -32,7 +32,7 @@ def register_trade_journal_tools(mcp: FastMCP) -> None:
             "account_type='paper' for paper trading journals (requires account name). "
             "paper_trade_id links to the paper trade record. "
             "metadata is an optional JSON dict for extensible fields "
-            "(e.g. {\"paperclip_issue_id\": \"ROB-XX\"} for Paperclip linkage)."
+            '(e.g. {"paperclip_issue_id": "ROB-XX"} for Paperclip linkage).'
         ),
     )(save_trade_journal)
     _ = mcp.tool(
