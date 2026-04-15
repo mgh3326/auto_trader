@@ -114,9 +114,10 @@ async def test_place_order_amount_and_quantity_both_error():
         await tools["place_order"](
             symbol="KRW-BTC",
             side="buy",
-            order_type="market",
+            order_type="limit",
             amount=100000.0,
             quantity=0.001,
+            price=50000000.0,
             dry_run=True,
         )
 
@@ -129,7 +130,8 @@ async def test_place_order_sell_with_amount_error():
         await tools["place_order"](
             symbol="KRW-BTC",
             side="sell",
-            order_type="market",
+            order_type="limit",
+            price=50000000.0,
             amount=100000.0,
             dry_run=True,
         )
@@ -406,6 +408,9 @@ async def test_place_order_insufficient_balance_kis_overseas(monkeypatch):
                     "frcr_gnrl_ord_psbl_amt": "100.0",
                 }
             ]
+
+        def adjust_price_to_upbit_unit(self, price):
+            return price
 
     _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
     _patch_runtime_attr(
@@ -689,8 +694,9 @@ class TestPlaceOrderHighAmount:
         result = await tools["place_order"](
             symbol="005930",
             side="buy",
-            order_type="market",
+            order_type="limit",
             amount=5_000_000.0,
+            price=100000.0,
             dry_run=True,
         )
 
@@ -730,8 +736,9 @@ class TestPlaceOrderHighAmount:
         result = await tools["place_order"](
             symbol="AAPL",
             side="buy",
-            order_type="market",
+            order_type="limit",
             amount=2_600_000.0,
+            price=200.0,
             dry_run=True,
         )
 
@@ -765,8 +772,9 @@ class TestPlaceOrderHighAmount:
         result = await tools["place_order"](
             symbol="KRW-BTC",
             side="buy",
-            order_type="market",
+            order_type="limit",
             amount=5_000_000.0,
+            price=50000000.0,
             dry_run=True,
         )
 
@@ -903,7 +911,7 @@ class TestPlaceOrderHighAmount:
         mock.fetch_my_coins = AsyncMock(
             return_value=[{"currency": "KRW", "balance": "10000000", "locked": "0"}]
         )
-        mock.place_market_buy_order = AsyncMock(
+        mock.place_buy_order = AsyncMock(
             return_value={"uuid": "crypto-12345", "side": "bid"}
         )
 
@@ -919,15 +927,21 @@ class TestPlaceOrderHighAmount:
         )
         monkeypatch.setattr(
             upbit_service,
-            "place_market_buy_order",
-            mock.place_market_buy_order,
+            "place_buy_order",
+            mock.place_buy_order,
+        )
+        monkeypatch.setattr(
+            upbit_service,
+            "adjust_price_to_upbit_unit",
+            lambda price: price,
         )
 
         result = await tools["place_order"](
             symbol="KRW-BTC",
             side="buy",
-            order_type="market",
+            order_type="limit",
             amount=5_000_000.0,
+            price=50000000.0,
             dry_run=False,
             thesis="Test thesis for BTC",
             strategy="test-strategy",
@@ -936,7 +950,9 @@ class TestPlaceOrderHighAmount:
         assert result["success"] is True
         assert result["dry_run"] is False
         assert result["preview"]["quantity"] == pytest.approx(0.1, rel=1e-6)
-        mock.place_market_buy_order.assert_awaited_once_with("KRW-BTC", "5000000")
+        mock.place_buy_order.assert_awaited_once_with(
+            "KRW-BTC", 50000000.0, "0.10000000", "limit"
+        )
 
     @pytest.mark.asyncio
     async def test_place_order_daily_limit_blocks_high_amount_order(self, monkeypatch):
@@ -984,8 +1000,9 @@ class TestPlaceOrderHighAmount:
         result = await tools["place_order"](
             symbol="KRW-BTC",
             side="buy",
-            order_type="market",
+            order_type="limit",
             amount=5_000_000.0,
+            price=50000000.0,
             dry_run=False,
             thesis="Test thesis for BTC",
             strategy="test-strategy",
@@ -1153,8 +1170,9 @@ async def test_place_order_kr_equity_calls_integrated_margin(monkeypatch):
     result = await tools["place_order"](
         symbol="005930",
         side="buy",
-        order_type="market",
+        order_type="limit",
         amount=1_000_000.0,
+        price=80000.0,
         dry_run=True,
     )
 
@@ -1230,8 +1248,9 @@ async def test_place_order_kr_equity_balance_lookup_failure_returns_query_error(
         result = await tools["place_order"](
             symbol="005930",
             side="buy",
-            order_type="market",
+            order_type="limit",
             amount=500_000.0,
+            price=60000.0,
             dry_run=True,
         )
 
@@ -1315,8 +1334,9 @@ async def test_place_order_crypto_sell_exceeds_orderable_with_locked(monkeypatch
     result = await tools["place_order"](
         symbol="KRW-BTC",
         side="sell",
-        order_type="market",
+        order_type="limit",
         quantity=0.05,
+        price=50000000.0,
         dry_run=True,
     )
 
@@ -1356,6 +1376,9 @@ async def test_place_order_crypto_sell_locked_zero_still_works(monkeypatch):
                 }
             ]
 
+        def adjust_price_to_upbit_unit(self, price):
+            return price
+
     _patch_runtime_attr(monkeypatch, "upbit_service", DummyUpbit())
     _patch_runtime_attr(
         monkeypatch,
@@ -1372,7 +1395,9 @@ async def test_place_order_crypto_sell_locked_zero_still_works(monkeypatch):
     result = await tools["place_order"](
         symbol="KRW-BTC",
         side="sell",
-        order_type="market",
+        order_type="limit",
+        quantity=0.5,
+        price=50000000.0,
         dry_run=True,
     )
 
@@ -1416,8 +1441,9 @@ async def test_place_order_crypto_buy_blocked_by_stop_loss_cooldown(monkeypatch)
     result = await tools["place_order"](
         symbol="KRW-BTC",
         side="buy",
-        order_type="market",
+        order_type="limit",
         amount=100000.0,
+        price=50000000.0,
         dry_run=True,
     )
 
@@ -1447,12 +1473,16 @@ async def test_place_order_crypto_sell_records_stop_loss_cooldown(monkeypatch):
                 {"currency": "BTC", "balance": "0.5", "avg_buy_price": "50000000.0"}
             ]
 
-        async def place_market_sell_order(self, symbol, volume):
+        def adjust_price_to_upbit_unit(self, price):
+            return price
+
+        async def place_sell_order(self, symbol, volume, price):
             return {
                 "uuid": "test-uuid",
                 "side": "ask",
                 "market": symbol,
                 "volume": volume,
+                "price": price,
             }
 
     _patch_runtime_attr(monkeypatch, "upbit_service", DummyUpbit())
@@ -1460,8 +1490,9 @@ async def test_place_order_crypto_sell_records_stop_loss_cooldown(monkeypatch):
     result = await tools["place_order"](
         symbol="KRW-BTC",
         side="sell",
-        order_type="market",
+        order_type="limit",
         quantity=0.5,
+        price=51000000.0,
         dry_run=False,
     )
 
@@ -1514,8 +1545,9 @@ async def test_place_order_crypto_dry_run_stop_loss_does_not_record_cooldown(
     result = await tools["place_order"](
         symbol="KRW-BTC",
         side="sell",
-        order_type="market",
+        order_type="limit",
         quantity=0.5,
+        price=51000000.0,
         dry_run=True,
     )
 
@@ -1545,12 +1577,16 @@ async def test_place_order_crypto_profitable_sell_does_not_record_cooldown(monke
                 {"currency": "BTC", "balance": "0.5", "avg_buy_price": "50000000.0"}
             ]
 
-        async def place_market_sell_order(self, symbol, volume):
+        def adjust_price_to_upbit_unit(self, price):
+            return price
+
+        async def place_sell_order(self, symbol, volume, price):
             return {
                 "uuid": "test-uuid",
                 "side": "ask",
                 "market": symbol,
                 "volume": volume,
+                "price": price,
             }
 
     _patch_runtime_attr(monkeypatch, "upbit_service", DummyUpbit())
@@ -1580,8 +1616,9 @@ async def test_place_order_crypto_profitable_sell_does_not_record_cooldown(monke
     result = await tools["place_order"](
         symbol="KRW-BTC",
         side="sell",
-        order_type="market",
+        order_type="limit",
         quantity=0.5,
+        price=55000000.0,
         dry_run=False,
     )
 
@@ -1615,9 +1652,15 @@ async def test_real_sell_closes_journals_and_returns_summary(monkeypatch) -> Non
     )
     monkeypatch.setattr(
         upbit_service,
-        "place_market_sell_order",
+        "place_sell_order",
         AsyncMock(
-            return_value={"uuid": "sell-uuid", "side": "ask", "market": "KRW-BTC"}
+            return_value={
+                "uuid": "sell-uuid",
+                "side": "ask",
+                "market": "KRW-BTC",
+                "price": "95000000",
+                "volume": "0.01",
+            }
         ),
     )
     monkeypatch.setattr(
@@ -1638,8 +1681,9 @@ async def test_real_sell_closes_journals_and_returns_summary(monkeypatch) -> Non
     result = await tools["place_order"](
         symbol="KRW-BTC",
         side="sell",
-        order_type="market",
+        order_type="limit",
         quantity=0.01,
+        price=95000000.0,
         dry_run=False,
         reason="rebalance",
         exit_reason="take_profit",
@@ -1678,9 +1722,15 @@ async def test_sell_journal_close_failure_keeps_order_success(monkeypatch) -> No
     )
     monkeypatch.setattr(
         upbit_service,
-        "place_market_sell_order",
+        "place_sell_order",
         AsyncMock(
-            return_value={"uuid": "sell-uuid", "side": "ask", "market": "KRW-BTC"}
+            return_value={
+                "uuid": "sell-uuid",
+                "side": "ask",
+                "market": "KRW-BTC",
+                "price": "95000000",
+                "volume": "0.01",
+            }
         ),
     )
     monkeypatch.setattr(
@@ -1696,8 +1746,9 @@ async def test_sell_journal_close_failure_keeps_order_success(monkeypatch) -> No
     result = await tools["place_order"](
         symbol="KRW-BTC",
         side="sell",
-        order_type="market",
+        order_type="limit",
         quantity=0.01,
+        price=95000000.0,
         dry_run=False,
     )
 
@@ -1737,8 +1788,9 @@ async def test_sell_dry_run_does_not_close_journals(monkeypatch) -> None:
     result = await tools["place_order"](
         symbol="KRW-BTC",
         side="sell",
-        order_type="market",
+        order_type="limit",
         quantity=0.01,
+        price=95000000.0,
         dry_run=True,
     )
 
