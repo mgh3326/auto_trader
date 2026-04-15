@@ -7,6 +7,9 @@ from typing import TYPE_CHECKING
 from app.mcp_server.tooling.analysis_registration import register_analysis_tools
 from app.mcp_server.tooling.fundamentals_registration import register_fundamentals_tools
 from app.mcp_server.tooling.market_data_registration import register_market_data_tools
+from app.mcp_server.tooling.market_report_registration import (
+    register_market_report_tools,
+)
 from app.mcp_server.tooling.news_registration import register_news_tools
 from app.mcp_server.tooling.orders_registration import register_order_tools
 from app.mcp_server.tooling.paper_account_registration import (
@@ -44,6 +47,7 @@ def register_all_tools(mcp: FastMCP) -> None:
     register_analysis_tools(mcp)
     register_watch_alert_tools(mcp)
     register_trade_profile_tools(mcp)
+    register_market_report_tools(mcp)
     register_user_settings_tools(mcp)
     register_news_tools(mcp)
     register_trade_journal_tools(mcp)
