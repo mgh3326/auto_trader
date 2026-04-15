@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import numpy as np
 import pandas as pd
@@ -11,7 +11,6 @@ import pytest
 
 from app.schemas.n8n.sell_signal import N8nSellCondition, N8nSellSignalResponse
 from app.services.sell_signal_service import (
-    REDIS_RSI_PREFIX,
     TRIGGER_THRESHOLD,
     _check_bollinger_reentry,
     _check_foreign_selling,
@@ -38,7 +37,9 @@ def _make_ohlcv_df(closes: list[float], n: int | None = None) -> pd.DataFrame:
     )
 
 
-def _make_large_ohlcv(n: int = 200, base: float = 100.0, seed: int = 42) -> pd.DataFrame:
+def _make_large_ohlcv(
+    n: int = 200, base: float = 100.0, seed: int = 42
+) -> pd.DataFrame:
     rng = np.random.default_rng(seed)
     changes = rng.normal(0, 1, n)
     closes = [base]
@@ -157,12 +158,15 @@ class TestCheckStochRsi:
     @pytest.mark.asyncio
     async def test_met_when_k_below_threshold(self):
         df = _make_large_ohlcv(200, base=100)
-        with patch(
-            "app.services.sell_signal_service._fetch_ohlcv_for_indicators",
-            return_value=df,
-        ), patch(
-            "app.services.sell_signal_service._calculate_stoch_rsi",
-            return_value={"k": 25.0, "d": 30.0},
+        with (
+            patch(
+                "app.services.sell_signal_service._fetch_ohlcv_for_indicators",
+                return_value=df,
+            ),
+            patch(
+                "app.services.sell_signal_service._calculate_stoch_rsi",
+                return_value={"k": 25.0, "d": 30.0},
+            ),
         ):
             cond, errors = await _check_stoch_rsi("000660", 80)
             assert cond.name == "stoch_rsi"
@@ -173,12 +177,15 @@ class TestCheckStochRsi:
     @pytest.mark.asyncio
     async def test_not_met_when_k_above_threshold(self):
         df = _make_large_ohlcv(200, base=100)
-        with patch(
-            "app.services.sell_signal_service._fetch_ohlcv_for_indicators",
-            return_value=df,
-        ), patch(
-            "app.services.sell_signal_service._calculate_stoch_rsi",
-            return_value={"k": 85.0, "d": 82.0},
+        with (
+            patch(
+                "app.services.sell_signal_service._fetch_ohlcv_for_indicators",
+                return_value=df,
+            ),
+            patch(
+                "app.services.sell_signal_service._calculate_stoch_rsi",
+                return_value={"k": 85.0, "d": 82.0},
+            ),
         ):
             cond, errors = await _check_stoch_rsi("000660", 80)
             assert cond.met is False
@@ -306,15 +313,19 @@ class TestCheckRsiMomentum:
         df = _make_large_ohlcv(200)
         mock_r = self._mock_redis({"was_above_high": True, "rsi": 72.0})
 
-        with patch(
-            "app.services.sell_signal_service._fetch_ohlcv_for_indicators",
-            return_value=df,
-        ), patch(
-            "app.services.sell_signal_service._calculate_rsi",
-            return_value={"14": 63.0},
-        ), patch(
-            "app.services.sell_signal_service._get_redis",
-            return_value=mock_r,
+        with (
+            patch(
+                "app.services.sell_signal_service._fetch_ohlcv_for_indicators",
+                return_value=df,
+            ),
+            patch(
+                "app.services.sell_signal_service._calculate_rsi",
+                return_value={"14": 63.0},
+            ),
+            patch(
+                "app.services.sell_signal_service._get_redis",
+                return_value=mock_r,
+            ),
         ):
             cond, errors = await _check_rsi_momentum("000660", 70, 65)
             assert cond.met is True
@@ -329,15 +340,19 @@ class TestCheckRsiMomentum:
         df = _make_large_ohlcv(200)
         mock_r = self._mock_redis({"was_above_high": True, "rsi": 72.0})
 
-        with patch(
-            "app.services.sell_signal_service._fetch_ohlcv_for_indicators",
-            return_value=df,
-        ), patch(
-            "app.services.sell_signal_service._calculate_rsi",
-            return_value={"14": 68.0},
-        ), patch(
-            "app.services.sell_signal_service._get_redis",
-            return_value=mock_r,
+        with (
+            patch(
+                "app.services.sell_signal_service._fetch_ohlcv_for_indicators",
+                return_value=df,
+            ),
+            patch(
+                "app.services.sell_signal_service._calculate_rsi",
+                return_value={"14": 68.0},
+            ),
+            patch(
+                "app.services.sell_signal_service._get_redis",
+                return_value=mock_r,
+            ),
         ):
             cond, errors = await _check_rsi_momentum("000660", 70, 65)
             assert cond.met is False
@@ -348,15 +363,19 @@ class TestCheckRsiMomentum:
         df = _make_large_ohlcv(200)
         mock_r = self._mock_redis()
 
-        with patch(
-            "app.services.sell_signal_service._fetch_ohlcv_for_indicators",
-            return_value=df,
-        ), patch(
-            "app.services.sell_signal_service._calculate_rsi",
-            return_value={"14": 50.0},
-        ), patch(
-            "app.services.sell_signal_service._get_redis",
-            return_value=mock_r,
+        with (
+            patch(
+                "app.services.sell_signal_service._fetch_ohlcv_for_indicators",
+                return_value=df,
+            ),
+            patch(
+                "app.services.sell_signal_service._calculate_rsi",
+                return_value={"14": 50.0},
+            ),
+            patch(
+                "app.services.sell_signal_service._get_redis",
+                return_value=mock_r,
+            ),
         ):
             cond, errors = await _check_rsi_momentum("000660", 70, 65)
             assert cond.met is False
@@ -367,15 +386,19 @@ class TestCheckRsiMomentum:
         df = _make_large_ohlcv(200)
         mock_r = self._mock_redis()
 
-        with patch(
-            "app.services.sell_signal_service._fetch_ohlcv_for_indicators",
-            return_value=df,
-        ), patch(
-            "app.services.sell_signal_service._calculate_rsi",
-            return_value={"14": 75.0},
-        ), patch(
-            "app.services.sell_signal_service._get_redis",
-            return_value=mock_r,
+        with (
+            patch(
+                "app.services.sell_signal_service._fetch_ohlcv_for_indicators",
+                return_value=df,
+            ),
+            patch(
+                "app.services.sell_signal_service._calculate_rsi",
+                return_value={"14": 75.0},
+            ),
+            patch(
+                "app.services.sell_signal_service._get_redis",
+                return_value=mock_r,
+            ),
         ):
             cond, errors = await _check_rsi_momentum("000660", 70, 65)
             assert cond.met is False
@@ -397,14 +420,17 @@ class TestCheckRsiMomentum:
     @pytest.mark.asyncio
     async def test_rsi_none_returns_not_met(self):
         df = _make_large_ohlcv(200)
-        mock_r = self._mock_redis()
+        self._mock_redis()
 
-        with patch(
-            "app.services.sell_signal_service._fetch_ohlcv_for_indicators",
-            return_value=df,
-        ), patch(
-            "app.services.sell_signal_service._calculate_rsi",
-            return_value={"14": None},
+        with (
+            patch(
+                "app.services.sell_signal_service._fetch_ohlcv_for_indicators",
+                return_value=df,
+            ),
+            patch(
+                "app.services.sell_signal_service._calculate_rsi",
+                return_value={"14": None},
+            ),
         ):
             cond, errors = await _check_rsi_momentum("000660", 70, 65)
             assert cond.met is False
@@ -415,15 +441,19 @@ class TestCheckRsiMomentum:
         df = _make_large_ohlcv(200)
         mock_r = self._mock_redis()
 
-        with patch(
-            "app.services.sell_signal_service._fetch_ohlcv_for_indicators",
-            return_value=df,
-        ), patch(
-            "app.services.sell_signal_service._calculate_rsi",
-            return_value={"14": 50.0},
-        ), patch(
-            "app.services.sell_signal_service._get_redis",
-            return_value=mock_r,
+        with (
+            patch(
+                "app.services.sell_signal_service._fetch_ohlcv_for_indicators",
+                return_value=df,
+            ),
+            patch(
+                "app.services.sell_signal_service._calculate_rsi",
+                return_value={"14": 50.0},
+            ),
+            patch(
+                "app.services.sell_signal_service._get_redis",
+                return_value=mock_r,
+            ),
         ):
             await _check_rsi_momentum("000660", 70, 65)
             set_call = mock_r.set.call_args
@@ -454,14 +484,23 @@ class TestCheckBollingerReentry:
         closes = [1_000_000.0] * 190 + prices_above + prices_below
         df = _make_ohlcv_df(closes)
 
-        with patch(
-            "app.services.sell_signal_service._fetch_ohlcv_for_indicators",
-            return_value=df,
-        ), patch(
-            "app.services.sell_signal_service._calculate_bollinger",
-            return_value={"upper": 1_150_000.0, "middle": 1_100_000.0, "lower": 1_050_000.0},
+        with (
+            patch(
+                "app.services.sell_signal_service._fetch_ohlcv_for_indicators",
+                return_value=df,
+            ),
+            patch(
+                "app.services.sell_signal_service._calculate_bollinger",
+                return_value={
+                    "upper": 1_150_000.0,
+                    "middle": 1_100_000.0,
+                    "lower": 1_050_000.0,
+                },
+            ),
         ):
-            cond, errors = await _check_bollinger_reentry("000660", 1_100_000.0, 1_142_000.0)
+            cond, errors = await _check_bollinger_reentry(
+                "000660", 1_100_000.0, 1_142_000.0
+            )
             assert cond.name == "bollinger_reentry"
             assert cond.met is True
             assert "재진입" in cond.detail
@@ -471,14 +510,23 @@ class TestCheckBollingerReentry:
         closes = [1_200_000.0] * 200
         df = _make_ohlcv_df(closes)
 
-        with patch(
-            "app.services.sell_signal_service._fetch_ohlcv_for_indicators",
-            return_value=df,
-        ), patch(
-            "app.services.sell_signal_service._calculate_bollinger",
-            return_value={"upper": 1_150_000.0, "middle": 1_100_000.0, "lower": 1_050_000.0},
+        with (
+            patch(
+                "app.services.sell_signal_service._fetch_ohlcv_for_indicators",
+                return_value=df,
+            ),
+            patch(
+                "app.services.sell_signal_service._calculate_bollinger",
+                return_value={
+                    "upper": 1_150_000.0,
+                    "middle": 1_100_000.0,
+                    "lower": 1_050_000.0,
+                },
+            ),
         ):
-            cond, errors = await _check_bollinger_reentry("000660", 1_200_000.0, 1_142_000.0)
+            cond, errors = await _check_bollinger_reentry(
+                "000660", 1_200_000.0, 1_142_000.0
+            )
             assert cond.met is False
 
     @pytest.mark.asyncio
@@ -486,25 +534,41 @@ class TestCheckBollingerReentry:
         closes = [1_000_000.0] * 200
         df = _make_ohlcv_df(closes)
 
-        with patch(
-            "app.services.sell_signal_service._fetch_ohlcv_for_indicators",
-            return_value=df,
-        ), patch(
-            "app.services.sell_signal_service._calculate_bollinger",
-            return_value={"upper": 1_150_000.0, "middle": 1_100_000.0, "lower": 1_050_000.0},
+        with (
+            patch(
+                "app.services.sell_signal_service._fetch_ohlcv_for_indicators",
+                return_value=df,
+            ),
+            patch(
+                "app.services.sell_signal_service._calculate_bollinger",
+                return_value={
+                    "upper": 1_150_000.0,
+                    "middle": 1_100_000.0,
+                    "lower": 1_050_000.0,
+                },
+            ),
         ):
-            cond, errors = await _check_bollinger_reentry("000660", 1_000_000.0, 1_142_000.0)
+            cond, errors = await _check_bollinger_reentry(
+                "000660", 1_000_000.0, 1_142_000.0
+            )
             assert cond.met is False
 
     @pytest.mark.asyncio
     async def test_not_met_when_current_price_none(self):
         df = _make_large_ohlcv(200)
-        with patch(
-            "app.services.sell_signal_service._fetch_ohlcv_for_indicators",
-            return_value=df,
-        ), patch(
-            "app.services.sell_signal_service._calculate_bollinger",
-            return_value={"upper": 1_150_000.0, "middle": 1_100_000.0, "lower": 1_050_000.0},
+        with (
+            patch(
+                "app.services.sell_signal_service._fetch_ohlcv_for_indicators",
+                return_value=df,
+            ),
+            patch(
+                "app.services.sell_signal_service._calculate_bollinger",
+                return_value={
+                    "upper": 1_150_000.0,
+                    "middle": 1_100_000.0,
+                    "lower": 1_050_000.0,
+                },
+            ),
         ):
             cond, errors = await _check_bollinger_reentry("000660", None, 1_142_000.0)
             assert cond.met is False
@@ -524,12 +588,15 @@ class TestCheckBollingerReentry:
     @pytest.mark.asyncio
     async def test_bb_upper_none(self):
         df = _make_large_ohlcv(200)
-        with patch(
-            "app.services.sell_signal_service._fetch_ohlcv_for_indicators",
-            return_value=df,
-        ), patch(
-            "app.services.sell_signal_service._calculate_bollinger",
-            return_value={"upper": None, "middle": None, "lower": None},
+        with (
+            patch(
+                "app.services.sell_signal_service._fetch_ohlcv_for_indicators",
+                return_value=df,
+            ),
+            patch(
+                "app.services.sell_signal_service._calculate_bollinger",
+                return_value={"upper": None, "middle": None, "lower": None},
+            ),
         ):
             cond, errors = await _check_bollinger_reentry("000660", 100.0, 95.0)
             assert cond.met is False
@@ -587,10 +654,26 @@ class TestEvaluateSellSignal:
 
         return (
             patch("app.services.sell_signal_service.KISClient", return_value=kis_mock),
-            patch("app.services.sell_signal_service._fetch_ohlcv_for_indicators", return_value=df),
-            patch("app.services.sell_signal_service._calculate_stoch_rsi", return_value={"k": stoch_k, "d": 30.0}),
-            patch("app.services.sell_signal_service._calculate_rsi", return_value={"14": rsi_val}),
-            patch("app.services.sell_signal_service._calculate_bollinger", return_value={"upper": bb_upper, "middle": 1_100_000.0, "lower": 1_050_000.0}),
+            patch(
+                "app.services.sell_signal_service._fetch_ohlcv_for_indicators",
+                return_value=df,
+            ),
+            patch(
+                "app.services.sell_signal_service._calculate_stoch_rsi",
+                return_value={"k": stoch_k, "d": 30.0},
+            ),
+            patch(
+                "app.services.sell_signal_service._calculate_rsi",
+                return_value={"14": rsi_val},
+            ),
+            patch(
+                "app.services.sell_signal_service._calculate_bollinger",
+                return_value={
+                    "upper": bb_upper,
+                    "middle": 1_100_000.0,
+                    "lower": 1_050_000.0,
+                },
+            ),
             patch("app.services.sell_signal_service._get_redis", return_value=mock_r),
         )
 
@@ -783,11 +866,35 @@ class TestSellSignalEndpoint:
             "triggered": True,
             "conditions_met": 3,
             "conditions": [
-                N8nSellCondition(name="trailing_stop", met=True, value=1_100_000, threshold=1_152_000, detail="현재가 ₩1,100,000"),
-                N8nSellCondition(name="stoch_rsi", met=True, value=25.0, threshold=80, detail="StochRSI K=25.0"),
-                N8nSellCondition(name="foreign_selling", met=True, value=None, detail="2일 연속 순매도"),
-                N8nSellCondition(name="rsi_momentum", met=False, value=68.0, detail="RSI 68.0"),
-                N8nSellCondition(name="bollinger_reentry", met=False, value=1_150_000, detail="밴드 상단 ₩1,150,000"),
+                N8nSellCondition(
+                    name="trailing_stop",
+                    met=True,
+                    value=1_100_000,
+                    threshold=1_152_000,
+                    detail="현재가 ₩1,100,000",
+                ),
+                N8nSellCondition(
+                    name="stoch_rsi",
+                    met=True,
+                    value=25.0,
+                    threshold=80,
+                    detail="StochRSI K=25.0",
+                ),
+                N8nSellCondition(
+                    name="foreign_selling",
+                    met=True,
+                    value=None,
+                    detail="2일 연속 순매도",
+                ),
+                N8nSellCondition(
+                    name="rsi_momentum", met=False, value=68.0, detail="RSI 68.0"
+                ),
+                N8nSellCondition(
+                    name="bollinger_reentry",
+                    met=False,
+                    value=1_150_000,
+                    detail="밴드 상단 ₩1,150,000",
+                ),
             ],
             "message": "[매도 검토] SK하이닉스 3/5 조건 충족 (trailing_stop, stoch_rsi, foreign_selling)",
             "errors": [],
