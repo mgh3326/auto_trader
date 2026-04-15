@@ -55,6 +55,7 @@ def _serialize_journal(j: TradeJournal) -> dict[str, Any]:
         "account": j.account,
         "account_type": j.account_type,
         "paper_trade_id": j.paper_trade_id,
+        "paperclip_issue_id": j.paperclip_issue_id,
         "notes": j.notes,
         "created_at": j.created_at.isoformat() if j.created_at else None,
         "updated_at": j.updated_at.isoformat() if j.updated_at else None,
@@ -78,6 +79,7 @@ async def save_trade_journal(
     status: str = "draft",
     account_type: str = "live",
     paper_trade_id: int | None = None,
+    paperclip_issue_id: str | None = None,
     metadata: dict | None = None,
 ) -> dict[str, Any]:
     """Save a trade journal entry with investment thesis and strategy metadata.
@@ -87,7 +89,8 @@ async def save_trade_journal(
     Warns if an active journal already exists for the same symbol.
     account_type='paper' for paper trading journals (requires account name).
     paper_trade_id links to the paper trade record.
-    metadata is an optional JSON dict for extensible fields (e.g. {"paperclip_issue_id": "ROB-XX"}).
+    paperclip_issue_id links to the Paperclip issue tracking this trade.
+    metadata is an optional JSON dict for extensible fields.
     """
     symbol = (symbol or "").strip()
     thesis = (thesis or "").strip()
@@ -172,6 +175,7 @@ async def save_trade_journal(
                 account=account,
                 account_type=account_type,
                 paper_trade_id=paper_trade_id,
+                paperclip_issue_id=paperclip_issue_id,
                 notes=notes,
                 extra_metadata=metadata,
             )
@@ -211,7 +215,7 @@ async def get_trade_journal(
     Each entry includes hold_remaining_days, hold_expired for hold period checks.
     account_type defaults to 'live'; set to 'paper' for paper journals, or None to query both.
     account (optional) filters to a specific account name.
-    paperclip_issue_id (optional) filters by metadata.paperclip_issue_id for reverse lookup.
+    paperclip_issue_id (optional) filters by Paperclip issue ID for reverse lookup.
     """
     try:
         async with _session_factory()() as db:
@@ -246,10 +250,7 @@ async def get_trade_journal(
                 filters.append(TradeJournal.account == account)
 
             if paperclip_issue_id is not None:
-                filters.append(
-                    TradeJournal.extra_metadata["paperclip_issue_id"].astext
-                    == paperclip_issue_id
-                )
+                filters.append(TradeJournal.paperclip_issue_id == paperclip_issue_id)
 
             if market:
                 market_map = {
