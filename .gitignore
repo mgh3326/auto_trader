@@ -275,10 +275,7 @@ blog/images/screenshot_*.png
 backtest/data/
 backtest/output/
 .omc/.env.prod
-# graphify cache only
-graphify-out/cache/
-app/graphify-out/cache/
-
-# optional heavy visualization artifacts
-graphify-out/graph.html
-app/graphify-out/graph.html
+# graphify: all generated artifacts (graph, report, cache, interpreter path, chunk inputs)
+graphify-out/
+app/graphify-out/
+/.air/worktree.json
