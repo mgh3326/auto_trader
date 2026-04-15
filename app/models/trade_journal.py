@@ -86,6 +86,11 @@ class TradeJournal(Base):
     # Indicator snapshot at entry
     indicators_snapshot: Mapped[dict | None] = mapped_column(JSONB)
 
+    # Extensible metadata (e.g. paperclip_issue_id linkage)
+    extra_metadata: Mapped[dict | None] = mapped_column(
+        "metadata", JSONB, nullable=True
+    )
+
     # Status
     status: Mapped[str] = mapped_column(Text, nullable=False, default="draft")
 
