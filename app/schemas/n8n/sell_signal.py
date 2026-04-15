@@ -25,3 +25,18 @@ class N8nSellSignalResponse(BaseModel):
     errors: list[dict[str, object]] = Field(
         default_factory=list, description="Non-fatal errors during evaluation"
     )
+
+
+class N8nSellSignalBatchResponse(BaseModel):
+    success: bool = Field(..., description="Whether batch request completed")
+    as_of: str = Field(..., description="Response timestamp in KST ISO8601")
+    total: int = Field(..., description="Total active symbols evaluated")
+    triggered_count: int = Field(
+        ..., description="Number of symbols with sell signal triggered"
+    )
+    results: list[N8nSellSignalResponse] = Field(
+        default_factory=list, description="Per-symbol evaluation results"
+    )
+    errors: list[dict[str, object]] = Field(
+        default_factory=list, description="Top-level errors"
+    )
