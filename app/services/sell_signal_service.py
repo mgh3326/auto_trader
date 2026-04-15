@@ -212,7 +212,6 @@ async def _check_rsi_momentum(
         except Exception:
             prev_state = {}
 
-        prev_rsi = prev_state.get("rsi")
         was_above_high = prev_state.get("was_above_high", False)
 
         if current_rsi >= high_mark:

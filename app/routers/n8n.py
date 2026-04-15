@@ -35,6 +35,7 @@ from app.schemas.n8n.pending_snapshot import (
     N8nPendingSnapshotsRequest,
     N8nPendingSnapshotsResponse,
 )
+from app.schemas.n8n.sell_signal import N8nSellSignalResponse
 from app.schemas.n8n.trade_review import (
     N8nTradeReviewListResponse,
     N8nTradeReviewsRequest,
@@ -48,7 +49,6 @@ from app.services.n8n_filled_orders_service import fetch_filled_orders
 from app.services.n8n_formatting import fmt_date_with_weekday
 from app.services.n8n_kr_morning_report_service import fetch_kr_morning_report
 from app.services.n8n_market_context_service import fetch_market_context
-from app.schemas.n8n.sell_signal import N8nSellSignalResponse
 from app.services.n8n_news_service import fetch_n8n_news
 from app.services.n8n_pending_orders_service import fetch_pending_orders
 from app.services.n8n_pending_review_service import fetch_pending_review
