@@ -269,6 +269,13 @@ async def _preview_sell(
 
     avg_price = holdings["avg_price"]
     if order_type == "market":
+        min_sell_price = avg_price * 1.01
+        if current_price < min_sell_price:
+            result["error"] = (
+                f"Market sell blocked: current price {current_price} "
+                f"below minimum (avg_buy_price * 1.01 = {min_sell_price:.0f})"
+            )
+            return result
         order_quantity = holdings["quantity"]
         execution_price = current_price
         result["price"] = execution_price
@@ -416,6 +423,18 @@ async def _validate_sell_side(
 
     order_quantity = available_quantity if quantity is None else quantity
     avg_price = _to_float(holdings.get("avg_price"), default=0.0)
+
+    if order_type == "market":
+        min_sell_price = avg_price * 1.01
+        if current_price < min_sell_price:
+            return (
+                0.0,
+                0.0,
+                order_error_fn(
+                    f"Market sell blocked: current price {current_price} "
+                    f"below minimum (avg_buy_price * 1.01 = {min_sell_price:.0f})"
+                ),
+            )
 
     if order_type == "limit" and price is not None:
         min_sell_price = avg_price * 1.01
