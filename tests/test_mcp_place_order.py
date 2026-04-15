@@ -18,6 +18,19 @@ from tests._mcp_tooling_support import (
     build_tools,
 )
 
+EXPECTED_MARKET_ERROR = (
+    "MCP place_order only supports limit orders; market orders are not allowed."
+)
+
+
+def _assert_market_rejected(result):
+    assert result["success"] is False, result
+    assert result.get("error") == EXPECTED_MARKET_ERROR, result
+    # must NOT look like a successful preview or execution
+    assert result.get("dry_run") is not True
+    assert "execution" not in result
+
+
 # ----------------------------------------------------------------------
 # Amount-based order tests
 # ----------------------------------------------------------------------
@@ -25,51 +38,18 @@ from tests._mcp_tooling_support import (
 
 @pytest.mark.asyncio
 async def test_place_order_with_amount_crypto_market_buy(monkeypatch):
+    """MCP place_order must reject crypto market buy."""
     tools = build_tools()
-
-    mock = AsyncMock()
-    mock.fetch_multiple_current_prices = AsyncMock(return_value={"KRW-BTC": 50000000.0})
-    mock.fetch_my_coins = AsyncMock(
-        return_value=[{"currency": "KRW", "balance": "500000", "locked": "0"}]
-    )
-    mock.place_market_buy_order = AsyncMock(
-        return_value={
-            "uuid": "test-uuid",
-            "side": "bid",
-            "market": "KRW-BTC",
-            "ord_type": "price",
-            "price": "100000",
-            "volume": "0.002",
-        }
-    )
-
-    monkeypatch.setattr(
-        upbit_service,
-        "fetch_multiple_current_prices",
-        mock.fetch_multiple_current_prices,
-    )
-    monkeypatch.setattr(
-        upbit_service,
-        "fetch_my_coins",
-        mock.fetch_my_coins,
-    )
-    monkeypatch.setattr(
-        upbit_service,
-        "place_market_buy_order",
-        mock.place_market_buy_order,
-    )
-
     result = await tools["place_order"](
         symbol="KRW-BTC",
         side="buy",
         order_type="market",
-        amount=100000.0,
-        dry_run=True,
+        amount=5_000_000,
+        dry_run=False,
+        thesis="t",
+        strategy="s",
     )
-
-    assert result["success"] is True
-    assert result["dry_run"] is True
-    assert result["quantity"] > 0
+    _assert_market_rejected(result)
 
 
 @pytest.mark.asyncio
@@ -110,36 +90,18 @@ async def test_place_order_with_amount_limit_order(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_place_order_with_amount_stock_market_buy(monkeypatch):
+    """MCP place_order must reject KR stock market buy."""
     tools = build_tools()
-
-    class MockKISClient:
-        async def order_korea_stock(self, stock_code, order_type, quantity, price):
-            return {"odno": "12345", "ord_qty": quantity}
-
-        async def inquire_integrated_margin(self):
-            return {
-                "dnca_tot_amt": "5000000",
-                "stck_cash_objt_amt": "5000000",
-                "stck_itgr_cash100_ord_psbl_amt": "5000000",
-            }
-
-    async def fetch_quote(symbol):
-        return {"price": 100000.0}
-
-    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
-    _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_kr", fetch_quote)
-
     result = await tools["place_order"](
         symbol="005930",
         side="buy",
         order_type="market",
-        amount=1000000.0,
-        dry_run=True,
+        amount=1_000_000,
+        dry_run=False,
+        thesis="t",
+        strategy="s",
     )
-
-    assert result["success"] is True
-    assert result["dry_run"] is True
-    assert result["quantity"] == 10
+    _assert_market_rejected(result)
 
 
 @pytest.mark.asyncio
@@ -229,45 +191,18 @@ async def test_place_order_upbit_buy_limit_dry_run(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_place_order_upbit_buy_market_dry_run(monkeypatch):
-    """Test Upbit buy market order in dry_run mode."""
+    """MCP place_order must reject crypto market buy even in dry_run."""
     tools = build_tools()
-
-    class DummyUpbit:
-        async def fetch_multiple_current_prices(self, symbols, use_cache=True):
-            return {"KRW-BTC": 50000000.0}
-
-        async def fetch_my_coins(self):
-            return [{"currency": "KRW", "balance": 2000000.0}]
-
-    _patch_runtime_attr(monkeypatch, "upbit_service", DummyUpbit())
-    _patch_runtime_attr(
-        monkeypatch,
-        "_preview_order",
-        AsyncMock(
-            return_value={
-                "symbol": "KRW-BTC",
-                "side": "buy",
-                "order_type": "market",
-                "price": 50000000.0,
-                "quantity": 0.04,
-                "estimated_value": 2000000.0,
-                "fee": 10000.0,
-            }
-        ),
-    )
-
     result = await tools["place_order"](
         symbol="KRW-BTC",
         side="buy",
         order_type="market",
+        amount=1_000_000,
         dry_run=True,
+        thesis="t",
+        strategy="s",
     )
-
-    assert result["success"] is True
-    assert result["dry_run"] is True
-    assert result["order_type"] == "market"
-    assert result["price"] == 50000000.0
-    assert result["quantity"] == 0.04
+    _assert_market_rejected(result)
 
 
 @pytest.mark.asyncio
@@ -309,70 +244,31 @@ async def test_place_order_sell_limit_price_below_minimum(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_place_order_market_buy_calculates_quantity(monkeypatch):
-    """Test that market buy order calculates quantity correctly."""
+    """MCP place_order must reject crypto market buy (calculates quantity path)."""
     tools = build_tools()
-
-    class DummyUpbit:
-        async def fetch_multiple_current_prices(self, symbols, use_cache=True):
-            return {"KRW-BTC": 50000000.0}
-
-        async def fetch_my_coins(self):
-            return [{"currency": "KRW", "balance": 2000000.0}]
-
-    _patch_runtime_attr(monkeypatch, "upbit_service", DummyUpbit())
-
     result = await tools["place_order"](
         symbol="KRW-BTC",
         side="buy",
         order_type="market",
+        amount=2_000_000,
         dry_run=True,
+        thesis="t",
+        strategy="s",
     )
-
-    assert result["success"] is True
-    assert result["dry_run"] is True
-    assert result["order_type"] == "market"
-    assert result["quantity"] == 0.04
-    assert result["price"] == 50000000.0
-    assert result["estimated_value"] == 2000000.0
+    _assert_market_rejected(result)
 
 
 @pytest.mark.asyncio
 async def test_place_order_market_sell_uses_full_quantity(monkeypatch):
-    """Test that market sell order uses full holdings."""
+    """MCP place_order must reject KR stock market sell."""
     tools = build_tools()
-
-    class DummyUpbit:
-        async def fetch_multiple_current_prices(self, symbols, use_cache=True):
-            return {"KRW-BTC": 50000000.0}
-
-        async def fetch_my_coins(self):
-            return [{"currency": "BTC", "balance": 0.5, "avg_buy_price": 40000000.0}]
-
-    _patch_runtime_attr(monkeypatch, "upbit_service", DummyUpbit())
-    _patch_runtime_attr(
-        monkeypatch,
-        "_preview_order",
-        AsyncMock(
-            return_value={
-                "estimated_value": 25000000.0,
-                "realized_pnl": 5000000.0,
-                "avg_buy_price": 40000000.0,
-            }
-        ),
-    )
-
     result = await tools["place_order"](
-        symbol="KRW-BTC",
+        symbol="005930",
         side="sell",
         order_type="market",
-        dry_run=True,
+        dry_run=False,
     )
-
-    assert result["success"] is True
-    assert result["dry_run"] is True
-    assert result["order_type"] == "market"
-    assert result["quantity"] == 0.5
-    assert result["realized_pnl"] == 5000000.0
+    _assert_market_rejected(result)
 
 
 # ----------------------------------------------------------------------
@@ -1431,45 +1327,15 @@ async def test_place_order_crypto_sell_exceeds_orderable_with_locked(monkeypatch
 
 @pytest.mark.asyncio
 async def test_place_order_crypto_market_sell_uses_orderable_only(monkeypatch):
+    """MCP place_order must reject crypto market sell."""
     tools = build_tools()
-
-    class DummyUpbit:
-        async def fetch_multiple_current_prices(self, symbols, use_cache=True):
-            return {"KRW-BTC": 50000000.0}
-
-        async def fetch_my_coins(self):
-            return [
-                {
-                    "currency": "BTC",
-                    "balance": 0.03,
-                    "locked": 0.02,
-                    "avg_buy_price": 50000000.0,
-                }
-            ]
-
-    _patch_runtime_attr(monkeypatch, "upbit_service", DummyUpbit())
-    _patch_runtime_attr(
-        monkeypatch,
-        "_preview_order",
-        AsyncMock(
-            return_value={
-                "estimated_value": 1500000.0,
-                "realized_pnl": 0.0,
-                "avg_buy_price": 50000000.0,
-            }
-        ),
-    )
-
     result = await tools["place_order"](
         symbol="KRW-BTC",
         side="sell",
         order_type="market",
-        dry_run=True,
+        dry_run=False,
     )
-
-    assert result["success"] is True
-    assert result["dry_run"] is True
-    assert result["quantity"] == 0.03
+    _assert_market_rejected(result)
 
 
 @pytest.mark.asyncio
@@ -2251,3 +2117,57 @@ class TestOrderFillRecording:
         assert result["success"] is True
         assert result["journal_created"] is False
         assert "journal_warning" in result
+
+
+# ----------------------------------------------------------------------
+# Market order rejection tests (policy change)
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_place_order_paper_market_rejected():
+    """MCP place_order must reject market orders even in paper mode."""
+    tools = build_tools()
+    result = await tools["place_order"](
+        symbol="KRW-BTC",
+        side="buy",
+        order_type="market",
+        amount=1_000_000,
+        dry_run=False,
+        account_type="paper",
+        thesis="t",
+        strategy="s",
+    )
+    _assert_market_rejected(result)
+
+
+@pytest.mark.asyncio
+async def test_place_order_paper_market_sell_rejected():
+    """MCP place_order must reject market sell orders in paper mode."""
+    tools = build_tools()
+    result = await tools["place_order"](
+        symbol="005930",
+        side="sell",
+        order_type="market",
+        dry_run=False,
+        account_type="paper",
+    )
+    _assert_market_rejected(result)
+
+
+@pytest.mark.asyncio
+async def test_place_order_limit_still_works_after_market_block(monkeypatch):
+    """Policy change must not regress the limit path."""
+    tools = build_tools()
+    result = await tools["place_order"](
+        symbol="KRW-BTC",
+        side="buy",
+        order_type="limit",
+        price=50_000_000,
+        quantity=0.01,
+        dry_run=True,
+        thesis="t",
+        strategy="s",
+    )
+    # limit dry-run should succeed (or at least not be the market-rejection error)
+    assert result.get("error") != EXPECTED_MARKET_ERROR
