@@ -5,6 +5,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from app.mcp_server.tooling.analysis_registration import register_analysis_tools
+from app.mcp_server.tooling.execution_comment_registration import (
+    register_execution_comment_tools,
+)
 from app.mcp_server.tooling.fundamentals_registration import register_fundamentals_tools
 from app.mcp_server.tooling.market_data_registration import register_market_data_tools
 from app.mcp_server.tooling.market_report_registration import (
@@ -54,6 +57,7 @@ def register_all_tools(mcp: FastMCP) -> None:
     register_paper_account_tools(mcp)
     register_paper_analytics_tools(mcp)
     register_paper_journal_tools(mcp)
+    register_execution_comment_tools(mcp)
 
 
 __all__ = ["register_all_tools"]
