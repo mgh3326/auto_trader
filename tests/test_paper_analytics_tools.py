@@ -71,15 +71,21 @@ def _perf_payload() -> dict:
             "symbol": "005930",
             "entry_date": "2026-04-01T00:00:00+00:00",
             "exit_date": "2026-04-06T00:00:00+00:00",
-            "holding_days": 5, "pnl": 98635.0, "return_pct": 16.44,
-            "entry_reason": "", "exit_reason": "",
+            "holding_days": 5,
+            "pnl": 98635.0,
+            "return_pct": 16.44,
+            "entry_reason": "",
+            "exit_reason": "",
         },
         "worst_trade": {
             "symbol": "005930",
             "entry_date": "2026-04-01T00:00:00+00:00",
             "exit_date": "2026-04-06T00:00:00+00:00",
-            "holding_days": 5, "pnl": 98635.0, "return_pct": 16.44,
-            "entry_reason": "", "exit_reason": "",
+            "holding_days": 5,
+            "pnl": 98635.0,
+            "return_pct": 16.44,
+            "entry_reason": "",
+            "exit_reason": "",
         },
     }
 
@@ -92,9 +98,11 @@ async def test_get_paper_performance_all_period(monkeypatch):
     _patch_session(monkeypatch, db)
 
     account = PaperAccount(
-        id=1, name="bot",
+        id=1,
+        name="bot",
         initial_capital=Decimal("10000000"),
-        cash_krw=Decimal("5000000"), cash_usd=Decimal("0"),
+        cash_krw=Decimal("5000000"),
+        cash_usd=Decimal("0"),
         is_active=True,
     )
 
@@ -143,9 +151,11 @@ async def test_get_paper_performance_invalid_period(monkeypatch):
     _patch_session(monkeypatch, db)
 
     account = PaperAccount(
-        id=1, name="bot",
+        id=1,
+        name="bot",
         initial_capital=Decimal("10000000"),
-        cash_krw=Decimal("0"), cash_usd=Decimal("0"),
+        cash_krw=Decimal("0"),
+        cash_usd=Decimal("0"),
         is_active=True,
     )
 
@@ -170,19 +180,28 @@ async def test_get_paper_trade_log_basic(monkeypatch):
     _patch_session(monkeypatch, db)
 
     account = PaperAccount(
-        id=1, name="bot",
+        id=1,
+        name="bot",
         initial_capital=Decimal("10000000"),
-        cash_krw=Decimal("0"), cash_usd=Decimal("0"),
+        cash_krw=Decimal("0"),
+        cash_usd=Decimal("0"),
         is_active=True,
     )
 
     trade_rows = [
         {
-            "id": 1, "symbol": "005930", "instrument_type": "equity_kr",
-            "side": "buy", "order_type": "market",
-            "quantity": Decimal("10"), "price": Decimal("60000"),
-            "total_amount": Decimal("600000"), "fee": Decimal("90"),
-            "currency": "KRW", "reason": "entry", "realized_pnl": None,
+            "id": 1,
+            "symbol": "005930",
+            "instrument_type": "equity_kr",
+            "side": "buy",
+            "order_type": "market",
+            "quantity": Decimal("10"),
+            "price": Decimal("60000"),
+            "total_amount": Decimal("600000"),
+            "fee": Decimal("90"),
+            "currency": "KRW",
+            "reason": "entry",
+            "realized_pnl": None,
             "executed_at": datetime(2026, 4, 1, 9, 0, tzinfo=UTC),
         },
     ]
@@ -219,9 +238,11 @@ async def test_get_paper_trade_log_filters_forwarded(monkeypatch):
     _patch_session(monkeypatch, db)
 
     account = PaperAccount(
-        id=1, name="bot",
+        id=1,
+        name="bot",
         initial_capital=Decimal("0"),
-        cash_krw=Decimal("0"), cash_usd=Decimal("0"),
+        cash_krw=Decimal("0"),
+        cash_usd=Decimal("0"),
         is_active=True,
     )
 
@@ -269,31 +290,47 @@ async def test_compare_paper_accounts_all_found(monkeypatch):
     _patch_session(monkeypatch, db)
 
     acc1 = PaperAccount(
-        id=1, name="bot-a",
+        id=1,
+        name="bot-a",
         initial_capital=Decimal("10000000"),
-        cash_krw=Decimal("0"), cash_usd=Decimal("0"),
+        cash_krw=Decimal("0"),
+        cash_usd=Decimal("0"),
         is_active=True,
     )
     acc2 = PaperAccount(
-        id=2, name="bot-b",
+        id=2,
+        name="bot-b",
         initial_capital=Decimal("10000000"),
-        cash_krw=Decimal("0"), cash_usd=Decimal("0"),
+        cash_krw=Decimal("0"),
+        cash_usd=Decimal("0"),
         is_active=True,
     )
 
     name_to_account = {"bot-a": acc1, "bot-b": acc2}
     perf_by_id = {
         1: {
-            "total_return_pct": 5.0, "realized_pnl": 100.0, "unrealized_pnl": 50.0,
-            "total_trades": 3, "win_rate": 66.67, "avg_holding_days": 4.0,
-            "max_drawdown_pct": 2.0, "sharpe_ratio": 1.0,
-            "best_trade": None, "worst_trade": None,
+            "total_return_pct": 5.0,
+            "realized_pnl": 100.0,
+            "unrealized_pnl": 50.0,
+            "total_trades": 3,
+            "win_rate": 66.67,
+            "avg_holding_days": 4.0,
+            "max_drawdown_pct": 2.0,
+            "sharpe_ratio": 1.0,
+            "best_trade": None,
+            "worst_trade": None,
         },
         2: {
-            "total_return_pct": -2.0, "realized_pnl": -200.0, "unrealized_pnl": 0.0,
-            "total_trades": 1, "win_rate": 0.0, "avg_holding_days": 2.0,
-            "max_drawdown_pct": 5.0, "sharpe_ratio": -0.5,
-            "best_trade": None, "worst_trade": None,
+            "total_return_pct": -2.0,
+            "realized_pnl": -200.0,
+            "unrealized_pnl": 0.0,
+            "total_trades": 1,
+            "win_rate": 0.0,
+            "avg_holding_days": 2.0,
+            "max_drawdown_pct": 5.0,
+            "sharpe_ratio": -0.5,
+            "best_trade": None,
+            "worst_trade": None,
         },
     }
 
@@ -328,9 +365,11 @@ async def test_compare_paper_accounts_skips_missing(monkeypatch):
     _patch_session(monkeypatch, db)
 
     acc1 = PaperAccount(
-        id=1, name="bot-a",
+        id=1,
+        name="bot-a",
         initial_capital=Decimal("10000000"),
-        cash_krw=Decimal("0"), cash_usd=Decimal("0"),
+        cash_krw=Decimal("0"),
+        cash_usd=Decimal("0"),
         is_active=True,
     )
 
@@ -342,12 +381,20 @@ async def test_compare_paper_accounts_skips_missing(monkeypatch):
     ) as svc_cls:
         svc = svc_cls.return_value
         svc.get_account_by_name = AsyncMock(side_effect=_lookup)
-        svc.calculate_performance = AsyncMock(return_value={
-            "total_return_pct": 0.0, "realized_pnl": 0.0, "unrealized_pnl": 0.0,
-            "total_trades": 0, "win_rate": 0.0, "avg_holding_days": 0.0,
-            "max_drawdown_pct": None, "sharpe_ratio": None,
-            "best_trade": None, "worst_trade": None,
-        })
+        svc.calculate_performance = AsyncMock(
+            return_value={
+                "total_return_pct": 0.0,
+                "realized_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "total_trades": 0,
+                "win_rate": 0.0,
+                "avg_holding_days": 0.0,
+                "max_drawdown_pct": None,
+                "sharpe_ratio": None,
+                "best_trade": None,
+                "worst_trade": None,
+            }
+        )
 
         tools = build_tools()
         result = await tools["compare_paper_accounts"](names=["bot-a", "ghost"])

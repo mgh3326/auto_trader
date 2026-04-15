@@ -170,27 +170,33 @@ def register_paper_analytics_tools(mcp: FastMCP) -> None:
             for account_name in names:
                 account = await service.get_account_by_name(account_name)
                 if account is None:
-                    comparison.append({
-                        "account_name": account_name,
-                        "performance": None,
-                        "error": f"Paper account '{account_name}' not found",
-                    })
+                    comparison.append(
+                        {
+                            "account_name": account_name,
+                            "performance": None,
+                            "error": f"Paper account '{account_name}' not found",
+                        }
+                    )
                     continue
                 try:
                     perf = await service.calculate_performance(
                         account_id=account.id, start_date=start, end_date=end
                     )
-                    comparison.append({
-                        "account_name": account_name,
-                        "performance": perf,
-                        "error": None,
-                    })
+                    comparison.append(
+                        {
+                            "account_name": account_name,
+                            "performance": perf,
+                            "error": None,
+                        }
+                    )
                 except ValueError as exc:
-                    comparison.append({
-                        "account_name": account_name,
-                        "performance": None,
-                        "error": str(exc),
-                    })
+                    comparison.append(
+                        {
+                            "account_name": account_name,
+                            "performance": None,
+                            "error": str(exc),
+                        }
+                    )
 
         return {"success": True, "period": period, "comparison": comparison}
 

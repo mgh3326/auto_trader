@@ -175,7 +175,6 @@ class PaperTradingService:
                 _fetch_quote_equity_us,
             )
 
-
             quote = await _fetch_quote_equity_us(symbol)
             price = quote.get("price")
         elif instrument_type == "crypto":
@@ -566,7 +565,6 @@ class PaperTradingService:
             "positions_count": len(positions),
         }
 
-
     # ------------------------------------------------------------------ #
     # Daily snapshot
     # ------------------------------------------------------------------ #
@@ -705,22 +703,29 @@ class PaperTradingService:
                     last_exit_date = t.executed_at
                     last_sell_reason = t.reason or ""
 
-                    if position_qty <= 0 and entry_date is not None and last_exit_date is not None:
+                    if (
+                        position_qty <= 0
+                        and entry_date is not None
+                        and last_exit_date is not None
+                    ):
                         holding_days = (last_exit_date.date() - entry_date.date()).days
                         return_pct = (
                             float(total_pnl / buy_cost * Decimal("100"))
-                            if buy_cost > 0 else 0.0
+                            if buy_cost > 0
+                            else 0.0
                         )
-                        round_trips.append({
-                            "symbol": symbol,
-                            "entry_date": entry_date.isoformat(),
-                            "exit_date": last_exit_date.isoformat(),
-                            "holding_days": max(holding_days, 0),
-                            "pnl": float(total_pnl),
-                            "return_pct": return_pct,
-                            "entry_reason": entry_reason,
-                            "exit_reason": last_sell_reason,
-                        })
+                        round_trips.append(
+                            {
+                                "symbol": symbol,
+                                "entry_date": entry_date.isoformat(),
+                                "exit_date": last_exit_date.isoformat(),
+                                "holding_days": max(holding_days, 0),
+                                "pnl": float(total_pnl),
+                                "return_pct": return_pct,
+                                "entry_reason": entry_reason,
+                                "exit_reason": last_sell_reason,
+                            }
+                        )
                         position_qty = Decimal("0")
                         buy_cost = Decimal("0")
                         total_pnl = Decimal("0")
@@ -751,6 +756,7 @@ class PaperTradingService:
     def _calc_sharpe_ratio(daily_returns_pct: list[Decimal]) -> float | None:
         """Annualised Sharpe ratio (252 trading days). Assumes 0% risk-free rate."""
         import math
+
         values = [float(r) for r in daily_returns_pct if r is not None]
         if len(values) < 2:
             return None
@@ -760,7 +766,6 @@ class PaperTradingService:
         if stdev == 0:
             return None
         return (mean / stdev) * math.sqrt(252)
-
 
     async def calculate_performance(
         self,
@@ -794,11 +799,13 @@ class PaperTradingService:
         trade_stmt = select(PaperTrade).where(PaperTrade.account_id == account_id)
         if start_date is not None:
             trade_stmt = trade_stmt.where(
-                PaperTrade.executed_at >= datetime.combine(start_date, datetime.min.time(), tzinfo=UTC)
+                PaperTrade.executed_at
+                >= datetime.combine(start_date, datetime.min.time(), tzinfo=UTC)
             )
         if end_date is not None:
             trade_stmt = trade_stmt.where(
-                PaperTrade.executed_at <= datetime.combine(end_date, datetime.max.time(), tzinfo=UTC)
+                PaperTrade.executed_at
+                <= datetime.combine(end_date, datetime.max.time(), tzinfo=UTC)
             )
         trade_stmt = trade_stmt.order_by(PaperTrade.executed_at.asc())
         trades = list((await self.db.execute(trade_stmt)).scalars().all())
@@ -814,10 +821,15 @@ class PaperTradingService:
         win_rate = (wins / total_trips * 100.0) if total_trips > 0 else 0.0
         avg_holding_days = (
             sum(trip["holding_days"] for trip in round_trips) / total_trips
-            if total_trips > 0 else 0.0
+            if total_trips > 0
+            else 0.0
         )
-        best_trip = max(round_trips, key=lambda t: t["return_pct"]) if round_trips else None
-        worst_trip = min(round_trips, key=lambda t: t["return_pct"]) if round_trips else None
+        best_trip = (
+            max(round_trips, key=lambda t: t["return_pct"]) if round_trips else None
+        )
+        worst_trip = (
+            min(round_trips, key=lambda t: t["return_pct"]) if round_trips else None
+        )
 
         # Snapshots in period → sharpe + max drawdown
         snap_stmt = select(PaperDailySnapshot).where(
@@ -831,7 +843,9 @@ class PaperTradingService:
         snaps = list((await self.db.execute(snap_stmt)).scalars().all())
 
         equity_curve = [s.total_equity for s in snaps]
-        daily_returns = [s.daily_return_pct for s in snaps if s.daily_return_pct is not None]
+        daily_returns = [
+            s.daily_return_pct for s in snaps if s.daily_return_pct is not None
+        ]
         max_dd = self._calc_max_drawdown_pct(equity_curve) if equity_curve else None
         sharpe = self._calc_sharpe_ratio(daily_returns) if daily_returns else None
 

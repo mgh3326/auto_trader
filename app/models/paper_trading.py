@@ -144,7 +144,8 @@ class PaperDailySnapshot(Base):
     __tablename__ = "paper_daily_snapshots"
     __table_args__ = (
         UniqueConstraint(
-            "account_id", "snapshot_date",
+            "account_id",
+            "snapshot_date",
             name="uq_paper_daily_snapshots_account_date",
         ),
         Index("ix_paper_daily_snapshots_account_date", "account_id", "snapshot_date"),
