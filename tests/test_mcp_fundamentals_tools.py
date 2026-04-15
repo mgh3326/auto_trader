@@ -4347,9 +4347,7 @@ class TestGetInvestorTrends:
                 **mock,
             }
 
-        _patch_runtime_attr(
-            monkeypatch, "_fetch_investor_trends_naver", mock_fetch
-        )
+        _patch_runtime_attr(monkeypatch, "_fetch_investor_trends_naver", mock_fetch)
 
         result = await tools["get_investor_trends"]("005930")
 
@@ -4375,9 +4373,7 @@ class TestGetInvestorTrends:
                 **mock,
             }
 
-        _patch_runtime_attr(
-            monkeypatch, "_fetch_investor_trends_naver", mock_fetch
-        )
+        _patch_runtime_attr(monkeypatch, "_fetch_investor_trends_naver", mock_fetch)
 
         result = await tools["get_investor_trends"]("005930", period="week")
 
@@ -4403,9 +4399,7 @@ class TestGetInvestorTrends:
                 **mock,
             }
 
-        _patch_runtime_attr(
-            monkeypatch, "_fetch_investor_trends_naver", mock_fetch
-        )
+        _patch_runtime_attr(monkeypatch, "_fetch_investor_trends_naver", mock_fetch)
 
         result = await tools["get_investor_trends"]("005930", period="month")
 
@@ -4437,9 +4431,7 @@ class TestGetInvestorTrends:
         async def mock_fetch(code, days):
             raise RuntimeError("Naver down")
 
-        _patch_runtime_attr(
-            monkeypatch, "_fetch_investor_trends_naver", mock_fetch
-        )
+        _patch_runtime_attr(monkeypatch, "_fetch_investor_trends_naver", mock_fetch)
 
         result = await tools["get_investor_trends"]("005930")
 
