@@ -4,7 +4,7 @@ import json
 import subprocess
 from pathlib import Path
 
-WORKFLOW_PATH = Path("n8n/data/export-check/tc-briefing-discord.json")
+WORKFLOW_PATH = Path("n8n/workflows/tc-briefing-discord.json")
 COMPOSE_PATH = Path("docker-compose.n8n.yml")
 
 
