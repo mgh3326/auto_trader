@@ -31,8 +31,8 @@ def register_trade_journal_tools(mcp: FastMCP) -> None:
             "status defaults to 'draft' — set to 'active' after fill confirmation. "
             "account_type='paper' for paper trading journals (requires account name). "
             "paper_trade_id links to the paper trade record. "
-            "metadata is an optional JSON dict for extensible fields "
-            '(e.g. {"paperclip_issue_id": "ROB-XX"} for Paperclip linkage).'
+            "paperclip_issue_id links to the Paperclip issue tracking this trade. "
+            "metadata is an optional JSON dict for extensible fields."
         ),
     )(save_trade_journal)
     _ = mcp.tool(
@@ -45,8 +45,7 @@ def register_trade_journal_tools(mcp: FastMCP) -> None:
             "account_type defaults to 'live'; set to 'paper' for paper journals, "
             "or None to query both. "
             "account (optional) filters to a specific account name. "
-            "paperclip_issue_id (optional) filters by metadata.paperclip_issue_id "
-            "for reverse lookup from Paperclip issue to trade journal."
+            "paperclip_issue_id (optional) reverse lookup by Paperclip issue ID."
         ),
     )(get_trade_journal)
     _ = mcp.tool(
