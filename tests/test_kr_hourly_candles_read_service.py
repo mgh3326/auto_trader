@@ -438,6 +438,7 @@ async def test_api_prefetch_plan_respects_nxt_ineligible(monkeypatch):
 @pytest.mark.asyncio
 async def test_end_date_in_past_disables_api(monkeypatch):
     from app.services import kr_hourly_candles_read_service as svc
+    from app.services.kr_intraday import _repository as _repo_module
 
     symbol = "005930"
 
@@ -476,7 +477,7 @@ async def test_end_date_in_past_disables_api(monkeypatch):
             raise AssertionError(f"unexpected sql: {sql}")
 
     monkeypatch.setattr(
-        svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
+        _repo_module, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
     )
 
     kis = SimpleNamespace(inquire_time_dailychartprice=AsyncMock())
@@ -495,6 +496,7 @@ async def test_end_date_in_past_disables_api(monkeypatch):
 @pytest.mark.asyncio
 async def test_current_hour_is_reaggregated_from_minutes_not_from_db_hour(monkeypatch):
     from app.services import kr_hourly_candles_read_service as svc
+    from app.services.kr_intraday import _repository as _repo_module
 
     symbol = "005930"
     now_kst = _dt_kst(2026, 2, 23, 10, 10, 0)
@@ -558,7 +560,7 @@ async def test_current_hour_is_reaggregated_from_minutes_not_from_db_hour(monkey
             raise AssertionError(f"unexpected sql: {sql}")
 
     monkeypatch.setattr(
-        svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
+        _repo_module, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
     )
 
     kis = SimpleNamespace(
@@ -587,6 +589,7 @@ async def test_current_hour_is_reaggregated_from_minutes_not_from_db_hour(monkey
 @pytest.mark.asyncio
 async def test_api_overrides_db_minutes_for_same_minute_and_venue(monkeypatch):
     from app.services import kr_hourly_candles_read_service as svc
+    from app.services.kr_intraday import _repository as _repo_module
 
     symbol = "005930"
     now_kst = _dt_kst(2026, 2, 23, 10, 10, 0)
@@ -628,7 +631,7 @@ async def test_api_overrides_db_minutes_for_same_minute_and_venue(monkeypatch):
             raise AssertionError(f"unexpected sql: {sql}")
 
     monkeypatch.setattr(
-        svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
+        _repo_module, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
     )
 
     api_df = pd.DataFrame(
@@ -668,6 +671,7 @@ async def test_api_overrides_db_minutes_for_same_minute_and_venue(monkeypatch):
 @pytest.mark.asyncio
 async def test_same_minute_both_venues_price_krx_priority_volume_sum(monkeypatch):
     from app.services import kr_hourly_candles_read_service as svc
+    from app.services.kr_intraday import _repository as _repo_module
 
     symbol = "005930"
     now_kst = _dt_kst(2026, 2, 23, 9, 10, 0)
@@ -719,7 +723,7 @@ async def test_same_minute_both_venues_price_krx_priority_volume_sum(monkeypatch
             raise AssertionError(f"unexpected sql: {sql}")
 
     monkeypatch.setattr(
-        svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
+        _repo_module, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
     )
     kis = SimpleNamespace(
         inquire_time_dailychartprice=AsyncMock(return_value=pd.DataFrame())
@@ -745,6 +749,7 @@ async def test_same_minute_both_venues_price_krx_priority_volume_sum(monkeypatch
 @pytest.mark.asyncio
 async def test_synthetic_current_hour_created_when_db_hour_missing(monkeypatch):
     from app.services import kr_hourly_candles_read_service as svc
+    from app.services.kr_intraday import _repository as _repo_module
 
     symbol = "005930"
     now_kst = _dt_kst(2026, 2, 23, 10, 10, 0)
@@ -786,7 +791,7 @@ async def test_synthetic_current_hour_created_when_db_hour_missing(monkeypatch):
             raise AssertionError(f"unexpected sql: {sql}")
 
     monkeypatch.setattr(
-        svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
+        _repo_module, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
     )
     kis = SimpleNamespace(
         inquire_time_dailychartprice=AsyncMock(return_value=pd.DataFrame())
@@ -806,6 +811,7 @@ async def test_synthetic_current_hour_created_when_db_hour_missing(monkeypatch):
 @pytest.mark.asyncio
 async def test_session_and_venues_fields_present_and_labeled(monkeypatch):
     from app.services import kr_hourly_candles_read_service as svc
+    from app.services.kr_intraday import _repository as _repo_module
 
     symbol = "005930"
     now_kst = _dt_kst(2026, 2, 23, 8, 10, 0)
@@ -858,7 +864,7 @@ async def test_session_and_venues_fields_present_and_labeled(monkeypatch):
             raise AssertionError(f"unexpected sql: {sql}")
 
     monkeypatch.setattr(
-        svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
+        _repo_module, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
     )
     kis = SimpleNamespace(
         inquire_time_dailychartprice=AsyncMock(return_value=pd.DataFrame())
@@ -880,6 +886,7 @@ async def test_session_and_venues_fields_present_and_labeled(monkeypatch):
 @pytest.mark.asyncio
 async def test_db_insufficient_rows_returns_empty_frame(monkeypatch):
     from app.services import kr_hourly_candles_read_service as svc
+    from app.services.kr_intraday import _repository as _repo_module
 
     symbol = "005930"
 
@@ -905,7 +912,7 @@ async def test_db_insufficient_rows_returns_empty_frame(monkeypatch):
             raise AssertionError(f"unexpected sql: {sql}")
 
     monkeypatch.setattr(
-        svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
+        _repo_module, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
     )
     kis = SimpleNamespace(
         inquire_time_dailychartprice=AsyncMock(return_value=pd.DataFrame())
@@ -925,6 +932,7 @@ async def test_db_insufficient_rows_returns_empty_frame(monkeypatch):
 @pytest.mark.asyncio
 async def test_api_partial_failure_returns_empty_frame(monkeypatch):
     from app.services import kr_hourly_candles_read_service as svc
+    from app.services.kr_intraday import _repository as _repo_module
 
     symbol = "005930"
     now_kst = _dt_kst(2026, 2, 23, 9, 0, 0)
@@ -951,7 +959,7 @@ async def test_api_partial_failure_returns_empty_frame(monkeypatch):
             raise AssertionError(f"unexpected sql: {sql}")
 
     monkeypatch.setattr(
-        svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
+        _repo_module, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
     )
 
     async def _fail_on_nx(*, market, **_):
@@ -978,6 +986,7 @@ async def test_api_partial_failure_returns_empty_frame(monkeypatch):
 async def test_db_first_returns_existing_data(monkeypatch):
     """Test that DB-first query returns existing data without calling KIS API."""
     from app.services import kr_hourly_candles_read_service as svc
+    from app.services.kr_intraday import _repository as _repo_module
 
     symbol = "005930"
     # now_kst is the next day, so all queried hours are historical (no current hour aggregation)
@@ -1059,7 +1068,7 @@ async def test_db_first_returns_existing_data(monkeypatch):
             raise AssertionError(f"unexpected sql: {sql}")
 
     monkeypatch.setattr(
-        svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
+        _repo_module, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
     )
 
     # Mock KIS API to track calls
@@ -1094,6 +1103,7 @@ async def test_db_first_returns_existing_data(monkeypatch):
 async def test_fallback_to_kis_api_when_db_empty(monkeypatch):
     """Test fallback to KIS API when DB is empty."""
     from app.services import kr_hourly_candles_read_service as svc
+    from app.services.kr_intraday import _repository as _repo_module
 
     symbol = "005930"
     now_kst = _dt_kst(2026, 2, 23, 10, 0, 0)
@@ -1155,7 +1165,7 @@ async def test_fallback_to_kis_api_when_db_empty(monkeypatch):
             pass
 
     monkeypatch.setattr(
-        svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
+        _repo_module, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
     )
 
     kis = _create_mock_kis_client(return_df=api_df)
@@ -1285,6 +1295,7 @@ async def test_background_task_non_blocking(monkeypatch):
     import asyncio
 
     from app.services import kr_hourly_candles_read_service as svc
+    from app.services.kr_intraday import _repository as _repo_module
 
     symbol = "005930"
     now_kst = _dt_kst(2026, 2, 23, 10, 10, 0)
@@ -1317,7 +1328,7 @@ async def test_background_task_non_blocking(monkeypatch):
             raise AssertionError(f"unexpected sql: {sql}")
 
     monkeypatch.setattr(
-        svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
+        _repo_module, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
     )
 
     # Mock _store_minute_candles_background with delay to simulate slow DB write
@@ -1406,6 +1417,7 @@ async def test_api_failure_returns_partial_data(monkeypatch):
     3. Function returns available DB data instead of raising error
     """
     from app.services import kr_hourly_candles_read_service as svc
+    from app.services.kr_intraday import _repository as _repo_module
 
     symbol = "005930"
     now_kst = _dt_kst(2026, 2, 23, 10, 0, 0)
@@ -1456,7 +1468,7 @@ async def test_api_failure_returns_partial_data(monkeypatch):
             raise AssertionError(f"unexpected sql: {sql}")
 
     monkeypatch.setattr(
-        svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
+        _repo_module, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
     )
 
     # Mock KIS API to raise exception (simulating network failure or API error)
@@ -1501,6 +1513,7 @@ async def test_venue_separation_preserved(monkeypatch):
     import asyncio
 
     from app.services import kr_hourly_candles_read_service as svc
+    from app.services.kr_intraday import _repository as _repo_module
 
     symbol = "005930"
     now_kst = _dt_kst(2026, 2, 23, 10, 10, 0)
@@ -1531,7 +1544,7 @@ async def test_venue_separation_preserved(monkeypatch):
             raise AssertionError(f"unexpected sql: {sql}")
 
     monkeypatch.setattr(
-        svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
+        _repo_module, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
     )
 
     # Mock _store_minute_candles_background to track venue preservation
@@ -1678,6 +1691,7 @@ async def test_partial_db_data_filled_by_api(monkeypatch):
     3. The result combines DB and API data to return requested count
     """
     from app.services import kr_hourly_candles_read_service as svc
+    from app.services.kr_intraday import _repository as _repo_module
 
     symbol = "005930"
     # Use 14:00 during regular market hours (after market opened at 09:00)
@@ -1763,7 +1777,7 @@ async def test_partial_db_data_filled_by_api(monkeypatch):
             pass
 
     monkeypatch.setattr(
-        svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
+        _repo_module, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
     )
 
     # Mock KIS API to return minute candles for the missing hours (10:00, 11:00)
@@ -1851,6 +1865,7 @@ async def test_partial_db_data_filled_by_api(monkeypatch):
     )
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_read_kr_intraday_candles_1m_merges_same_minute_venues(monkeypatch):
     from app.services import kr_hourly_candles_read_service as svc
@@ -1920,6 +1935,7 @@ async def test_read_kr_intraday_candles_1m_merges_same_minute_venues(monkeypatch
     assert second["venues"] == ["KRX"]
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_read_kr_intraday_candles_5m_includes_current_partial_bucket(monkeypatch):
     from app.services import kr_hourly_candles_read_service as svc
@@ -2017,6 +2033,7 @@ async def test_read_kr_intraday_candles_5m_includes_current_partial_bucket(monke
     assert second["venues"] == ["KRX"]
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_read_kr_intraday_candles_5m_overlay_starts_background_storage(
     monkeypatch,
@@ -2108,6 +2125,7 @@ async def test_read_kr_intraday_candles_5m_overlay_starts_background_storage(
     assert background_completed, "Background storage should complete after response"
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_read_kr_intraday_candles_5m_fallback_schedules_background_storage(
     monkeypatch,
@@ -2191,6 +2209,7 @@ async def test_read_kr_intraday_candles_5m_fallback_schedules_background_storage
     assert {row.get("venue") for row in stored_rows} == {"KRX"}
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_read_kr_intraday_candles_1m_mixed_history_and_aware_fallback_keeps_naive_kst(
     monkeypatch,
@@ -2346,6 +2365,7 @@ def test_merge_overlay_into_intraday_frame_mixed_timezones_keeps_naive_kst():
     assert merged.iloc[0]["venues"] == ["NTX"]
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_read_kr_intraday_candles_5m_mixed_history_and_aware_fallback_keeps_naive_kst(
     monkeypatch,
@@ -2476,6 +2496,7 @@ async def test_read_kr_intraday_candles_5m_mixed_history_and_aware_fallback_keep
 @pytest.mark.asyncio
 async def test_schedule_background_minute_storage_writes_utc_naive_time(monkeypatch):
     from app.services import kr_hourly_candles_read_service as svc
+    from app.services.kr_intraday import _repository as _repo_module
 
     symbol = "005930"
     executed_params: list[dict[str, object]] = []
@@ -2495,7 +2516,7 @@ async def test_schedule_background_minute_storage_writes_utc_naive_time(monkeypa
             commit_called = True
 
     monkeypatch.setattr(
-        svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
+        _repo_module, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
     )
 
     svc._schedule_background_minute_storage(
@@ -2527,6 +2548,7 @@ async def test_schedule_background_minute_storage_writes_utc_naive_time(monkeypa
     assert stored_time.tzinfo is None
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_read_kr_intraday_candles_1m_pure_kis_overlay_and_fallback_keep_naive_kst(
     monkeypatch,
@@ -2612,6 +2634,7 @@ async def test_read_kr_intraday_candles_1m_pure_kis_overlay_and_fallback_keep_na
     assert all(venues == ["NTX"] for venues in out["venues"])
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_read_kr_intraday_candles_5m_pure_kis_overlay_and_fallback_keep_naive_kst(
     monkeypatch,
@@ -2703,6 +2726,7 @@ async def test_read_kr_intraday_candles_5m_pure_kis_overlay_and_fallback_keep_na
     assert out.iloc[-1]["venues"] == ["NTX"]
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_read_kr_intraday_candles_db_only_does_not_schedule_background_storage(
     monkeypatch,
