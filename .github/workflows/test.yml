@@ -85,10 +85,28 @@ jobs:
     - name: Install dependencies
       run: uv sync --group test
     
+    - name: Wait for PostgreSQL to be ready
+      run: |
+        for i in {1..30}; do
+          if pg_isready -h localhost -p 5432 -U postgres; then
+            echo "PostgreSQL is ready!"
+            exit 0
+          fi
+          echo "Waiting for PostgreSQL... ($i/30)"
+          sleep 1
+        done
+        echo "PostgreSQL failed to start"
+        exit 1
+
     - name: Set environment variables from env.example
       run: |
         chmod +x scripts/setup-test-env.sh
         bash scripts/setup-test-env.sh
+
+    - name: Verify environment setup
+      run: |
+        echo "DATABASE_URL is set: ${{ env.DATABASE_URL != '' }}"
+        echo "PYTHON_VERSION: ${{ matrix.python-version }}"
 
     - name: Run tests
       run: |
@@ -138,6 +156,19 @@ jobs:
 
     - name: Install dependencies
       run: uv sync --group test
+
+    - name: Wait for Redis to be ready
+      run: |
+        for i in {1..30}; do
+          if redis-cli -h localhost -p 6379 ping | grep -q PONG; then
+            echo "Redis is ready!"
+            exit 0
+          fi
+          echo "Waiting for Redis... ($i/30)"
+          sleep 1
+        done
+        echo "Redis failed to start"
+        exit 1
 
     - name: Set environment variables from env.example
       run: |
