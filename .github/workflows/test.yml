@@ -157,19 +157,6 @@ jobs:
     - name: Install dependencies
       run: uv sync --group test
 
-    - name: Wait for Redis to be ready
-      run: |
-        for i in {1..30}; do
-          if redis-cli -h localhost -p 6379 ping | grep -q PONG; then
-            echo "Redis is ready!"
-            exit 0
-          fi
-          echo "Waiting for Redis... ($i/30)"
-          sleep 1
-        done
-        echo "Redis failed to start"
-        exit 1
-
     - name: Set environment variables from env.example
       run: |
         chmod +x scripts/setup-test-env.sh
