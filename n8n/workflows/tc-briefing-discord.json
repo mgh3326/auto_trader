@@ -1,0 +1,185 @@
+{
+  "id": "tc-briefing-discord",
+  "name": "TC Briefing → Discord",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "tc-briefing-discord",
+        "options": {
+          "responseMode": "lastNode"
+        }
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "id": "tc-webhook",
+      "name": "TC Briefing Webhook",
+      "webhookId": "tc-briefing-discord"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        200
+      ],
+      "id": "tc-manual",
+      "name": "Manual Trigger"
+    },
+    {
+      "parameters": {
+        "jsCode": "// TC Briefing → Discord embed builder\n// Input: webhook body with briefing items from Trading Coordinator\n//\n// Expected input shape:\n// {\n//   briefing: [\n//     {\n//       symbol: \"SK하이닉스\",\n//       action: \"sell\",       // sell | buy | hold | add_buy\n//       confidence: 85,\n//       reasons: [\"목표가 도달\", \"거래량 감소\"],\n//       paperclip_issue_url: \"http://...\"\n//     }\n//   ],\n//   generated_at: \"2026-04-16T09:00:00Z\",\n//   title: \"TC 브리핑\"  // optional\n// }\n\nconst botToken = ($env.DISCORD_TC_BRIEFING_BOT_TOKEN || '').trim();\nconst channelId = ($env.DISCORD_TC_BRIEFING_CHANNEL_ID || '').trim();\n\nif (!botToken || !channelId) {\n  return [{\n    json: {\n      shouldSend: false,\n      reason: !botToken\n        ? 'DISCORD_TC_BRIEFING_BOT_TOKEN not configured'\n        : 'DISCORD_TC_BRIEFING_CHANNEL_ID not configured',\n    }\n  }];\n}\n\nconst input = $input.first().json;\nconst body = input.body || input;\nconst briefing = Array.isArray(body.briefing) ? body.briefing : [];\nconst title = body.title || 'TC 브리핑';\nconst generatedAt = body.generated_at || new Date().toISOString();\n\nif (briefing.length === 0) {\n  return [{\n    json: {\n      shouldSend: false,\n      reason: 'briefing array is empty',\n    }\n  }];\n}\n\n// Category config\nconst categories = {\n  sell:    { label: '매도', emoji: '🔴', color: 0xE74C3C },\n  buy:     { label: '매수', emoji: '🟢', color: 0x2ECC71 },\n  hold:    { label: '홀드', emoji: '🟡', color: 0xF1C40F },\n  add_buy: { label: '추가매수', emoji: '🔵', color: 0x3498DB },\n};\n\n// Group items by action\nconst grouped = {};\nfor (const item of briefing) {\n  const action = String(item.action || 'hold').toLowerCase();\n  if (!grouped[action]) grouped[action] = [];\n  grouped[action].push(item);\n}\n\n// Build embeds (one per category)\nconst embeds = [];\nconst categoryOrder = ['sell', 'buy', 'add_buy', 'hold'];\n\nfor (const action of categoryOrder) {\n  const items = grouped[action];\n  if (!items || items.length === 0) continue;\n  const cat = categories[action] || categories.hold;\n\n  const fields = items.map(item => {\n    const confidence = item.confidence != null ? ` (${item.confidence}%)` : '';\n    const reasons = Array.isArray(item.reasons)\n      ? item.reasons.slice(0, 3).join(' / ')\n      : '';\n    const link = item.paperclip_issue_url\n      ? `\\n[Paperclip에서 결정하기](${item.paperclip_issue_url})`\n      : '';\n\n    return {\n      name: `${cat.emoji} ${item.symbol || 'Unknown'}${confidence}`,\n      value: (reasons || '근거 없음') + link,\n      inline: false,\n    };\n  });\n\n  embeds.push({\n    title: `${cat.emoji} ${cat.label} (${items.length}건)`,\n    color: cat.color,\n    fields: fields.slice(0, 25),\n  });\n}\n\n// Discord allows max 10 embeds per message\nconst embedsToSend = embeds.slice(0, 10);\n\n// Add footer to last embed\nif (embedsToSend.length > 0) {\n  embedsToSend[embedsToSend.length - 1].footer = {\n    text: `${title} · ${new Date(generatedAt).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })}`,\n  };\n  embedsToSend[embedsToSend.length - 1].timestamp = generatedAt;\n}\n\nreturn [{\n  json: {\n    shouldSend: true,\n    channelId,\n    botToken,\n    payload: {\n      embeds: embedsToSend,\n    },\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        300,
+        80
+      ],
+      "id": "tc-build-embeds",
+      "name": "Build Discord Embeds"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "tc-should-send",
+              "leftValue": "={{ $json.shouldSend }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        560,
+        80
+      ],
+      "id": "tc-if-send",
+      "name": "Should Send?"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://discord.com/api/v10/channels/{{ $json.channelId }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bot ' + $json.botToken }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.payload) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        800,
+        0
+      ],
+      "id": "tc-discord-send",
+      "name": "Send to Discord"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { ok: true, skipped: true, reason: $json.reason || 'not configured' } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        800,
+        200
+      ],
+      "id": "tc-skip",
+      "name": "Skip (Not Configured)"
+    }
+  ],
+  "connections": {
+    "TC Briefing Webhook": {
+      "main": [
+        [
+          {
+            "node": "Build Discord Embeds",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Build Discord Embeds",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Discord Embeds": {
+      "main": [
+        [
+          {
+            "node": "Should Send?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Send?": {
+      "main": [
+        [
+          {
+            "node": "Send to Discord",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Skip (Not Configured)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1
+}
