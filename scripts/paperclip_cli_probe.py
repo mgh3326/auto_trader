@@ -593,9 +593,6 @@ def derive_boss_queue_items(
             continue
         if str(issue.get("status") or "").strip().lower() != "in_review":
             continue
-        assignee_user_id = issue.get("assigneeUserId")
-        if not isinstance(assignee_user_id, str) or not assignee_user_id:
-            continue
         issue_id = issue.get("id")
         identifier = str(issue.get("identifier") or "") or None
         title = str(issue.get("title") or "Untitled")
@@ -603,56 +600,83 @@ def derive_boss_queue_items(
         if updated_at and (reference_now - updated_at) < REVIEW_GRACE_PERIOD:
             continue
 
-        linked_approvals = pending_approvals_by_issue.get(str(issue_id), [])
-        if linked_approvals:
-            for appr in linked_approvals:
-                approval_id = str(appr.get("id") or "")
+        assignee_user_id = issue.get("assigneeUserId")
+        has_user = isinstance(assignee_user_id, str) and bool(assignee_user_id)
+        assignee_agent_id = issue.get("assigneeAgentId")
+        has_agent = isinstance(assignee_agent_id, str) and bool(assignee_agent_id)
+
+        if has_user:
+            linked_approvals = pending_approvals_by_issue.get(str(issue_id), [])
+            if linked_approvals:
+                for appr in linked_approvals:
+                    approval_id = str(appr.get("id") or "")
+                    items.append(
+                        {
+                            "fingerprint": fingerprint_for_item(
+                                "formal_approval_pending",
+                                identifier or str(issue_id),
+                                approval_id,
+                            ),
+                            "kind": "formal_approval_pending",
+                            "severity": "high",
+                            "owner": "board",
+                            "issue_identifier": identifier,
+                            "title": title,
+                            "summary": "in_review 이슈에 pending approval이 있다",
+                            "evidence": {
+                                "approval_id": approval_id,
+                                "assignee_user_id": assignee_user_id,
+                                "updated_at": issue.get("updatedAt"),
+                            },
+                            "recommended_action": "approval 검토 및 승인/반려 결정",
+                        }
+                    )
+            else:
                 items.append(
                     {
                         "fingerprint": fingerprint_for_item(
-                            "formal_approval_pending",
+                            "issue_review_needed",
                             identifier or str(issue_id),
-                            approval_id,
+                            assignee_user_id,
                         ),
-                        "kind": "formal_approval_pending",
+                        "kind": "issue_review_needed",
                         "severity": "high",
                         "owner": "board",
                         "issue_identifier": identifier,
                         "title": title,
-                        "summary": "in_review 이슈에 pending approval이 있다",
+                        "summary": "in_review 이슈가 사람 검토 대기 중이다",
                         "evidence": {
-                            "approval_id": approval_id,
                             "assignee_user_id": assignee_user_id,
                             "updated_at": issue.get("updatedAt"),
                         },
-                        "recommended_action": "approval 검토 및 승인/반려 결정",
+                        "recommended_action": "이슈 검토 후 승인 또는 피드백 전달",
                     }
                 )
-        else:
-            assignee_agent_id = issue.get("assigneeAgentId")
-            owner_label = "board"
-            if isinstance(assignee_agent_id, str) and assignee_agent_id in agents:
-                owner_label = str(
-                    agents[assignee_agent_id].get("name") or assignee_agent_id
-                )
+        elif has_agent:
+            agent_name = (
+                str(agents[assignee_agent_id].get("name") or assignee_agent_id)
+                if assignee_agent_id in agents
+                else assignee_agent_id
+            )
             items.append(
                 {
                     "fingerprint": fingerprint_for_item(
-                        "issue_review_needed",
+                        "misrouted_review",
                         identifier or str(issue_id),
-                        assignee_user_id,
+                        assignee_agent_id,
                     ),
-                    "kind": "issue_review_needed",
-                    "severity": "high",
-                    "owner": owner_label,
+                    "kind": "misrouted_review",
+                    "severity": "medium",
+                    "owner": agent_name,
                     "issue_identifier": identifier,
                     "title": title,
-                    "summary": "in_review 이슈가 사람 검토 대기 중이다",
+                    "summary": "in_review인데 agent만 할당되어 있다 (사람 reviewer 없음)",
                     "evidence": {
-                        "assignee_user_id": assignee_user_id,
+                        "assignee_agent_id": assignee_agent_id,
+                        "agent_name": agent_name,
                         "updated_at": issue.get("updatedAt"),
                     },
-                    "recommended_action": "이슈 검토 후 승인 또는 피드백 전달",
+                    "recommended_action": "사람 reviewer 할당 또는 상태 재조정",
                 }
             )
 

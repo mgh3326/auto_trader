@@ -9,7 +9,9 @@ import pytest
 from scripts import paperclip_cli_probe as probe
 
 
-def test_resolve_cli_launcher_prefers_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resolve_cli_launcher_prefers_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("PAPERCLIP_CLI_COMMAND", "/custom/bin/paperclipai")
     monkeypatch.setattr(probe.shutil, "which", lambda _name: None)
 
@@ -81,7 +83,9 @@ def test_resolve_runtime_config_uses_auth_store_when_env_token_missing(
     assert config.company_id == "company-1"
 
 
-def test_run_cli_json_probe_returns_parsed_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_cli_json_probe_returns_parsed_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     launcher = probe.CliLauncher(argv=["paperclipai"], display="paperclipai")
     runtime = probe.RuntimeConfig(
         api_base="http://127.0.0.1:3100",
@@ -162,7 +166,9 @@ def test_main_returns_success_false_payload_when_auth_missing(
     assert payload["error_code"] == "auth_bootstrap_required"
 
 
-def test_derive_manager_followup_needed_when_child_newer_than_assignee_heartbeat() -> None:
+def test_derive_manager_followup_needed_when_child_newer_than_assignee_heartbeat() -> (
+    None
+):
     snapshot = {
         "issues": [
             {
@@ -316,7 +322,10 @@ def test_derive_heartbeat_missed_skips_agents_without_active_issue_context() -> 
         ],
         "heartbeat_runs": {
             "a1": [
-                {"invocationSource": "on_demand", "startedAt": "2026-04-15T11:50:00+09:00"},
+                {
+                    "invocationSource": "on_demand",
+                    "startedAt": "2026-04-15T11:50:00+09:00",
+                },
                 {"invocationSource": "timer", "startedAt": "2026-04-15T09:00:00+09:00"},
             ]
         },
@@ -380,7 +389,9 @@ def test_derive_heartbeat_missed_links_to_latest_active_issue_context() -> None:
     assert heartbeat_item["title"] == "Blocked rollout"
 
 
-def test_derive_heartbeat_missed_falls_back_to_agent_last_heartbeat_with_warning() -> None:
+def test_derive_heartbeat_missed_falls_back_to_agent_last_heartbeat_with_warning() -> (
+    None
+):
     snapshot = {
         "issues": [
             {
@@ -412,3 +423,119 @@ def test_derive_heartbeat_missed_falls_back_to_agent_last_heartbeat_with_warning
 
     assert any("fallback" in warning for warning in warnings)
     assert any(item["kind"] == "heartbeat_missed" for item in items)
+
+
+def _in_review_snapshot(
+    *,
+    assignee_user_id: str | None = None,
+    assignee_agent_id: str | None = None,
+    updated_at: str = "2026-04-15T09:00:00+09:00",
+    approvals: list | None = None,
+) -> dict:
+    issue: dict = {
+        "id": "i1",
+        "identifier": "ROB-200",
+        "title": "Review test issue",
+        "status": "in_review",
+        "parentId": None,
+        "assigneeAgentId": assignee_agent_id,
+        "assigneeUserId": assignee_user_id,
+        "updatedAt": updated_at,
+    }
+    return {
+        "issues": [issue],
+        "approvals": approvals or [],
+        "agents": [
+            {
+                "id": "agent-cto",
+                "name": "CTO",
+                "runtimeConfig": {},
+                "lastHeartbeatAt": None,
+            }
+        ],
+        "heartbeat_runs": {},
+    }
+
+
+def test_in_review_with_user_no_approval_emits_issue_review_needed() -> None:
+    snapshot = _in_review_snapshot(assignee_user_id="user-1")
+    items, _ = probe.derive_boss_queue_items(
+        snapshot,
+        now=probe.parse_timestamp("2026-04-15T10:00:00+09:00"),
+    )
+    assert len(items) == 1
+    assert items[0]["kind"] == "issue_review_needed"
+    assert items[0]["severity"] == "high"
+    assert items[0]["evidence"]["assignee_user_id"] == "user-1"
+
+
+def test_in_review_with_user_and_pending_approval_emits_formal_approval_pending() -> (
+    None
+):
+    snapshot = _in_review_snapshot(
+        assignee_user_id="user-1",
+        approvals=[
+            {
+                "id": "ap-1",
+                "type": "request_board_approval",
+                "status": "pending",
+                "issueIds": ["i1"],
+                "payload": {"title": "Test approval"},
+                "updatedAt": "2026-04-15T09:00:00+09:00",
+            }
+        ],
+    )
+    items, _ = probe.derive_boss_queue_items(
+        snapshot,
+        now=probe.parse_timestamp("2026-04-15T10:00:00+09:00"),
+    )
+    assert len(items) == 1
+    assert items[0]["kind"] == "formal_approval_pending"
+    assert items[0]["severity"] == "high"
+    assert items[0]["evidence"]["approval_id"] == "ap-1"
+
+
+def test_in_review_within_grace_period_emits_no_signal() -> None:
+    snapshot = _in_review_snapshot(
+        assignee_user_id="user-1",
+        updated_at="2026-04-15T09:50:00+09:00",
+    )
+    items, _ = probe.derive_boss_queue_items(
+        snapshot,
+        now=probe.parse_timestamp("2026-04-15T10:00:00+09:00"),
+    )
+    review_items = [
+        i
+        for i in items
+        if i["kind"]
+        in ("issue_review_needed", "formal_approval_pending", "misrouted_review")
+    ]
+    assert review_items == []
+
+
+def test_in_review_with_agent_only_emits_misrouted_review() -> None:
+    snapshot = _in_review_snapshot(assignee_agent_id="agent-cto")
+    items, _ = probe.derive_boss_queue_items(
+        snapshot,
+        now=probe.parse_timestamp("2026-04-15T10:00:00+09:00"),
+    )
+    assert len(items) == 1
+    assert items[0]["kind"] == "misrouted_review"
+    assert items[0]["severity"] == "medium"
+    assert items[0]["evidence"]["assignee_agent_id"] == "agent-cto"
+    assert items[0]["evidence"]["agent_name"] == "CTO"
+
+
+def test_in_review_with_no_assignee_falls_to_active_issue_unassigned() -> None:
+    snapshot = _in_review_snapshot()
+    items, _ = probe.derive_boss_queue_items(
+        snapshot,
+        now=probe.parse_timestamp("2026-04-15T10:00:00+09:00"),
+    )
+    review_items = [
+        i
+        for i in items
+        if i["kind"]
+        in ("issue_review_needed", "formal_approval_pending", "misrouted_review")
+    ]
+    assert review_items == []
