@@ -26,6 +26,7 @@ services:
       # TC Briefing → Discord workflow
       - DISCORD_TC_BRIEFING_BOT_TOKEN=${DISCORD_TC_BRIEFING_BOT_TOKEN:-}
       - DISCORD_TC_BRIEFING_CHANNEL_ID=${DISCORD_TC_BRIEFING_CHANNEL_ID:-}
+      - PAPERCLIP_UI_BASE_URL=${PAPERCLIP_UI_BASE_URL:-}
     volumes:
       - ./n8n/data:/home/node/.n8n
       - ws-heartbeat:/shared/heartbeat:ro
