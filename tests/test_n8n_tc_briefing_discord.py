@@ -4,7 +4,6 @@ import json
 import subprocess
 from pathlib import Path
 
-
 WORKFLOW_PATH = Path("n8n/data/export-check/tc-briefing-discord.json")
 COMPOSE_PATH = Path("docker-compose.n8n.yml")
 
@@ -25,8 +24,7 @@ process.stdout.write(JSON.stringify(result[0].json));
         ["node", "-e", runner],
         input=json.dumps({"env": env, "payload": payload, "jsCode": js_code}),
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=True,
     )
     return json.loads(completed.stdout)
@@ -55,7 +53,9 @@ def test_tc_briefing_buttons_use_paperclip_base_url_with_identifier() -> None:
     assert button["url"] == "http://raspberrypi:3100/ROB/issues/ROB-99"
 
 
-def test_tc_briefing_buttons_extract_identifier_from_url_when_identifier_missing() -> None:
+def test_tc_briefing_buttons_extract_identifier_from_url_when_identifier_missing() -> (
+    None
+):
     result = _run_build_embeds_node(
         {
             "DISCORD_TC_BRIEFING_BOT_TOKEN": "bot-token",
