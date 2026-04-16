@@ -37,6 +37,7 @@ from app.schemas.n8n.pending_snapshot import (
     N8nPendingSnapshotsResponse,
 )
 from app.schemas.n8n.sell_signal import N8nSellSignalResponse
+from app.schemas.n8n.tc_briefing import N8nTcBriefingRequest, N8nTcBriefingResponse
 from app.schemas.n8n.trade_review import (
     N8nTradeReviewListResponse,
     N8nTradeReviewsRequest,
@@ -62,6 +63,7 @@ from app.services.n8n_pending_snapshot_service import (
     resolve_pending_snapshots,
     save_pending_snapshots,
 )
+from app.services.n8n_tc_briefing_service import send_tc_briefing
 from app.services.n8n_trade_review_service import (
     get_trade_review_stats,
     get_trade_reviews,
@@ -644,4 +646,38 @@ async def get_sell_signal(
         success=True,
         as_of=as_of,
         **result,
+    )
+
+
+@router.post("/tc-briefing", response_model=N8nTcBriefingResponse)
+async def post_tc_briefing(
+    body: N8nTcBriefingRequest,
+) -> N8nTcBriefingResponse | JSONResponse:
+    """Send TC briefing to Discord channel.
+
+    Formats briefing items into Discord embeds grouped by category
+    (매도/매수/홀드/추가매수) and sends via Channel Messages API.
+    """
+    try:
+        result = await send_tc_briefing(body)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to send TC briefing to Discord")
+        payload = N8nTcBriefingResponse(
+            success=False,
+            message_id=None,
+            errors=[{"error": str(exc)}],
+        )
+        return JSONResponse(status_code=500, content=payload.model_dump())
+
+    if "error" in result:
+        return N8nTcBriefingResponse(
+            success=False,
+            message_id=result.get("message_id"),
+            errors=[{"error": result["error"]}],
+        )
+
+    return N8nTcBriefingResponse(
+        success=True,
+        message_id=result.get("message_id"),
+        errors=[],
     )
