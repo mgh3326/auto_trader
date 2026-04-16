@@ -60,14 +60,36 @@ docker exec auto_trader_n8n_prod n8n import:workflow \
 
 ## 워크플로우 목록
 
-### Paperclip Review/Blocked Notify
-- **ID**: `paperclip-review-notify`
-- **주기**: 3분 간격 polling
-- **동작**: Paperclip API에서 `in_review`, `blocked` 상태 태스크를 조회하고 새로운 상태 변경을 감지하면 Discord webhook으로 알림 전송 (embed 형식)
-- **중복 방지**: n8n static data로 이미 알린 태스크 ID+상태 추적. 상태 변경 시에만 재알림
-- **환경 변수**: `PAPERCLIP_COMPANY_ID`, `PAPERCLIP_DISCORD_WEBHOOK_URL`
+### Paperclip Boss Action Queue
+- **Export file**: `n8n/workflows/paperclip-boss-action-queue.json`
+- **주기**: 10분 간격 + Manual Trigger
+- **동작**: n8n 컨테이너 내부에서 `PAPERCLIP_CLI_COMMAND`(기본: baked-in `paperclipai`, fallback: `npx -y paperclipai`)로 issue / approval / agent 목록을 수집하고, heartbeat-runs HTTP API를 보강 호출한 뒤 Boss Action Queue 메시지를 Alfred Discord bot으로 전송
+- **신호**: `manager_followup_needed`, `approval_revision_requested`, `active_issue_unassigned`, `heartbeat_missed`, `issue_review_needed`, `formal_approval_pending`, `misrouted_review`
+- **필수 환경 변수**:
+  - `N8N_DISCORD_BOT_TOKEN_ALFRED`
+  - `PAPERCLIP_API_URL`
+  - `PAPERCLIP_COMPANY_ID`
+  - `PAPERCLIP_API_KEY`
+  - `PAPERCLIP_BOSS_QUEUE_CHANNEL_ID`
+- **중복 방지**: n8n workflow static data(`sentMap`)로 fingerprint + severity cooldown 관리
+- **1차 alert tuning**:
+  - `manager_followup_needed`: child update 직후 즉시 paging하지 않고 **10분 grace** 후에도 stale일 때만 알림
+  - `active_issue_unassigned`: **20분 이상** assignee 없이 남은 active issue만 알림
+  - `heartbeat_missed`: 우선 `CEO` / `CTO` / `Trader` / `Scout`만 감시, 나머지 역할 heartbeat는 v1에서 노이즈 방지를 위해 무시
+  - `issue_review_needed`: `in_review` 상태 + user assignee + approval 없는 이슈. **30분 grace** 후 알림. 메시지에 역할 태그(`[Boss]`/`[CTO]` 등) 포함
+  - `formal_approval_pending`: `in_review` 상태 + pending approval이 linked된 이슈. **30분 grace** 후 알림
+  - `misrouted_review`: `in_review` 상태인데 agent만 할당 (user reviewer 없음). **30분 grace** 후 `medium` severity 알림
+- **주의**:
+  - 현재 workflow는 inline Node.js probe를 사용한다
+  - `scripts/paperclip_cli_probe.py`는 host-side canonical/reference 구현이다
+  - cold container 기준 `npx -y paperclipai` 3회 호출은 ~199초까지 늘어날 수 있어, 운영 이미지는 `Dockerfile.n8n`에서 `paperclipai`를 bake-in 하도록 전환했다
+
+### ~~Paperclip Review/Blocked Notify~~ (deprecated)
+- **폐기**: Boss Action Queue의 `issue_review_needed` / `formal_approval_pending` signal이 이 워크플로우의 역할을 대체합니다. 신규 배포 시 비활성화 권장.
 
 ### WebSocket Container Monitor
+- **Export file**: `n8n/workflows/websocket-container-monitor.json`
+- **Live workflow id**: `KyN2SJUCZ5QvOAKK`
 - **주기**: 15분 간격
 - **동작**: Upbit/KIS WebSocket heartbeat 파일을 읽어 비정상 상태 시 Discord 알림
 
