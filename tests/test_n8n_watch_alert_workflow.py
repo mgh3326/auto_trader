@@ -235,19 +235,32 @@ def test_threshold_type_guard_rejects_non_scalar() -> None:
     assert result["validate_output"]["errorCode"] == "invalid_triggered_item"
 
 
-def test_discord_success_outputs_route_through_mark_sent_node() -> None:
-    """Structural guard: every Discord main output must funnel into Mark Sent.
+def test_discord_outputs_are_guarded_before_mark_sent() -> None:
+    """Structural guard: Discord output must be branched by explicit success IF.
 
-    Catches a future refactor that accidentally re-wires a Discord node straight
-    back to `Respond 200 (sent)` and reintroduces the bug.
+    n8n's `continueErrorOutput` can still emit errored items on main output, so
+    wiring Discord main directly into Mark Sent can incorrectly produce 200/sent.
     """
     workflow = json.loads(WORKFLOW_PATH.read_text(encoding="utf-8"))
-    for discord_id in ("Discord — Crypto", "Discord — KR", "Discord — US"):
-        main = workflow["connections"][discord_id]["main"][0]
+    expected_if_nodes = {
+        "Discord — Crypto": "Discord OK? — Crypto",
+        "Discord — KR": "Discord OK? — KR",
+        "Discord — US": "Discord OK? — US",
+    }
+
+    for discord_name, if_name in expected_if_nodes.items():
+        main = workflow["connections"][discord_name]["main"][0]
         assert len(main) == 1
-        assert main[0]["node"] == "Mark Sent", (
-            f"{discord_id} main output must go through Mark Sent, not {main[0]['node']}"
-        )
+        assert main[0]["node"] == if_name
+        assert "error" not in workflow["connections"][discord_name]
+
+        if_main = workflow["connections"][if_name]["main"]
+        assert len(if_main) == 2
+        ok_branch = if_main[0]
+        fail_branch = if_main[1]
+        assert len(ok_branch) == 1 and ok_branch[0]["node"] == "Mark Sent"
+        assert len(fail_branch) == 1 and fail_branch[0]["node"] == "Respond 500"
+
     mark_main = workflow["connections"]["Mark Sent"]["main"][0]
     assert len(mark_main) == 1
     assert mark_main[0]["node"] == "Respond 200 (sent)"

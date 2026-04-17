@@ -96,7 +96,7 @@ docker exec auto_trader_n8n_prod n8n import:workflow \
 ### Paperclip Watch Alert
 - **Export file**: `n8n/workflows/paperclip-watch-alert.json`
 - **Trigger**: Webhook `POST /webhook/watch-alert`
-- **동작**: auto_trader `OpenClawClient.send_watch_alert_to_n8n` ([ROB-173](/ROB/issues/ROB-173) / PR #540) 이 보내는 watch alert 페이로드를 받아 market (`crypto` / `kr` / `us`) 별 Discord 채널로 라우팅. `{market}:{symbol}:{condition_type}:{threshold}` fingerprint 를 workflow static data 에 저장해 **6시간 쿨다운** dedupe, 24시간 초과 엔트리는 GC.
+- **동작**: auto_trader `OpenClawClient.send_watch_alert_to_n8n` ([ROB-173](/ROB/issues/ROB-173) / PR #540) 이 보내는 watch alert 페이로드를 받아 market (`crypto` / `kr` / `us`) 별 Discord 채널로 라우팅. Discord 결과는 market별 `Discord OK?` IF 노드에서 성공/실패를 먼저 분기하고, 성공 branch에서만 `Mark Sent` 가 static data 를 갱신한다. `{market}:{symbol}:{condition_type}:{threshold}` fingerprint 를 workflow static data 에 저장해 **6시간 쿨다운** dedupe, 24시간 초과 엔트리는 GC.
 - **응답 계약**:
   - 전송 성공 → `200 {"status":"sent","market":"...","sent_count":N,"deduped_count":M,...}`
   - 전 항목 dedupe hit → `200 {"status":"deduped","sent_count":0,"deduped_count":N,...}`
