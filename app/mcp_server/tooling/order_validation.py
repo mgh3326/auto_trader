@@ -81,7 +81,9 @@ def _log_defensive_trim_bypass(
             "price": price,
             "current_price": current_price,
             "avg_price": avg_price,
+            "avg_buy_price": avg_price,
             "min_sell_price": min_sell_price,
+            "min_floor": min_sell_price,
             "approval_issue_id": defensive_trim_ctx.approval_issue_id,
             "requester_agent_id": defensive_trim_ctx.requester_agent_id,
             "phase": phase,
@@ -127,6 +129,10 @@ async def _validate_defensive_trim_preconditions(
     side: str,
     order_type: str,
 ) -> DefensiveTrimContext | None:
+    """Validate defensive_trim gates.
+
+    requester_agent_id is caller-asserted; ST-3 tracks true caller attestation.
+    """
     if not defensive_trim:
         return None
 

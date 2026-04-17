@@ -374,6 +374,7 @@ async def _handle_sell_journal(
     exit_reason: str | None,
     reason: str,
     journal_warning: str | None,
+    defensive_trim_ctx: DefensiveTrimContext | None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Close journals for sell orders.
 
@@ -396,6 +397,7 @@ async def _handle_sell_journal(
             sell_quantity=resolved_sell_qty,
             sell_price=resolved_sell_price,
             exit_reason=exit_reason or reason,
+            defensive_trim_ctx=defensive_trim_ctx,
         )
         return journal_close_result, journal_warning
     except Exception as journal_exc:
@@ -478,6 +480,7 @@ async def _record_fill_and_journals(
     min_hold_days: int | None,
     notes: str | None,
     indicators_snapshot: dict[str, Any] | None,
+    defensive_trim_ctx: DefensiveTrimContext | None,
 ) -> dict[str, Any]:
     """Save fill to DB, manage journals (create for buy, close for sell)."""
     journal_created = False
@@ -542,6 +545,7 @@ async def _record_fill_and_journals(
             exit_reason=exit_reason,
             reason=reason,
             journal_warning=journal_warning,
+            defensive_trim_ctx=defensive_trim_ctx,
         )
 
     result: dict[str, Any] = {
@@ -665,6 +669,7 @@ async def _execute_and_record(
         min_hold_days=min_hold_days,
         notes=notes,
         indicators_snapshot=indicators_snapshot,
+        defensive_trim_ctx=defensive_trim_ctx,
     )
 
     return {

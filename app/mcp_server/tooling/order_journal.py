@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
+from app.mcp_server.tooling.order_validation import DefensiveTrimContext
 from app.mcp_server.tooling.shared import logger
 from app.mcp_server.tooling.shared import to_float as _to_float
 from app.models.review import Trade
@@ -205,6 +206,7 @@ async def _close_journals_on_sell(
     exit_reason: str | None = None,
     account_type: str = "live",
     account: str | None = None,
+    defensive_trim_ctx: DefensiveTrimContext | None = None,
 ) -> dict[str, Any]:
     """Close active trade journals in FIFO order when a sell order succeeds.
 
@@ -252,6 +254,12 @@ async def _close_journals_on_sell(
             journal.exit_price = sell_price_dec
             journal.exit_date = now_kst()
             journal.exit_reason = resolved_reason
+            if defensive_trim_ctx is not None:
+                journal.notes = _append_defensive_trim_note(
+                    journal.notes,
+                    approval_issue_id=defensive_trim_ctx.approval_issue_id,
+                    requester_agent_id=defensive_trim_ctx.requester_agent_id,
+                )
 
             if journal.entry_price and journal.entry_price > 0:
                 pnl_pct = (
@@ -280,3 +288,20 @@ async def _close_journals_on_sell(
 def _append_journal_warning(existing: str | None, new_message: str) -> str:
     """Append a new journal warning to an existing one."""
     return new_message if not existing else f"{existing}; {new_message}"
+
+
+def _append_defensive_trim_note(
+    existing: str | None,
+    *,
+    approval_issue_id: str,
+    requester_agent_id: str,
+) -> str:
+    line = (
+        "_defensive_trim: "
+        f"approval={approval_issue_id}, "
+        f"caller={requester_agent_id}, "
+        "bypassed_floor=avg*1.01_"
+    )
+    if existing and existing.strip():
+        return f"{existing.rstrip()}\n\n{line}"
+    return line
