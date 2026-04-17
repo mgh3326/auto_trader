@@ -191,7 +191,7 @@
           "name": "Discord Webhook - Watch Alert Crypto"
         }
       },
-      "onError": "continueErrorOutput"
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
@@ -213,7 +213,7 @@
           "name": "Discord Webhook - Watch Alert KR"
         }
       },
-      "onError": "continueErrorOutput"
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
@@ -235,7 +235,7 @@
           "name": "Discord Webhook - Watch Alert US"
         }
       },
-      "onError": "continueErrorOutput"
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
@@ -249,7 +249,7 @@
           "conditions": [
             {
               "id": "wa-discord-ok-crypto",
-              "leftValue": "={{ !($json.error && $json.error.message) }}",
+            "leftValue": "={{ !$json.error }}",
               "rightValue": true,
               "operator": {
                 "type": "boolean",
@@ -282,7 +282,7 @@
           "conditions": [
             {
               "id": "wa-discord-ok-kr",
-              "leftValue": "={{ !($json.error && $json.error.message) }}",
+            "leftValue": "={{ !$json.error }}",
               "rightValue": true,
               "operator": {
                 "type": "boolean",
@@ -315,7 +315,7 @@
           "conditions": [
             {
               "id": "wa-discord-ok-us",
-              "leftValue": "={{ !($json.error && $json.error.message) }}",
+            "leftValue": "={{ !$json.error }}",
               "rightValue": true,
               "operator": {
                 "type": "boolean",

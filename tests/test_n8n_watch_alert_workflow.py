@@ -261,6 +261,17 @@ def test_discord_outputs_are_guarded_before_mark_sent() -> None:
         assert len(ok_branch) == 1 and ok_branch[0]["node"] == "Mark Sent"
         assert len(fail_branch) == 1 and fail_branch[0]["node"] == "Respond 500"
 
+        if_node = next(node for node in workflow["nodes"] if node["name"] == if_name)
+        condition = if_node["parameters"]["conditions"]["conditions"][0]
+        assert condition["leftValue"] == "={{ !$json.error }}"
+
+    for node in workflow["nodes"]:
+        if node["type"] == "n8n-nodes-base.discord":
+            assert node.get("onError") == "continueRegularOutput", (
+                f"{node['name']} must use continueRegularOutput so errors flow to main "
+                "with $json.error populated (required by the Discord OK? IF guard)."
+            )
+
     mark_main = workflow["connections"]["Mark Sent"]["main"][0]
     assert len(mark_main) == 1
     assert mark_main[0]["node"] == "Respond 200 (sent)"
