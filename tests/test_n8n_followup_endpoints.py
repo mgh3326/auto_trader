@@ -14,12 +14,46 @@ class TestN8nFollowupEndpoints:
         app.include_router(router)
         return TestClient(app)
 
+    def _required_v2_payload(self) -> dict:
+        return {
+            "exchange_krw": 1_000_000,
+            "unverified_cap": {"amount": 5_000_000},
+            "next_obligation": {
+                "date": "2026-04-24",
+                "days_remaining": 7,
+                "cash_needed_until": 2_500_000,
+            },
+            "tier_scenarios": [
+                {
+                    "label": "T1",
+                    "deposit_amount": 1_500_000,
+                    "target_exchange_krw": 2_500_000,
+                    "buffer_days": 25,
+                    "cushion_after_obligation": 0,
+                }
+            ],
+            "data_sufficient_by_symbol": {"BTC": True},
+            "btc_regime": {
+                "close_vs_20d_ma": "above",
+                "ma20_slope": "up",
+                "drawdown_14d_pct": -3.2,
+            },
+            "holdings": [
+                {"symbol": "BTC", "current_krw_value": 1_000_000, "dust": False},
+                {"symbol": "DOGE", "current_krw_value": 3_000, "dust": True},
+            ],
+            "dust_items": [
+                {"symbol": "DOGE", "current_krw_value": 3_000, "dust": True}
+            ],
+        }
+
     def test_tc_followup_returns_preliminary_render(self) -> None:
         client = self._get_client()
 
         resp = client.post(
             "/api/n8n/tc-followup",
             json={
+                **self._required_v2_payload(),
                 "manual_cash_krw": 1_250_000,
                 "daily_burn_krw": 50_000,
                 "weights_top_n": [{"symbol": "BTC", "weight_pct": 42.5}],
@@ -36,10 +70,13 @@ class TestN8nFollowupEndpoints:
         body = resp.json()
         assert body["phase"] == "tc_preliminary"
         assert body["generated_at"]
-        assert body["embed"]["title"] == "📊 TC Preliminary — 자금 현황 재계산"
+        assert (
+            body["embed"]["title"]
+            == "📊 TC Preliminary — 입금 약속 반영 시나리오 (pledged, 거래소 미반영)"
+        )
         assert "경로 A·B 병행 가능" in body["text"]
         assert "BTC" in body["text"]
-        assert "DOGE" in body["text"]
+        assert "🧹 Dust 1종목" in body["text"]
         assert "🎯 권고" not in body["text"]
         assert "📊 Gate 판정 결과" not in body["text"]
 
@@ -49,6 +86,7 @@ class TestN8nFollowupEndpoints:
         resp = client.post(
             "/api/n8n/cio-followup",
             json={
+                **self._required_v2_payload(),
                 "manual_cash_krw": 700_000,
                 "daily_burn_krw": 100_000,
                 "manual_cash_runway_days": 7,
@@ -84,7 +122,7 @@ class TestN8nFollowupEndpoints:
         assert "🚫 신규 매수 차단 — G2 fail" in body["text"]
         assert "(3) 현금 우선 정책 적용" in body["text"]
         assert "📊 Gate 판정 결과" in body["text"]
-        assert "[funding]" in body["text"]
+        assert "[funding-confirmation]" in body["text"]
         assert "[action]" in body["text"]
 
     def test_evaluate_g1_gate_pass_ignores_force_cash_policy_note(self) -> None:
@@ -93,6 +131,7 @@ class TestN8nFollowupEndpoints:
         resp = client.post(
             "/api/n8n/cio-followup",
             json={
+                **self._required_v2_payload(),
                 "manual_cash_krw": 1_500_000,
                 "daily_burn_krw": 100_000,
                 "manual_cash_runway_days": 15,
@@ -146,6 +185,7 @@ class TestN8nFollowupEndpoints:
         resp = client.post(
             "/api/n8n/cio-followup",
             json={
+                **self._required_v2_payload(),
                 "manual_cash_krw": 700_000,
                 "daily_burn_krw": 100_000,
                 "manual_cash_runway_days": 7,
@@ -177,6 +217,7 @@ class TestN8nFollowupEndpoints:
         resp = client.post(
             "/api/n8n/tc-followup",
             json={
+                **self._required_v2_payload(),
                 "manual_cash_krw": 700_000,
                 "daily_burn_krw": 100_000,
                 "board_response": {

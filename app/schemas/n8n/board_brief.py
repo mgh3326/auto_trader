@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -10,6 +10,9 @@ from pydantic import BaseModel, Field
 FundingIntent = Literal["runway_recovery", "new_buy", "partial", "other"]
 BoardBriefPhase = Literal["tc_preliminary", "cio_pending"]
 GateStatus = Literal["pass", "fail", "pending", "tbd"]
+BtcCloseVs20dMa = Literal["above", "below"]
+BtcMa20Slope = Literal["up", "flat", "down"]
+TierLabel = Literal["T1", "T2", "T3"]
 
 
 class GateResult(BaseModel):
@@ -65,7 +68,62 @@ class BoardFundingResponse(BaseModel):
     manual_cash_verified: bool = False
 
 
-class BoardBriefContext(BaseModel):
+class UnverifiedCapPayload(BaseModel):
+    """Manual funding cap that is not counted as verified exchange cash."""
+
+    amount: float = Field(0, ge=0)
+    confirmed_at: datetime | None = None
+    verified_by_boss_today: bool = False
+    stale_warning: bool = False
+
+
+class NextObligationPayload(BaseModel):
+    """Next cash obligation used for runway and funding-path decisions."""
+
+    date: date
+    days_remaining: int = Field(..., ge=0)
+    cash_needed_until: float = Field(..., ge=0)
+
+
+class TierScenario(BaseModel):
+    """Funding tier scenario for board-facing path A comparison."""
+
+    label: TierLabel
+    target_exchange_krw: float = Field(..., ge=0)
+    deposit_amount: float = Field(..., ge=0)
+    buffer_days: int = Field(..., ge=0)
+    cushion_after_obligation: float
+
+
+class HardGateCandidate(BaseModel):
+    """Candidate action that still requires a separate hard-gate critique."""
+
+    symbol: str = Field(..., min_length=1)
+    proposal: str = Field(..., min_length=1)
+    amount_range: str = Field(..., min_length=1)
+
+
+class BtcRegimePayload(BaseModel):
+    """BTC regime metrics used by G4."""
+
+    close_vs_20d_ma: BtcCloseVs20dMa
+    ma20_slope: BtcMa20Slope
+    drawdown_14d_pct: float
+
+
+class BoardBriefV2Fields(BaseModel):
+    """Prompt v2 fields shared by context and n8n follow-up request bodies."""
+
+    exchange_krw: float = Field(0, ge=0)
+    unverified_cap: UnverifiedCapPayload | None = None
+    next_obligation: NextObligationPayload | None = None
+    tier_scenarios: list[TierScenario] = Field(default_factory=list)
+    hard_gate_candidates: list[HardGateCandidate] = Field(default_factory=list)
+    data_sufficient_by_symbol: dict[str, bool] = Field(default_factory=dict)
+    btc_regime: BtcRegimePayload | None = None
+
+
+class BoardBriefContext(BoardBriefV2Fields):
     """Internal render context shared by TC preliminary and CIO pending builders."""
 
     manual_cash_krw: float = Field(0, ge=0)
@@ -87,11 +145,12 @@ class BoardBriefRender(BaseModel):
     phase: BoardBriefPhase
     embed: dict[str, Any]
     text: str
+    funding_intent: FundingIntent | None = None
     gate_results: dict[str, GateResult | N8nG2GatePayload] | None = None
     generated_at: datetime
 
 
-class TCFollowupRequest(BaseModel):
+class TCFollowupRequest(BoardBriefV2Fields):
     """Request payload for /api/n8n/tc-followup."""
 
     manual_cash_krw: float = Field(0, ge=0)
@@ -116,11 +175,16 @@ __all__ = [
     "BoardBriefPhase",
     "BoardBriefRender",
     "BoardFundingResponse",
+    "BtcRegimePayload",
     "CIOFollowupRequest",
     "DustItem",
     "FundingIntent",
     "GateResult",
+    "HardGateCandidate",
     "N8nG2GatePayload",
+    "NextObligationPayload",
     "TCFollowupRequest",
+    "TierScenario",
+    "UnverifiedCapPayload",
     "WeightItem",
 ]
