@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import app.services.brokers.upbit.client as upbit_service
 import app.services.brokers.yahoo.client as yahoo_service
 from app.core.symbol import to_db_symbol
+from app.mcp_server.tooling.shared import min_order_krw
 from app.models.manual_holdings import MarketType
 from app.services.brokers.kis.client import KISClient
 from app.services.exchange_rate_service import get_usd_krw_rate
@@ -1149,6 +1150,11 @@ class PortfolioOverviewService:
                 market_type=row["market_type"],
                 usd_krw=usd_krw,
             )
+            is_dust = False
+            if row["market_type"] == _MARKET_CRYPTO:
+                evaluation = float(totals["evaluation"] or 0)
+                if evaluation > 0:
+                    is_dust = evaluation < min_order_krw(str(row["symbol"]))
 
             rows.append(
                 {
@@ -1163,6 +1169,7 @@ class PortfolioOverviewService:
                     "profit_rate": totals["profit_rate"],
                     "evaluation_krw": totals["evaluation_krw"],
                     "profit_loss_krw": totals["profit_loss_krw"],
+                    "dust": is_dust,
                     "components": components_list,
                 }
             )

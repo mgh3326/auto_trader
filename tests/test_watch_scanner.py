@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.jobs.watch_scanner import WatchScanner
+from app.services.openclaw_client import WatchAlertDeliveryResult
 
 
 class _FakeWatchService:
@@ -30,17 +31,37 @@ class _FakeWatchService:
 
 
 class _FakeOpenClawClient:
-    def __init__(self, success: bool = True) -> None:
-        self._success = success
+    def __init__(self, status: str = "success") -> None:
+        self._status = status
         self.messages: list[str] = []
 
     async def send_scan_alert(self, message: str) -> str | None:
         self.messages.append(message)
-        return "scan-1" if self._success else None
+        return "scan-1" if self._status == "success" else None
 
     async def send_watch_alert(self, message: str) -> str | None:
         self.messages.append(message)
-        return "watch-1" if self._success else None
+        return "watch-1" if self._status == "success" else None
+
+    async def send_watch_alert_to_n8n(
+        self,
+        *,
+        message: str,
+        market: str,
+        triggered: list[dict[str, object]],
+        as_of: str,
+        correlation_id: str | None = None,
+    ) -> WatchAlertDeliveryResult:
+        _ = market, triggered, as_of, correlation_id
+        self.messages.append(message)
+        if self._status == "success":
+            return WatchAlertDeliveryResult(status="success", request_id="watch-1")
+        if self._status == "skipped":
+            return WatchAlertDeliveryResult(
+                status="skipped",
+                reason="n8n_webhook_not_configured",
+            )
+        return WatchAlertDeliveryResult(status="failed", reason="request_failed")
 
 
 @pytest.mark.asyncio
@@ -64,7 +85,7 @@ async def test_scan_market_sends_single_batched_message_and_removes_only_trigger
             },
         ]
     )
-    scanner._openclaw = _FakeOpenClawClient(success=True)
+    scanner._openclaw = _FakeOpenClawClient(status="success")
 
     monkeypatch.setattr(scanner, "_is_market_open", lambda market: True)
     monkeypatch.setattr(scanner, "_get_price", AsyncMock(return_value=90.0))
@@ -86,7 +107,7 @@ async def test_run_scans_all_markets_and_skips_closed_market(
 ) -> None:
     scanner = WatchScanner()
     scanner._watch_service = _FakeWatchService(rows=[])
-    scanner._openclaw = _FakeOpenClawClient(success=True)
+    scanner._openclaw = _FakeOpenClawClient(status="success")
 
     monkeypatch.setattr(scanner, "_is_market_open", lambda market: market != "us")
     monkeypatch.setattr(scanner, "_get_price", AsyncMock(return_value=None))
@@ -97,6 +118,7 @@ async def test_run_scans_all_markets_and_skips_closed_market(
     assert set(result.keys()) == {"crypto", "kr", "us"}
     assert result["us"] == {
         "market": "us",
+        "status": "skipped",
         "skipped": True,
         "reason": "market_closed",
     }
@@ -238,3 +260,58 @@ async def test_watch_scanner_uses_market_data_domain_service(
         period="day",
         count=200,
     )
+
+
+@pytest.mark.asyncio
+async def test_scan_market_keeps_watch_records_when_n8n_delivery_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scanner = WatchScanner()
+    scanner._watch_service = _FakeWatchService(
+        rows=[
+            {
+                "symbol": "BTC",
+                "condition_type": "price_below",
+                "threshold": 100.0,
+                "field": "BTC:price_below:100",
+            }
+        ]
+    )
+    scanner._openclaw = _FakeOpenClawClient(status="failed")
+
+    monkeypatch.setattr(scanner, "_is_market_open", lambda market: True)
+    monkeypatch.setattr(scanner, "_get_price", AsyncMock(return_value=90.0))
+
+    result = await scanner.scan_market("crypto")
+
+    assert result["alerts_sent"] == 0
+    assert result["status"] == "failed"
+    assert scanner._watch_service.removed_fields == []
+
+
+@pytest.mark.asyncio
+async def test_scan_market_keeps_watch_records_when_n8n_delivery_skipped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scanner = WatchScanner()
+    scanner._watch_service = _FakeWatchService(
+        rows=[
+            {
+                "symbol": "BTC",
+                "condition_type": "price_below",
+                "threshold": 100.0,
+                "field": "BTC:price_below:100",
+            }
+        ]
+    )
+    scanner._openclaw = _FakeOpenClawClient(status="skipped")
+
+    monkeypatch.setattr(scanner, "_is_market_open", lambda market: True)
+    monkeypatch.setattr(scanner, "_get_price", AsyncMock(return_value=90.0))
+
+    result = await scanner.scan_market("crypto")
+
+    assert result["alerts_sent"] == 0
+    assert result["status"] == "skipped"
+    assert result["reason"] == "n8n_webhook_not_configured"
+    assert scanner._watch_service.removed_fields == []

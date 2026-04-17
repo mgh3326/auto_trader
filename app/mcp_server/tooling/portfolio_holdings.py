@@ -63,6 +63,9 @@ from app.mcp_server.tooling.shared import (
     match_account_filter as _match_account_filter,
 )
 from app.mcp_server.tooling.shared import (
+    min_order_krw as _min_order_krw,
+)
+from app.mcp_server.tooling.shared import (
     normalize_account_filter as _normalize_account_filter,
 )
 from app.mcp_server.tooling.shared import (
@@ -829,6 +832,24 @@ async def _get_holdings_impl(
 
     filtered_count = 0
     filter_reason: str | None = None
+
+    for position in positions:
+        position["dust"] = False
+
+    if include_current_price:
+        for position in positions:
+            if position.get("instrument_type") != "crypto":
+                continue
+            symbol = str(position.get("symbol") or "").strip().upper()
+            if not symbol:
+                continue
+            value = _value_for_minimum_filter(position)
+            if value <= 0:
+                # Price/evaluation unavailable → keep conservative default (not dust).
+                position["dust"] = False
+                continue
+            threshold = _min_order_krw(symbol)
+            position["dust"] = value < threshold
 
     if include_current_price and minimum_value is not None:
         threshold = float(minimum_value)

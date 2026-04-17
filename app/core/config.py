@@ -306,6 +306,8 @@ class Settings(BaseSettings):
 
     # N8N Fill Notification webhook (replaces OPENCLAW_THREAD_* for fills)
     N8N_FILL_WEBHOOK_URL: str = ""
+    # N8N Watch Alert webhook (replaces OpenClaw watch alert route)
+    N8N_WATCH_ALERT_WEBHOOK_URL: str = ""
 
     DAILY_SCAN_ENABLED: bool = False
     DAILY_SCAN_CRASH_THRESHOLD: float = 0.05
@@ -333,6 +335,9 @@ class Settings(BaseSettings):
     # N8N API Key Authentication
     N8N_API_KEY: str = ""
     PUBLIC_API_PATHS: list[str] = []
+    trader_agent_id: str = "6b2192cc-14fa-4335-b572-2fe1e0cb54a7"
+    paperclip_api_url: str | None = None
+    paperclip_api_key: str | None = None
 
     public_base_url: str = "https://mgh3326.duckdns.org"
 

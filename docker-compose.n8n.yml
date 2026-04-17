@@ -23,6 +23,10 @@ services:
       # Paperclip Review Notify workflow
       - PAPERCLIP_COMPANY_ID=${PAPERCLIP_COMPANY_ID:-6a41f388-ff8d-4b65-82dc-38a9b66fa69e}
       - PAPERCLIP_DISCORD_WEBHOOK_URL=${PAPERCLIP_DISCORD_WEBHOOK_URL}
+      # TC Briefing → Discord workflow
+      - DISCORD_TC_BRIEFING_BOT_TOKEN=${DISCORD_TC_BRIEFING_BOT_TOKEN:-}
+      - DISCORD_TC_BRIEFING_CHANNEL_ID=${DISCORD_TC_BRIEFING_CHANNEL_ID:-}
+      - PAPERCLIP_UI_BASE_URL=${PAPERCLIP_UI_BASE_URL:-}
     volumes:
       - ./n8n/data:/home/node/.n8n
       - ws-heartbeat:/shared/heartbeat:ro

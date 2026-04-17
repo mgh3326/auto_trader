@@ -242,7 +242,11 @@ def _build_portfolio_summary(
 
         # Top gainers/losers by profit_rate
         sorted_positions = sorted(
-            [p for p in market_positions if p.get("profit_rate") is not None],
+            [
+                p
+                for p in market_positions
+                if p.get("profit_rate") is not None and not p.get("dust")
+            ],
             key=lambda p: float(p.get("profit_rate") or 0),
             reverse=True,
         )
@@ -271,6 +275,15 @@ def _build_portfolio_summary(
             "position_count": len(market_positions),
             "top_gainers": top_gainers,
             "top_losers": top_losers,
+            "dust_positions": [
+                {
+                    "symbol": p.get("symbol"),
+                    "quantity": p.get("quantity"),
+                    "current_krw_value": float(p.get("evaluation") or 0),
+                }
+                for p in market_positions
+                if p.get("dust")
+            ],
         }
 
         if market == "us":
@@ -377,6 +390,27 @@ def _build_brief_text(
                 line += f" ({pnl_fmt})"
             lines.append(line)
     lines.append("")
+
+    dust_lines: list[str] = []
+    for market_key in ("crypto", "kr", "us"):
+        market_data = portfolio_by_market.get(market_key) or {}
+        for dust_pos in market_data.get("dust_positions") or []:
+            symbol = str(dust_pos.get("symbol") or "")
+            if symbol.startswith("KRW-"):
+                symbol = symbol[4:]
+            quantity_raw = dust_pos.get("quantity")
+            try:
+                quantity_fmt = f"{float(quantity_raw):g}"
+            except (TypeError, ValueError):
+                quantity_fmt = "-"
+            krw_value = float(dust_pos.get("current_krw_value") or 0)
+            dust_lines.append(f"{symbol} {quantity_fmt} (~{krw_value:.0f} KRW)")
+    if dust_lines:
+        lines.append("🧹 Dust")
+        lines.append(
+            f"{', '.join(dust_lines)} — Upbit 최소 주문 금액 미만, execution-actionable 제외, journal 유지. cleanup backlog."
+        )
+        lines.append("")
 
     # Yesterday fills
     fills_data = yesterday_fills or {}
