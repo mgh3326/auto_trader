@@ -138,3 +138,60 @@ class TestN8nFollowupEndpoints:
 
         assert resp.status_code == 422
         assert field in resp.text
+
+    def test_cio_followup_accepts_zero_amount_as_no_funding(self) -> None:
+        """Board amount=0 with no funding_intent is a valid "자금 지원 안 함" response."""
+        client = self._get_client()
+
+        resp = client.post(
+            "/api/n8n/cio-followup",
+            json={
+                "manual_cash_krw": 700_000,
+                "daily_burn_krw": 100_000,
+                "manual_cash_runway_days": 7,
+                "board_response": {
+                    "amount": 0,
+                    "manual_cash_verified": True,
+                },
+                "weights_top_n": [{"symbol": "BTC", "weight_pct": 42.5}],
+                "holdings": [
+                    {"symbol": "BTC", "current_krw_value": 1_000_000, "dust": False}
+                ],
+            },
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["phase"] == "cio_pending"
+        assert body["gate_results"]["G2"]["passed"] is True
+        assert "자금 지원 없음" in body["gate_results"]["G2"]["detail"]
+        assert "🗳️ 보드 응답" in body["text"]
+        assert "자금 지원 안 함 (0 KRW)" in body["text"]
+        assert "보드 응답: 자금 지원 없음" in body["text"]
+
+    def test_tc_followup_renders_board_response_when_provided(self) -> None:
+        """TC preliminary should render the 0 KRW no-funding framing when
+        the board response carries over into the TC recomputation."""
+        client = self._get_client()
+
+        resp = client.post(
+            "/api/n8n/tc-followup",
+            json={
+                "manual_cash_krw": 700_000,
+                "daily_burn_krw": 100_000,
+                "board_response": {
+                    "amount": 0,
+                    "manual_cash_verified": True,
+                },
+                "weights_top_n": [{"symbol": "BTC", "weight_pct": 42.5}],
+                "holdings": [
+                    {"symbol": "BTC", "current_krw_value": 1_000_000, "dust": False}
+                ],
+            },
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["phase"] == "tc_preliminary"
+        assert "🗳️ 보드 응답" in body["text"]
+        assert "자금 지원 안 함 (0 KRW)" in body["text"]

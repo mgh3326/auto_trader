@@ -119,6 +119,13 @@ def _evaluate_g1_gate(g1_gate: dict | None) -> GateResult:
 
 
 def _evaluate_g2_gate(payload: CIOFollowupRequest) -> N8nG2GatePayload:
+    if payload.board_response is not None and payload.board_response.amount == 0:
+        return N8nG2GatePayload(
+            passed=True,
+            status="pass",
+            detail="보드 응답: 자금 지원 없음 (0 KRW)",
+        )
+
     intent = payload.board_response.funding_intent if payload.board_response else None
     intent = intent or payload.funding_intent
     if intent is None:
@@ -147,6 +154,7 @@ def _followup_context_from_tc(payload: TCFollowupRequest) -> BoardBriefContext:
         manual_cash_krw=payload.manual_cash_krw,
         daily_burn_krw=payload.daily_burn_krw,
         manual_cash_runway_days=payload.manual_cash_runway_days,
+        board_response=payload.board_response,
         weights_top_n=payload.weights_top_n,
         holdings=payload.holdings,
         dust_items=payload.dust_items,
