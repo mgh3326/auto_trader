@@ -186,10 +186,10 @@ async def test_compute_active_dca_daily_burn_returns_zero_when_no_active(
 
     result = await compute_active_dca_daily_burn()
 
-    assert result["daily_burn_krw"] == 0.0
+    assert result["daily_burn_krw"] == pytest.approx(0.0)
     assert result["active_count"] == 0
     assert result["days_to_next_obligation"] is None
-    assert result["cash_needed_until_obligation"] == 0.0
+    assert result["cash_needed_until_obligation"] == pytest.approx(0.0)
     assert result["per_record"] == []
 
 
