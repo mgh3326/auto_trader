@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from functools import lru_cache
+from uuid import uuid4
 
 import exchange_calendars as xcals
 import pandas as pd
@@ -9,7 +10,7 @@ from pandas import Timestamp
 
 from app.mcp_server.tooling.market_data_indicators import _calculate_rsi
 from app.services import market_data as market_data_service
-from app.services.openclaw_client import OpenClawClient
+from app.services.openclaw_client import OpenClawClient, WatchAlertDeliveryResult
 from app.services.watch_alerts import WatchAlertService
 
 logger = logging.getLogger(__name__)
@@ -169,25 +170,46 @@ class WatchScanner:
             )
         return "\n".join(lines)
 
-    async def _send_alert(self, message: str) -> str | None:
+    async def _send_alert(
+        self,
+        *,
+        market: str,
+        triggered: list[dict[str, object]],
+        message: str,
+    ) -> WatchAlertDeliveryResult:
+        correlation_id = str(uuid4())
+        as_of = Timestamp.now("UTC").isoformat()
         try:
-            return await self._openclaw.send_watch_alert(message)
+            return await self._openclaw.send_watch_alert_to_n8n(
+                message=message,
+                market=market,
+                triggered=triggered,
+                as_of=as_of,
+                correlation_id=correlation_id,
+            )
         except Exception as exc:
             logger.error("Failed to send watch scan alert: %s", exc)
-            return None
+            return WatchAlertDeliveryResult(status="failed", reason="request_failed")
 
     async def scan_market(self, market: str) -> dict[str, object]:
         normalized_market = str(market).strip().lower()
         if not self._is_market_open(normalized_market):
             return {
                 "market": normalized_market,
+                "status": "skipped",
                 "skipped": True,
                 "reason": "market_closed",
             }
 
         watches = await self._watch_service.get_watches_for_market(normalized_market)
         if not watches:
-            return {"market": normalized_market, "alerts_sent": 0, "details": []}
+            return {
+                "market": normalized_market,
+                "status": "skipped",
+                "reason": "no_watch_records",
+                "alerts_sent": 0,
+                "details": [],
+            }
 
         triggered: list[dict[str, object]] = []
         triggered_fields: list[str] = []
@@ -228,18 +250,42 @@ class WatchScanner:
             triggered_fields.append(field)
 
         if not triggered:
-            return {"market": normalized_market, "alerts_sent": 0, "details": []}
+            return {
+                "market": normalized_market,
+                "status": "skipped",
+                "reason": "no_triggered_alerts",
+                "alerts_sent": 0,
+                "details": [],
+            }
 
         message = self._build_batched_message(normalized_market, triggered)
-        request_id = await self._send_alert(message)
-        if not request_id:
-            return {"market": normalized_market, "alerts_sent": 0, "details": []}
+        result = await self._send_alert(
+            market=normalized_market,
+            triggered=triggered,
+            message=message,
+        )
+        if result.status != "success":
+            logger.warning(
+                "Watch alert delivery was not successful: market=%s status=%s reason=%s",
+                normalized_market,
+                result.status,
+                result.reason,
+            )
+            return {
+                "market": normalized_market,
+                "status": result.status,
+                "reason": result.reason,
+                "alerts_sent": 0,
+                "details": [message],
+            }
 
         for field in triggered_fields:
             await self._watch_service.trigger_and_remove(normalized_market, field)
 
         return {
             "market": normalized_market,
+            "status": "success",
+            "request_id": result.request_id,
             "alerts_sent": len(triggered_fields),
             "details": [message],
         }

@@ -306,6 +306,8 @@ class Settings(BaseSettings):
 
     # N8N Fill Notification webhook (replaces OPENCLAW_THREAD_* for fills)
     N8N_FILL_WEBHOOK_URL: str = ""
+    # N8N Watch Alert webhook (replaces OpenClaw watch alert route)
+    N8N_WATCH_ALERT_WEBHOOK_URL: str = ""
 
     DAILY_SCAN_ENABLED: bool = False
     DAILY_SCAN_CRASH_THRESHOLD: float = 0.05
