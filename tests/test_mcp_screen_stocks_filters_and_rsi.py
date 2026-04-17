@@ -600,6 +600,78 @@ class TestScreenStocksPhase2Spec:
         assert result["results"][0]["market_cap"] == 4800000
 
     @pytest.mark.asyncio
+    async def test_kr_new_filters_pass_through_and_echo(self, monkeypatch):
+        async def mock_screen_kr_via_tvscreener(**kwargs):
+            assert kwargs["market"] == "kospi"
+            assert kwargs["adv_krw_min"] == 5_000_000_000
+            assert kwargs["market_cap_min_krw"] == 10_000_000_000
+            assert kwargs["market_cap_max_krw"] == 1_000_000_000_000
+            assert kwargs["instrument_types"] == ["common"]
+            assert kwargs["exclude_sectors"] == ["Finance"]
+            assert kwargs["exclude_sector_keys"] == {"finance"}
+            return {
+                "stocks": [
+                    {
+                        "symbol": "005930",
+                        "name": "Samsung Electronics Co., Ltd.",
+                        "price": 80000.0,
+                        "change_percent": 2.5,
+                        "volume": 1000.0,
+                        "market_cap": 4_800_000,
+                        "market_cap_krw": 480_000_000_000_000,
+                        "adv_krw": 8_000_000_000,
+                        "instrument_type": "common",
+                        "sector": "Technology",
+                        "rsi": 35.0,
+                        "adx": 20.0,
+                        "market": "KOSPI",
+                    }
+                ],
+                "count": 1,
+                "filters_applied": {
+                    "market": "kospi",
+                    "adv_krw_min": 5_000_000_000,
+                    "market_cap_min_krw": 10_000_000_000,
+                    "market_cap_max_krw": 1_000_000_000_000,
+                    "instrument_types": ["common"],
+                    "exclude_sectors": ["Finance"],
+                    "sort_by": "volume",
+                    "sort_order": "desc",
+                },
+                "meta_fields": {"adv_window_days": 30},
+                "source": "tvscreener",
+                "error": None,
+            }
+
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.screening.kr._screen_kr_via_tvscreener",
+            mock_screen_kr_via_tvscreener,
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="kospi",
+            asset_type="stock",
+            adv_krw_min=5_000_000_000,
+            market_cap_min_krw=10_000_000_000,
+            market_cap_max_krw=1_000_000_000_000,
+            instrument_types=["common"],
+            exclude_sectors=["Finance"],
+            sort_by="volume",
+            sort_order="desc",
+            limit=20,
+        )
+
+        assert result["filters_applied"]["adv_krw_min"] == 5_000_000_000
+        assert result["filters_applied"]["market_cap_min_krw"] == 10_000_000_000
+        assert result["filters_applied"]["market_cap_max_krw"] == 1_000_000_000_000
+        assert result["filters_applied"]["instrument_types"] == ["common"]
+        assert result["filters_applied"]["exclude_sectors"] == ["Finance"]
+        assert result["meta"]["adv_window_days"] == 30
+        assert result["results"][0]["adv_krw"] == 8_000_000_000
+        assert result["results"][0]["instrument_type"] == "common"
+
+    @pytest.mark.asyncio
     async def test_us_early_return_filters_applied_complete(self, monkeypatch):
         def mock_screen_none(query, size, sortField, sortAsc, session=None):
             assert session is not None
