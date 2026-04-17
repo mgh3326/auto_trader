@@ -14,12 +14,46 @@ class TestN8nFollowupEndpoints:
         app.include_router(router)
         return TestClient(app)
 
+    def _required_v2_payload(self) -> dict:
+        return {
+            "exchange_krw": 1_000_000,
+            "unverified_cap": {"amount": 5_000_000},
+            "next_obligation": {
+                "date": "2026-04-24",
+                "days_remaining": 7,
+                "cash_needed_until": 2_500_000,
+            },
+            "tier_scenarios": [
+                {
+                    "label": "T1",
+                    "deposit_amount": 1_500_000,
+                    "target_exchange_krw": 2_500_000,
+                    "buffer_days": 25,
+                    "cushion_after_obligation": 0,
+                }
+            ],
+            "data_sufficient_by_symbol": {"BTC": True},
+            "btc_regime": {
+                "close_vs_20d_ma": "above",
+                "ma20_slope": "up",
+                "drawdown_14d_pct": -3.2,
+            },
+            "holdings": [
+                {"symbol": "BTC", "current_krw_value": 1_000_000, "dust": False},
+                {"symbol": "DOGE", "current_krw_value": 3_000, "dust": True},
+            ],
+            "dust_items": [
+                {"symbol": "DOGE", "current_krw_value": 3_000, "dust": True}
+            ],
+        }
+
     def test_tc_followup_returns_preliminary_render(self) -> None:
         client = self._get_client()
 
         resp = client.post(
             "/api/n8n/tc-followup",
             json={
+                **self._required_v2_payload(),
                 "manual_cash_krw": 1_250_000,
                 "daily_burn_krw": 50_000,
                 "weights_top_n": [{"symbol": "BTC", "weight_pct": 42.5}],
@@ -52,6 +86,7 @@ class TestN8nFollowupEndpoints:
         resp = client.post(
             "/api/n8n/cio-followup",
             json={
+                **self._required_v2_payload(),
                 "manual_cash_krw": 700_000,
                 "daily_burn_krw": 100_000,
                 "manual_cash_runway_days": 7,
@@ -96,6 +131,7 @@ class TestN8nFollowupEndpoints:
         resp = client.post(
             "/api/n8n/cio-followup",
             json={
+                **self._required_v2_payload(),
                 "manual_cash_krw": 1_500_000,
                 "daily_burn_krw": 100_000,
                 "manual_cash_runway_days": 15,

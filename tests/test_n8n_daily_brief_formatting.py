@@ -136,6 +136,28 @@ class TestBoardBriefBuilders:
         from app.schemas.n8n.board_brief import BoardBriefContext
 
         return BoardBriefContext(
+            exchange_krw=1_000_000,
+            unverified_cap={"amount": 5_000_000},
+            next_obligation={
+                "date": "2026-04-24",
+                "days_remaining": 7,
+                "cash_needed_until": 2_500_000,
+            },
+            tier_scenarios=[
+                {
+                    "label": "T1",
+                    "deposit_amount": 1_500_000,
+                    "target_exchange_krw": 2_500_000,
+                    "buffer_days": 25,
+                    "cushion_after_obligation": 0,
+                }
+            ],
+            data_sufficient_by_symbol={"BTC": True},
+            btc_regime={
+                "close_vs_20d_ma": "above",
+                "ma20_slope": "up",
+                "drawdown_14d_pct": -3.2,
+            },
             manual_cash_krw=1_250_000,
             daily_burn_krw=50_000,
             weights_top_n=[{"symbol": "BTC", "weight_pct": 42.5}],

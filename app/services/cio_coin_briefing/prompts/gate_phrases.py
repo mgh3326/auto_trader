@@ -1,5 +1,7 @@
 """Prompt v2 phrase constants used by board brief renderers."""
 
+import re
+
 G2_RUNWAY_FUEL_LINES = [
     "- 이번 {amount} 원은 **운영 연료** 로 귀속 — coinmoogi DCA {days} 일 지속분 + 만기 cushion.",
     "- 신규 매수 여력으로 전용 금지. G2 에서 차단.",
@@ -19,3 +21,19 @@ PATH_SECTION_AB_REPEAT = "**A 와 B 는 상호배타 아님 — 병행 가능.**
 BOARD_QUESTIONS_TEMPLATE = """질문 (Step 1 답변 반영 — 재질문 아님)
 1) **[funding-confirmation]** manual_cash 중 오늘 실제 입금 가능액이 있습니까? 있다면 얼마, 언제까지?
 2) **[action]** 부분매도를 Hard Gate critique 에 올려 실행하시겠습니까?"""
+
+FORBIDDEN_PATTERN_STRINGS = [
+    r"\[funding\].*\[action\]",
+    r"가용\s*현금[^(]*\d",
+    r"Planning\s*cash",
+    r"\b유휴\s*자금\b",
+    r"\b예비\s*자금\b",
+    r"\b대기\s*자금\b",
+    r"\b대기\s*cash\b",
+    r"\b입금\s*여력\b",
+    r"\b천만\s*원\s*(현금|cash|가용)",
+    r"A\s*(또는|혹은|or)\s*B\s*(중|에서)\s*택1?",
+    r"입금\s*(또는|혹은)\s*매도\s*(중|에서)\s*택1?",
+]
+
+FORBIDDEN_PATTERNS = [re.compile(pattern) for pattern in FORBIDDEN_PATTERN_STRINGS]

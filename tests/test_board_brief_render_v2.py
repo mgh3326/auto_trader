@@ -39,6 +39,12 @@ def _v2_context() -> BoardBriefContext:
                     "cushion_after_obligation": 2_000_000,
                 },
             ],
+            "data_sufficient_by_symbol": {"BTC": True},
+            "btc_regime": {
+                "close_vs_20d_ma": "above",
+                "ma20_slope": "up",
+                "drawdown_14d_pct": -3.2,
+            },
             "holdings": [
                 {"symbol": "BTC", "current_krw_value": 7_000_000, "dust": False},
                 {"symbol": "DOGE", "current_krw_value": 3_000, "dust": True},

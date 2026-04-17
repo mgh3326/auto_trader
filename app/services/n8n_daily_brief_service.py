@@ -8,13 +8,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import re
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
+
+import httpx
 
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
 from app.schemas.n8n.board_brief import (
     BoardBriefContext,
+    BoardBriefPhase,
     BoardBriefRender,
     BoardFundingResponse,
     FundingIntent,
@@ -24,6 +31,7 @@ from app.schemas.n8n.board_brief import (
 from app.schemas.n8n.common import N8nMarketOverview
 from app.services.cio_coin_briefing.prompts.gate_phrases import (
     BOARD_QUESTIONS_TEMPLATE,
+    FORBIDDEN_PATTERNS,
     FRAMING_AB_PATH_NON_EXCLUSIVE,
     G2_NEW_BUDGET_LINES,
     G2_RUNWAY_FUEL_LINES,
@@ -42,6 +50,47 @@ from app.services.n8n_pending_orders_service import fetch_pending_orders
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MARKETS = ("crypto", "kr", "us")
+_FAIL_CLOSED_ANCHOR_RE = re.compile(r"^⚠️ .+ 누락 — .+$")
+_DUST_AGGREGATE_RE = re.compile(
+    r"^🧹 Dust \d+종목 · 합계 .+ · 포트폴리오 \d+(?:\.\d+)?%$"
+)
+
+
+@dataclass(frozen=True)
+class InvariantViolation:
+    """One render invariant violation."""
+
+    code: str
+    detail: str
+
+
+class RenderInvariantError(RuntimeError):
+    """Raised when final markdown violates render safety invariants."""
+
+    def __init__(self, violations: list[InvariantViolation]) -> None:
+        self.violations = violations
+        details = ", ".join(f"{item.code}: {item.detail}" for item in violations)
+        super().__init__(f"Board brief render invariant failed: {details}")
+
+
+class RenderRouter:
+    """Route render output to board or ops channels.
+
+    The default implementation only performs ops escalation when
+    N8N_OPS_ESCALATION_WEBHOOK is configured. Tests can inject a subclass to
+    assert fail-closed routing without making network calls.
+    """
+
+    def route_ops_escalation(self, message: str) -> None:
+        webhook_url = os.getenv("N8N_OPS_ESCALATION_WEBHOOK", "").strip()
+        if not webhook_url:
+            logger.warning("Ops escalation webhook not configured: %s", message)
+            return
+        try:
+            with httpx.Client(timeout=5) as client:
+                client.post(webhook_url, json={"content": message})
+        except httpx.HTTPError:
+            logger.exception("Failed to send ops escalation webhook")
 
 
 async def _get_portfolio_overview(
@@ -481,6 +530,253 @@ def _extract_followup_context(
     return BoardBriefContext.model_validate(payload)
 
 
+def _missing_required_context(ctx: BoardBriefContext) -> tuple[str, str] | None:
+    required_checks: list[tuple[str, bool, str]] = [
+        (
+            "exchange_krw",
+            ctx.exchange_krw > 0,
+            "거래소 주문가능 KRW 미수신, 브리핑 생성 불가",
+        ),
+        (
+            "unverified_cap",
+            ctx.unverified_cap is not None,
+            "manual_cash 관련 권고/문구 생성 금지",
+        ),
+        (
+            "next_obligation",
+            ctx.next_obligation is not None,
+            "obligation 행과 경로 A 평가 보류",
+        ),
+        (
+            "tier_scenarios",
+            bool(ctx.tier_scenarios),
+            "입금 시나리오 산출 보류",
+        ),
+        (
+            "data_sufficient_by_symbol",
+            bool(ctx.data_sufficient_by_symbol),
+            "심볼별 G1 데이터 충분성 평가 불가",
+        ),
+        (
+            "btc_regime",
+            ctx.btc_regime is not None,
+            "G4 regime 통과 판정 금지",
+        ),
+        (
+            "holdings",
+            bool(ctx.holdings),
+            "포트폴리오 쏠림 및 dust 평가 불가",
+        ),
+    ]
+    for field, present, reason in required_checks:
+        if not present:
+            return field, reason
+    return None
+
+
+def _route_fail_closed(
+    *,
+    ctx: BoardBriefContext,
+    phase: BoardBriefPhase,
+    field: str,
+    reason: str,
+    router: RenderRouter,
+) -> BoardBriefRender:
+    generated_at = ctx.generated_at or now_kst().replace(microsecond=0)
+    text = f"⚠️ {field} 누락 — {reason}"
+    router.route_ops_escalation(text)
+    logger.error(
+        "Board brief fail-closed render routed to ops",
+        extra={"phase": phase, "missing_field": field},
+    )
+    return BoardBriefRender(
+        phase=phase,
+        embed={},
+        text=text,
+        gate_results=None,
+        generated_at=generated_at,
+    )
+
+
+def _format_unverified_amounts(ctx: BoardBriefContext) -> set[str]:
+    if not ctx.unverified_cap:
+        return set()
+    amount = ctx.unverified_cap.amount
+    return {
+        f"{amount:,.0f}",
+        f"{amount:.0f}",
+        _fmt_krw(amount),
+    }
+
+
+def _gate_passed(gate: GateResult | N8nG2GatePayload | None) -> bool:
+    if isinstance(gate, N8nG2GatePayload):
+        return gate.passed and gate.status == "pass"
+    if isinstance(gate, GateResult):
+        return gate.status == "pass"
+    return False
+
+
+def _line_count(text: str, needle: str) -> int:
+    return sum(1 for line in text.splitlines() if needle in line)
+
+
+def _contains_fail_closed_anchor(text: str) -> bool:
+    return any(_FAIL_CLOSED_ANCHOR_RE.match(line) for line in text.splitlines())
+
+
+def validate_render_invariants(
+    text: str,
+    ctx: BoardBriefContext,
+    *,
+    phase: BoardBriefPhase,
+) -> list[InvariantViolation]:
+    """Return structural render invariant violations for final markdown."""
+    violations: list[InvariantViolation] = []
+
+    exchange_rows = _line_count(text, "거래소 KRW:")
+    unverified_rows = _line_count(text, "미확인 cap")
+    if exchange_rows != 1 or unverified_rows != 1:
+        violations.append(
+            InvariantViolation(
+                code="funding_rows",
+                detail=(
+                    "expected 거래소 KRW and 미확인 cap rows exactly once "
+                    f"(got {exchange_rows}/{unverified_rows})"
+                ),
+            )
+        )
+
+    runway_lines = [line for line in text.splitlines() if "runway" in line.lower()]
+    unverified_amounts = _format_unverified_amounts(ctx)
+    if any(
+        amount and amount in line
+        for line in runway_lines
+        for amount in unverified_amounts
+    ):
+        violations.append(
+            InvariantViolation(
+                code="runway_excludes_unverified_cap",
+                detail="runway line includes unverified_cap amount",
+            )
+        )
+
+    framing_count = text.count(FRAMING_AB_PATH_NON_EXCLUSIVE)
+    path_repeat_count = text.count(PATH_SECTION_AB_REPEAT)
+    funding_question_count = text.count("[funding-confirmation]") + text.count(
+        "[funding]"
+    )
+    action_question_count = text.count("[action]")
+    if phase == "cio_pending":
+        ab_ok = (
+            framing_count == 1
+            and path_repeat_count == 1
+            and funding_question_count == 1
+            and action_question_count == 1
+        )
+    else:
+        ab_ok = framing_count == 1 and path_repeat_count == 1
+    if not ab_ok:
+        violations.append(
+            InvariantViolation(
+                code="ab_anchor_triple",
+                detail=(
+                    "expected A/B framing, repeat, and CIO question anchors exactly once "
+                    f"(got {framing_count}/{path_repeat_count}/"
+                    f"{funding_question_count}/{action_question_count})"
+                ),
+            )
+        )
+
+    if phase == "cio_pending":
+        runway_phrase_count = text.count("**운영 연료**")
+        new_budget_phrase_count = text.count("신규 risk budget 후보")
+        if runway_phrase_count + new_budget_phrase_count != 1:
+            violations.append(
+                InvariantViolation(
+                    code="g2_phrase_exactly_one",
+                    detail=(
+                        "expected exactly one G2 phrase head "
+                        f"(got {runway_phrase_count}/{new_budget_phrase_count})"
+                    ),
+                )
+            )
+
+        if "CIO 권고 (1) 즉시 매수" in text:
+            gates = _build_gate_results(ctx)
+            missing = [
+                name
+                for name in ("G2", "G3", "G4", "G5")
+                if not _gate_passed(gates.get(name))
+            ]
+            if missing:
+                violations.append(
+                    InvariantViolation(
+                        code="immediate_buy_requires_g2_g5_pass",
+                        detail=f"immediate buy rendered while {', '.join(missing)} not pass",
+                    )
+                )
+
+    dust_count = sum(1 for line in text.splitlines() if _DUST_AGGREGATE_RE.match(line))
+    if dust_count != 1:
+        violations.append(
+            InvariantViolation(
+                code="dust_aggregate",
+                detail=f"expected exactly one dust aggregate line (got {dust_count})",
+            )
+        )
+
+    if _contains_fail_closed_anchor(text):
+        violations.append(
+            InvariantViolation(
+                code="fail_closed_anchor",
+                detail="fail-closed anchors must bypass normal board render validation",
+            )
+        )
+
+    return violations
+
+
+def _check_forbidden_patterns(text: str) -> list[InvariantViolation]:
+    violations: list[InvariantViolation] = []
+    for pattern in FORBIDDEN_PATTERNS:
+        if pattern.search(text):
+            violations.append(
+                InvariantViolation(
+                    code="forbidden_pattern",
+                    detail=pattern.pattern,
+                )
+            )
+    return violations
+
+
+def _postprocess_and_validate_render(
+    *,
+    text: str,
+    ctx: BoardBriefContext,
+    phase: BoardBriefPhase,
+    router: RenderRouter,
+    text_postprocessor: Callable[[str], str] | None,
+) -> str:
+    if text_postprocessor:
+        text = text_postprocessor(text)
+
+    violations = _check_forbidden_patterns(text)
+    violations.extend(validate_render_invariants(text, ctx, phase=phase))
+    if violations:
+        message = "; ".join(f"{item.code}: {item.detail}" for item in violations)
+        logger.error(
+            "Board brief render invariant violation",
+            extra={
+                "phase": phase,
+                "violations": [item.__dict__ for item in violations],
+            },
+        )
+        router.route_ops_escalation(message)
+        raise RenderInvariantError(violations)
+    return text
+
+
 def _default_gate_results() -> dict[str, GateResult | N8nG2GatePayload]:
     return {
         "G1": GateResult(status="pending", detail="G1 데이터 충분성 평가 대기"),
@@ -766,11 +1062,30 @@ def _build_board_embed(*, title: str, text: str, color: int) -> dict[str, Any]:
 
 def build_tc_preliminary(
     payload: BoardBriefContext | dict[str, Any],
+    *,
+    router: RenderRouter | None = None,
+    text_postprocessor: Callable[[str], str] | None = None,
 ) -> BoardBriefRender:
     """Render the first TC follow-up phase."""
     ctx = _extract_followup_context(payload)
+    router = router or RenderRouter()
+    if missing := _missing_required_context(ctx):
+        return _route_fail_closed(
+            ctx=ctx,
+            phase="tc_preliminary",
+            field=missing[0],
+            reason=missing[1],
+            router=router,
+        )
     generated_at = ctx.generated_at or now_kst().replace(microsecond=0)
     text = _build_tc_preliminary_text(ctx)
+    text = _postprocess_and_validate_render(
+        text=text,
+        ctx=ctx,
+        phase="tc_preliminary",
+        router=router,
+        text_postprocessor=text_postprocessor,
+    )
     return BoardBriefRender(
         phase="tc_preliminary",
         embed=_build_board_embed(
@@ -786,9 +1101,21 @@ def build_tc_preliminary(
 
 def build_cio_pending_decision(
     payload: BoardBriefContext | dict[str, Any],
+    *,
+    router: RenderRouter | None = None,
+    text_postprocessor: Callable[[str], str] | None = None,
 ) -> BoardBriefRender:
     """Render the second CIO follow-up phase."""
     ctx = _extract_followup_context(payload)
+    router = router or RenderRouter()
+    if missing := _missing_required_context(ctx):
+        return _route_fail_closed(
+            ctx=ctx,
+            phase="cio_pending",
+            field=missing[0],
+            reason=missing[1],
+            router=router,
+        )
     generated_at = ctx.generated_at or now_kst().replace(microsecond=0)
     gate_results = _build_gate_results(ctx)
     funding_intent, _ = resolve_funding_intent(ctx, ctx.board_response)
@@ -796,6 +1123,13 @@ def build_cio_pending_decision(
         update={"funding_intent": funding_intent, "gate_results": gate_results}
     )
     text = _build_cio_pending_text(ctx)
+    text = _postprocess_and_validate_render(
+        text=text,
+        ctx=ctx,
+        phase="cio_pending",
+        router=router,
+        text_postprocessor=text_postprocessor,
+    )
     return BoardBriefRender(
         phase="cio_pending",
         embed=_build_board_embed(
@@ -948,7 +1282,11 @@ async def fetch_daily_brief(
 
 
 __all__ = [
+    "InvariantViolation",
+    "RenderInvariantError",
+    "RenderRouter",
     "build_cio_pending_decision",
     "build_tc_preliminary",
     "fetch_daily_brief",
+    "validate_render_invariants",
 ]
