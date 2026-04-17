@@ -128,3 +128,67 @@ class TestBuildBriefText:
 
         assert "✅ 전일 체결" in text
         assert "ETH sell" in text
+
+
+@pytest.mark.unit
+class TestBoardBriefBuilders:
+    def _context(self):
+        from app.schemas.n8n.board_brief import BoardBriefContext
+
+        return BoardBriefContext(
+            manual_cash_krw=1_250_000,
+            daily_burn_krw=50_000,
+            weights_top_n=[{"symbol": "BTC", "weight_pct": 42.5}],
+            holdings=[
+                {"symbol": "BTC", "current_krw_value": 1_000_000, "dust": False},
+                {"symbol": "DOGE", "current_krw_value": 3_000, "dust": True},
+            ],
+            dust_items=[{"symbol": "DOGE", "current_krw_value": 3_000, "dust": True}],
+        )
+
+    def test_tc_preliminary_has_no_recommendation_or_gate_sections(self):
+        from app.services.n8n_daily_brief_service import build_tc_preliminary
+
+        render = build_tc_preliminary(self._context())
+        text = render.text
+
+        assert render.phase == "tc_preliminary"
+        assert "경로 A·B 병행 가능" in text
+        assert "BTC" in text
+        assert "DOGE" in text
+        assert "🎯 권고" not in text
+        assert "📊 Gate 판정 결과" not in text
+        assert "[funding]" not in text
+        assert "[action]" not in text
+
+    def test_cio_pending_includes_recommendation_gates_and_questions(self):
+        from app.schemas.n8n.board_brief import GateResult, N8nG2GatePayload
+        from app.services.n8n_daily_brief_service import build_cio_pending_decision
+
+        ctx = self._context().model_copy(
+            update={
+                "gate_results": {
+                    "G1": GateResult(
+                        status="fail",
+                        detail="(3) 현금 우선 정책 적용",
+                    ),
+                    "G2": N8nG2GatePayload(
+                        passed=False,
+                        status="fail",
+                        blocking_reason="runway recovery requires cash",
+                    ),
+                }
+            }
+        )
+
+        render = build_cio_pending_decision(ctx)
+        text = render.text
+
+        assert render.phase == "cio_pending"
+        assert "🎯 권고" in text
+        assert "📊 Gate 판정 결과" in text
+        assert "🚫 신규 매수 차단 — G2 fail" in text
+        assert "(3) 현금 우선 정책 적용" in text
+        assert "[funding]" in text
+        assert "[action]" in text
+        assert text.count("경로 A·B 병행 가능") >= 2
