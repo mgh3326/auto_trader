@@ -17,6 +17,7 @@ from app.services.fill_notification import FillOrder, format_fill_message
 from app.services.openclaw_client import (
     FillNotificationDeliveryResult,
     OpenClawClient,
+    WatchAlertDeliveryResult,
     _build_n8n_fill_payload,
     _build_openclaw_message,
 )
@@ -1212,6 +1213,131 @@ async def test_send_watch_alert_success(
     assert called_json["sessionKey"].startswith("auto-trader:watch:")
     assert called_json["message"] == "watch message"
     mock_notifier.notify_openclaw_message.assert_awaited_once_with("watch message")
+
+
+@pytest.mark.asyncio
+async def test_send_watch_alert_to_n8n_skips_when_webhook_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "N8N_WATCH_ALERT_WEBHOOK_URL", "")
+
+    result = await OpenClawClient().send_watch_alert_to_n8n(
+        message="watch message",
+        market="crypto",
+        triggered=[{"symbol": "BTC", "condition_type": "price_above"}],
+        as_of="2026-04-17T00:00:00+09:00",
+        correlation_id="corr-watch-skip",
+    )
+
+    assert result.status == "skipped"
+    assert result.reason == "n8n_webhook_not_configured"
+    assert result.request_id is None
+
+
+@pytest.mark.asyncio
+@patch("app.services.openclaw_client.httpx.AsyncClient")
+async def test_send_watch_alert_to_n8n_posts_payload(
+    mock_httpx_client_cls: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        settings,
+        "N8N_WATCH_ALERT_WEBHOOK_URL",
+        "http://127.0.0.1:5678/webhook/watch-alert",
+    )
+
+    mock_cli = AsyncMock()
+    mock_res = MagicMock(status_code=200)
+    mock_res.raise_for_status.return_value = None
+    mock_cli.post.return_value = mock_res
+
+    mock_client_instance = AsyncMock()
+    mock_client_instance.__aenter__.return_value = mock_cli
+    mock_client_instance.__aexit__.return_value = None
+    mock_httpx_client_cls.return_value = mock_client_instance
+
+    result = await OpenClawClient().send_watch_alert_to_n8n(
+        message="watch summary",
+        market="kr",
+        triggered=[
+            {
+                "symbol": "005930",
+                "condition_type": "price_below",
+                "threshold": 70000,
+                "current": 69000,
+            }
+        ],
+        as_of="2026-04-17T09:30:00+09:00",
+        correlation_id="corr-watch-ok",
+    )
+
+    assert result.status == "success"
+    assert result.reason is None
+    assert result.request_id is not None
+    called_url = mock_cli.post.call_args.args[0]
+    called_json = mock_cli.post.call_args.kwargs["json"]
+    assert called_url == "http://127.0.0.1:5678/webhook/watch-alert"
+    assert called_json["alert_type"] == "watch"
+    assert called_json["correlation_id"] == "corr-watch-ok"
+    assert called_json["as_of"] == "2026-04-17T09:30:00+09:00"
+    assert called_json["market"] == "kr"
+    assert called_json["triggered"] == [
+        {
+            "symbol": "005930",
+            "condition_type": "price_below",
+            "threshold": 70000,
+            "current": 69000,
+        }
+    ]
+    assert called_json["message"] == "watch summary"
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("zero_delay_openclaw_retry_wait")
+@patch("app.services.openclaw_client.httpx.AsyncClient")
+async def test_send_watch_alert_to_n8n_returns_failed_on_retries_exhausted(
+    mock_httpx_client_cls: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        settings,
+        "N8N_WATCH_ALERT_WEBHOOK_URL",
+        "http://127.0.0.1:5678/webhook/watch-alert",
+    )
+
+    mock_cli = AsyncMock()
+    mock_res_fail = MagicMock()
+    mock_res_fail.raise_for_status.side_effect = Exception("watch 5xx")
+    mock_cli.post.return_value = mock_res_fail
+
+    mock_client_instance = AsyncMock()
+    mock_client_instance.__aenter__.return_value = mock_cli
+    mock_client_instance.__aexit__.return_value = None
+    mock_httpx_client_cls.return_value = mock_client_instance
+
+    result = await OpenClawClient().send_watch_alert_to_n8n(
+        message="watch summary",
+        market="crypto",
+        triggered=[{"symbol": "BTC", "condition_type": "price_above"}],
+        as_of="2026-04-17T00:00:00+09:00",
+        correlation_id="corr-watch-fail",
+    )
+
+    assert result.status == "failed"
+    assert result.reason == "request_failed"
+    assert result.request_id is None
+    assert mock_cli.post.call_count == 4
+
+
+def test_watch_alert_delivery_result_enforces_request_id_contract() -> None:
+    with pytest.raises(ValueError, match="success results require a request_id"):
+        WatchAlertDeliveryResult(status="success")
+
+    with pytest.raises(
+        ValueError,
+        match="request_id is only allowed for success results",
+    ):
+        WatchAlertDeliveryResult(status="failed", request_id="req-123")
 
 
 @pytest.mark.asyncio
