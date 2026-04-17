@@ -179,10 +179,11 @@ class TestMcpServerMain:
 
         capture_exception.assert_called_once()
 
+    @pytest.mark.parametrize("transport", ["streamable-http", "sse"])
     def test_refuses_to_boot_when_env_fallback_set_on_http_transport(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, transport: str
     ) -> None:
-        monkeypatch.setenv("MCP_TYPE", "streamable-http")
+        monkeypatch.setenv("MCP_TYPE", transport)
 
         module, mcp, capture_exception = _load_main_module(monkeypatch)
         module.settings.mcp_caller_agent_id_fallback = "trader-agent-id"
@@ -190,8 +191,7 @@ class TestMcpServerMain:
         with pytest.raises(
             RuntimeError,
             match=(
-                "MCP_CALLER_AGENT_ID is only allowed for stdio/local dev "
-                "transports"
+                "MCP_CALLER_AGENT_ID is only allowed for stdio/local dev transports"
             ),
         ):
             module.main()
