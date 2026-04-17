@@ -428,6 +428,7 @@ def position_to_output(position: dict[str, Any]) -> dict[str, Any]:
         "evaluation_amount": position["evaluation_amount"],
         "profit_loss": position["profit_loss"],
         "profit_rate": position["profit_rate"],
+        "dust": bool(position.get("dust", False)),
     }
     if "price_error" in position:
         output["price_error"] = position["price_error"]
@@ -446,6 +447,17 @@ def value_for_minimum_filter(position: dict[str, Any]) -> float:
     if current_price <= 0:
         return 0.0
     return quantity * current_price
+
+
+def min_order_krw(symbol: str) -> float:
+    """Return KRW minimum order threshold for crypto positions.
+
+    Upbit KRW markets share a fixed minimum order amount in current policy.
+    The ``symbol`` parameter is intentionally retained for future per-market
+    extensions without changing the public function signature.
+    """
+    _ = symbol
+    return DEFAULT_MINIMUM_VALUES["crypto"]
 
 
 def format_filter_threshold(value: float) -> str:
@@ -903,6 +915,7 @@ __all__ = [
     "normalize_position_symbol",
     "position_to_output",
     "value_for_minimum_filter",
+    "min_order_krw",
     "format_filter_threshold",
     "build_holdings_summary",
     "is_position_symbol_match",
