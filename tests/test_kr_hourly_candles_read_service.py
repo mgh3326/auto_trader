@@ -167,6 +167,34 @@ def _make_intraday_db_manager(
     return DummySessionManager(DummyDB())
 
 
+def _make_api_minute_frame(
+    *,
+    minutes: int,
+    open_base: float,
+    high_base: float,
+    low_base: float,
+    close_base: float,
+    volume_base: float,
+    value_base: float,
+) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "datetime": pd.Timestamp(f"2026-03-10 08:{minute:02d}:00"),
+                "date": datetime.date(2026, 3, 10),
+                "time": datetime.time(8, minute, 0),
+                "open": open_base + minute * 0.1,
+                "high": high_base + minute * 0.1,
+                "low": low_base + minute * 0.1,
+                "close": close_base + minute * 0.1,
+                "volume": volume_base + minute,
+                "value": value_base + minute * 100.0,
+            }
+            for minute in range(minutes)
+        ]
+    )
+
+
 def _patch_intraday_mocks(
     monkeypatch,
     *,
@@ -2560,37 +2588,23 @@ async def test_read_kr_intraday_candles_1m_pure_kis_overlay_and_fallback_keep_na
     symbol = "005930"
     now_kst = _dt_kst(2026, 3, 10, 8, 18, 0)
 
-    overlay_df = pd.DataFrame(
-        [
-            {
-                "datetime": pd.Timestamp(f"2026-03-10 08:{minute:02d}:00"),
-                "date": datetime.date(2026, 3, 10),
-                "time": datetime.time(8, minute, 0),
-                "open": 100.0 + minute * 0.1,
-                "high": 100.5 + minute * 0.1,
-                "low": 99.5 + minute * 0.1,
-                "close": 100.2 + minute * 0.1,
-                "volume": 10.0 + minute,
-                "value": 1000.0 + minute * 100.0,
-            }
-            for minute in range(19)
-        ]
+    overlay_df = _make_api_minute_frame(
+        minutes=19,
+        open_base=100.0,
+        high_base=100.5,
+        low_base=99.5,
+        close_base=100.2,
+        volume_base=10.0,
+        value_base=1000.0,
     )
-    fallback_df = pd.DataFrame(
-        [
-            {
-                "datetime": pd.Timestamp(f"2026-03-10 08:{minute:02d}:00"),
-                "date": datetime.date(2026, 3, 10),
-                "time": datetime.time(8, minute, 0),
-                "open": 101.0 + minute * 0.1,
-                "high": 101.5 + minute * 0.1,
-                "low": 100.5 + minute * 0.1,
-                "close": 101.2 + minute * 0.1,
-                "volume": 20.0 + minute,
-                "value": 2000.0 + minute * 100.0,
-            }
-            for minute in range(20)
-        ]
+    fallback_df = _make_api_minute_frame(
+        minutes=20,
+        open_base=101.0,
+        high_base=101.5,
+        low_base=100.5,
+        close_base=101.2,
+        volume_base=20.0,
+        value_base=2000.0,
     )
 
     async def mock_inquire(*, market, end_time, **_):
@@ -2637,37 +2651,23 @@ async def test_read_kr_intraday_candles_5m_pure_kis_overlay_and_fallback_keep_na
     symbol = "005930"
     now_kst = _dt_kst(2026, 3, 10, 8, 19, 0)
 
-    overlay_df = pd.DataFrame(
-        [
-            {
-                "datetime": pd.Timestamp(f"2026-03-10 08:{minute:02d}:00"),
-                "date": datetime.date(2026, 3, 10),
-                "time": datetime.time(8, minute, 0),
-                "open": 100.0 + minute * 0.1,
-                "high": 100.5 + minute * 0.1,
-                "low": 99.5 + minute * 0.1,
-                "close": 100.2 + minute * 0.1,
-                "volume": 10.0 + minute,
-                "value": 1000.0 + minute * 100.0,
-            }
-            for minute in range(19)
-        ]
+    overlay_df = _make_api_minute_frame(
+        minutes=19,
+        open_base=100.0,
+        high_base=100.5,
+        low_base=99.5,
+        close_base=100.2,
+        volume_base=10.0,
+        value_base=1000.0,
     )
-    fallback_df = pd.DataFrame(
-        [
-            {
-                "datetime": pd.Timestamp(f"2026-03-10 08:{minute:02d}:00"),
-                "date": datetime.date(2026, 3, 10),
-                "time": datetime.time(8, minute, 0),
-                "open": 101.0 + minute * 0.1,
-                "high": 101.5 + minute * 0.1,
-                "low": 100.5 + minute * 0.1,
-                "close": 101.2 + minute * 0.1,
-                "volume": 20.0 + minute,
-                "value": 2000.0 + minute * 100.0,
-            }
-            for minute in range(20)
-        ]
+    fallback_df = _make_api_minute_frame(
+        minutes=20,
+        open_base=101.0,
+        high_base=101.5,
+        low_base=100.5,
+        close_base=101.2,
+        volume_base=20.0,
+        value_base=2000.0,
     )
 
     async def mock_inquire(*, market, end_time, **_):
