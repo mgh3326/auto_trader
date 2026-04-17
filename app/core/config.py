@@ -309,6 +309,12 @@ class Settings(BaseSettings):
     # N8N Watch Alert webhook (replaces OpenClaw watch alert route)
     N8N_WATCH_ALERT_WEBHOOK_URL: str = ""
 
+    # MCP caller identity fallback for non-HTTP/manual runs
+    mcp_caller_agent_id_fallback: str | None = Field(
+        default=None,
+        validation_alias="MCP_CALLER_AGENT_ID",
+    )
+
     DAILY_SCAN_ENABLED: bool = False
     DAILY_SCAN_CRASH_THRESHOLD: float = 0.05
     DAILY_SCAN_CRASH_HOLDING_THRESHOLD: float = 0.04
