@@ -11,6 +11,7 @@ from typing import Any, Literal
 from typing import cast as typing_cast
 
 import app.services.brokers.upbit.client as upbit_service
+from app.mcp_server.caller_identity import get_caller_source
 from app.mcp_server.tick_size import adjust_tick_size_kr, get_tick_size_kr
 from app.mcp_server.tooling.order_journal import (
     _append_journal_warning,
@@ -374,6 +375,7 @@ async def _handle_sell_journal(
     exit_reason: str | None,
     reason: str,
     journal_warning: str | None,
+    defensive_trim_ctx: DefensiveTrimContext | None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Close journals for sell orders.
 
@@ -396,6 +398,7 @@ async def _handle_sell_journal(
             sell_quantity=resolved_sell_qty,
             sell_price=resolved_sell_price,
             exit_reason=exit_reason or reason,
+            defensive_trim_ctx=defensive_trim_ctx,
         )
         return journal_close_result, journal_warning
     except Exception as journal_exc:
@@ -478,6 +481,7 @@ async def _record_fill_and_journals(
     min_hold_days: int | None,
     notes: str | None,
     indicators_snapshot: dict[str, Any] | None,
+    defensive_trim_ctx: DefensiveTrimContext | None,
 ) -> dict[str, Any]:
     """Save fill to DB, manage journals (create for buy, close for sell)."""
     journal_created = False
@@ -542,6 +546,7 @@ async def _record_fill_and_journals(
             exit_reason=exit_reason,
             reason=reason,
             journal_warning=journal_warning,
+            defensive_trim_ctx=defensive_trim_ctx,
         )
 
     result: dict[str, Any] = {
@@ -644,6 +649,7 @@ async def _execute_and_record(
         requester_agent_id=(
             defensive_trim_ctx.requester_agent_id if defensive_trim_ctx else None
         ),
+        caller_source=get_caller_source() if defensive_trim_ctx else None,
     )
 
     # Record phase: fills + journals
@@ -665,6 +671,7 @@ async def _execute_and_record(
         min_hold_days=min_hold_days,
         notes=notes,
         indicators_snapshot=indicators_snapshot,
+        defensive_trim_ctx=defensive_trim_ctx,
     )
 
     return {
@@ -714,7 +721,6 @@ async def _place_order_impl(
     indicators_snapshot: dict[str, Any] | None = None,
     defensive_trim: bool = False,
     approval_issue_id: str | None = None,
-    requester_agent_id: str | None = None,
 ) -> dict[str, Any]:
     symbol, side_lower, order_type_lower = _validate_inputs(
         symbol,
@@ -754,7 +760,6 @@ async def _place_order_impl(
         defensive_trim_ctx = await _validate_defensive_trim_preconditions(
             defensive_trim=defensive_trim,
             approval_issue_id=approval_issue_id,
-            requester_agent_id=requester_agent_id,
             side=side_lower,
             order_type=order_type_lower,
         )
@@ -884,6 +889,7 @@ async def _place_order_impl(
             requester_agent_id=(
                 defensive_trim_ctx.requester_agent_id if defensive_trim_ctx else None
             ),
+            caller_source=get_caller_source() if defensive_trim_ctx else None,
         )
         return _order_error(str(exc))
 

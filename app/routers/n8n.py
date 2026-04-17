@@ -10,6 +10,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
 from app.core.timezone import now_kst
+from app.schemas.n8n.board_brief import (
+    BoardBriefContext,
+    BoardBriefRender,
+    CIOFollowupRequest,
+    GateResult,
+    N8nG2GatePayload,
+    TCFollowupRequest,
+)
 from app.schemas.n8n.common import N8nMarketOverview
 from app.schemas.n8n.crypto_scan import (
     N8nBtcContext,
@@ -53,7 +61,11 @@ from app.services.market_report_service import (
     save_kr_morning_report,
 )
 from app.services.n8n_crypto_scan_service import fetch_crypto_scan
-from app.services.n8n_daily_brief_service import fetch_daily_brief
+from app.services.n8n_daily_brief_service import (
+    build_cio_pending_decision,
+    build_tc_preliminary,
+    fetch_daily_brief,
+)
 from app.services.n8n_filled_orders_service import fetch_filled_orders
 from app.services.n8n_formatting import fmt_date_with_weekday
 from app.services.n8n_kr_morning_report_service import fetch_kr_morning_report
@@ -79,6 +91,108 @@ from app.services.sell_signal_service import evaluate_sell_signal
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/n8n", tags=["n8n"])
+
+
+def _evaluate_g1_gate(g1_gate: dict | None) -> GateResult:
+    if not g1_gate:
+        return GateResult(status="pending", detail="G1 데이터 충분성 평가 대기")
+
+    symbols = g1_gate.get("symbols") if isinstance(g1_gate, dict) else None
+    if not isinstance(symbols, dict):
+        symbols = g1_gate if isinstance(g1_gate, dict) else {}
+
+    failed_symbols: list[str] = []
+    for symbol, result in symbols.items():
+        if not isinstance(result, dict):
+            continue
+        if result.get("data_sufficient") is False:
+            missing = ", ".join(str(item) for item in result.get("missing", []))
+            failed_symbols.append(f"{symbol}({missing or 'insufficient'})")
+
+    policy_note = str(g1_gate.get("force_cash_policy_note") or "")
+    if failed_symbols:
+        detail = f"데이터 부족: {', '.join(failed_symbols)}"
+        if policy_note:
+            detail = f"{policy_note} — {detail}"
+        return GateResult(status="fail", detail=detail)
+    return GateResult(status="pass", detail="G1 데이터 충분성 통과")
+
+
+def _evaluate_g2_gate(payload: CIOFollowupRequest) -> N8nG2GatePayload:
+    if payload.board_response is not None and payload.board_response.amount == 0:
+        return N8nG2GatePayload(
+            passed=True,
+            status="pass",
+            detail="보드 응답: 자금 지원 없음 (0 KRW)",
+        )
+
+    intent = payload.board_response.funding_intent if payload.board_response else None
+    intent = intent or payload.funding_intent
+    if intent is None:
+        return N8nG2GatePayload(
+            passed=True,
+            status="pending",
+            detail="funding_intent 미입력",
+        )
+
+    runway_days = payload.manual_cash_runway_days
+    if runway_days is None and payload.daily_burn_krw > 0:
+        runway_days = payload.manual_cash_krw / payload.daily_burn_krw
+
+    if intent in {"runway_recovery", "new_buy"} and (runway_days or 0) < 14:
+        return N8nG2GatePayload(
+            passed=False,
+            status="fail",
+            blocking_reason="runway recovery requires cash before new buy",
+        )
+
+    return N8nG2GatePayload(passed=True, status="pass", detail="G2 통과")
+
+
+def _followup_context_from_tc(payload: TCFollowupRequest) -> BoardBriefContext:
+    return BoardBriefContext(
+        exchange_krw=payload.exchange_krw,
+        unverified_cap=payload.unverified_cap,
+        next_obligation=payload.next_obligation,
+        tier_scenarios=payload.tier_scenarios,
+        hard_gate_candidates=payload.hard_gate_candidates,
+        data_sufficient_by_symbol=payload.data_sufficient_by_symbol,
+        btc_regime=payload.btc_regime,
+        manual_cash_krw=payload.manual_cash_krw,
+        daily_burn_krw=payload.daily_burn_krw,
+        manual_cash_runway_days=payload.manual_cash_runway_days,
+        board_response=payload.board_response,
+        weights_top_n=payload.weights_top_n,
+        holdings=payload.holdings,
+        dust_items=payload.dust_items,
+        generated_at=payload.generated_at,
+    )
+
+
+def _followup_context_from_cio(payload: CIOFollowupRequest) -> BoardBriefContext:
+    return BoardBriefContext(
+        exchange_krw=payload.exchange_krw,
+        unverified_cap=payload.unverified_cap,
+        next_obligation=payload.next_obligation,
+        tier_scenarios=payload.tier_scenarios,
+        hard_gate_candidates=payload.hard_gate_candidates,
+        data_sufficient_by_symbol=payload.data_sufficient_by_symbol,
+        btc_regime=payload.btc_regime,
+        manual_cash_krw=payload.manual_cash_krw,
+        daily_burn_krw=payload.daily_burn_krw,
+        manual_cash_runway_days=payload.manual_cash_runway_days,
+        funding_intent=payload.funding_intent,
+        board_response=payload.board_response,
+        g1_gate=payload.g1_gate,
+        gate_results={
+            "G1": _evaluate_g1_gate(payload.g1_gate),
+            "G2": _evaluate_g2_gate(payload),
+        },
+        weights_top_n=payload.weights_top_n,
+        holdings=payload.holdings,
+        dust_items=payload.dust_items,
+        generated_at=payload.generated_at,
+    )
 
 
 @router.get("/pending-orders", response_model=N8nPendingOrdersResponse)
@@ -267,6 +381,18 @@ async def get_daily_brief(
 
     asyncio.ensure_future(save_daily_brief_report(result))
     return N8nDailyBriefResponse(**result)
+
+
+@router.post("/tc-followup", response_model=BoardBriefRender)
+async def post_tc_followup(payload: TCFollowupRequest) -> BoardBriefRender:
+    """Render the first TC follow-up phase without touching daily-brief state."""
+    return build_tc_preliminary(_followup_context_from_tc(payload))
+
+
+@router.post("/cio-followup", response_model=BoardBriefRender)
+async def post_cio_followup(payload: CIOFollowupRequest) -> BoardBriefRender:
+    """Render the second CIO pending phase with G1/G2 gate rows."""
+    return build_cio_pending_decision(_followup_context_from_cio(payload))
 
 
 @router.get("/filled-orders", response_model=N8nFilledOrdersResponse)
