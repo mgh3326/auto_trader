@@ -6,6 +6,7 @@ import pytest
 import app.services.naver_finance as naver_finance
 from app.mcp_server.tooling.screening import crypto as screening_crypto
 from app.mcp_server.tooling.screening import kr as screening_kr
+from app.mcp_server.tooling.screening import us as screening_us
 from tests._mcp_tooling_support import build_tools
 
 pytest_plugins = ("tests._mcp_tooling_support",)
@@ -701,6 +702,63 @@ class TestScreenStocksPhase2Spec:
         assert "max_rsi" in result["filters_applied"]
         assert "sort_by" in result["filters_applied"]
         assert "sort_order" in result["filters_applied"]
+
+    @pytest.mark.asyncio
+    async def test_us_yfinance_fallback_converts_market_cap_filter_to_krw(
+        self, monkeypatch
+    ):
+        def mock_screen(query, size, sortField, sortAsc, session=None):
+            assert session is not None
+            return {
+                "quotes": [
+                    {
+                        "symbol": "PASS",
+                        "shortName": "Pass Corp",
+                        "regularMarketPrice": 100.0,
+                        "regularMarketChangePercent": 1.0,
+                        "regularMarketVolume": 1_000_000,
+                        "marketCap": 10_000_000,
+                    },
+                    {
+                        "symbol": "FAIL",
+                        "shortName": "Fail Corp",
+                        "regularMarketPrice": 100.0,
+                        "regularMarketChangePercent": 1.0,
+                        "regularMarketVolume": 1_000_000,
+                        "marketCap": 1_000_000,
+                    },
+                ]
+            }
+
+        import yfinance as yf
+
+        monkeypatch.setattr(yf, "screen", mock_screen)
+        monkeypatch.setattr(
+            screening_us,
+            "get_usd_krw_rate",
+            AsyncMock(return_value=1_300.0),
+            raising=False,
+        )
+
+        result = await screening_us._screen_us(
+            market="us",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="market_cap",
+            sort_order="desc",
+            limit=20,
+            adv_krw_min=5_000_000_000,
+            market_cap_min_krw=10_000_000_000,
+        )
+
+        assert result["returned_count"] == 1
+        assert result["results"][0]["code"] == "PASS"
+        assert result["results"][0]["market_cap_krw"] == 13_000_000_000
+        assert any("adv_krw_min" in warning for warning in result["warnings"])
 
     @pytest.mark.asyncio
     async def test_us_max_rsi_filter_applied(self, mock_yfinance_screen, monkeypatch):

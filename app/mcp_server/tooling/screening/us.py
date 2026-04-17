@@ -37,6 +37,7 @@ from app.mcp_server.tooling.screening.tvscreener_support import (
 )
 from app.mcp_server.tooling.shared import error_payload as _error_payload
 from app.monitoring import build_yfinance_tracing_session
+from app.services.exchange_rate_service import get_usd_krw_rate
 from app.services.tvscreener_service import (
     TvScreenerError,
     TvScreenerService,
@@ -44,6 +45,34 @@ from app.services.tvscreener_service import (
 )
 
 logger = logging.getLogger(__name__)
+
+_US_SCREENING_USD_KRW_FALLBACK_RATE = 1300.0
+
+
+def _has_krw_valuation_filter(
+    *,
+    adv_krw_min: int | None = None,
+    market_cap_min_krw: int | None = None,
+    market_cap_max_krw: int | None = None,
+) -> bool:
+    return any(
+        value is not None
+        for value in (adv_krw_min, market_cap_min_krw, market_cap_max_krw)
+    )
+
+
+async def _resolve_us_screening_usd_krw_rate(*, prefer_live_rate: bool) -> float:
+    if not prefer_live_rate:
+        return _US_SCREENING_USD_KRW_FALLBACK_RATE
+    try:
+        return await get_usd_krw_rate()
+    except Exception as exc:
+        logger.warning(
+            "US screening USD/KRW lookup failed; using fallback rate %s: %s",
+            _US_SCREENING_USD_KRW_FALLBACK_RATE,
+            exc,
+        )
+        return _US_SCREENING_USD_KRW_FALLBACK_RATE
 
 
 async def _screen_us(
@@ -166,6 +195,13 @@ async def _screen_us(
             _complete_filters_applied()
             return _build_screen_response([], 0, filters_applied, market)
 
+        usd_krw_rate = await _resolve_us_screening_usd_krw_rate(
+            prefer_live_rate=_has_krw_valuation_filter(
+                market_cap_min_krw=market_cap_min_krw,
+                market_cap_max_krw=market_cap_max_krw,
+            )
+        )
+
         def _first_value(quote: dict[str, Any], *keys: str) -> Any:
             for key in keys:
                 value = quote.get(key)
@@ -223,7 +259,7 @@ async def _screen_us(
             )
             market_cap = _to_optional_float(mapped.get("market_cap"))
             if market_cap is not None:
-                mapped["market_cap_krw"] = market_cap
+                mapped["market_cap_krw"] = market_cap * usd_krw_rate
             # Drop rows without usable price; these often come from stale/partial screener rows.
             if mapped["close"] in (None, 0):
                 continue
@@ -456,6 +492,7 @@ def _normalize_us_results(
     df: Any,
     *,
     market: str,
+    usd_krw_rate: float,
 ) -> list[dict[str, Any]]:
     """Map tvscreener DataFrame rows to normalized US stock dicts."""
     stocks: list[dict[str, Any]] = []
@@ -531,10 +568,10 @@ def _normalize_us_results(
             stock["sector"] = sector
         avg_volume = _to_optional_float(stock.get("average_volume_30_day"))
         if avg_volume is not None:
-            stock["adv_krw"] = avg_volume * price
+            stock["adv_krw"] = avg_volume * price * usd_krw_rate
         market_cap = _to_optional_float(stock.get("market_cap"))
         if market_cap is not None:
-            stock["market_cap_krw"] = market_cap
+            stock["market_cap_krw"] = market_cap * usd_krw_rate
         stock["instrument_type"] = classify_us_instrument(
             stock.get("symbol"),
             stock.get("name"),
@@ -648,7 +685,18 @@ async def _screen_us_via_tvscreener(
         logger.info("[Screen-US-TV] StockScreener returned %d US stocks", len(df))
 
         # Phase 3: Normalize results
-        stocks = _normalize_us_results(df, market=market)
+        usd_krw_rate = await _resolve_us_screening_usd_krw_rate(
+            prefer_live_rate=_has_krw_valuation_filter(
+                adv_krw_min=adv_krw_min,
+                market_cap_min_krw=market_cap_min_krw,
+                market_cap_max_krw=market_cap_max_krw,
+            )
+        )
+        stocks = _normalize_us_results(
+            df,
+            market=market,
+            usd_krw_rate=usd_krw_rate,
+        )
 
         stocks = _filter_by_min_analyst_buy(stocks, min_analyst_buy)
 
