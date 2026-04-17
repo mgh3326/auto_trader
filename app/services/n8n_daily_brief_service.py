@@ -625,42 +625,44 @@ def _contains_fail_closed_anchor(text: str) -> bool:
     return any(_FAIL_CLOSED_ANCHOR_RE.match(line) for line in text.splitlines())
 
 
-def validate_render_invariants(
-    text: str,
-    ctx: BoardBriefContext,
-    *,
-    phase: BoardBriefPhase,
-) -> list[InvariantViolation]:
-    """Return structural render invariant violations for final markdown."""
-    violations: list[InvariantViolation] = []
-
+def _validate_funding_rows(text: str) -> list[InvariantViolation]:
     exchange_rows = _line_count(text, "거래소 KRW:")
     unverified_rows = _line_count(text, "미확인 cap")
-    if exchange_rows != 1 or unverified_rows != 1:
-        violations.append(
-            InvariantViolation(
-                code="funding_rows",
-                detail=(
-                    "expected 거래소 KRW and 미확인 cap rows exactly once "
-                    f"(got {exchange_rows}/{unverified_rows})"
-                ),
-            )
+    if exchange_rows == 1 and unverified_rows == 1:
+        return []
+    return [
+        InvariantViolation(
+            code="funding_rows",
+            detail=(
+                "expected 거래소 KRW and 미확인 cap rows exactly once "
+                f"(got {exchange_rows}/{unverified_rows})"
+            ),
         )
+    ]
 
+
+def _validate_runway_excludes_unverified_cap(
+    text: str, ctx: BoardBriefContext
+) -> list[InvariantViolation]:
     runway_lines = [line for line in text.splitlines() if "runway" in line.lower()]
     unverified_amounts = _format_unverified_amounts(ctx)
-    if any(
+    if not any(
         amount and amount in line
         for line in runway_lines
         for amount in unverified_amounts
     ):
-        violations.append(
-            InvariantViolation(
-                code="runway_excludes_unverified_cap",
-                detail="runway line includes unverified_cap amount",
-            )
+        return []
+    return [
+        InvariantViolation(
+            code="runway_excludes_unverified_cap",
+            detail="runway line includes unverified_cap amount",
         )
+    ]
 
+
+def _validate_ab_anchors(
+    text: str, *, phase: BoardBriefPhase
+) -> list[InvariantViolation]:
     framing_count = text.count(FRAMING_AB_PATH_NON_EXCLUSIVE)
     path_repeat_count = text.count(PATH_SECTION_AB_REPEAT)
     funding_question_count = text.count("[funding-confirmation]") + text.count(
@@ -676,64 +678,104 @@ def validate_render_invariants(
         )
     else:
         ab_ok = framing_count == 1 and path_repeat_count == 1
-    if not ab_ok:
-        violations.append(
-            InvariantViolation(
-                code="ab_anchor_triple",
-                detail=(
-                    "expected A/B framing, repeat, and CIO question anchors exactly once "
-                    f"(got {framing_count}/{path_repeat_count}/"
-                    f"{funding_question_count}/{action_question_count})"
-                ),
-            )
+    if ab_ok:
+        return []
+    return [
+        InvariantViolation(
+            code="ab_anchor_triple",
+            detail=(
+                "expected A/B framing, repeat, and CIO question anchors exactly once "
+                f"(got {framing_count}/{path_repeat_count}/"
+                f"{funding_question_count}/{action_question_count})"
+            ),
         )
+    ]
 
-    if phase == "cio_pending":
-        runway_phrase_count = text.count("**운영 연료**")
-        new_budget_phrase_count = text.count("신규 risk budget 후보")
-        if runway_phrase_count + new_budget_phrase_count != 1:
-            violations.append(
-                InvariantViolation(
-                    code="g2_phrase_exactly_one",
-                    detail=(
-                        "expected exactly one G2 phrase head "
-                        f"(got {runway_phrase_count}/{new_budget_phrase_count})"
-                    ),
-                )
-            )
 
-        if "CIO 권고 (1) 즉시 매수" in text:
-            gates = _build_gate_results(ctx)
-            missing = [
-                name
-                for name in ("G2", "G3", "G4", "G5")
-                if not _gate_passed(gates.get(name))
-            ]
-            if missing:
-                violations.append(
-                    InvariantViolation(
-                        code="immediate_buy_requires_g2_g5_pass",
-                        detail=f"immediate buy rendered while {', '.join(missing)} not pass",
-                    )
-                )
+def _validate_g2_phrase(text: str) -> list[InvariantViolation]:
+    runway_phrase_count = text.count("**운영 연료**")
+    new_budget_phrase_count = text.count("신규 risk budget 후보")
+    if runway_phrase_count + new_budget_phrase_count == 1:
+        return []
+    return [
+        InvariantViolation(
+            code="g2_phrase_exactly_one",
+            detail=(
+                "expected exactly one G2 phrase head "
+                f"(got {runway_phrase_count}/{new_budget_phrase_count})"
+            ),
+        )
+    ]
 
+
+def _validate_immediate_buy_gates(
+    text: str, ctx: BoardBriefContext
+) -> list[InvariantViolation]:
+    if "CIO 권고 (1) 즉시 매수" not in text:
+        return []
+    gates = _build_gate_results(ctx)
+    missing = [
+        name
+        for name in ("G2", "G3", "G4", "G5")
+        if not _gate_passed(gates.get(name))
+    ]
+    if not missing:
+        return []
+    return [
+        InvariantViolation(
+            code="immediate_buy_requires_g2_g5_pass",
+            detail=f"immediate buy rendered while {', '.join(missing)} not pass",
+        )
+    ]
+
+
+def _validate_cio_pending_invariants(
+    text: str, ctx: BoardBriefContext
+) -> list[InvariantViolation]:
+    return [
+        *_validate_g2_phrase(text),
+        *_validate_immediate_buy_gates(text, ctx),
+    ]
+
+
+def _validate_dust_aggregate(text: str) -> list[InvariantViolation]:
     dust_count = sum(1 for line in text.splitlines() if _DUST_AGGREGATE_RE.match(line))
-    if dust_count != 1:
-        violations.append(
-            InvariantViolation(
-                code="dust_aggregate",
-                detail=f"expected exactly one dust aggregate line (got {dust_count})",
-            )
+    if dust_count == 1:
+        return []
+    return [
+        InvariantViolation(
+            code="dust_aggregate",
+            detail=f"expected exactly one dust aggregate line (got {dust_count})",
         )
+    ]
 
-    if _contains_fail_closed_anchor(text):
-        violations.append(
-            InvariantViolation(
-                code="fail_closed_anchor",
-                detail="fail-closed anchors must bypass normal board render validation",
-            )
+
+def _validate_fail_closed_anchor(text: str) -> list[InvariantViolation]:
+    if not _contains_fail_closed_anchor(text):
+        return []
+    return [
+        InvariantViolation(
+            code="fail_closed_anchor",
+            detail="fail-closed anchors must bypass normal board render validation",
         )
+    ]
 
+
+def validate_render_invariants(
+    text: str,
+    ctx: BoardBriefContext,
+    *,
+    phase: BoardBriefPhase,
+) -> list[InvariantViolation]:
+    """Return structural render invariant violations for final markdown."""
+    violations: list[InvariantViolation] = []
+    violations.extend(_validate_funding_rows(text))
+    violations.extend(_validate_runway_excludes_unverified_cap(text, ctx))
+    violations.extend(_validate_ab_anchors(text, phase=phase))
+    if phase == "cio_pending":
+        violations.extend(_validate_cio_pending_invariants(text, ctx))
+    violations.extend(_validate_dust_aggregate(text))
+    violations.extend(_validate_fail_closed_anchor(text))
     return violations
 
 
