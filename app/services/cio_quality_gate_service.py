@@ -165,6 +165,12 @@ def has_keyword(text: str, group: str) -> bool:
 CODE_RE = re.compile(r"\b(\d{6})\b")
 SKIP_CELL_WORDS = {"---", ""}
 
+TABLE_SEPARATOR_RE = re.compile(r"^\s*\|[\s\-:|]+\|\s*$")
+EXEC_HEADER_RE = re.compile(
+    r"(실행\s*경로|execution\s*path|계좌.*실행|\bexec(ution)?\b)",
+    re.IGNORECASE,
+)
+
 
 @dataclass
 class Candidate:
@@ -195,10 +201,28 @@ class Candidate:
         return "fail"
 
 
-def _extract_execution_cell(row_line: str) -> str:
-    """Return the trailing cell text from a markdown pipe row."""
+def _detect_exec_col_idx(header_line: str) -> int | None:
+    """Return the 0-based column index labelled 실행경로/execution path, or None."""
+    cells = [c.strip() for c in header_line.strip().strip("|").split("|")]
+    for idx, cell in enumerate(cells):
+        if EXEC_HEADER_RE.search(cell):
+            return idx
+    return None
+
+
+def _extract_execution_cell(row_line: str, col_idx: int | None = None) -> str:
+    """Return the execution-path cell text from a markdown pipe row.
+
+    If ``col_idx`` is given (header-detected 실행경로/execution path column),
+    pull that column directly — the row's column order is irrelevant. When
+    no header column matched, fall back to the trailing cell.
+    """
     cells = [c.strip() for c in row_line.strip().strip("|").split("|")]
-    return cells[-1] if cells else ""
+    if not cells:
+        return ""
+    if col_idx is not None and 0 <= col_idx < len(cells):
+        return cells[col_idx]
+    return cells[-1]
 
 
 def extract_candidates(md: str) -> list[Candidate]:
@@ -213,12 +237,27 @@ def extract_candidates(md: str) -> list[Candidate]:
     and (d) not introducing a new 6-digit code. The pipe-count of the
     subline itself is irrelevant — v2 reports frequently write multi-cell
     bullet rows like `|   | • RSI 54 | • BB mid |`.
+
+    Table-header tracking: when a markdown table separator (`|---|---|`) is
+    encountered, the row immediately above is treated as the column header
+    for the table that follows. If any header cell matches `실행경로` /
+    `execution path`, that column index is used to extract the execution
+    cell from subsequent candidate rows — regardless of column position
+    (v2 §6.2 reports put 액션 in the last column, not 실행경로).
     """
     lines = md.splitlines()
     by_code: dict[str, Candidate] = {}
+    current_exec_col_idx: int | None = None
     i = 0
     while i < len(lines):
         line = lines[i]
+        if TABLE_SEPARATOR_RE.match(line):
+            if i > 0 and lines[i - 1].lstrip().startswith("|"):
+                current_exec_col_idx = _detect_exec_col_idx(lines[i - 1])
+            else:
+                current_exec_col_idx = None
+            i += 1
+            continue
         if line.count("|") < 3:
             i += 1
             continue
@@ -252,9 +291,11 @@ def extract_candidates(md: str) -> list[Candidate]:
             (c for c in cells if CODE_RE.search(c)), cells[0] if cells else code
         )
         name = re.sub(r"\*+", "", name_cell).strip()
-        is_new = "신규" in name_cell or "신규" in cells[0] if cells else False
+        # v2 §6.2 puts 신규/보유 in the 분류 column, v1 embeds [신규] in the
+        # 종목 name — scan all cells so either shape is detected.
+        is_new = any("신규" in c for c in cells) if cells else False
 
-        exec_cell = _extract_execution_cell(line)
+        exec_cell = _extract_execution_cell(line, current_exec_col_idx)
 
         if code in by_code:
             c = by_code[code]
@@ -482,10 +523,17 @@ def run_gates(
     )
 
     # ---- G4 Execution path ----
+    # Check the dedicated execution_cell AND the full row context (sub-bullets).
+    # v2 §6.2 puts execution path inside a sub-bullet (e.g. "execution path:
+    # KIS 즉시"), not a dedicated column — fall back to context_text so that
+    # column order / placement is irrelevant. Short-circuiting on a non-empty
+    # execution_cell would miss the sub-bullet qualifier.
     no_qual = [
         c
         for c in cands
-        if c.is_new and not EXEC_QUALIFIER_RE.search(c.execution_cell or c.context_text)
+        if c.is_new
+        and not EXEC_QUALIFIER_RE.search(c.execution_cell)
+        and not EXEC_QUALIFIER_RE.search(c.context_text)
     ]
     results.append(
         GateResult(

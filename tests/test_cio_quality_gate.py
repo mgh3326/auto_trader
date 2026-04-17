@@ -250,3 +250,104 @@ def test_naver_news_qualifier_still_counts_when_explicit():
         assert c.items[5] is True, (
             f"#5 News must fire on explicit Naver-news qualifier; md={md!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# ROB-206 regressions:
+#   1. Parser must locate the `실행경로` / `execution path` cell by header,
+#      independent of column position. v2 §6.2 puts 액션 in the last column.
+#   2. G4 must accept execution qualifiers placed in v2 sub-bullet lines
+#      (e.g. "execution path: KIS 즉시"), not only in a dedicated column.
+# ---------------------------------------------------------------------------
+
+
+EXEC_MIDDLE_COLUMN_MD = """### 신규 후보 비교
+
+| 종목 (코드) | 실행경로 | 시장가 | RSI | 액션 |
+|---|---|---|---|---|
+| **[신규]** Krafton 259960 | KIS 즉시 | 266,500 | 64 | watch only |
+"""
+
+
+@pytest.mark.unit
+def test_exec_cell_resolved_by_header_when_column_is_not_last():
+    """`_extract_execution_cell` must pull from the 실행경로 column by header,
+    not from the last cell. With 실행경로 placed in column 2 (not last), the
+    new candidate has a valid qualifier and G4 must pass.
+    """
+    report = evaluate_scout_report(markdown=EXEC_MIDDLE_COLUMN_MD)
+    krafton = next(c for c in report.candidates if c.code == "259960")
+    assert krafton.execution_cell == "KIS 즉시", (
+        f"execution_cell must be pulled from the header-matched column; "
+        f"got {krafton.execution_cell!r}"
+    )
+    g4 = next(r for r in report.gates if r.key == "G4")
+    assert g4.passed, f"G4 must pass when exec qualifier sits mid-row; {g4.detail}"
+
+
+V2_EXEC_SUBLINE_MD = """### 신규 후보 + 기존 DCA 동일 프레임 비교
+
+| 시장 | 종목 | 분류 | 시장가 | RSI | ADX | 구조적 Buy Zone | 액션 |
+|---|---|---|---|---|---|---|---|
+| KR | **Krafton 259960** | 신규(watch) | 266,500 | 64 | 18 | 244K (bb_mid) | watch only |
+|   | • BB 223K/244K/265K · EMA 5>20<120 · 괴리 –8.3% · 기존 NAVER DCA 대비 열위 |
+|   | • 뉴스 2건 (Reuters: PUBG / Bloomberg: earning guidance) · 컨센서스 목표가 290K, PER 18 · execution path: KIS 즉시 · same-depth-check: pass |
+
+### 제한사항
+없음
+"""
+
+
+@pytest.mark.unit
+def test_v2_sec62_execution_path_in_subline_passes_g4():
+    """v2 §6.2 core table has no 실행경로 column — the last cell is 액션.
+    Execution path lives inside the sub-bullet line ("execution path: KIS 즉시").
+    G4 must accept the sub-bullet qualifier via context_text fallback.
+    """
+    report = evaluate_scout_report(markdown=V2_EXEC_SUBLINE_MD)
+    krafton = next(c for c in report.candidates if c.code == "259960")
+    # Parent-row last cell is 액션 ("watch only") — no direct qualifier there.
+    assert "즉시" not in krafton.execution_cell
+    # But context_text carries the sub-bullet execution-path evidence.
+    assert "즉시" in krafton.context_text
+    g4 = next(r for r in report.gates if r.key == "G4")
+    assert g4.passed, (
+        f"G4 must pass when execution qualifier is carried in sub-bullet; {g4.detail}"
+    )
+
+
+@pytest.mark.unit
+def test_g4_still_fails_when_bare_kis_appears_without_qualifier_anywhere():
+    """Regression guard: the combined (execution_cell + context_text) check
+    must NOT over-match. A row with bare `KIS` in both the cell and the
+    sub-bullet still lacks an EXEC_QUALIFIER_RE match and G4 must fail.
+    """
+    md = """### 신규 후보
+
+| 시장 | 종목 | 분류 | 시장가 | RSI | ADX | Buy Zone | 액션 |
+|---|---|---|---|---|---|---|---|
+| KR | **LG이노텍 011070** | 신규(buy 검토) | 212,500 | 58 | 24 | 202K | buy 검토 |
+|   | • BB 194K/202K/222K · execution path: KIS · same-depth-check: pass |
+"""
+    report = evaluate_scout_report(markdown=md)
+    lginnotek = next(c for c in report.candidates if c.code == "011070")
+    assert lginnotek.is_new
+    g4 = next(r for r in report.gates if r.key == "G4")
+    assert not g4.passed, f"G4 must hit when bare 'KIS' has no qualifier; {g4.detail}"
+
+
+@pytest.mark.unit
+def test_is_new_detected_from_v2_category_column():
+    """v2 §6.2 puts 신규/보유 in the 분류 column (col idx 2), not embedded in
+    the 종목 name. is_new must fire on the 분류 cell alone.
+    """
+    md = """| 시장 | 종목 | 분류 | 시장가 | 액션 |
+|---|---|---|---|---|
+| KR | NAVER 035420 | 보유/DCA | 216,000 | DCA limit |
+| KR | Krafton 259960 | 신규(watch) | 266,500 | watch only |
+"""
+    report = evaluate_scout_report(markdown=md)
+    naver = next(c for c in report.candidates if c.code == "035420")
+    krafton = next(c for c in report.candidates if c.code == "259960")
+    assert not naver.is_new, "보유/DCA cell must not mark NAVER as 신규"
+    assert krafton.is_new, "신규(watch) cell in col 2 must mark Krafton as 신규"

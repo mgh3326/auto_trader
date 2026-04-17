@@ -1,4 +1,4 @@
-# Scout Report — G6 budget-reality fixture (ROB-196)
+# Scout Report — G6 budget-reality fixture (ROB-196 · v2 §6.2)
 
 ### 요약
 - 탐색 범위: KR momentum / oversold
@@ -6,12 +6,16 @@
 - **same-depth status**: `PASS`
 - 결론: NAVER + LG이노텍 Tier 1 분할 체결
 
-### 보유 + 신규 후보 동일 깊이 비교
+### 신규 후보 + 기존 DCA 동일 프레임 비교
 
-| 종목 | 시장가 | 지표 | BB/EMA | S/R | 뉴스 | 컨센서스/목표가 | DCA 대비 비교 | 실행경로 |
-|---|---|---|---|---|---|---|---|---|
-| **NAVER 035420** holdings/DCA | 216,000 | RSI 53, ADX 26 | BB 191K/206K/221K, EMA 5≈20<cur | 지지 206K (bb_mid) / 193K (bb_lower) | 뉴스 1건 (Naver: AI 검색 β) | 컨센서스 목표가 230K, PER 22 | 기존 보유 대비 우위 | KIS 즉시 |
-| **[신규]** LG이노텍 011070 | 212,500 | RSI 58, ADX 24 | BB 194K/202K/222K, EMA 5>20>60<120 | 지지 202K (bb_mid) / 194K (bb_lower) | 뉴스 3건 (Naver: Apple / Reuters: 전장 / Bloomberg: 컨센서스) | 컨센서스 목표가 250K, PER 16 | NAVER 대비 우위 | KIS 즉시 |
+| 시장 | 종목 | 분류 | 시장가 | RSI | ADX | 구조적 Buy Zone | 액션 |
+|---|---|---|---|---|---|---|---|
+| KR | **NAVER 035420** | 보유/DCA | 216,000 | 53 | 26 | 206K (bb_mid) / 193K (bb_lower) | DCA limit |
+|   | • BB 191K/206K/221K · EMA 5≈20<cur · 괴리 –4.6% · 기존 보유 대비 우위 |
+|   | • 뉴스 1건 (Naver news: AI 검색 β) · 컨센서스 목표가 230K, PER 22 · execution path: KIS 즉시 · same-depth-check: pass |
+| KR | **LG이노텍 011070** | 신규(buy) | 212,500 | 58 | 24 | 202K (bb_mid) / 194K (bb_lower) | buy |
+|   | • BB 194K/202K/222K · EMA 5>20>60<120 · 괴리 –4.5% · NAVER DCA 대비 우위 |
+|   | • 뉴스 3건 (Naver news: Apple / Reuters: 전장 / Bloomberg: 컨센서스) · 컨센서스 목표가 250K, PER 16 · execution path: KIS 즉시 · same-depth-check: pass |
 
 ### 주문안 합계
 - NAVER DCA 10주 × 206K + LG이노텍 buy 15주 × 202K
