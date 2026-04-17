@@ -112,7 +112,9 @@ def test_place_order_description_documents_four_and_defensive_trim_gate() -> Non
     assert "(a) side='sell'" in description
     assert "(b) order_type='limit'" in description
     assert "(c) valid approval_issue_id" in description
-    assert "(d) middleware-extracted caller identity matching Trader agent" in description
+    assert (
+        "(d) middleware-extracted caller identity matching Trader agent" in description
+    )
     assert "approval issue status=done" in description
     assert "requester_agent_id" not in description
     assert "ROB-164/ROB-166" in description
