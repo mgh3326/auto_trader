@@ -13,6 +13,7 @@ import httpx
 
 import app.services.brokers.upbit.client as upbit_service
 from app.core.config import settings
+from app.mcp_server.caller_identity import get_caller_agent_id, get_caller_source
 from app.mcp_server.tooling.market_data_quotes import (
     _fetch_quote_equity_kr,
     _fetch_quote_equity_us,
@@ -125,14 +126,10 @@ async def _validate_defensive_trim_preconditions(
     *,
     defensive_trim: bool,
     approval_issue_id: str | None,
-    requester_agent_id: str | None,
     side: str,
     order_type: str,
 ) -> DefensiveTrimContext | None:
-    """Validate defensive_trim gates.
-
-    requester_agent_id is caller-asserted; ST-3 tracks true caller attestation.
-    """
+    """Validate defensive_trim gates using middleware-extracted caller identity."""
     if not defensive_trim:
         return None
 
@@ -148,14 +145,18 @@ async def _validate_defensive_trim_preconditions(
         raise ValueError("defensive_trim=True requires approval_issue_id")
     if not _DEFENSIVE_TRIM_APPROVAL_REGEX.match(approval_issue_id):
         raise ValueError("approval_issue_id format invalid (expected e.g. 'ROB-164')")
-    if not requester_agent_id:
-        raise ValueError("requester_agent_id is required for defensive_trim")
+
+    caller_agent_id = get_caller_agent_id()
+    if not caller_agent_id:
+        raise ValueError(
+            "caller identity unavailable — defensive_trim requires authenticated MCP caller"
+        )
 
     trader_agent_id = getattr(settings, "trader_agent_id", _TRADER_AGENT_ID_DEFAULT)
-    if requester_agent_id != trader_agent_id:
+    if caller_agent_id != trader_agent_id:
         raise ValueError(
             "defensive_trim requires Trader agent caller "
-            f"(got requester_agent_id={requester_agent_id})"
+            f"(got caller_agent_id={caller_agent_id})"
         )
 
     approval_status: str | None
@@ -176,7 +177,7 @@ async def _validate_defensive_trim_preconditions(
 
     return DefensiveTrimContext(
         approval_issue_id=approval_issue_id,
-        requester_agent_id=requester_agent_id,
+        requester_agent_id=caller_agent_id,
         approval_verified_at=datetime.datetime.now(datetime.UTC),
     )
 
@@ -300,6 +301,7 @@ async def _record_order_history(
     defensive_trim: bool = False,
     approval_issue_id: str | None = None,
     requester_agent_id: str | None = None,
+    caller_source: str | None = None,
 ) -> None:
     try:
         import redis.asyncio as redis_async
@@ -327,6 +329,7 @@ async def _record_order_history(
             "defensive_trim": defensive_trim,
             "approval_issue_id": approval_issue_id,
             "requester_agent_id": requester_agent_id,
+            "caller_source": caller_source or get_caller_source(),
         }
 
         await redis.rpush(key, json.dumps(record))
