@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -9,8 +9,11 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.ext.compiler import compiles
 
-from app.core.timezone import now_kst
-from app.mcp_server.tooling.trade_journal_tools import compute_active_dca_daily_burn
+from app.core.timezone import KST, now_kst
+from app.mcp_server.tooling.trade_journal_tools import (
+    _extract_daily_allocation_krw,
+    compute_active_dca_daily_burn,
+)
 from app.models.trade_journal import JournalStatus, TradeJournal
 from app.models.trading import InstrumentType
 from app.services.n8n_daily_brief_service import _build_brief_text
@@ -188,6 +191,83 @@ async def test_compute_active_dca_daily_burn_returns_zero_when_no_active(
     assert result["days_to_next_obligation"] is None
     assert result["cash_needed_until_obligation"] == 0.0
     assert result["per_record"] == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_compute_active_dca_daily_burn_uses_kst_date_for_utc_hold_until(
+    sqlite_session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixed_now = datetime(2026, 4, 17, 0, 0, tzinfo=KST)
+    # 2026-04-17 15:30 UTC == 2026-04-18 00:30 KST
+    hold_until_utc = datetime(2026, 4, 17, 15, 30, tzinfo=timezone.utc)
+
+    await _insert_journals(
+        sqlite_session_factory,
+        [
+            TradeJournal(
+                id=31,
+                symbol="KRW-BTC",
+                instrument_type=InstrumentType.crypto,
+                side="buy",
+                thesis="dca",
+                status=JournalStatus.active,
+                strategy="dca_oversold",
+                amount=Decimal("90000"),
+                min_hold_days=9,
+                hold_until=hold_until_utc,
+            )
+        ],
+    )
+
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.trade_journal_tools._session_factory",
+        lambda: sqlite_session_factory,
+    )
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.trade_journal_tools.now_kst",
+        lambda: fixed_now,
+    )
+
+    result = await compute_active_dca_daily_burn()
+
+    assert result["days_to_next_obligation"] == 1
+    assert result["cash_needed_until_obligation"] == pytest.approx(10000.0)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("extra_metadata", "amount", "min_hold_days", "expected"),
+    [
+        ({"amount_krw": 100000, "hold_days": 10}, None, None, 10000.0),
+        ({"amount_krw": 120000}, Decimal("60000"), 6, 20000.0),
+        ({}, Decimal("60000"), 6, 10000.0),
+        ({"amount_krw": "abc", "hold_days": 10}, None, None, 0.0),
+        ({"amount_krw": 100000, "hold_days": 0}, None, None, 0.0),
+        ({"amount_krw": -100000, "hold_days": 10}, None, None, 0.0),
+    ],
+)
+def test_extract_daily_allocation_krw_edge_cases(
+    extra_metadata: dict[str, int | str],
+    amount: Decimal | None,
+    min_hold_days: int | None,
+    expected: float,
+) -> None:
+    journal = TradeJournal(
+        id=41,
+        symbol="KRW-BTC",
+        instrument_type=InstrumentType.crypto,
+        side="buy",
+        thesis="dca",
+        status=JournalStatus.active,
+        strategy="dca_oversold",
+        extra_metadata=extra_metadata,
+        amount=amount,
+        min_hold_days=min_hold_days,
+    )
+
+    assert _extract_daily_allocation_krw(journal) == pytest.approx(expected)
 
 
 @pytest.mark.unit

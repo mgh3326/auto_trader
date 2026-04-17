@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+from datetime import timedelta, timezone
 from decimal import Decimal
 from typing import Any, cast
 
@@ -12,7 +12,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
-from app.core.timezone import now_kst
+from app.core.timezone import KST, now_kst
 from app.mcp_server.tooling.shared import (
     resolve_market_type as _resolve_market_type,
 )
@@ -509,7 +509,14 @@ async def compute_active_dca_daily_burn() -> dict[str, Any]:
         daily_burn += allocation
 
         if journal.hold_until is not None:
-            days_to_obligation = (journal.hold_until.date() - today).days
+            hold_until = journal.hold_until
+            hold_until_with_tz = (
+                hold_until
+                if hold_until.tzinfo is not None
+                else hold_until.replace(tzinfo=timezone.utc)
+            )
+            hold_until_kst_date = hold_until_with_tz.astimezone(KST).date()
+            days_to_obligation = (hold_until_kst_date - today).days
             if days_to_obligation > 0:
                 obligation_days.append(days_to_obligation)
 
