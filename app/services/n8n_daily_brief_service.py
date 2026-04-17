@@ -50,7 +50,8 @@ from app.services.n8n_pending_orders_service import fetch_pending_orders
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MARKETS = ("crypto", "kr", "us")
-_FAIL_CLOSED_ANCHOR_RE = re.compile(r"^⚠️ .+ 누락 — .+$")
+_FAIL_CLOSED_PREFIX = "⚠️ "
+_FAIL_CLOSED_SEPARATOR = " 누락 — "
 _DUST_AGGREGATE_RE = re.compile(
     r"^🧹 Dust \d+종목 · 합계 .+ · 포트폴리오 \d+(?:\.\d+)?%$"
 )
@@ -622,7 +623,10 @@ def _line_count(text: str, needle: str) -> int:
 
 
 def _contains_fail_closed_anchor(text: str) -> bool:
-    return any(_FAIL_CLOSED_ANCHOR_RE.match(line) for line in text.splitlines())
+    return any(
+        line.startswith(_FAIL_CLOSED_PREFIX) and _FAIL_CLOSED_SEPARATOR in line
+        for line in text.splitlines()
+    )
 
 
 def _validate_funding_rows(text: str) -> list[InvariantViolation]:
