@@ -24,7 +24,9 @@
 #      like $1 / $2 or the $PAYLOAD / $TOOL_NAME / $ARGS runtime vars):
 #        envsubst '$MCP_ENDPOINT $MCP_AUTH_TOKEN $MCP_SESSION_ID $PAPERCLIP_AGENT_ID' \
 #          < scripts/templates/mcp_call.sh.tmpl > /tmp/mcp_call.sh
-#        chmod +x /tmp/mcp_call.sh
+#        chmod 700 /tmp/mcp_call.sh
+#      (0700 — owner-only; the rendered file contains MCP_AUTH_TOKEN in
+#       plaintext, so group/other read bits must be stripped.)
 #   3. Smoke test (should return a tool payload, not a 401/403):
 #        /tmp/mcp_call.sh get_quote '{"symbol":"005930","market":"kr"}'
 #
@@ -37,6 +39,10 @@
 
 set -euo pipefail
 
+# envsubst substitution anchors — these `${VAR}` references are replaced with
+# literal values when the template is rendered into `/tmp/mcp_call.sh` (see
+# the regeneration procedure above). They look like self-assignments here,
+# but at runtime the rendered file holds the baked-in values.
 MCP_ENDPOINT="${MCP_ENDPOINT}"
 MCP_AUTH_TOKEN="${MCP_AUTH_TOKEN}"
 MCP_SESSION_ID="${MCP_SESSION_ID}"
@@ -48,11 +54,16 @@ ARGS="$2"
 PAYLOAD=$(jq -n --arg tool "$TOOL_NAME" --argjson args "$ARGS" \
   '{jsonrpc:"2.0",id:100,method:"tools/call",params:{name:$tool,arguments:$args}}')
 
-curl -s -X POST "$MCP_ENDPOINT" \
+# `-f` makes curl exit non-zero on HTTP 4xx/5xx (so auth/header-gate failures
+# surface instead of falling through as an empty SSE stream); `-S` keeps the
+# stderr error message visible even with `-s`. Combined with `set -euo
+# pipefail` above, a failed request aborts the script rather than silently
+# emitting an empty payload.
+curl -fsS -X POST "$MCP_ENDPOINT" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
   -H "Authorization: Bearer $MCP_AUTH_TOKEN" \
   -H "Mcp-Session-Id: $MCP_SESSION_ID" \
   -H "x-paperclip-agent-id: $PAPERCLIP_AGENT_ID" \
-  -d "$PAYLOAD" 2>/dev/null \
+  -d "$PAYLOAD" \
   | grep "^data:" | head -1 | sed 's/^data: //'

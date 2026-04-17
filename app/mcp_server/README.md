@@ -884,7 +884,9 @@ export MCP_SESSION_ID="<MCP session id>"
 export PAPERCLIP_AGENT_ID="<calling agent's Paperclip agent id>"
 envsubst '$MCP_ENDPOINT $MCP_AUTH_TOKEN $MCP_SESSION_ID $PAPERCLIP_AGENT_ID' \
   < scripts/templates/mcp_call.sh.tmpl > /tmp/mcp_call.sh
-chmod +x /tmp/mcp_call.sh
+# 0700 — owner-only. The rendered script bakes MCP_AUTH_TOKEN in plaintext,
+# so group/other read bits must be stripped.
+chmod 700 /tmp/mcp_call.sh
 
 # Smoke test — should return a tool payload, not 401/403/reject:
 /tmp/mcp_call.sh get_quote '{"symbol":"005930","market":"kr"}'
