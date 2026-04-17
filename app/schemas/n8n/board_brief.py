@@ -141,6 +141,7 @@ class BoardBriefRender(BaseModel):
     phase: BoardBriefPhase
     embed: dict[str, Any]
     text: str
+    funding_intent: FundingIntent | None = None
     gate_results: dict[str, GateResult | N8nG2GatePayload] | None = None
     generated_at: datetime
 

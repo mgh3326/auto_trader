@@ -155,7 +155,7 @@ class TestBoardBriefBuilders:
         assert render.phase == "tc_preliminary"
         assert "경로 A·B 병행 가능" in text
         assert "BTC" in text
-        assert "DOGE" in text
+        assert "🧹 Dust 1종목" in text
         assert "🎯 권고" not in text
         assert "📊 Gate 판정 결과" not in text
         assert "[funding]" not in text
@@ -189,6 +189,7 @@ class TestBoardBriefBuilders:
         assert "📊 Gate 판정 결과" in text
         assert "🚫 신규 매수 차단 — G2 fail" in text
         assert "(3) 현금 우선 정책 적용" in text
-        assert "[funding]" in text
+        assert "[funding-confirmation]" in text
         assert "[action]" in text
-        assert text.count("경로 A·B 병행 가능") >= 2
+        assert "경로 A·B 병행 가능" in text
+        assert "**A 와 B 는 상호배타 아님 — 병행 가능.**" in text

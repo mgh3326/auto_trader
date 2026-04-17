@@ -16,10 +16,19 @@ from app.core.timezone import now_kst
 from app.schemas.n8n.board_brief import (
     BoardBriefContext,
     BoardBriefRender,
+    BoardFundingResponse,
+    FundingIntent,
     GateResult,
     N8nG2GatePayload,
 )
 from app.schemas.n8n.common import N8nMarketOverview
+from app.services.cio_coin_briefing.prompts.gate_phrases import (
+    BOARD_QUESTIONS_TEMPLATE,
+    FRAMING_AB_PATH_NON_EXCLUSIVE,
+    G2_NEW_BUDGET_LINES,
+    G2_RUNWAY_FUEL_LINES,
+    PATH_SECTION_AB_REPEAT,
+)
 from app.services.n8n_formatting import (
     fmt_amount,
     fmt_date_with_weekday,
@@ -457,6 +466,12 @@ def _fmt_pct(value: float | int | None) -> str:
     return f"{float(value):.1f}%"
 
 
+def _fmt_days(value: float | int | None) -> str:
+    if value is None:
+        return "-"
+    return f"{float(value):.2f}일"
+
+
 def _extract_followup_context(
     payload: BoardBriefContext | dict[str, Any],
 ) -> BoardBriefContext:
@@ -490,12 +505,89 @@ def _build_gate_results(
     return gates
 
 
+def _has_v2_funding_context(ctx: BoardBriefContext) -> bool:
+    return bool(
+        ctx.exchange_krw
+        or ctx.unverified_cap
+        or ctx.next_obligation
+        or ctx.tier_scenarios
+    )
+
+
 def _cash_runway_days(ctx: BoardBriefContext) -> float | None:
     if ctx.manual_cash_runway_days is not None:
         return ctx.manual_cash_runway_days
+    if _has_v2_funding_context(ctx) and ctx.daily_burn_krw > 0:
+        return ctx.exchange_krw / ctx.daily_burn_krw
     if ctx.daily_burn_krw > 0:
         return ctx.manual_cash_krw / ctx.daily_burn_krw
     return None
+
+
+def _funding_amount(board_response: BoardFundingResponse | None) -> float:
+    return board_response.amount if board_response else 0
+
+
+def _funding_verified(
+    ctx: BoardBriefContext, board_response: BoardFundingResponse | None
+) -> bool:
+    return bool(
+        (board_response and board_response.manual_cash_verified)
+        or (ctx.unverified_cap and ctx.unverified_cap.verified_by_boss_today)
+    )
+
+
+def _format_g2_lines(lines: list[str], *, amount: float, days: int) -> list[str]:
+    return [line.format(amount=f"{amount:,.0f}", days=days) for line in lines]
+
+
+def resolve_funding_intent(
+    ctx: BoardBriefContext,
+    board_response: BoardFundingResponse | None,
+) -> tuple[FundingIntent, list[str]]:
+    """Resolve G2 funding intent and the exact phrase set to render.
+
+    >>> ctx = BoardBriefContext(exchange_krw=100, daily_burn_krw=10)
+    >>> resolve_funding_intent(ctx, None)[0]
+    'runway_recovery'
+    >>> response = BoardFundingResponse(
+    ...     amount=100, target="BTC", funding_intent="new_buy", manual_cash_verified=True
+    ... )
+    >>> ctx = BoardBriefContext(
+    ...     exchange_krw=100, daily_burn_krw=10,
+    ...     next_obligation={"date": "2026-04-24", "days_remaining": 7, "cash_needed_until": 50}
+    ... )
+    >>> resolve_funding_intent(ctx, response)[0]
+    'new_buy'
+    """
+    amount = _funding_amount(board_response)
+    days = ctx.next_obligation.days_remaining if ctx.next_obligation else 0
+    runway_lines = _format_g2_lines(
+        G2_RUNWAY_FUEL_LINES,
+        amount=amount,
+        days=days,
+    )
+    new_budget_lines = _format_g2_lines(
+        G2_NEW_BUDGET_LINES,
+        amount=amount,
+        days=days,
+    )
+
+    verified_amount = amount if _funding_verified(ctx, board_response) else 0
+    if (
+        ctx.next_obligation
+        and ctx.next_obligation.cash_needed_until > ctx.exchange_krw + verified_amount
+    ):
+        return "runway_recovery", runway_lines
+
+    if (
+        board_response
+        and board_response.target
+        and _funding_verified(ctx, board_response)
+    ):
+        return "new_buy", new_budget_lines
+
+    return "runway_recovery", runway_lines
 
 
 def _build_concentration_lines(ctx: BoardBriefContext) -> list[str]:
@@ -519,30 +611,79 @@ def _build_candidate_lines(ctx: BoardBriefContext) -> list[str]:
 
 def _build_dust_lines(ctx: BoardBriefContext) -> list[str]:
     dust_items = ctx.dust_items or [holding for holding in ctx.holdings if holding.dust]
-    if not dust_items:
-        return []
-    joined = ", ".join(
-        f"{item.symbol} (~{float(item.current_krw_value):,.0f} KRW)"
-        for item in dust_items[:8]
+    dust_total = sum(float(item.current_krw_value) for item in dust_items)
+    portfolio_total = sum(float(holding.current_krw_value) for holding in ctx.holdings)
+    dust_pct = (dust_total / portfolio_total * 100) if portfolio_total > 0 else 0
+    return [
+        f"🧹 Dust {len(dust_items)}종목 · 합계 {_fmt_krw(dust_total)} · 포트폴리오 {dust_pct:.2f}%"
+    ]
+
+
+def _build_funding_lines(ctx: BoardBriefContext) -> list[str]:
+    runway_days = _cash_runway_days(ctx)
+    unverified_cap = ctx.unverified_cap.amount if ctx.unverified_cap else None
+    unverified_badges = []
+    if ctx.unverified_cap and ctx.unverified_cap.stale_warning:
+        unverified_badges.append("stale_warning")
+    if ctx.unverified_cap and ctx.unverified_cap.verified_by_boss_today:
+        unverified_badges.append("verified_by_boss_today")
+    badge_text = f" ({' / '.join(unverified_badges)})" if unverified_badges else ""
+    obligation = (
+        f"{ctx.next_obligation.date.isoformat()} / D-{ctx.next_obligation.days_remaining} / "
+        f"{_fmt_krw(ctx.next_obligation.cash_needed_until)}"
+        if ctx.next_obligation
+        else "-"
+    )
+    runway_formula = (
+        f"{_fmt_krw(ctx.exchange_krw)} / {_fmt_krw(ctx.daily_burn_krw)} = "
+        f"{_fmt_days(runway_days)}"
+        if runway_days is not None and ctx.daily_burn_krw > 0
+        else "-"
     )
     return [
-        "🧹 Dust",
-        f"{joined} — Upbit 최소 주문 금액 미만, execution-actionable 제외, journal 유지. cleanup backlog.",
+        f"- 거래소 KRW: {_fmt_krw(ctx.exchange_krw)}",
+        f"- 미확인 cap (보스 확인 전): {_fmt_krw(unverified_cap)}{badge_text}",
+        f"- 일일 소진 (daily_burn): {_fmt_krw(ctx.daily_burn_krw)}",
+        f"- 다음 의무 (date / days_remaining / cash_needed_until): {obligation}",
+        f"- runway 산식: {runway_formula}",
     ]
+
+
+def _build_tier_lines(ctx: BoardBriefContext) -> list[str]:
+    if not ctx.tier_scenarios:
+        return ["tier_scenarios 미수신, 입금 시나리오 산출 보류"]
+    obligation = (
+        f"{ctx.next_obligation.date.isoformat()} / D-{ctx.next_obligation.days_remaining}"
+        if ctx.next_obligation
+        else "-"
+    )
+    lines = [
+        (
+            "deposit_amount | next_obligation | cash_needed_until | "
+            "cushion_after_obligation | target_exchange_krw | buffer_days (보조)"
+        )
+    ]
+    for scenario in ctx.tier_scenarios:
+        cash_needed = (
+            ctx.next_obligation.cash_needed_until if ctx.next_obligation else None
+        )
+        lines.append(
+            f"{_fmt_krw(scenario.deposit_amount)} | {obligation} | "
+            f"{_fmt_krw(cash_needed)} | {_fmt_krw(scenario.cushion_after_obligation)} | "
+            f"{_fmt_krw(scenario.target_exchange_krw)} | {scenario.buffer_days}"
+        )
+    return lines
 
 
 def _build_tc_preliminary_text(ctx: BoardBriefContext) -> str:
     """Build TC preliminary text without recommendation or gate sections."""
-    runway_days = _cash_runway_days(ctx)
     lines = [
-        "📊 TC Preliminary — 자금 현황 재계산",
+        "📊 TC Preliminary — 입금 약속 반영 시나리오 (pledged, 거래소 미반영)",
         "",
-        "요약: 경로 A·B 병행 가능. 현금 runway와 포지션 쏠림을 먼저 재계산한다.",
+        f"요약: 경로 A·B 병행 가능. {FRAMING_AB_PATH_NON_EXCLUSIVE}",
         "",
         "💵 자금 현황",
-        f"- 수동 현금: {_fmt_krw(ctx.manual_cash_krw)}",
-        f"- 일 burn: {_fmt_krw(ctx.daily_burn_krw)}",
-        f"- runway: {_fmt_pct(runway_days).replace('%', '일') if runway_days is not None else '-'}",
+        *_build_funding_lines(ctx),
         "",
         "📌 쏠림/편중",
         *_build_concentration_lines(ctx),
@@ -558,6 +699,10 @@ def _build_tc_preliminary_text(ctx: BoardBriefContext) -> str:
             "",
             "경로 A: 신규 매수 없이 현금 runway 회복 우선.",
             "경로 B: board funding 확인 후 CIO pending decision에서 gate 재평가.",
+            "",
+            "§7 Tier table",
+            *_build_tier_lines(ctx),
+            PATH_SECTION_AB_REPEAT,
         ]
     )
     return "\n".join(lines)
@@ -580,6 +725,7 @@ def _build_cio_pending_text(ctx: BoardBriefContext) -> str:
     gates = _build_gate_results(ctx)
     g2 = gates["G2"]
     g2_failed = isinstance(g2, N8nG2GatePayload) and not g2.passed
+    _, g2_lines = resolve_funding_intent(ctx, ctx.board_response)
     lines = [
         _build_tc_preliminary_text(ctx),
         "",
@@ -589,6 +735,7 @@ def _build_cio_pending_text(ctx: BoardBriefContext) -> str:
             if g2_failed
             else "CIO 의견 대기 중 — gate 결과 확인 후 action 확정"
         ),
+        *g2_lines,
         "",
         "📊 Gate 판정 결과",
     ]
@@ -603,9 +750,7 @@ def _build_cio_pending_text(ctx: BoardBriefContext) -> str:
     lines.extend(
         [
             "",
-            "질문",
-            "[funding] 경로 A·B 병행 가능 기준으로 board funding 금액/목적을 확정할 것.",
-            "[action] 경로 A·B 병행 가능 조건에서 신규 매수, 현금 회복, 축소 중 하나를 선택할 것.",
+            BOARD_QUESTIONS_TEMPLATE,
         ]
     )
     return "\n".join(lines)
@@ -629,7 +774,7 @@ def build_tc_preliminary(
     return BoardBriefRender(
         phase="tc_preliminary",
         embed=_build_board_embed(
-            title="📊 TC Preliminary — 자금 현황 재계산",
+            title="📊 TC Preliminary — 입금 약속 반영 시나리오 (pledged, 거래소 미반영)",
             text=text,
             color=0x3498DB,
         ),
@@ -646,7 +791,10 @@ def build_cio_pending_decision(
     ctx = _extract_followup_context(payload)
     generated_at = ctx.generated_at or now_kst().replace(microsecond=0)
     gate_results = _build_gate_results(ctx)
-    ctx = ctx.model_copy(update={"gate_results": gate_results})
+    funding_intent, _ = resolve_funding_intent(ctx, ctx.board_response)
+    ctx = ctx.model_copy(
+        update={"funding_intent": funding_intent, "gate_results": gate_results}
+    )
     text = _build_cio_pending_text(ctx)
     return BoardBriefRender(
         phase="cio_pending",
@@ -656,6 +804,7 @@ def build_cio_pending_decision(
             color=0xF1C40F,
         ),
         text=text,
+        funding_intent=funding_intent,
         gate_results=gate_results,
         generated_at=generated_at,
     )

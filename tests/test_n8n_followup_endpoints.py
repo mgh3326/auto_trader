@@ -36,10 +36,13 @@ class TestN8nFollowupEndpoints:
         body = resp.json()
         assert body["phase"] == "tc_preliminary"
         assert body["generated_at"]
-        assert body["embed"]["title"] == "📊 TC Preliminary — 자금 현황 재계산"
+        assert (
+            body["embed"]["title"]
+            == "📊 TC Preliminary — 입금 약속 반영 시나리오 (pledged, 거래소 미반영)"
+        )
         assert "경로 A·B 병행 가능" in body["text"]
         assert "BTC" in body["text"]
-        assert "DOGE" in body["text"]
+        assert "🧹 Dust 1종목" in body["text"]
         assert "🎯 권고" not in body["text"]
         assert "📊 Gate 판정 결과" not in body["text"]
 
@@ -84,7 +87,7 @@ class TestN8nFollowupEndpoints:
         assert "🚫 신규 매수 차단 — G2 fail" in body["text"]
         assert "(3) 현금 우선 정책 적용" in body["text"]
         assert "📊 Gate 판정 결과" in body["text"]
-        assert "[funding]" in body["text"]
+        assert "[funding-confirmation]" in body["text"]
         assert "[action]" in body["text"]
 
     def test_evaluate_g1_gate_pass_ignores_force_cash_policy_note(self) -> None:
