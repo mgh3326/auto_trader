@@ -471,7 +471,9 @@ async def fetch_daily_brief(
     portfolio_task = _get_portfolio_overview(effective_markets)
 
     results_s1 = await asyncio.gather(
-        pending_task, portfolio_task, return_exceptions=True
+        pending_task,
+        portfolio_task,
+        return_exceptions=True,
     )
 
     # Unpack Stage 1 results with fallbacks
@@ -572,3 +574,6 @@ async def fetch_daily_brief(
         "brief_text": brief_text,
         "errors": errors,
     }
+
+
+__all__ = ["fetch_daily_brief"]
