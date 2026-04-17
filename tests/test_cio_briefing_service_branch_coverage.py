@@ -27,10 +27,9 @@ def test_renderer_helper_fallback_branches() -> None:
         == set()
     )
     assert _gate_passed(None) is False
-    assert (
-        _cash_runway_days(plan_v2_section_f_context(manual_cash_runway_days=7.5))
-        == pytest.approx(7.5)
-    )
+    assert _cash_runway_days(
+        plan_v2_section_f_context(manual_cash_runway_days=7.5)
+    ) == pytest.approx(7.5)
     assert (
         _cash_runway_days(BoardBriefContext(manual_cash_krw=1_000, daily_burn_krw=100))
         == 10

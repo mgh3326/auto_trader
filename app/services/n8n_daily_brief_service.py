@@ -715,9 +715,7 @@ def _validate_immediate_buy_gates(
         return []
     gates = _build_gate_results(ctx)
     missing = [
-        name
-        for name in ("G2", "G3", "G4", "G5")
-        if not _gate_passed(gates.get(name))
+        name for name in ("G2", "G3", "G4", "G5") if not _gate_passed(gates.get(name))
     ]
     if not missing:
         return []
