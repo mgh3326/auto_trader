@@ -892,6 +892,11 @@ chmod 700 /tmp/mcp_call.sh
 /tmp/mcp_call.sh get_quote '{"symbol":"005930","market":"kr"}'
 ```
 
+The rendered bridge intentionally calls curl with `-N --max-time 15` and sends
+`Connection: close`. It only consumes the first SSE `data:` line, so no-buffer
+mode and the timeout keep the helper from holding a completed Paperclip run open
+if the server keeps the stream alive.
+
 If the Trader adapter is later migrated to an in-process MCP client (for
 example a Claude Code `.mcp.json` entry or an SDK-level `default_headers`
 config), that client must also set `x-paperclip-agent-id`; do not rely on

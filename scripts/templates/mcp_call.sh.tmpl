@@ -56,14 +56,54 @@ PAYLOAD=$(jq -n --arg tool "$TOOL_NAME" --argjson args "$ARGS" \
 
 # `-f` makes curl exit non-zero on HTTP 4xx/5xx (so auth/header-gate failures
 # surface instead of falling through as an empty SSE stream); `-S` keeps the
-# stderr error message visible even with `-s`. Combined with `set -euo
-# pipefail` above, a failed request aborts the script rather than silently
-# emitting an empty payload.
-curl -fsS -X POST "$MCP_ENDPOINT" \
-  -H "Content-Type: application/json" \
-  -H "Accept: application/json, text/event-stream" \
-  -H "Authorization: Bearer $MCP_AUTH_TOKEN" \
-  -H "Mcp-Session-Id: $MCP_SESSION_ID" \
-  -H "x-paperclip-agent-id: $PAPERCLIP_AGENT_ID" \
-  -d "$PAYLOAD" \
-  | grep "^data:" | head -1 | sed 's/^data: //'
+# stderr error message visible even with `-s`.
+#
+# The MCP endpoint may answer with an SSE stream while this bridge only needs
+# the first `data:` line. `-N` flushes that line immediately, `--max-time`
+# prevents stuck helper processes, and `Connection: close` avoids keep-alive
+# ambiguity. Run curl as a coprocess so the helper can stop it after the first
+# payload; a plain pipeline can still wait forever if the server keeps the
+# stream open without writing again. Non-zero curl waits after a successful
+# read are expected because the helper intentionally closes the stream early
+# (SIGPIPE/SIGTERM depending on timing).
+CURL_ERR=$(mktemp)
+cleanup() {
+  rm -f "$CURL_ERR"
+}
+trap cleanup EXIT
+
+coproc CURL_STREAM {
+  curl -fsS -N --max-time 15 -X POST "$MCP_ENDPOINT" \
+    -H "Content-Type: application/json" \
+    -H "Accept: application/json, text/event-stream" \
+    -H "Authorization: Bearer $MCP_AUTH_TOKEN" \
+    -H "Mcp-Session-Id: $MCP_SESSION_ID" \
+    -H "x-paperclip-agent-id: $PAPERCLIP_AGENT_ID" \
+    -H "Connection: close" \
+    -d "$PAYLOAD" 2>"$CURL_ERR"
+}
+
+RESPONSE=""
+CURL_FD=${CURL_STREAM[0]}
+while IFS= read -r line <&"$CURL_FD"; do
+  if [[ "$line" == data:* ]]; then
+    RESPONSE="${line#data: }"
+    break
+  fi
+done
+exec {CURL_FD}<&-
+
+if [[ -z "$RESPONSE" ]]; then
+  CURL_STATUS=1
+  wait "$CURL_STREAM_PID" || CURL_STATUS=$?
+  cat "$CURL_ERR" >&2
+  exit "$CURL_STATUS"
+fi
+
+if kill "$CURL_STREAM_PID" 2>/dev/null; then
+  wait "$CURL_STREAM_PID" 2>/dev/null || true
+else
+  wait "$CURL_STREAM_PID" 2>/dev/null || true
+fi
+
+printf '%s\n' "$RESPONSE"
