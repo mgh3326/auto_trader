@@ -94,13 +94,13 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `format_execution_comment(stage, symbol, side, filled_qty, filled_price, ...)` - Format Discord/Paperclip-ready Markdown for `fill` and `follow_up` execution stages.
 - `get_latest_market_brief(symbols=None, market=None, limit=10)` - Return concise latest AI analysis context for recent or selected symbols.
 - `get_market_reports(symbol, days=7, limit=10)` - Return detailed AI analysis report history and decision trend for one symbol.
-- `place_order(symbol, side, order_type="limit", quantity=None, price=None, amount=None, dry_run=True, reason="", exit_reason=None, thesis=None, strategy=None, target_price=None, stop_loss=None, min_hold_days=None, notes=None, indicators_snapshot=None, defensive_trim=False, approval_issue_id=None, requester_agent_id=None)`
+- `place_order(symbol, side, order_type="limit", quantity=None, price=None, amount=None, dry_run=True, reason="", exit_reason=None, thesis=None, strategy=None, target_price=None, stop_loss=None, min_hold_days=None, notes=None, indicators_snapshot=None, defensive_trim=False, approval_issue_id=None)`
   - `side="buy"` 이고 `dry_run=False` 인 경우 `thesis` 와 `strategy` 가 필수
   - 실매수 성공 시 trade journal draft를 자동 생성하고 fill 저장 후 active로 연결 시도
   - 실매도 성공 시 동일 symbol의 active journal을 FIFO 기준으로 auto-close 시도
   - 부분 매도는 quantity를 수정하지 않고, fully-consumed journal만 close한다
   - journal close 실패는 주문 성공을 되돌리지 않고 `journal_warning` 으로 응답한다
-  - `defensive_trim=True` 는 ROB-164/ROB-166 승인 기반 제한 경로이며 `(a) side="sell"`, `(b) order_type="limit"`, `(c) `approval_issue_id` 가 Paperclip `done` 상태, `(d) `requester_agent_id` 가 Trader agent 와 일치할 때만 평균단가 1% 매도 floor 를 우회한다. `requester_agent_id` 는 caller-asserted 값이며, 실제 caller attestation 은 ST-3 에서 별도 추적한다
+  - `defensive_trim=True` 는 ROB-164/ROB-166 승인 기반 제한 경로이며 `(a) side="sell"`, `(b) order_type="limit"`, `(c) `approval_issue_id` 가 Paperclip `done` 상태, `(d) middleware-extracted caller identity 가 Trader agent 와 일치할 때만 평균단가 1% 매도 floor 를 우회한다
 - `modify_order(order_id, symbol, market=None, new_price=None, new_quantity=None, dry_run=True)`
 - `cancel_order(order_id, symbol=None, market=None)`
   - US equities: resolves exchange from symbol DB, open orders, and recent history before cancel
