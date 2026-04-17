@@ -19,6 +19,7 @@ import httpx
 
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
+from app.mcp_server.tooling.trade_journal_tools import compute_active_dca_daily_burn
 from app.schemas.n8n.board_brief import (
     BoardBriefContext,
     BoardBriefPhase,
@@ -370,6 +371,7 @@ def _build_brief_text(
     pending_by_market: dict[str, dict[str, Any]],
     portfolio_by_market: dict[str, dict[str, Any]],
     yesterday_fills: dict[str, Any],
+    daily_burn: dict[str, Any] | None = None,
 ) -> str:
     """Build the full brief text for Discord delivery."""
     lines: list[str] = []
@@ -476,6 +478,16 @@ def _build_brief_text(
             f"{', '.join(dust_lines)} — Upbit 최소 주문 금액 미만, execution-actionable 제외, journal 유지. cleanup backlog."
         )
         lines.append("")
+
+    # Funding
+    burn_data = daily_burn or {}
+    burn_krw = float(burn_data.get("daily_burn_krw") or 0)
+    active_dca_count = int(burn_data.get("active_count") or 0)
+    lines.append("💰 자금 현황")
+    lines.append(
+        f"daily_burn: {burn_krw:,.0f} KRW (active DCA {active_dca_count}종 · 재산출)"
+    )
+    lines.append("")
 
     # Yesterday fills
     fills_data = yesterday_fills or {}
@@ -1252,10 +1264,12 @@ async def fetch_daily_brief(
         as_of=effective_as_of,
     )
     portfolio_task = _get_portfolio_overview(effective_markets)
+    daily_burn_task = compute_active_dca_daily_burn()
 
     results_s1 = await asyncio.gather(
         pending_task,
         portfolio_task,
+        daily_burn_task,
         return_exceptions=True,
     )
 
@@ -1271,6 +1285,18 @@ async def fetch_daily_brief(
         portfolio_result = results_s1[1]
     elif isinstance(results_s1[1], Exception):
         errors.append({"source": "portfolio", "error": str(results_s1[1])})
+
+    daily_burn_result: dict[str, Any] = {
+        "daily_burn_krw": 0.0,
+        "active_count": 0,
+        "per_record": [],
+        "days_to_next_obligation": None,
+        "cash_needed_until_obligation": 0.0,
+    }
+    if isinstance(results_s1[2], dict):
+        daily_burn_result = results_s1[2]
+    elif isinstance(results_s1[2], Exception):
+        errors.append({"source": "daily_burn", "error": str(results_s1[2])})
 
     # Derive shared symbol context for Stage 2
     symbols_by_market = _collect_symbols_by_market(pending_result, portfolio_result)
@@ -1335,6 +1361,7 @@ async def fetch_daily_brief(
         pending_by_market=pending_by_market,
         portfolio_by_market=portfolio_by_market,
         yesterday_fills=fills_result,
+        daily_burn=daily_burn_result,
     )
 
     # Collect sub-errors
@@ -1354,6 +1381,7 @@ async def fetch_daily_brief(
             market: portfolio_by_market.get(market) for market in effective_markets
         },
         "yesterday_fills": fills_result,
+        "daily_burn": daily_burn_result,
         "brief_text": brief_text,
         "errors": errors,
     }
