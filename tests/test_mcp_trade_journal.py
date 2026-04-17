@@ -1252,3 +1252,55 @@ class TestCloseJournalsOnSell:
         assert compiled.params["symbol_1"] == "AAPL"
         assert compiled.params["status_1"] == JournalStatus.active
         assert "ORDER BY review.trade_journals.created_at ASC" in str(compiled)
+
+    @pytest.mark.asyncio
+    async def test_close_journals_appends_defensive_trim_note(self) -> None:
+        """defensive_trim context is persisted into journal notes."""
+        from app.mcp_server.tooling.order_execution import _close_journals_on_sell
+        from app.mcp_server.tooling.order_validation import DefensiveTrimContext
+
+        now = datetime.now(UTC)
+        active = TradeJournal(
+            id=777,
+            symbol="KRW-BTC",
+            instrument_type=InstrumentType.crypto,
+            thesis="trim candidate",
+            status="active",
+            side="buy",
+            entry_price=Decimal("100"),
+            quantity=Decimal("1"),
+            notes="existing note",
+            created_at=now,
+            updated_at=now,
+        )
+
+        mock_session = AsyncMock()
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = [active]
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute.return_value = mock_result
+
+        factory = _mock_session_factory(mock_session)
+        with patch(
+            "app.mcp_server.tooling.order_journal._order_session_factory",
+            return_value=factory,
+        ):
+            result = await _close_journals_on_sell(
+                symbol="KRW-BTC",
+                sell_quantity=1.0,
+                sell_price=120.0,
+                defensive_trim_ctx=DefensiveTrimContext(
+                    approval_issue_id="ROB-164",
+                    requester_agent_id="agent-cio",
+                    approval_verified_at=now,
+                ),
+            )
+
+        assert result["journals_closed"] == 1
+        assert active.notes is not None
+        assert "existing note" in active.notes
+        assert (
+            "_defensive_trim: approval=ROB-164, caller=agent-cio, "
+            "bypassed_floor=avg*1.01_"
+        ) in active.notes

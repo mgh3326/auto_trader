@@ -392,8 +392,9 @@ async def test_flag_on_still_rejects_below_current_price(
 async def test_journal_and_redis_record_defensive_trim_fields(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Error-path order history records defensive trim audit fields."""
+    """Successful defensive trim sell records journal and Redis audit fields."""
     tools = build_tools()
+    _mock_crypto_sell_context(monkeypatch, current_price=1000.0, avg_buy_price="1000.0")
     monkeypatch.setattr(
         order_validation,
         "_fetch_approval_issue_status",
@@ -403,10 +404,23 @@ async def test_journal_and_redis_record_defensive_trim_fields(
     record_mock = AsyncMock()
     monkeypatch.setattr(order_execution, "_record_order_history", record_mock)
     monkeypatch.setattr(
-        order_execution,
-        "_fetch_current_price",
-        AsyncMock(side_effect=RuntimeError("boom")),
+        upbit_service,
+        "place_sell_order",
+        AsyncMock(return_value={"uuid": "defensive-trim-uuid"}),
     )
+    monkeypatch.setattr(
+        order_execution, "_save_order_fill", AsyncMock(return_value=9191)
+    )
+    monkeypatch.setattr(order_execution, "_link_journal_to_fill", AsyncMock())
+    close_mock = AsyncMock(
+        return_value={
+            "journals_closed": 1,
+            "journals_kept": 0,
+            "closed_ids": [71],
+            "total_pnl_pct": 0.5,
+        }
+    )
+    monkeypatch.setattr(order_execution, "_close_journals_on_sell", close_mock)
 
     result = await tools["place_order"](
         symbol="KRW-BTC",
@@ -417,15 +431,22 @@ async def test_journal_and_redis_record_defensive_trim_fields(
         defensive_trim=True,
         approval_issue_id="ROB-164",
         requester_agent_id=TRADER_AGENT_ID,
-        dry_run=True,
+        dry_run=False,
     )
 
-    assert result["success"] is False
+    assert result["success"] is True
+    assert result["journals_closed"] == 1
+
     record_mock.assert_awaited_once()
     kwargs = record_mock.await_args.kwargs
     assert kwargs["defensive_trim"] is True
     assert kwargs["approval_issue_id"] == "ROB-164"
     assert kwargs["requester_agent_id"] == TRADER_AGENT_ID
+
+    close_mock.assert_awaited_once()
+    close_kwargs = close_mock.await_args.kwargs
+    assert close_kwargs["defensive_trim_ctx"].approval_issue_id == "ROB-164"
+    assert close_kwargs["defensive_trim_ctx"].requester_agent_id == TRADER_AGENT_ID
 
 
 @pytest.mark.unit
