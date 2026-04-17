@@ -13,6 +13,12 @@ from typing import Any
 
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
+from app.schemas.n8n.board_brief import (
+    BoardBriefContext,
+    BoardBriefRender,
+    GateResult,
+    N8nG2GatePayload,
+)
 from app.schemas.n8n.common import N8nMarketOverview
 from app.services.n8n_formatting import (
     fmt_amount,
@@ -439,6 +445,222 @@ def _build_brief_text(
     return "\n".join(lines)
 
 
+def _fmt_krw(value: float | int | None) -> str:
+    if value is None:
+        return "-"
+    return f"{float(value):,.0f} KRW"
+
+
+def _fmt_pct(value: float | int | None) -> str:
+    if value is None:
+        return "-"
+    return f"{float(value):.1f}%"
+
+
+def _extract_followup_context(
+    payload: BoardBriefContext | dict[str, Any],
+) -> BoardBriefContext:
+    """Normalize router/test payloads into the board brief render context."""
+    if isinstance(payload, BoardBriefContext):
+        return payload
+    return BoardBriefContext.model_validate(payload)
+
+
+def _default_gate_results() -> dict[str, GateResult | N8nG2GatePayload]:
+    return {
+        "G1": GateResult(status="pending", detail="G1 데이터 충분성 평가 대기"),
+        "G2": N8nG2GatePayload(
+            passed=True,
+            status="pending",
+            detail="G2 funding intent 평가 대기",
+        ),
+        "G3": GateResult(status="tbd", detail="TBD (S3)"),
+        "G4": GateResult(status="tbd", detail="TBD (S4)"),
+        "G5": GateResult(status="tbd", detail="TBD (S5)"),
+        "G6": GateResult(status="tbd", detail="TBD (S6)"),
+    }
+
+
+def _build_gate_results(
+    ctx: BoardBriefContext,
+) -> dict[str, GateResult | N8nG2GatePayload]:
+    """Return complete G1-G6 rows for CIO pending embeds."""
+    gates = _default_gate_results()
+    gates.update(ctx.gate_results or {})
+    return gates
+
+
+def _cash_runway_days(ctx: BoardBriefContext) -> float | None:
+    if ctx.manual_cash_runway_days is not None:
+        return ctx.manual_cash_runway_days
+    if ctx.daily_burn_krw > 0:
+        return ctx.manual_cash_krw / ctx.daily_burn_krw
+    return None
+
+
+def _build_concentration_lines(ctx: BoardBriefContext) -> list[str]:
+    if not ctx.weights_top_n:
+        return ["- 상위 비중 데이터 없음"]
+    return [
+        f"- {item.symbol}: {_fmt_pct(item.weight_pct)}"
+        for item in ctx.weights_top_n[:5]
+    ]
+
+
+def _build_candidate_lines(ctx: BoardBriefContext) -> list[str]:
+    candidates = [holding for holding in ctx.holdings if not holding.dust]
+    if not candidates:
+        return ["- execution-actionable 매도/축소 후보 없음"]
+    return [
+        f"- {holding.symbol}: {_fmt_krw(holding.current_krw_value)}"
+        for holding in candidates[:5]
+    ]
+
+
+def _build_dust_lines(ctx: BoardBriefContext) -> list[str]:
+    dust_items = ctx.dust_items or [holding for holding in ctx.holdings if holding.dust]
+    if not dust_items:
+        return []
+    joined = ", ".join(
+        f"{item.symbol} (~{float(item.current_krw_value):,.0f} KRW)"
+        for item in dust_items[:8]
+    )
+    return [
+        "🧹 Dust",
+        f"{joined} — Upbit 최소 주문 금액 미만, execution-actionable 제외, journal 유지. cleanup backlog.",
+    ]
+
+
+def _build_tc_preliminary_text(ctx: BoardBriefContext) -> str:
+    """Build TC preliminary text without recommendation or gate sections."""
+    runway_days = _cash_runway_days(ctx)
+    lines = [
+        "📊 TC Preliminary — 자금 현황 재계산",
+        "",
+        "요약: 경로 A·B 병행 가능. 현금 runway와 포지션 쏠림을 먼저 재계산한다.",
+        "",
+        "💵 자금 현황",
+        f"- 수동 현금: {_fmt_krw(ctx.manual_cash_krw)}",
+        f"- 일 burn: {_fmt_krw(ctx.daily_burn_krw)}",
+        f"- runway: {_fmt_pct(runway_days).replace('%', '일') if runway_days is not None else '-'}",
+        "",
+        "📌 쏠림/편중",
+        *_build_concentration_lines(ctx),
+        "",
+        "🔻 매도/축소 후보",
+        *_build_candidate_lines(ctx),
+    ]
+    dust_lines = _build_dust_lines(ctx)
+    if dust_lines:
+        lines.extend(["", *dust_lines])
+    lines.extend(
+        [
+            "",
+            "경로 A: 신규 매수 없이 현금 runway 회복 우선.",
+            "경로 B: board funding 확인 후 CIO pending decision에서 gate 재평가.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _gate_status_label(gate: GateResult | N8nG2GatePayload) -> str:
+    if isinstance(gate, N8nG2GatePayload):
+        return "pass" if gate.passed else "fail"
+    return gate.status
+
+
+def _gate_detail(gate: GateResult | N8nG2GatePayload) -> str:
+    if isinstance(gate, N8nG2GatePayload):
+        return gate.blocking_reason or gate.detail or ""
+    return gate.detail
+
+
+def _build_cio_pending_text(ctx: BoardBriefContext) -> str:
+    """Build CIO pending text with recommendation placeholder and G1-G6 rows."""
+    gates = _build_gate_results(ctx)
+    g2 = gates["G2"]
+    g2_failed = isinstance(g2, N8nG2GatePayload) and not g2.passed
+    lines = [
+        _build_tc_preliminary_text(ctx),
+        "",
+        "🎯 권고",
+        (
+            "🚫 신규 매수 차단 — G2 fail"
+            if g2_failed
+            else "CIO 의견 대기 중 — gate 결과 확인 후 action 확정"
+        ),
+        "",
+        "📊 Gate 판정 결과",
+    ]
+    for gate_name in ("G1", "G2", "G3", "G4", "G5", "G6"):
+        gate = gates[gate_name]
+        detail = _gate_detail(gate)
+        lines.append(
+            f"- {gate_name}: {_gate_status_label(gate)}"
+            + (f" — {detail}" if detail else "")
+        )
+
+    lines.extend(
+        [
+            "",
+            "질문",
+            "[funding] 경로 A·B 병행 가능 기준으로 board funding 금액/목적을 확정할 것.",
+            "[action] 경로 A·B 병행 가능 조건에서 신규 매수, 현금 회복, 축소 중 하나를 선택할 것.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _build_board_embed(*, title: str, text: str, color: int) -> dict[str, Any]:
+    return {
+        "title": title,
+        "description": text[:4000],
+        "color": color,
+    }
+
+
+def build_tc_preliminary(
+    payload: BoardBriefContext | dict[str, Any],
+) -> BoardBriefRender:
+    """Render the first TC follow-up phase."""
+    ctx = _extract_followup_context(payload)
+    generated_at = ctx.generated_at or now_kst().replace(microsecond=0)
+    text = _build_tc_preliminary_text(ctx)
+    return BoardBriefRender(
+        phase="tc_preliminary",
+        embed=_build_board_embed(
+            title="📊 TC Preliminary — 자금 현황 재계산",
+            text=text,
+            color=0x3498DB,
+        ),
+        text=text,
+        gate_results=None,
+        generated_at=generated_at,
+    )
+
+
+def build_cio_pending_decision(
+    payload: BoardBriefContext | dict[str, Any],
+) -> BoardBriefRender:
+    """Render the second CIO follow-up phase."""
+    ctx = _extract_followup_context(payload)
+    generated_at = ctx.generated_at or now_kst().replace(microsecond=0)
+    gate_results = _build_gate_results(ctx)
+    ctx = ctx.model_copy(update={"gate_results": gate_results})
+    text = _build_cio_pending_text(ctx)
+    return BoardBriefRender(
+        phase="cio_pending",
+        embed=_build_board_embed(
+            title="🎯 CIO Pending Decision — Gate 판정 결과",
+            text=text,
+            color=0xF1C40F,
+        ),
+        text=text,
+        gate_results=gate_results,
+        generated_at=generated_at,
+    )
+
+
 async def fetch_daily_brief(
     *,
     markets: list[str] | None = None,
@@ -576,4 +798,8 @@ async def fetch_daily_brief(
     }
 
 
-__all__ = ["fetch_daily_brief"]
+__all__ = [
+    "build_cio_pending_decision",
+    "build_tc_preliminary",
+    "fetch_daily_brief",
+]
