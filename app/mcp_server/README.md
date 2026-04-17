@@ -352,10 +352,15 @@ Error examples:
 
 ### `screen_stocks` spec
 Parameters:
-- `market`: Market to screen - "kr", "us", "crypto" (default: "kr")
+- `market`: Market to screen - "kr", "kospi", "kosdaq", "konex", "all", "us", "crypto" (default: "kr")
 - `asset_type`: Asset type - "stock", "etf", "etn" (only applicable to KR, default: None)
 - `category`: Category filter - ETF categories for KR, sector for US (default: None)
 - `sector`: Sector filter for KR/US stocks (default: None). Not supported for crypto or KR ETF/ETN requests
+- `exclude_sectors`: Sector exclusion list for KR/US stocks (default: None). Values are de-duplicated case-insensitively for ASCII labels
+- `instrument_types`: Instrument taxonomy filter list - "common", "preferred", "etf", "reit", "spac", "unknown" (default: None)
+- `adv_krw_min`: Minimum 30-day average daily value in KRW. Use 1,000,000,000 for a conservative liquidity floor or 5,000,000,000 for an aggressive liquidity floor
+- `market_cap_min_krw`: Minimum market capitalization in KRW (default: None)
+- `market_cap_max_krw`: Maximum market capitalization in KRW (default: None)
 - `sort_by`: Sort criteria - "volume", "trade_amount", "market_cap", "change_rate", "dividend_yield", "rsi" (default: crypto="rsi", KR/US="volume")
 - `sort_order`: Sort order - "asc" or "desc" (default: "desc")
 - `min_market_cap`: Minimum market cap (억원 for KR, USD for US; not supported for crypto)
@@ -368,8 +373,11 @@ Parameters:
 
 Market-specific behavior:
 - **KR market**:
+  - `market="konex"` screens KONEX only; `market="all"` screens KOSPI, KOSDAQ, and KONEX
   - Default `asset_type in {None, "stock"}` + `category=None` requests use tvscreener only when verified KR stock-query capabilities cover the request; otherwise they fall back to the legacy KRX/Naver path before entering tvscreener
-  - Successful stock responses expose `meta.source = "tvscreener"` and include `adx` in each result row
+  - Successful stock responses expose `meta.source = "tvscreener"` and include `adx`, `instrument_type`, and 30-day ADV fields when TradingView provides them
+  - `adv_krw_min` uses TradingView 30-day average volume multiplied by price; responses set `meta.adv_window_days = 30` when this filter is requested
+  - Legacy KRX fallback cannot compute `adv_krw_min`; it returns a warning and skips only that filter
   - `sort_by="rsi"` is supported via tvscreener RSI data; legacy path falls back to OHLCV-based RSI enrichment
   - ETF/category requests stay on the legacy KRX/Naver path
   - KRX data cached with 300s TTL (Redis) + in-memory fallback
@@ -381,7 +389,9 @@ Market-specific behavior:
   - Default `asset_type in {None, "stock"}` requests use tvscreener only when verified US stock-query capabilities cover the request
   - US `category`/`sector` alias requests stay on the tvscreener path only when the TradingView sector filter capability is verified; otherwise they fall back to legacy before running the tv query
   - `sort_by="rsi"` is supported via tvscreener RSI data; legacy yfinance path falls back to OHLCV-based RSI enrichment
-  - Successful stock responses expose `meta.source = "tvscreener"`, include `adx`, and preserve public enrichment fields (`sector`, `analyst_buy`, `analyst_hold`, `analyst_sell`, `avg_target`, `upside_pct`) from tvscreener when available
+  - Successful stock responses expose `meta.source = "tvscreener"`, include `adx`, `instrument_type`, 30-day ADV fields, and preserve public enrichment fields (`sector`, `analyst_buy`, `analyst_hold`, `analyst_sell`, `avg_target`, `upside_pct`) from tvscreener when available
+  - `adv_krw_min` uses TradingView 30-day average volume multiplied by price; responses set `meta.adv_window_days = 30` when this filter is requested
+  - Legacy yfinance fallback cannot compute `adv_krw_min`; it returns a warning and skips only that filter
   - Post-screen enrichment skips per-row Finnhub/yfinance fan-out when those public fields are already populated; missing fields fall back to lightweight yfinance/Finnhub enrichment
   - Unsupported or unverified tvscreener request-critical capabilities fall back to the legacy yfinance path
   - Legacy yfinance maps: `min_market_cap` → `intradaymarketcap`, `max_per` → `peratio.lasttwelvemonths`, `min_dividend_yield` → `forward_dividend_yield`
@@ -404,10 +414,13 @@ Market-specific behavior:
   - `market_cap` sorting is supported; public `market_cap` prefers CoinGecko cache values and falls back to TradingView `MARKET_CAP`, and final ordering uses that public value without silently falling back to `trade_amount_24h`
   - `max_per`, `min_dividend_yield`, `sort_by="dividend_yield"` not supported - returns error
   - `min_market_cap` filter is not supported; crypto responses return a warning that it was ignored
-  - `sector` and `min_analyst_buy` filters are not supported for crypto - returns error
+  - `sector`, `exclude_sectors`, `instrument_types`, `adv_krw_min`, `market_cap_min_krw`, `market_cap_max_krw`, and `min_analyst_buy` filters are not supported for crypto - returns error
 
 Filter compatibility and error semantics:
 - `sector` filter: Supported for KR/US stocks only. Returns error for crypto or KR ETF/ETN requests
+- `exclude_sectors`: Supported for KR/US stocks only. Cannot overlap with `sector`
+- `instrument_types`: Supported for KR/US only. `asset_type="etf"` conflicts with `instrument_types=["common"]`
+- `adv_krw_min`, `market_cap_min_krw`, `market_cap_max_krw`: Non-negative integers only. `market_cap_min_krw` must be less than or equal to `market_cap_max_krw`
 - `min_analyst_buy` filter: Supported for KR/US stocks only (not ETF/ETN). Returns error for crypto or non-stock asset types
 - `min_dividend` / `min_dividend_yield`: These are aliases. Accepts decimal (0.03) or percentage (3.0) formats. If both are specified with different values, returns error. Not supported for crypto
 - `category` and `sector`: These are aliases for US market. If both are specified with different values, returns error

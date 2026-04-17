@@ -156,14 +156,22 @@ def register_analysis_tools(mcp: FastMCP) -> None:
     @mcp.tool(
         name="screen_stocks",
         description=(
-            "Screen stocks across markets (KR/US/Crypto) with various filters."
+            "Screen stocks across markets (KR/US/Crypto) with filters. "
+            "KR supports kospi/kosdaq/konex/all, 30-day ADV via adv_krw_min "
+            "(1B KRW conservative, 5B KRW aggressive), instrument_types, "
+            "and exclude_sectors."
         ),
     )
     async def screen_stocks(
-        market: Literal["kr", "kospi", "kosdaq", "us", "crypto"] = "kr",
+        market: Literal["kr", "kospi", "kosdaq", "konex", "all", "us", "crypto"] = "kr",
         asset_type: Literal["stock", "etf", "etn"] | None = None,
         category: str | None = None,
         sector: str | None = None,
+        exclude_sectors: list[str] | None = None,
+        instrument_types: list[
+            Literal["common", "preferred", "etf", "reit", "spac", "unknown"]
+        ]
+        | None = None,
         strategy: str | None = None,
         sort_by: Literal[
             "volume",
@@ -182,6 +190,9 @@ def register_analysis_tools(mcp: FastMCP) -> None:
         min_dividend: float | None = None,
         min_analyst_buy: float | None = None,
         max_rsi: float | None = None,
+        adv_krw_min: int | None = None,
+        market_cap_min_krw: int | None = None,
+        market_cap_max_krw: int | None = None,
         limit: int = 50,
     ) -> dict[str, Any]:
         return await screen_stocks_impl(
@@ -189,6 +200,8 @@ def register_analysis_tools(mcp: FastMCP) -> None:
             asset_type=asset_type,
             category=category,
             sector=sector,
+            exclude_sectors=exclude_sectors,
+            instrument_types=instrument_types,
             strategy=strategy,
             sort_by=sort_by,
             sort_order=sort_order,
@@ -199,6 +212,9 @@ def register_analysis_tools(mcp: FastMCP) -> None:
             min_dividend=min_dividend,
             min_analyst_buy=min_analyst_buy,
             max_rsi=max_rsi,
+            adv_krw_min=adv_krw_min,
+            market_cap_min_krw=market_cap_min_krw,
+            market_cap_max_krw=market_cap_max_krw,
             limit=limit,
         )
 

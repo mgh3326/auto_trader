@@ -21,6 +21,7 @@ DROP_THRESHOLD = -0.30
 MARKET_PANIC = -0.10
 CRYPTO_TOP_BY_VOLUME = 100
 COINGECKO_MARKETS_URL = "https://api.coingecko.com/api/v3/coins/markets"
+SUPPORTED_INSTRUMENT_TYPES = {"common", "preferred", "etf", "reit", "spac", "unknown"}
 
 # ---------------------------------------------------------------------------
 # Timeout Policy Configuration
@@ -199,6 +200,10 @@ def _kr_market_codes(market: str) -> tuple[list[str], str]:
         return ["STK"], "STK"
     if market == "kosdaq":
         return ["KSQ"], "KSQ"
+    if market == "konex":
+        return ["KNX"], "KNX"
+    if market == "all":
+        return ["STK", "KSQ", "KNX"], "ALL"
     return ["STK", "KSQ"], "ALL"
 
 
@@ -380,6 +385,45 @@ def _normalize_sector_compare_key(sector: str | None) -> str | None:
     return normalized
 
 
+def _normalize_string_list(values: list[str] | None) -> list[str] | None:
+    if values is None:
+        return None
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = _normalize_optional_text(value)
+        if text is None:
+            continue
+        key = text.casefold() if text.isascii() else text
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(text)
+    return normalized or None
+
+
+def _normalize_instrument_types(values: list[str] | None) -> list[str] | None:
+    normalized = _normalize_string_list(values)
+    if normalized is None:
+        return None
+    lowered = [value.casefold() for value in normalized]
+    invalid = sorted(set(lowered) - SUPPORTED_INSTRUMENT_TYPES)
+    if invalid:
+        raise ValueError(
+            "instrument_types must contain only: "
+            + ", ".join(sorted(SUPPORTED_INSTRUMENT_TYPES))
+        )
+    return lowered
+
+
+def _normalize_non_negative_int(value: int | None, name: str) -> int | None:
+    if value is None:
+        return None
+    if value < 0:
+        raise ValueError(f"{name} must be >= 0")
+    return int(value)
+
+
 def _canonicalize_us_sector_label(sector: str) -> str:
     """Canonicalize a US sector label for the TradingView tvscreener provider.
 
@@ -451,11 +495,51 @@ def normalize_screen_request(
     min_analyst_buy: float | None,
     max_rsi: float | None,
     limit: int,
+    exclude_sectors: list[str] | None = None,
+    instrument_types: list[str] | None = None,
+    adv_krw_min: int | None = None,
+    market_cap_min_krw: int | None = None,
+    market_cap_max_krw: int | None = None,
 ) -> dict[str, Any]:
     normalized_market = _normalize_screen_market(market)
+    if normalized_market not in {
+        "kr",
+        "kospi",
+        "kosdaq",
+        "konex",
+        "all",
+        "us",
+        "crypto",
+    }:
+        raise ValueError(
+            "market must be one of: kr, kospi, kosdaq, konex, all, us, crypto"
+        )
     normalized_asset_type = _normalize_asset_type(asset_type)
     normalized_category = _normalize_optional_text(category)
     normalized_sector = _normalize_sector_value(sector)
+    normalized_exclude_sectors = _normalize_string_list(exclude_sectors)
+    exclude_sector_keys = {
+        key
+        for key in (
+            _normalize_sector_compare_key(sector)
+            for sector in (normalized_exclude_sectors or [])
+        )
+        if key is not None
+    }
+    normalized_instrument_types = _normalize_instrument_types(instrument_types)
+    normalized_adv_krw_min = _normalize_non_negative_int(adv_krw_min, "adv_krw_min")
+    normalized_market_cap_min_krw = _normalize_non_negative_int(
+        market_cap_min_krw, "market_cap_min_krw"
+    )
+    normalized_market_cap_max_krw = _normalize_non_negative_int(
+        market_cap_max_krw, "market_cap_max_krw"
+    )
+    if (
+        normalized_market_cap_min_krw is not None
+        and normalized_market_cap_max_krw is not None
+        and normalized_market_cap_min_krw > normalized_market_cap_max_krw
+    ):
+        raise ValueError("market_cap_min_krw must be <= market_cap_max_krw")
     normalized_strategy = _normalize_optional_text(strategy)
     normalized_sort_by = _normalize_sort_by(sort_by)
     normalized_sort_order = _normalize_sort_order(sort_order)
@@ -485,13 +569,22 @@ def normalize_screen_request(
         effective_sector = _canonicalize_us_sector_label(effective_sector)
 
     if effective_sector is not None:
+        sector_key = _normalize_sector_compare_key(effective_sector)
+        if sector_key is not None and sector_key in exclude_sector_keys:
+            raise ValueError("sector and exclude_sectors cannot overlap")
         if normalized_market == "crypto":
             raise ValueError("crypto market does not support sector filter")
-        if normalized_market in {"kr", "kospi", "kosdaq"} and normalized_asset_type in {
-            "etf",
-            "etn",
-        }:
+        if normalized_market in {
+            "kr",
+            "kospi",
+            "kosdaq",
+            "konex",
+            "all",
+        } and normalized_asset_type in {"etf", "etn"}:
             raise ValueError("sector filter is only supported for stock requests")
+
+    if normalized_asset_type == "etf" and normalized_instrument_types == ["common"]:
+        raise ValueError("asset_type='etf' conflicts with instrument_types=['common']")
 
     if normalized_min_analyst_buy is not None:
         if normalized_market == "crypto":
@@ -527,6 +620,12 @@ def normalize_screen_request(
         "min_analyst_buy": normalized_min_analyst_buy,
         "max_rsi": max_rsi,
         "limit": limit,
+        "exclude_sectors": normalized_exclude_sectors,
+        "exclude_sector_keys": exclude_sector_keys,
+        "instrument_types": normalized_instrument_types,
+        "adv_krw_min": normalized_adv_krw_min,
+        "market_cap_min_krw": normalized_market_cap_min_krw,
+        "market_cap_max_krw": normalized_market_cap_max_krw,
     }
 
 
@@ -543,12 +642,27 @@ def _validate_screen_filters(
     min_dividend_yield: float | None,
     max_rsi: float | None,
     sort_by: str | None,
+    adv_krw_min: int | None = None,
+    market_cap_min_krw: int | None = None,
+    market_cap_max_krw: int | None = None,
+    instrument_types: list[str] | None = None,
+    exclude_sectors: list[str] | None = None,
 ) -> None:
     """Validate screening filters and raise ValueError for unsupported combinations."""
     _ = min_market_cap
     _ = max_rsi
 
     if market == "crypto":
+        if adv_krw_min is not None:
+            raise ValueError("crypto market does not support adv_krw_min filter")
+        if market_cap_min_krw is not None:
+            raise ValueError("crypto market does not support market_cap_min_krw filter")
+        if market_cap_max_krw is not None:
+            raise ValueError("crypto market does not support market_cap_max_krw filter")
+        if instrument_types is not None:
+            raise ValueError("crypto market does not support instrument_types filter")
+        if exclude_sectors is not None:
+            raise ValueError("crypto market does not support exclude_sectors filter")
         if max_per is not None:
             raise ValueError(
                 "Crypto market does not support 'max_per' filter (no P/E ratio)"
@@ -571,7 +685,7 @@ def _validate_screen_filters(
                 "'trade_amount' sorting is only supported for crypto market"
             )
 
-    if market in ("kr", "kospi", "kosdaq") and asset_type == "etn":
+    if market in ("kr", "kospi", "kosdaq", "konex", "all") and asset_type == "etn":
         raise ValueError(
             "Korean market (KR/KOSPI/KOSDAQ) does not support ETN (Exchange Traded Notes) asset_type"
         )
@@ -584,9 +698,15 @@ def _apply_basic_filters(
     max_pbr: float | None,
     min_dividend_yield: float | None,
     max_rsi: float | None,
+    adv_krw_min: int | None = None,
+    market_cap_min_krw: int | None = None,
+    market_cap_max_krw: int | None = None,
+    instrument_types: list[str] | None = None,
+    exclude_sector_keys: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Apply basic numeric filters to candidate stocks."""
     filtered = []
+    instrument_type_set = set(instrument_types or [])
 
     for item in candidates:
         skip = False
@@ -595,6 +715,24 @@ def _apply_basic_filters(
             if item.get("market_cap") is None:
                 skip = True
             elif item["market_cap"] < min_market_cap:
+                skip = True
+
+        if not skip and adv_krw_min is not None:
+            if item.get("adv_krw") is None:
+                skip = True
+            elif item["adv_krw"] < adv_krw_min:
+                skip = True
+
+        if not skip and market_cap_min_krw is not None:
+            if item.get("market_cap_krw") is None:
+                skip = True
+            elif item["market_cap_krw"] < market_cap_min_krw:
+                skip = True
+
+        if not skip and market_cap_max_krw is not None:
+            if item.get("market_cap_krw") is None:
+                skip = True
+            elif item["market_cap_krw"] > market_cap_max_krw:
                 skip = True
 
         if not skip and max_per is not None:
@@ -619,6 +757,18 @@ def _apply_basic_filters(
             if item.get("rsi") is None:
                 skip = True
             elif item["rsi"] > max_rsi:
+                skip = True
+
+        if not skip and instrument_types is not None:
+            if (
+                str(item.get("instrument_type") or "").casefold()
+                not in instrument_type_set
+            ):
+                skip = True
+
+        if not skip and exclude_sector_keys:
+            sector_key = _normalize_sector_compare_key(item.get("sector"))
+            if sector_key is not None and sector_key in exclude_sector_keys:
                 skip = True
 
         if not skip:
