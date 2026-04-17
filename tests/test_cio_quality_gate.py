@@ -351,3 +351,90 @@ def test_is_new_detected_from_v2_category_column():
     krafton = next(c for c in report.candidates if c.code == "259960")
     assert not naver.is_new, "보유/DCA cell must not mark NAVER as 신규"
     assert krafton.is_new, "신규(watch) cell in col 2 must mark Krafton as 신규"
+
+
+# ---------------------------------------------------------------------------
+# ROB-206 review follow-up — over-match guards:
+#   1. G4 must not treat incidental 해외/자동/수동 tokens in unrelated bullet
+#      segments (뉴스 headlines, S/R notes) as execution-path qualifiers.
+#   2. is_new must not treat `신규` appearing in 액션/메모/뉴스 cells as a
+#      positive signal — only the 분류 column (or legacy [신규] name tag)
+#      counts.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_g4_ignores_exec_qualifier_tokens_in_unrelated_bullet_segments():
+    """`해외 매출`, `전기 자동차`, `수동 검증` style tokens in 뉴스/S-R/memo
+    sub-bullets must NOT satisfy EXEC_QUALIFIER_RE. G4 is only satisfied by
+    an actual `execution path:` / `실행경로:` segment OR a direct 실행경로
+    cell match.
+    """
+    md = """### 신규 후보
+
+| 시장 | 종목 | 분류 | 시장가 | RSI | ADX | Buy Zone | 액션 |
+|---|---|---|---|---|---|---|---|
+| KR | **LG이노텍 011070** | 신규(buy 검토) | 212,500 | 58 | 24 | 202K | buy 검토 |
+|   | • BB 194K/202K/222K · EMA 5>20>60<120 · 괴리 –4.5% |
+|   | • 뉴스 3건 (Reuters: 해외 매출 전망 / Bloomberg: 전기 자동차 수요 / 한경: 수동 검증 통과) · 컨센서스 목표가 250K, PER 16 · execution path: KIS · same-depth-check: pass |
+"""
+    report = evaluate_scout_report(markdown=md)
+    lginnotek = next(c for c in report.candidates if c.code == "011070")
+    assert lginnotek.is_new
+    # The sub-bullet contains 해외/자동/수동 tokens in 뉴스 segment, but the
+    # actual `execution path:` segment is `KIS` (bare). G4 must still hit.
+    g4 = next(r for r in report.gates if r.key == "G4")
+    assert not g4.passed, (
+        f"G4 must ignore 해외/자동/수동 appearing outside execution-path segment; "
+        f"detail={g4.detail}"
+    )
+
+
+@pytest.mark.unit
+def test_g4_segment_scan_still_accepts_multiple_labelled_segments():
+    """If the row has multiple `execution path:` segments (e.g. per-market
+    split), G4 must pass when any one of them carries a qualifier.
+    """
+    md = """| 시장 | 종목 | 분류 | 시장가 | RSI | ADX | Buy Zone | 액션 |
+|---|---|---|---|---|---|---|---|
+| KR | Krafton 259960 | 신규(watch) | 266,500 | 64 | 18 | 244K | watch only |
+|   | • 뉴스 — none · execution path: KIS · 실행경로: Toss manual · same-depth-check: pass |
+"""
+    report = evaluate_scout_report(markdown=md)
+    g4 = next(r for r in report.gates if r.key == "G4")
+    assert g4.passed, (
+        f"G4 must accept `Toss manual` qualifier in the 실행경로 segment even "
+        f"when a sibling `execution path: KIS` segment is bare; detail={g4.detail}"
+    )
+
+
+@pytest.mark.unit
+def test_is_new_does_not_fire_on_action_or_news_mention_of_신규():
+    """A 보유 row whose 액션 or 뉴스 cell happens to reference `신규 추천`,
+    `신규 카테고리`, etc. must NOT be promoted to 신규. Only the 분류 column
+    (or v1 name-cell `[신규]` tag) counts.
+    """
+    md = """| 시장 | 종목 | 분류 | 시장가 | 뉴스 | 액션 | 비고 |
+|---|---|---|---|---|---|---|
+| KR | NAVER 035420 | 보유/DCA | 216,000 | 뉴스 1건 — 신규 CEO 임명 | DCA limit | 신규 후보 대비 우위 |
+"""
+    report = evaluate_scout_report(markdown=md)
+    naver = next(c for c in report.candidates if c.code == "035420")
+    assert not naver.is_new, (
+        "보유/DCA row must stay 보유 even when 뉴스/액션/비고 cells mention 신규"
+    )
+
+
+@pytest.mark.unit
+def test_is_new_does_not_fire_on_category_column_saying_보유_in_v1_name_tag():
+    """Symmetric guard: when 분류 column is present AND says 보유, an
+    incidental `신규` elsewhere on the row (e.g. 비고: `신규 섹터 노출 없음`)
+    must still leave is_new=False because the 분류 column is authoritative.
+    """
+    md = """| 시장 | 종목 | 분류 | 시장가 | 비고 |
+|---|---|---|---|---|
+| KR | NAVER 035420 | 보유 | 216,000 | 신규 섹터 노출 없음 |
+"""
+    report = evaluate_scout_report(markdown=md)
+    naver = next(c for c in report.candidates if c.code == "035420")
+    assert not naver.is_new
