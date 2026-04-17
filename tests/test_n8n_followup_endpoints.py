@@ -87,6 +87,34 @@ class TestN8nFollowupEndpoints:
         assert "[funding]" in body["text"]
         assert "[action]" in body["text"]
 
+    def test_evaluate_g1_gate_pass_ignores_force_cash_policy_note(self) -> None:
+        client = self._get_client()
+
+        resp = client.post(
+            "/api/n8n/cio-followup",
+            json={
+                "manual_cash_krw": 1_500_000,
+                "daily_burn_krw": 100_000,
+                "manual_cash_runway_days": 15,
+                "funding_intent": "new_buy",
+                "g1_gate": {
+                    "force_cash_policy_note": "(3) 현금 우선 정책 적용",
+                    "symbols": {
+                        "BTC": {
+                            "data_sufficient": True,
+                            "missing": [],
+                        }
+                    },
+                },
+            },
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["gate_results"]["G1"]["status"] == "pass"
+        assert body["gate_results"]["G1"]["detail"] == "G1 데이터 충분성 통과"
+        assert "(3) 현금 우선 정책 적용" not in body["text"]
+
     @pytest.mark.parametrize(
         ("payload", "field"),
         [
