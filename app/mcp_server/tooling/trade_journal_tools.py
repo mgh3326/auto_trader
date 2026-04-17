@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta, timezone
+from datetime import UTC, timedelta
 from decimal import Decimal
 from typing import Any, cast
 
@@ -513,7 +513,7 @@ async def compute_active_dca_daily_burn() -> dict[str, Any]:
             hold_until_with_tz = (
                 hold_until
                 if hold_until.tzinfo is not None
-                else hold_until.replace(tzinfo=timezone.utc)
+                else hold_until.replace(tzinfo=UTC)
             )
             hold_until_kst_date = hold_until_with_tz.astimezone(KST).date()
             days_to_obligation = (hold_until_kst_date - today).days

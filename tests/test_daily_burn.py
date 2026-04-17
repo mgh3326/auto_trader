@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -201,7 +201,7 @@ async def test_compute_active_dca_daily_burn_uses_kst_date_for_utc_hold_until(
 ) -> None:
     fixed_now = datetime(2026, 4, 17, 0, 0, tzinfo=KST)
     # 2026-04-17 15:30 UTC == 2026-04-18 00:30 KST
-    hold_until_utc = datetime(2026, 4, 17, 15, 30, tzinfo=timezone.utc)
+    hold_until_utc = datetime(2026, 4, 17, 15, 30, tzinfo=UTC)
 
     await _insert_journals(
         sqlite_session_factory,
