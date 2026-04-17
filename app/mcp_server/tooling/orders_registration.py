@@ -91,7 +91,9 @@ def register_order_tools(mcp: FastMCP) -> None:
             "defensive_trim=True enables a sell/limit-only floor bypass path. "
             "ROB-164/ROB-166 defensive_trim requires ALL of: (a) side='sell', "
             "(b) order_type='limit', (c) valid approval_issue_id with approval issue "
-            "status=done in Paperclip, and (d) requester_agent_id matching Trader."
+            "status=done in Paperclip, and (d) requester_agent_id matching Trader. "
+            "requester_agent_id is caller-asserted; ST-3 tracks true caller "
+            "attestation."
         ),
     )
     async def place_order(

@@ -129,6 +129,10 @@ async def _validate_defensive_trim_preconditions(
     side: str,
     order_type: str,
 ) -> DefensiveTrimContext | None:
+    """Validate defensive_trim gates.
+
+    requester_agent_id is caller-asserted; ST-3 tracks true caller attestation.
+    """
     if not defensive_trim:
         return None
 

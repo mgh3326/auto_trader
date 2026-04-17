@@ -105,6 +105,8 @@ def test_place_order_description_documents_four_and_defensive_trim_gate() -> Non
     assert "(c) valid approval_issue_id" in description
     assert "(d) requester_agent_id matching Trader" in description
     assert "approval issue status=done" in description
+    assert "requester_agent_id is caller-asserted" in description
+    assert "ST-3" in description
     assert "ROB-164/ROB-166" in description
 
 

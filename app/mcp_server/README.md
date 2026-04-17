@@ -100,7 +100,7 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - 실매도 성공 시 동일 symbol의 active journal을 FIFO 기준으로 auto-close 시도
   - 부분 매도는 quantity를 수정하지 않고, fully-consumed journal만 close한다
   - journal close 실패는 주문 성공을 되돌리지 않고 `journal_warning` 으로 응답한다
-  - `defensive_trim=True` 는 ROB-164/ROB-166 승인 기반 제한 경로이며 `(a) side="sell"`, `(b) order_type="limit"`, `(c) `approval_issue_id` 가 Paperclip `done` 상태, `(d) `requester_agent_id` 가 Trader agent 와 일치할 때만 평균단가 1% 매도 floor 를 우회한다
+  - `defensive_trim=True` 는 ROB-164/ROB-166 승인 기반 제한 경로이며 `(a) side="sell"`, `(b) order_type="limit"`, `(c) `approval_issue_id` 가 Paperclip `done` 상태, `(d) `requester_agent_id` 가 Trader agent 와 일치할 때만 평균단가 1% 매도 floor 를 우회한다. `requester_agent_id` 는 caller-asserted 값이며, 실제 caller attestation 은 ST-3 에서 별도 추적한다
 - `modify_order(order_id, symbol, market=None, new_price=None, new_quantity=None, dry_run=True)`
 - `cancel_order(order_id, symbol=None, market=None)`
   - US equities: resolves exchange from symbol DB, open orders, and recent history before cancel
