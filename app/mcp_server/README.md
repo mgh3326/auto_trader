@@ -859,6 +859,7 @@ Environment variables:
 - `MCP_PATH` : `/mcp`
 - `MCP_GRACEFUL_SHUTDOWN_TIMEOUT` : `10` (seconds, HTTP transports only: `sse` / `streamable-http`)
 - `MCP_USER_ID` : `1` (manual holdings 조회에 사용할 기본 사용자 ID)
+- `MCP_CALLER_AGENT_ID` : optional caller agent id fallback when no `x-paperclip-agent-id` HTTP header is present
 
 Example:
 ```bash

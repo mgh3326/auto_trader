@@ -51,6 +51,13 @@ def _load_main_module(
         return_value="middleware"
     )
 
+    fake_caller_identity_middleware = ModuleType(
+        "app.mcp_server.caller_identity_middleware"
+    )
+    fake_caller_identity_middleware.__dict__["CallerIdentityMiddleware"] = MagicMock(
+        return_value="caller-identity-middleware"
+    )
+
     fake_tooling = ModuleType("app.mcp_server.tooling")
     register_all_tools = MagicMock()
     fake_tooling.__dict__["register_all_tools"] = register_all_tools
@@ -69,6 +76,11 @@ def _load_main_module(
     monkeypatch.setitem(
         sys.modules, "app.mcp_server.sentry_middleware", fake_sentry_middleware
     )
+    monkeypatch.setitem(
+        sys.modules,
+        "app.mcp_server.caller_identity_middleware",
+        fake_caller_identity_middleware,
+    )
     monkeypatch.setitem(sys.modules, "app.mcp_server.tooling", fake_tooling)
     monkeypatch.setitem(sys.modules, "app.monitoring.sentry", fake_monitoring)
     monkeypatch.delitem(sys.modules, "app.mcp_server.main", raising=False)
@@ -84,6 +96,16 @@ def _load_main_module(
 
 @pytest.mark.unit
 class TestMcpServerMain:
+    def test_registers_caller_identity_middleware_after_sentry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _, mcp, _ = _load_main_module(monkeypatch)
+
+        assert [call.args[0] for call in mcp.add_middleware.call_args_list] == [
+            "middleware",
+            "caller-identity-middleware",
+        ]
+
     def test_streamable_http_uses_default_shutdown_timeout(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

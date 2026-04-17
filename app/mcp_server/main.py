@@ -28,6 +28,9 @@ init_sentry(
 from fastmcp import FastMCP  # noqa: E402
 
 from app.mcp_server.auth import build_auth_provider  # noqa: E402
+from app.mcp_server.caller_identity_middleware import (  # noqa: E402
+    CallerIdentityMiddleware,
+)
 from app.mcp_server.sentry_middleware import McpToolCallSentryMiddleware  # noqa: E402
 from app.mcp_server.tooling import register_all_tools  # noqa: E402
 
@@ -44,6 +47,7 @@ mcp = FastMCP(
 )
 
 mcp.add_middleware(McpToolCallSentryMiddleware())
+mcp.add_middleware(CallerIdentityMiddleware())
 register_all_tools(mcp)
 
 
