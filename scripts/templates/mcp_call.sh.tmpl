@@ -1,0 +1,58 @@
+#!/bin/bash
+# auto_trader MCP JSON-RPC bridge — canonical template.
+#
+# Purpose:
+#   Reference implementation of the `/tmp/mcp_call.sh` curl bridge that Scout
+#   (read-only) and Trader (read/write) use to call the auto_trader MCP HTTP
+#   server when no in-process MCP client is registered with the agent runtime.
+#
+# Why this template exists:
+#   ST-3 (ROB-212) switches MCP caller identity from tool-arg self-assertion
+#   to middleware-extracted HTTP header. Every caller MUST send the
+#   `x-paperclip-agent-id` header; otherwise defensive_trim and future
+#   caller-identity-gated tools reject the call.
+#
+# Operator regeneration procedure (CIO / Scout / Trader operators):
+#   1. Export the three env vars below (values differ per host / session):
+#        export MCP_ENDPOINT="http://127.0.0.1:8765/mcp"
+#        export MCP_AUTH_TOKEN="<bearer token from env.MCP_AUTH_TOKEN>"
+#        export PAPERCLIP_AGENT_ID="<calling agent's Paperclip agent id>"
+#      Optional:
+#        export MCP_SESSION_ID="<MCP session id from session/init handshake>"
+#   2. Regenerate `/tmp/mcp_call.sh` from this template (pass an explicit
+#      variable allow-list so envsubst does NOT expand shell positional args
+#      like $1 / $2 or the $PAYLOAD / $TOOL_NAME / $ARGS runtime vars):
+#        envsubst '$MCP_ENDPOINT $MCP_AUTH_TOKEN $MCP_SESSION_ID $PAPERCLIP_AGENT_ID' \
+#          < scripts/templates/mcp_call.sh.tmpl > /tmp/mcp_call.sh
+#        chmod +x /tmp/mcp_call.sh
+#   3. Smoke test (should return a tool payload, not a 401/403):
+#        /tmp/mcp_call.sh get_quote '{"symbol":"005930","market":"kr"}'
+#
+# Runtime behaviour:
+#   - Values of MCP_ENDPOINT / MCP_AUTH_TOKEN / MCP_SESSION_ID / PAPERCLIP_AGENT_ID
+#     are baked in by `envsubst` at regeneration time. Changing them later
+#     requires re-running step 2.
+#   - PAPERCLIP_AGENT_ID is emitted as the `x-paperclip-agent-id` request
+#     header; the MCP middleware reads it into a contextvar for gated tools.
+
+set -euo pipefail
+
+MCP_ENDPOINT="${MCP_ENDPOINT}"
+MCP_AUTH_TOKEN="${MCP_AUTH_TOKEN}"
+MCP_SESSION_ID="${MCP_SESSION_ID}"
+PAPERCLIP_AGENT_ID="${PAPERCLIP_AGENT_ID}"
+
+TOOL_NAME="$1"
+ARGS="$2"
+
+PAYLOAD=$(jq -n --arg tool "$TOOL_NAME" --argjson args "$ARGS" \
+  '{jsonrpc:"2.0",id:100,method:"tools/call",params:{name:$tool,arguments:$args}}')
+
+curl -s -X POST "$MCP_ENDPOINT" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Authorization: Bearer $MCP_AUTH_TOKEN" \
+  -H "Mcp-Session-Id: $MCP_SESSION_ID" \
+  -H "x-paperclip-agent-id: $PAPERCLIP_AGENT_ID" \
+  -d "$PAYLOAD" 2>/dev/null \
+  | grep "^data:" | head -1 | sed 's/^data: //'

@@ -851,6 +851,50 @@ Behavior:
 - `updated_at` is automatically set to the current timestamp
 - The (user_id, key) pair is unique; attempting to create a duplicate key for the same user will update the existing entry
 
+## Caller Identity Header (required)
+
+All MCP callers (Scout, Trader, CIO bridges, and any future client) MUST send
+`x-paperclip-agent-id: <calling agent's Paperclip agent id>` on every
+`tools/call` request. The value is the caller's Paperclip agent id, not the
+target trader agent id.
+
+- The `CallerIdentityMiddleware` added in ROB-214 (ST-3.1) reads this header,
+  stores it in a request-scoped contextvar, and records the extraction source
+  (`http_header` | `env_fallback` | `none`) on each call.
+- Caller-identity-gated tools (e.g. `place_order(..., defensive_trim=True)`
+  after ST-3.2) reject calls where the contextvar is `None`, so a missing
+  header in a production path is an outage, not a soft warning.
+- Local dev / stdio transports that cannot send HTTP headers may export
+  `MCP_CALLER_AGENT_ID` as an env fallback. This is a dev convenience only —
+  production callers must send the header explicitly.
+
+### Scout / Trader curl bridge
+
+When an agent runs under a harness that does not register the auto_trader MCP
+server in-process (current state for Scout and Trader on `claude_local`),
+they use a JSON-RPC curl bridge at `/tmp/mcp_call.sh`. The canonical template
+lives at `scripts/templates/mcp_call.sh.tmpl`; both agents MUST regenerate
+their local `/tmp/mcp_call.sh` from that template so the header is present.
+
+```bash
+# From the repo root, per operator host/session:
+export MCP_ENDPOINT="http://127.0.0.1:8765/mcp"
+export MCP_AUTH_TOKEN="<value from env.MCP_AUTH_TOKEN>"
+export MCP_SESSION_ID="<MCP session id>"
+export PAPERCLIP_AGENT_ID="<calling agent's Paperclip agent id>"
+envsubst '$MCP_ENDPOINT $MCP_AUTH_TOKEN $MCP_SESSION_ID $PAPERCLIP_AGENT_ID' \
+  < scripts/templates/mcp_call.sh.tmpl > /tmp/mcp_call.sh
+chmod +x /tmp/mcp_call.sh
+
+# Smoke test — should return a tool payload, not 401/403/reject:
+/tmp/mcp_call.sh get_quote '{"symbol":"005930","market":"kr"}'
+```
+
+If the Trader adapter is later migrated to an in-process MCP client (for
+example a Claude Code `.mcp.json` entry or an SDK-level `default_headers`
+config), that client must also set `x-paperclip-agent-id`; do not rely on
+the shell bridge as the long-term header injection point.
+
 ## Run (docker-compose.prod)
 Environment variables:
 - `MCP_TYPE` : `streamable-http` (default) | `sse` | `stdio`
