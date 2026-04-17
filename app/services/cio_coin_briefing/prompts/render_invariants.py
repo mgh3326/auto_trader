@@ -53,4 +53,14 @@ RENDER_INVARIANTS: list[Invariant] = [
         description="CIO 권고가 '(1) 즉시 매수' 이면 G2~G5 모두 pass — 하나라도 fail/대기/차단이면 assertion fail",
         check=_parser_not_implemented,
     ),
+    Invariant(
+        name="dust_aggregate_line",
+        description="§4 통합 포트폴리오 쏠림 말미에 'Dust aggregate: N symbols / total KRW / portfolio pct' 한 줄 존재",
+        check=_parser_not_implemented,
+    ),
+    Invariant(
+        name="fail_closed_anchor_routing",
+        description="Missing-field fail-closed anchor (⚠️ ... 누락 ...) 가 등장하면 보드 채널 전송 금지, 운영팀 에스컬레이션 라우팅",
+        check=_parser_not_implemented,
+    ),
 ]

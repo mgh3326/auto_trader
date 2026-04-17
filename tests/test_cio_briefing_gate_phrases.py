@@ -61,7 +61,17 @@ def test_forbidden_patterns_are_compiled_regexes():
 def test_render_invariants_exist_with_callable_stubs():
     invariants = render_invariants.RENDER_INVARIANTS
     assert isinstance(invariants, list)
-    assert len(invariants) == 7
+    assert len(invariants) == 9
+
+    invariant_by_name = {invariant.name: invariant for invariant in invariants}
+    assert (
+        invariant_by_name["dust_aggregate_line"].description
+        == "§4 통합 포트폴리오 쏠림 말미에 'Dust aggregate: N symbols / total KRW / portfolio pct' 한 줄 존재"
+    )
+    assert (
+        invariant_by_name["fail_closed_anchor_routing"].description
+        == "Missing-field fail-closed anchor (⚠️ ... 누락 ...) 가 등장하면 보드 채널 전송 금지, 운영팀 에스컬레이션 라우팅"
+    )
 
     for invariant in invariants:
         assert isinstance(invariant, render_invariants.Invariant)
