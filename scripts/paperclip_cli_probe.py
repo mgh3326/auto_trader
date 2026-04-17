@@ -19,6 +19,10 @@ import httpx
 
 ACTIVE_ISSUE_STATUSES = {"in_progress", "blocked"}
 OPTIONAL_PENDING_STATUSES = {"backlog", "todo"}
+# Child statuses that warrant a manager_followup_needed signal on the parent.
+# Lane handoffs (in_review) and in-lane work (in_progress) are excluded
+# because they do not require the parent owner to rerun or intervene.
+MANAGER_FOLLOWUP_CHILD_STATUSES = {"done", "blocked"}
 NON_FATAL_ERROR_CODES = {"auth_bootstrap_required"}
 REVIEW_GRACE_PERIOD = timedelta(minutes=30)
 DEFAULT_HEARTBEAT_RUN_LIMIT = 50
@@ -468,49 +472,62 @@ def derive_boss_queue_items(
         assignee_agent_id = issue.get("assigneeAgentId")
 
         # manager_followup_needed
+        # Only in_progress parents are eligible. A `blocked` parent is waiting
+        # on an external blocker to resolve, so child updates alone should not
+        # wake the parent owner (see ROB-181 / ROB-166 false-positive).
         if (
             isinstance(issue_id, str)
-            and is_active_issue_status(status, include_backlog=False)
+            and status.strip().lower() == "in_progress"
             and isinstance(assignee_agent_id, str)
             and assignee_agent_id in agents
             and child_issues.get(issue_id)
         ):
-            agent = agents[assignee_agent_id]
-            last_heartbeat_at = parse_timestamp(agent.get("lastHeartbeatAt"))
-            latest_child_update = max(
-                (
-                    parse_timestamp(child.get("updatedAt"))
-                    for child in child_issues[issue_id]
-                    if parse_timestamp(child.get("updatedAt")) is not None
-                ),
-                default=None,
-            )
-            if latest_child_update and (
-                last_heartbeat_at is None or latest_child_update > last_heartbeat_at
-            ):
-                owner = str(agent.get("name") or assignee_agent_id)
-                items.append(
-                    {
-                        "fingerprint": fingerprint_for_item(
-                            "manager_followup_needed",
-                            identifier or issue_id,
-                            latest_child_update.isoformat(),
-                        ),
-                        "kind": "manager_followup_needed",
-                        "severity": "critical",
-                        "owner": owner,
-                        "issue_identifier": identifier,
-                        "title": title,
-                        "summary": "자식 이슈 업데이트가 assignee 마지막 heartbeat보다 최신",
-                        "evidence": {
-                            "latest_child_update": latest_child_update.isoformat(),
-                            "last_heartbeat_at": last_heartbeat_at.isoformat()
-                            if last_heartbeat_at
-                            else None,
-                        },
-                        "recommended_action": f"{owner} 재실행 또는 parent issue 확인",
-                    }
+            # Only count children in states that require parent follow-up.
+            # `in_review` and `in_progress` children represent lane handoff or
+            # in-lane work and must not trigger a rerun signal.
+            actionable_children = [
+                child
+                for child in child_issues[issue_id]
+                if str(child.get("status") or "").strip().lower()
+                in MANAGER_FOLLOWUP_CHILD_STATUSES
+            ]
+            if actionable_children:
+                agent = agents[assignee_agent_id]
+                last_heartbeat_at = parse_timestamp(agent.get("lastHeartbeatAt"))
+                latest_child_update = max(
+                    (
+                        parse_timestamp(child.get("updatedAt"))
+                        for child in actionable_children
+                        if parse_timestamp(child.get("updatedAt")) is not None
+                    ),
+                    default=None,
                 )
+                if latest_child_update and (
+                    last_heartbeat_at is None or latest_child_update > last_heartbeat_at
+                ):
+                    owner = str(agent.get("name") or assignee_agent_id)
+                    items.append(
+                        {
+                            "fingerprint": fingerprint_for_item(
+                                "manager_followup_needed",
+                                identifier or issue_id,
+                                latest_child_update.isoformat(),
+                            ),
+                            "kind": "manager_followup_needed",
+                            "severity": "critical",
+                            "owner": owner,
+                            "issue_identifier": identifier,
+                            "title": title,
+                            "summary": "자식 이슈 업데이트가 assignee 마지막 heartbeat보다 최신",
+                            "evidence": {
+                                "latest_child_update": latest_child_update.isoformat(),
+                                "last_heartbeat_at": last_heartbeat_at.isoformat()
+                                if last_heartbeat_at
+                                else None,
+                            },
+                            "recommended_action": f"{owner} 재실행 또는 parent issue 확인",
+                        }
+                    )
 
         # active_issue_unassigned
         if (

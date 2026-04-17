@@ -184,7 +184,7 @@ def test_derive_manager_followup_needed_when_child_newer_than_assignee_heartbeat
                 "id": "c1",
                 "identifier": "ROB-52",
                 "title": "Child",
-                "status": "in_progress",
+                "status": "done",
                 "parentId": "p1",
                 "assigneeAgentId": None,
                 "updatedAt": "2026-04-15T10:58:24+09:00",
@@ -208,6 +208,109 @@ def test_derive_manager_followup_needed_when_child_newer_than_assignee_heartbeat
     )
 
     assert warnings == []
+    assert any(item["kind"] == "manager_followup_needed" for item in items)
+
+
+def _manager_followup_snapshot(
+    *,
+    parent_status: str,
+    child_status: str,
+    parent_updated_at: str = "2026-04-15T10:57:47+09:00",
+    child_updated_at: str = "2026-04-15T10:58:24+09:00",
+    last_heartbeat_at: str = "2026-04-15T10:54:16+09:00",
+) -> dict:
+    return {
+        "issues": [
+            {
+                "id": "p1",
+                "identifier": "ROB-111",
+                "title": "Parent",
+                "status": parent_status,
+                "parentId": None,
+                "assigneeAgentId": "a1",
+                "updatedAt": parent_updated_at,
+            },
+            {
+                "id": "c1",
+                "identifier": "ROB-181c",
+                "title": "Child",
+                "status": child_status,
+                "parentId": "p1",
+                "assigneeAgentId": None,
+                "updatedAt": child_updated_at,
+            },
+        ],
+        "approvals": [],
+        "agents": [
+            {
+                "id": "a1",
+                "name": "CEO",
+                "runtimeConfig": {"heartbeat": {"enabled": True, "intervalSec": 3600}},
+                "lastHeartbeatAt": last_heartbeat_at,
+            }
+        ],
+        "heartbeat_runs": {},
+    }
+
+
+def test_manager_followup_skipped_when_parent_blocked_and_child_in_review() -> None:
+    # ROB-166 regression: blocked parent waiting on external blocker +
+    # child moved to in_review (lane handoff) must NOT emit manager_followup.
+    snapshot = _manager_followup_snapshot(
+        parent_status="blocked",
+        child_status="in_review",
+    )
+
+    items, _warnings = probe.derive_boss_queue_items(
+        snapshot,
+        now=probe.parse_timestamp("2026-04-15T11:00:00+09:00"),
+    )
+
+    assert all(item["kind"] != "manager_followup_needed" for item in items)
+
+
+def test_manager_followup_skipped_when_child_in_progress_only() -> None:
+    # In-lane child work (in_progress) is not a parent-owner signal.
+    snapshot = _manager_followup_snapshot(
+        parent_status="in_progress",
+        child_status="in_progress",
+    )
+
+    items, _warnings = probe.derive_boss_queue_items(
+        snapshot,
+        now=probe.parse_timestamp("2026-04-15T11:00:00+09:00"),
+    )
+
+    assert all(item["kind"] != "manager_followup_needed" for item in items)
+
+
+def test_manager_followup_skipped_when_child_in_review() -> None:
+    # Code Reviewer lane handoff must not trigger parent rerun signal.
+    snapshot = _manager_followup_snapshot(
+        parent_status="in_progress",
+        child_status="in_review",
+    )
+
+    items, _warnings = probe.derive_boss_queue_items(
+        snapshot,
+        now=probe.parse_timestamp("2026-04-15T11:00:00+09:00"),
+    )
+
+    assert all(item["kind"] != "manager_followup_needed" for item in items)
+
+
+def test_manager_followup_emitted_when_child_blocked() -> None:
+    # Child blocked on something the parent owner may need to resolve.
+    snapshot = _manager_followup_snapshot(
+        parent_status="in_progress",
+        child_status="blocked",
+    )
+
+    items, _warnings = probe.derive_boss_queue_items(
+        snapshot,
+        now=probe.parse_timestamp("2026-04-15T11:00:00+09:00"),
+    )
+
     assert any(item["kind"] == "manager_followup_needed" for item in items)
 
 
