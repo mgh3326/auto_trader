@@ -329,6 +329,34 @@ def fetch_heartbeat_runs(
     return [row for row in data if isinstance(row, dict)]
 
 
+def fetch_issue_blockers(
+    *,
+    api_base: str,
+    issue_id: str,
+    api_key: str,
+    timeout: float = DEFAULT_HTTP_TIMEOUT,
+) -> list[dict[str, Any]]:
+    url = f"{normalize_api_base(api_base)}/api/issues/{issue_id}"
+    headers = {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+    with httpx.Client() as client:
+        response = client.get(url, headers=headers, timeout=timeout)
+        response.raise_for_status()
+        data = response.json()
+    if not isinstance(data, dict):
+        raise CliProbeError(
+            code="api_invalid_json",
+            message="Issue detail endpoint returned non-object JSON",
+            debug={"url": url, "body": data},
+        )
+    blocked_by = data.get("blockedBy")
+    if not isinstance(blocked_by, list):
+        return []
+    return [row for row in blocked_by if isinstance(row, dict)]
+
+
 def collect_raw_snapshot(
     launcher: CliLauncher,
     runtime: RuntimeConfig,
@@ -360,6 +388,31 @@ def collect_raw_snapshot(
             except Exception as exc:  # noqa: BLE001
                 warnings.append(
                     f"heartbeat API fallback unavailable for agent {agent_id}: {exc}"
+                )
+
+    # Enrich `blocked` issues with their `blockedBy` relation so the derive
+    # stage can detect parent_unblocked signals. The CLI `issue list` response
+    # does not include blockers, so we fetch per-issue details via HTTP.
+    if runtime.api_key and isinstance(issues, list):
+        for issue in issues:
+            if not isinstance(issue, dict):
+                continue
+            if str(issue.get("status") or "").strip().lower() != "blocked":
+                continue
+            issue_id = issue.get("id")
+            if not isinstance(issue_id, str) or not issue_id:
+                continue
+            if isinstance(issue.get("blockedBy"), list):
+                continue
+            try:
+                issue["blockedBy"] = fetch_issue_blockers(
+                    api_base=runtime.api_base or "",
+                    issue_id=issue_id,
+                    api_key=runtime.api_key,
+                )
+            except Exception as exc:  # noqa: BLE001
+                warnings.append(
+                    f"blockers fetch unavailable for issue {issue_id}: {exc}"
                 )
 
     return (
@@ -526,6 +579,66 @@ def derive_boss_queue_items(
                                 else None,
                             },
                             "recommended_action": f"{owner} 재실행 또는 parent issue 확인",
+                        }
+                    )
+
+        # parent_unblocked
+        # A `blocked` issue whose entire blockedBy set has reached `done` is
+        # ready to resume. Paperclip's backend fires an `issue_blockers_resolved`
+        # wake for this case — the probe emits the same signal independently so
+        # the Boss Action Queue surfaces it even when a wake is missed.
+        if (
+            isinstance(issue_id, str)
+            and status.strip().lower() == "blocked"
+            and isinstance(assignee_agent_id, str)
+            and assignee_agent_id in agents
+        ):
+            blocked_by = issue.get("blockedBy")
+            if isinstance(blocked_by, list) and blocked_by:
+                blocker_dicts = [b for b in blocked_by if isinstance(b, dict)]
+                all_done = bool(blocker_dicts) and all(
+                    str(b.get("status") or "").strip().lower() == "done"
+                    for b in blocker_dicts
+                )
+                if all_done:
+                    agent = agents[assignee_agent_id]
+                    owner = str(agent.get("name") or assignee_agent_id)
+                    blocker_timestamps = [
+                        ts
+                        for ts in (
+                            parse_timestamp(b.get("updatedAt")) for b in blocker_dicts
+                        )
+                        if ts is not None
+                    ]
+                    latest_blocker_update = (
+                        max(blocker_timestamps) if blocker_timestamps else None
+                    )
+                    blocker_identifiers = [
+                        str(b.get("identifier") or b.get("id") or "")
+                        for b in blocker_dicts
+                    ]
+                    items.append(
+                        {
+                            "fingerprint": fingerprint_for_item(
+                                "parent_unblocked",
+                                identifier or issue_id,
+                                latest_blocker_update.isoformat()
+                                if latest_blocker_update
+                                else "",
+                            ),
+                            "kind": "parent_unblocked",
+                            "severity": "high",
+                            "owner": owner,
+                            "issue_identifier": identifier,
+                            "title": title,
+                            "summary": "blocked 이슈의 모든 blocker가 done — 재실행 가능",
+                            "evidence": {
+                                "blocker_identifiers": blocker_identifiers,
+                                "latest_blocker_update": latest_blocker_update.isoformat()
+                                if latest_blocker_update
+                                else None,
+                            },
+                            "recommended_action": f"{owner} 재실행 또는 blocker 해소 후 후속 작업 시작",
                         }
                     )
 

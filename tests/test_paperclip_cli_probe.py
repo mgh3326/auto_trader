@@ -642,3 +642,163 @@ def test_in_review_with_no_assignee_falls_to_active_issue_unassigned() -> None:
         in ("issue_review_needed", "formal_approval_pending", "misrouted_review")
     ]
     assert review_items == []
+
+
+def _parent_unblocked_snapshot(
+    *,
+    blocker_statuses: list[str],
+    parent_status: str = "blocked",
+    blocker_updated_at: str = "2026-04-15T10:30:00+09:00",
+) -> dict:
+    blockers = [
+        {
+            "id": f"blk{index}",
+            "identifier": f"ROB-9{index}",
+            "status": blocker_status,
+            "updatedAt": blocker_updated_at,
+        }
+        for index, blocker_status in enumerate(blocker_statuses, start=1)
+    ]
+    return {
+        "issues": [
+            {
+                "id": "p1",
+                "identifier": "ROB-111",
+                "title": "Boss Action Queue",
+                "status": parent_status,
+                "parentId": None,
+                "assigneeAgentId": "a1",
+                "updatedAt": "2026-04-15T09:00:00+09:00",
+                "blockedBy": blockers,
+            }
+        ],
+        "approvals": [],
+        "agents": [
+            {
+                "id": "a1",
+                "name": "Staff",
+                "runtimeConfig": {"heartbeat": {"enabled": True, "intervalSec": 3600}},
+                "lastHeartbeatAt": "2026-04-15T10:00:00+09:00",
+            }
+        ],
+        "heartbeat_runs": {},
+    }
+
+
+def test_parent_unblocked_emitted_when_all_blockers_done() -> None:
+    # ROB-184: blocked parent whose entire blockedBy set reached `done` must
+    # emit `parent_unblocked` so the Boss Action Queue can wake the owner.
+    snapshot = _parent_unblocked_snapshot(blocker_statuses=["done", "done"])
+
+    items, warnings = probe.derive_boss_queue_items(
+        snapshot,
+        now=probe.parse_timestamp("2026-04-15T11:00:00+09:00"),
+    )
+
+    unblocked = [item for item in items if item["kind"] == "parent_unblocked"]
+    assert warnings == []
+    assert len(unblocked) == 1
+    assert unblocked[0]["severity"] == "high"
+    assert unblocked[0]["owner"] == "Staff"
+    assert unblocked[0]["issue_identifier"] == "ROB-111"
+    assert unblocked[0]["evidence"]["blocker_identifiers"] == ["ROB-91", "ROB-92"]
+
+
+def test_parent_unblocked_skipped_when_any_blocker_not_done() -> None:
+    # Partial blocker completion must NOT emit parent_unblocked — at least one
+    # blocker still needs to reach `done` (cancelled/in_progress/in_review all
+    # count as unresolved per the Paperclip backend wake semantics).
+    snapshot = _parent_unblocked_snapshot(blocker_statuses=["done", "in_progress"])
+
+    items, _warnings = probe.derive_boss_queue_items(
+        snapshot,
+        now=probe.parse_timestamp("2026-04-15T11:00:00+09:00"),
+    )
+
+    assert all(item["kind"] != "parent_unblocked" for item in items)
+
+
+def test_parent_unblocked_skipped_when_blockers_cancelled() -> None:
+    # Cancelled blockers do not count as resolved (matches Paperclip's
+    # issue_blockers_resolved wake behavior).
+    snapshot = _parent_unblocked_snapshot(blocker_statuses=["done", "cancelled"])
+
+    items, _warnings = probe.derive_boss_queue_items(
+        snapshot,
+        now=probe.parse_timestamp("2026-04-15T11:00:00+09:00"),
+    )
+
+    assert all(item["kind"] != "parent_unblocked" for item in items)
+
+
+def test_parent_unblocked_skipped_when_blocked_by_empty() -> None:
+    # A `blocked` issue with no declared blockers must not emit parent_unblocked
+    # because we cannot assert that any dependency has been resolved.
+    snapshot = _parent_unblocked_snapshot(blocker_statuses=[])
+
+    items, _warnings = probe.derive_boss_queue_items(
+        snapshot,
+        now=probe.parse_timestamp("2026-04-15T11:00:00+09:00"),
+    )
+
+    assert all(item["kind"] != "parent_unblocked" for item in items)
+
+
+def test_parent_unblocked_skipped_when_parent_not_blocked() -> None:
+    # Non-blocked parents are out of scope for this signal even if their
+    # blockedBy snapshot happens to show done blockers.
+    snapshot = _parent_unblocked_snapshot(
+        blocker_statuses=["done"],
+        parent_status="in_progress",
+    )
+
+    items, _warnings = probe.derive_boss_queue_items(
+        snapshot,
+        now=probe.parse_timestamp("2026-04-15T11:00:00+09:00"),
+    )
+
+    assert all(item["kind"] != "parent_unblocked" for item in items)
+
+
+def test_fetch_issue_blockers_returns_blocked_by_relation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called: dict[str, object] = {}
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {
+                "id": "i1",
+                "blockedBy": [
+                    {"id": "b1", "identifier": "ROB-90", "status": "done"},
+                    "not-a-dict",
+                ],
+            }
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+        def get(self, url: str, headers=None, timeout=None):
+            called["url"] = url
+            called["headers"] = headers
+            return FakeResponse()
+
+    monkeypatch.setattr(probe.httpx, "Client", lambda: FakeClient())
+
+    rows = probe.fetch_issue_blockers(
+        api_base="http://127.0.0.1:3100",
+        issue_id="i1",
+        api_key="token-1",
+    )
+
+    assert called["url"] == "http://127.0.0.1:3100/api/issues/i1"
+    assert called["headers"]["Authorization"] == "Bearer token-1"
+    assert len(rows) == 1
+    assert rows[0]["identifier"] == "ROB-90"
