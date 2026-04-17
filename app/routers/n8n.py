@@ -144,6 +144,13 @@ def _evaluate_g2_gate(payload: CIOFollowupRequest) -> N8nG2GatePayload:
 
 def _followup_context_from_tc(payload: TCFollowupRequest) -> BoardBriefContext:
     return BoardBriefContext(
+        exchange_krw=payload.exchange_krw,
+        unverified_cap=payload.unverified_cap,
+        next_obligation=payload.next_obligation,
+        tier_scenarios=payload.tier_scenarios,
+        hard_gate_candidates=payload.hard_gate_candidates,
+        data_sufficient_by_symbol=payload.data_sufficient_by_symbol,
+        btc_regime=payload.btc_regime,
         manual_cash_krw=payload.manual_cash_krw,
         daily_burn_krw=payload.daily_burn_krw,
         manual_cash_runway_days=payload.manual_cash_runway_days,
@@ -156,6 +163,13 @@ def _followup_context_from_tc(payload: TCFollowupRequest) -> BoardBriefContext:
 
 def _followup_context_from_cio(payload: CIOFollowupRequest) -> BoardBriefContext:
     return BoardBriefContext(
+        exchange_krw=payload.exchange_krw,
+        unverified_cap=payload.unverified_cap,
+        next_obligation=payload.next_obligation,
+        tier_scenarios=payload.tier_scenarios,
+        hard_gate_candidates=payload.hard_gate_candidates,
+        data_sufficient_by_symbol=payload.data_sufficient_by_symbol,
+        btc_regime=payload.btc_regime,
         manual_cash_krw=payload.manual_cash_krw,
         daily_burn_krw=payload.daily_burn_krw,
         manual_cash_runway_days=payload.manual_cash_runway_days,

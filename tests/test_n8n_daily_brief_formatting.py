@@ -136,6 +136,28 @@ class TestBoardBriefBuilders:
         from app.schemas.n8n.board_brief import BoardBriefContext
 
         return BoardBriefContext(
+            exchange_krw=1_000_000,
+            unverified_cap={"amount": 5_000_000},
+            next_obligation={
+                "date": "2026-04-24",
+                "days_remaining": 7,
+                "cash_needed_until": 2_500_000,
+            },
+            tier_scenarios=[
+                {
+                    "label": "T1",
+                    "deposit_amount": 1_500_000,
+                    "target_exchange_krw": 2_500_000,
+                    "buffer_days": 25,
+                    "cushion_after_obligation": 0,
+                }
+            ],
+            data_sufficient_by_symbol={"BTC": True},
+            btc_regime={
+                "close_vs_20d_ma": "above",
+                "ma20_slope": "up",
+                "drawdown_14d_pct": -3.2,
+            },
             manual_cash_krw=1_250_000,
             daily_burn_krw=50_000,
             weights_top_n=[{"symbol": "BTC", "weight_pct": 42.5}],
@@ -155,7 +177,7 @@ class TestBoardBriefBuilders:
         assert render.phase == "tc_preliminary"
         assert "경로 A·B 병행 가능" in text
         assert "BTC" in text
-        assert "DOGE" in text
+        assert "🧹 Dust 1종목" in text
         assert "🎯 권고" not in text
         assert "📊 Gate 판정 결과" not in text
         assert "[funding]" not in text
@@ -189,6 +211,7 @@ class TestBoardBriefBuilders:
         assert "📊 Gate 판정 결과" in text
         assert "🚫 신규 매수 차단 — G2 fail" in text
         assert "(3) 현금 우선 정책 적용" in text
-        assert "[funding]" in text
+        assert "[funding-confirmation]" in text
         assert "[action]" in text
-        assert text.count("경로 A·B 병행 가능") >= 2
+        assert "경로 A·B 병행 가능" in text
+        assert "**A 와 B 는 상호배타 아님 — 병행 가능.**" in text
