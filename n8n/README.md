@@ -93,6 +93,39 @@ docker exec auto_trader_n8n_prod n8n import:workflow \
 - **주기**: 15분 간격
 - **동작**: Upbit/KIS WebSocket heartbeat 파일을 읽어 비정상 상태 시 Discord 알림
 
+### Paperclip Watch Alert
+- **Export file**: `n8n/workflows/paperclip-watch-alert.json`
+- **Trigger**: Webhook `POST /webhook/watch-alert`
+- **동작**: auto_trader `OpenClawClient.send_watch_alert_to_n8n` ([ROB-173](/ROB/issues/ROB-173) / PR #540) 이 보내는 watch alert 페이로드를 받아 market (`crypto` / `kr` / `us`) 별 Discord 채널로 라우팅. `{market}:{symbol}:{condition_type}:{threshold}` fingerprint 를 workflow static data 에 저장해 **6시간 쿨다운** dedupe, 24시간 초과 엔트리는 GC.
+- **응답 계약**:
+  - 전송 성공 → `200 {"status":"sent","market":"...","sent_count":N,"deduped_count":M,...}`
+  - 전 항목 dedupe hit → `200 {"status":"deduped","sent_count":0,"deduped_count":N,...}`
+  - 잘못된 payload (unknown market, missing `triggered`, item 필드 누락) → `400 {"status":"error","error":"..."}`
+  - Discord 노드 실패 (5xx / 타임아웃) → `500 {"status":"error","error":"discord_send_failed",...}` — auto_trader 가 재시도 후 record 보존
+- **필수 credential (n8n UI 에서 수동 등록 후 import 된 workflow 에 매핑)**:
+
+  | market  | credential 이름                        | 소스 env 값                |
+  |---------|----------------------------------------|----------------------------|
+  | crypto  | `Discord Webhook - Watch Alert Crypto` | `DISCORD_WEBHOOK_CRYPTO`   |
+  | kr      | `Discord Webhook - Watch Alert KR`     | `DISCORD_WEBHOOK_KR`       |
+  | us      | `Discord Webhook - Watch Alert US`     | `DISCORD_WEBHOOK_US`       |
+
+  각 credential 은 n8n 의 `Discord Webhook account` 타입이며 `.env.prod` 에 저장된 URL 을 그대로 등록한다. Export 된 JSON 은 `REPLACE_WITH_DISCORD_WEBHOOK_*` placeholder id 를 가지므로 import 후 반드시 UI 에서 credential 을 재매핑할 것.
+- **auto_trader 연동**: `.env.prod` 의 `N8N_WATCH_ALERT_WEBHOOK_URL=http://localhost:5678/webhook/watch-alert` 세팅 후 API 재시작. webhook URL 은 PR #540 / [ROB-173](/ROB/issues/ROB-173) 에서 서버측 수신 경로에 이미 연결되어 있다.
+- **검증 (import 후 로컬)**:
+  ```bash
+  # 정상 전송 (crypto) → 200 sent
+  curl -sS -X POST http://127.0.0.1:5678/webhook/watch-alert \
+    -H 'content-type: application/json' \
+    -d '{"alert_type":"watch","correlation_id":"00000000-0000-0000-0000-000000000001","as_of":"2026-04-17T00:00:00Z","market":"crypto","triggered":[{"symbol":"AAVE","condition_type":"rsi_above","threshold":70.0,"current":73.12}],"message":"Watch alerts (crypto)\n- AAVE rsi_above: current=73.1200, threshold=70.0000"}'
+
+  # 동일 fingerprint 재전송 → 200 deduped
+  # market 오타 → 400
+  curl -sS -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:5678/webhook/watch-alert \
+    -H 'content-type: application/json' \
+    -d '{"alert_type":"watch","correlation_id":"x","as_of":"2026-04-17T00:00:00Z","market":"nyse","triggered":[{"symbol":"AAPL","condition_type":"rsi_above","threshold":70,"current":80}],"message":"x"}'
+  ```
+
 ## 런타임 계약
 
 n8n은 낮부 전용으로 `127.0.0.1:5678`에 고정 바인딩됩니다.
