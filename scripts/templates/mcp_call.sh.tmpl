@@ -84,6 +84,8 @@ coproc CURL_STREAM {
 }
 
 RESPONSE=""
+# Bash may unset CURL_STREAM_PID after a fast-exiting coproc; keep a stable copy.
+CURL_PID="$CURL_STREAM_PID"
 CURL_FD=${CURL_STREAM[0]}
 while IFS= read -r line <&"$CURL_FD"; do
   if [[ "$line" == data:* ]]; then
@@ -95,15 +97,15 @@ exec {CURL_FD}<&-
 
 if [[ -z "$RESPONSE" ]]; then
   CURL_STATUS=1
-  wait "$CURL_STREAM_PID" || CURL_STATUS=$?
+  wait "$CURL_PID" || CURL_STATUS=$?
   cat "$CURL_ERR" >&2
   exit "$CURL_STATUS"
 fi
 
-if kill "$CURL_STREAM_PID" 2>/dev/null; then
-  wait "$CURL_STREAM_PID" 2>/dev/null || true
+if kill "$CURL_PID" 2>/dev/null; then
+  wait "$CURL_PID" 2>/dev/null || true
 else
-  wait "$CURL_STREAM_PID" 2>/dev/null || true
+  wait "$CURL_PID" 2>/dev/null || true
 fi
 
 printf '%s\n' "$RESPONSE"

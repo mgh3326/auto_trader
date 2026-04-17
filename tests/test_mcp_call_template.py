@@ -1,4 +1,5 @@
 import json
+import socket
 import subprocess
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -79,3 +80,41 @@ def test_mcp_call_template_exits_after_first_sse_data_line(tmp_path: Path) -> No
         "result": {"content": []},
     }
     assert elapsed < 5
+
+
+def test_mcp_call_template_fast_fail_does_not_use_unbound_coproc_pid(
+    tmp_path: Path,
+) -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        closed_port = sock.getsockname()[1]
+
+    template = TEMPLATE_PATH.read_text()
+    rendered = (
+        template.replace("${MCP_ENDPOINT}", f"http://127.0.0.1:{closed_port}/mcp")
+        .replace("${MCP_AUTH_TOKEN}", "dummy-token")
+        .replace("${MCP_SESSION_ID}", "dummy-session")
+        .replace("${PAPERCLIP_AGENT_ID}", "dummy-agent")
+    )
+    helper = tmp_path / "mcp_call.sh"
+    helper.write_text(rendered)
+    helper.chmod(0o700)
+
+    start = time.monotonic()
+    result = subprocess.run(
+        [
+            "bash",
+            str(helper),
+            "get_sector_peers",
+            json.dumps({"symbol": "HSY", "market": "us"}),
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=5,
+    )
+    elapsed = time.monotonic() - start
+
+    assert result.returncode != 0
+    assert elapsed < 5
+    assert "CURL_STREAM_PID: unbound variable" not in result.stderr
