@@ -667,9 +667,7 @@ def evaluate_scout_report(
             from the markdown for G3 disclosure check.
     """
     cands = extract_candidates(markdown)
-    cash_override_m = (
-        (cash_balance / 1_000_000) if cash_balance is not None else None
-    )
+    cash_override_m = (cash_balance / 1_000_000) if cash_balance is not None else None
     results = run_gates(
         markdown,
         cands,
