@@ -191,7 +191,7 @@
           "name": "Discord Webhook - Watch Alert Crypto"
         }
       },
-      "onError": "continueErrorOutput"
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
@@ -213,7 +213,7 @@
           "name": "Discord Webhook - Watch Alert KR"
         }
       },
-      "onError": "continueErrorOutput"
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
@@ -235,7 +235,106 @@
           "name": "Discord Webhook - Watch Alert US"
         }
       },
-      "onError": "continueErrorOutput"
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "wa-discord-ok-crypto",
+            "leftValue": "={{ !$json.error }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        940,
+        -80
+      ],
+      "id": "wa-if-discord-ok-crypto",
+      "name": "Discord OK? — Crypto"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "wa-discord-ok-kr",
+            "leftValue": "={{ !$json.error }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        940,
+        80
+      ],
+      "id": "wa-if-discord-ok-kr",
+      "name": "Discord OK? — KR"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "wa-discord-ok-us",
+            "leftValue": "={{ !$json.error }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        940,
+        240
+      ],
+      "id": "wa-if-discord-ok-us",
+      "name": "Discord OK? — US"
     },
     {
       "parameters": {
@@ -385,16 +484,7 @@
       "main": [
         [
           {
-            "node": "Mark Sent",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ],
-      "error": [
-        [
-          {
-            "node": "Respond 500",
+            "node": "Discord OK? — Crypto",
             "type": "main",
             "index": 0
           }
@@ -405,16 +495,7 @@
       "main": [
         [
           {
-            "node": "Mark Sent",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ],
-      "error": [
-        [
-          {
-            "node": "Respond 500",
+            "node": "Discord OK? — KR",
             "type": "main",
             "index": 0
           }
@@ -425,13 +506,58 @@
       "main": [
         [
           {
-            "node": "Mark Sent",
+            "node": "Discord OK? — US",
             "type": "main",
             "index": 0
           }
         ]
-      ],
-      "error": [
+      ]
+    },
+    "Discord OK? — Crypto": {
+      "main": [
+        [
+          {
+            "node": "Mark Sent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 500",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Discord OK? — KR": {
+      "main": [
+        [
+          {
+            "node": "Mark Sent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 500",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Discord OK? — US": {
+      "main": [
+        [
+          {
+            "node": "Mark Sent",
+            "type": "main",
+            "index": 0
+          }
+        ],
         [
           {
             "node": "Respond 500",
