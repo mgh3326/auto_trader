@@ -167,6 +167,38 @@ def _make_intraday_db_manager(
     return DummySessionManager(DummyDB())
 
 
+def _patch_intraday_mocks(
+    monkeypatch,
+    *,
+    symbol: str,
+    nxt_eligible: bool,
+    history_table: str | None = None,
+    history_rows: list[dict[str, object]] | None = None,
+    minute_rows: list[dict[str, object]] | None = None,
+    kis: object | None = None,
+    store_background: object | None = None,
+) -> None:
+    monkeypatch.setattr(
+        _repo_module,
+        "AsyncSessionLocal",
+        lambda: _make_intraday_db_manager(
+            symbol=symbol,
+            nxt_eligible=nxt_eligible,
+            history_table=history_table,
+            history_rows=history_rows,
+            minute_rows=minute_rows,
+        ),
+    )
+    if kis is not None:
+        monkeypatch.setattr(_kis_api_module, "KISClient", lambda: kis)
+    if store_background is not None:
+        monkeypatch.setattr(
+            _repo_module,
+            "_store_minute_candles_background",
+            store_background,
+        )
+
+
 @pytest.mark.asyncio
 async def test_api_prefetch_plan_time_boundaries_for_nxt_eligible(monkeypatch):
     from app.services import kr_hourly_candles_read_service as svc
@@ -1349,7 +1381,9 @@ async def test_background_task_non_blocking(monkeypatch):
         await asyncio.sleep(0.2)
         background_storage_completed = True
 
-    monkeypatch.setattr(_repo_module, "_store_minute_candles_background", mock_store_background)
+    monkeypatch.setattr(
+        _repo_module, "_store_minute_candles_background", mock_store_background
+    )
 
     # Mock KIS API to return minute candles (triggers background storage)
     api_df = pd.DataFrame(
@@ -1559,7 +1593,9 @@ async def test_venue_separation_preserved(monkeypatch):
             {"symbol": symbol, "minute_rows": list(minute_rows)}
         )
 
-    monkeypatch.setattr(_repo_module, "_store_minute_candles_background", mock_store_background)
+    monkeypatch.setattr(
+        _repo_module, "_store_minute_candles_background", mock_store_background
+    )
 
     # Mock KIS API to return mixed KRX/NTX minute candles
     # First call (J/KRX market): returns KRX candles
@@ -1909,14 +1945,11 @@ async def test_read_kr_intraday_candles_1m_merges_same_minute_venues(monkeypatch
         ),
     ]
 
-    monkeypatch.setattr(
-        _repo_module,
-        "AsyncSessionLocal",
-        lambda: _make_intraday_db_manager(
-            symbol=symbol,
-            nxt_eligible=True,
-            minute_rows=minute_rows,
-        ),
+    _patch_intraday_mocks(
+        monkeypatch,
+        symbol=symbol,
+        nxt_eligible=True,
+        minute_rows=minute_rows,
     )
 
     out = await svc.read_kr_intraday_candles(
@@ -1998,21 +2031,18 @@ async def test_read_kr_intraday_candles_5m_includes_current_partial_bucket(monke
         ),
     ]
 
-    monkeypatch.setattr(
-        _repo_module,
-        "AsyncSessionLocal",
-        lambda: _make_intraday_db_manager(
-            symbol=symbol,
-            nxt_eligible=False,
-            history_table="public.kr_candles_5m",
-            history_rows=[],
-            minute_rows=minute_rows,
-        ),
-    )
     kis = SimpleNamespace(
         inquire_time_dailychartprice=AsyncMock(return_value=pd.DataFrame())
     )
-    monkeypatch.setattr(_kis_api_module, "KISClient", lambda: kis)
+    _patch_intraday_mocks(
+        monkeypatch,
+        symbol=symbol,
+        nxt_eligible=False,
+        history_table="public.kr_candles_5m",
+        history_rows=[],
+        minute_rows=minute_rows,
+        kis=kis,
+    )
 
     out = await svc.read_kr_intraday_candles(
         symbol=symbol,
@@ -2049,26 +2079,12 @@ async def test_read_kr_intraday_candles_5m_overlay_starts_background_storage(
     background_completed = False
     background_calls: list[tuple[str, list[dict[str, object]]]] = []
 
-    monkeypatch.setattr(
-        _repo_module,
-        "AsyncSessionLocal",
-        lambda: _make_intraday_db_manager(
-            symbol=symbol,
-            nxt_eligible=False,
-            history_table="public.kr_candles_5m",
-            history_rows=[],
-            minute_rows=[],
-        ),
-    )
-
     async def mock_store_background(*, symbol, minute_rows):
         nonlocal background_started, background_completed
         background_started = True
         background_calls.append((symbol, list(minute_rows)))
         await asyncio.sleep(0.2)
         background_completed = True
-
-    monkeypatch.setattr(_repo_module, "_store_minute_candles_background", mock_store_background)
 
     overlay_df = pd.DataFrame(
         [
@@ -2099,7 +2115,16 @@ async def test_read_kr_intraday_candles_5m_overlay_starts_background_storage(
     kis = SimpleNamespace(
         inquire_time_dailychartprice=AsyncMock(return_value=overlay_df)
     )
-    monkeypatch.setattr(_kis_api_module, "KISClient", lambda: kis)
+    _patch_intraday_mocks(
+        monkeypatch,
+        symbol=symbol,
+        nxt_eligible=False,
+        history_table="public.kr_candles_5m",
+        history_rows=[],
+        minute_rows=[],
+        kis=kis,
+        store_background=mock_store_background,
+    )
 
     start_time = datetime.datetime.now()
     out = await svc.read_kr_intraday_candles(
@@ -2138,29 +2163,25 @@ async def test_read_kr_intraday_candles_5m_fallback_schedules_background_storage
     now_kst = _dt_kst(2026, 2, 23, 9, 7, 0)
     background_storage_calls: list[dict[str, object]] = []
 
-    monkeypatch.setattr(
-        _repo_module,
-        "AsyncSessionLocal",
-        lambda: _make_intraday_db_manager(
-            symbol=symbol,
-            nxt_eligible=False,
-            history_table="public.kr_candles_5m",
-            history_rows=[],
-            minute_rows=[],
-        ),
-    )
-
     async def mock_store_background(*, symbol, minute_rows):
         background_storage_calls.append(
             {"symbol": symbol, "minute_rows": list(minute_rows)}
         )
         await asyncio.sleep(0)
 
-    monkeypatch.setattr(_repo_module, "_store_minute_candles_background", mock_store_background)
     kis = SimpleNamespace(
         inquire_time_dailychartprice=AsyncMock(return_value=pd.DataFrame())
     )
-    monkeypatch.setattr(_kis_api_module, "KISClient", lambda: kis)
+    _patch_intraday_mocks(
+        monkeypatch,
+        symbol=symbol,
+        nxt_eligible=False,
+        history_table="public.kr_candles_5m",
+        history_rows=[],
+        minute_rows=[],
+        kis=kis,
+        store_background=mock_store_background,
+    )
 
     fallback_minute_rows = [
         _MinuteRow(
@@ -2232,15 +2253,6 @@ async def test_read_kr_intraday_candles_1m_mixed_history_and_aware_fallback_keep
         )
     ]
 
-    monkeypatch.setattr(
-        _repo_module,
-        "AsyncSessionLocal",
-        lambda: _make_intraday_db_manager(
-            symbol=symbol,
-            nxt_eligible=True,
-            minute_rows=db_minute_rows,
-        ),
-    )
     fallback_df = pd.DataFrame(
         [
             {
@@ -2273,14 +2285,16 @@ async def test_read_kr_intraday_candles_1m_mixed_history_and_aware_fallback_keep
             return fallback_df
         return pd.DataFrame()
 
-    monkeypatch.setattr(
-        _kis_api_module,
-        "KISClient",
-        lambda: SimpleNamespace(
+    _patch_intraday_mocks(
+        monkeypatch,
+        symbol=symbol,
+        nxt_eligible=True,
+        minute_rows=db_minute_rows,
+        kis=SimpleNamespace(
             inquire_time_dailychartprice=AsyncMock(side_effect=mock_inquire)
         ),
+        store_background=AsyncMock(),
     )
-    monkeypatch.setattr(_repo_module, "_store_minute_candles_background", AsyncMock())
 
     out = await svc.read_kr_intraday_candles(
         symbol=symbol,
@@ -2386,17 +2400,6 @@ async def test_read_kr_intraday_candles_5m_mixed_history_and_aware_fallback_keep
         )
     ]
 
-    monkeypatch.setattr(
-        _repo_module,
-        "AsyncSessionLocal",
-        lambda: _make_intraday_db_manager(
-            symbol=symbol,
-            nxt_eligible=True,
-            history_table="public.kr_candles_5m",
-            history_rows=history_rows,
-            minute_rows=[],
-        ),
-    )
     fallback_df = pd.DataFrame(
         [
             {
@@ -2462,14 +2465,18 @@ async def test_read_kr_intraday_candles_5m_mixed_history_and_aware_fallback_keep
             return fallback_df
         return pd.DataFrame()
 
-    monkeypatch.setattr(
-        _kis_api_module,
-        "KISClient",
-        lambda: SimpleNamespace(
+    _patch_intraday_mocks(
+        monkeypatch,
+        symbol=symbol,
+        nxt_eligible=True,
+        history_table="public.kr_candles_5m",
+        history_rows=history_rows,
+        minute_rows=[],
+        kis=SimpleNamespace(
             inquire_time_dailychartprice=AsyncMock(side_effect=mock_inquire)
         ),
+        store_background=AsyncMock(),
     )
-    monkeypatch.setattr(_repo_module, "_store_minute_candles_background", AsyncMock())
 
     out = await svc.read_kr_intraday_candles(
         symbol=symbol,
@@ -2553,16 +2560,6 @@ async def test_read_kr_intraday_candles_1m_pure_kis_overlay_and_fallback_keep_na
     symbol = "005930"
     now_kst = _dt_kst(2026, 3, 10, 8, 18, 0)
 
-    monkeypatch.setattr(
-        _repo_module,
-        "AsyncSessionLocal",
-        lambda: _make_intraday_db_manager(
-            symbol=symbol,
-            nxt_eligible=True,
-            minute_rows=[],
-        ),
-    )
-
     overlay_df = pd.DataFrame(
         [
             {
@@ -2605,14 +2602,16 @@ async def test_read_kr_intraday_candles_1m_pure_kis_overlay_and_fallback_keep_na
             return fallback_df
         return pd.DataFrame()
 
-    monkeypatch.setattr(
-        _kis_api_module,
-        "KISClient",
-        lambda: SimpleNamespace(
+    _patch_intraday_mocks(
+        monkeypatch,
+        symbol=symbol,
+        nxt_eligible=True,
+        minute_rows=[],
+        kis=SimpleNamespace(
             inquire_time_dailychartprice=AsyncMock(side_effect=mock_inquire)
         ),
+        store_background=AsyncMock(),
     )
-    monkeypatch.setattr(_repo_module, "_store_minute_candles_background", AsyncMock())
 
     out = await svc.read_kr_intraday_candles(
         symbol=symbol,
@@ -2637,18 +2636,6 @@ async def test_read_kr_intraday_candles_5m_pure_kis_overlay_and_fallback_keep_na
 
     symbol = "005930"
     now_kst = _dt_kst(2026, 3, 10, 8, 19, 0)
-
-    monkeypatch.setattr(
-        _repo_module,
-        "AsyncSessionLocal",
-        lambda: _make_intraday_db_manager(
-            symbol=symbol,
-            nxt_eligible=True,
-            history_table="public.kr_candles_5m",
-            history_rows=[],
-            minute_rows=[],
-        ),
-    )
 
     overlay_df = pd.DataFrame(
         [
@@ -2692,14 +2679,18 @@ async def test_read_kr_intraday_candles_5m_pure_kis_overlay_and_fallback_keep_na
             return fallback_df
         return pd.DataFrame()
 
-    monkeypatch.setattr(
-        _kis_api_module,
-        "KISClient",
-        lambda: SimpleNamespace(
+    _patch_intraday_mocks(
+        monkeypatch,
+        symbol=symbol,
+        nxt_eligible=True,
+        history_table="public.kr_candles_5m",
+        history_rows=[],
+        minute_rows=[],
+        kis=SimpleNamespace(
             inquire_time_dailychartprice=AsyncMock(side_effect=mock_inquire)
         ),
+        store_background=AsyncMock(),
     )
-    monkeypatch.setattr(_repo_module, "_store_minute_candles_background", AsyncMock())
 
     out = await svc.read_kr_intraday_candles(
         symbol=symbol,
@@ -2728,30 +2719,27 @@ async def test_read_kr_intraday_candles_db_only_does_not_schedule_background_sto
 
     symbol = "005930"
 
-    monkeypatch.setattr(
-        _repo_module,
-        "AsyncSessionLocal",
-        lambda: _make_intraday_db_manager(
-            symbol=symbol,
-            nxt_eligible=False,
-            history_table="public.kr_candles_5m",
-            history_rows=[
-                _make_hour_row(
-                    bucket_kst_naive=datetime.datetime(2026, 2, 21, 9, 0, 0),
-                    open=100.0,
-                    high=101.0,
-                    low=99.0,
-                    close=100.5,
-                    volume=1200.0,
-                    value=120000.0,
-                    venues=["KRX"],
-                )
-            ],
-            minute_rows=[],
-        ),
-    )
     store_mock = AsyncMock()
-    monkeypatch.setattr(_repo_module, "_store_minute_candles_background", store_mock)
+    _patch_intraday_mocks(
+        monkeypatch,
+        symbol=symbol,
+        nxt_eligible=False,
+        history_table="public.kr_candles_5m",
+        history_rows=[
+            _make_hour_row(
+                bucket_kst_naive=datetime.datetime(2026, 2, 21, 9, 0, 0),
+                open=100.0,
+                high=101.0,
+                low=99.0,
+                close=100.5,
+                volume=1200.0,
+                value=120000.0,
+                venues=["KRX"],
+            )
+        ],
+        minute_rows=[],
+        store_background=store_mock,
+    )
 
     out = await svc.read_kr_intraday_candles(
         symbol=symbol,
