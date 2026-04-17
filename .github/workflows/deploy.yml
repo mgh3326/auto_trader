@@ -120,7 +120,9 @@ jobs:
 
       - name: Deploy via SSH
         timeout-minutes: 10
+        shell: bash
         run: |
+          set -eo pipefail
           ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 \
             ${{ secrets.DEPLOY_SSH_HOST }} \
             "cd /home/mgh3326/auto_trader && ./scripts/deploy.sh" 2>&1 | tee /tmp/deploy-output.txt
