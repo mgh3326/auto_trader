@@ -109,6 +109,22 @@ class TestMcpServerMain:
             "caller-identity-middleware",
         ]
 
+    def test_non_integer_log_level_falls_back_to_info(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        module, mcp, _ = _load_main_module(monkeypatch)
+        module.settings.LOG_LEVEL = "BASIC_FORMAT"
+
+        module.main()
+
+        mcp.run.assert_called_once_with(
+            transport="streamable-http",
+            host="0.0.0.0",
+            port=8765,
+            path="/mcp",
+            uvicorn_config={"timeout_graceful_shutdown": 10},
+        )
+
     def test_streamable_http_uses_default_shutdown_timeout(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
