@@ -51,6 +51,16 @@ mcp.add_middleware(CallerIdentityMiddleware())
 register_all_tools(mcp)
 
 
+def _validate_caller_agent_id_fallback(mcp_type: str) -> None:
+    fallback_agent_id = settings.mcp_caller_agent_id_fallback
+    if mcp_type in {"streamable-http", "sse"} and fallback_agent_id:
+        raise RuntimeError(
+            "MCP_CALLER_AGENT_ID is only allowed for stdio/local dev transports; "
+            "unset it for production HTTP deployments and send "
+            "x-paperclip-agent-id explicitly."
+        )
+
+
 def main() -> None:
     log_level_name = str(getattr(settings, "LOG_LEVEL", "INFO") or "INFO").upper()
     log_level = getattr(logging, log_level_name, logging.INFO)
@@ -73,6 +83,8 @@ def main() -> None:
     )
 
     try:
+        _validate_caller_agent_id_fallback(mcp_type)
+
         if mcp_type == "stdio":
             mcp.run(transport="stdio")
         elif mcp_type == "sse":

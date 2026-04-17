@@ -866,7 +866,9 @@ target trader agent id.
   header in a production path is an outage, not a soft warning.
 - Local dev / stdio transports that cannot send HTTP headers may export
   `MCP_CALLER_AGENT_ID` as an env fallback. This is a dev convenience only —
-  production callers must send the header explicitly.
+  production callers must send the header explicitly. `MCP_CALLER_AGENT_ID`
+  MUST NOT be set in production HTTP deployments because it re-opens a caller
+  spoofing vector for requests that omit `x-paperclip-agent-id`.
 
 ### Scout / Trader curl bridge
 
@@ -905,7 +907,7 @@ Environment variables:
 - `MCP_PATH` : `/mcp`
 - `MCP_GRACEFUL_SHUTDOWN_TIMEOUT` : `10` (seconds, HTTP transports only: `sse` / `streamable-http`)
 - `MCP_USER_ID` : `1` (manual holdings 조회에 사용할 기본 사용자 ID)
-- `MCP_CALLER_AGENT_ID` : optional caller agent id fallback when no `x-paperclip-agent-id` HTTP header is present
+- `MCP_CALLER_AGENT_ID` : DEV/stdio only — MUST NOT be set in production HTTP deployments (re-opens caller spoofing vector)
 
 Example:
 ```bash

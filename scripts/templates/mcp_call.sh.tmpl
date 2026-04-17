@@ -11,6 +11,8 @@
 #   to middleware-extracted HTTP header. Every caller MUST send the
 #   `x-paperclip-agent-id` header; otherwise defensive_trim and future
 #   caller-identity-gated tools reject the call.
+#   Do NOT set MCP_CALLER_AGENT_ID for this HTTP bridge. That env fallback is
+#   DEV/stdio only and MUST NOT be used in production HTTP deployments.
 #
 # Operator regeneration procedure (CIO / Scout / Trader operators):
 #   1. Export the three env vars below (values differ per host / session):
