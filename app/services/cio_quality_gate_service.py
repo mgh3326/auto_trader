@@ -165,6 +165,24 @@ def has_keyword(text: str, group: str) -> bool:
 CODE_RE = re.compile(r"\b(\d{6})\b")
 SKIP_CELL_WORDS = {"---", ""}
 
+TABLE_SEPARATOR_RE = re.compile(r"^\s*\|[\s\-:|]+\|\s*$")
+EXEC_HEADER_RE = re.compile(
+    r"(실행\s*경로|execution\s*path|계좌.*실행|\bexec(ution)?\b)",
+    re.IGNORECASE,
+)
+CATEGORY_HEADER_RE = re.compile(
+    r"(^|\s)(분류|category)(\s|$)",
+    re.IGNORECASE,
+)
+# v2 §6.2 sub-bullets label the execution path like
+# "· execution path: KIS 즉시 ·" or "· 실행경로: Toss manual ·". Capture
+# only the path-labeled segment so G4's qualifier check does not match
+# unrelated middle-dot bullet segments (뉴스: 해외 매출 / 전기 자동차 …).
+EXEC_PATH_SEGMENT_RE = re.compile(
+    r"(?:execution\s*path|실행\s*경로)\s*[:：]\s*([^·\n|]+)",
+    re.IGNORECASE,
+)
+
 
 @dataclass
 class Candidate:
@@ -195,10 +213,47 @@ class Candidate:
         return "fail"
 
 
-def _extract_execution_cell(row_line: str) -> str:
-    """Return the trailing cell text from a markdown pipe row."""
+def _detect_exec_col_idx(header_line: str) -> int | None:
+    """Return the 0-based column index labelled 실행경로/execution path, or None."""
+    cells = [c.strip() for c in header_line.strip().strip("|").split("|")]
+    for idx, cell in enumerate(cells):
+        if EXEC_HEADER_RE.search(cell):
+            return idx
+    return None
+
+
+def _detect_category_col_idx(header_line: str) -> int | None:
+    """Return the 0-based column index labelled 분류/category, or None."""
+    cells = [c.strip() for c in header_line.strip().strip("|").split("|")]
+    for idx, cell in enumerate(cells):
+        if CATEGORY_HEADER_RE.search(cell):
+            return idx
+    return None
+
+
+def _exec_path_segments(text: str) -> list[str]:
+    """Return only the substrings that follow an 'execution path:' / '실행경로:' label.
+
+    Used for G4's sub-bullet fallback so unrelated middle-dot bullet segments
+    (뉴스 headlines, S/R notes, etc.) cannot satisfy EXEC_QUALIFIER_RE via
+    incidental 해외 / 자동 / 수동 tokens.
+    """
+    return [m.strip() for m in EXEC_PATH_SEGMENT_RE.findall(text)]
+
+
+def _extract_execution_cell(row_line: str, col_idx: int | None = None) -> str:
+    """Return the execution-path cell text from a markdown pipe row.
+
+    If ``col_idx`` is given (header-detected 실행경로/execution path column),
+    pull that column directly — the row's column order is irrelevant. When
+    no header column matched, fall back to the trailing cell.
+    """
     cells = [c.strip() for c in row_line.strip().strip("|").split("|")]
-    return cells[-1] if cells else ""
+    if not cells:
+        return ""
+    if col_idx is not None and 0 <= col_idx < len(cells):
+        return cells[col_idx]
+    return cells[-1]
 
 
 def extract_candidates(md: str) -> list[Candidate]:
@@ -213,12 +268,30 @@ def extract_candidates(md: str) -> list[Candidate]:
     and (d) not introducing a new 6-digit code. The pipe-count of the
     subline itself is irrelevant — v2 reports frequently write multi-cell
     bullet rows like `|   | • RSI 54 | • BB mid |`.
+
+    Table-header tracking: when a markdown table separator (`|---|---|`) is
+    encountered, the row immediately above is treated as the column header
+    for the table that follows. If any header cell matches `실행경로` /
+    `execution path`, that column index is used to extract the execution
+    cell from subsequent candidate rows — regardless of column position
+    (v2 §6.2 reports put 액션 in the last column, not 실행경로).
     """
     lines = md.splitlines()
     by_code: dict[str, Candidate] = {}
+    current_exec_col_idx: int | None = None
+    current_category_col_idx: int | None = None
     i = 0
     while i < len(lines):
         line = lines[i]
+        if TABLE_SEPARATOR_RE.match(line):
+            if i > 0 and lines[i - 1].lstrip().startswith("|"):
+                current_exec_col_idx = _detect_exec_col_idx(lines[i - 1])
+                current_category_col_idx = _detect_category_col_idx(lines[i - 1])
+            else:
+                current_exec_col_idx = None
+                current_category_col_idx = None
+            i += 1
+            continue
         if line.count("|") < 3:
             i += 1
             continue
@@ -252,9 +325,20 @@ def extract_candidates(md: str) -> list[Candidate]:
             (c for c in cells if CODE_RE.search(c)), cells[0] if cells else code
         )
         name = re.sub(r"\*+", "", name_cell).strip()
-        is_new = "신규" in name_cell or "신규" in cells[0] if cells else False
+        # 신규 detection is scoped to avoid false positives from 액션/뉴스/메모
+        # cells that incidentally mention "신규":
+        #   - If the table has a 분류 header column (v2 §6.2), trust only that
+        #     cell. No leakage from other columns.
+        #   - Otherwise fall back to the 종목 name cell where v1 reports embed
+        #     the `[신규]` tag (e.g. "**[신규]** Krafton 259960").
+        if current_category_col_idx is not None and 0 <= current_category_col_idx < len(
+            cells
+        ):
+            is_new = "신규" in cells[current_category_col_idx]
+        else:
+            is_new = "신규" in name_cell
 
-        exec_cell = _extract_execution_cell(line)
+        exec_cell = _extract_execution_cell(line, current_exec_col_idx)
 
         if code in by_code:
             c = by_code[code]
@@ -482,11 +566,22 @@ def run_gates(
     )
 
     # ---- G4 Execution path ----
-    no_qual = [
-        c
-        for c in cands
-        if c.is_new and not EXEC_QUALIFIER_RE.search(c.execution_cell or c.context_text)
-    ]
+    # The qualifier must live in one of two explicit slots:
+    #   1. The 실행경로 / execution path column cell (header-detected or
+    #      v1 trailing cell).
+    #   2. A sub-bullet segment explicitly labelled "execution path:" or
+    #      "실행경로:" — scanned via EXEC_PATH_SEGMENT_RE so that incidental
+    #      middle-dot bullet text (뉴스: 해외 매출 / 전기 자동차 / 수동 검증)
+    #      cannot false-pass G4 through context_text-wide regex matching.
+    def _has_exec_qualifier(cand: Candidate) -> bool:
+        if EXEC_QUALIFIER_RE.search(cand.execution_cell):
+            return True
+        for seg in _exec_path_segments(cand.context_text):
+            if EXEC_QUALIFIER_RE.search(seg):
+                return True
+        return False
+
+    no_qual = [c for c in cands if c.is_new and not _has_exec_qualifier(c)]
     results.append(
         GateResult(
             key="G4",
