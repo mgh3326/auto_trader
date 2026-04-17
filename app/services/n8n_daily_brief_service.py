@@ -8,70 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any
 
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
-
-try:
-    from app.mcp_server.tooling.trade_journal_tools import compute_active_dca_daily_burn
-except ImportError:
-
-    async def compute_active_dca_daily_burn() -> dict[str, Any]:
-        return {
-            "daily_burn_krw": 0.0,
-            "active_count": 0,
-            "per_record": [],
-            "days_to_next_obligation": None,
-            "cash_needed_until_obligation": 0.0,
-        }
-
-
-try:
-    from app.schemas.n8n.board_brief import (
-        BoardBriefContext,
-        BoardBriefRender,
-        GateResult,
-        N8nG2GatePayload,
-    )
-except ModuleNotFoundError:
-
-    @dataclass
-    class GateResult:
-        id: str
-        label: str
-        status: str
-        detail: str
-
-    @dataclass
-    class N8nG2GatePayload:
-        pass_: bool = True
-
-    @dataclass
-    class BoardBriefContext:
-        date_fmt: str = ""
-        market_overview: Any = None
-        pending_by_market: dict[str, Any] = field(default_factory=dict)
-        portfolio_by_market: dict[str, Any] = field(default_factory=dict)
-        yesterday_fills: dict[str, Any] = field(default_factory=dict)
-        daily_burn: dict[str, Any] = field(default_factory=dict)
-        gate_results: dict[str, Any] = field(default_factory=dict)
-        generated_at: datetime = field(default_factory=now_kst)
-        cio_recommendation: str | None = None
-
-        def model_copy(self, update: dict[str, Any]) -> BoardBriefContext:
-            return replace(self, **update)
-
-    @dataclass
-    class BoardBriefRender:
-        phase: str
-        brief_text: str
-        generated_at: datetime
-        gate_results: dict[str, Any] | None = None
-
-
 from app.schemas.n8n.common import N8nMarketOverview
 from app.services.n8n_formatting import (
     fmt_amount,
@@ -364,7 +305,6 @@ def _build_brief_text(
     pending_by_market: dict[str, dict[str, Any]],
     portfolio_by_market: dict[str, dict[str, Any]],
     yesterday_fills: dict[str, Any],
-    daily_burn: dict[str, Any] | None = None,
 ) -> str:
     """Build the full brief text for Discord delivery."""
     lines: list[str] = []
@@ -472,16 +412,6 @@ def _build_brief_text(
         )
         lines.append("")
 
-    # Funding
-    burn_data = daily_burn or {}
-    burn_krw = float(burn_data.get("daily_burn_krw") or 0)
-    active_dca_count = int(burn_data.get("active_count") or 0)
-    lines.append("💰 자금 현황")
-    lines.append(
-        f"daily_burn: {burn_krw:,.0f} KRW (active DCA {active_dca_count}종 · 재산출)"
-    )
-    lines.append("")
-
     # Yesterday fills
     fills_data = yesterday_fills or {}
     total_fills = fills_data.get("total", 0)
@@ -507,119 +437,6 @@ def _build_brief_text(
     lines.append("각 시장별 미체결 상세는 스레드에서 확인 후 리뷰해줘.")
 
     return "\n".join(lines)
-
-
-def _build_tc_preliminary_text(ctx: BoardBriefContext) -> str:
-    lines: list[str] = []
-    lines.append("📊 TC Preliminary — 자금 현황 재계산")
-    lines.append("")
-    lines.append("🧭 Framing")
-    lines.append("경로 A·B 병행 가능. 경로 A/B는 상호배타가 아니다.")
-    lines.append("")
-    lines.append("💰 자금 현황")
-    lines.append(f"- manual_cash: {fmt_amount(float(ctx.manual_cash))}")
-    lines.append(
-        f"- daily_burn: {fmt_amount(float(ctx.daily_burn)) if ctx.daily_burn is not None else '-'}"
-    )
-    lines.append(
-        f"- days_to_next_obligation: {ctx.days_to_next_obligation}일"
-        if ctx.days_to_next_obligation is not None
-        else "- days_to_next_obligation: -"
-    )
-    lines.append("")
-    lines.append("📈 쏠림/편중")
-    if ctx.weights_top_n:
-        for item in ctx.weights_top_n:
-            lines.append(f"- {item.symbol} {item.weight_pct:.1f}% ({item.market})")
-    else:
-        lines.append("- 상위 비중 데이터 없음")
-    lines.append("")
-    lines.append("📉 매도/축소 후보")
-    if ctx.holdings:
-        for item in ctx.holdings[:5]:
-            lines.append(f"- {item.symbol} ({item.market})")
-    else:
-        lines.append("- 후보 없음")
-    if ctx.dust_items:
-        dust_line = ", ".join(
-            f"{item.symbol} (~{int(item.value_krw):,} KRW)" for item in ctx.dust_items
-        )
-        lines.append(f"- Dust footnote: {dust_line}")
-    lines.append("")
-    lines.append("🛣️ 경로 A / 경로 B")
-    lines.append("- A: 즉시 재배치")
-    lines.append("- B: 분할 대응")
-    lines.append("- 경로 A·B 병행 가능")
-    return "\n".join(lines)
-
-
-def _normalize_gate_results(
-    gate_results: dict[str, GateResult | N8nG2GatePayload],
-) -> dict[str, GateResult]:
-    defaults = {
-        "G1": ("G1 Runway", "tbd", "TBD (S7)"),
-        "G2": ("G2 Diversification", "pending", "S5 engineering 중"),
-        "G3": ("G3", "tbd", "TBD (Sx)"),
-        "G4": ("G4", "tbd", "TBD (Sx)"),
-        "G5": ("G5", "tbd", "TBD (Sx)"),
-        "G6": ("G6", "tbd", "TBD (Sx)"),
-    }
-    normalized: dict[str, GateResult] = {}
-    for gate_id, (label, status, detail) in defaults.items():
-        item = gate_results.get(gate_id)
-        if item is None or not isinstance(item, GateResult):
-            normalized[gate_id] = GateResult(
-                id=gate_id, label=label, status=status, detail=detail
-            )
-        else:
-            normalized[gate_id] = item
-    return normalized
-
-
-def _build_cio_pending_text(ctx: BoardBriefContext) -> str:
-    lines: list[str] = [_build_tc_preliminary_text(ctx), ""]
-    lines.append("🎯 권고")
-    lines.append(ctx.cio_recommendation or "(CIO 의견 대기 중)")
-    lines.append("")
-    lines.append("📊 Gate 판정 결과")
-    gate_status_results = _normalize_gate_results(ctx.gate_results)
-    for gate_id in ("G1", "G2", "G3", "G4", "G5", "G6"):
-        gate = gate_status_results[gate_id]
-        lines.append(f"- {gate.id} {gate.label}: {gate.status} ({gate.detail})")
-    g2_payload = ctx.gate_results.get("G2")
-    if isinstance(g2_payload, N8nG2GatePayload) and not g2_payload.pass_:
-        lines.append("🚫 신규 매수 차단 — G2 fail")
-    lines.append("")
-    lines.append("[funding] 자금 의도/제약 확인. (경로 A·B 병행 가능)")
-    lines.append("[action] 실행 우선순위 확인. (경로 A·B 병행 가능)")
-    return "\n".join(lines)
-
-
-def build_tc_preliminary(ctx: BoardBriefContext) -> BoardBriefRender:
-    brief_text = _build_tc_preliminary_text(ctx)
-    return BoardBriefRender(
-        phase="tc_preliminary",
-        brief_text=brief_text,
-        generated_at=ctx.generated_at,
-    )
-
-
-def build_cio_pending_decision(ctx: BoardBriefContext) -> BoardBriefRender:
-    gate_status_results = _normalize_gate_results(ctx.gate_results)
-    merged_gate_results: dict[str, GateResult | N8nG2GatePayload] = {
-        **gate_status_results
-    }
-    if isinstance(ctx.gate_results.get("G2"), N8nG2GatePayload):
-        merged_gate_results["G2"] = ctx.gate_results["G2"]
-
-    pending_ctx = ctx.model_copy(update={"gate_results": merged_gate_results})
-    brief_text = _build_cio_pending_text(pending_ctx)
-    return BoardBriefRender(
-        phase="cio_pending",
-        brief_text=brief_text,
-        gate_results=merged_gate_results,
-        generated_at=ctx.generated_at,
-    )
 
 
 async def fetch_daily_brief(
@@ -652,13 +469,9 @@ async def fetch_daily_brief(
         as_of=effective_as_of,
     )
     portfolio_task = _get_portfolio_overview(effective_markets)
-    daily_burn_task = compute_active_dca_daily_burn()
 
     results_s1 = await asyncio.gather(
-        pending_task,
-        portfolio_task,
-        daily_burn_task,
-        return_exceptions=True,
+        pending_task, portfolio_task, return_exceptions=True
     )
 
     # Unpack Stage 1 results with fallbacks
@@ -673,18 +486,6 @@ async def fetch_daily_brief(
         portfolio_result = results_s1[1]
     elif isinstance(results_s1[1], Exception):
         errors.append({"source": "portfolio", "error": str(results_s1[1])})
-
-    daily_burn_result: dict[str, Any] = {
-        "daily_burn_krw": 0.0,
-        "active_count": 0,
-        "per_record": [],
-        "days_to_next_obligation": None,
-        "cash_needed_until_obligation": 0.0,
-    }
-    if isinstance(results_s1[2], dict):
-        daily_burn_result = results_s1[2]
-    elif isinstance(results_s1[2], Exception):
-        errors.append({"source": "daily_burn", "error": str(results_s1[2])})
 
     # Derive shared symbol context for Stage 2
     symbols_by_market = _collect_symbols_by_market(pending_result, portfolio_result)
@@ -749,7 +550,6 @@ async def fetch_daily_brief(
         pending_by_market=pending_by_market,
         portfolio_by_market=portfolio_by_market,
         yesterday_fills=fills_result,
-        daily_burn=daily_burn_result,
     )
 
     # Collect sub-errors
@@ -769,10 +569,6 @@ async def fetch_daily_brief(
             market: portfolio_by_market.get(market) for market in effective_markets
         },
         "yesterday_fills": fills_result,
-        "daily_burn": daily_burn_result,
         "brief_text": brief_text,
         "errors": errors,
     }
-
-
-__all__ = ["build_cio_pending_decision", "build_tc_preliminary", "fetch_daily_brief"]
