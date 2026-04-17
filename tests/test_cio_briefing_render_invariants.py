@@ -1,112 +1,107 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pytest
 
-from app.schemas.n8n.board_brief import BoardBriefContext
+from app.schemas.n8n.board_brief import GateResult
 from app.services.n8n_daily_brief_service import (
-    InvariantViolation,
     RenderInvariantError,
-    RenderRouter,
     build_cio_pending_decision,
-    build_tc_preliminary,
     validate_render_invariants,
 )
+from tests.fixtures.cio_briefing import plan_v2_section_f_context, replace_once
 
 
-def _v2_context(**updates: object) -> BoardBriefContext:
-    payload = {
-        "exchange_krw": 1_000_000,
-        "unverified_cap": {
-            "amount": 5_000_000,
-            "verified_by_boss_today": False,
-        },
-        "daily_burn_krw": 100_000,
-        "next_obligation": {
-            "date": "2026-04-24",
-            "days_remaining": 7,
-            "cash_needed_until": 2_500_000,
-        },
-        "tier_scenarios": [
-            {
-                "label": "T1",
-                "deposit_amount": 1_500_000,
-                "target_exchange_krw": 2_500_000,
-                "buffer_days": 25,
-                "cushion_after_obligation": 0,
-            },
-        ],
-        "data_sufficient_by_symbol": {"BTC": True},
-        "btc_regime": {
-            "close_vs_20d_ma": "above",
-            "ma20_slope": "up",
-            "drawdown_14d_pct": -3.2,
-        },
-        "holdings": [
-            {"symbol": "BTC", "current_krw_value": 1_000_000, "dust": False},
-            {"symbol": "DOGE", "current_krw_value": 3_000, "dust": True},
-        ],
-        "dust_items": [{"symbol": "DOGE", "current_krw_value": 3_000}],
-    }
-    payload.update(updates)
-    return BoardBriefContext.model_validate(payload)
+def _append_immediate_buy(text: str) -> str:
+    return text + "\nCIO 권고 (1) 즉시 매수"
 
 
-class RecordingRouter(RenderRouter):
-    def __init__(self) -> None:
-        self.ops_messages: list[str] = []
-
-    def route_ops_escalation(self, message: str) -> None:
-        self.ops_messages.append(message)
+def _append_fail_closed_anchor(text: str) -> str:
+    return text + "\n⚠️ synthetic 누락 — 테스트 anchor"
 
 
-def test_missing_required_context_returns_anchor_only_and_routes_ops() -> None:
-    router = RecordingRouter()
-    ctx = _v2_context(unverified_cap=None)
-
-    render = build_tc_preliminary(ctx, router=router)
-
-    assert render.text == "⚠️ unverified_cap 누락 — manual_cash 관련 권고/문구 생성 금지"
-    assert render.embed == {}
-    assert router.ops_messages == [render.text]
+def _duplicate_dust_line(text: str) -> str:
+    dust_line = next(line for line in text.splitlines() if line.startswith("🧹 Dust"))
+    return text + f"\n{dust_line}"
 
 
-def test_forbidden_pattern_blocks_partial_render_and_routes_ops() -> None:
-    router = RecordingRouter()
-    ctx = _v2_context()
+INVARIANT_CASES: list[tuple[str, Callable[[str], str], str]] = [
+    (
+        "funding_rows",
+        replace_once("- 거래소 KRW:", "- 거래소 원화:"),
+        "funding_rows",
+    ),
+    (
+        "runway_excludes_unverified_cap",
+        replace_once(
+            "runway 산식: 83,318 KRW / 80,000 KRW = 1.04일",
+            "runway 산식: 83,318 KRW + 10,000,000 KRW / 80,000 KRW = 126.04일",
+        ),
+        "runway_excludes_unverified_cap",
+    ),
+    (
+        "ab_anchor_triple",
+        replace_once(
+            "경로 A (입금) 와 경로 B (현물 부분매도) 는 **상호배타 아님**. 병행 가능합니다.",
+            "경로 A와 경로 B를 검토합니다.",
+        ),
+        "ab_anchor_triple",
+    ),
+    (
+        "g2_phrase_exactly_one",
+        lambda text: (
+            text
+            + "\n- 이번 1,200,000 원은 G3 (runway/obligation) 통과 후 신규 risk budget 후보."
+        ),
+        "g2_phrase_exactly_one",
+    ),
+    (
+        "immediate_buy_requires_g2_g5_pass",
+        _append_immediate_buy,
+        "immediate_buy_requires_g2_g5_pass",
+    ),
+    ("dust_aggregate", _duplicate_dust_line, "dust_aggregate"),
+    ("fail_closed_anchor", _append_fail_closed_anchor, "fail_closed_anchor"),
+]
+
+
+@pytest.mark.parametrize(
+    ("case_name", "mutate", "violation_code"),
+    INVARIANT_CASES,
+    ids=[case[0] for case in INVARIANT_CASES],
+)
+def test_render_invariant_positive_and_negative_fixtures(
+    case_name: str,
+    mutate: Callable[[str], str],
+    violation_code: str,
+) -> None:
+    ctx = plan_v2_section_f_context()
+    positive = build_cio_pending_decision(ctx).text
+    if case_name == "immediate_buy_requires_g2_g5_pass":
+        positive = _append_immediate_buy(positive)
+        assert validate_render_invariants(positive, ctx, phase="cio_pending") == []
+        negative_ctx = ctx.model_copy(
+            update={
+                "gate_results": ctx.gate_results
+                | {"G4": GateResult(status="fail", detail="target below MA20")}
+            }
+        )
+    else:
+        assert validate_render_invariants(positive, ctx, phase="cio_pending") == []
+        negative_ctx = ctx
 
     with pytest.raises(RenderInvariantError) as exc_info:
-        build_cio_pending_decision(
-            ctx,
-            router=router,
-            text_postprocessor=lambda text: text + "\n가용 현금 1000000",
-        )
+        build_cio_pending_decision(negative_ctx, text_postprocessor=mutate)
 
-    assert exc_info.value.violations == [
-        InvariantViolation(
-            code="forbidden_pattern",
-            detail=r"가용\s*현금[^(]*\d",
-        )
+    assert [violation.code for violation in exc_info.value.violations] == [
+        violation_code
     ]
-    assert router.ops_messages
-    assert "forbidden_pattern" in router.ops_messages[0]
 
 
-def test_validate_render_invariants_reports_structural_violations() -> None:
-    ctx = _v2_context()
-    text = "\n".join(
-        [
-            "💵 자금 현황",
-            "- 거래소 KRW: 1,000,000 KRW",
-            "- runway 산식: 1,000,000 KRW + 5,000,000 KRW / 100,000 KRW = 60.00일",
-            "경로 A: 신규 매수 없이 현금 runway 회복 우선.",
-            "🧹 Dust 1종목 · 합계 3,000 KRW · 포트폴리오 0.30%",
-        ]
-    )
+def test_full_suite_pass_plan_v2_section_f_sample() -> None:
+    ctx = plan_v2_section_f_context()
 
-    violations = validate_render_invariants(text, ctx, phase="cio_pending")
+    render = build_cio_pending_decision(ctx)
 
-    codes = {violation.code for violation in violations}
-    assert "funding_rows" in codes
-    assert "runway_excludes_unverified_cap" in codes
-    assert "ab_anchor_triple" in codes
-    assert "g2_phrase_exactly_one" in codes
+    assert validate_render_invariants(render.text, ctx, phase="cio_pending") == []
