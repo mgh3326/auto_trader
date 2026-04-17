@@ -205,6 +205,8 @@ celerybeat.pid
 .env
 .env.test
 .env.mcp
+.env.prod
+.env.prod.*
 .venv
 env/
 venv/

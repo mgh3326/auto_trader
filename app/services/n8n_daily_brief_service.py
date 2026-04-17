@@ -971,6 +971,34 @@ def _build_tier_lines(ctx: BoardBriefContext) -> list[str]:
     return lines
 
 
+def _build_board_response_lines(ctx: BoardBriefContext) -> list[str]:
+    """Render the board funding response section when one is available.
+
+    `amount == 0` means the board explicitly responded with "자금 지원 안 함";
+    funding_intent in that case is optional since no funding path is selected.
+    """
+    response = ctx.board_response
+    if response is None:
+        return []
+    if response.amount == 0:
+        detail_parts = ["자금 지원 안 함 (0 KRW)"]
+        if response.funding_intent:
+            detail_parts.append(f"intent: {response.funding_intent}")
+        if response.manual_cash_verified:
+            detail_parts.append("manual_cash_verified")
+        return [
+            "🗳️ 보드 응답",
+            f"- {' · '.join(detail_parts)} — 경로 A 지속, 신규 매수 차단",
+        ]
+    target = response.target or "-"
+    intent = response.funding_intent or "-"
+    verified = " · manual_cash_verified" if response.manual_cash_verified else ""
+    return [
+        "🗳️ 보드 응답",
+        f"- {_fmt_krw(response.amount)} → {target} (intent: {intent}){verified}",
+    ]
+
+
 def _build_tc_preliminary_text(ctx: BoardBriefContext) -> str:
     """Build TC preliminary text without recommendation or gate sections."""
     lines = [
@@ -990,6 +1018,9 @@ def _build_tc_preliminary_text(ctx: BoardBriefContext) -> str:
     dust_lines = _build_dust_lines(ctx)
     if dust_lines:
         lines.extend(["", *dust_lines])
+    board_lines = _build_board_response_lines(ctx)
+    if board_lines:
+        lines.extend(["", *board_lines])
     lines.extend(
         [
             "",
@@ -1022,15 +1053,18 @@ def _build_cio_pending_text(ctx: BoardBriefContext) -> str:
     g2 = gates["G2"]
     g2_failed = isinstance(g2, N8nG2GatePayload) and not g2.passed
     _, g2_lines = resolve_funding_intent(ctx, ctx.board_response)
+    no_funding = ctx.board_response is not None and ctx.board_response.amount == 0
+    if no_funding:
+        recommendation = "🚫 신규 매수 차단 — 보드 응답: 자금 지원 없음 (0 KRW)"
+    elif g2_failed:
+        recommendation = "🚫 신규 매수 차단 — G2 fail"
+    else:
+        recommendation = "CIO 의견 대기 중 — gate 결과 확인 후 action 확정"
     lines = [
         _build_tc_preliminary_text(ctx),
         "",
         "🎯 권고",
-        (
-            "🚫 신규 매수 차단 — G2 fail"
-            if g2_failed
-            else "CIO 의견 대기 중 — gate 결과 확인 후 action 확정"
-        ),
+        recommendation,
         *g2_lines,
         "",
         "📊 Gate 판정 결과",

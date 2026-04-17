@@ -94,13 +94,13 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `format_execution_comment(stage, symbol, side, filled_qty, filled_price, ...)` - Format Discord/Paperclip-ready Markdown for `fill` and `follow_up` execution stages.
 - `get_latest_market_brief(symbols=None, market=None, limit=10)` - Return concise latest AI analysis context for recent or selected symbols.
 - `get_market_reports(symbol, days=7, limit=10)` - Return detailed AI analysis report history and decision trend for one symbol.
-- `place_order(symbol, side, order_type="limit", quantity=None, price=None, amount=None, dry_run=True, reason="", exit_reason=None, thesis=None, strategy=None, target_price=None, stop_loss=None, min_hold_days=None, notes=None, indicators_snapshot=None, defensive_trim=False, approval_issue_id=None, requester_agent_id=None)`
+- `place_order(symbol, side, order_type="limit", quantity=None, price=None, amount=None, dry_run=True, reason="", exit_reason=None, thesis=None, strategy=None, target_price=None, stop_loss=None, min_hold_days=None, notes=None, indicators_snapshot=None, defensive_trim=False, approval_issue_id=None)`
   - `side="buy"` 이고 `dry_run=False` 인 경우 `thesis` 와 `strategy` 가 필수
   - 실매수 성공 시 trade journal draft를 자동 생성하고 fill 저장 후 active로 연결 시도
   - 실매도 성공 시 동일 symbol의 active journal을 FIFO 기준으로 auto-close 시도
   - 부분 매도는 quantity를 수정하지 않고, fully-consumed journal만 close한다
   - journal close 실패는 주문 성공을 되돌리지 않고 `journal_warning` 으로 응답한다
-  - `defensive_trim=True` 는 ROB-164/ROB-166 승인 기반 제한 경로이며 `(a) side="sell"`, `(b) order_type="limit"`, `(c) `approval_issue_id` 가 Paperclip `done` 상태, `(d) `requester_agent_id` 가 Trader agent 와 일치할 때만 평균단가 1% 매도 floor 를 우회한다. `requester_agent_id` 는 caller-asserted 값이며, 실제 caller attestation 은 ST-3 에서 별도 추적한다
+  - `defensive_trim=True` 는 ROB-164/ROB-166 승인 기반 제한 경로이며 `(a) side="sell"`, `(b) order_type="limit"`, `(c) `approval_issue_id` 가 Paperclip `done` 상태, `(d) middleware-extracted caller identity 가 Trader agent 와 일치할 때만 평균단가 1% 매도 floor 를 우회한다
 - `modify_order(order_id, symbol, market=None, new_price=None, new_quantity=None, dry_run=True)`
 - `cancel_order(order_id, symbol=None, market=None)`
   - US equities: resolves exchange from symbol DB, open orders, and recent history before cancel
@@ -851,6 +851,59 @@ Behavior:
 - `updated_at` is automatically set to the current timestamp
 - The (user_id, key) pair is unique; attempting to create a duplicate key for the same user will update the existing entry
 
+## Caller Identity Header (required)
+
+All MCP callers (Scout, Trader, CIO bridges, and any future client) MUST send
+`x-paperclip-agent-id: <calling agent's Paperclip agent id>` on every
+`tools/call` request. The value is the caller's Paperclip agent id, not the
+target trader agent id.
+
+- The `CallerIdentityMiddleware` added in ROB-214 (ST-3.1) reads this header,
+  stores it in a request-scoped contextvar, and records the extraction source
+  (`http_header` | `env_fallback` | `none`) on each call.
+- Caller-identity-gated tools (e.g. `place_order(..., defensive_trim=True)`
+  after ST-3.2) reject calls where the contextvar is `None`, so a missing
+  header in a production path is an outage, not a soft warning.
+- Local dev / stdio transports that cannot send HTTP headers may export
+  `MCP_CALLER_AGENT_ID` as an env fallback. This is a dev convenience only —
+  production callers must send the header explicitly. `MCP_CALLER_AGENT_ID`
+  MUST NOT be set in production HTTP deployments because it re-opens a caller
+  spoofing vector for requests that omit `x-paperclip-agent-id`.
+
+### Scout / Trader curl bridge
+
+When an agent runs under a harness that does not register the auto_trader MCP
+server in-process (current state for Scout and Trader on `claude_local`),
+they use a JSON-RPC curl bridge at `/tmp/mcp_call.sh`. The canonical template
+lives at `scripts/templates/mcp_call.sh.tmpl`; both agents MUST regenerate
+their local `/tmp/mcp_call.sh` from that template so the header is present.
+
+```bash
+# From the repo root, per operator host/session:
+export MCP_ENDPOINT="http://127.0.0.1:8765/mcp"
+export MCP_AUTH_TOKEN="<value from env.MCP_AUTH_TOKEN>"
+export MCP_SESSION_ID="<MCP session id>"
+export PAPERCLIP_AGENT_ID="<calling agent's Paperclip agent id>"
+envsubst '$MCP_ENDPOINT $MCP_AUTH_TOKEN $MCP_SESSION_ID $PAPERCLIP_AGENT_ID' \
+  < scripts/templates/mcp_call.sh.tmpl > /tmp/mcp_call.sh
+# 0700 — owner-only. The rendered script bakes MCP_AUTH_TOKEN in plaintext,
+# so group/other read bits must be stripped.
+chmod 700 /tmp/mcp_call.sh
+
+# Smoke test — should return a tool payload, not 401/403/reject:
+/tmp/mcp_call.sh get_quote '{"symbol":"005930","market":"kr"}'
+```
+
+The rendered bridge intentionally calls curl with `-N --max-time 15` and sends
+`Connection: close`. It only consumes the first SSE `data:` line, so no-buffer
+mode and the timeout keep the helper from holding a completed Paperclip run open
+if the server keeps the stream alive.
+
+If the Trader adapter is later migrated to an in-process MCP client (for
+example a Claude Code `.mcp.json` entry or an SDK-level `default_headers`
+config), that client must also set `x-paperclip-agent-id`; do not rely on
+the shell bridge as the long-term header injection point.
+
 ## Run (docker-compose.prod)
 Environment variables:
 - `MCP_TYPE` : `streamable-http` (default) | `sse` | `stdio`
@@ -859,6 +912,7 @@ Environment variables:
 - `MCP_PATH` : `/mcp`
 - `MCP_GRACEFUL_SHUTDOWN_TIMEOUT` : `10` (seconds, HTTP transports only: `sse` / `streamable-http`)
 - `MCP_USER_ID` : `1` (manual holdings 조회에 사용할 기본 사용자 ID)
+- `MCP_CALLER_AGENT_ID` : DEV/stdio only — MUST NOT be set in production HTTP deployments (re-opens caller spoofing vector)
 
 Example:
 ```bash

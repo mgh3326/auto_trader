@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import inspect
+import json
 from unittest.mock import AsyncMock
 
 import pytest
 
 import app.services.brokers.upbit.client as upbit_service
 from app.core.config import settings
+from app.mcp_server.caller_identity import caller_agent_id_var, caller_source_var
 from app.mcp_server.tooling import order_execution, order_validation
 from app.mcp_server.tooling.orders_registration import register_order_tools
 from tests._mcp_tooling_support import build_tools
@@ -44,7 +47,7 @@ def _mock_crypto_sell_context(
 
 
 @pytest.fixture(autouse=True)
-def _set_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+def _set_defaults(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(settings, "trader_agent_id", TRADER_AGENT_ID, raising=False)
     monkeypatch.setattr(
         settings,
@@ -54,6 +57,13 @@ def _set_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.setattr(settings, "paperclip_api_key", "test-token", raising=False)
     order_validation._defensive_trim_success_cache.clear()
+    agent_token = caller_agent_id_var.set(TRADER_AGENT_ID)
+    source_token = caller_source_var.set("http_header")
+    try:
+        yield
+    finally:
+        caller_source_var.reset(source_token)
+        caller_agent_id_var.reset(agent_token)
 
 
 @pytest.mark.unit
@@ -68,7 +78,6 @@ async def test_defensive_trim_schema_blocks_market_even_with_flag() -> None:
         order_type="market",
         defensive_trim=True,
         approval_issue_id="ROB-164",
-        requester_agent_id=TRADER_AGENT_ID,
         dry_run=True,
     )
 
@@ -103,11 +112,22 @@ def test_place_order_description_documents_four_and_defensive_trim_gate() -> Non
     assert "(a) side='sell'" in description
     assert "(b) order_type='limit'" in description
     assert "(c) valid approval_issue_id" in description
-    assert "(d) requester_agent_id matching Trader" in description
+    assert (
+        "(d) middleware-extracted caller identity matching Trader agent" in description
+    )
     assert "approval issue status=done" in description
-    assert "requester_agent_id is caller-asserted" in description
-    assert "ST-3" in description
+    assert "requester_agent_id" not in description
     assert "ROB-164/ROB-166" in description
+
+
+@pytest.mark.unit
+def test_place_order_signature_removes_requester_agent_id() -> None:
+    """Public MCP place_order signature no longer accepts caller-asserted identity."""
+    tools = build_tools()
+
+    signature = inspect.signature(tools["place_order"])
+
+    assert "requester_agent_id" not in signature.parameters
 
 
 @pytest.mark.unit
@@ -154,7 +174,6 @@ async def test_flag_on_with_valid_approval_and_trader_caller_allowed(
         price=1005.0,
         defensive_trim=True,
         approval_issue_id="ROB-164",
-        requester_agent_id=TRADER_AGENT_ID,
         dry_run=True,
     )
 
@@ -187,7 +206,6 @@ async def test_flag_on_floor_bypass_logs_structured_warning(
         price=1005.0,
         defensive_trim=True,
         approval_issue_id="ROB-164",
-        requester_agent_id=TRADER_AGENT_ID,
         dry_run=True,
     )
 
@@ -219,7 +237,6 @@ async def test_flag_on_missing_approval_id_rejected() -> None:
         quantity=1.0,
         price=1005.0,
         defensive_trim=True,
-        requester_agent_id=TRADER_AGENT_ID,
         dry_run=True,
     )
 
@@ -241,7 +258,6 @@ async def test_flag_on_malformed_approval_id_rejected() -> None:
         price=1005.0,
         defensive_trim=True,
         approval_issue_id="bad-format",
-        requester_agent_id=TRADER_AGENT_ID,
         dry_run=True,
     )
 
@@ -272,7 +288,6 @@ async def test_flag_on_approval_not_done_rejected(
         price=1005.0,
         defensive_trim=True,
         approval_issue_id="ROB-164",
-        requester_agent_id=TRADER_AGENT_ID,
         dry_run=True,
     )
 
@@ -303,7 +318,6 @@ async def test_flag_on_paperclip_api_timeout_fail_closed(
         price=1005.0,
         defensive_trim=True,
         approval_issue_id="ROB-164",
-        requester_agent_id=TRADER_AGENT_ID,
         dry_run=True,
     )
 
@@ -318,6 +332,7 @@ async def test_flag_on_paperclip_api_timeout_fail_closed(
 async def test_flag_on_non_trader_caller_rejected() -> None:
     """Only trader agent can use defensive_trim."""
     tools = build_tools()
+    caller_agent_id_var.set("other-agent")
 
     result = await tools["place_order"](
         symbol="KRW-BTC",
@@ -327,14 +342,13 @@ async def test_flag_on_non_trader_caller_rejected() -> None:
         price=1005.0,
         defensive_trim=True,
         approval_issue_id="ROB-164",
-        requester_agent_id="other-agent",
         dry_run=True,
     )
 
     assert result["success"] is False
     assert (
         result["error"]
-        == "defensive_trim requires Trader agent caller (got requester_agent_id=other-agent)"
+        == "defensive_trim requires Trader agent caller (got caller_agent_id=other-agent)"
     )
 
 
@@ -343,6 +357,7 @@ async def test_flag_on_non_trader_caller_rejected() -> None:
 async def test_flag_on_missing_caller_id_rejected() -> None:
     """defensive_trim requires caller identity."""
     tools = build_tools()
+    caller_agent_id_var.set(None)
 
     result = await tools["place_order"](
         symbol="KRW-BTC",
@@ -356,7 +371,10 @@ async def test_flag_on_missing_caller_id_rejected() -> None:
     )
 
     assert result["success"] is False
-    assert result["error"] == "requester_agent_id is required for defensive_trim"
+    assert (
+        result["error"]
+        == "caller identity unavailable — defensive_trim requires authenticated MCP caller"
+    )
 
 
 @pytest.mark.unit
@@ -381,7 +399,6 @@ async def test_flag_on_still_rejects_below_current_price(
         price=990.0,
         defensive_trim=True,
         approval_issue_id="ROB-164",
-        requester_agent_id=TRADER_AGENT_ID,
         dry_run=True,
     )
 
@@ -432,7 +449,6 @@ async def test_journal_and_redis_record_defensive_trim_fields(
         price=1005.0,
         defensive_trim=True,
         approval_issue_id="ROB-164",
-        requester_agent_id=TRADER_AGENT_ID,
         dry_run=False,
     )
 
@@ -444,11 +460,57 @@ async def test_journal_and_redis_record_defensive_trim_fields(
     assert kwargs["defensive_trim"] is True
     assert kwargs["approval_issue_id"] == "ROB-164"
     assert kwargs["requester_agent_id"] == TRADER_AGENT_ID
+    assert kwargs["caller_source"] == "http_header"
 
     close_mock.assert_awaited_once()
     close_kwargs = close_mock.await_args.kwargs
     assert close_kwargs["defensive_trim_ctx"].approval_issue_id == "ROB-164"
     assert close_kwargs["defensive_trim_ctx"].requester_agent_id == TRADER_AGENT_ID
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_record_order_history_persists_caller_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Redis order history audit records the middleware caller source."""
+
+    class FakeRedis:
+        def __init__(self) -> None:
+            self.pushed: list[tuple[str, str]] = []
+
+        async def rpush(self, key: str, value: str) -> None:
+            self.pushed.append((key, value))
+
+        async def expire(self, key: str, seconds: int) -> None:
+            del key, seconds
+
+    fake_redis = FakeRedis()
+    monkeypatch.setattr(settings, "redis_url", "redis://test", raising=False)
+    monkeypatch.setattr(
+        "redis.asyncio.from_url",
+        AsyncMock(return_value=fake_redis),
+    )
+
+    await order_validation._record_order_history(
+        symbol="KRW-BTC",
+        side="sell",
+        order_type="limit",
+        quantity=1.0,
+        price=1005.0,
+        amount=1005.0,
+        reason="defensive trim",
+        dry_run=False,
+        defensive_trim=True,
+        approval_issue_id="ROB-164",
+        requester_agent_id=TRADER_AGENT_ID,
+    )
+
+    assert len(fake_redis.pushed) == 1
+    _, raw_record = fake_redis.pushed[0]
+    record = json.loads(raw_record)
+    assert record["requester_agent_id"] == TRADER_AGENT_ID
+    assert record["caller_source"] == "http_header"
 
 
 @pytest.mark.unit
@@ -465,7 +527,6 @@ async def test_flag_on_buy_side_rejected() -> None:
         price=1000.0,
         defensive_trim=True,
         approval_issue_id="ROB-164",
-        requester_agent_id=TRADER_AGENT_ID,
         dry_run=True,
     )
 
