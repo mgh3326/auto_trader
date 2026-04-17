@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from app.services.cio_quality_gate_service import (
+    CHECKLIST_LABELS,
     build_reopen_comment,
     evaluate_scout_report,
     extract_candidates,
@@ -143,3 +144,109 @@ def test_evaluate_scout_report_tool_failures_merged_into_g3(rob_158_md):
     assert g3 is not None, "G3 must fail when tool_failures passed without 제한사항"
     assert g3.severity == "hard"
     assert "schema mismatch" in g3.detail
+
+
+# ---------------------------------------------------------------------------
+# Board revision blockers (approval d029ee95):
+#   1. v2 Scout Report `|   | • ... |` subline은 부모 row에 병합되어야 한다 —
+#      병합 누락 시 정상 v2 입력이 G1 hard gate에서 false fail(REOPEN) 된다.
+#   2. `NAVER` 종목명 자체가 news 근거로 오인되어, 실제 뉴스 증거 없이도
+#      shallow row가 false pass 되어서는 안 된다.
+# ---------------------------------------------------------------------------
+
+
+V2_SUBLINE_MD = """### 1) 보유 + 주요 신규 후보 동일 기준 비교
+
+| 종목 (코드) | 시장가 | 액션 | 계좌 |
+|---|---|---|---|
+| **[신규]** Krafton 259960 | 266,500 | **watch only** | KIS 즉시 |
+|   | • RSI 64, ADX 18, BB upper 돌파, EMA 5>20 bull |
+|   | • 지지 244K (bb_mid) / 263K (fib_0+현재 부근) |
+|   | • 뉴스: Bloomberg 2026-04-15 — 신작 런칭 catalyst, earning beat |
+|   | • 목표가 357K(컨센서스), PER 15 — fundamental 양호 |
+|   | • 기존 NAVER DCA 대비 우위, 섹터 노출 중복 없음 |
+
+### 제한사항
+없음
+"""
+
+
+@pytest.mark.unit
+def test_v2_subline_bullets_merge_into_parent_row_and_pass_g1():
+    """v2 bullet sublines `|   | • ... |` must fold into the parent row.
+
+    Without the merge, the Krafton row sees only source/quote/exec — it would
+    false-fail G1 (hard gate → REOPEN) despite the full deep-dive being present
+    in the subline bullets.
+    """
+    report = evaluate_scout_report(markdown=V2_SUBLINE_MD)
+    krafton = next(c for c in report.candidates if c.code == "259960")
+    # All 8 checklist items must be satisfied once sublines merge.
+    for k in range(1, 9):
+        assert krafton.items[k], (
+            f"#{k} ({list(CHECKLIST_LABELS.values())[k - 1]}) must be True "
+            f"when v2 sublines are merged"
+        )
+    assert krafton.verdict == "pass"
+    g1 = next(r for r in report.gates if r.key == "G1")
+    assert g1.passed, f"G1 must pass on full v2 input; detail={g1.detail}"
+
+
+@pytest.mark.unit
+def test_v2_subline_merge_drops_without_bullet_first_cell():
+    """Sanity check: the merge predicate only folds rows whose first cell is
+    empty and which contain a bullet. A follow-up data row (content in first
+    cell) must not bleed into the previous candidate.
+    """
+    from app.services.cio_quality_gate_service import extract_candidates
+
+    md = "| A 111111 | 1,000 | KIS |\n| B 222222 | 2,000 | KIS |\n"
+    cands = extract_candidates(md)
+    codes = {c.code for c in cands}
+    assert codes == {"111111", "222222"}
+    a = next(c for c in cands if c.code == "111111")
+    assert "B 222222" not in a.context_text
+
+
+NAVER_NAME_ONLY_MD = """### 1) 보유 비교
+
+| 종목 (코드) | 시장가 | RSI/ADX | BB | P/L | 액션 | 계좌 |
+|---|---|---|---|---|---|---|
+| NAVER 035420 | 216,000 | RSI 53, ADX 26 | bb_mid 206K, bb_lower 193K | –4.6% | **DCA 대비 우위** | KIS |
+"""
+
+
+@pytest.mark.unit
+def test_naver_ticker_name_does_not_trigger_news_evidence():
+    """`NAVER` as a stock ticker must not satisfy #5 News by itself.
+
+    Row has real evidence for 1/2/3/4/7/8 (source=DCA, quote, RSI/ADX, bb_mid,
+    exec=KIS, 대비/우위) but no news text. Before the fix `\\bNaver\\b` matched
+    the ticker name and gave a 6/7 false pass on G1. After the fix, news must
+    remain False and the row must fail G1.
+    """
+    report = evaluate_scout_report(markdown=NAVER_NAME_ONLY_MD)
+    naver = next(c for c in report.candidates if c.code == "035420")
+    assert naver.items[5] is False, (
+        "#5 News must not trigger on the 'NAVER' ticker name alone"
+    )
+    assert naver.verdict == "fail"
+    g1 = next(r for r in report.gates if r.key == "G1")
+    assert not g1.passed
+    assert "NAVER" in g1.detail or "035420" in g1.detail or "NAVER" in naver.name
+
+
+@pytest.mark.unit
+def test_naver_news_qualifier_still_counts_when_explicit():
+    """When 'Naver news' / '네이버뉴스' appears as an explicit news-source
+    qualifier, #5 News must still fire."""
+    md_explicit_en = "| NAVER 035420 | 216,000 | Naver news — catalyst reform | KIS |\n"
+    md_explicit_kr = (
+        "| NAVER 035420 | 216,000 | 네이버뉴스 — 외인 순매수 earning beat | KIS |\n"
+    )
+    for md in (md_explicit_en, md_explicit_kr):
+        report = evaluate_scout_report(markdown=md)
+        c = next(c for c in report.candidates if c.code == "035420")
+        assert c.items[5] is True, (
+            f"#5 News must fire on explicit Naver-news qualifier; md={md!r}"
+        )

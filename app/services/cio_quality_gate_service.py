@@ -75,7 +75,11 @@ KEYWORDS: dict[str, list[str]] = {
         r"뉴스",
         r"\bnews\b",
         r"catalyst",
-        r"\bNaver\b",
+        # Bare "Naver" is ambiguous — "NAVER" is a Korean stock ticker that
+        # would false-pass shallow rows on news evidence. Require an explicit
+        # news-context qualifier ("Naver news" / "네이버뉴스").
+        r"\bNaver\s*(news|뉴스)\b",
+        r"네이버\s*(news|뉴스)",
         r"\bReuters\b",
         r"\bBloomberg\b",
         r"한경",
@@ -203,6 +207,12 @@ def extract_candidates(md: str) -> list[Candidate]:
     Any markdown table row containing a 6-digit code is treated as a candidate.
     Sub-line bullets ("|   | • ...") immediately following the row are folded
     into the same row_text for keyword detection (ROB-170 §6.2 v2 format).
+
+    A subline is identified by (a) starting with `|`, (b) having an empty
+    first cell (depth continuation marker), (c) containing a bullet (`•`),
+    and (d) not introducing a new 6-digit code. The pipe-count of the
+    subline itself is irrelevant — v2 reports frequently write multi-cell
+    bullet rows like `|   | • RSI 54 | • BB mid |`.
     """
     lines = md.splitlines()
     by_code: dict[str, Candidate] = {}
@@ -222,23 +232,18 @@ def extract_candidates(md: str) -> list[Candidate]:
         j = i + 1
         while j < len(lines):
             nxt = lines[j]
-            if nxt.lstrip().startswith("|") and (
-                "•" in nxt
-                or nxt.count("|") >= 3
-                and not CODE_RE.search(nxt)
-                and not re.search(
-                    r"\b\d+[,.]?\d*",
-                    nxt.split("|")[1] if len(nxt.split("|")) > 1 else "",
-                )
-            ):
-                if CODE_RE.search(nxt):
-                    break
-                if nxt.count("|") >= 3:
-                    break
+            if not nxt.lstrip().startswith("|"):
+                break
+            if CODE_RE.search(nxt):
+                break
+            cells = [c.strip() for c in nxt.strip().strip("|").split("|")]
+            first_cell_empty = (not cells) or cells[0] == ""
+            has_bullet = "•" in nxt
+            if first_cell_empty and has_bullet:
                 row_parts.append(nxt)
                 j += 1
-            else:
-                break
+                continue
+            break
 
         row_text = "\n".join(row_parts)
 
