@@ -53,11 +53,15 @@ class DustItem(BaseModel):
 
 
 class BoardFundingResponse(BaseModel):
-    """Board funding response captured between TC preliminary and CIO pending."""
+    """Board funding response captured between TC preliminary and CIO pending.
 
-    amount: float = Field(..., gt=0, le=100_000_000_000)
+    `amount == 0` is a valid "자금 지원 안 함" signal from the board; in that
+    case `funding_intent` may be omitted since no funding path is selected.
+    """
+
+    amount: float = Field(..., ge=0, le=100_000_000_000)
     target: str | None = Field(None, max_length=80)
-    funding_intent: FundingIntent
+    funding_intent: FundingIntent | None = None
     manual_cash_verified: bool = False
 
 
@@ -93,6 +97,7 @@ class TCFollowupRequest(BaseModel):
     manual_cash_krw: float = Field(0, ge=0)
     daily_burn_krw: float = Field(0, ge=0)
     manual_cash_runway_days: float | None = Field(None, ge=0)
+    board_response: BoardFundingResponse | None = None
     weights_top_n: list[WeightItem] = Field(default_factory=list)
     holdings: list[HoldingSnapshot] = Field(default_factory=list)
     dust_items: list[DustItem] = Field(default_factory=list)
@@ -103,7 +108,6 @@ class CIOFollowupRequest(TCFollowupRequest):
     """Request payload for /api/n8n/cio-followup."""
 
     funding_intent: FundingIntent | None = None
-    board_response: BoardFundingResponse | None = None
     g1_gate: dict[str, Any] | None = None
 
 
