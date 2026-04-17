@@ -12,6 +12,7 @@ from app.mcp_server.tooling.analysis_screen_core import (
     _screen_us_via_tvscreener,
     normalize_screen_request,
 )
+from app.mcp_server.tooling.screening import us as screening_us
 
 
 class _Condition:
@@ -56,6 +57,9 @@ def fake_tvscreener_module() -> SimpleNamespace:
             PRICE_TO_EARNINGS_RATIO_TTM=_Field("pe_ttm"),
             PRICE_TO_BOOK_FQ=_Field("pbr_fq"),
             DIVIDEND_YIELD_FORWARD=_Field("dividend_yield_forward"),
+            AVERAGE_VOLUME_30_DAY=_Field("average_volume_30_day"),
+            TYPE=_Field("type"),
+            SUBTYPE=_Field("subtype"),
             COUNTRY=_Field("country"),
         ),
     )
@@ -179,6 +183,57 @@ async def test_screen_us_uses_market_america_and_country_filter(
     assert kwargs["country"] == "United States"
     assert [stock["symbol"] for stock in result["stocks"]] == ["AAPL", "NVDA"]
     assert result["stocks"][0]["name"] == "Apple Inc."
+
+
+@pytest.mark.asyncio
+async def test_screen_us_converts_usd_adv_and_market_cap_to_krw_before_filtering(
+    fake_tvscreener_module: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = AsyncMock()
+    service.query_stock_screener.return_value = pd.DataFrame(
+        {
+            "symbol": ["NASDAQ:PASS", "NASDAQ:FAIL"],
+            "description": ["Pass Corp", "Fail Corp"],
+            "name": ["PASS", "FAIL"],
+            "price": [100.0, 100.0],
+            "relative_strength_index_14": [35.0, 35.0],
+            "average_directional_index_14": [25.0, 25.0],
+            "volume": [1_000_000.0, 1_000_000.0],
+            "average_volume_30_day": [50_000.0, 1_000.0],
+            "change_percent": [1.0, 1.0],
+            "market_capitalization": [10_000_000.0, 10_000_000.0],
+            "country": ["United States", "United States"],
+        }
+    )
+    monkeypatch.setattr(
+        screening_us,
+        "get_usd_krw_rate",
+        AsyncMock(return_value=1_300.0),
+        raising=False,
+    )
+
+    with (
+        patch(
+            "app.mcp_server.tooling.screening.us._import_tvscreener",
+            return_value=fake_tvscreener_module,
+        ),
+        patch(
+            "app.mcp_server.tooling.screening.us.TvScreenerService",
+            return_value=service,
+        ),
+    ):
+        result = await _screen_us_via_tvscreener(
+            adv_krw_min=5_000_000_000,
+            market_cap_min_krw=10_000_000_000,
+            limit=5,
+        )
+
+    assert result["error"] is None
+    assert [stock["symbol"] for stock in result["stocks"]] == ["PASS"]
+    assert result["stocks"][0]["adv_krw"] == 6_500_000_000
+    assert result["stocks"][0]["market_cap_krw"] == 13_000_000_000
+    assert result["meta_fields"]["adv_window_days"] == 30
 
 
 @pytest.mark.asyncio

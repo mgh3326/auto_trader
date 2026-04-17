@@ -45,6 +45,12 @@ async def _dispatch_kr_screen(
         sort_by=normalized_request["sort_by"],
         sort_order=normalized_request["sort_order"],
         limit=query_limit,
+        adv_krw_min=normalized_request["adv_krw_min"],
+        market_cap_min_krw=normalized_request["market_cap_min_krw"],
+        market_cap_max_krw=normalized_request["market_cap_max_krw"],
+        instrument_types=normalized_request["instrument_types"],
+        exclude_sectors=normalized_request["exclude_sectors"],
+        exclude_sector_keys=normalized_request["exclude_sector_keys"],
     )
 
 
@@ -70,6 +76,12 @@ async def _dispatch_us_screen(
         sort_by=normalized_request["sort_by"],
         sort_order=normalized_request["sort_order"],
         limit=query_limit,
+        adv_krw_min=normalized_request["adv_krw_min"],
+        market_cap_min_krw=normalized_request["market_cap_min_krw"],
+        market_cap_max_krw=normalized_request["market_cap_max_krw"],
+        instrument_types=normalized_request["instrument_types"],
+        exclude_sectors=normalized_request["exclude_sectors"],
+        exclude_sector_keys=normalized_request["exclude_sector_keys"],
     )
 
 
@@ -109,6 +121,11 @@ def _dispatch_unsupported_market(
             "asset_type": normalized_request["asset_type"],
             "category": normalized_request["category_for_filters"],
             "sector": normalized_request["sector"],
+            "exclude_sectors": normalized_request["exclude_sectors"],
+            "instrument_types": normalized_request["instrument_types"],
+            "adv_krw_min": normalized_request["adv_krw_min"],
+            "market_cap_min_krw": normalized_request["market_cap_min_krw"],
+            "market_cap_max_krw": normalized_request["market_cap_max_krw"],
         },
         market=normalized_request["market"],
         warnings=[f"Unsupported market: {normalized_request['market']}"],
@@ -130,6 +147,11 @@ async def screen_stocks_unified(
     sector: str | None = None,
     min_dividend: float | None = None,
     min_analyst_buy: float | None = None,
+    exclude_sectors: list[str] | None = None,
+    instrument_types: list[str] | None = None,
+    adv_krw_min: int | None = None,
+    market_cap_min_krw: int | None = None,
+    market_cap_max_krw: int | None = None,
 ) -> dict[str, Any]:
     """Unified stock screening entry point with automatic data source selection.
 
@@ -171,6 +193,11 @@ async def screen_stocks_unified(
         min_analyst_buy=min_analyst_buy,
         max_rsi=max_rsi,
         limit=limit,
+        exclude_sectors=exclude_sectors,
+        instrument_types=instrument_types,
+        adv_krw_min=adv_krw_min,
+        market_cap_min_krw=market_cap_min_krw,
+        market_cap_max_krw=market_cap_max_krw,
     )
     normalized_market = normalized_request["market"]
     normalized_asset_type = normalized_request["asset_type"]
@@ -178,7 +205,7 @@ async def screen_stocks_unified(
     normalized_sort_order = normalized_request["sort_order"]
     normalized_min_dividend_yield = normalized_request["min_dividend_yield"]
     apply_post_enrichment_filters = (
-        normalized_market in {"kr", "kospi", "kosdaq", "us"}
+        normalized_market in {"kr", "kospi", "kosdaq", "konex", "all", "us"}
         and normalized_asset_type in {None, "stock"}
         and (
             normalized_request["sector"] is not None
@@ -188,7 +215,7 @@ async def screen_stocks_unified(
     can_avoid_overfetch = normalized_asset_type in {None, "stock"} and (
         normalized_market == "us"
         or (
-            normalized_market in {"kr", "kospi", "kosdaq"}
+            normalized_market in {"kr", "kospi", "kosdaq", "konex", "all"}
             and normalized_request["sector"] is None
             and normalized_request["min_analyst_buy"] is not None
         )
@@ -208,10 +235,15 @@ async def screen_stocks_unified(
         min_dividend_yield=normalized_min_dividend_yield,
         max_rsi=max_rsi,
         sort_by=normalized_sort_by,
+        adv_krw_min=normalized_request["adv_krw_min"],
+        market_cap_min_krw=normalized_request["market_cap_min_krw"],
+        market_cap_max_krw=normalized_request["market_cap_max_krw"],
+        instrument_types=normalized_request["instrument_types"],
+        exclude_sectors=normalized_request["exclude_sectors"],
     )
 
     # Route to appropriate implementation based on market
-    if normalized_market in ("kr", "kospi", "kosdaq"):
+    if normalized_market in ("kr", "kospi", "kosdaq", "konex", "all"):
         response = await _dispatch_kr_screen(
             normalized_request,
             min_market_cap=min_market_cap,
@@ -276,6 +308,25 @@ async def screen_stocks_unified(
         "min_analyst_buy", normalized_request["min_analyst_buy"]
     )
     normalized_filters_applied.setdefault("max_rsi", max_rsi)
+    normalized_filters_applied.setdefault(
+        "exclude_sectors", normalized_request["exclude_sectors"]
+    )
+    normalized_filters_applied.setdefault(
+        "instrument_types", normalized_request["instrument_types"]
+    )
+    normalized_filters_applied.setdefault(
+        "adv_krw_min", normalized_request["adv_krw_min"]
+    )
+    normalized_filters_applied.setdefault(
+        "market_cap_min_krw", normalized_request["market_cap_min_krw"]
+    )
+    normalized_filters_applied.setdefault(
+        "market_cap_max_krw", normalized_request["market_cap_max_krw"]
+    )
+    if normalized_request["adv_krw_min"] is not None:
+        meta = response.get("meta")
+        if isinstance(meta, dict):
+            meta.setdefault("adv_window_days", 30)
     if normalized_request["min_dividend_input"] is not None:
         normalized_filters_applied["min_dividend_input"] = normalized_request[
             "min_dividend_input"

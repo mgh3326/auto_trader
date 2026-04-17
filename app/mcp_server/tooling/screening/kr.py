@@ -24,6 +24,7 @@ from app.mcp_server.tooling.screening.common import (
     _to_optional_float,
 )
 from app.mcp_server.tooling.screening.enrichment import _pick_display_name
+from app.mcp_server.tooling.screening.instrument_type import classify_kr_instrument
 from app.mcp_server.tooling.screening.tvscreener_support import (
     _adapt_tvscreener_stock_response,
     _can_use_tvscreener_stock_path,
@@ -56,6 +57,12 @@ async def _screen_kr(
     sort_by: str,
     sort_order: str,
     limit: int,
+    adv_krw_min: int | None = None,
+    market_cap_min_krw: int | None = None,
+    market_cap_max_krw: int | None = None,
+    instrument_types: list[str] | None = None,
+    exclude_sectors: list[str] | None = None,
+    exclude_sector_keys: set[str] | None = None,
 ) -> dict[str, Any]:
     """Screen Korean market stocks/ETFs."""
     (
@@ -67,6 +74,11 @@ async def _screen_kr(
         "market": market,
         "asset_type": asset_type,
         "category": category,
+        "adv_krw_min": adv_krw_min,
+        "market_cap_min_krw": market_cap_min_krw,
+        "market_cap_max_krw": market_cap_max_krw,
+        "instrument_types": instrument_types,
+        "exclude_sectors": exclude_sectors,
     }
 
     if category is not None and asset_type is None:
@@ -118,6 +130,19 @@ async def _screen_kr(
 
         if "asset_type" not in item:
             item["asset_type"] = "stock"
+        item["instrument_type"] = (
+            "etf"
+            if item.get("asset_type") == "etf"
+            else classify_kr_instrument(
+                item.get("short_code") or item.get("code"),
+                item.get("name"),
+                item.get("subtype"),
+            )
+        )
+        if item.get("market_cap_krw") is None:
+            market_cap = _to_optional_float(item.get("market_cap"))
+            if market_cap is not None:
+                item["market_cap_krw"] = market_cap * 100_000_000
 
     valuation_market = {"kospi": "STK", "kosdaq": "KSQ"}.get(market, "ALL")
     try:
@@ -149,6 +174,11 @@ async def _screen_kr(
         max_pbr=max_pbr,
         min_dividend_yield=min_dividend_yield_normalized,
         max_rsi=max_rsi,
+        adv_krw_min=None,
+        market_cap_min_krw=market_cap_min_krw,
+        market_cap_max_krw=market_cap_max_krw,
+        instrument_types=instrument_types,
+        exclude_sector_keys=exclude_sector_keys,
     )
     results = _sort_and_limit(
         filtered,
@@ -165,11 +195,19 @@ async def _screen_kr(
     if min_dividend_yield_normalized is not None:
         filters_applied["min_dividend_yield_normalized"] = min_dividend_yield_normalized
 
+    warnings = []
+    if adv_krw_min is not None:
+        warnings.append(
+            "adv_krw_min requires 30-day average-volume data and is not available "
+            "on the KR legacy fallback path; filter was skipped."
+        )
+
     return _build_screen_response(
         results,
         len(filtered),
         filters_applied,
         market,
+        warnings=warnings or None,
     )
 
 
@@ -217,6 +255,11 @@ def _build_kr_filters(
     )
     price_target_field = _get_tvscreener_attr(StockField, "PRICE_TARGET_1Y")
     price_target_delta_field = _get_tvscreener_attr(StockField, "PRICE_TARGET_1Y_DELTA")
+    average_volume_30_day_field = _get_tvscreener_attr(
+        StockField, "AVERAGE_VOLUME_30_DAY", "AVERAGE_VOLUME_30D", "AVERAGE_VOLUME_30"
+    )
+    type_field = _get_tvscreener_attr(StockField, "TYPE")
+    subtype_field = _get_tvscreener_attr(StockField, "SUBTYPE")
 
     columns = [
         StockField.ACTIVE_SYMBOL,
@@ -242,6 +285,9 @@ def _build_kr_filters(
         recommendation_under_field,
         price_target_field,
         price_target_delta_field,
+        average_volume_30_day_field,
+        type_field,
+        subtype_field,
     ):
         if optional_field is not None:
             columns.append(optional_field)
@@ -351,6 +397,14 @@ async def _normalize_kr_results(
             "rsi": _to_optional_float(row.get("relative_strength_index_14")),
             "adx": _to_optional_float(row.get("average_directional_index_14")),
             "volume": _to_optional_float(row.get("volume")),
+            "average_volume_30_day": _to_optional_float(
+                _get_first_present(
+                    row,
+                    "average_volume_30_day",
+                    "average_volume_30d",
+                    "average_volume_30",
+                )
+            ),
             "change_percent": _to_optional_float(row.get("change_percent")),
             "market_cap": _to_optional_float(
                 _get_first_present(
@@ -381,6 +435,18 @@ async def _normalize_kr_results(
             else "South Korea",
         }
         stock["change_rate"] = stock["change_percent"]
+        avg_volume = _to_optional_float(stock.get("average_volume_30_day"))
+        price = _to_optional_float(stock.get("price"))
+        if avg_volume is not None and price is not None:
+            stock["adv_krw"] = avg_volume * price
+        market_cap = _to_optional_float(stock.get("market_cap"))
+        if market_cap is not None:
+            stock["market_cap_krw"] = market_cap * 100_000_000
+        stock["instrument_type"] = classify_kr_instrument(
+            code,
+            stock.get("name") or base.get("name"),
+            _get_first_present(row, "subtype", "type"),
+        )
 
         # Fallback to KRX data for missing fields
         if stock["market_cap"] is None:
@@ -427,6 +493,12 @@ async def _screen_kr_via_tvscreener(
     sort_by: str = "rsi",
     sort_order: str = "desc",
     limit: int = 50,
+    adv_krw_min: int | None = None,
+    market_cap_min_krw: int | None = None,
+    market_cap_max_krw: int | None = None,
+    instrument_types: list[str] | None = None,
+    exclude_sectors: list[str] | None = None,
+    exclude_sector_keys: set[str] | None = None,
 ) -> dict[str, Any]:
     """Screen Korean stocks using TradingView StockScreener API."""
     (
@@ -450,6 +522,11 @@ async def _screen_kr_via_tvscreener(
         "sort_by": sort_by,
         "sort_order": sort_order,
         "limit": limit,
+        "adv_krw_min": adv_krw_min,
+        "market_cap_min_krw": market_cap_min_krw,
+        "market_cap_max_krw": market_cap_max_krw,
+        "instrument_types": instrument_types,
+        "exclude_sectors": exclude_sectors,
     }
     if min_dividend_yield_input is not None:
         filters_applied["min_dividend_yield_input"] = min_dividend_yield_input
@@ -499,11 +576,18 @@ async def _screen_kr_via_tvscreener(
             max_pbr=max_pbr,
             min_dividend_yield=min_dividend_yield_normalized,
             max_rsi=max_rsi,
+            adv_krw_min=adv_krw_min,
+            market_cap_min_krw=market_cap_min_krw,
+            market_cap_max_krw=market_cap_max_krw,
+            instrument_types=instrument_types,
+            exclude_sector_keys=exclude_sector_keys,
         )
         ordered = _sort_and_limit(filtered, sort_by, sort_order, limit)
 
         result["count"] = len(filtered)
         result["stocks"] = ordered
+        if adv_krw_min is not None:
+            result["meta_fields"] = {"adv_window_days": 30}
 
         logger.info(
             "[Screen-KR-TV] Returning %d Korean stocks sorted by %s",
@@ -547,6 +631,12 @@ async def _screen_kr_with_fallback(
     sort_by: str,
     sort_order: str,
     limit: int,
+    adv_krw_min: int | None = None,
+    market_cap_min_krw: int | None = None,
+    market_cap_max_krw: int | None = None,
+    instrument_types: list[str] | None = None,
+    exclude_sectors: list[str] | None = None,
+    exclude_sector_keys: set[str] | None = None,
 ) -> dict[str, Any]:
     """Screen Korean market with tvscreener fallback to legacy."""
     capability_snapshot = await _get_tvscreener_stock_capability_snapshot(
@@ -585,6 +675,12 @@ async def _screen_kr_with_fallback(
                 sort_by=sort_by,
                 sort_order=sort_order,
                 limit=limit,
+                adv_krw_min=adv_krw_min,
+                market_cap_min_krw=market_cap_min_krw,
+                market_cap_max_krw=market_cap_max_krw,
+                instrument_types=instrument_types,
+                exclude_sectors=exclude_sectors,
+                exclude_sector_keys=exclude_sector_keys,
             )
             if tvscreener_result and not tvscreener_result.get("error"):
                 logger.info(
@@ -614,4 +710,10 @@ async def _screen_kr_with_fallback(
         sort_by=sort_by,
         sort_order=sort_order,
         limit=limit,
+        adv_krw_min=adv_krw_min,
+        market_cap_min_krw=market_cap_min_krw,
+        market_cap_max_krw=market_cap_max_krw,
+        instrument_types=instrument_types,
+        exclude_sectors=exclude_sectors,
+        exclude_sector_keys=exclude_sector_keys,
     )

@@ -29,6 +29,7 @@ from app.mcp_server.tooling.screening.common import (
 from app.mcp_server.tooling.screening.enrichment import (
     _pick_display_name,
 )
+from app.mcp_server.tooling.screening.instrument_type import classify_us_instrument
 from app.mcp_server.tooling.screening.tvscreener_support import (
     _adapt_tvscreener_stock_response,
     _can_use_tvscreener_stock_path,
@@ -36,6 +37,7 @@ from app.mcp_server.tooling.screening.tvscreener_support import (
 )
 from app.mcp_server.tooling.shared import error_payload as _error_payload
 from app.monitoring import build_yfinance_tracing_session
+from app.services.exchange_rate_service import get_usd_krw_rate
 from app.services.tvscreener_service import (
     TvScreenerError,
     TvScreenerService,
@@ -43,6 +45,34 @@ from app.services.tvscreener_service import (
 )
 
 logger = logging.getLogger(__name__)
+
+_US_SCREENING_USD_KRW_FALLBACK_RATE = 1300.0
+
+
+def _has_krw_valuation_filter(
+    *,
+    adv_krw_min: int | None = None,
+    market_cap_min_krw: int | None = None,
+    market_cap_max_krw: int | None = None,
+) -> bool:
+    return any(
+        value is not None
+        for value in (adv_krw_min, market_cap_min_krw, market_cap_max_krw)
+    )
+
+
+async def _resolve_us_screening_usd_krw_rate(*, prefer_live_rate: bool) -> float:
+    if not prefer_live_rate:
+        return _US_SCREENING_USD_KRW_FALLBACK_RATE
+    try:
+        return await get_usd_krw_rate()
+    except Exception as exc:
+        logger.warning(
+            "US screening USD/KRW lookup failed; using fallback rate %s: %s",
+            _US_SCREENING_USD_KRW_FALLBACK_RATE,
+            exc,
+        )
+        return _US_SCREENING_USD_KRW_FALLBACK_RATE
 
 
 async def _screen_us(
@@ -56,6 +86,12 @@ async def _screen_us(
     sort_by: str,
     sort_order: str,
     limit: int,
+    adv_krw_min: int | None = None,
+    market_cap_min_krw: int | None = None,
+    market_cap_max_krw: int | None = None,
+    instrument_types: list[str] | None = None,
+    exclude_sectors: list[str] | None = None,
+    exclude_sector_keys: set[str] | None = None,
 ) -> dict[str, Any]:
     """Screen US market stocks using yfinance screener."""
     (
@@ -73,6 +109,11 @@ async def _screen_us(
         filters_applied.update(
             {
                 "min_market_cap": min_market_cap,
+                "adv_krw_min": adv_krw_min,
+                "market_cap_min_krw": market_cap_min_krw,
+                "market_cap_max_krw": market_cap_max_krw,
+                "instrument_types": instrument_types,
+                "exclude_sectors": exclude_sectors,
                 "max_per": max_per,
                 "min_dividend_yield": min_dividend_yield_normalized,
                 "max_rsi": max_rsi,
@@ -154,6 +195,13 @@ async def _screen_us(
             _complete_filters_applied()
             return _build_screen_response([], 0, filters_applied, market)
 
+        usd_krw_rate = await _resolve_us_screening_usd_krw_rate(
+            prefer_live_rate=_has_krw_valuation_filter(
+                market_cap_min_krw=market_cap_min_krw,
+                market_cap_max_krw=market_cap_max_krw,
+            )
+        )
+
         def _first_value(quote: dict[str, Any], *keys: str) -> Any:
             for key in keys:
                 value = quote.get(key)
@@ -200,6 +248,18 @@ async def _screen_us(
                 ),
                 "market": "us",
             }
+            sector = _first_value(quote, "sector", "sectorDisp")
+            if sector:
+                mapped["sector"] = sector
+            mapped["instrument_type"] = classify_us_instrument(
+                mapped.get("code"),
+                mapped.get("name"),
+                _first_value(quote, "quoteType", "type"),
+                _first_value(quote, "typeDisp", "subtype"),
+            )
+            market_cap = _to_optional_float(mapped.get("market_cap"))
+            if market_cap is not None:
+                mapped["market_cap_krw"] = market_cap * usd_krw_rate
             # Drop rows without usable price; these often come from stale/partial screener rows.
             if mapped["close"] in (None, 0):
                 continue
@@ -213,12 +273,43 @@ async def _screen_us(
                 max_pbr=None,
                 min_dividend_yield=None,
                 max_rsi=max_rsi,
+                adv_krw_min=None,
+                market_cap_min_krw=market_cap_min_krw,
+                market_cap_max_krw=market_cap_max_krw,
+                instrument_types=instrument_types,
+                exclude_sector_keys=exclude_sector_keys,
+            )
+        else:
+            results = _apply_basic_filters(
+                results,
+                min_market_cap=None,
+                max_per=None,
+                max_pbr=None,
+                min_dividend_yield=None,
+                max_rsi=None,
+                adv_krw_min=None,
+                market_cap_min_krw=market_cap_min_krw,
+                market_cap_max_krw=market_cap_max_krw,
+                instrument_types=instrument_types,
+                exclude_sector_keys=exclude_sector_keys,
             )
 
         _complete_filters_applied()
         pre_limit_count = len(results)
         results = _sort_and_limit(results, sort_by, sort_order, limit)
-        return _build_screen_response(results, pre_limit_count, filters_applied, market)
+        warnings = []
+        if adv_krw_min is not None:
+            warnings.append(
+                "adv_krw_min requires 30-day average-volume data and is not "
+                "available on the US yfinance fallback path; filter was skipped."
+            )
+        return _build_screen_response(
+            results,
+            pre_limit_count,
+            filters_applied,
+            market,
+            warnings=warnings or None,
+        )
     except ImportError:
         return _error_payload(
             source="yfinance",
@@ -281,6 +372,11 @@ def _build_us_filters(
     )
     price_target_field = _get_tvscreener_attr(StockField, "PRICE_TARGET_1Y")
     price_target_delta_field = _get_tvscreener_attr(StockField, "PRICE_TARGET_1Y_DELTA")
+    average_volume_30_day_field = _get_tvscreener_attr(
+        StockField, "AVERAGE_VOLUME_30_DAY", "AVERAGE_VOLUME_30D", "AVERAGE_VOLUME_30"
+    )
+    type_field = _get_tvscreener_attr(StockField, "TYPE")
+    subtype_field = _get_tvscreener_attr(StockField, "SUBTYPE")
 
     # Validate that required fields are available
     if sort_by == "market_cap" and market_cap_field is None:
@@ -324,6 +420,9 @@ def _build_us_filters(
         price_target_average_field,
         price_target_field,
         price_target_delta_field,
+        average_volume_30_day_field,
+        type_field,
+        subtype_field,
     ):
         if optional_field is not None:
             columns.append(optional_field)
@@ -393,6 +492,7 @@ def _normalize_us_results(
     df: Any,
     *,
     market: str,
+    usd_krw_rate: float,
 ) -> list[dict[str, Any]]:
     """Map tvscreener DataFrame rows to normalized US stock dicts."""
     stocks: list[dict[str, Any]] = []
@@ -408,6 +508,14 @@ def _normalize_us_results(
             "rsi": _to_optional_float(row.get("relative_strength_index_14")),
             "adx": _to_optional_float(row.get("average_directional_index_14")),
             "volume": _to_optional_float(row.get("volume")),
+            "average_volume_30_day": _to_optional_float(
+                _get_first_present(
+                    row,
+                    "average_volume_30_day",
+                    "average_volume_30d",
+                    "average_volume_30",
+                )
+            ),
             "change_percent": _to_optional_float(row.get("change_percent")),
             "market_cap": _to_optional_float(
                 _get_first_present(row, "market_capitalization", "market_cap_basic")
@@ -458,6 +566,18 @@ def _normalize_us_results(
         sector = _clean_text(_get_first_present(row, "sector.tr", "sector"))
         if sector:
             stock["sector"] = sector
+        avg_volume = _to_optional_float(stock.get("average_volume_30_day"))
+        if avg_volume is not None:
+            stock["adv_krw"] = avg_volume * price * usd_krw_rate
+        market_cap = _to_optional_float(stock.get("market_cap"))
+        if market_cap is not None:
+            stock["market_cap_krw"] = market_cap * usd_krw_rate
+        stock["instrument_type"] = classify_us_instrument(
+            stock.get("symbol"),
+            stock.get("name"),
+            _get_first_present(row, "type"),
+            _get_first_present(row, "subtype"),
+        )
 
         stock.update(_aggregate_analyst_recommendations(row))
 
@@ -489,6 +609,12 @@ async def _screen_us_via_tvscreener(
     sort_by: str = "rsi",
     sort_order: str = "desc",
     limit: int = 50,
+    adv_krw_min: int | None = None,
+    market_cap_min_krw: int | None = None,
+    market_cap_max_krw: int | None = None,
+    instrument_types: list[str] | None = None,
+    exclude_sectors: list[str] | None = None,
+    exclude_sector_keys: set[str] | None = None,
 ) -> dict[str, Any]:
     """Screen US stocks using TradingView StockScreener API."""
     (
@@ -510,6 +636,11 @@ async def _screen_us_via_tvscreener(
         "sort_by": sort_by,
         "sort_order": sort_order,
         "limit": limit,
+        "adv_krw_min": adv_krw_min,
+        "market_cap_min_krw": market_cap_min_krw,
+        "market_cap_max_krw": market_cap_max_krw,
+        "instrument_types": instrument_types,
+        "exclude_sectors": exclude_sectors,
     }
     if min_dividend_yield_input is not None:
         filters_applied["min_dividend_yield_input"] = min_dividend_yield_input
@@ -554,7 +685,18 @@ async def _screen_us_via_tvscreener(
         logger.info("[Screen-US-TV] StockScreener returned %d US stocks", len(df))
 
         # Phase 3: Normalize results
-        stocks = _normalize_us_results(df, market=market)
+        usd_krw_rate = await _resolve_us_screening_usd_krw_rate(
+            prefer_live_rate=_has_krw_valuation_filter(
+                adv_krw_min=adv_krw_min,
+                market_cap_min_krw=market_cap_min_krw,
+                market_cap_max_krw=market_cap_max_krw,
+            )
+        )
+        stocks = _normalize_us_results(
+            df,
+            market=market,
+            usd_krw_rate=usd_krw_rate,
+        )
 
         stocks = _filter_by_min_analyst_buy(stocks, min_analyst_buy)
 
@@ -565,11 +707,18 @@ async def _screen_us_via_tvscreener(
             max_pbr=None,
             min_dividend_yield=min_dividend_yield_normalized,
             max_rsi=max_rsi,
+            adv_krw_min=adv_krw_min,
+            market_cap_min_krw=market_cap_min_krw,
+            market_cap_max_krw=market_cap_max_krw,
+            instrument_types=instrument_types,
+            exclude_sector_keys=exclude_sector_keys,
         )
         ordered = _sort_and_limit(filtered, sort_by, sort_order, limit)
 
         result["count"] = len(filtered)
         result["stocks"] = ordered
+        if adv_krw_min is not None:
+            result["meta_fields"] = {"adv_window_days": 30}
 
         logger.info(
             "[Screen-US-TV] Returning %d US stocks sorted by %s",
@@ -611,6 +760,12 @@ async def _screen_us_with_fallback(
     sort_by: str,
     sort_order: str,
     limit: int,
+    adv_krw_min: int | None = None,
+    market_cap_min_krw: int | None = None,
+    market_cap_max_krw: int | None = None,
+    instrument_types: list[str] | None = None,
+    exclude_sectors: list[str] | None = None,
+    exclude_sector_keys: set[str] | None = None,
 ) -> dict[str, Any]:
     """Screen US market with tvscreener fallback to legacy."""
     capability_snapshot = await _get_tvscreener_stock_capability_snapshot(
@@ -647,6 +802,12 @@ async def _screen_us_with_fallback(
                 sort_by=sort_by,
                 sort_order=sort_order,
                 limit=limit,
+                adv_krw_min=adv_krw_min,
+                market_cap_min_krw=market_cap_min_krw,
+                market_cap_max_krw=market_cap_max_krw,
+                instrument_types=instrument_types,
+                exclude_sectors=exclude_sectors,
+                exclude_sector_keys=exclude_sector_keys,
             )
             if tvscreener_result and not tvscreener_result.get("error"):
                 logger.info(
@@ -675,4 +836,10 @@ async def _screen_us_with_fallback(
         sort_by=sort_by,
         sort_order=sort_order,
         limit=limit,
+        adv_krw_min=adv_krw_min,
+        market_cap_min_krw=market_cap_min_krw,
+        market_cap_max_krw=market_cap_max_krw,
+        instrument_types=instrument_types,
+        exclude_sectors=exclude_sectors,
+        exclude_sector_keys=exclude_sector_keys,
     )
