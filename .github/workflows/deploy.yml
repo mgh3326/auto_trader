@@ -119,7 +119,7 @@ jobs:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
 
       - name: Deploy via SSH
-        timeout-minutes: 10
+        timeout-minutes: 20
         shell: bash
         run: |
           set -eo pipefail
