@@ -1,0 +1,389 @@
+{% extends "base.html" %}
+
+{% block title %}Decision Desk - Auto Trader{% endblock %}
+
+{% block content %}
+<div id="portfolio-decision-desk-page" class="container-fluid py-4">
+    <!-- Header -->
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h1 class="h3 mb-1">Decision Desk <span class="badge bg-secondary fs-6">V1 Analysis</span></h1>
+            <p class="text-muted mb-0">Analysis-only generated action slate for your current portfolio.</p>
+        </div>
+        <div class="d-flex gap-2">
+            <a href="/portfolio/" class="btn btn-outline-primary">
+                <i class="bi bi-arrow-left"></i> Portfolio Dashboard
+            </a>
+            <button id="refresh-btn" class="btn btn-primary">
+                <i class="bi bi-arrow-clockwise"></i> Refresh Analysis
+            </button>
+        </div>
+    </div>
+
+    <!-- Summary Cards -->
+    <div id="summary-section" class="row g-3 mb-4">
+        <!-- Summary will be injected here -->
+        <div class="col-12">
+            <div class="card border-0 shadow-sm">
+                <div class="card-body py-5 text-center">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                    <p class="mt-3 mb-0">Building decision slate...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Filters -->
+    <div class="card border-0 shadow-sm mb-4">
+        <div class="card-body">
+            <form id="filter-form" class="row g-3 align-items-end">
+                <div class="col-md-3">
+                    <label class="form-label small text-uppercase fw-bold text-muted">Market</label>
+                    <select name="market" class="form-select">
+                        <option value="ALL">All Markets</option>
+                        <option value="KR">Korea Equity</option>
+                        <option value="US">US Equity</option>
+                        <option value="CRYPTO">Crypto</option>
+                    </select>
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label small text-uppercase fw-bold text-muted">Search Symbol/Name</label>
+                    <div class="input-group">
+                        <span class="input-group-text bg-white border-end-0"><i class="bi bi-search"></i></span>
+                        <input type="text" name="q" class="form-control border-start-0" placeholder="NVDA, 삼성전자...">
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label small text-uppercase fw-bold text-muted">Action Filter</label>
+                    <select id="action-filter" class="form-select">
+                        <option value="all">All Actions</option>
+                        <option value="actionable">Actionable Only</option>
+                        <option value="buy_candidate">Buy Candidates</option>
+                        <option value="trim_candidate">Trim Candidates</option>
+                        <option value="sell_watch">Sell Watch</option>
+                        <option value="hold">Hold Only</option>
+                        <option value="manual_review">Manual Review</option>
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <button type="submit" class="btn btn-secondary w-100">Apply</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Symbol Groups -->
+    <div id="groups-container">
+        <!-- Symbol groups will be injected here -->
+    </div>
+</div>
+
+<template id="summary-template">
+    <div class="col-md-2">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-body text-center">
+                <div class="text-muted small text-uppercase mb-1">Symbols</div>
+                <div class="h4 mb-0 fw-bold" id="sum-symbols">0</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-body text-center">
+                <div class="text-muted small text-uppercase mb-1">Actionable</div>
+                <div class="h4 mb-0 fw-bold text-primary" id="sum-actionable">0</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-body text-center">
+                <div class="text-muted small text-uppercase mb-1">Trim/Sell</div>
+                <div class="h4 mb-0 fw-bold text-danger" id="sum-trim-sell">0</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-body text-center">
+                <div class="text-muted small text-uppercase mb-1">Buy</div>
+                <div class="h4 mb-0 fw-bold text-success" id="sum-buy">0</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card border-0 shadow-sm h-100 border-start border-warning border-4">
+            <div class="card-body text-center">
+                <div class="text-muted small text-uppercase mb-1">Manual</div>
+                <div class="h4 mb-0 fw-bold text-warning" id="sum-manual">0</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-body text-center">
+                <div class="text-muted small text-uppercase mb-1">Missing Info</div>
+                <div class="h4 mb-0 fw-bold" id="sum-missing">0</div>
+            </div>
+        </div>
+    </div>
+</template>
+
+<template id="group-template">
+    <div class="symbol-group mb-5">
+        <div class="d-flex align-items-center mb-3 group-header">
+            <div class="market-badge me-2"></div>
+            <h2 class="h5 mb-0 fw-bold symbol-name">SYMBOL NAME</h2>
+            <div class="ms-auto d-flex align-items-center gap-3">
+                <div class="text-muted small">
+                    <span class="qty">0</span> qty @ <span class="current-price">0</span>
+                    (<span class="pl-rate">0%</span>)
+                </div>
+                <a href="#" class="btn btn-sm btn-link detail-link">Detail <i class="bi bi-chevron-right"></i></a>
+            </div>
+        </div>
+        
+        <div class="row g-3 items-container">
+            <!-- Decision items will be injected here -->
+        </div>
+    </div>
+</template>
+
+<template id="item-template">
+    <div class="col-12 decision-item-card">
+        <div class="card border-0 shadow-sm">
+            <div class="card-body p-0">
+                <div class="row g-0">
+                    <div class="col-md-1 d-flex align-items-center justify-content-center item-action-sidebar border-end">
+                        <div class="action-icon h4 mb-0"></div>
+                    </div>
+                    <div class="col-md-11 p-3">
+                        <div class="d-flex justify-content-between align-items-start mb-2">
+                            <div>
+                                <span class="badge action-badge mb-1">ACTION</span>
+                                <h3 class="h6 fw-bold mb-0 label-text">Label</h3>
+                            </div>
+                            <div class="text-end">
+                                <div class="action-price-container mb-1">
+                                    <span class="text-muted small">Action Price:</span>
+                                    <span class="fw-bold action-price">-</span>
+                                </div>
+                                <div class="badge boundary-badge">Analysis Only</div>
+                            </div>
+                        </div>
+                        
+                        <div class="rationale-list mt-3">
+                            <ul class="mb-0 small text-muted"></ul>
+                        </div>
+                        
+                        <div class="anchor-info mt-2 pt-2 border-top d-flex gap-3 small text-muted">
+                            <span class="anchor-type"></span>
+                            <span class="anchor-price"></span>
+                            <span class="anchor-dist"></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</template>
+
+<style>
+    .market-badge-KR { background-color: #0d6efd; width: 4px; height: 24px; border-radius: 2px; }
+    .market-badge-US { background-color: #198754; width: 4px; height: 24px; border-radius: 2px; }
+    .market-badge-CRYPTO { background-color: #f7931a; width: 4px; height: 24px; border-radius: 2px; }
+    
+    .item-action-sidebar.action-buy_candidate { background-color: #f0fdf4; border-color: #bbf7d0 !important; color: #16a34a; }
+    .item-action-sidebar.action-trim_candidate { background-color: #fff7ed; border-color: #fed7aa !important; color: #ea580c; }
+    .item-action-sidebar.action-sell_watch { background-color: #fef2f2; border-color: #fecaca !important; color: #dc2626; }
+    .item-action-sidebar.action-hold { background-color: #f8fafc; border-color: #e2e8f0 !important; color: #475569; }
+    .item-action-sidebar.action-manual_review { background-color: #fefce8; border-color: #fef08a !important; color: #ca8a04; }
+    
+    .badge.action-buy_candidate { background-color: #16a34a; }
+    .badge.action-trim_candidate { background-color: #ea580c; }
+    .badge.action-sell_watch { background-color: #dc2626; }
+    .badge.action-hold { background-color: #475569; }
+    .badge.action-manual_review { background-color: #ca8a04; }
+</style>
+
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const groupsContainer = document.getElementById('groups-container');
+        const summarySection = document.getElementById('summary-section');
+        const filterForm = document.getElementById('filter-form');
+        const refreshBtn = document.getElementById('refresh-btn');
+        const actionFilter = document.getElementById('action-filter');
+
+        let currentSlate = null;
+
+        function setStatusMessage(message, className = 'text-muted') {
+            groupsContainer.innerHTML = '';
+            const div = document.createElement('div');
+            div.className = `text-center py-5 ${className}`;
+            div.textContent = message;
+            groupsContainer.appendChild(div);
+        }
+
+        function setAlertMessage(message, className = 'alert-danger') {
+            groupsContainer.innerHTML = '';
+            const div = document.createElement('div');
+            div.className = `alert ${className}`;
+            div.textContent = message;
+            groupsContainer.appendChild(div);
+        }
+
+        function formatNumber(value) {
+            if (value === null || value === undefined || Number.isNaN(Number(value))) return '-';
+            return Number(value).toLocaleString();
+        }
+
+        function formatPercent(value) {
+            if (value === null || value === undefined || Number.isNaN(Number(value))) return '-';
+            return `${(Number(value) * 100).toFixed(2)}%`;
+        }
+
+        async function fetchSlate() {
+            setStatusMessage('Fetching latest analysis...');
+            
+            const formData = new FormData(filterForm);
+            const params = new URLSearchParams();
+            if (formData.get('market') !== 'ALL') params.append('market', formData.get('market'));
+            if (formData.get('q')) params.append('q', formData.get('q'));
+            
+            try {
+                const response = await fetch('/portfolio/api/decision-slate?' + params.toString());
+                const data = await response.json();
+                if (data.success) {
+                    currentSlate = data;
+                    renderSlate();
+                } else {
+                    setAlertMessage(`Failed to fetch data: ${data.detail || 'Unknown error'}`);
+                }
+            } catch (error) {
+                setAlertMessage(`Error: ${error.message}`);
+            }
+        }
+
+        function renderSlate() {
+            if (!currentSlate) return;
+
+            // Render Summary
+            const sum = currentSlate.summary;
+            summarySection.innerHTML = '';
+            const sumTemplate = document.getElementById('summary-template');
+            const sumNode = sumTemplate.content.cloneNode(true);
+            sumNode.getElementById('sum-symbols').textContent = sum.symbols;
+            sumNode.getElementById('sum-actionable').textContent = sum.actionable_items;
+            sumNode.getElementById('sum-trim-sell').textContent = (sum.by_action.trim_candidate || 0) + (sum.by_action.sell_watch || 0);
+            sumNode.getElementById('sum-buy').textContent = sum.by_action.buy_candidate || 0;
+            sumNode.getElementById('sum-manual').textContent = sum.manual_review_items;
+            sumNode.getElementById('sum-missing').textContent = sum.missing_context_items;
+            summarySection.appendChild(sumNode);
+
+            // Render Groups
+            groupsContainer.innerHTML = '';
+            const groupTemplate = document.getElementById('group-template');
+            const itemTemplate = document.getElementById('item-template');
+            
+            const selectedAction = actionFilter.value;
+
+            currentSlate.symbol_groups.forEach(group => {
+                // Filter items in group
+                const filteredItems = group.items.filter(item => {
+                    if (selectedAction === 'all') return true;
+                    if (selectedAction === 'actionable') return ['buy_candidate', 'trim_candidate', 'sell_watch'].includes(item.action);
+                    return item.action === selectedAction;
+                });
+
+                if (filteredItems.length === 0) return;
+
+                const gNode = groupTemplate.content.cloneNode(true);
+                const header = gNode.querySelector('.group-header');
+                const badge = header.querySelector('.market-badge');
+                badge.classList.add(`market-badge-${group.market_type}`);
+                
+                header.querySelector('.symbol-name').textContent = `${group.symbol} - ${group.name}`;
+                header.querySelector('.qty').textContent = formatNumber(group.position.quantity);
+                header.querySelector('.current-price').textContent = formatNumber(group.position.current_price);
+                const pl = header.querySelector('.pl-rate');
+                pl.textContent = formatPercent(group.position.profit_rate);
+                pl.className = group.position.profit_rate === null || group.position.profit_rate === undefined
+                    ? 'text-muted'
+                    : (group.position.profit_rate >= 0 ? 'text-success' : 'text-danger');
+                
+                const link = header.querySelector('.detail-link');
+                link.href = group.detail_url;
+
+                const itemsContainer = gNode.querySelector('.items-container');
+                filteredItems.forEach(item => {
+                    const iNode = itemTemplate.content.cloneNode(true);
+                    const sidebar = iNode.querySelector('.item-action-sidebar');
+                    sidebar.classList.add(`action-${item.action}`);
+                    
+                    const icon = iNode.querySelector('.action-icon');
+                    if (item.action === 'buy_candidate') icon.innerHTML = '<i class="bi bi-plus-circle-fill"></i>';
+                    else if (item.action === 'trim_candidate') icon.innerHTML = '<i class="bi bi-dash-circle-fill"></i>';
+                    else if (item.action === 'sell_watch') icon.innerHTML = '<i class="bi bi-exclamation-triangle-fill"></i>';
+                    else if (item.action === 'manual_review') icon.innerHTML = '<i class="bi bi-question-circle-fill"></i>';
+                    else icon.innerHTML = '<i class="bi bi-info-circle-fill"></i>';
+
+                    const badge = iNode.querySelector('.action-badge');
+                    badge.textContent = item.label;
+                    badge.classList.add(`action-${item.action}`);
+                    
+                    iNode.querySelector('.label-text').textContent = item.label;
+                    
+                    if (item.action_price !== null && item.action_price !== undefined) {
+                        iNode.querySelector('.action-price').textContent = formatNumber(item.action_price);
+                    } else {
+                        iNode.querySelector('.action-price-container').style.display = 'none';
+                    }
+
+                    const rationale = iNode.querySelector('.rationale-list ul');
+                    item.rationale.forEach(r => {
+                        const li = document.createElement('li');
+                        li.textContent = r;
+                        rationale.appendChild(li);
+                    });
+
+                    if (item.anchor) {
+                        iNode.querySelector('.anchor-type').textContent = `Ref: ${item.anchor.type.toUpperCase()}`;
+                        iNode.querySelector('.anchor-price').textContent = `@ ${formatNumber(item.anchor.price)}`;
+                        if (item.anchor.distance_pct !== null && item.anchor.distance_pct !== undefined) {
+                            iNode.querySelector('.anchor-dist').textContent = `(${item.anchor.distance_pct > 0 ? '+' : ''}${item.anchor.distance_pct.toFixed(2)}%)`;
+                        }
+                    } else {
+                        iNode.querySelector('.anchor-info').style.display = 'none';
+                    }
+
+                    itemsContainer.appendChild(iNode);
+                });
+
+                groupsContainer.appendChild(gNode);
+            });
+
+            if (groupsContainer.innerHTML === '') {
+                setStatusMessage('No positions match the current filters.');
+            }
+        }
+
+        filterForm.addEventListener('submit', function(e) {
+            e.preventDefault();
+            fetchSlate();
+        });
+
+        refreshBtn.addEventListener('click', function() {
+            fetchSlate();
+        });
+        
+        actionFilter.addEventListener('change', function() {
+            renderSlate();
+        });
+
+        // Initial fetch
+        fetchSlate();
+    });
+</script>
+{% endblock %}
