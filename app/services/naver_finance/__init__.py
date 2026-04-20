@@ -85,6 +85,18 @@ from app.services.naver_finance.valuation import (
     _fetch_sector_stock_codes as _fetch_sector_stock_codes,
 )
 from app.services.naver_finance.valuation import (
+    _parse_basic_info as _parse_basic_info,
+)
+from app.services.naver_finance.valuation import (
+    _parse_financial_metrics as _parse_financial_metrics,
+)
+from app.services.naver_finance.valuation import (
+    _parse_industry_info as _parse_industry_info,
+)
+from app.services.naver_finance.valuation import (
+    _parse_peer_comparison as _parse_peer_comparison,
+)
+from app.services.naver_finance.valuation import (
     _parse_total_infos as _parse_total_infos,
 )
 from app.services.naver_finance.valuation import (
@@ -97,6 +109,8 @@ from app.services.naver_finance.valuation import (
     fetch_valuation as fetch_valuation,
 )
 
+# Re-export private helpers for backward compatibility with existing tests and
+# MCP tool consumers that imported them from app.services.naver_finance.
 __all__ = [
     "DEFAULT_HEADERS",
     "NAVER_FINANCE_BASE",
@@ -115,8 +129,12 @@ __all__ = [
     "_fetch_report_detail_with_client",
     "_fetch_sector_name",
     "_fetch_sector_stock_codes",
+    "_parse_basic_info",
+    "_parse_financial_metrics",
+    "_parse_industry_info",
     "_parse_naver_date",
     "_parse_news_soup",
+    "_parse_peer_comparison",
     "_parse_report_detail_soup",
     "_parse_total_infos",
     "_parse_valuation_from_soups",

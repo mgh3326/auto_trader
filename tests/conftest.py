@@ -72,6 +72,7 @@ def _ensure_test_env() -> None:
         "MCP_AUTH_TOKEN": "",  # Empty to disable auth for tests
         "N8N_API_KEY": "",  # Empty = n8n auth disabled in tests by default
         "N8N_FILL_WEBHOOK_URL": "",  # Empty = n8n fill webhook disabled in tests by default
+        "N8N_WATCH_ALERT_WEBHOOK_URL": "",  # Empty = n8n watch webhook disabled in tests
         "OPENAI_API_KEY": "",
         "GEMINI_ADVISOR_API_KEY": "",
         "GROK_API_KEY": "",
@@ -85,6 +86,12 @@ def _ensure_test_env() -> None:
     # Force overwrite SECRET_KEY to ensure it passes validation during tests
     # regardless of what's in env.example or .env
     os.environ["SECRET_KEY"] = "Test_Secret_Key_12345_Test_Secret_Key_12345"
+
+    # Force overwrite DATABASE_URL to ensure tests use the correct test database
+    # regardless of what's in env.example (which may contain placeholder values)
+    os.environ["DATABASE_URL"] = (
+        "postgresql+asyncpg://postgres:postgres@localhost:5432/test_db"
+    )
 
     # Force disable Sentry during tests — prevent test-originated errors
     # from leaking to the real Sentry project (developer shell may have SENTRY_DSN set)

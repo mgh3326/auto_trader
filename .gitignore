@@ -205,6 +205,8 @@ celerybeat.pid
 .env
 .env.test
 .env.mcp
+.env.prod
+.env.prod.*
 .venv
 env/
 venv/
@@ -275,3 +277,7 @@ blog/images/screenshot_*.png
 backtest/data/
 backtest/output/
 .omc/.env.prod
+# graphify: all generated artifacts (graph, report, cache, interpreter path, chunk inputs)
+graphify-out/
+app/graphify-out/
+/.air/worktree.json

@@ -16,6 +16,10 @@ from app.services.ohlcv_cache_common import (
     _enforce_retention_limit,
     _release_lock,
     _to_json_value,
+    acquire_lock_with_retry,
+    create_redis_client,
+    make_keys,
+    normalize_period,
 )
 
 logger = logging.getLogger(__name__)
@@ -39,26 +43,20 @@ _REDIS_CLIENT: redis.Redis | None = None
 _FALLBACK_COUNT = 0
 
 
-def _normalize_period(period: str) -> str:
-    normalized = str(period or "").strip().lower()
-    if normalized not in _SUPPORTED_PERIODS:
-        raise ValueError(f"period must be one of {sorted(_SUPPORTED_PERIODS)}")
-    return normalized
+def _normalize_period_local(period: str) -> str:
+    return normalize_period(period, _SUPPORTED_PERIODS)
 
 
 def _base_key(symbol: str, period: str, route: str | None = None) -> str:
-    normalized_symbol = str(symbol or "").strip().upper()
-    normalized_route = str(route or "").strip().upper()
-    if normalized_route:
-        return f"kis:ohlcv:{period}:v1:{normalized_symbol}:{normalized_route}"
-    return f"kis:ohlcv:{period}:v1:{normalized_symbol}"
+    from app.services.ohlcv_cache_common import make_base_key
+
+    return make_base_key("kis", symbol, period, route)
 
 
 def _keys(
     symbol: str, period: str, route: str | None = None
 ) -> tuple[str, str, str, str]:
-    base = _base_key(symbol, period, route)
-    return f"{base}:dates", f"{base}:rows", f"{base}:meta", f"{base}:lock"
+    return make_keys("kis", symbol, period, route)
 
 
 def _empty_dataframe(period: str) -> pd.DataFrame:
@@ -259,13 +257,7 @@ def _parse_cached_row(
 async def _get_redis_client() -> redis.Redis:
     global _REDIS_CLIENT
     if _REDIS_CLIENT is None:
-        _REDIS_CLIENT = redis.from_url(
-            settings.get_redis_url(),
-            max_connections=settings.redis_max_connections,
-            socket_timeout=settings.redis_socket_timeout,
-            socket_connect_timeout=settings.redis_socket_connect_timeout,
-            decode_responses=True,
-        )
+        _REDIS_CLIENT = await create_redis_client()
     return _REDIS_CLIENT
 
 
@@ -380,7 +372,7 @@ async def get_candles(
     raw_fetcher: Callable[[int], Awaitable[pd.DataFrame]],
     route: str | None = None,
 ) -> pd.DataFrame:
-    normalized_period = _normalize_period(period)
+    normalized_period = _normalize_period_local(period)
     requested_count = int(count)
     if requested_count <= 0:
         return _empty_dataframe(normalized_period)
@@ -423,40 +415,31 @@ async def get_candles(
         ):
             return cached.tail(requested_count).reset_index(drop=True)
 
-        lock_token = await _acquire_lock(
+        lock_token = await acquire_lock_with_retry(
             redis_client,
             lock_key,
             settings.kis_ohlcv_cache_lock_ttl_seconds,
+            _acquire_lock,
+            asyncio.sleep,
         )
         if lock_token is None:
-            for _ in range(2):
-                await asyncio.sleep(0.1)
-                lock_token = await _acquire_lock(
-                    redis_client,
-                    lock_key,
-                    settings.kis_ohlcv_cache_lock_ttl_seconds,
-                )
-                if lock_token is not None:
-                    break
-
-            if lock_token is None:
-                refreshed = await _read_cached_rows(
-                    redis_client,
-                    dates_key,
-                    rows_key,
-                    requested_count,
-                    normalized_period,
-                )
-                if len(refreshed) >= requested_count and _is_cache_fresh(
-                    normalized_period, refreshed
-                ):
-                    return refreshed.tail(requested_count).reset_index(drop=True)
-                raw_fallback = await raw_fetcher(requested_count)
-                return (
-                    _canonicalize_frame(normalized_period, raw_fallback)
-                    .tail(requested_count)
-                    .reset_index(drop=True)
-                )
+            refreshed = await _read_cached_rows(
+                redis_client,
+                dates_key,
+                rows_key,
+                requested_count,
+                normalized_period,
+            )
+            if len(refreshed) >= requested_count and _is_cache_fresh(
+                normalized_period, refreshed
+            ):
+                return refreshed.tail(requested_count).reset_index(drop=True)
+            raw_fallback = await raw_fetcher(requested_count)
+            return (
+                _canonicalize_frame(normalized_period, raw_fallback)
+                .tail(requested_count)
+                .reset_index(drop=True)
+            )
 
         raw_frame = _empty_dataframe(normalized_period)
         try:

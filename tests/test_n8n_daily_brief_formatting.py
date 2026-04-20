@@ -52,7 +52,7 @@ class TestDailyBriefFormatting:
 @pytest.mark.unit
 class TestBuildBriefText:
     def test_contains_header(self):
-        from app.schemas.n8n import N8nMarketOverview
+        from app.schemas.n8n.common import N8nMarketOverview
         from app.services.n8n_daily_brief_service import _build_brief_text
 
         text = _build_brief_text(
@@ -73,7 +73,7 @@ class TestBuildBriefText:
         assert "📊 포트폴리오" in text
 
     def test_includes_pending_counts(self):
-        from app.schemas.n8n import N8nMarketOverview
+        from app.schemas.n8n.common import N8nMarketOverview
         from app.services.n8n_daily_brief_service import _build_brief_text
 
         text = _build_brief_text(
@@ -99,7 +99,7 @@ class TestBuildBriefText:
         assert "[크립토] 11건 (매수 4 / 매도 7)" in text
 
     def test_includes_fills(self):
-        from app.schemas.n8n import N8nMarketOverview
+        from app.schemas.n8n.common import N8nMarketOverview
         from app.services.n8n_daily_brief_service import _build_brief_text
 
         text = _build_brief_text(
@@ -128,3 +128,90 @@ class TestBuildBriefText:
 
         assert "✅ 전일 체결" in text
         assert "ETH sell" in text
+
+
+@pytest.mark.unit
+class TestBoardBriefBuilders:
+    def _context(self):
+        from app.schemas.n8n.board_brief import BoardBriefContext
+
+        return BoardBriefContext(
+            exchange_krw=1_000_000,
+            unverified_cap={"amount": 5_000_000},
+            next_obligation={
+                "date": "2026-04-24",
+                "days_remaining": 7,
+                "cash_needed_until": 2_500_000,
+            },
+            tier_scenarios=[
+                {
+                    "label": "T1",
+                    "deposit_amount": 1_500_000,
+                    "target_exchange_krw": 2_500_000,
+                    "buffer_days": 25,
+                    "cushion_after_obligation": 0,
+                }
+            ],
+            data_sufficient_by_symbol={"BTC": True},
+            btc_regime={
+                "close_vs_20d_ma": "above",
+                "ma20_slope": "up",
+                "drawdown_14d_pct": -3.2,
+            },
+            manual_cash_krw=1_250_000,
+            daily_burn_krw=50_000,
+            weights_top_n=[{"symbol": "BTC", "weight_pct": 42.5}],
+            holdings=[
+                {"symbol": "BTC", "current_krw_value": 1_000_000, "dust": False},
+                {"symbol": "DOGE", "current_krw_value": 3_000, "dust": True},
+            ],
+            dust_items=[{"symbol": "DOGE", "current_krw_value": 3_000, "dust": True}],
+        )
+
+    def test_tc_preliminary_has_no_recommendation_or_gate_sections(self):
+        from app.services.n8n_daily_brief_service import build_tc_preliminary
+
+        render = build_tc_preliminary(self._context())
+        text = render.text
+
+        assert render.phase == "tc_preliminary"
+        assert "경로 A·B 병행 가능" in text
+        assert "BTC" in text
+        assert "🧹 Dust 1종목" in text
+        assert "🎯 권고" not in text
+        assert "📊 Gate 판정 결과" not in text
+        assert "[funding]" not in text
+        assert "[action]" not in text
+
+    def test_cio_pending_includes_recommendation_gates_and_questions(self):
+        from app.schemas.n8n.board_brief import GateResult, N8nG2GatePayload
+        from app.services.n8n_daily_brief_service import build_cio_pending_decision
+
+        ctx = self._context().model_copy(
+            update={
+                "gate_results": {
+                    "G1": GateResult(
+                        status="fail",
+                        detail="(3) 현금 우선 정책 적용",
+                    ),
+                    "G2": N8nG2GatePayload(
+                        passed=False,
+                        status="fail",
+                        blocking_reason="runway recovery requires cash",
+                    ),
+                }
+            }
+        )
+
+        render = build_cio_pending_decision(ctx)
+        text = render.text
+
+        assert render.phase == "cio_pending"
+        assert "🎯 권고" in text
+        assert "📊 Gate 판정 결과" in text
+        assert "🚫 신규 매수 차단 — G2 fail" in text
+        assert "(3) 현금 우선 정책 적용" in text
+        assert "[funding-confirmation]" in text
+        assert "[action]" in text
+        assert "경로 A·B 병행 가능" in text
+        assert "**A 와 B 는 상호배타 아님 — 병행 가능.**" in text

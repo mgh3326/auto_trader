@@ -352,7 +352,7 @@ async def get_quote(symbol: str, market: str) -> Quote:
         kis = KISClient()
         frame = await kis.inquire_daily_itemchartprice(
             code=resolved_symbol,
-            market="UN",
+            market="J",
             n=1,
             period="D",
         )
@@ -420,7 +420,7 @@ async def get_orderbook(symbol: str, market: str = "kr") -> OrderbookSnapshot:
         kis = KISClient()
         output1, output2 = await kis.inquire_orderbook_snapshot(
             code=resolved_symbol,
-            market="UN",
+            market="J",
         )
         expected_price, expected_qty = _extract_expected_match_metadata(
             resolved_symbol,
@@ -577,7 +577,7 @@ async def get_ohlcv(
             period_map = {"day": "D", "week": "W", "month": "M"}
             frame = await kis.inquire_daily_itemchartprice(
                 code=resolved_symbol,
-                market="UN",
+                market="J",
                 n=min(count, 200),
                 period=period_map[resolved_period],
                 end_date=(pd.Timestamp(end.date()) if end is not None else None),
@@ -600,7 +600,7 @@ async def get_ohlcv(
         else:
             frame = await kis.inquire_minute_chart(
                 code=resolved_symbol,
-                market="UN",
+                market="J",
                 time_unit=60,
                 n=min(count, 200),
                 end_date=(pd.Timestamp(end.date()) if end is not None else None),

@@ -29,12 +29,14 @@ from app.routers import (
     n8n_scan,
     news_analysis,
     openclaw_callback,
+    order_estimation,
     pending_orders,
     portfolio,
     screener,
     symbol_settings,
     test,
     trading,
+    user_defaults,
     websocket,
 )
 from app.services.error_serialization import (
@@ -147,6 +149,8 @@ def create_app() -> FastAPI:
     app.include_router(n8n.router)
     app.include_router(n8n_scan.router)
     app.include_router(openclaw_callback.router)
+    app.include_router(user_defaults.router)
+    app.include_router(order_estimation.router)
     app.include_router(symbol_settings.router)
     app.include_router(portfolio.router)
     app.include_router(ai_markdown.router)

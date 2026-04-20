@@ -9,6 +9,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.core.timezone import now_kst
+from app.mcp_server.tooling.trade_journal_tools import (
+    _serialize_journal,
+    get_trade_journal,
+    save_trade_journal,
+    update_trade_journal,
+)
 from app.models.trade_journal import TradeJournal
 from app.models.trading import InstrumentType
 
@@ -240,10 +247,337 @@ class TestGetTradeJournal:
         assert result["summary"]["total_active"] == 0
 
 
+class TestSaveTradeJournalMetadata:
+    """save_trade_journal metadata 파라미터 테스트."""
+
+    @pytest.mark.asyncio
+    async def test_save_with_metadata_stores_correctly(self) -> None:
+        mock_session = AsyncMock()
+        mock_scalars = MagicMock()
+        mock_scalars.first.return_value = None
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute.return_value = mock_result
+
+        factory = _mock_session_factory(mock_session)
+        with patch(
+            "app.mcp_server.tooling.trade_journal_tools._session_factory",
+            return_value=factory,
+        ):
+            result = await save_trade_journal(
+                symbol="KRW-BTC",
+                thesis="RSI oversold bounce play",
+                metadata={"paperclip_issue_id": "ROB-51", "source": "auto"},
+            )
+
+        assert result["success"] is True
+        added_obj = mock_session.add.call_args[0][0]
+        assert isinstance(added_obj, TradeJournal)
+        assert added_obj.extra_metadata == {
+            "paperclip_issue_id": "ROB-51",
+            "source": "auto",
+        }
+
+    @pytest.mark.asyncio
+    async def test_save_without_metadata_no_regression(self) -> None:
+        mock_session = AsyncMock()
+        mock_scalars = MagicMock()
+        mock_scalars.first.return_value = None
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute.return_value = mock_result
+
+        factory = _mock_session_factory(mock_session)
+        with patch(
+            "app.mcp_server.tooling.trade_journal_tools._session_factory",
+            return_value=factory,
+        ):
+            result = await save_trade_journal(
+                symbol="KRW-BTC",
+                thesis="RSI oversold bounce play",
+            )
+
+        assert result["success"] is True
+        added_obj = mock_session.add.call_args[0][0]
+        assert added_obj.extra_metadata is None
+
+
+class TestGetTradeJournalPaperclipIssueId:
+    """get_trade_journal paperclip_issue_id 필터 테스트."""
+
+    @pytest.mark.asyncio
+    async def test_filter_by_paperclip_issue_id_returns_matching(self) -> None:
+        now = datetime.now(UTC)
+        journal = TradeJournal(
+            id=10,
+            symbol="KRW-BTC",
+            instrument_type=InstrumentType.crypto,
+            thesis="RSI oversold",
+            status="active",
+            side="buy",
+            extra_metadata={"paperclip_issue_id": "ROB-51"},
+            created_at=now,
+            updated_at=now,
+        )
+
+        mock_session = AsyncMock()
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = [journal]
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute.return_value = mock_result
+
+        factory = _mock_session_factory(mock_session)
+        with patch(
+            "app.mcp_server.tooling.trade_journal_tools._session_factory",
+            return_value=factory,
+        ):
+            result = await get_trade_journal(paperclip_issue_id="ROB-51")
+
+        assert result["success"] is True
+        assert len(result["entries"]) == 1
+        assert result["entries"][0]["metadata"] == {"paperclip_issue_id": "ROB-51"}
+
+    @pytest.mark.asyncio
+    async def test_filter_by_paperclip_issue_id_no_matches(self) -> None:
+        mock_session = AsyncMock()
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = []
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute.return_value = mock_result
+
+        factory = _mock_session_factory(mock_session)
+        with patch(
+            "app.mcp_server.tooling.trade_journal_tools._session_factory",
+            return_value=factory,
+        ):
+            result = await get_trade_journal(paperclip_issue_id="ROB-999")
+
+        assert result["success"] is True
+        assert result["entries"] == []
+        assert result["summary"]["total_active"] == 0
+
+    @pytest.mark.asyncio
+    async def test_paperclip_issue_id_filter_builds_correct_query(self) -> None:
+        mock_session = AsyncMock()
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = []
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute.return_value = mock_result
+
+        factory = _mock_session_factory(mock_session)
+        with patch(
+            "app.mcp_server.tooling.trade_journal_tools._session_factory",
+            return_value=factory,
+        ):
+            await get_trade_journal(paperclip_issue_id="ROB-51")
+
+        stmt = mock_session.execute.call_args[0][0]
+        compiled_sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+        assert "metadata" in compiled_sql.lower()
+        assert "paperclip_issue_id" in compiled_sql
+
+
+class TestSerializeJournalMetadata:
+    """_serialize_journal metadata 필드 직렬화 테스트."""
+
+    def test_serialize_includes_metadata(self) -> None:
+        journal = TradeJournal(
+            symbol="KRW-BTC",
+            instrument_type=InstrumentType.crypto,
+            thesis="Test",
+            extra_metadata={"paperclip_issue_id": "ROB-51"},
+        )
+        journal.id = 1
+        journal.created_at = now_kst()
+        journal.updated_at = now_kst()
+        result = _serialize_journal(journal)
+        assert result["metadata"] == {"paperclip_issue_id": "ROB-51"}
+
+    def test_serialize_metadata_none(self) -> None:
+        journal = TradeJournal(
+            symbol="KRW-BTC",
+            instrument_type=InstrumentType.crypto,
+            thesis="Test",
+        )
+        journal.id = 2
+        journal.created_at = now_kst()
+        journal.updated_at = now_kst()
+        result = _serialize_journal(journal)
+        assert result["metadata"] is None
+
+
+class TestSerializeJournalNewFields:
+    """account_type, paper_trade_id 직렬화 테스트."""
+
+    def test_serialize_live_journal(self) -> None:
+        journal = TradeJournal(
+            symbol="005930",
+            instrument_type=InstrumentType.equity_kr,
+            thesis="Test",
+            account_type="live",
+        )
+        journal.id = 1
+        journal.created_at = now_kst()
+        journal.updated_at = now_kst()
+        result = _serialize_journal(journal)
+        assert result["account_type"] == "live"
+        assert result["paper_trade_id"] is None
+
+    def test_serialize_paper_journal(self) -> None:
+        journal = TradeJournal(
+            symbol="005930",
+            instrument_type=InstrumentType.equity_kr,
+            thesis="Test",
+            account_type="paper",
+            paper_trade_id=42,
+            account="paper-momentum",
+        )
+        journal.id = 2
+        journal.created_at = now_kst()
+        journal.updated_at = now_kst()
+        result = _serialize_journal(journal)
+        assert result["account_type"] == "paper"
+        assert result["paper_trade_id"] == 42
+
+
+class TestSaveTradeJournalAccountType:
+    """save_trade_journal account_type 검증 테스트."""
+
+    @pytest.mark.asyncio
+    async def test_save_with_default_account_type(self, monkeypatch) -> None:
+        """기본 account_type은 'live'."""
+        mock_session = AsyncMock()
+        mock_session.add = MagicMock()
+        mock_session.commit = AsyncMock()
+        mock_session.refresh = AsyncMock()
+        mock_scalars = MagicMock()
+        mock_scalars.first.return_value = None
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute = AsyncMock(return_value=mock_result)
+
+        cm = AsyncMock()
+        cm.__aenter__.return_value = mock_session
+        cm.__aexit__.return_value = None
+        factory = MagicMock(return_value=cm)
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.trade_journal_tools._session_factory",
+            lambda: factory,
+        )
+
+        result = await save_trade_journal(
+            symbol="005930",
+            thesis="Test thesis",
+        )
+        assert result["success"] is True
+        added_obj = mock_session.add.call_args[0][0]
+        assert added_obj.account_type == "live"
+
+    @pytest.mark.asyncio
+    async def test_save_live_with_paper_trade_id_errors(self, monkeypatch) -> None:
+        """account_type='live' + paper_trade_id 지정 시 오류."""
+        result = await save_trade_journal(
+            symbol="005930",
+            thesis="Test thesis",
+            account_type="live",
+            paper_trade_id=42,
+        )
+        assert result["success"] is False
+        assert "paper_trade_id" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_save_paper_without_account_errors(self, monkeypatch) -> None:
+        """account_type='paper' + account 비어있으면 오류."""
+        result = await save_trade_journal(
+            symbol="005930",
+            thesis="Test thesis",
+            account_type="paper",
+        )
+        assert result["success"] is False
+        assert "account" in result["error"]
+
+
+class TestGetTradeJournalAccountType:
+    """get_trade_journal account_type 필터 테스트."""
+
+    @pytest.mark.asyncio
+    async def test_default_returns_live_only(self, monkeypatch) -> None:
+        """기본 account_type='live' — 기존 동작 유지."""
+        live_journal = TradeJournal(
+            symbol="005930",
+            instrument_type=InstrumentType.equity_kr,
+            thesis="Live",
+            account_type="live",
+            status="active",
+        )
+        live_journal.id = 1
+        live_journal.created_at = now_kst()
+        live_journal.updated_at = now_kst()
+
+        mock_session = AsyncMock()
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = [live_journal]
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute = AsyncMock(return_value=mock_result)
+
+        cm = AsyncMock()
+        cm.__aenter__.return_value = mock_session
+        cm.__aexit__.return_value = None
+        factory = MagicMock(return_value=cm)
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.trade_journal_tools._session_factory",
+            lambda: factory,
+        )
+
+        result = await get_trade_journal()
+        assert result["success"] is True
+        assert len(result["entries"]) == 1
+        assert result["entries"][0]["account_type"] == "live"
+
+    @pytest.mark.asyncio
+    async def test_filter_by_account_name(self, monkeypatch) -> None:
+        """account 필터 검증."""
+        acc_journal = TradeJournal(
+            symbol="005930",
+            instrument_type=InstrumentType.equity_kr,
+            thesis="Paper",
+            account_type="paper",
+            account="paper-momentum",
+            status="active",
+        )
+        acc_journal.id = 1
+        acc_journal.created_at = now_kst()
+        acc_journal.updated_at = now_kst()
+
+        mock_session = AsyncMock()
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = [acc_journal]
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute = AsyncMock(return_value=mock_result)
+
+        cm = AsyncMock()
+        cm.__aenter__.return_value = mock_session
+        cm.__aexit__.return_value = None
+        factory = MagicMock(return_value=cm)
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.trade_journal_tools._session_factory",
+            lambda: factory,
+        )
+
+        result = await get_trade_journal(account_type="paper", account="paper-momentum")
+        assert result["success"] is True
+        assert len(result["entries"]) == 1
+        assert result["entries"][0]["account"] == "paper-momentum"
+
+
 class TestUpdateTradeJournal:
     @pytest.mark.asyncio
     async def test_update_draft_to_active(self) -> None:
-        from app.mcp_server.tooling.trade_journal_tools import update_trade_journal
 
         now = datetime.now(UTC)
         journal = TradeJournal(
@@ -278,7 +612,6 @@ class TestUpdateTradeJournal:
 
     @pytest.mark.asyncio
     async def test_update_close_with_pnl(self) -> None:
-        from app.mcp_server.tooling.trade_journal_tools import update_trade_journal
 
         now = datetime.now(UTC)
         journal = TradeJournal(
@@ -318,7 +651,6 @@ class TestUpdateTradeJournal:
 
     @pytest.mark.asyncio
     async def test_update_by_symbol_finds_latest_active(self) -> None:
-        from app.mcp_server.tooling.trade_journal_tools import update_trade_journal
 
         now = datetime.now(UTC)
         journal = TradeJournal(
@@ -355,7 +687,6 @@ class TestUpdateTradeJournal:
 
     @pytest.mark.asyncio
     async def test_update_not_found(self) -> None:
-        from app.mcp_server.tooling.trade_journal_tools import update_trade_journal
 
         mock_session = AsyncMock()
         mock_session.get.return_value = None
@@ -410,7 +741,7 @@ class TestCreateTradeJournalForBuy:
         factory = _mock_session_factory(mock_session)
 
         with patch(
-            "app.mcp_server.tooling.order_execution._order_session_factory",
+            "app.mcp_server.tooling.order_journal._order_session_factory",
             return_value=factory,
         ):
             result = await _create_trade_journal_for_buy(
@@ -454,7 +785,7 @@ class TestCreateTradeJournalForBuy:
         factory = _mock_session_factory(mock_session)
 
         with patch(
-            "app.mcp_server.tooling.order_execution._order_session_factory",
+            "app.mcp_server.tooling.order_journal._order_session_factory",
             return_value=factory,
         ):
             result = await _create_trade_journal_for_buy(
@@ -511,7 +842,7 @@ class TestJournalFillIntegration:
 
         factory = _mock_session_factory(mock_session)
         with patch(
-            "app.mcp_server.tooling.order_execution._order_session_factory",
+            "app.mcp_server.tooling.order_journal._order_session_factory",
             return_value=factory,
         ):
             await _link_journal_to_fill("KRW-BTC", trade_id=123)
@@ -537,7 +868,7 @@ class TestJournalFillIntegration:
 
         factory = _mock_session_factory(mock_session)
         with patch(
-            "app.mcp_server.tooling.order_execution._order_session_factory",
+            "app.mcp_server.tooling.order_journal._order_session_factory",
             return_value=factory,
         ):
             await _link_journal_to_fill("KRW-BTC", trade_id=123)
@@ -570,7 +901,7 @@ class TestJournalFillIntegration:
 
         factory = _mock_session_factory(mock_session)
         with patch(
-            "app.mcp_server.tooling.order_execution._order_session_factory",
+            "app.mcp_server.tooling.order_journal._order_session_factory",
             return_value=factory,
         ):
             await _link_journal_to_fill("KRW-BTC", trade_id=321)
@@ -614,7 +945,7 @@ class TestCloseJournalsOnSell:
 
         factory = _mock_session_factory(mock_session)
         with patch(
-            "app.mcp_server.tooling.order_execution._order_session_factory",
+            "app.mcp_server.tooling.order_journal._order_session_factory",
             return_value=factory,
         ):
             result = await _close_journals_on_sell(
@@ -672,7 +1003,7 @@ class TestCloseJournalsOnSell:
 
         factory = _mock_session_factory(mock_session)
         with patch(
-            "app.mcp_server.tooling.order_execution._order_session_factory",
+            "app.mcp_server.tooling.order_journal._order_session_factory",
             return_value=factory,
         ):
             result = await _close_journals_on_sell(
@@ -737,7 +1068,7 @@ class TestCloseJournalsOnSell:
 
         factory = _mock_session_factory(mock_session)
         with patch(
-            "app.mcp_server.tooling.order_execution._order_session_factory",
+            "app.mcp_server.tooling.order_journal._order_session_factory",
             return_value=factory,
         ):
             result = await _close_journals_on_sell(
@@ -789,7 +1120,7 @@ class TestCloseJournalsOnSell:
 
         factory = _mock_session_factory(mock_session)
         with patch(
-            "app.mcp_server.tooling.order_execution._order_session_factory",
+            "app.mcp_server.tooling.order_journal._order_session_factory",
             return_value=factory,
         ):
             result = await _close_journals_on_sell(
@@ -844,7 +1175,7 @@ class TestCloseJournalsOnSell:
 
         factory = _mock_session_factory(mock_session)
         with patch(
-            "app.mcp_server.tooling.order_execution._order_session_factory",
+            "app.mcp_server.tooling.order_journal._order_session_factory",
             return_value=factory,
         ):
             result = await _close_journals_on_sell(
@@ -874,7 +1205,7 @@ class TestCloseJournalsOnSell:
 
         factory = _mock_session_factory(mock_session)
         with patch(
-            "app.mcp_server.tooling.order_execution._order_session_factory",
+            "app.mcp_server.tooling.order_journal._order_session_factory",
             return_value=factory,
         ):
             result = await _close_journals_on_sell(
@@ -906,7 +1237,7 @@ class TestCloseJournalsOnSell:
 
         factory = _mock_session_factory(mock_session)
         with patch(
-            "app.mcp_server.tooling.order_execution._order_session_factory",
+            "app.mcp_server.tooling.order_journal._order_session_factory",
             return_value=factory,
         ):
             await _close_journals_on_sell(
@@ -921,3 +1252,55 @@ class TestCloseJournalsOnSell:
         assert compiled.params["symbol_1"] == "AAPL"
         assert compiled.params["status_1"] == JournalStatus.active
         assert "ORDER BY review.trade_journals.created_at ASC" in str(compiled)
+
+    @pytest.mark.asyncio
+    async def test_close_journals_appends_defensive_trim_note(self) -> None:
+        """defensive_trim context is persisted into journal notes."""
+        from app.mcp_server.tooling.order_execution import _close_journals_on_sell
+        from app.mcp_server.tooling.order_validation import DefensiveTrimContext
+
+        now = datetime.now(UTC)
+        active = TradeJournal(
+            id=777,
+            symbol="KRW-BTC",
+            instrument_type=InstrumentType.crypto,
+            thesis="trim candidate",
+            status="active",
+            side="buy",
+            entry_price=Decimal("100"),
+            quantity=Decimal("1"),
+            notes="existing note",
+            created_at=now,
+            updated_at=now,
+        )
+
+        mock_session = AsyncMock()
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = [active]
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute.return_value = mock_result
+
+        factory = _mock_session_factory(mock_session)
+        with patch(
+            "app.mcp_server.tooling.order_journal._order_session_factory",
+            return_value=factory,
+        ):
+            result = await _close_journals_on_sell(
+                symbol="KRW-BTC",
+                sell_quantity=1.0,
+                sell_price=120.0,
+                defensive_trim_ctx=DefensiveTrimContext(
+                    approval_issue_id="ROB-164",
+                    requester_agent_id="agent-cio",
+                    approval_verified_at=now,
+                ),
+            )
+
+        assert result["journals_closed"] == 1
+        assert active.notes is not None
+        assert "existing note" in active.notes
+        assert (
+            "_defensive_trim: approval=ROB-164, caller=agent-cio, "
+            "bypassed_floor=avg*1.01_"
+        ) in active.notes

@@ -512,7 +512,7 @@ class TestMarketContextSchemas:
 
     def test_market_context_response_validates(self) -> None:
         """Test that response schema validates correctly."""
-        from app.schemas.n8n import N8nMarketContextResponse
+        from app.schemas.n8n.market_context import N8nMarketContextResponse
 
         data = {
             "success": True,

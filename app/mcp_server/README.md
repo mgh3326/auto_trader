@@ -88,12 +88,19 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - `status="pending"` 만 symbol 없이 호출 가능
   - `status in {"all", "filled", "cancelled"}` 는 symbol 필요
   - filled/cancelled 조회는 시장별 historical endpoint 제약 때문에 symbol fan-out을 자동 수행하지 않음
-- `place_order(symbol, side, order_type="limit", quantity=None, price=None, amount=None, dry_run=True, reason="", exit_reason=None, thesis=None, strategy=None, target_price=None, stop_loss=None, min_hold_days=None, notes=None, indicators_snapshot=None)`
+- `save_trade_journal(symbol, thesis, ..., paperclip_issue_id=None)` - Save the thesis, strategy, account context, and optional Paperclip issue link for a trade.
+- `get_trade_journal(symbol=None, status=None, ..., paperclip_issue_id=None)` - Query active journal entries by symbol/account or reverse-lookup a journal from a Paperclip issue ID.
+- `update_trade_journal(journal_id=None, symbol=None, ...)` - Activate, close, stop, or adjust the latest matching journal entry.
+- `format_execution_comment(stage, symbol, side, filled_qty, filled_price, ...)` - Format Discord/Paperclip-ready Markdown for `fill` and `follow_up` execution stages.
+- `get_latest_market_brief(symbols=None, market=None, limit=10)` - Return concise latest AI analysis context for recent or selected symbols.
+- `get_market_reports(symbol, days=7, limit=10)` - Return detailed AI analysis report history and decision trend for one symbol.
+- `place_order(symbol, side, order_type="limit", quantity=None, price=None, amount=None, dry_run=True, reason="", exit_reason=None, thesis=None, strategy=None, target_price=None, stop_loss=None, min_hold_days=None, notes=None, indicators_snapshot=None, defensive_trim=False, approval_issue_id=None)`
   - `side="buy"` 이고 `dry_run=False` 인 경우 `thesis` 와 `strategy` 가 필수
   - 실매수 성공 시 trade journal draft를 자동 생성하고 fill 저장 후 active로 연결 시도
   - 실매도 성공 시 동일 symbol의 active journal을 FIFO 기준으로 auto-close 시도
   - 부분 매도는 quantity를 수정하지 않고, fully-consumed journal만 close한다
   - journal close 실패는 주문 성공을 되돌리지 않고 `journal_warning` 으로 응답한다
+  - `defensive_trim=True` 는 ROB-164/ROB-166 승인 기반 제한 경로이며 `(a) side="sell"`, `(b) order_type="limit"`, `(c) `approval_issue_id` 가 Paperclip `done` 상태, `(d) middleware-extracted caller identity 가 Trader agent 와 일치할 때만 평균단가 1% 매도 floor 를 우회한다
 - `modify_order(order_id, symbol, market=None, new_price=None, new_quantity=None, dry_run=True)`
 - `cancel_order(order_id, symbol=None, market=None)`
   - US equities: resolves exchange from symbol DB, open orders, and recent history before cancel
@@ -101,7 +108,7 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - Discord button flows: `cancel_order(order_id="...", market="...")` — symbol auto-lookup enabled
 - `modify_order` Discord button flow example:
   - `modify_order(order_id="...", symbol="...", market="...", new_price=123.45, dry_run=false)`
-- `manage_watch_alerts(action, market=None, symbol=None, metric=None, operator=None, threshold=None)`
+- `manage_watch_alerts(action, market=None, target_kind=None, symbol=None, metric=None, operator=None, threshold=None)`
 - `screen_stocks(...)` - Screen stocks across different markets (KR/US/Crypto) with various filters.
 - `recommend_stocks(...)` - Recommend stocks based on budget and strategy.
 - `analyze_stock_batch(symbols, market=None, include_peers=False, quick=True)`
@@ -293,8 +300,9 @@ Behavior:
 Parameters:
 - `action`: Required action - `"add"`, `"remove"`, `"list"`
 - `market`: Market - `"crypto"`, `"kr"`, `"us"` (required for `add`/`remove`, optional for `list`)
-- `symbol`: Asset symbol/ticker (required for `add`/`remove`)
-- `metric`: Condition metric - `"price"` or `"rsi"` (required for `add`/`remove`)
+- `target_kind`: Watched target type - `"asset"` (default), `"index"`, or `"fx"`
+- `symbol`: Asset ticker, index symbol, or FX symbol (required for `add`/`remove`)
+- `metric`: Condition metric - `"price"`, `"rsi"`, or `"trade_value"` (required for `add`/`remove`)
 - `operator`: Condition operator - `"above"` or `"below"` (required for `add`/`remove`)
 - `threshold`: Numeric threshold value (required for `add`/`remove`)
 
@@ -303,6 +311,20 @@ Behavior:
 - `action="remove"`: Removes one matching watch condition.
 - `action="list"`: Returns all watches, optionally filtered by market.
 - Triggered watches are removed only after successful outbound alert delivery by the scheduler path.
+- Legacy asset watches stored before `target_kind` are listed as `target_kind="asset"` and can still be removed with the same tool arguments.
+
+Supported target/metric combinations:
+- `target_kind="asset"`: `price` and `rsi` for `crypto`, `kr`, `us`; `trade_value` for `kr` only.
+- `target_kind="index"`: `price` for `market="kr"` and `symbol="KOSPI"` or `"KOSDAQ"`.
+- `target_kind="fx"`: `price` for `market="kr"` and `symbol="USDKRW"`.
+
+Example calls:
+```text
+manage_watch_alerts(action="add", market="kr", target_kind="index", symbol="KOSPI", metric="price", operator="below", threshold=6176.75)
+manage_watch_alerts(action="add", market="kr", target_kind="index", symbol="KOSDAQ", metric="price", operator="below", threshold=1161.00)
+manage_watch_alerts(action="add", market="kr", target_kind="fx", symbol="USDKRW", metric="price", operator="above", threshold=1478)
+manage_watch_alerts(action="add", market="kr", symbol="005930", metric="trade_value", operator="above", threshold=1000000000)
+```
 
 Response examples:
 ```json
@@ -310,6 +332,7 @@ Response examples:
   "success": true,
   "action": "add",
   "market": "crypto",
+  "target_kind": "asset",
   "symbol": "BTC",
   "condition_type": "price_below",
   "threshold": 90000000.0,
@@ -325,6 +348,7 @@ Response examples:
   "watches": {
     "crypto": [
       {
+        "target_kind": "asset",
         "symbol": "BTC",
         "condition_type": "price_below",
         "threshold": 90000000.0,
@@ -345,10 +369,15 @@ Error examples:
 
 ### `screen_stocks` spec
 Parameters:
-- `market`: Market to screen - "kr", "us", "crypto" (default: "kr")
+- `market`: Market to screen - "kr", "kospi", "kosdaq", "konex", "all", "us", "crypto" (default: "kr")
 - `asset_type`: Asset type - "stock", "etf", "etn" (only applicable to KR, default: None)
 - `category`: Category filter - ETF categories for KR, sector for US (default: None)
 - `sector`: Sector filter for KR/US stocks (default: None). Not supported for crypto or KR ETF/ETN requests
+- `exclude_sectors`: Sector exclusion list for KR/US stocks (default: None). Values are de-duplicated case-insensitively for ASCII labels
+- `instrument_types`: Instrument taxonomy filter list - "common", "preferred", "etf", "reit", "spac", "unknown" (default: None)
+- `adv_krw_min`: Minimum 30-day average daily value in KRW. Use 1,000,000,000 for a conservative liquidity floor or 5,000,000,000 for an aggressive liquidity floor
+- `market_cap_min_krw`: Minimum market capitalization in KRW (default: None)
+- `market_cap_max_krw`: Maximum market capitalization in KRW (default: None)
 - `sort_by`: Sort criteria - "volume", "trade_amount", "market_cap", "change_rate", "dividend_yield", "rsi" (default: crypto="rsi", KR/US="volume")
 - `sort_order`: Sort order - "asc" or "desc" (default: "desc")
 - `min_market_cap`: Minimum market cap (억원 for KR, USD for US; not supported for crypto)
@@ -361,8 +390,11 @@ Parameters:
 
 Market-specific behavior:
 - **KR market**:
+  - `market="konex"` screens KONEX only; `market="all"` screens KOSPI, KOSDAQ, and KONEX
   - Default `asset_type in {None, "stock"}` + `category=None` requests use tvscreener only when verified KR stock-query capabilities cover the request; otherwise they fall back to the legacy KRX/Naver path before entering tvscreener
-  - Successful stock responses expose `meta.source = "tvscreener"` and include `adx` in each result row
+  - Successful stock responses expose `meta.source = "tvscreener"` and include `adx`, `instrument_type`, and 30-day ADV fields when TradingView provides them
+  - `adv_krw_min` uses TradingView 30-day average volume multiplied by price; responses set `meta.adv_window_days = 30` when this filter is requested
+  - Legacy KRX fallback cannot compute `adv_krw_min`; it returns a warning and skips only that filter
   - `sort_by="rsi"` is supported via tvscreener RSI data; legacy path falls back to OHLCV-based RSI enrichment
   - ETF/category requests stay on the legacy KRX/Naver path
   - KRX data cached with 300s TTL (Redis) + in-memory fallback
@@ -374,7 +406,9 @@ Market-specific behavior:
   - Default `asset_type in {None, "stock"}` requests use tvscreener only when verified US stock-query capabilities cover the request
   - US `category`/`sector` alias requests stay on the tvscreener path only when the TradingView sector filter capability is verified; otherwise they fall back to legacy before running the tv query
   - `sort_by="rsi"` is supported via tvscreener RSI data; legacy yfinance path falls back to OHLCV-based RSI enrichment
-  - Successful stock responses expose `meta.source = "tvscreener"`, include `adx`, and preserve public enrichment fields (`sector`, `analyst_buy`, `analyst_hold`, `analyst_sell`, `avg_target`, `upside_pct`) from tvscreener when available
+  - Successful stock responses expose `meta.source = "tvscreener"`, include `adx`, `instrument_type`, 30-day ADV fields, and preserve public enrichment fields (`sector`, `analyst_buy`, `analyst_hold`, `analyst_sell`, `avg_target`, `upside_pct`) from tvscreener when available
+  - `adv_krw_min` uses TradingView 30-day average volume multiplied by price; responses set `meta.adv_window_days = 30` when this filter is requested
+  - Legacy yfinance fallback cannot compute `adv_krw_min`; it returns a warning and skips only that filter
   - Post-screen enrichment skips per-row Finnhub/yfinance fan-out when those public fields are already populated; missing fields fall back to lightweight yfinance/Finnhub enrichment
   - Unsupported or unverified tvscreener request-critical capabilities fall back to the legacy yfinance path
   - Legacy yfinance maps: `min_market_cap` → `intradaymarketcap`, `max_per` → `peratio.lasttwelvemonths`, `min_dividend_yield` → `forward_dividend_yield`
@@ -397,10 +431,13 @@ Market-specific behavior:
   - `market_cap` sorting is supported; public `market_cap` prefers CoinGecko cache values and falls back to TradingView `MARKET_CAP`, and final ordering uses that public value without silently falling back to `trade_amount_24h`
   - `max_per`, `min_dividend_yield`, `sort_by="dividend_yield"` not supported - returns error
   - `min_market_cap` filter is not supported; crypto responses return a warning that it was ignored
-  - `sector` and `min_analyst_buy` filters are not supported for crypto - returns error
+  - `sector`, `exclude_sectors`, `instrument_types`, `adv_krw_min`, `market_cap_min_krw`, `market_cap_max_krw`, and `min_analyst_buy` filters are not supported for crypto - returns error
 
 Filter compatibility and error semantics:
 - `sector` filter: Supported for KR/US stocks only. Returns error for crypto or KR ETF/ETN requests
+- `exclude_sectors`: Supported for KR/US stocks only. Cannot overlap with `sector`
+- `instrument_types`: Supported for KR/US only. `asset_type="etf"` conflicts with `instrument_types=["common"]`
+- `adv_krw_min`, `market_cap_min_krw`, `market_cap_max_krw`: Non-negative integers only. `market_cap_min_krw` must be less than or equal to `market_cap_max_krw`
 - `min_analyst_buy` filter: Supported for KR/US stocks only (not ETF/ETN). Returns error for crypto or non-stock asset types
 - `min_dividend` / `min_dividend_yield`: These are aliases. Accepts decimal (0.03) or percentage (3.0) formats. If both are specified with different values, returns error. Not supported for crypto
 - `category` and `sector`: These are aliases for US market. If both are specified with different values, returns error
@@ -831,6 +868,59 @@ Behavior:
 - `updated_at` is automatically set to the current timestamp
 - The (user_id, key) pair is unique; attempting to create a duplicate key for the same user will update the existing entry
 
+## Caller Identity Header (required)
+
+All MCP callers (Scout, Trader, CIO bridges, and any future client) MUST send
+`x-paperclip-agent-id: <calling agent's Paperclip agent id>` on every
+`tools/call` request. The value is the caller's Paperclip agent id, not the
+target trader agent id.
+
+- The `CallerIdentityMiddleware` added in ROB-214 (ST-3.1) reads this header,
+  stores it in a request-scoped contextvar, and records the extraction source
+  (`http_header` | `env_fallback` | `none`) on each call.
+- Caller-identity-gated tools (e.g. `place_order(..., defensive_trim=True)`
+  after ST-3.2) reject calls where the contextvar is `None`, so a missing
+  header in a production path is an outage, not a soft warning.
+- Local dev / stdio transports that cannot send HTTP headers may export
+  `MCP_CALLER_AGENT_ID` as an env fallback. This is a dev convenience only —
+  production callers must send the header explicitly. `MCP_CALLER_AGENT_ID`
+  MUST NOT be set in production HTTP deployments because it re-opens a caller
+  spoofing vector for requests that omit `x-paperclip-agent-id`.
+
+### Scout / Trader curl bridge
+
+When an agent runs under a harness that does not register the auto_trader MCP
+server in-process (current state for Scout and Trader on `claude_local`),
+they use a JSON-RPC curl bridge at `/tmp/mcp_call.sh`. The canonical template
+lives at `scripts/templates/mcp_call.sh.tmpl`; both agents MUST regenerate
+their local `/tmp/mcp_call.sh` from that template so the header is present.
+
+```bash
+# From the repo root, per operator host/session:
+export MCP_ENDPOINT="http://127.0.0.1:8765/mcp"
+export MCP_AUTH_TOKEN="<value from env.MCP_AUTH_TOKEN>"
+export MCP_SESSION_ID="<MCP session id>"
+export PAPERCLIP_AGENT_ID="<calling agent's Paperclip agent id>"
+envsubst '$MCP_ENDPOINT $MCP_AUTH_TOKEN $MCP_SESSION_ID $PAPERCLIP_AGENT_ID' \
+  < scripts/templates/mcp_call.sh.tmpl > /tmp/mcp_call.sh
+# 0700 — owner-only. The rendered script bakes MCP_AUTH_TOKEN in plaintext,
+# so group/other read bits must be stripped.
+chmod 700 /tmp/mcp_call.sh
+
+# Smoke test — should return a tool payload, not 401/403/reject:
+/tmp/mcp_call.sh get_quote '{"symbol":"005930","market":"kr"}'
+```
+
+The rendered bridge intentionally calls curl with `-N --max-time 15` and sends
+`Connection: close`. It only consumes the first SSE `data:` line, so no-buffer
+mode and the timeout keep the helper from holding a completed Paperclip run open
+if the server keeps the stream alive.
+
+If the Trader adapter is later migrated to an in-process MCP client (for
+example a Claude Code `.mcp.json` entry or an SDK-level `default_headers`
+config), that client must also set `x-paperclip-agent-id`; do not rely on
+the shell bridge as the long-term header injection point.
+
 ## Run (docker-compose.prod)
 Environment variables:
 - `MCP_TYPE` : `streamable-http` (default) | `sse` | `stdio`
@@ -839,6 +929,7 @@ Environment variables:
 - `MCP_PATH` : `/mcp`
 - `MCP_GRACEFUL_SHUTDOWN_TIMEOUT` : `10` (seconds, HTTP transports only: `sse` / `streamable-http`)
 - `MCP_USER_ID` : `1` (manual holdings 조회에 사용할 기본 사용자 ID)
+- `MCP_CALLER_AGENT_ID` : DEV/stdio only — MUST NOT be set in production HTTP deployments (re-opens caller spoofing vector)
 
 Example:
 ```bash

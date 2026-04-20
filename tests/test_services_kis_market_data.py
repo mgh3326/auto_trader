@@ -485,7 +485,7 @@ async def test_kis_inquire_time_dailychartprice_parses_rows(monkeypatch):
         request_mock,
     )
 
-    df = await client.inquire_time_dailychartprice("005930", market="UN", n=1)
+    df = await client.inquire_time_dailychartprice("005930", market="J", n=1)
 
     assert len(df) == 1
     assert {"datetime", "open", "high", "low", "close", "volume", "value"} <= set(
@@ -546,7 +546,7 @@ async def test_kis_inquire_daily_itemchartprice_returns_empty_dataframe_on_empty
     request_mock = AsyncMock(return_value={"rt_cd": "0", "output2": []})
     monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
 
-    df = await client.inquire_daily_itemchartprice("005930", market="UN", n=5)
+    df = await client.inquire_daily_itemchartprice("005930", market="J", n=5)
 
     assert df.empty
     assert list(df.columns) == [
@@ -570,7 +570,7 @@ async def test_kis_inquire_daily_itemchartprice_rejects_non_positive_n(monkeypat
     monkeypatch.setattr(client, "_ensure_token", AsyncMock())
 
     with pytest.raises(ValueError, match="greater than or equal to 1"):
-        await client.inquire_daily_itemchartprice("005930", market="UN", n=0)
+        await client.inquire_daily_itemchartprice("005930", market="J", n=0)
 
 
 @pytest.mark.unit
@@ -598,7 +598,7 @@ async def test_kis_inquire_daily_itemchartprice_clamps_oversized_n_to_200(monkey
     request_mock = AsyncMock(return_value={"rt_cd": "0", "output2": chunk})
     monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
 
-    df = await client.inquire_daily_itemchartprice("005930", market="UN", n=9999)
+    df = await client.inquire_daily_itemchartprice("005930", market="J", n=9999)
 
     assert len(df) == 200
     request_mock.assert_awaited_once()
@@ -630,7 +630,7 @@ async def test_kis_inquire_daily_itemchartprice_raises_controlled_error_on_missi
     monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
 
     with pytest.raises(RuntimeError, match="stck_bsop_date"):
-        await client.inquire_daily_itemchartprice("005930", market="UN", n=1)
+        await client.inquire_daily_itemchartprice("005930", market="J", n=1)
 
 
 @pytest.mark.asyncio
@@ -645,7 +645,7 @@ async def test_kis_inquire_daily_itemchartprice_raises_controlled_error_on_non_l
     monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
 
     with pytest.raises(RuntimeError, match="expected list"):
-        await client.inquire_daily_itemchartprice("005930", market="UN", n=1)
+        await client.inquire_daily_itemchartprice("005930", market="J", n=1)
 
 
 def test_aggregate_to_hourly_keeps_partial_bucket():

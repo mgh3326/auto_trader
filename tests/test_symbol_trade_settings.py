@@ -9,9 +9,9 @@ import pytest
 
 from app.models.symbol_trade_settings import SymbolTradeSettings
 from app.models.trading import InstrumentType
+from app.services.order_estimation_service import calculate_estimated_order_cost
 from app.services.symbol_trade_settings_service import (
     SymbolTradeSettingsService,
-    calculate_estimated_order_cost,
     get_buy_quantity_for_crypto,
     get_buy_quantity_for_symbol,
 )
@@ -396,11 +396,19 @@ class TestSymbolSettingsRouter:
 
     def test_router_endpoint_exists(self):
         """라우터 엔드포인트 존재 확인"""
-        from app.routers.symbol_settings import router
+        from app.routers.order_estimation import router as estimation_router
+        from app.routers.symbol_settings import router as settings_router
+        from app.routers.user_defaults import router as defaults_router
 
-        # 라우터에 정의된 경로 확인
-        routes = [route.path for route in router.routes]
-        # 경로는 prefix 포함 형태로 저장됨
-        assert any("/api/symbol-settings/" in r for r in routes)
-        assert any("/api/symbol-settings/symbols/{symbol}" in r for r in routes)
-        assert any("estimated-cost" in r for r in routes)
+        settings_routes = [route.path for route in settings_router.routes]
+        estimation_routes = [route.path for route in estimation_router.routes]
+        defaults_routes = [route.path for route in defaults_router.routes]
+
+        # symbol_settings: CRUD 엔드포인트
+        assert any("/symbols/{symbol}" in r for r in settings_routes)
+
+        # order_estimation: 비용 추정 엔드포인트
+        assert any("estimated-cost" in r for r in estimation_routes)
+
+        # user_defaults: 사용자 기본 설정 엔드포인트
+        assert any("user-defaults" in r for r in defaults_routes)

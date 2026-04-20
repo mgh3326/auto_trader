@@ -238,6 +238,56 @@ DB Tables:
 - Upbit 심볼/마켓 해석도 DB 테이블(`upbit_symbol_universe`)을 단일 소스로 사용
 - 배포/마이그레이션 직후 심볼 유니버스 sync 스크립트 실행이 필요
 
+## 브랜치 & PR 워크플로우
+
+### 브랜치 보호
+- **main**, **production** 브랜치는 보호됨 — 직접 push 금지
+- 모든 코드 변경은 Pull Request를 통해 머지
+
+### 브랜치 역할
+- **main**: 개발 브랜치 (모든 PR의 base)
+- **production**: 배포 브랜치 (GHCR 이미지 빌드 트리거)
+
+### 브랜치 네이밍
+```
+feature/<task-id>-<설명>     # 새 기능 (예: feature/ROB-16-branch-protection)
+fix/<task-id>-<설명>         # 버그 수정
+chore/<설명>                 # 유지보수
+```
+
+### 워크플로우
+1. `main` 브랜치에서 feature branch 생성
+2. 코드 변경 후 커밋 (`Co-Authored-By: Paperclip <noreply@paperclip.ing>`)
+3. PR 생성 (base: `main`)
+4. 리뷰 후 머지
+5. 배포 시 `main` → `production` 머지
+
+### Worktree 운영 규칙 (필수)
+
+**루트 `/home/mgh3326/auto_trader` 는 항상 `main` 체크아웃 고정. 배포 머지 시에만 `production` 으로 일시 전환.** 루트에서 feature/fix 브랜치를 체크아웃하거나 작업하지 않습니다.
+
+모든 코드 변경은 worktree 에서 수행합니다:
+
+```bash
+# 새 작업 시작
+cd ~/auto_trader && git switch main && git pull
+git worktree add ~/auto_trader/.worktrees/<ISSUE-ID> -b feature/<ISSUE-ID>-<desc> main
+
+# 작업
+cd ~/auto_trader/.worktrees/<ISSUE-ID>
+# ... 커밋, 푸시, PR ...
+
+# PR 머지 후 (24h 내)
+cd ~/auto_trader
+git worktree remove .worktrees/<ISSUE-ID>
+git branch -D feature/<ISSUE-ID>-<desc>
+```
+
+- **표준 worktree 경로**: `~/auto_trader/.worktrees/<ISSUE-ID>` (대문자 ISSUE-ID 권장)
+- 이전 경로 `.claude/worktrees/`, `~/.claude/worktrees/` 는 deprecated — 남아 있다면 표준 경로로 이관하거나 prune
+- 이관: `git worktree move <old-path> <new-path>` (dirty 없는 상태에서)
+- 삭제된 원격 브랜치(`upstream gone`) 는 주기적으로 `git fetch --prune && git branch -vv | grep ': gone\]'` 로 확인하고 정리
+
 ## 주요 워크플로우
 
 ### 1. 새로운 서비스 분석기 추가

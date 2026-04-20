@@ -71,3 +71,74 @@ class TestTradeJournalModel:
     def test_table_args(self) -> None:
         assert TradeJournal.__table_args__[-1] == {"schema": "review"}
         assert TradeJournal.__tablename__ == "trade_journals"
+
+
+class TestAccountTypeField:
+    """account_type 및 paper_trade_id 필드 테스트."""
+
+    def test_default_account_type_is_live(self) -> None:
+        journal = TradeJournal(
+            symbol="005930",
+            instrument_type=InstrumentType.equity_kr,
+            thesis="Test thesis",
+        )
+        assert journal.account_type == "live"
+
+    def test_paper_account_type(self) -> None:
+        journal = TradeJournal(
+            symbol="005930",
+            instrument_type=InstrumentType.equity_kr,
+            thesis="Test thesis",
+            account_type="paper",
+            paper_trade_id=42,
+            account="paper-momentum",
+        )
+        assert journal.account_type == "paper"
+        assert journal.paper_trade_id == 42
+
+    def test_live_journal_paper_trade_id_is_none(self) -> None:
+        journal = TradeJournal(
+            symbol="005930",
+            instrument_type=InstrumentType.equity_kr,
+            thesis="Test thesis",
+        )
+        assert journal.paper_trade_id is None
+
+
+class TestMetadataJSONBField:
+    """extra_metadata (JSONB 'metadata' column) 테스트."""
+
+    def test_create_with_metadata_dict(self) -> None:
+        journal = TradeJournal(
+            symbol="KRW-BTC",
+            instrument_type=InstrumentType.crypto,
+            thesis="RSI oversold",
+            extra_metadata={"paperclip_issue_id": "ROB-51"},
+        )
+        assert journal.extra_metadata == {"paperclip_issue_id": "ROB-51"}
+
+    def test_create_with_none_metadata(self) -> None:
+        journal = TradeJournal(
+            symbol="KRW-BTC",
+            instrument_type=InstrumentType.crypto,
+            thesis="RSI oversold",
+        )
+        assert journal.extra_metadata is None
+
+    def test_metadata_stores_complex_nested_json(self) -> None:
+        nested = {
+            "paperclip_issue_id": "ROB-51",
+            "tags": ["momentum", "oversold"],
+            "scores": {"technical": 85, "fundamental": 70},
+            "nested": {"deep": {"value": True}},
+        }
+        journal = TradeJournal(
+            symbol="AAPL",
+            instrument_type=InstrumentType.equity_us,
+            thesis="Earnings play",
+            extra_metadata=nested,
+        )
+        assert journal.extra_metadata == nested
+        assert journal.extra_metadata["tags"] == ["momentum", "oversold"]
+        assert journal.extra_metadata["scores"]["technical"] == 85
+        assert journal.extra_metadata["nested"]["deep"]["value"] is True

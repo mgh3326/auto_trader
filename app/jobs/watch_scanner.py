@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import logging
 from functools import lru_cache
+from uuid import uuid4
 
 import exchange_calendars as xcals
 import pandas as pd
 from pandas import Timestamp
 
 from app.mcp_server.tooling.market_data_indicators import _calculate_rsi
+from app.services import exchange_rate_service, market_index_service
 from app.services import market_data as market_data_service
-from app.services.openclaw_client import OpenClawClient
+from app.services.openclaw_client import OpenClawClient, WatchAlertDeliveryResult
 from app.services.watch_alerts import WatchAlertService
 
 logger = logging.getLogger(__name__)
@@ -107,6 +109,30 @@ class WatchScanner:
             return price
         return None
 
+    async def _get_trade_value(self, symbol: str, market: str) -> float | None:
+        if market != "kr":
+            return None
+        quote = await market_data_service.get_quote(
+            symbol=symbol,
+            market="equity_kr",
+        )
+        return self._to_float(getattr(quote, "value", None))
+
+    async def _get_index_price(self, symbol: str, market: str) -> float | None:
+        if market != "kr":
+            return None
+        normalized_symbol = str(symbol or "").strip().upper()
+        if normalized_symbol not in {"KOSPI", "KOSDAQ"}:
+            return None
+        data = await market_index_service.get_kr_index_quote(normalized_symbol)
+        return self._to_float(data.get("current"))
+
+    async def _get_fx_price(self, symbol: str) -> float | None:
+        normalized_symbol = str(symbol or "").strip().upper()
+        if normalized_symbol != "USDKRW":
+            return None
+        return self._to_float(await exchange_rate_service.get_usd_krw_quote())
+
     async def _get_rsi(self, symbol: str, market: str) -> float | None:
         if market == "crypto":
             symbol_for_query = self._normalize_crypto_symbol(symbol)
@@ -169,30 +195,81 @@ class WatchScanner:
             )
         return "\n".join(lines)
 
-    async def _send_alert(self, message: str) -> str | None:
+    async def _get_current_value(
+        self,
+        *,
+        target_kind: str,
+        metric: str,
+        symbol: str,
+        market: str,
+    ) -> float | None:
+        if target_kind == "asset":
+            if metric == "price":
+                return await self._get_price(symbol, market)
+            if metric == "rsi":
+                return await self._get_rsi(symbol, market)
+            if metric == "trade_value":
+                return await self._get_trade_value(symbol, market)
+            return None
+        if target_kind == "index":
+            if metric == "price":
+                return await self._get_index_price(symbol, market)
+            return None
+        if target_kind == "fx":
+            if metric == "price":
+                return await self._get_fx_price(symbol)
+            return None
+        return None
+
+    async def _send_alert(
+        self,
+        *,
+        market: str,
+        triggered: list[dict[str, object]],
+        message: str,
+    ) -> WatchAlertDeliveryResult:
+        correlation_id = str(uuid4())
+        as_of = Timestamp.now("UTC").isoformat()
         try:
-            return await self._openclaw.send_watch_alert(message)
+            return await self._openclaw.send_watch_alert_to_n8n(
+                message=message,
+                market=market,
+                triggered=triggered,
+                as_of=as_of,
+                correlation_id=correlation_id,
+            )
         except Exception as exc:
             logger.error("Failed to send watch scan alert: %s", exc)
-            return None
+            return WatchAlertDeliveryResult(status="failed", reason="request_failed")
 
     async def scan_market(self, market: str) -> dict[str, object]:
         normalized_market = str(market).strip().lower()
-        if not self._is_market_open(normalized_market):
-            return {
-                "market": normalized_market,
-                "skipped": True,
-                "reason": "market_closed",
-            }
+        market_open = self._is_market_open(normalized_market)
 
         watches = await self._watch_service.get_watches_for_market(normalized_market)
         if not watches:
-            return {"market": normalized_market, "alerts_sent": 0, "details": []}
+            if not market_open:
+                return {
+                    "market": normalized_market,
+                    "status": "skipped",
+                    "skipped": True,
+                    "reason": "market_closed",
+                }
+            return {
+                "market": normalized_market,
+                "status": "skipped",
+                "reason": "no_watch_records",
+                "alerts_sent": 0,
+                "details": [],
+            }
 
         triggered: list[dict[str, object]] = []
         triggered_fields: list[str] = []
 
         for watch in watches:
+            target_kind = str(watch.get("target_kind") or "asset").strip().lower()
+            if not market_open and target_kind != "fx":
+                continue
             symbol = str(watch.get("symbol") or "").strip().upper()
             condition_type = str(watch.get("condition_type") or "").strip().lower()
             field = str(watch.get("field") or "")
@@ -202,23 +279,23 @@ class WatchScanner:
                 continue
 
             try:
-                metric, operator = condition_type.split("_", 1)
+                metric, operator = condition_type.rsplit("_", 1)
             except ValueError:
                 continue
 
-            current: float | None
-            if metric == "price":
-                current = await self._get_price(symbol, normalized_market)
-            elif metric == "rsi":
-                current = await self._get_rsi(symbol, normalized_market)
-            else:
-                continue
+            current = await self._get_current_value(
+                target_kind=target_kind,
+                metric=metric,
+                symbol=symbol,
+                market=normalized_market,
+            )
 
             if not self._is_triggered(current, operator, threshold):
                 continue
 
             triggered.append(
                 {
+                    "target_kind": target_kind,
                     "symbol": symbol,
                     "condition_type": condition_type,
                     "threshold": threshold,
@@ -228,18 +305,49 @@ class WatchScanner:
             triggered_fields.append(field)
 
         if not triggered:
-            return {"market": normalized_market, "alerts_sent": 0, "details": []}
+            if not market_open:
+                return {
+                    "market": normalized_market,
+                    "status": "skipped",
+                    "skipped": True,
+                    "reason": "market_closed",
+                }
+            return {
+                "market": normalized_market,
+                "status": "skipped",
+                "reason": "no_triggered_alerts",
+                "alerts_sent": 0,
+                "details": [],
+            }
 
         message = self._build_batched_message(normalized_market, triggered)
-        request_id = await self._send_alert(message)
-        if not request_id:
-            return {"market": normalized_market, "alerts_sent": 0, "details": []}
+        result = await self._send_alert(
+            market=normalized_market,
+            triggered=triggered,
+            message=message,
+        )
+        if result.status != "success":
+            logger.warning(
+                "Watch alert delivery was not successful: market=%s status=%s reason=%s",
+                normalized_market,
+                result.status,
+                result.reason,
+            )
+            return {
+                "market": normalized_market,
+                "status": result.status,
+                "reason": result.reason,
+                "alerts_sent": 0,
+                "details": [message],
+            }
 
         for field in triggered_fields:
             await self._watch_service.trigger_and_remove(normalized_market, field)
 
         return {
             "market": normalized_market,
+            "status": "success",
+            "request_id": result.request_id,
             "alerts_sent": len(triggered_fields),
             "details": [message],
         }

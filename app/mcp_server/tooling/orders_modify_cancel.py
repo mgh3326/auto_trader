@@ -383,11 +383,16 @@ def _normalize_kis_overseas_order(order: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def cancel_order_impl(
+def _validate_cancel_inputs(
     order_id: str,
-    symbol: str | None = None,
-    market: str | None = None,
-) -> dict[str, Any]:
+    symbol: str | None,
+    market: str | None,
+) -> tuple[str, str | None, str]:
+    """Validate and resolve cancel order inputs.
+
+    Returns:
+        (order_id, symbol, market_type)
+    """
     order_id = (order_id or "").strip()
     if not order_id:
         raise ValueError("order_id is required")
@@ -402,255 +407,267 @@ async def cancel_order_impl(
             market_type = "crypto"
         else:
             raise ValueError(
-                "market must be specified when symbol is not provided and order_id is not a UUID"
+                "market must be specified when symbol is not provided "
+                "and order_id is not a UUID"
             )
 
-    try:
-        if market_type == "crypto":
-            results = await upbit_service.cancel_orders([order_id])
-            if results and len(results) > 0:
-                result = results[0]
-                if "error" in result:
-                    return {
-                        "success": False,
-                        "order_id": order_id,
-                        "error": result.get("error"),
-                    }
-                return {
-                    "success": True,
-                    "order_id": order_id,
-                    "cancelled_at": result.get("created_at", ""),
-                }
+    return order_id, symbol, market_type
+
+
+async def _cancel_upbit(order_id: str) -> dict[str, Any]:
+    """Cancel an Upbit (crypto) order."""
+    results = await upbit_service.cancel_orders([order_id])
+    if results and len(results) > 0:
+        result = results[0]
+        if "error" in result:
             return {
                 "success": False,
                 "order_id": order_id,
-                "error": "No result from Upbit",
+                "error": result.get("error"),
+            }
+        return {
+            "success": True,
+            "order_id": order_id,
+            "cancelled_at": result.get("created_at", ""),
+        }
+    return {
+        "success": False,
+        "order_id": order_id,
+        "error": "No result from Upbit",
+    }
+
+
+async def _cancel_kis_domestic(
+    order_id: str,
+    symbol: str | None,
+) -> dict[str, Any]:
+    """Cancel a KIS domestic (Korean equity) order."""
+    if not symbol:
+        try:
+            kis = KISClient()
+            open_orders = await kis.inquire_korea_orders()
+            for order in open_orders:
+                if (
+                    str(_get_kis_field(order, "odno", "ODNO", "ord_no", "ORD_NO"))
+                    == order_id
+                ):
+                    symbol = str(_get_kis_field(order, "pdno", "PDNO"))
+                    break
+        except Exception as exc:
+            return {
+                "success": False,
+                "order_id": order_id,
+                "error": f"Failed to auto-retrieve order details: {exc}",
             }
 
+    if not symbol:
+        return {
+            "success": False,
+            "order_id": order_id,
+            "error": "symbol not found in order",
+        }
+
+    try:
+        kis = KISClient()
+        side_code = "02"
+        price = 0
+        quantity = 1
+        krx_fwdg_ord_orgno = None
+
+        open_orders = await kis.inquire_korea_orders()
+        for order in open_orders:
+            if (
+                str(_get_kis_field(order, "odno", "ODNO", "ord_no", "ORD_NO"))
+                == order_id
+            ):
+                side_code = _get_kis_field(
+                    order,
+                    "sll_buy_dvsn_cd",
+                    "SLL_BUY_DVSN_CD",
+                    default="02",
+                )
+                price = int(
+                    float(_get_kis_field(order, "ord_unpr", "ORD_UNPR", default=0) or 0)
+                )
+                quantity = int(
+                    float(_get_kis_field(order, "ord_qty", "ORD_QTY", default=0) or 0)
+                )
+                orgno_value = _get_kis_field(
+                    order,
+                    "ord_gno_brno",
+                    "ORD_GNO_BRNO",
+                    default="",
+                )
+                if orgno_value:
+                    krx_fwdg_ord_orgno = str(orgno_value).strip()
+                break
+
+        order_type_str = "buy" if side_code == "02" else "sell"
+        result = await kis.cancel_korea_order(
+            order_number=order_id,
+            stock_code=symbol,
+            quantity=quantity,
+            price=price,
+            order_type=order_type_str,
+            krx_fwdg_ord_orgno=krx_fwdg_ord_orgno,
+        )
+        return {
+            "success": True,
+            "order_id": order_id,
+            "symbol": symbol,
+            "cancelled_at": result.get("ord_tmd", ""),
+        }
+    except Exception as exc:
+        return {
+            "success": False,
+            "order_id": order_id,
+            "symbol": symbol,
+            "error": str(exc),
+        }
+
+
+async def _cancel_kis_overseas(
+    order_id: str,
+    symbol: str | None,
+) -> dict[str, Any]:
+    """Cancel a KIS overseas (US equity) order."""
+    try:
+        kis = KISClient()
+        (
+            target_order,
+            target_exchange,
+            exchange_candidates,
+        ) = await _find_us_open_order_by_id(kis, order_id, symbol)
+        logger.debug(
+            "US cancel lookup: order_id=%s symbol=%s checked_exchanges=%s",
+            order_id,
+            symbol,
+            ", ".join(exchange_candidates),
+        )
+
+        # If not in open orders, try recent history
+        if target_order is None and symbol:
+            (
+                target_order,
+                target_exchange,
+            ) = await _find_us_order_in_recent_history(
+                kis, order_id, symbol, exchange_candidates
+            )
+
+        if target_order is None:
+            return {
+                "success": False,
+                "order_id": order_id,
+                "error": (
+                    "Order not found in open orders or recent history "
+                    f"(checked exchanges: {','.join(exchange_candidates)})"
+                ),
+                "market": _normalize_market_type_to_external("equity_us"),
+            }
+
+        if not symbol:
+            symbol = str(_get_kis_field(target_order, "pdno", "PDNO")) or None
+
+        if not symbol:
+            return {
+                "success": False,
+                "order_id": order_id,
+                "error": "symbol not found in order",
+                "market": _normalize_market_type_to_external("equity_us"),
+            }
+
+        # Try to get remaining quantity from open order fields first
+        remaining_quantity = int(
+            float(_get_kis_field(target_order, "nccs_qty", "NCCS_QTY", default=0) or 0)
+        )
+
+        if remaining_quantity > 0:
+            quantity = remaining_quantity
+        else:
+            # Calculate remaining from ordered - filled
+            ordered = int(
+                float(
+                    _get_kis_field(target_order, "ft_ord_qty", "FT_ORD_QTY", default=0)
+                    or 0
+                )
+            )
+            filled = int(
+                float(
+                    _get_kis_field(
+                        target_order, "ft_ccld_qty", "FT_CCLD_QTY", default=0
+                    )
+                    or 0
+                )
+            )
+            quantity = max(ordered - filled, 0)
+
+            if quantity <= 0:
+                return {
+                    "success": False,
+                    "order_id": order_id,
+                    "symbol": symbol,
+                    "error": "Unable to resolve remaining quantity from open orders or recent history",
+                    "market": _normalize_market_type_to_external("equity_us"),
+                }
+
+        if quantity <= 0:
+            return {
+                "success": False,
+                "order_id": order_id,
+                "symbol": symbol,
+                "error": "Unable to resolve cancel quantity from open order",
+                "market": _normalize_market_type_to_external("equity_us"),
+            }
+
+        # Normalize exchange from order payload or fallback to candidate
+        exchange_code = _normalize_kis_exchange_code(
+            target_exchange or exchange_candidates[0]
+        )
+        logger.info(
+            "US cancel resolved: order_id=%s symbol=%s checked_exchanges=%s "
+            "selected_exchange=%s resolved_quantity=%s",
+            order_id,
+            symbol,
+            ", ".join(exchange_candidates),
+            exchange_code,
+            quantity,
+        )
+
+        result = await kis.cancel_overseas_order(
+            order_number=order_id,
+            symbol=symbol,
+            exchange_code=exchange_code,
+            quantity=quantity,
+        )
+        return {
+            "success": True,
+            "order_id": order_id,
+            "symbol": symbol,
+            "cancelled_at": result.get("ord_tmd", ""),
+        }
+    except Exception as exc:
+        return {
+            "success": False,
+            "order_id": order_id,
+            "symbol": symbol,
+            "error": str(exc),
+        }
+
+
+async def cancel_order_impl(
+    order_id: str,
+    symbol: str | None = None,
+    market: str | None = None,
+) -> dict[str, Any]:
+    order_id, symbol, market_type = _validate_cancel_inputs(order_id, symbol, market)
+
+    try:
+        if market_type == "crypto":
+            return await _cancel_upbit(order_id)
         if market_type == "equity_kr":
-            if not symbol:
-                try:
-                    kis = KISClient()
-                    open_orders = await kis.inquire_korea_orders()
-                    for order in open_orders:
-                        if (
-                            str(
-                                _get_kis_field(
-                                    order, "odno", "ODNO", "ord_no", "ORD_NO"
-                                )
-                            )
-                            == order_id
-                        ):
-                            symbol = str(_get_kis_field(order, "pdno", "PDNO"))
-                            break
-                except Exception as exc:
-                    return {
-                        "success": False,
-                        "order_id": order_id,
-                        "error": f"Failed to auto-retrieve order details: {exc}",
-                    }
-
-            if not symbol:
-                return {
-                    "success": False,
-                    "order_id": order_id,
-                    "error": "symbol not found in order",
-                }
-
-            try:
-                kis = KISClient()
-                side_code = "02"
-                price = 0
-                quantity = 1
-                krx_fwdg_ord_orgno = None
-
-                open_orders = await kis.inquire_korea_orders()
-                for order in open_orders:
-                    if (
-                        str(_get_kis_field(order, "odno", "ODNO", "ord_no", "ORD_NO"))
-                        == order_id
-                    ):
-                        side_code = _get_kis_field(
-                            order,
-                            "sll_buy_dvsn_cd",
-                            "SLL_BUY_DVSN_CD",
-                            default="02",
-                        )
-                        price = int(
-                            float(
-                                _get_kis_field(order, "ord_unpr", "ORD_UNPR", default=0)
-                                or 0
-                            )
-                        )
-                        quantity = int(
-                            float(
-                                _get_kis_field(order, "ord_qty", "ORD_QTY", default=0)
-                                or 0
-                            )
-                        )
-                        orgno_value = _get_kis_field(
-                            order,
-                            "ord_gno_brno",
-                            "ORD_GNO_BRNO",
-                            default="",
-                        )
-                        if orgno_value:
-                            krx_fwdg_ord_orgno = str(orgno_value).strip()
-                        break
-
-                order_type_str = "buy" if side_code == "02" else "sell"
-                result = await kis.cancel_korea_order(
-                    order_number=order_id,
-                    stock_code=symbol,
-                    quantity=quantity,
-                    price=price,
-                    order_type=order_type_str,
-                    krx_fwdg_ord_orgno=krx_fwdg_ord_orgno,
-                )
-                return {
-                    "success": True,
-                    "order_id": order_id,
-                    "symbol": symbol,
-                    "cancelled_at": result.get("ord_tmd", ""),
-                }
-            except Exception as exc:
-                return {
-                    "success": False,
-                    "order_id": order_id,
-                    "symbol": symbol,
-                    "error": str(exc),
-                }
-
+            return await _cancel_kis_domestic(order_id, symbol)
         if market_type == "equity_us":
-            try:
-                kis = KISClient()
-                (
-                    target_order,
-                    target_exchange,
-                    exchange_candidates,
-                ) = await _find_us_open_order_by_id(kis, order_id, symbol)
-                logger.debug(
-                    "US cancel lookup: order_id=%s symbol=%s checked_exchanges=%s",
-                    order_id,
-                    symbol,
-                    ", ".join(exchange_candidates),
-                )
-
-                # If not in open orders, try recent history
-                if target_order is None and symbol:
-                    (
-                        target_order,
-                        target_exchange,
-                    ) = await _find_us_order_in_recent_history(
-                        kis, order_id, symbol, exchange_candidates
-                    )
-
-                if target_order is None:
-                    return {
-                        "success": False,
-                        "order_id": order_id,
-                        "error": (
-                            "Order not found in open orders or recent history "
-                            f"(checked exchanges: {','.join(exchange_candidates)})"
-                        ),
-                        "market": _normalize_market_type_to_external(market_type),
-                    }
-
-                if not symbol:
-                    symbol = str(_get_kis_field(target_order, "pdno", "PDNO")) or None
-
-                if not symbol:
-                    return {
-                        "success": False,
-                        "order_id": order_id,
-                        "error": "symbol not found in order",
-                        "market": _normalize_market_type_to_external(market_type),
-                    }
-
-                # Try to get remaining quantity from open order fields first
-                remaining_quantity = int(
-                    float(
-                        _get_kis_field(target_order, "nccs_qty", "NCCS_QTY", default=0)
-                        or 0
-                    )
-                )
-
-                # If remaining_quantity is available (>0), use it directly
-                if remaining_quantity > 0:
-                    quantity = remaining_quantity
-                else:
-                    # Calculate remaining from ordered - filled (for history or open orders without nccs_qty)
-                    ordered = int(
-                        float(
-                            _get_kis_field(
-                                target_order, "ft_ord_qty", "FT_ORD_QTY", default=0
-                            )
-                            or 0
-                        )
-                    )
-                    filled = int(
-                        float(
-                            _get_kis_field(
-                                target_order, "ft_ccld_qty", "FT_CCLD_QTY", default=0
-                            )
-                            or 0
-                        )
-                    )
-                    quantity = max(ordered - filled, 0)
-
-                    # KIS cancel requires a concrete order quantity in current client usage.
-                    # Fail closed if neither open orders nor recent history can reconstruct it.
-                    if quantity <= 0:
-                        return {
-                            "success": False,
-                            "order_id": order_id,
-                            "symbol": symbol,
-                            "error": "Unable to resolve remaining quantity from open orders or recent history",
-                            "market": _normalize_market_type_to_external(market_type),
-                        }
-
-                if quantity <= 0:
-                    return {
-                        "success": False,
-                        "order_id": order_id,
-                        "symbol": symbol,
-                        "error": "Unable to resolve cancel quantity from open order",
-                        "market": _normalize_market_type_to_external(market_type),
-                    }
-
-                # Normalize exchange from order payload or fallback to candidate
-                exchange_code = _normalize_kis_exchange_code(
-                    target_exchange or exchange_candidates[0]
-                )
-                logger.info(
-                    "US cancel resolved: order_id=%s symbol=%s checked_exchanges=%s selected_exchange=%s resolved_quantity=%s",
-                    order_id,
-                    symbol,
-                    ", ".join(exchange_candidates),
-                    exchange_code,
-                    quantity,
-                )
-
-                result = await kis.cancel_overseas_order(
-                    order_number=order_id,
-                    symbol=symbol,
-                    exchange_code=exchange_code,
-                    quantity=quantity,
-                )
-                return {
-                    "success": True,
-                    "order_id": order_id,
-                    "symbol": symbol,
-                    "cancelled_at": result.get("ord_tmd", ""),
-                }
-            except Exception as exc:
-                return {
-                    "success": False,
-                    "order_id": order_id,
-                    "symbol": symbol,
-                    "error": str(exc),
-                }
-
+            return await _cancel_kis_overseas(order_id, symbol)
         return {
             "success": False,
             "order_id": order_id,
@@ -664,14 +681,18 @@ async def cancel_order_impl(
         }
 
 
-async def modify_order_impl(
+def _validate_modify_inputs(
     order_id: str,
     symbol: str,
-    market: str | None = None,
-    new_price: float | None = None,
-    new_quantity: float | None = None,
-    dry_run: bool = True,
-) -> dict[str, Any]:
+    market: str | None,
+    new_price: float | None,
+    new_quantity: float | None,
+) -> tuple[str, str, str, str]:
+    """Validate modify order inputs.
+
+    Returns:
+        (order_id, symbol, market_type, normalized_symbol)
+    """
     if new_price is None and new_quantity is None:
         raise ValueError("At least one of new_price or new_quantity must be specified")
     if new_price is not None and new_price <= 0:
@@ -682,320 +703,397 @@ async def modify_order_impl(
     order_id = order_id.strip()
     symbol = symbol.strip()
     market_type, normalized_symbol = _resolve_market_type(symbol, market)
+    return order_id, symbol, market_type, normalized_symbol
 
-    if dry_run:
-        changes: dict[str, Any] = {
-            "price": {"from": None, "to": new_price} if new_price else None,
-            "quantity": {"from": None, "to": new_quantity} if new_quantity else None,
+
+def _build_modify_dry_run_response(
+    order_id: str,
+    normalized_symbol: str,
+    market_type: str,
+    new_price: float | None,
+    new_quantity: float | None,
+    dry_run: bool,
+) -> dict[str, Any]:
+    """Build dry-run preview response for modify order."""
+    changes: dict[str, Any] = {
+        "price": {"from": None, "to": new_price} if new_price else None,
+        "quantity": ({"from": None, "to": new_quantity} if new_quantity else None),
+    }
+    return {
+        "success": True,
+        "status": "simulated",
+        "order_id": order_id,
+        "symbol": normalized_symbol,
+        "market": _normalize_market_type_to_external(market_type),
+        "changes": changes,
+        "method": "dry_run",
+        "dry_run": dry_run,
+        "message": f"Dry run - Preview changes for order {order_id}",
+    }
+
+
+async def _modify_upbit(
+    order_id: str,
+    normalized_symbol: str,
+    market_type: str,
+    new_price: float | None,
+    new_quantity: float | None,
+    dry_run: bool,
+) -> dict[str, Any]:
+    """Modify an Upbit (crypto) order via cancel-and-reorder."""
+    try:
+        original_order = await upbit_service.fetch_order_detail(order_id)
+
+        if original_order.get("state") != "wait":
+            return {
+                "success": False,
+                "status": "failed",
+                "order_id": order_id,
+                "symbol": normalized_symbol,
+                "market": _normalize_market_type_to_external(market_type),
+                "error": "Order not in wait state (cannot modify non-pending orders)",
+                "dry_run": dry_run,
+            }
+        if original_order.get("ord_type") != "limit":
+            return {
+                "success": False,
+                "status": "failed",
+                "order_id": order_id,
+                "symbol": normalized_symbol,
+                "market": _normalize_market_type_to_external(market_type),
+                "error": "Only limit orders can be modified (not market orders)",
+                "dry_run": dry_run,
+            }
+
+        original_price = float(original_order.get("price", 0) or 0)
+        original_quantity = float(original_order.get("remaining_volume", 0) or 0)
+        final_price = new_price if new_price is not None else original_price
+        final_quantity = new_quantity if new_quantity is not None else original_quantity
+
+        result = await upbit_service.cancel_and_reorder(
+            order_id, final_price, final_quantity
+        )
+        changes = {
+            "price": {"from": original_price, "to": final_price}
+            if final_price != original_price
+            else None,
+            "quantity": {"from": original_quantity, "to": final_quantity}
+            if final_quantity != original_quantity
+            else None,
         }
+
+        if result.get("new_order") and "uuid" in result["new_order"]:
+            return {
+                "success": True,
+                "status": "modified",
+                "order_id": order_id,
+                "new_order_id": result["new_order"]["uuid"],
+                "symbol": normalized_symbol,
+                "market": _normalize_market_type_to_external(market_type),
+                "changes": changes,
+                "method": "cancel_reorder",
+                "dry_run": dry_run,
+                "message": "Order modified via cancel and reorder",
+            }
         return {
-            "success": True,
-            "status": "simulated",
+            "success": False,
+            "status": "failed",
             "order_id": order_id,
             "symbol": normalized_symbol,
             "market": _normalize_market_type_to_external(market_type),
+            "error": result.get("cancel_result", {}).get("error", "Unknown error"),
             "changes": changes,
-            "method": "dry_run",
+            "method": "cancel_reorder",
             "dry_run": dry_run,
-            "message": f"Dry run - Preview changes for order {order_id}",
+        }
+    except Exception as exc:
+        return {
+            "success": False,
+            "status": "failed",
+            "order_id": order_id,
+            "symbol": normalized_symbol,
+            "market": _normalize_market_type_to_external(market_type),
+            "error": str(exc),
+            "changes": None,
+            "method": "cancel_reorder",
+            "dry_run": dry_run,
         }
 
-    if market_type == "crypto":
-        try:
-            original_order = await upbit_service.fetch_order_detail(order_id)
 
-            if original_order.get("state") != "wait":
-                return {
-                    "success": False,
-                    "status": "failed",
-                    "order_id": order_id,
-                    "symbol": normalized_symbol,
-                    "market": _normalize_market_type_to_external(market_type),
-                    "error": "Order not in wait state (cannot modify non-pending orders)",
-                    "dry_run": dry_run,
-                }
-            if original_order.get("ord_type") != "limit":
-                return {
-                    "success": False,
-                    "status": "failed",
-                    "order_id": order_id,
-                    "symbol": normalized_symbol,
-                    "market": _normalize_market_type_to_external(market_type),
-                    "error": "Only limit orders can be modified (not market orders)",
-                    "dry_run": dry_run,
-                }
+async def _modify_kis_domestic(
+    order_id: str,
+    normalized_symbol: str,
+    market_type: str,
+    new_price: float | None,
+    new_quantity: float | None,
+    dry_run: bool,
+) -> dict[str, Any]:
+    """Modify a KIS domestic (Korean equity) order."""
+    try:
+        kis = KISClient()
+        open_orders = await kis.inquire_korea_orders()
+        target_order = None
+        for order in open_orders:
+            if (
+                str(_get_kis_field(order, "odno", "ODNO", "ord_no", "ORD_NO"))
+                == order_id
+            ):
+                target_order = order
+                break
 
-            original_price = float(original_order.get("price", 0) or 0)
-            original_quantity = float(original_order.get("remaining_volume", 0) or 0)
-            final_price = new_price if new_price is not None else original_price
-            final_quantity = (
-                new_quantity if new_quantity is not None else original_quantity
-            )
-
-            result = await upbit_service.cancel_and_reorder(
-                order_id, final_price, final_quantity
-            )
-            changes = {
-                "price": {"from": original_price, "to": final_price}
-                if final_price != original_price
-                else None,
-                "quantity": {"from": original_quantity, "to": final_quantity}
-                if final_quantity != original_quantity
-                else None,
-            }
-
-            if result.get("new_order") and "uuid" in result["new_order"]:
-                return {
-                    "success": True,
-                    "status": "modified",
-                    "order_id": order_id,
-                    "new_order_id": result["new_order"]["uuid"],
-                    "symbol": normalized_symbol,
-                    "market": _normalize_market_type_to_external(market_type),
-                    "changes": changes,
-                    "method": "cancel_reorder",
-                    "dry_run": dry_run,
-                    "message": "Order modified via cancel and reorder",
-                }
+        if not target_order:
             return {
                 "success": False,
                 "status": "failed",
                 "order_id": order_id,
                 "symbol": normalized_symbol,
                 "market": _normalize_market_type_to_external(market_type),
-                "error": result.get("cancel_result", {}).get("error", "Unknown error"),
-                "changes": changes,
-                "method": "cancel_reorder",
-                "dry_run": dry_run,
-            }
-        except Exception as exc:
-            return {
-                "success": False,
-                "status": "failed",
-                "order_id": order_id,
-                "symbol": normalized_symbol,
-                "market": _normalize_market_type_to_external(market_type),
-                "error": str(exc),
-                "changes": None,
-                "method": "cancel_reorder",
+                "error": "Order not found in open orders",
                 "dry_run": dry_run,
             }
 
-    if market_type == "equity_kr":
-        try:
-            kis = KISClient()
-            open_orders = await kis.inquire_korea_orders()
-            target_order = None
-            for order in open_orders:
-                if (
-                    str(_get_kis_field(order, "odno", "ODNO", "ord_no", "ORD_NO"))
-                    == order_id
-                ):
-                    target_order = order
-                    break
+        original_price = int(
+            float(_get_kis_field(target_order, "ord_unpr", "ORD_UNPR", default=0) or 0)
+        )
+        original_quantity = int(
+            float(_get_kis_field(target_order, "ord_qty", "ORD_QTY", default=0) or 0)
+        )
+        side_code = _get_kis_field(target_order, "sll_buy_dvsn_cd", "SLL_BUY_DVSN_CD")
+        side = "buy" if side_code == "02" else "sell"
 
-            if not target_order:
-                return {
-                    "success": False,
-                    "status": "failed",
-                    "order_id": order_id,
-                    "symbol": normalized_symbol,
-                    "market": _normalize_market_type_to_external(market_type),
-                    "error": "Order not found in open orders",
-                    "dry_run": dry_run,
-                }
+        final_price_raw = int(new_price) if new_price is not None else original_price
+        final_price = int(adjust_tick_size_kr(float(final_price_raw), side))
+        final_quantity = (
+            int(new_quantity) if new_quantity is not None else original_quantity
+        )
 
-            original_price = int(
-                float(
-                    _get_kis_field(target_order, "ord_unpr", "ORD_UNPR", default=0) or 0
-                )
-            )
-            original_quantity = int(
-                float(
-                    _get_kis_field(target_order, "ord_qty", "ORD_QTY", default=0) or 0
-                )
-            )
-            side_code = _get_kis_field(
-                target_order, "sll_buy_dvsn_cd", "SLL_BUY_DVSN_CD"
-            )
-            side = "buy" if side_code == "02" else "sell"
+        krx_fwdg_ord_orgno = _get_kis_field(
+            target_order,
+            "ord_gno_brno",
+            "ORD_GNO_BRNO",
+            default="",
+        )
+        if krx_fwdg_ord_orgno:
+            krx_fwdg_ord_orgno = str(krx_fwdg_ord_orgno).strip()
+        else:
+            krx_fwdg_ord_orgno = None
 
-            final_price_raw = (
-                int(new_price) if new_price is not None else original_price
-            )
-            final_price = int(adjust_tick_size_kr(float(final_price_raw), side))
-            final_quantity = (
-                int(new_quantity) if new_quantity is not None else original_quantity
-            )
+        result = await kis.modify_korea_order(
+            order_id,
+            normalized_symbol,
+            final_quantity,
+            final_price,
+            krx_fwdg_ord_orgno=krx_fwdg_ord_orgno,
+        )
+        changes = {
+            "price": {"from": original_price, "to": final_price}
+            if final_price != original_price
+            else None,
+            "quantity": {"from": original_quantity, "to": final_quantity}
+            if final_quantity != original_quantity
+            else None,
+        }
 
-            krx_fwdg_ord_orgno = _get_kis_field(
-                target_order,
-                "ord_gno_brno",
-                "ORD_GNO_BRNO",
-                default="",
-            )
-            if krx_fwdg_ord_orgno:
-                krx_fwdg_ord_orgno = str(krx_fwdg_ord_orgno).strip()
-            else:
-                krx_fwdg_ord_orgno = None
-
-            result = await kis.modify_korea_order(
-                order_id,
-                normalized_symbol,
-                final_quantity,
-                final_price,
-                krx_fwdg_ord_orgno=krx_fwdg_ord_orgno,
-            )
-            changes = {
-                "price": {"from": original_price, "to": final_price}
-                if final_price != original_price
-                else None,
-                "quantity": {"from": original_quantity, "to": final_quantity}
-                if final_quantity != original_quantity
-                else None,
-            }
-
-            if result.get("odno"):
-                return {
-                    "success": True,
-                    "status": "modified",
-                    "order_id": order_id,
-                    "new_order_id": result["odno"],
-                    "symbol": normalized_symbol,
-                    "market": _normalize_market_type_to_external(market_type),
-                    "changes": changes,
-                    "method": "api_modify",
-                    "dry_run": dry_run,
-                    "message": "Order modified via KIS API",
-                }
+        if result.get("odno"):
             return {
-                "success": False,
-                "status": "failed",
+                "success": True,
+                "status": "modified",
                 "order_id": order_id,
+                "new_order_id": result["odno"],
                 "symbol": normalized_symbol,
                 "market": _normalize_market_type_to_external(market_type),
-                "error": result.get("msg", "Unknown error"),
                 "changes": changes,
                 "method": "api_modify",
                 "dry_run": dry_run,
+                "message": "Order modified via KIS API",
             }
-        except Exception as exc:
+        return {
+            "success": False,
+            "status": "failed",
+            "order_id": order_id,
+            "symbol": normalized_symbol,
+            "market": _normalize_market_type_to_external(market_type),
+            "error": result.get("msg", "Unknown error"),
+            "changes": changes,
+            "method": "api_modify",
+            "dry_run": dry_run,
+        }
+    except Exception as exc:
+        return {
+            "success": False,
+            "status": "failed",
+            "order_id": order_id,
+            "symbol": normalized_symbol,
+            "market": _normalize_market_type_to_external(market_type),
+            "error": str(exc),
+            "changes": None,
+            "method": "api_modify",
+            "dry_run": dry_run,
+        }
+
+
+async def _modify_kis_overseas(
+    order_id: str,
+    normalized_symbol: str,
+    market_type: str,
+    new_price: float | None,
+    new_quantity: float | None,
+    dry_run: bool,
+) -> dict[str, Any]:
+    """Modify a KIS overseas (US equity) order."""
+    try:
+        kis = KISClient()
+        (
+            target_order,
+            target_exchange,
+            exchange_candidates,
+        ) = await _find_us_open_order_by_id(kis, order_id, normalized_symbol)
+        logger.debug(
+            "US modify lookup: order_id=%s symbol=%s checked_exchanges=%s",
+            order_id,
+            normalized_symbol,
+            ", ".join(exchange_candidates),
+        )
+
+        if not target_order:
             return {
                 "success": False,
                 "status": "failed",
                 "order_id": order_id,
                 "symbol": normalized_symbol,
                 "market": _normalize_market_type_to_external(market_type),
-                "error": str(exc),
-                "changes": None,
-                "method": "api_modify",
+                "error": f"Order not found in open orders (checked: {','.join(exchange_candidates)})",
                 "dry_run": dry_run,
             }
 
-    if market_type == "equity_us":
-        try:
-            kis = KISClient()
-            (
-                target_order,
-                target_exchange,
-                exchange_candidates,
-            ) = await _find_us_open_order_by_id(kis, order_id, normalized_symbol)
-            logger.debug(
-                "US modify lookup: order_id=%s symbol=%s checked_exchanges=%s",
-                order_id,
-                normalized_symbol,
-                ", ".join(exchange_candidates),
+        original_price = float(
+            _get_kis_field(target_order, "ft_ord_unpr3", "FT_ORD_UNPR3", default=0) or 0
+        )
+        original_quantity = int(
+            float(
+                _get_kis_field(target_order, "ft_ord_qty", "FT_ORD_QTY", default=0) or 0
             )
+        )
 
-            if not target_order:
-                return {
-                    "success": False,
-                    "status": "failed",
-                    "order_id": order_id,
-                    "symbol": normalized_symbol,
-                    "market": _normalize_market_type_to_external(market_type),
-                    "error": f"Order not found in open orders (checked: {','.join(exchange_candidates)})",
-                    "dry_run": dry_run,
-                }
+        exchange_code = target_exchange or exchange_candidates[0]
+        logger.info(
+            "US modify resolved: order_id=%s symbol=%s "
+            "checked_exchanges=%s selected_exchange=%s",
+            order_id,
+            normalized_symbol,
+            ", ".join(exchange_candidates),
+            exchange_code,
+        )
+        final_price = float(new_price) if new_price is not None else original_price
+        final_quantity = (
+            int(new_quantity) if new_quantity is not None else original_quantity
+        )
 
-            original_price = float(
-                _get_kis_field(target_order, "ft_ord_unpr3", "FT_ORD_UNPR3", default=0)
-                or 0
-            )
-            original_quantity = int(
-                float(
-                    _get_kis_field(target_order, "ft_ord_qty", "FT_ORD_QTY", default=0)
-                    or 0
-                )
-            )
+        result = await kis.modify_overseas_order(
+            order_id,
+            normalized_symbol,
+            exchange_code,
+            final_quantity,
+            final_price,
+        )
+        changes = {
+            "price": {"from": original_price, "to": final_price}
+            if final_price != original_price
+            else None,
+            "quantity": {"from": original_quantity, "to": final_quantity}
+            if final_quantity != original_quantity
+            else None,
+        }
 
-            exchange_code = target_exchange or exchange_candidates[0]
-            logger.info(
-                "US modify resolved: order_id=%s symbol=%s checked_exchanges=%s selected_exchange=%s",
-                order_id,
-                normalized_symbol,
-                ", ".join(exchange_candidates),
-                exchange_code,
-            )
-            final_price = float(new_price) if new_price is not None else original_price
-            final_quantity = (
-                int(new_quantity) if new_quantity is not None else original_quantity
-            )
-
-            result = await kis.modify_overseas_order(
-                order_id,
-                normalized_symbol,
-                exchange_code,
-                final_quantity,
-                final_price,
-            )
-            changes = {
-                "price": {"from": original_price, "to": final_price}
-                if final_price != original_price
-                else None,
-                "quantity": {"from": original_quantity, "to": final_quantity}
-                if final_quantity != original_quantity
-                else None,
-            }
-
-            if result.get("odno"):
-                return {
-                    "success": True,
-                    "status": "modified",
-                    "order_id": order_id,
-                    "new_order_id": result["odno"],
-                    "symbol": normalized_symbol,
-                    "market": _normalize_market_type_to_external(market_type),
-                    "exchange": exchange_code,
-                    "changes": changes,
-                    "method": "api_modify",
-                    "dry_run": dry_run,
-                    "message": "Order modified via KIS API",
-                }
+        if result.get("odno"):
             return {
-                "success": False,
-                "status": "failed",
+                "success": True,
+                "status": "modified",
                 "order_id": order_id,
+                "new_order_id": result["odno"],
                 "symbol": normalized_symbol,
                 "market": _normalize_market_type_to_external(market_type),
                 "exchange": exchange_code,
-                "error": result.get("msg", "Unknown error"),
                 "changes": changes,
                 "method": "api_modify",
                 "dry_run": dry_run,
+                "message": "Order modified via KIS API",
             }
-        except Exception as exc:
-            return {
-                "success": False,
-                "status": "failed",
-                "order_id": order_id,
-                "symbol": normalized_symbol,
-                "market": _normalize_market_type_to_external(market_type),
-                "error": str(exc),
-                "changes": None,
-                "method": "api_modify",
-                "dry_run": dry_run,
-            }
+        return {
+            "success": False,
+            "status": "failed",
+            "order_id": order_id,
+            "symbol": normalized_symbol,
+            "market": _normalize_market_type_to_external(market_type),
+            "exchange": exchange_code,
+            "error": result.get("msg", "Unknown error"),
+            "changes": changes,
+            "method": "api_modify",
+            "dry_run": dry_run,
+        }
+    except Exception as exc:
+        return {
+            "success": False,
+            "status": "failed",
+            "order_id": order_id,
+            "symbol": normalized_symbol,
+            "market": _normalize_market_type_to_external(market_type),
+            "error": str(exc),
+            "changes": None,
+            "method": "api_modify",
+            "dry_run": dry_run,
+        }
+
+
+async def modify_order_impl(
+    order_id: str,
+    symbol: str,
+    market: str | None = None,
+    new_price: float | None = None,
+    new_quantity: float | None = None,
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    order_id, symbol, market_type, normalized_symbol = _validate_modify_inputs(
+        order_id, symbol, market, new_price, new_quantity
+    )
+
+    if dry_run:
+        return _build_modify_dry_run_response(
+            order_id,
+            normalized_symbol,
+            market_type,
+            new_price,
+            new_quantity,
+            dry_run,
+        )
+
+    if market_type == "crypto":
+        return await _modify_upbit(
+            order_id,
+            normalized_symbol,
+            market_type,
+            new_price,
+            new_quantity,
+            dry_run,
+        )
+    if market_type == "equity_kr":
+        return await _modify_kis_domestic(
+            order_id,
+            normalized_symbol,
+            market_type,
+            new_price,
+            new_quantity,
+            dry_run,
+        )
+    if market_type == "equity_us":
+        return await _modify_kis_overseas(
+            order_id,
+            normalized_symbol,
+            market_type,
+            new_price,
+            new_quantity,
+            dry_run,
+        )
 
     return {
         "success": False,

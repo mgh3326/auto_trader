@@ -149,6 +149,10 @@ async def fetch_financials(
 
     # Parse data rows
     rows = table.select("tbody tr, tr")
+    income_metrics = ["매출액", "영업이익", "당기순이익", "영업이익률", "순이익률"]
+    balance_metrics = ["자산총계", "부채총계", "자본총계", "부채비율"]
+    cashflow_metrics = ["영업활동", "투자활동", "재무활동"]
+
     for row in rows:
         cells = row.select("td, th")
         if len(cells) < 2:
@@ -159,10 +163,6 @@ async def fetch_financials(
             continue
 
         # Filter metrics based on statement type
-        income_metrics = ["매출액", "영업이익", "당기순이익", "영업이익률", "순이익률"]
-        balance_metrics = ["자산총계", "부채총계", "자본총계", "부채비율"]
-        cashflow_metrics = ["영업활동", "투자활동", "재무활동"]
-
         if statement == "income" and not any(m in metric_name for m in income_metrics):
             continue
         if statement == "balance" and not any(

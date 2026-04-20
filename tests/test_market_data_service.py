@@ -274,9 +274,9 @@ async def test_get_orderbook_parses_kr_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class DummyKIS:
-        async def inquire_orderbook_snapshot(self, code: str, market: str = "UN"):
+        async def inquire_orderbook_snapshot(self, code: str, market: str = "J"):
             assert code == "005930"
-            assert market == "UN"
+            assert market == "J"
             return (
                 {
                     "askp1": "70100",
@@ -319,7 +319,7 @@ async def test_get_orderbook_normalizes_blank_expected_qty_and_logs_diagnostics(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     class DummyKIS:
-        async def inquire_orderbook_snapshot(self, code: str, market: str = "UN"):
+        async def inquire_orderbook_snapshot(self, code: str, market: str = "J"):
             return (
                 {
                     "askp1": "70100",
@@ -361,7 +361,7 @@ async def test_get_orderbook_normalizes_missing_expected_qty_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class DummyKIS:
-        async def inquire_orderbook_snapshot(self, code: str, market: str = "UN"):
+        async def inquire_orderbook_snapshot(self, code: str, market: str = "J"):
             return (
                 {
                     "askp1": "70100",
@@ -387,7 +387,7 @@ async def test_get_orderbook_normalizes_none_expected_qty_value(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class DummyKIS:
-        async def inquire_orderbook_snapshot(self, code: str, market: str = "UN"):
+        async def inquire_orderbook_snapshot(self, code: str, market: str = "J"):
             return (
                 {
                     "askp1": "70100",
@@ -414,7 +414,7 @@ async def test_get_orderbook_logs_diagnostics_when_output2_is_none(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     class DummyKIS:
-        async def inquire_orderbook_snapshot(self, code: str, market: str = "UN"):
+        async def inquire_orderbook_snapshot(self, code: str, market: str = "J"):
             return (
                 {
                     "askp1": "70100",
@@ -457,7 +457,7 @@ async def test_get_orderbook_keeps_zero_expected_qty_without_diagnostic_log(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     class DummyKIS:
-        async def inquire_orderbook_snapshot(self, code: str, market: str = "UN"):
+        async def inquire_orderbook_snapshot(self, code: str, market: str = "J"):
             return (
                 {
                     "askp1": "70100",
@@ -487,9 +487,9 @@ async def test_get_orderbook_falls_back_to_legacy_quantity_keys(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class DummyKIS:
-        async def inquire_orderbook_snapshot(self, code: str, market: str = "UN"):
+        async def inquire_orderbook_snapshot(self, code: str, market: str = "J"):
             assert code == "005930"
-            assert market == "UN"
+            assert market == "J"
             return (
                 {
                     "askp1": "70200",
@@ -517,9 +517,9 @@ async def test_get_orderbook_defaults_market_to_kr(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class DummyKIS:
-        async def inquire_orderbook_snapshot(self, code: str, market: str = "UN"):
+        async def inquire_orderbook_snapshot(self, code: str, market: str = "J"):
             assert code == "005930"
-            assert market == "UN"
+            assert market == "J"
             return (
                 {
                     "askp1": "70200",
@@ -545,9 +545,9 @@ async def test_get_orderbook_returns_none_ratio_when_total_ask_is_zero(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class DummyKIS:
-        async def inquire_orderbook_snapshot(self, code: str, market: str = "UN"):
+        async def inquire_orderbook_snapshot(self, code: str, market: str = "J"):
             assert code == "005930"
-            assert market == "UN"
+            assert market == "J"
             return (
                 {
                     "askp1": "70100",
@@ -782,7 +782,7 @@ async def test_get_short_interest_maps_rows_and_uses_naver_name_fallback(
             )
 
         async def fetch_fundamental_info(
-            self, _code: str, _market: str = "UN"
+            self, _code: str, _market: str = "J"
         ) -> dict[str, str]:
             raise AssertionError("KIS fundamental fallback should not be used")
 
@@ -851,7 +851,7 @@ async def test_get_short_interest_returns_clean_no_data_payload(
             return ({}, [])
 
         async def fetch_fundamental_info(
-            self, _code: str, _market: str = "UN"
+            self, _code: str, _market: str = "J"
         ) -> dict[str, str]:
             raise AssertionError("KIS fundamental fallback should not be used")
 

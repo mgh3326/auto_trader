@@ -32,11 +32,25 @@ OPENCLAW_RETRY_WAIT = wait_exponential(multiplier=1, min=1, max=4)
 _KR_SYMBOLS_REVERSE: dict[str, str] | None = None
 
 FillNotificationDeliveryStatus = Literal["success", "skipped", "failed"]
+WatchAlertDeliveryStatus = Literal["success", "skipped", "failed"]
 
 
 @dataclass(slots=True, frozen=True)
 class FillNotificationDeliveryResult:
     status: FillNotificationDeliveryStatus
+    reason: str | None = None
+    request_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.status == "success" and self.request_id is None:
+            raise ValueError("success results require a request_id")
+        if self.status != "success" and self.request_id is not None:
+            raise ValueError("request_id is only allowed for success results")
+
+
+@dataclass(slots=True, frozen=True)
+class WatchAlertDeliveryResult:
+    status: WatchAlertDeliveryStatus
     reason: str | None = None
     request_id: str | None = None
 
@@ -364,6 +378,99 @@ class OpenClawClient:
 
         return result
 
+    async def send_watch_alert_to_n8n(
+        self,
+        *,
+        message: str,
+        market: str,
+        triggered: list[dict[str, Any]],
+        as_of: str,
+        correlation_id: str | None = None,
+    ) -> WatchAlertDeliveryResult:
+        request_id = str(uuid4())
+        n8n_webhook_url = settings.N8N_WATCH_ALERT_WEBHOOK_URL.strip()
+
+        if not n8n_webhook_url:
+            logger.debug(
+                "N8N watch alert skipped: correlation_id=%s market=%s reason=n8n_webhook_not_configured",
+                correlation_id,
+                market,
+            )
+            return WatchAlertDeliveryResult(
+                status="skipped",
+                reason="n8n_webhook_not_configured",
+            )
+
+        payload = {
+            "alert_type": "watch",
+            "correlation_id": correlation_id,
+            "as_of": as_of,
+            "market": market,
+            "triggered": triggered,
+            "message": message,
+        }
+        headers = {"Content-Type": "application/json"}
+
+        try:
+            async for attempt in _build_openclaw_retrying():
+                attempt_number = attempt.retry_state.attempt_number
+                with attempt:
+                    logger.info(
+                        "N8N watch alert send start: correlation_id=%s request_id=%s market=%s attempt=%s",
+                        correlation_id,
+                        request_id,
+                        market,
+                        attempt_number,
+                    )
+                    try:
+                        async with httpx.AsyncClient(timeout=10) as cli:
+                            res = await cli.post(
+                                n8n_webhook_url,
+                                json=payload,
+                                headers=headers,
+                            )
+                            _ = res.raise_for_status()
+                    except Exception as exc:
+                        logger.warning(
+                            "N8N watch alert attempt failed: correlation_id=%s request_id=%s market=%s attempt=%s error=%s",
+                            correlation_id,
+                            request_id,
+                            market,
+                            attempt_number,
+                            exc,
+                        )
+                        raise
+                    logger.info(
+                        "N8N watch alert sent: correlation_id=%s request_id=%s market=%s attempt=%s status=%s",
+                        correlation_id,
+                        request_id,
+                        market,
+                        attempt_number,
+                        res.status_code,
+                    )
+                    return WatchAlertDeliveryResult(
+                        status="success",
+                        request_id=request_id,
+                    )
+        except RetryError as exc:
+            logger.error(
+                "N8N watch alert failed after retries: correlation_id=%s request_id=%s market=%s error=%s",
+                correlation_id,
+                request_id,
+                market,
+                exc,
+            )
+        except Exception as exc:
+            logger.error(
+                "N8N watch alert error: correlation_id=%s request_id=%s market=%s error=%s",
+                correlation_id,
+                request_id,
+                market,
+                exc,
+            )
+
+        return WatchAlertDeliveryResult(status="failed", reason="request_failed")
+
     async def _send_market_alert(
         self,
         message: str,
@@ -371,6 +478,7 @@ class OpenClawClient:
         *,
         mirror_to_telegram: bool = True,
     ) -> str | None:
+        # Deprecated: watch category is replaced by send_watch_alert_to_n8n (ROB-171)
         if not settings.OPENCLAW_ENABLED:
             logger.debug("OpenClaw disabled, skipping %s alert", category)
             return None
@@ -439,6 +547,7 @@ class OpenClawClient:
         )
 
     async def send_watch_alert(self, message: str) -> str | None:
+        # Deprecated: replaced by send_watch_alert_to_n8n (ROB-171)
         return await self._send_market_alert(message, category="watch")
 
 

@@ -102,14 +102,16 @@ class TestManualHoldingsIntegration:
                 "app.services.manual_holdings_service.ManualHoldingsService",
                 MockManualService,
             ),
+            patch(
+                "app.services.kis_trading_service.process_kis_domestic_buy_orders_with_analysis",
+                fake_buy,
+            ),
+            patch(
+                "app.services.kis_trading_service.process_kis_domestic_sell_orders_with_analysis",
+                fake_sell,
+            ),
         ):
             monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-            monkeypatch.setattr(
-                kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy
-            )
-            monkeypatch.setattr(
-                kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell
-            )
 
             result = asyncio.run(kis_tasks.run_per_domestic_stock_automation())
 
@@ -198,14 +200,16 @@ class TestManualHoldingsIntegration:
                 "app.services.manual_holdings_service.ManualHoldingsService",
                 MockManualService,
             ),
+            patch(
+                "app.services.kis_trading_service.process_kis_domestic_buy_orders_with_analysis",
+                fake_buy,
+            ),
+            patch(
+                "app.services.kis_trading_service.process_kis_domestic_sell_orders_with_analysis",
+                fake_sell,
+            ),
         ):
             monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-            monkeypatch.setattr(
-                kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy
-            )
-            monkeypatch.setattr(
-                kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell
-            )
 
             result = asyncio.run(kis_tasks.run_per_domestic_stock_automation())
 
@@ -281,14 +285,16 @@ class TestManualHoldingsIntegration:
                 "app.services.manual_holdings_service.ManualHoldingsService",
                 MockManualService,
             ),
+            patch(
+                "app.services.kis_trading_service.process_kis_domestic_buy_orders_with_analysis",
+                fake_buy,
+            ),
+            patch(
+                "app.services.kis_trading_service.process_kis_domestic_sell_orders_with_analysis",
+                fake_sell,
+            ),
         ):
             monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-            monkeypatch.setattr(
-                kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy
-            )
-            monkeypatch.setattr(
-                kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell
-            )
 
             result = asyncio.run(kis_tasks.run_per_domestic_stock_automation())
 
@@ -361,14 +367,16 @@ class TestManualHoldingsIntegration:
                 "app.services.manual_holdings_service.ManualHoldingsService",
                 MockManualService,
             ),
+            patch(
+                "app.services.kis_trading_service.process_kis_domestic_buy_orders_with_analysis",
+                fake_buy,
+            ),
+            patch(
+                "app.services.kis_trading_service.process_kis_domestic_sell_orders_with_analysis",
+                fake_sell,
+            ),
         ):
             monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-            monkeypatch.setattr(
-                kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy
-            )
-            monkeypatch.setattr(
-                kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell
-            )
 
             result = asyncio.run(kis_tasks.run_per_domestic_stock_automation())
 
@@ -441,7 +449,7 @@ class TestManualHoldingsIntegration:
         # Mock DB session
         mock_db_session = MagicMock()
         mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
-        mock_db_session.__aexit__ = AsyncMock(return_value=None)
+        mock_db_session.__aexit__ = AsyncMock()
 
         with (
             patch("app.core.db.AsyncSessionLocal", return_value=mock_db_session),
@@ -449,14 +457,16 @@ class TestManualHoldingsIntegration:
                 "app.services.manual_holdings_service.ManualHoldingsService",
                 MockManualService,
             ),
+            patch(
+                "app.services.kis_trading_service.process_kis_domestic_buy_orders_with_analysis",
+                fake_buy,
+            ),
+            patch(
+                "app.services.kis_trading_service.process_kis_domestic_sell_orders_with_analysis",
+                fake_sell,
+            ),
         ):
             monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-            monkeypatch.setattr(
-                kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy
-            )
-            monkeypatch.setattr(
-                kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell
-            )
 
             result = asyncio.run(kis_tasks.run_per_domestic_stock_automation())
 
@@ -542,14 +552,16 @@ class TestManualHoldingsIntegration:
                 "app.services.manual_holdings_service.ManualHoldingsService",
                 MockManualService,
             ),
+            patch(
+                "app.services.kis_trading_service.process_kis_domestic_buy_orders_with_analysis",
+                fake_buy,
+            ),
+            patch(
+                "app.services.kis_trading_service.process_kis_domestic_sell_orders_with_analysis",
+                fake_sell,
+            ),
         ):
             monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-            monkeypatch.setattr(
-                kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy
-            )
-            monkeypatch.setattr(
-                kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell
-            )
 
             result = asyncio.run(kis_tasks.run_per_domestic_stock_automation())
 

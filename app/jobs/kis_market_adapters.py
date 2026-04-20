@@ -124,6 +124,74 @@ class BaseAutomationAdapter:
         *,
         exchange_code: str | None = None,
     ) -> dict[str, Any]:
+        """Cancel pending orders matching symbol and type."""
+        target_code = "02" if order_type == "buy" else "01"
+        target_orders = self._filter_pending_orders(
+            all_open_orders, symbol, target_code
+        )
+        if not target_orders:
+            return {"cancelled": 0, "failed": 0, "total": 0}
+
+        cancelled = 0
+        failed = 0
+        for order in target_orders:
+            order_number = self._extract_order_number(order)
+            if not order_number:
+                logger.warning("주문번호 없음 (%s): order=%s", symbol, order)
+                failed += 1
+                continue
+            try:
+                await self._cancel_single_order(
+                    kis,
+                    symbol,
+                    order,
+                    order_number,
+                    order_type,
+                    exchange_code=exchange_code,
+                )
+                cancelled += 1
+                await asyncio.sleep(0.2)
+            except Exception as e:
+                logger.warning(
+                    "주문 취소 실패 (%s, %s): %s",
+                    symbol,
+                    order_number,
+                    e,
+                )
+                failed += 1
+        return {
+            "cancelled": cancelled,
+            "failed": failed,
+            "total": len(target_orders),
+        }
+
+    @staticmethod
+    def _extract_order_number(order: dict[str, Any]) -> str | None:
+        return (
+            order.get("odno")
+            or order.get("ODNO")
+            or order.get("ord_no")
+            or order.get("ORD_NO")
+        )
+
+    def _filter_pending_orders(
+        self,
+        orders: list[dict[str, Any]],
+        symbol: str,
+        target_code: str,
+    ) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    async def _cancel_single_order(
+        self,
+        kis: Any,
+        symbol: str,
+        order: dict[str, Any],
+        order_number: str,
+        order_type: str,
+        *,
+        exchange_code: str | None = None,
+    ) -> None:
         raise NotImplementedError
 
     # --- Hook methods: subclass MAY override (have defaults) ---
@@ -172,27 +240,317 @@ class BaseAutomationAdapter:
 
     # --- Main workflow ---
 
+    async def _prepare_holdings(
+        self, kis: Any
+    ) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]]]:
+        """Fetch KIS + manual holdings, merge, and fetch open orders.
+
+        Returns (None, []) when no stocks are held.
+        """
+        my_stocks = await self.fetch_holdings(kis)
+
+        async with self.async_session_factory() as db:
+            manual_service = self.manual_holdings_service_factory(db)
+            manual_holdings = await manual_service.get_holdings_by_user(
+                user_id=1,
+                market_type=self.manual_market_type,
+            )
+
+        for holding in manual_holdings:
+            ticker = holding.ticker
+            if any(self.is_same_symbol(stock, ticker) for stock in my_stocks):
+                continue
+            my_stocks.append(self.build_manual_entry(holding))
+
+        if not my_stocks:
+            return None, []
+
+        all_open_orders = await self.fetch_open_orders(kis)
+        logger.info(
+            "%s 미체결 주문 조회 완료: %s건",
+            self.market_type_label,
+            len(all_open_orders),
+        )
+        return my_stocks, all_open_orders
+
+    async def _resolve_manual_price(self, kis: Any, ctx: StockContext) -> None:
+        """Fetch live price for manual holdings; fall back to avg_price on failure."""
+        try:
+            ctx.current_price = await self.fetch_manual_price(kis, ctx.symbol)
+            logger.info(
+                "[수동잔고] %s(%s) 현재가 조회: %s",
+                ctx.name,
+                ctx.symbol,
+                ctx.current_price,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[수동잔고] %s(%s) 현재가 조회 실패, 평단가 사용: %s",
+                ctx.name,
+                ctx.symbol,
+                exc,
+            )
+            ctx.current_price = ctx.avg_price
+
+    async def _execute_buy_orders(
+        self,
+        kis: Any,
+        ctx: StockContext,
+        all_open_orders: list[dict[str, Any]],
+        stock_steps: StepResults,
+    ) -> None:
+        """Cancel pending buy orders, execute buy, notify, and refresh holdings."""
+        # --- Cancel pending buy orders ---
+        try:
+            cancel_result = await self.cancel_pending(
+                kis,
+                ctx.symbol,
+                "buy",
+                all_open_orders,
+                exchange_code=ctx.exchange_code,
+            )
+            if cancel_result["total"] > 0:
+                logger.info(
+                    "%s 미체결 매수 주문 취소: %s/%s건",
+                    ctx.name or ctx.symbol,
+                    cancel_result["cancelled"],
+                    cancel_result["total"],
+                )
+                stock_steps.append(
+                    {
+                        "step": "매수취소",
+                        "result": {"success": True, **cancel_result},
+                    }
+                )
+                await asyncio.sleep(0.5)
+        except Exception as exc:
+            logger.warning(
+                "%s 미체결 매수 주문 취소 실패: %s", ctx.name or ctx.symbol, exc
+            )
+            stock_steps.append(
+                {
+                    "step": "매수취소",
+                    "result": {"success": False, "error": str(exc)},
+                }
+            )
+
+        # --- Buy ---
+        try:
+            buy_result = await self.buy_handler(
+                kis,
+                ctx.symbol,
+                ctx.current_price,
+                ctx.avg_price,
+                exchange_code=ctx.exchange_code,
+            )
+            stock_steps.append({"step": "매수", "result": buy_result})
+            await self.on_buy_error_result(ctx.name, ctx.symbol, buy_result)
+            if buy_result.get("success") and buy_result.get("orders_placed", 0) > 0:
+                try:
+                    notifier = self.notifier_factory()
+                    await notifier.notify_buy_order(
+                        symbol=ctx.symbol,
+                        korean_name=ctx.name or ctx.symbol,
+                        order_count=buy_result.get("orders_placed", 0),
+                        total_amount=buy_result.get("total_amount", 0.0),
+                        prices=buy_result.get("prices", []),
+                        volumes=buy_result.get("quantities", []),
+                        market_type=self.market_type_label,
+                    )
+                except Exception as notify_error:
+                    logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
+        except Exception as exc:
+            error_msg = str(exc)
+            stock_steps.append(
+                {
+                    "step": "매수",
+                    "result": {"success": False, "error": error_msg},
+                }
+            )
+            logger.error(
+                "[매수 실패] %s(%s): %s",
+                ctx.name,
+                ctx.symbol,
+                error_msg,
+            )
+            await self.on_trade_exception(ctx.symbol, ctx.name, exc, "매수")
+
+        # --- Refresh after buy ---
+        (
+            ctx.qty,
+            ctx.avg_price,
+            ctx.current_price,
+        ) = await self.refresh_after_buy(
+            kis,
+            ctx.symbol,
+            ctx.qty,
+            ctx.avg_price,
+            ctx.current_price,
+        )
+
+    async def _handle_manual_sell(
+        self, kis: Any, ctx: StockContext, stock_steps: StepResults
+    ) -> None:
+        """Send toss recommendation for manual holdings instead of KIS sell."""
+        logger.info(
+            "[수동잔고] %s(%s) - KIS 매도 불가, 토스 추천 알림 발송",
+            ctx.name,
+            ctx.symbol,
+        )
+        try:
+            await self.send_toss_recommendation(
+                code=ctx.symbol,
+                name=ctx.name,
+                current_price=ctx.current_price,
+                toss_quantity=ctx.qty,
+                toss_avg_price=ctx.avg_price,
+                market_type=self.toss_market_type,
+                currency=self.toss_currency,
+            )
+            stock_steps.append(
+                {
+                    "step": "매도",
+                    "result": {
+                        "success": True,
+                        "message": "수동잔고 - 토스 추천 알림 발송",
+                        "orders_placed": 0,
+                    },
+                }
+            )
+        except Exception as exc:
+            logger.warning(
+                "[수동잔고] %s(%s) 토스 추천 알림 발송 실패: %s",
+                ctx.name,
+                ctx.symbol,
+                exc,
+            )
+            stock_steps.append(
+                {
+                    "step": "매도",
+                    "result": {
+                        "success": True,
+                        "message": "수동잔고 - 매도 스킵",
+                        "orders_placed": 0,
+                    },
+                }
+            )
+
+    async def _execute_sell_orders(
+        self,
+        kis: Any,
+        ctx: StockContext,
+        all_open_orders: list[dict[str, Any]],
+        stock_steps: StepResults,
+    ) -> None:
+        """Cancel pending sell orders, refresh, and execute sell.
+
+        For manual holdings, delegates to toss recommendation instead.
+        """
+        if ctx.is_manual:
+            await self._handle_manual_sell(kis, ctx, stock_steps)
+            return
+
+        # --- Cancel pending sell orders ---
+        sell_orders_cancelled = False
+        try:
+            cancel_result = await self.cancel_pending(
+                kis,
+                ctx.symbol,
+                "sell",
+                all_open_orders,
+                exchange_code=ctx.exchange_code,
+            )
+            if cancel_result["total"] > 0:
+                logger.info(
+                    "%s 미체결 매도 주문 취소: %s/%s건",
+                    ctx.name or ctx.symbol,
+                    cancel_result["cancelled"],
+                    cancel_result["total"],
+                )
+                stock_steps.append(
+                    {
+                        "step": "매도취소",
+                        "result": {"success": True, **cancel_result},
+                    }
+                )
+                sell_orders_cancelled = cancel_result["cancelled"] > 0
+                await asyncio.sleep(0.5)
+        except Exception as exc:
+            logger.warning(
+                "%s 미체결 매도 주문 취소 실패: %s", ctx.name or ctx.symbol, exc
+            )
+            stock_steps.append(
+                {
+                    "step": "매도취소",
+                    "result": {"success": False, "error": str(exc)},
+                }
+            )
+
+        # --- Refresh after sell cancel ---
+        if sell_orders_cancelled and self.refresh_holdings_after_sell_cancel:
+            ctx.qty, ctx.current_price = await self.refresh_after_sell_cancel(
+                kis,
+                ctx.symbol,
+                ctx.qty,
+                ctx.current_price,
+            )
+
+        # --- Sell ---
+        try:
+            sell_result = await self.sell_handler(
+                kis,
+                ctx.symbol,
+                ctx.current_price,
+                ctx.avg_price,
+                ctx.qty,
+                exchange_code=ctx.exchange_code,
+            )
+            stock_steps.append({"step": "매도", "result": sell_result})
+            if sell_result.get("success") and sell_result.get("orders_placed", 0) > 0:
+                try:
+                    notifier = self.notifier_factory()
+                    await notifier.notify_sell_order(
+                        symbol=ctx.symbol,
+                        korean_name=ctx.name or ctx.symbol,
+                        order_count=sell_result.get("orders_placed", 0),
+                        total_volume=sell_result.get("total_volume", 0),
+                        prices=sell_result.get("prices", []),
+                        volumes=sell_result.get("quantities", []),
+                        expected_amount=sell_result.get("expected_amount", 0.0),
+                        market_type=self.market_type_label,
+                    )
+                except Exception as notify_error:
+                    logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
+        except Exception as exc:
+            error_msg = str(exc)
+            stock_steps.append(
+                {
+                    "step": "매도",
+                    "result": {"success": False, "error": error_msg},
+                }
+            )
+            logger.error(
+                "[매도 실패] %s(%s): %s",
+                ctx.name,
+                ctx.symbol,
+                error_msg,
+            )
+            await self.on_trade_exception(ctx.symbol, ctx.name, exc, "매도")
+
+    def _aggregate_results(self, results: list[AutomationResult]) -> AutomationResult:
+        return {
+            "status": "completed",
+            "message": "종목별 자동 실행 완료",
+            "results": results,
+        }
+
     async def execute(self) -> AutomationResult:
-        """Unified per-stock automation: cancel → buy → refresh → sell."""
+        """Unified per-stock automation: cancel -> buy -> refresh -> sell."""
         kis = self.kis_client_factory()
 
         try:
-            my_stocks = await self.fetch_holdings(kis)
-
-            async with self.async_session_factory() as db:
-                manual_service = self.manual_holdings_service_factory(db)
-                manual_holdings = await manual_service.get_holdings_by_user(
-                    user_id=1,
-                    market_type=self.manual_market_type,
-                )
-
-            for holding in manual_holdings:
-                ticker = holding.ticker
-                if any(self.is_same_symbol(stock, ticker) for stock in my_stocks):
-                    continue
-                my_stocks.append(self.build_manual_entry(holding))
-
-            if not my_stocks:
+            my_stocks, all_open_orders = await self._prepare_holdings(kis)
+            if my_stocks is None:
                 return {
                     "status": "completed",
                     "message": self.no_stocks_message,
@@ -200,283 +558,26 @@ class BaseAutomationAdapter:
                 }
 
             results: list[AutomationResult] = []
-            all_open_orders = await self.fetch_open_orders(kis)
-            logger.info(
-                "%s 미체결 주문 조회 완료: %s건",
-                self.market_type_label,
-                len(all_open_orders),
-            )
 
             for stock in my_stocks:
                 ctx = self.extract_stock_info(stock)
                 ctx.exchange_code = await self.resolve_exchange(ctx.symbol, stock)
 
                 if ctx.is_manual:
-                    try:
-                        ctx.current_price = await self.fetch_manual_price(
-                            kis, ctx.symbol
-                        )
-                        logger.info(
-                            "[수동잔고] %s(%s) 현재가 조회: %s",
-                            ctx.name,
-                            ctx.symbol,
-                            ctx.current_price,
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "[수동잔고] %s(%s) 현재가 조회 실패, 평단가 사용: %s",
-                            ctx.name,
-                            ctx.symbol,
-                            exc,
-                        )
-                        ctx.current_price = ctx.avg_price
+                    await self._resolve_manual_price(kis, ctx)
 
-                stock_steps: StepResults = []
-
-                # Analysis step skipped
-                stock_steps.append(
+                stock_steps: StepResults = [
                     {
                         "step": "분석",
                         "result": {
                             "success": True,
                             "message": "분석 스킵 (대체 분석기 준비 중)",
                         },
-                    }
-                )
+                    },
+                ]
 
-                # --- Cancel pending buy orders ---
-                try:
-                    cancel_result = await self.cancel_pending(
-                        kis,
-                        ctx.symbol,
-                        "buy",
-                        all_open_orders,
-                        exchange_code=ctx.exchange_code,
-                    )
-                    if cancel_result["total"] > 0:
-                        logger.info(
-                            "%s 미체결 매수 주문 취소: %s/%s건",
-                            ctx.name or ctx.symbol,
-                            cancel_result["cancelled"],
-                            cancel_result["total"],
-                        )
-                        stock_steps.append(
-                            {
-                                "step": "매수취소",
-                                "result": {"success": True, **cancel_result},
-                            }
-                        )
-                        await asyncio.sleep(0.5)
-                except Exception as exc:
-                    logger.warning(
-                        "%s 미체결 매수 주문 취소 실패: %s", ctx.name or ctx.symbol, exc
-                    )
-                    stock_steps.append(
-                        {
-                            "step": "매수취소",
-                            "result": {"success": False, "error": str(exc)},
-                        }
-                    )
-
-                # --- Buy ---
-                try:
-                    buy_result = await self.buy_handler(
-                        kis,
-                        ctx.symbol,
-                        ctx.current_price,
-                        ctx.avg_price,
-                        exchange_code=ctx.exchange_code,
-                    )
-                    stock_steps.append({"step": "매수", "result": buy_result})
-                    await self.on_buy_error_result(ctx.name, ctx.symbol, buy_result)
-                    if (
-                        buy_result.get("success")
-                        and buy_result.get("orders_placed", 0) > 0
-                    ):
-                        try:
-                            notifier = self.notifier_factory()
-                            await notifier.notify_buy_order(
-                                symbol=ctx.symbol,
-                                korean_name=ctx.name or ctx.symbol,
-                                order_count=buy_result.get("orders_placed", 0),
-                                total_amount=buy_result.get("total_amount", 0.0),
-                                prices=buy_result.get("prices", []),
-                                volumes=buy_result.get("quantities", []),
-                                market_type=self.market_type_label,
-                            )
-                        except Exception as notify_error:
-                            logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
-                except Exception as exc:
-                    error_msg = str(exc)
-                    stock_steps.append(
-                        {
-                            "step": "매수",
-                            "result": {"success": False, "error": error_msg},
-                        }
-                    )
-                    logger.error(
-                        "[매수 실패] %s(%s): %s",
-                        ctx.name,
-                        ctx.symbol,
-                        error_msg,
-                    )
-                    await self.on_trade_exception(ctx.symbol, ctx.name, exc, "매수")
-
-                # --- Refresh after buy ---
-                (
-                    ctx.qty,
-                    ctx.avg_price,
-                    ctx.current_price,
-                ) = await self.refresh_after_buy(
-                    kis,
-                    ctx.symbol,
-                    ctx.qty,
-                    ctx.avg_price,
-                    ctx.current_price,
-                )
-
-                # --- Manual holdings: toss recommendation, then continue ---
-                if ctx.is_manual:
-                    logger.info(
-                        "[수동잔고] %s(%s) - KIS 매도 불가, 토스 추천 알림 발송",
-                        ctx.name,
-                        ctx.symbol,
-                    )
-                    try:
-                        await self.send_toss_recommendation(
-                            code=ctx.symbol,
-                            name=ctx.name,
-                            current_price=ctx.current_price,
-                            toss_quantity=ctx.qty,
-                            toss_avg_price=ctx.avg_price,
-                            market_type=self.toss_market_type,
-                            currency=self.toss_currency,
-                        )
-                        stock_steps.append(
-                            {
-                                "step": "매도",
-                                "result": {
-                                    "success": True,
-                                    "message": "수동잔고 - 토스 추천 알림 발송",
-                                    "orders_placed": 0,
-                                },
-                            }
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "[수동잔고] %s(%s) 토스 추천 알림 발송 실패: %s",
-                            ctx.name,
-                            ctx.symbol,
-                            exc,
-                        )
-                        stock_steps.append(
-                            {
-                                "step": "매도",
-                                "result": {
-                                    "success": True,
-                                    "message": "수동잔고 - 매도 스킵",
-                                    "orders_placed": 0,
-                                },
-                            }
-                        )
-                    results.append(
-                        self.build_result_entry(
-                            name=ctx.name,
-                            symbol=ctx.symbol,
-                            steps=stock_steps,
-                        )
-                    )
-                    continue
-
-                # --- Cancel pending sell orders ---
-                sell_orders_cancelled = False
-                try:
-                    cancel_result = await self.cancel_pending(
-                        kis,
-                        ctx.symbol,
-                        "sell",
-                        all_open_orders,
-                        exchange_code=ctx.exchange_code,
-                    )
-                    if cancel_result["total"] > 0:
-                        logger.info(
-                            "%s 미체결 매도 주문 취소: %s/%s건",
-                            ctx.name or ctx.symbol,
-                            cancel_result["cancelled"],
-                            cancel_result["total"],
-                        )
-                        stock_steps.append(
-                            {
-                                "step": "매도취소",
-                                "result": {"success": True, **cancel_result},
-                            }
-                        )
-                        sell_orders_cancelled = cancel_result["cancelled"] > 0
-                        await asyncio.sleep(0.5)
-                except Exception as exc:
-                    logger.warning(
-                        "%s 미체결 매도 주문 취소 실패: %s", ctx.name or ctx.symbol, exc
-                    )
-                    stock_steps.append(
-                        {
-                            "step": "매도취소",
-                            "result": {"success": False, "error": str(exc)},
-                        }
-                    )
-
-                # --- Refresh after sell cancel ---
-                if sell_orders_cancelled and self.refresh_holdings_after_sell_cancel:
-                    ctx.qty, ctx.current_price = await self.refresh_after_sell_cancel(
-                        kis,
-                        ctx.symbol,
-                        ctx.qty,
-                        ctx.current_price,
-                    )
-
-                # --- Sell ---
-                try:
-                    sell_result = await self.sell_handler(
-                        kis,
-                        ctx.symbol,
-                        ctx.current_price,
-                        ctx.avg_price,
-                        ctx.qty,
-                        exchange_code=ctx.exchange_code,
-                    )
-                    stock_steps.append({"step": "매도", "result": sell_result})
-                    if (
-                        sell_result.get("success")
-                        and sell_result.get("orders_placed", 0) > 0
-                    ):
-                        try:
-                            notifier = self.notifier_factory()
-                            await notifier.notify_sell_order(
-                                symbol=ctx.symbol,
-                                korean_name=ctx.name or ctx.symbol,
-                                order_count=sell_result.get("orders_placed", 0),
-                                total_volume=sell_result.get("total_volume", 0),
-                                prices=sell_result.get("prices", []),
-                                volumes=sell_result.get("quantities", []),
-                                expected_amount=sell_result.get("expected_amount", 0.0),
-                                market_type=self.market_type_label,
-                            )
-                        except Exception as notify_error:
-                            logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
-                except Exception as exc:
-                    error_msg = str(exc)
-                    stock_steps.append(
-                        {
-                            "step": "매도",
-                            "result": {"success": False, "error": error_msg},
-                        }
-                    )
-                    logger.error(
-                        "[매도 실패] %s(%s): %s",
-                        ctx.name,
-                        ctx.symbol,
-                        error_msg,
-                    )
-                    await self.on_trade_exception(ctx.symbol, ctx.name, exc, "매도")
+                await self._execute_buy_orders(kis, ctx, all_open_orders, stock_steps)
+                await self._execute_sell_orders(kis, ctx, all_open_orders, stock_steps)
 
                 results.append(
                     self.build_result_entry(
@@ -486,11 +587,7 @@ class BaseAutomationAdapter:
                     )
                 )
 
-            return {
-                "status": "completed",
-                "message": "종목별 자동 실행 완료",
-                "results": results,
-            }
+            return self._aggregate_results(results)
         except Exception as exc:
             logger.error(
                 "[태스크 실패] %s: %s",
@@ -538,64 +635,35 @@ class DomesticAutomationAdapter(BaseAutomationAdapter):
         info = await kis.fetch_fundamental_info(symbol)
         return float(info.get("현재가", 0))
 
-    async def cancel_pending(
-        self, kis, symbol, order_type, all_open_orders, *, exchange_code=None
-    ):
-        target_code = "02" if order_type == "buy" else "01"
-        target_orders = [
+    def _filter_pending_orders(self, orders, symbol, target_code):
+        return [
             order
-            for order in all_open_orders
+            for order in orders
             if (order.get("pdno") or order.get("PDNO")) == symbol
             and (order.get("sll_buy_dvsn_cd") or order.get("SLL_BUY_DVSN_CD"))
             == target_code
         ]
-        if not target_orders:
-            return {"cancelled": 0, "failed": 0, "total": 0}
 
-        cancelled = 0
-        failed = 0
-        for order in target_orders:
-            order_number = None
-            try:
-                order_number = (
-                    order.get("odno")
-                    or order.get("ODNO")
-                    or order.get("ord_no")
-                    or order.get("ORD_NO")
-                )
-                order_qty = int(order.get("ord_qty") or order.get("ORD_QTY") or 0)
-                order_price = int(
-                    float(order.get("ord_unpr") or order.get("ORD_UNPR") or 0)
-                )
-                order_orgno = (
-                    order.get("ord_gno_brno")
-                    or order.get("ORD_GNO_BRNO")
-                    or order.get("krx_fwdg_ord_orgno")
-                    or order.get("KRX_FWDG_ORD_ORGNO")
-                )
-                if not order_number:
-                    logger.warning("주문번호 없음 (%s): order=%s", symbol, order)
-                    failed += 1
-                    continue
-                await kis.cancel_korea_order(
-                    order_number=order_number,
-                    stock_code=symbol,
-                    quantity=order_qty,
-                    price=order_price,
-                    order_type=order_type,
-                    is_mock=False,
-                    krx_fwdg_ord_orgno=str(order_orgno).strip()
-                    if order_orgno
-                    else None,
-                )
-                cancelled += 1
-                await asyncio.sleep(0.2)
-            except Exception as e:
-                logger.warning(
-                    "주문 취소 실패 (%s, %s): %s", symbol, order_number or "unknown", e
-                )
-                failed += 1
-        return {"cancelled": cancelled, "failed": failed, "total": len(target_orders)}
+    async def _cancel_single_order(
+        self, kis, symbol, order, order_number, order_type, *, exchange_code=None
+    ):
+        order_qty = int(order.get("ord_qty") or order.get("ORD_QTY") or 0)
+        order_price = int(float(order.get("ord_unpr") or order.get("ORD_UNPR") or 0))
+        order_orgno = (
+            order.get("ord_gno_brno")
+            or order.get("ORD_GNO_BRNO")
+            or order.get("krx_fwdg_ord_orgno")
+            or order.get("KRX_FWDG_ORD_ORGNO")
+        )
+        await kis.cancel_korea_order(
+            order_number=order_number,
+            stock_code=symbol,
+            quantity=order_qty,
+            price=order_price,
+            order_type=order_type,
+            is_mock=False,
+            krx_fwdg_ord_orgno=str(order_orgno).strip() if order_orgno else None,
+        )
 
     def analysis_target(self, *, name=None, symbol=None):
         return name or symbol or ""
@@ -710,53 +778,28 @@ class OverseasAutomationAdapter(BaseAutomationAdapter):
             return normalized
         return await get_us_exchange_by_symbol(symbol)
 
-    async def cancel_pending(
-        self, kis, symbol, order_type, all_open_orders, *, exchange_code=None
-    ):
-        target_code = "02" if order_type == "buy" else "01"
+    def _filter_pending_orders(self, orders, symbol, target_code):
         normalized_symbol = to_db_symbol(symbol)
-        target_orders = [
+        return [
             order
-            for order in all_open_orders
+            for order in orders
             if to_db_symbol(order.get("pdno") or order.get("PDNO") or "")
             == normalized_symbol
             and (order.get("sll_buy_dvsn_cd") or order.get("SLL_BUY_DVSN_CD"))
             == target_code
         ]
-        if not target_orders:
-            return {"cancelled": 0, "failed": 0, "total": 0}
 
-        cancelled = 0
-        failed = 0
-        for order in target_orders:
-            order_number = None
-            try:
-                order_number = (
-                    order.get("odno")
-                    or order.get("ODNO")
-                    or order.get("ord_no")
-                    or order.get("ORD_NO")
-                )
-                order_qty = int(order.get("ft_ord_qty") or order.get("FT_ORD_QTY") or 0)
-                if not order_number:
-                    logger.warning("주문번호 없음 (%s): order=%s", symbol, order)
-                    failed += 1
-                    continue
-                await kis.cancel_overseas_order(
-                    order_number=order_number,
-                    symbol=symbol,
-                    exchange_code=exchange_code or "NASD",
-                    quantity=order_qty,
-                    is_mock=False,
-                )
-                cancelled += 1
-                await asyncio.sleep(0.2)
-            except Exception as e:
-                logger.warning(
-                    "주문 취소 실패 (%s, %s): %s", symbol, order_number or "unknown", e
-                )
-                failed += 1
-        return {"cancelled": cancelled, "failed": failed, "total": len(target_orders)}
+    async def _cancel_single_order(
+        self, kis, symbol, order, order_number, order_type, *, exchange_code=None
+    ):
+        order_qty = int(order.get("ft_ord_qty") or order.get("FT_ORD_QTY") or 0)
+        await kis.cancel_overseas_order(
+            order_number=order_number,
+            symbol=symbol,
+            exchange_code=exchange_code or "NASD",
+            quantity=order_qty,
+            is_mock=False,
+        )
 
     def analysis_target(self, *, name=None, symbol=None):
         return symbol or name or ""

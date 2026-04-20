@@ -142,15 +142,17 @@ def _register_fundamentals_tools_impl(mcp: FastMCP) -> None:
     @mcp.tool(
         name="get_investor_trends",
         description=(
-            "Get foreign and institutional investor trading trends for a Korean "
-            "stock. Returns daily net buy/sell data. Korean stocks only."
+            "Get foreign, institutional, and individual investor trading trends "
+            "for a Korean stock. Returns net buy/sell data by investor type. "
+            "Supports daily/weekly/monthly aggregation. Korean stocks only."
         ),
     )
     async def get_investor_trends(
         symbol: str,
         days: int = 20,
+        period: str = "day",
     ) -> dict[str, Any]:
-        return await handle_get_investor_trends(symbol, days)
+        return await handle_get_investor_trends(symbol, days, period)
 
     @mcp.tool(
         name="get_investment_opinions",

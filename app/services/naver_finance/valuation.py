@@ -14,6 +14,7 @@ from app.services.naver_finance.parser import (
     DEFAULT_HEADERS,
     NAVER_FINANCE_BASE,
     NAVER_FINANCE_ITEM,
+    _decode_html_content,
     _extract_current_price_from_main_soup,
     _fetch_html,
 )
@@ -109,6 +110,108 @@ def _parse_valuation_from_soups(
             valuation["current_position_52w"] = round((current - low) / (high - low), 2)
 
     return valuation
+
+
+def _parse_basic_info(main_soup: BeautifulSoup) -> dict[str, Any]:
+    """Extract company name and current price from the main page soup."""
+    info: dict[str, Any] = {"name": None, "current_price": None}
+    name_elem = main_soup.select_one("div.wrap_company h2 a")
+    if name_elem:
+        info["name"] = name_elem.get_text(strip=True)
+    info["current_price"] = _extract_current_price_from_main_soup(main_soup)
+    return info
+
+
+def _parse_financial_metrics(main_soup: BeautifulSoup) -> dict[str, Any]:
+    """Extract PER, PBR, ROE, and dividend yield from the main page soup."""
+    metrics: dict[str, Any] = {
+        "per": None,
+        "pbr": None,
+        "roe": None,
+        "roe_controlling": None,
+        "dividend_yield": None,
+    }
+
+    per_elem = main_soup.select_one("em#_per")
+    if per_elem:
+        per_val = _parse_korean_number(per_elem.get_text(strip=True))
+        if per_val is not None and per_val != 0:
+            metrics["per"] = per_val
+
+    pbr_elem = main_soup.select_one("em#_pbr")
+    if pbr_elem:
+        pbr_val = _parse_korean_number(pbr_elem.get_text(strip=True))
+        if pbr_val is not None and pbr_val != 0:
+            metrics["pbr"] = pbr_val
+
+    dvr_elem = main_soup.select_one("em#_dvr")
+    if dvr_elem:
+        dvr_val = _parse_korean_number(dvr_elem.get_text(strip=True))
+        if dvr_val is not None:
+            metrics["dividend_yield"] = dvr_val / 100
+
+    for row in main_soup.select("tr"):
+        th = row.select_one("th")
+        if not th:
+            continue
+        th_text = th.get_text(strip=True)
+        if not th_text.startswith("ROE"):
+            continue
+        tds = row.select("td")
+        if not tds:
+            continue
+        roe_val = _parse_korean_number(tds[0].get_text(strip=True))
+        if roe_val is None:
+            continue
+        if "ROE(%)" in th_text:
+            metrics["roe"] = roe_val
+        elif "지배" in th_text:
+            metrics["roe_controlling"] = roe_val
+
+    return metrics
+
+
+def _parse_industry_info(soup: BeautifulSoup) -> dict[str, Any]:
+    """Extract exchange type and sector from the main page soup."""
+    info: dict[str, Any] = {"exchange": None, "sector": None}
+
+    code_info = soup.select_one("div.code")
+    if code_info:
+        code_text = code_info.get_text(strip=True)
+        if "코스피" in code_text:
+            info["exchange"] = "KOSPI"
+        elif "코스닥" in code_text:
+            info["exchange"] = "KOSDAQ"
+
+    sector_elem = soup.select_one("div.tab_con1 em a")
+    if sector_elem:
+        info["sector"] = sector_elem.get_text(strip=True)
+
+    return info
+
+
+def _parse_peer_comparison(
+    peer_results: list[dict[str, Any] | None],
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Build a sorted peer list from raw integration fetch results."""
+    peers: list[dict[str, Any]] = []
+    for pr in peer_results:
+        if pr is None:
+            continue
+        peers.append(
+            {
+                "symbol": pr["symbol"],
+                "name": pr["name"],
+                "current_price": pr["current_price"],
+                "change_pct": pr["change_pct"],
+                "per": pr["per"],
+                "pbr": pr["pbr"],
+                "market_cap": pr["market_cap"],
+            }
+        )
+    peers.sort(key=lambda x: x.get("market_cap") or 0, reverse=True)
+    return peers[:limit]
 
 
 async def fetch_valuation(code: str) -> dict[str, Any]:
@@ -247,10 +350,14 @@ async def fetch_sector_peers(
             if pc and pc != code:
                 peer_codes.append(pc)
 
-        # If we need more peers, scrape the sector detail page
         industry_code = target.get("industry_code")
-        if len(peer_codes) < limit and industry_code:
-            extra_codes = await _fetch_sector_stock_codes(str(industry_code), client)
+        sector_soup = None
+        if industry_code:
+            sector_soup = await _fetch_sector_soup(str(industry_code), client)
+
+        # If we need more peers, scrape the sector detail page.
+        if len(peer_codes) < limit and sector_soup is not None:
+            extra_codes = _parse_sector_stock_codes(sector_soup)
             seen = {code, *peer_codes}
             for ec in extra_codes:
                 if ec not in seen:
@@ -269,29 +376,10 @@ async def fetch_sector_peers(
         peer_results = await asyncio.gather(*[_safe_fetch(pc) for pc in peer_codes])
 
         # Resolve sector name from the sector page title
-        if industry_code:
-            sector_name = await _fetch_sector_name(str(industry_code), client)
+        if sector_soup is not None:
+            sector_name = _parse_sector_name(sector_soup)
 
-    # ---- Build peer list ----
-    peers: list[dict[str, Any]] = []
-    for pr in peer_results:
-        if pr is None:
-            continue
-        peers.append(
-            {
-                "symbol": pr["symbol"],
-                "name": pr["name"],
-                "current_price": pr["current_price"],
-                "change_pct": pr["change_pct"],
-                "per": pr["per"],
-                "pbr": pr["pbr"],
-                "market_cap": pr["market_cap"],
-            }
-        )
-
-    # Sort by market_cap desc (None last)
-    peers.sort(key=lambda x: x.get("market_cap") or 0, reverse=True)
-    peers = peers[:limit]
+    peers = _parse_peer_comparison(peer_results, limit)
 
     return {
         "symbol": code,
@@ -307,6 +395,42 @@ async def fetch_sector_peers(
     }
 
 
+async def _fetch_sector_soup(
+    sector_code: str,
+    client: httpx.AsyncClient,
+) -> BeautifulSoup | None:
+    url = f"{NAVER_FINANCE_BASE}/sise/sise_group_detail.naver"
+    try:
+        r = await client.get(url, params={"type": "upjong", "no": sector_code})
+        return BeautifulSoup(_decode_html_content(r.content), "lxml")
+    except Exception:
+        return None
+
+
+def _parse_sector_stock_codes(soup: BeautifulSoup) -> list[str]:
+    table = soup.select_one("table.type_5")
+    if not table:
+        return []
+
+    codes: list[str] = []
+    for a in table.select("a[href*='code=']"):
+        href = a.get("href")
+        href_str = href if isinstance(href, str) else ""
+        m = re.search(r"code=(\w{6})", href_str)
+        if m:
+            codes.append(m.group(1))
+    return codes
+
+
+def _parse_sector_name(soup: BeautifulSoup) -> str | None:
+    title_elem = soup.select_one("title")
+    if title_elem:
+        raw = title_elem.get_text(strip=True)
+        # "전기장비 : Npay 증권" -> "전기장비"
+        return raw.split(":")[0].strip() if ":" in raw else raw
+    return None
+
+
 async def _fetch_sector_stock_codes(
     sector_code: str,
     client: httpx.AsyncClient,
@@ -315,26 +439,8 @@ async def _fetch_sector_stock_codes(
 
     URL: ``finance.naver.com/sise/sise_group_detail.naver?type=upjong&no={sector_code}``
     """
-    url = f"{NAVER_FINANCE_BASE}/sise/sise_group_detail.naver"
-    try:
-        r = await client.get(url, params={"type": "upjong", "no": sector_code})
-        r.encoding = "euc-kr"
-        soup = BeautifulSoup(r.text, "lxml")
-
-        table = soup.select_one("table.type_5")
-        if not table:
-            return []
-
-        codes: list[str] = []
-        for a in table.select("a[href*='code=']"):
-            href = a.get("href")
-            href_str = href if isinstance(href, str) else ""
-            m = re.search(r"code=(\w{6})", href_str)
-            if m:
-                codes.append(m.group(1))
-        return codes
-    except Exception:
-        return []
+    soup = await _fetch_sector_soup(sector_code, client)
+    return _parse_sector_stock_codes(soup) if soup is not None else []
 
 
 async def _fetch_sector_name(
@@ -345,16 +451,5 @@ async def _fetch_sector_name(
 
     The title has the format ``"전기장비 : Npay 증권"``.
     """
-    url = f"{NAVER_FINANCE_BASE}/sise/sise_group_detail.naver"
-    try:
-        r = await client.get(url, params={"type": "upjong", "no": sector_code})
-        r.encoding = "euc-kr"
-        soup = BeautifulSoup(r.text, "lxml")
-        title_elem = soup.select_one("title")
-        if title_elem:
-            raw = title_elem.get_text(strip=True)
-            # "전기장비 : Npay 증권" → "전기장비"
-            return raw.split(":")[0].strip() if ":" in raw else raw
-        return None
-    except Exception:
-        return None
+    soup = await _fetch_sector_soup(sector_code, client)
+    return _parse_sector_name(soup) if soup is not None else None

@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from app.core.timezone import KST
-from app.schemas.n8n import N8nKrMorningReportResponse
+from app.schemas.n8n.kr_morning_report import N8nKrMorningReportResponse
 from app.services.n8n_kr_morning_report_service import (
     _build_brief_text,
     fetch_kr_morning_report,

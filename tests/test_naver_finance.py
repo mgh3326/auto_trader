@@ -55,6 +55,178 @@ class TestParseNaverDate:
         assert naver_finance._parse_naver_date("invalid") == "invalid"
 
 
+class TestParseBasicInfo:
+    """Tests for _parse_basic_info sub-parser."""
+
+    def test_extracts_name_and_price(self) -> None:
+        soup = BeautifulSoup(SAMPLE_VALUATION_MAIN_HTML, "lxml")
+        result = naver_finance._parse_basic_info(soup)
+        assert result["name"] == "삼성전자"
+        assert result["current_price"] == 75000
+
+    def test_missing_name(self) -> None:
+        soup = BeautifulSoup("<html></html>", "lxml")
+        result = naver_finance._parse_basic_info(soup)
+        assert result["name"] is None
+        assert result["current_price"] is None
+
+    def test_fallback_price_parsing(self) -> None:
+        soup = BeautifulSoup(SAMPLE_VALUATION_MINIMAL_MAIN_HTML, "lxml")
+        result = naver_finance._parse_basic_info(soup)
+        assert result["name"] == "효성중공업"
+        assert result["current_price"] == 450000
+
+
+class TestParseFinancialMetrics:
+    """Tests for _parse_financial_metrics sub-parser."""
+
+    def test_extracts_all_metrics(self) -> None:
+        soup = BeautifulSoup(SAMPLE_VALUATION_MAIN_HTML, "lxml")
+        result = naver_finance._parse_financial_metrics(soup)
+        assert result["per"] == 12.5
+        assert result["pbr"] == 1.2
+        assert result["roe"] == 18.5
+        assert result["roe_controlling"] == 17.2
+        assert abs(result["dividend_yield"] - 0.02) < 0.001
+
+    def test_skips_zero_per(self) -> None:
+        html = '<html><body><em id="_per">0</em></body></html>'
+        soup = BeautifulSoup(html, "lxml")
+        result = naver_finance._parse_financial_metrics(soup)
+        assert result["per"] is None
+
+    def test_skips_na_per(self) -> None:
+        soup = BeautifulSoup(SAMPLE_VALUATION_MINIMAL_MAIN_HTML, "lxml")
+        result = naver_finance._parse_financial_metrics(soup)
+        assert result["per"] is None
+        assert result["pbr"] == 2.1
+        assert result["roe"] is None
+        assert result["dividend_yield"] is None
+
+    def test_empty_html(self) -> None:
+        soup = BeautifulSoup("<html></html>", "lxml")
+        result = naver_finance._parse_financial_metrics(soup)
+        assert result["per"] is None
+        assert result["pbr"] is None
+        assert result["roe"] is None
+        assert result["roe_controlling"] is None
+        assert result["dividend_yield"] is None
+
+
+class TestParseIndustryInfo:
+    """Tests for _parse_industry_info sub-parser."""
+
+    def test_extracts_exchange_and_sector(self) -> None:
+        soup = BeautifulSoup(SAMPLE_PROFILE_HTML, "lxml")
+        result = naver_finance._parse_industry_info(soup)
+        assert result["exchange"] == "KOSPI"
+        assert result["sector"] == "전기전자"
+
+    def test_kosdaq_exchange(self) -> None:
+        html = '<html><body><div class="code">123456 코스닥</div></body></html>'
+        soup = BeautifulSoup(html, "lxml")
+        result = naver_finance._parse_industry_info(soup)
+        assert result["exchange"] == "KOSDAQ"
+        assert result["sector"] is None
+
+    def test_empty_html(self) -> None:
+        soup = BeautifulSoup("<html></html>", "lxml")
+        result = naver_finance._parse_industry_info(soup)
+        assert result["exchange"] is None
+        assert result["sector"] is None
+
+
+class TestParsePeerComparison:
+    """Tests for _parse_peer_comparison sub-parser."""
+
+    def test_builds_sorted_peer_list(self) -> None:
+        raw = [
+            {
+                "symbol": "AAA",
+                "name": "Small",
+                "current_price": 1000,
+                "change_pct": 1.0,
+                "per": 10.0,
+                "pbr": 1.0,
+                "market_cap": 100,
+            },
+            {
+                "symbol": "BBB",
+                "name": "Big",
+                "current_price": 5000,
+                "change_pct": -0.5,
+                "per": 15.0,
+                "pbr": 2.0,
+                "market_cap": 999,
+            },
+        ]
+        result = naver_finance._parse_peer_comparison(raw, limit=5)
+        assert len(result) == 2
+        assert result[0]["symbol"] == "BBB"  # market_cap 999 first
+        assert result[1]["symbol"] == "AAA"
+
+    def test_none_entries_skipped(self) -> None:
+        raw = [
+            None,
+            {
+                "symbol": "CCC",
+                "name": "Only",
+                "current_price": 2000,
+                "change_pct": 0.0,
+                "per": 8.0,
+                "pbr": 0.5,
+                "market_cap": 50,
+            },
+            None,
+        ]
+        result = naver_finance._parse_peer_comparison(raw, limit=5)
+        assert len(result) == 1
+        assert result[0]["symbol"] == "CCC"
+
+    def test_limit_applied(self) -> None:
+        raw = [
+            {
+                "symbol": f"S{i}",
+                "name": f"Stock{i}",
+                "current_price": 1000 * i,
+                "change_pct": 0.0,
+                "per": 10.0,
+                "pbr": 1.0,
+                "market_cap": 100 * i,
+            }
+            for i in range(1, 6)
+        ]
+        result = naver_finance._parse_peer_comparison(raw, limit=3)
+        assert len(result) == 3
+        # Top 3 by market_cap: S5(500), S4(400), S3(300)
+        assert [p["symbol"] for p in result] == ["S5", "S4", "S3"]
+
+    def test_none_market_cap_sorted_last(self) -> None:
+        raw = [
+            {
+                "symbol": "X",
+                "name": "NoMcap",
+                "current_price": 1000,
+                "change_pct": 0.0,
+                "per": None,
+                "pbr": None,
+                "market_cap": None,
+            },
+            {
+                "symbol": "Y",
+                "name": "HasMcap",
+                "current_price": 2000,
+                "change_pct": 0.0,
+                "per": 5.0,
+                "pbr": 1.0,
+                "market_cap": 200,
+            },
+        ]
+        result = naver_finance._parse_peer_comparison(raw, limit=5)
+        assert result[0]["symbol"] == "Y"
+        assert result[1]["symbol"] == "X"
+
+
 # ---------------------------------------------------------------------------
 # HTML Fixtures
 # ---------------------------------------------------------------------------
@@ -954,3 +1126,88 @@ class TestFetchValuation:
         assert result["name"] is None
         assert result["current_price"] is None
         assert result["current_position_52w"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+class TestFetchSectorPeers:
+    async def test_fetches_sector_page_once_for_codes_and_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sector_gets: list[tuple[str, dict[str, Any] | None]] = []
+
+        class FakeResponse:
+            content = (
+                """
+                <html>
+                <head><title>반도체 : Npay 증권</title></head>
+                <body>
+                    <table class="type_5">
+                        <tr><td><a href="/item/main.naver?code=000002">Peer</a></td></tr>
+                    </table>
+                </body>
+                </html>
+                """.encode("euc-kr")
+            )
+
+            @property
+            def text(self) -> str:
+                return self.content.decode("euc-kr")
+
+        class FakeClient:
+            async def __aenter__(self) -> FakeClient:
+                return self
+
+            async def __aexit__(self, *_args: Any) -> None:
+                return None
+
+            async def get(
+                self,
+                url: str,
+                params: dict[str, Any] | None = None,
+            ) -> FakeResponse:
+                sector_gets.append((url, params))
+                return FakeResponse()
+
+        async def fake_fetch_integration(
+            code: str,
+            _client: Any,
+        ) -> dict[str, Any]:
+            if code == "000001":
+                return {
+                    "symbol": code,
+                    "name": "Target",
+                    "per": 10,
+                    "pbr": 1.1,
+                    "market_cap": 1000,
+                    "current_price": 50000,
+                    "change_pct": 1.0,
+                    "industry_code": "123",
+                    "peers_raw": [],
+                }
+            return {
+                "symbol": code,
+                "name": "Peer",
+                "per": 11,
+                "pbr": 1.2,
+                "market_cap": 900,
+                "current_price": 40000,
+                "change_pct": 0.5,
+                "industry_code": "123",
+                "peers_raw": [],
+            }
+
+        import httpx
+
+        monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: FakeClient())
+        monkeypatch.setattr(
+            naver_finance.valuation,
+            "_fetch_integration",
+            fake_fetch_integration,
+        )
+
+        result = await naver_finance.fetch_sector_peers("000001", limit=1)
+
+        assert result["sector"] == "반도체"
+        assert result["peers"][0]["symbol"] == "000002"
+        assert len(sector_gets) == 1

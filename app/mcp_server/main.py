@@ -28,6 +28,9 @@ init_sentry(
 from fastmcp import FastMCP  # noqa: E402
 
 from app.mcp_server.auth import build_auth_provider  # noqa: E402
+from app.mcp_server.caller_identity_middleware import (  # noqa: E402
+    CallerIdentityMiddleware,
+)
 from app.mcp_server.sentry_middleware import McpToolCallSentryMiddleware  # noqa: E402
 from app.mcp_server.tooling import register_all_tools  # noqa: E402
 
@@ -44,7 +47,18 @@ mcp = FastMCP(
 )
 
 mcp.add_middleware(McpToolCallSentryMiddleware())
+mcp.add_middleware(CallerIdentityMiddleware())
 register_all_tools(mcp)
+
+
+def _validate_caller_agent_id_fallback(mcp_type: str) -> None:
+    fallback_agent_id = settings.mcp_caller_agent_id_fallback
+    if mcp_type in {"streamable-http", "sse"} and fallback_agent_id:
+        raise RuntimeError(
+            "MCP_CALLER_AGENT_ID is only allowed for stdio/local dev transports; "
+            "unset it for production HTTP deployments and send "
+            "x-paperclip-agent-id explicitly."
+        )
 
 
 def main() -> None:
@@ -69,6 +83,8 @@ def main() -> None:
     )
 
     try:
+        _validate_caller_agent_id_fallback(mcp_type)
+
         if mcp_type == "stdio":
             mcp.run(transport="stdio")
         elif mcp_type == "sse":

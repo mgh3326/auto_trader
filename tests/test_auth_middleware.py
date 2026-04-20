@@ -48,6 +48,11 @@ async def nested_api_data():
     return {"data": "nested-ok"}
 
 
+@app.get("/portfolio/", response_class=HTMLResponse)
+async def portfolio_page(request: Request):
+    return "Portfolio Page"
+
+
 @app.get("/manual-holdings/", response_class=HTMLResponse)
 async def legacy_page_placeholder():
     return HTMLResponse("Deprecated page", status_code=410)
@@ -236,3 +241,29 @@ def test_protected_route_redirects_cleanly_with_sentry_fastapi_enabled(monkeypat
 
     assert response.status_code == 303
     assert response.headers["location"].startswith("/web-auth/login")
+
+
+def test_redirect_next_uses_relative_path(client, mock_session_local):
+    """AuthMiddleware must generate relative-path next, not absolute URL."""
+    response = client.get("/portfolio/", follow_redirects=False)
+    assert response.status_code == 303
+    location = response.headers["location"]
+    # next must be a relative path, not http://testserver/portfolio/
+    assert location == "/web-auth/login?next=/portfolio/"
+
+
+def test_redirect_next_preserves_query_string(client, mock_session_local):
+    """Query string in original URL must survive the redirect."""
+    response = client.get("/portfolio/?tab=crypto&sort=asc", follow_redirects=False)
+    assert response.status_code == 303
+    location = response.headers["location"]
+    assert location == "/web-auth/login?next=/portfolio/?tab=crypto&sort=asc"
+
+
+def test_redirect_next_no_trailing_question_mark(client, mock_session_local):
+    """Path without query string must not have trailing '?'."""
+    response = client.get("/test-protected", follow_redirects=False)
+    assert response.status_code == 303
+    location = response.headers["location"]
+    assert location == "/web-auth/login?next=/test-protected"
+    assert "next=/test-protected?" not in location

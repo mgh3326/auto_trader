@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Literal
 
@@ -9,33 +10,62 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
 from app.core.timezone import now_kst
-from app.schemas.n8n import (
+from app.schemas.n8n.board_brief import (
+    BoardBriefContext,
+    BoardBriefRender,
+    CIOFollowupRequest,
+    GateResult,
+    N8nG2GatePayload,
+    TCFollowupRequest,
+)
+from app.schemas.n8n.common import N8nMarketOverview
+from app.schemas.n8n.crypto_scan import (
     N8nBtcContext,
     N8nCryptoScanParams,
     N8nCryptoScanResponse,
     N8nCryptoScanSummary,
-    N8nDailyBriefResponse,
-    N8nFilledOrdersResponse,
-    N8nKrMorningReportResponse,
+)
+from app.schemas.n8n.daily_brief import N8nDailyBriefResponse
+from app.schemas.n8n.filled_orders import N8nFilledOrdersResponse
+from app.schemas.n8n.kr_morning_report import N8nKrMorningReportResponse
+from app.schemas.n8n.market_context import (
     N8nMarketContextResponse,
     N8nMarketContextSummary,
-    N8nMarketOverview,
-    N8nNewsResponse,
+)
+from app.schemas.n8n.news import N8nNewsResponse
+from app.schemas.n8n.pending_orders import (
     N8nPendingOrdersResponse,
     N8nPendingOrderSummary,
+)
+from app.schemas.n8n.pending_review import N8nPendingReviewResponse
+from app.schemas.n8n.pending_snapshot import (
     N8nPendingResolveRequest,
     N8nPendingResolveResponse,
-    N8nPendingReviewResponse,
     N8nPendingSnapshotsRequest,
     N8nPendingSnapshotsResponse,
+)
+from app.schemas.n8n.sell_signal import (
+    N8nSellSignalBatchResponse,
+    N8nSellSignalResponse,
+)
+from app.schemas.n8n.trade_review import (
     N8nTradeReviewListResponse,
     N8nTradeReviewsRequest,
     N8nTradeReviewsResponse,
     N8nTradeReviewStats,
     N8nTradeReviewStatsResponse,
 )
+from app.services.market_report_service import (
+    save_crypto_scan_report,
+    save_daily_brief_report,
+    save_kr_morning_report,
+)
 from app.services.n8n_crypto_scan_service import fetch_crypto_scan
-from app.services.n8n_daily_brief_service import fetch_daily_brief
+from app.services.n8n_daily_brief_service import (
+    build_cio_pending_decision,
+    build_tc_preliminary,
+    fetch_daily_brief,
+)
 from app.services.n8n_filled_orders_service import fetch_filled_orders
 from app.services.n8n_formatting import fmt_date_with_weekday
 from app.services.n8n_kr_morning_report_service import fetch_kr_morning_report
@@ -52,10 +82,117 @@ from app.services.n8n_trade_review_service import (
     get_trade_reviews,
     save_trade_reviews,
 )
+from app.services.sell_conditions_service import (
+    get_active_sell_conditions,
+    get_sell_condition,
+)
+from app.services.sell_signal_service import evaluate_sell_signal
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/n8n", tags=["n8n"])
+
+
+def _evaluate_g1_gate(g1_gate: dict | None) -> GateResult:
+    if not g1_gate:
+        return GateResult(status="pending", detail="G1 데이터 충분성 평가 대기")
+
+    symbols = g1_gate.get("symbols") if isinstance(g1_gate, dict) else None
+    if not isinstance(symbols, dict):
+        symbols = g1_gate if isinstance(g1_gate, dict) else {}
+
+    failed_symbols: list[str] = []
+    for symbol, result in symbols.items():
+        if not isinstance(result, dict):
+            continue
+        if result.get("data_sufficient") is False:
+            missing = ", ".join(str(item) for item in result.get("missing", []))
+            failed_symbols.append(f"{symbol}({missing or 'insufficient'})")
+
+    policy_note = str(g1_gate.get("force_cash_policy_note") or "")
+    if failed_symbols:
+        detail = f"데이터 부족: {', '.join(failed_symbols)}"
+        if policy_note:
+            detail = f"{policy_note} — {detail}"
+        return GateResult(status="fail", detail=detail)
+    return GateResult(status="pass", detail="G1 데이터 충분성 통과")
+
+
+def _evaluate_g2_gate(payload: CIOFollowupRequest) -> N8nG2GatePayload:
+    if payload.board_response is not None and payload.board_response.amount == 0:
+        return N8nG2GatePayload(
+            passed=True,
+            status="pass",
+            detail="보드 응답: 자금 지원 없음 (0 KRW)",
+        )
+
+    intent = payload.board_response.funding_intent if payload.board_response else None
+    intent = intent or payload.funding_intent
+    if intent is None:
+        return N8nG2GatePayload(
+            passed=True,
+            status="pending",
+            detail="funding_intent 미입력",
+        )
+
+    runway_days = payload.manual_cash_runway_days
+    if runway_days is None and payload.daily_burn_krw > 0:
+        runway_days = payload.manual_cash_krw / payload.daily_burn_krw
+
+    if intent in {"runway_recovery", "new_buy"} and (runway_days or 0) < 14:
+        return N8nG2GatePayload(
+            passed=False,
+            status="fail",
+            blocking_reason="runway recovery requires cash before new buy",
+        )
+
+    return N8nG2GatePayload(passed=True, status="pass", detail="G2 통과")
+
+
+def _followup_context_from_tc(payload: TCFollowupRequest) -> BoardBriefContext:
+    return BoardBriefContext(
+        exchange_krw=payload.exchange_krw,
+        unverified_cap=payload.unverified_cap,
+        next_obligation=payload.next_obligation,
+        tier_scenarios=payload.tier_scenarios,
+        hard_gate_candidates=payload.hard_gate_candidates,
+        data_sufficient_by_symbol=payload.data_sufficient_by_symbol,
+        btc_regime=payload.btc_regime,
+        manual_cash_krw=payload.manual_cash_krw,
+        daily_burn_krw=payload.daily_burn_krw,
+        manual_cash_runway_days=payload.manual_cash_runway_days,
+        board_response=payload.board_response,
+        weights_top_n=payload.weights_top_n,
+        holdings=payload.holdings,
+        dust_items=payload.dust_items,
+        generated_at=payload.generated_at,
+    )
+
+
+def _followup_context_from_cio(payload: CIOFollowupRequest) -> BoardBriefContext:
+    return BoardBriefContext(
+        exchange_krw=payload.exchange_krw,
+        unverified_cap=payload.unverified_cap,
+        next_obligation=payload.next_obligation,
+        tier_scenarios=payload.tier_scenarios,
+        hard_gate_candidates=payload.hard_gate_candidates,
+        data_sufficient_by_symbol=payload.data_sufficient_by_symbol,
+        btc_regime=payload.btc_regime,
+        manual_cash_krw=payload.manual_cash_krw,
+        daily_burn_krw=payload.daily_burn_krw,
+        manual_cash_runway_days=payload.manual_cash_runway_days,
+        funding_intent=payload.funding_intent,
+        board_response=payload.board_response,
+        g1_gate=payload.g1_gate,
+        gate_results={
+            "G1": _evaluate_g1_gate(payload.g1_gate),
+            "G2": _evaluate_g2_gate(payload),
+        },
+        weights_top_n=payload.weights_top_n,
+        holdings=payload.holdings,
+        dust_items=payload.dust_items,
+        generated_at=payload.generated_at,
+    )
 
 
 @router.get("/pending-orders", response_model=N8nPendingOrdersResponse)
@@ -217,10 +354,10 @@ async def get_daily_brief(
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to build daily brief")
-        from app.schemas.n8n import (
+        from app.schemas.n8n.common import N8nMarketOverview
+        from app.schemas.n8n.daily_brief import (
             N8nDailyBriefPendingOrders,
             N8nDailyBriefPortfolio,
-            N8nMarketOverview,
             N8nYesterdayFills,
         )
 
@@ -242,7 +379,20 @@ async def get_daily_brief(
         )
         return JSONResponse(status_code=500, content=payload.model_dump())
 
+    asyncio.ensure_future(save_daily_brief_report(result))
     return N8nDailyBriefResponse(**result)
+
+
+@router.post("/tc-followup", response_model=BoardBriefRender)
+async def post_tc_followup(payload: TCFollowupRequest) -> BoardBriefRender:
+    """Render the first TC follow-up phase without touching daily-brief state."""
+    return build_tc_preliminary(_followup_context_from_tc(payload))
+
+
+@router.post("/cio-followup", response_model=BoardBriefRender)
+async def post_cio_followup(payload: CIOFollowupRequest) -> BoardBriefRender:
+    """Render the second CIO pending phase with G1/G2 gate rows."""
+    return build_cio_pending_decision(_followup_context_from_cio(payload))
 
 
 @router.get("/filled-orders", response_model=N8nFilledOrdersResponse)
@@ -493,6 +643,7 @@ async def get_crypto_scan(
         )
         return JSONResponse(status_code=500, content=payload.model_dump())
 
+    asyncio.ensure_future(save_crypto_scan_report(result))
     return N8nCryptoScanResponse(
         success=result.get("success", True),
         as_of=as_of,
@@ -535,6 +686,7 @@ async def get_kr_morning_report(
         )
         return JSONResponse(status_code=500, content=payload.model_dump())
 
+    asyncio.ensure_future(save_kr_morning_report(result))
     return N8nKrMorningReportResponse(**result)
 
 
@@ -578,3 +730,141 @@ async def get_n8n_news(
         return JSONResponse(status_code=500, content=payload.model_dump())
 
     return result
+
+
+@router.get("/sell-signal/batch", response_model=N8nSellSignalBatchResponse)
+async def get_sell_signal_batch(
+    db: AsyncSession = Depends(get_db),
+) -> N8nSellSignalBatchResponse | JSONResponse:
+    as_of = now_kst().replace(microsecond=0).isoformat()
+
+    try:
+        conditions = await get_active_sell_conditions(db)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to load active sell conditions")
+        payload = N8nSellSignalBatchResponse(
+            success=False,
+            as_of=as_of,
+            total=0,
+            triggered_count=0,
+            results=[],
+            errors=[{"error": str(exc)}],
+        )
+        return JSONResponse(status_code=500, content=payload.model_dump())
+
+    results: list[N8nSellSignalResponse] = []
+    top_errors: list[dict[str, object]] = []
+
+    for cond in conditions:
+        try:
+            result = await evaluate_sell_signal(
+                symbol=cond.symbol,
+                price_threshold=float(cond.price_threshold),
+                stoch_rsi_threshold=float(cond.stoch_rsi_threshold),
+                foreign_consecutive_days=cond.foreign_days,
+                rsi_high_mark=float(cond.rsi_high),
+                rsi_low_mark=float(cond.rsi_low),
+                bb_upper_ref=float(cond.bb_upper_ref),
+            )
+            results.append(N8nSellSignalResponse(success=True, as_of=as_of, **result))
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Batch sell signal failed for %s", cond.symbol)
+            top_errors.append({"symbol": cond.symbol, "error": str(exc)})
+
+    triggered_count = sum(1 for r in results if r.triggered)
+    return N8nSellSignalBatchResponse(
+        success=True,
+        as_of=as_of,
+        total=len(results),
+        triggered_count=triggered_count,
+        results=results,
+        errors=top_errors,
+    )
+
+
+@router.get("/sell-signal/{symbol}", response_model=N8nSellSignalResponse)
+async def get_sell_signal(
+    symbol: str,
+    price_threshold: float | None = Query(
+        None, description="Trailing stop price (KRW). Loaded from DB if omitted."
+    ),
+    stoch_rsi_threshold: float | None = Query(
+        None, description="StochRSI K threshold. Loaded from DB if omitted."
+    ),
+    foreign_days: int | None = Query(
+        None, ge=1, le=5, description="Foreign consecutive sell days"
+    ),
+    rsi_high: float | None = Query(
+        None, description="RSI high watermark. Loaded from DB if omitted."
+    ),
+    rsi_low: float | None = Query(
+        None, description="RSI low trigger. Loaded from DB if omitted."
+    ),
+    bb_upper_ref: float | None = Query(
+        None, description="Bollinger upper reference (KRW). Loaded from DB if omitted."
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> N8nSellSignalResponse | JSONResponse:
+    as_of = now_kst().replace(microsecond=0).isoformat()
+
+    db_cond = await get_sell_condition(db, symbol)
+
+    final_price_threshold = (
+        price_threshold
+        if price_threshold is not None
+        else (float(db_cond.price_threshold) if db_cond else 1_152_000)
+    )
+    final_stoch_rsi = (
+        stoch_rsi_threshold
+        if stoch_rsi_threshold is not None
+        else (float(db_cond.stoch_rsi_threshold) if db_cond else 80)
+    )
+    final_foreign_days = (
+        foreign_days
+        if foreign_days is not None
+        else (db_cond.foreign_days if db_cond else 2)
+    )
+    final_rsi_high = (
+        rsi_high
+        if rsi_high is not None
+        else (float(db_cond.rsi_high) if db_cond else 70)
+    )
+    final_rsi_low = (
+        rsi_low if rsi_low is not None else (float(db_cond.rsi_low) if db_cond else 65)
+    )
+    final_bb_upper_ref = (
+        bb_upper_ref
+        if bb_upper_ref is not None
+        else (float(db_cond.bb_upper_ref) if db_cond else 1_142_000)
+    )
+
+    try:
+        result = await evaluate_sell_signal(
+            symbol=symbol,
+            price_threshold=final_price_threshold,
+            stoch_rsi_threshold=final_stoch_rsi,
+            foreign_consecutive_days=final_foreign_days,
+            rsi_high_mark=final_rsi_high,
+            rsi_low_mark=final_rsi_low,
+            bb_upper_ref=final_bb_upper_ref,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to evaluate sell signal for %s", symbol)
+        payload = N8nSellSignalResponse(
+            success=False,
+            as_of=as_of,
+            symbol=symbol,
+            name=symbol,
+            triggered=False,
+            conditions_met=0,
+            conditions=[],
+            message="",
+            errors=[{"error": str(exc)}],
+        )
+        return JSONResponse(status_code=500, content=payload.model_dump())
+
+    return N8nSellSignalResponse(
+        success=True,
+        as_of=as_of,
+        **result,
+    )

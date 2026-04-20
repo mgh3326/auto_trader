@@ -95,7 +95,7 @@ async def _fetch_ohlcv_for_indicators(
 
         async def _raw_fetch_kr_daily(n: int) -> pd.DataFrame:
             return await kis.inquire_daily_itemchartprice(
-                code=symbol, market="UN", n=n, period="D"
+                code=symbol, market="J", n=n, period="D"
             )
 
         return await kis_ohlcv_cache.get_candles(
@@ -122,7 +122,7 @@ async def _fetch_ohlcv_for_volume_profile(
 
         async def _raw_fetch_kr_daily_vp(n: int) -> pd.DataFrame:
             return await kis.inquire_daily_itemchartprice(
-                code=symbol, market="UN", n=n, period="D"
+                code=symbol, market="J", n=n, period="D"
             )
 
         return await kis_ohlcv_cache.get_candles(

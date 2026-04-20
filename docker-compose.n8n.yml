@@ -7,6 +7,8 @@ services:
     container_name: auto_trader_n8n_prod
     restart: unless-stopped
     network_mode: host # auto_trader API/MCP에 localhost로 직접 접근
+    env_file:
+      - .env
     environment:
       - N8N_HOST=localhost
       - N8N_LISTEN_ADDRESS=127.0.0.1
@@ -14,8 +16,17 @@ services:
       - TZ=Asia/Seoul
       - N8N_DIAGNOSTICS_ENABLED=false
       - N8N_VERSION_NOTIFICATIONS_ENABLED=false
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
+      - N8N_DISCORD_BOT_TOKEN_ALFRED=${N8N_DISCORD_BOT_TOKEN_ALFRED}
       - QUEUE_HEALTH_CHECK_ACTIVE=true
       - NODES_EXCLUDE=[]  # executeCommand 노드 허용 (내부 전용)
+      # Paperclip Review Notify workflow
+      - PAPERCLIP_COMPANY_ID=${PAPERCLIP_COMPANY_ID:-6a41f388-ff8d-4b65-82dc-38a9b66fa69e}
+      - PAPERCLIP_DISCORD_WEBHOOK_URL=${PAPERCLIP_DISCORD_WEBHOOK_URL}
+      # TC Briefing → Discord workflow
+      - DISCORD_TC_BRIEFING_BOT_TOKEN=${DISCORD_TC_BRIEFING_BOT_TOKEN:-}
+      - DISCORD_TC_BRIEFING_CHANNEL_ID=${DISCORD_TC_BRIEFING_CHANNEL_ID:-}
+      - PAPERCLIP_UI_BASE_URL=${PAPERCLIP_UI_BASE_URL:-}
     volumes:
       - ./n8n/data:/home/node/.n8n
       - ws-heartbeat:/shared/heartbeat:ro

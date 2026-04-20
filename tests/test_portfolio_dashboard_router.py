@@ -408,7 +408,7 @@ def test_portfolio_dashboard_page_retains_filter_controls_and_component_detail_h
     body = response.text
 
     assert 'refreshButton.addEventListener("click", () => {' in body
-    assert 'marketSelect.addEventListener("change", fetchOverview);' in body
+    assert 'marketSelect.addEventListener("change", () => {' in body
     assert 'queryInput.addEventListener("keydown", (event) => {' in body
     assert 'clearAccountsButton.addEventListener("click", () => {' in body
     assert "fetchCashSummary();" in body
