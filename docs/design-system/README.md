@@ -406,10 +406,12 @@ do not have shadows — they separate by background + border alone.
 same element.
 
 **Type.** Pretendard Variable → Pretendard → Noto Sans KR → Apple SD
-Gothic Neo → system. The variable file ships with the system at
-`fonts/PretendardVariable.ttf` and is loaded via `@font-face` in
-`colors_and_type.css`, so weight 100–900 is available without a
-network round-trip. Pretendard has excellent Hangul + Latin metrics
+Gothic Neo → system. The runtime variable file ships with the system at
+`app/static/css/fonts/PretendardVariable.ttf` and is loaded via
+`@font-face` in `app/static/css/colors_and_type.css`, so weight
+100–900 is available without a network round-trip. Docs previews point
+at that committed runtime asset instead of carrying a second font copy.
+Pretendard has excellent Hangul + Latin metrics
 and is the visual DNA. Mono stack is plain `ui-monospace` — we want
 the OS mono, not a bespoke geometric mono. Display feels fintech
 because weights sit at
@@ -513,10 +515,10 @@ as a new preview card and reference it from this section.
   iconography or layout variants — fold them into the Iconography
   and Visual Foundations sections in a follow-up pass.
 - **Typography distribution.** Pretendard Variable (weights 100–900) is
-  bundled at `fonts/PretendardVariable.ttf` and wired through
-  `@font-face` in `colors_and_type.css`. Noto Sans KR and Apple SD
-  Gothic Neo remain as system-level fallbacks; no additional webfont
-  files are required.
+  bundled once at `app/static/css/fonts/PretendardVariable.ttf` and wired
+  through `@font-face` in `app/static/css/colors_and_type.css`. The docs
+  previews reference the same runtime asset by relative path, so no
+  additional webfont files are required.
 - **Brand logo.** See Iconography → Logo. A dedicated logo asset is
   not yet part of the system.
 - **Legacy pages.** `login`, `register`, `admin_users`, `nav`,
