@@ -481,12 +481,15 @@ def _build_brief_text(
 
     # Funding
     burn_data = daily_burn or {}
-    burn_krw = float(burn_data.get("daily_burn_krw") or 0)
-    active_dca_count = int(burn_data.get("active_count") or 0)
     lines.append("💰 자금 현황")
-    lines.append(
-        f"daily_burn: {burn_krw:,.0f} KRW (active DCA {active_dca_count}종 · 재산출)"
-    )
+    if burn_data.get("error"):
+        lines.append("daily_burn: unavailable (active DCA 재산출 실패)")
+    else:
+        burn_krw = float(burn_data.get("daily_burn_krw") or 0)
+        active_dca_count = int(burn_data.get("active_count") or 0)
+        lines.append(
+            f"daily_burn: {burn_krw:,.0f} KRW (active DCA {active_dca_count}종 · 재산출)"
+        )
     lines.append("")
 
     # Yesterday fills
@@ -1296,7 +1299,10 @@ async def fetch_daily_brief(
     if isinstance(results_s1[2], dict):
         daily_burn_result = results_s1[2]
     elif isinstance(results_s1[2], Exception):
-        errors.append({"source": "daily_burn", "error": str(results_s1[2])})
+        daily_burn_result["error"] = str(results_s1[2])
+
+    if daily_burn_result.get("error"):
+        errors.append({"source": "daily_burn", "error": daily_burn_result["error"]})
 
     # Derive shared symbol context for Stage 2
     symbols_by_market = _collect_symbols_by_market(pending_result, portfolio_result)

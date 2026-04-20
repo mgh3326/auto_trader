@@ -54,7 +54,7 @@ async def test_compute_active_dca_daily_burn_sums_mixed_strategies(
     sqlite_session_factory: async_sessionmaker[AsyncSession],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    now = now_kst()
+    now = datetime(2026, 4, 17, 12, 0, tzinfo=KST)
     await _insert_journals(
         sqlite_session_factory,
         [
@@ -98,6 +98,10 @@ async def test_compute_active_dca_daily_burn_sums_mixed_strategies(
     monkeypatch.setattr(
         "app.mcp_server.tooling.trade_journal_tools._session_factory",
         lambda: sqlite_session_factory,
+    )
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.trade_journal_tools.now_kst",
+        lambda: now,
     )
 
     result = await compute_active_dca_daily_burn()
@@ -287,3 +291,86 @@ def test_brief_text_renders_recomputed_daily_burn_line() -> None:
     )
 
     assert "daily_burn: 60,000 KRW (active DCA 3종 · 재산출)" in text
+
+
+@pytest.mark.unit
+def test_brief_text_marks_daily_burn_unavailable_when_recompute_failed() -> None:
+    text = _build_brief_text(
+        date_fmt="03/17 (화)",
+        market_overview={
+            "fear_greed": None,
+            "btc_dominance": None,
+            "total_market_cap_change_24h": None,
+            "economic_events_today": [],
+        },
+        pending_by_market={},
+        portfolio_by_market={},
+        yesterday_fills={"total": 0, "fills": []},
+        daily_burn={
+            "daily_burn_krw": 0.0,
+            "active_count": 0,
+            "error": "compute_active_dca_daily_burn failed: db unavailable",
+        },
+    )
+
+    assert "daily_burn: unavailable" in text
+    assert "daily_burn: 0 KRW" not in text
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_daily_brief_marks_daily_burn_unavailable_when_task_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _raise_daily_burn() -> dict[str, object]:
+        raise RuntimeError("db unavailable")
+
+    async def _fetch_pending_orders(**_kwargs: object) -> dict[str, object]:
+        return {"orders": [], "errors": []}
+
+    async def _get_portfolio_overview(_markets: list[str]) -> dict[str, object]:
+        return {"positions": [], "warnings": []}
+
+    async def _fetch_market_context(**_kwargs: object) -> dict[str, object]:
+        return {
+            "market_overview": {
+                "fear_greed": None,
+                "btc_dominance": None,
+                "total_market_cap_change_24h": None,
+                "economic_events_today": [],
+            },
+            "errors": [],
+        }
+
+    async def _fetch_yesterday_fills(**_kwargs: object) -> dict[str, object]:
+        return {"total": 0, "fills": []}
+
+    monkeypatch.setattr(
+        "app.services.n8n_daily_brief_service.compute_active_dca_daily_burn",
+        _raise_daily_burn,
+    )
+    monkeypatch.setattr(
+        "app.services.n8n_daily_brief_service.fetch_pending_orders",
+        _fetch_pending_orders,
+    )
+    monkeypatch.setattr(
+        "app.services.n8n_daily_brief_service._get_portfolio_overview",
+        _get_portfolio_overview,
+    )
+    monkeypatch.setattr(
+        "app.services.n8n_daily_brief_service.fetch_market_context",
+        _fetch_market_context,
+    )
+    monkeypatch.setattr(
+        "app.services.n8n_daily_brief_service._fetch_yesterday_fills",
+        _fetch_yesterday_fills,
+    )
+
+    from app.services.n8n_daily_brief_service import fetch_daily_brief
+
+    result = await fetch_daily_brief(markets=["crypto"])
+
+    assert result["daily_burn"]["error"] == "db unavailable"
+    assert {"source": "daily_burn", "error": "db unavailable"} in result["errors"]
+    assert "daily_burn: unavailable" in result["brief_text"]
+    assert "daily_burn: 0 KRW" not in result["brief_text"]
