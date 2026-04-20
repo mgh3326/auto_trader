@@ -108,7 +108,7 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - Discord button flows: `cancel_order(order_id="...", market="...")` — symbol auto-lookup enabled
 - `modify_order` Discord button flow example:
   - `modify_order(order_id="...", symbol="...", market="...", new_price=123.45, dry_run=false)`
-- `manage_watch_alerts(action, market=None, symbol=None, metric=None, operator=None, threshold=None)`
+- `manage_watch_alerts(action, market=None, target_kind=None, symbol=None, metric=None, operator=None, threshold=None)`
 - `screen_stocks(...)` - Screen stocks across different markets (KR/US/Crypto) with various filters.
 - `recommend_stocks(...)` - Recommend stocks based on budget and strategy.
 - `analyze_stock_batch(symbols, market=None, include_peers=False, quick=True)`
@@ -300,8 +300,9 @@ Behavior:
 Parameters:
 - `action`: Required action - `"add"`, `"remove"`, `"list"`
 - `market`: Market - `"crypto"`, `"kr"`, `"us"` (required for `add`/`remove`, optional for `list`)
-- `symbol`: Asset symbol/ticker (required for `add`/`remove`)
-- `metric`: Condition metric - `"price"` or `"rsi"` (required for `add`/`remove`)
+- `target_kind`: Watched target type - `"asset"` (default), `"index"`, or `"fx"`
+- `symbol`: Asset ticker, index symbol, or FX symbol (required for `add`/`remove`)
+- `metric`: Condition metric - `"price"`, `"rsi"`, or `"trade_value"` (required for `add`/`remove`)
 - `operator`: Condition operator - `"above"` or `"below"` (required for `add`/`remove`)
 - `threshold`: Numeric threshold value (required for `add`/`remove`)
 
@@ -310,6 +311,20 @@ Behavior:
 - `action="remove"`: Removes one matching watch condition.
 - `action="list"`: Returns all watches, optionally filtered by market.
 - Triggered watches are removed only after successful outbound alert delivery by the scheduler path.
+- Legacy asset watches stored before `target_kind` are listed as `target_kind="asset"` and can still be removed with the same tool arguments.
+
+Supported target/metric combinations:
+- `target_kind="asset"`: `price` and `rsi` for `crypto`, `kr`, `us`; `trade_value` for `kr` only.
+- `target_kind="index"`: `price` for `market="kr"` and `symbol="KOSPI"` or `"KOSDAQ"`.
+- `target_kind="fx"`: `price` for `market="kr"` and `symbol="USDKRW"`.
+
+Example calls:
+```text
+manage_watch_alerts(action="add", market="kr", target_kind="index", symbol="KOSPI", metric="price", operator="below", threshold=6176.75)
+manage_watch_alerts(action="add", market="kr", target_kind="index", symbol="KOSDAQ", metric="price", operator="below", threshold=1161.00)
+manage_watch_alerts(action="add", market="kr", target_kind="fx", symbol="USDKRW", metric="price", operator="above", threshold=1478)
+manage_watch_alerts(action="add", market="kr", symbol="005930", metric="trade_value", operator="above", threshold=1000000000)
+```
 
 Response examples:
 ```json
@@ -317,6 +332,7 @@ Response examples:
   "success": true,
   "action": "add",
   "market": "crypto",
+  "target_kind": "asset",
   "symbol": "BTC",
   "condition_type": "price_below",
   "threshold": 90000000.0,
@@ -332,6 +348,7 @@ Response examples:
   "watches": {
     "crypto": [
       {
+        "target_kind": "asset",
         "symbol": "BTC",
         "condition_type": "price_below",
         "threshold": 90000000.0,

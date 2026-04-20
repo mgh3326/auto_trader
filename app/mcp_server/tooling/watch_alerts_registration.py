@@ -13,6 +13,7 @@ WATCH_ALERT_TOOL_NAMES: set[str] = {"manage_watch_alerts"}
 async def manage_watch_alerts_impl(
     action: str,
     market: str | None = None,
+    target_kind: str | None = None,
     symbol: str | None = None,
     metric: str | None = None,
     operator: str | None = None,
@@ -43,7 +44,7 @@ async def manage_watch_alerts_impl(
 
         normalized_metric = str(metric or "").strip().lower()
         normalized_operator = str(operator or "").strip().lower()
-        if normalized_metric not in {"price", "rsi"}:
+        if normalized_metric not in {"price", "rsi", "trade_value"}:
             return {
                 "success": False,
                 "error": f"Invalid metric: {metric}",
@@ -70,11 +71,13 @@ async def manage_watch_alerts_impl(
                 symbol=symbol,
                 condition_type=condition_type,
                 threshold=normalized_threshold,
+                target_kind=target_kind,
             )
             return {
                 "success": True,
                 "action": "add",
                 **result,
+                "target_kind": str(target_kind or "asset").strip().lower(),
                 "market": normalized_market,
                 "symbol": normalized_symbol,
                 "condition_type": condition_type,
@@ -86,11 +89,13 @@ async def manage_watch_alerts_impl(
             symbol=symbol,
             condition_type=condition_type,
             threshold=normalized_threshold,
+            target_kind=target_kind,
         )
         return {
             "success": True,
             "action": "remove",
             **result,
+            "target_kind": str(target_kind or "asset").strip().lower(),
             "market": normalized_market,
             "symbol": normalized_symbol,
             "condition_type": condition_type,
