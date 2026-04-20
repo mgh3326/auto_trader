@@ -321,12 +321,12 @@ class TestSingleSymbolDbDefaults:
             resp = client.get("/api/n8n/sell-signal/000660")
             assert resp.status_code == 200
             call_kwargs = mock_eval.call_args[1]
-            assert call_kwargs["price_threshold"] == 1_200_000.0
-            assert call_kwargs["stoch_rsi_threshold"] == 75.0
+            assert call_kwargs["price_threshold"] == pytest.approx(1_200_000.0)
+            assert call_kwargs["stoch_rsi_threshold"] == pytest.approx(75.0)
             assert call_kwargs["foreign_consecutive_days"] == 3
-            assert call_kwargs["rsi_high_mark"] == 72.0
-            assert call_kwargs["rsi_low_mark"] == 62.0
-            assert call_kwargs["bb_upper_ref"] == 1_180_000.0
+            assert call_kwargs["rsi_high_mark"] == pytest.approx(72.0)
+            assert call_kwargs["rsi_low_mark"] == pytest.approx(62.0)
+            assert call_kwargs["bb_upper_ref"] == pytest.approx(1_180_000.0)
 
     @pytest.mark.asyncio
     async def test_query_params_override_db_values(self, client):
