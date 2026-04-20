@@ -1137,8 +1137,7 @@ class TestFetchSectorPeers:
         sector_gets: list[tuple[str, dict[str, Any] | None]] = []
 
         class FakeResponse:
-            content = (
-                """
+            content = """
                 <html>
                 <head><title>반도체 : Npay 증권</title></head>
                 <body>
@@ -1148,7 +1147,6 @@ class TestFetchSectorPeers:
                 </body>
                 </html>
                 """.encode("euc-kr")
-            )
 
             @property
             def text(self) -> str:
