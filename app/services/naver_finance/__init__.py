@@ -1,0 +1,148 @@
+"""Naver Finance crawling service for Korean equities.
+
+This package provides async functions to fetch:
+- Stock news and disclosures
+- Company profile information
+- Financial statements
+- Foreign/institutional investor trends
+- Securities firm investment opinions
+- Valuation metrics and sector peer analysis
+"""
+
+from app.services.naver_finance.company import (
+    fetch_company_profile as fetch_company_profile,
+)
+from app.services.naver_finance.company import (
+    fetch_financials as fetch_financials,
+)
+from app.services.naver_finance.investor import (
+    _build_investment_opinions_from_company_list_soup as _build_investment_opinions_from_company_list_soup,
+)
+from app.services.naver_finance.investor import (
+    _collect_opinion_report_infos as _collect_opinion_report_infos,
+)
+from app.services.naver_finance.investor import (
+    _fetch_current_price as _fetch_current_price,
+)
+from app.services.naver_finance.investor import (
+    _fetch_kr_snapshot as _fetch_kr_snapshot,
+)
+from app.services.naver_finance.investor import (
+    _fetch_report_detail as _fetch_report_detail,
+)
+from app.services.naver_finance.investor import (
+    _fetch_report_detail_with_client as _fetch_report_detail_with_client,
+)
+from app.services.naver_finance.investor import (
+    _parse_report_detail_soup as _parse_report_detail_soup,
+)
+from app.services.naver_finance.investor import (
+    fetch_investment_opinions as fetch_investment_opinions,
+)
+from app.services.naver_finance.investor import (
+    fetch_investor_trends as fetch_investor_trends,
+)
+from app.services.naver_finance.news import (
+    _parse_news_soup as _parse_news_soup,
+)
+from app.services.naver_finance.news import (
+    fetch_news as fetch_news,
+)
+from app.services.naver_finance.parser import (
+    DEFAULT_HEADERS as DEFAULT_HEADERS,
+)
+from app.services.naver_finance.parser import (
+    NAVER_FINANCE_BASE as NAVER_FINANCE_BASE,
+)
+from app.services.naver_finance.parser import (
+    NAVER_FINANCE_ITEM as NAVER_FINANCE_ITEM,
+)
+from app.services.naver_finance.parser import (
+    _decode_html_content as _decode_html_content,
+)
+from app.services.naver_finance.parser import (
+    _extract_current_price_from_main_soup as _extract_current_price_from_main_soup,
+)
+from app.services.naver_finance.parser import (
+    _fetch_html as _fetch_html,
+)
+from app.services.naver_finance.parser import (
+    _fetch_html_with_client as _fetch_html_with_client,
+)
+from app.services.naver_finance.parser import (
+    _parse_naver_date as _parse_naver_date,
+)
+from app.services.naver_finance.valuation import (
+    NAVER_MOBILE_API as NAVER_MOBILE_API,
+)
+from app.services.naver_finance.valuation import (
+    _fetch_integration as _fetch_integration,
+)
+from app.services.naver_finance.valuation import (
+    _fetch_sector_name as _fetch_sector_name,
+)
+from app.services.naver_finance.valuation import (
+    _fetch_sector_stock_codes as _fetch_sector_stock_codes,
+)
+from app.services.naver_finance.valuation import (
+    _parse_basic_info as _parse_basic_info,
+)
+from app.services.naver_finance.valuation import (
+    _parse_financial_metrics as _parse_financial_metrics,
+)
+from app.services.naver_finance.valuation import (
+    _parse_industry_info as _parse_industry_info,
+)
+from app.services.naver_finance.valuation import (
+    _parse_peer_comparison as _parse_peer_comparison,
+)
+from app.services.naver_finance.valuation import (
+    _parse_total_infos as _parse_total_infos,
+)
+from app.services.naver_finance.valuation import (
+    _parse_valuation_from_soups as _parse_valuation_from_soups,
+)
+from app.services.naver_finance.valuation import (
+    fetch_sector_peers as fetch_sector_peers,
+)
+from app.services.naver_finance.valuation import (
+    fetch_valuation as fetch_valuation,
+)
+
+# Re-export private helpers for backward compatibility with existing tests and
+# MCP tool consumers that imported them from app.services.naver_finance.
+__all__ = [
+    "DEFAULT_HEADERS",
+    "NAVER_FINANCE_BASE",
+    "NAVER_FINANCE_ITEM",
+    "NAVER_MOBILE_API",
+    "_build_investment_opinions_from_company_list_soup",
+    "_collect_opinion_report_infos",
+    "_decode_html_content",
+    "_extract_current_price_from_main_soup",
+    "_fetch_current_price",
+    "_fetch_html",
+    "_fetch_html_with_client",
+    "_fetch_integration",
+    "_fetch_kr_snapshot",
+    "_fetch_report_detail",
+    "_fetch_report_detail_with_client",
+    "_fetch_sector_name",
+    "_fetch_sector_stock_codes",
+    "_parse_basic_info",
+    "_parse_financial_metrics",
+    "_parse_industry_info",
+    "_parse_naver_date",
+    "_parse_news_soup",
+    "_parse_peer_comparison",
+    "_parse_report_detail_soup",
+    "_parse_total_infos",
+    "_parse_valuation_from_soups",
+    "fetch_company_profile",
+    "fetch_financials",
+    "fetch_investment_opinions",
+    "fetch_investor_trends",
+    "fetch_news",
+    "fetch_sector_peers",
+    "fetch_valuation",
+]
