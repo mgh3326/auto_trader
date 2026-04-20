@@ -28,6 +28,7 @@ from app.schemas.manual_holdings import (
     MergedPortfolioResponse,
     ReferencePricesResponse,
 )
+from app.schemas.portfolio_decision import PortfolioDecisionSlateResponse
 from app.schemas.portfolio_position_detail import (
     PositionIndicatorsResponse,
     PositionNewsResponse,
@@ -41,6 +42,7 @@ from app.services.brokers.kis.client import KISClient
 from app.services.kis_holdings_service import get_kis_holding_for_ticker
 from app.services.merged_portfolio_service import MergedPortfolioService
 from app.services.portfolio_dashboard_service import PortfolioDashboardService
+from app.services.portfolio_decision_service import PortfolioDecisionService
 from app.services.portfolio_overview_service import PortfolioOverviewService
 from app.services.portfolio_position_detail_service import (
     PortfolioPositionDetailNotFoundError,
@@ -49,6 +51,7 @@ from app.services.portfolio_position_detail_service import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/portfolio", tags=["Portfolio"])
+DECISION_SLATE_ERROR_DETAIL = "Unable to build portfolio decision slate."
 
 
 def get_portfolio_overview_service(
@@ -61,6 +64,62 @@ def get_portfolio_dashboard_service(
     db: AsyncSession = Depends(get_db),
 ) -> PortfolioDashboardService:
     return PortfolioDashboardService(db)
+
+
+def get_portfolio_decision_service(
+    overview_service: Annotated[
+        PortfolioOverviewService, Depends(get_portfolio_overview_service)
+    ],
+    dashboard_service: Annotated[
+        PortfolioDashboardService, Depends(get_portfolio_dashboard_service)
+    ],
+) -> PortfolioDecisionService:
+    return PortfolioDecisionService(
+        overview_service=overview_service,
+        dashboard_service=dashboard_service,
+    )
+
+
+@router.get("/decision", response_class=HTMLResponse)
+async def portfolio_decision_page(request: Request):
+    user = getattr(request.state, "user", None)
+    return templates.TemplateResponse(
+        request,
+        "portfolio_decision_desk.html",
+        {
+            "request": request,
+            "user": user,
+        },
+    )
+
+
+@router.get(
+    "/api/decision-slate",
+    response_model=PortfolioDecisionSlateResponse,
+    responses={500: {"description": "Failed to build portfolio decision slate"}},
+)
+async def get_portfolio_decision_slate(
+    current_user: Annotated[User, Depends(get_authenticated_user)],
+    decision_service: Annotated[
+        PortfolioDecisionService, Depends(get_portfolio_decision_service)
+    ],
+    market: Literal["ALL", "KR", "US", "CRYPTO"] = "ALL",
+    account_keys: Annotated[list[str] | None, Query()] = None,
+    q: Annotated[str | None, Query(min_length=1)] = None,
+):
+    try:
+        return await decision_service.build_decision_slate(
+            user_id=current_user.id,
+            market=market,
+            account_keys=account_keys,
+            q=q,
+        )
+    except Exception as e:
+        logger.error("Error building decision slate: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=DECISION_SLATE_ERROR_DETAIL,
+        ) from e
 
 
 @router.get("/", response_class=HTMLResponse)
