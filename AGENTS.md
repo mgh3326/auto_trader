@@ -58,8 +58,8 @@ auto_trader/
 - Tag `high_risk_change` on any issue or PR touching those high-risk categories, even when implementation is straightforward.
 - Tag `needs_stronger_model_review` when a `high_risk_change` needs Sonnet/Opus review before merge, approval, or operational use.
 - Tag `hold_for_final_review` when work is implemented but must not be merged, deployed, or used for live trading until the named stronger-model reviewer or CTO clears it.
-- Example issue comment: `Applying high_risk_change + needs_stronger_model_review: this touches DB migration behavior. Holding merge until CTO/Opus review confirms rollback and data-safety assumptions.`
-- Example hold comment: `Implementation is ready, but I am applying hold_for_final_review because this changes live order approval boundaries. No deploy or live execution until final review clears it.`
+- Example issue comment: `Applying high_risk_change + needs_stronger_model_review for [ROB-275](/ROB/issues/ROB-275): this touches DB migration behavior. Holding merge until CTO/Opus review confirms rollback and data-safety assumptions.`
+- Example hold comment: `Implementation is ready for [ROB-275](/ROB/issues/ROB-275), but I am applying hold_for_final_review because this changes live order approval boundaries. No deploy or live execution until final review clears it.`
 
 ## ANTI-PATTERNS (THIS PROJECT)
 - Do not hardcode credentials/secrets in code or scripts.
