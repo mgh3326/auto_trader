@@ -293,6 +293,11 @@ def get_mock_tr_id(tr_id: str, is_mock: bool) -> str:
 
 # Transient (retryable) KIS API error codes
 # SYDB0050: "조회이후에 자료가 변경되었습니다.(다시 조회하세요)" — DB race condition
-RETRYABLE_MSG_CODES: frozenset[str] = frozenset({"SYDB0050"})
+RETRYABLE_MSG_CODES: frozenset[str] = frozenset(
+    {
+        "SYDB0050",  # "조회이후에 자료가 변경되었습니다.(다시 조회하세요)" — DB race condition
+        "EGW00316",  # "조회 처리 중 오류 발생하였습니다. 재 조회 수행 부탁드립니다." — Inquiry processing error
+    }
+)
 RETRYABLE_MAX_ATTEMPTS: int = 3
 RETRYABLE_BASE_DELAY: float = 0.3  # seconds, applied before each retry
