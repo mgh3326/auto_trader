@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><title>Spacing and Radius</title>
+<style>
+  body{margin:0;padding:16px;font-family:"Pretendard",system-ui,sans-serif;background:#fff;color:#242220}
+  .sec{margin-bottom:14px}
+  h4{margin:0 0 8px;font-size:11.5px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#4F4A44}
+  .sp{display:flex;gap:10px;align-items:flex-end}
+  .sp .b{background:#C05A3C;height:12px}
+  .sp .c{display:flex;flex-direction:column;align-items:center;gap:4px;font-family:ui-monospace,monospace;font-size:10.5px;color:#4F4A44}
+  .rad{display:flex;gap:10px}
+  .rad .d{background:#FCFBF8;border:1px solid #D1CCC4;width:64px;height:48px;display:flex;align-items:center;justify-content:center;font-family:ui-monospace,monospace;font-size:11px;color:#4F4A44}
+</style></head><body>
+<div class="sec"><h4>Spacing (rem)</h4>
+  <div class="sp">
+    <div class="c"><div class="b" style="width:4px"></div>.25</div>
+    <div class="c"><div class="b" style="width:7px"></div>.45</div>
+    <div class="c"><div class="b" style="width:10px"></div>.60</div>
+    <div class="c"><div class="b" style="width:12px"></div>.75</div>
+    <div class="c"><div class="b" style="width:14px"></div>.90</div>
+    <div class="c"><div class="b" style="width:16px"></div>1.00</div>
+    <div class="c"><div class="b" style="width:22px"></div>1.40</div>
+    <div class="c"><div class="b" style="width:26px"></div>1.60</div>
+  </div>
+</div>
+<div class="sec"><h4>Radius</h4>
+  <div class="rad">
+    <div class="d" style="border-radius:.25rem">.25</div>
+    <div class="d" style="border-radius:.5rem">.50</div>
+    <div class="d" style="border-radius:.6rem">.60</div>
+    <div class="d" style="border-radius:.75rem">.75</div>
+    <div class="d" style="border-radius:1rem">1.00</div>
+    <div class="d" style="border-radius:999px">pill</div>
+  </div>
+</div>
+</body></html>

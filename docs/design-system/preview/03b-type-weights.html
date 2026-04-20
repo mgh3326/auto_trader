@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><title>Typography Weights</title>
+<style>
+  @font-face {
+    font-family: "Pretendard Variable";
+    font-weight: 100 900;
+    font-style: normal;
+    font-display: swap;
+    src: url("../../app/static/css/fonts/PretendardVariable.ttf") format("truetype-variations"),
+         url("../../app/static/css/fonts/PretendardVariable.ttf") format("truetype");
+  }
+  body{margin:0;padding:18px 22px;background:#fff;color:#242220;font-family:"Pretendard Variable","Pretendard","Noto Sans KR",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+  .row{display:grid;grid-template-columns:70px 1fr 160px;gap:6px 18px;align-items:baseline;padding:4px 0;border-bottom:1px solid #EDE9E0}
+  .row:last-child{border-bottom:0}
+  .w{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:#8A8378}
+  .spec{font-size:20px;letter-spacing:-.005em}
+  .use{font-size:11px;color:#8A8378;text-align:right;font-family:ui-monospace,Menlo,monospace}
+</style></head><body>
+<div class="row"><div class="w">300</div><div class="spec" style="font-weight:300">Auto Trader · 자동 매매</div><div class="use">— rarely used</div></div>
+<div class="row"><div class="w">400</div><div class="spec" style="font-weight:400">Auto Trader · 자동 매매</div><div class="use">body, table cells</div></div>
+<div class="row"><div class="w">500</div><div class="spec" style="font-weight:500">Auto Trader · 자동 매매</div><div class="use">table numerics, KPIs</div></div>
+<div class="row"><div class="w">600</div><div class="spec" style="font-weight:600">Auto Trader · 자동 매매</div><div class="use">labels, nav, h1–h3</div></div>
+<div class="row"><div class="w">700</div><div class="spec" style="font-weight:700">Auto Trader · 자동 매매</div><div class="use">display, brand lockup</div></div>
+<div class="row"><div class="w">800</div><div class="spec" style="font-weight:800">Auto Trader · 자동 매매</div><div class="use">— reserved</div></div>
+</body></html>

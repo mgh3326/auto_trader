@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><title>Buttons</title>
+<style>
+  body{margin:0;padding:20px;font-family:"Pretendard",system-ui,sans-serif;background:#fff;color:#242220}
+  .grp{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+  .lbl{font-size:11.5px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#4F4A44;width:120px}
+  button,.btn{font:inherit;font-size:.82rem;border-radius:.6rem;padding:.45rem .72rem;cursor:pointer;border:1px solid transparent;line-height:1.2}
+  .primary{background:#1A1A1A;color:#fff;border-color:#1A1A1A}
+  .secondary{background:#fff;color:#242220;border-color:#242220}
+  .accent{background:#C05A3C;color:#fff;border-color:#9F462D}
+  .neutral{background:#fff;color:#4F4A44;border-color:#D1CCC4}
+  .disabled{opacity:.5;pointer-events:none}
+  .seg{display:inline-flex;border:1px solid #242220;border-radius:.6rem;overflow:hidden}
+  .seg b{padding:.35rem .8rem;font-weight:500;font-size:.82rem;cursor:pointer}
+  .seg b.on{background:#1A1A1A;color:#fff}
+</style></head><body>
+<div class="grp"><div class="lbl">Primary</div><button class="primary">Search</button><button class="primary">Submit Order</button><button class="primary disabled">Requesting…</button></div>
+<div class="grp"><div class="lbl">Secondary</div><button class="secondary">Refresh Cache</button><button class="secondary">Stop Polling</button></div>
+<div class="grp"><div class="lbl">Accent</div><button class="accent">Refresh</button><button class="accent" style="box-shadow:0 8px 18px rgba(192,90,60,.25);transform:translateY(-1px)">Refresh (hover)</button></div>
+<div class="grp"><div class="lbl">Neutral</div><button class="neutral">Back to Dashboard</button><button class="neutral disabled">Open Detail</button></div>
+<div class="grp"><div class="lbl">Segmented</div>
+  <div class="seg"><b class="on">buy</b><b>sell</b></div>
+  <div class="seg"><b>limit</b><b class="on">market</b></div>
+</div>
+</body></html>

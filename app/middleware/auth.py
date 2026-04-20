@@ -22,6 +22,7 @@ class AuthMiddleware:
     Public routes (no authentication required):
     - /web-auth/* (login, register, logout)
     - /auth/* (API authentication endpoints)
+    - /static/* (runtime CSS/font assets)
     - /health
     - /docs, /redoc, /openapi.json (only if DOCS_ENABLED=True)
 
@@ -34,6 +35,7 @@ class AuthMiddleware:
         "/web-auth/register",
         "/web-auth/logout",
         "/auth/",
+        "/static/",
         "/health",
     ]
 

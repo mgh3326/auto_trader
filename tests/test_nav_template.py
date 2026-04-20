@@ -20,3 +20,10 @@ def test_nav_removes_deprecated_legacy_links() -> None:
     assert 'href="/analysis-json/"' not in nav_html
     assert 'href="/stock-latest/"' not in nav_html
     assert 'href="/orderbook/"' not in nav_html
+
+
+def test_nav_uses_bootstrap_icons_for_brand_and_admin() -> None:
+    nav_html = Path("app/templates/nav.html").read_text(encoding="utf-8")
+
+    assert "bi-" in nav_html
+    assert "👥" not in nav_html

@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><title>Table</title>
+<style>
+  body{margin:0;padding:18px;font-family:"Pretendard",system-ui,sans-serif;background:#FCFBF8;color:#242220}
+  .wrap{border:1px solid #D1CCC4;border-radius:.6rem;background:#fff;overflow:hidden}
+  table{width:100%;border-collapse:collapse;font-size:.8rem}
+  th,td{padding:.48rem .55rem;border-bottom:1px solid #ECE7DF;white-space:nowrap;text-align:right}
+  th:first-child,td:first-child,th:nth-child(2),td:nth-child(2){text-align:left}
+  th{background:#F4F2EC;font-size:.74rem;letter-spacing:.01em;color:#4F4A44;font-weight:600}
+  tr:hover td{background:#FAF9F7}
+  .mono{font-family:ui-monospace,Menlo,monospace}
+  .pos{color:#9A1C1C;font-weight:600}.neg{color:#0F4C9C;font-weight:600}
+  .mkt{border-radius:999px;font-size:.7rem;padding:.1rem .45rem;color:#fff}
+  .kr{background:#225F9C}.us{background:#2F7A4F}.cr{background:#80592F}
+</style></head><body>
+<div class="wrap"><table>
+  <thead><tr><th>SYMBOL</th><th>NAME</th><th>MKT</th><th>PRICE</th><th>CHANGE</th><th>VOLUME</th><th>RSI</th></tr></thead>
+  <tbody>
+    <tr><td class="mono">AAPL</td><td>Apple Inc.</td><td><span class="mkt us">US</span></td><td class="mono">192.45</td><td class="pos">+1.82%</td><td class="mono">48,210,113</td><td class="mono">61.4</td></tr>
+    <tr><td class="mono">005930</td><td>삼성전자</td><td><span class="mkt kr">KR</span></td><td class="mono">72,400</td><td class="neg">-0.55%</td><td class="mono">8,442,910</td><td class="mono">54.9</td></tr>
+    <tr><td class="mono">KRW-BTC</td><td>Bitcoin</td><td><span class="mkt cr">CRYPTO</span></td><td class="mono">94,210,000</td><td class="pos">+2.14%</td><td class="mono">134,502,112,000</td><td class="mono">67.2</td></tr>
+    <tr><td class="mono">BRK.B</td><td>Berkshire Hathaway B</td><td><span class="mkt us">US</span></td><td class="mono">412.08</td><td class="pos">+0.31%</td><td class="mono">2,120,448</td><td class="mono">58.0</td></tr>
+  </tbody>
+</table></div>
+</body></html>

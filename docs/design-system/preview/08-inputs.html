@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><title>Inputs</title>
+<style>
+  body{margin:0;padding:20px;font-family:"Pretendard",system-ui,sans-serif;background:#FCFBF8;color:#242220;font-size:.85rem}
+  .wrap{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+  label{display:block;font-size:.8rem;color:#4F4A44;margin-bottom:.2rem}
+  input,select{width:100%;border:1px solid #D1CCC4;border-radius:.5rem;background:#fff;color:#242220;padding:.5rem .55rem;font:inherit;font-size:.85rem;box-sizing:border-box}
+  input:focus,select:focus{outline:none;border-color:#C05A3C}
+  .focus{border-color:#C05A3C !important}
+  .err{border-color:#B54A4A !important}
+  .msg{color:#B54A4A;font-size:.8rem;margin-top:.25rem}
+  .chk{display:flex;align-items:center;gap:.4rem;font-size:.82rem;color:#4F4A44}
+</style></head><body>
+<div class="wrap">
+  <div><label for="market">Market</label><select id="market"><option>US</option></select></div>
+  <div><label for="sort-by">Sort By</label><select id="sort-by"><option>volume</option></select></div>
+  <div><label for="limit">Limit</label><input id="limit" type="number" value="50"></div>
+  <div><label for="symbol">Symbol</label><input id="symbol" value="AAPL" class="focus"></div>
+  <div><label for="price">Price</label><input id="price" value="192.45"></div>
+  <div><label for="max-rsi">Max RSI</label><input id="max-rsi" placeholder="optional" class="err"><div class="msg">Must be ≤ 100</div></div>
+</div>
+<label style="margin-top:12px" class="chk"><input type="checkbox"> Execute real order (unchecked = dry run)</label>
+</body></html>

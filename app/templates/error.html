@@ -4,48 +4,61 @@
 
 {% block styles %}
 .error-container {
-    background: white;
-    padding: 3rem;
-    border-radius: 20px;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+    background: var(--bg-card);
+    border: 1px solid var(--border-light);
+    border-radius: var(--r-2xl);
+    box-shadow: var(--elev-card);
     max-width: 500px;
+    margin: var(--sp-10) auto;
+    padding: var(--sp-10);
     text-align: center;
 }
 
 .error-icon {
+    color: var(--error);
     font-size: 4rem;
-    margin-bottom: 1rem;
+    line-height: 1;
+    margin-bottom: var(--sp-6);
 }
 
 .error-container h1 {
-    color: #dc3545;
-    margin-bottom: 1rem;
+    color: var(--error);
+    font-size: var(--fs-xl);
+    font-weight: var(--fw-semibold);
+    margin-bottom: var(--sp-4);
 }
 
 .error-container p {
-    color: #666;
-    margin-bottom: 2rem;
+    color: var(--text-secondary);
+    margin-bottom: var(--sp-8);
 }
 
 .btn-back {
     display: inline-block;
-    padding: 0.875rem 2rem;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    color: white;
+    padding: 0.72rem 1.4rem;
+    background: var(--accent);
+    color: var(--text-on-accent);
+    border: 1px solid var(--accent);
+    border-radius: var(--r-lg);
+    font-weight: var(--fw-semibold);
     text-decoration: none;
-    border-radius: 8px;
-    font-weight: 600;
-    transition: transform 0.2s;
+    transition: transform var(--dur-base) var(--ease-out), box-shadow var(--dur-base) var(--ease-out), background var(--dur-base) var(--ease-out), border-color var(--dur-base) var(--ease-out);
 }
 
 .btn-back:hover {
-    transform: translateY(-2px);
+    background: var(--accent-hover);
+    border-color: var(--accent-hover);
+    box-shadow: var(--elev-cta);
+    color: var(--text-on-accent);
+    transform: translateY(-1px);
 }
 {% endblock %}
 
 {% block content %}
 <div class="error-container">
-    <div class="error-icon">⚠️</div>
+    <div class="error-icon" aria-hidden="true">
+        <i class="bi bi-exclamation-triangle-fill"></i>
+    </div>
     <h1>{{ error }}</h1>
     <p>{{ message }}</p>
     <a href="/" class="btn-back">홈으로 돌아가기</a>
