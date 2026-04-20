@@ -8,9 +8,8 @@ import exchange_calendars as xcals
 import pandas as pd
 from pandas import Timestamp
 
-from app.mcp_server.tooling.fundamentals_sources_indices import _fetch_index_kr_current
 from app.mcp_server.tooling.market_data_indicators import _calculate_rsi
-from app.services import exchange_rate_service
+from app.services import exchange_rate_service, market_index_service
 from app.services import market_data as market_data_service
 from app.services.openclaw_client import OpenClawClient, WatchAlertDeliveryResult
 from app.services.watch_alerts import WatchAlertService
@@ -125,7 +124,7 @@ class WatchScanner:
         normalized_symbol = str(symbol or "").strip().upper()
         if normalized_symbol not in {"KOSPI", "KOSDAQ"}:
             return None
-        data = await _fetch_index_kr_current(normalized_symbol, normalized_symbol)
+        data = await market_index_service.get_kr_index_quote(normalized_symbol)
         return self._to_float(data.get("current"))
 
     async def _get_fx_price(self, symbol: str) -> float | None:
@@ -245,16 +244,17 @@ class WatchScanner:
 
     async def scan_market(self, market: str) -> dict[str, object]:
         normalized_market = str(market).strip().lower()
-        if not self._is_market_open(normalized_market):
-            return {
-                "market": normalized_market,
-                "status": "skipped",
-                "skipped": True,
-                "reason": "market_closed",
-            }
+        market_open = self._is_market_open(normalized_market)
 
         watches = await self._watch_service.get_watches_for_market(normalized_market)
         if not watches:
+            if not market_open:
+                return {
+                    "market": normalized_market,
+                    "status": "skipped",
+                    "skipped": True,
+                    "reason": "market_closed",
+                }
             return {
                 "market": normalized_market,
                 "status": "skipped",
@@ -268,6 +268,8 @@ class WatchScanner:
 
         for watch in watches:
             target_kind = str(watch.get("target_kind") or "asset").strip().lower()
+            if not market_open and target_kind != "fx":
+                continue
             symbol = str(watch.get("symbol") or "").strip().upper()
             condition_type = str(watch.get("condition_type") or "").strip().lower()
             field = str(watch.get("field") or "")
@@ -303,6 +305,13 @@ class WatchScanner:
             triggered_fields.append(field)
 
         if not triggered:
+            if not market_open:
+                return {
+                    "market": normalized_market,
+                    "status": "skipped",
+                    "skipped": True,
+                    "reason": "market_closed",
+                }
             return {
                 "market": normalized_market,
                 "status": "skipped",

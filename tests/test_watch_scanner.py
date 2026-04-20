@@ -156,6 +156,55 @@ async def test_scan_market_dispatches_asset_trade_value_index_and_fx_price(
 
 
 @pytest.mark.asyncio
+async def test_scan_market_allows_fx_watch_when_kr_equity_market_is_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scanner = WatchScanner()
+    scanner._watch_service = _FakeWatchService()
+    scanner._watch_service._rows_by_market["kr"] = [
+        {
+            "target_kind": "fx",
+            "symbol": "USDKRW",
+            "condition_type": "price_above",
+            "threshold": 1478.0,
+            "field": "fx:USDKRW:price_above:1478",
+        }
+    ]
+    scanner._openclaw = _FakeOpenClawClient(status="success")
+
+    monkeypatch.setattr(scanner, "_is_market_open", lambda market: False)
+    monkeypatch.setattr(scanner, "_get_fx_price", AsyncMock(return_value=1479.5))
+
+    result = await scanner.scan_market("kr")
+
+    assert result["alerts_sent"] == 1
+    assert scanner._watch_service.removed_fields == [
+        ("kr", "fx:USDKRW:price_above:1478")
+    ]
+    assert scanner._openclaw.triggered_payloads[0][0]["target_kind"] == "fx"
+
+
+@pytest.mark.asyncio
+async def test_get_index_price_uses_market_index_service_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.jobs import watch_scanner as watch_scanner_module
+
+    scanner = WatchScanner()
+    mock_get_kr_index_quote = AsyncMock(return_value={"current": 6176.75})
+    monkeypatch.setattr(
+        watch_scanner_module.market_index_service,
+        "get_kr_index_quote",
+        mock_get_kr_index_quote,
+    )
+
+    current = await scanner._get_index_price("kospi", "kr")
+
+    assert current == pytest.approx(6176.75)
+    mock_get_kr_index_quote.assert_awaited_once_with("KOSPI")
+
+
+@pytest.mark.asyncio
 async def test_scan_market_skips_unsupported_target_metric_without_removing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -316,7 +316,7 @@ Behavior:
 Supported target/metric combinations:
 - `target_kind="asset"`: `price` and `rsi` for `crypto`, `kr`, `us`; `trade_value` for `kr` only.
 - `target_kind="index"`: `price` for `market="kr"` and `symbol="KOSPI"` or `"KOSDAQ"`.
-- `target_kind="fx"`: `price` for `symbol="USDKRW"`.
+- `target_kind="fx"`: `price` for `market="kr"` and `symbol="USDKRW"`.
 
 Example calls:
 ```text

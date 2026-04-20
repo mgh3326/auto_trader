@@ -138,7 +138,7 @@ async def test_validation_matrix_allows_new_mvp_targets() -> None:
         target_kind="index",
     )
     fx_price = service.validate_watch_inputs(
-        market="us",
+        market="kr",
         symbol="usdkrw",
         condition_type="price_above",
         threshold=1478,
@@ -179,6 +179,15 @@ async def test_validation_matrix_rejects_unsupported_target_metric_pairs() -> No
         service.validate_watch_inputs(
             market="kr",
             symbol="EURKRW",
+            condition_type="price_above",
+            threshold=1478,
+            target_kind="fx",
+        )
+
+    with pytest.raises(ValueError, match="market=kr"):
+        service.validate_watch_inputs(
+            market="us",
+            symbol="USDKRW",
             condition_type="price_above",
             threshold=1478,
             target_kind="fx",

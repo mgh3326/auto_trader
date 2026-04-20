@@ -98,6 +98,31 @@ class WatchAlertService:
     def _key_for_market(market: str) -> str:
         return f"watch:alerts:{market}"
 
+    @staticmethod
+    def _validate_asset_watch(metric: str, market: str) -> None:
+        if metric == "trade_value" and market != "kr":
+            raise ValueError("trade_value watches are supported for KR assets only")
+        if metric not in {"price", "rsi", "trade_value"}:
+            raise ValueError("asset watches support price, rsi, or trade_value")
+
+    @staticmethod
+    def _validate_index_watch(metric: str, market: str, symbol: str) -> None:
+        if market != "kr":
+            raise ValueError("index watches are supported for market=kr only")
+        if symbol not in _SUPPORTED_INDEX_SYMBOLS:
+            raise ValueError("index symbol must be one of: KOSPI, KOSDAQ")
+        if metric != "price":
+            raise ValueError("index watches support price only")
+
+    @staticmethod
+    def _validate_fx_watch(metric: str, market: str, symbol: str) -> None:
+        if market != "kr":
+            raise ValueError("fx watches are supported for market=kr only")
+        if symbol != "USDKRW":
+            raise ValueError("fx symbol must be USDKRW")
+        if metric != "price":
+            raise ValueError("fx watches support price only")
+
     async def _get_redis(self) -> redis.Redis:
         if self._redis is None:
             self._redis = redis.from_url(
@@ -135,22 +160,11 @@ class WatchAlertService:
             raise ValueError("RSI threshold must be between 0 and 100")
 
         if normalized_target_kind == "asset":
-            if metric == "trade_value" and normalized_market != "kr":
-                raise ValueError("trade_value watches are supported for KR assets only")
-            if metric not in {"price", "rsi", "trade_value"}:
-                raise ValueError("asset watches support price, rsi, or trade_value")
+            self._validate_asset_watch(metric, normalized_market)
         elif normalized_target_kind == "index":
-            if normalized_market != "kr":
-                raise ValueError("index watches are supported for market=kr only")
-            if normalized_symbol not in _SUPPORTED_INDEX_SYMBOLS:
-                raise ValueError("index symbol must be one of: KOSPI, KOSDAQ")
-            if metric != "price":
-                raise ValueError("index watches support price only")
+            self._validate_index_watch(metric, normalized_market, normalized_symbol)
         elif normalized_target_kind == "fx":
-            if normalized_symbol != "USDKRW":
-                raise ValueError("fx symbol must be USDKRW")
-            if metric != "price":
-                raise ValueError("fx watches support price only")
+            self._validate_fx_watch(metric, normalized_market, normalized_symbol)
 
         return _WatchKey(
             target_kind=normalized_target_kind,
