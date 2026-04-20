@@ -12,6 +12,7 @@ from .manual_holdings import (
 from .market_report import MarketReport
 from .news import NewsAnalysisResult, NewsArticle, Sentiment
 from .paper_trading import PaperAccount, PaperPosition, PaperTrade
+from .portfolio_decision_run import PortfolioDecisionRun
 from .prompt import PromptResult
 from .research_backtest import (
     ResearchBacktestPair,
@@ -90,6 +91,7 @@ __all__ = [
     "PaperAccount",
     "PaperPosition",
     "PaperTrade",
+    "PortfolioDecisionRun",
     "SellCondition",
     # "AlertRule", "AlertEvent",
     # "PricesLatest", "PricesOHLCV", "FxRate",

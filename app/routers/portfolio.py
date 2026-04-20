@@ -28,7 +28,10 @@ from app.schemas.manual_holdings import (
     MergedPortfolioResponse,
     ReferencePricesResponse,
 )
-from app.schemas.portfolio_decision import PortfolioDecisionSlateResponse
+from app.schemas.portfolio_decision import (
+    DecisionRunCreateRequest,
+    PortfolioDecisionSlateResponse,
+)
 from app.schemas.portfolio_position_detail import (
     PositionIndicatorsResponse,
     PositionNewsResponse,
@@ -42,7 +45,10 @@ from app.services.brokers.kis.client import KISClient
 from app.services.kis_holdings_service import get_kis_holding_for_ticker
 from app.services.merged_portfolio_service import MergedPortfolioService
 from app.services.portfolio_dashboard_service import PortfolioDashboardService
-from app.services.portfolio_decision_service import PortfolioDecisionService
+from app.services.portfolio_decision_service import (
+    PortfolioDecisionRunNotFoundError,
+    PortfolioDecisionService,
+)
 from app.services.portfolio_overview_service import PortfolioOverviewService
 from app.services.portfolio_position_detail_service import (
     PortfolioPositionDetailNotFoundError,
@@ -52,6 +58,9 @@ from app.services.portfolio_position_detail_service import (
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/portfolio", tags=["Portfolio"])
 DECISION_SLATE_ERROR_DETAIL = "Unable to build portfolio decision slate."
+DECISION_RUN_CREATE_ERROR_DETAIL = "Unable to create portfolio decision run."
+DECISION_RUN_LOOKUP_ERROR_DETAIL = "Unable to load portfolio decision run."
+DECISION_RUN_NOT_FOUND_DETAIL = "Decision run not found."
 
 
 def get_portfolio_overview_service(
@@ -67,6 +76,7 @@ def get_portfolio_dashboard_service(
 
 
 def get_portfolio_decision_service(
+    db: Annotated[AsyncSession, Depends(get_db)],
     overview_service: Annotated[
         PortfolioOverviewService, Depends(get_portfolio_overview_service)
     ],
@@ -77,6 +87,7 @@ def get_portfolio_decision_service(
     return PortfolioDecisionService(
         overview_service=overview_service,
         dashboard_service=dashboard_service,
+        db=db,
     )
 
 
@@ -119,6 +130,66 @@ async def get_portfolio_decision_slate(
         raise HTTPException(
             status_code=500,
             detail=DECISION_SLATE_ERROR_DETAIL,
+        ) from e
+
+
+@router.post(
+    "/api/decision-runs",
+    response_model=PortfolioDecisionSlateResponse,
+    responses={500: {"description": "Failed to create portfolio decision run"}},
+)
+async def create_portfolio_decision_run(
+    request: DecisionRunCreateRequest,
+    current_user: Annotated[User, Depends(get_authenticated_user)],
+    decision_service: Annotated[
+        PortfolioDecisionService, Depends(get_portfolio_decision_service)
+    ],
+):
+    try:
+        return await decision_service.create_decision_run(
+            user_id=current_user.id,
+            market=request.market,
+            account_keys=request.account_keys,
+            q=request.q,
+        )
+    except Exception as e:
+        logger.error("Error creating decision run: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=DECISION_RUN_CREATE_ERROR_DETAIL,
+        ) from e
+
+
+@router.get(
+    "/api/decision-runs/{run_id}",
+    response_model=PortfolioDecisionSlateResponse,
+    responses={
+        404: {"description": "Decision run not found"},
+        500: {"description": "Failed to load portfolio decision run"},
+    },
+)
+async def get_portfolio_decision_run(
+    run_id: str,
+    current_user: Annotated[User, Depends(get_authenticated_user)],
+    decision_service: Annotated[
+        PortfolioDecisionService, Depends(get_portfolio_decision_service)
+    ],
+):
+    try:
+        return await decision_service.get_decision_run(
+            user_id=current_user.id,
+            run_id=run_id,
+        )
+    except PortfolioDecisionRunNotFoundError as e:
+        raise HTTPException(
+            status_code=404,
+            detail=DECISION_RUN_NOT_FOUND_DETAIL,
+        ) from e
+    except Exception as e:
+        logger.error("Error loading decision run: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=DECISION_RUN_LOOKUP_ERROR_DETAIL,
         ) from e
 
 

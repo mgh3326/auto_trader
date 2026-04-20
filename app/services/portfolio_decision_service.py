@@ -1,12 +1,18 @@
 import asyncio
 import logging
+import secrets
 from datetime import UTC, datetime
 from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.mcp_server.tooling.fundamentals._support_resistance import (
     get_support_resistance_impl as _get_support_resistance_impl,
 )
 from app.mcp_server.tooling.market_data_quotes import _get_indicators_impl
+from app.models.portfolio_decision_run import PortfolioDecisionRun
+from app.schemas.portfolio_decision import PortfolioDecisionSlateResponse
 
 logger = logging.getLogger(__name__)
 
@@ -43,17 +49,95 @@ def _to_optional_float(value: Any) -> float | None:
         return None
 
 
+class PortfolioDecisionRunNotFoundError(Exception):
+    """Raised when a persisted Decision Desk snapshot is missing or not owned."""
+
+
 class PortfolioDecisionService:
     def __init__(
         self,
         *,
         overview_service,
         dashboard_service,
+        db: AsyncSession | None = None,
         context_timeout_seconds: float = CONTEXT_TIMEOUT_SECONDS,
     ) -> None:
         self.overview_service = overview_service
         self.dashboard_service = dashboard_service
+        self.db = db
         self.context_timeout_seconds = context_timeout_seconds
+
+    async def create_decision_run(
+        self,
+        *,
+        user_id: int,
+        market: str = "ALL",
+        account_keys: list[str] | None = None,
+        q: str | None = None,
+    ) -> dict[str, Any]:
+        """Persist one immutable snapshot; live generation remains separate."""
+        db = self._require_db()
+        live_slate = await self.build_decision_slate(
+            user_id=user_id,
+            market=market,
+            account_keys=account_keys,
+            q=q,
+        )
+        validated_live_slate = PortfolioDecisionSlateResponse.model_validate(live_slate)
+        generated_at = validated_live_slate.decision_run.generated_at
+        run_id = self._new_run_id(generated_at)
+        share_url = f"/portfolio/decision?run_id={run_id}"
+
+        snapshot = validated_live_slate.model_dump()
+        snapshot["decision_run"] = {
+            **snapshot["decision_run"],
+            "id": run_id,
+            "market_scope": market,
+            "persisted": True,
+            "share_url": share_url,
+        }
+        payload = PortfolioDecisionSlateResponse.model_validate(snapshot).model_dump(
+            mode="json"
+        )
+
+        run = PortfolioDecisionRun(
+            run_id=run_id,
+            user_id=user_id,
+            generated_at=generated_at,
+            market_scope=market,
+            mode=payload["decision_run"]["mode"],
+            source=payload["decision_run"]["source"],
+            filters=payload["filters"],
+            summary=payload["summary"],
+            facets=payload["facets"],
+            symbol_groups=payload["symbol_groups"],
+            warnings=payload["warnings"],
+            payload=payload,
+            created_at=datetime.now(UTC),
+        )
+        db.add(run)
+        await db.commit()
+        return payload
+
+    async def get_decision_run(
+        self,
+        *,
+        user_id: int,
+        run_id: str,
+    ) -> dict[str, Any]:
+        """Return a stored snapshot only; this path never recalculates context."""
+        db = self._require_db()
+        result = await db.execute(
+            select(PortfolioDecisionRun).where(
+                PortfolioDecisionRun.run_id == run_id,
+                PortfolioDecisionRun.user_id == user_id,
+            )
+        )
+        run = result.scalar_one_or_none()
+        if run is None:
+            raise PortfolioDecisionRunNotFoundError(run_id)
+        PortfolioDecisionSlateResponse.model_validate(run.payload)
+        return run.payload
 
     async def build_decision_slate(
         self,
@@ -117,6 +201,15 @@ class PortfolioDecisionService:
             "symbol_groups": symbol_groups,
             "warnings": [],
         }
+
+    def _require_db(self) -> AsyncSession:
+        if self.db is None:
+            raise RuntimeError("PortfolioDecisionService persistence requires a db.")
+        return self.db
+
+    def _new_run_id(self, generated_at: datetime) -> str:
+        timestamp = generated_at.astimezone(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        return f"decision-{timestamp}-{secrets.token_hex(4)}"
 
     def _position_key(self, position: dict[str, Any]) -> PositionKey:
         return (str(position["market_type"]).upper(), str(position["symbol"]))
