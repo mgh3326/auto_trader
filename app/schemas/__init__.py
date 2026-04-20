@@ -29,6 +29,7 @@ from .n8n.pending_orders import (
     N8nPendingOrdersResponse,
     N8nPendingOrderSummary,
 )
+from .portfolio_decision import PortfolioDecisionSlateResponse
 from .portfolio_position_detail import (
     PositionDetailComponentResponse,
     PositionDetailPageResponse,
@@ -61,6 +62,8 @@ __all__ = [
     "ReferencePricesResponse",
     "MergedHoldingResponse",
     "MergedPortfolioResponse",
+    # Portfolio Decision
+    "PortfolioDecisionSlateResponse",
     # Portfolio Position Detail
     "PositionDetailComponentResponse",
     "PositionDetailSummaryResponse",

@@ -130,6 +130,7 @@ def _base_payload(**overrides) -> dict:
         "market": "crypto",
         "triggered": [
             {
+                "target_kind": "asset",
                 "symbol": "BTC/KRW",
                 "condition_type": "price_above",
                 "threshold": 100000000,
@@ -157,7 +158,7 @@ def test_validate_dedupe_does_not_write_sentmap_on_sent_path() -> None:
     # Fingerprints must be exposed for Mark Sent to consume.
     fingerprints = result["validate_output"]["fingerprints"]
     assert isinstance(fingerprints, list) and len(fingerprints) == 1
-    assert fingerprints[0]["fp"] == "crypto:BTC/KRW:price_above:100000000"
+    assert fingerprints[0]["fp"] == "crypto:asset:BTC/KRW:price_above:100000000"
     assert fingerprints[0]["isNew"] is True
 
 
@@ -166,9 +167,52 @@ def test_mark_sent_records_fingerprints_after_discord_success() -> None:
     result = _run_js_pipeline({"sentMap": {}}, _base_payload())
     assert result["mark_sent_ran"] is True
     sent_map = result["static_data_after_mark"]["sentMap"]
-    assert "crypto:BTC/KRW:price_above:100000000" in sent_map
-    entry = sent_map["crypto:BTC/KRW:price_above:100000000"]
+    assert "crypto:asset:BTC/KRW:price_above:100000000" in sent_map
+    entry = sent_map["crypto:asset:BTC/KRW:price_above:100000000"]
     assert isinstance(entry["lastSentAt"], int) and entry["lastSentAt"] > 0
+
+
+def test_fingerprint_includes_target_kind() -> None:
+    static_data: dict = {"sentMap": {}}
+
+    asset = _run_js_pipeline(
+        static_data,
+        _base_payload(
+            market="kr",
+            triggered=[
+                {
+                    "target_kind": "asset",
+                    "symbol": "KOSPI",
+                    "condition_type": "price_below",
+                    "threshold": 6176.75,
+                    "current": 6170,
+                }
+            ],
+        ),
+    )
+    index = _run_js_pipeline(
+        asset["static_data_after_mark"],
+        _base_payload(
+            market="kr",
+            triggered=[
+                {
+                    "target_kind": "index",
+                    "symbol": "KOSPI",
+                    "condition_type": "price_below",
+                    "threshold": 6176.75,
+                    "current": 6170,
+                }
+            ],
+        ),
+    )
+
+    assert asset["validate_output"]["fingerprints"][0]["fp"] == (
+        "kr:asset:KOSPI:price_below:6176.75"
+    )
+    assert index["validate_output"]["fingerprints"][0]["fp"] == (
+        "kr:index:KOSPI:price_below:6176.75"
+    )
+    assert index["validate_output"]["route"] == "kr"
 
 
 def test_discord_failure_retry_redelivers_instead_of_deduping() -> None:
@@ -227,6 +271,23 @@ def test_threshold_type_guard_rejects_non_scalar() -> None:
                     "symbol": "BTC/KRW",
                     "condition_type": "price_above",
                     "threshold": {"value": 1},
+                }
+            ]
+        ),
+    )
+    assert result["validate_output"]["route"] == "invalid"
+    assert result["validate_output"]["errorCode"] == "invalid_triggered_item"
+
+
+def test_target_kind_guard_rejects_missing_target_kind() -> None:
+    result = _run_js_pipeline(
+        {"sentMap": {}},
+        _base_payload(
+            triggered=[
+                {
+                    "symbol": "BTC/KRW",
+                    "condition_type": "price_above",
+                    "threshold": 100000000,
                 }
             ]
         ),

@@ -50,6 +50,148 @@ async def test_add_watch_is_idempotent_and_preserves_created_at() -> None:
     assert watch["condition_type"] == "price_below"
     assert watch["metric"] == "price"
     assert watch["operator"] == "below"
+    assert watch["target_kind"] == "asset"
+
+
+@pytest.mark.asyncio
+async def test_add_watch_stores_target_kind_in_field_identity() -> None:
+    service = WatchAlertService()
+    fake_redis = _FakeRedisHash()
+    service._get_redis = AsyncMock(return_value=fake_redis)  # type: ignore[method-assign]
+
+    result = await service.add_watch(
+        "kr",
+        "KOSPI",
+        "price_below",
+        6176.75,
+        target_kind="index",
+    )
+
+    assert result["target_kind"] == "index"
+    assert result["field"] == "index:KOSPI:price_below:6176.75"
+
+    rows = await service.list_watches("kr")
+    assert rows["kr"][0]["target_kind"] == "index"
+    assert rows["kr"][0]["symbol"] == "KOSPI"
+    assert rows["kr"][0]["field"] == "index:KOSPI:price_below:6176.75"
+
+
+@pytest.mark.asyncio
+async def test_legacy_three_part_fields_list_as_asset_and_remove_by_fallback() -> None:
+    service = WatchAlertService()
+    fake_redis = _FakeRedisHash()
+    service._get_redis = AsyncMock(return_value=fake_redis)  # type: ignore[method-assign]
+    fake_redis._hashes["watch:alerts:crypto"] = {
+        "BTC:price_below:90000000": '{"created_at":"2026-02-17T13:00:00+09:00"}'
+    }
+
+    rows = await service.list_watches("crypto")
+    assert rows["crypto"][0]["target_kind"] == "asset"
+    assert rows["crypto"][0]["field"] == "BTC:price_below:90000000"
+
+    result = await service.remove_watch(
+        "crypto",
+        "BTC",
+        "price_below",
+        90000000,
+    )
+
+    assert result["removed"] is True
+    assert await fake_redis.hgetall("watch:alerts:crypto") == {}
+
+
+@pytest.mark.asyncio
+async def test_add_watch_treats_legacy_asset_field_as_existing() -> None:
+    service = WatchAlertService()
+    fake_redis = _FakeRedisHash()
+    service._get_redis = AsyncMock(return_value=fake_redis)  # type: ignore[method-assign]
+    fake_redis._hashes["watch:alerts:crypto"] = {
+        "BTC:price_below:90000000": '{"created_at":"2026-02-17T13:00:00+09:00"}'
+    }
+
+    result = await service.add_watch("crypto", "BTC", "price_below", 90000000)
+
+    assert result["created"] is False
+    assert result["already_exists"] is True
+    assert result["field"] == "BTC:price_below:90000000"
+    assert set((await fake_redis.hgetall("watch:alerts:crypto")).keys()) == {
+        "BTC:price_below:90000000"
+    }
+
+
+@pytest.mark.asyncio
+async def test_validation_matrix_allows_new_mvp_targets() -> None:
+    service = WatchAlertService()
+
+    kr_trade_value = service.validate_watch_inputs(
+        market="kr",
+        symbol="005930",
+        condition_type="trade_value_above",
+        threshold=1_000_000_000,
+        target_kind="asset",
+    )
+    index_price = service.validate_watch_inputs(
+        market="kr",
+        symbol="kosdaq",
+        condition_type="price_below",
+        threshold=1161.0,
+        target_kind="index",
+    )
+    fx_price = service.validate_watch_inputs(
+        market="kr",
+        symbol="usdkrw",
+        condition_type="price_above",
+        threshold=1478,
+        target_kind="fx",
+    )
+
+    assert kr_trade_value.target_kind == "asset"
+    assert kr_trade_value.condition_type == "trade_value_above"
+    assert index_price.target_kind == "index"
+    assert index_price.symbol == "KOSDAQ"
+    assert fx_price.target_kind == "fx"
+    assert fx_price.symbol == "USDKRW"
+
+
+@pytest.mark.asyncio
+async def test_validation_matrix_rejects_unsupported_target_metric_pairs() -> None:
+    service = WatchAlertService()
+
+    with pytest.raises(ValueError, match="trade_value"):
+        service.validate_watch_inputs(
+            market="us",
+            symbol="AAPL",
+            condition_type="trade_value_above",
+            threshold=1_000_000,
+            target_kind="asset",
+        )
+
+    with pytest.raises(ValueError, match="index"):
+        service.validate_watch_inputs(
+            market="kr",
+            symbol="KOSPI",
+            condition_type="rsi_below",
+            threshold=30,
+            target_kind="index",
+        )
+
+    with pytest.raises(ValueError, match="USDKRW"):
+        service.validate_watch_inputs(
+            market="kr",
+            symbol="EURKRW",
+            condition_type="price_above",
+            threshold=1478,
+            target_kind="fx",
+        )
+
+    with pytest.raises(ValueError, match="market=kr"):
+        service.validate_watch_inputs(
+            market="us",
+            symbol="USDKRW",
+            condition_type="price_above",
+            threshold=1478,
+            target_kind="fx",
+        )
 
 
 @pytest.mark.asyncio

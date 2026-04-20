@@ -508,9 +508,16 @@
 <body>
     {% include 'nav.html' %}
     <main class="shell" id="portfolio-main-page">
-        <header class="header">
-            <h1>Unified Portfolio Dashboard</h1>
-            <p>KR / US / CRYPTO 통합 보유현황을 계좌별 토글로 조회합니다.</p>
+        <header class="header" style="display: flex; justify-content: space-between; align-items: center;">
+            <div>
+                <h1>Unified Portfolio Dashboard</h1>
+                <p>KR / US / CRYPTO 통합 보유현황을 계좌별 토글로 조회합니다.</p>
+            </div>
+            <div>
+                <a href="/portfolio/decision" class="btn-primary-soft" style="text-decoration: none; background: #f3ede5; color: #1a1a1a; border-color: #d1ccc4;">
+                    <i class="bi bi-cpu"></i> Decision Desk
+                </a>
+            </div>
         </header>
 
         <!-- AI Markdown Export Section -->
