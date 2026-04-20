@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -25,6 +26,52 @@ def _make_overview_position(**overrides):
     }
     position.update(overrides)
     return position
+
+
+def _make_service_for_positions(
+    positions: list[dict],
+    journals: dict[str, dict] | None = None,
+) -> PortfolioDecisionService:
+    overview_service = MagicMock()
+    overview_service.get_overview = AsyncMock(
+        return_value={
+            "success": True,
+            "positions": positions,
+            "facets": {"accounts": []},
+        }
+    )
+    dashboard_service = MagicMock()
+    dashboard_service.get_journals_batch = AsyncMock(return_value=journals or {})
+    return PortfolioDecisionService(
+        overview_service=overview_service,
+        dashboard_service=dashboard_service,
+    )
+
+
+def _aapl_and_samsung_positions() -> list[dict]:
+    return [
+        _make_overview_position(),
+        _make_overview_position(
+            market_type="KR",
+            symbol="005930",
+            name="삼성전자",
+            evaluation=50_000_000.0,
+            evaluation_krw=50_000_000.0,
+            current_price=70_000.0,
+            profit_rate=0.0,
+        ),
+    ]
+
+
+def _aapl_journal_far_from_triggers() -> dict[str, dict]:
+    return {
+        "AAPL": {
+            "target_price": 130.0,
+            "target_distance_pct": 18.18,
+            "stop_loss": 90.0,
+            "stop_distance_pct": -18.18,
+        }
+    }
 
 
 @pytest.mark.unit
@@ -109,6 +156,99 @@ async def test_build_decision_slate_returns_valid_structure() -> None:
     group = slate["symbol_groups"][0]
     assert group["symbol"] == "NVDA"
     assert len(group["items"]) > 0
+    assert slate["decision_run"]["generated_at"].tzinfo is not None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_same_symbol_different_markets_keep_separate_contexts() -> None:
+    service = _make_service_for_positions(
+        [
+            _make_overview_position(
+                market_type="US",
+                symbol="ABC",
+                name="US ABC",
+                profit_rate=0.2,
+            ),
+            _make_overview_position(
+                market_type="KR",
+                symbol="ABC",
+                name="KR ABC",
+                current_price=70_000.0,
+                profit_rate=0.2,
+                evaluation=7_000_000.0,
+                evaluation_krw=7_000_000.0,
+            ),
+        ],
+        journals={},
+    )
+
+    async def support_resistance(symbol: str, *, market: str):
+        if market == "US":
+            return {
+                "nearest_resistance": {"price": 112.0, "distance_pct": 1.2},
+                "supports": [],
+                "resistances": [],
+            }
+        return {
+            "nearest_resistance": {"price": 71_000.0, "distance_pct": 1.4},
+            "supports": [],
+            "resistances": [],
+        }
+
+    with (
+        patch(
+            "app.services.portfolio_decision_service._get_support_resistance_impl",
+            support_resistance,
+        ),
+        patch(
+            "app.services.portfolio_decision_service._get_indicators_impl",
+            AsyncMock(return_value={"indicators": {"rsi": {"14": 65.0}}}),
+        ),
+    ):
+        slate = await service.build_decision_slate(user_id=1)
+
+    groups = {
+        (group["market_type"], group["symbol"]): group
+        for group in slate["symbol_groups"]
+    }
+    assert groups[("US", "ABC")]["support_resistance"]["nearest_resistance"][
+        "price"
+    ] == pytest.approx(112.0)
+    assert groups[("KR", "ABC")]["support_resistance"]["nearest_resistance"][
+        "price"
+    ] == pytest.approx(71_000.0)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_context_fetch_timeout_logs_warning_and_degrades(caplog) -> None:
+    service = _make_service_for_positions([_make_overview_position()], journals={})
+    service.context_timeout_seconds = 0.01
+
+    async def slow_support_resistance(symbol: str, *, market: str):
+        await asyncio.sleep(0.05)
+        return {"status": "available"}
+
+    with (
+        patch(
+            "app.services.portfolio_decision_service._get_support_resistance_impl",
+            slow_support_resistance,
+        ),
+        patch(
+            "app.services.portfolio_decision_service._get_indicators_impl",
+            AsyncMock(return_value={"indicators": {"rsi": {"14": 65.0}}}),
+        ),
+        caplog.at_level("WARNING"),
+    ):
+        slate = await service.build_decision_slate(user_id=1)
+
+    group = slate["symbol_groups"][0]
+    assert group["support_resistance"]["status"] == "unavailable"
+    assert "portfolio decision context fetch failed" in caplog.text
+    assert "symbol=AAPL" in caplog.text
+    assert "market=US" in caplog.text
+    assert "call=support_resistance" in caplog.text
 
 
 @pytest.mark.unit
@@ -295,40 +435,9 @@ async def test_manual_review_when_context_missing() -> None:
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_support_resistance_levels_supply_nearest_anchor() -> None:
-    overview_service = MagicMock()
-    overview_service.get_overview = AsyncMock(
-        return_value={
-            "success": True,
-            "positions": [
-                _make_overview_position(),
-                _make_overview_position(
-                    market_type="KR",
-                    symbol="005930",
-                    name="삼성전자",
-                    evaluation=50_000_000.0,
-                    evaluation_krw=50_000_000.0,
-                    current_price=70_000.0,
-                    profit_rate=0.0,
-                ),
-            ],
-            "facets": {"accounts": []},
-        }
-    )
-    dashboard_service = MagicMock()
-    dashboard_service.get_journals_batch = AsyncMock(
-        return_value={
-            "AAPL": {
-                "target_price": 130.0,
-                "target_distance_pct": 18.18,
-                "stop_loss": 90.0,
-                "stop_distance_pct": -18.18,
-            }
-        }
-    )
-
-    service = PortfolioDecisionService(
-        overview_service=overview_service,
-        dashboard_service=dashboard_service,
+    service = _make_service_for_positions(
+        _aapl_and_samsung_positions(),
+        _aapl_journal_far_from_triggers(),
     )
 
     with (
@@ -364,10 +473,14 @@ async def test_support_resistance_levels_supply_nearest_anchor() -> None:
 
     group = slate["symbol_groups"][0]
     item = next(item for item in group["items"] if item["action"] == "trim_candidate")
-    assert item["action_price"] == 112.0
-    assert item["anchor"]["price"] == 112.0
-    assert group["support_resistance"]["nearest_support"]["price"] == 108.0
-    assert group["support_resistance"]["nearest_resistance"]["price"] == 112.0
+    assert item["action_price"] == pytest.approx(112.0)
+    assert item["anchor"]["price"] == pytest.approx(112.0)
+    assert group["support_resistance"]["nearest_support"]["price"] == pytest.approx(
+        108.0
+    )
+    assert group["support_resistance"]["nearest_resistance"]["price"] == pytest.approx(
+        112.0
+    )
 
 
 @pytest.mark.unit
@@ -375,40 +488,9 @@ async def test_support_resistance_levels_supply_nearest_anchor() -> None:
 async def test_unavailable_support_resistance_does_not_create_zero_price_action() -> (
     None
 ):
-    overview_service = MagicMock()
-    overview_service.get_overview = AsyncMock(
-        return_value={
-            "success": True,
-            "positions": [
-                _make_overview_position(),
-                _make_overview_position(
-                    market_type="KR",
-                    symbol="005930",
-                    name="삼성전자",
-                    evaluation=50_000_000.0,
-                    evaluation_krw=50_000_000.0,
-                    current_price=70_000.0,
-                    profit_rate=0.0,
-                ),
-            ],
-            "facets": {"accounts": []},
-        }
-    )
-    dashboard_service = MagicMock()
-    dashboard_service.get_journals_batch = AsyncMock(
-        return_value={
-            "AAPL": {
-                "target_price": 130.0,
-                "target_distance_pct": 18.18,
-                "stop_loss": 90.0,
-                "stop_distance_pct": -18.18,
-            }
-        }
-    )
-
-    service = PortfolioDecisionService(
-        overview_service=overview_service,
-        dashboard_service=dashboard_service,
+    service = _make_service_for_positions(
+        _aapl_and_samsung_positions(),
+        _aapl_journal_far_from_triggers(),
     )
 
     with (

@@ -51,6 +51,7 @@ from app.services.portfolio_position_detail_service import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/portfolio", tags=["Portfolio"])
+DECISION_SLATE_ERROR_DETAIL = "Unable to build portfolio decision slate."
 
 
 def get_portfolio_overview_service(
@@ -66,12 +67,12 @@ def get_portfolio_dashboard_service(
 
 
 def get_portfolio_decision_service(
-    overview_service: PortfolioOverviewService = Depends(
-        get_portfolio_overview_service
-    ),
-    dashboard_service: PortfolioDashboardService = Depends(
-        get_portfolio_dashboard_service
-    ),
+    overview_service: Annotated[
+        PortfolioOverviewService, Depends(get_portfolio_overview_service)
+    ],
+    dashboard_service: Annotated[
+        PortfolioDashboardService, Depends(get_portfolio_dashboard_service)
+    ],
 ) -> PortfolioDecisionService:
     return PortfolioDecisionService(
         overview_service=overview_service,
@@ -92,15 +93,19 @@ async def portfolio_decision_page(request: Request):
     )
 
 
-@router.get("/api/decision-slate", response_model=PortfolioDecisionSlateResponse)
+@router.get(
+    "/api/decision-slate",
+    response_model=PortfolioDecisionSlateResponse,
+    responses={500: {"description": "Failed to build portfolio decision slate"}},
+)
 async def get_portfolio_decision_slate(
+    current_user: Annotated[User, Depends(get_authenticated_user)],
+    decision_service: Annotated[
+        PortfolioDecisionService, Depends(get_portfolio_decision_service)
+    ],
     market: Literal["ALL", "KR", "US", "CRYPTO"] = "ALL",
     account_keys: Annotated[list[str] | None, Query()] = None,
     q: Annotated[str | None, Query(min_length=1)] = None,
-    current_user: User = Depends(get_authenticated_user),
-    decision_service: PortfolioDecisionService = Depends(
-        get_portfolio_decision_service
-    ),
 ):
     try:
         return await decision_service.build_decision_slate(
@@ -111,7 +116,10 @@ async def get_portfolio_decision_slate(
         )
     except Exception as e:
         logger.error("Error building decision slate: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(
+            status_code=500,
+            detail=DECISION_SLATE_ERROR_DETAIL,
+        ) from e
 
 
 @router.get("/", response_class=HTMLResponse)

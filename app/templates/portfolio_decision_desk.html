@@ -11,7 +11,7 @@
             <p class="text-muted mb-0">Analysis-only generated action slate for your current portfolio.</p>
         </div>
         <div class="d-flex gap-2">
-            <a href="/portfolio/" class="btn btn-outline-primary">
+            <a href="/portfolio/" class="btn btn-outline-secondary">
                 <i class="bi bi-arrow-left"></i> Portfolio Dashboard
             </a>
             <button id="refresh-btn" class="btn btn-primary">
@@ -26,9 +26,9 @@
         <div class="col-12">
             <div class="card border-0 shadow-sm">
                 <div class="card-body py-5 text-center">
-                    <div class="spinner-border text-primary" role="status">
+                    <output class="spinner-border text-primary" aria-live="polite">
                         <span class="visually-hidden">Loading...</span>
-                    </div>
+                    </output>
                     <p class="mt-3 mb-0">Building decision slate...</p>
                 </div>
             </div>
@@ -40,8 +40,8 @@
         <div class="card-body">
             <form id="filter-form" class="row g-3 align-items-end">
                 <div class="col-md-3">
-                    <label class="form-label small text-uppercase fw-bold text-muted">Market</label>
-                    <select name="market" class="form-select">
+                    <label for="decision-market-filter" class="form-label small text-uppercase fw-bold text-muted">Market</label>
+                    <select id="decision-market-filter" name="market" class="form-select">
                         <option value="ALL">All Markets</option>
                         <option value="KR">Korea Equity</option>
                         <option value="US">US Equity</option>
@@ -49,14 +49,14 @@
                     </select>
                 </div>
                 <div class="col-md-4">
-                    <label class="form-label small text-uppercase fw-bold text-muted">Search Symbol/Name</label>
+                    <label for="decision-symbol-search" class="form-label small text-uppercase fw-bold text-muted">Search Symbol/Name</label>
                     <div class="input-group">
                         <span class="input-group-text bg-white border-end-0"><i class="bi bi-search"></i></span>
-                        <input type="text" name="q" class="form-control border-start-0" placeholder="NVDA, 삼성전자...">
+                        <input id="decision-symbol-search" type="text" name="q" class="form-control border-start-0" placeholder="NVDA, 삼성전자...">
                     </div>
                 </div>
                 <div class="col-md-3">
-                    <label class="form-label small text-uppercase fw-bold text-muted">Action Filter</label>
+                    <label for="action-filter" class="form-label small text-uppercase fw-bold text-muted">Action Filter</label>
                     <select id="action-filter" class="form-select">
                         <option value="all">All Actions</option>
                         <option value="actionable">Actionable Only</option>
@@ -195,11 +195,11 @@
     .market-badge-US { background-color: #198754; width: 4px; height: 24px; border-radius: 2px; }
     .market-badge-CRYPTO { background-color: #f7931a; width: 4px; height: 24px; border-radius: 2px; }
     
-    .item-action-sidebar.action-buy_candidate { background-color: #f0fdf4; border-color: #bbf7d0 !important; color: #16a34a; }
-    .item-action-sidebar.action-trim_candidate { background-color: #fff7ed; border-color: #fed7aa !important; color: #ea580c; }
-    .item-action-sidebar.action-sell_watch { background-color: #fef2f2; border-color: #fecaca !important; color: #dc2626; }
-    .item-action-sidebar.action-hold { background-color: #f8fafc; border-color: #e2e8f0 !important; color: #475569; }
-    .item-action-sidebar.action-manual_review { background-color: #fefce8; border-color: #fef08a !important; color: #ca8a04; }
+    .item-action-sidebar.action-buy_candidate { background-color: #f0fdf4; border-color: #bbf7d0 !important; color: #0f7a35; }
+    .item-action-sidebar.action-trim_candidate { background-color: #fff7ed; border-color: #fed7aa !important; color: #9a3412; }
+    .item-action-sidebar.action-sell_watch { background-color: #fef2f2; border-color: #fecaca !important; color: #991b1b; }
+    .item-action-sidebar.action-hold { background-color: #f8fafc; border-color: #e2e8f0 !important; color: #334155; }
+    .item-action-sidebar.action-manual_review { background-color: #fefce8; border-color: #fef08a !important; color: #854d0e; }
     
     .badge.action-buy_candidate { background-color: #16a34a; }
     .badge.action-trim_candidate { background-color: #ea580c; }
@@ -208,7 +208,86 @@
     .badge.action-manual_review { background-color: #ca8a04; }
 </style>
 
-<script>
+    <script>
+    const ACTIONABLE_ACTIONS = new Set(['buy_candidate', 'trim_candidate', 'sell_watch']);
+    const ACTION_ICON_CLASSES = {
+        buy_candidate: 'bi-plus-circle-fill',
+        trim_candidate: 'bi-dash-circle-fill',
+        sell_watch: 'bi-exclamation-triangle-fill',
+        manual_review: 'bi-question-circle-fill',
+        hold: 'bi-info-circle-fill',
+    };
+
+    function formatNumber(value) {
+        if (value === null || value === undefined || Number.isNaN(Number(value))) return '-';
+        return Number(value).toLocaleString();
+    }
+
+    function formatPercent(value) {
+        if (value === null || value === undefined || Number.isNaN(Number(value))) return '-';
+        return `${(Number(value) * 100).toFixed(2)}%`;
+    }
+
+    function profitRateClass(profitRate) {
+        if (profitRate === null || profitRate === undefined) return 'text-muted';
+        return profitRate >= 0 ? 'text-success' : 'text-danger';
+    }
+
+    function itemMatchesActionFilter(item, selectedAction) {
+        if (selectedAction === 'all') return true;
+        if (selectedAction === 'actionable') return ACTIONABLE_ACTIONS.has(item.action);
+        return item.action === selectedAction;
+    }
+
+    function setActionIcon(iconContainer, action) {
+        const icon = document.createElement('i');
+        icon.className = `bi ${ACTION_ICON_CLASSES[action] || ACTION_ICON_CLASSES.hold}`;
+        iconContainer.replaceChildren(icon);
+    }
+
+    function renderDecisionItem(item, itemTemplate) {
+        const iNode = itemTemplate.content.cloneNode(true);
+        const sidebar = iNode.querySelector('.item-action-sidebar');
+        sidebar.classList.add(`action-${item.action}`);
+
+        setActionIcon(iNode.querySelector('.action-icon'), item.action);
+
+        const badge = iNode.querySelector('.action-badge');
+        badge.textContent = item.label;
+        badge.classList.add(`action-${item.action}`);
+        iNode.querySelector('.label-text').textContent = item.label;
+
+        if (item.action_price !== null && item.action_price !== undefined) {
+            iNode.querySelector('.action-price').textContent = formatNumber(item.action_price);
+        } else {
+            iNode.querySelector('.action-price-container').style.display = 'none';
+        }
+
+        const rationale = iNode.querySelector('.rationale-list ul');
+        item.rationale.forEach(r => {
+            const li = document.createElement('li');
+            li.textContent = r;
+            rationale.appendChild(li);
+        });
+
+        updateAnchorInfo(iNode, item.anchor);
+        return iNode;
+    }
+
+    function updateAnchorInfo(iNode, anchor) {
+        if (!anchor) {
+            iNode.querySelector('.anchor-info').style.display = 'none';
+            return;
+        }
+
+        iNode.querySelector('.anchor-type').textContent = `Ref: ${anchor.type.toUpperCase()}`;
+        iNode.querySelector('.anchor-price').textContent = `@ ${formatNumber(anchor.price)}`;
+        if (anchor.distance_pct !== null && anchor.distance_pct !== undefined) {
+            const sign = anchor.distance_pct > 0 ? '+' : '';
+            iNode.querySelector('.anchor-dist').textContent = `(${sign}${anchor.distance_pct.toFixed(2)}%)`;
+        }
+    }
+
     document.addEventListener('DOMContentLoaded', function() {
         const groupsContainer = document.getElementById('groups-container');
         const summarySection = document.getElementById('summary-section');
@@ -234,16 +313,6 @@
             groupsContainer.appendChild(div);
         }
 
-        function formatNumber(value) {
-            if (value === null || value === undefined || Number.isNaN(Number(value))) return '-';
-            return Number(value).toLocaleString();
-        }
-
-        function formatPercent(value) {
-            if (value === null || value === undefined || Number.isNaN(Number(value))) return '-';
-            return `${(Number(value) * 100).toFixed(2)}%`;
-        }
-
         async function fetchSlate() {
             setStatusMessage('Fetching latest analysis...');
             
@@ -254,6 +323,12 @@
             
             try {
                 const response = await fetch('/portfolio/api/decision-slate?' + params.toString());
+                const contentType = response.headers.get('content-type') || '';
+                if (!contentType.includes('application/json')) {
+                    setAlertMessage('Failed to fetch data: unexpected response format.');
+                    return;
+                }
+
                 const data = await response.json();
                 if (data.success) {
                     currentSlate = data;
@@ -291,11 +366,9 @@
 
             currentSlate.symbol_groups.forEach(group => {
                 // Filter items in group
-                const filteredItems = group.items.filter(item => {
-                    if (selectedAction === 'all') return true;
-                    if (selectedAction === 'actionable') return ['buy_candidate', 'trim_candidate', 'sell_watch'].includes(item.action);
-                    return item.action === selectedAction;
-                });
+                const filteredItems = group.items.filter(
+                    item => itemMatchesActionFilter(item, selectedAction)
+                );
 
                 if (filteredItems.length === 0) return;
 
@@ -309,56 +382,14 @@
                 header.querySelector('.current-price').textContent = formatNumber(group.position.current_price);
                 const pl = header.querySelector('.pl-rate');
                 pl.textContent = formatPercent(group.position.profit_rate);
-                pl.className = group.position.profit_rate === null || group.position.profit_rate === undefined
-                    ? 'text-muted'
-                    : (group.position.profit_rate >= 0 ? 'text-success' : 'text-danger');
+                pl.className = profitRateClass(group.position.profit_rate);
                 
                 const link = header.querySelector('.detail-link');
                 link.href = group.detail_url;
 
                 const itemsContainer = gNode.querySelector('.items-container');
                 filteredItems.forEach(item => {
-                    const iNode = itemTemplate.content.cloneNode(true);
-                    const sidebar = iNode.querySelector('.item-action-sidebar');
-                    sidebar.classList.add(`action-${item.action}`);
-                    
-                    const icon = iNode.querySelector('.action-icon');
-                    if (item.action === 'buy_candidate') icon.innerHTML = '<i class="bi bi-plus-circle-fill"></i>';
-                    else if (item.action === 'trim_candidate') icon.innerHTML = '<i class="bi bi-dash-circle-fill"></i>';
-                    else if (item.action === 'sell_watch') icon.innerHTML = '<i class="bi bi-exclamation-triangle-fill"></i>';
-                    else if (item.action === 'manual_review') icon.innerHTML = '<i class="bi bi-question-circle-fill"></i>';
-                    else icon.innerHTML = '<i class="bi bi-info-circle-fill"></i>';
-
-                    const badge = iNode.querySelector('.action-badge');
-                    badge.textContent = item.label;
-                    badge.classList.add(`action-${item.action}`);
-                    
-                    iNode.querySelector('.label-text').textContent = item.label;
-                    
-                    if (item.action_price !== null && item.action_price !== undefined) {
-                        iNode.querySelector('.action-price').textContent = formatNumber(item.action_price);
-                    } else {
-                        iNode.querySelector('.action-price-container').style.display = 'none';
-                    }
-
-                    const rationale = iNode.querySelector('.rationale-list ul');
-                    item.rationale.forEach(r => {
-                        const li = document.createElement('li');
-                        li.textContent = r;
-                        rationale.appendChild(li);
-                    });
-
-                    if (item.anchor) {
-                        iNode.querySelector('.anchor-type').textContent = `Ref: ${item.anchor.type.toUpperCase()}`;
-                        iNode.querySelector('.anchor-price').textContent = `@ ${formatNumber(item.anchor.price)}`;
-                        if (item.anchor.distance_pct !== null && item.anchor.distance_pct !== undefined) {
-                            iNode.querySelector('.anchor-dist').textContent = `(${item.anchor.distance_pct > 0 ? '+' : ''}${item.anchor.distance_pct.toFixed(2)}%)`;
-                        }
-                    } else {
-                        iNode.querySelector('.anchor-info').style.display = 'none';
-                    }
-
-                    itemsContainer.appendChild(iNode);
+                    itemsContainer.appendChild(renderDecisionItem(item, itemTemplate));
                 });
 
                 groupsContainer.appendChild(gNode);

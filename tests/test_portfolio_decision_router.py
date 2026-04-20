@@ -62,8 +62,7 @@ def test_portfolio_decision_page_renders_html() -> None:
 
 
 @pytest.mark.unit
-@pytest.mark.asyncio
-async def test_get_portfolio_decision_slate_api() -> None:
+def test_get_portfolio_decision_slate_api() -> None:
     client, fake_service = _create_client()
     response = client.get("/portfolio/api/decision-slate")
 
@@ -73,3 +72,17 @@ async def test_get_portfolio_decision_slate_api() -> None:
     assert data["decision_run"]["id"] == "test-run"
 
     fake_service.build_decision_slate.assert_awaited_once()
+
+
+@pytest.mark.unit
+def test_get_portfolio_decision_slate_uses_safe_error_detail() -> None:
+    client, fake_service = _create_client()
+    fake_service.build_decision_slate.side_effect = RuntimeError(
+        "upstream token secret leaked"
+    )
+
+    response = client.get("/portfolio/api/decision-slate")
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Unable to build portfolio decision slate."}
+    assert "secret" not in response.text
