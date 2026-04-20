@@ -34,6 +34,7 @@ class _FakeOpenClawClient:
     def __init__(self, status: str = "success") -> None:
         self._status = status
         self.messages: list[str] = []
+        self.triggered_payloads: list[list[dict[str, object]]] = []
 
     async def send_scan_alert(self, message: str) -> str | None:
         self.messages.append(message)
@@ -52,8 +53,9 @@ class _FakeOpenClawClient:
         as_of: str,
         correlation_id: str | None = None,
     ) -> WatchAlertDeliveryResult:
-        _ = market, triggered, as_of, correlation_id
+        _ = market, as_of, correlation_id
         self.messages.append(message)
+        self.triggered_payloads.append(triggered)
         if self._status == "success":
             return WatchAlertDeliveryResult(status="success", request_id="watch-1")
         if self._status == "skipped":
@@ -99,6 +101,89 @@ async def test_scan_market_sends_single_batched_message_and_removes_only_trigger
         ("crypto", "BTC:price_below:100"),
         ("crypto", "ETH:rsi_above:70"),
     ]
+    assert scanner._openclaw.triggered_payloads[0][0]["target_kind"] == "asset"
+
+
+@pytest.mark.asyncio
+async def test_scan_market_dispatches_asset_trade_value_index_and_fx_price(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scanner = WatchScanner()
+    scanner._watch_service = _FakeWatchService()
+    scanner._watch_service._rows_by_market["kr"] = [
+        {
+            "target_kind": "asset",
+            "symbol": "005930",
+            "condition_type": "trade_value_above",
+            "threshold": 1_000_000.0,
+            "field": "asset:005930:trade_value_above:1000000",
+        },
+        {
+            "target_kind": "index",
+            "symbol": "KOSPI",
+            "condition_type": "price_below",
+            "threshold": 6200.0,
+            "field": "index:KOSPI:price_below:6200",
+        },
+        {
+            "target_kind": "fx",
+            "symbol": "USDKRW",
+            "condition_type": "price_above",
+            "threshold": 1478.0,
+            "field": "fx:USDKRW:price_above:1478",
+        },
+    ]
+    scanner._openclaw = _FakeOpenClawClient(status="success")
+
+    monkeypatch.setattr(scanner, "_is_market_open", lambda market: True)
+    monkeypatch.setattr(
+        scanner, "_get_trade_value", AsyncMock(return_value=1_500_000.0)
+    )
+    monkeypatch.setattr(scanner, "_get_index_price", AsyncMock(return_value=6176.75))
+    monkeypatch.setattr(scanner, "_get_fx_price", AsyncMock(return_value=1479.5))
+
+    result = await scanner.scan_market("kr")
+
+    assert result["alerts_sent"] == 3
+    assert scanner._watch_service.removed_fields == [
+        ("kr", "asset:005930:trade_value_above:1000000"),
+        ("kr", "index:KOSPI:price_below:6200"),
+        ("kr", "fx:USDKRW:price_above:1478"),
+    ]
+    payload = scanner._openclaw.triggered_payloads[0]
+    assert [row["target_kind"] for row in payload] == ["asset", "index", "fx"]
+    assert [row["symbol"] for row in payload] == ["005930", "KOSPI", "USDKRW"]
+
+
+@pytest.mark.asyncio
+async def test_scan_market_skips_unsupported_target_metric_without_removing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scanner = WatchScanner()
+    scanner._watch_service = _FakeWatchService(
+        rows=[
+            {
+                "target_kind": "index",
+                "symbol": "KOSPI",
+                "condition_type": "rsi_below",
+                "threshold": 30.0,
+                "field": "index:KOSPI:rsi_below:30",
+            }
+        ]
+    )
+    scanner._watch_service._rows_by_market["kr"] = (
+        scanner._watch_service._rows_by_market["crypto"]
+    )
+    scanner._openclaw = _FakeOpenClawClient(status="success")
+
+    monkeypatch.setattr(scanner, "_is_market_open", lambda market: True)
+    monkeypatch.setattr(scanner, "_get_rsi", AsyncMock(return_value=20.0))
+
+    result = await scanner.scan_market("kr")
+
+    assert result["reason"] == "no_triggered_alerts"
+    assert scanner._watch_service.removed_fields == []
+    assert scanner._openclaw.messages == []
 
 
 @pytest.mark.asyncio

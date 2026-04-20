@@ -8,7 +8,9 @@ import exchange_calendars as xcals
 import pandas as pd
 from pandas import Timestamp
 
+from app.mcp_server.tooling.fundamentals_sources_indices import _fetch_index_kr_current
 from app.mcp_server.tooling.market_data_indicators import _calculate_rsi
+from app.services import exchange_rate_service
 from app.services import market_data as market_data_service
 from app.services.openclaw_client import OpenClawClient, WatchAlertDeliveryResult
 from app.services.watch_alerts import WatchAlertService
@@ -108,6 +110,30 @@ class WatchScanner:
             return price
         return None
 
+    async def _get_trade_value(self, symbol: str, market: str) -> float | None:
+        if market != "kr":
+            return None
+        quote = await market_data_service.get_quote(
+            symbol=symbol,
+            market="equity_kr",
+        )
+        return self._to_float(getattr(quote, "value", None))
+
+    async def _get_index_price(self, symbol: str, market: str) -> float | None:
+        if market != "kr":
+            return None
+        normalized_symbol = str(symbol or "").strip().upper()
+        if normalized_symbol not in {"KOSPI", "KOSDAQ"}:
+            return None
+        data = await _fetch_index_kr_current(normalized_symbol, normalized_symbol)
+        return self._to_float(data.get("current"))
+
+    async def _get_fx_price(self, symbol: str) -> float | None:
+        normalized_symbol = str(symbol or "").strip().upper()
+        if normalized_symbol != "USDKRW":
+            return None
+        return self._to_float(await exchange_rate_service.get_usd_krw_quote())
+
     async def _get_rsi(self, symbol: str, market: str) -> float | None:
         if market == "crypto":
             symbol_for_query = self._normalize_crypto_symbol(symbol)
@@ -170,6 +196,32 @@ class WatchScanner:
             )
         return "\n".join(lines)
 
+    async def _get_current_value(
+        self,
+        *,
+        target_kind: str,
+        metric: str,
+        symbol: str,
+        market: str,
+    ) -> float | None:
+        if target_kind == "asset":
+            if metric == "price":
+                return await self._get_price(symbol, market)
+            if metric == "rsi":
+                return await self._get_rsi(symbol, market)
+            if metric == "trade_value":
+                return await self._get_trade_value(symbol, market)
+            return None
+        if target_kind == "index":
+            if metric == "price":
+                return await self._get_index_price(symbol, market)
+            return None
+        if target_kind == "fx":
+            if metric == "price":
+                return await self._get_fx_price(symbol)
+            return None
+        return None
+
     async def _send_alert(
         self,
         *,
@@ -215,6 +267,7 @@ class WatchScanner:
         triggered_fields: list[str] = []
 
         for watch in watches:
+            target_kind = str(watch.get("target_kind") or "asset").strip().lower()
             symbol = str(watch.get("symbol") or "").strip().upper()
             condition_type = str(watch.get("condition_type") or "").strip().lower()
             field = str(watch.get("field") or "")
@@ -224,23 +277,23 @@ class WatchScanner:
                 continue
 
             try:
-                metric, operator = condition_type.split("_", 1)
+                metric, operator = condition_type.rsplit("_", 1)
             except ValueError:
                 continue
 
-            current: float | None
-            if metric == "price":
-                current = await self._get_price(symbol, normalized_market)
-            elif metric == "rsi":
-                current = await self._get_rsi(symbol, normalized_market)
-            else:
-                continue
+            current = await self._get_current_value(
+                target_kind=target_kind,
+                metric=metric,
+                symbol=symbol,
+                market=normalized_market,
+            )
 
             if not self._is_triggered(current, operator, threshold):
                 continue
 
             triggered.append(
                 {
+                    "target_kind": target_kind,
                     "symbol": symbol,
                     "condition_type": condition_type,
                     "threshold": threshold,
