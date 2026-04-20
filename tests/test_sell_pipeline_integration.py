@@ -91,6 +91,7 @@ def client():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.integration
 class TestSellConditionsService:
     @pytest.mark.asyncio
     async def test_get_sell_condition_returns_match(self):
@@ -150,6 +151,7 @@ class TestSellConditionsService:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.integration
 class TestBatchEndpoint:
     @pytest.mark.asyncio
     async def test_batch_success_with_results(self, client):
@@ -291,6 +293,7 @@ class TestBatchEndpoint:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.integration
 class TestSingleSymbolDbDefaults:
     @pytest.mark.asyncio
     async def test_loads_defaults_from_db_when_no_query_params(self, client):
@@ -388,6 +391,7 @@ WORKFLOW_PATH = (
 )
 
 
+@pytest.mark.unit
 class TestN8nWorkflowValidation:
     @pytest.fixture
     def workflow(self) -> dict:
@@ -428,7 +432,7 @@ class TestN8nWorkflowValidation:
         assert "$env.AUTO_TRADER_API_URL" in raw
         assert "$env.HERMES_WEBHOOK_URL" in raw
         assert "http://localhost" not in raw
-        assert "https://" not in raw.replace("https://", "", 0)
+        assert "https://" not in raw
 
     def test_credential_store_reference(self, workflow):
         http_nodes = [n for n in workflow["nodes"] if "httpRequest" in n["type"]]
