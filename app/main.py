@@ -2,10 +2,12 @@ import logging
 import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import taskiq_fastapi
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from starlette.responses import Response
@@ -102,6 +104,8 @@ def create_app() -> FastAPI:
         redoc_url="/redoc" if settings.DOCS_ENABLED else None,
         openapi_url="/openapi.json" if settings.DOCS_ENABLED else None,
     )
+    static_dir = Path(__file__).resolve().parent / "static"
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
     # Add slowapi state for rate limiting
     app.state.limiter = limiter

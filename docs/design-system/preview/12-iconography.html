@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><title>Iconography</title>
+<style>
+  body{margin:0;padding:18px;font-family:"Pretendard",system-ui,sans-serif;background:#fff;color:#242220}
+  .row{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}
+  .ic{border:1px solid #D1CCC4;border-radius:.6rem;padding:12px;display:flex;flex-direction:column;align-items:center;gap:6px;background:#FCFBF8}
+  .glyph{width:24px;height:24px;border:1.6px solid #242220;border-radius:7px;display:grid;place-items:center;color:#242220;font:700 11px/1 ui-monospace,Menlo,monospace}
+  .brand .glyph{border-color:#C05A3C;color:#C05A3C}
+  .ic .n{font-size:11px;color:#4F4A44;font-family:ui-monospace,monospace}
+  .note{margin-top:12px;font-size:.8rem;color:#4F4A44}
+</style></head><body>
+<div class="row">
+  <div class="ic brand"><span class="glyph">AT</span><div class="n">brand</div></div>
+  <div class="ic"><span class="glyph">SC</span><div class="n">screener</div></div>
+  <div class="ic"><span class="glyph">PO</span><div class="n">pending</div></div>
+  <div class="ic"><span class="glyph">PF</span><div class="n">portfolio</div></div>
+  <div class="ic"><span class="glyph">AD</span><div class="n">admin</div></div>
+  <div class="ic"><span class="glyph">LO</span><div class="n">logout</div></div>
+</div>
+<p class="note">Self-contained letter glyphs keep the preview offline-safe. Runtime templates may still use Bootstrap Icons from the application shell.</p>
+</body></html>

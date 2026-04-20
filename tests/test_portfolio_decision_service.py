@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.models.portfolio_decision_run import PortfolioDecisionRun
 from app.schemas.portfolio_decision import PortfolioDecisionSlateResponse
 from app.services.portfolio_decision_service import PortfolioDecisionService
 
@@ -31,6 +32,7 @@ def _make_overview_position(**overrides):
 def _make_service_for_positions(
     positions: list[dict],
     journals: dict[str, dict] | None = None,
+    db=None,
 ) -> PortfolioDecisionService:
     overview_service = MagicMock()
     overview_service.get_overview = AsyncMock(
@@ -42,9 +44,50 @@ def _make_service_for_positions(
     )
     dashboard_service = MagicMock()
     dashboard_service.get_journals_batch = AsyncMock(return_value=journals or {})
-    return PortfolioDecisionService(
-        overview_service=overview_service,
-        dashboard_service=dashboard_service,
+    kwargs = {
+        "overview_service": overview_service,
+        "dashboard_service": dashboard_service,
+    }
+    if db is not None:
+        kwargs["db"] = db
+    return PortfolioDecisionService(**kwargs)
+
+
+class _FakePortfolioDecisionDb:
+    def __init__(self, stored_run: PortfolioDecisionRun | None = None) -> None:
+        self.add = MagicMock()
+        self.commit = AsyncMock()
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = stored_run
+        self.execute = AsyncMock(return_value=result)
+
+
+def _available_context_patches():
+    return (
+        patch(
+            "app.services.portfolio_decision_service._get_support_resistance_impl",
+            AsyncMock(
+                return_value={
+                    "status": "available",
+                    "nearest_support": {
+                        "price": 100.0,
+                        "distance_pct": -1.5,
+                        "strength": "moderate",
+                    },
+                    "nearest_resistance": {
+                        "price": 115.0,
+                        "distance_pct": 3.0,
+                        "strength": "strong",
+                    },
+                    "supports": [],
+                    "resistances": [],
+                }
+            ),
+        ),
+        patch(
+            "app.services.portfolio_decision_service._get_indicators_impl",
+            AsyncMock(return_value={"indicators": {"rsi": {"14": 45.0}}}),
+        ),
     )
 
 
@@ -611,3 +654,132 @@ async def test_execution_boundary_marks_manual_or_mixed_accounts_for_review() ->
     boundary = slate["symbol_groups"][0]["items"][0]["execution_boundary"]
     assert boundary["channel"] == "manual_review"
     assert boundary["manual_only"] is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_create_decision_run_persists_crypto_snapshot_with_share_url() -> None:
+    db = _FakePortfolioDecisionDb()
+    service = _make_service_for_positions(
+        [
+            _make_overview_position(
+                market_type="CRYPTO",
+                symbol="KRW-BTC",
+                name="Bitcoin",
+                current_price=100.0,
+                evaluation=1_000_000.0,
+                evaluation_krw=1_000_000.0,
+            )
+        ],
+        journals={"KRW-BTC": {"status": "active", "target_price": 120.0}},
+        db=db,
+    )
+
+    with _available_context_patches()[0], _available_context_patches()[1]:
+        slate = await service.create_decision_run(
+            user_id=42,
+            market="CRYPTO",
+            account_keys=["upbit:main"],
+            q="BTC",
+        )
+
+    PortfolioDecisionSlateResponse.model_validate(slate)
+    run = slate["decision_run"]
+    assert run["id"].startswith("decision-")
+    assert run["persisted"] is True
+    assert run["market_scope"] == "CRYPTO"
+    assert run["share_url"] == f"/portfolio/decision?run_id={run['id']}"
+    assert slate["filters"] == {
+        "market": "CRYPTO",
+        "account_keys": ["upbit:main"],
+        "q": "BTC",
+    }
+    assert slate["symbol_groups"][0]["symbol"] == "KRW-BTC"
+
+    db.add.assert_called_once()
+    stored = db.add.call_args.args[0]
+    assert isinstance(stored, PortfolioDecisionRun)
+    assert stored.run_id == run["id"]
+    assert stored.user_id == 42
+    assert stored.market_scope == "CRYPTO"
+    assert stored.mode == "analysis_only"
+    assert stored.source == "portfolio_decision_service_v1"
+    assert stored.filters == slate["filters"]
+    assert stored.summary == slate["summary"]
+    assert stored.symbol_groups == slate["symbol_groups"]
+    assert stored.warnings == slate["warnings"]
+    assert stored.payload == slate
+    db.commit.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_decision_run_returns_stored_payload_without_recalculating() -> None:
+    payload = {
+        "success": True,
+        "decision_run": {
+            "id": "decision-stored",
+            "generated_at": "2026-04-20T10:00:00+00:00",
+            "market_scope": "CRYPTO",
+            "mode": "analysis_only",
+            "persisted": True,
+            "source": "portfolio_decision_service_v1",
+            "share_url": "/portfolio/decision?run_id=decision-stored",
+        },
+        "filters": {"market": "CRYPTO", "account_keys": [], "q": None},
+        "summary": {
+            "symbols": 0,
+            "decision_items": 0,
+            "actionable_items": 0,
+            "manual_review_items": 0,
+            "auto_candidate_items": 0,
+            "missing_context_items": 0,
+            "by_action": {},
+            "by_market": {},
+        },
+        "facets": {"accounts": []},
+        "symbol_groups": [],
+        "warnings": [],
+    }
+    stored_run = PortfolioDecisionRun(
+        run_id="decision-stored",
+        user_id=42,
+        generated_at="2026-04-20T10:00:00+00:00",
+        market_scope="CRYPTO",
+        mode="analysis_only",
+        source="portfolio_decision_service_v1",
+        filters=payload["filters"],
+        summary=payload["summary"],
+        facets=payload["facets"],
+        symbol_groups=payload["symbol_groups"],
+        warnings=payload["warnings"],
+        payload=payload,
+        created_at="2026-04-20T10:00:00+00:00",
+    )
+    db = _FakePortfolioDecisionDb(stored_run)
+    service = _make_service_for_positions([_make_overview_position()], db=db)
+
+    result = await service.get_decision_run(user_id=42, run_id="decision-stored")
+
+    assert result == payload
+    PortfolioDecisionSlateResponse.model_validate(result)
+    service.overview_service.get_overview.assert_not_awaited()
+    db.execute.assert_awaited_once()
+    statement = db.execute.call_args.args[0]
+    assert str(statement.compile(compile_kwargs={"literal_binds": True})).count(
+        "portfolio_decision_runs"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_decision_run_rejects_missing_run() -> None:
+    from app.services.portfolio_decision_service import (
+        PortfolioDecisionRunNotFoundError,
+    )
+
+    db = _FakePortfolioDecisionDb(None)
+    service = _make_service_for_positions([_make_overview_position()], db=db)
+
+    with pytest.raises(PortfolioDecisionRunNotFoundError):
+        await service.get_decision_run(user_id=42, run_id="missing-run")

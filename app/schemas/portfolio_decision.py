@@ -7,9 +7,17 @@ from pydantic import BaseModel, Field
 class DecisionRunResponse(BaseModel):
     id: str
     generated_at: datetime
+    market_scope: str | None = None
     mode: Literal["analysis_only", "dry_run", "live"] = "analysis_only"
     persisted: bool = False
     source: str = "portfolio_decision_service_v1"
+    share_url: str | None = None
+
+
+class DecisionRunCreateRequest(BaseModel):
+    market: Literal["ALL", "KR", "US", "CRYPTO"] = "ALL"
+    account_keys: list[str] = Field(default_factory=list)
+    q: str | None = Field(default=None, min_length=1)
 
 
 class DecisionFiltersResponse(BaseModel):

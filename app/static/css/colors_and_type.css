@@ -1,0 +1,230 @@
+/* ============================================================================
+   Auto Trader - Colors and Type
+   Source of truth for the warm-neutral fintech workspace style.
+   Lift these vars into any Auto Trader page. Values match what the newer
+   dashboards already use (screener, portfolio, pending orders).
+   ============================================================================ */
+
+/* ---- Brand webfont ---------------------------------------------------------
+   Pretendard Variable is the primary Latin + Hangul face. The file ships
+   with the system at fonts/PretendardVariable.ttf. Weights 100-900 are all
+   available through the variable axis; common picks: 400 body, 500 table
+   numerics, 600 labels/nav, 700 display headings.
+   -------------------------------------------------------------------------- */
+@font-face {
+  font-family: "Pretendard Variable";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("fonts/PretendardVariable.ttf") format("truetype-variations"),
+       url("fonts/PretendardVariable.ttf") format("truetype");
+}
+
+:root {
+  /* ---- Surfaces --------------------------------------------------------- */
+  --bg-page:        #F5F3EF;   /* warm neutral app background */
+  --bg-page-top:    #F9F7F3;   /* radial-gradient light stop   */
+  --bg-page-bot:    #ECE8DF;   /* radial-gradient dark stop    */
+  --bg-card:        #FFFFFF;   /* white cards                  */
+  --bg-panel:       #FCFBF8;   /* panels nested inside cards   */
+  --bg-subtle:      #F4F2EC;   /* table headers, muted chrome  */
+  --bg-hover:       #FAF9F7;   /* row hover                    */
+  --bg-elev:        #F8F4EE;   /* elevated / portfolio headers */
+
+  /* Dark navigation surface (sidebar / top header band) */
+  --bg-dark:        #1A1A1A;
+  --bg-dark-2:      #2F2B28;
+  --bg-dark-3:      #45352E;
+  --on-dark:        #F3EDE5;
+  --on-dark-muted:  #D9CEC1;
+
+  /* ---- Borders --------------------------------------------------------- */
+  --border-light:   #D1CCC4;   /* default control + card border */
+  --border-dash:    #ECE7DF;   /* internal dashed dividers      */
+  --border-focus:   #C05A3C;   /* focus ring = accent           */
+
+  /* ---- Text ------------------------------------------------------------ */
+  --text-primary:   #242220;
+  --text-secondary: #4F4A44;
+  --text-muted:     #7A6E64;
+  --text-on-accent: #FFFFFF;
+
+  /* ---- Brand / semantic ------------------------------------------------ */
+  --accent:         #C05A3C;   /* primary CTA, focus, links   */
+  --accent-hover:   #9F462D;
+  --accent-soft:    rgba(192, 90, 60, 0.08);
+  --accent-ring:    rgba(192, 90, 60, 0.25);
+
+  --success:        #4A7C59;
+  --success-soft:   rgba(74, 124, 89, 0.08);
+  --success-ring:   rgba(74, 124, 89, 0.35);
+
+  --error:          #B54A4A;
+  --error-soft:     rgba(181, 74, 74, 0.08);
+  --error-ring:     rgba(181, 74, 74, 0.35);
+
+  --warn:           #8D6E2F;
+  --warn-soft:      rgba(141, 110, 47, 0.10);
+  --warn-ring:      rgba(141, 110, 47, 0.35);
+
+  --info:           #1D5F7A;   /* used on "running" badges     */
+  --info-soft:      rgba(29, 95, 122, 0.08);
+  --info-ring:      rgba(29, 95, 122, 0.35);
+
+  /* Market accents (used on portfolio badges) */
+  --mkt-kr:         #225F9C;
+  --mkt-us:         #2F7A4F;
+  --mkt-crypto:     #80592F;
+
+  /* Direction (KR convention: gain = red, loss = blue) */
+  --profit-pos:     #9A1C1C;   /* 상승 / 빨강 */
+  --profit-neg:     #0F4C9C;   /* 하락 / 파랑 */
+
+  /* ---- Type ------------------------------------------------------------ */
+  --font-sans: "Pretendard Variable", "Pretendard", "Noto Sans KR",
+               "Apple SD Gothic Neo", system-ui, -apple-system, "Segoe UI",
+               Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+               "Liberation Mono", "Courier New", monospace;
+
+  /* Scale - information-dense; don't inflate beyond this */
+  --fs-xs:   0.72rem;   /* 11.5px - uppercase eyebrow labels */
+  --fs-sm:   0.80rem;   /* 12.8px - table body, metric grid  */
+  --fs-base: 0.85rem;   /* 13.6px - default body / controls  */
+  --fs-md:   0.92rem;   /* 14.7px - panel h3                  */
+  --fs-lg:   1.00rem;   /* 16px   - panel h2                  */
+  --fs-xl:   1.25rem;   /* 20px   - page title (dark header)  */
+  --fs-2xl:  1.50rem;   /* 24px   - KPI card value            */
+
+  --lh-tight: 1.2;
+  --lh-body:  1.45;
+
+  --fw-regular: 400;
+  --fw-medium:  500;
+  --fw-semibold:600;
+
+  --tracking-label: 0.05em;   /* uppercase eyebrows */
+  --tracking-head:  0.02em;   /* dark header title  */
+
+  /* ---- Spacing / radius / shadow --------------------------------------- */
+  --sp-1: 0.25rem;
+  --sp-2: 0.45rem;
+  --sp-3: 0.60rem;
+  --sp-4: 0.75rem;
+  --sp-5: 0.90rem;
+  --sp-6: 1.00rem;
+  --sp-8: 1.40rem;
+  --sp-10:1.60rem;
+
+  --r-sm: 0.25rem;   /* side badges (BUY/SELL) */
+  --r-md: 0.50rem;   /* inputs                 */
+  --r-lg: 0.60rem;   /* buttons, small panels  */
+  --r-xl: 0.75rem;   /* panels                 */
+  --r-2xl:1.00rem;   /* shell                  */
+  --r-pill: 999px;   /* status badges          */
+
+  --elev-0: none;
+  --elev-1: 0 1px 2px rgba(24, 19, 16, 0.04);
+  --elev-card: 0 18px 40px rgba(24, 19, 16, 0.08);   /* shell drop shadow */
+  --elev-cta:  0 8px 18px rgba(192, 90, 60, 0.25);   /* accent btn hover  */
+
+  /* Motion */
+  --dur-fast: 0.15s;
+  --dur-base: 0.18s;
+  --dur-slow: 0.30s;
+  --ease-out: ease;
+}
+
+/* ============================================================================
+   Semantic element defaults - apply these on top of a root body{} that uses
+   var(--font-sans) and var(--bg-page). Keep specificity low so consumers
+   override easily.
+   ============================================================================ */
+
+.at-body,
+body.at {
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  line-height: var(--lh-body);
+  color: var(--text-primary);
+  background: var(--bg-page);
+}
+
+.at-page-bg {
+  background: radial-gradient(
+    circle at top right,
+    var(--bg-page-top) 0%,
+    var(--bg-page) 45%,
+    var(--bg-page-bot) 100%
+  );
+  min-height: 100vh;
+}
+
+/* Headings ------------------------------------------------------------------ */
+.at-h1 {          /* dark-header page title */
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-head);
+  margin: 0;
+  color: var(--on-dark);
+}
+.at-h1-sub {
+  font-size: var(--fs-base);
+  margin: 0.35rem 0 0;
+  color: var(--on-dark-muted);
+}
+.at-h2 {          /* panel title */
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  margin: 0;
+  color: var(--text-primary);
+}
+.at-h3 {          /* sub-panel heading */
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  margin: 0;
+  color: var(--text-primary);
+}
+.at-eyebrow {     /* KPI / section label */
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+.at-kpi {         /* KPI big number */
+  font-size: var(--fs-2xl);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
+  margin: 0;
+}
+
+/* Body + utility ------------------------------------------------------------ */
+.at-subtle  { color: var(--text-secondary); font-size: var(--fs-base); }
+.at-muted   { color: var(--text-muted);     font-size: var(--fs-sm);   }
+.at-mono    { font-family: var(--font-mono); }
+.at-error   { color: var(--error);   font-size: var(--fs-base); }
+.at-success { color: var(--success); font-size: var(--fs-base); }
+
+/* Shared navigation chrome -------------------------------------------------- */
+.at-navbar {
+  background: linear-gradient(120deg, var(--bg-dark) 0%, var(--bg-dark-2) 50%, var(--bg-dark-3) 100%);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.at-navbar .navbar-brand,
+.at-navbar .nav-link,
+.at-navbar .navbar-text {
+  color: var(--on-dark);
+}
+
+.at-navbar .nav-link:hover,
+.at-navbar .nav-link:focus {
+  color: var(--text-on-accent);
+}
+
+.at-role-badge {
+  background: var(--accent-soft);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: var(--on-dark);
+}

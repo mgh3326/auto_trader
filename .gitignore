@@ -281,3 +281,4 @@ backtest/output/
 graphify-out/
 app/graphify-out/
 /.air/worktree.json
+.omx/

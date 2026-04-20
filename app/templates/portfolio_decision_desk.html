@@ -7,13 +7,17 @@
     <!-- Header -->
     <div class="d-flex justify-content-between align-items-center mb-4">
         <div>
-            <h1 class="h3 mb-1">Decision Desk <span class="badge bg-secondary fs-6">V1 Analysis</span></h1>
-            <p class="text-muted mb-0">Analysis-only generated action slate for your current portfolio.</p>
+            <h1 class="h3 mb-1">Decision Desk <span id="decision-mode-badge" class="badge bg-secondary fs-6">V1 Analysis</span></h1>
+            <p id="decision-run-status" class="text-muted mb-0">Analysis-only generated action slate for your current portfolio.</p>
+            <p id="decision-share-url" class="small text-muted mb-0 d-none"></p>
         </div>
         <div class="d-flex gap-2">
             <a href="/portfolio/" class="btn btn-outline-secondary">
                 <i class="bi bi-arrow-left"></i> Portfolio Dashboard
             </a>
+            <button id="create-share-link-btn" class="btn btn-outline-primary">
+                <i class="bi bi-link-45deg"></i> Create Share Link
+            </button>
             <button id="refresh-btn" class="btn btn-primary">
                 <i class="bi bi-arrow-clockwise"></i> Refresh Analysis
             </button>
@@ -293,9 +297,50 @@
         const summarySection = document.getElementById('summary-section');
         const filterForm = document.getElementById('filter-form');
         const refreshBtn = document.getElementById('refresh-btn');
+        const createShareLinkBtn = document.getElementById('create-share-link-btn');
         const actionFilter = document.getElementById('action-filter');
+        const modeBadge = document.getElementById('decision-mode-badge');
+        const runStatus = document.getElementById('decision-run-status');
+        const shareUrlEl = document.getElementById('decision-share-url');
 
+        const initialParams = new URLSearchParams(window.location.search);
+        const snapshotRunId = initialParams.get('run_id');
+        const isSnapshotMode = Boolean(snapshotRunId);
         let currentSlate = null;
+
+        initializeLiveFiltersFromUrl(initialParams);
+        updateModeChrome();
+
+        function initializeLiveFiltersFromUrl(params) {
+            if (isSnapshotMode) return;
+            const market = params.get('market');
+            if (market) {
+                const marketSelect = document.getElementById('decision-market-filter');
+                if ([...marketSelect.options].some(option => option.value === market)) {
+                    marketSelect.value = market;
+                }
+            }
+            const q = params.get('q');
+            if (q) document.getElementById('decision-symbol-search').value = q;
+        }
+
+        function updateModeChrome() {
+            if (isSnapshotMode) {
+                modeBadge.textContent = 'Snapshot';
+                modeBadge.className = 'badge bg-success fs-6';
+                runStatus.textContent = `Loading persisted decision snapshot ${snapshotRunId}...`;
+                refreshBtn.classList.add('d-none');
+                createShareLinkBtn.classList.add('d-none');
+                filterForm.querySelectorAll('input, select, button').forEach(el => {
+                    if (el.id !== 'action-filter') el.disabled = true;
+                });
+                return;
+            }
+            modeBadge.textContent = 'V1 Analysis';
+            modeBadge.className = 'badge bg-secondary fs-6';
+            runStatus.textContent = 'Analysis-only generated action slate for your current portfolio.';
+            shareUrlEl.classList.add('d-none');
+        }
 
         function setStatusMessage(message, className = 'text-muted') {
             groupsContainer.innerHTML = '';
@@ -313,31 +358,120 @@
             groupsContainer.appendChild(div);
         }
 
-        async function fetchSlate() {
-            setStatusMessage('Fetching latest analysis...');
-            
+        function buildLiveParams() {
             const formData = new FormData(filterForm);
             const params = new URLSearchParams();
-            if (formData.get('market') !== 'ALL') params.append('market', formData.get('market'));
-            if (formData.get('q')) params.append('q', formData.get('q'));
-            
-            try {
-                const response = await fetch('/portfolio/api/decision-slate?' + params.toString());
-                const contentType = response.headers.get('content-type') || '';
-                if (!contentType.includes('application/json')) {
-                    setAlertMessage('Failed to fetch data: unexpected response format.');
-                    return;
-                }
+            const market = formData.get('market') || 'ALL';
+            params.set('market', market);
+            if (formData.get('q')) params.set('q', formData.get('q'));
+            initialParams.getAll('account_keys').forEach(accountKey => {
+                if (accountKey) params.append('account_keys', accountKey);
+            });
+            return params;
+        }
 
-                const data = await response.json();
+        function updateLiveUrl(params) {
+            if (isSnapshotMode) return;
+            const nextUrl = `${window.location.pathname}?${params.toString()}`;
+            window.history.replaceState({}, '', nextUrl);
+        }
+
+        async function fetchSlate(options = {}) {
+            if (isSnapshotMode) {
+                await fetchPersistedSnapshot();
+                return;
+            }
+
+            setStatusMessage('Fetching latest analysis...');
+            const params = buildLiveParams();
+            if (options.updateUrl) updateLiveUrl(params);
+
+            try {
+                const response = await fetch(`/portfolio/api/decision-slate?${params.toString()}`);
+                const data = await parseJsonResponse(response);
                 if (data.success) {
                     currentSlate = data;
+                    updateLiveRunStatus();
                     renderSlate();
                 } else {
                     setAlertMessage(`Failed to fetch data: ${data.detail || 'Unknown error'}`);
                 }
             } catch (error) {
                 setAlertMessage(`Error: ${error.message}`);
+            }
+        }
+
+        async function fetchPersistedSnapshot() {
+            setStatusMessage('Fetching persisted snapshot...');
+            try {
+                const response = await fetch(`/portfolio/api/decision-runs/${encodeURIComponent(snapshotRunId)}`);
+                const data = await parseJsonResponse(response);
+                if (data.success) {
+                    currentSlate = data;
+                    updateSnapshotRunStatus(data);
+                    renderSlate();
+                } else {
+                    setAlertMessage(`Failed to fetch snapshot: ${data.detail || 'Unknown error'}`);
+                }
+            } catch (error) {
+                setAlertMessage(`Error: ${error.message}`);
+            }
+        }
+
+        async function parseJsonResponse(response) {
+            const contentType = response.headers.get('content-type') || '';
+            if (!contentType.includes('application/json')) {
+                throw new Error('unexpected response format');
+            }
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.detail || `request failed (${response.status})`);
+            }
+            return data;
+        }
+
+        function updateLiveRunStatus() {
+            if (!currentSlate) return;
+            const generatedAt = new Date(currentSlate.decision_run.generated_at).toLocaleString();
+            runStatus.textContent = `Live operator view generated ${generatedAt}. Filters are preserved in this URL.`;
+            shareUrlEl.classList.add('d-none');
+        }
+
+        function updateSnapshotRunStatus(data) {
+            const run = data.decision_run;
+            const generatedAt = new Date(run.generated_at).toLocaleString();
+            runStatus.textContent = `Persisted snapshot ${run.id} generated ${generatedAt} for ${run.market_scope || data.filters.market || 'ALL'}.`;
+            if (run.share_url) {
+                const absoluteUrl = new URL(run.share_url, window.location.origin).toString();
+                shareUrlEl.textContent = `Share URL: ${absoluteUrl}`;
+                shareUrlEl.classList.remove('d-none');
+            }
+        }
+
+        async function createShareLink() {
+            if (isSnapshotMode) return;
+            createShareLinkBtn.disabled = true;
+            createShareLinkBtn.textContent = 'Creating...';
+            try {
+                const formData = new FormData(filterForm);
+                const params = buildLiveParams();
+                const response = await fetch('/portfolio/api/decision-runs', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        market: formData.get('market') || 'ALL',
+                        account_keys: params.getAll('account_keys'),
+                        q: formData.get('q') || null,
+                    }),
+                });
+                const data = await parseJsonResponse(response);
+                const shareUrl = data.decision_run.share_url || `/portfolio/decision?run_id=${encodeURIComponent(data.decision_run.id)}`;
+                window.location.assign(shareUrl);
+            } catch (error) {
+                setAlertMessage(`Error creating share link: ${error.message}`);
+            } finally {
+                createShareLinkBtn.disabled = false;
+                createShareLinkBtn.innerHTML = '<i class="bi bi-link-45deg"></i> Create Share Link';
             }
         }
 
@@ -402,11 +536,15 @@
 
         filterForm.addEventListener('submit', function(e) {
             e.preventDefault();
-            fetchSlate();
+            fetchSlate({updateUrl: true});
         });
 
         refreshBtn.addEventListener('click', function() {
-            fetchSlate();
+            fetchSlate({updateUrl: true});
+        });
+
+        createShareLinkBtn.addEventListener('click', function() {
+            createShareLink();
         });
         
         actionFilter.addEventListener('change', function() {
@@ -414,7 +552,7 @@
         });
 
         // Initial fetch
-        fetchSlate();
+        fetchSlate({updateUrl: false});
     });
 </script>
 {% endblock %}
