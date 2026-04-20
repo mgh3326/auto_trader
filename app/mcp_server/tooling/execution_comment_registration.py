@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from app.mcp_server.tooling.execution_comment import format_execution_comment
+from app.mcp_server.tooling.execution_comment_tools import format_execution_comment
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP

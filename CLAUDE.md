@@ -262,6 +262,32 @@ chore/<설명>                 # 유지보수
 4. 리뷰 후 머지
 5. 배포 시 `main` → `production` 머지
 
+### Worktree 운영 규칙 (필수)
+
+**루트 `/home/mgh3326/auto_trader` 는 항상 `main` 체크아웃 고정. 배포 머지 시에만 `production` 으로 일시 전환.** 루트에서 feature/fix 브랜치를 체크아웃하거나 작업하지 않습니다.
+
+모든 코드 변경은 worktree 에서 수행합니다:
+
+```bash
+# 새 작업 시작
+cd ~/auto_trader && git switch main && git pull
+git worktree add ~/auto_trader/.worktrees/<ISSUE-ID> -b feature/<ISSUE-ID>-<desc> main
+
+# 작업
+cd ~/auto_trader/.worktrees/<ISSUE-ID>
+# ... 커밋, 푸시, PR ...
+
+# PR 머지 후 (24h 내)
+cd ~/auto_trader
+git worktree remove .worktrees/<ISSUE-ID>
+git branch -D feature/<ISSUE-ID>-<desc>
+```
+
+- **표준 worktree 경로**: `~/auto_trader/.worktrees/<ISSUE-ID>` (대문자 ISSUE-ID 권장)
+- 이전 경로 `.claude/worktrees/`, `~/.claude/worktrees/` 는 deprecated — 남아 있다면 표준 경로로 이관하거나 prune
+- 이관: `git worktree move <old-path> <new-path>` (dirty 없는 상태에서)
+- 삭제된 원격 브랜치(`upstream gone`) 는 주기적으로 `git fetch --prune && git branch -vv | grep ': gone\]'` 로 확인하고 정리
+
 ## 주요 워크플로우
 
 ### 1. 새로운 서비스 분석기 추가

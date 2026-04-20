@@ -11,6 +11,7 @@ from typing import Any, Literal
 from typing import cast as typing_cast
 
 import app.services.brokers.upbit.client as upbit_service
+from app.mcp_server.caller_identity import get_caller_source
 from app.mcp_server.tick_size import adjust_tick_size_kr, get_tick_size_kr
 from app.mcp_server.tooling.order_journal import (
     _append_journal_warning,
@@ -22,6 +23,7 @@ from app.mcp_server.tooling.order_journal import (
     _validate_buy_journal_requirements,
 )
 from app.mcp_server.tooling.order_validation import (
+    DefensiveTrimContext,
     _check_balance_and_warn,
     _check_daily_order_limit,
     _get_balance_for_order,
@@ -30,6 +32,7 @@ from app.mcp_server.tooling.order_validation import (
     _preview_order,
     _record_order_history,
     _resolve_buy_quantity,
+    _validate_defensive_trim_preconditions,
     _validate_sell_side,
 )
 from app.mcp_server.tooling.shared import logger
@@ -287,6 +290,7 @@ async def _build_preview(
     price: float | None,
     current_price: float,
     market_type: str,
+    defensive_trim_ctx: DefensiveTrimContext | None,
 ) -> dict[str, Any]:
     """Run preview and enrich result with defaults."""
     dry_run_result = await _preview_order(
@@ -297,6 +301,7 @@ async def _build_preview(
         price=price,
         current_price=current_price,
         market_type=market_type,
+        defensive_trim_ctx=defensive_trim_ctx,
     )
     if not isinstance(dry_run_result, dict):
         raise ValueError("Order preview returned invalid result")
@@ -370,6 +375,7 @@ async def _handle_sell_journal(
     exit_reason: str | None,
     reason: str,
     journal_warning: str | None,
+    defensive_trim_ctx: DefensiveTrimContext | None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Close journals for sell orders.
 
@@ -392,6 +398,7 @@ async def _handle_sell_journal(
             sell_quantity=resolved_sell_qty,
             sell_price=resolved_sell_price,
             exit_reason=exit_reason or reason,
+            defensive_trim_ctx=defensive_trim_ctx,
         )
         return journal_close_result, journal_warning
     except Exception as journal_exc:
@@ -474,6 +481,7 @@ async def _record_fill_and_journals(
     min_hold_days: int | None,
     notes: str | None,
     indicators_snapshot: dict[str, Any] | None,
+    defensive_trim_ctx: DefensiveTrimContext | None,
 ) -> dict[str, Any]:
     """Save fill to DB, manage journals (create for buy, close for sell)."""
     journal_created = False
@@ -538,6 +546,7 @@ async def _record_fill_and_journals(
             exit_reason=exit_reason,
             reason=reason,
             journal_warning=journal_warning,
+            defensive_trim_ctx=defensive_trim_ctx,
         )
 
     result: dict[str, Any] = {
@@ -597,6 +606,7 @@ async def _execute_and_record(
     min_hold_days: int | None,
     notes: str | None,
     indicators_snapshot: dict[str, Any] | None,
+    defensive_trim_ctx: DefensiveTrimContext | None,
     order_error_fn: Any,
 ) -> dict[str, Any]:
     """Execute a live order, record history, fills, and journals."""
@@ -632,6 +642,14 @@ async def _execute_and_record(
         amount=order_amount,
         reason=reason,
         dry_run=False,
+        defensive_trim=defensive_trim_ctx is not None,
+        approval_issue_id=(
+            defensive_trim_ctx.approval_issue_id if defensive_trim_ctx else None
+        ),
+        requester_agent_id=(
+            defensive_trim_ctx.requester_agent_id if defensive_trim_ctx else None
+        ),
+        caller_source=get_caller_source() if defensive_trim_ctx else None,
     )
 
     # Record phase: fills + journals
@@ -653,6 +671,7 @@ async def _execute_and_record(
         min_hold_days=min_hold_days,
         notes=notes,
         indicators_snapshot=indicators_snapshot,
+        defensive_trim_ctx=defensive_trim_ctx,
     )
 
     return {
@@ -700,6 +719,8 @@ async def _place_order_impl(
     min_hold_days: int | None = None,
     notes: str | None = None,
     indicators_snapshot: dict[str, Any] | None = None,
+    defensive_trim: bool = False,
+    approval_issue_id: str | None = None,
 ) -> dict[str, Any]:
     symbol, side_lower, order_type_lower = _validate_inputs(
         symbol,
@@ -734,6 +755,16 @@ async def _place_order_impl(
 
     def _order_error(message: str) -> dict[str, Any]:
         return _build_order_error(message, source, normalized_symbol, market_type)
+
+    try:
+        defensive_trim_ctx = await _validate_defensive_trim_preconditions(
+            defensive_trim=defensive_trim,
+            approval_issue_id=approval_issue_id,
+            side=side_lower,
+            order_type=order_type_lower,
+        )
+    except ValueError as e:
+        return _order_error(str(e))
 
     # Check stop-loss cooldown for crypto buys
     if side_lower == "buy" and market_type == "crypto":
@@ -776,6 +807,7 @@ async def _place_order_impl(
                 price=price,
                 current_price=current_price,
                 order_error_fn=_order_error,
+                defensive_trim_ctx=defensive_trim_ctx,
             )
             if sell_error is not None:
                 return sell_error
@@ -790,6 +822,7 @@ async def _place_order_impl(
                 price=price,
                 current_price=current_price,
                 market_type=market_type,
+                defensive_trim_ctx=defensive_trim_ctx,
             )
         except ValueError as preview_exc:
             return _order_error(str(preview_exc))
@@ -835,6 +868,7 @@ async def _place_order_impl(
             min_hold_days=min_hold_days,
             notes=notes,
             indicators_snapshot=indicators_snapshot,
+            defensive_trim_ctx=defensive_trim_ctx,
             order_error_fn=_order_error,
         )
     except Exception as exc:
@@ -848,6 +882,14 @@ async def _place_order_impl(
             reason=reason,
             dry_run=True,
             error=str(exc),
+            defensive_trim=defensive_trim_ctx is not None,
+            approval_issue_id=(
+                defensive_trim_ctx.approval_issue_id if defensive_trim_ctx else None
+            ),
+            requester_agent_id=(
+                defensive_trim_ctx.requester_agent_id if defensive_trim_ctx else None
+            ),
+            caller_source=get_caller_source() if defensive_trim_ctx else None,
         )
         return _order_error(str(exc))
 

@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import datetime
 import json
+import re
+import time
+from dataclasses import dataclass
 from typing import Any
+
+import httpx
 
 import app.services.brokers.upbit.client as upbit_service
 from app.core.config import settings
+from app.mcp_server.caller_identity import get_caller_agent_id, get_caller_source
 from app.mcp_server.tooling.market_data_quotes import (
     _fetch_quote_equity_kr,
     _fetch_quote_equity_us,
@@ -27,6 +33,153 @@ from app.services.brokers.kis import (
 from app.services.brokers.upbit.client import (
     parse_upbit_account_row as _parse_upbit_account_row,
 )
+
+_DEFENSIVE_TRIM_APPROVAL_REGEX = re.compile(r"^[A-Z]+-\d+$")
+_DEFENSIVE_TRIM_CACHE_TTL_SECONDS = 60.0
+_defensive_trim_success_cache: dict[str, float] = {}
+_TRADER_AGENT_ID_DEFAULT = "6b2192cc-14fa-4335-b572-2fe1e0cb54a7"
+
+
+@dataclass(frozen=True)
+class DefensiveTrimContext:
+    approval_issue_id: str
+    requester_agent_id: str
+    approval_verified_at: datetime.datetime
+
+
+def _is_cached_approved(approval_issue_id: str) -> bool:
+    expires_at = _defensive_trim_success_cache.get(approval_issue_id)
+    if expires_at is None:
+        return False
+    if expires_at <= time.time():
+        _defensive_trim_success_cache.pop(approval_issue_id, None)
+        return False
+    return True
+
+
+def _cache_approved(approval_issue_id: str) -> None:
+    _defensive_trim_success_cache[approval_issue_id] = (
+        time.time() + _DEFENSIVE_TRIM_CACHE_TTL_SECONDS
+    )
+
+
+def _log_defensive_trim_bypass(
+    *,
+    symbol: str,
+    market_type: str,
+    price: float,
+    current_price: float,
+    avg_price: float,
+    min_sell_price: float,
+    defensive_trim_ctx: DefensiveTrimContext,
+    phase: str,
+) -> None:
+    logger.warning(
+        "defensive_trim_bypass_active: sell floor bypassed",
+        extra={
+            "symbol": symbol,
+            "market_type": market_type,
+            "price": price,
+            "current_price": current_price,
+            "avg_price": avg_price,
+            "avg_buy_price": avg_price,
+            "min_sell_price": min_sell_price,
+            "min_floor": min_sell_price,
+            "approval_issue_id": defensive_trim_ctx.approval_issue_id,
+            "requester_agent_id": defensive_trim_ctx.requester_agent_id,
+            "phase": phase,
+        },
+    )
+
+
+async def _fetch_approval_issue_status(approval_issue_id: str) -> str | None:
+    api_url = getattr(settings, "paperclip_api_url", None)
+    api_key = getattr(settings, "paperclip_api_key", None)
+    if not api_url or not api_key:
+        logger.warning(
+            "defensive_trim disabled: missing PAPERCLIP_API_URL or PAPERCLIP_API_KEY"
+        )
+        return None
+
+    issue_api_url = f"{api_url.rstrip('/')}/api/issues/{approval_issue_id}"
+    headers = {"Authorization": f"Bearer {api_key}"}
+
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            response = await client.get(issue_api_url, headers=headers)
+    except Exception:
+        return None
+
+    if response.status_code != 200:
+        return None
+
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+
+    status = payload.get("status")
+    return str(status) if status is not None else None
+
+
+async def _validate_defensive_trim_preconditions(
+    *,
+    defensive_trim: bool,
+    approval_issue_id: str | None,
+    side: str,
+    order_type: str,
+) -> DefensiveTrimContext | None:
+    """Validate defensive_trim gates using middleware-extracted caller identity."""
+    if not defensive_trim:
+        return None
+
+    if side != "sell":
+        raise ValueError(
+            "defensive_trim requires side='sell' (buy orders always use existing path)"
+        )
+    if order_type != "limit":
+        raise ValueError(
+            "defensive_trim requires order_type='limit' (market orders are blocked)"
+        )
+    if not approval_issue_id:
+        raise ValueError("defensive_trim=True requires approval_issue_id")
+    if not _DEFENSIVE_TRIM_APPROVAL_REGEX.match(approval_issue_id):
+        raise ValueError("approval_issue_id format invalid (expected e.g. 'ROB-164')")
+
+    caller_agent_id = get_caller_agent_id()
+    if not caller_agent_id:
+        raise ValueError(
+            "caller identity unavailable — defensive_trim requires authenticated MCP caller"
+        )
+
+    trader_agent_id = getattr(settings, "trader_agent_id", _TRADER_AGENT_ID_DEFAULT)
+    if caller_agent_id != trader_agent_id:
+        raise ValueError(
+            "defensive_trim requires Trader agent caller "
+            f"(got caller_agent_id={caller_agent_id})"
+        )
+
+    approval_status: str | None
+    if _is_cached_approved(approval_issue_id):
+        approval_status = "done"
+    else:
+        try:
+            approval_status = await _fetch_approval_issue_status(approval_issue_id)
+        except Exception:
+            approval_status = None
+        if approval_status == "done":
+            _cache_approved(approval_issue_id)
+
+    if approval_status != "done":
+        raise ValueError(
+            f"approval_issue_id {approval_issue_id} not found or not in 'done' status"
+        )
+
+    return DefensiveTrimContext(
+        approval_issue_id=approval_issue_id,
+        requester_agent_id=caller_agent_id,
+        approval_verified_at=datetime.datetime.now(datetime.UTC),
+    )
 
 
 async def _get_current_price_for_order(symbol: str, market_type: str) -> float | None:
@@ -145,6 +298,10 @@ async def _record_order_history(
     reason: str,
     dry_run: bool,
     error: str | None = None,
+    defensive_trim: bool = False,
+    approval_issue_id: str | None = None,
+    requester_agent_id: str | None = None,
+    caller_source: str | None = None,
 ) -> None:
     try:
         import redis.asyncio as redis_async
@@ -169,6 +326,10 @@ async def _record_order_history(
             "reason": reason,
             "dry_run": dry_run,
             "error": error,
+            "defensive_trim": defensive_trim,
+            "approval_issue_id": approval_issue_id,
+            "requester_agent_id": requester_agent_id,
+            "caller_source": caller_source or get_caller_source(),
         }
 
         await redis.rpush(key, json.dumps(record))
@@ -253,6 +414,7 @@ async def _preview_sell(
     price: float | None,
     current_price: float,
     market_type: str,
+    defensive_trim_ctx: DefensiveTrimContext | None = None,
 ) -> dict[str, Any]:
     """Build a dry-run preview dict for a sell order."""
     result: dict[str, Any] = {
@@ -277,18 +439,33 @@ async def _preview_sell(
             result["error"] = "price is required for limit sell orders"
             return result
         min_sell_price = avg_price * 1.01
-        if price < min_sell_price:
+        if price < min_sell_price and defensive_trim_ctx is None:
             result["error"] = (
                 f"Sell price {price} below minimum "
                 f"(avg_buy_price * 1.01 = {min_sell_price:.0f})"
             )
             return result
+        if price < min_sell_price and defensive_trim_ctx is not None:
+            _log_defensive_trim_bypass(
+                symbol=symbol,
+                market_type=market_type,
+                price=price,
+                current_price=current_price,
+                avg_price=avg_price,
+                min_sell_price=min_sell_price,
+                defensive_trim_ctx=defensive_trim_ctx,
+                phase="preview",
+            )
         if price < current_price:
             result["error"] = f"Sell price {price} below current price {current_price}"
             return result
         order_quantity = holdings["quantity"] if quantity is None else quantity
         execution_price = price
         result["price"] = execution_price
+
+    if defensive_trim_ctx is not None:
+        result["defensive_trim"] = True
+        result["approval_issue_id"] = defensive_trim_ctx.approval_issue_id
 
     estimated_value = execution_price * order_quantity
     realized_pnl = (execution_price - avg_price) * order_quantity
@@ -309,6 +486,7 @@ async def _preview_order(
     price: float | None,
     current_price: float,
     market_type: str,
+    defensive_trim_ctx: DefensiveTrimContext | None = None,
 ) -> dict[str, Any]:
     """Validate order and return a dry-run simulation dict.
 
@@ -330,6 +508,7 @@ async def _preview_order(
         price=price,
         current_price=current_price,
         market_type=market_type,
+        defensive_trim_ctx=defensive_trim_ctx,
     )
 
 
@@ -392,6 +571,7 @@ async def _validate_sell_side(
     price: float | None,
     current_price: float,
     order_error_fn: Any,
+    defensive_trim_ctx: DefensiveTrimContext | None = None,
 ) -> tuple[float, float, dict[str, Any] | None]:
     """Validate sell-side: check holdings, locked, price constraints.
 
@@ -419,7 +599,7 @@ async def _validate_sell_side(
 
     if order_type == "limit" and price is not None:
         min_sell_price = avg_price * 1.01
-        if price < min_sell_price:
+        if price < min_sell_price and defensive_trim_ctx is None:
             return (
                 0.0,
                 0.0,
@@ -427,6 +607,17 @@ async def _validate_sell_side(
                     f"Sell price {price} below minimum "
                     f"(avg_buy_price * 1.01 = {min_sell_price:.0f})"
                 ),
+            )
+        if price < min_sell_price and defensive_trim_ctx is not None:
+            _log_defensive_trim_bypass(
+                symbol=normalized_symbol,
+                market_type=market_type,
+                price=price,
+                current_price=current_price,
+                avg_price=avg_price,
+                min_sell_price=min_sell_price,
+                defensive_trim_ctx=defensive_trim_ctx,
+                phase="execution",
             )
         if price < current_price:
             return (

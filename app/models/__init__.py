@@ -63,6 +63,8 @@ __all__ = [
     "SellMode",
     "TierParamType",
     "FilterName",
+    "JournalStatus",
+    "TradeJournal",
     "StockInfo",
     "StockAnalysisResult",
     "KRSymbolUniverse",

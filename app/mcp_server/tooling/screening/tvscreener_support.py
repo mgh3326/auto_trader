@@ -168,6 +168,18 @@ def _map_tvscreener_stock_row(
         "adx": row.get("adx"),
         "market": row.get("market") or market,
     }
+    adv_krw = _to_optional_float(row.get("adv_krw"))
+    if adv_krw is not None:
+        mapped["adv_krw"] = adv_krw
+    average_volume_30_day = _to_optional_float(row.get("average_volume_30_day"))
+    if average_volume_30_day is not None:
+        mapped["average_volume_30_day"] = average_volume_30_day
+    market_cap_krw = _to_optional_float(row.get("market_cap_krw"))
+    if market_cap_krw is not None:
+        mapped["market_cap_krw"] = market_cap_krw
+    instrument_type = row.get("instrument_type")
+    if instrument_type is not None:
+        mapped["instrument_type"] = instrument_type
     pbr = _to_optional_float(
         _get_first_present(
             row,
@@ -252,10 +264,14 @@ def _adapt_tvscreener_stock_response(
     normalized_filters.setdefault("sort_by", None)
     normalized_filters.setdefault("sort_order", "desc")
     total_count = int(tvscreener_result.get("count", len(rows)) or 0)
+    meta_fields = {"source": "tvscreener"}
+    extra_meta = tvscreener_result.get("meta_fields")
+    if isinstance(extra_meta, dict):
+        meta_fields.update(extra_meta)
     return _build_screen_response(
         rows,
         total_count,
         normalized_filters,
         market,
-        meta_fields={"source": "tvscreener"},
+        meta_fields=meta_fields,
     )

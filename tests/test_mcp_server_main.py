@@ -41,7 +41,10 @@ def _load_main_module(
     fake_mcp_package.__path__ = []
 
     fake_config = ModuleType("app.core.config")
-    fake_config.__dict__["settings"] = SimpleNamespace(LOG_LEVEL="INFO")
+    fake_config.__dict__["settings"] = SimpleNamespace(
+        LOG_LEVEL="INFO",
+        mcp_caller_agent_id_fallback=None,
+    )
 
     fake_auth = ModuleType("app.mcp_server.auth")
     fake_auth.__dict__["build_auth_provider"] = MagicMock(return_value="auth-provider")
@@ -49,6 +52,13 @@ def _load_main_module(
     fake_sentry_middleware = ModuleType("app.mcp_server.sentry_middleware")
     fake_sentry_middleware.__dict__["McpToolCallSentryMiddleware"] = MagicMock(
         return_value="middleware"
+    )
+
+    fake_caller_identity_middleware = ModuleType(
+        "app.mcp_server.caller_identity_middleware"
+    )
+    fake_caller_identity_middleware.__dict__["CallerIdentityMiddleware"] = MagicMock(
+        return_value="caller-identity-middleware"
     )
 
     fake_tooling = ModuleType("app.mcp_server.tooling")
@@ -69,6 +79,11 @@ def _load_main_module(
     monkeypatch.setitem(
         sys.modules, "app.mcp_server.sentry_middleware", fake_sentry_middleware
     )
+    monkeypatch.setitem(
+        sys.modules,
+        "app.mcp_server.caller_identity_middleware",
+        fake_caller_identity_middleware,
+    )
     monkeypatch.setitem(sys.modules, "app.mcp_server.tooling", fake_tooling)
     monkeypatch.setitem(sys.modules, "app.monitoring.sentry", fake_monitoring)
     monkeypatch.delitem(sys.modules, "app.mcp_server.main", raising=False)
@@ -84,6 +99,32 @@ def _load_main_module(
 
 @pytest.mark.unit
 class TestMcpServerMain:
+    def test_registers_caller_identity_middleware_after_sentry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _, mcp, _ = _load_main_module(monkeypatch)
+
+        assert [call.args[0] for call in mcp.add_middleware.call_args_list] == [
+            "middleware",
+            "caller-identity-middleware",
+        ]
+
+    def test_non_integer_log_level_falls_back_to_info(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        module, mcp, _ = _load_main_module(monkeypatch)
+        module.settings.LOG_LEVEL = "BASIC_FORMAT"
+
+        module.main()
+
+        mcp.run.assert_called_once_with(
+            transport="streamable-http",
+            host="0.0.0.0",
+            port=8765,
+            path="/mcp",
+            uvicorn_config={"timeout_graceful_shutdown": 10},
+        )
+
     def test_streamable_http_uses_default_shutdown_timeout(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -153,3 +194,55 @@ class TestMcpServerMain:
             module.main()
 
         capture_exception.assert_called_once()
+
+    @pytest.mark.parametrize("transport", ["streamable-http", "sse"])
+    def test_refuses_to_boot_when_env_fallback_set_on_http_transport(
+        self, monkeypatch: pytest.MonkeyPatch, transport: str
+    ) -> None:
+        monkeypatch.setenv("MCP_TYPE", transport)
+
+        module, mcp, capture_exception = _load_main_module(monkeypatch)
+        module.settings.mcp_caller_agent_id_fallback = "trader-agent-id"
+
+        with pytest.raises(
+            RuntimeError,
+            match=(
+                "MCP_CALLER_AGENT_ID is only allowed for stdio/local dev transports"
+            ),
+        ):
+            module.main()
+
+        mcp.run.assert_not_called()
+        capture_exception.assert_called_once()
+
+    def test_boot_ok_when_env_fallback_unset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MCP_TYPE", "sse")
+
+        module, mcp, capture_exception = _load_main_module(monkeypatch)
+        module.settings.mcp_caller_agent_id_fallback = None
+
+        module.main()
+
+        mcp.run.assert_called_once_with(
+            transport="sse",
+            host="0.0.0.0",
+            port=8765,
+            path="/mcp",
+            uvicorn_config={"timeout_graceful_shutdown": 10},
+        )
+        capture_exception.assert_not_called()
+
+    def test_boot_ok_when_stdio_and_env_fallback_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MCP_TYPE", "stdio")
+
+        module, mcp, capture_exception = _load_main_module(monkeypatch)
+        module.settings.mcp_caller_agent_id_fallback = "trader-agent-id"
+
+        module.main()
+
+        mcp.run.assert_called_once_with(transport="stdio")
+        capture_exception.assert_not_called()

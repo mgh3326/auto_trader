@@ -528,7 +528,7 @@ async def analyze_portfolio_impl(
 
 
 async def screen_stocks_impl(
-    market: Literal["kr", "kospi", "kosdaq", "us", "crypto"] = "kr",
+    market: Literal["kr", "kospi", "kosdaq", "konex", "all", "us", "crypto"] = "kr",
     asset_type: Literal["stock", "etf", "etn"] | None = None,
     category: str | None = None,
     sector: str | None = None,
@@ -550,6 +550,11 @@ async def screen_stocks_impl(
     min_dividend: float | None = None,
     min_analyst_buy: float | None = None,
     max_rsi: float | None = None,
+    exclude_sectors: list[str] | None = None,
+    instrument_types: list[str] | None = None,
+    adv_krw_min: int | None = None,
+    market_cap_min_krw: int | None = None,
+    market_cap_max_krw: int | None = None,
     limit: int = 50,
 ) -> dict[str, Any]:
     sort_by_specified = sort_by is not None
@@ -588,6 +593,11 @@ async def screen_stocks_impl(
         min_analyst_buy=min_analyst_buy,
         max_rsi=max_rsi,
         limit=limit,
+        exclude_sectors=exclude_sectors,
+        instrument_types=instrument_types,
+        adv_krw_min=adv_krw_min,
+        market_cap_min_krw=market_cap_min_krw,
+        market_cap_max_krw=market_cap_max_krw,
     )
 
     normalized_market = analysis_screening._normalize_screen_market(market)
@@ -616,6 +626,11 @@ async def screen_stocks_impl(
         min_dividend_yield=normalized_request["min_dividend_yield"],
         max_rsi=max_rsi,
         sort_by=normalized_sort_by,
+        adv_krw_min=normalized_request["adv_krw_min"],
+        market_cap_min_krw=normalized_request["market_cap_min_krw"],
+        market_cap_max_krw=normalized_request["market_cap_max_krw"],
+        instrument_types=normalized_request["instrument_types"],
+        exclude_sectors=normalized_request["exclude_sectors"],
     )
     # Use unified screening with automatic data source selection
     return await analysis_screening.screen_stocks_unified(
@@ -633,6 +648,11 @@ async def screen_stocks_impl(
         sort_by=normalized_sort_by,
         sort_order=normalized_sort_order,
         limit=limit,
+        exclude_sectors=exclude_sectors,
+        instrument_types=instrument_types,
+        adv_krw_min=adv_krw_min,
+        market_cap_min_krw=market_cap_min_krw,
+        market_cap_max_krw=market_cap_max_krw,
     )
 
 

@@ -66,3 +66,8 @@ async def get_usd_krw_rate() -> float:
             "expires_at": now + _CACHE_TTL_SECONDS,
         }
         return rate
+
+
+async def get_usd_krw_quote() -> float:
+    """Return the current USD/KRW quote for watch-alert FX checks."""
+    return await get_usd_krw_rate()
