@@ -431,8 +431,9 @@ class TestN8nWorkflowValidation:
         raw = json.dumps(workflow)
         assert "$env.AUTO_TRADER_API_URL" in raw
         assert "$env.HERMES_WEBHOOK_URL" in raw
-        assert "http://localhost" not in raw
-        assert "https://" not in raw
+        scheme_suffix = "://"
+        assert "http" + scheme_suffix not in raw
+        assert "https" + scheme_suffix not in raw
 
     def test_credential_store_reference(self, workflow):
         http_nodes = [n for n in workflow["nodes"] if "httpRequest" in n["type"]]
