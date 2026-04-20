@@ -1,0 +1,19 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+  body{margin:0;padding:18px;font-family:"Pretendard",system-ui,sans-serif;background:#fff;color:#242220}
+  .grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}
+  .box{border:1px solid #D1CCC4;border-radius:.7rem;background:#fff;padding:14px;min-height:140px}
+  .lbl{font-size:.72rem;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#4F4A44;margin-bottom:10px}
+  .sk{height:.85rem;border-radius:999px;background:linear-gradient(90deg,#ECE7DF 25%,#F7F3ED 50%,#ECE7DF 75%);background-size:200% 100%;animation:sh 1.2s ease-in-out infinite;margin-bottom:8px}
+  .sk.short{width:60%}.sk.tiny{width:42%}
+  @keyframes sh{0%{background-position:200% 0}100%{background-position:-200% 0}}
+  .empty{border:1px dashed #D8D0C6;border-radius:.65rem;background:#fff;text-align:center;padding:28px 14px;font-size:.84rem;color:#4F4A44}
+  .err{border:1px solid rgba(181,74,74,.25);background:rgba(181,74,74,.08);color:#B54A4A;border-radius:.5rem;padding:.55rem .7rem;font-size:.82rem}
+</style></head><body>
+<div class="grid">
+  <div class="box"><div class="lbl">Loading</div><div class="sk"></div><div class="sk short"></div><div class="sk tiny"></div><div class="sk short"></div></div>
+  <div class="box"><div class="lbl">Empty</div><div class="empty">No rows found for the current filters.</div></div>
+  <div class="box"><div class="lbl">Error</div><div class="err">report request failed with 429 — retrying in 4s.</div></div>
+</div>
+</body></html>

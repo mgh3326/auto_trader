@@ -6,29 +6,39 @@
 .admin-container {
     max-width: 1200px;
     width: 100%;
-    background: white;
-    padding: 2rem;
-    border-radius: 20px;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+    background: var(--bg-card);
+    padding: var(--sp-10);
+    border: 1px solid var(--border-light);
+    border-radius: var(--r-2xl);
+    box-shadow: var(--elev-card);
 }
 
 .admin-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 2rem;
-    padding-bottom: 1rem;
-    border-bottom: 2px solid #e0e0e0;
+    gap: var(--sp-8);
+    margin-bottom: var(--sp-8);
+    padding-bottom: var(--sp-6);
+    border-bottom: 1px solid var(--border-dash);
 }
 
 .admin-header h1 {
-    color: #333;
+    color: var(--text-primary);
+    font-size: var(--fs-xl);
+    font-weight: var(--fw-semibold);
+    letter-spacing: var(--tracking-head);
     margin: 0;
+}
+
+.admin-header h1 .bi {
+    color: var(--accent);
+    margin-right: var(--sp-2);
 }
 
 .admin-header .stats {
     display: flex;
-    gap: 2rem;
+    gap: var(--sp-8);
 }
 
 .stat-item {
@@ -36,80 +46,97 @@
 }
 
 .stat-value {
-    font-size: 2rem;
-    font-weight: bold;
-    color: #667eea;
+    font-size: var(--fs-2xl);
+    font-weight: var(--fw-semibold);
+    line-height: var(--lh-tight);
+    color: var(--accent);
 }
 
 .stat-label {
-    color: #999;
-    font-size: 0.875rem;
+    color: var(--text-muted);
+    font-size: var(--fs-xs);
+    font-weight: var(--fw-semibold);
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
 }
 
 .users-table {
     width: 100%;
     border-collapse: collapse;
-    margin-top: 1rem;
+    margin-top: var(--sp-6);
+    font-size: var(--fs-sm);
 }
 
 .users-table th {
-    background: #f5f5f5;
-    padding: 1rem;
+    background: var(--bg-subtle);
+    padding: var(--sp-5);
     text-align: left;
-    font-weight: 600;
-    color: #333;
-    border-bottom: 2px solid #e0e0e0;
+    font-size: var(--fs-xs);
+    font-weight: var(--fw-semibold);
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border-light);
 }
 
 .users-table td {
-    padding: 1rem;
-    border-bottom: 1px solid #f0f0f0;
+    padding: var(--sp-5);
+    color: var(--text-primary);
+    border-bottom: 1px solid var(--border-dash);
 }
 
 .users-table tr:hover {
-    background: #fafafa;
+    background: var(--bg-hover);
 }
 
-.badge {
+.admin-container .badge {
     display: inline-block;
-    padding: 0.25rem 0.75rem;
-    border-radius: 12px;
-    font-size: 0.875rem;
-    font-weight: 600;
+    padding: var(--sp-1) var(--sp-4);
+    border-radius: var(--r-pill);
+    font-size: var(--fs-xs);
+    font-weight: var(--fw-semibold);
 }
 
 .badge-admin {
-    background: #dc3545;
-    color: white;
+    background: var(--error-soft);
+    color: var(--error);
 }
 
 .badge-trader {
-    background: #28a745;
-    color: white;
+    background: var(--success-soft);
+    color: var(--success);
 }
 
 .badge-viewer {
-    background: #6c757d;
-    color: white;
+    background: var(--info-soft);
+    color: var(--info);
 }
 
 .badge-active {
-    background: #e8f5e9;
-    color: #2e7d32;
+    background: var(--success-soft);
+    color: var(--success);
 }
 
 .badge-inactive {
-    background: #ffebee;
-    color: #c62828;
+    background: var(--error-soft);
+    color: var(--error);
 }
 
 .role-select {
-    padding: 0.5rem;
-    border: 1px solid #ddd;
-    border-radius: 6px;
-    background: white;
+    padding: 0.5rem 0.55rem;
+    border: 1px solid var(--border-light);
+    border-radius: var(--r-md);
+    background: var(--bg-card);
+    color: var(--text-primary);
     cursor: pointer;
-    font-size: 0.875rem;
+    font-family: var(--font-sans);
+    font-size: var(--fs-sm);
+}
+
+.role-select:focus {
+    outline: none;
+    border-color: var(--border-focus);
+    box-shadow: 0 0 0 3px var(--accent-ring);
 }
 
 .role-select:disabled {
@@ -118,54 +145,63 @@
 }
 
 .btn-toggle {
-    padding: 0.5rem 1rem;
-    border: none;
-    border-radius: 6px;
+    padding: 0.5rem 0.9rem;
+    border: 1px solid transparent;
+    border-radius: var(--r-lg);
     cursor: pointer;
-    font-size: 0.875rem;
-    transition: all 0.3s;
+    font-size: var(--fs-sm);
+    font-weight: var(--fw-semibold);
+    transition: opacity var(--dur-base) var(--ease-out), transform var(--dur-base) var(--ease-out), box-shadow var(--dur-base) var(--ease-out);
 }
 
 .btn-toggle.active {
-    background: #28a745;
-    color: white;
+    background: var(--success);
+    border-color: var(--success);
+    color: var(--text-on-accent);
 }
 
 .btn-toggle.inactive {
-    background: #dc3545;
-    color: white;
+    background: var(--error);
+    border-color: var(--error);
+    color: var(--text-on-accent);
 }
 
 .btn-toggle:hover {
-    opacity: 0.8;
+    box-shadow: var(--elev-1);
+    opacity: 0.88;
+    transform: translateY(-1px);
 }
 
 .btn-toggle:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+    transform: none;
 }
 
 .message {
-    padding: 1rem;
-    border-radius: 8px;
-    margin-bottom: 1rem;
+    padding: var(--sp-5);
+    border-radius: var(--r-md);
+    margin-bottom: var(--sp-6);
+    font-size: var(--fs-sm);
 }
 
 .message-success {
-    background: #e8f5e9;
-    color: #2e7d32;
+    background: var(--success-soft);
+    color: var(--success);
+    border: 1px solid var(--success-ring);
 }
 
 .message-error {
-    background: #ffebee;
-    color: #c62828;
+    background: var(--error-soft);
+    color: var(--error);
+    border: 1px solid var(--error-ring);
 }
 
 .loading {
     display: none;
     text-align: center;
-    padding: 2rem;
-    color: #999;
+    padding: var(--sp-8);
+    color: var(--text-muted);
 }
 
 .loading.show {
@@ -176,7 +212,7 @@
 {% block content %}
 <div class="admin-container">
     <div class="admin-header">
-        <h1>👥 사용자 관리</h1>
+        <h1><i class="bi bi-people-fill" aria-hidden="true"></i> 사용자 관리</h1>
         <div class="stats">
             <div class="stat-item">
                 <div class="stat-value" id="total-users">{{ users|length }}</div>

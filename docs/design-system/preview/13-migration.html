@@ -1,0 +1,32 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+  body{margin:0;padding:18px;font-family:"Pretendard",system-ui,sans-serif;background:#fff;color:#242220}
+  .pair{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .card{border:1px solid #D1CCC4;border-radius:.7rem;padding:14px;background:#fff}
+  .lbl{font-size:.72rem;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#4F4A44;margin-bottom:10px}
+  .legacy{background:#fff}
+  .legacy .btn{display:block;width:100%;padding:.75rem;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:#fff;border:none;border-radius:8px;font-weight:600;font-size:.9rem;text-align:center}
+  .legacy input{display:block;width:100%;padding:.6rem;border:2px solid #e0e0e0;border-radius:8px;margin-bottom:8px;font-size:.85rem;box-sizing:border-box}
+  .tgt{background:#FCFBF8}
+  .tgt input{display:block;width:100%;padding:.5rem .55rem;border:1px solid #D1CCC4;border-radius:.5rem;background:#fff;margin-bottom:8px;font-size:.85rem;box-sizing:border-box}
+  .tgt .btn{display:block;width:100%;padding:.55rem;background:#1A1A1A;color:#fff;border:1px solid #1A1A1A;border-radius:.6rem;font-size:.85rem;font-weight:500;text-align:center}
+  .cap{font-size:.75rem;color:#4F4A44;margin-top:6px}
+</style></head><body>
+<div class="pair">
+  <div class="card legacy">
+    <div class="lbl">Before · login.html</div>
+    <input placeholder="사용자명">
+    <input type="password" placeholder="비밀번호">
+    <div class="btn">로그인</div>
+    <div class="cap">Indigo→purple gradient, 2px #e0e0e0 inputs, 8px radius.</div>
+  </div>
+  <div class="card tgt">
+    <div class="lbl">After · warm-neutral</div>
+    <input placeholder="사용자명">
+    <input type="password" placeholder="비밀번호">
+    <div class="btn">로그인</div>
+    <div class="cap">Dark primary, 1px --border-light, --r-md inputs, --r-lg button.</div>
+  </div>
+</div>
+</body></html>

@@ -4,108 +4,147 @@
 
 {% block styles %}
 .auth-page {
-    min-height: calc(100vh - 4rem);
+    min-height: calc(100vh - 7rem);
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 1rem;
+    padding: var(--sp-8) var(--sp-4);
 }
 
 .auth-card {
-    background: white;
-    padding: 3rem;
-    border-radius: 20px;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+    background: var(--bg-card);
+    border: 1px solid var(--border-light);
+    border-radius: var(--r-2xl);
+    box-shadow: var(--elev-card);
     width: 100%;
-    max-width: 400px;
+    max-width: 420px;
+    padding: var(--sp-10);
 }
 
 .auth-card h1 {
-    color: #333;
-    margin-bottom: 0.5rem;
+    color: var(--text-primary);
+    font-size: var(--fs-xl);
+    font-weight: var(--fw-semibold);
     text-align: center;
+    margin-bottom: var(--sp-2);
+}
+
+.auth-card p,
+.divider,
+.login-link,
+.register-link {
+    color: var(--text-secondary);
 }
 
 .auth-card p {
-    color: #666;
     text-align: center;
-    margin-bottom: 2rem;
+    margin-bottom: var(--sp-8);
 }
 
 .form-group {
-    margin-bottom: 1.5rem;
+    margin-bottom: var(--sp-6);
 }
 
 .form-group label {
     display: block;
-    color: #333;
-    margin-bottom: 0.5rem;
-    font-weight: 500;
+    color: var(--text-secondary);
+    font-size: var(--fs-sm);
+    font-weight: var(--fw-semibold);
+    margin-bottom: var(--sp-2);
 }
 
 .form-group input {
     width: 100%;
-    padding: 0.75rem;
-    border: 2px solid #e0e0e0;
-    border-radius: 8px;
-    font-size: 1rem;
-    transition: border-color 0.3s;
+    padding: 0.65rem 0.7rem;
+    border: 1px solid var(--border-light);
+    border-radius: var(--r-md);
+    font-family: var(--font-sans);
+    font-size: var(--fs-base);
+    color: var(--text-primary);
+    background: var(--bg-card);
+    transition: border-color var(--dur-base) var(--ease-out), box-shadow var(--dur-base) var(--ease-out);
 }
 
 .form-group input:focus {
     outline: none;
-    border-color: #667eea;
+    border-color: var(--border-focus);
+    box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+.form-group small {
+    display: block;
+    color: var(--text-muted);
+    margin-top: var(--sp-1);
+    font-size: var(--fs-xs);
 }
 
 .btn-primary {
     width: 100%;
-    padding: 0.875rem;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    color: white;
-    border: none;
-    border-radius: 8px;
-    font-size: 1rem;
-    font-weight: 600;
+    padding: 0.72rem 0.9rem;
+    background: var(--accent);
+    color: var(--text-on-accent);
+    border: 1px solid var(--accent);
+    border-radius: var(--r-lg);
+    font-size: var(--fs-base);
+    font-weight: var(--fw-semibold);
     cursor: pointer;
-    transition: transform 0.2s, box-shadow 0.2s;
+    transition: transform var(--dur-base) var(--ease-out), box-shadow var(--dur-base) var(--ease-out), background var(--dur-base) var(--ease-out), border-color var(--dur-base) var(--ease-out);
 }
 
 .btn-primary:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 10px 20px rgba(102, 126, 234, 0.4);
+    background: var(--accent-hover);
+    border-color: var(--accent-hover);
+    box-shadow: var(--elev-cta);
+    transform: translateY(-1px);
 }
 
 .btn-primary:active {
     transform: translateY(0);
 }
 
-.error-message {
-    background: #fee;
-    color: #c33;
-    padding: 0.75rem;
-    border-radius: 8px;
-    margin-bottom: 1rem;
+.error-message,
+.success-message {
+    padding: var(--sp-4);
+    border-radius: var(--r-md);
+    margin-bottom: var(--sp-6);
     text-align: center;
+    font-size: var(--fs-sm);
+}
+
+.error-message {
+    background: var(--error-soft);
+    color: var(--error);
+    border: 1px solid var(--error-ring);
+}
+
+.success-message {
+    background: var(--success-soft);
+    color: var(--success);
+    border: 1px solid var(--success-ring);
 }
 
 .divider {
     text-align: center;
-    margin: 1.5rem 0;
-    color: #999;
+    margin: var(--sp-6) 0;
+    font-size: var(--fs-sm);
 }
 
+.login-link,
 .register-link {
     text-align: center;
-    color: #666;
+    font-size: var(--fs-sm);
 }
 
+.login-link a,
 .register-link a {
-    color: #667eea;
+    color: var(--accent);
     text-decoration: none;
-    font-weight: 600;
+    font-weight: var(--fw-semibold);
 }
 
+.login-link a:hover,
 .register-link a:hover {
+    color: var(--accent-hover);
     text-decoration: underline;
 }
 {% endblock %}
