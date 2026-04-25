@@ -99,3 +99,38 @@ async def test_buy_candidate_with_action_price_yields_watch_ready_below_trigger(
     assert intent.trigger.metric == "price"
     assert intent.trigger.operator == "below"
     assert intent.trigger.threshold == 140_000_000.0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_hold_items_are_excluded() -> None:
+    items = [
+        _item(id="hold-1", action="hold", action_price=None),
+        _item(id="buy-1", action="buy_candidate"),
+    ]
+    service = _service(_payload_with_items(items))
+
+    response = await service.build_preview(
+        user_id=7,
+        run_id="decision-test-run",
+        request=OrderIntentPreviewRequest(),
+    )
+
+    assert [i.decision_item_id for i in response.intents] == ["buy-1"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_manual_review_action_is_marked_manual_review_required() -> None:
+    items = [_item(id="mr-1", action="manual_review", action_price=None)]
+    service = _service(_payload_with_items(items))
+
+    response = await service.build_preview(
+        user_id=7,
+        run_id="decision-test-run",
+        request=OrderIntentPreviewRequest(),
+    )
+
+    assert len(response.intents) == 1
+    assert response.intents[0].status == "manual_review_required"
+    assert response.intents[0].trigger is None
