@@ -402,3 +402,13 @@ def test_preview_service_does_not_import_order_or_redis_modules() -> None:
     )
     for needle in forbidden:
         assert needle not in source, f"forbidden symbol '{needle}' present in preview service"
+
+
+@pytest.mark.unit
+def test_per_symbol_budget_rejects_negative_values() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        OrderIntentPreviewRequest.model_validate(
+            {"budget": {"per_symbol_budget_krw": {"KRW-BTC": -1.0}}}
+        )

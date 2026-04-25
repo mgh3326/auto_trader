@@ -1,11 +1,13 @@
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
+
+NonNegativeFloat = Annotated[float, Field(ge=0)]
 
 
 class IntentBudgetInput(BaseModel):
     total_krw: float | None = Field(default=None, ge=0)
-    per_symbol_budget_krw: dict[str, float] = Field(default_factory=dict)
+    per_symbol_budget_krw: dict[str, NonNegativeFloat] = Field(default_factory=dict)
     default_buy_budget_krw: float | None = Field(default=None, ge=0)
 
 
