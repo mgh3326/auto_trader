@@ -343,3 +343,40 @@ async def test_buy_budget_missing_emits_warning_and_null_budget() -> None:
     intent = response.intents[0]
     assert intent.budget_krw is None
     assert "missing_buy_budget" in intent.warnings
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_sell_quantity_pct_defaults() -> None:
+    items = [
+        _item(id="trim-1", action="trim_candidate", current_price=120.0,
+              action_price=110.0),
+        _item(id="sw-1", action="sell_watch", current_price=90.0,
+              action_price=110.0),
+    ]
+    service = _service(_payload_with_items(items))
+    response = await service.build_preview(
+        user_id=7, run_id="decision-test-run", request=OrderIntentPreviewRequest()
+    )
+    by_id = {i.decision_item_id: i for i in response.intents}
+    assert by_id["trim-1"].quantity_pct == 30.0
+    assert by_id["sw-1"].quantity_pct == 100.0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_sell_quantity_pct_selection_overrides_default() -> None:
+    items = [
+        _item(id="trim-1", action="trim_candidate", current_price=120.0,
+              action_price=110.0),
+    ]
+    service = _service(_payload_with_items(items))
+    request = OrderIntentPreviewRequest(
+        selections=[
+            IntentSelectionInput(decision_item_id="trim-1", quantity_pct=55.0),
+        ]
+    )
+    response = await service.build_preview(
+        user_id=7, run_id="decision-test-run", request=request
+    )
+    assert response.intents[0].quantity_pct == 55.0

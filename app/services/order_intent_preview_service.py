@@ -98,6 +98,13 @@ class OrderIntentPreviewService:
             else:
                 warnings.append("missing_buy_budget")
 
+        quantity_pct: float | None = None
+        if side == "sell" and action != "manual_review":
+            if selection is not None and selection.quantity_pct is not None:
+                quantity_pct = selection.quantity_pct
+            else:
+                quantity_pct = _DEFAULT_SELL_QTY_PCT.get(action)
+
         threshold: float | None = None
         threshold_source: str | None = None
         if selection is not None and selection.override_threshold is not None:
@@ -139,6 +146,7 @@ class OrderIntentPreviewService:
             status=status,
             execution_mode=request.execution_mode,
             budget_krw=budget_krw,
+            quantity_pct=quantity_pct,
             trigger=trigger,
             warnings=warnings,
         )
