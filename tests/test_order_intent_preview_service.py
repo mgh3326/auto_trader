@@ -279,3 +279,67 @@ async def test_selection_enabled_false_excludes_item() -> None:
     )
 
     assert [i.decision_item_id for i in response.intents] == ["buy-2"]
+
+
+from app.schemas.order_intent_preview import IntentBudgetInput
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_buy_budget_uses_selection_first() -> None:
+    items = [_item(id="buy-1", action="buy_candidate")]
+    service = _service(_payload_with_items(items))
+    request = OrderIntentPreviewRequest(
+        budget=IntentBudgetInput(
+            per_symbol_budget_krw={"KRW-BTC": 200_000.0},
+            default_buy_budget_krw=100_000.0,
+        ),
+        selections=[
+            IntentSelectionInput(decision_item_id="buy-1", budget_krw=500_000.0),
+        ],
+    )
+    response = await service.build_preview(
+        user_id=7, run_id="decision-test-run", request=request
+    )
+    assert response.intents[0].budget_krw == 500_000.0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_buy_budget_falls_back_to_per_symbol_then_default() -> None:
+    items = [_item(id="buy-1", action="buy_candidate")]
+    service = _service(_payload_with_items(items))
+
+    per_symbol = OrderIntentPreviewRequest(
+        budget=IntentBudgetInput(
+            per_symbol_budget_krw={"KRW-BTC": 200_000.0},
+            default_buy_budget_krw=100_000.0,
+        ),
+    )
+    response = await service.build_preview(
+        user_id=7, run_id="decision-test-run", request=per_symbol
+    )
+    assert response.intents[0].budget_krw == 200_000.0
+
+    default_only = OrderIntentPreviewRequest(
+        budget=IntentBudgetInput(default_buy_budget_krw=100_000.0),
+    )
+    response = await service.build_preview(
+        user_id=7, run_id="decision-test-run", request=default_only
+    )
+    assert response.intents[0].budget_krw == 100_000.0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_buy_budget_missing_emits_warning_and_null_budget() -> None:
+    items = [_item(id="buy-1", action="buy_candidate")]
+    service = _service(_payload_with_items(items))
+    response = await service.build_preview(
+        user_id=7,
+        run_id="decision-test-run",
+        request=OrderIntentPreviewRequest(),
+    )
+    intent = response.intents[0]
+    assert intent.budget_krw is None
+    assert "missing_buy_budget" in intent.warnings

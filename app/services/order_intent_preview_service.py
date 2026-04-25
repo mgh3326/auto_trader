@@ -86,6 +86,18 @@ class OrderIntentPreviewService:
         else:
             side = "sell"
 
+        budget_krw: float | None = None
+        warnings: list[str] = []
+        if side == "buy":
+            if selection is not None and selection.budget_krw is not None:
+                budget_krw = selection.budget_krw
+            elif group["symbol"] in request.budget.per_symbol_budget_krw:
+                budget_krw = request.budget.per_symbol_budget_krw[group["symbol"]]
+            elif request.budget.default_buy_budget_krw is not None:
+                budget_krw = request.budget.default_buy_budget_krw
+            else:
+                warnings.append("missing_buy_budget")
+
         threshold: float | None = None
         threshold_source: str | None = None
         if selection is not None and selection.override_threshold is not None:
@@ -126,5 +138,7 @@ class OrderIntentPreviewService:
             intent_type=action,
             status=status,
             execution_mode=request.execution_mode,
+            budget_krw=budget_krw,
             trigger=trigger,
+            warnings=warnings,
         )
