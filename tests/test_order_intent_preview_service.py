@@ -134,3 +134,72 @@ async def test_manual_review_action_is_marked_manual_review_required() -> None:
     assert len(response.intents) == 1
     assert response.intents[0].status == "manual_review_required"
     assert response.intents[0].trigger is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_trim_candidate_above_threshold_is_execution_candidate() -> None:
+    items = [
+        _item(
+            id="trim-1",
+            action="trim_candidate",
+            current_price=120.0,
+            action_price=110.0,
+        )
+    ]
+    service = _service(_payload_with_items(items))
+
+    response = await service.build_preview(
+        user_id=7,
+        run_id="decision-test-run",
+        request=OrderIntentPreviewRequest(),
+    )
+
+    intent = response.intents[0]
+    assert intent.side == "sell"
+    assert intent.intent_type == "trim_candidate"
+    assert intent.status == "execution_candidate"
+    assert intent.trigger is not None
+    assert intent.trigger.operator == "above"
+    assert intent.trigger.threshold == 110.0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_sell_watch_below_threshold_is_watch_ready() -> None:
+    items = [
+        _item(
+            id="sw-1",
+            action="sell_watch",
+            current_price=90.0,
+            action_price=110.0,
+        )
+    ]
+    service = _service(_payload_with_items(items))
+
+    response = await service.build_preview(
+        user_id=7,
+        run_id="decision-test-run",
+        request=OrderIntentPreviewRequest(),
+    )
+
+    intent = response.intents[0]
+    assert intent.side == "sell"
+    assert intent.status == "watch_ready"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_trim_candidate_without_action_price_is_manual_review_required() -> None:
+    items = [_item(id="trim-2", action="trim_candidate", action_price=None)]
+    service = _service(_payload_with_items(items))
+
+    response = await service.build_preview(
+        user_id=7,
+        run_id="decision-test-run",
+        request=OrderIntentPreviewRequest(),
+    )
+
+    intent = response.intents[0]
+    assert intent.status == "manual_review_required"
+    assert intent.trigger is None

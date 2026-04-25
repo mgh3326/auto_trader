@@ -77,13 +77,21 @@ class OrderIntentPreviewService:
         trigger: IntentTriggerPreview | None = None
         status = "manual_review_required"
         if action != "manual_review" and threshold is not None:
+            threshold_f = float(threshold)
             trigger = IntentTriggerPreview(
                 metric="price",
                 operator=operator,
-                threshold=float(threshold),
+                threshold=threshold_f,
                 source=item.get("action_price_source"),
             )
-            status = "watch_ready"
+            if side == "sell":
+                current_price = item.get("current_price")
+                if current_price is not None and float(current_price) >= threshold_f:
+                    status = "execution_candidate"
+                else:
+                    status = "watch_ready"
+            else:
+                status = "watch_ready"
 
         return OrderIntentPreviewItem(
             decision_run_id=run_id,
