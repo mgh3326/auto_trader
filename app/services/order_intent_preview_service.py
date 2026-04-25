@@ -44,12 +44,14 @@ class OrderIntentPreviewService:
 
         for group in payload.get("symbol_groups", []):
             for item in group.get("items", []):
+                item_id = item.get("id")
+                selection = selection_map.get(item_id) if item_id else None
                 intent = self._build_intent_for_item(
                     run_id=run_id,
                     group=group,
                     item=item,
                     request=request,
-                    selection=selection_map.get(item.get("id", "")),
+                    selection=selection,
                 )
                 if intent is not None:
                     intents.append(intent)
