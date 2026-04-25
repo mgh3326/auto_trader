@@ -25,8 +25,8 @@ def _make_client():
     app.dependency_overrides[portfolio.get_authenticated_user] = lambda: (
         SimpleNamespace(id=7)
     )
-    app.dependency_overrides[portfolio.get_order_intent_preview_service] = (
-        lambda: fake_preview
+    app.dependency_overrides[portfolio.get_order_intent_preview_service] = lambda: (
+        fake_preview
     )
     return TestClient(app), fake_preview
 
@@ -36,7 +36,11 @@ def test_preview_endpoint_returns_preview_only_response() -> None:
     client, fake_preview = _make_client()
     response = client.post(
         "/portfolio/api/decision-runs/decision-stored/intent-preview",
-        json={"budget": {}, "selections": [], "execution_mode": "requires_final_approval"},
+        json={
+            "budget": {},
+            "selections": [],
+            "execution_mode": "requires_final_approval",
+        },
     )
 
     assert response.status_code == 200

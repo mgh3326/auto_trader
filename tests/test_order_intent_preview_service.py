@@ -83,7 +83,9 @@ def _service(payload: dict) -> OrderIntentPreviewService:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_buy_candidate_with_action_price_yields_watch_ready_below_trigger() -> None:
+async def test_buy_candidate_with_action_price_yields_watch_ready_below_trigger() -> (
+    None
+):
     service = _service(_payload_with_items([_item()]))
 
     response = await service.build_preview(
@@ -215,8 +217,6 @@ async def test_trim_candidate_without_action_price_is_manual_review_required() -
     assert intent.trigger is None
 
 
-
-
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_selection_override_threshold_replaces_action_price() -> None:
@@ -244,8 +244,11 @@ async def test_selection_override_threshold_replaces_action_price() -> None:
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_override_threshold_supplies_trigger_when_action_price_missing() -> None:
-    items = [_item(id="trim-3", action="trim_candidate", action_price=None,
-                   current_price=200.0)]
+    items = [
+        _item(
+            id="trim-3", action="trim_candidate", action_price=None, current_price=200.0
+        )
+    ]
     service = _service(_payload_with_items(items))
 
     request = OrderIntentPreviewRequest(
@@ -288,8 +291,6 @@ async def test_selection_enabled_false_excludes_item() -> None:
     )
 
     assert [i.decision_item_id for i in response.intents] == ["buy-2"]
-
-
 
 
 @pytest.mark.unit
@@ -357,10 +358,13 @@ async def test_buy_budget_missing_emits_warning_and_null_budget() -> None:
 @pytest.mark.asyncio
 async def test_sell_quantity_pct_defaults() -> None:
     items = [
-        _item(id="trim-1", action="trim_candidate", current_price=120.0,
-              action_price=110.0),
-        _item(id="sw-1", action="sell_watch", current_price=90.0,
-              action_price=110.0),
+        _item(
+            id="trim-1",
+            action="trim_candidate",
+            current_price=120.0,
+            action_price=110.0,
+        ),
+        _item(id="sw-1", action="sell_watch", current_price=90.0, action_price=110.0),
     ]
     service = _service(_payload_with_items(items))
     response = await service.build_preview(
@@ -375,8 +379,12 @@ async def test_sell_quantity_pct_defaults() -> None:
 @pytest.mark.asyncio
 async def test_sell_quantity_pct_selection_overrides_default() -> None:
     items = [
-        _item(id="trim-1", action="trim_candidate", current_price=120.0,
-              action_price=110.0),
+        _item(
+            id="trim-1",
+            action="trim_candidate",
+            current_price=120.0,
+            action_price=110.0,
+        ),
     ]
     service = _service(_payload_with_items(items))
     request = OrderIntentPreviewRequest(
@@ -388,8 +396,6 @@ async def test_sell_quantity_pct_selection_overrides_default() -> None:
         user_id=7, run_id="decision-test-run", request=request
     )
     assert response.intents[0].quantity_pct == pytest.approx(55.0)
-
-
 
 
 @pytest.mark.unit
@@ -405,7 +411,9 @@ def test_preview_service_does_not_import_order_or_redis_modules() -> None:
         "paperclip",
     )
     for needle in forbidden:
-        assert needle not in source, f"forbidden symbol '{needle}' present in preview service"
+        assert needle not in source, (
+            f"forbidden symbol '{needle}' present in preview service"
+        )
 
 
 @pytest.mark.unit
