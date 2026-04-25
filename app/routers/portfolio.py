@@ -28,6 +28,10 @@ from app.schemas.manual_holdings import (
     MergedPortfolioResponse,
     ReferencePricesResponse,
 )
+from app.schemas.order_intent_preview import (
+    OrderIntentPreviewRequest,
+    OrderIntentPreviewResponse,
+)
 from app.schemas.portfolio_decision import (
     DecisionRunCreateRequest,
     PortfolioDecisionSlateResponse,
@@ -45,6 +49,7 @@ from app.services.brokers.kis.client import KISClient
 from app.services.kis_holdings_service import get_kis_holding_for_ticker
 from app.services.merged_portfolio_service import MergedPortfolioService
 from app.services.portfolio_dashboard_service import PortfolioDashboardService
+from app.services.order_intent_preview_service import OrderIntentPreviewService
 from app.services.portfolio_decision_service import (
     PortfolioDecisionRunNotFoundError,
     PortfolioDecisionService,
@@ -61,6 +66,7 @@ DECISION_SLATE_ERROR_DETAIL = "Unable to build portfolio decision slate."
 DECISION_RUN_CREATE_ERROR_DETAIL = "Unable to create portfolio decision run."
 DECISION_RUN_LOOKUP_ERROR_DETAIL = "Unable to load portfolio decision run."
 DECISION_RUN_NOT_FOUND_DETAIL = "Decision run not found."
+INTENT_PREVIEW_ERROR_DETAIL = "Unable to build order intent preview."
 
 
 def get_portfolio_overview_service(
@@ -89,6 +95,14 @@ def get_portfolio_decision_service(
         dashboard_service=dashboard_service,
         db=db,
     )
+
+
+def get_order_intent_preview_service(
+    decision_service: Annotated[
+        PortfolioDecisionService, Depends(get_portfolio_decision_service)
+    ],
+) -> OrderIntentPreviewService:
+    return OrderIntentPreviewService(decision_service=decision_service)
 
 
 @router.get("/decision", response_class=HTMLResponse)
@@ -190,6 +204,41 @@ async def get_portfolio_decision_run(
         raise HTTPException(
             status_code=500,
             detail=DECISION_RUN_LOOKUP_ERROR_DETAIL,
+        ) from e
+
+
+@router.post(
+    "/api/decision-runs/{run_id}/intent-preview",
+    response_model=OrderIntentPreviewResponse,
+    responses={
+        404: {"description": "Decision run not found"},
+        500: {"description": "Failed to build order intent preview"},
+    },
+)
+async def preview_order_intents_for_decision_run(
+    run_id: str,
+    payload: OrderIntentPreviewRequest,
+    current_user: Annotated[User, Depends(get_authenticated_user)],
+    preview_service: Annotated[
+        OrderIntentPreviewService, Depends(get_order_intent_preview_service)
+    ],
+) -> OrderIntentPreviewResponse:
+    try:
+        return await preview_service.build_preview(
+            user_id=current_user.id,
+            run_id=run_id,
+            request=payload,
+        )
+    except PortfolioDecisionRunNotFoundError as e:
+        raise HTTPException(
+            status_code=404,
+            detail=DECISION_RUN_NOT_FOUND_DETAIL,
+        ) from e
+    except Exception as e:
+        logger.error("Error building intent preview: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=INTENT_PREVIEW_ERROR_DETAIL,
         ) from e
 
 
