@@ -209,7 +209,6 @@ async def get_portfolio_decision_run(
 
 @router.post(
     "/api/decision-runs/{run_id}/intent-preview",
-    response_model=OrderIntentPreviewResponse,
     responses={
         404: {"description": "Decision run not found"},
         500: {"description": "Failed to build order intent preview"},
