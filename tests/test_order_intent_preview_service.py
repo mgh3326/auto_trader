@@ -255,3 +255,27 @@ async def test_override_threshold_supplies_trigger_when_action_price_missing() -
     assert intent.trigger is not None
     assert intent.trigger.threshold == 180.0
     assert intent.status == "execution_candidate"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_selection_enabled_false_excludes_item() -> None:
+    items = [
+        _item(id="buy-1", action="buy_candidate"),
+        _item(id="buy-2", action="buy_candidate"),
+    ]
+    service = _service(_payload_with_items(items))
+
+    request = OrderIntentPreviewRequest(
+        selections=[
+            IntentSelectionInput(decision_item_id="buy-1", enabled=False),
+        ]
+    )
+
+    response = await service.build_preview(
+        user_id=7,
+        run_id="decision-test-run",
+        request=request,
+    )
+
+    assert [i.decision_item_id for i in response.intents] == ["buy-2"]

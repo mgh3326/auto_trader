@@ -78,6 +78,9 @@ class OrderIntentPreviewService:
         if action == "hold":
             return None
 
+        if selection is not None and not selection.enabled:
+            return None
+
         if action in _BUY_ACTIONS:
             side = "buy"
         else:
