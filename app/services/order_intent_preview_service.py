@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from app.schemas.order_intent_preview import (
     IntentSelectionInput,
@@ -18,6 +18,7 @@ from app.services.portfolio_decision_service import (
 
 _BUY_ACTIONS = {"buy_candidate"}
 _SELL_ACTIONS = {"trim_candidate", "sell_watch"}
+_MANUAL_REVIEW_ACTIONS = {"manual_review"}
 _DEFAULT_SELL_QTY_PCT = {"trim_candidate": 30.0, "sell_watch": 100.0}
 
 
@@ -65,6 +66,15 @@ class OrderIntentPreviewService:
     ) -> dict[str, IntentSelectionInput]:
         return {s.decision_item_id: s for s in selections}
 
+    @staticmethod
+    def _side_for_action(action: str | None) -> Literal["buy", "sell"]:
+        if action in _BUY_ACTIONS:
+            return "buy"
+        # Explicit contract: sell-style actions and manual_review map to "sell"
+        # so they share the buy/sell schema. manual_review is gated separately
+        # by status="manual_review_required" and trigger=None.
+        return "sell"
+
     def _build_intent_for_item(
         self,
         *,
@@ -81,10 +91,7 @@ class OrderIntentPreviewService:
         if selection is not None and not selection.enabled:
             return None
 
-        if action in _BUY_ACTIONS:
-            side = "buy"
-        else:
-            side = "sell"
+        side = self._side_for_action(action)
 
         budget_krw: float | None = None
         warnings: list[str] = []

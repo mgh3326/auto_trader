@@ -138,8 +138,12 @@ async def test_manual_review_action_is_marked_manual_review_required() -> None:
     )
 
     assert len(response.intents) == 1
-    assert response.intents[0].status == "manual_review_required"
-    assert response.intents[0].trigger is None
+    intent = response.intents[0]
+    assert intent.status == "manual_review_required"
+    assert intent.trigger is None
+    # Explicit contract: manual_review is mapped to side="sell" so it surfaces
+    # in the existing buy/sell schema while remaining manual-only via status.
+    assert intent.side == "sell"
 
 
 @pytest.mark.unit
