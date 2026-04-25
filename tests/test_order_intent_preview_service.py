@@ -104,7 +104,7 @@ async def test_buy_candidate_with_action_price_yields_watch_ready_below_trigger(
     assert intent.trigger is not None
     assert intent.trigger.metric == "price"
     assert intent.trigger.operator == "below"
-    assert intent.trigger.threshold == 140_000_000.0
+    assert intent.trigger.threshold == pytest.approx(140_000_000.0)
 
 
 @pytest.mark.unit
@@ -167,7 +167,7 @@ async def test_trim_candidate_above_threshold_is_execution_candidate() -> None:
     assert intent.status == "execution_candidate"
     assert intent.trigger is not None
     assert intent.trigger.operator == "above"
-    assert intent.trigger.threshold == 110.0
+    assert intent.trigger.threshold == pytest.approx(110.0)
 
 
 @pytest.mark.unit
@@ -233,7 +233,7 @@ async def test_selection_override_threshold_replaces_action_price() -> None:
 
     intent = response.intents[0]
     assert intent.trigger is not None
-    assert intent.trigger.threshold == 125.0
+    assert intent.trigger.threshold == pytest.approx(125.0)
     assert intent.trigger.source == "override"
 
 
@@ -258,7 +258,7 @@ async def test_override_threshold_supplies_trigger_when_action_price_missing() -
 
     intent = response.intents[0]
     assert intent.trigger is not None
-    assert intent.trigger.threshold == 180.0
+    assert intent.trigger.threshold == pytest.approx(180.0)
     assert intent.status == "execution_candidate"
 
 
@@ -305,7 +305,7 @@ async def test_buy_budget_uses_selection_first() -> None:
     response = await service.build_preview(
         user_id=7, run_id="decision-test-run", request=request
     )
-    assert response.intents[0].budget_krw == 500_000.0
+    assert response.intents[0].budget_krw == pytest.approx(500_000.0)
 
 
 @pytest.mark.unit
@@ -323,7 +323,7 @@ async def test_buy_budget_falls_back_to_per_symbol_then_default() -> None:
     response = await service.build_preview(
         user_id=7, run_id="decision-test-run", request=per_symbol
     )
-    assert response.intents[0].budget_krw == 200_000.0
+    assert response.intents[0].budget_krw == pytest.approx(200_000.0)
 
     default_only = OrderIntentPreviewRequest(
         budget=IntentBudgetInput(default_buy_budget_krw=100_000.0),
@@ -331,7 +331,7 @@ async def test_buy_budget_falls_back_to_per_symbol_then_default() -> None:
     response = await service.build_preview(
         user_id=7, run_id="decision-test-run", request=default_only
     )
-    assert response.intents[0].budget_krw == 100_000.0
+    assert response.intents[0].budget_krw == pytest.approx(100_000.0)
 
 
 @pytest.mark.unit
@@ -363,8 +363,8 @@ async def test_sell_quantity_pct_defaults() -> None:
         user_id=7, run_id="decision-test-run", request=OrderIntentPreviewRequest()
     )
     by_id = {i.decision_item_id: i for i in response.intents}
-    assert by_id["trim-1"].quantity_pct == 30.0
-    assert by_id["sw-1"].quantity_pct == 100.0
+    assert by_id["trim-1"].quantity_pct == pytest.approx(30.0)
+    assert by_id["sw-1"].quantity_pct == pytest.approx(100.0)
 
 
 @pytest.mark.unit
@@ -383,7 +383,7 @@ async def test_sell_quantity_pct_selection_overrides_default() -> None:
     response = await service.build_preview(
         user_id=7, run_id="decision-test-run", request=request
     )
-    assert response.intents[0].quantity_pct == 55.0
+    assert response.intents[0].quantity_pct == pytest.approx(55.0)
 
 
 
