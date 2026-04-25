@@ -412,3 +412,24 @@ def test_per_symbol_budget_rejects_negative_values() -> None:
         OrderIntentPreviewRequest.model_validate(
             {"budget": {"per_symbol_budget_krw": {"KRW-BTC": -1.0}}}
         )
+
+
+@pytest.mark.unit
+def test_intent_type_rejects_unknown_value() -> None:
+    from pydantic import ValidationError
+
+    from app.schemas.order_intent_preview import OrderIntentPreviewItem
+
+    with pytest.raises(ValidationError):
+        OrderIntentPreviewItem.model_validate(
+            {
+                "decision_run_id": "r",
+                "decision_item_id": "i",
+                "symbol": "KRW-BTC",
+                "market": "CRYPTO",
+                "side": "buy",
+                "intent_type": "totally_invalid_action",
+                "status": "watch_ready",
+                "execution_mode": "requires_final_approval",
+            }
+        )

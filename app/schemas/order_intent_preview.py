@@ -42,7 +42,12 @@ class OrderIntentPreviewItem(BaseModel):
     symbol: str
     market: str
     side: Literal["buy", "sell"]
-    intent_type: str
+    intent_type: Literal[
+        "buy_candidate",
+        "trim_candidate",
+        "sell_watch",
+        "manual_review",
+    ]
     status: Literal[
         "invalid",
         "watch_ready",
