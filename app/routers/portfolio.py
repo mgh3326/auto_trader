@@ -48,8 +48,8 @@ from app.services.ai_providers.base import AiProviderError
 from app.services.brokers.kis.client import KISClient
 from app.services.kis_holdings_service import get_kis_holding_for_ticker
 from app.services.merged_portfolio_service import MergedPortfolioService
-from app.services.portfolio_dashboard_service import PortfolioDashboardService
 from app.services.order_intent_preview_service import OrderIntentPreviewService
+from app.services.portfolio_dashboard_service import PortfolioDashboardService
 from app.services.portfolio_decision_service import (
     PortfolioDecisionRunNotFoundError,
     PortfolioDecisionService,

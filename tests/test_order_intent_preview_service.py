@@ -1,8 +1,14 @@
+import inspect
 from unittest.mock import AsyncMock
 
 import pytest
 
-from app.schemas.order_intent_preview import OrderIntentPreviewRequest
+from app.schemas.order_intent_preview import (
+    IntentBudgetInput,
+    IntentSelectionInput,
+    OrderIntentPreviewRequest,
+)
+from app.services import order_intent_preview_service as preview_module
 from app.services.order_intent_preview_service import OrderIntentPreviewService
 
 
@@ -205,7 +211,6 @@ async def test_trim_candidate_without_action_price_is_manual_review_required() -
     assert intent.trigger is None
 
 
-from app.schemas.order_intent_preview import IntentSelectionInput
 
 
 @pytest.mark.unit
@@ -281,7 +286,6 @@ async def test_selection_enabled_false_excludes_item() -> None:
     assert [i.decision_item_id for i in response.intents] == ["buy-2"]
 
 
-from app.schemas.order_intent_preview import IntentBudgetInput
 
 
 @pytest.mark.unit
@@ -382,9 +386,6 @@ async def test_sell_quantity_pct_selection_overrides_default() -> None:
     assert response.intents[0].quantity_pct == 55.0
 
 
-import inspect
-
-from app.services import order_intent_preview_service as preview_module
 
 
 @pytest.mark.unit
