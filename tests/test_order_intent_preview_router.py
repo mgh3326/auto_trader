@@ -6,7 +6,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.routers import portfolio
-from app.schemas.order_intent_preview import OrderIntentPreviewResponse
+from app.schemas.order_intent_preview import (
+    OrderIntentPreviewRequest,
+    OrderIntentPreviewResponse,
+)
 from app.services.portfolio_decision_service import PortfolioDecisionRunNotFoundError
 
 
@@ -44,6 +47,8 @@ def test_preview_endpoint_returns_preview_only_response() -> None:
     kwargs = fake_preview.build_preview.await_args.kwargs
     assert kwargs["user_id"] == 7
     assert kwargs["run_id"] == "decision-stored"
+    assert isinstance(kwargs["request"], OrderIntentPreviewRequest)
+    assert kwargs["request"].execution_mode == "requires_final_approval"
 
 
 @pytest.mark.unit
