@@ -77,6 +77,67 @@ class OrderIntentPreviewService:
         # by status="manual_review_required" and trigger=None.
         return "sell"
 
+    @staticmethod
+    def _resolve_buy_budget(
+        request: OrderIntentPreviewRequest,
+        group: dict[str, Any],
+        selection: IntentSelectionInput | None,
+    ) -> tuple[float | None, list[str]]:
+        if selection is not None and selection.budget_krw is not None:
+            return selection.budget_krw, []
+        per_symbol = request.budget.per_symbol_budget_krw
+        symbol = group["symbol"]
+        if symbol in per_symbol:
+            return per_symbol[symbol], []
+        if request.budget.default_buy_budget_krw is not None:
+            return request.budget.default_buy_budget_krw, []
+        return None, ["missing_buy_budget"]
+
+    @staticmethod
+    def _resolve_sell_quantity_pct(
+        action: str | None,
+        selection: IntentSelectionInput | None,
+    ) -> float | None:
+        if selection is not None and selection.quantity_pct is not None:
+            return selection.quantity_pct
+        return _DEFAULT_SELL_QTY_PCT.get(action) if action is not None else None
+
+    @staticmethod
+    def _resolve_threshold(
+        item: dict[str, Any],
+        selection: IntentSelectionInput | None,
+    ) -> tuple[float | None, str | None]:
+        if selection is not None and selection.override_threshold is not None:
+            return selection.override_threshold, "override"
+        raw = item.get("action_price")
+        if raw is None:
+            return None, None
+        return float(raw), item.get("action_price_source")
+
+    @staticmethod
+    def _build_trigger_and_status(
+        side: Literal["buy", "sell"],
+        action: str | None,
+        threshold: float | None,
+        threshold_source: str | None,
+        item: dict[str, Any],
+    ) -> tuple[IntentTriggerPreview | None, str]:
+        if action == "manual_review" or threshold is None:
+            return None, "manual_review_required"
+        operator = "below" if side == "buy" else "above"
+        trigger = IntentTriggerPreview(
+            metric="price",
+            operator=operator,
+            threshold=threshold,
+            source=threshold_source,
+        )
+        if side == "sell":
+            current_price = item.get("current_price")
+            if current_price is not None and float(current_price) >= threshold:
+                return trigger, "execution_candidate"
+            return trigger, "watch_ready"
+        return trigger, "watch_ready"
+
     def _build_intent_for_item(
         self,
         *,
@@ -89,7 +150,6 @@ class OrderIntentPreviewService:
         action = item.get("action")
         if action == "hold":
             return None
-
         if selection is not None and not selection.enabled:
             return None
 
@@ -98,52 +158,16 @@ class OrderIntentPreviewService:
         budget_krw: float | None = None
         warnings: list[str] = []
         if side == "buy":
-            if selection is not None and selection.budget_krw is not None:
-                budget_krw = selection.budget_krw
-            elif group["symbol"] in request.budget.per_symbol_budget_krw:
-                budget_krw = request.budget.per_symbol_budget_krw[group["symbol"]]
-            elif request.budget.default_buy_budget_krw is not None:
-                budget_krw = request.budget.default_buy_budget_krw
-            else:
-                warnings.append("missing_buy_budget")
+            budget_krw, warnings = self._resolve_buy_budget(request, group, selection)
 
         quantity_pct: float | None = None
         if side == "sell" and action != "manual_review":
-            if selection is not None and selection.quantity_pct is not None:
-                quantity_pct = selection.quantity_pct
-            else:
-                quantity_pct = _DEFAULT_SELL_QTY_PCT.get(action)
+            quantity_pct = self._resolve_sell_quantity_pct(action, selection)
 
-        threshold: float | None = None
-        threshold_source: str | None = None
-        if selection is not None and selection.override_threshold is not None:
-            threshold = selection.override_threshold
-            threshold_source = "override"
-        else:
-            threshold_raw = item.get("action_price")
-            if threshold_raw is not None:
-                threshold = float(threshold_raw)
-                threshold_source = item.get("action_price_source")
-
-        operator = "below" if side == "buy" else "above"
-        trigger: IntentTriggerPreview | None = None
-        status = "manual_review_required"
-        if action != "manual_review" and threshold is not None:
-            threshold_f = float(threshold)
-            trigger = IntentTriggerPreview(
-                metric="price",
-                operator=operator,
-                threshold=threshold_f,
-                source=threshold_source,
-            )
-            if side == "sell":
-                current_price = item.get("current_price")
-                if current_price is not None and float(current_price) >= threshold_f:
-                    status = "execution_candidate"
-                else:
-                    status = "watch_ready"
-            else:
-                status = "watch_ready"
+        threshold, threshold_source = self._resolve_threshold(item, selection)
+        trigger, status = self._build_trigger_and_status(
+            side, action, threshold, threshold_source, item
+        )
 
         return OrderIntentPreviewItem(
             decision_run_id=run_id,
