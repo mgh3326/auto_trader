@@ -380,3 +380,24 @@ async def test_sell_quantity_pct_selection_overrides_default() -> None:
         user_id=7, run_id="decision-test-run", request=request
     )
     assert response.intents[0].quantity_pct == 55.0
+
+
+import inspect
+
+from app.services import order_intent_preview_service as preview_module
+
+
+@pytest.mark.unit
+def test_preview_service_does_not_import_order_or_redis_modules() -> None:
+    source = inspect.getsource(preview_module)
+    forbidden = (
+        "place_order",
+        "manage_watch_alerts",
+        "redis",
+        "Redis",
+        "broker",
+        "trading_service",
+        "paperclip",
+    )
+    for needle in forbidden:
+        assert needle not in source, f"forbidden symbol '{needle}' present in preview service"
