@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.schemas.order_intent_preview import (
+    IntentSelectionInput,
     IntentTriggerPreview,
     OrderIntentPreviewItem,
     OrderIntentPreviewRequest,
@@ -38,6 +39,8 @@ class OrderIntentPreviewService:
         intents: list[OrderIntentPreviewItem] = []
         warnings: list[str] = []
 
+        selection_map = self._selections_by_id(request.selections)
+
         for group in payload.get("symbol_groups", []):
             for item in group.get("items", []):
                 intent = self._build_intent_for_item(
@@ -45,6 +48,7 @@ class OrderIntentPreviewService:
                     group=group,
                     item=item,
                     request=request,
+                    selection=selection_map.get(item.get("id", "")),
                 )
                 if intent is not None:
                     intents.append(intent)
@@ -55,6 +59,12 @@ class OrderIntentPreviewService:
             warnings=warnings,
         )
 
+    @staticmethod
+    def _selections_by_id(
+        selections: list[IntentSelectionInput],
+    ) -> dict[str, IntentSelectionInput]:
+        return {s.decision_item_id: s for s in selections}
+
     def _build_intent_for_item(
         self,
         *,
@@ -62,6 +72,7 @@ class OrderIntentPreviewService:
         group: dict[str, Any],
         item: dict[str, Any],
         request: OrderIntentPreviewRequest,
+        selection: IntentSelectionInput | None = None,
     ) -> OrderIntentPreviewItem | None:
         action = item.get("action")
         if action == "hold":
@@ -72,7 +83,17 @@ class OrderIntentPreviewService:
         else:
             side = "sell"
 
-        threshold = item.get("action_price")
+        threshold: float | None = None
+        threshold_source: str | None = None
+        if selection is not None and selection.override_threshold is not None:
+            threshold = selection.override_threshold
+            threshold_source = "override"
+        else:
+            threshold_raw = item.get("action_price")
+            if threshold_raw is not None:
+                threshold = float(threshold_raw)
+                threshold_source = item.get("action_price_source")
+
         operator = "below" if side == "buy" else "above"
         trigger: IntentTriggerPreview | None = None
         status = "manual_review_required"
@@ -82,7 +103,7 @@ class OrderIntentPreviewService:
                 metric="price",
                 operator=operator,
                 threshold=threshold_f,
-                source=item.get("action_price_source"),
+                source=threshold_source,
             )
             if side == "sell":
                 current_price = item.get("current_price")

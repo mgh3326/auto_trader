@@ -203,3 +203,55 @@ async def test_trim_candidate_without_action_price_is_manual_review_required() -
     intent = response.intents[0]
     assert intent.status == "manual_review_required"
     assert intent.trigger is None
+
+
+from app.schemas.order_intent_preview import IntentSelectionInput
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_selection_override_threshold_replaces_action_price() -> None:
+    items = [_item(id="buy-1", action="buy_candidate", action_price=140.0)]
+    service = _service(_payload_with_items(items))
+
+    request = OrderIntentPreviewRequest(
+        selections=[
+            IntentSelectionInput(decision_item_id="buy-1", override_threshold=125.0)
+        ]
+    )
+
+    response = await service.build_preview(
+        user_id=7,
+        run_id="decision-test-run",
+        request=request,
+    )
+
+    intent = response.intents[0]
+    assert intent.trigger is not None
+    assert intent.trigger.threshold == 125.0
+    assert intent.trigger.source == "override"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_override_threshold_supplies_trigger_when_action_price_missing() -> None:
+    items = [_item(id="trim-3", action="trim_candidate", action_price=None,
+                   current_price=200.0)]
+    service = _service(_payload_with_items(items))
+
+    request = OrderIntentPreviewRequest(
+        selections=[
+            IntentSelectionInput(decision_item_id="trim-3", override_threshold=180.0)
+        ]
+    )
+
+    response = await service.build_preview(
+        user_id=7,
+        run_id="decision-test-run",
+        request=request,
+    )
+
+    intent = response.intents[0]
+    assert intent.trigger is not None
+    assert intent.trigger.threshold == 180.0
+    assert intent.status == "execution_candidate"
