@@ -48,6 +48,7 @@ from app.services.ai_providers.base import AiProviderError
 from app.services.brokers.kis.client import KISClient
 from app.services.kis_holdings_service import get_kis_holding_for_ticker
 from app.services.merged_portfolio_service import MergedPortfolioService
+from app.services.order_intent_discord_brief import build_decision_desk_url
 from app.services.order_intent_preview_service import OrderIntentPreviewService
 from app.services.portfolio_dashboard_service import PortfolioDashboardService
 from app.services.portfolio_decision_service import (
@@ -217,16 +218,22 @@ async def get_portfolio_decision_run(
 async def preview_order_intents_for_decision_run(
     run_id: str,
     payload: OrderIntentPreviewRequest,
+    request: Request,
     current_user: Annotated[User, Depends(get_authenticated_user)],
     preview_service: Annotated[
         OrderIntentPreviewService, Depends(get_order_intent_preview_service)
     ],
 ) -> OrderIntentPreviewResponse:
+    # TODO(follow-up): respect PUBLIC_BASE_URL / X-Forwarded-* origin once
+    # the public Decision Desk URL diverges from request.base_url under
+    # proxies. For now request.base_url works for direct + standard setups.
+    decision_desk_url = build_decision_desk_url(str(request.base_url), run_id)
     try:
         return await preview_service.build_preview(
             user_id=current_user.id,
             run_id=run_id,
             request=payload,
+            decision_desk_url=decision_desk_url,
         )
     except PortfolioDecisionRunNotFoundError as e:
         raise HTTPException(
