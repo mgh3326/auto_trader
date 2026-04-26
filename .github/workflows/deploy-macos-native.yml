@@ -46,6 +46,8 @@ jobs:
           install -d -m 700 ~/.ssh
           printf '%s\n' "$MACBOOK_DEPLOY_SSH_PRIVATE_KEY" > ~/.ssh/auto_trader_deploy_key
           chmod 600 ~/.ssh/auto_trader_deploy_key
+          echo "Deploy SSH public key fingerprint:"
+          ssh-keygen -y -f ~/.ssh/auto_trader_deploy_key | ssh-keygen -lf -
           deploy_host="${MACBOOK_DEPLOY_SSH_HOST#*@}"
           printf '%s %s\n' "$deploy_host" "$MACBOOK_DEPLOY_SSH_HOST_KEY" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
@@ -64,6 +66,7 @@ jobs:
           ssh_opts=(
             -i ~/.ssh/auto_trader_deploy_key
             -o IdentitiesOnly=yes
+            -o BatchMode=yes
             -o StrictHostKeyChecking=yes
             -o UserKnownHostsFile=~/.ssh/known_hosts
             -o ConnectTimeout=30
