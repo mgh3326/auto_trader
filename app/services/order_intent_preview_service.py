@@ -11,6 +11,7 @@ from app.schemas.order_intent_preview import (
     OrderIntentPreviewRequest,
     OrderIntentPreviewResponse,
 )
+from app.services.order_intent_discord_brief import format_discord_brief
 from app.services.portfolio_decision_service import (
     PortfolioDecisionRunNotFoundError,  # noqa: F401  (re-exported for callers)
     PortfolioDecisionService,
@@ -32,6 +33,7 @@ class OrderIntentPreviewService:
         user_id: int,
         run_id: str,
         request: OrderIntentPreviewRequest,
+        decision_desk_url: str | None = None,
     ) -> OrderIntentPreviewResponse:
         payload = await self._decision_service.get_decision_run(
             user_id=user_id,
@@ -56,11 +58,18 @@ class OrderIntentPreviewService:
                 if intent is not None:
                     intents.append(intent)
 
-        return OrderIntentPreviewResponse(
+        response = OrderIntentPreviewResponse(
             decision_run_id=run_id,
             intents=intents,
             warnings=warnings,
         )
+        if decision_desk_url is not None:
+            response.discord_brief = format_discord_brief(
+                preview=response,
+                decision_desk_url=decision_desk_url,
+                execution_mode=request.execution_mode,
+            )
+        return response
 
     @staticmethod
     def _selections_by_id(

@@ -457,3 +457,40 @@ def test_response_includes_optional_discord_brief_field() -> None:
     response.discord_brief = "## Order Intent Preview Ready\n"
     dumped = response.model_dump()
     assert dumped["discord_brief"] == "## Order Intent Preview Ready\n"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_preview_omits_discord_brief_when_url_is_none() -> None:
+    service = _service(_payload_with_items([_item()]))
+
+    response = await service.build_preview(
+        user_id=7,
+        run_id="decision-test-run",
+        request=OrderIntentPreviewRequest(),
+    )
+
+    assert response.discord_brief is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_preview_fills_discord_brief_when_url_provided() -> None:
+    service = _service(_payload_with_items([_item()]))
+
+    response = await service.build_preview(
+        user_id=7,
+        run_id="decision-test-run",
+        request=OrderIntentPreviewRequest(),
+        decision_desk_url=(
+            "https://trader.robinco.dev/portfolio/decision?run_id=decision-test-run"
+        ),
+    )
+
+    assert response.discord_brief is not None
+    assert (
+        "https://trader.robinco.dev/portfolio/decision?run_id=decision-test-run"
+        in response.discord_brief
+    )
+    assert "Mode: `preview_only`" in response.discord_brief
+    assert "Run ID: `decision-test-run`" in response.discord_brief
