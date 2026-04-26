@@ -39,6 +39,74 @@
         </div>
     </div>
 
+    <!-- Order Intent Preview (snapshot mode only) -->
+    <section id="intent-preview-section" class="card border-0 shadow-sm mb-4 d-none" aria-labelledby="intent-preview-title">
+        <div class="card-body">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h2 id="intent-preview-title" class="h5 mb-0">Order Intent Preview</h2>
+                <span class="badge bg-info-subtle text-info-emphasis">preview_only</span>
+            </div>
+
+            <div class="alert alert-warning small mb-3" role="note">
+                Preview only — no order, watch alert, Redis watch key, broker task, or Paperclip action is created.
+            </div>
+
+            <div class="row g-3 align-items-end mb-3">
+                <div class="col-md-4">
+                    <label for="intent-default-buy-budget" class="form-label small text-uppercase fw-bold text-muted">
+                        Default buy budget (KRW)
+                    </label>
+                    <input id="intent-default-buy-budget" type="number" min="0" step="1000" class="form-control" placeholder="100000">
+                </div>
+                <div class="col-md-4">
+                    <label for="intent-execution-mode" class="form-label small text-uppercase fw-bold text-muted">
+                        Execution mode
+                    </label>
+                    <select id="intent-execution-mode" class="form-select">
+                        <option value="requires_final_approval" selected>requires_final_approval</option>
+                        <option value="paper_only">paper_only</option>
+                        <option value="dry_run_only">dry_run_only</option>
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <button id="build-intent-preview-btn" type="button" class="btn btn-primary w-100">
+                        Build Intent Preview
+                    </button>
+                </div>
+                <div class="col-md-2">
+                    <button id="copy-intent-discord-brief-btn" type="button" class="btn btn-outline-secondary w-100" disabled>
+                        <i class="bi bi-clipboard"></i> Copy Discord Brief
+                    </button>
+                </div>
+            </div>
+
+            <div id="intent-preview-status" class="small text-muted mb-2" aria-live="polite"></div>
+
+            <div id="intent-preview-result" class="d-none">
+                <div class="row g-2 mb-3" id="intent-preview-counts"></div>
+                <div class="table-responsive">
+                    <table class="table table-sm align-middle mb-0">
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>Symbol</th>
+                                <th>Market</th>
+                                <th>Side</th>
+                                <th>Type</th>
+                                <th>Status</th>
+                                <th>Trigger</th>
+                                <th>Size</th>
+                                <th>Warnings</th>
+                            </tr>
+                        </thead>
+                        <tbody id="intent-preview-rows"></tbody>
+                    </table>
+                </div>
+                <div id="intent-preview-truncation" class="small text-muted mt-2 d-none"></div>
+            </div>
+        </div>
+    </section>
+
     <!-- Filters -->
     <div class="card border-0 shadow-sm mb-4">
         <div class="card-body">
@@ -550,6 +618,182 @@
         actionFilter.addEventListener('change', function() {
             renderSlate();
         });
+
+        const intentPreviewSection = document.getElementById('intent-preview-section');
+        const intentPreviewBudgetInput = document.getElementById('intent-default-buy-budget');
+        const intentPreviewModeSelect = document.getElementById('intent-execution-mode');
+        const buildIntentPreviewBtn = document.getElementById('build-intent-preview-btn');
+        const copyIntentBriefBtn = document.getElementById('copy-intent-discord-brief-btn');
+        const intentPreviewStatus = document.getElementById('intent-preview-status');
+        const intentPreviewResult = document.getElementById('intent-preview-result');
+        const intentPreviewCounts = document.getElementById('intent-preview-counts');
+        const intentPreviewRows = document.getElementById('intent-preview-rows');
+        const intentPreviewTruncation = document.getElementById('intent-preview-truncation');
+        const INTENT_PREVIEW_ROW_LIMIT = 10;
+
+        let lastIntentBrief = null;
+
+        if (isSnapshotMode) {
+            intentPreviewSection.classList.remove('d-none');
+            buildIntentPreviewBtn.addEventListener('click', buildIntentPreview);
+            copyIntentBriefBtn.addEventListener('click', copyIntentBrief);
+        }
+
+        async function buildIntentPreview() {
+            if (!snapshotRunId) return;
+            setPreviewStatus('Building preview…', 'text-muted');
+            intentPreviewResult.classList.add('d-none');
+            buildIntentPreviewBtn.disabled = true;
+            copyIntentBriefBtn.disabled = true;
+            lastIntentBrief = null;
+
+            const raw = intentPreviewBudgetInput.value.trim();
+            const parsed = raw === '' ? null : Number(raw);
+            const defaultBuyBudgetKrw = parsed !== null && Number.isFinite(parsed) ? parsed : null;
+
+            const body = {
+                budget: { default_buy_budget_krw: defaultBuyBudgetKrw },
+                selections: [],
+                execution_mode: intentPreviewModeSelect.value,
+            };
+
+            try {
+                const response = await fetch(
+                    `/portfolio/api/decision-runs/${encodeURIComponent(snapshotRunId)}/intent-preview`,
+                    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+                );
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) {
+                    setPreviewStatus(formatPreviewError(response.status, data), 'text-danger');
+                    return;
+                }
+                renderIntentPreview(data);
+                if (data.discord_brief) {
+                    lastIntentBrief = data.discord_brief;
+                    copyIntentBriefBtn.disabled = false;
+                }
+                setPreviewStatus(`Preview built (${data.intents.length} intents).`, 'text-success');
+            } catch (err) {
+                setPreviewStatus(`Error: ${err.message}`, 'text-danger');
+            } finally {
+                buildIntentPreviewBtn.disabled = false;
+            }
+        }
+
+        async function copyIntentBrief() {
+            if (!lastIntentBrief) return;
+            try {
+                await navigator.clipboard.writeText(lastIntentBrief);
+                const original = copyIntentBriefBtn.innerHTML;
+                copyIntentBriefBtn.innerHTML = '<i class="bi bi-check2"></i> Copied';
+                setTimeout(() => { copyIntentBriefBtn.innerHTML = original; }, 1500);
+            } catch (err) {
+                setPreviewStatus(`Clipboard error: ${err.message}`, 'text-danger');
+            }
+        }
+
+        function setPreviewStatus(message, toneClass) {
+            intentPreviewStatus.textContent = message;
+            intentPreviewStatus.className = `small ${toneClass} mb-2`;
+        }
+
+        function formatPreviewError(status, data) {
+            if (status === 422 && data && Array.isArray(data.detail)) {
+                const msgs = data.detail.map(d => d && d.msg).filter(Boolean);
+                if (msgs.length > 0) return msgs.join('; ');
+                return 'Invalid input.';
+            }
+            if (data && typeof data.detail === 'string') return data.detail;
+            return `Request failed (${status}).`;
+        }
+
+        function renderIntentPreview(data) {
+            intentPreviewResult.classList.remove('d-none');
+
+            const total = data.intents.length;
+            const counts = {
+                buy: 0, sell: 0,
+                manual_review_required: 0, execution_candidate: 0,
+                watch_ready: 0, invalid: 0,
+            };
+            data.intents.forEach(i => {
+                if (i.side === 'buy') counts.buy += 1;
+                if (i.side === 'sell') counts.sell += 1;
+                if (i.status in counts) counts[i.status] += 1;
+            });
+
+            intentPreviewCounts.replaceChildren();
+            appendCountChip('Total', total);
+            appendCountChip('Buy', counts.buy);
+            appendCountChip('Sell', counts.sell);
+            appendCountChip('Manual review', counts.manual_review_required);
+            appendCountChip('Execution candidate', counts.execution_candidate);
+            appendCountChip('Watch ready', counts.watch_ready);
+            appendCountChip('Invalid', counts.invalid);
+
+            intentPreviewRows.replaceChildren();
+            if (data.intents.length === 0) {
+                const tr = document.createElement('tr');
+                const td = document.createElement('td');
+                td.colSpan = 9;
+                td.className = 'text-muted text-center';
+                td.textContent = '(no intents)';
+                tr.appendChild(td);
+                intentPreviewRows.appendChild(tr);
+            } else {
+                data.intents.slice(0, INTENT_PREVIEW_ROW_LIMIT).forEach((intent, idx) => {
+                    intentPreviewRows.appendChild(renderIntentRow(idx + 1, intent));
+                });
+            }
+
+            if (data.intents.length > INTENT_PREVIEW_ROW_LIMIT) {
+                intentPreviewTruncation.textContent =
+                    `Showing ${INTENT_PREVIEW_ROW_LIMIT} of ${data.intents.length} intents — see full list in Discord brief.`;
+                intentPreviewTruncation.classList.remove('d-none');
+            } else {
+                intentPreviewTruncation.classList.add('d-none');
+            }
+        }
+
+        function appendCountChip(label, value) {
+            const col = document.createElement('div');
+            col.className = 'col-auto';
+            const span = document.createElement('span');
+            span.className = 'badge bg-light text-dark border';
+            span.textContent = `${label}: ${value}`;
+            col.appendChild(span);
+            intentPreviewCounts.appendChild(col);
+        }
+
+        function renderIntentRow(idx, intent) {
+            const tr = document.createElement('tr');
+            const triggerText = intent.trigger
+                ? `${intent.trigger.metric} ${intent.trigger.operator} ${intent.trigger.threshold}`
+                : '';
+            let sizeText = '';
+            if (intent.side === 'buy' && intent.budget_krw != null) {
+                sizeText = `₩${Number(intent.budget_krw).toLocaleString()}`;
+            } else if (intent.side === 'sell' && intent.quantity_pct != null) {
+                sizeText = `${intent.quantity_pct}%`;
+            }
+            const cells = [
+                String(idx),
+                intent.symbol,
+                intent.market,
+                intent.side,
+                intent.intent_type,
+                intent.status,
+                triggerText,
+                sizeText,
+                (intent.warnings || []).join(', '),
+            ];
+            cells.forEach(text => {
+                const td = document.createElement('td');
+                td.textContent = text;
+                tr.appendChild(td);
+            });
+            return tr;
+        }
 
         // Initial fetch
         fetchSlate({updateUrl: false});

@@ -72,3 +72,4 @@ class OrderIntentPreviewResponse(BaseModel):
     mode: Literal["preview_only"] = "preview_only"
     intents: list[OrderIntentPreviewItem] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    discord_brief: str | None = None
