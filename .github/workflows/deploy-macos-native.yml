@@ -1,0 +1,139 @@
+name: Deploy MacBook Native Production
+
+on:
+  push:
+    branches: [production]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Commit SHA to deploy (defaults to the workflow commit)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: auto-trader-macos-native-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to MacBook native launchd
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    env:
+      DISCORD_DEPLOY_WEBHOOK_URL: ${{ secrets.DISCORD_DEPLOY_WEBHOOK_URL }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Setup Tailscale
+        uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8 # v4
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+
+      - name: Configure SSH key and known host
+        shell: bash
+        env:
+          MACBOOK_DEPLOY_SSH_HOST: ${{ secrets.MACBOOK_DEPLOY_SSH_HOST }}
+          MACBOOK_DEPLOY_SSH_HOST_KEY: ${{ secrets.MACBOOK_DEPLOY_SSH_HOST_KEY }}
+          MACBOOK_DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.MACBOOK_DEPLOY_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$MACBOOK_DEPLOY_SSH_PRIVATE_KEY" > ~/.ssh/auto_trader_deploy_key
+          chmod 600 ~/.ssh/auto_trader_deploy_key
+          deploy_host="${MACBOOK_DEPLOY_SSH_HOST#*@}"
+          printf '%s %s\n' "$deploy_host" "$MACBOOK_DEPLOY_SSH_HOST_KEY" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Deploy via SSH
+        id: deploy
+        shell: bash
+        env:
+          MACBOOK_DEPLOY_SSH_HOST: ${{ secrets.MACBOOK_DEPLOY_SSH_HOST }}
+          DEPLOY_SHA: ${{ github.event.inputs.sha || github.sha }}
+          DEPLOY_BRANCH: production
+        run: |
+          set -euo pipefail
+          test -s scripts/deploy-native.sh
+
+          ssh_opts=(
+            -i ~/.ssh/auto_trader_deploy_key
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o UserKnownHostsFile=~/.ssh/known_hosts
+            -o ConnectTimeout=30
+          )
+
+          deploy_sha_q=$(printf '%q' "$DEPLOY_SHA")
+          deploy_branch_q=$(printf '%q' "$DEPLOY_BRANCH")
+          ssh "${ssh_opts[@]}" "$MACBOOK_DEPLOY_SSH_HOST" \
+            "tmp=\$(mktemp /tmp/auto-trader-deploy-native.XXXXXX) && cat > \$tmp && chmod +x \$tmp && \$tmp $deploy_sha_q $deploy_branch_q; rc=\$?; rm -f \$tmp; exit \$rc" \
+            < scripts/deploy-native.sh 2>&1 | tee /tmp/deploy-output.txt
+
+      - name: Discord notification (success)
+        if: success() && env.DISCORD_DEPLOY_WEBHOOK_URL != ''
+        env:
+          DISCORD_WEBHOOK: ${{ env.DISCORD_DEPLOY_WEBHOOK_URL }}
+          BRANCH_NAME: ${{ github.ref_name }}
+          COMMIT_SHA: ${{ github.sha }}
+          COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          python3 - <<'PY' >/tmp/discord-payload.json
+          import json, os
+          sha = os.environ["COMMIT_SHA"]
+          payload = {
+              "embeds": [{
+                  "title": "✅ Auto Trader MacBook native 배포 완료",
+                  "description": (
+                      f"**Branch:** `{os.environ['BRANCH_NAME']}`\n"
+                      f"**Commit:** [`{sha[:7]}`]({os.environ['COMMIT_URL']})\n"
+                      f"**Run:** [#{os.environ['RUN_NUMBER']}]({os.environ['RUN_URL']})"
+                  ),
+                  "color": 5763719,
+                  "footer": {"text": "auto_trader macOS native production"},
+              }]
+          }
+          print(json.dumps(payload, ensure_ascii=False))
+          PY
+          curl -s -H "Content-Type: application/json" --data @/tmp/discord-payload.json "$DISCORD_WEBHOOK"
+
+      - name: Discord notification (failure)
+        if: failure() && env.DISCORD_DEPLOY_WEBHOOK_URL != ''
+        env:
+          DISCORD_WEBHOOK: ${{ env.DISCORD_DEPLOY_WEBHOOK_URL }}
+          BRANCH_NAME: ${{ github.ref_name }}
+          COMMIT_SHA: ${{ github.sha }}
+          COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          python3 - <<'PY' >/tmp/discord-payload.json
+          import json, os, pathlib
+          sha = os.environ["COMMIT_SHA"]
+          log_path = pathlib.Path("/tmp/deploy-output.txt")
+          deploy_log = "No deploy log available"
+          if log_path.exists():
+              deploy_log = "\n".join(log_path.read_text(errors="replace").splitlines()[-20:])[:1500]
+          payload = {
+              "embeds": [{
+                  "title": "❌ Auto Trader MacBook native 배포 실패",
+                  "description": (
+                      f"**Branch:** `{os.environ['BRANCH_NAME']}`\n"
+                      f"**Commit:** [`{sha[:7]}`]({os.environ['COMMIT_URL']})\n"
+                      f"**Run:** [#{os.environ['RUN_NUMBER']}]({os.environ['RUN_URL']})\n\n"
+                      f"**Log:**\n```\n{deploy_log}\n```"
+                  ),
+                  "color": 15548997,
+                  "footer": {"text": "auto_trader macOS native production"},
+              }]
+          }
+          print(json.dumps(payload, ensure_ascii=False))
+          PY
+          curl -s -H "Content-Type: application/json" --data @/tmp/discord-payload.json "$DISCORD_WEBHOOK"
