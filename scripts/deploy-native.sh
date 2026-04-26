@@ -193,7 +193,14 @@ fi
 
 cd "$NEW_RELEASE"
 log "Preparing release checkout"
-git fetch origin "$BRANCH" --tags
+if ! git cat-file -e "$SHA^{commit}" 2>/dev/null; then
+  log "Release checkout missing commit; fetching refs from source repo"
+  git fetch "$SOURCE_REPO" \
+    '+refs/heads/*:refs/remotes/source/*' \
+    '+refs/remotes/origin/*:refs/remotes/source-origin/*' \
+    --tags
+fi
+git cat-file -e "$SHA^{commit}"
 git checkout --detach "$SHA"
 git clean -fdx -e .venv
 
