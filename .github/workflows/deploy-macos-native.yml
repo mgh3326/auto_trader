@@ -64,6 +64,7 @@ jobs:
           ssh_opts=(
             -i ~/.ssh/auto_trader_deploy_key
             -o IdentitiesOnly=yes
+            -o BatchMode=yes
             -o StrictHostKeyChecking=yes
             -o UserKnownHostsFile=~/.ssh/known_hosts
             -o ConnectTimeout=30
