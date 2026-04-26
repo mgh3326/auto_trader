@@ -445,3 +445,15 @@ def test_intent_type_rejects_unknown_value() -> None:
                 "execution_mode": "requires_final_approval",
             }
         )
+
+
+@pytest.mark.unit
+def test_response_includes_optional_discord_brief_field() -> None:
+    from app.schemas.order_intent_preview import OrderIntentPreviewResponse
+
+    response = OrderIntentPreviewResponse(decision_run_id="r")
+    assert response.discord_brief is None
+
+    response.discord_brief = "## Order Intent Preview Ready\n"
+    dumped = response.model_dump()
+    assert dumped["discord_brief"] == "## Order Intent Preview Ready\n"
