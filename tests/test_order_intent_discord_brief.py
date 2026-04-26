@@ -3,7 +3,12 @@ import inspect
 
 import pytest
 
-from app.services.order_intent_discord_brief import build_decision_desk_url
+from app.schemas.order_intent_preview import (
+    IntentTriggerPreview,
+    OrderIntentPreviewItem,
+    OrderIntentPreviewResponse,
+)
+from app.services.order_intent_discord_brief import build_decision_desk_url, format_discord_brief
 from app.services import order_intent_discord_brief as brief_module
 
 
@@ -64,3 +69,113 @@ def test_module_does_not_import_forbidden_modules() -> None:
             assert not name.startswith(prefix), (
                 f"forbidden import '{name}' in order_intent_discord_brief.py"
             )
+
+
+def _item(**overrides) -> OrderIntentPreviewItem:
+    base = dict(
+        decision_run_id="decision-r1",
+        decision_item_id="item-1",
+        symbol="005930",
+        market="KR",
+        side="buy",
+        intent_type="buy_candidate",
+        status="watch_ready",
+        execution_mode="requires_final_approval",
+        budget_krw=100000.0,
+        quantity_pct=None,
+        trigger=IntentTriggerPreview(
+            metric="price", operator="below", threshold=72000
+        ),
+        warnings=[],
+    )
+    base.update(overrides)
+    return OrderIntentPreviewItem(**base)
+
+
+def _response(intents: list[OrderIntentPreviewItem]) -> OrderIntentPreviewResponse:
+    return OrderIntentPreviewResponse(decision_run_id="decision-r1", intents=intents)
+
+
+_DEFAULT_URL = "https://trader.robinco.dev/portfolio/decision?run_id=decision-r1"
+
+
+@pytest.mark.unit
+def test_format_brief_header_lines() -> None:
+    out = format_discord_brief(
+        preview=_response([]),
+        decision_desk_url=_DEFAULT_URL,
+        execution_mode="requires_final_approval",
+    )
+    assert "## Order Intent Preview Ready" in out
+    assert f"Decision Desk: {_DEFAULT_URL}" in out
+    assert "Run ID: `decision-r1`" in out
+    assert "Mode: `preview_only`" in out
+    assert "Execution mode: `requires_final_approval`" in out
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "needle",
+    [
+        "This is preview-only.",
+        "No orders were placed.",
+        "No watch alerts were registered.",
+        "Final approval is still required before any execution.",
+    ],
+)
+def test_format_brief_safety_text_locked(needle: str) -> None:
+    out = format_discord_brief(
+        preview=_response([]),
+        decision_desk_url=_DEFAULT_URL,
+        execution_mode="requires_final_approval",
+    )
+    assert needle in out
+
+
+@pytest.mark.unit
+def test_format_brief_counts_by_side_and_status() -> None:
+    intents = [
+        _item(side="buy", intent_type="buy_candidate", status="watch_ready"),
+        _item(
+            decision_item_id="item-2",
+            side="sell",
+            intent_type="trim_candidate",
+            status="manual_review_required",
+            budget_krw=None,
+            quantity_pct=30.0,
+            trigger=None,
+        ),
+        _item(
+            decision_item_id="item-3",
+            side="sell",
+            intent_type="sell_watch",
+            status="execution_candidate",
+            budget_krw=None,
+            quantity_pct=100.0,
+            trigger=IntentTriggerPreview(
+                metric="price", operator="above", threshold=80000
+            ),
+        ),
+    ]
+    out = format_discord_brief(
+        preview=_response(intents),
+        decision_desk_url=_DEFAULT_URL,
+        execution_mode="requires_final_approval",
+    )
+    assert "- Total intents: 3" in out
+    assert "- Buy: 1" in out
+    assert "- Sell: 2" in out
+    assert "- Manual review required: 1" in out
+    assert "- Execution candidates: 1" in out
+    assert "- Watch ready: 1" in out
+
+
+@pytest.mark.unit
+def test_format_brief_empty_intents_renders_no_intents_marker() -> None:
+    out = format_discord_brief(
+        preview=_response([]),
+        decision_desk_url=_DEFAULT_URL,
+        execution_mode="requires_final_approval",
+    )
+    assert "- Total intents: 0" in out
+    assert "(no intents)" in out
