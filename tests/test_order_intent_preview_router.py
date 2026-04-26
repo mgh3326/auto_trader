@@ -136,3 +136,65 @@ def test_preview_endpoint_response_includes_discord_brief_with_run_path() -> Non
     assert "/portfolio/decision?run_id=decision-r1" in body["discord_brief"]
     assert "Mode: `preview_only`" in body["discord_brief"]
     assert "This is preview-only." in body["discord_brief"]
+
+
+@pytest.mark.unit
+def test_preview_endpoint_uses_public_base_url_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        portfolio.settings, "public_base_url", "https://trader.robinco.dev/"
+    )
+    client = _make_client_with_real_preview_service()
+
+    response = client.post(
+        "/portfolio/api/decision-runs/decision-r1/intent-preview",
+        json={
+            "budget": {"default_buy_budget_krw": 100000},
+            "selections": [],
+            "execution_mode": "requires_final_approval",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    brief = body["discord_brief"]
+    assert brief is not None
+    assert (
+        "Decision Desk: https://trader.robinco.dev/portfolio/decision?"
+        "run_id=decision-r1"
+    ) in brief
+    # Safety lines must remain intact.
+    for needle in (
+        "This is preview-only.",
+        "No orders were placed.",
+        "No watch alerts were registered.",
+        "Final approval is still required before any execution.",
+    ):
+        assert needle in brief
+
+
+@pytest.mark.unit
+def test_preview_endpoint_falls_back_to_request_base_url_when_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(portfolio.settings, "public_base_url", "")
+    client = _make_client_with_real_preview_service()
+
+    response = client.post(
+        "/portfolio/api/decision-runs/decision-r1/intent-preview",
+        json={
+            "budget": {"default_buy_budget_krw": 100000},
+            "selections": [],
+            "execution_mode": "requires_final_approval",
+        },
+    )
+
+    assert response.status_code == 200
+    brief = response.json()["discord_brief"]
+    assert brief is not None
+    # TestClient's default base URL is http://testserver/.
+    assert (
+        "Decision Desk: http://testserver/portfolio/decision?run_id=decision-r1"
+    ) in brief
+    assert "https://trader.robinco.dev" not in brief

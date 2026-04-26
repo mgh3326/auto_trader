@@ -12,6 +12,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.db import get_db
 from app.core.templates import templates
 from app.models.manual_holdings import MarketType
@@ -48,7 +49,10 @@ from app.services.ai_providers.base import AiProviderError
 from app.services.brokers.kis.client import KISClient
 from app.services.kis_holdings_service import get_kis_holding_for_ticker
 from app.services.merged_portfolio_service import MergedPortfolioService
-from app.services.order_intent_discord_brief import build_decision_desk_url
+from app.services.order_intent_discord_brief import (
+    build_decision_desk_url,
+    resolve_decision_desk_base_url,
+)
 from app.services.order_intent_preview_service import OrderIntentPreviewService
 from app.services.portfolio_dashboard_service import PortfolioDashboardService
 from app.services.portfolio_decision_service import (
@@ -224,10 +228,11 @@ async def preview_order_intents_for_decision_run(
         OrderIntentPreviewService, Depends(get_order_intent_preview_service)
     ],
 ) -> OrderIntentPreviewResponse:
-    # TODO(follow-up): respect PUBLIC_BASE_URL / X-Forwarded-* origin once
-    # the public Decision Desk URL diverges from request.base_url under
-    # proxies. For now request.base_url works for direct + standard setups.
-    decision_desk_url = build_decision_desk_url(str(request.base_url), run_id)
+    base_url = resolve_decision_desk_base_url(
+        configured=settings.public_base_url,
+        request_base_url=str(request.base_url),
+    )
+    decision_desk_url = build_decision_desk_url(base_url, run_id)
     try:
         return await preview_service.build_preview(
             user_id=current_user.id,
