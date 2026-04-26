@@ -90,5 +90,32 @@ def _top_intent_lines(
 ) -> list[str]:
     if not intents:
         return ["(no intents)"]
-    # Filled in by Task 5.
-    return ["(no intents)"]
+
+    visible = intents[:limit]
+    overflow = len(intents) - len(visible)
+    lines = [_format_top_line(idx, intent) for idx, intent in enumerate(visible, 1)]
+    if overflow > 0:
+        lines.append(f"… and {overflow} more")
+    return lines
+
+
+def _format_top_line(idx: int, intent: OrderIntentPreviewItem) -> str:
+    head = (
+        f"{idx}. `{intent.symbol}` {intent.market} "
+        f"{intent.side} {intent.intent_type} — {intent.status}"
+    )
+
+    trigger_part = ""
+    if intent.trigger is not None and intent.trigger.threshold is not None:
+        trigger_part = (
+            f" — price {intent.trigger.operator} "
+            f"{intent.trigger.threshold:g}"
+        )
+
+    size_part = ""
+    if intent.side == "buy" and intent.budget_krw is not None:
+        size_part = f" — budget ₩{int(intent.budget_krw):,}"
+    elif intent.side == "sell" and intent.quantity_pct is not None:
+        size_part = f" — qty {intent.quantity_pct:g}%"
+
+    return head + trigger_part + size_part

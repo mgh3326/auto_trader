@@ -179,3 +179,53 @@ def test_format_brief_empty_intents_renders_no_intents_marker() -> None:
     )
     assert "- Total intents: 0" in out
     assert "(no intents)" in out
+
+
+@pytest.mark.unit
+def test_top_intent_line_buy_with_trigger_and_budget() -> None:
+    out = format_discord_brief(
+        preview=_response([_item()]),
+        decision_desk_url=_DEFAULT_URL,
+        execution_mode="requires_final_approval",
+    )
+    assert (
+        "1. `005930` KR buy buy_candidate — watch_ready "
+        "— price below 72000 — budget ₩100,000"
+    ) in out
+
+
+@pytest.mark.unit
+def test_top_intent_line_sell_manual_review_with_qty() -> None:
+    item = _item(
+        symbol="KRW-BTC",
+        market="CRYPTO",
+        side="sell",
+        intent_type="trim_candidate",
+        status="manual_review_required",
+        budget_krw=None,
+        quantity_pct=30.0,
+        trigger=None,
+    )
+    out = format_discord_brief(
+        preview=_response([item]),
+        decision_desk_url=_DEFAULT_URL,
+        execution_mode="paper_only",
+    )
+    assert (
+        "1. `KRW-BTC` CRYPTO sell trim_candidate — manual_review_required — qty 30%"
+    ) in out
+
+
+@pytest.mark.unit
+def test_top_intents_truncated_at_default_limit_with_more_marker() -> None:
+    items = [
+        _item(decision_item_id=f"item-{i}", symbol=f"SYM{i:02d}") for i in range(13)
+    ]
+    out = format_discord_brief(
+        preview=_response(items),
+        decision_desk_url=_DEFAULT_URL,
+        execution_mode="requires_final_approval",
+    )
+    assert "10. `SYM09`" in out
+    assert "11. " not in out
+    assert "… and 3 more" in out
