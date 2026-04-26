@@ -39,6 +39,74 @@
         </div>
     </div>
 
+    <!-- Order Intent Preview (snapshot mode only) -->
+    <section id="intent-preview-section" class="card border-0 shadow-sm mb-4 d-none" aria-labelledby="intent-preview-title">
+        <div class="card-body">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h2 id="intent-preview-title" class="h5 mb-0">Order Intent Preview</h2>
+                <span class="badge bg-info-subtle text-info-emphasis">preview_only</span>
+            </div>
+
+            <div class="alert alert-warning small mb-3" role="note">
+                Preview only — no order, watch alert, Redis watch key, broker task, or Paperclip action is created.
+            </div>
+
+            <div class="row g-3 align-items-end mb-3">
+                <div class="col-md-4">
+                    <label for="intent-default-buy-budget" class="form-label small text-uppercase fw-bold text-muted">
+                        Default buy budget (KRW)
+                    </label>
+                    <input id="intent-default-buy-budget" type="number" min="0" step="1000" class="form-control" placeholder="100000">
+                </div>
+                <div class="col-md-4">
+                    <label for="intent-execution-mode" class="form-label small text-uppercase fw-bold text-muted">
+                        Execution mode
+                    </label>
+                    <select id="intent-execution-mode" class="form-select">
+                        <option value="requires_final_approval" selected>requires_final_approval</option>
+                        <option value="paper_only">paper_only</option>
+                        <option value="dry_run_only">dry_run_only</option>
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <button id="build-intent-preview-btn" type="button" class="btn btn-primary w-100">
+                        Build Intent Preview
+                    </button>
+                </div>
+                <div class="col-md-2">
+                    <button id="copy-intent-discord-brief-btn" type="button" class="btn btn-outline-secondary w-100" disabled>
+                        <i class="bi bi-clipboard"></i> Copy Discord Brief
+                    </button>
+                </div>
+            </div>
+
+            <div id="intent-preview-status" class="small text-muted mb-2" aria-live="polite"></div>
+
+            <div id="intent-preview-result" class="d-none">
+                <div class="row g-2 mb-3" id="intent-preview-counts"></div>
+                <div class="table-responsive">
+                    <table class="table table-sm align-middle mb-0">
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>Symbol</th>
+                                <th>Market</th>
+                                <th>Side</th>
+                                <th>Type</th>
+                                <th>Status</th>
+                                <th>Trigger</th>
+                                <th>Size</th>
+                                <th>Warnings</th>
+                            </tr>
+                        </thead>
+                        <tbody id="intent-preview-rows"></tbody>
+                    </table>
+                </div>
+                <div id="intent-preview-truncation" class="small text-muted mt-2 d-none"></div>
+            </div>
+        </div>
+    </section>
+
     <!-- Filters -->
     <div class="card border-0 shadow-sm mb-4">
         <div class="card-body">
