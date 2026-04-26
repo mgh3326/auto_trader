@@ -8,8 +8,11 @@ from app.schemas.order_intent_preview import (
     OrderIntentPreviewItem,
     OrderIntentPreviewResponse,
 )
-from app.services.order_intent_discord_brief import build_decision_desk_url, format_discord_brief
 from app.services import order_intent_discord_brief as brief_module
+from app.services.order_intent_discord_brief import (
+    build_decision_desk_url,
+    format_discord_brief,
+)
 
 
 @pytest.mark.unit
@@ -72,22 +75,22 @@ def test_module_does_not_import_forbidden_modules() -> None:
 
 
 def _item(**overrides) -> OrderIntentPreviewItem:
-    base = dict(
-        decision_run_id="decision-r1",
-        decision_item_id="item-1",
-        symbol="005930",
-        market="KR",
-        side="buy",
-        intent_type="buy_candidate",
-        status="watch_ready",
-        execution_mode="requires_final_approval",
-        budget_krw=100000.0,
-        quantity_pct=None,
-        trigger=IntentTriggerPreview(
+    base = {
+        "decision_run_id": "decision-r1",
+        "decision_item_id": "item-1",
+        "symbol": "005930",
+        "market": "KR",
+        "side": "buy",
+        "intent_type": "buy_candidate",
+        "status": "watch_ready",
+        "execution_mode": "requires_final_approval",
+        "budget_krw": 100000.0,
+        "quantity_pct": None,
+        "trigger": IntentTriggerPreview(
             metric="price", operator="below", threshold=72000
         ),
-        warnings=[],
-    )
+        "warnings": [],
+    }
     base.update(overrides)
     return OrderIntentPreviewItem(**base)
 

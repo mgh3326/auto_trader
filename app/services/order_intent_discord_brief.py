@@ -85,9 +85,7 @@ def _counts(intents: list[OrderIntentPreviewItem]) -> dict[str, int]:
     }
 
 
-def _top_intent_lines(
-    intents: list[OrderIntentPreviewItem], limit: int
-) -> list[str]:
+def _top_intent_lines(intents: list[OrderIntentPreviewItem], limit: int) -> list[str]:
     if not intents:
         return ["(no intents)"]
 
@@ -108,8 +106,7 @@ def _format_top_line(idx: int, intent: OrderIntentPreviewItem) -> str:
     trigger_part = ""
     if intent.trigger is not None and intent.trigger.threshold is not None:
         trigger_part = (
-            f" — price {intent.trigger.operator} "
-            f"{intent.trigger.threshold:g}"
+            f" — price {intent.trigger.operator} {intent.trigger.threshold:g}"
         )
 
     size_part = ""

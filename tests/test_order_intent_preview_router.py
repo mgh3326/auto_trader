@@ -10,6 +10,7 @@ from app.schemas.order_intent_preview import (
     OrderIntentPreviewRequest,
     OrderIntentPreviewResponse,
 )
+from app.services.order_intent_preview_service import OrderIntentPreviewService
 from app.services.portfolio_decision_service import PortfolioDecisionRunNotFoundError
 
 
@@ -67,9 +68,6 @@ def test_preview_endpoint_returns_404_when_run_missing() -> None:
     assert response.json() == {"detail": "Decision run not found."}
 
 
-from app.services.order_intent_preview_service import OrderIntentPreviewService
-
-
 def _make_client_with_real_preview_service():
     app = FastAPI()
     app.include_router(portfolio.router)
@@ -109,8 +107,8 @@ def _make_client_with_real_preview_service():
     app.dependency_overrides[portfolio.get_authenticated_user] = lambda: (
         SimpleNamespace(id=7)
     )
-    app.dependency_overrides[portfolio.get_order_intent_preview_service] = (
-        lambda: real_preview_service
+    app.dependency_overrides[portfolio.get_order_intent_preview_service] = lambda: (
+        real_preview_service
     )
     return TestClient(app)
 
