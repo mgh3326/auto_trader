@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 usage() {
   cat <<'USAGE' >&2
@@ -67,7 +67,7 @@ require_file() {
 }
 
 restart_services() {
-  local uid_num label plist target
+  local uid_num label plist target attempt
   uid_num="$(id -u)"
 
   for label in "${LABELS[@]}"; do
@@ -81,7 +81,19 @@ restart_services() {
 
     install -m 0644 "$plist" "$target"
     launchctl bootout "gui/$uid_num/$label" 2>/dev/null || true
-    launchctl bootstrap "gui/$uid_num" "$target"
+    launchctl bootout "gui/$uid_num" "$target" 2>/dev/null || true
+
+    for attempt in {1..5}; do
+      if launchctl bootstrap "gui/$uid_num" "$target"; then
+        break
+      fi
+      if (( attempt == 5 )); then
+        echo "Failed to bootstrap $label after $attempt attempts" >&2
+        return 5
+      fi
+      sleep 1
+    done
+
     launchctl enable "gui/$uid_num/$label"
     launchctl kickstart -k "gui/$uid_num/$label"
   done
