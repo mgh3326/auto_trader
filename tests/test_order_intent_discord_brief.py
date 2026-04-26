@@ -12,12 +12,68 @@ from app.services import order_intent_discord_brief as brief_module
 from app.services.order_intent_discord_brief import (
     build_decision_desk_url,
     format_discord_brief,
+    resolve_decision_desk_base_url,
 )
 
 
 @pytest.mark.unit
 def test_build_decision_desk_url_strips_trailing_slash() -> None:
     url = build_decision_desk_url("https://trader.robinco.dev/", "decision-r1")
+    assert url == "https://trader.robinco.dev/portfolio/decision?run_id=decision-r1"
+
+
+@pytest.mark.unit
+def test_resolve_base_url_uses_configured_when_set() -> None:
+    resolved = resolve_decision_desk_base_url(
+        configured="https://trader.robinco.dev",
+        request_base_url="http://127.0.0.1:8000/",
+    )
+    assert resolved == "https://trader.robinco.dev"
+
+
+@pytest.mark.unit
+def test_resolve_base_url_strips_surrounding_whitespace_in_configured() -> None:
+    resolved = resolve_decision_desk_base_url(
+        configured="  https://trader.robinco.dev/  ",
+        request_base_url="http://127.0.0.1:8000/",
+    )
+    assert resolved == "https://trader.robinco.dev/"
+
+
+@pytest.mark.unit
+def test_resolve_base_url_falls_back_when_configured_is_none() -> None:
+    resolved = resolve_decision_desk_base_url(
+        configured=None,
+        request_base_url="http://127.0.0.1:8000/",
+    )
+    assert resolved == "http://127.0.0.1:8000/"
+
+
+@pytest.mark.unit
+def test_resolve_base_url_falls_back_when_configured_is_empty() -> None:
+    resolved = resolve_decision_desk_base_url(
+        configured="",
+        request_base_url="http://127.0.0.1:8000/",
+    )
+    assert resolved == "http://127.0.0.1:8000/"
+
+
+@pytest.mark.unit
+def test_resolve_base_url_falls_back_when_configured_is_whitespace() -> None:
+    resolved = resolve_decision_desk_base_url(
+        configured="   ",
+        request_base_url="http://127.0.0.1:8000/",
+    )
+    assert resolved == "http://127.0.0.1:8000/"
+
+
+@pytest.mark.unit
+def test_resolve_then_build_normalises_trailing_slash() -> None:
+    base = resolve_decision_desk_base_url(
+        configured="https://trader.robinco.dev/",
+        request_base_url="http://127.0.0.1:8000/",
+    )
+    url = build_decision_desk_url(base, "decision-r1")
     assert url == "https://trader.robinco.dev/portfolio/decision?run_id=decision-r1"
 
 

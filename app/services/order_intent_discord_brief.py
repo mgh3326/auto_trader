@@ -36,6 +36,21 @@ def build_decision_desk_url(base_url: str, run_id: str) -> str:
     return f"{base}/portfolio/decision?run_id={quote(run_id, safe='')}"
 
 
+def resolve_decision_desk_base_url(
+    *, configured: str | None, request_base_url: str
+) -> str:
+    """Pick the configured public base URL when set, else fall back.
+
+    Pure function — no settings/env access. The caller (router) supplies
+    `configured` from `settings.public_base_url` and `request_base_url`
+    from `request.base_url`. Whitespace-only or empty configured values
+    are treated as unset so the request origin remains the fallback.
+    """
+    if configured is not None and configured.strip():
+        return configured.strip()
+    return request_base_url
+
+
 def format_discord_brief(
     *,
     preview: OrderIntentPreviewResponse,
