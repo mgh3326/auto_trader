@@ -203,6 +203,9 @@ celerybeat.pid
 
 # Environments
 .env
+.env.*
+!.env.example
+!.env.sample
 .env.test
 .env.mcp
 .env.prod
