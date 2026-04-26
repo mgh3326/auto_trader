@@ -28,22 +28,27 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Setup Tailscale
-        uses: tailscale/github-action@v3
+        uses: tailscale/github-action@v4
         with:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
 
-      - name: Configure SSH key
+      - name: Configure SSH key and known host
         shell: bash
         env:
+          MACBOOK_DEPLOY_SSH_HOST: ${{ secrets.MACBOOK_DEPLOY_SSH_HOST }}
+          MACBOOK_DEPLOY_SSH_HOST_KEY: ${{ secrets.MACBOOK_DEPLOY_SSH_HOST_KEY }}
           MACBOOK_DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.MACBOOK_DEPLOY_SSH_PRIVATE_KEY }}
         run: |
           set -euo pipefail
           install -d -m 700 ~/.ssh
           printf '%s\n' "$MACBOOK_DEPLOY_SSH_PRIVATE_KEY" > ~/.ssh/auto_trader_deploy_key
           chmod 600 ~/.ssh/auto_trader_deploy_key
+          deploy_host="${MACBOOK_DEPLOY_SSH_HOST#*@}"
+          printf '%s %s\n' "$deploy_host" "$MACBOOK_DEPLOY_SSH_HOST_KEY" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
 
       - name: Deploy via SSH
         id: deploy
@@ -59,12 +64,15 @@ jobs:
           ssh_opts=(
             -i ~/.ssh/auto_trader_deploy_key
             -o IdentitiesOnly=yes
-            -o StrictHostKeyChecking=accept-new
+            -o StrictHostKeyChecking=yes
+            -o UserKnownHostsFile=~/.ssh/known_hosts
             -o ConnectTimeout=30
           )
 
+          deploy_sha_q=$(printf '%q' "$DEPLOY_SHA")
+          deploy_branch_q=$(printf '%q' "$DEPLOY_BRANCH")
           ssh "${ssh_opts[@]}" "$MACBOOK_DEPLOY_SSH_HOST" \
-            "tmp=\$(mktemp /tmp/auto-trader-deploy-native.XXXXXX) && cat > \$tmp && chmod +x \$tmp && \$tmp '$DEPLOY_SHA' '$DEPLOY_BRANCH'; rc=\$?; rm -f \$tmp; exit \$rc" \
+            "tmp=\$(mktemp /tmp/auto-trader-deploy-native.XXXXXX) && cat > \$tmp && chmod +x \$tmp && \$tmp $deploy_sha_q $deploy_branch_q; rc=\$?; rm -f \$tmp; exit \$rc" \
             < scripts/deploy-native.sh 2>&1 | tee /tmp/deploy-output.txt
 
       - name: Discord notification (success)

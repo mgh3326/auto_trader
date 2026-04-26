@@ -1,4 +1,4 @@
-#!/bin/zsh
+#!/usr/bin/env bash
 set -euo pipefail
 
 usage() {
@@ -87,14 +87,12 @@ restart_services() {
   done
 }
 
-run_healthcheck() {
+run_healthcheck_once() {
   if [[ -x "$SERVER_HEALTHCHECK" ]]; then
-    log "Running server native healthcheck: $SERVER_HEALTHCHECK"
     "$SERVER_HEALTHCHECK"
     return $?
   fi
 
-  log "Running built-in native healthcheck fallback"
   local rc=0 code
 
   curl -fsS http://127.0.0.1:8000/healthz >/dev/null || {
@@ -120,6 +118,33 @@ run_healthcheck() {
   fi
 
   return $rc
+}
+
+run_healthcheck() {
+  local attempts="${AUTO_TRADER_HEALTHCHECK_ATTEMPTS:-6}"
+  local interval="${AUTO_TRADER_HEALTHCHECK_INTERVAL_SECONDS:-5}"
+  local attempt
+
+  if [[ -x "$SERVER_HEALTHCHECK" ]]; then
+    log "Running server native healthcheck with retries: $SERVER_HEALTHCHECK"
+  else
+    log "Running built-in native healthcheck fallback with retries"
+  fi
+
+  for ((attempt = 1; attempt <= attempts; attempt++)); do
+    log "Healthcheck attempt $attempt/$attempts"
+    if run_healthcheck_once; then
+      log "Healthcheck passed"
+      return 0
+    fi
+
+    if (( attempt < attempts )); then
+      sleep "$interval"
+    fi
+  done
+
+  echo "Healthcheck failed after $attempts attempts" >&2
+  return 1
 }
 
 rollback() {
@@ -154,6 +179,11 @@ log "New release: $NEW_RELEASE"
 
 log "Fetching source repository"
 git -C "$SOURCE_REPO" fetch origin "$BRANCH" --tags
+if ! git -C "$SOURCE_REPO" cat-file -e "$SHA^{commit}" 2>/dev/null; then
+  log "Commit not found after branch fetch; trying explicit SHA fetch"
+  git -C "$SOURCE_REPO" fetch origin "$SHA" --tags || \
+    git -C "$SOURCE_REPO" fetch origin '+refs/heads/*:refs/remotes/origin/*' --tags
+fi
 git -C "$SOURCE_REPO" cat-file -e "$SHA^{commit}"
 
 if [[ ! -d "$NEW_RELEASE/.git" ]]; then
@@ -165,12 +195,15 @@ cd "$NEW_RELEASE"
 log "Preparing release checkout"
 git fetch origin "$BRANCH" --tags
 git checkout --detach "$SHA"
-git clean -fdx
+git clean -fdx -e .venv
 
 log "Installing dependencies with uv"
 uv sync --frozen
 
 log "Running Alembic migrations"
+# Online deploy rollback only reverts code/services. Production migrations must be
+# expansion-only/backwards-compatible with the previous release; do not merge
+# destructive downgrades into this path without a separate data rollback runbook.
 ENV_FILE="$SHARED_ENV" uv run alembic upgrade head
 
 log "Switching current symlink"
