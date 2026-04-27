@@ -35,6 +35,19 @@ from .trade_profile import (
     TierRuleParam,
 )
 from .trading import Exchange, Instrument, User, UserChannel, UserRole, UserWatchItem
+from .trading_decision import (
+    ActionKind,
+    OutcomeHorizon,
+    ProposalKind,
+    SessionStatus,
+    TrackKind,
+    TradingDecisionAction,
+    TradingDecisionCounterfactual,
+    TradingDecisionOutcome,
+    TradingDecisionProposal,
+    TradingDecisionSession,
+    UserResponse,
+)
 from .upbit_symbol_universe import UpbitSymbolUniverse
 from .us_symbol_universe import USSymbolUniverse
 from .user_settings import UserSetting
@@ -93,6 +106,17 @@ __all__ = [
     "PaperTrade",
     "PortfolioDecisionRun",
     "SellCondition",
+    "TradingDecisionSession",
+    "TradingDecisionProposal",
+    "TradingDecisionAction",
+    "TradingDecisionCounterfactual",
+    "TradingDecisionOutcome",
+    "SessionStatus",
+    "ProposalKind",
+    "UserResponse",
+    "ActionKind",
+    "TrackKind",
+    "OutcomeHorizon",
     # "AlertRule", "AlertEvent",
     # "PricesLatest", "PricesOHLCV", "FxRate",
 ]
