@@ -109,4 +109,31 @@ describe("decisions API client", () => {
       );
     }
   });
+
+  it("built bundle contains no forbidden runtime tokens when requested", async () => {
+    if (process.env.RUN_BUNDLE_GREP !== "1") return;
+    const { readdir, readFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    const assetsDir = join(process.cwd(), "dist", "assets");
+    const files = (await readdir(assetsDir)).filter((file) =>
+      file.endsWith(".js"),
+    );
+    const forbidden = [
+      "kis.",
+      "upbit.",
+      "redis",
+      "telegram",
+      "broker",
+      "order_service",
+      "fill_notification",
+      "execution_event",
+      "watch_alert_service",
+    ];
+    for (const file of files) {
+      const body = (await readFile(join(assetsDir, file), "utf8")).toLowerCase();
+      for (const token of forbidden) {
+        expect(body.includes(token)).toBe(false);
+      }
+    }
+  });
 });
