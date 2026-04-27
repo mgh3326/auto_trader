@@ -1,0 +1,18 @@
+.hello-decision {
+  max-width: 720px;
+  margin: 4rem auto;
+  padding: 0 1.5rem;
+  font: 16px/1.6 ui-sans-serif, system-ui, sans-serif;
+  color: #1a1a1a;
+}
+
+.hello-decision h1 {
+  font-size: 1.75rem;
+  margin-bottom: 1rem;
+}
+
+.hello-decision code {
+  background: #f3f3f3;
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+}
