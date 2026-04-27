@@ -1,4 +1,4 @@
-.PHONY: help install install-dev test test-unit test-integration test-services-split test-cov test-fast test-watch lint format typecheck security clean dev taskiq-worker taskiq-scheduler docker-build docker-run docker-test sync-kr-symbol-universe sync-upbit-symbol-universe sync-us-symbol-universe sync-kr-candles-backfill sync-kr-candles-incremental
+.PHONY: help install install-dev test test-unit test-integration test-services-split test-cov test-fast test-watch lint format typecheck security clean dev taskiq-worker taskiq-scheduler docker-build docker-run docker-test sync-kr-symbol-universe sync-upbit-symbol-universe sync-us-symbol-universe sync-kr-candles-backfill sync-kr-candles-incremental frontend-install frontend-dev frontend-build frontend-typecheck
 
 help: ## Show this help message
 	@echo "Available commands:"
@@ -90,6 +90,18 @@ sync-kr-candles-backfill: ## Backfill KR candles for recent sessions
 
 sync-kr-candles-incremental: ## Incremental KR candles sync (venue-gated)
 	uv run python scripts/sync_kr_candles.py --mode incremental
+
+frontend-install: ## Install React/Vite workspace deps (npm ci)
+	cd frontend/trading-decision && npm ci
+
+frontend-dev: ## Start Vite dev server on :5173 (requires `make dev` for the API on :8000)
+	cd frontend/trading-decision && npm run dev
+
+frontend-build: ## Build the React/Vite workspace into frontend/trading-decision/dist/
+	cd frontend/trading-decision && npm run build
+
+frontend-typecheck: ## Run tsc --noEmit on the React/Vite workspace
+	cd frontend/trading-decision && npm run typecheck
 
 docker-build: ## Build Docker image
 	vcs_ref="$$(git rev-parse HEAD)"; \
