@@ -1,0 +1,13 @@
+.panel {
+  border: 1px solid #e2e7ef;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.panel pre {
+  overflow: auto;
+}
+
+.notes {
+  color: #4e5f75;
+}

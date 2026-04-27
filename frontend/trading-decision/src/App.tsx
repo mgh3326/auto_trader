@@ -1,5 +1,6 @@
-import HelloDecision from "./components/HelloDecision";
+import { RouterProvider } from "react-router-dom";
+import { router } from "./routes";
 
 export default function App() {
-  return <HelloDecision />;
+  return <RouterProvider router={router} />;
 }

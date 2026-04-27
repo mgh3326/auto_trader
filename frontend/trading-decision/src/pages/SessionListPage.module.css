@@ -1,0 +1,34 @@
+.page {
+  display: grid;
+  gap: 20px;
+}
+
+.topbar {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.controls {
+  display: flex;
+  gap: 10px;
+}
+
+.table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.table th,
+.table td {
+  border-bottom: 1px solid #e2e7ef;
+  padding: 10px;
+  text-align: left;
+}
+
+.pagination {
+  display: flex;
+  gap: 8px;
+}

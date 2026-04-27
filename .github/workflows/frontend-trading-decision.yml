@@ -27,7 +27,9 @@ jobs:
           cache-dependency-path: frontend/trading-decision/package-lock.json
       - run: npm ci
       - run: npm run typecheck
+      - run: npm run test
       - run: npm run build
+      - run: RUN_BUNDLE_GREP=1 npm run test
       - name: Verify dist/index.html exists and references hashed assets
         run: |
           test -f dist/index.html

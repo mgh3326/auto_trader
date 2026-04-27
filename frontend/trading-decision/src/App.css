@@ -1,18 +1,88 @@
-.hello-decision {
-  max-width: 720px;
-  margin: 4rem auto;
-  padding: 0 1.5rem;
-  font: 16px/1.6 ui-sans-serif, system-ui, sans-serif;
-  color: #1a1a1a;
+* {
+  box-sizing: border-box;
 }
 
-.hello-decision h1 {
-  font-size: 1.75rem;
-  margin-bottom: 1rem;
+body {
+  background: #f5f7fa;
+  color: #172033;
+  font: 16px/1.5 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
+  margin: 0;
 }
 
-.hello-decision code {
-  background: #f3f3f3;
-  padding: 0.1rem 0.35rem;
-  border-radius: 3px;
+a {
+  color: #1f5f99;
+}
+
+#root {
+  margin: 0 auto;
+  max-width: 1180px;
+  padding: 28px 20px 48px;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin-top: 0;
+}
+
+.btn,
+button {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid #c8d0dc;
+  border-radius: 6px;
+  color: #172033;
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-weight: 700;
+  min-height: 36px;
+  padding: 7px 12px;
+  text-decoration: none;
+}
+
+.btn:hover,
+button:hover {
+  background: #f0f4f8;
+}
+
+.btn:disabled,
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.btn-primary {
+  background: #1f5f99;
+  border-color: #1f5f99;
+  color: #ffffff;
+}
+
+.btn-ghost {
+  background: transparent;
+}
+
+.btn-danger {
+  border-color: #c94141;
+  color: #9f2d2d;
+}
+
+.btn-warn {
+  border-color: #d7a500;
+  color: #765600;
+}
+
+.surface-message {
+  background: #ffffff;
+  border: 1px solid #e2e7ef;
+  border-radius: 8px;
+  padding: 18px;
+}
+
+.response-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
