@@ -1,4 +1,5 @@
 """Trading decisions API schemas."""
+
 from datetime import datetime
 from decimal import Decimal
 from typing import Literal, Self
@@ -61,6 +62,7 @@ InstrumentTypeLiteral = Literal[
 
 # ========== Session Schemas ==========
 
+
 class SessionCreateRequest(BaseModel):
     source_profile: str = Field(..., min_length=1, max_length=64)
     strategy_name: str | None = Field(default=None, max_length=128)
@@ -97,6 +99,7 @@ class SessionListResponse(BaseModel):
 
 
 # ========== Proposal Schemas ==========
+
 
 class ProposalCreateItem(BaseModel):
     symbol: str = Field(..., min_length=1, max_length=64)
@@ -158,6 +161,7 @@ class ProposalCreateBulkResponse(BaseModel):
 
 # ========== Response Schemas ==========
 
+
 class ProposalRespondRequest(BaseModel):
     response: Literal["accept", "reject", "modify", "partial_accept", "defer"]
     user_quantity: Decimal | None = None
@@ -188,6 +192,7 @@ class ProposalRespondRequest(BaseModel):
 
 
 # ========== Action Schemas ==========
+
 
 class ActionCreateRequest(BaseModel):
     action_kind: ActionKindLiteral
@@ -224,6 +229,7 @@ class ActionDetail(BaseModel):
 
 # ========== Counterfactual Schemas ==========
 
+
 class CounterfactualCreateRequest(BaseModel):
     track_kind: Literal[
         "rejected_counterfactual",
@@ -250,6 +256,7 @@ class CounterfactualDetail(BaseModel):
 
 
 # ========== Outcome Schemas ==========
+
 
 class OutcomeCreateRequest(BaseModel):
     track_kind: TrackKindLiteral

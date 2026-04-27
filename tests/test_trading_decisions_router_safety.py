@@ -1,4 +1,5 @@
 """Safety test to verify trading_decisions router does not import execution paths."""
+
 import json
 import os
 import subprocess

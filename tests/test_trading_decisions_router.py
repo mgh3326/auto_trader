@@ -1,4 +1,5 @@
 """Tests for trading decisions router."""
+
 from datetime import datetime
 from decimal import Decimal
 from types import SimpleNamespace
@@ -27,6 +28,7 @@ def _make_test_client():
 
 
 # ========== Authentication Tests ==========
+
 
 @pytest.mark.unit
 def test_authenticated_create_session():
@@ -57,7 +59,9 @@ def test_authenticated_create_session():
         updated_at=datetime.utcnow(),
         proposals=[],
     )
-    trading_decision_service.create_decision_session = AsyncMock(return_value=mock_session)
+    trading_decision_service.create_decision_session = AsyncMock(
+        return_value=mock_session
+    )
     trading_decision_service.get_session_by_uuid = AsyncMock(return_value=mock_session)
 
     client = TestClient(app)
@@ -103,6 +107,7 @@ def test_unauthenticated_request_returns_401():
 
 
 # ========== Session Tests ==========
+
 
 @pytest.mark.unit
 def test_create_proposals_btc_eth_sol():
@@ -168,8 +173,12 @@ def test_create_proposals_btc_eth_sol():
         make_mock_proposal(2, "ETH", "add", "buy"),
         make_mock_proposal(3, "SOL", "pullback_watch", "none"),
     ]
-    trading_decision_service.add_decision_proposals = AsyncMock(return_value=mock_proposals)
-    trading_decision_service.get_proposal_by_uuid = AsyncMock(side_effect=mock_proposals)
+    trading_decision_service.add_decision_proposals = AsyncMock(
+        return_value=mock_proposals
+    )
+    trading_decision_service.get_proposal_by_uuid = AsyncMock(
+        side_effect=mock_proposals
+    )
 
     client = TestClient(app)
 
@@ -261,8 +270,12 @@ def test_modify_btc_20_to_10_preserves_original():
         )
 
     mock_proposal = make_full_mock_proposal()
-    trading_decision_service.get_proposal_by_uuid = AsyncMock(return_value=mock_proposal)
-    trading_decision_service.record_user_response = AsyncMock(return_value=mock_proposal)
+    trading_decision_service.get_proposal_by_uuid = AsyncMock(
+        return_value=mock_proposal
+    )
+    trading_decision_service.record_user_response = AsyncMock(
+        return_value=mock_proposal
+    )
 
     client = TestClient(app)
 
@@ -375,6 +388,7 @@ def test_accept_btc_eth_defer_sol():
 
 # ========== Action Tests ==========
 
+
 @pytest.mark.unit
 def test_record_live_order_action():
     """POST /actions records a live order with external ID."""
@@ -397,7 +411,9 @@ def test_record_live_order_action():
         session=SimpleNamespace(status="open"),
         symbol="BTC",
     )
-    trading_decision_service.get_proposal_by_uuid = AsyncMock(return_value=mock_proposal)
+    trading_decision_service.get_proposal_by_uuid = AsyncMock(
+        return_value=mock_proposal
+    )
 
     mock_action = SimpleNamespace(
         id=1,
@@ -411,7 +427,9 @@ def test_record_live_order_action():
         recorded_at=datetime.utcnow(),
         created_at=datetime.utcnow(),
     )
-    trading_decision_service.record_decision_action = AsyncMock(return_value=mock_action)
+    trading_decision_service.record_decision_action = AsyncMock(
+        return_value=mock_action
+    )
 
     client = TestClient(app)
 
@@ -458,7 +476,9 @@ def test_record_watch_alert_action():
         session=SimpleNamespace(status="open"),
         symbol="BTC",
     )
-    trading_decision_service.get_proposal_by_uuid = AsyncMock(return_value=mock_proposal)
+    trading_decision_service.get_proposal_by_uuid = AsyncMock(
+        return_value=mock_proposal
+    )
 
     mock_action = SimpleNamespace(
         id=1,
@@ -472,7 +492,9 @@ def test_record_watch_alert_action():
         recorded_at=datetime.utcnow(),
         created_at=datetime.utcnow(),
     )
-    trading_decision_service.record_decision_action = AsyncMock(return_value=mock_action)
+    trading_decision_service.record_decision_action = AsyncMock(
+        return_value=mock_action
+    )
 
     client = TestClient(app)
 
@@ -521,6 +543,7 @@ def test_action_no_external_id_returns_422():
 
 
 # ========== Authorization Tests ==========
+
 
 @pytest.mark.unit
 def test_session_not_owned_returns_404():
@@ -578,6 +601,7 @@ def test_proposal_not_owned_returns_404():
 
 # ========== Session State Tests ==========
 
+
 @pytest.mark.unit
 def test_create_proposals_on_archived_session_returns_409():
     """Adding proposals to archived session returns 409."""
@@ -624,6 +648,7 @@ def test_create_proposals_on_archived_session_returns_409():
 
 # ========== Validation Tests ==========
 
+
 @pytest.mark.unit
 def test_modify_without_user_fields_returns_422():
     """Modify response without any user_* fields returns 422."""
@@ -649,6 +674,7 @@ def test_modify_without_user_fields_returns_422():
 
 
 # ========== Outcome Tests ==========
+
 
 @pytest.mark.unit
 def test_outcome_mark_invalid_track_combo_returns_422():
@@ -704,7 +730,9 @@ def test_outcome_mark_duplicate_horizon_returns_409():
         session=SimpleNamespace(status="open"),
         symbol="BTC",
     )
-    trading_decision_service.get_proposal_by_uuid = AsyncMock(return_value=mock_proposal)
+    trading_decision_service.get_proposal_by_uuid = AsyncMock(
+        return_value=mock_proposal
+    )
 
     # Simulate unique constraint violation
     trading_decision_service.record_outcome_mark = AsyncMock(
@@ -728,6 +756,7 @@ def test_outcome_mark_duplicate_horizon_returns_409():
 
 
 # ========== List/Pagination Tests ==========
+
 
 @pytest.mark.unit
 def test_list_decisions_pagination():
@@ -774,7 +803,9 @@ def test_list_decisions_pagination():
             0,  # pending_count
         ),
     ]
-    trading_decision_service.list_user_sessions = AsyncMock(return_value=(mock_sessions, 10))
+    trading_decision_service.list_user_sessions = AsyncMock(
+        return_value=(mock_sessions, 10)
+    )
 
     client = TestClient(app)
 
@@ -899,6 +930,7 @@ def test_get_session_detail_includes_nested_actions_and_outcomes():
 
 # ========== Counterfactual Tests ==========
 
+
 @pytest.mark.unit
 def test_create_counterfactual_track():
     """POST /counterfactuals creates a counterfactual track."""
@@ -921,7 +953,9 @@ def test_create_counterfactual_track():
         session=SimpleNamespace(status="open"),
         symbol="SOL",
     )
-    trading_decision_service.get_proposal_by_uuid = AsyncMock(return_value=mock_proposal)
+    trading_decision_service.get_proposal_by_uuid = AsyncMock(
+        return_value=mock_proposal
+    )
 
     mock_counterfactual = SimpleNamespace(
         id=1,
@@ -934,7 +968,9 @@ def test_create_counterfactual_track():
         notes=None,
         created_at=datetime.utcnow(),
     )
-    trading_decision_service.create_counterfactual_track = AsyncMock(return_value=mock_counterfactual)
+    trading_decision_service.create_counterfactual_track = AsyncMock(
+        return_value=mock_counterfactual
+    )
 
     client = TestClient(app)
 
@@ -957,6 +993,7 @@ def test_create_counterfactual_track():
 
 
 # ========== Schema Consistency Test ==========
+
 
 @pytest.mark.unit
 def test_pydantic_literals_match_db_enums():

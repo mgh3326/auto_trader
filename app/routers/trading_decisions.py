@@ -1,4 +1,5 @@
 """Trading decisions API router."""
+
 from datetime import UTC, datetime
 from typing import Annotated
 from uuid import UUID
@@ -102,12 +103,16 @@ def _to_proposal_detail(proposal) -> ProposalDetail:
         user_threshold_pct=proposal.user_threshold_pct,
         user_note=proposal.user_note,
         actions=[_to_action_detail(a) for a in proposal.actions],
-        counterfactuals=[_to_counterfactual_detail(c) for c in proposal.counterfactuals],
+        counterfactuals=[
+            _to_counterfactual_detail(c) for c in proposal.counterfactuals
+        ],
         outcomes=[_to_outcome_detail(o) for o in proposal.outcomes],
     )
 
 
-def _to_session_summary(session, proposals_count: int, pending_count: int) -> SessionSummary:
+def _to_session_summary(
+    session, proposals_count: int, pending_count: int
+) -> SessionSummary:
     return SessionSummary(
         session_uuid=session.session_uuid,
         source_profile=session.source_profile,
@@ -156,7 +161,9 @@ async def list_decisions(
         status=status,
     )
 
-    sessions = [_to_session_summary(session, count, pending) for session, count, pending in rows]
+    sessions = [
+        _to_session_summary(session, count, pending) for session, count, pending in rows
+    ]
 
     return SessionListResponse(
         sessions=sessions,
@@ -166,7 +173,9 @@ async def list_decisions(
     )
 
 
-@router.post("/api/decisions", response_model=SessionDetail, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/api/decisions", response_model=SessionDetail, status_code=status.HTTP_201_CREATED
+)
 async def create_decision(
     request: SessionCreateRequest,
     response: Response,
