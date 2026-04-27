@@ -21,6 +21,22 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen
 
 # ==============================================================================
+# STAGE 1b (optional): frontend-builder - builds the React/Vite SPA
+# Toggle with: --build-arg ENABLE_FRONTEND_BUILD=1
+# ==============================================================================
+FROM --platform=$BUILDPLATFORM node:20-alpine AS frontend-builder
+
+ARG ENABLE_FRONTEND_BUILD=0
+
+WORKDIR /build
+
+COPY frontend/trading-decision/package.json frontend/trading-decision/package-lock.json ./
+RUN if [ "$ENABLE_FRONTEND_BUILD" = "1" ]; then npm ci; fi
+
+COPY frontend/trading-decision/ ./
+RUN if [ "$ENABLE_FRONTEND_BUILD" = "1" ]; then npm run build; else mkdir -p dist && echo '<!-- frontend build disabled -->' > dist/index.html; fi
+
+# ==============================================================================
 # STAGE 2: 'final' - 최종 실행 이미지를 만드는 스테이지
 # 가볍고 깨끗한 상태에서 시작합니다.
 # ==============================================================================
@@ -28,6 +44,7 @@ FROM python:3.13-slim AS final
 
 ARG VCS_REF=""
 ARG GITHUB_SHA=unknown
+ARG ENABLE_FRONTEND_BUILD=0
 
 # 환경 변수 설정
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -52,6 +69,7 @@ COPY --from=builder /app/.venv /app/.venv
 
 # 앱 소스 코드 복사
 COPY . .
+COPY --from=frontend-builder /build/dist /app/frontend/trading-decision/dist
 
 # tmp 디렉토리 생성 및 권한 설정
 RUN printf '%s' "$VCS_REF" > /app/.build-vcs-ref && \

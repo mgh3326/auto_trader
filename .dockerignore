@@ -90,3 +90,6 @@ example_*.py
 renovate.json
 Makefile
 
+# Frontend workspaces
+frontend/**/node_modules/
+frontend/**/.vite/

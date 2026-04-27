@@ -1,0 +1,34 @@
+name: Frontend - Trading Decision
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "frontend/trading-decision/**"
+      - ".github/workflows/frontend-trading-decision.yml"
+  pull_request:
+    paths:
+      - "frontend/trading-decision/**"
+      - ".github/workflows/frontend-trading-decision.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend/trading-decision
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: frontend/trading-decision/.nvmrc
+          cache: "npm"
+          cache-dependency-path: frontend/trading-decision/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - name: Verify dist/index.html exists and references hashed assets
+        run: |
+          test -f dist/index.html
+          grep -q '/trading/decisions/assets/' dist/index.html
