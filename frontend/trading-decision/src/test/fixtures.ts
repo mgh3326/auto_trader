@@ -1,7 +1,10 @@
 import type {
   ActionDetail,
   CounterfactualDetail,
+  OutcomeDetail,
   ProposalDetail,
+  SessionAnalyticsCell,
+  SessionAnalyticsResponse,
   SessionDetail,
   SessionListResponse,
   SessionSummary,
@@ -38,6 +41,58 @@ export function makeCounterfactual(
     payload: { reason: "baseline" },
     notes: "Track rejected path",
     created_at: now,
+    ...overrides,
+  };
+}
+
+export function makeOutcome(
+  overrides: Partial<OutcomeDetail> = {},
+): OutcomeDetail {
+  return {
+    id: 100,
+    counterfactual_id: null,
+    track_kind: "accepted_live",
+    horizon: "1h",
+    price_at_mark: "118000000",
+    pnl_pct: "1.2500",
+    pnl_amount: "1500.0000",
+    marked_at: now,
+    payload: null,
+    created_at: now,
+    ...overrides,
+  };
+}
+
+export function makeAnalyticsCell(
+  overrides: Partial<SessionAnalyticsCell> = {},
+): SessionAnalyticsCell {
+  return {
+    track_kind: "accepted_live",
+    horizon: "1h",
+    outcome_count: 2,
+    proposal_count: 1,
+    mean_pnl_pct: "1.2500",
+    sum_pnl_amount: "3000.0000",
+    latest_marked_at: now,
+    ...overrides,
+  };
+}
+
+export function makeAnalyticsResponse(
+  overrides: Partial<SessionAnalyticsResponse> = {},
+): SessionAnalyticsResponse {
+  return {
+    session_uuid: "session-1",
+    generated_at: now,
+    tracks: [
+      "accepted_live",
+      "accepted_paper",
+      "rejected_counterfactual",
+      "analyst_alternative",
+      "user_alternative",
+    ],
+    horizons: ["1h", "4h", "1d", "3d", "7d", "final"],
+    cells: [makeAnalyticsCell()],
     ...overrides,
   };
 }
