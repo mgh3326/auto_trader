@@ -56,7 +56,9 @@ def _configure_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path
     monkeypatch.setattr(svc.settings, "tradingagents_repo_path", str(repo))
     monkeypatch.setattr(svc.settings, "tradingagents_python", sys.executable)
     monkeypatch.setattr(svc.settings, "tradingagents_runner_path", None)
-    monkeypatch.setattr(svc.settings, "tradingagents_base_url", "http://shim/v1")
+    monkeypatch.setattr(
+        svc.settings, "tradingagents_base_url", "https://shim.invalid/v1"
+    )
     monkeypatch.setattr(svc.settings, "tradingagents_model", "gpt-5.5")
     monkeypatch.setattr(svc.settings, "tradingagents_default_analysts", "market")
     monkeypatch.setattr(svc.settings, "tradingagents_subprocess_timeout_sec", 15)
@@ -81,13 +83,18 @@ def _required_settings() -> dict[str, str]:
     }
 
 
-def test_settings_parse_tradingagents_env_values() -> None:
+def test_settings_parse_tradingagents_env_values(tmp_path: Path) -> None:
+    repo_path = tmp_path / "TradingAgents"
+    python_path = repo_path / ".venv" / "bin" / "python"
+    runner_path = tmp_path / "runner.py"
+    memory_path = tmp_path / "tradingagents-memory"
+
     settings = Settings(
         **_required_settings(),
-        tradingagents_repo_path="/tmp/TradingAgents",
-        tradingagents_python="/tmp/TradingAgents/.venv/bin/python",
-        tradingagents_runner_path="/tmp/runner.py",
-        tradingagents_base_url="http://localhost:8796/v1",
+        tradingagents_repo_path=str(repo_path),
+        tradingagents_python=str(python_path),
+        tradingagents_runner_path=str(runner_path),
+        tradingagents_base_url="https://localhost:8796/v1",
         tradingagents_model="local-model",
         tradingagents_default_analysts="market,news",
         tradingagents_subprocess_timeout_sec=45,
@@ -96,11 +103,11 @@ def test_settings_parse_tradingagents_env_values() -> None:
         tradingagents_max_recur_limit=12,
         tradingagents_output_language="Korean",
         tradingagents_checkpoint_enabled=True,
-        tradingagents_memory_log_path="/tmp/tradingagents-memory",
+        tradingagents_memory_log_path=str(memory_path),
     )
 
-    assert settings.tradingagents_repo_path == "/tmp/TradingAgents"
-    assert settings.tradingagents_runner_path == "/tmp/runner.py"
+    assert settings.tradingagents_repo_path == str(repo_path)
+    assert settings.tradingagents_runner_path == str(runner_path)
     assert settings.tradingagents_subprocess_timeout_sec == 45
     assert settings.tradingagents_checkpoint_enabled is True
 
