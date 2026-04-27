@@ -20,6 +20,15 @@
   gap: 14px;
 }
 
+.analytics {
+  display: grid;
+  gap: 10px;
+}
+
+.analytics h2 {
+  margin: 0;
+}
+
 .footer {
   color: #536276;
 }
