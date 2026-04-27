@@ -1,3 +1,6 @@
-from . import order_service as order_service
-from . import upbit_orderbook as upbit_orderbook
-from . import upbit_websocket as upbit_websocket
+"""Service package.
+
+Keep package import side-effect free. Import concrete service modules directly at
+call sites (for example, ``from app.services import order_service``) so safety
+checks can reason about which execution paths are actually loaded.
+"""
