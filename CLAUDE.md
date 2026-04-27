@@ -422,6 +422,12 @@ TELEGRAM_CHAT_IDS_STR=chat_id1,chat_id2
 
 # OpenDART (선택사항)
 OPENDART_API_KEY=xxx
+
+# TradingAgents advisory runner (ROB-9, 선택사항)
+TRADINGAGENTS_REPO_PATH=/path/to/TradingAgents
+TRADINGAGENTS_PYTHON=/path/to/TradingAgents/.venv/bin/python
+TRADINGAGENTS_RUNNER_PATH=/path/to/run_auto_trader_research.py
+# 전체 설정과 안전 제약은 docs/plans/ROB-9-tradingagents-auto-trader-integration-plan.md 참고
 ```
 
 ## 테스트 작성
