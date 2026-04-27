@@ -996,6 +996,45 @@ def test_create_counterfactual_track():
 
 
 @pytest.mark.unit
+def test_session_analytics_response_serializes_decimal_strings():
+    from datetime import UTC, datetime
+    from decimal import Decimal
+
+    from app.schemas.trading_decisions import (
+        SessionAnalyticsCell,
+        SessionAnalyticsResponse,
+    )
+
+    payload = SessionAnalyticsResponse(
+        session_uuid=uuid4(),
+        generated_at=datetime.now(UTC),
+        tracks=[
+            "accepted_live",
+            "accepted_paper",
+            "rejected_counterfactual",
+            "analyst_alternative",
+            "user_alternative",
+        ],
+        horizons=["1h", "4h", "1d", "3d", "7d", "final"],
+        cells=[
+            SessionAnalyticsCell(
+                track_kind="accepted_live",
+                horizon="1h",
+                outcome_count=2,
+                proposal_count=2,
+                mean_pnl_pct=Decimal("1.5"),
+                sum_pnl_amount=Decimal("12.34"),
+                latest_marked_at=datetime.now(UTC),
+            )
+        ],
+    )
+    body = payload.model_dump(mode="json")
+    assert body["cells"][0]["mean_pnl_pct"] == "1.5"
+    assert body["cells"][0]["sum_pnl_amount"] == "12.34"
+    assert body["tracks"][0] == "accepted_live"
+
+
+@pytest.mark.unit
 def test_pydantic_literals_match_db_enums():
     """Verify Pydantic Literal types match SQLAlchemy Enum values."""
     from typing import get_args
