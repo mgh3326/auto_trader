@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../api/client";
 import {
+  createOutcomeMark,
   getDecisions,
   getSession,
+  getSessionAnalytics,
   respondToProposal,
 } from "../api/decisions";
 import { mockFetch } from "../test/server";
@@ -54,6 +56,66 @@ describe("decisions API client", () => {
     expect(calls[0]?.body).toBe(
       JSON.stringify({ response: "modify", user_quantity_pct: "10" }),
     );
+  });
+
+  it("getSessionAnalytics calls GET /trading/api/decisions/:uuid/analytics", async () => {
+    const { calls } = mockFetch({
+      "/trading/api/decisions/sess-1/analytics": () =>
+        new Response(
+          JSON.stringify({
+            session_uuid: "sess-1",
+            generated_at: "2026-04-28T06:00:00Z",
+            tracks: [
+              "accepted_live",
+              "accepted_paper",
+              "rejected_counterfactual",
+              "analyst_alternative",
+              "user_alternative",
+            ],
+            horizons: ["1h", "4h", "1d", "3d", "7d", "final"],
+            cells: [],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    });
+
+    const res = await getSessionAnalytics("sess-1");
+
+    expect(res.session_uuid).toBe("sess-1");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.method).toBe("GET");
+  });
+
+  it("createOutcomeMark POSTs to /trading/api/proposals/:uuid/outcomes with the body", async () => {
+    const { calls } = mockFetch({
+      "/trading/api/proposals/p-1/outcomes": () =>
+        new Response(
+          JSON.stringify({
+            id: 1,
+            counterfactual_id: null,
+            track_kind: "accepted_live",
+            horizon: "1h",
+            price_at_mark: "100",
+            pnl_pct: null,
+            pnl_amount: null,
+            marked_at: "2026-04-28T07:00:00Z",
+            payload: null,
+            created_at: "2026-04-28T07:00:00Z",
+          }),
+          { status: 201, headers: { "Content-Type": "application/json" } },
+        ),
+    });
+
+    const out = await createOutcomeMark("p-1", {
+      track_kind: "accepted_live",
+      horizon: "1h",
+      price_at_mark: "100",
+      marked_at: "2026-04-28T07:00:00Z",
+    });
+
+    expect(out.track_kind).toBe("accepted_live");
+    expect(calls[0]?.method).toBe("POST");
+    expect(calls[0]?.body).toContain('"track_kind":"accepted_live"');
   });
 
   it("401 throws ApiError", async () => {

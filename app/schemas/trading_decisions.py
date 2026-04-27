@@ -290,3 +290,24 @@ class OutcomeDetail(BaseModel):
     marked_at: datetime
     payload: dict | None
     created_at: datetime
+
+
+# ========== Analytics Schemas ==========
+
+
+class SessionAnalyticsCell(BaseModel):
+    track_kind: TrackKindLiteral
+    horizon: OutcomeHorizonLiteral
+    outcome_count: int
+    proposal_count: int
+    mean_pnl_pct: Decimal | None = None
+    sum_pnl_amount: Decimal | None = None
+    latest_marked_at: datetime | None = None
+
+
+class SessionAnalyticsResponse(BaseModel):
+    session_uuid: UUID
+    generated_at: datetime
+    tracks: list[TrackKindLiteral]
+    horizons: list[OutcomeHorizonLiteral]
+    cells: list[SessionAnalyticsCell]

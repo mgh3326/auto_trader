@@ -1,0 +1,33 @@
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.table th,
+.table td {
+  border: 1px solid var(--border, #ddd);
+  padding: 0.5rem 0.6rem;
+  text-align: center;
+}
+
+.trackCell {
+  text-align: left;
+  font-weight: 600;
+}
+
+.cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.meta {
+  color: var(--muted, #888);
+  font-size: 0.75rem;
+}
+
+.empty {
+  color: var(--muted, #888);
+}

@@ -3,7 +3,11 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import SessionDetailPage from "../pages/SessionDetailPage";
-import { makeProposal, makeSessionDetail } from "../test/fixtures";
+import {
+  makeAnalyticsResponse,
+  makeProposal,
+  makeSessionDetail,
+} from "../test/fixtures";
 import { mockFetch } from "../test/server";
 
 function renderDetail() {
@@ -23,6 +27,8 @@ describe("SessionDetailPage", () => {
     mockFetch({
       "/trading/api/decisions/session-1": () =>
         new Response(JSON.stringify(makeSessionDetail())),
+      "/trading/api/decisions/session-1/analytics": () =>
+        new Response(JSON.stringify(makeAnalyticsResponse())),
     });
 
     renderDetail();
@@ -31,6 +37,8 @@ describe("SessionDetailPage", () => {
     expect(screen.getByText("BTC")).toBeInTheDocument();
     expect(screen.getByText("ETH")).toBeInTheDocument();
     expect(screen.getByText("SOL")).toBeInTheDocument();
+    expect(await screen.findByText("Outcome analytics")).toBeInTheDocument();
+    expect(screen.getByText("1.25%")).toBeInTheDocument();
   });
 
   it("successful respond refetches and updates row", async () => {
@@ -49,6 +57,8 @@ describe("SessionDetailPage", () => {
           JSON.stringify(makeSessionDetail({ proposals: [proposal] })),
         );
       },
+      "/trading/api/decisions/session-1/analytics": () =>
+        new Response(JSON.stringify(makeAnalyticsResponse())),
       "/trading/api/proposals/proposal-btc/respond": () =>
         new Response(JSON.stringify(makeProposal({ user_response: "accept" }))),
     });
@@ -66,6 +76,10 @@ describe("SessionDetailPage", () => {
         new Response(JSON.stringify({ detail: "Decision session not found" }), {
           status: 404,
         }),
+      "/trading/api/decisions/session-1/analytics": () =>
+        new Response(JSON.stringify({ detail: "Session not found" }), {
+          status: 404,
+        }),
     });
 
     renderDetail();
@@ -77,6 +91,8 @@ describe("SessionDetailPage", () => {
     mockFetch({
       "/trading/api/decisions/session-1": () =>
         new Response(JSON.stringify(makeSessionDetail({ proposals: [makeProposal()] }))),
+      "/trading/api/decisions/session-1/analytics": () =>
+        new Response(JSON.stringify(makeAnalyticsResponse())),
       "/trading/api/proposals/proposal-btc/respond": () =>
         new Response(JSON.stringify({ detail: "Session is archived" }), {
           status: 409,

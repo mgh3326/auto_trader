@@ -501,6 +501,125 @@ async def test_record_1h_and_1d_outcome_marks() -> None:
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_aggregate_session_outcomes_groups_by_track_and_horizon() -> None:
+    """Aggregate marks across two proposals of one session into (track, horizon) cells."""
+    from app.services.trading_decision_service import aggregate_session_outcomes
+
+    await _ensure_trading_decision_tables()
+    user_id = await _create_user()
+    try:
+        async with SessionLocal() as session:
+            sess = await create_decision_session(
+                session,
+                user_id=user_id,
+                source_profile="roadmap",
+                generated_at=datetime.now(UTC),
+            )
+            proposals = await add_decision_proposals(
+                session,
+                session_id=sess.id,
+                proposals=[
+                    {
+                        "symbol": "BTC",
+                        "instrument_type": InstrumentType.crypto,
+                        "proposal_kind": ProposalKind.trim,
+                        "side": "sell",
+                        "original_payload": {},
+                    },
+                    {
+                        "symbol": "ETH",
+                        "instrument_type": InstrumentType.crypto,
+                        "proposal_kind": ProposalKind.add,
+                        "side": "buy",
+                        "original_payload": {},
+                    },
+                ],
+            )
+
+            # accepted_live marks at 1h on both proposals
+            for p in proposals:
+                await record_outcome_mark(
+                    session,
+                    proposal_id=p.id,
+                    track_kind=TrackKind.accepted_live,
+                    horizon=OutcomeHorizon.h1,
+                    price_at_mark=Decimal("100"),
+                    pnl_pct=Decimal("2.0"),
+                    pnl_amount=Decimal("10"),
+                    marked_at=datetime.now(UTC),
+                )
+
+            # rejected_counterfactual at 1d on first proposal
+            cf = await create_counterfactual_track(
+                session,
+                proposal_id=proposals[0].id,
+                track_kind=TrackKind.rejected_counterfactual,
+                baseline_price=Decimal("100"),
+                baseline_at=datetime.now(UTC),
+                payload={},
+            )
+            await record_outcome_mark(
+                session,
+                proposal_id=proposals[0].id,
+                counterfactual_id=cf.id,
+                track_kind=TrackKind.rejected_counterfactual,
+                horizon=OutcomeHorizon.d1,
+                price_at_mark=Decimal("110"),
+                pnl_pct=Decimal("-1.0"),
+                pnl_amount=Decimal("-5"),
+                marked_at=datetime.now(UTC),
+            )
+            await session.flush()
+
+            cells = await aggregate_session_outcomes(
+                session, session_uuid=sess.session_uuid, user_id=user_id
+            )
+
+            assert cells is not None
+            keyed = {(c.track_kind, c.horizon): c for c in cells}
+            assert (TrackKind.accepted_live.value, OutcomeHorizon.h1.value) in keyed
+            live_1h = keyed[(TrackKind.accepted_live.value, OutcomeHorizon.h1.value)]
+            assert live_1h.outcome_count == 2
+            assert live_1h.proposal_count == 2
+            assert live_1h.mean_pnl_pct == Decimal("2.0000")
+            assert live_1h.sum_pnl_amount == Decimal("20.0000")
+
+            rej_1d = keyed[
+                (TrackKind.rejected_counterfactual.value, OutcomeHorizon.d1.value)
+            ]
+            assert rej_1d.outcome_count == 1
+            assert rej_1d.proposal_count == 1
+    finally:
+        await _cleanup_user(user_id)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_aggregate_session_outcomes_returns_none_for_other_user() -> None:
+    """Cross-user access yields None (treated as 404 by router)."""
+    from app.services.trading_decision_service import aggregate_session_outcomes
+
+    await _ensure_trading_decision_tables()
+    user_id = await _create_user()
+    try:
+        async with SessionLocal() as session:
+            sess = await create_decision_session(
+                session,
+                user_id=user_id,
+                source_profile="x",
+                generated_at=datetime.now(UTC),
+            )
+            await session.flush()
+            result = await aggregate_session_outcomes(
+                session, session_uuid=sess.session_uuid, user_id=user_id + 1
+            )
+            assert result is None
+    finally:
+        await _cleanup_user(user_id)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_record_user_response_does_not_mutate_original_fields() -> None:
     """All original_* columns must be byte-identical before and after record_user_response."""
     await _ensure_trading_decision_tables()

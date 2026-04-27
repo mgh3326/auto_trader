@@ -60,3 +60,13 @@
   color: #765600;
   padding: 10px;
 }
+
+.outcomes {
+  display: grid;
+  gap: 10px;
+}
+
+.outcomes summary {
+  cursor: pointer;
+  font-weight: 600;
+}

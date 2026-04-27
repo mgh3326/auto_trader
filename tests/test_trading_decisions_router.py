@@ -759,6 +759,68 @@ def test_outcome_mark_duplicate_horizon_returns_409():
 
 
 @pytest.mark.unit
+def test_get_session_analytics_happy_path():
+    from datetime import UTC, datetime
+    from decimal import Decimal
+
+    from app.routers import trading_decisions
+    from app.routers.dependencies import get_authenticated_user
+    from app.services import trading_decision_service
+    from app.services.trading_decision_service import AggregatedOutcomeCell
+
+    app = FastAPI()
+    app.include_router(trading_decisions.router)
+    app.dependency_overrides[get_authenticated_user] = lambda: SimpleNamespace(id=7)
+
+    session_uuid = uuid4()
+    trading_decision_service.aggregate_session_outcomes = AsyncMock(
+        return_value=[
+            AggregatedOutcomeCell(
+                track_kind="accepted_live",
+                horizon="1h",
+                outcome_count=3,
+                proposal_count=2,
+                mean_pnl_pct=Decimal("1.5"),
+                sum_pnl_amount=Decimal("12.34"),
+                latest_marked_at=datetime.now(UTC),
+            )
+        ]
+    )
+
+    client = TestClient(app)
+    res = client.get(f"/trading/api/decisions/{session_uuid}/analytics")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["session_uuid"] == str(session_uuid)
+    assert body["tracks"] == [
+        "accepted_live",
+        "accepted_paper",
+        "rejected_counterfactual",
+        "analyst_alternative",
+        "user_alternative",
+    ]
+    assert body["horizons"] == ["1h", "4h", "1d", "3d", "7d", "final"]
+    assert len(body["cells"]) == 1
+    assert body["cells"][0]["mean_pnl_pct"] == "1.5"
+
+
+@pytest.mark.unit
+def test_get_session_analytics_returns_404_for_unknown_session():
+    from app.routers import trading_decisions
+    from app.routers.dependencies import get_authenticated_user
+    from app.services import trading_decision_service
+
+    app = FastAPI()
+    app.include_router(trading_decisions.router)
+    app.dependency_overrides[get_authenticated_user] = lambda: SimpleNamespace(id=7)
+    trading_decision_service.aggregate_session_outcomes = AsyncMock(return_value=None)
+
+    client = TestClient(app)
+    res = client.get(f"/trading/api/decisions/{uuid4()}/analytics")
+    assert res.status_code == 404
+
+
+@pytest.mark.unit
 def test_list_decisions_pagination():
     """GET /decisions returns paginated list with counts."""
     from app.routers import trading_decisions
@@ -993,6 +1055,45 @@ def test_create_counterfactual_track():
 
 
 # ========== Schema Consistency Test ==========
+
+
+@pytest.mark.unit
+def test_session_analytics_response_serializes_decimal_strings():
+    from datetime import UTC, datetime
+    from decimal import Decimal
+
+    from app.schemas.trading_decisions import (
+        SessionAnalyticsCell,
+        SessionAnalyticsResponse,
+    )
+
+    payload = SessionAnalyticsResponse(
+        session_uuid=uuid4(),
+        generated_at=datetime.now(UTC),
+        tracks=[
+            "accepted_live",
+            "accepted_paper",
+            "rejected_counterfactual",
+            "analyst_alternative",
+            "user_alternative",
+        ],
+        horizons=["1h", "4h", "1d", "3d", "7d", "final"],
+        cells=[
+            SessionAnalyticsCell(
+                track_kind="accepted_live",
+                horizon="1h",
+                outcome_count=2,
+                proposal_count=2,
+                mean_pnl_pct=Decimal("1.5"),
+                sum_pnl_amount=Decimal("12.34"),
+                latest_marked_at=datetime.now(UTC),
+            )
+        ],
+    )
+    body = payload.model_dump(mode="json")
+    assert body["cells"][0]["mean_pnl_pct"] == "1.5"
+    assert body["cells"][0]["sum_pnl_amount"] == "12.34"
+    assert body["tracks"][0] == "accepted_live"
 
 
 @pytest.mark.unit

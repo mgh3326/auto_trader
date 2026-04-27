@@ -1,10 +1,11 @@
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from typing import TypedDict
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -235,6 +236,79 @@ async def record_outcome_mark(
     await session.flush()
     await session.refresh(db_outcome)
     return db_outcome
+
+
+@dataclass(frozen=True)
+class AggregatedOutcomeCell:
+    track_kind: str
+    horizon: str
+    outcome_count: int
+    proposal_count: int
+    mean_pnl_pct: Decimal | None
+    sum_pnl_amount: Decimal | None
+    latest_marked_at: datetime | None
+
+
+async def aggregate_session_outcomes(
+    session: AsyncSession,
+    *,
+    session_uuid: UUID,
+    user_id: int,
+) -> list[AggregatedOutcomeCell] | None:
+    """Aggregate outcomes for one session, grouped by (track_kind, horizon).
+
+    Returns None if the session does not exist or does not belong to user_id.
+    """
+    sess_row = await session.execute(
+        select(TradingDecisionSession.id).where(
+            TradingDecisionSession.session_uuid == session_uuid,
+            TradingDecisionSession.user_id == user_id,
+        )
+    )
+    sess_id = sess_row.scalar_one_or_none()
+    if sess_id is None:
+        return None
+
+    stmt = (
+        select(
+            TradingDecisionOutcome.track_kind,
+            TradingDecisionOutcome.horizon,
+            func.count(TradingDecisionOutcome.id).label("outcome_count"),
+            func.count(distinct(TradingDecisionOutcome.proposal_id)).label(
+                "proposal_count"
+            ),
+            func.avg(TradingDecisionOutcome.pnl_pct).label("mean_pnl_pct"),
+            func.sum(TradingDecisionOutcome.pnl_amount).label("sum_pnl_amount"),
+            func.max(TradingDecisionOutcome.marked_at).label("latest_marked_at"),
+        )
+        .join(
+            TradingDecisionProposal,
+            TradingDecisionProposal.id == TradingDecisionOutcome.proposal_id,
+        )
+        .where(TradingDecisionProposal.session_id == sess_id)
+        .group_by(
+            TradingDecisionOutcome.track_kind,
+            TradingDecisionOutcome.horizon,
+        )
+        .order_by(
+            TradingDecisionOutcome.track_kind,
+            TradingDecisionOutcome.horizon,
+        )
+    )
+
+    rows = (await session.execute(stmt)).all()
+    return [
+        AggregatedOutcomeCell(
+            track_kind=row.track_kind,
+            horizon=row.horizon,
+            outcome_count=int(row.outcome_count),
+            proposal_count=int(row.proposal_count),
+            mean_pnl_pct=row.mean_pnl_pct,
+            sum_pnl_amount=row.sum_pnl_amount,
+            latest_marked_at=row.latest_marked_at,
+        )
+        for row in rows
+    ]
 
 
 async def get_session_by_uuid(

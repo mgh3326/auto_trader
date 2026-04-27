@@ -1,0 +1,25 @@
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.table th,
+.table td {
+  border: 1px solid var(--border, #ddd);
+  padding: 0.4rem 0.6rem;
+  text-align: center;
+}
+
+.trackCell {
+  text-align: left;
+  font-weight: 600;
+}
+
+.cell {
+  font-variant-numeric: tabular-nums;
+}
+
+.empty {
+  color: var(--muted, #888);
+}

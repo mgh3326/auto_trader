@@ -22,6 +22,8 @@ from app.schemas.trading_decisions import (
     ProposalCreateBulkResponse,
     ProposalDetail,
     ProposalRespondRequest,
+    SessionAnalyticsCell,
+    SessionAnalyticsResponse,
     SessionCreateRequest,
     SessionDetail,
     SessionListResponse,
@@ -487,3 +489,46 @@ async def create_outcome(
         )
 
     return _to_outcome_detail(outcome)
+
+
+@router.get(
+    "/api/decisions/{session_uuid}/analytics",
+    response_model=SessionAnalyticsResponse,
+)
+async def get_session_analytics(
+    session_uuid: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
+) -> SessionAnalyticsResponse:
+    cells = await trading_decision_service.aggregate_session_outcomes(
+        db, session_uuid=session_uuid, user_id=current_user.id
+    )
+    if cells is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session not found",
+        )
+    return SessionAnalyticsResponse(
+        session_uuid=session_uuid,
+        generated_at=datetime.now(UTC),
+        tracks=[
+            "accepted_live",
+            "accepted_paper",
+            "rejected_counterfactual",
+            "analyst_alternative",
+            "user_alternative",
+        ],
+        horizons=["1h", "4h", "1d", "3d", "7d", "final"],
+        cells=[
+            SessionAnalyticsCell(
+                track_kind=c.track_kind,
+                horizon=c.horizon,
+                outcome_count=c.outcome_count,
+                proposal_count=c.proposal_count,
+                mean_pnl_pct=c.mean_pnl_pct,
+                sum_pnl_amount=c.sum_pnl_amount,
+                latest_marked_at=c.latest_marked_at,
+            )
+            for c in cells
+        ],
+    )

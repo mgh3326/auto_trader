@@ -1,9 +1,15 @@
 import { useState } from "react";
-import type { ProposalDetail, ProposalRespondRequest } from "../api/types";
+import type {
+  OutcomeCreateRequest,
+  ProposalDetail,
+  ProposalRespondRequest,
+} from "../api/types";
 import { formatDateTime } from "../format/datetime";
 import { formatDecimal } from "../format/decimal";
 import LinkedActionsPanel from "./LinkedActionsPanel";
 import OriginalVsAdjustedSummary from "./OriginalVsAdjustedSummary";
+import OutcomeMarkForm from "./OutcomeMarkForm";
+import OutcomesPanel from "./OutcomesPanel";
 import ProposalAdjustmentEditor from "./ProposalAdjustmentEditor";
 import ProposalResponseControls from "./ProposalResponseControls";
 import StatusBadge from "./StatusBadge";
@@ -14,6 +20,10 @@ interface ProposalRowProps {
   onRespond: (
     proposalUuid: string,
     body: ProposalRespondRequest,
+  ) => Promise<{ ok: boolean; status?: number; detail?: string }>;
+  onRecordOutcome: (
+    proposalUuid: string,
+    body: OutcomeCreateRequest,
   ) => Promise<{ ok: boolean; status?: number; detail?: string }>;
 }
 
@@ -26,7 +36,11 @@ const valuePairs = [
   ["Threshold percent", "original_threshold_pct", "user_threshold_pct"],
 ] as const;
 
-export default function ProposalRow({ proposal, onRespond }: ProposalRowProps) {
+export default function ProposalRow({
+  proposal,
+  onRespond,
+  onRecordOutcome,
+}: ProposalRowProps) {
   const [adjustResponse, setAdjustResponse] = useState<
     "modify" | "partial_accept" | null
   >(null);
@@ -101,6 +115,16 @@ export default function ProposalRow({ proposal, onRespond }: ProposalRowProps) {
         actions={proposal.actions}
         counterfactuals={proposal.counterfactuals}
       />
+      <section className={styles.outcomes} aria-label="Outcome marks">
+        <OutcomesPanel outcomes={proposal.outcomes} />
+        <details>
+          <summary>Record outcome mark</summary>
+          <OutcomeMarkForm
+            counterfactuals={proposal.counterfactuals}
+            onSubmit={(body) => onRecordOutcome(proposal.proposal_uuid, body)}
+          />
+        </details>
+      </section>
     </article>
   );
 }

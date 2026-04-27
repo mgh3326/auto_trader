@@ -1,4 +1,5 @@
 import { Link, useParams } from "react-router-dom";
+import AnalyticsMatrix from "../components/AnalyticsMatrix";
 import ErrorView from "../components/ErrorView";
 import LoadingView from "../components/LoadingView";
 import MarketBriefPanel from "../components/MarketBriefPanel";
@@ -6,11 +7,13 @@ import ProposalRow from "../components/ProposalRow";
 import StatusBadge from "../components/StatusBadge";
 import { formatDateTime } from "../format/datetime";
 import { useDecisionSession } from "../hooks/useDecisionSession";
+import { useSessionAnalytics } from "../hooks/useSessionAnalytics";
 import styles from "./SessionDetailPage.module.css";
 
 export default function SessionDetailPage() {
   const { sessionUuid } = useParams();
   const session = useDecisionSession(sessionUuid ?? "");
+  const analytics = useSessionAnalytics(sessionUuid ?? "");
 
   if (!sessionUuid) {
     return <ErrorView message="Session not found" />;
@@ -52,10 +55,29 @@ export default function SessionDetailPage() {
         </p>
       </header>
       <MarketBriefPanel brief={data.market_brief} notes={data.notes} />
+      {analytics.status === "loading" ? (
+        <section className={styles.analytics} aria-label="Analytics">
+          <h2>Outcome analytics</h2>
+          <p>Loading analytics...</p>
+        </section>
+      ) : null}
+      {analytics.status === "error" ? (
+        <section className={styles.analytics} aria-label="Analytics">
+          <h2>Outcome analytics</h2>
+          <p role="alert">{analytics.error}</p>
+        </section>
+      ) : null}
+      {analytics.status === "success" && analytics.data ? (
+        <section className={styles.analytics} aria-label="Analytics">
+          <h2>Outcome analytics</h2>
+          <AnalyticsMatrix data={analytics.data} />
+        </section>
+      ) : null}
       <section className={styles.proposals} aria-label="Proposals">
         {data.proposals.map((proposal) => (
           <ProposalRow
             key={proposal.proposal_uuid}
+            onRecordOutcome={session.recordOutcome}
             onRespond={session.respond}
             proposal={proposal}
           />

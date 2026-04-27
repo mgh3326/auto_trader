@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
 import { ApiError } from "../api/client";
-import { getSession, respondToProposal } from "../api/decisions";
-import type { ProposalRespondRequest, SessionDetail } from "../api/types";
+import {
+  createOutcomeMark,
+  getSession,
+  respondToProposal,
+} from "../api/decisions";
+import type {
+  OutcomeCreateRequest,
+  ProposalRespondRequest,
+  SessionDetail,
+} from "../api/types";
 
 interface SessionState {
   status: "idle" | "loading" | "success" | "error" | "not_found";
@@ -14,6 +22,10 @@ export function useDecisionSession(sessionUuid: string): SessionState & {
   respond: (
     proposalUuid: string,
     body: ProposalRespondRequest,
+  ) => Promise<{ ok: boolean; status?: number; detail?: string }>;
+  recordOutcome: (
+    proposalUuid: string,
+    body: OutcomeCreateRequest,
   ) => Promise<{ ok: boolean; status?: number; detail?: string }>;
 } {
   const [state, setState] = useState<SessionState>({
@@ -72,7 +84,24 @@ export function useDecisionSession(sessionUuid: string): SessionState & {
     }
   }
 
-  return { ...state, refetch, respond };
+  async function recordOutcome(proposalUuid: string, body: OutcomeCreateRequest) {
+    try {
+      await createOutcomeMark(proposalUuid, body);
+      refetch();
+      return { ok: true };
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        redirectToLogin();
+        return { ok: false, status: 401, detail: error.detail };
+      }
+      if (error instanceof ApiError) {
+        return { ok: false, status: error.status, detail: error.detail };
+      }
+      return { ok: false, detail: "Something went wrong. Try again." };
+    }
+  }
+
+  return { ...state, refetch, respond, recordOutcome };
 }
 
 function redirectToLogin() {
