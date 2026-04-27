@@ -1,0 +1,62 @@
+.row {
+  border: 1px solid #dde4ee;
+  border-radius: 8px;
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+}
+
+.header {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.symbol {
+  font-size: 1.2rem;
+  font-weight: 800;
+}
+
+.chip {
+  background: #eef4fb;
+  border-radius: 999px;
+  color: #38536f;
+  font-size: 0.78rem;
+  padding: 4px 8px;
+}
+
+.panels {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.panel {
+  background: #fafbfd;
+  border: 1px solid #e3e8f0;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.panel h3 {
+  margin: 0 0 8px;
+}
+
+.values {
+  display: grid;
+  gap: 5px;
+}
+
+.rationale {
+  color: #4e5f75;
+  font-style: italic;
+}
+
+.banner {
+  background: #fff3cd;
+  border: 1px solid #ffe08a;
+  border-radius: 8px;
+  color: #765600;
+  padding: 10px;
+}

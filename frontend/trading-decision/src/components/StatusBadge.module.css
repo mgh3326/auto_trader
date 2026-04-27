@@ -1,0 +1,45 @@
+.badge {
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1;
+  padding: 5px 8px;
+}
+
+.open,
+.accept {
+  background: #dff7e7;
+  color: #176b35;
+}
+
+.closed,
+.defer {
+  background: #eef1f5;
+  color: #495467;
+}
+
+.archived {
+  background: #d8dde5;
+  color: #263241;
+}
+
+.pending {
+  background: #fff3cd;
+  color: #765600;
+}
+
+.partial_accept {
+  background: #d8f4f2;
+  color: #0f766e;
+}
+
+.modify {
+  background: #dfeeff;
+  color: #1f5f99;
+}
+
+.reject {
+  background: #fde2e2;
+  color: #9f2d2d;
+}
