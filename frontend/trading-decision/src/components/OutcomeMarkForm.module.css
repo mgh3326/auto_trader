@@ -1,0 +1,23 @@
+.form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(140px, 1fr));
+  gap: 0.5rem 1rem;
+}
+
+.form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+}
+
+.form button {
+  grid-column: 1 / -1;
+  padding: 0.5rem;
+}
+
+.error {
+  grid-column: 1 / -1;
+  color: var(--danger, #b00020);
+  margin: 0;
+}
