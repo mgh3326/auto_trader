@@ -1,0 +1,37 @@
+.editor {
+  border: 1px solid #d8dee7;
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 14px;
+}
+
+.grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.field {
+  display: grid;
+  gap: 5px;
+}
+
+.field input,
+.field textarea {
+  border: 1px solid #c8d0dc;
+  border-radius: 6px;
+  font: inherit;
+  padding: 8px 10px;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+}
+
+.error {
+  color: #a43131;
+  margin: 0;
+}
