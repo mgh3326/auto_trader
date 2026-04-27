@@ -56,6 +56,7 @@ export default function SessionDetailPage() {
         {data.proposals.map((proposal) => (
           <ProposalRow
             key={proposal.proposal_uuid}
+            onRecordOutcome={session.recordOutcome}
             onRespond={session.respond}
             proposal={proposal}
           />
