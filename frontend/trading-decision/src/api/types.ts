@@ -97,6 +97,35 @@ export interface OutcomeDetail {
   created_at: IsoDateTime;
 }
 
+export interface OutcomeCreateRequest {
+  track_kind: TrackKind;
+  horizon: OutcomeHorizon;
+  price_at_mark: DecimalString;
+  counterfactual_id?: number | null;
+  pnl_pct?: DecimalString | null;
+  pnl_amount?: DecimalString | null;
+  marked_at: IsoDateTime;
+  payload?: Record<string, unknown> | null;
+}
+
+export interface SessionAnalyticsCell {
+  track_kind: TrackKind;
+  horizon: OutcomeHorizon;
+  outcome_count: number;
+  proposal_count: number;
+  mean_pnl_pct: DecimalString | null;
+  sum_pnl_amount: DecimalString | null;
+  latest_marked_at: IsoDateTime | null;
+}
+
+export interface SessionAnalyticsResponse {
+  session_uuid: Uuid;
+  generated_at: IsoDateTime;
+  tracks: TrackKind[];
+  horizons: OutcomeHorizon[];
+  cells: SessionAnalyticsCell[];
+}
+
 export interface ProposalDetail {
   proposal_uuid: Uuid;
   symbol: string;
