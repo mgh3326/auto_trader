@@ -252,6 +252,9 @@ git clean -fdx -e .venv
 log "Installing dependencies with uv"
 uv sync --frozen
 
+log "Building Trading Decision SPA"
+build_frontend
+
 log "Running Alembic migrations"
 # Online deploy rollback only reverts code/services. Production migrations must be
 # expansion-only/backwards-compatible with the previous release; do not merge
