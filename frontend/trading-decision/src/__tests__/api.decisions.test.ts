@@ -104,7 +104,7 @@ describe("decisions API client", () => {
     await getDecisions({ limit: 50, offset: 0 });
 
     for (const call of calls) {
-      expect(new URL(call.url, "http://x").pathname).toMatch(
+      expect(new URL(call.url, "https://example.test").pathname).toMatch(
         /^\/trading\/api\//,
       );
     }

@@ -27,7 +27,7 @@ export function mockFetch(
     const body = typeof init?.body === "string" ? init.body : undefined;
     calls.push({ url, method, body });
 
-    const parsed = new URL(url, "http://x");
+    const parsed = new URL(url, "https://example.test");
     const route = routes[parsed.pathname + parsed.search] ?? routes[parsed.pathname];
     if (!route) return new Response("no route", { status: 599 });
     return route(new Request(parsed.toString(), init));
