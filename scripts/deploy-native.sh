@@ -66,6 +66,39 @@ require_file() {
   fi
 }
 
+build_frontend() {
+  local workspace="$NEW_RELEASE/frontend/trading-decision"
+  local index="$workspace/dist/index.html"
+
+  if [[ ! -d "$workspace" ]]; then
+    log "Frontend workspace not present at $workspace; skipping SPA build"
+    return 0
+  fi
+
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "npm not found on PATH for native deploy; cannot build trading-decision SPA" >&2
+    echo "PATH=$PATH" >&2
+    return 78
+  fi
+
+  log "Building trading-decision SPA in $workspace"
+  log "node $(node --version 2>/dev/null || echo 'unknown')"
+  log "npm  $(npm --version 2>/dev/null || echo 'unknown')"
+
+  (
+    cd "$workspace"
+    npm ci
+    npm run build
+  )
+
+  if [[ ! -f "$index" ]]; then
+    echo "Frontend build did not produce $index" >&2
+    return 1
+  fi
+
+  log "Frontend SPA build present: $index"
+}
+
 restart_services() {
   local uid_num label plist target attempt
   uid_num="$(id -u)"
@@ -218,6 +251,9 @@ git clean -fdx -e .venv
 
 log "Installing dependencies with uv"
 uv sync --frozen
+
+log "Building Trading Decision SPA"
+build_frontend
 
 log "Running Alembic migrations"
 # Online deploy rollback only reverts code/services. Production migrations must be

@@ -50,15 +50,16 @@ Built assets land in `frontend/trading-decision/dist/` and are served by FastAPI
 
 ## Production Deployment
 
-The production-baked path is currently off by default. The macOS native deploy path in `scripts/deploy-native.sh` does not yet build the SPA, so `/trading/decisions/` in production returns the HTTP 503 build-missing page until a follow-up enables that flow.
+The macOS native deploy path in `scripts/deploy-native.sh` builds this SPA on every release. The deploy script runs `npm ci && npm run build` inside `frontend/trading-decision/` of the new release checkout, asserts `dist/index.html` exists, and aborts before the `current` symlink switch if the build fails (see ROB-11). No manual `make frontend-build` step on the deploy host is required.
 
-To preview the production-baked path on a deploy host, run:
+If you ever need to rebuild on a deploy host out-of-band (e.g. a hotfix between deploys), run from the active release directory:
 
 ```bash
-make frontend-build
+cd "$AUTO_TRADER_BASE/current/frontend/trading-decision"
+npm ci && npm run build
 ```
 
-Then restart the API.
+and then reload the API process. This is a fallback only — the next deploy will rebuild from scratch.
 
 ## Adding Components
 
