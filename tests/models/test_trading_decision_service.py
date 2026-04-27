@@ -247,13 +247,22 @@ async def test_select_subset_btc_eth_reject_sol() -> None:
         now = datetime.now(UTC)
         async with SessionLocal() as session:
             await record_user_response(
-                session, proposal_id=btc_id, response=UserResponse.accept, responded_at=now
+                session,
+                proposal_id=btc_id,
+                response=UserResponse.accept,
+                responded_at=now,
             )
             await record_user_response(
-                session, proposal_id=eth_id, response=UserResponse.accept, responded_at=now
+                session,
+                proposal_id=eth_id,
+                response=UserResponse.accept,
+                responded_at=now,
             )
             await record_user_response(
-                session, proposal_id=sol_id, response=UserResponse.defer, responded_at=now
+                session,
+                proposal_id=sol_id,
+                response=UserResponse.defer,
+                responded_at=now,
             )
             await session.commit()
 
