@@ -1,0 +1,25 @@
+.page {
+  display: grid;
+  gap: 18px;
+}
+
+.header {
+  display: grid;
+  gap: 8px;
+}
+
+.titleRow {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.proposals {
+  display: grid;
+  gap: 14px;
+}
+
+.footer {
+  color: #536276;
+}
