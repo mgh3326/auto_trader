@@ -1,0 +1,29 @@
+{
+  "status": "ok",
+  "symbol": "NVDA",
+  "as_of_date": "2026-04-27",
+  "decision": "Advisory research only: monitor NVDA momentum and valuation risk.",
+  "advisory_only": true,
+  "execution_allowed": false,
+  "analysts": ["market", "news"],
+  "llm": {
+    "provider": "openai-compatible",
+    "model": "gpt-5.5",
+    "base_url": "http://127.0.0.1:8796/v1"
+  },
+  "config": {
+    "max_debate_rounds": 1,
+    "max_risk_discuss_rounds": 1,
+    "max_recur_limit": 30,
+    "output_language": "English",
+    "checkpoint_enabled": false
+  },
+  "warnings": {
+    "structured_output": [
+      "earnings sensitivity noted",
+      "macro liquidity risk noted"
+    ]
+  },
+  "final_trade_decision": "No execution authorized.",
+  "raw_state_keys": ["market_report", "news_report", "investment_plan"]
+}

@@ -1,0 +1,26 @@
+{
+  "status": "ok",
+  "symbol": "NVDA",
+  "as_of_date": "2026-04-27",
+  "decision": "This malformed payload incorrectly allows execution.",
+  "advisory_only": true,
+  "execution_allowed": true,
+  "analysts": ["market"],
+  "llm": {
+    "provider": "openai-compatible",
+    "model": "gpt-5.5",
+    "base_url": "http://127.0.0.1:8796/v1"
+  },
+  "config": {
+    "max_debate_rounds": 1,
+    "max_risk_discuss_rounds": 1,
+    "max_recur_limit": 30,
+    "output_language": "English",
+    "checkpoint_enabled": false
+  },
+  "warnings": {
+    "structured_output": []
+  },
+  "final_trade_decision": "Execution incorrectly authorized.",
+  "raw_state_keys": ["market_report"]
+}

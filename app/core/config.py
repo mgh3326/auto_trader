@@ -421,6 +421,21 @@ class Settings(BaseSettings):
     ai_advisor_timeout: float = 60.0
     ai_advisor_default_provider: str = "gemini"
 
+    # TradingAgents advisory runner (ROB-9)
+    tradingagents_repo_path: str | None = None
+    tradingagents_python: str | None = None
+    tradingagents_runner_path: str | None = None
+    tradingagents_base_url: str = "http://127.0.0.1:8796/v1"
+    tradingagents_model: str = "gpt-5.5"
+    tradingagents_default_analysts: str = "market"
+    tradingagents_subprocess_timeout_sec: int = 300
+    tradingagents_max_debate_rounds: int = 1
+    tradingagents_max_risk_discuss_rounds: int = 1
+    tradingagents_max_recur_limit: int = 30
+    tradingagents_output_language: str = "English"
+    tradingagents_checkpoint_enabled: bool = False
+    tradingagents_memory_log_path: str | None = None
+
     model_config = SettingsConfigDict(
         env_file=os.getenv("ENV_FILE", ".env"),
         env_file_encoding="utf-8",
