@@ -2,9 +2,11 @@ from collections.abc import Sequence
 from datetime import datetime
 from decimal import Decimal
 from typing import TypedDict
+from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models.trading import InstrumentType
 from app.models.trading_decision import (
@@ -233,3 +235,107 @@ async def record_outcome_mark(
     await session.flush()
     await session.refresh(db_outcome)
     return db_outcome
+
+
+async def get_session_by_uuid(
+    session: AsyncSession,
+    *,
+    session_uuid: UUID,
+    user_id: int,
+) -> TradingDecisionSession | None:
+    """Return session iff it exists AND belongs to user_id; eager-load proposals."""
+    result = await session.execute(
+        select(TradingDecisionSession)
+        .where(
+            TradingDecisionSession.session_uuid == session_uuid,
+            TradingDecisionSession.user_id == user_id,
+        )
+        .options(
+            selectinload(TradingDecisionSession.proposals).selectinload(
+                TradingDecisionProposal.actions
+            ),
+            selectinload(TradingDecisionSession.proposals).selectinload(
+                TradingDecisionProposal.counterfactuals
+            ),
+            selectinload(TradingDecisionSession.proposals).selectinload(
+                TradingDecisionProposal.outcomes
+            ),
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def list_user_sessions(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    limit: int = 50,
+    offset: int = 0,
+    status: str | None = None,
+) -> tuple[list[tuple[TradingDecisionSession, int, int]], int]:
+    """
+    Return (rows, total). Each row is (session, proposals_count, pending_count).
+    Single SQL query with grouped counts to avoid N+1.
+    """
+    # Build base filters
+    base_filters = [TradingDecisionSession.user_id == user_id]
+    if status:
+        base_filters.append(TradingDecisionSession.status == status)
+
+    # Get total count
+    total_result = await session.execute(
+        select(func.count(TradingDecisionSession.id)).where(*base_filters)
+    )
+    total = total_result.scalar() or 0
+
+    # Get sessions with counts
+    stmt = (
+        select(
+            TradingDecisionSession,
+            func.count(TradingDecisionProposal.id).label("proposals_count"),
+            func.count(TradingDecisionProposal.id)
+            .filter(TradingDecisionProposal.user_response == "pending")
+            .label("pending_count"),
+        )
+        .outerjoin(
+            TradingDecisionProposal,
+            TradingDecisionProposal.session_id == TradingDecisionSession.id,
+        )
+        .where(*base_filters)
+        .group_by(TradingDecisionSession.id)
+        .order_by(TradingDecisionSession.generated_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+
+    result = await session.execute(stmt)
+    rows = [
+        (row.TradingDecisionSession, row.proposals_count, row.pending_count)
+        for row in result.all()
+    ]
+
+    return rows, total
+
+
+async def get_proposal_by_uuid(
+    session: AsyncSession,
+    *,
+    proposal_uuid: UUID,
+    user_id: int,
+) -> TradingDecisionProposal | None:
+    """JOIN sessions to enforce ownership. Eager-load actions/counterfactuals/outcomes."""
+    result = await session.execute(
+        select(TradingDecisionProposal)
+        .join(TradingDecisionSession)
+        .where(
+            TradingDecisionProposal.proposal_uuid == proposal_uuid,
+            TradingDecisionSession.user_id == user_id,
+        )
+        .options(
+            selectinload(TradingDecisionProposal.session),
+            selectinload(TradingDecisionProposal.actions),
+            selectinload(TradingDecisionProposal.counterfactuals),
+            selectinload(TradingDecisionProposal.outcomes),
+        )
+    )
+    return result.scalar_one_or_none()
