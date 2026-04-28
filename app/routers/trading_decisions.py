@@ -4,13 +4,18 @@ from datetime import UTC, datetime
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.db import get_db
 from app.models.trading import User
 from app.routers.dependencies import get_authenticated_user
+from app.schemas.operator_decision_session import (
+    OperatorDecisionRequest,
+    OperatorDecisionResponse,
+)
 from app.schemas.trading_decisions import (
     ActionCreateRequest,
     ActionDetail,
@@ -30,7 +35,15 @@ from app.schemas.trading_decisions import (
     SessionStatusLiteral,
     SessionSummary,
 )
-from app.services import trading_decision_service
+from app.services import operator_decision_session_service, trading_decision_service
+from app.services.trading_decision_session_url import (
+    build_trading_decision_session_url,
+    resolve_trading_decision_base_url,
+)
+from app.services.tradingagents_research_service import (
+    TradingAgentsNotConfigured,
+    TradingAgentsRunnerError,
+)
 
 router = APIRouter(prefix="/trading", tags=["trading-decisions"])
 
@@ -531,4 +544,59 @@ async def get_session_analytics(
             )
             for c in cells
         ],
+    )
+
+
+@router.post(
+    "/api/decisions/from-operator-request",
+    response_model=OperatorDecisionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_decision_from_operator_request(
+    payload: OperatorDecisionRequest,
+    response: Response,
+    fastapi_request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
+) -> OperatorDecisionResponse:
+    try:
+        result = (
+            await operator_decision_session_service.create_operator_decision_session(
+                db,
+                user_id=current_user.id,
+                request=payload,
+            )
+        )
+    except TradingAgentsNotConfigured as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="tradingagents_not_configured",
+        ) from exc
+    except TradingAgentsRunnerError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="tradingagents_runner_failed",
+        ) from exc
+
+    await db.commit()
+
+    base_url = resolve_trading_decision_base_url(
+        configured=settings.public_base_url,
+        request_base_url=str(fastapi_request.base_url),
+    )
+    session_url = build_trading_decision_session_url(
+        base_url=base_url,
+        session_uuid=result.session.session_uuid,
+    )
+    response.headers["Location"] = (
+        f"/trading/api/decisions/{result.session.session_uuid}"
+    )
+
+    return OperatorDecisionResponse(
+        session_uuid=result.session.session_uuid,
+        session_url=session_url,
+        status=result.session.status,
+        proposal_count=result.proposal_count,
+        advisory_used=result.advisory_used,
+        advisory_skipped_reason=result.advisory_skipped_reason,
     )
