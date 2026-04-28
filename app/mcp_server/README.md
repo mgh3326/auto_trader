@@ -101,8 +101,8 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - 부분 매도는 quantity를 수정하지 않고, fully-consumed journal만 close한다
   - journal close 실패는 주문 성공을 되돌리지 않고 `journal_warning` 으로 응답한다
   - `defensive_trim=True` 는 ROB-164/ROB-166 승인 기반 제한 경로이며 `(a) side="sell"`, `(b) order_type="limit"`, `(c) `approval_issue_id` 가 Paperclip `done` 상태, `(d) middleware-extracted caller identity 가 Trader agent 와 일치할 때만 평균단가 1% 매도 floor 를 우회한다
-- `modify_order(order_id, symbol, market=None, new_price=None, new_quantity=None, dry_run=True)`
-- `cancel_order(order_id, symbol=None, market=None)`
+- `modify_order(order_id, symbol, market=None, new_price=None, new_quantity=None, dry_run=True, account_mode=None)`
+- `cancel_order(order_id, symbol=None, market=None, account_mode=None)`
   - US equities: resolves exchange from symbol DB, open orders, and recent history before cancel
   - When symbol is omitted, KR/US auto-lookup is best effort and may fail if the order cannot be reconstructed
   - Discord button flows: `cancel_order(order_id="...", market="...")` — symbol auto-lookup enabled
@@ -137,6 +137,48 @@ simulation. Responses from updated surfaces include `account_mode`; deprecated
 aliases include `warnings`.
   - Set `quick=False` for full analysis payload (like `analyze_portfolio`)
   - Example: `analyze_stock_batch(symbols=["NVDA", "AMZN", "MSFT", "GOOGL"], market="us")`
+
+#### KIS mock unsupported endpoints
+
+`account_mode="kis_mock"` returns explicit "mock unsupported" errors instead
+of silently degrading for the following KIS endpoints, which are live-only on
+the official KIS mock account:
+
+- `inquire_integrated_margin` (`TTTC0869R`) — returns `OPSQ0002 없는 서비스 코드 입니다`
+  on mock. Mock cash routes via `inquire_domestic_cash_balance` (`VTTC8434R`)
+  instead.
+- `inquire_overseas_orders` (`TTTS3018R`) — KIS does not publish a mock TR.
+  Pending US history under `account_mode="kis_mock"` returns
+  `errors: [{market: "equity_us", error: "kis_mock: overseas pending-orders
+  inquiry ..."}]` and an empty orders list.
+- `inquire_korea_orders` (`TTTC8036R`) — documented as "실전/모의 공통" but
+  some mock accounts return `EGW02006 모의투자 TR 이 아닙니다`. KR pending
+  under `account_mode="kis_mock"` surfaces these as structured errors, not
+  silent empty results.
+- KIS overseas margin (`TTTS2101R` / `VTTS2101R`) — treated as
+  mock-unsupported; the USD account row is omitted under
+  `account_mode="kis_mock"` and the failure is reported in `errors[]`.
+
+#### Operator runtime config
+
+`account_mode="kis_mock"` reads only `KIS_MOCK_*` settings. To enable the
+mock account in production, the operator should source a separate env file
+(for example `~/services/auto_trader/shared/.env.kis-mock`) into the launchd
+plist environment for the MCP / API processes — **never** merge mock
+secrets into the live `.env.prod.native` file. When any of
+`KIS_MOCK_ENABLED=true`, `KIS_MOCK_APP_KEY`, `KIS_MOCK_APP_SECRET`, or
+`KIS_MOCK_ACCOUNT_NO` are missing, every mock surface returns:
+
+```
+{
+  "success": false,
+  "error": "KIS mock account is disabled or missing required configuration: KIS_MOCK_ENABLED, ...",
+  "source": "kis",
+  "account_mode": "kis_mock"
+}
+```
+
+The error names variables only — never values.
 
 ### `get_orderbook` spec
 Parameters:
