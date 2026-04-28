@@ -45,9 +45,9 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - US equity quote price resolution uses Yahoo directly via `app.services.brokers.yahoo.client`
   - US quote response keeps `source: "yahoo"` and includes `previous_close/open/high/low/volume` from Yahoo `fast_info`
   - US equity Yahoo lookup failures are propagated as tool-level errors (exceptions), not returned as in-band error payload dicts
-- `get_holdings(account=None, market=None, include_current_price=True, minimum_value=None)`
+- `get_holdings(account=None, market=None, include_current_price=True, minimum_value=None, account_mode=None)`
   - Crypto positions may include optional `strategy_signal` field when Phase 2 exit logic triggers (4.5% stop-loss or RSI > 46 mean-reversion on profitable positions)
-- `get_position(symbol, market=None)`
+- `get_position(symbol, market=None, account_mode=None)`
 - `get_ohlcv(symbol, count=100, period="day", end_date=None, market=None, include_indicators=False)`
   - period: `day`, `week`, `month`, `1m`, `5m`, `15m`, `30m`, `4h`, `1h`
   - `include_indicators=True` adds `indicators_included` at the payload top level and appends `rsi_14`, `ema_20`, `bb_upper`, `bb_mid`, `bb_lower`, `vwap` to each row
@@ -84,7 +84,7 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - US ticker (`AAPL`, `SMCI`) 와 crypto symbol (`KRW-BTC`) 은 지원하지 않음
   - `days` 는 1~60 범위로 cap 됨
 - `get_volume_profile(symbol, market=None, period=60, bins=20)`
-- `get_order_history(symbol=None, status="all", order_id=None, limit=50)`
+- `get_order_history(symbol=None, status="all", order_id=None, limit=50, account_mode=None)`
   - `status="pending"` 만 symbol 없이 호출 가능
   - `status in {"all", "filled", "cancelled"}` 는 symbol 필요
   - filled/cancelled 조회는 시장별 historical endpoint 제약 때문에 symbol fan-out을 자동 수행하지 않음
@@ -94,7 +94,7 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `format_execution_comment(stage, symbol, side, filled_qty, filled_price, ...)` - Format Discord/Paperclip-ready Markdown for `fill` and `follow_up` execution stages.
 - `get_latest_market_brief(symbols=None, market=None, limit=10)` - Return concise latest AI analysis context for recent or selected symbols.
 - `get_market_reports(symbol, days=7, limit=10)` - Return detailed AI analysis report history and decision trend for one symbol.
-- `place_order(symbol, side, order_type="limit", quantity=None, price=None, amount=None, dry_run=True, reason="", exit_reason=None, thesis=None, strategy=None, target_price=None, stop_loss=None, min_hold_days=None, notes=None, indicators_snapshot=None, defensive_trim=False, approval_issue_id=None)`
+- `place_order(symbol, side, order_type="limit", quantity=None, price=None, amount=None, dry_run=True, reason="", exit_reason=None, thesis=None, strategy=None, target_price=None, stop_loss=None, min_hold_days=None, notes=None, indicators_snapshot=None, defensive_trim=False, approval_issue_id=None, account_mode=None)`
   - `side="buy"` 이고 `dry_run=False` 인 경우 `thesis` 와 `strategy` 가 필수
   - 실매수 성공 시 trade journal draft를 자동 생성하고 fill 저장 후 active로 연결 시도
   - 실매도 성공 시 동일 symbol의 active journal을 FIFO 기준으로 auto-close 시도
@@ -114,6 +114,25 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `analyze_stock_batch(symbols, market=None, include_peers=False, quick=True)`
   - Analyze multiple symbols in parallel and return compact per-symbol summaries
   - Default `quick=True` returns compact summary with: symbol, current_price, rsi_14, consensus, recommendation, supports (top 3), resistances (top 3)
+
+### Account Routing
+
+MCP account-facing tools use `account_mode` to avoid mixing DB simulation,
+official KIS mock, and KIS live account paths:
+
+- `account_mode="db_simulated"`: DB-backed paper trading only. No KIS broker
+  calls. Existing `account_type="paper"`, `account_mode="paper"`, and
+  `account_mode="simulated"` remain aliases and return warnings.
+- `account_mode="kis_mock"`: official KIS mock/sandbox account. Uses KIS mock
+  credentials only, passes `is_mock=True` to KIS broker methods, and fails
+  closed if `KIS_MOCK_ENABLED=true`, `KIS_MOCK_APP_KEY`,
+  `KIS_MOCK_APP_SECRET`, or `KIS_MOCK_ACCOUNT_NO` are missing.
+- `account_mode="kis_live"` or omitted: existing live KIS behavior. For
+  `place_order`, `dry_run=True` remains the default.
+
+Do not use `account_type="paper"` for official KIS mock. It is always DB
+simulation. Responses from updated surfaces include `account_mode`; deprecated
+aliases include `warnings`.
   - Set `quick=False` for full analysis payload (like `analyze_portfolio`)
   - Example: `analyze_stock_batch(symbols=["NVDA", "AMZN", "MSFT", "GOOGL"], market="us")`
 

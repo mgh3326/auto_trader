@@ -53,6 +53,22 @@ CRYPTO_STOP_LOSS_PCT = 0.045
 _order_cooldown_service: CryptoTradeCooldownService | None = None
 
 
+def _create_kis_client(*, is_mock: bool) -> KISClient:
+    if is_mock:
+        try:
+            return KISClient(is_mock=True)
+        except TypeError:
+            return KISClient()
+    return KISClient()
+
+
+async def _call_kis(method: Any, *args: Any, is_mock: bool, **kwargs: Any) -> Any:
+    kwargs.pop("is_mock", None)
+    if is_mock:
+        return await method(*args, **kwargs, is_mock=True)
+    return await method(*args, **kwargs)
+
+
 def _get_crypto_trade_cooldown_service() -> CryptoTradeCooldownService:
     """Get or create the crypto trade cooldown service."""
     global _order_cooldown_service
@@ -91,12 +107,15 @@ async def _execute_order(
     quantity: float | None,
     price: float | None,
     market_type: str,
+    is_mock: bool = False,
 ) -> dict[str, Any]:
     if market_type == "crypto":
         return await _execute_crypto_order(symbol, side, order_type, quantity, price)
     if market_type == "equity_kr":
-        return await _execute_kr_order(symbol, side, order_type, quantity, price)
-    return await _execute_us_order(symbol, side, quantity, price)
+        return await _execute_kr_order(
+            symbol, side, order_type, quantity, price, is_mock=is_mock
+        )
+    return await _execute_us_order(symbol, side, quantity, price, is_mock=is_mock)
 
 
 async def _execute_crypto_order(
@@ -135,8 +154,9 @@ async def _execute_kr_order(
     order_type: str,
     quantity: float | None,
     price: float | None,
+    is_mock: bool = False,
 ) -> dict[str, Any]:
-    kis = KISClient()
+    kis = _create_kis_client(is_mock=is_mock)
     stock_code = symbol
     order_quantity = int(quantity) if quantity else 0
     order_price = int(price) if price else 0
@@ -165,18 +185,22 @@ async def _execute_kr_order(
             )
 
     if side == "buy":
-        result = await kis.order_korea_stock(
+        result = await _call_kis(
+            kis.order_korea_stock,
             stock_code=stock_code,
             order_type="buy",
             quantity=order_quantity,
             price=order_price,
+            is_mock=is_mock,
         )
     else:
-        result = await kis.order_korea_stock(
+        result = await _call_kis(
+            kis.order_korea_stock,
             stock_code=stock_code,
             order_type="sell",
             quantity=order_quantity,
             price=order_price,
+            is_mock=is_mock,
         )
 
     if original_price is not None and order_price != original_price:
@@ -191,22 +215,27 @@ async def _execute_us_order(
     side: str,
     quantity: float | None,
     price: float | None,
+    is_mock: bool = False,
 ) -> dict[str, Any]:
-    kis = KISClient()
+    kis = _create_kis_client(is_mock=is_mock)
     exchange_code = await get_us_exchange_by_symbol(symbol)
 
     if side == "buy":
-        return await kis.buy_overseas_stock(
+        return await _call_kis(
+            kis.buy_overseas_stock,
             symbol=symbol,
             exchange_code=exchange_code,
             quantity=int(quantity) if quantity else 0,
             price=price if price else 0.0,
+            is_mock=is_mock,
         )
-    return await kis.sell_overseas_stock(
+    return await _call_kis(
+        kis.sell_overseas_stock,
         symbol=symbol,
         exchange_code=exchange_code,
         quantity=int(quantity) if quantity else 0,
         price=price if price else 0.0,
+        is_mock=is_mock,
     )
 
 
@@ -608,6 +637,7 @@ async def _execute_and_record(
     indicators_snapshot: dict[str, Any] | None,
     defensive_trim_ctx: DefensiveTrimContext | None,
     order_error_fn: Any,
+    is_mock: bool = False,
 ) -> dict[str, Any]:
     """Execute a live order, record history, fills, and journals."""
     if not await _check_daily_order_limit(_MAX_ORDERS_PER_DAY):
@@ -621,6 +651,7 @@ async def _execute_and_record(
             quantity=order_quantity,
             price=price,
             market_type=market_type,
+            is_mock=is_mock,
         )
     except Exception as exec_exc:
         logger.error(
@@ -721,6 +752,7 @@ async def _place_order_impl(
     indicators_snapshot: dict[str, Any] | None = None,
     defensive_trim: bool = False,
     approval_issue_id: str | None = None,
+    is_mock: bool = False,
 ) -> dict[str, Any]:
     symbol, side_lower, order_type_lower = _validate_inputs(
         symbol,
@@ -808,6 +840,7 @@ async def _place_order_impl(
                 current_price=current_price,
                 order_error_fn=_order_error,
                 defensive_trim_ctx=defensive_trim_ctx,
+                is_mock=is_mock,
             )
             if sell_error is not None:
                 return sell_error
@@ -839,6 +872,7 @@ async def _place_order_impl(
                 order_amount=order_amount,
                 dry_run=dry_run,
                 order_error_fn=_order_error,
+                is_mock=is_mock,
             )
             if balance_error is not None:
                 return balance_error
@@ -870,6 +904,7 @@ async def _place_order_impl(
             indicators_snapshot=indicators_snapshot,
             defensive_trim_ctx=defensive_trim_ctx,
             order_error_fn=_order_error,
+            is_mock=is_mock,
         )
     except Exception as exc:
         await _record_order_history(

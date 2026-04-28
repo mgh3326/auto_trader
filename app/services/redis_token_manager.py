@@ -13,10 +13,10 @@ from app.core.config import settings
 class RedisTokenManager:
     """Redis 기반 토큰 관리 서비스 with 분산 락"""
 
-    def __init__(self):
+    def __init__(self, namespace: str = "kis"):
         self.redis_client: redis.Redis | None = None
-        self._lock_key = "kis:token:lock"
-        self._token_key = "kis:access_token"
+        self._lock_key = f"{namespace}:token:lock"
+        self._token_key = f"{namespace}:access_token"
         self._lock_timeout = 30  # 락 타임아웃 (초)
         self._token_expiry_buffer = 60  # 토큰 만료 전 버퍼 (초)
         self._current_lock_value: str | None = None  # 현재 획득한 락 값 저장

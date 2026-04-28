@@ -8,8 +8,13 @@ from typing import TYPE_CHECKING, Any, cast
 import pandas as pd
 
 import app.services.brokers.upbit.client as upbit_service
+from app.core.config import validate_kis_mock_config
 from app.core.db import AsyncSessionLocal
 from app.mcp_server.env_utils import _env_int
+from app.mcp_server.tooling.account_modes import (
+    apply_account_routing_metadata,
+    normalize_account_mode,
+)
 from app.mcp_server.tooling.market_data_indicators import (
     _compute_crypto_realtime_rsi_from_frame,
     _compute_indicators,
@@ -231,17 +236,25 @@ async def _compute_crypto_signals_for_position(
 
 async def _collect_kis_positions(
     market_filter: str | None,
+    *,
+    is_mock: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     if market_filter == "crypto":
         return [], []
 
     positions: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
-    kis = KISClient()
+    try:
+        kis = KISClient(is_mock=is_mock)
+    except TypeError:
+        kis = KISClient()
 
     if market_filter in (None, "equity_kr"):
         try:
-            kr_stocks = await kis.fetch_my_stocks()
+            if is_mock:
+                kr_stocks = await kis.fetch_my_stocks(is_mock=True)
+            else:
+                kr_stocks = await kis.fetch_my_stocks()
             for stock in kr_stocks:
                 quantity = _to_float(stock.get("hldg_qty"))
                 if quantity <= 0:
@@ -274,7 +287,10 @@ async def _collect_kis_positions(
 
     if market_filter in (None, "equity_us"):
         try:
-            us_stocks = await kis.fetch_my_us_stocks()
+            if is_mock:
+                us_stocks = await kis.fetch_my_us_stocks(is_mock=True)
+            else:
+                us_stocks = await kis.fetch_my_us_stocks()
             for stock in us_stocks:
                 quantity = _to_float(stock.get("ovrs_cblc_qty"))
                 if quantity <= 0:
@@ -612,6 +628,7 @@ async def _collect_portfolio_positions(
     include_current_price: bool,
     account_name: str | None = None,
     user_id: int = _MCP_USER_ID,
+    is_mock: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None, str | None]:
     # Short-circuit to paper handler when the caller asked for a paper account.
     from app.mcp_server.tooling.paper_portfolio_handler import (
@@ -664,7 +681,10 @@ async def _collect_portfolio_positions(
 
     tasks: list[Any] = []
     if market_filter != "crypto":
-        tasks.append(_collect_kis_positions(market_filter))
+        if is_mock:
+            tasks.append(_collect_kis_positions(market_filter, is_mock=True))
+        else:
+            tasks.append(_collect_kis_positions(market_filter))
     if market_filter in (None, "crypto"):
         tasks.append(_collect_upbit_positions(market_filter))
     tasks.append(
@@ -813,6 +833,7 @@ async def _get_holdings_impl(
     include_current_price: bool = True,
     minimum_value: float | None = None,
     account_name: str | None = None,
+    is_mock: bool = False,
 ) -> dict[str, Any]:
     """Implementation for get_holdings tool."""
     if minimum_value is not None and minimum_value < 0:
@@ -828,6 +849,7 @@ async def _get_holdings_impl(
         market=market,
         include_current_price=include_current_price,
         account_name=account_name,
+        is_mock=is_mock,
     )
 
     filtered_count = 0
@@ -960,7 +982,8 @@ async def _get_position_impl(
     *,
     symbol: str,
     market: str | None = None,
-    account_type: str = "real",
+    account_mode: str | None = None,
+    account_type: str | None = None,
     paper_account: str | None = None,
 ) -> dict[str, Any]:
     """Implementation for get_position tool.
@@ -974,8 +997,10 @@ async def _get_position_impl(
     if not symbol:
         raise ValueError("symbol is required")
 
-    if account_type not in ("real", "paper"):
-        raise ValueError("account_type must be 'real' or 'paper'")
+    routing = normalize_account_mode(
+        account_mode=account_mode,
+        account_type=account_type,
+    )
 
     parsed_market = _parse_holdings_market_filter(market)
     if parsed_market == "equity_us":
@@ -987,7 +1012,7 @@ async def _get_position_impl(
     else:
         query_symbol = symbol.strip().upper()
 
-    if account_type == "paper":
+    if routing.is_db_simulated:
         token = "paper" if not paper_account else f"paper:{paper_account}"
         positions, errors, _, _ = await _collect_portfolio_positions(
             account=token,
@@ -995,10 +1020,19 @@ async def _get_position_impl(
             include_current_price=True,
         )
     else:
+        if routing.is_kis_mock:
+            missing = validate_kis_mock_config()
+            if missing:
+                raise RuntimeError(
+                    "KIS mock account is disabled or missing required "
+                    "configuration: "
+                    + ", ".join(missing)
+                )
         positions, errors, _, _ = await _collect_portfolio_positions(
             account=None,
             market=market,
             include_current_price=True,
+            is_mock=routing.is_kis_mock,
         )
 
     matched_positions = [
@@ -1012,7 +1046,7 @@ async def _get_position_impl(
     ]
 
     if not matched_positions:
-        return {
+        return apply_account_routing_metadata({
             "symbol": query_symbol,
             "market": _INSTRUMENT_TO_MARKET.get(parsed_market),
             "has_position": False,
@@ -1020,7 +1054,7 @@ async def _get_position_impl(
             "position_count": 0,
             "positions": [],
             "errors": errors,
-        }
+        }, routing)
 
     matched_positions.sort(
         key=lambda position: (
@@ -1030,7 +1064,7 @@ async def _get_position_impl(
         )
     )
 
-    return {
+    return apply_account_routing_metadata({
         "symbol": query_symbol,
         "market": _INSTRUMENT_TO_MARKET.get(parsed_market),
         "has_position": True,
@@ -1047,7 +1081,7 @@ async def _get_position_impl(
             for position in matched_positions
         ],
         "errors": errors,
-    }
+    }, routing)
 
 
 async def _update_manual_holdings_impl(
@@ -1107,13 +1141,33 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
         include_current_price: bool = True,
         minimum_value: float | None = None,
         account_name: str | None = None,
+        account_mode: str | None = None,
+        account_type: str | None = None,
     ) -> dict[str, Any]:
-        return await _get_holdings_impl(
-            account=account,
-            market=market,
-            include_current_price=include_current_price,
-            minimum_value=minimum_value,
-            account_name=account_name,
+        routing = normalize_account_mode(
+            account_mode=account_mode,
+            account_type=account_type,
+        )
+        if routing.is_db_simulated and account is None:
+            account = "paper"
+        if routing.is_kis_mock:
+            missing = validate_kis_mock_config()
+            if missing:
+                raise RuntimeError(
+                    "KIS mock account is disabled or missing required "
+                    "configuration: "
+                    + ", ".join(missing)
+                )
+        return apply_account_routing_metadata(
+            await _get_holdings_impl(
+                account=account,
+                market=market,
+                include_current_price=include_current_price,
+                minimum_value=minimum_value,
+                account_name=account_name,
+                is_mock=routing.is_kis_mock,
+            ),
+            routing,
         )
 
     @mcp.tool(
@@ -1129,12 +1183,14 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
     async def get_position(
         symbol: str,
         market: str | None = None,
-        account_type: str = "real",
+        account_mode: str | None = None,
+        account_type: str | None = None,
         paper_account: str | None = None,
     ) -> dict[str, Any]:
         return await _get_position_impl(
             symbol=symbol,
             market=market,
+            account_mode=account_mode,
             account_type=account_type,
             paper_account=paper_account,
         )
@@ -1189,8 +1245,32 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
             "Returns detailed balance information including orderable amounts."
         ),
     )
-    async def get_cash_balance(account: str | None = None) -> dict[str, Any]:
-        return await _get_cash_balance_impl(account=account)
+    async def get_cash_balance(
+        account: str | None = None,
+        account_mode: str | None = None,
+        account_type: str | None = None,
+    ) -> dict[str, Any]:
+        routing = normalize_account_mode(
+            account_mode=account_mode,
+            account_type=account_type,
+        )
+        if routing.is_db_simulated and account is None:
+            account = "paper"
+        if routing.is_kis_mock:
+            missing = validate_kis_mock_config()
+            if missing:
+                raise RuntimeError(
+                    "KIS mock account is disabled or missing required "
+                    "configuration: "
+                    + ", ".join(missing)
+                )
+        return apply_account_routing_metadata(
+            await _get_cash_balance_impl(
+                account=account,
+                is_mock=routing.is_kis_mock,
+            ),
+            routing,
+        )
 
     @mcp.tool(
         name="get_available_capital",
@@ -1205,10 +1285,31 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
     )
     async def get_available_capital(
         account: str | None = None,
+        account_mode: str | None = None,
+        account_type: str | None = None,
         include_manual: bool = True,
     ) -> dict[str, Any]:
-        return await _get_available_capital_impl(
-            account=account, include_manual=include_manual
+        routing = normalize_account_mode(
+            account_mode=account_mode,
+            account_type=account_type,
+        )
+        if routing.is_db_simulated and account is None:
+            account = "paper"
+        if routing.is_kis_mock:
+            missing = validate_kis_mock_config()
+            if missing:
+                raise RuntimeError(
+                    "KIS mock account is disabled or missing required "
+                    "configuration: "
+                    + ", ".join(missing)
+                )
+        return apply_account_routing_metadata(
+            await _get_available_capital_impl(
+                account=account,
+                include_manual=include_manual,
+                is_mock=routing.is_kis_mock,
+            ),
+            routing,
         )
 
 

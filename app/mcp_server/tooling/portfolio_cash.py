@@ -22,9 +22,26 @@ from app.services.brokers.kis import (
 from app.services.exchange_rate_service import get_usd_krw_rate as _get_usd_krw_rate
 
 
-async def _get_kis_domestic_pending_buy_amount(kis: KISClient) -> float:
+def _create_kis_client(*, is_mock: bool) -> KISClient:
+    try:
+        return KISClient(is_mock=is_mock)
+    except TypeError:
+        return KISClient()
+
+
+async def _call_kis(method: Any, *args: Any, is_mock: bool, **kwargs: Any) -> Any:
+    if is_mock:
+        return await method(*args, **kwargs, is_mock=True)
+    return await method(*args, **kwargs)
+
+
+async def _get_kis_domestic_pending_buy_amount(
+    kis: KISClient,
+    *,
+    is_mock: bool = False,
+) -> float:
     total = 0.0
-    open_orders = await kis.inquire_korea_orders()
+    open_orders = await _call_kis(kis.inquire_korea_orders, is_mock=is_mock)
     for order in open_orders:
         if str(order.get("sll_buy_dvsn_cd", "")).strip() != "02":
             continue
@@ -37,11 +54,19 @@ async def _get_kis_domestic_pending_buy_amount(kis: KISClient) -> float:
     return total
 
 
-async def _get_kis_overseas_pending_buy_amount_usd(kis: KISClient) -> float:
+async def _get_kis_overseas_pending_buy_amount_usd(
+    kis: KISClient,
+    *,
+    is_mock: bool = False,
+) -> float:
     total = 0.0
     # KIS documents NASD as a US-wide open-order lookup. Querying NYSE/AMEX as
     # well can double-count the same locked cash when orders are mirrored there.
-    open_orders = await kis.inquire_overseas_orders("NASD")
+    open_orders = await _call_kis(
+        kis.inquire_overseas_orders,
+        "NASD",
+        is_mock=is_mock,
+    )
     for order in open_orders:
         if str(order.get("sll_buy_dvsn_cd", "")).strip() != "02":
             continue
@@ -92,7 +117,11 @@ def select_usd_row_for_us_order(
     return max(usd_rows, key=extract_usd_orderable_from_row)
 
 
-async def get_cash_balance_impl(account: str | None = None) -> dict[str, Any]:
+async def get_cash_balance_impl(
+    account: str | None = None,
+    *,
+    is_mock: bool = False,
+) -> dict[str, Any]:
     from app.mcp_server.tooling.paper_portfolio_handler import (
         collect_paper_cash_balances,
         is_paper_account_token,
@@ -147,11 +176,14 @@ async def get_cash_balance_impl(account: str | None = None) -> dict[str, Any]:
         "kis_domestic",
         "kis_overseas",
     ):
-        kis = KISClient()
+        kis = _create_kis_client(is_mock=is_mock)
 
         if account_filter is None or account_filter in ("kis", "kis_domestic"):
             try:
-                margin_data = await kis.inquire_integrated_margin()
+                margin_data = await _call_kis(
+                    kis.inquire_integrated_margin,
+                    is_mock=is_mock,
+                )
                 domestic_cash = extract_domestic_cash_summary_from_integrated_margin(
                     margin_data
                 )
@@ -160,7 +192,10 @@ async def get_cash_balance_impl(account: str | None = None) -> dict[str, Any]:
                 orderable = raw_orderable
 
                 try:
-                    pending_buy_amount = await _get_kis_domestic_pending_buy_amount(kis)
+                    pending_buy_amount = await _get_kis_domestic_pending_buy_amount(
+                        kis,
+                        is_mock=is_mock,
+                    )
                     orderable = max(0.0, raw_orderable - pending_buy_amount)
                 except Exception as exc:
                     logger.warning(
@@ -189,7 +224,10 @@ async def get_cash_balance_impl(account: str | None = None) -> dict[str, Any]:
 
         if account_filter is None or account_filter in ("kis", "kis_overseas"):
             try:
-                overseas_margin_data = await kis.inquire_overseas_margin()
+                overseas_margin_data = await _call_kis(
+                    kis.inquire_overseas_margin,
+                    is_mock=is_mock,
+                )
                 usd_margin = select_usd_row_for_us_order(overseas_margin_data)
                 if usd_margin is None:
                     raise RuntimeError(
@@ -205,7 +243,10 @@ async def get_cash_balance_impl(account: str | None = None) -> dict[str, Any]:
                 orderable = raw_orderable
 
                 try:
-                    pending_usd = await _get_kis_overseas_pending_buy_amount_usd(kis)
+                    pending_usd = await _get_kis_overseas_pending_buy_amount_usd(
+                        kis,
+                        is_mock=is_mock,
+                    )
                     orderable = max(0.0, raw_orderable - pending_usd)
                 except Exception as exc:
                     logger.warning(
@@ -269,6 +310,7 @@ def _is_stale_manual_cash(updated_at_iso: str | None) -> bool:
 async def get_available_capital_impl(
     account: str | None = None,
     include_manual: bool = True,
+    is_mock: bool = False,
 ) -> dict[str, Any]:
     """Query orderable capital across KIS, Upbit, and manual cash.
 
@@ -281,7 +323,7 @@ async def get_available_capital_impl(
     """
     errors: list[dict[str, Any]] = []
 
-    cash_result = await get_cash_balance_impl(account=account)
+    cash_result = await get_cash_balance_impl(account=account, is_mock=is_mock)
     accounts = cash_result.get("accounts", [])
     errors.extend(cash_result.get("errors", []))
 
