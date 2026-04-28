@@ -47,6 +47,13 @@ _SYMBOL_RE = re.compile(r"^[A-Za-z0-9._/-]{1,32}$")
 
 logger = logging.getLogger("smoke_tradingagents")
 
+# Test workers may preload unrelated app modules before importing this harness.
+# The harness safety guard is meant to detect forbidden modules loaded by this
+# harness or the ingestion service, not to mutate or fail because of unrelated
+# pre-existing process state. In production the smoke runs in a fresh process,
+# so this baseline is effectively stdlib + this module only.
+_MODULES_AT_IMPORT_START = frozenset(sys.modules)
+
 Settings: Any | None = None
 ingest_tradingagents_research: Any | None = None
 
@@ -70,6 +77,8 @@ def _refuse_forbidden_argv(argv: list[str]) -> None:
 
 def _refuse_forbidden_modules() -> None:
     for name in list(sys.modules):
+        if name in _MODULES_AT_IMPORT_START:
+            continue
         for prefix in _FORBIDDEN_PREFIXES:
             if name == prefix or name.startswith(prefix + "."):
                 print(

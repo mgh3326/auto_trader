@@ -107,17 +107,17 @@ def _fake_db() -> SimpleNamespace:
     return SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock())
 
 
-def _clear_forbidden_modules() -> None:
-    for name in list(sys.modules):
-        if name == "scripts.smoke_tradingagents_db_ingestion" or any(
-            name == prefix or name.startswith(prefix + ".")
-            for prefix in _FORBIDDEN_PREFIXES
-        ):
-            sys.modules.pop(name, None)
+def _clear_smoke_module() -> None:
+    # Only remove the smoke harness module so each test gets a fresh copy.
+    # Do not remove unrelated app modules from sys.modules: later tests in the
+    # same pytest worker may already hold references to functions from those
+    # modules, and deleting/re-importing them makes unittest.mock.patch target a
+    # different module object.
+    sys.modules.pop("scripts.smoke_tradingagents_db_ingestion", None)
 
 
 def _import_smoke():
-    _clear_forbidden_modules()
+    _clear_smoke_module()
     from scripts import smoke_tradingagents_db_ingestion as smoke
 
     return smoke
@@ -233,7 +233,7 @@ def test_invariant_violation_rolls_back(monkeypatch: pytest.MonkeyPatch) -> None
         AsyncMock(return_value={"actions": 0, "counterfactuals": 0, "outcomes": 0}),
     )
 
-    _clear_forbidden_modules()
+    _clear_smoke_module()
     with pytest.raises(SystemExit) as exc:
         smoke.main(argv=_base_argv())
 
@@ -280,7 +280,7 @@ def test_success_path_prints_redacted_json_report(
         raising=False,
     )
 
-    _clear_forbidden_modules()
+    _clear_smoke_module()
     with pytest.raises(SystemExit) as exc:
         smoke.main(argv=_base_argv())
 
