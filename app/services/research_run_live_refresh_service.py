@@ -65,7 +65,7 @@ async def _fetch_quote(
     *,
     symbol: str,
     market_scope: str,
-    timeout: float,
+    timeout_seconds: float,
     now: Callable[[], datetime],
     quote_by_symbol: dict[str, LiveRefreshQuote],
     warnings: list[str],
@@ -73,10 +73,8 @@ async def _fetch_quote(
     from app.services.market_data import get_quote
 
     try:
-        quote = await asyncio.wait_for(
-            get_quote(symbol, market=market_scope),
-            timeout=timeout,
-        )
+        async with asyncio.timeout(timeout_seconds):
+            quote = await get_quote(symbol, market=market_scope)
         quote_by_symbol[symbol] = LiveRefreshQuote(
             price=Decimal(str(quote.price)),
             as_of=now(),
@@ -89,7 +87,7 @@ async def _fetch_orderbook(
     *,
     symbol: str,
     market_scope: str,
-    timeout: float,
+    timeout_seconds: float,
     orderbook_by_symbol: dict[str, OrderbookSnapshot],
     warnings: list[str],
 ) -> None:
@@ -99,10 +97,8 @@ async def _fetch_orderbook(
         warnings.append("orderbook_unavailable_us")
         return
     try:
-        orderbook = await asyncio.wait_for(
-            get_orderbook(symbol, market=market_scope),
-            timeout=timeout,
-        )
+        async with asyncio.timeout(timeout_seconds):
+            orderbook = await get_orderbook(symbol, market=market_scope)
         orderbook_by_symbol[symbol] = _orderbook_snapshot(orderbook)
     except Exception:
         warnings.append(f"orderbook_failed:{symbol}")
@@ -161,18 +157,16 @@ def _pending_order_snapshot(
 async def _fetch_pending_orders(
     *,
     market_scope: str,
-    timeout: float,
+    timeout_seconds: float,
     warnings: list[str],
 ) -> list[PendingOrderSnapshot]:
     from app.mcp_server.tooling.orders_history import get_order_history_impl
 
     try:
-        order_history = await asyncio.wait_for(
-            get_order_history_impl(
+        async with asyncio.timeout(timeout_seconds):
+            order_history = await get_order_history_impl(
                 status="pending", market=market_scope, is_mock=False
-            ),
-            timeout=timeout,
-        )
+            )
     except Exception:
         warnings.append("pending_orders_fetch_failed")
         return []
@@ -212,7 +206,7 @@ async def build_live_refresh_snapshot(
                 _fetch_quote(
                     symbol=symbol,
                     market_scope=run.market_scope,
-                    timeout=per_call_timeout,
+                    timeout_seconds=per_call_timeout,
                     now=now,
                     quote_by_symbol=quote_by_symbol,
                     warnings=warnings,
@@ -220,7 +214,7 @@ async def build_live_refresh_snapshot(
                 _fetch_orderbook(
                     symbol=symbol,
                     market_scope=run.market_scope,
-                    timeout=per_call_timeout,
+                    timeout_seconds=per_call_timeout,
                     orderbook_by_symbol=orderbook_by_symbol,
                     warnings=warnings,
                 ),
@@ -238,7 +232,7 @@ async def build_live_refresh_snapshot(
 
     pending_orders = await _fetch_pending_orders(
         market_scope=run.market_scope,
-        timeout=per_call_timeout * 3,
+        timeout_seconds=per_call_timeout * 3,
         warnings=warnings,
     )
 
