@@ -257,3 +257,66 @@ async def test_get_order_history_pending_us_mock_surfaces_unsupported(monkeypatc
         e.get("market") == "equity_us" and "mock" in (e.get("error") or "").lower()
         for e in result["errors"]
     )
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_kis_mock_kr_returns_mock_unsupported(monkeypatch):
+    from app.mcp_server.tooling import orders_modify_cancel
+
+    class FakeKIS:
+        def __init__(self, *, is_mock: bool = False) -> None:
+            self.is_mock = is_mock
+
+        async def inquire_korea_orders(self, *, is_mock=False):
+            raise RuntimeError(
+                "KIS domestic pending-orders inquiry (TTTC8036R) is not "
+                "available in mock mode."
+            )
+
+        cancel_korea_order = AsyncMock(
+            side_effect=AssertionError("must not call cancel under mock-unsupported")
+        )
+
+    monkeypatch.setattr(orders_modify_cancel, "KISClient", FakeKIS)
+
+    result = await orders_modify_cancel.cancel_order_impl(
+        order_id="0001", symbol="005930", market="kr", is_mock=True
+    )
+
+    assert result["success"] is False
+    assert result.get("mock_unsupported") is True
+    assert "mock" in result["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_modify_order_kis_mock_kr_returns_mock_unsupported(monkeypatch):
+    from app.mcp_server.tooling import orders_modify_cancel
+
+    class FakeKIS:
+        def __init__(self, *, is_mock: bool = False) -> None:
+            pass
+
+        async def inquire_korea_orders(self, *, is_mock=False):
+            raise RuntimeError(
+                "KIS domestic pending-orders inquiry (TTTC8036R) is not "
+                "available in mock mode."
+            )
+
+        modify_korea_order = AsyncMock(
+            side_effect=AssertionError("must not call modify under mock-unsupported")
+        )
+
+    monkeypatch.setattr(orders_modify_cancel, "KISClient", FakeKIS)
+
+    result = await orders_modify_cancel.modify_order_impl(
+        order_id="0001",
+        symbol="005930",
+        market="kr",
+        new_price=70100.0,
+        dry_run=False,
+        is_mock=True,
+    )
+
+    assert result["success"] is False
+    assert result.get("mock_unsupported") is True
+    assert "mock" in result["error"].lower()

@@ -482,7 +482,20 @@ async def _cancel_kis_domestic(
         quantity = 1
         krx_fwdg_ord_orgno = None
 
-        open_orders = await kis.inquire_korea_orders(is_mock=is_mock)
+        try:
+            open_orders = await kis.inquire_korea_orders(is_mock=is_mock)
+        except RuntimeError as exc:
+            if is_mock and "mock" in str(exc).lower():
+                return {
+                    "success": False,
+                    "order_id": order_id,
+                    "error": "kis_mock: domestic pending-orders inquiry "
+                    "(TTTC8036R) is not available in mock mode",
+                    "market": _normalize_market_type_to_external("equity_kr"),
+                    "mock_unsupported": True,
+                }
+            raise
+
         for order in open_orders:
             if (
                 str(_get_kis_field(order, "odno", "ODNO", "ord_no", "ORD_NO"))
@@ -856,7 +869,22 @@ async def _modify_kis_domestic(
     """Modify a KIS domestic (Korean equity) order."""
     try:
         kis = _create_kis_client(is_mock=is_mock)
-        open_orders = await kis.inquire_korea_orders(is_mock=is_mock)
+        try:
+            open_orders = await kis.inquire_korea_orders(is_mock=is_mock)
+        except RuntimeError as exc:
+            if is_mock and "mock" in str(exc).lower():
+                return {
+                    "success": False,
+                    "status": "failed",
+                    "order_id": order_id,
+                    "symbol": normalized_symbol,
+                    "error": "kis_mock: domestic pending-orders inquiry "
+                    "(TTTC8036R) is not available in mock mode",
+                    "market": _normalize_market_type_to_external(market_type),
+                    "mock_unsupported": True,
+                    "dry_run": dry_run,
+                }
+            raise
         target_order = None
         for order in open_orders:
             if (
