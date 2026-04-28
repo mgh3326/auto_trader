@@ -230,8 +230,18 @@ async def _fetch_us_orders(
                     if normalized_symbol and o_sym != normalized_symbol:
                         continue
                     fetched.append(_normalize_kis_overseas_order(o))
-            except Exception:
-                pass
+            except Exception as exc:
+                if is_mock and "mock" in str(exc).lower():
+                    # Surface mock-unsupported once per market, not per exchange.
+                    raise RuntimeError(
+                        "kis_mock: overseas pending-orders inquiry is not "
+                        "available in mock mode"
+                    ) from exc
+                logger.warning(
+                    "US pending-orders inquiry failed for exchange=%s: %s",
+                    ex,
+                    exc,
+                )
 
     if status in ("all", "filled", "cancelled") and normalized_symbol:
         lookup_days = effective_days if effective_days is not None else 30

@@ -230,3 +230,31 @@ def test_modify_order_kis_mock_dry_run_does_not_instantiate_kis(monkeypatch):
     )
     assert result["success"] is True
     assert result["dry_run"] is True
+
+
+@pytest.mark.asyncio
+async def test_get_order_history_pending_us_mock_surfaces_unsupported(monkeypatch):
+    """Mock pending US history must NOT silently return empty."""
+    from app.mcp_server.tooling import orders_history
+
+    class FakeKIS:
+        def __init__(self, *, is_mock: bool = False) -> None:
+            pass
+
+        async def inquire_overseas_orders(self, exchange, *, is_mock=False):
+            raise RuntimeError(
+                "KIS overseas pending-orders inquiry (TTTS3018R) is not "
+                "available in mock mode."
+            )
+
+    monkeypatch.setattr(orders_history, "KISClient", FakeKIS)
+    result = await orders_history.get_order_history_impl(
+        status="pending", market="us", is_mock=True
+    )
+
+    assert result["orders"] == []
+    assert any(
+        e.get("market") == "equity_us"
+        and "mock" in (e.get("error") or "").lower()
+        for e in result["errors"]
+    )
