@@ -85,6 +85,14 @@ class MarketDataBase:
     def _settings(self):
         return self._parent._settings
 
+    def _kis_url(self, path: str) -> str:
+        """Build a KIS API URL through the owning client.
+
+        Market-data mixins are instantiated as sub-clients in tests and production;
+        routing through the parent keeps live vs mock base URL selection centralized.
+        """
+        return self._parent._kis_url(path)
+
     async def _request_with_token_retry(
         self,
         tr_id: str,

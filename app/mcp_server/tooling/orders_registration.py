@@ -76,7 +76,25 @@ def register_order_tools(mcp: FastMCP) -> None:
             account_type=account_type,
         )
         if routing.is_db_simulated:
-            return apply_account_routing_metadata(await _get_paper_order_history(
+            return apply_account_routing_metadata(
+                await _get_paper_order_history(
+                    symbol=symbol,
+                    status=status,
+                    order_id=order_id,
+                    market=market,
+                    side=side,
+                    days=days,
+                    limit=limit,
+                    paper_account_name=paper_account,
+                ),
+                routing,
+            )
+        if routing.is_kis_mock:
+            config_error = _kis_mock_config_error()
+            if config_error:
+                return config_error
+        return apply_account_routing_metadata(
+            await orders_history.get_order_history_impl(
                 symbol=symbol,
                 status=status,
                 order_id=order_id,
@@ -84,22 +102,10 @@ def register_order_tools(mcp: FastMCP) -> None:
                 side=side,
                 days=days,
                 limit=limit,
-                paper_account_name=paper_account,
-            ), routing)
-        if routing.is_kis_mock:
-            config_error = _kis_mock_config_error()
-            if config_error:
-                return config_error
-        return apply_account_routing_metadata(await orders_history.get_order_history_impl(
-            symbol=symbol,
-            status=status,
-            order_id=order_id,
-            market=market,
-            side=side,
-            days=days,
-            limit=limit,
-            is_mock=routing.is_kis_mock,
-        ), routing)
+                is_mock=routing.is_kis_mock,
+            ),
+            routing,
+        )
 
     @mcp.tool(
         name="place_order",
@@ -181,7 +187,34 @@ def register_order_tools(mcp: FastMCP) -> None:
                 "order_type": order_type,
             }
         if routing.is_db_simulated:
-            return apply_account_routing_metadata(await _place_paper_order(
+            return apply_account_routing_metadata(
+                await _place_paper_order(
+                    symbol=symbol,
+                    side=side,
+                    order_type=order_type,
+                    quantity=quantity,
+                    price=price,
+                    amount=amount,
+                    dry_run=dry_run,
+                    reason=reason,
+                    exit_reason=exit_reason,
+                    thesis=thesis,
+                    strategy=strategy,
+                    target_price=target_price,
+                    stop_loss=stop_loss,
+                    min_hold_days=min_hold_days,
+                    notes=notes,
+                    indicators_snapshot=indicators_snapshot,
+                    paper_account_name=paper_account,
+                ),
+                routing,
+            )
+        if routing.is_kis_mock:
+            config_error = _kis_mock_config_error()
+            if config_error:
+                return config_error
+        return apply_account_routing_metadata(
+            await order_execution._place_order_impl(
                 symbol=symbol,
                 side=side,
                 order_type=order_type,
@@ -198,33 +231,12 @@ def register_order_tools(mcp: FastMCP) -> None:
                 min_hold_days=min_hold_days,
                 notes=notes,
                 indicators_snapshot=indicators_snapshot,
-                paper_account_name=paper_account,
-            ), routing)
-        if routing.is_kis_mock:
-            config_error = _kis_mock_config_error()
-            if config_error:
-                return config_error
-        return apply_account_routing_metadata(await order_execution._place_order_impl(
-            symbol=symbol,
-            side=side,
-            order_type=order_type,
-            quantity=quantity,
-            price=price,
-            amount=amount,
-            dry_run=dry_run,
-            reason=reason,
-            exit_reason=exit_reason,
-            thesis=thesis,
-            strategy=strategy,
-            target_price=target_price,
-            stop_loss=stop_loss,
-            min_hold_days=min_hold_days,
-            notes=notes,
-            indicators_snapshot=indicators_snapshot,
-            defensive_trim=defensive_trim,
-            approval_issue_id=approval_issue_id,
-            is_mock=routing.is_kis_mock,
-        ), routing)
+                defensive_trim=defensive_trim,
+                approval_issue_id=approval_issue_id,
+                is_mock=routing.is_kis_mock,
+            ),
+            routing,
+        )
 
     @mcp.tool(
         name="cancel_order",

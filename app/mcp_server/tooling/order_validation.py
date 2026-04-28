@@ -46,6 +46,7 @@ async def _call_kis(method: Any, *args: Any, is_mock: bool, **kwargs: Any) -> An
         return await method(*args, **kwargs, is_mock=True)
     return await method(*args, **kwargs)
 
+
 _DEFENSIVE_TRIM_APPROVAL_REGEX = re.compile(r"^[A-Z]+-\d+$")
 _DEFENSIVE_TRIM_CACHE_TTL_SECONDS = 60.0
 _defensive_trim_success_cache: dict[str, float] = {}

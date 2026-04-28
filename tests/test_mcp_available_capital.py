@@ -10,7 +10,7 @@ async def test_get_available_capital_aggregates_accounts_and_manual_cash(monkeyp
     """Test that get_available_capital aggregates broker accounts and manual cash."""
     from app.mcp_server.tooling import portfolio_cash
 
-    async def mock_get_cash_balance_impl(account=None):
+    async def mock_get_cash_balance_impl(account=None, **_kwargs):
         return {
             "accounts": [
                 {
@@ -82,7 +82,7 @@ async def test_get_available_capital_excludes_manual_when_flag_disabled(monkeypa
     """Test that include_manual=False excludes manual cash from aggregation."""
     from app.mcp_server.tooling import portfolio_cash
 
-    async def mock_get_cash_balance_impl(account=None):
+    async def mock_get_cash_balance_impl(account=None, **_kwargs):
         return {
             "accounts": [
                 {"account": "upbit", "currency": "KRW", "orderable": 1000000.0},
@@ -120,7 +120,7 @@ async def test_get_available_capital_handles_missing_manual_cash(monkeypatch):
     """Test that missing manual cash is handled gracefully (amount = 0)."""
     from app.mcp_server.tooling import portfolio_cash
 
-    async def mock_get_cash_balance_impl(account=None):
+    async def mock_get_cash_balance_impl(account=None, **_kwargs):
         return {
             "accounts": [
                 {"account": "upbit", "currency": "KRW", "orderable": 1000000.0}
@@ -154,7 +154,7 @@ async def test_get_available_capital_marks_stale_manual_cash(monkeypatch):
     """Test that manual cash older than 3 days gets stale_warning=True."""
     from app.mcp_server.tooling import portfolio_cash
 
-    async def mock_get_cash_balance_impl(account=None):
+    async def mock_get_cash_balance_impl(account=None, **_kwargs):
         return {
             "accounts": [],
             "summary": {"total_krw": 0.0, "total_usd": 0.0},
@@ -193,7 +193,7 @@ async def test_get_available_capital_toss_filter_uses_manual_cash_path(monkeypat
 
     cash_balance_calls = []
 
-    async def mock_get_cash_balance_impl(account=None):
+    async def mock_get_cash_balance_impl(account=None, **_kwargs):
         cash_balance_calls.append(account)
         return {
             "accounts": [],

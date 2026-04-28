@@ -1022,8 +1022,7 @@ async def _get_position_impl(
             if missing:
                 raise RuntimeError(
                     "KIS mock account is disabled or missing required "
-                    "configuration: "
-                    + ", ".join(missing)
+                    "configuration: " + ", ".join(missing)
                 )
         positions, errors, _, _ = await _collect_portfolio_positions(
             account=None,
@@ -1043,15 +1042,18 @@ async def _get_position_impl(
     ]
 
     if not matched_positions:
-        return apply_account_routing_metadata({
-            "symbol": query_symbol,
-            "market": _INSTRUMENT_TO_MARKET.get(parsed_market),
-            "has_position": False,
-            "status": "미보유",
-            "position_count": 0,
-            "positions": [],
-            "errors": errors,
-        }, routing)
+        return apply_account_routing_metadata(
+            {
+                "symbol": query_symbol,
+                "market": _INSTRUMENT_TO_MARKET.get(parsed_market),
+                "has_position": False,
+                "status": "미보유",
+                "position_count": 0,
+                "positions": [],
+                "errors": errors,
+            },
+            routing,
+        )
 
     matched_positions.sort(
         key=lambda position: (
@@ -1061,24 +1063,27 @@ async def _get_position_impl(
         )
     )
 
-    return apply_account_routing_metadata({
-        "symbol": query_symbol,
-        "market": _INSTRUMENT_TO_MARKET.get(parsed_market),
-        "has_position": True,
-        "status": "보유",
-        "position_count": len(matched_positions),
-        "accounts": sorted({position["account"] for position in matched_positions}),
-        "positions": [
-            {
-                "account": position["account"],
-                "broker": position["broker"],
-                "account_name": position["account_name"],
-                **_position_to_output(position),
-            }
-            for position in matched_positions
-        ],
-        "errors": errors,
-    }, routing)
+    return apply_account_routing_metadata(
+        {
+            "symbol": query_symbol,
+            "market": _INSTRUMENT_TO_MARKET.get(parsed_market),
+            "has_position": True,
+            "status": "보유",
+            "position_count": len(matched_positions),
+            "accounts": sorted({position["account"] for position in matched_positions}),
+            "positions": [
+                {
+                    "account": position["account"],
+                    "broker": position["broker"],
+                    "account_name": position["account_name"],
+                    **_position_to_output(position),
+                }
+                for position in matched_positions
+            ],
+            "errors": errors,
+        },
+        routing,
+    )
 
 
 async def _update_manual_holdings_impl(
@@ -1154,8 +1159,7 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
             if missing:
                 raise RuntimeError(
                     "KIS mock account is disabled or missing required "
-                    "configuration: "
-                    + ", ".join(missing)
+                    "configuration: " + ", ".join(missing)
                 )
         return apply_account_routing_metadata(
             await _get_holdings_impl(
@@ -1264,8 +1268,7 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
             if missing:
                 raise RuntimeError(
                     "KIS mock account is disabled or missing required "
-                    "configuration: "
-                    + ", ".join(missing)
+                    "configuration: " + ", ".join(missing)
                 )
         return apply_account_routing_metadata(
             await _get_cash_balance_impl(
@@ -1305,8 +1308,7 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
             if missing:
                 raise RuntimeError(
                     "KIS mock account is disabled or missing required "
-                    "configuration: "
-                    + ", ".join(missing)
+                    "configuration: " + ", ".join(missing)
                 )
         return apply_account_routing_metadata(
             await _get_available_capital_impl(
