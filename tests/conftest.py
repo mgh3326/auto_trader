@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pandas as pd
 import pytest
+import pytest_asyncio
 
 
 def _load_env_file(env_path: Path) -> None:
@@ -399,3 +400,130 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if item.get_closest_marker("live"):
                 item.add_marker(skip_live)
+
+
+# Database fixtures for integration tests
+@pytest_asyncio.fixture
+async def db_session():
+    """Create a database session for testing."""
+    from app.core.db import AsyncSessionLocal
+
+    async with AsyncSessionLocal() as session:
+        yield session
+
+
+@pytest_asyncio.fixture
+async def user(db_session):
+    """Create a test user."""
+    from app.models.trading import User
+
+    u = User(email="test@example.com", username="testuser", hashed_password="fakehash")
+    db_session.add(u)
+    await db_session.flush()
+    await db_session.refresh(u)
+    return u
+
+
+@pytest_asyncio.fixture
+async def other_user(db_session):
+    """Create another test user for isolation tests."""
+    from app.models.trading import User
+
+    u = User(
+        email="other@example.com", username="otheruser", hashed_password="fakehash"
+    )
+    db_session.add(u)
+    await db_session.flush()
+    await db_session.refresh(u)
+    return u
+
+
+@pytest.fixture
+def research_run_factory():
+    """Factory fixture for creating research runs."""
+
+    async def _factory(
+        db_session,
+        user_id,
+        market_scope="kr",
+        stage="preopen",
+        status="open",
+        candidates=None,
+    ):
+        from datetime import UTC, datetime
+        from app.models.research_run import ResearchRun
+        from app.models.trading import InstrumentType
+
+        run = ResearchRun(
+            user_id=user_id,
+            market_scope=market_scope,
+            stage=stage,
+            source_profile="test_profile",
+            status=status,
+            generated_at=datetime.now(UTC),
+        )
+        db_session.add(run)
+        await db_session.flush()
+        await db_session.refresh(run)
+
+        # Create candidates if provided
+        if candidates is not None:
+            if len(candidates) == 0:
+                # Explicitly empty list - don't create any
+                pass
+            else:
+                for cand_data in candidates:
+                    from app.models.research_run import ResearchRunCandidate
+
+                    cand = ResearchRunCandidate(
+                        research_run_id=run.id,
+                        symbol=cand_data.get("symbol", "005930"),
+                        instrument_type=cand_data.get(
+                            "instrument_type", InstrumentType.equity_kr
+                        ),
+                        side=cand_data.get("side", "none"),
+                        candidate_kind=cand_data.get("candidate_kind", "proposed"),
+                        proposed_price=cand_data.get("proposed_price"),
+                        proposed_qty=cand_data.get("proposed_qty"),
+                        payload=cand_data.get("payload", {}),
+                    )
+                    db_session.add(cand)
+                await db_session.flush()
+                # Refresh run to load candidates
+                await db_session.refresh(run)
+
+        return run
+
+    return _factory
+
+
+@pytest.fixture
+def research_run_candidate_factory():
+    """Factory fixture for creating research run candidates."""
+
+    async def _factory(
+        research_run_id,
+        symbol="005930",
+        instrument_type=None,
+        side="none",
+        candidate_kind="proposed",
+        proposed_price=None,
+        proposed_qty=None,
+        payload=None,
+    ):
+        from app.models.research_run import ResearchRunCandidate
+        from app.models.trading import InstrumentType as InstType
+
+        cand = ResearchRunCandidate(
+            research_run_id=research_run_id,
+            symbol=symbol,
+            instrument_type=instrument_type or InstType.equity_kr,
+            side=side,
+            candidate_kind=candidate_kind,
+            proposed_price=proposed_price,
+            proposed_qty=proposed_qty,
+            payload=payload or {},
+        )
+        return cand
+
+    return _factory
