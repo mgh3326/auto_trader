@@ -460,6 +460,7 @@ def research_run_factory():
         candidates=None,
     ):
         from datetime import UTC, datetime
+
         from app.models.research_run import ResearchRun
         from app.models.trading import InstrumentType
 
