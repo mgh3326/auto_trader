@@ -19,7 +19,6 @@ from app.models.trading_decision import (
     UserResponse,
 )
 
-
 _FORBIDDEN_PREFIXES = [
     "app.services.kis",
     "app.services.upbit",

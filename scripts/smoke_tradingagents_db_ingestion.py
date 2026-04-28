@@ -165,8 +165,9 @@ def _require_settings(settings: Any) -> None:
 
 
 async def _count_proposals(db: Any, session_id: int) -> int:
-    from app.models.trading_decision import TradingDecisionProposal
     from sqlalchemy import func, select
+
+    from app.models.trading_decision import TradingDecisionProposal
 
     result = await db.execute(
         select(func.count(TradingDecisionProposal.id)).where(
@@ -201,11 +202,12 @@ async def _count_side_effects(db: Any, session_id: int) -> dict[str, int]:
 
 
 async def _reload_session_and_proposal(db: Any, session_id: int) -> tuple[Any, Any]:
+    from sqlalchemy import select
+
     from app.models.trading_decision import (
         TradingDecisionProposal,
         TradingDecisionSession,
     )
-    from sqlalchemy import select
 
     session_result = await db.execute(
         select(TradingDecisionSession).where(TradingDecisionSession.id == session_id)
@@ -247,7 +249,10 @@ def _validate_invariants(
     original_payload = proposal.original_payload or {}
     if session_obj.source_profile != "tradingagents":
         problems.append("source_profile != tradingagents")
-    if expected_market_scope is not None and session_obj.market_scope != expected_market_scope:
+    if (
+        expected_market_scope is not None
+        and session_obj.market_scope != expected_market_scope
+    ):
         problems.append(f"market_scope != {expected_market_scope}")
     if session_brief.get("advisory_only") is not True:
         problems.append("session.market_brief.advisory_only is not True")
