@@ -133,3 +133,36 @@ async def test_portfolio_holdings_mock_collection_does_not_fallback_to_live(
 
     with pytest.raises(TypeError, match="is_mock unsupported"):
         await portfolio_holdings._collect_kis_positions(None, is_mock=True)
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_kis_mock_uses_mock_client(monkeypatch):
+    from app.mcp_server.tooling import orders_modify_cancel
+
+    instances: list[bool] = []
+
+    class TrackedKISClient:
+        def __init__(self, *, is_mock: bool = False) -> None:
+            instances.append(is_mock)
+            self.is_mock = is_mock
+            self.inquire_korea_orders = AsyncMock(
+                return_value=[
+                    {
+                        "odno": "0001",
+                        "pdno": "005930",
+                        "sll_buy_dvsn_cd": "02",
+                        "ord_unpr": "70000",
+                        "ord_qty": "1",
+                    }
+                ]
+            )
+            self.cancel_korea_order = AsyncMock(return_value={"ord_tmd": "100000"})
+
+    monkeypatch.setattr(orders_modify_cancel, "KISClient", TrackedKISClient)
+
+    result = await orders_modify_cancel.cancel_order_impl(
+        order_id="0001", symbol="005930", market="kr", is_mock=True
+    )
+
+    assert result["success"] is True
+    assert all(flag is True for flag in instances), instances
