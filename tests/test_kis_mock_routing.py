@@ -166,3 +166,67 @@ async def test_cancel_order_kis_mock_uses_mock_client(monkeypatch):
 
     assert result["success"] is True
     assert all(flag is True for flag in instances), instances
+
+
+@pytest.mark.asyncio
+async def test_modify_order_kis_mock_uses_mock_client(monkeypatch):
+    from app.mcp_server.tooling import orders_modify_cancel
+
+    instances: list[bool] = []
+
+    class TrackedKISClient:
+        def __init__(self, *, is_mock: bool = False) -> None:
+            instances.append(is_mock)
+            self.inquire_korea_orders = AsyncMock(
+                return_value=[
+                    {
+                        "odno": "0001",
+                        "pdno": "005930",
+                        "sll_buy_dvsn_cd": "02",
+                        "ord_unpr": "70000",
+                        "ord_qty": "1",
+                    }
+                ]
+            )
+            self.modify_korea_order = AsyncMock(return_value={"odno": "0002"})
+
+    monkeypatch.setattr(orders_modify_cancel, "KISClient", TrackedKISClient)
+
+    result = await orders_modify_cancel.modify_order_impl(
+        order_id="0001",
+        symbol="005930",
+        market="kr",
+        new_price=70100.0,
+        dry_run=False,
+        is_mock=True,
+    )
+
+    assert result["success"] is True
+    assert result["new_order_id"] == "0002"
+    assert all(flag is True for flag in instances), instances
+
+
+def test_modify_order_kis_mock_dry_run_does_not_instantiate_kis(monkeypatch):
+    """Dry-run preview must not require any KIS client instantiation."""
+    from app.mcp_server.tooling import orders_modify_cancel
+
+    class BrokenKISClient:
+        def __init__(self, *, is_mock: bool = False) -> None:
+            raise AssertionError("must not instantiate KIS in dry-run preview")
+
+    monkeypatch.setattr(orders_modify_cancel, "KISClient", BrokenKISClient)
+    # Dry-run should succeed without instantiating KIS client.
+    import asyncio
+
+    result = asyncio.run(
+        orders_modify_cancel.modify_order_impl(
+            order_id="0001",
+            symbol="005930",
+            market="kr",
+            new_price=70100.0,
+            dry_run=True,
+            is_mock=True,
+        )
+    )
+    assert result["success"] is True
+    assert result["dry_run"] is True

@@ -850,11 +850,13 @@ async def _modify_kis_domestic(
     new_price: float | None,
     new_quantity: float | None,
     dry_run: bool,
+    *,
+    is_mock: bool = False,
 ) -> dict[str, Any]:
     """Modify a KIS domestic (Korean equity) order."""
     try:
-        kis = KISClient()
-        open_orders = await kis.inquire_korea_orders()
+        kis = _create_kis_client(is_mock=is_mock)
+        open_orders = await kis.inquire_korea_orders(is_mock=is_mock)
         target_order = None
         for order in open_orders:
             if (
@@ -907,6 +909,7 @@ async def _modify_kis_domestic(
             final_quantity,
             final_price,
             krx_fwdg_ord_orgno=krx_fwdg_ord_orgno,
+            is_mock=is_mock,
         )
         changes = {
             "price": {"from": original_price, "to": final_price}
@@ -962,10 +965,25 @@ async def _modify_kis_overseas(
     new_price: float | None,
     new_quantity: float | None,
     dry_run: bool,
+    *,
+    is_mock: bool = False,
 ) -> dict[str, Any]:
     """Modify a KIS overseas (US equity) order."""
+    if is_mock:
+        return {
+            "success": False,
+            "status": "failed",
+            "order_id": order_id,
+            "symbol": normalized_symbol,
+            "market": _normalize_market_type_to_external("equity_us"),
+            "error": "kis_mock: overseas pending-orders inquiry (TTTS3018R) is "
+            "not available in mock mode",
+            "mock_unsupported": True,
+            "dry_run": dry_run,
+        }
+
     try:
-        kis = KISClient()
+        kis = _create_kis_client(is_mock=is_mock)
         (
             target_order,
             target_exchange,
@@ -1075,6 +1093,8 @@ async def modify_order_impl(
     new_price: float | None = None,
     new_quantity: float | None = None,
     dry_run: bool = True,
+    *,
+    is_mock: bool = False,
 ) -> dict[str, Any]:
     order_id, symbol, market_type, normalized_symbol = _validate_modify_inputs(
         order_id, symbol, market, new_price, new_quantity
@@ -1107,6 +1127,7 @@ async def modify_order_impl(
             new_price,
             new_quantity,
             dry_run,
+            is_mock=is_mock,
         )
     if market_type == "equity_us":
         return await _modify_kis_overseas(
@@ -1116,6 +1137,7 @@ async def modify_order_impl(
             new_price,
             new_quantity,
             dry_run,
+            is_mock=is_mock,
         )
 
     return {
