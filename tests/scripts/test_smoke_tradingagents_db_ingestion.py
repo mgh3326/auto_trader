@@ -108,8 +108,24 @@ def _fake_db() -> SimpleNamespace:
     return SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock())
 
 
-def test_argv_rejects_dry_run_false() -> None:
+def _clear_forbidden_modules() -> None:
+    for name in list(sys.modules):
+        if name == "scripts.smoke_tradingagents_db_ingestion" or any(
+            name == prefix or name.startswith(prefix + ".")
+            for prefix in _FORBIDDEN_PREFIXES
+        ):
+            sys.modules.pop(name, None)
+
+
+def _import_smoke():
+    _clear_forbidden_modules()
     from scripts import smoke_tradingagents_db_ingestion as smoke
+
+    return smoke
+
+
+def test_argv_rejects_dry_run_false() -> None:
+    smoke = _import_smoke()
 
     with pytest.raises(SystemExit) as exc:
         smoke.main(argv=[*_base_argv(), "--dry-run=False"])
@@ -118,7 +134,7 @@ def test_argv_rejects_dry_run_false() -> None:
 
 
 def test_argv_rejects_place_order_flag() -> None:
-    from scripts import smoke_tradingagents_db_ingestion as smoke
+    smoke = _import_smoke()
 
     with pytest.raises(SystemExit) as exc:
         smoke.main(argv=[*_base_argv(), "--place-order"])
@@ -127,7 +143,7 @@ def test_argv_rejects_place_order_flag() -> None:
 
 
 def test_argv_rejects_register_watch_flag() -> None:
-    from scripts import smoke_tradingagents_db_ingestion as smoke
+    smoke = _import_smoke()
 
     with pytest.raises(SystemExit) as exc:
         smoke.main(argv=[*_base_argv(), "--register-watch"])
@@ -172,7 +188,7 @@ print(json.dumps({{"violations": violations, "loaded": loaded}}))
 def test_settings_missing_tradingagents_python_exits_78(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from scripts import smoke_tradingagents_db_ingestion as smoke
+    smoke = _import_smoke()
 
     monkeypatch.delenv("TRADINGAGENTS_PYTHON", raising=False)
     monkeypatch.setattr(
@@ -192,8 +208,8 @@ def test_settings_missing_tradingagents_python_exits_78(
 
 
 def test_invariant_violation_rolls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    smoke = _import_smoke()
     from app.core import db as db_module
-    from scripts import smoke_tradingagents_db_ingestion as smoke
 
     db = _fake_db()
     monkeypatch.setattr(db_module, "AsyncSessionLocal", lambda: FakeSessionContext(db))
@@ -203,7 +219,7 @@ def test_invariant_violation_rolls_back(monkeypatch: pytest.MonkeyPatch) -> None
         lambda: SimpleNamespace(
             tradingagents_python=sys.executable,
             tradingagents_repo_path=str(pathlib.Path.cwd()),
-            tradingagents_runner_path=None,
+            tradingagents_runner_path=__file__,
         ),
     )
     monkeypatch.setattr(
@@ -218,6 +234,7 @@ def test_invariant_violation_rolls_back(monkeypatch: pytest.MonkeyPatch) -> None
         AsyncMock(return_value={"actions": 0, "counterfactuals": 0, "outcomes": 0}),
     )
 
+    _clear_forbidden_modules()
     with pytest.raises(SystemExit) as exc:
         smoke.main(argv=_base_argv())
 
@@ -230,8 +247,8 @@ def test_success_path_prints_redacted_json_report(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    smoke = _import_smoke()
     from app.core import db as db_module
-    from scripts import smoke_tradingagents_db_ingestion as smoke
 
     db = _fake_db()
     session_obj = _session()
@@ -243,7 +260,7 @@ def test_success_path_prints_redacted_json_report(
         lambda: SimpleNamespace(
             tradingagents_python=sys.executable,
             tradingagents_repo_path=str(pathlib.Path.cwd()),
-            tradingagents_runner_path=None,
+            tradingagents_runner_path=__file__,
         ),
     )
     monkeypatch.setattr(
@@ -264,6 +281,7 @@ def test_success_path_prints_redacted_json_report(
         raising=False,
     )
 
+    _clear_forbidden_modules()
     with pytest.raises(SystemExit) as exc:
         smoke.main(argv=_base_argv())
 
