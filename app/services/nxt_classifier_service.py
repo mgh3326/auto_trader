@@ -138,7 +138,53 @@ def _build_summary(  # noqa: C901 (rule-by-rule mapper)
     return "NXT 분류 불가 — 시세 정보 부족"
 
 
-def _map_recon_to_nxt(  # noqa: C901 (rule-by-rule classifier)
+def _is_kr_missing_universe(market: str, recon: PendingReconciliationItem) -> bool:
+    return market == "kr" and "missing_kr_universe" in recon.warnings
+
+
+def _far_or_chasing_label(side: str) -> NxtClassification:
+    if side == "buy":
+        return "buy_pending_too_far"
+    return "sell_pending_too_optimistic"
+
+
+def _pct_distance(reference: Decimal, target: Decimal) -> Decimal | None:
+    if reference <= 0:
+        return None
+    return abs(reference - target) / reference * Decimal("100")
+
+
+def _buy_proximity_label(
+    recon: PendingReconciliationItem,
+    order_price: Decimal,
+    nxt_cfg: NxtClassifierConfig,
+    extra_reasons: list[str],
+) -> NxtClassification:
+    support_price = recon.decision_support.get("nearest_support_price")
+    if isinstance(support_price, Decimal):
+        distance_pct = _pct_distance(order_price, support_price)
+        if distance_pct is not None and distance_pct <= nxt_cfg.near_support_pct:
+            extra_reasons.append("order_within_near_support_pct")
+            return "buy_pending_at_support"
+    return "buy_pending_actionable"
+
+
+def _sell_proximity_label(
+    recon: PendingReconciliationItem,
+    order_price: Decimal,
+    nxt_cfg: NxtClassifierConfig,
+    extra_reasons: list[str],
+) -> NxtClassification:
+    resistance_price = recon.decision_support.get("nearest_resistance_price")
+    if isinstance(resistance_price, Decimal):
+        distance_pct = _pct_distance(order_price, resistance_price)
+        if distance_pct is not None and distance_pct <= nxt_cfg.near_resistance_pct:
+            extra_reasons.append("order_within_near_resistance_pct")
+            return "sell_pending_near_resistance"
+    return "sell_pending_actionable"
+
+
+def _map_recon_to_nxt(
     recon: PendingReconciliationItem,
     *,
     market: str,
@@ -153,41 +199,20 @@ def _map_recon_to_nxt(  # noqa: C901 (rule-by-rule classifier)
         return "non_nxt_pending_ignore_for_nxt", extra_reasons
     # ROB-29 fail-closed: KR pending with no resolvable NXT-eligibility row must
     # NEVER default to actionable. Fires before any quote / S-R rule.
-    if market == "kr" and "missing_kr_universe" in recon.warnings:
+    if _is_kr_missing_universe(market, recon):
         extra_reasons.append("missing_kr_universe_fail_closed")
         return "data_mismatch_requires_review", extra_reasons
     if recon.classification == "unknown":
         return "unknown", extra_reasons
-    if recon.classification == "too_far":
-        return (
-            "buy_pending_too_far" if side == "buy" else "sell_pending_too_optimistic"
-        ), extra_reasons
-    if recon.classification == "chasing_risk":
-        return (
-            "buy_pending_too_far" if side == "buy" else "sell_pending_too_optimistic"
-        ), extra_reasons
-
-    # near_fill or maintain -> S/R proximity decides at_support / near_resistance
+    if recon.classification in ("too_far", "chasing_risk"):
+        return _far_or_chasing_label(side), extra_reasons
     if side == "buy":
-        support_price = recon.decision_support.get("nearest_support_price")
-        if isinstance(support_price, Decimal) and order_price > 0:
-            order_to_support_pct = (
-                abs(order_price - support_price) / order_price * Decimal("100")
-            )
-            if order_to_support_pct <= nxt_cfg.near_support_pct:
-                extra_reasons.append("order_within_near_support_pct")
-                return "buy_pending_at_support", extra_reasons
-        return "buy_pending_actionable", extra_reasons
-
-    resistance_price = recon.decision_support.get("nearest_resistance_price")
-    if isinstance(resistance_price, Decimal) and order_price > 0:
-        order_to_resistance_pct = (
-            abs(order_price - resistance_price) / order_price * Decimal("100")
-        )
-        if order_to_resistance_pct <= nxt_cfg.near_resistance_pct:
-            extra_reasons.append("order_within_near_resistance_pct")
-            return "sell_pending_near_resistance", extra_reasons
-    return "sell_pending_actionable", extra_reasons
+        return _buy_proximity_label(
+            recon, order_price, nxt_cfg, extra_reasons
+        ), extra_reasons
+    return _sell_proximity_label(
+        recon, order_price, nxt_cfg, extra_reasons
+    ), extra_reasons
 
 
 def _apply_orderbook_warnings(
