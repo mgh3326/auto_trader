@@ -209,10 +209,22 @@ async def get_cash_balance_impl(
                     )
                     orderable = max(0.0, raw_orderable - pending_buy_amount)
                 except Exception as exc:
+                    msg = str(exc)
+                    is_mock_unsupported = is_mock and "mock" in msg.lower()
                     logger.warning(
                         "KR pending order deduction failed, using raw orderable: %s",
-                        exc,
+                        msg,
                     )
+                    if is_mock_unsupported:
+                        errors.append(
+                            {
+                                "source": "kis",
+                                "market": "kr",
+                                "error": "mock_unsupported: KIS domestic pending-orders "
+                                "inquiry is not available in mock mode",
+                                "mock_unsupported": True,
+                            }
+                        )
 
                 accounts.append(
                     {

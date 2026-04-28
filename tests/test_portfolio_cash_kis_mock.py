@@ -77,3 +77,42 @@ async def test_cash_balance_mock_pending_buy_tolerates_egw02006(monkeypatch):
     # (not zero, not crash).
     accounts = {a["account"]: a for a in result["accounts"]}
     assert accounts["kis_domestic"]["orderable"] == pytest.approx(1000.0)
+
+
+@pytest.mark.asyncio
+async def test_cash_balance_mock_pending_buy_records_mock_unsupported(monkeypatch):
+    fake_kis = MagicMock()
+    fake_kis.inquire_domestic_cash_balance = AsyncMock(
+        return_value={
+            "dnca_tot_amt": 1000.0,
+            "stck_cash_ord_psbl_amt": 1000.0,
+            "raw": {},
+        },
+    )
+    fake_kis.inquire_overseas_margin = AsyncMock(
+        side_effect=RuntimeError("mock unsupported"),
+    )
+    fake_kis.inquire_korea_orders = AsyncMock(
+        side_effect=RuntimeError(
+            "KIS domestic pending-orders inquiry (TTTC8036R) is not "
+            "available in mock mode."
+        ),
+    )
+
+    monkeypatch.setattr(
+        portfolio_cash, "_create_kis_client", lambda *, is_mock: fake_kis
+    )
+    monkeypatch.setattr(
+        portfolio_cash.upbit_service,
+        "fetch_krw_cash_summary",
+        AsyncMock(return_value={"balance": 0.0, "orderable": 0.0}),
+    )
+
+    result = await portfolio_cash.get_cash_balance_impl(is_mock=True)
+
+    assert any(
+        e.get("source") == "kis"
+        and e.get("market") == "kr"
+        and e.get("mock_unsupported") is True
+        for e in result["errors"]
+    ), result["errors"]
