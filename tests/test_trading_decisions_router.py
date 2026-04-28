@@ -31,7 +31,7 @@ def _make_test_client():
 
 
 @pytest.mark.unit
-def test_authenticated_create_session():
+def test_authenticated_create_session(monkeypatch: pytest.MonkeyPatch):
     """POST /decisions returns 201 with session data when authenticated."""
     from app.routers import trading_decisions
     from app.routers.dependencies import get_authenticated_user
@@ -59,10 +59,16 @@ def test_authenticated_create_session():
         updated_at=datetime.utcnow(),
         proposals=[],
     )
-    trading_decision_service.create_decision_session = AsyncMock(
-        return_value=mock_session
+    monkeypatch.setattr(
+        trading_decision_service,
+        "create_decision_session",
+        AsyncMock(return_value=mock_session),
     )
-    trading_decision_service.get_session_by_uuid = AsyncMock(return_value=mock_session)
+    monkeypatch.setattr(
+        trading_decision_service,
+        "get_session_by_uuid",
+        AsyncMock(return_value=mock_session),
+    )
 
     client = TestClient(app)
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from typing import cast
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -12,6 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.research_run_decision_session import LiveRefreshSnapshot
 from app.services.research_run_live_refresh_service import build_live_refresh_snapshot
+
+if TYPE_CHECKING:
+    from app.models.research_run import ResearchRun
 
 pytestmark = pytest.mark.asyncio
 
@@ -48,7 +51,7 @@ async def test_build_snapshot_returns_live_refresh_snapshot():
                     mock_orders.return_value = {"orders": []}
 
                     result = await build_live_refresh_snapshot(
-                        cast(AsyncSession, mock_db), run=mock_run
+                        cast(AsyncSession, mock_db), run=cast("ResearchRun", mock_run)
                     )
 
                     assert isinstance(result, LiveRefreshSnapshot)
@@ -88,7 +91,7 @@ async def test_build_snapshot_quote_failure_adds_warning():
                     mock_orders.return_value = {"orders": []}
 
                     result = await build_live_refresh_snapshot(
-                        cast(AsyncSession, mock_db), run=mock_run
+                        cast(AsyncSession, mock_db), run=cast("ResearchRun", mock_run)
                     )
 
                     assert isinstance(result, LiveRefreshSnapshot)
@@ -123,7 +126,7 @@ async def test_build_snapshot_us_skips_orderbook():
                 mock_orders.return_value = {"orders": []}
 
                 result = await build_live_refresh_snapshot(
-                    cast(AsyncSession, mock_db), run=mock_run
+                    cast(AsyncSession, mock_db), run=cast("ResearchRun", mock_run)
                 )
 
                 assert isinstance(result, LiveRefreshSnapshot)
@@ -163,7 +166,7 @@ async def test_build_snapshot_missing_kr_universe_adds_warning():
                     mock_orders.return_value = {"orders": []}
 
                     result = await build_live_refresh_snapshot(
-                        cast(AsyncSession, mock_db), run=mock_run
+                        cast(AsyncSession, mock_db), run=cast("ResearchRun", mock_run)
                     )
 
                     assert isinstance(result, LiveRefreshSnapshot)
@@ -205,7 +208,7 @@ async def test_build_snapshot_refreshed_at_after_gather():
                     mock_orders.return_value = {"orders": []}
 
                     result = await build_live_refresh_snapshot(
-                        cast(AsyncSession, mock_db), run=mock_run
+                        cast(AsyncSession, mock_db), run=cast("ResearchRun", mock_run)
                     )
 
                     assert result.refreshed_at >= start_time
