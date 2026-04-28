@@ -1916,7 +1916,14 @@ async def test_modify_order_button_flow_uses_kr_path_and_executes_modify(monkeyp
             return []
 
         async def modify_korea_order(
-            self, order_id, symbol, quantity, price, krx_fwdg_ord_orgno=None, *, is_mock=False
+            self,
+            order_id,
+            symbol,
+            quantity,
+            price,
+            krx_fwdg_ord_orgno=None,
+            *,
+            is_mock=False,
         ):
             received.update(
                 {
