@@ -320,3 +320,55 @@ async def test_modify_order_kis_mock_kr_returns_mock_unsupported(monkeypatch):
     assert result["success"] is False
     assert result.get("mock_unsupported") is True
     assert "mock" in result["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_inquire_daily_order_domestic_mock_uses_mock_tr(monkeypatch):
+    from app.services.brokers.kis.client import KISClient
+
+    client = KISClient(is_mock=True)
+    monkeypatch.setattr(client, "_ensure_token", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        type(client._settings),
+        "kis_account_no",
+        property(lambda self: "00000000-01"),
+    )
+
+    captured: dict = {}
+
+    async def fake_request(method, url, *, headers, params, **kwargs):
+        captured["tr_id"] = headers.get("tr_id")
+        return {"rt_cd": "0", "output1": []}
+
+    monkeypatch.setattr(client, "_request_with_rate_limit", fake_request)
+
+    await client.inquire_daily_order_domestic(
+        start_date="20260101", end_date="20260102", is_mock=True
+    )
+    assert captured["tr_id"] == "VTTC8001R"
+
+
+@pytest.mark.asyncio
+async def test_inquire_daily_order_overseas_mock_uses_mock_tr(monkeypatch):
+    from app.services.brokers.kis.client import KISClient
+
+    client = KISClient(is_mock=True)
+    monkeypatch.setattr(client, "_ensure_token", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        type(client._settings),
+        "kis_account_no",
+        property(lambda self: "00000000-01"),
+    )
+
+    captured: dict = {}
+
+    async def fake_request(method, url, *, headers, params, **kwargs):
+        captured["tr_id"] = headers.get("tr_id")
+        return {"rt_cd": "0", "output1": []}
+
+    monkeypatch.setattr(client, "_request_with_rate_limit", fake_request)
+
+    await client.inquire_daily_order_overseas(
+        start_date="20260101", end_date="20260102", is_mock=True
+    )
+    assert captured["tr_id"] == "VTTS3035R"
