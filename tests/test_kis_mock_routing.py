@@ -289,6 +289,33 @@ async def test_cancel_order_kis_mock_kr_returns_mock_unsupported(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_cancel_order_kis_mock_kr_without_symbol_returns_mock_unsupported(
+    monkeypatch,
+):
+    from app.mcp_server.tooling import orders_modify_cancel
+
+    class FakeKIS:
+        def __init__(self, *, is_mock: bool = False) -> None:
+            self.is_mock = is_mock
+
+        async def inquire_korea_orders(self, *, is_mock=False):
+            raise RuntimeError(
+                "KIS domestic pending-orders inquiry (TTTC8036R) is not "
+                "available in mock mode."
+            )
+
+    monkeypatch.setattr(orders_modify_cancel, "KISClient", FakeKIS)
+
+    result = await orders_modify_cancel.cancel_order_impl(
+        order_id="0001", symbol=None, market="kr", is_mock=True
+    )
+
+    assert result["success"] is False
+    assert result.get("mock_unsupported") is True
+    assert "mock" in result["error"].lower()
+
+
+@pytest.mark.asyncio
 async def test_modify_order_kis_mock_kr_returns_mock_unsupported(monkeypatch):
     from app.mcp_server.tooling import orders_modify_cancel
 
