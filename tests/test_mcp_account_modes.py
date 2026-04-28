@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pytest
 
+from tests._mcp_tooling_support import DummyMCP
+
 
 def test_default_account_mode_is_kis_live():
     from app.mcp_server.tooling.account_modes import normalize_account_mode
@@ -68,3 +70,186 @@ def test_validate_kis_mock_config_reports_names_only():
         "KIS_MOCK_ACCOUNT_NO",
     ]
     assert "secret-value" not in repr(missing)
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_kis_mock_fails_closed_when_config_missing(monkeypatch):
+    from app.mcp_server.tooling import orders_registration
+
+    mcp = DummyMCP()
+    orders_registration.register_order_tools(mcp)
+
+    monkeypatch.setattr(
+        orders_registration,
+        "validate_kis_mock_config",
+        lambda: ["KIS_MOCK_ENABLED", "KIS_MOCK_APP_KEY"],
+    )
+
+    captured: list = []
+
+    async def fake_cancel_impl(**kwargs):
+        captured.append(kwargs)
+        return {"success": True, "order_id": kwargs["order_id"]}
+
+    monkeypatch.setattr(
+        orders_registration, "cancel_order_impl", fake_cancel_impl
+    )
+
+    result = await mcp.tools["cancel_order"](
+        order_id="test-order",
+        account_mode="kis_mock",
+    )
+
+    assert result["success"] is False
+    assert "KIS_MOCK_ENABLED" in result["error"]
+    assert "KIS_MOCK_APP_KEY" in result["error"]
+    assert result["account_mode"] == "kis_mock"
+    assert captured == []
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_db_simulated_is_not_supported(monkeypatch):
+    from app.mcp_server.tooling import orders_registration
+
+    mcp = DummyMCP()
+    orders_registration.register_order_tools(mcp)
+
+    result = await mcp.tools["cancel_order"](
+        order_id="test-order",
+        account_mode="db_simulated",
+    )
+
+    assert result["success"] is False
+    assert "not supported" in result["error"].lower()
+    assert result["account_mode"] == "db_simulated"
+
+
+@pytest.mark.asyncio
+async def test_modify_order_kis_mock_fails_closed_when_config_missing(monkeypatch):
+    from app.mcp_server.tooling import orders_registration
+
+    mcp = DummyMCP()
+    orders_registration.register_order_tools(mcp)
+
+    monkeypatch.setattr(
+        orders_registration,
+        "validate_kis_mock_config",
+        lambda: ["KIS_MOCK_ENABLED", "KIS_MOCK_ACCOUNT_NO"],
+    )
+
+    captured: list = []
+
+    async def fake_modify_impl(**kwargs):
+        captured.append(kwargs)
+        return {"success": True, "order_id": kwargs["order_id"]}
+
+    monkeypatch.setattr(
+        orders_registration, "modify_order_impl", fake_modify_impl
+    )
+
+    result = await mcp.tools["modify_order"](
+        order_id="test-order",
+        symbol="005930",
+        account_mode="kis_mock",
+        new_price=70000.0,
+    )
+
+    assert result["success"] is False
+    assert "KIS_MOCK_ENABLED" in result["error"]
+    assert "KIS_MOCK_ACCOUNT_NO" in result["error"]
+    assert result["account_mode"] == "kis_mock"
+    assert captured == []
+
+
+@pytest.mark.asyncio
+async def test_modify_order_db_simulated_is_not_supported():
+    from app.mcp_server.tooling import orders_registration
+
+    mcp = DummyMCP()
+    orders_registration.register_order_tools(mcp)
+
+    result = await mcp.tools["modify_order"](
+        order_id="test-order",
+        symbol="005930",
+        account_mode="db_simulated",
+        new_price=70000.0,
+    )
+
+    assert result["success"] is False
+    assert "not supported" in result["error"].lower()
+    assert result["account_mode"] == "db_simulated"
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_kis_mock_passes_is_mock_to_impl(monkeypatch):
+    from app.mcp_server.tooling import orders_registration
+
+    mcp = DummyMCP()
+    orders_registration.register_order_tools(mcp)
+
+    monkeypatch.setattr(
+        orders_registration,
+        "validate_kis_mock_config",
+        lambda: [],
+    )
+
+    captured: list = []
+
+    async def fake_cancel_impl(**kwargs):
+        captured.append(kwargs)
+        return {"success": True, "order_id": kwargs["order_id"]}
+
+    monkeypatch.setattr(
+        orders_registration, "cancel_order_impl", fake_cancel_impl
+    )
+
+    result = await mcp.tools["cancel_order"](
+        order_id="test-order",
+        account_mode="kis_mock",
+    )
+
+    assert result["success"] is True
+    assert captured == [{"order_id": "test-order", "symbol": None, "market": None, "is_mock": True}]
+
+
+@pytest.mark.asyncio
+async def test_modify_order_kis_mock_passes_is_mock_to_impl(monkeypatch):
+    from app.mcp_server.tooling import orders_registration
+
+    mcp = DummyMCP()
+    orders_registration.register_order_tools(mcp)
+
+    monkeypatch.setattr(
+        orders_registration,
+        "validate_kis_mock_config",
+        lambda: [],
+    )
+
+    captured: list = []
+
+    async def fake_modify_impl(**kwargs):
+        captured.append(kwargs)
+        return {"success": True, "order_id": kwargs["order_id"]}
+
+    monkeypatch.setattr(
+        orders_registration, "modify_order_impl", fake_modify_impl
+    )
+
+    result = await mcp.tools["modify_order"](
+        order_id="test-order",
+        symbol="005930",
+        account_mode="kis_mock",
+        new_price=70000.0,
+        dry_run=True,
+    )
+
+    assert result["success"] is True
+    assert captured == [{
+        "order_id": "test-order",
+        "symbol": "005930",
+        "market": None,
+        "new_price": 70000.0,
+        "new_quantity": None,
+        "dry_run": True,
+        "is_mock": True,
+    }]
