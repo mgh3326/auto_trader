@@ -126,7 +126,9 @@ official KIS mock, and KIS live account paths:
 - `account_mode="kis_mock"`: official KIS mock/sandbox account. Uses KIS mock
   credentials only, passes `is_mock=True` to KIS broker methods, and fails
   closed if `KIS_MOCK_ENABLED=true`, `KIS_MOCK_APP_KEY`,
-  `KIS_MOCK_APP_SECRET`, or `KIS_MOCK_ACCOUNT_NO` are missing.
+  `KIS_MOCK_APP_SECRET`, or `KIS_MOCK_ACCOUNT_NO` are missing. HTTP requests
+  use `KIS_MOCK_BASE_URL`, which defaults to the official KIS mock host
+  `https://openapivts.koreainvestment.com:29443`.
 - `account_mode="kis_live"` or omitted: existing live KIS behavior. For
   `place_order`, `dry_run=True` remains the default.
 

@@ -166,6 +166,7 @@ class Settings(BaseSettings):
     # KIS
     kis_app_key: str
     kis_app_secret: str
+    kis_base_url: str = "https://openapi.koreainvestment.com:9443"
     kis_access_token: str | None = None  # 최초엔 비워두고 자동 발급
     kis_account_no: str | None = None  # 계좌번호 (예: "12345678-01")
 
@@ -174,6 +175,7 @@ class Settings(BaseSettings):
     kis_mock_enabled: bool = False
     kis_mock_app_key: str | None = None
     kis_mock_app_secret: str | None = None
+    kis_mock_base_url: str = "https://openapivts.koreainvestment.com:29443"
     kis_mock_account_no: str | None = None
     kis_mock_access_token: str | None = None
 

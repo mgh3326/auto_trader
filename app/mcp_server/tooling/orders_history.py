@@ -31,10 +31,7 @@ from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
 
 def _create_kis_client(*, is_mock: bool) -> KISClient:
     if is_mock:
-        try:
-            return KISClient(is_mock=True)
-        except TypeError:
-            return KISClient()
+        return KISClient(is_mock=True)
     return KISClient()
 
 

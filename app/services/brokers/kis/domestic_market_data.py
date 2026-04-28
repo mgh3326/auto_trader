@@ -62,7 +62,7 @@ class DomesticMarketDataMixin(MarketDataBase):
     async def volume_rank(self, market: str = "J", limit: int = 30) -> list[dict]:
         js = await self._request_with_token_retry(
             tr_id=constants.DOMESTIC_VOLUME_TR,
-            url=f"{constants.BASE}{constants.DOMESTIC_VOLUME_URL}",
+            url=self._kis_url(constants.DOMESTIC_VOLUME_URL),
             params={
                 "FID_COND_MRKT_DIV_CODE": market,
                 "FID_COND_SCR_DIV_CODE": "20171",
@@ -91,7 +91,7 @@ class DomesticMarketDataMixin(MarketDataBase):
     async def market_cap_rank(self, market: str = "J", limit: int = 30) -> list[dict]:
         js = await self._request_with_token_retry(
             tr_id=constants.MARKET_CAP_RANK_TR,
-            url=f"{constants.BASE}{constants.MARKET_CAP_RANK_URL}",
+            url=self._kis_url(constants.MARKET_CAP_RANK_URL),
             params={
                 "FID_COND_MRKT_DIV_CODE": market,
                 "FID_COND_SCR_DIV_CODE": "20174",
@@ -123,7 +123,7 @@ class DomesticMarketDataMixin(MarketDataBase):
 
         js = await self._request_with_token_retry(
             tr_id=constants.FLUCTUATION_RANK_TR,
-            url=f"{constants.BASE}{constants.FLUCTUATION_RANK_URL}",
+            url=self._kis_url(constants.FLUCTUATION_RANK_URL),
             params={
                 "FID_COND_MRKT_DIV_CODE": market,
                 "FID_COND_SCR_DIV_CODE": "20170",
@@ -157,7 +157,7 @@ class DomesticMarketDataMixin(MarketDataBase):
     ) -> list[dict]:
         js = await self._request_with_token_retry(
             tr_id=constants.FOREIGN_BUYING_RANK_TR,
-            url=f"{constants.BASE}{constants.FOREIGN_BUYING_RANK_URL}",
+            url=self._kis_url(constants.FOREIGN_BUYING_RANK_URL),
             params={
                 "FID_COND_MRKT_DIV_CODE": "V",
                 "FID_COND_SCR_DIV_CODE": "16449",
@@ -181,7 +181,7 @@ class DomesticMarketDataMixin(MarketDataBase):
         """
         js = await self._request_with_token_retry(
             tr_id=constants.DOMESTIC_PRICE_TR,
-            url=f"{constants.BASE}{constants.DOMESTIC_PRICE_URL}",
+            url=self._kis_url(constants.DOMESTIC_PRICE_URL),
             params={
                 "FID_COND_MRKT_DIV_CODE": market,
                 "FID_INPUT_ISCD": code.zfill(6),
@@ -217,7 +217,7 @@ class DomesticMarketDataMixin(MarketDataBase):
     async def _request_orderbook_snapshot(self, code: str, market: str = "J") -> dict:
         return await self._request_with_token_retry(
             tr_id=constants.DOMESTIC_ORDERBOOK_TR,
-            url=f"{constants.BASE}{constants.DOMESTIC_ORDERBOOK_URL}",
+            url=self._kis_url(constants.DOMESTIC_ORDERBOOK_URL),
             params={
                 "FID_COND_MRKT_DIV_CODE": market,
                 "FID_INPUT_ISCD": code.zfill(6),
@@ -288,7 +288,7 @@ class DomesticMarketDataMixin(MarketDataBase):
 
         js = await self._request_with_token_retry(
             tr_id=constants.DOMESTIC_SHORT_SELLING_TR,
-            url=f"{constants.BASE}{constants.DOMESTIC_SHORT_SELLING_URL}",
+            url=self._kis_url(constants.DOMESTIC_SHORT_SELLING_URL),
             params=params,
             api_name="inquire_short_selling",
         )
@@ -322,7 +322,7 @@ class DomesticMarketDataMixin(MarketDataBase):
     ) -> list[dict[str, Any]]:
         js = await self._request_with_token_retry(
             tr_id=constants.INVESTOR_TRADING_TR,
-            url=f"{constants.BASE}{constants.INVESTOR_TRADING_URL}",
+            url=self._kis_url(constants.INVESTOR_TRADING_URL),
             params={
                 "FID_COND_MRKT_DIV_CODE": market,
                 "FID_INPUT_ISCD": code.zfill(6),
@@ -343,7 +343,7 @@ class DomesticMarketDataMixin(MarketDataBase):
         """
         js = await self._request_with_token_retry(
             tr_id=constants.DOMESTIC_PRICE_TR,
-            url=f"{constants.BASE}{constants.DOMESTIC_PRICE_URL}",
+            url=self._kis_url(constants.DOMESTIC_PRICE_URL),
             params={
                 "FID_COND_MRKT_DIV_CODE": market,
                 "FID_INPUT_ISCD": code.zfill(6),
@@ -443,7 +443,7 @@ class DomesticMarketDataMixin(MarketDataBase):
 
             js = await self._request_with_token_retry(
                 tr_id=constants.DOMESTIC_DAILY_CHART_TR,
-                url=f"{constants.BASE}{constants.DOMESTIC_DAILY_CHART_URL}",
+                url=self._kis_url(constants.DOMESTIC_DAILY_CHART_URL),
                 params=params,
                 api_name="inquire_daily_itemchartprice",
             )
@@ -491,7 +491,7 @@ class DomesticMarketDataMixin(MarketDataBase):
 
         js = await self._request_with_token_retry(
             tr_id=constants.DOMESTIC_TIME_DAILY_CHART_TR,
-            url=f"{constants.BASE}{constants.DOMESTIC_TIME_DAILY_CHART_URL}",
+            url=self._kis_url(constants.DOMESTIC_TIME_DAILY_CHART_URL),
             params=params,
             api_name="inquire_time_dailychartprice",
         )
@@ -557,7 +557,7 @@ class DomesticMarketDataMixin(MarketDataBase):
 
         js = await self._request_with_token_retry(
             tr_id=constants.DOMESTIC_MINUTE_CHART_TR,
-            url=f"{constants.BASE}{constants.DOMESTIC_MINUTE_CHART_URL}",
+            url=self._kis_url(constants.DOMESTIC_MINUTE_CHART_URL),
             params=params,
             api_name="inquire_minute_chart",
         )

@@ -55,10 +55,7 @@ _order_cooldown_service: CryptoTradeCooldownService | None = None
 
 def _create_kis_client(*, is_mock: bool) -> KISClient:
     if is_mock:
-        try:
-            return KISClient(is_mock=True)
-        except TypeError:
-            return KISClient()
+        return KISClient(is_mock=True)
     return KISClient()
 
 

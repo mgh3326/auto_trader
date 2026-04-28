@@ -244,10 +244,7 @@ async def _collect_kis_positions(
 
     positions: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
-    try:
-        kis = KISClient(is_mock=is_mock)
-    except TypeError:
-        kis = KISClient()
+    kis = KISClient(is_mock=True) if is_mock else KISClient()
 
     if market_filter in (None, "equity_kr"):
         try:
@@ -1132,7 +1129,9 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
             "When minimum_value is None (default), per-currency thresholds are "
             "applied: KRW=5000, USD=10. Explicit number uses uniform threshold. "
             "Response includes filtered_count, filter_reason, and per-symbol "
-            "price lookup errors."
+            "price lookup errors. "
+            "Use account_mode={'db_simulated','kis_mock','kis_live'} "
+            "(preferred); account_type aliases are deprecated and emit warnings."
         ),
     )
     async def get_holdings(
@@ -1177,6 +1176,8 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
             "positions across all accounts. account_type='real' (default) scans "
             "live brokerage and manual holdings; account_type='paper' scans "
             "paper trading accounts, optionally scoped by paper_account. "
+            "Use account_mode={'db_simulated','kis_mock','kis_live'} "
+            "(preferred); account_type aliases are deprecated and emit warnings. "
             "Returns status='미보유' when no position exists."
         ),
     )
@@ -1242,7 +1243,9 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
             "Query available cash balances from all accounts. "
             "Supports Upbit (KRW), KIS domestic (KRW), KIS overseas (USD), "
             "and paper trading accounts (account='paper' or 'paper:<name>'). "
-            "Returns detailed balance information including orderable amounts."
+            "Returns detailed balance information including orderable amounts. "
+            "Use account_mode={'db_simulated','kis_mock','kis_live'} "
+            "(preferred); account_type aliases are deprecated and emit warnings."
         ),
     )
     async def get_cash_balance(
@@ -1280,7 +1283,9 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
             "Converts USD orderable cash to KRW and can optionally exclude "
             "manual cash. Manual cash is stored via set_user_setting/"
             "get_user_setting with key='manual_cash'; it is not added for "
-            "paper account queries."
+            "paper account queries. "
+            "Use account_mode={'db_simulated','kis_mock','kis_live'} "
+            "(preferred); account_type aliases are deprecated and emit warnings."
         ),
     )
     async def get_available_capital(

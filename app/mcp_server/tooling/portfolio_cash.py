@@ -23,10 +23,9 @@ from app.services.exchange_rate_service import get_usd_krw_rate as _get_usd_krw_
 
 
 def _create_kis_client(*, is_mock: bool) -> KISClient:
-    try:
-        return KISClient(is_mock=is_mock)
-    except TypeError:
-        return KISClient()
+    if is_mock:
+        return KISClient(is_mock=True)
+    return KISClient()
 
 
 async def _call_kis(method: Any, *args: Any, is_mock: bool, **kwargs: Any) -> Any:

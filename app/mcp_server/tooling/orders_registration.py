@@ -54,7 +54,9 @@ def register_order_tools(mcp: FastMCP) -> None:
             "but filled/cancelled/all queries require symbol. "
             "Set account_type='paper' to query the virtual paper-trading "
             "account's trade history instead; pass paper_account to target a "
-            "named paper account (defaults to 'default')."
+            "named paper account (defaults to 'default'). "
+            "Use account_mode={'db_simulated','kis_mock','kis_live'} "
+            "(preferred); account_type aliases are deprecated and emit warnings."
         ),
     )
     async def get_order_history(
@@ -117,6 +119,8 @@ def register_order_tools(mcp: FastMCP) -> None:
             "(no real broker calls, uses PaperTradingService). In paper mode, the "
             "default account is auto-created with 100,000,000 KRW on first use; "
             "pass paper_account to target a named paper account. "
+            "Use account_mode={'db_simulated','kis_mock','kis_live'} "
+            "(preferred); account_type aliases are deprecated and emit warnings. "
             "Journal features (thesis/strategy/FIFO close) ARE supported in paper mode. "
             "defensive_trim=True enables a sell/limit-only floor bypass path. "
             "ROB-164/ROB-166 defensive_trim requires ALL of: (a) side='sell', "

@@ -41,6 +41,8 @@ __all__ = [
 
 
 class _KISSettingsView:
+    """Expose live or KIS mock credentials without cross-account fallback."""
+
     def __init__(self, *, is_mock: bool) -> None:
         self._is_mock = is_mock
 
@@ -64,6 +66,12 @@ class _KISSettingsView:
         if self._is_mock:
             return settings.kis_mock_account_no
         return settings.kis_account_no
+
+    @property
+    def kis_base_url(self) -> str:
+        if self._is_mock:
+            return settings.kis_mock_base_url
+        return settings.kis_base_url
 
     @property
     def kis_access_token(self) -> str | None:

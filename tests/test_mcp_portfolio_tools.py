@@ -90,6 +90,9 @@ async def test_get_cash_balance_kis_mock_passes_is_mock(monkeypatch):
     calls: list[tuple[str, bool]] = []
 
     class MockKISClient:
+        def __init__(self, *, is_mock: bool = False) -> None:
+            self.is_mock = is_mock
+
         async def inquire_integrated_margin(self, is_mock=False):
             calls.append(("integrated", is_mock))
             return {
