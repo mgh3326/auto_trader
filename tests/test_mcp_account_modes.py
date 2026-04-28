@@ -91,9 +91,7 @@ async def test_cancel_order_kis_mock_fails_closed_when_config_missing(monkeypatc
         captured.append(kwargs)
         return {"success": True, "order_id": kwargs["order_id"]}
 
-    monkeypatch.setattr(
-        orders_registration, "cancel_order_impl", fake_cancel_impl
-    )
+    monkeypatch.setattr(orders_registration, "cancel_order_impl", fake_cancel_impl)
 
     result = await mcp.tools["cancel_order"](
         order_id="test-order",
@@ -143,9 +141,7 @@ async def test_modify_order_kis_mock_fails_closed_when_config_missing(monkeypatc
         captured.append(kwargs)
         return {"success": True, "order_id": kwargs["order_id"]}
 
-    monkeypatch.setattr(
-        orders_registration, "modify_order_impl", fake_modify_impl
-    )
+    monkeypatch.setattr(orders_registration, "modify_order_impl", fake_modify_impl)
 
     result = await mcp.tools["modify_order"](
         order_id="test-order",
@@ -199,9 +195,7 @@ async def test_cancel_order_kis_mock_passes_is_mock_to_impl(monkeypatch):
         captured.append(kwargs)
         return {"success": True, "order_id": kwargs["order_id"]}
 
-    monkeypatch.setattr(
-        orders_registration, "cancel_order_impl", fake_cancel_impl
-    )
+    monkeypatch.setattr(orders_registration, "cancel_order_impl", fake_cancel_impl)
 
     result = await mcp.tools["cancel_order"](
         order_id="test-order",
@@ -209,7 +203,9 @@ async def test_cancel_order_kis_mock_passes_is_mock_to_impl(monkeypatch):
     )
 
     assert result["success"] is True
-    assert captured == [{"order_id": "test-order", "symbol": None, "market": None, "is_mock": True}]
+    assert captured == [
+        {"order_id": "test-order", "symbol": None, "market": None, "is_mock": True}
+    ]
 
 
 @pytest.mark.asyncio
@@ -231,9 +227,7 @@ async def test_modify_order_kis_mock_passes_is_mock_to_impl(monkeypatch):
         captured.append(kwargs)
         return {"success": True, "order_id": kwargs["order_id"]}
 
-    monkeypatch.setattr(
-        orders_registration, "modify_order_impl", fake_modify_impl
-    )
+    monkeypatch.setattr(orders_registration, "modify_order_impl", fake_modify_impl)
 
     result = await mcp.tools["modify_order"](
         order_id="test-order",
@@ -244,12 +238,14 @@ async def test_modify_order_kis_mock_passes_is_mock_to_impl(monkeypatch):
     )
 
     assert result["success"] is True
-    assert captured == [{
-        "order_id": "test-order",
-        "symbol": "005930",
-        "market": None,
-        "new_price": 70000.0,
-        "new_quantity": None,
-        "dry_run": True,
-        "is_mock": True,
-    }]
+    assert captured == [
+        {
+            "order_id": "test-order",
+            "symbol": "005930",
+            "market": None,
+            "new_price": 70000.0,
+            "new_quantity": None,
+            "dry_run": True,
+            "is_mock": True,
+        }
+    ]

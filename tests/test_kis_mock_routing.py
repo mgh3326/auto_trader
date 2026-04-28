@@ -254,7 +254,6 @@ async def test_get_order_history_pending_us_mock_surfaces_unsupported(monkeypatc
 
     assert result["orders"] == []
     assert any(
-        e.get("market") == "equity_us"
-        and "mock" in (e.get("error") or "").lower()
+        e.get("market") == "equity_us" and "mock" in (e.get("error") or "").lower()
         for e in result["errors"]
     )
