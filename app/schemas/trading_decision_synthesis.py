@@ -136,8 +136,8 @@ def advisory_from_runner_result(payload: dict[str, Any]) -> AdvisoryEvidence:
             warning_items.append(str(value))
 
     return AdvisoryEvidence(
-        advisory_only=payload.get("advisory_only"),
-        execution_allowed=payload.get("execution_allowed"),
+        advisory_only=payload.get("advisory_only", True),
+        execution_allowed=payload.get("execution_allowed", False),
         advisory_action=str(
             payload.get("decision") or payload.get("advisory_action") or "Unknown"
         ),
