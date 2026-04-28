@@ -100,6 +100,14 @@ async def test_get_cash_balance_kis_mock_passes_is_mock(monkeypatch):
                 "stck_cash100_max_ord_psbl_amt": "80000.0",
             }
 
+        async def inquire_domestic_cash_balance(self, is_mock=False):
+            calls.append(("domestic_cash", is_mock))
+            return {
+                "dnca_tot_amt": "100000.0",
+                "stck_cash_ord_psbl_amt": "80000.0",
+                "raw": {},
+            }
+
         async def inquire_korea_orders(self, is_mock=False):
             calls.append(("kr_orders", is_mock))
             return []

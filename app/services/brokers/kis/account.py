@@ -614,6 +614,12 @@ class AccountClient:
             - usd_ord_psbl_amt: 달러 주문가능금액
             - usd_balance: 달러 예수금
         """
+        if is_mock:
+            raise RuntimeError(
+                "KIS integrated margin is not supported in mock mode; "
+                "use inquire_domestic_cash_balance(is_mock=True) instead."
+            )
+
         await self._parent._ensure_token()
 
         cano, acnt_prdt_cd = self._resolve_account_parts()

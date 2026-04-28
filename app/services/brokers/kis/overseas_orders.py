@@ -287,6 +287,12 @@ class OverseasOrderClient:
             - ord_dt: 주문일자
             - ord_tmd: 주문시각
         """
+        if is_mock:
+            raise RuntimeError(
+                "KIS overseas pending-orders inquiry (TTTS3018R) is not "
+                "available in mock mode."
+            )
+
         await self._parent._ensure_token()
 
         # 계좌번호 확인

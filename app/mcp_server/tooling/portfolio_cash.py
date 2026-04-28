@@ -179,15 +179,27 @@ async def get_cash_balance_impl(
 
         if account_filter is None or account_filter in ("kis", "kis_domestic"):
             try:
-                margin_data = await _call_kis(
-                    kis.inquire_integrated_margin,
-                    is_mock=is_mock,
-                )
-                domestic_cash = extract_domestic_cash_summary_from_integrated_margin(
-                    margin_data
-                )
-                dncl_amt = float(domestic_cash.get("balance", 0) or 0)
-                raw_orderable = float(domestic_cash.get("orderable", 0) or 0)
+                if is_mock:
+                    cash_summary = await _call_kis(
+                        kis.inquire_domestic_cash_balance,
+                        is_mock=is_mock,
+                    )
+                    dncl_amt = float(cash_summary.get("dnca_tot_amt", 0) or 0)
+                    raw_orderable = float(
+                        cash_summary.get("stck_cash_ord_psbl_amt", 0) or 0
+                    )
+                else:
+                    margin_data = await _call_kis(
+                        kis.inquire_integrated_margin,
+                        is_mock=is_mock,
+                    )
+                    domestic_cash = (
+                        extract_domestic_cash_summary_from_integrated_margin(
+                            margin_data
+                        )
+                    )
+                    dncl_amt = float(domestic_cash.get("balance", 0) or 0)
+                    raw_orderable = float(domestic_cash.get("orderable", 0) or 0)
                 orderable = raw_orderable
 
                 try:
@@ -222,56 +234,65 @@ async def get_cash_balance_impl(
                 errors.append({"source": "kis", "market": "kr", "error": str(exc)})
 
         if account_filter is None or account_filter in ("kis", "kis_overseas"):
-            try:
-                overseas_margin_data = await _call_kis(
-                    kis.inquire_overseas_margin,
-                    is_mock=is_mock,
-                )
-                usd_margin = select_usd_row_for_us_order(overseas_margin_data)
-                if usd_margin is None:
-                    raise RuntimeError(
-                        "USD margin data not found in KIS overseas margin"
-                    )
-
-                balance = to_float(
-                    usd_margin.get("frcr_dncl_amt1")
-                    or usd_margin.get("frcr_dncl_amt_2"),
-                    default=0.0,
-                )
-                raw_orderable = extract_usd_orderable_from_row(usd_margin)
-                orderable = raw_orderable
-
-                try:
-                    pending_usd = await _get_kis_overseas_pending_buy_amount_usd(
-                        kis,
-                        is_mock=is_mock,
-                    )
-                    orderable = max(0.0, raw_orderable - pending_usd)
-                except Exception as exc:
-                    logger.warning(
-                        "USD pending order deduction failed, using raw orderable: %s",
-                        exc,
-                    )
-
-                accounts.append(
+            if is_mock:
+                errors.append(
                     {
-                        "account": "kis_overseas",
-                        "account_name": "기본 계좌",
-                        "broker": "kis",
-                        "currency": "USD",
-                        "balance": balance,
-                        "orderable": orderable,
-                        "exchange_rate": None,
-                        "formatted": f"${balance:.2f} USD",
+                        "source": "kis",
+                        "market": "us",
+                        "error": "mock_unsupported: KIS overseas margin is not available in mock mode",
                     }
                 )
-                total_usd += balance
-            except Exception as exc:
-                if strict_mode:
-                    raise RuntimeError(
-                        f"KIS overseas cash balance query failed: {exc}"
-                    ) from exc
-                errors.append({"source": "kis", "market": "us", "error": str(exc)})
+            else:
+                try:
+                    overseas_margin_data = await _call_kis(
+                        kis.inquire_overseas_margin,
+                        is_mock=is_mock,
+                    )
+                    usd_margin = select_usd_row_for_us_order(overseas_margin_data)
+                    if usd_margin is None:
+                        raise RuntimeError(
+                            "USD margin data not found in KIS overseas margin"
+                        )
+
+                    balance = to_float(
+                        usd_margin.get("frcr_dncl_amt1")
+                        or usd_margin.get("frcr_dncl_amt_2"),
+                        default=0.0,
+                    )
+                    raw_orderable = extract_usd_orderable_from_row(usd_margin)
+                    orderable = raw_orderable
+
+                    try:
+                        pending_usd = await _get_kis_overseas_pending_buy_amount_usd(
+                            kis,
+                            is_mock=is_mock,
+                        )
+                        orderable = max(0.0, raw_orderable - pending_usd)
+                    except Exception as exc:
+                        logger.warning(
+                            "USD pending order deduction failed, using raw orderable: %s",
+                            exc,
+                        )
+
+                    accounts.append(
+                        {
+                            "account": "kis_overseas",
+                            "account_name": "기본 계좌",
+                            "broker": "kis",
+                            "currency": "USD",
+                            "balance": balance,
+                            "orderable": orderable,
+                            "exchange_rate": None,
+                            "formatted": f"${balance:.2f} USD",
+                        }
+                    )
+                    total_usd += balance
+                except Exception as exc:
+                    if strict_mode:
+                        raise RuntimeError(
+                            f"KIS overseas cash balance query failed: {exc}"
+                        ) from exc
+                    errors.append({"source": "kis", "market": "us", "error": str(exc)})
 
     return {
         "accounts": accounts,

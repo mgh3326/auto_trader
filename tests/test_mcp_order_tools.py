@@ -1289,7 +1289,10 @@ async def test_cancel_order_kis_domestic_auto_lookup(monkeypatch):
     received_orgnos: list[str | None] = []
 
     class MockKISClient:
-        async def inquire_korea_orders(self):
+        def __init__(self, *, is_mock: bool = False) -> None:
+            self.is_mock = is_mock
+
+        async def inquire_korea_orders(self, *, is_mock=False):
             return [
                 {
                     "ord_no": "12345",
@@ -1310,6 +1313,8 @@ async def test_cancel_order_kis_domestic_auto_lookup(monkeypatch):
             price,
             order_type,
             krx_fwdg_ord_orgno=None,
+            *,
+            is_mock=False,
         ):
             received_orgnos.append(krx_fwdg_ord_orgno)
             return {"ord_no": order_number, "ord_tmd": "2024-01-01 10:00:00"}
@@ -1763,7 +1768,10 @@ async def test_cancel_order_kr_uppercase_fields(monkeypatch):
     received_orgnos: list[str | None] = []
 
     class FakeKIS:
-        async def inquire_korea_orders(self):
+        def __init__(self, *, is_mock: bool = False) -> None:
+            self.is_mock = is_mock
+
+        async def inquire_korea_orders(self, *, is_mock=False):
             return [
                 {
                     "ORD_NO": "KR-OD-UPPER",
@@ -1783,11 +1791,13 @@ async def test_cancel_order_kr_uppercase_fields(monkeypatch):
             price,
             order_type,
             krx_fwdg_ord_orgno=None,
+            *,
+            is_mock=False,
         ):
             received_orgnos.append(krx_fwdg_ord_orgno)
             return {"odno": "KR-OD-UPPER", "ord_tmd": "093000"}
 
-    _patch_kis_client(monkeypatch, lambda: FakeKIS())
+    _patch_kis_client(monkeypatch, FakeKIS)
 
     result = await tools["cancel_order"](order_id="KR-OD-UPPER", market="kr")
 
@@ -1804,7 +1814,10 @@ async def test_modify_order_kr_uppercase_fields(monkeypatch):
     received_orgnos: list[str | None] = []
 
     class FakeKIS:
-        async def inquire_korea_orders(self):
+        def __init__(self, *, is_mock: bool = False) -> None:
+            self.is_mock = is_mock
+
+        async def inquire_korea_orders(self, *, is_mock=False):
             return [
                 {
                     "ORD_NO": "KR-OD-UPPER",
@@ -1823,11 +1836,13 @@ async def test_modify_order_kr_uppercase_fields(monkeypatch):
             quantity,
             price,
             krx_fwdg_ord_orgno=None,
+            *,
+            is_mock=False,
         ):
             received_orgnos.append(krx_fwdg_ord_orgno)
             return {"odno": "KR-OD-UPPER"}
 
-    _patch_kis_client(monkeypatch, lambda: FakeKIS())
+    _patch_kis_client(monkeypatch, FakeKIS)
 
     result = await tools["modify_order"](
         order_id="KR-OD-UPPER",
@@ -1882,7 +1897,10 @@ async def test_modify_order_button_flow_uses_kr_path_and_executes_modify(monkeyp
     received = {}
 
     class FakeKIS:
-        async def inquire_korea_orders(self):
+        def __init__(self, *, is_mock: bool = False) -> None:
+            self.is_mock = is_mock
+
+        async def inquire_korea_orders(self, *, is_mock=False):
             return [
                 {
                     "odno": "KR-BTN-1",
@@ -1894,11 +1912,18 @@ async def test_modify_order_button_flow_uses_kr_path_and_executes_modify(monkeyp
                 }
             ]
 
-        async def inquire_overseas_orders(self, exchange_code="NASD", is_mock=False):
+        async def inquire_overseas_orders(self, exchange_code="NASD", *, is_mock=False):
             return []
 
         async def modify_korea_order(
-            self, order_id, symbol, quantity, price, krx_fwdg_ord_orgno=None
+            self,
+            order_id,
+            symbol,
+            quantity,
+            price,
+            krx_fwdg_ord_orgno=None,
+            *,
+            is_mock=False,
         ):
             received.update(
                 {
@@ -1911,7 +1936,7 @@ async def test_modify_order_button_flow_uses_kr_path_and_executes_modify(monkeyp
             )
             return {"odno": "KR-BTN-2"}
 
-    _patch_kis_client(monkeypatch, lambda: FakeKIS())
+    _patch_kis_client(monkeypatch, FakeKIS)
 
     result = await tools["modify_order"](
         order_id="KR-BTN-1",

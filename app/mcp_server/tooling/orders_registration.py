@@ -242,15 +242,47 @@ def register_order_tools(mcp: FastMCP) -> None:
         name="cancel_order",
         description=(
             "Cancel a pending order. Supports Upbit (crypto) and KIS (KR/US equities). "
-            "For KIS US orders, resolves exchange/order details from symbol lookup and order history when possible."
+            "For KIS US orders, resolves exchange/order details from symbol lookup and order history when possible. "
+            "Use account_mode={'kis_live','kis_mock'} to choose KIS routing; "
+            "account_type aliases are deprecated and emit warnings. "
+            "account_mode='kis_mock' fails closed if KIS_MOCK_ENABLED, "
+            "KIS_MOCK_APP_KEY, KIS_MOCK_APP_SECRET, or KIS_MOCK_ACCOUNT_NO "
+            "are missing."
         ),
     )
     async def cancel_order(
         order_id: str,
         symbol: str | None = None,
         market: str | None = None,
+        account_mode: str | None = None,
+        account_type: str | None = None,
     ):
-        return await cancel_order_impl(order_id=order_id, symbol=symbol, market=market)
+        routing = normalize_account_mode(
+            account_mode=account_mode,
+            account_type=account_type,
+        )
+        if routing.is_db_simulated:
+            return apply_account_routing_metadata(
+                {
+                    "success": False,
+                    "error": "cancel_order is not supported for db_simulated",
+                    "order_id": order_id,
+                },
+                routing,
+            )
+        if routing.is_kis_mock:
+            config_error = _kis_mock_config_error()
+            if config_error:
+                return apply_account_routing_metadata(config_error, routing)
+        return apply_account_routing_metadata(
+            await cancel_order_impl(
+                order_id=order_id,
+                symbol=symbol,
+                market=market,
+                is_mock=routing.is_kis_mock,
+            ),
+            routing,
+        )
 
     @mcp.tool(
         name="modify_order",
@@ -259,7 +291,12 @@ def register_order_tools(mcp: FastMCP) -> None:
             "Supports Upbit (crypto) and KIS (KR/US equities). "
             "dry_run=True by default for safety. "
             "Upbit: only limit orders in wait state. "
-            "KIS: uses API modify endpoint."
+            "KIS: uses API modify endpoint. "
+            "Use account_mode={'kis_live','kis_mock'} to choose KIS routing; "
+            "account_type aliases are deprecated and emit warnings. "
+            "account_mode='kis_mock' fails closed if KIS_MOCK_ENABLED, "
+            "KIS_MOCK_APP_KEY, KIS_MOCK_APP_SECRET, or KIS_MOCK_ACCOUNT_NO "
+            "are missing."
         ),
     )
     async def modify_order(
@@ -270,15 +307,39 @@ def register_order_tools(mcp: FastMCP) -> None:
         new_quantity: float | None = None,
         dry_run: bool = True,
         reason: str = "",
+        account_mode: str | None = None,
+        account_type: str | None = None,
     ):
         del reason
-        return await modify_order_impl(
-            order_id=order_id,
-            symbol=symbol,
-            market=market,
-            new_price=new_price,
-            new_quantity=new_quantity,
-            dry_run=dry_run,
+        routing = normalize_account_mode(
+            account_mode=account_mode,
+            account_type=account_type,
+        )
+        if routing.is_db_simulated:
+            return apply_account_routing_metadata(
+                {
+                    "success": False,
+                    "error": "modify_order is not supported for db_simulated",
+                    "order_id": order_id,
+                    "symbol": symbol,
+                },
+                routing,
+            )
+        if routing.is_kis_mock:
+            config_error = _kis_mock_config_error()
+            if config_error:
+                return apply_account_routing_metadata(config_error, routing)
+        return apply_account_routing_metadata(
+            await modify_order_impl(
+                order_id=order_id,
+                symbol=symbol,
+                market=market,
+                new_price=new_price,
+                new_quantity=new_quantity,
+                dry_run=dry_run,
+                is_mock=routing.is_kis_mock,
+            ),
+            routing,
         )
 
 

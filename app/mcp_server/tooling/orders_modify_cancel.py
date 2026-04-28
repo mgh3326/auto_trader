@@ -23,6 +23,12 @@ from app.services.brokers.kis.overseas_orders import _normalize_kis_exchange_cod
 from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
 
 
+def _create_kis_client(*, is_mock: bool) -> KISClient:
+    if is_mock:
+        return KISClient(is_mock=True)
+    return KISClient()
+
+
 def _map_upbit_state(state: str, filled: float, remaining: float) -> str:
     if state == "wait":
         return "pending"
@@ -440,12 +446,14 @@ async def _cancel_upbit(order_id: str) -> dict[str, Any]:
 async def _cancel_kis_domestic(
     order_id: str,
     symbol: str | None,
+    *,
+    is_mock: bool = False,
 ) -> dict[str, Any]:
     """Cancel a KIS domestic (Korean equity) order."""
     if not symbol:
         try:
-            kis = KISClient()
-            open_orders = await kis.inquire_korea_orders()
+            kis = _create_kis_client(is_mock=is_mock)
+            open_orders = await kis.inquire_korea_orders(is_mock=is_mock)
             for order in open_orders:
                 if (
                     str(_get_kis_field(order, "odno", "ODNO", "ord_no", "ORD_NO"))
@@ -468,13 +476,13 @@ async def _cancel_kis_domestic(
         }
 
     try:
-        kis = KISClient()
+        kis = _create_kis_client(is_mock=is_mock)
         side_code = "02"
         price = 0
         quantity = 1
         krx_fwdg_ord_orgno = None
 
-        open_orders = await kis.inquire_korea_orders()
+        open_orders = await kis.inquire_korea_orders(is_mock=is_mock)
         for order in open_orders:
             if (
                 str(_get_kis_field(order, "odno", "ODNO", "ord_no", "ORD_NO"))
@@ -510,6 +518,7 @@ async def _cancel_kis_domestic(
             price=price,
             order_type=order_type_str,
             krx_fwdg_ord_orgno=krx_fwdg_ord_orgno,
+            is_mock=is_mock,
         )
         return {
             "success": True,
@@ -529,10 +538,22 @@ async def _cancel_kis_domestic(
 async def _cancel_kis_overseas(
     order_id: str,
     symbol: str | None,
+    *,
+    is_mock: bool = False,
 ) -> dict[str, Any]:
     """Cancel a KIS overseas (US equity) order."""
+    if is_mock:
+        return {
+            "success": False,
+            "order_id": order_id,
+            "error": "kis_mock: overseas pending-orders inquiry (TTTS3018R) is "
+            "not available in mock mode",
+            "market": _normalize_market_type_to_external("equity_us"),
+            "mock_unsupported": True,
+        }
+
     try:
-        kis = KISClient()
+        kis = _create_kis_client(is_mock=is_mock)
         (
             target_order,
             target_exchange,
@@ -658,6 +679,8 @@ async def cancel_order_impl(
     order_id: str,
     symbol: str | None = None,
     market: str | None = None,
+    *,
+    is_mock: bool = False,
 ) -> dict[str, Any]:
     order_id, symbol, market_type = _validate_cancel_inputs(order_id, symbol, market)
 
@@ -665,9 +688,9 @@ async def cancel_order_impl(
         if market_type == "crypto":
             return await _cancel_upbit(order_id)
         if market_type == "equity_kr":
-            return await _cancel_kis_domestic(order_id, symbol)
+            return await _cancel_kis_domestic(order_id, symbol, is_mock=is_mock)
         if market_type == "equity_us":
-            return await _cancel_kis_overseas(order_id, symbol)
+            return await _cancel_kis_overseas(order_id, symbol, is_mock=is_mock)
         return {
             "success": False,
             "order_id": order_id,
@@ -827,11 +850,13 @@ async def _modify_kis_domestic(
     new_price: float | None,
     new_quantity: float | None,
     dry_run: bool,
+    *,
+    is_mock: bool = False,
 ) -> dict[str, Any]:
     """Modify a KIS domestic (Korean equity) order."""
     try:
-        kis = KISClient()
-        open_orders = await kis.inquire_korea_orders()
+        kis = _create_kis_client(is_mock=is_mock)
+        open_orders = await kis.inquire_korea_orders(is_mock=is_mock)
         target_order = None
         for order in open_orders:
             if (
@@ -884,6 +909,7 @@ async def _modify_kis_domestic(
             final_quantity,
             final_price,
             krx_fwdg_ord_orgno=krx_fwdg_ord_orgno,
+            is_mock=is_mock,
         )
         changes = {
             "price": {"from": original_price, "to": final_price}
@@ -939,10 +965,25 @@ async def _modify_kis_overseas(
     new_price: float | None,
     new_quantity: float | None,
     dry_run: bool,
+    *,
+    is_mock: bool = False,
 ) -> dict[str, Any]:
     """Modify a KIS overseas (US equity) order."""
+    if is_mock:
+        return {
+            "success": False,
+            "status": "failed",
+            "order_id": order_id,
+            "symbol": normalized_symbol,
+            "market": _normalize_market_type_to_external("equity_us"),
+            "error": "kis_mock: overseas pending-orders inquiry (TTTS3018R) is "
+            "not available in mock mode",
+            "mock_unsupported": True,
+            "dry_run": dry_run,
+        }
+
     try:
-        kis = KISClient()
+        kis = _create_kis_client(is_mock=is_mock)
         (
             target_order,
             target_exchange,
@@ -1052,6 +1093,8 @@ async def modify_order_impl(
     new_price: float | None = None,
     new_quantity: float | None = None,
     dry_run: bool = True,
+    *,
+    is_mock: bool = False,
 ) -> dict[str, Any]:
     order_id, symbol, market_type, normalized_symbol = _validate_modify_inputs(
         order_id, symbol, market, new_price, new_quantity
@@ -1084,6 +1127,7 @@ async def modify_order_impl(
             new_price,
             new_quantity,
             dry_run,
+            is_mock=is_mock,
         )
     if market_type == "equity_us":
         return await _modify_kis_overseas(
@@ -1093,6 +1137,7 @@ async def modify_order_impl(
             new_price,
             new_quantity,
             dry_run,
+            is_mock=is_mock,
         )
 
     return {
