@@ -405,8 +405,17 @@ def pytest_collection_modifyitems(config, items):
 # Database fixtures for integration tests
 @pytest_asyncio.fixture
 async def db_session():
-    """Create a database session for testing."""
-    from app.core.db import AsyncSessionLocal
+    """Create a database session for testing with schema setup."""
+    from sqlalchemy import text
+
+    from app.core.db import AsyncSessionLocal, engine
+    from app.models.base import Base
+
+    async with engine.begin() as conn:
+        # Create required schemas first (PostgreSQL-specific)
+        for schema in ["paper", "research", "review"]:
+            await conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
+        await conn.run_sync(Base.metadata.create_all)
 
     async with AsyncSessionLocal() as session:
         yield session
@@ -502,6 +511,7 @@ def research_run_candidate_factory():
     """Factory fixture for creating research run candidates."""
 
     async def _factory(
+        db_session,
         research_run_id,
         symbol="005930",
         instrument_type=None,
@@ -524,6 +534,8 @@ def research_run_candidate_factory():
             proposed_qty=proposed_qty,
             payload=payload or {},
         )
+        db_session.add(cand)
+        await db_session.flush()
         return cand
 
     return _factory

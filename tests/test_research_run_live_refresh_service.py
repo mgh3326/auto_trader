@@ -3,19 +3,15 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-pytestmark = pytest.mark.asyncio
-
 from app.schemas.research_run_decision_session import LiveRefreshSnapshot
-from app.services.research_run_live_refresh_service import (
-    LiveRefreshTimeout,
-    build_live_refresh_snapshot,
-)
+from app.services.research_run_live_refresh_service import build_live_refresh_snapshot
+
+pytestmark = pytest.mark.asyncio
 
 
 @pytest.mark.unit

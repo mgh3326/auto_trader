@@ -167,7 +167,9 @@ class ProposalPayload(BaseModel):
     research_run_candidate_id: int
     refreshed_at: datetime
     reconciliation_status: ReconClassificationLiteral | None = None
+    reconciliation_summary: str | None = None
     nxt_classification: NxtClassificationLiteral | None = None
+    nxt_summary: str | None = None
     nxt_eligible: bool | None = None
     venue_eligibility: dict[str, bool | None] = Field(default_factory=dict)
     live_quote: LiveRefreshQuote | None = None

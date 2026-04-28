@@ -98,7 +98,7 @@ async def create_decision_from_research_run(
         session_uuid=result.session.session_uuid,
         session_url=session_url,
         status=result.session.status,
-        research_run_uuid=result.research_run_uuid,
+        research_run_uuid=result.research_run.run_uuid,
         refreshed_at=result.refreshed_at,
         proposal_count=result.proposal_count,
         reconciliation_count=result.reconciliation_count,

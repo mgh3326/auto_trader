@@ -57,7 +57,6 @@ async def build_live_refresh_snapshot(
         LiveRefreshTimeout: If the refresh exceeds timeout_seconds
     """
     from app.mcp_server.tooling.orders_history import get_order_history_impl
-    from app.services.kr_symbol_universe_service import is_nxt_eligible
     from app.services.market_data import get_orderbook, get_quote
 
     # Collect unique symbols from candidates and reconciliations
@@ -125,12 +124,29 @@ async def build_live_refresh_snapshot(
         if run.market_scope != "kr":
             return
         try:
-            nxt_eligible = await asyncio.wait_for(
-                is_nxt_eligible(symbol, db=db),
-                timeout=per_call_timeout,
+            # Query KRSymbolUniverse directly to distinguish missing rows from non-NXT
+            from sqlalchemy import select
+
+            from app.models.kr_symbol_universe import KRSymbolUniverse
+
+            stmt = select(KRSymbolUniverse).where(
+                KRSymbolUniverse.symbol == symbol,
+                KRSymbolUniverse.is_active.is_(True),
             )
+            result = await db.execute(stmt)
+            row = result.scalar_one_or_none()
+
+            if row is None:
+                # Symbol is missing from universe - omit from kr_universe_by_symbol
+                # and emit warning for fail-closed handling (ROB-29)
+                warnings.append(f"missing_kr_universe:{symbol}")
+                return
+
+            # Symbol exists - include in snapshot with its NXT eligibility
             kr_universe_by_symbol[symbol] = KrUniverseSnapshot(
-                nxt_eligible=nxt_eligible,
+                nxt_eligible=row.nxt_eligible,
+                name=row.name,
+                exchange=row.exchange,
             )
         except Exception:
             warnings.append(f"missing_kr_universe:{symbol}")
@@ -180,9 +196,14 @@ async def build_live_refresh_snapshot(
     except Exception:
         warnings.append("pending_orders_fetch_failed")
 
-    # Fetch cash balances and holdings (simplified - mock implementation)
+    # Fetch cash balances and holdings (read-only fetches per plan §4.3)
+    # For now, emit explicit warnings as these are not yet implemented
     cash_balances: dict[str, Decimal] = {}
     holdings_by_symbol: dict[str, Decimal] = {}
+
+    # Emit warnings for unavailable cash/holdings data
+    warnings.append("cash_unavailable")
+    warnings.append("holdings_unavailable")
 
     # Set refreshed_at after all fetches complete
     refreshed_at = now()

@@ -8,8 +8,6 @@ from uuid import UUID
 
 import pytest
 
-pytestmark = pytest.mark.asyncio
-
 from app.schemas.research_run_decision_session import (
     KrUniverseSnapshot,
     LiveRefreshQuote,
@@ -24,11 +22,13 @@ from app.services.research_run_decision_session_service import (
     resolve_research_run,
 )
 
+pytestmark = pytest.mark.asyncio
+
 
 @pytest.mark.unit
 async def test_resolve_research_run_by_uuid(db_session, user, research_run_factory):
     """Test resolving a research run by UUID."""
-    run = await research_run_factory(user_id=user.id)
+    run = await research_run_factory(db_session, user_id=user.id)
 
     selector = ResearchRunSelector(run_uuid=run.run_uuid)
     resolved = await resolve_research_run(
@@ -44,10 +44,10 @@ async def test_resolve_research_run_by_criteria(db_session, user, research_run_f
     """Test resolving latest research run by market_scope and stage."""
     # Create two runs, the second one should be latest
     await research_run_factory(
-        user_id=user.id, market_scope="kr", stage="preopen", status="open"
+        db_session, user_id=user.id, market_scope="kr", stage="preopen", status="open"
     )
     latest = await research_run_factory(
-        user_id=user.id, market_scope="kr", stage="preopen", status="open"
+        db_session, user_id=user.id, market_scope="kr", stage="preopen", status="open"
     )
 
     selector = ResearchRunSelector(market_scope="kr", stage="preopen")
@@ -74,7 +74,7 @@ async def test_resolve_research_run_user_isolation(
     db_session, user, other_user, research_run_factory
 ):
     """Test that users cannot access other users' research runs."""
-    run = await research_run_factory(user_id=user.id)
+    run = await research_run_factory(db_session, user_id=user.id)
 
     selector = ResearchRunSelector(run_uuid=run.run_uuid)
 
@@ -87,7 +87,7 @@ async def test_create_session_empty_candidates_raises(
     db_session, user, research_run_factory
 ):
     """Test that EmptyResearchRunError is raised when candidates list is empty."""
-    run = await research_run_factory(user_id=user.id, candidates=[])
+    run = await research_run_factory(db_session, user_id=user.id, candidates=[])
 
     snapshot = LiveRefreshSnapshot(
         refreshed_at=datetime.now(UTC),
@@ -113,8 +113,10 @@ async def test_create_session_not_implemented_tradingagents(
     db_session, user, research_run_factory, research_run_candidate_factory
 ):
     """Test that NotImplementedError is raised for TradingAgents in v1."""
-    run = await research_run_factory(user_id=user.id)
-    await research_run_candidate_factory(research_run_id=run.id, symbol="000660")
+    run = await research_run_factory(db_session, user_id=user.id)
+    await research_run_candidate_factory(
+        db_session, research_run_id=run.id, symbol="000660"
+    )
 
     snapshot = LiveRefreshSnapshot(
         refreshed_at=datetime.now(UTC),
@@ -143,8 +145,9 @@ async def test_create_session_happy_path_kr(
     db_session, user, research_run_factory, research_run_candidate_factory
 ):
     """Test happy path for KR market with NXT classification."""
-    run = await research_run_factory(user_id=user.id, market_scope="kr")
-    candidate = await research_run_candidate_factory(
+    run = await research_run_factory(db_session, user_id=user.id, market_scope="kr")
+    await research_run_candidate_factory(
+        db_session,
         research_run_id=run.id,
         symbol="000660",
         candidate_kind="proposed",
@@ -195,8 +198,9 @@ async def test_create_session_us_skips_nxt(
     db_session, user, research_run_factory, research_run_candidate_factory
 ):
     """Test that US market skips NXT classification."""
-    run = await research_run_factory(user_id=user.id, market_scope="us")
+    run = await research_run_factory(db_session, user_id=user.id, market_scope="us")
     await research_run_candidate_factory(
+        db_session,
         research_run_id=run.id,
         symbol="AAPL",
         candidate_kind="proposed",
@@ -231,8 +235,9 @@ async def test_create_session_crypto_skips_nxt(
     db_session, user, research_run_factory, research_run_candidate_factory
 ):
     """Test that crypto market skips NXT classification."""
-    run = await research_run_factory(user_id=user.id, market_scope="crypto")
+    run = await research_run_factory(db_session, user_id=user.id, market_scope="crypto")
     await research_run_candidate_factory(
+        db_session,
         research_run_id=run.id,
         symbol="KRW-BTC",
         candidate_kind="proposed",
@@ -269,8 +274,9 @@ async def test_missing_kr_universe_fail_closed(
     db_session, user, research_run_factory, research_run_candidate_factory
 ):
     """Test ROB-29 fail-closed: KR pending without universe row gets data_mismatch_requires_review."""
-    run = await research_run_factory(user_id=user.id, market_scope="kr")
+    run = await research_run_factory(db_session, user_id=user.id, market_scope="kr")
     await research_run_candidate_factory(
+        db_session,
         research_run_id=run.id,
         symbol="000660",
         candidate_kind="pending_order",
@@ -313,14 +319,14 @@ async def test_deterministic_proposal_order(
     db_session, user, research_run_factory, research_run_candidate_factory
 ):
     """Test that proposals are created in deterministic order (by candidate.id)."""
-    run = await research_run_factory(user_id=user.id)
+    run = await research_run_factory(db_session, user_id=user.id)
 
     # Create candidates in reverse order
     c2 = await research_run_candidate_factory(
-        research_run_id=run.id, symbol="000660", candidate_kind="proposed"
+        db_session, research_run_id=run.id, symbol="000660", candidate_kind="proposed"
     )
     c1 = await research_run_candidate_factory(
-        research_run_id=run.id, symbol="005930", candidate_kind="proposed"
+        db_session, research_run_id=run.id, symbol="005930", candidate_kind="proposed"
     )
 
     snapshot = LiveRefreshSnapshot(
