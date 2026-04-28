@@ -36,8 +36,8 @@ async def test_cash_balance_mock_uses_domestic_cash_not_integrated_margin(monkey
 
     accounts = {a["account"]: a for a in result["accounts"]}
     assert "kis_domestic" in accounts
-    assert accounts["kis_domestic"]["balance"] == 1000.0
-    assert accounts["kis_domestic"]["orderable"] == 900.0
+    assert accounts["kis_domestic"]["balance"] == pytest.approx(1000.0)
+    assert accounts["kis_domestic"]["orderable"] == pytest.approx(900.0)
     # Overseas should be reported as a mock_unsupported error, not silent zero.
     assert any(
         e.get("market") == "us" and "mock" in (e.get("error") or "").lower()
@@ -76,4 +76,4 @@ async def test_cash_balance_mock_pending_buy_tolerates_egw02006(monkeypatch):
     # Pending deduction failed -> orderable falls back to raw orderable
     # (not zero, not crash).
     accounts = {a["account"]: a for a in result["accounts"]}
-    assert accounts["kis_domestic"]["orderable"] == 1000.0
+    assert accounts["kis_domestic"]["orderable"] == pytest.approx(1000.0)
