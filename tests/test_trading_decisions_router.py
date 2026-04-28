@@ -1,5 +1,6 @@
 """Tests for trading decisions router."""
 
+import importlib
 from datetime import datetime
 from decimal import Decimal
 from types import SimpleNamespace
@@ -9,6 +10,16 @@ from uuid import uuid4
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
+
+@pytest.fixture(autouse=True)
+def restore_trading_decision_service_module():
+    """Undo direct service mocks so later loadfile workers see real persistence."""
+    from app.services import trading_decision_service
+
+    importlib.reload(trading_decision_service)
+    yield
+    importlib.reload(trading_decision_service)
 
 
 # Helpers
@@ -31,7 +42,7 @@ def _make_test_client():
 
 
 @pytest.mark.unit
-def test_authenticated_create_session():
+def test_authenticated_create_session(monkeypatch: pytest.MonkeyPatch):
     """POST /decisions returns 201 with session data when authenticated."""
     from app.routers import trading_decisions
     from app.routers.dependencies import get_authenticated_user
@@ -59,10 +70,16 @@ def test_authenticated_create_session():
         updated_at=datetime.utcnow(),
         proposals=[],
     )
-    trading_decision_service.create_decision_session = AsyncMock(
-        return_value=mock_session
+    monkeypatch.setattr(
+        trading_decision_service,
+        "create_decision_session",
+        AsyncMock(return_value=mock_session),
     )
-    trading_decision_service.get_session_by_uuid = AsyncMock(return_value=mock_session)
+    monkeypatch.setattr(
+        trading_decision_service,
+        "get_session_by_uuid",
+        AsyncMock(return_value=mock_session),
+    )
 
     client = TestClient(app)
 

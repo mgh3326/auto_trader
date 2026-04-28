@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import uuid
 from pathlib import Path
@@ -25,6 +26,14 @@ FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "tradingagents"
 SessionLocal = async_sessionmaker(
     bind=engine, class_=AsyncSession, expire_on_commit=False
 )
+
+
+@pytest.fixture(autouse=True)
+def reset_trading_decision_service_module():
+    """Undo direct service monkeypatches from legacy router tests in same process."""
+    from app.services import trading_decision_service
+
+    svc.trading_decision_service = importlib.reload(trading_decision_service)
 
 
 async def _ensure_trading_decision_tables() -> None:

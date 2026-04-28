@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import uuid
 from datetime import date
 from types import SimpleNamespace
@@ -17,6 +18,16 @@ from app.core.db import engine
 SessionLocal = async_sessionmaker(
     bind=engine, class_=AsyncSession, expire_on_commit=False
 )
+
+
+@pytest.fixture(autouse=True)
+def reset_trading_decision_service_module():
+    """Undo direct service monkeypatches from legacy router tests in same process."""
+    from app.services import operator_decision_session_service, trading_decision_service
+
+    operator_decision_session_service.trading_decision_service = importlib.reload(
+        trading_decision_service
+    )
 
 
 async def _ensure_tables() -> None:

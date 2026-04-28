@@ -199,6 +199,52 @@ async def get_research_run_by_uuid(
     return result.scalar_one_or_none()
 
 
+async def get_latest_research_run(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    market_scope: str,
+    stage: str,
+    strategy_name: str | None = None,
+    status: str | None = "open",
+) -> ResearchRun | None:
+    """Get the most recent research run matching criteria.
+
+    Args:
+        session: Database session
+        user_id: User ID to filter by
+        market_scope: Market scope (kr, us, crypto)
+        stage: Stage (preopen, intraday, nxt_aftermarket, us_open)
+        strategy_name: Optional strategy name filter
+        status: Status filter (default: "open")
+
+    Returns:
+        The most recent ResearchRun or None if not found.
+        Tie-breaker on identical generated_at: ORDER BY id DESC.
+    """
+    query = (
+        select(ResearchRun)
+        .options(
+            selectinload(ResearchRun.candidates),
+            selectinload(ResearchRun.reconciliations),
+        )
+        .where(
+            ResearchRun.user_id == user_id,
+            ResearchRun.market_scope == market_scope,
+            ResearchRun.stage == stage,
+        )
+        .order_by(ResearchRun.generated_at.desc(), ResearchRun.id.desc())
+    )
+
+    if status is not None:
+        query = query.where(ResearchRun.status == status)
+    if strategy_name is not None:
+        query = query.where(ResearchRun.strategy_name == strategy_name)
+
+    result = await session.execute(query.limit(1))
+    return result.scalar_one_or_none()
+
+
 async def list_user_research_runs(
     session: AsyncSession,
     *,

@@ -586,6 +586,7 @@ async def test_get_ohlcv_korean_equity(monkeypatch):
             return df
 
     _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    monkeypatch.setattr(settings, "kis_ohlcv_cache_enabled", False, raising=False)
 
     result = await tools["get_ohlcv"]("005930", count=10)
 
