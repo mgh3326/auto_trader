@@ -117,7 +117,9 @@ class TradingDecisionSession(Base):
     )
 
     proposals: Mapped[list["TradingDecisionProposal"]] = relationship(
-        back_populates="session", cascade="all, delete-orphan"
+        back_populates="session",
+        cascade="all, delete-orphan",
+        order_by="TradingDecisionProposal.id",
     )
 
 

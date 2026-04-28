@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
@@ -23,6 +24,16 @@ from app.services.research_run_decision_session_service import (
 )
 
 pytestmark = pytest.mark.asyncio
+
+
+@pytest.fixture(autouse=True)
+def restore_trading_decision_service_module():
+    """Keep this persistence-backed service isolated from router mock tests."""
+    from app.services import trading_decision_service
+
+    importlib.reload(trading_decision_service)
+    yield
+    importlib.reload(trading_decision_service)
 
 
 @pytest.mark.unit

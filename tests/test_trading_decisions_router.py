@@ -1,5 +1,6 @@
 """Tests for trading decisions router."""
 
+import importlib
 from datetime import datetime
 from decimal import Decimal
 from types import SimpleNamespace
@@ -9,6 +10,16 @@ from uuid import uuid4
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
+
+@pytest.fixture(autouse=True)
+def restore_trading_decision_service_module():
+    """Undo direct service mocks so later loadfile workers see real persistence."""
+    from app.services import trading_decision_service
+
+    importlib.reload(trading_decision_service)
+    yield
+    importlib.reload(trading_decision_service)
 
 
 # Helpers
