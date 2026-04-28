@@ -442,7 +442,10 @@ async def get_order_history_impl(
                 f["_source_market"] = source_market
             orders.extend(fetched)
         except Exception as e:
-            errors.append({"market": m_type, "error": str(e)})
+            err_entry: dict[str, Any] = {"market": m_type, "error": str(e)}
+            if is_mock and "mock" in str(e).lower():
+                err_entry["mock_unsupported"] = True
+            errors.append(err_entry)
 
     orders = _dedupe_orders(orders)
     response_orders, total_available, truncated = _filter_and_sort_orders(

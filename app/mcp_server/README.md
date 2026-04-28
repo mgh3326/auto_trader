@@ -140,6 +140,9 @@ aliases include `warnings`.
 
 #### KIS mock unsupported endpoints
 
+> See [`docs/kis-mock-tr-routing-matrix.md`](../../docs/kis-mock-tr-routing-matrix.md)
+> for the full live ↔ mock TR routing matrix.
+
 `account_mode="kis_mock"` returns explicit "mock unsupported" errors instead
 of silently degrading for the following KIS endpoints, which are live-only on
 the official KIS mock account:
@@ -151,11 +154,11 @@ the official KIS mock account:
   Pending US history under `account_mode="kis_mock"` returns
   `errors: [{market: "equity_us", error: "kis_mock: overseas pending-orders
   inquiry ..."}]` and an empty orders list.
-- `inquire_korea_orders` (`TTTC8036R`) — documented as "실전/모의 공통" but
-  some mock accounts return `EGW02006 모의투자 TR 이 아닙니다`. KR pending
-  under `account_mode="kis_mock"` surfaces these as structured errors, not
-  silent empty results.
-- KIS overseas margin (`TTTS2101R` / `VTTS2101R`) — treated as
+- `inquire_korea_orders` (`TTTC8036R`) — confirmed live-only on the mock
+  account (returns `EGW02006 모의투자 TR 이 아닙니다`). Pending KR history
+  and KR cancel/modify lookup under `account_mode="kis_mock"` return
+  `mock_unsupported=true` errors instead of attempting the call.
+- KIS overseas margin (`TTTC2101R` / `VTTS2101R`) — treated as
   mock-unsupported; the USD account row is omitted under
   `account_mode="kis_mock"` and the failure is reported in `errors[]`.
 

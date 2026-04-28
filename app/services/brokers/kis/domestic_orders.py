@@ -108,6 +108,12 @@ class DomesticOrderClient:
             - ord_unpr: 주문단가
             - ord_tmd: 주문시각
         """
+        if is_mock:
+            raise RuntimeError(
+                "KIS domestic pending-orders inquiry (TTTC8036R) is not "
+                "available in mock mode."
+            )
+
         await self._parent._ensure_token()
 
         # 계좌번호 확인
@@ -123,7 +129,8 @@ class DomesticOrderClient:
         cano = account_no[:8]
         acnt_prdt_cd = account_no[8:10]
 
-        # 정정취소가능주문 조회는 실전/모의 구분 없이 동일한 TR_ID 사용
+        # Live-only TR. Mock account returns EGW02006 모의투자 TR 이 아닙니다 —
+        # is_mock=True is rejected at the top of this function.
         tr_id = constants.DOMESTIC_ORDER_INQUIRY_TR
 
         all_orders = []
