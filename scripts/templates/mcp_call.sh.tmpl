@@ -63,39 +63,35 @@ PAYLOAD=$(jq -n --arg tool "$TOOL_NAME" --argjson args "$ARGS" \
 # The MCP endpoint may answer with an SSE stream while this bridge only needs
 # the first `data:` line. `-N` flushes that line immediately, `--max-time`
 # prevents stuck helper processes, and `Connection: close` avoids keep-alive
-# ambiguity. Run curl as a coprocess so the helper can stop it after the first
-# payload; a plain pipeline can still wait forever if the server keeps the
-# stream open without writing again. Non-zero curl waits after a successful
-# read are expected because the helper intentionally closes the stream early
-# (SIGPIPE/SIGTERM depending on timing).
+# ambiguity. Use a FIFO plus a background curl process instead of Bash `coproc`
+# so the helper works on macOS' default Bash 3.2 as well as newer Linux Bash.
+# After the first payload is read, the helper intentionally terminates curl;
+# non-zero waits after a successful read are expected (SIGPIPE/SIGTERM timing).
 CURL_ERR=$(mktemp)
+CURL_FIFO=$(mktemp -u)
 cleanup() {
-  rm -f "$CURL_ERR"
+  rm -f "$CURL_ERR" "$CURL_FIFO"
 }
 trap cleanup EXIT
+mkfifo "$CURL_FIFO"
 
-coproc CURL_STREAM {
-  curl -fsS -N --max-time 15 -X POST "$MCP_ENDPOINT" \
-    -H "Content-Type: application/json" \
-    -H "Accept: application/json, text/event-stream" \
-    -H "Authorization: Bearer $MCP_AUTH_TOKEN" \
-    -H "Mcp-Session-Id: $MCP_SESSION_ID" \
-    -H "x-paperclip-agent-id: $PAPERCLIP_AGENT_ID" \
-    -H "Connection: close" \
-    -d "$PAYLOAD" 2>"$CURL_ERR"
-}
+curl -fsS -N --max-time 15 -X POST "$MCP_ENDPOINT" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Authorization: Bearer ${MCP_AUTH_TOKEN}" \
+  -H "Mcp-Session-Id: $MCP_SESSION_ID" \
+  -H "x-paperclip-agent-id: $PAPERCLIP_AGENT_ID" \
+  -H "Connection: close" \
+  -d "$PAYLOAD" >"$CURL_FIFO" 2>"$CURL_ERR" &
+CURL_PID=$!
 
 RESPONSE=""
-# Bash may unset CURL_STREAM_PID after a fast-exiting coproc; keep a stable copy.
-CURL_PID="$CURL_STREAM_PID"
-CURL_FD=${CURL_STREAM[0]}
-while IFS= read -r line <&"$CURL_FD"; do
+while IFS= read -r line; do
   if [[ "$line" == data:* ]]; then
     RESPONSE="${line#data: }"
     break
   fi
-done
-exec {CURL_FD}<&-
+done <"$CURL_FIFO"
 
 if [[ -z "$RESPONSE" ]]; then
   CURL_STATUS=1
@@ -109,5 +105,4 @@ if kill "$CURL_PID" 2>/dev/null; then
 else
   wait "$CURL_PID" 2>/dev/null || true
 fi
-
 printf '%s\n' "$RESPONSE"
