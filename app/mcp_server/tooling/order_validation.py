@@ -34,6 +34,19 @@ from app.services.brokers.upbit.client import (
     parse_upbit_account_row as _parse_upbit_account_row,
 )
 
+
+def _create_kis_client(*, is_mock: bool) -> KISClient:
+    if is_mock:
+        return KISClient(is_mock=True)
+    return KISClient()
+
+
+async def _call_kis(method: Any, *args: Any, is_mock: bool, **kwargs: Any) -> Any:
+    if is_mock:
+        return await method(*args, **kwargs, is_mock=True)
+    return await method(*args, **kwargs)
+
+
 _DEFENSIVE_TRIM_APPROVAL_REGEX = re.compile(r"^[A-Z]+-\d+$")
 _DEFENSIVE_TRIM_CACHE_TTL_SECONDS = 60.0
 _defensive_trim_success_cache: dict[str, float] = {}
@@ -197,7 +210,7 @@ async def _get_current_price_for_order(symbol: str, market_type: str) -> float |
 
 
 async def _get_holdings_for_order(
-    symbol: str, market_type: str
+    symbol: str, market_type: str, is_mock: bool = False
 ) -> dict[str, Any] | None:
     if market_type == "crypto":
         coins = await upbit_service.fetch_my_coins()
@@ -213,9 +226,9 @@ async def _get_holdings_for_order(
                 }
         return None
 
-    kis = KISClient()
+    kis = _create_kis_client(is_mock=is_mock)
     if market_type == "equity_kr":
-        stocks = await kis.fetch_my_stocks()
+        stocks = await _call_kis(kis.fetch_my_stocks, is_mock=is_mock)
         for stock in stocks:
             stock_code = str(stock.get("pdno", "")).strip().upper()
             if stock_code != symbol.upper():
@@ -226,7 +239,7 @@ async def _get_holdings_for_order(
             }
         return None
 
-    us_stocks = await kis.fetch_my_us_stocks()
+    us_stocks = await _call_kis(kis.fetch_my_us_stocks, is_mock=is_mock)
     for stock in us_stocks:
         stock_code = str(stock.get("ovrs_pdno", "")).strip().upper()
         if stock_code != symbol.upper():
@@ -238,7 +251,7 @@ async def _get_holdings_for_order(
     return None
 
 
-async def _get_balance_for_order(market_type: str) -> float:
+async def _get_balance_for_order(market_type: str, is_mock: bool = False) -> float:
     if market_type == "crypto":
         coins = await upbit_service.fetch_my_coins()
         for coin in coins:
@@ -247,15 +260,18 @@ async def _get_balance_for_order(market_type: str) -> float:
         return 0.0
 
     if market_type == "equity_kr":
-        kis = KISClient()
-        margin_data = await kis.inquire_integrated_margin()
+        kis = _create_kis_client(is_mock=is_mock)
+        margin_data = await _call_kis(
+            kis.inquire_integrated_margin,
+            is_mock=is_mock,
+        )
         domestic_cash = extract_domestic_cash_summary_from_integrated_margin(
             margin_data
         )
         return float(domestic_cash.get("orderable") or 0)
 
-    kis = KISClient()
-    margin_data = await kis.inquire_overseas_margin()
+    kis = _create_kis_client(is_mock=is_mock)
+    margin_data = await _call_kis(kis.inquire_overseas_margin, is_mock=is_mock)
     usd_row = _select_usd_row_for_us_order(margin_data)
     if usd_row is None:
         raise RuntimeError("USD margin data not found in KIS overseas margin")
@@ -572,12 +588,17 @@ async def _validate_sell_side(
     current_price: float,
     order_error_fn: Any,
     defensive_trim_ctx: DefensiveTrimContext | None = None,
+    is_mock: bool = False,
 ) -> tuple[float, float, dict[str, Any] | None]:
     """Validate sell-side: check holdings, locked, price constraints.
 
     Returns (order_quantity, avg_price, error_dict_or_None).
     """
-    holdings = await _get_holdings_for_order(normalized_symbol, market_type)
+    holdings = await _get_holdings_for_order(
+        normalized_symbol,
+        market_type,
+        is_mock=is_mock,
+    )
     if not holdings:
         return 0.0, 0.0, order_error_fn(f"No holdings found for {symbol}")
 
@@ -639,6 +660,7 @@ async def _check_balance_and_warn(
     order_amount: float,
     dry_run: bool,
     order_error_fn: Any,
+    is_mock: bool = False,
 ) -> tuple[str | None, dict[str, Any] | None]:
     """Pre-check cash balance for buy orders.
 
@@ -646,7 +668,7 @@ async def _check_balance_and_warn(
     If error_dict is not None, the caller should return it immediately.
     """
     try:
-        balance = await _get_balance_for_order(market_type)
+        balance = await _get_balance_for_order(market_type, is_mock=is_mock)
     except Exception as balance_exc:
         logger.error(
             "balance_precheck 조회 실패: stage=balance_query, market_type=%s, symbol=%s, side=%s, error=%s",

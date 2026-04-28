@@ -85,6 +85,67 @@ async def test_get_cash_balance_all_accounts(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_cash_balance_kis_mock_passes_is_mock(monkeypatch):
+    tools = build_tools()
+    calls: list[tuple[str, bool]] = []
+
+    class MockKISClient:
+        def __init__(self, *, is_mock: bool = False) -> None:
+            self.is_mock = is_mock
+
+        async def inquire_integrated_margin(self, is_mock=False):
+            calls.append(("integrated", is_mock))
+            return {
+                "stck_cash_objt_amt": "100000.0",
+                "stck_cash100_max_ord_psbl_amt": "80000.0",
+            }
+
+        async def inquire_korea_orders(self, is_mock=False):
+            calls.append(("kr_orders", is_mock))
+            return []
+
+        async def inquire_overseas_margin(self, is_mock=False):
+            calls.append(("overseas", is_mock))
+            return [
+                {
+                    "natn_name": "United States",
+                    "crcy_cd": "USD",
+                    "frcr_dncl_amt1": "25.0",
+                    "frcr_gnrl_ord_psbl_amt": "20.0",
+                }
+            ]
+
+        async def inquire_overseas_orders(self, exchange_code="NASD", is_mock=False):
+            del exchange_code
+            calls.append(("us_orders", is_mock))
+            return []
+
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.portfolio_holdings.validate_kis_mock_config",
+        lambda: [],
+    )
+
+    result = await tools["get_cash_balance"](account_mode="kis_mock")
+
+    assert result["account_mode"] == "kis_mock"
+    assert calls
+    assert all(is_mock for _, is_mock in calls)
+
+
+@pytest.mark.asyncio
+async def test_get_cash_balance_kis_mock_fails_closed(monkeypatch):
+    tools = build_tools()
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.portfolio_holdings.validate_kis_mock_config",
+        lambda: ["KIS_MOCK_ENABLED"],
+    )
+
+    with pytest.raises(RuntimeError, match="KIS_MOCK_ENABLED"):
+        await tools["get_cash_balance"](account_mode="kis_mock")
+
+
+@pytest.mark.asyncio
 async def test_get_cash_balance_with_account_filter(monkeypatch):
     tools = build_tools()
 

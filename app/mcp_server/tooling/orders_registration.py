@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Literal
 
+from app.core.config import validate_kis_mock_config
 from app.mcp_server.tooling import order_execution, orders_history
+from app.mcp_server.tooling.account_modes import (
+    apply_account_routing_metadata,
+    normalize_account_mode,
+)
 from app.mcp_server.tooling.orders_modify_cancel import (
     cancel_order_impl,
     modify_order_impl,
@@ -25,6 +30,21 @@ ORDER_TOOL_NAMES: set[str] = {
 }
 
 
+def _kis_mock_config_error() -> dict[str, Any] | None:
+    missing = validate_kis_mock_config()
+    if not missing:
+        return None
+    return {
+        "success": False,
+        "error": (
+            "KIS mock account is disabled or missing required configuration: "
+            + ", ".join(missing)
+        ),
+        "source": "kis",
+        "account_mode": "kis_mock",
+    }
+
+
 def register_order_tools(mcp: FastMCP) -> None:
     @mcp.tool(
         name="get_order_history",
@@ -34,7 +54,9 @@ def register_order_tools(mcp: FastMCP) -> None:
             "but filled/cancelled/all queries require symbol. "
             "Set account_type='paper' to query the virtual paper-trading "
             "account's trade history instead; pass paper_account to target a "
-            "named paper account (defaults to 'default')."
+            "named paper account (defaults to 'default'). "
+            "Use account_mode={'db_simulated','kis_mock','kis_live'} "
+            "(preferred); account_type aliases are deprecated and emit warnings."
         ),
     )
     async def get_order_history(
@@ -45,11 +67,34 @@ def register_order_tools(mcp: FastMCP) -> None:
         side: str | None = None,
         days: int | None = None,
         limit: int | None = 50,
-        account_type: Literal["real", "paper"] = "real",
+        account_mode: str | None = None,
+        account_type: str | None = None,
         paper_account: str | None = None,
     ):
-        if account_type == "paper":
-            return await _get_paper_order_history(
+        routing = normalize_account_mode(
+            account_mode=account_mode,
+            account_type=account_type,
+        )
+        if routing.is_db_simulated:
+            return apply_account_routing_metadata(
+                await _get_paper_order_history(
+                    symbol=symbol,
+                    status=status,
+                    order_id=order_id,
+                    market=market,
+                    side=side,
+                    days=days,
+                    limit=limit,
+                    paper_account_name=paper_account,
+                ),
+                routing,
+            )
+        if routing.is_kis_mock:
+            config_error = _kis_mock_config_error()
+            if config_error:
+                return config_error
+        return apply_account_routing_metadata(
+            await orders_history.get_order_history_impl(
                 symbol=symbol,
                 status=status,
                 order_id=order_id,
@@ -57,16 +102,9 @@ def register_order_tools(mcp: FastMCP) -> None:
                 side=side,
                 days=days,
                 limit=limit,
-                paper_account_name=paper_account,
-            )
-        return await orders_history.get_order_history_impl(
-            symbol=symbol,
-            status=status,
-            order_id=order_id,
-            market=market,
-            side=side,
-            days=days,
-            limit=limit,
+                is_mock=routing.is_kis_mock,
+            ),
+            routing,
         )
 
     @mcp.tool(
@@ -87,6 +125,8 @@ def register_order_tools(mcp: FastMCP) -> None:
             "(no real broker calls, uses PaperTradingService). In paper mode, the "
             "default account is auto-created with 100,000,000 KRW on first use; "
             "pass paper_account to target a named paper account. "
+            "Use account_mode={'db_simulated','kis_mock','kis_live'} "
+            "(preferred); account_type aliases are deprecated and emit warnings. "
             "Journal features (thesis/strategy/FIFO close) ARE supported in paper mode. "
             "defensive_trim=True enables a sell/limit-only floor bypass path. "
             "ROB-164/ROB-166 defensive_trim requires ALL of: (a) side='sell', "
@@ -114,9 +154,14 @@ def register_order_tools(mcp: FastMCP) -> None:
         indicators_snapshot: dict[str, Any] | None = None,
         defensive_trim: bool = False,
         approval_issue_id: str | None = None,
-        account_type: Literal["real", "paper"] = "real",
+        account_mode: str | None = None,
+        account_type: str | None = None,
         paper_account: str | None = None,
     ):
+        routing = normalize_account_mode(
+            account_mode=account_mode,
+            account_type=account_type,
+        )
         # Defense in depth: reject market orders even if a stale client
         # bypasses the tightened schema and still sends order_type="market".
         if str(order_type).lower().strip() != "limit":
@@ -141,8 +186,35 @@ def register_order_tools(mcp: FastMCP) -> None:
                 "symbol": symbol,
                 "order_type": order_type,
             }
-        if account_type == "paper":
-            return await _place_paper_order(
+        if routing.is_db_simulated:
+            return apply_account_routing_metadata(
+                await _place_paper_order(
+                    symbol=symbol,
+                    side=side,
+                    order_type=order_type,
+                    quantity=quantity,
+                    price=price,
+                    amount=amount,
+                    dry_run=dry_run,
+                    reason=reason,
+                    exit_reason=exit_reason,
+                    thesis=thesis,
+                    strategy=strategy,
+                    target_price=target_price,
+                    stop_loss=stop_loss,
+                    min_hold_days=min_hold_days,
+                    notes=notes,
+                    indicators_snapshot=indicators_snapshot,
+                    paper_account_name=paper_account,
+                ),
+                routing,
+            )
+        if routing.is_kis_mock:
+            config_error = _kis_mock_config_error()
+            if config_error:
+                return config_error
+        return apply_account_routing_metadata(
+            await order_execution._place_order_impl(
                 symbol=symbol,
                 side=side,
                 order_type=order_type,
@@ -159,27 +231,11 @@ def register_order_tools(mcp: FastMCP) -> None:
                 min_hold_days=min_hold_days,
                 notes=notes,
                 indicators_snapshot=indicators_snapshot,
-                paper_account_name=paper_account,
-            )
-        return await order_execution._place_order_impl(
-            symbol=symbol,
-            side=side,
-            order_type=order_type,
-            quantity=quantity,
-            price=price,
-            amount=amount,
-            dry_run=dry_run,
-            reason=reason,
-            exit_reason=exit_reason,
-            thesis=thesis,
-            strategy=strategy,
-            target_price=target_price,
-            stop_loss=stop_loss,
-            min_hold_days=min_hold_days,
-            notes=notes,
-            indicators_snapshot=indicators_snapshot,
-            defensive_trim=defensive_trim,
-            approval_issue_id=approval_issue_id,
+                defensive_trim=defensive_trim,
+                approval_issue_id=approval_issue_id,
+                is_mock=routing.is_kis_mock,
+            ),
+            routing,
         )
 
     @mcp.tool(

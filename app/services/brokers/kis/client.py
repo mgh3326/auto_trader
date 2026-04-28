@@ -9,6 +9,7 @@ from pandas import DataFrame
 
 from app.core.async_rate_limiter import get_limiter
 from app.core.config import settings
+from app.services.redis_token_manager import RedisTokenManager
 
 from .account import AccountClient, extract_domestic_cash_summary_from_integrated_margin
 from .base import BaseKISClient
@@ -39,6 +40,53 @@ __all__ = [
 ]
 
 
+class _KISSettingsView:
+    """Expose live or KIS mock credentials without cross-account fallback."""
+
+    def __init__(self, *, is_mock: bool) -> None:
+        self._is_mock = is_mock
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(settings, name)
+
+    @property
+    def kis_app_key(self) -> str:
+        if self._is_mock:
+            return str(settings.kis_mock_app_key or "")
+        return settings.kis_app_key
+
+    @property
+    def kis_app_secret(self) -> str:
+        if self._is_mock:
+            return str(settings.kis_mock_app_secret or "")
+        return settings.kis_app_secret
+
+    @property
+    def kis_account_no(self) -> str | None:
+        if self._is_mock:
+            return settings.kis_mock_account_no
+        return settings.kis_account_no
+
+    @property
+    def kis_base_url(self) -> str:
+        if self._is_mock:
+            return settings.kis_mock_base_url
+        return settings.kis_base_url
+
+    @property
+    def kis_access_token(self) -> str | None:
+        if self._is_mock:
+            return settings.kis_mock_access_token
+        return settings.kis_access_token
+
+    @kis_access_token.setter
+    def kis_access_token(self, value: str | None) -> None:
+        if self._is_mock:
+            settings.kis_mock_access_token = value
+        else:
+            settings.kis_access_token = value
+
+
 class KISClient(BaseKISClient):
     """KIS API facade client that delegates to specialized sub-clients.
 
@@ -53,8 +101,12 @@ class KISClient(BaseKISClient):
     are inherited from BaseKISClient.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, is_mock: bool = False) -> None:
+        self._is_mock_client = is_mock
+        self._settings_view = _KISSettingsView(is_mock=is_mock)
         super().__init__()
+        if is_mock:
+            self._token_manager = RedisTokenManager("kis_mock")
         parent: KISClientProtocol = cast(KISClientProtocol, cast(object, self))
         self._market_data: MarketDataClient = MarketDataClient(parent)
         self._account: AccountClient = AccountClient(parent)
@@ -63,7 +115,7 @@ class KISClient(BaseKISClient):
 
     @property
     def _settings(self) -> Any:
-        return settings
+        return self._settings_view
 
     async def _get_limiter(self, api_key: str, *, rate: int, period: float) -> Any:
         return await get_limiter("kis", api_key, rate=rate, period=period)

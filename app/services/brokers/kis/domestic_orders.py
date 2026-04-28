@@ -157,7 +157,7 @@ class DomesticOrderClient:
 
             js = await self._parent._request_with_rate_limit(
                 "GET",
-                f"{constants.BASE}{constants.DOMESTIC_ORDER_INQUIRY_URL}",
+                self._parent._kis_url(constants.DOMESTIC_ORDER_INQUIRY_URL),
                 headers=hdr,
                 params=params,
                 timeout=10,
@@ -302,7 +302,7 @@ class DomesticOrderClient:
 
         js = await self._parent._request_with_rate_limit(
             "POST",
-            f"{constants.BASE}{constants.DOMESTIC_ORDER_URL}",
+            self._parent._kis_url(constants.DOMESTIC_ORDER_URL),
             headers=hdr,
             json_body=body,
             timeout=10,
@@ -468,7 +468,7 @@ class DomesticOrderClient:
 
         js = await self._parent._request_with_rate_limit(
             "POST",
-            f"{constants.BASE}{constants.DOMESTIC_ORDER_CANCEL_URL}",
+            self._parent._kis_url(constants.DOMESTIC_ORDER_CANCEL_URL),
             headers=hdr,
             json_body=body,
             timeout=10,
@@ -610,7 +610,7 @@ class DomesticOrderClient:
 
             js = await self._parent._request_with_rate_limit(
                 "GET",
-                f"{constants.BASE}{constants.DOMESTIC_DAILY_ORDER_URL}",
+                self._parent._kis_url(constants.DOMESTIC_DAILY_ORDER_URL),
                 headers=hdr,
                 params=params,
                 timeout=10,
@@ -764,7 +764,7 @@ class DomesticOrderClient:
 
         js = await self._parent._request_with_rate_limit(
             "POST",
-            f"{constants.BASE}{constants.DOMESTIC_ORDER_CANCEL_URL}",
+            self._parent._kis_url(constants.DOMESTIC_ORDER_CANCEL_URL),
             headers=hdr,
             json_body=body,
             timeout=10,

@@ -150,7 +150,7 @@ class OverseasMarketDataMixin(MarketDataBase):
 
             js = await self._request_with_token_retry(
                 tr_id=constants.OVERSEAS_DAILY_CHART_TR,
-                url=f"{constants.BASE}{constants.OVERSEAS_DAILY_CHART_URL}",
+                url=self._kis_url(constants.OVERSEAS_DAILY_CHART_URL),
                 params=params,
                 timeout=10,
                 api_name="inquire_overseas_daily_price",
@@ -260,7 +260,7 @@ class OverseasMarketDataMixin(MarketDataBase):
 
         js = await self._request_with_token_retry(
             tr_id=constants.OVERSEAS_MINUTE_CHART_TR,
-            url=f"{constants.BASE}{constants.OVERSEAS_MINUTE_CHART_URL}",
+            url=self._kis_url(constants.OVERSEAS_MINUTE_CHART_URL),
             params=params,
             timeout=10,
             api_name="inquire_overseas_minute_chart",

@@ -302,7 +302,7 @@ class AccountClient:
 
             js = await self._parent._request_with_rate_limit(
                 "GET",
-                f"{constants.BASE}{url}",
+                self._parent._kis_url(url),
                 headers=hdr,
                 params=params,
                 timeout=5,
@@ -416,7 +416,7 @@ class AccountClient:
 
         js = await self._parent._request_with_rate_limit(
             "GET",
-            f"{constants.BASE}{constants.DOMESTIC_BALANCE_URL}",
+            self._parent._kis_url(constants.DOMESTIC_BALANCE_URL),
             headers=hdr,
             params=params,
             timeout=5,
@@ -518,7 +518,7 @@ class AccountClient:
 
         js = await self._parent._request_with_rate_limit(
             "GET",
-            f"{constants.BASE}{constants.OVERSEAS_MARGIN_URL}",
+            self._parent._kis_url(constants.OVERSEAS_MARGIN_URL),
             headers=hdr,
             params=params,
             timeout=5,
@@ -639,7 +639,7 @@ class AccountClient:
 
         js = await self._parent._request_with_rate_limit(
             "GET",
-            f"{constants.BASE}{constants.INTEGRATED_MARGIN_URL}",
+            self._parent._kis_url(constants.INTEGRATED_MARGIN_URL),
             headers=hdr,
             params=params,
             timeout=5,

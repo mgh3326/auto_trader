@@ -29,6 +29,18 @@ from app.services.brokers.kis.client import KISClient
 from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
 
 
+def _create_kis_client(*, is_mock: bool) -> KISClient:
+    if is_mock:
+        return KISClient(is_mock=True)
+    return KISClient()
+
+
+async def _call_kis(method: Any, *args: Any, is_mock: bool, **kwargs: Any) -> Any:
+    if is_mock:
+        return await method(*args, **kwargs, is_mock=True)
+    return await method(*args, **kwargs)
+
+
 def _calculate_order_summary(orders: list[dict[str, Any]]) -> dict[str, Any]:
     total_orders = len(orders)
     filled = sum(1 for o in orders if o.get("status") == "filled")
@@ -152,14 +164,15 @@ async def _fetch_kr_orders(
     normalized_symbol: str | None,
     status: str,
     effective_days: int | None,
+    is_mock: bool = False,
 ) -> list[dict[str, Any]]:
     """Fetch and normalize KIS domestic (Korean equity) orders."""
     fetched: list[dict[str, Any]] = []
-    kis = KISClient()
+    kis = _create_kis_client(is_mock=is_mock)
 
     if status in ("all", "pending"):
         logger.debug("Fetching KR pending orders, symbol=%s", normalized_symbol)
-        open_ops = await kis.inquire_korea_orders()
+        open_ops = await _call_kis(kis.inquire_korea_orders, is_mock=is_mock)
         if open_ops:
             logger.debug("Raw API response keys: %s", list(open_ops[0].keys()))
         for o in open_ops:
@@ -171,11 +184,13 @@ async def _fetch_kr_orders(
     if status in ("all", "filled", "cancelled") and normalized_symbol:
         lookup_days = effective_days if effective_days is not None else 30
         start_dt, end_dt = _calculate_date_range(lookup_days)
-        hist_ops = await kis.inquire_daily_order_domestic(
+        hist_ops = await _call_kis(
+            kis.inquire_daily_order_domestic,
             start_date=start_dt,
             end_date=end_dt,
             stock_code=normalized_symbol,
             side="00",
+            is_mock=is_mock,
         )
         fetched.extend([_normalize_kis_domestic_order(o) for o in hist_ops])
 
@@ -186,10 +201,11 @@ async def _fetch_us_orders(
     normalized_symbol: str | None,
     status: str,
     effective_days: int | None,
+    is_mock: bool = False,
 ) -> list[dict[str, Any]]:
     """Fetch and normalize KIS overseas (US equity) orders."""
     fetched: list[dict[str, Any]] = []
-    kis = KISClient()
+    kis = _create_kis_client(is_mock=is_mock)
 
     if status in ("all", "pending"):
         target_exchanges = ["NASD", "NYSE", "AMEX"]
@@ -199,7 +215,11 @@ async def _fetch_us_orders(
         seen_oids: set[str] = set()
         for ex in target_exchanges:
             try:
-                ops = await kis.inquire_overseas_orders(ex)
+                ops = await _call_kis(
+                    kis.inquire_overseas_orders,
+                    ex,
+                    is_mock=is_mock,
+                )
                 for o in ops:
                     oid = _extract_kis_order_number(o)
                     if oid in seen_oids:
@@ -217,12 +237,14 @@ async def _fetch_us_orders(
         lookup_days = effective_days if effective_days is not None else 30
         start_dt, end_dt = _calculate_date_range(lookup_days)
         ex = await get_us_exchange_by_symbol(normalized_symbol)
-        hist_ops = await kis.inquire_daily_order_overseas(
+        hist_ops = await _call_kis(
+            kis.inquire_daily_order_overseas,
             start_date=start_dt,
             end_date=end_dt,
             symbol=normalized_symbol,
             exchange_code=ex,
             side="00",
+            is_mock=is_mock,
         )
         fetched.extend([_normalize_kis_overseas_order(o) for o in hist_ops])
 
@@ -371,6 +393,7 @@ async def get_order_history_impl(
     side: str | None = None,
     days: int | None = None,
     limit: int | None = 50,
+    is_mock: bool = False,
 ) -> dict[str, Any]:
     (
         symbol,
@@ -388,10 +411,10 @@ async def get_order_history_impl(
             normalized_symbol, status, limit_val, limit or 50
         ),
         "equity_kr": lambda: _fetch_kr_orders(
-            normalized_symbol, status, effective_days
+            normalized_symbol, status, effective_days, is_mock=is_mock
         ),
         "equity_us": lambda: _fetch_us_orders(
-            normalized_symbol, status, effective_days
+            normalized_symbol, status, effective_days, is_mock=is_mock
         ),
     }
 

@@ -135,6 +135,12 @@ class BaseKISClient:
         """Access to application settings."""
         return settings
 
+    def _kis_url(self, path: str) -> str:
+        base_url = getattr(self._settings, "kis_base_url", "").rstrip("/")
+        if not base_url:
+            base_url = "https://openapi.koreainvestment.com:9443"
+        return f"{base_url}{path}"
+
     async def _get_limiter(self, api_key: str, *, rate: int, period: float) -> Any:
         return await get_limiter("kis", api_key, rate=rate, period=period)
 
@@ -262,12 +268,9 @@ class BaseKISClient:
             httpx.HTTPStatusError: On HTTP errors
             KeyError: If response doesn't contain access_token
         """
-        base_url = getattr(
-            self._settings, "kis_base_url", "https://openapi.koreainvestment.com:9443"
-        )
         cli = await self._ensure_client(timeout=5.0)
         r = await cli.post(
-            f"{base_url}/oauth2/token",
+            self._kis_url("/oauth2/token"),
             data={
                 "grant_type": "client_credentials",
                 "appkey": self._settings.kis_app_key,

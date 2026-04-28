@@ -62,6 +62,10 @@ class KISClientProtocol(Protocol):
         """Get rate limit for a specific API key."""
         ...
 
+    def _kis_url(self, path: str) -> str:
+        """Build a KIS API URL for the active account mode."""
+        ...
+
     @property
     def _settings(self) -> Any:
         """Access to application settings."""

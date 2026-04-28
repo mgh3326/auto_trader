@@ -166,8 +166,18 @@ class Settings(BaseSettings):
     # KIS
     kis_app_key: str
     kis_app_secret: str
+    kis_base_url: str = "https://openapi.koreainvestment.com:9443"
     kis_access_token: str | None = None  # 최초엔 비워두고 자동 발급
     kis_account_no: str | None = None  # 계좌번호 (예: "12345678-01")
+
+    # KIS official mock/sandbox account. Disabled by default and must be
+    # explicitly configured by the runtime environment.
+    kis_mock_enabled: bool = False
+    kis_mock_app_key: str | None = None
+    kis_mock_app_secret: str | None = None
+    kis_mock_base_url: str = "https://openapivts.koreainvestment.com:29443"
+    kis_mock_account_no: str | None = None
+    kis_mock_access_token: str | None = None
 
     # KIS WebSocket
     kis_ws_is_mock: bool = False  # Mock 모드 (테스트용)
@@ -448,3 +458,22 @@ class Settings(BaseSettings):
 
 
 settings = _load_settings()  # import 하면 전역 singleton
+
+
+def _has_nonempty_value(value: Any) -> bool:
+    return bool(str(value or "").strip())
+
+
+def validate_kis_mock_config(settings_obj: Any = settings) -> list[str]:
+    """Return missing KIS mock env names without exposing configured values."""
+
+    missing: list[str] = []
+    if not bool(getattr(settings_obj, "kis_mock_enabled", False)):
+        missing.append("KIS_MOCK_ENABLED")
+    if not _has_nonempty_value(getattr(settings_obj, "kis_mock_app_key", None)):
+        missing.append("KIS_MOCK_APP_KEY")
+    if not _has_nonempty_value(getattr(settings_obj, "kis_mock_app_secret", None)):
+        missing.append("KIS_MOCK_APP_SECRET")
+    if not _has_nonempty_value(getattr(settings_obj, "kis_mock_account_no", None)):
+        missing.append("KIS_MOCK_ACCOUNT_NO")
+    return missing
