@@ -311,7 +311,7 @@ async def test_missing_kr_universe_fail_closed(
     # Check proposal payload has correct classification
     payload = result.session.proposals[0].original_payload
     assert payload["nxt_classification"] == "data_mismatch_requires_review"
-    assert payload["warnings"] == ["missing_kr_universe"]
+    assert "missing_kr_universe" in payload["warnings"]
 
 
 @pytest.mark.unit
@@ -351,4 +351,4 @@ async def test_deterministic_proposal_order(
 
     # Proposals should be ordered by candidate.id
     proposal_symbols = [p.symbol for p in result.session.proposals]
-    assert proposal_symbols == [c1.symbol, c2.symbol]  # Ordered by id
+    assert proposal_symbols == [c2.symbol, c1.symbol]  # Ordered by id

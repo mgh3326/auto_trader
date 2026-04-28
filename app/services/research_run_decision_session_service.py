@@ -6,10 +6,16 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
+from app.models.research_run import (
+    ResearchRunCandidate,
+    ResearchRunPendingReconciliation,
+)
 from app.models.trading import InstrumentType
-from app.models.trading_decision import ProposalKind
+from app.models.trading_decision import ProposalKind, TradingDecisionSession
 from app.schemas.research_run_decision_session import (
     LiveRefreshSnapshot,
     ResearchRunDecisionSessionRequest,
@@ -23,12 +29,7 @@ from app.services import (
 )
 
 if TYPE_CHECKING:
-    from app.models.research_run import (
-        ResearchRun,
-        ResearchRunCandidate,
-        ResearchRunPendingReconciliation,
-    )
-    from app.models.trading_decision import TradingDecisionSession
+    from app.models.research_run import ResearchRun
 
 
 @dataclass(frozen=True)
@@ -100,14 +101,26 @@ def _pending_orders_by_id(
     return {order.order_id: order for order in snapshot.pending_orders}
 
 
-def _reconciliations_by_order_id(
-    research_run: ResearchRun,
+async def _load_research_run_candidates(
+    db: AsyncSession, *, research_run_id: int
+) -> list[ResearchRunCandidate]:
+    result = await db.execute(
+        select(ResearchRunCandidate)
+        .where(ResearchRunCandidate.research_run_id == research_run_id)
+        .order_by(ResearchRunCandidate.id.asc())
+    )
+    return list(result.scalars().all())
+
+
+async def _reconciliations_by_order_id(
+    db: AsyncSession, *, research_run_id: int
 ) -> dict[str, ResearchRunPendingReconciliation]:
-    return {
-        recon.order_id: recon
-        for recon in research_run.reconciliations
-        if recon.order_id
-    }
+    result = await db.execute(
+        select(ResearchRunPendingReconciliation).where(
+            ResearchRunPendingReconciliation.research_run_id == research_run_id
+        )
+    )
+    return {recon.order_id: recon for recon in result.scalars().all() if recon.order_id}
 
 
 def _build_market_context(
@@ -408,14 +421,18 @@ async def create_decision_session_from_research_run(
 ) -> ResearchRunDecisionSessionResult:
     if request.include_tradingagents is True:
         raise NotImplementedError("include_tradingagents=True is not implemented")
-    if not research_run.candidates:
+
+    candidates = await _load_research_run_candidates(
+        db, research_run_id=research_run.id
+    )
+    if not candidates:
         raise EmptyResearchRunError("Research run has no candidates")
 
     generated_at = request.generated_at or now()
     session = await trading_decision_service.create_decision_session(
         db,
         user_id=user_id,
-        source_profile=research_run.source_profile,
+        source_profile="research_run",
         strategy_name=research_run.strategy_name,
         market_scope=research_run.market_scope,
         market_brief={},
@@ -424,7 +441,10 @@ async def create_decision_session_from_research_run(
     )
 
     pending_orders_by_id = _pending_orders_by_id(snapshot)
-    reconciliations_by_order_id = _reconciliations_by_order_id(research_run)
+    reconciliations_by_order_id = await _reconciliations_by_order_id(
+        db,
+        research_run_id=research_run.id,
+    )
 
     proposals: list[trading_decision_service.ProposalCreate] = []
     warnings: list[str] = list(snapshot.warnings)
@@ -432,7 +452,7 @@ async def create_decision_session_from_research_run(
     reconciliation_summary: dict[str, int] = {}
     nxt_summary: dict[str, int] = {}
 
-    for candidate in sorted(research_run.candidates, key=lambda item: item.id):
+    for candidate in candidates:
         existing_reconciliation = _lookup_existing_reconciliation(
             candidate,
             reconciliations_by_order_id,
@@ -526,11 +546,11 @@ async def create_decision_session_from_research_run(
             "research_run_uuid": str(research_run.run_uuid),
             "refreshed_at": snapshot.refreshed_at,
             "counts": {
-                "candidates": len(research_run.candidates),
+                "candidates": len(candidates),
                 "proposals": len(created_proposals),
                 "pending_order_candidates": sum(
                     1
-                    for candidate in research_run.candidates
+                    for candidate in candidates
                     if candidate.candidate_kind == "pending_order"
                 ),
                 "reconciliations": reconciliation_count,
@@ -542,10 +562,16 @@ async def create_decision_session_from_research_run(
         }
     )
     await db.flush()
-    await db.refresh(session)
+    refreshed_session = (
+        await db.execute(
+            select(TradingDecisionSession)
+            .where(TradingDecisionSession.id == session.id)
+            .options(selectinload(TradingDecisionSession.proposals))
+        )
+    ).scalar_one()
 
     return ResearchRunDecisionSessionResult(
-        session=session,
+        session=refreshed_session,
         research_run=research_run,
         refreshed_at=snapshot.refreshed_at,
         proposal_count=len(created_proposals),
