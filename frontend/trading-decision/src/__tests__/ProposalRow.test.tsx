@@ -10,6 +10,55 @@ import {
 } from "../test/fixtures";
 
 describe("ProposalRow", () => {
+  it("shows the payload display name prominently with the symbol as secondary text", () => {
+    render(
+      <ProposalRow
+        proposal={makeProposal({
+          symbol: "035420",
+          original_payload: { name: "NAVER" },
+        })}
+        onRecordOutcome={vi.fn()}
+        onRespond={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "NAVER" })).toBeInTheDocument();
+    expect(screen.getByText("035420")).toBeInTheDocument();
+  });
+
+  it("does not show a zero KRW amount as actionable when a sell amount is missing", () => {
+    render(
+      <ProposalRow
+        proposal={makeProposal({
+          original_amount: "0",
+          original_price: null,
+          original_quantity: "3",
+          side: "sell",
+        })}
+        onRecordOutcome={vi.fn()}
+        onRespond={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText("0 KRW")).not.toBeInTheDocument();
+    expect(screen.getByText("Current quote estimate needed")).toBeInTheDocument();
+  });
+
+  it("explains that accepting records a decision only", () => {
+    render(
+      <ProposalRow
+        proposal={makeProposal()}
+        onRecordOutcome={vi.fn()}
+        onRespond={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByText(/Accept records this decision only/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/does not send a live trade/i)).toBeInTheDocument();
+  });
+
   it("pending proposal shows original block only", () => {
     render(
       <ProposalRow

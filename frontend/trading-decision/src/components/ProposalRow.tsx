@@ -46,6 +46,8 @@ export default function ProposalRow({
   >(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [banner, setBanner] = useState<string | null>(null);
+  const displayName = getDisplayName(proposal);
+  const shouldShowSymbol = displayName !== proposal.symbol;
 
   async function respond(body: ProposalRespondRequest) {
     setIsSubmitting(true);
@@ -67,7 +69,12 @@ export default function ProposalRow({
   return (
     <article className={styles.row}>
       <header className={styles.header}>
-        <span className={styles.symbol}>{proposal.symbol}</span>
+        <div className={styles.identity}>
+          <h2 className={styles.name}>{displayName}</h2>
+          {shouldShowSymbol ? (
+            <span className={styles.symbol}>{proposal.symbol}</span>
+          ) : null}
+        </div>
         <span className={styles.chip}>{proposal.side}</span>
         <span className={styles.chip}>{proposal.proposal_kind}</span>
         <StatusBadge value={proposal.user_response} />
@@ -103,6 +110,9 @@ export default function ProposalRow({
         onOpenAdjust={setAdjustResponse}
         onSimpleResponse={(response) => void respond({ response })}
       />
+      <p className={styles.safetyNote}>
+        Accept records this decision only; it does not send a live trade.
+      </p>
       {adjustResponse ? (
         <ProposalAdjustmentEditor
           onCancel={() => setAdjustResponse(null)}
@@ -148,16 +158,47 @@ function ValueList({
       {rows.map((row) => (
         <div key={row.label}>
           <dt>{row.label}</dt>
-          <dd>
-            {formatDecimal(row.value)}
-            {row.label === "Amount" && proposal.original_currency
-              ? ` ${proposal.original_currency}`
-              : ""}
-          </dd>
+          <dd>{formatProposalValue(row.label, row.value, proposal)}</dd>
         </div>
       ))}
     </dl>
   );
+}
+
+function getDisplayName(proposal: ProposalDetail) {
+  const payloadName = proposal.original_payload?.name;
+  if (typeof payloadName === "string" && payloadName.trim().length > 0) {
+    return payloadName;
+  }
+  return proposal.symbol;
+}
+
+function isMissingSellAmount(
+  label: string,
+  value: string,
+  proposal: ProposalDetail,
+) {
+  return (
+    label === "Amount" &&
+    proposal.side === "sell" &&
+    Number(value) === 0 &&
+    proposal.original_price === null
+  );
+}
+
+function formatProposalValue(
+  label: string,
+  value: string,
+  proposal: ProposalDetail,
+) {
+  if (isMissingSellAmount(label, value, proposal)) {
+    return "Current quote estimate needed";
+  }
+  return `${formatDecimal(value)}${
+    label === "Amount" && proposal.original_currency
+      ? ` ${proposal.original_currency}`
+      : ""
+  }`;
 }
 
 function summaryPairs(proposal: ProposalDetail) {
