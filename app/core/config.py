@@ -235,12 +235,24 @@ class Settings(BaseSettings):
     # Scheduler
     cron: str = "0 * * * *"  # 매시 정각
 
+    # ROB-26 — research-run refresh schedules
+    research_run_refresh_enabled: bool = False
+    research_run_refresh_user_id: int | None = None
+    research_run_refresh_market_hours_only: bool = True
+
     @property
     def telegram_chat_ids(self) -> list[str]:
         """단일 chat_id를 리스트로 변환 (하위 호환성 유지)"""
         if not self.telegram_chat_id:
             return []
         return [self.telegram_chat_id.strip()]
+
+    @field_validator("research_run_refresh_user_id", mode="before")
+    @classmethod
+    def _parse_optional_user_id(cls, v: Any) -> int | None:
+        if v == "" or v is None:
+            return None
+        return int(v)
 
     @field_validator("kis_api_rate_limits", "upbit_api_rate_limits", mode="before")
     @classmethod
