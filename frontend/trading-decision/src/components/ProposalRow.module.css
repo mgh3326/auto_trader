@@ -13,9 +13,25 @@
   gap: 8px;
 }
 
-.symbol {
-  font-size: 1.2rem;
+.identity {
+  display: grid;
+  gap: 2px;
+  margin-right: 4px;
+}
+
+.name {
+  font-size: 1.35rem;
   font-weight: 800;
+  line-height: 1.15;
+  margin: 0;
+}
+
+.symbol {
+  color: #60728a;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+  font-size: 0.86rem;
+  font-weight: 700;
 }
 
 .chip {
@@ -59,6 +75,16 @@
   border-radius: 8px;
   color: #765600;
   padding: 10px;
+}
+
+.safetyNote {
+  background: #eef7ff;
+  border: 1px solid #cfe4ff;
+  border-radius: 8px;
+  color: #284c72;
+  font-size: 0.9rem;
+  margin: -4px 0 0;
+  padding: 8px 10px;
 }
 
 .outcomes {
