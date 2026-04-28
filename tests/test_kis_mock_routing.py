@@ -4,6 +4,44 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+KOREA_PENDING_MOCK_UNSUPPORTED = (
+    "KIS domestic pending-orders inquiry (TTTC8036R) is not available in mock mode."
+)
+OVERSEAS_PENDING_MOCK_UNSUPPORTED = (
+    "KIS overseas pending-orders inquiry (TTTS3018R) is not available in mock mode."
+)
+
+
+class KoreaPendingMockUnsupportedKIS:
+    def __init__(self, *, is_mock: bool = False) -> None:
+        self.is_mock = is_mock
+
+    async def inquire_korea_orders(self, *, is_mock=False):
+        raise RuntimeError(KOREA_PENDING_MOCK_UNSUPPORTED)
+
+    cancel_korea_order = AsyncMock(
+        side_effect=AssertionError("must not call cancel under mock-unsupported")
+    )
+    modify_korea_order = AsyncMock(
+        side_effect=AssertionError("must not call modify under mock-unsupported")
+    )
+
+
+class OverseasPendingMockUnsupportedKIS:
+    def __init__(self, *, is_mock: bool = False) -> None:
+        self.is_mock = is_mock
+
+    async def inquire_overseas_orders(self, exchange, *, is_mock=False):
+        raise RuntimeError(OVERSEAS_PENDING_MOCK_UNSUPPORTED)
+
+
+def _use_placeholder_kis_account(monkeypatch, client) -> None:
+    monkeypatch.setattr(
+        type(client._settings),
+        "kis_account_no",
+        property(lambda self: "00000000-01"),
+    )
+
 
 def test_kis_mock_settings_view_uses_mock_base_url(monkeypatch):
     from app.services.brokers.kis.client import KISClient
@@ -237,17 +275,7 @@ async def test_get_order_history_pending_us_mock_surfaces_unsupported(monkeypatc
     """Mock pending US history must NOT silently return empty."""
     from app.mcp_server.tooling import orders_history
 
-    class FakeKIS:
-        def __init__(self, *, is_mock: bool = False) -> None:
-            pass
-
-        async def inquire_overseas_orders(self, exchange, *, is_mock=False):
-            raise RuntimeError(
-                "KIS overseas pending-orders inquiry (TTTS3018R) is not "
-                "available in mock mode."
-            )
-
-    monkeypatch.setattr(orders_history, "KISClient", FakeKIS)
+    monkeypatch.setattr(orders_history, "KISClient", OverseasPendingMockUnsupportedKIS)
     result = await orders_history.get_order_history_impl(
         status="pending", market="us", is_mock=True
     )
@@ -263,21 +291,9 @@ async def test_get_order_history_pending_us_mock_surfaces_unsupported(monkeypatc
 async def test_cancel_order_kis_mock_kr_returns_mock_unsupported(monkeypatch):
     from app.mcp_server.tooling import orders_modify_cancel
 
-    class FakeKIS:
-        def __init__(self, *, is_mock: bool = False) -> None:
-            self.is_mock = is_mock
-
-        async def inquire_korea_orders(self, *, is_mock=False):
-            raise RuntimeError(
-                "KIS domestic pending-orders inquiry (TTTC8036R) is not "
-                "available in mock mode."
-            )
-
-        cancel_korea_order = AsyncMock(
-            side_effect=AssertionError("must not call cancel under mock-unsupported")
-        )
-
-    monkeypatch.setattr(orders_modify_cancel, "KISClient", FakeKIS)
+    monkeypatch.setattr(
+        orders_modify_cancel, "KISClient", KoreaPendingMockUnsupportedKIS
+    )
 
     result = await orders_modify_cancel.cancel_order_impl(
         order_id="0001", symbol="005930", market="kr", is_mock=True
@@ -294,17 +310,9 @@ async def test_cancel_order_kis_mock_kr_without_symbol_returns_mock_unsupported(
 ):
     from app.mcp_server.tooling import orders_modify_cancel
 
-    class FakeKIS:
-        def __init__(self, *, is_mock: bool = False) -> None:
-            self.is_mock = is_mock
-
-        async def inquire_korea_orders(self, *, is_mock=False):
-            raise RuntimeError(
-                "KIS domestic pending-orders inquiry (TTTC8036R) is not "
-                "available in mock mode."
-            )
-
-    monkeypatch.setattr(orders_modify_cancel, "KISClient", FakeKIS)
+    monkeypatch.setattr(
+        orders_modify_cancel, "KISClient", KoreaPendingMockUnsupportedKIS
+    )
 
     result = await orders_modify_cancel.cancel_order_impl(
         order_id="0001", symbol=None, market="kr", is_mock=True
@@ -319,21 +327,9 @@ async def test_cancel_order_kis_mock_kr_without_symbol_returns_mock_unsupported(
 async def test_modify_order_kis_mock_kr_returns_mock_unsupported(monkeypatch):
     from app.mcp_server.tooling import orders_modify_cancel
 
-    class FakeKIS:
-        def __init__(self, *, is_mock: bool = False) -> None:
-            pass
-
-        async def inquire_korea_orders(self, *, is_mock=False):
-            raise RuntimeError(
-                "KIS domestic pending-orders inquiry (TTTC8036R) is not "
-                "available in mock mode."
-            )
-
-        modify_korea_order = AsyncMock(
-            side_effect=AssertionError("must not call modify under mock-unsupported")
-        )
-
-    monkeypatch.setattr(orders_modify_cancel, "KISClient", FakeKIS)
+    monkeypatch.setattr(
+        orders_modify_cancel, "KISClient", KoreaPendingMockUnsupportedKIS
+    )
 
     result = await orders_modify_cancel.modify_order_impl(
         order_id="0001",
@@ -350,16 +346,24 @@ async def test_modify_order_kis_mock_kr_returns_mock_unsupported(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_inquire_daily_order_domestic_mock_uses_mock_tr(monkeypatch):
+@pytest.mark.parametrize(
+    ("method_name", "expected_tr_id"),
+    [
+        ("inquire_daily_order_domestic", "VTTC8001R"),
+        ("inquire_daily_order_overseas", "VTTS3035R"),
+    ],
+    ids=["domestic", "overseas"],
+)
+async def test_inquire_daily_order_mock_uses_mock_tr(
+    monkeypatch,
+    method_name: str,
+    expected_tr_id: str,
+):
     from app.services.brokers.kis.client import KISClient
 
     client = KISClient(is_mock=True)
     monkeypatch.setattr(client, "_ensure_token", AsyncMock(return_value=None))
-    monkeypatch.setattr(
-        type(client._settings),
-        "kis_account_no",
-        property(lambda self: "00000000-01"),
-    )
+    _use_placeholder_kis_account(monkeypatch, client)
 
     captured: dict = {}
 
@@ -369,33 +373,7 @@ async def test_inquire_daily_order_domestic_mock_uses_mock_tr(monkeypatch):
 
     monkeypatch.setattr(client, "_request_with_rate_limit", fake_request)
 
-    await client.inquire_daily_order_domestic(
+    await getattr(client, method_name)(
         start_date="20260101", end_date="20260102", is_mock=True
     )
-    assert captured["tr_id"] == "VTTC8001R"
-
-
-@pytest.mark.asyncio
-async def test_inquire_daily_order_overseas_mock_uses_mock_tr(monkeypatch):
-    from app.services.brokers.kis.client import KISClient
-
-    client = KISClient(is_mock=True)
-    monkeypatch.setattr(client, "_ensure_token", AsyncMock(return_value=None))
-    monkeypatch.setattr(
-        type(client._settings),
-        "kis_account_no",
-        property(lambda self: "00000000-01"),
-    )
-
-    captured: dict = {}
-
-    async def fake_request(method, url, *, headers, params, **kwargs):
-        captured["tr_id"] = headers.get("tr_id")
-        return {"rt_cd": "0", "output1": []}
-
-    monkeypatch.setattr(client, "_request_with_rate_limit", fake_request)
-
-    await client.inquire_daily_order_overseas(
-        start_date="20260101", end_date="20260102", is_mock=True
-    )
-    assert captured["tr_id"] == "VTTS3035R"
+    assert captured["tr_id"] == expected_tr_id
