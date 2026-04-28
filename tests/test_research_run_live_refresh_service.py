@@ -45,9 +45,7 @@ async def test_build_snapshot_returns_live_refresh_snapshot():
                     mock_nxt.return_value = True
                     mock_orders.return_value = {"orders": []}
 
-                    result = await build_live_refresh_snapshot(
-                        mock_db, run=mock_run, user_id=1
-                    )
+                    result = await build_live_refresh_snapshot(mock_db, run=mock_run)
 
                     assert isinstance(result, LiveRefreshSnapshot)
                     assert result.refreshed_at is not None
@@ -85,9 +83,7 @@ async def test_build_snapshot_quote_failure_adds_warning():
                     mock_nxt.return_value = True
                     mock_orders.return_value = {"orders": []}
 
-                    result = await build_live_refresh_snapshot(
-                        mock_db, run=mock_run, user_id=1
-                    )
+                    result = await build_live_refresh_snapshot(mock_db, run=mock_run)
 
                     assert isinstance(result, LiveRefreshSnapshot)
                     assert any("quote_failed:005930" in w for w in result.warnings)
@@ -120,9 +116,7 @@ async def test_build_snapshot_us_skips_orderbook():
                 )
                 mock_orders.return_value = {"orders": []}
 
-                result = await build_live_refresh_snapshot(
-                    mock_db, run=mock_run, user_id=1
-                )
+                result = await build_live_refresh_snapshot(mock_db, run=mock_run)
 
                 assert isinstance(result, LiveRefreshSnapshot)
                 assert any("orderbook_unavailable_us" in w for w in result.warnings)
@@ -157,11 +151,10 @@ async def test_build_snapshot_missing_kr_universe_adds_warning():
                         total_ask_qty=0.0,
                     )
                     mock_nxt.side_effect = Exception("DB error")
+                    mock_db.execute.side_effect = Exception("DB error")
                     mock_orders.return_value = {"orders": []}
 
-                    result = await build_live_refresh_snapshot(
-                        mock_db, run=mock_run, user_id=1
-                    )
+                    result = await build_live_refresh_snapshot(mock_db, run=mock_run)
 
                     assert isinstance(result, LiveRefreshSnapshot)
                     assert any(
@@ -201,8 +194,6 @@ async def test_build_snapshot_refreshed_at_after_gather():
                     mock_nxt.return_value = True
                     mock_orders.return_value = {"orders": []}
 
-                    result = await build_live_refresh_snapshot(
-                        mock_db, run=mock_run, user_id=1
-                    )
+                    result = await build_live_refresh_snapshot(mock_db, run=mock_run)
 
                     assert result.refreshed_at >= start_time

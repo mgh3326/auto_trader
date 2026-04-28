@@ -1,6 +1,6 @@
 """Tests for research_run_decision_sessions router."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -61,9 +61,9 @@ def test_create_decision_from_research_run_201_with_run_uuid():
         status="open",
         notes=None,
         market_brief={},
-        generated_at=datetime.utcnow(),
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+        generated_at=datetime.now(UTC),
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
         proposals=[],
     )
 
@@ -71,14 +71,14 @@ def test_create_decision_from_research_run_201_with_run_uuid():
         session=mock_session,
         research_run=mock_run,
         research_run_uuid=mock_run.run_uuid,
-        refreshed_at=datetime.utcnow(),
+        refreshed_at=datetime.now(UTC),
         proposal_count=1,
         reconciliation_count=0,
         warnings=(),
     )
 
     mock_snapshot = SimpleNamespace(
-        refreshed_at=datetime.utcnow(),
+        refreshed_at=datetime.now(UTC),
         quote_by_symbol={"005930": SimpleNamespace(price=Decimal("70000"))},
         orderbook_by_symbol={},
         kr_universe_by_symbol={
@@ -169,9 +169,9 @@ def test_create_decision_from_research_run_201_with_latest_selector():
         status="open",
         notes=None,
         market_brief={},
-        generated_at=datetime.utcnow(),
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+        generated_at=datetime.now(UTC),
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
         proposals=[],
     )
 
@@ -179,14 +179,14 @@ def test_create_decision_from_research_run_201_with_latest_selector():
         session=mock_session,
         research_run=mock_run,
         research_run_uuid=mock_run.run_uuid,
-        refreshed_at=datetime.utcnow(),
+        refreshed_at=datetime.now(UTC),
         proposal_count=1,
         reconciliation_count=0,
         warnings=(),
     )
 
     mock_snapshot = SimpleNamespace(
-        refreshed_at=datetime.utcnow(),
+        refreshed_at=datetime.now(UTC),
         quote_by_symbol={"005930": SimpleNamespace(price=Decimal("70000"))},
         orderbook_by_symbol={},
         kr_universe_by_symbol={
@@ -285,7 +285,7 @@ def test_create_decision_422_empty_candidates():
     )
 
     mock_snapshot = SimpleNamespace(
-        refreshed_at=datetime.utcnow(),
+        refreshed_at=datetime.now(UTC),
         quote_by_symbol={},
         orderbook_by_symbol={},
         kr_universe_by_symbol={},
@@ -364,7 +364,7 @@ def test_create_decision_501_tradingagents():
     )
 
     mock_snapshot = SimpleNamespace(
-        refreshed_at=datetime.utcnow(),
+        refreshed_at=datetime.now(UTC),
         quote_by_symbol={},
         orderbook_by_symbol={},
         kr_universe_by_symbol={},

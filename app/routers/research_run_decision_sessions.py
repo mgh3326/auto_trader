@@ -1,5 +1,7 @@
 """Research run decision session API router."""
 
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,15 +33,14 @@ router = APIRouter(prefix="/trading", tags=["research-run-decisions"])
 
 @router.post(
     "/api/decisions/from-research-run",
-    response_model=ResearchRunDecisionSessionResponse,
     status_code=status.HTTP_201_CREATED,
 )
 async def create_decision_from_research_run(
     payload: ResearchRunDecisionSessionRequest,
     fastapi_request: Request,
     response: Response,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_authenticated_user),
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_authenticated_user)],
 ) -> ResearchRunDecisionSessionResponse:
     try:
         research_run = await research_run_decision_session_service.resolve_research_run(
@@ -50,7 +51,6 @@ async def create_decision_from_research_run(
         snapshot = await research_run_live_refresh_service.build_live_refresh_snapshot(
             db,
             run=research_run,
-            user_id=current_user.id,
         )
         result = await research_run_decision_session_service.create_decision_session_from_research_run(
             db,

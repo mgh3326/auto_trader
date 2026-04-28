@@ -426,7 +426,9 @@ async def user(db_session):
     """Create a test user."""
     from app.models.trading import User
 
-    u = User(email="test@example.com", username="testuser", hashed_password="fakehash")
+    u = User(
+        email="test@example.com", username="testuser", hashed_password="fakehash"
+    )  # NOSONAR test-only hash
     db_session.add(u)
     await db_session.flush()
     await db_session.refresh(u)
@@ -439,7 +441,9 @@ async def other_user(db_session):
     from app.models.trading import User
 
     u = User(
-        email="other@example.com", username="otheruser", hashed_password="fakehash"
+        email="other@example.com",
+        username="otheruser",
+        hashed_password="fakehash",  # NOSONAR test-only hash
     )
     db_session.add(u)
     await db_session.flush()

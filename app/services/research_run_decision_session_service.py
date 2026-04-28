@@ -17,7 +17,10 @@ from app.models.research_run import (
 from app.models.trading import InstrumentType
 from app.models.trading_decision import ProposalKind, TradingDecisionSession
 from app.schemas.research_run_decision_session import (
+    LiveRefreshQuote,
     LiveRefreshSnapshot,
+    OrderbookLevel,
+    OrderbookSnapshot,
     ResearchRunDecisionSessionRequest,
     ResearchRunSelector,
 )
@@ -123,82 +126,89 @@ async def _reconciliations_by_order_id(
     return {recon.order_id: recon for recon in result.scalars().all() if recon.order_id}
 
 
+def _quote_context(
+    quote: LiveRefreshQuote | None,
+) -> pending_reconciliation_service.QuoteContext | None:
+    if quote is None:
+        return None
+    return pending_reconciliation_service.QuoteContext(
+        price=quote.price,
+        as_of=quote.as_of,
+    )
+
+
+def _orderbook_level_context(
+    level: OrderbookLevel | None,
+) -> pending_reconciliation_service.OrderbookLevelContext | None:
+    if level is None:
+        return None
+    return pending_reconciliation_service.OrderbookLevelContext(
+        price=level.price,
+        quantity=level.quantity,
+    )
+
+
+def _orderbook_context(
+    orderbook: OrderbookSnapshot | None,
+) -> pending_reconciliation_service.OrderbookContext | None:
+    if orderbook is None:
+        return None
+    return pending_reconciliation_service.OrderbookContext(
+        best_bid=_orderbook_level_context(orderbook.best_bid),
+        best_ask=_orderbook_level_context(orderbook.best_ask),
+        total_bid_qty=orderbook.total_bid_qty,
+        total_ask_qty=orderbook.total_ask_qty,
+    )
+
+
+def _support_resistance_level(
+    level: Any | None,
+) -> pending_reconciliation_service.SupportResistanceLevel | None:
+    if level is None:
+        return None
+    return pending_reconciliation_service.SupportResistanceLevel(
+        price=level.price,
+        distance_pct=level.distance_pct,
+    )
+
+
+def _support_resistance_context(
+    support_resistance: Any | None,
+) -> pending_reconciliation_service.SupportResistanceContext | None:
+    if support_resistance is None:
+        return None
+    return pending_reconciliation_service.SupportResistanceContext(
+        nearest_support=_support_resistance_level(support_resistance.nearest_support),
+        nearest_resistance=_support_resistance_level(
+            support_resistance.nearest_resistance
+        ),
+    )
+
+
+def _kr_universe_context(
+    kr_universe: Any | None,
+) -> pending_reconciliation_service.KrUniverseContext | None:
+    if kr_universe is None:
+        return None
+    return pending_reconciliation_service.KrUniverseContext(
+        nxt_eligible=kr_universe.nxt_eligible,
+        name=kr_universe.name,
+        exchange=kr_universe.exchange,
+    )
+
+
 def _build_market_context(
     snapshot: LiveRefreshSnapshot,
     *,
     symbol: str,
 ) -> pending_reconciliation_service.MarketContextInput:
-    quote = snapshot.quote_by_symbol.get(symbol)
-    orderbook = snapshot.orderbook_by_symbol.get(symbol)
-    support_resistance = snapshot.support_resistance_by_symbol.get(symbol)
-    kr_universe = snapshot.kr_universe_by_symbol.get(symbol)
-
     return pending_reconciliation_service.MarketContextInput(
-        quote=(
-            pending_reconciliation_service.QuoteContext(
-                price=quote.price,
-                as_of=quote.as_of,
-            )
-            if quote is not None
-            else None
+        quote=_quote_context(snapshot.quote_by_symbol.get(symbol)),
+        orderbook=_orderbook_context(snapshot.orderbook_by_symbol.get(symbol)),
+        support_resistance=_support_resistance_context(
+            snapshot.support_resistance_by_symbol.get(symbol)
         ),
-        orderbook=(
-            pending_reconciliation_service.OrderbookContext(
-                best_bid=(
-                    pending_reconciliation_service.OrderbookLevelContext(
-                        price=orderbook.best_bid.price,
-                        quantity=orderbook.best_bid.quantity,
-                    )
-                    if orderbook is not None and orderbook.best_bid is not None
-                    else None
-                ),
-                best_ask=(
-                    pending_reconciliation_service.OrderbookLevelContext(
-                        price=orderbook.best_ask.price,
-                        quantity=orderbook.best_ask.quantity,
-                    )
-                    if orderbook is not None and orderbook.best_ask is not None
-                    else None
-                ),
-                total_bid_qty=orderbook.total_bid_qty,
-                total_ask_qty=orderbook.total_ask_qty,
-            )
-            if orderbook is not None
-            else None
-        ),
-        support_resistance=(
-            pending_reconciliation_service.SupportResistanceContext(
-                nearest_support=(
-                    pending_reconciliation_service.SupportResistanceLevel(
-                        price=support_resistance.nearest_support.price,
-                        distance_pct=support_resistance.nearest_support.distance_pct,
-                    )
-                    if support_resistance is not None
-                    and support_resistance.nearest_support is not None
-                    else None
-                ),
-                nearest_resistance=(
-                    pending_reconciliation_service.SupportResistanceLevel(
-                        price=support_resistance.nearest_resistance.price,
-                        distance_pct=support_resistance.nearest_resistance.distance_pct,
-                    )
-                    if support_resistance is not None
-                    and support_resistance.nearest_resistance is not None
-                    else None
-                ),
-            )
-            if support_resistance is not None
-            else None
-        ),
-        kr_universe=(
-            pending_reconciliation_service.KrUniverseContext(
-                nxt_eligible=kr_universe.nxt_eligible,
-                name=kr_universe.name,
-                exchange=kr_universe.exchange,
-            )
-            if kr_universe is not None
-            else None
-        ),
+        kr_universe=_kr_universe_context(snapshot.kr_universe_by_symbol.get(symbol)),
     )
 
 
@@ -302,6 +312,19 @@ def _build_nxt_item(
     return None
 
 
+def _decision_support(
+    *,
+    live_reconciliation: pending_reconciliation_service.PendingReconciliationItem
+    | None,
+    nxt_item: nxt_classifier_service.NxtClassifierItem | None,
+) -> dict[str, Any]:
+    if live_reconciliation is not None:
+        return live_reconciliation.decision_support
+    if nxt_item is not None:
+        return nxt_item.decision_support
+    return {}
+
+
 def _proposal_payload(
     *,
     candidate: ResearchRunCandidate,
@@ -357,10 +380,9 @@ def _proposal_payload(
             if live_quote is not None
             else None
         ),
-        "decision_support": (
-            live_reconciliation.decision_support
-            if live_reconciliation is not None
-            else (nxt_item.decision_support if nxt_item is not None else {})
+        "decision_support": _decision_support(
+            live_reconciliation=live_reconciliation,
+            nxt_item=nxt_item,
         ),
         "source_freshness": candidate.source_freshness,
         "warnings": list(
