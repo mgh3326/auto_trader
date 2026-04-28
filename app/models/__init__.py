@@ -20,6 +20,15 @@ from .research_backtest import (
     ResearchPromotionCandidate,
     ResearchSyncJob,
 )
+from .research_run import (
+    ResearchRun,
+    ResearchRunCandidate,
+    ResearchRunCandidateKind,
+    ResearchRunMarketScope,
+    ResearchRunPendingReconciliation,
+    ResearchRunStage,
+    ResearchRunStatus,
+)
 from .review import PendingSnapshot, Trade, TradeReview, TradeSnapshot
 from .sell_condition import SellCondition
 from .symbol_trade_settings import SymbolTradeSettings
@@ -117,6 +126,13 @@ __all__ = [
     "ActionKind",
     "TrackKind",
     "OutcomeHorizon",
+    "ResearchRun",
+    "ResearchRunCandidate",
+    "ResearchRunPendingReconciliation",
+    "ResearchRunStatus",
+    "ResearchRunStage",
+    "ResearchRunMarketScope",
+    "ResearchRunCandidateKind",
     # "AlertRule", "AlertEvent",
     # "PricesLatest", "PricesOHLCV", "FxRate",
 ]
