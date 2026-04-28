@@ -157,6 +157,31 @@ def test_order_validation_mock_client_factory_does_not_fallback_to_live(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_order_validation_kis_mock_balance_uses_domestic_cash_not_integrated_margin(
+    monkeypatch,
+):
+    from app.mcp_server.tooling import order_validation
+
+    fake_kis = MagicMock()
+    fake_kis.inquire_integrated_margin = AsyncMock(
+        side_effect=AssertionError("must not call integrated margin in mock")
+    )
+    fake_kis.inquire_domestic_cash_balance = AsyncMock(
+        return_value={"stck_cash_ord_psbl_amt": "900000", "dnca_tot_amt": "1000000"}
+    )
+
+    monkeypatch.setattr(
+        order_validation, "_create_kis_client", lambda *, is_mock: fake_kis
+    )
+
+    balance = await order_validation._get_balance_for_order("equity_kr", is_mock=True)
+
+    assert balance == pytest.approx(900000.0)
+    fake_kis.inquire_integrated_margin.assert_not_called()
+    fake_kis.inquire_domestic_cash_balance.assert_awaited_once_with(is_mock=True)
+
+
+@pytest.mark.asyncio
 async def test_portfolio_holdings_mock_collection_does_not_fallback_to_live(
     monkeypatch,
 ):

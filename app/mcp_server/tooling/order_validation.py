@@ -261,6 +261,12 @@ async def _get_balance_for_order(market_type: str, is_mock: bool = False) -> flo
 
     if market_type == "equity_kr":
         kis = _create_kis_client(is_mock=is_mock)
+        if is_mock:
+            cash_summary = await _call_kis(
+                kis.inquire_domestic_cash_balance,
+                is_mock=is_mock,
+            )
+            return float(cash_summary.get("stck_cash_ord_psbl_amt") or 0)
         margin_data = await _call_kis(
             kis.inquire_integrated_margin,
             is_mock=is_mock,
