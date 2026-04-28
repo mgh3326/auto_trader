@@ -171,6 +171,20 @@ def test_runner_result_normalization_preserves_metadata_and_invariants():
     assert evidence.warnings == ["fallback used"]
 
 
+def test_runner_result_normalization_defaults_to_advisory_only_invariants():
+    evidence = advisory_from_runner_result(
+        {
+            "decision": "Underweight",
+            "model": "tradingagents-smoke",
+            "base_url": "local-smoke",
+        }
+    )
+
+    assert evidence.advisory_only is True
+    assert evidence.execution_allowed is False
+    assert evidence.advisory_action == "Underweight"
+
+
 def test_session_synthesis_meta_counts_conflicts_and_keeps_safety_flags():
     synthesized = synthesize_candidate_with_advisory(
         CandidateAnalysis(**_candidate_kwargs()), AdvisoryEvidence(**_advisory_kwargs())
