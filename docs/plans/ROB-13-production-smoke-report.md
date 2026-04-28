@@ -23,6 +23,8 @@ No `.env` contents or secret values were printed.
 
 Status: PASS
 
+Initial smoke before CI fix:
+
 ```json
 {
   "ok": true,
@@ -35,6 +37,36 @@ Status: PASS
   },
   "proposal": {
     "id": 10,
+    "symbol": "005930.KS",
+    "instrument_type": "equity_kr",
+    "proposal_kind": "other",
+    "side": "none",
+    "original_payload_advisory_only": true,
+    "original_payload_execution_allowed": false,
+    "user_response": "pending"
+  },
+  "side_effect_counts": {
+    "actions": 0,
+    "counterfactuals": 0,
+    "outcomes": 0
+  }
+}
+```
+
+Regression smoke after fixing the CI worker module-cache test interaction:
+
+```json
+{
+  "ok": true,
+  "session": {
+    "id": 3,
+    "source_profile": "tradingagents",
+    "market_scope": "kr",
+    "advisory_only": true,
+    "execution_allowed": false
+  },
+  "proposal": {
+    "id": 11,
     "symbol": "005930.KS",
     "instrument_type": "equity_kr",
     "proposal_kind": "other",
