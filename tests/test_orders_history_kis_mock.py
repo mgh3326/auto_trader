@@ -1,5 +1,4 @@
 import pytest
-from unittest.mock import AsyncMock, MagicMock
 
 
 @pytest.mark.asyncio
@@ -56,7 +55,6 @@ async def test_get_order_history_pending_us_mock_surfaces_unsupported(
 
     assert result["orders"] == []
     assert any(
-        e.get("market") == "equity_us"
-        and e.get("mock_unsupported") is True
+        e.get("market") == "equity_us" and e.get("mock_unsupported") is True
         for e in result["errors"]
     ), result["errors"]
