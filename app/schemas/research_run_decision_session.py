@@ -195,3 +195,30 @@ class ResearchRunDecisionSessionResponse(BaseModel):
     advisory_used: bool = False
     advisory_skipped_reason: str | None = None
     warnings: list[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Reference: shape of `proposal.original_payload` for proposals derived from a
+# research run. Built by `app.services.research_run_decision_session_service.
+# _proposal_payload`. Consumed (read-only) by the trading-decision SPA in
+# `frontend/trading-decision/src/api/reconciliation.ts`.
+#
+# {
+#   "advisory_only": True,
+#   "execution_allowed": False,
+#   "research_run_id": "<uuid>",
+#   "research_run_candidate_id": <int>,
+#   "refreshed_at": "<iso8601>",
+#   "candidate_kind": "pending_order|holding|screener_hit|proposed|other",
+#   "pending_order_id": "<order_id>|None",
+#   "reconciliation_status": "<ReconClassificationLiteral>|None",
+#   "reconciliation_summary": "<str>|None",
+#   "nxt_classification": "<NxtClassificationLiteral>|None",
+#   "nxt_summary": "<str>|None",
+#   "nxt_eligible": True | False | None,
+#   "venue_eligibility": {"nxt": True|False|None, "regular": True|None},
+#   "live_quote": {"price": "<decimal>", "as_of": "<iso8601>"} | None,
+#   "decision_support": { "current_price": ..., "gap_pct": ..., ... },
+#   "warnings": ["str", ...]
+# }
+# ---------------------------------------------------------------------------
