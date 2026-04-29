@@ -243,18 +243,20 @@ export default function PreopenPage() {
             Open session
           </Link>
         ) : null}
-        <button
-          className="btn"
-          disabled={creating || !data.run_uuid}
-          onClick={() => data.run_uuid && handleCreate(String(data.run_uuid))}
-          type="button"
-        >
-          {confirmPending
-            ? "Confirm create decision session?"
-            : creating
-              ? "Creating…"
-              : "Create decision session"}
-        </button>
+        {data.linked_sessions.length === 0 ? (
+          <button
+            className="btn"
+            disabled={creating || !data.run_uuid}
+            onClick={() => data.run_uuid && handleCreate(String(data.run_uuid))}
+            type="button"
+          >
+            {confirmPending
+              ? "Confirm create decision session?"
+              : creating
+                ? "Creating…"
+                : "Create decision session"}
+          </button>
+        ) : null}
         {confirmPending ? (
           <button
             className="btn"

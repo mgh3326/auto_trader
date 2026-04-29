@@ -183,10 +183,14 @@ async def test_advisory_skipped_reason_when_zero_candidates():
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_advisory_skipped_reason_from_source_warning():
+@pytest.mark.parametrize(
+    "warning",
+    ["advisory_timeout", "tradingagents_not_configured"],
+)
+async def test_advisory_skipped_reason_from_source_warning(warning: str):
     from app.services import preopen_dashboard_service, research_run_service
 
-    run = _make_run(source_warnings=["advisory_timeout"])
+    run = _make_run(source_warnings=[warning])
 
     with (
         patch.object(
@@ -208,7 +212,7 @@ async def test_advisory_skipped_reason_from_source_warning():
 
     assert result.has_run is True
     assert result.advisory_used is False
-    assert result.advisory_skipped_reason == "advisory_timeout"
+    assert result.advisory_skipped_reason == warning
 
 
 @pytest.mark.asyncio
