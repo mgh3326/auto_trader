@@ -1,4 +1,5 @@
 """ROB-26 settings smoke test."""
+
 from app.core.config import settings
 
 

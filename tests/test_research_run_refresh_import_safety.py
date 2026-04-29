@@ -1,4 +1,5 @@
 """ROB-26 forbidden-import safety test."""
+
 import importlib
 
 import pytest
@@ -41,9 +42,5 @@ def test_module_does_not_import_forbidden(module_name: str) -> None:
     module = importlib.import_module(module_name)
     src = open(module.__file__).read()
     for forbidden in FORBIDDEN_PREFIXES:
-        assert f"import {forbidden}" not in src, (
-            f"{module_name} imports {forbidden}"
-        )
-        assert f"from {forbidden}" not in src, (
-            f"{module_name} imports from {forbidden}"
-        )
+        assert f"import {forbidden}" not in src, f"{module_name} imports {forbidden}"
+        assert f"from {forbidden}" not in src, f"{module_name} imports from {forbidden}"

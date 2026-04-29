@@ -1,4 +1,5 @@
 """ROB-26 orchestrator unit tests."""
+
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
@@ -7,7 +8,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.jobs.research_run_refresh_runner import _within_window, run_research_run_refresh
+from app.jobs.research_run_refresh_runner import (
+    _within_window,
+    run_research_run_refresh,
+)
 
 
 def test_preopen_window_includes_0810_weekday():
@@ -25,12 +29,21 @@ def test_preopen_window_excludes_after_0930():
 
 
 def test_nxt_window_includes_1545_and_1955():
-    assert _within_window(stage="nxt_aftermarket", now=datetime(2026, 4, 29, 15, 45)) is True
-    assert _within_window(stage="nxt_aftermarket", now=datetime(2026, 4, 29, 19, 55)) is True
+    assert (
+        _within_window(stage="nxt_aftermarket", now=datetime(2026, 4, 29, 15, 45))
+        is True
+    )
+    assert (
+        _within_window(stage="nxt_aftermarket", now=datetime(2026, 4, 29, 19, 55))
+        is True
+    )
 
 
 def test_nxt_window_excludes_after_2030():
-    assert _within_window(stage="nxt_aftermarket", now=datetime(2026, 4, 29, 20, 31)) is False
+    assert (
+        _within_window(stage="nxt_aftermarket", now=datetime(2026, 4, 29, 20, 31))
+        is False
+    )
 
 
 # ── Skip-path helpers ──────────────────────────────────────────────────────
@@ -96,7 +109,9 @@ async def test_outside_hours_skips(monkeypatch):
 
     monkeypatch.setattr(settings, "research_run_refresh_enabled", True, raising=False)
     monkeypatch.setattr(settings, "research_run_refresh_user_id", 1, raising=False)
-    monkeypatch.setattr(settings, "research_run_refresh_market_hours_only", True, raising=False)
+    monkeypatch.setattr(
+        settings, "research_run_refresh_market_hours_only", True, raising=False
+    )
     # Saturday 08:10 — outside window because weekend
     result = await run_research_run_refresh(
         stage="preopen",
@@ -115,7 +130,9 @@ async def test_no_run_returns_skipped(monkeypatch):
 
     monkeypatch.setattr(settings, "research_run_refresh_enabled", True, raising=False)
     monkeypatch.setattr(settings, "research_run_refresh_user_id", 1, raising=False)
-    monkeypatch.setattr(settings, "research_run_refresh_market_hours_only", False, raising=False)
+    monkeypatch.setattr(
+        settings, "research_run_refresh_market_hours_only", False, raising=False
+    )
     monkeypatch.setattr(
         svc,
         "resolve_research_run",
@@ -137,12 +154,16 @@ async def test_happy_path_completed(monkeypatch):
     from app.core.config import settings
     from app.services import (
         research_run_decision_session_service as svc,
+    )
+    from app.services import (
         research_run_live_refresh_service as lrs,
     )
 
     monkeypatch.setattr(settings, "research_run_refresh_enabled", True, raising=False)
     monkeypatch.setattr(settings, "research_run_refresh_user_id", 1, raising=False)
-    monkeypatch.setattr(settings, "research_run_refresh_market_hours_only", False, raising=False)
+    monkeypatch.setattr(
+        settings, "research_run_refresh_market_hours_only", False, raising=False
+    )
 
     run_uuid = uuid4()
     session_uuid = uuid4()
@@ -161,9 +182,13 @@ async def test_happy_path_completed(monkeypatch):
     mock_result.warnings = ("warn1",)
 
     monkeypatch.setattr(svc, "resolve_research_run", AsyncMock(return_value=mock_run))
-    monkeypatch.setattr(lrs, "build_live_refresh_snapshot", AsyncMock(return_value=mock_snapshot))
     monkeypatch.setattr(
-        svc, "create_decision_session_from_research_run", AsyncMock(return_value=mock_result)
+        lrs, "build_live_refresh_snapshot", AsyncMock(return_value=mock_snapshot)
+    )
+    monkeypatch.setattr(
+        svc,
+        "create_decision_session_from_research_run",
+        AsyncMock(return_value=mock_result),
     )
 
     captured_session: list[_FakeSession] = []

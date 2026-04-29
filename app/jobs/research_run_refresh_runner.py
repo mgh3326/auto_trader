@@ -8,13 +8,14 @@ Scheduler-agnostic: no Taskiq imports here, so this function can be wrapped
 by any scheduler (Taskiq cron tasks in app/tasks/research_run_refresh_tasks.py,
 or a future Prefect @flow in a separate package).
 """
+
 from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import UTC, datetime
-from typing import AsyncContextManager, Literal, TypedDict
+from typing import Literal, TypedDict
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -82,7 +83,7 @@ async def run_research_run_refresh(
     *,
     stage: StageLiteral,
     market_scope: MarketScopeLiteral = "kr",
-    db_factory: Callable[[], AsyncContextManager[AsyncSession]] | None = None,
+    db_factory: Callable[[], AbstractAsyncContextManager[AsyncSession]] | None = None,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
     now_local: Callable[[], datetime] = now_kst,
 ) -> ResearchRunRefreshSummary:
@@ -131,20 +132,24 @@ async def run_research_run_refresh(
     async with _factory() as db:
         try:
             try:
-                research_run = await research_run_decision_session_service.resolve_research_run(
-                    db,
-                    user_id=user_id,
-                    selector=ResearchRunSelector(
-                        market_scope=market_scope,
-                        stage=stage,
-                        status="open",
-                    ),
+                research_run = (
+                    await research_run_decision_session_service.resolve_research_run(
+                        db,
+                        user_id=user_id,
+                        selector=ResearchRunSelector(
+                            market_scope=market_scope,
+                            stage=stage,
+                            status="open",
+                        ),
+                    )
                 )
             except research_run_decision_session_service.ResearchRunNotFound:
                 return {**base, "status": "skipped", "reason": "no_research_run"}
 
-            snapshot = await research_run_live_refresh_service.build_live_refresh_snapshot(
-                db, run=research_run
+            snapshot = (
+                await research_run_live_refresh_service.build_live_refresh_snapshot(
+                    db, run=research_run
+                )
             )
 
             try:

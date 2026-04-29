@@ -1,11 +1,12 @@
 """ROB-26 Taskiq cron task tests."""
+
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, patch
 
-from app.tasks import research_run_refresh_tasks as mod
+import pytest
 
+from app.tasks import research_run_refresh_tasks as mod
 
 EXPECTED_SCHEDULES = {
     "kr_preopen_research_refresh": ("10 8 * * 1-5", "preopen"),
@@ -32,9 +33,7 @@ def test_cron_strings_match_schedule_matrix():
         assert any(
             s.get("cron") == cron and s.get("cron_offset") == "Asia/Seoul"
             for s in schedules
-        ), (
-            f"{name}: expected cron={cron!r} cron_offset='Asia/Seoul', got {schedules}"
-        )
+        ), f"{name}: expected cron={cron!r} cron_offset='Asia/Seoul', got {schedules}"
 
 
 def test_module_registered_in_taskiq_task_modules():

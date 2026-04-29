@@ -4,6 +4,7 @@ Each task is a thin wrapper around run_research_run_refresh(); all
 guard logic (disabled, no-operator, outside-hours, no-run) lives in
 the orchestrator, not here.
 """
+
 from __future__ import annotations
 
 from app.core.taskiq_broker import broker

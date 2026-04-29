@@ -1,9 +1,9 @@
 """ROB-26 end-to-end smoke test — no-op skipped path, no DB writes."""
+
 from __future__ import annotations
 
 import re
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import pytest
