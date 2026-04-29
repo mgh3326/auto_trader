@@ -317,6 +317,7 @@ async def _build_preview(
     current_price: float,
     market_type: str,
     defensive_trim_ctx: DefensiveTrimContext | None,
+    is_mock: bool = False,
 ) -> dict[str, Any]:
     """Run preview and enrich result with defaults."""
     dry_run_result = await _preview_order(
@@ -328,6 +329,7 @@ async def _build_preview(
         current_price=current_price,
         market_type=market_type,
         defensive_trim_ctx=defensive_trim_ctx,
+        is_mock=is_mock,
     )
     if not isinstance(dry_run_result, dict):
         raise ValueError("Order preview returned invalid result")
@@ -873,6 +875,7 @@ async def _place_order_impl(
                 current_price=current_price,
                 market_type=market_type,
                 defensive_trim_ctx=defensive_trim_ctx,
+                is_mock=is_mock,
             )
         except ValueError as preview_exc:
             return _order_error(str(preview_exc))
