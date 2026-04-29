@@ -680,6 +680,23 @@ async def _execute_and_record(
         caller_source=get_caller_source() if defensive_trim_ctx else None,
     )
 
+    # KIS mock: write to dedicated ledger, skip live journal/fill paths entirely.
+    if is_mock:
+        from app.mcp_server.tooling.kis_mock_ledger import _record_kis_mock_order
+
+        return await _record_kis_mock_order(
+            normalized_symbol=normalized_symbol,
+            market_type=market_type,
+            side=side,
+            order_type=order_type,
+            dry_run_result=dry_run_result,
+            execution_result=execution_result,
+            reason=reason,
+            thesis=thesis,
+            strategy=strategy,
+            notes=notes,
+        )
+
     # Record phase: fills + journals
     record_result = await _record_fill_and_journals(
         side=side,
@@ -762,22 +779,25 @@ async def _place_order_impl(
 
     market_type, normalized_symbol = _resolve_market_type(symbol, market)
 
-    # Validate buy order journal requirements before any external API calls
-    try:
-        _validate_buy_journal_requirements(
-            side=side_lower,
-            dry_run=dry_run,
-            thesis=thesis,
-            strategy=strategy,
-        )
-    except ValueError as e:
-        return {
-            "success": False,
-            "error": str(e),
-            "source": "upbit" if market_type == "crypto" else "kis",
-            "symbol": normalized_symbol,
-            "instrument_type": market_type,
-        }
+    # Validate buy order journal requirements before any external API calls.
+    # Skipped for KIS mock: mock orders write to kis_mock_order_ledger and
+    # never create a TradeJournal, so thesis/strategy are optional.
+    if not is_mock:
+        try:
+            _validate_buy_journal_requirements(
+                side=side_lower,
+                dry_run=dry_run,
+                thesis=thesis,
+                strategy=strategy,
+            )
+        except ValueError as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "source": "upbit" if market_type == "crypto" else "kis",
+                "symbol": normalized_symbol,
+                "instrument_type": market_type,
+            }
 
     source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "kis"}
     source = source_map[market_type]
