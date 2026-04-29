@@ -43,12 +43,18 @@ class ResearchRunDecisionSessionResult:
     proposal_count: int
     reconciliation_count: int
     warnings: tuple[str, ...]
+    advisory_used: bool = False
+    advisory_skipped_reason: str | None = None
 
 
 class ResearchRunNotFound(Exception): ...
 
 
 class EmptyResearchRunError(Exception): ...
+
+
+def _tradingagents_skip_reason() -> str:
+    return "tradingagents_not_configured"
 
 
 def _json_safe(value: Any) -> Any:
@@ -441,8 +447,10 @@ async def create_decision_session_from_research_run(
     request: ResearchRunDecisionSessionRequest,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> ResearchRunDecisionSessionResult:
-    if request.include_tradingagents is True:
-        raise NotImplementedError("include_tradingagents=True is not implemented")
+    advisory_used = False
+    advisory_skipped_reason = (
+        _tradingagents_skip_reason() if request.include_tradingagents is True else None
+    )
 
     candidates = await _load_research_run_candidates(
         db, research_run_id=research_run.id
@@ -470,6 +478,8 @@ async def create_decision_session_from_research_run(
 
     proposals: list[trading_decision_service.ProposalCreate] = []
     warnings: list[str] = list(snapshot.warnings)
+    if advisory_skipped_reason is not None:
+        warnings.append(advisory_skipped_reason)
     reconciliation_count = 0
     reconciliation_summary: dict[str, int] = {}
     nxt_summary: dict[str, int] = {}
@@ -581,6 +591,11 @@ async def create_decision_session_from_research_run(
             "nxt_summary": nxt_summary,
             "snapshot_warnings": list(snapshot.warnings),
             "source_warnings": list(research_run.source_warnings),
+            "tradingagents": {
+                "requested": request.include_tradingagents,
+                "advisory_used": advisory_used,
+                "skipped_reason": advisory_skipped_reason,
+            },
         }
     )
     await db.flush()
@@ -599,6 +614,8 @@ async def create_decision_session_from_research_run(
         proposal_count=len(created_proposals),
         reconciliation_count=reconciliation_count,
         warnings=tuple(dict.fromkeys(warnings)),
+        advisory_used=advisory_used,
+        advisory_skipped_reason=advisory_skipped_reason,
     )
 
 

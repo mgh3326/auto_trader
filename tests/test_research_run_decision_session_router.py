@@ -86,7 +86,13 @@ def _session() -> SimpleNamespace:
     )
 
 
-def _result(run: SimpleNamespace) -> SimpleNamespace:
+def _result(
+    run: SimpleNamespace,
+    *,
+    advisory_used: bool = False,
+    advisory_skipped_reason: str | None = None,
+    warnings: tuple[str, ...] = (),
+) -> SimpleNamespace:
     return SimpleNamespace(
         session=_session(),
         research_run=run,
@@ -94,7 +100,9 @@ def _result(run: SimpleNamespace) -> SimpleNamespace:
         refreshed_at=datetime.now(UTC),
         proposal_count=1,
         reconciliation_count=0,
-        warnings=(),
+        advisory_used=advisory_used,
+        advisory_skipped_reason=advisory_skipped_reason,
+        warnings=warnings,
     )
 
 
@@ -103,6 +111,7 @@ def _patch_services(
     *,
     run: SimpleNamespace,
     snapshot: SimpleNamespace | None = None,
+    result: SimpleNamespace | None = None,
     create_side_effect: Exception | None = None,
 ) -> None:
     from app.services import (
@@ -125,7 +134,7 @@ def _patch_services(
         "create_decision_session_from_research_run",
         AsyncMock(side_effect=create_side_effect)
         if create_side_effect is not None
-        else AsyncMock(return_value=_result(run)),
+        else AsyncMock(return_value=result or _result(run)),
     )
 
 
@@ -220,14 +229,21 @@ def test_create_decision_422_empty_candidates(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.unit
-def test_create_decision_501_tradingagents(monkeypatch: pytest.MonkeyPatch):
-    """POST /decisions/from-research-run returns 501 for include_tradingagents=True."""
+def test_create_decision_tradingagents_fail_open_response(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """POST /decisions/from-research-run exposes TA skip state instead of 501."""
     run = _run()
     _patch_services(
         monkeypatch,
         run=run,
         snapshot=_snapshot(),
-        create_side_effect=NotImplementedError("TradingAgents not supported"),
+        result=_result(
+            run,
+            advisory_used=False,
+            advisory_skipped_reason="tradingagents_not_configured:repo_path_missing",
+            warnings=("tradingagents_not_configured:repo_path_missing",),
+        ),
     )
 
     response = _post(
@@ -238,5 +254,11 @@ def test_create_decision_501_tradingagents(monkeypatch: pytest.MonkeyPatch):
         },
     )
 
-    assert response.status_code == 501
-    assert response.json()["detail"] == "not_implemented"
+    assert response.status_code == 201
+    body = response.json()
+    assert body["advisory_used"] is False
+    assert (
+        body["advisory_skipped_reason"]
+        == "tradingagents_not_configured:repo_path_missing"
+    )
+    assert body["warnings"] == ["tradingagents_not_configured:repo_path_missing"]

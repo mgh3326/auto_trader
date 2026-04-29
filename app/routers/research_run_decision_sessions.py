@@ -102,11 +102,7 @@ async def create_decision_from_research_run(
         refreshed_at=result.refreshed_at,
         proposal_count=result.proposal_count,
         reconciliation_count=result.reconciliation_count,
-        advisory_used=False,
-        advisory_skipped_reason=(
-            "include_tradingagents_not_supported"
-            if payload.include_tradingagents
-            else None
-        ),
+        advisory_used=result.advisory_used,
+        advisory_skipped_reason=result.advisory_skipped_reason,
         warnings=list(result.warnings),
     )
