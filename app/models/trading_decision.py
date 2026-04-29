@@ -11,6 +11,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Numeric,
+    SmallInteger,
     Text,
     func,
 )
@@ -339,4 +340,92 @@ class TradingDecisionOutcome(Base):
     proposal: Mapped[TradingDecisionProposal] = relationship(back_populates="outcomes")
     counterfactual: Mapped[TradingDecisionCounterfactual | None] = relationship(
         back_populates="outcomes"
+    )
+
+
+class StrategyEventSource(enum.StrEnum):
+    user = "user"
+    hermes = "hermes"
+    tradingagents = "tradingagents"
+    news = "news"
+    market_data = "market_data"
+    scheduler = "scheduler"
+
+
+class StrategyEventType(enum.StrEnum):
+    operator_market_event = "operator_market_event"
+    earnings_event = "earnings_event"
+    macro_event = "macro_event"
+    sector_rotation = "sector_rotation"
+    technical_break = "technical_break"
+    risk_veto = "risk_veto"
+    cash_budget_change = "cash_budget_change"
+    position_change = "position_change"
+
+
+class TradingDecisionStrategyEvent(Base):
+    __tablename__ = "trading_decision_strategy_events"
+    __table_args__ = (
+        CheckConstraint(
+            "source IN ('user','hermes','tradingagents','news','market_data','scheduler')",
+            name="trading_decision_strategy_events_source_allowed",
+        ),
+        CheckConstraint(
+            "event_type IN ('operator_market_event','earnings_event','macro_event',"
+            "'sector_rotation','technical_break','risk_veto',"
+            "'cash_budget_change','position_change')",
+            name="trading_decision_strategy_events_type_allowed",
+        ),
+        CheckConstraint(
+            "severity BETWEEN 1 AND 5",
+            name="trading_decision_strategy_events_severity_range",
+        ),
+        CheckConstraint(
+            "confidence BETWEEN 0 AND 100",
+            name="trading_decision_strategy_events_confidence_range",
+        ),
+        Index(
+            "ix_trading_decision_strategy_events_session_id_partial",
+            "session_id",
+            postgresql_where="(session_id IS NOT NULL)",
+        ),
+        Index(
+            "ix_trading_decision_strategy_events_user_created_at",
+            "created_by_user_id",
+            "created_at",
+            postgresql_using="btree",
+            postgresql_ops={"created_at": "DESC"},
+        ),
+        Index(
+            "ix_trading_decision_strategy_events_created_at",
+            "created_at",
+            postgresql_using="btree",
+            postgresql_ops={"created_at": "DESC"},
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    event_uuid: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), unique=True, index=True, default=uuid4, nullable=False
+    )
+    session_id: Mapped[int | None] = mapped_column(
+        ForeignKey("trading_decision_sessions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    event_type: Mapped[str] = mapped_column(Text, nullable=False)
+    source_text: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_summary: Mapped[str | None] = mapped_column(Text)
+    affected_markets: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    affected_sectors: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    affected_themes: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    affected_symbols: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    severity: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=2)
+    confidence: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=50)
+    created_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    event_metadata: Mapped[dict | None] = mapped_column("event_metadata", JSONB)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
     )
