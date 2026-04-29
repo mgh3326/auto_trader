@@ -12,7 +12,7 @@ import pytest
 
 import app.services.brokers.upbit.client as upbit_service
 from app.core.config import settings
-from app.mcp_server.tooling import order_execution
+from app.mcp_server.tooling import order_execution, orders_registration
 from tests._mcp_tooling_support import (
     _patch_runtime_attr,
     build_tools,
@@ -1304,6 +1304,54 @@ async def test_place_order_kr_equity_balance_lookup_failure_blocks_real_order(
     assert "dry_run" not in result
     assert "OPSQ2001 CMA_EVLU_AMT_ICLD_YN error" in result["error"]
     assert len(order_calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_place_order_kis_mock_sell_preview_uses_mock_holdings(monkeypatch):
+    """kis_mock sell dry-run preview must not fall back to live KIS holdings."""
+    tools = build_tools()
+    kis_calls: list[bool] = []
+
+    class MockKISClient:
+        def __init__(self, is_mock: bool = False):
+            self.is_mock = is_mock
+
+        async def fetch_my_stocks(self, *, is_mock: bool = False):
+            kis_calls.append(is_mock)
+            avg_price = 227000.0 if is_mock else 194950.0
+            return [
+                {
+                    "pdno": "005930",
+                    "hldg_qty": "1",
+                    "pchs_avg_pric": str(avg_price),
+                }
+            ]
+
+    async def fetch_quote(symbol):
+        assert symbol == "005930"
+        return {"price": 226000.0}
+
+    monkeypatch.setattr(orders_registration, "validate_kis_mock_config", lambda: [])
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
+    _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_kr", fetch_quote)
+
+    result = await tools["place_order"](
+        symbol="005930",
+        side="sell",
+        order_type="limit",
+        quantity=1,
+        price=229500.0,
+        dry_run=True,
+        account_mode="kis_mock",
+    )
+
+    assert result["success"] is True
+    assert result["dry_run"] is True
+    assert result["account_mode"] == "kis_mock"
+    assert result["avg_buy_price"] == 227000.0
+    assert result["realized_pnl"] == 2500.0
+    assert kis_calls
+    assert all(kis_calls)
 
 
 # ----------------------------------------------------------------------

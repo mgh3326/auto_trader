@@ -437,6 +437,7 @@ async def _preview_sell(
     current_price: float,
     market_type: str,
     defensive_trim_ctx: DefensiveTrimContext | None = None,
+    is_mock: bool = False,
 ) -> dict[str, Any]:
     """Build a dry-run preview dict for a sell order."""
     result: dict[str, Any] = {
@@ -446,7 +447,7 @@ async def _preview_sell(
         "current_price": current_price,
     }
 
-    holdings = await _get_holdings_for_order(symbol, market_type)
+    holdings = await _get_holdings_for_order(symbol, market_type, is_mock=is_mock)
     if not holdings:
         result["error"] = "No holdings found"
         return result
@@ -509,6 +510,7 @@ async def _preview_order(
     current_price: float,
     market_type: str,
     defensive_trim_ctx: DefensiveTrimContext | None = None,
+    is_mock: bool = False,
 ) -> dict[str, Any]:
     """Validate order and return a dry-run simulation dict.
 
@@ -531,6 +533,7 @@ async def _preview_order(
         current_price=current_price,
         market_type=market_type,
         defensive_trim_ctx=defensive_trim_ctx,
+        is_mock=is_mock,
     )
 
 
