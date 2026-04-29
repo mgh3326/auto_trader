@@ -1,0 +1,42 @@
+.badge {
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1;
+  padding: 5px 8px;
+}
+
+.maintain {
+  background: #eef1f5;
+  color: #495467;
+}
+.near_fill {
+  background: #dff7e7;
+  color: #176b35;
+}
+.too_far {
+  background: #fde2e2;
+  color: #9f2d2d;
+}
+.chasing_risk {
+  background: #fdebcb;
+  color: #8c5b00;
+}
+.data_mismatch {
+  background: #fdebeb;
+  border: 1px dashed #c44a4a;
+  color: #8b1b1b;
+}
+.kr_pending_non_nxt {
+  background: #fff3cd;
+  color: #6b3f00;
+}
+.unknown_venue {
+  background: #fde2e2;
+  color: #6b1f1f;
+}
+.unknown {
+  background: #e6e9ee;
+  color: #4d5666;
+}
