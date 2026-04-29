@@ -17,6 +17,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 
@@ -162,6 +163,66 @@ class PendingSnapshot(Base):
     order_id: Mapped[str | None] = mapped_column(Text)
     resolved_as: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
     resolved_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+# ---------------------------------------------------------------------------
+# review.kis_mock_order_ledger — KIS official-mock execution records (ROB-37)
+# Fully isolated from live review.trades / TradeJournal paths.
+# ---------------------------------------------------------------------------
+class KISMockOrderLedger(Base):
+    __tablename__ = "kis_mock_order_ledger"
+    __table_args__ = (
+        UniqueConstraint("order_no", name="uq_kis_mock_ledger_order_no"),
+        CheckConstraint("side IN ('buy','sell')", name="kis_mock_ledger_side"),
+        CheckConstraint("currency IN ('KRW','USD')", name="kis_mock_ledger_currency"),
+        CheckConstraint(
+            "account_mode = 'kis_mock'", name="kis_mock_ledger_account_mode_kis_mock"
+        ),
+        CheckConstraint("broker = 'kis'", name="kis_mock_ledger_broker_kis"),
+        CheckConstraint(
+            "status IN ('accepted','rejected','unknown')",
+            name="kis_mock_ledger_status_allowed",
+        ),
+        Index("ix_kis_mock_ledger_trade_date", "trade_date"),
+        Index("ix_kis_mock_ledger_symbol", "symbol"),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    trade_date: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
+    symbol: Mapped[str] = mapped_column(Text, nullable=False)
+    instrument_type: Mapped[InstrumentType] = mapped_column(
+        Enum(InstrumentType, name="instrument_type", create_type=False), nullable=False
+    )
+    side: Mapped[str] = mapped_column(Text, nullable=False)
+    order_type: Mapped[str] = mapped_column(Text, nullable=False, default="limit")
+    quantity: Mapped[float] = mapped_column(Numeric(20, 8), nullable=False)
+    price: Mapped[float] = mapped_column(Numeric(20, 4), nullable=False)
+    amount: Mapped[float] = mapped_column(Numeric(20, 4), nullable=False, default=0)
+    fee: Mapped[float] = mapped_column(Numeric(20, 4), nullable=False, default=0)
+    currency: Mapped[str] = mapped_column(Text, nullable=False, default="KRW")
+
+    order_no: Mapped[str | None] = mapped_column(Text)
+    order_time: Mapped[str | None] = mapped_column(Text)
+    krx_fwdg_ord_orgno: Mapped[str | None] = mapped_column(Text)
+
+    account_mode: Mapped[str] = mapped_column(Text, nullable=False, default="kis_mock")
+    broker: Mapped[str] = mapped_column(Text, nullable=False, default="kis")
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="unknown")
+    response_code: Mapped[str | None] = mapped_column(Text)
+    response_message: Mapped[str | None] = mapped_column(Text)
+    raw_response: Mapped[dict | None] = mapped_column(JSONB)
+
+    reason: Mapped[str | None] = mapped_column(Text)
+    thesis: Mapped[str | None] = mapped_column(Text)
+    strategy: Mapped[str | None] = mapped_column(Text)
+    notes: Mapped[str | None] = mapped_column(Text)
+
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
     )
