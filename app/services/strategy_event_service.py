@@ -144,9 +144,11 @@ async def list_strategy_events(
             TradingDecisionStrategyEvent.created_by_user_id == user_id
         )
 
-    base = base.order_by(TradingDecisionStrategyEvent.created_at.desc()).limit(
-        limit
-    ).offset(offset)
+    base = (
+        base.order_by(TradingDecisionStrategyEvent.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
 
     total = (await db.execute(count_base)).scalar_one()
     rows = (await db.execute(base)).all()

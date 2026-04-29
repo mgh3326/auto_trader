@@ -5,6 +5,7 @@ Revises: d3703007a676
 Create Date: 2026-04-29 00:00:00.000000
 
 """
+
 from collections.abc import Sequence
 
 import sqlalchemy as sa
@@ -52,10 +53,19 @@ def upgrade() -> None:
             nullable=False,
             server_default=sa.text("'[]'::jsonb"),
         ),
-        sa.Column("severity", sa.SmallInteger(), nullable=False, server_default=sa.text("2")),
-        sa.Column("confidence", sa.SmallInteger(), nullable=False, server_default=sa.text("50")),
+        sa.Column(
+            "severity", sa.SmallInteger(), nullable=False, server_default=sa.text("2")
+        ),
+        sa.Column(
+            "confidence",
+            sa.SmallInteger(),
+            nullable=False,
+            server_default=sa.text("50"),
+        ),
         sa.Column("created_by_user_id", sa.BigInteger(), nullable=True),
-        sa.Column("event_metadata", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+        sa.Column(
+            "event_metadata", postgresql.JSONB(astext_type=sa.Text()), nullable=True
+        ),
         sa.Column(
             "created_at",
             sa.TIMESTAMP(timezone=True),

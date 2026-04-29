@@ -75,9 +75,7 @@ def test_authenticated_post_returns_201_and_round_trips_lists(monkeypatch):
     from app.services import strategy_event_service
 
     create_mock = AsyncMock(return_value=_detail_stub())
-    monkeypatch.setattr(
-        strategy_event_service, "create_strategy_event", create_mock
-    )
+    monkeypatch.setattr(strategy_event_service, "create_strategy_event", create_mock)
 
     fake_db = _FakeDB()
     client, app = _make_client()
@@ -111,9 +109,7 @@ def test_authenticated_post_links_session_uuid(monkeypatch):
 
     sess_uuid = uuid4()
     create_mock = AsyncMock(return_value=_detail_stub(session_uuid=sess_uuid))
-    monkeypatch.setattr(
-        strategy_event_service, "create_strategy_event", create_mock
-    )
+    monkeypatch.setattr(strategy_event_service, "create_strategy_event", create_mock)
 
     fake_db = _FakeDB()
     client, app = _make_client()
@@ -140,9 +136,7 @@ def test_unknown_session_uuid_returns_404(monkeypatch):
     create_mock = AsyncMock(
         side_effect=strategy_event_service.UnknownSessionUUIDError("x")
     )
-    monkeypatch.setattr(
-        strategy_event_service, "create_strategy_event", create_mock
-    )
+    monkeypatch.setattr(strategy_event_service, "create_strategy_event", create_mock)
 
     client, app = _make_client()
     app.dependency_overrides[get_db] = lambda: _FakeDB()
@@ -204,9 +198,7 @@ def test_list_endpoint_filters_by_session_uuid(monkeypatch):
     sess_uuid = uuid4()
     client, app = _make_client()
     app.dependency_overrides[get_db] = lambda: SimpleNamespace()
-    resp = client.get(
-        f"/trading/api/strategy-events?session_uuid={sess_uuid}&limit=10"
-    )
+    resp = client.get(f"/trading/api/strategy-events?session_uuid={sess_uuid}&limit=10")
     assert resp.status_code == 200
     assert list_mock.await_args.kwargs["session_uuid"] == sess_uuid
     assert list_mock.await_args.kwargs["limit"] == 10

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 
@@ -80,9 +80,7 @@ async def test_create_strategy_event_links_session_by_uuid(monkeypatch):
     db.refresh = AsyncMock(side_effect=_make_refresh_effect())
 
     # `_resolve_session_id_for_uuid` should hit db.execute and unwrap scalar.
-    db.execute = AsyncMock(
-        return_value=SimpleNamespace(scalar_one_or_none=lambda: 42)
-    )
+    db.execute = AsyncMock(return_value=SimpleNamespace(scalar_one_or_none=lambda: 42))
 
     req = StrategyEventCreateRequest(
         event_type="risk_veto",
@@ -118,7 +116,5 @@ async def test_create_strategy_event_unknown_session_uuid_raises(monkeypatch):
         session_uuid=uuid4(),
     )
     with pytest.raises(strategy_event_service.UnknownSessionUUIDError):
-        await strategy_event_service.create_strategy_event(
-            db, request=req, user_id=7
-        )
+        await strategy_event_service.create_strategy_event(db, request=req, user_id=7)
     db.add.assert_not_called()

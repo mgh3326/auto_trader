@@ -47,9 +47,7 @@ async def create_strategy_event(
     return detail
 
 
-@router.get(
-    "/api/strategy-events", response_model=StrategyEventListResponse
-)
+@router.get("/api/strategy-events", response_model=StrategyEventListResponse)
 async def list_strategy_events(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_authenticated_user)],
@@ -70,9 +68,7 @@ async def list_strategy_events(
         raise HTTPException(status_code=404, detail="session_uuid_not_found")
 
 
-@router.get(
-    "/api/strategy-events/{event_uuid}", response_model=StrategyEventDetail
-)
+@router.get("/api/strategy-events/{event_uuid}", response_model=StrategyEventDetail)
 async def get_strategy_event(
     event_uuid: UUID,
     db: Annotated[AsyncSession, Depends(get_db)],

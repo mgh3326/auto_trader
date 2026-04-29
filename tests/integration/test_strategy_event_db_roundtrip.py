@@ -14,6 +14,7 @@ async def async_db_session():
     """Real async Postgres session using DATABASE_URL from env/settings."""
     try:
         from app.core.config import settings
+
         db_url = settings.DATABASE_URL
     except Exception:
         pytest.skip("DATABASE_URL not configured — skipping integration test")
