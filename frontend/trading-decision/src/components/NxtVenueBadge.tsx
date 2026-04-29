@@ -22,23 +22,35 @@ export default function NxtVenueBadge({
   if (marketScope !== "kr") return null;
 
   if (nxtClassification === "data_mismatch_requires_review") {
+    const badgeLabel = "NXT review needed";
     return (
-      <span className={`${styles.badge} ${styles.review}`}>
-        NXT review needed
+      <span
+        aria-label={`NXT venue: ${badgeLabel}`}
+        className={`${styles.badge} ${styles.review}`}
+      >
+        {badgeLabel}
       </span>
     );
   }
   if (nxtEligible === false) {
+    const badgeLabel = "Non-NXT (KR broker)";
     return (
-      <span className={`${styles.badge} ${styles.nonNxt}`}>
-        Non-NXT (KR broker)
+      <span
+        aria-label={`NXT venue: ${badgeLabel}`}
+        className={`${styles.badge} ${styles.nonNxt}`}
+      >
+        {badgeLabel}
       </span>
     );
   }
   if (nxtEligible === null) {
+    const badgeLabel = "NXT eligibility unknown";
     return (
-      <span className={`${styles.badge} ${styles.unknown}`}>
-        NXT eligibility unknown
+      <span
+        aria-label={`NXT venue: ${badgeLabel}`}
+        className={`${styles.badge} ${styles.unknown}`}
+      >
+        {badgeLabel}
       </span>
     );
   }
@@ -46,15 +58,23 @@ export default function NxtVenueBadge({
     nxtClassification !== null &&
     ACTIONABLE.indexOf(nxtClassification) >= 0
   ) {
+    const badgeLabel = "NXT actionable";
     return (
-      <span className={`${styles.badge} ${styles.actionable}`}>
-        NXT actionable
+      <span
+        aria-label={`NXT venue: ${badgeLabel}`}
+        className={`${styles.badge} ${styles.actionable}`}
+      >
+        {badgeLabel}
       </span>
     );
   }
+  const badgeLabel = "NXT not actionable";
   return (
-    <span className={`${styles.badge} ${styles.notActionable}`}>
-      NXT not actionable
+    <span
+      aria-label={`NXT venue: ${badgeLabel}`}
+      className={`${styles.badge} ${styles.notActionable}`}
+    >
+      {badgeLabel}
     </span>
   );
 }

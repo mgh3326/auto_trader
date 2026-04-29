@@ -152,9 +152,11 @@ export default function ProposalRow({
         onOpenAdjust={setAdjustResponse}
         onSimpleResponse={(response) => void respond({ response })}
       />
-      <p className={styles.safetyNote}>
-        Accept records this decision only; it does not send a live trade.
-      </p>
+      {!nonActionable ? (
+        <p className={styles.safetyNote}>
+          Accept records this decision only; it does not send a live trade.
+        </p>
+      ) : null}
       {adjustResponse ? (
         <ProposalAdjustmentEditor
           onCancel={() => setAdjustResponse(null)}

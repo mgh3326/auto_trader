@@ -33,7 +33,9 @@ describe("NxtVenueBadge", () => {
         nxtEligible={false}
       />,
     );
-    expect(screen.getByText("Non-NXT (KR broker)")).toBeInTheDocument();
+    const badge = screen.getByText("Non-NXT (KR broker)");
+    expect(badge).toBeInTheDocument();
+    expect(badge).toHaveAccessibleName("NXT venue: Non-NXT (KR broker)");
   });
 
   it("renders 'NXT eligibility unknown' when nxt_eligible is null", () => {

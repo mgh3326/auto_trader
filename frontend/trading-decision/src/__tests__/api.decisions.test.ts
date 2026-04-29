@@ -180,21 +180,23 @@ describe("decisions API client", () => {
     const files = (await readdir(assetsDir)).filter((file) =>
       file.endsWith(".js"),
     );
-    const forbidden = [
-      "kis.",
-      "upbit.",
-      "redis",
-      "telegram",
-      "broker",
-      "order_service",
-      "fill_notification",
-      "execution_event",
-      "watch_alert_service",
+    // Keep backend/runtime integration symbols out of the SPA bundle while
+    // allowing user-facing copy to use ordinary words such as "broker".
+    const forbidden: RegExp[] = [
+      /kis\./i,
+      /upbit\./i,
+      /redis/i,
+      /telegram/i,
+      /broker[._]/i,
+      /order_service/i,
+      /fill_notification/i,
+      /execution_event/i,
+      /watch_alert_service/i,
     ];
     for (const file of files) {
-      const body = (await readFile(join(assetsDir, file), "utf8")).toLowerCase();
+      const body = await readFile(join(assetsDir, file), "utf8");
       for (const token of forbidden) {
-        expect(body.includes(token)).toBe(false);
+        expect(token.test(body)).toBe(false);
       }
     }
   });

@@ -229,6 +229,9 @@ describe("ProposalRow — reconciliation/NXT badges", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(
       /Non-NXT pending order/,
     );
+    expect(
+      screen.queryByText(/Accept records this decision only/i),
+    ).not.toBeInTheDocument();
   });
 
   it("renders review banner for data_mismatch_requires_review", () => {
