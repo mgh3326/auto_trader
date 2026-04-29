@@ -22,6 +22,16 @@ def test_unknown_event_type_rejected():
 
 
 @pytest.mark.unit
+def test_user_facing_create_rejects_system_source_spoofing():
+    with pytest.raises(ValidationError):
+        StrategyEventCreateRequest(
+            source="scheduler",  # type: ignore[arg-type]
+            event_type="operator_market_event",
+            source_text="x",
+        )
+
+
+@pytest.mark.unit
 def test_source_text_max_length_enforced():
     with pytest.raises(ValidationError):
         StrategyEventCreateRequest(

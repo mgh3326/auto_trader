@@ -40,7 +40,7 @@ def _strip_short(items: list[str], *, max_len: int) -> list[str]:
 class StrategyEventCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    source: StrategyEventSourceLiteral = "user"
+    source: Literal["user"] = "user"
     event_type: StrategyEventTypeLiteral
     source_text: str = Field(min_length=1, max_length=8000)
     normalized_summary: str | None = Field(default=None, max_length=2000)

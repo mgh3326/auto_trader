@@ -170,6 +170,23 @@ def test_extra_fields_rejected_with_422():
 
 
 @pytest.mark.unit
+def test_system_source_spoofing_rejected_with_422():
+    from app.core.db import get_db
+
+    client, app = _make_client()
+    app.dependency_overrides[get_db] = lambda: SimpleNamespace()
+    resp = client.post(
+        "/trading/api/strategy-events",
+        json={
+            "source": "scheduler",
+            "event_type": "operator_market_event",
+            "source_text": "x",
+        },
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.unit
 def test_too_long_source_text_returns_422():
     from app.core.db import get_db
 
