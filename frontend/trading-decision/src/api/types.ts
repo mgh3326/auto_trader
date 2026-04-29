@@ -175,3 +175,76 @@ export interface ProposalRespondRequest {
   user_threshold_pct?: DecimalString | null;
   user_note?: string | null;
 }
+
+// Preopen dashboard types (ROB-39)
+export interface PreopenCandidateSummary {
+  candidate_uuid: Uuid;
+  symbol: string;
+  instrument_type: InstrumentType;
+  side: Side;
+  candidate_kind: string;
+  proposed_price: DecimalString | null;
+  proposed_qty: DecimalString | null;
+  confidence: number | null;
+  rationale: string | null;
+  currency: string | null;
+  warnings: string[];
+}
+
+export interface PreopenReconciliationSummary {
+  order_id: string;
+  symbol: string;
+  market: string;
+  side: "buy" | "sell";
+  classification: string;
+  nxt_classification: string | null;
+  nxt_actionable: boolean | null;
+  gap_pct: DecimalString | null;
+  summary: string | null;
+  reasons: string[];
+  warnings: string[];
+}
+
+export interface PreopenLinkedSession {
+  session_uuid: Uuid;
+  status: string;
+  created_at: IsoDateTime;
+}
+
+export interface PreopenLatestResponse {
+  has_run: boolean;
+  advisory_used: boolean;
+  advisory_skipped_reason: string | null;
+  run_uuid: Uuid | null;
+  market_scope: "kr" | "us" | "crypto" | null;
+  stage: "preopen" | null;
+  status: string | null;
+  strategy_name: string | null;
+  source_profile: string | null;
+  generated_at: IsoDateTime | null;
+  created_at: IsoDateTime | null;
+  notes: string | null;
+  market_brief: Record<string, unknown> | null;
+  source_freshness: Record<string, unknown> | null;
+  source_warnings: string[];
+  advisory_links: Record<string, unknown>[];
+  candidate_count: number;
+  reconciliation_count: number;
+  candidates: PreopenCandidateSummary[];
+  reconciliations: PreopenReconciliationSummary[];
+  linked_sessions: PreopenLinkedSession[];
+}
+
+export interface CreateFromResearchRunRequest {
+  selector: { run_uuid: Uuid };
+  include_tradingagents: false;
+  notes: string;
+}
+
+export interface CreateFromResearchRunResponse {
+  session_uuid: Uuid;
+  session_url: string;
+  status: string;
+  advisory_skipped_reason: string | null;
+  warnings: string[];
+}

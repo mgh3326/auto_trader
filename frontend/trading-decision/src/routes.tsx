@@ -1,4 +1,5 @@
 import { createBrowserRouter, type RouteObject, useParams } from "react-router-dom";
+import PreopenPage from "./pages/PreopenPage";
 import SessionDetailPage from "./pages/SessionDetailPage";
 import SessionListPage from "./pages/SessionListPage";
 
@@ -21,6 +22,7 @@ function LegacySessionDetailAlias() {
 
 export const tradingDecisionRoutes: RouteObject[] = [
   { path: "/", element: <SessionListPage /> },
+  { path: "/preopen", element: <PreopenPage /> },
   { path: "/sessions/:sessionUuid", element: <SessionDetailPage /> },
   // Backward-compatible alias for UUID session URLs generated before the
   // canonical /sessions/:sessionUuid route was adopted. Keep arbitrary
