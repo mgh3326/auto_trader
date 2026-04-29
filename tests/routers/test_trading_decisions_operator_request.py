@@ -17,7 +17,7 @@ def _make_test_client():
     app.include_router(trading_decisions.router)
     fake_user = SimpleNamespace(id=7)
     app.dependency_overrides[get_authenticated_user] = lambda: fake_user
-    return TestClient(app), app
+    return TestClient(app, base_url="https://testserver"), app
 
 
 class _FakeDB:
@@ -244,6 +244,6 @@ def test_response_session_url_falls_back_to_request_origin_when_unconfigured(
     assert resp.status_code == 201
     body = resp.json()
     assert body["session_url"].startswith(
-        "http://testserver/trading/decisions/sessions/"
+        "https://testserver/trading/decisions/sessions/"
     )
     assert body["session_url"].endswith(str(sess_uuid))
