@@ -120,10 +120,19 @@ async def test_create_session_empty_candidates_raises(
 
 
 @pytest.mark.unit
-async def test_create_session_not_implemented_tradingagents(
-    db_session, user, research_run_factory, research_run_candidate_factory
+async def test_create_session_tradingagents_missing_config_fail_open(
+    monkeypatch, db_session, user, research_run_factory, research_run_candidate_factory
 ):
-    """Test that NotImplementedError is raised for TradingAgents in v1."""
+    """include_tradingagents=True should not block session creation when TA is unavailable."""
+    from app.services import research_run_decision_session_service
+
+    monkeypatch.setattr(
+        research_run_decision_session_service,
+        "_tradingagents_skip_reason",
+        lambda: "tradingagents_not_configured:repo_path_missing",
+        raising=False,
+    )
+
     run = await research_run_factory(db_session, user_id=user.id)
     await research_run_candidate_factory(
         db_session, research_run_id=run.id, symbol="000660"
@@ -141,14 +150,27 @@ async def test_create_session_not_implemented_tradingagents(
         include_tradingagents=True,
     )
 
-    with pytest.raises(NotImplementedError):
-        await create_decision_session_from_research_run(
-            db_session,
-            user_id=user.id,
-            research_run=run,
-            snapshot=snapshot,
-            request=request,
-        )
+    result = await create_decision_session_from_research_run(
+        db_session,
+        user_id=user.id,
+        research_run=run,
+        snapshot=snapshot,
+        request=request,
+    )
+
+    assert result.proposal_count == 1
+    assert result.advisory_used is False
+    assert (
+        result.advisory_skipped_reason
+        == "tradingagents_not_configured:repo_path_missing"
+    )
+    assert "tradingagents_not_configured:repo_path_missing" in result.warnings
+    assert result.session.market_brief["tradingagents"]["requested"] is True
+    assert result.session.market_brief["tradingagents"]["advisory_used"] is False
+    assert (
+        result.session.market_brief["tradingagents"]["skipped_reason"]
+        == "tradingagents_not_configured:repo_path_missing"
+    )
 
 
 @pytest.mark.unit
