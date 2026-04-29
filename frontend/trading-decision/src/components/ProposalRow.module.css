@@ -96,3 +96,19 @@
   cursor: pointer;
   font-weight: 600;
 }
+
+.nonActionable {
+  background: #fff7ed;
+  border-color: #f5cf91;
+}
+
+.nonActionableAlert {
+  background: #fff3cd;
+  border: 1px solid #ffe08a;
+  border-radius: 8px;
+  color: #6b3f00;
+  font-size: 0.92rem;
+  font-weight: 600;
+  margin: 0;
+  padding: 10px 12px;
+}

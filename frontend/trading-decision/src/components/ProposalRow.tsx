@@ -4,15 +4,20 @@ import type {
   ProposalDetail,
   ProposalRespondRequest,
 } from "../api/types";
+import { parseReconciliationPayload } from "../api/reconciliation";
 import { formatDateTime } from "../format/datetime";
 import { formatDecimal } from "../format/decimal";
 import LinkedActionsPanel from "./LinkedActionsPanel";
+import NxtVenueBadge from "./NxtVenueBadge";
 import OriginalVsAdjustedSummary from "./OriginalVsAdjustedSummary";
 import OutcomeMarkForm from "./OutcomeMarkForm";
 import OutcomesPanel from "./OutcomesPanel";
 import ProposalAdjustmentEditor from "./ProposalAdjustmentEditor";
 import ProposalResponseControls from "./ProposalResponseControls";
+import ReconciliationBadge from "./ReconciliationBadge";
+import ReconciliationDecisionSupportPanel from "./ReconciliationDecisionSupportPanel";
 import StatusBadge from "./StatusBadge";
+import WarningChips from "./WarningChips";
 import styles from "./ProposalRow.module.css";
 
 interface ProposalRowProps {
@@ -49,6 +54,15 @@ export default function ProposalRow({
   const displayName = getDisplayName(proposal);
   const shouldShowSymbol = displayName !== proposal.symbol;
 
+  const recon = parseReconciliationPayload(proposal.original_payload);
+  const nonActionable =
+    proposal.proposal_kind === "other" &&
+    recon !== null &&
+    recon.candidate_kind === "pending_order" &&
+    (recon.reconciliation_status === "kr_pending_non_nxt" ||
+      recon.nxt_classification === "non_nxt_pending_ignore_for_nxt" ||
+      recon.nxt_classification === "data_mismatch_requires_review");
+
   async function respond(body: ProposalRespondRequest) {
     setIsSubmitting(true);
     setBanner(null);
@@ -67,7 +81,7 @@ export default function ProposalRow({
   }
 
   return (
-    <article className={styles.row}>
+    <article className={`${styles.row} ${nonActionable ? styles.nonActionable : ""}`}>
       <header className={styles.header}>
         <div className={styles.identity}>
           <h2 className={styles.name}>{displayName}</h2>
@@ -78,6 +92,16 @@ export default function ProposalRow({
         <span className={styles.chip}>{proposal.side}</span>
         <span className={styles.chip}>{proposal.proposal_kind}</span>
         <StatusBadge value={proposal.user_response} />
+        {recon ? (
+          <>
+            <ReconciliationBadge value={recon.reconciliation_status} />
+            <NxtVenueBadge
+              marketScope={inferMarketScope(proposal)}
+              nxtClassification={recon.nxt_classification}
+              nxtEligible={recon.nxt_eligible}
+            />
+          </>
+        ) : null}
       </header>
       {banner ? (
         <div className={styles.banner} role="alert">
@@ -104,6 +128,24 @@ export default function ProposalRow({
           </section>
         ) : null}
       </div>
+      {recon ? (
+        <>
+          <WarningChips tokens={recon.warnings} />
+          <ReconciliationDecisionSupportPanel
+            side={proposal.side}
+            originalPrice={proposal.original_price}
+            originalQuantity={proposal.original_quantity}
+            payload={recon}
+          />
+          {nonActionable ? (
+            <p className={styles.nonActionableAlert} role="alert">
+              Non-NXT pending order — KR broker routing only. Review before
+              deciding; recording a response on this row does not place or
+              cancel a broker order.
+            </p>
+          ) : null}
+        </>
+      ) : null}
       <ProposalResponseControls
         currentResponse={proposal.user_response}
         isSubmitting={isSubmitting}
@@ -137,6 +179,13 @@ export default function ProposalRow({
       </section>
     </article>
   );
+}
+
+function inferMarketScope(proposal: ProposalDetail): string {
+  if (proposal.instrument_type === "equity_kr") return "kr";
+  if (proposal.instrument_type === "equity_us") return "us";
+  if (proposal.instrument_type === "crypto") return "crypto";
+  return "";
 }
 
 function ValueList({
