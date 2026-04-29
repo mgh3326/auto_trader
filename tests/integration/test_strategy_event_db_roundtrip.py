@@ -40,6 +40,7 @@ async def integration_user_id(async_db_session):
     return row[0]
 
 
+@pytest.mark.asyncio
 async def test_strategy_event_round_trip(async_db_session, integration_user_id):
     """Themes/symbols/markets/sectors persist as structured JSON; FK linkage works."""
     from app.models.trading_decision import (
