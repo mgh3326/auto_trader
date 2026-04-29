@@ -36,6 +36,7 @@ from app.routers import (
     portfolio,
     preopen,
     research_run_decision_sessions,
+    strategy_events,
     screener,
     symbol_settings,
     test,
@@ -168,6 +169,7 @@ def create_app() -> FastAPI:
     app.include_router(trading_decisions_spa.router)
     app.include_router(research_run_decision_sessions.router)
     app.include_router(preopen.router)
+    app.include_router(strategy_events.router)
     app.include_router(kospi200.router)
     app.include_router(websocket.router)
     if settings.EXPOSE_MONITORING_TEST_ROUTES:
