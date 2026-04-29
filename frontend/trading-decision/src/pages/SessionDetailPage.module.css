@@ -32,3 +32,12 @@
 .footer {
   color: #536276;
 }
+
+.strategyEvents {
+  display: grid;
+  gap: 12px;
+}
+
+.strategyEvents h2 {
+  margin: 0;
+}

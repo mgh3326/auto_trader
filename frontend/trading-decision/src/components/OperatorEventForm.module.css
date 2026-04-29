@@ -1,0 +1,38 @@
+.form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(140px, 1fr));
+  gap: 0.5rem 1rem;
+  border: 1px solid #d6dbe3;
+  border-radius: 6px;
+  padding: 12px;
+  background: #ffffff;
+}
+
+.form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+}
+
+.fullWidth {
+  grid-column: 1 / -1;
+}
+
+.form textarea {
+  font-family: inherit;
+  font-size: 0.95rem;
+  min-height: 4rem;
+  padding: 0.4rem;
+}
+
+.form button {
+  grid-column: 1 / -1;
+  padding: 0.5rem;
+}
+
+.error {
+  grid-column: 1 / -1;
+  color: var(--danger, #b00020);
+  margin: 0;
+}

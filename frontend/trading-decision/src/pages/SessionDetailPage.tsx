@@ -3,17 +3,21 @@ import AnalyticsMatrix from "../components/AnalyticsMatrix";
 import ErrorView from "../components/ErrorView";
 import LoadingView from "../components/LoadingView";
 import MarketBriefPanel from "../components/MarketBriefPanel";
+import OperatorEventForm from "../components/OperatorEventForm";
 import ProposalRow from "../components/ProposalRow";
 import StatusBadge from "../components/StatusBadge";
+import StrategyEventTimeline from "../components/StrategyEventTimeline";
 import { formatDateTime } from "../format/datetime";
 import { useDecisionSession } from "../hooks/useDecisionSession";
 import { useSessionAnalytics } from "../hooks/useSessionAnalytics";
+import { useStrategyEvents } from "../hooks/useStrategyEvents";
 import styles from "./SessionDetailPage.module.css";
 
 export default function SessionDetailPage() {
   const { sessionUuid } = useParams();
   const session = useDecisionSession(sessionUuid ?? "");
   const analytics = useSessionAnalytics(sessionUuid ?? "");
+  const strategyEvents = useStrategyEvents(sessionUuid ?? "");
 
   if (!sessionUuid) {
     return <ErrorView message="Session not found" />;
@@ -73,6 +77,29 @@ export default function SessionDetailPage() {
           <AnalyticsMatrix data={analytics.data} />
         </section>
       ) : null}
+      <section
+        className={styles.strategyEvents}
+        aria-label="Strategy events"
+      >
+        <h2>Strategy events</h2>
+        <OperatorEventForm
+          sessionUuid={data.session_uuid}
+          onSubmit={(body) => strategyEvents.submit(body)}
+        />
+        {strategyEvents.status === "loading" ||
+        strategyEvents.status === "idle" ? (
+          <p>Loading strategy events...</p>
+        ) : null}
+        {strategyEvents.status === "error" ? (
+          <p role="alert">{strategyEvents.error}</p>
+        ) : null}
+        {strategyEvents.status === "not_found" ? (
+          <p role="alert">Session not found for strategy events.</p>
+        ) : null}
+        {strategyEvents.status === "success" && strategyEvents.data ? (
+          <StrategyEventTimeline events={strategyEvents.data.events} />
+        ) : null}
+      </section>
       <section className={styles.proposals} aria-label="Proposals">
         {data.proposals.map((proposal) => (
           <ProposalRow

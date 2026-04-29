@@ -248,3 +248,63 @@ export interface CreateFromResearchRunResponse {
   advisory_skipped_reason: string | null;
   warnings: string[];
 }
+
+// Strategy events (ROB-41 backend, ROB-42 UI)
+export type StrategyEventSource =
+  | "user"
+  | "hermes"
+  | "tradingagents"
+  | "news"
+  | "market_data"
+  | "scheduler";
+
+export type StrategyEventType =
+  | "operator_market_event"
+  | "earnings_event"
+  | "macro_event"
+  | "sector_rotation"
+  | "technical_break"
+  | "risk_veto"
+  | "cash_budget_change"
+  | "position_change";
+
+export interface StrategyEventDetail {
+  id: number;
+  event_uuid: Uuid;
+  session_uuid: Uuid | null;
+  source: StrategyEventSource;
+  event_type: StrategyEventType;
+  source_text: string;
+  normalized_summary: string | null;
+  affected_markets: string[];
+  affected_sectors: string[];
+  affected_themes: string[];
+  affected_symbols: string[];
+  severity: number;
+  confidence: number;
+  created_by_user_id: number | null;
+  metadata: Record<string, unknown> | null;
+  created_at: IsoDateTime;
+}
+
+export interface StrategyEventListResponse {
+  events: StrategyEventDetail[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface StrategyEventCreateRequest {
+  source: "user";
+  event_type: StrategyEventType;
+  source_text: string;
+  normalized_summary?: string;
+  session_uuid?: Uuid;
+  affected_markets?: string[];
+  affected_sectors?: string[];
+  affected_themes?: string[];
+  affected_symbols?: string[];
+  severity?: number;
+  confidence?: number;
+  metadata?: Record<string, unknown>;
+}

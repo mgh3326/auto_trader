@@ -8,6 +8,8 @@ import type {
   SessionDetail,
   SessionListResponse,
   SessionSummary,
+  StrategyEventDetail,
+  StrategyEventListResponse,
 } from "../api/types";
 import type {
   CandidateKind,
@@ -265,6 +267,42 @@ export function makeResearchRunMarketBrief(
     },
     snapshot_warnings: ["missing_orderbook"],
     source_warnings: [],
+    ...overrides,
+  };
+}
+
+export function makeStrategyEvent(
+  overrides: Partial<StrategyEventDetail> = {},
+): StrategyEventDetail {
+  return {
+    id: 1,
+    event_uuid: "event-uuid-1",
+    session_uuid: "session-1",
+    source: "user",
+    event_type: "operator_market_event",
+    source_text: "OpenAI earnings missed expectations",
+    normalized_summary: null,
+    affected_markets: ["us"],
+    affected_sectors: [],
+    affected_themes: ["ai"],
+    affected_symbols: ["MSFT", "NVDA"],
+    severity: 3,
+    confidence: 60,
+    created_by_user_id: 7,
+    metadata: null,
+    created_at: now,
+    ...overrides,
+  };
+}
+
+export function makeStrategyEventListResponse(
+  overrides: Partial<StrategyEventListResponse> = {},
+): StrategyEventListResponse {
+  return {
+    events: [makeStrategyEvent()],
+    total: 1,
+    limit: 50,
+    offset: 0,
     ...overrides,
   };
 }
