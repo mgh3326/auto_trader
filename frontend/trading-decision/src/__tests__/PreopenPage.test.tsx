@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import PreopenPage from "../pages/PreopenPage";
 import {
   makePreopenFailOpen,
+  makePreopenLinkedSession,
   makePreopenResponse,
 } from "../test/fixtures/preopen";
 import { mockFetch } from "../test/server";
@@ -82,6 +83,26 @@ describe("PreopenPage", () => {
       expect(body.include_tradingagents).toBe(false);
       expect(body.notes).toBe("Created from preopen dashboard");
     });
+  });
+
+  it("hides Create decision session when a linked session already exists", async () => {
+    mockFetch({
+      [PREOPEN_URL]: () =>
+        new Response(
+          JSON.stringify(
+            makePreopenResponse({
+              linked_sessions: [makePreopenLinkedSession()],
+            }),
+          ),
+        ),
+    });
+
+    render(<PreopenPage />, { wrapper: MemoryRouter });
+
+    expect(await screen.findByRole("link", { name: /open session/i })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /create decision session/i }),
+    ).toBeNull();
   });
 
   it("surfaces ApiError detail (research_run_has_no_candidates) inline without throwing", async () => {

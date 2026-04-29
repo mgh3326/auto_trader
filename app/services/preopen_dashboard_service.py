@@ -138,7 +138,12 @@ def _map_reconciliations(run: ResearchRun) -> list[ReconciliationSummary]:
 def _advisory_skipped_reason(run: ResearchRun) -> str | None:
     if not run.candidates:
         return "no_candidates"
-    advisory_failure_markers = {"advisory_failed", "advisory_error", "advisory_timeout"}
+    advisory_failure_markers = {
+        "advisory_failed",
+        "advisory_error",
+        "advisory_timeout",
+        "tradingagents_not_configured",
+    }
     for w in run.source_warnings:
         if w in advisory_failure_markers:
             return w
