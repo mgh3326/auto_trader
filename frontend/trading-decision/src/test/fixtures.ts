@@ -9,6 +9,12 @@ import type {
   SessionListResponse,
   SessionSummary,
 } from "../api/types";
+import type {
+  CandidateKind,
+  NxtClassification,
+  ReconciliationPayload,
+  ReconciliationStatus,
+} from "../api/reconciliation";
 
 const now = "2026-04-28T06:00:00Z";
 
@@ -196,6 +202,69 @@ export function makeSessionDetail(
     market_brief: { regime: "risk-on", symbols: ["BTC", "ETH", "SOL"] },
     notes: "Review before market close.",
     proposals,
+    ...overrides,
+  };
+}
+
+export function makeReconciliationPayload(
+  overrides: Partial<ReconciliationPayload> = {},
+): ReconciliationPayload {
+  return {
+    research_run_id: "11111111-1111-1111-1111-111111111111",
+    candidate_kind: "pending_order" as CandidateKind,
+    pending_order_id: "ORD-1",
+    reconciliation_status: "near_fill" as ReconciliationStatus,
+    reconciliation_summary: "gap_within_near_fill_pct",
+    nxt_classification: "buy_pending_actionable" as NxtClassification,
+    nxt_summary: "Pending fill within 0.5% of current price.",
+    nxt_eligible: true,
+    venue_eligibility: { nxt: true, regular: true },
+    live_quote: { price: "70200", as_of: "2026-04-29T01:00:00Z" },
+    decision_support: {
+      current_price: "70200",
+      gap_pct: "0.2857",
+      signed_distance_to_fill: "-0.2857",
+      nearest_support_price: "69500",
+      nearest_support_distance_pct: "1.0",
+      nearest_resistance_price: "71000",
+      nearest_resistance_distance_pct: "1.14",
+      bid_ask_spread_pct: "0.05",
+    },
+    warnings: [],
+    refreshed_at: "2026-04-29T01:00:00Z",
+    ...overrides,
+  };
+}
+
+export function makeResearchRunMarketBrief(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    advisory_only: true,
+    execution_allowed: false,
+    research_run_uuid: "11111111-1111-1111-1111-111111111111",
+    refreshed_at: "2026-04-29T01:00:00Z",
+    counts: { candidates: 3, reconciliations: 1 },
+    reconciliation_summary: {
+      maintain: 1,
+      near_fill: 1,
+      too_far: 0,
+      chasing_risk: 0,
+      data_mismatch: 0,
+      kr_pending_non_nxt: 1,
+      unknown_venue: 0,
+      unknown: 0,
+    },
+    nxt_summary: {
+      actionable: 1,
+      too_far: 0,
+      non_nxt: 1,
+      watch_only: 1,
+      data_mismatch_requires_review: 0,
+      unknown: 0,
+    },
+    snapshot_warnings: ["missing_orderbook"],
+    source_warnings: [],
     ...overrides,
   };
 }
