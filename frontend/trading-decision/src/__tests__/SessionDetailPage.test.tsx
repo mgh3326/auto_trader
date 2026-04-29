@@ -8,6 +8,8 @@ import {
   makeProposal,
   makeResearchRunMarketBrief,
   makeSessionDetail,
+  makeStrategyEvent,
+  makeStrategyEventListResponse,
 } from "../test/fixtures";
 import { mockFetch } from "../test/server";
 
@@ -103,6 +105,11 @@ describe("SessionDetailPage", () => {
         new Response(JSON.stringify(makeSessionDetail({ proposals: [makeProposal()] }))),
       "/trading/api/decisions/session-1/analytics": () =>
         new Response(JSON.stringify(makeAnalyticsResponse())),
+      "/trading/api/strategy-events?session_uuid=session-1&limit=50&offset=0":
+        () =>
+          new Response(
+            JSON.stringify(makeStrategyEventListResponse({ events: [], total: 0 })),
+          ),
       "/trading/api/proposals/proposal-btc/respond": () =>
         new Response(JSON.stringify({ detail: "Session is archived" }), {
           status: 409,
@@ -116,5 +123,172 @@ describe("SessionDetailPage", () => {
     expect(
       await screen.findByText("Session is archived. You can no longer respond."),
     ).toBeInTheDocument();
+  });
+
+  it("renders session-scoped strategy events timeline", async () => {
+    mockFetch({
+      "/trading/api/decisions/session-1": () =>
+        new Response(JSON.stringify(makeSessionDetail())),
+      "/trading/api/decisions/session-1/analytics": () =>
+        new Response(JSON.stringify(makeAnalyticsResponse())),
+      "/trading/api/strategy-events?session_uuid=session-1&limit=50&offset=0":
+        () =>
+          new Response(
+            JSON.stringify(
+              makeStrategyEventListResponse({
+                events: [
+                  makeStrategyEvent({
+                    source_text: "Fed hike confirmed",
+                    affected_symbols: ["TSLA"],
+                  }),
+                ],
+              }),
+            ),
+          ),
+    });
+
+    renderDetail();
+
+    expect(await screen.findByText("Strategy events")).toBeInTheDocument();
+    expect(await screen.findByText(/fed hike confirmed/i)).toBeInTheDocument();
+    expect(screen.getByText("TSLA")).toBeInTheDocument();
+    expect(screen.getByText(/operator_market_event/i)).toBeInTheDocument();
+  });
+
+  it("renders an empty state when there are no strategy events", async () => {
+    mockFetch({
+      "/trading/api/decisions/session-1": () =>
+        new Response(JSON.stringify(makeSessionDetail())),
+      "/trading/api/decisions/session-1/analytics": () =>
+        new Response(JSON.stringify(makeAnalyticsResponse())),
+      "/trading/api/strategy-events?session_uuid=session-1&limit=50&offset=0":
+        () =>
+          new Response(
+            JSON.stringify(
+              makeStrategyEventListResponse({ events: [], total: 0 }),
+            ),
+          ),
+    });
+
+    renderDetail();
+
+    expect(
+      await screen.findByText(/no strategy events yet/i),
+    ).toBeInTheDocument();
+  });
+
+  it("submitting the operator event form POSTs operator_market_event with current session_uuid and refreshes the timeline", async () => {
+    let listCalls = 0;
+    const recorded: { url: string; method: string; body?: string }[] = [];
+    mockFetch({
+      "/trading/api/decisions/session-1": () =>
+        new Response(JSON.stringify(makeSessionDetail())),
+      "/trading/api/decisions/session-1/analytics": () =>
+        new Response(JSON.stringify(makeAnalyticsResponse())),
+      "/trading/api/strategy-events?session_uuid=session-1&limit=50&offset=0":
+        () => {
+          listCalls += 1;
+          if (listCalls === 1) {
+            return new Response(
+              JSON.stringify(
+                makeStrategyEventListResponse({ events: [], total: 0 }),
+              ),
+            );
+          }
+          return new Response(
+            JSON.stringify(
+              makeStrategyEventListResponse({
+                events: [
+                  makeStrategyEvent({
+                    source_text: "OpenAI earnings missed",
+                    affected_symbols: ["MSFT"],
+                  }),
+                ],
+                total: 1,
+              }),
+            ),
+          );
+        },
+      "/trading/api/strategy-events": (req) => {
+        return req.text().then((body) => {
+          recorded.push({ url: req.url, method: req.method, body });
+          return new Response(
+            JSON.stringify(
+              makeStrategyEvent({
+                source_text: "OpenAI earnings missed",
+                affected_symbols: ["MSFT"],
+              }),
+            ),
+            { status: 201 },
+          );
+        });
+      },
+    });
+
+    renderDetail();
+
+    await screen.findByText(/no strategy events yet/i);
+
+    await userEvent.type(
+      screen.getByLabelText(/source text/i),
+      "OpenAI earnings missed",
+    );
+    await userEvent.type(
+      screen.getByLabelText(/affected symbols/i),
+      "MSFT",
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: /add event/i }),
+    );
+
+    await waitFor(() => expect(recorded.length).toBe(1));
+    const sentBody = JSON.parse(recorded[0]!.body ?? "{}");
+    expect(sentBody.source).toBe("user");
+    expect(sentBody.event_type).toBe("operator_market_event");
+    expect(sentBody.session_uuid).toBe("session-1");
+    expect(sentBody.source_text).toBe("OpenAI earnings missed");
+    expect(sentBody.affected_symbols).toEqual(["MSFT"]);
+
+    expect(
+      await screen.findByText(/openai earnings missed/i),
+    ).toBeInTheDocument();
+  });
+
+  it("surfaces a strategy-event submit error without mutating proposals", async () => {
+    let proposalRespondCalled = false;
+    mockFetch({
+      "/trading/api/decisions/session-1": () =>
+        new Response(JSON.stringify(makeSessionDetail())),
+      "/trading/api/decisions/session-1/analytics": () =>
+        new Response(JSON.stringify(makeAnalyticsResponse())),
+      "/trading/api/strategy-events?session_uuid=session-1&limit=50&offset=0":
+        () =>
+          new Response(
+            JSON.stringify(
+              makeStrategyEventListResponse({ events: [], total: 0 }),
+            ),
+          ),
+      "/trading/api/strategy-events": () =>
+        new Response(JSON.stringify({ detail: "validation failed" }), {
+          status: 422,
+        }),
+      "/trading/api/proposals/proposal-btc/respond": () => {
+        proposalRespondCalled = true;
+        return new Response(JSON.stringify({}));
+      },
+    });
+
+    renderDetail();
+
+    await screen.findByText(/no strategy events yet/i);
+    await userEvent.type(screen.getByLabelText(/source text/i), "msg");
+    await userEvent.click(
+      screen.getByRole("button", { name: /add event/i }),
+    );
+
+    expect(
+      await screen.findByText(/validation failed/i),
+    ).toBeInTheDocument();
+    expect(proposalRespondCalled).toBe(false);
   });
 });
