@@ -15,7 +15,7 @@ def test_builds_url_from_base_and_uuid():
         "https://trader.robinco.dev/", UUID("11111111-1111-1111-1111-111111111111")
     )
     assert url == (
-        "https://trader.robinco.dev/trading/decisions/"
+        "https://trader.robinco.dev/trading/decisions/sessions/"
         "11111111-1111-1111-1111-111111111111"
     )
 
@@ -31,7 +31,7 @@ def test_strips_trailing_slashes_and_quotes_uuid():
         UUID("22222222-2222-2222-2222-222222222222"),
     )
     assert url == (
-        "https://trader.robinco.dev/trading/decisions/"
+        "https://trader.robinco.dev/trading/decisions/sessions/"
         "22222222-2222-2222-2222-222222222222"
     )
 

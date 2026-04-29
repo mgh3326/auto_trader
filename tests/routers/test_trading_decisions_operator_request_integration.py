@@ -160,7 +160,7 @@ def test_no_advisory_persists_session_and_proposals_in_db(monkeypatch):
             "no_advisory"
         ]
         assert body["session_url"] == (
-            f"https://trader.robinco.dev/trading/decisions/{persisted.session_uuid}"
+            f"https://trader.robinco.dev/trading/decisions/sessions/{persisted.session_uuid}"
         )
     finally:
         asyncio.run(_cleanup_user(user_id))

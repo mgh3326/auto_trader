@@ -8,7 +8,7 @@ from uuid import UUID
 
 def build_trading_decision_session_url(base_url: str, session_uuid: UUID) -> str:
     base = base_url.rstrip("/")
-    return f"{base}/trading/decisions/{quote(str(session_uuid), safe='')}"
+    return f"{base}/trading/decisions/sessions/{quote(str(session_uuid), safe='')}"
 
 
 def resolve_trading_decision_base_url(
