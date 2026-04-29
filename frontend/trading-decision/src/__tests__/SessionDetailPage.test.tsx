@@ -6,6 +6,7 @@ import SessionDetailPage from "../pages/SessionDetailPage";
 import {
   makeAnalyticsResponse,
   makeProposal,
+  makeResearchRunMarketBrief,
   makeSessionDetail,
 } from "../test/fixtures";
 import { mockFetch } from "../test/server";
@@ -26,7 +27,11 @@ describe("SessionDetailPage", () => {
   it("shows market brief and proposals", async () => {
     mockFetch({
       "/trading/api/decisions/session-1": () =>
-        new Response(JSON.stringify(makeSessionDetail())),
+        new Response(
+          JSON.stringify(
+            makeSessionDetail({ market_brief: makeResearchRunMarketBrief() }),
+          ),
+        ),
       "/trading/api/decisions/session-1/analytics": () =>
         new Response(JSON.stringify(makeAnalyticsResponse())),
     });
@@ -39,6 +44,11 @@ describe("SessionDetailPage", () => {
     expect(screen.getByText("SOL")).toBeInTheDocument();
     expect(await screen.findByText("Outcome analytics")).toBeInTheDocument();
     expect(screen.getByText("1.25%")).toBeInTheDocument();
+    expect(screen.getByText(/Research run/)).toBeInTheDocument();
+    expect(screen.getByText(/Reconciliation summary/)).toBeInTheDocument();
+    expect(screen.getByText(/Maintain: 1/)).toBeInTheDocument();
+    expect(screen.getByText(/Near fill: 1/)).toBeInTheDocument();
+    expect(screen.getByText(/KR broker only: 1/)).toBeInTheDocument();
   });
 
   it("successful respond refetches and updates row", async () => {

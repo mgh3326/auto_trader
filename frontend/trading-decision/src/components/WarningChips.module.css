@@ -1,0 +1,17 @@
+.list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.chip {
+  background: #fff7ed;
+  border: 1px solid #f5cf91;
+  border-radius: 999px;
+  color: #6b3f00;
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 4px 8px;
+}

@@ -1,0 +1,29 @@
+.badge {
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1;
+  padding: 5px 8px;
+}
+.actionable {
+  background: #dff7e7;
+  color: #176b35;
+}
+.notActionable {
+  background: #eef1f5;
+  color: #495467;
+}
+.nonNxt {
+  background: #fff3cd;
+  color: #6b3f00;
+}
+.unknown {
+  background: #e6e9ee;
+  border: 1px dashed #939aa7;
+  color: #4d5666;
+}
+.review {
+  background: #fde2e2;
+  color: #9f2d2d;
+}

@@ -5,13 +5,154 @@ interface MarketBriefPanelProps {
   notes: string | null;
 }
 
+interface ResearchRunSummary {
+  research_run_uuid: string | null;
+  refreshed_at: string | null;
+  counts: { candidates: number | null; reconciliations: number | null } | null;
+  reconciliation_summary: Record<string, number> | null;
+  nxt_summary: Record<string, number> | null;
+  snapshot_warnings: string[];
+  source_warnings: string[];
+}
+
+const RECON_LABEL: Record<string, string> = {
+  maintain: "Maintain",
+  near_fill: "Near fill",
+  too_far: "Too far",
+  chasing_risk: "Chasing risk",
+  data_mismatch: "Data mismatch",
+  kr_pending_non_nxt: "KR broker only",
+  unknown_venue: "Unknown venue",
+  unknown: "Unknown",
+};
+
+const NXT_LABEL: Record<string, string> = {
+  actionable: "Actionable",
+  too_far: "Too far",
+  non_nxt: "Non-NXT",
+  watch_only: "Watch only",
+  data_mismatch_requires_review: "Review needed",
+  unknown: "Unknown",
+};
+
+function tryParseSummary(brief: Record<string, unknown>): ResearchRunSummary | null {
+  if (!("research_run_uuid" in brief)) return null;
+  const counts = brief.counts;
+  return {
+    research_run_uuid:
+      typeof brief.research_run_uuid === "string"
+        ? brief.research_run_uuid
+        : null,
+    refreshed_at:
+      typeof brief.refreshed_at === "string" ? brief.refreshed_at : null,
+    counts:
+      counts && typeof counts === "object"
+        ? {
+            candidates: numberOrNull(
+              (counts as Record<string, unknown>).candidates,
+            ),
+            reconciliations: numberOrNull(
+              (counts as Record<string, unknown>).reconciliations,
+            ),
+          }
+        : null,
+    reconciliation_summary: numberMap(brief.reconciliation_summary),
+    nxt_summary: numberMap(brief.nxt_summary),
+    snapshot_warnings: stringArray(brief.snapshot_warnings),
+    source_warnings: stringArray(brief.source_warnings),
+  };
+}
+
+function numberOrNull(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+function numberMap(v: unknown): Record<string, number> | null {
+  if (!v || typeof v !== "object") return null;
+  const out: Record<string, number> = {};
+  for (const [k, raw] of Object.entries(v as Record<string, unknown>)) {
+    if (typeof raw === "number" && Number.isFinite(raw)) out[k] = raw;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+function stringArray(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+}
+
 export default function MarketBriefPanel({ brief, notes }: MarketBriefPanelProps) {
   if (brief === null && notes === null) return null;
+  const summary = brief ? tryParseSummary(brief) : null;
   return (
-    <details className={styles.panel}>
+    <details className={styles.panel} open>
       <summary>Market brief</summary>
       {notes ? <p className={styles.notes}>{notes}</p> : null}
-      {brief ? <pre>{JSON.stringify(brief, null, 2)}</pre> : null}
+      {summary ? (
+        <div className={styles.summary}>
+          <p>
+            <strong>Research run:</strong>{" "}
+            {summary.research_run_uuid ?? "—"}
+            {summary.refreshed_at ? ` · refreshed ${summary.refreshed_at}` : ""}
+          </p>
+          {summary.counts ? (
+            <p>
+              <strong>Counts:</strong> candidates {summary.counts.candidates ?? "—"} ·
+              reconciliations {summary.counts.reconciliations ?? "—"}
+            </p>
+          ) : null}
+          {summary.reconciliation_summary ? (
+            <SummaryList
+              title="Reconciliation summary"
+              entries={summary.reconciliation_summary}
+              labels={RECON_LABEL}
+            />
+          ) : null}
+          {summary.nxt_summary ? (
+            <SummaryList
+              title="NXT summary"
+              entries={summary.nxt_summary}
+              labels={NXT_LABEL}
+            />
+          ) : null}
+          {summary.snapshot_warnings.length > 0 ? (
+            <p>
+              <strong>Snapshot warnings:</strong>{" "}
+              {summary.snapshot_warnings.join(", ")}
+            </p>
+          ) : null}
+          {summary.source_warnings.length > 0 ? (
+            <p>
+              <strong>Source warnings:</strong>{" "}
+              {summary.source_warnings.join(", ")}
+            </p>
+          ) : null}
+        </div>
+      ) : brief ? (
+        <pre>{JSON.stringify(brief, null, 2)}</pre>
+      ) : null}
     </details>
+  );
+}
+
+function SummaryList({
+  title,
+  entries,
+  labels,
+}: {
+  title: string;
+  entries: Record<string, number>;
+  labels: Record<string, string>;
+}) {
+  return (
+    <div>
+      <strong>{title}</strong>
+      <ul className={styles.summaryList}>
+        {Object.entries(entries).map(([k, v]) => (
+          <li key={k}>
+            {labels[k] ?? k}: {v}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }

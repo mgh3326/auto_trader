@@ -11,3 +11,18 @@
 .notes {
   color: #4e5f75;
 }
+
+.summary {
+  display: grid;
+  font-size: 0.92rem;
+  gap: 6px;
+}
+
+.summaryList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+}

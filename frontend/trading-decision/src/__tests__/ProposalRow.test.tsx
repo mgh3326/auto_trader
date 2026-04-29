@@ -7,6 +7,7 @@ import {
   makeCounterfactual,
   makeOutcome,
   makeProposal,
+  makeReconciliationPayload,
 } from "../test/fixtures";
 
 describe("ProposalRow", () => {
@@ -165,5 +166,115 @@ describe("ProposalRow", () => {
         price_at_mark: "100",
       }),
     );
+  });
+});
+
+describe("ProposalRow — reconciliation/NXT badges", () => {
+  it("renders the Near fill badge for near_fill", () => {
+    render(
+      <ProposalRow
+        proposal={makeProposal({
+          instrument_type: "equity_kr",
+          original_payload: makeReconciliationPayload({
+            reconciliation_status: "near_fill",
+            nxt_classification: "buy_pending_actionable",
+          }) as unknown as Record<string, unknown>,
+        })}
+        onRecordOutcome={vi.fn()}
+        onRespond={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Near fill")).toBeInTheDocument();
+    expect(screen.getByText("NXT actionable")).toBeInTheDocument();
+  });
+
+  it("renders the Too far badge for too_far", () => {
+    render(
+      <ProposalRow
+        proposal={makeProposal({
+          instrument_type: "equity_kr",
+          original_payload: makeReconciliationPayload({
+            reconciliation_status: "too_far",
+            nxt_classification: "buy_pending_too_far",
+          }) as unknown as Record<string, unknown>,
+        })}
+        onRecordOutcome={vi.fn()}
+        onRespond={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Too far")).toBeInTheDocument();
+    expect(screen.getByText("NXT not actionable")).toBeInTheDocument();
+  });
+
+  it("marks kr_pending_non_nxt rows non-actionable and shows non_nxt_venue chip", () => {
+    render(
+      <ProposalRow
+        proposal={makeProposal({
+          proposal_kind: "other",
+          instrument_type: "equity_kr",
+          original_payload: makeReconciliationPayload({
+            reconciliation_status: "kr_pending_non_nxt",
+            nxt_classification: "non_nxt_pending_ignore_for_nxt",
+            nxt_eligible: false,
+            warnings: ["non_nxt_venue"],
+          }) as unknown as Record<string, unknown>,
+        })}
+        onRecordOutcome={vi.fn()}
+        onRespond={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("KR broker only")).toBeInTheDocument();
+    expect(screen.getByText("Non-NXT (KR broker)")).toBeInTheDocument();
+    expect(screen.getByText("Non-NXT venue")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      /Non-NXT pending order/,
+    );
+    expect(
+      screen.queryByText(/Accept records this decision only/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders review banner for data_mismatch_requires_review", () => {
+    render(
+      <ProposalRow
+        proposal={makeProposal({
+          proposal_kind: "other",
+          instrument_type: "equity_kr",
+          original_payload: makeReconciliationPayload({
+            reconciliation_status: "data_mismatch",
+            nxt_classification: "data_mismatch_requires_review",
+            nxt_eligible: true,
+            warnings: ["missing_kr_universe"],
+          }) as unknown as Record<string, unknown>,
+        })}
+        onRecordOutcome={vi.fn()}
+        onRespond={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("NXT review needed")).toBeInTheDocument();
+    expect(
+      screen.getByText("KR universe row missing"),
+    ).toBeInTheDocument();
+  });
+
+  it("does not mark actionable NXT rows as non-actionable", () => {
+    render(
+      <ProposalRow
+        proposal={makeProposal({
+          proposal_kind: "other",
+          instrument_type: "equity_kr",
+          original_payload: makeReconciliationPayload({
+            reconciliation_status: "near_fill",
+            nxt_classification: "buy_pending_actionable",
+            nxt_eligible: true,
+          }) as unknown as Record<string, unknown>,
+        })}
+        onRecordOutcome={vi.fn()}
+        onRespond={vi.fn()}
+      />,
+    );
+    expect(
+      screen.queryByText(/Non-NXT pending order/),
+    ).not.toBeInTheDocument();
   });
 });
