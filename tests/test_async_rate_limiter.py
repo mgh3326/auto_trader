@@ -89,19 +89,32 @@ class TestAsyncSlidingWindowRateLimiter:
         assert callback_wait_times[0] > 0
 
     @pytest.mark.asyncio
-    async def test_sync_blocking_callback_supported(self):
-        limiter = AsyncSlidingWindowRateLimiter(rate=1, period=0.2, name="test")
+    async def test_sync_blocking_callback_supported(self, monkeypatch):
+        limiter = AsyncSlidingWindowRateLimiter(rate=1, period=10.0, name="test")
+        current_time = 100.0
 
-        callback_invoked = False
+        def fake_monotonic():
+            return current_time
+
+        async def fake_sleep(delay: float):
+            nonlocal current_time
+            current_time += delay
+
+        monkeypatch.setattr(
+            "app.core.async_rate_limiter.time.monotonic", fake_monotonic
+        )
+        monkeypatch.setattr("app.core.async_rate_limiter.asyncio.sleep", fake_sleep)
+
+        callback_wait_times: list[float] = []
 
         def sync_callback(wait_time: float):
-            nonlocal callback_invoked
-            callback_invoked = True
+            callback_wait_times.append(wait_time)
 
         await limiter.acquire()
         await limiter.acquire(blocking_callback=sync_callback)
 
-        assert callback_invoked
+        assert len(callback_wait_times) == 1
+        assert callback_wait_times[0] == pytest.approx(10.05)
 
     @pytest.mark.asyncio
     async def test_concurrent_acquire_respects_limit(self):
