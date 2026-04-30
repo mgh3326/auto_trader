@@ -51,6 +51,7 @@ class AuthMiddleware:
         "/api/v1/openclaw/callback",
         "/api/screener/callback",
     ]
+    NEWS_INGESTOR_BULK_INGEST_PATH: ClassVar[str] = "/api/v1/news/ingest/bulk"
     LEGACY_DEPRECATED_PREFIXES: ClassVar[tuple[str, ...]] = LEGACY_PREFIXES
 
     def __init__(self, app: ASGIApp):
@@ -140,6 +141,32 @@ class AuthMiddleware:
                 return JSONResponse(
                     status_code=401,
                     content={"detail": "Invalid N8N API key"},
+                )
+            return None
+
+        # news-ingestor bulk ingest API: dedicated machine-to-machine token auth.
+        # This path deliberately bypasses session-cookie auth only after the
+        # internal ingest token has been configured and validated.
+        if path == self.NEWS_INGESTOR_BULK_INGEST_PATH:
+            expected_token = settings.NEWS_INGESTOR_INGEST_TOKEN
+            if not expected_token:
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "News ingestor ingest token not configured"},
+                )
+            header_name = settings.NEWS_INGESTOR_INGEST_TOKEN_HEADER.strip()
+            if not header_name:
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "detail": "News ingestor ingest token header not configured"
+                    },
+                )
+            supplied_token = request.headers.get(header_name, "")
+            if not hmac.compare_digest(supplied_token, expected_token):
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Invalid news ingestor ingest token"},
                 )
             return None
 
