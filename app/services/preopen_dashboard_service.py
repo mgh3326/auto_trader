@@ -251,7 +251,6 @@ async def _build_news_section(
 
 
 def _build_news_brief(
-    news_summary: NewsReadinessSummary | None,
     readiness_raw: object | None,
     run: ResearchRun | None,
 ) -> KRPreopenNewsBrief | None:
@@ -299,7 +298,7 @@ async def get_latest_preopen_dashboard(
         source_freshness=run.source_freshness,
         source_warnings=list(run.source_warnings),
     )
-    news_brief = _build_news_brief(news_summary, readiness_raw, run)
+    news_brief = _build_news_brief(readiness_raw, run)
     advisory_reason = _advisory_skipped_reason(run)
     linked = await _linked_sessions(db, run=run, user_id=user_id)
 

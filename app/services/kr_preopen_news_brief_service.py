@@ -65,6 +65,48 @@ def _has_tradingagents_evidence(research_run: Any | None) -> bool:
     )
 
 
+def _candidate_direction(candidate: Any) -> str:
+    side = getattr(candidate, "side", "none")
+    if side == "buy":
+        return "positive"
+    if side == "sell":
+        return "negative"
+    return "unclear"
+
+
+def _candidate_confidence(candidate: Any, overall_confidence: int) -> int:
+    raw_confidence = getattr(candidate, "confidence", None)
+    return min(
+        raw_confidence if raw_confidence is not None else overall_confidence,
+        overall_confidence,
+    )
+
+
+def _candidate_reasons(candidate: Any, payload: dict[str, Any]) -> list[str]:
+    rationale = getattr(candidate, "rationale", None) or ""
+    reasons: list[str] = [rationale] if rationale else []
+    payload_reasons = payload.get("reasons", [])
+    if isinstance(payload_reasons, list):
+        for reason in payload_reasons:
+            if reason and reason not in reasons:
+                reasons.append(str(reason))
+    return reasons[:3]
+
+
+def _candidate_flag(candidate: Any, overall_confidence: int) -> CandidateImpactFlag:
+    symbol = getattr(candidate, "symbol", "")
+    payload = dict(getattr(candidate, "payload", {}) or {})
+    return CandidateImpactFlag(
+        symbol=symbol,
+        name=payload.get("name", symbol),
+        direction=_candidate_direction(candidate),  # type: ignore[arg-type]
+        confidence=_candidate_confidence(candidate, overall_confidence),
+        sector=payload.get("sector"),
+        reasons=_candidate_reasons(candidate, payload),
+        research_run_candidate_id=getattr(candidate, "id", None),
+    )
+
+
 def _extract_candidate_flags(
     research_run: Any,
     overall_confidence: int,
@@ -77,48 +119,11 @@ def _extract_candidate_flags(
     candidates = list(getattr(research_run, "candidates", []) or [])
     flags: list[CandidateImpactFlag] = []
 
-    for c in candidates:
-        kind = getattr(c, "candidate_kind", "")
+    for candidate in candidates:
+        kind = getattr(candidate, "candidate_kind", "")
         if kind not in ("proposed", "other"):
             continue
-
-        symbol = getattr(c, "symbol", "")
-        payload = dict(getattr(c, "payload", {}) or {})
-
-        side = getattr(c, "side", "none")
-        if side == "buy":
-            direction = "positive"
-        elif side == "sell":
-            direction = "negative"
-        else:
-            direction = "unclear"
-
-        raw_confidence = getattr(c, "confidence", None)
-        candidate_confidence = min(
-            raw_confidence if raw_confidence is not None else overall_confidence,
-            overall_confidence,
-        )
-
-        rationale = getattr(c, "rationale", None) or ""
-        reasons: list[str] = [rationale] if rationale else []
-        payload_reasons = payload.get("reasons", [])
-        if isinstance(payload_reasons, list):
-            for r in payload_reasons:
-                if r and r not in reasons:
-                    reasons.append(str(r))
-        reasons = reasons[:3]
-
-        flags.append(
-            CandidateImpactFlag(
-                symbol=symbol,
-                name=payload.get("name", symbol),
-                direction=direction,  # type: ignore[arg-type]
-                confidence=candidate_confidence,
-                sector=payload.get("sector"),
-                reasons=reasons,
-                research_run_candidate_id=getattr(c, "id", None),
-            )
-        )
+        flags.append(_candidate_flag(candidate, overall_confidence))
 
     return flags
 

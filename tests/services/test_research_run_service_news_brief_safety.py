@@ -10,15 +10,16 @@ Verifies:
 
 from __future__ import annotations
 
-import json
-import os
-import subprocess
-import sys
 from datetime import UTC, datetime
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from tests.services.research_run_safety_helpers import (
+    NEWS_BRIEF_FORBIDDEN_PREFIXES,
+    RESEARCH_RUN_FORBIDDEN_PREFIXES,
+    assert_module_does_not_import_forbidden,
+)
 
 _FORBIDDEN_EXECUTION_KEYS = [
     "quantity",
@@ -61,7 +62,7 @@ async def test_record_kr_preopen_news_brief_persists_advisory_only_run():
 
     created_runs = []
 
-    async def fake_create_research_run(session, **kwargs):
+    def fake_create_research_run(session, **kwargs):
         run = MagicMock()
         run.id = 1
         run.candidates = []
@@ -70,7 +71,9 @@ async def test_record_kr_preopen_news_brief_persists_advisory_only_run():
         return run
 
     with patch.object(
-        research_run_service, "create_research_run", new=fake_create_research_run
+        research_run_service,
+        "create_research_run",
+        new=AsyncMock(side_effect=fake_create_research_run),
     ):
         session_mock = AsyncMock()
         await research_run_service.record_kr_preopen_news_brief(
@@ -150,21 +153,27 @@ async def test_record_accepts_clean_candidate_payload():
     created_runs = []
     added_candidates = []
 
-    async def fake_create(session, **kwargs):
+    def fake_create(session, **kwargs):
         run = MagicMock()
         run.id = 1
         run.candidates = []
         created_runs.append(kwargs)
         return run
 
-    async def fake_add_candidates(session, *, research_run_id, candidates):
+    def fake_add_candidates(session, *, research_run_id, candidates):
         added_candidates.extend(candidates)
         return []
 
     with (
-        patch.object(research_run_service, "create_research_run", new=fake_create),
         patch.object(
-            research_run_service, "add_research_run_candidates", new=fake_add_candidates
+            research_run_service,
+            "create_research_run",
+            new=AsyncMock(side_effect=fake_create),
+        ),
+        patch.object(
+            research_run_service,
+            "add_research_run_candidates",
+            new=AsyncMock(side_effect=fake_add_candidates),
         ),
     ):
         session_mock = AsyncMock()
@@ -197,24 +206,20 @@ async def test_record_does_not_make_outbound_http_calls():
 
     outbound_called = []
 
-    class FakeClient:
-        def __getattr__(self, name):
-            def boom(*args, **kwargs):
-                outbound_called.append(f"{self.__class__.__name__}.{name}")
-                raise AssertionError(f"Outbound call: {self.__class__.__name__}.{name}")
-
-            return boom
-
     created = []
 
-    async def fake_create(session, **kwargs):
+    def fake_create(session, **kwargs):
         run = MagicMock()
         run.id = 1
         run.candidates = []
         created.append(True)
         return run
 
-    with patch.object(research_run_service, "create_research_run", new=fake_create):
+    with patch.object(
+        research_run_service,
+        "create_research_run",
+        new=AsyncMock(side_effect=fake_create),
+    ):
         session_mock = AsyncMock()
         await research_run_service.record_kr_preopen_news_brief(
             session_mock,
@@ -227,84 +232,19 @@ async def test_record_does_not_make_outbound_http_calls():
 
 # --- No forbidden transitive imports ---
 
-FORBIDDEN_PREFIXES = [
-    "app.services.kis",
-    "app.services.upbit",
-    "app.services.brokers",
-    "app.services.order_service",
-    "app.services.orders",
-    "app.services.watch_alerts",
-    "app.services.paper_trading_service",
-    "app.services.openclaw_client",
-    "app.services.fill_notification",
-    "app.services.execution_event",
-    "app.services.kis_websocket",
-    "app.services.kis_trading_service",
-    "app.services.upbit_websocket",
-    "app.services.redis_token_manager",
-    "app.tasks",
-    "redis",
-]
-
 
 @pytest.mark.unit
 def test_kr_preopen_news_brief_service_does_not_import_forbidden() -> None:
-    project_root = Path(__file__).resolve().parents[2]
-    script = """
-import importlib
-import json
-import sys
-
-importlib.import_module('app.services.kr_preopen_news_brief_service')
-print(json.dumps(sorted(sys.modules)))
-"""
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(project_root)
-    result = subprocess.run(
-        [sys.executable, "-c", script],
-        cwd=project_root,
-        env=env,
-        check=True,
-        capture_output=True,
-        text=True,
+    assert_module_does_not_import_forbidden(
+        "app.services.kr_preopen_news_brief_service",
+        NEWS_BRIEF_FORBIDDEN_PREFIXES,
     )
-    loaded = set(json.loads(result.stdout))
-    violations = sorted(
-        name
-        for name in loaded
-        for forbidden in FORBIDDEN_PREFIXES
-        if name == forbidden or name.startswith(f"{forbidden}.")
-    )
-    assert not violations, f"forbidden modules transitively imported: {violations}"
 
 
 @pytest.mark.unit
 def test_research_run_service_still_does_not_import_forbidden() -> None:
     """Extending research_run_service must not introduce forbidden imports."""
-    project_root = Path(__file__).resolve().parents[2]
-    script = """
-import importlib
-import json
-import sys
-
-importlib.import_module('app.services.research_run_service')
-print(json.dumps(sorted(sys.modules)))
-"""
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(project_root)
-    result = subprocess.run(
-        [sys.executable, "-c", script],
-        cwd=project_root,
-        env=env,
-        check=True,
-        capture_output=True,
-        text=True,
+    assert_module_does_not_import_forbidden(
+        "app.services.research_run_service",
+        RESEARCH_RUN_FORBIDDEN_PREFIXES,
     )
-    loaded = set(json.loads(result.stdout))
-    violations = sorted(
-        name
-        for name in loaded
-        for forbidden in FORBIDDEN_PREFIXES
-        if name == forbidden or name.startswith(f"{forbidden}.")
-    )
-    assert not violations, f"forbidden modules transitively imported: {violations}"
