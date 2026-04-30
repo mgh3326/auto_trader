@@ -211,6 +211,31 @@ export interface PreopenLinkedSession {
   created_at: IsoDateTime;
 }
 
+export type PreopenNewsReadinessStatus = "ready" | "stale" | "unavailable";
+
+export interface PreopenNewsReadinessSummary {
+  status: PreopenNewsReadinessStatus;
+  is_ready: boolean;
+  is_stale: boolean;
+  latest_run_uuid: string | null;
+  latest_status: string | null;
+  latest_finished_at: IsoDateTime | null;
+  latest_article_published_at: IsoDateTime | null;
+  source_counts: Record<string, number>;
+  warnings: string[];
+  max_age_minutes: number;
+}
+
+export interface PreopenNewsArticlePreview {
+  id: number;
+  title: string;
+  url: string;
+  source: string | null;
+  feed_source: string | null;
+  published_at: IsoDateTime | null;
+  summary: string | null;
+}
+
 export interface PreopenLatestResponse {
   has_run: boolean;
   advisory_used: boolean;
@@ -233,6 +258,8 @@ export interface PreopenLatestResponse {
   candidates: PreopenCandidateSummary[];
   reconciliations: PreopenReconciliationSummary[];
   linked_sessions: PreopenLinkedSession[];
+  news: PreopenNewsReadinessSummary | null;
+  news_preview: PreopenNewsArticlePreview[];
 }
 
 export interface CreateFromResearchRunRequest {

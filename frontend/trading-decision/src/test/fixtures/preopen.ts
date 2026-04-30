@@ -2,6 +2,8 @@ import type {
   PreopenCandidateSummary,
   PreopenLatestResponse,
   PreopenLinkedSession,
+  PreopenNewsArticlePreview,
+  PreopenNewsReadinessSummary,
   PreopenReconciliationSummary,
 } from "../../api/types";
 
@@ -56,6 +58,70 @@ export function makePreopenLinkedSession(
   };
 }
 
+export function makePreopenNewsReady(
+  overrides: Partial<PreopenNewsReadinessSummary> = {},
+): PreopenNewsReadinessSummary {
+  return {
+    status: "ready",
+    is_ready: true,
+    is_stale: false,
+    latest_run_uuid: "news-run-1",
+    latest_status: "success",
+    latest_finished_at: now,
+    latest_article_published_at: now,
+    source_counts: { mk_stock: 12, yna_market: 8 },
+    warnings: [],
+    max_age_minutes: 180,
+    ...overrides,
+  };
+}
+
+export function makePreopenNewsStale(
+  overrides: Partial<PreopenNewsReadinessSummary> = {},
+): PreopenNewsReadinessSummary {
+  return {
+    ...makePreopenNewsReady(),
+    status: "stale",
+    is_ready: false,
+    is_stale: true,
+    warnings: ["news_stale"],
+    ...overrides,
+  };
+}
+
+export function makePreopenNewsUnavailable(
+  overrides: Partial<PreopenNewsReadinessSummary> = {},
+): PreopenNewsReadinessSummary {
+  return {
+    status: "unavailable",
+    is_ready: false,
+    is_stale: true,
+    latest_run_uuid: null,
+    latest_status: null,
+    latest_finished_at: null,
+    latest_article_published_at: null,
+    source_counts: {},
+    warnings: ["news_unavailable", "news_stale"],
+    max_age_minutes: 180,
+    ...overrides,
+  };
+}
+
+export function makePreopenNewsArticle(
+  overrides: Partial<PreopenNewsArticlePreview> = {},
+): PreopenNewsArticlePreview {
+  return {
+    id: 1001,
+    title: "삼성전자 1분기 실적 발표",
+    url: "https://example.com/article/1001",
+    source: "MK",
+    feed_source: "mk_stock",
+    published_at: now,
+    summary: null,
+    ...overrides,
+  };
+}
+
 export function makePreopenResponse(
   overrides: Partial<PreopenLatestResponse> = {},
 ): PreopenLatestResponse {
@@ -81,6 +147,8 @@ export function makePreopenResponse(
     candidates: [makePreopenCandidate()],
     reconciliations: [makePreopenReconciliation()],
     linked_sessions: [],
+    news: makePreopenNewsReady(),
+    news_preview: [makePreopenNewsArticle()],
     ...overrides,
   };
 }
@@ -110,6 +178,8 @@ export function makePreopenFailOpen(
     candidates: [],
     reconciliations: [],
     linked_sessions: [],
+    news: null,
+    news_preview: [],
     ...overrides,
   };
 }

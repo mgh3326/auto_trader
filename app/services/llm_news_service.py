@@ -353,6 +353,44 @@ async def ingest_news_ingestor_bulk(
     )
 
 
+async def get_latest_news_preview(
+    *,
+    db: AsyncSession,
+    feed_sources: list[str],
+    limit: int = 5,
+) -> list:
+    """Return the N most recent news articles for the given feed sources.
+
+    Read-only, no LLM. The caller derives feed_sources from the latest
+    ingestion run's source_counts.keys().
+    """
+    from app.schemas.preopen import NewsArticlePreview
+
+    if not feed_sources or limit <= 0:
+        return []
+
+    stmt = (
+        select(NewsArticle)
+        .where(NewsArticle.feed_source.in_(feed_sources))
+        .order_by(NewsArticle.article_published_at.desc().nulls_last())
+        .limit(limit)
+    )
+    result = await db.execute(stmt)
+    rows = result.scalars().all()
+    return [
+        NewsArticlePreview(
+            id=row.id,
+            title=row.title,
+            url=row.url,
+            source=row.source,
+            feed_source=row.feed_source,
+            published_at=row.article_published_at,
+            summary=row.summary,
+        )
+        for row in rows
+    ]
+
+
 async def get_news_readiness(
     *,
     market: str = "kr",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -91,6 +92,54 @@ def _make_news_readiness(**kwargs) -> SimpleNamespace:
     return SimpleNamespace(**defaults)
 
 
+@contextmanager
+def _patched_dashboard_dependencies(
+    preopen_dashboard_service,
+    research_run_service,
+    *,
+    run,
+    readiness=None,
+    preview=None,
+    readiness_error: Exception | None = None,
+    preview_error: Exception | None = None,
+):
+    readiness_mock = (
+        AsyncMock(side_effect=readiness_error)
+        if readiness_error
+        else AsyncMock(
+            return_value=readiness if readiness is not None else _make_news_readiness()
+        )
+    )
+    preview_mock = (
+        AsyncMock(side_effect=preview_error)
+        if preview_error
+        else AsyncMock(return_value=preview if preview is not None else [])
+    )
+    with (
+        patch.object(
+            research_run_service,
+            "get_latest_research_run",
+            new=AsyncMock(return_value=run),
+        ),
+        patch.object(
+            preopen_dashboard_service,
+            "_linked_sessions",
+            new=AsyncMock(return_value=[]),
+        ),
+        patch.object(
+            preopen_dashboard_service,
+            "get_news_readiness",
+            new=readiness_mock,
+        ),
+        patch.object(
+            preopen_dashboard_service,
+            "get_latest_news_preview",
+            new=preview_mock,
+        ),
+    ):
+        yield
+
+
 @pytest.mark.asyncio
 @pytest.mark.unit
 async def test_returns_fail_open_when_no_run():
@@ -137,22 +186,8 @@ async def test_maps_candidates_and_reconciliations():
         ],
     )
 
-    with (
-        patch.object(
-            research_run_service,
-            "get_latest_research_run",
-            new=AsyncMock(return_value=run),
-        ),
-        patch.object(
-            preopen_dashboard_service,
-            "_linked_sessions",
-            new=AsyncMock(return_value=[]),
-        ),
-        patch.object(
-            preopen_dashboard_service,
-            "get_news_readiness",
-            new=AsyncMock(return_value=_make_news_readiness()),
-        ),
+    with _patched_dashboard_dependencies(
+        preopen_dashboard_service, research_run_service, run=run
     ):
         result = await preopen_dashboard_service.get_latest_preopen_dashboard(
             db=AsyncMock(),
@@ -179,22 +214,8 @@ async def test_advisory_skipped_reason_when_zero_candidates():
 
     run = _make_run(candidates=[])
 
-    with (
-        patch.object(
-            research_run_service,
-            "get_latest_research_run",
-            new=AsyncMock(return_value=run),
-        ),
-        patch.object(
-            preopen_dashboard_service,
-            "_linked_sessions",
-            new=AsyncMock(return_value=[]),
-        ),
-        patch.object(
-            preopen_dashboard_service,
-            "get_news_readiness",
-            new=AsyncMock(return_value=_make_news_readiness()),
-        ),
+    with _patched_dashboard_dependencies(
+        preopen_dashboard_service, research_run_service, run=run
     ):
         result = await preopen_dashboard_service.get_latest_preopen_dashboard(
             db=AsyncMock(),
@@ -219,22 +240,8 @@ async def test_advisory_skipped_reason_from_source_warning(warning: str):
 
     run = _make_run(source_warnings=[warning])
 
-    with (
-        patch.object(
-            research_run_service,
-            "get_latest_research_run",
-            new=AsyncMock(return_value=run),
-        ),
-        patch.object(
-            preopen_dashboard_service,
-            "_linked_sessions",
-            new=AsyncMock(return_value=[]),
-        ),
-        patch.object(
-            preopen_dashboard_service,
-            "get_news_readiness",
-            new=AsyncMock(return_value=_make_news_readiness()),
-        ),
+    with _patched_dashboard_dependencies(
+        preopen_dashboard_service, research_run_service, run=run
     ):
         result = await preopen_dashboard_service.get_latest_preopen_dashboard(
             db=AsyncMock(),
@@ -261,6 +268,164 @@ async def test_linked_sessions_lookup_fail_open():
         db_mock, run=run, user_id=7
     )
     assert result == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_news_summary_ready_and_preview_attached():
+    from app.schemas.preopen import NewsArticlePreview
+    from app.services import preopen_dashboard_service, research_run_service
+
+    run = _make_run()
+    readiness = _make_news_readiness(
+        is_ready=True,
+        is_stale=False,
+        warnings=[],
+        source_counts={"browser_naver_mainnews": 20, "yna_market": 12},
+    )
+    preview = [
+        NewsArticlePreview(
+            id=1,
+            title="t",
+            url="u",
+            source="MK",
+            feed_source="mk_stock",
+            published_at=datetime.now(UTC),
+            summary=None,
+        )
+    ]
+
+    with _patched_dashboard_dependencies(
+        preopen_dashboard_service,
+        research_run_service,
+        run=run,
+        readiness=readiness,
+        preview=preview,
+    ):
+        result = await preopen_dashboard_service.get_latest_preopen_dashboard(
+            db=AsyncMock(),
+            user_id=7,
+            market_scope="kr",
+        )
+
+    assert result.news is not None
+    assert result.news.status == "ready"
+    assert result.news.source_counts["browser_naver_mainnews"] == 20
+    assert len(result.news_preview) == 1
+    assert result.news_preview[0].title == "t"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_news_summary_stale_status_when_warning_present():
+    from app.services import preopen_dashboard_service, research_run_service
+
+    run = _make_run()
+    readiness = _make_news_readiness(
+        is_ready=False,
+        is_stale=True,
+        warnings=["news_stale"],
+        source_counts={"browser_naver_mainnews": 20},
+    )
+
+    with _patched_dashboard_dependencies(
+        preopen_dashboard_service,
+        research_run_service,
+        run=run,
+        readiness=readiness,
+    ):
+        result = await preopen_dashboard_service.get_latest_preopen_dashboard(
+            db=AsyncMock(),
+            user_id=7,
+            market_scope="kr",
+        )
+
+    assert result.news is not None
+    assert result.news.status == "stale"
+    assert "news_stale" in result.news.warnings
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_news_summary_unavailable_when_no_run():
+    from app.services import preopen_dashboard_service, research_run_service
+
+    run = _make_run()
+    readiness = _make_news_readiness(
+        is_ready=False,
+        is_stale=True,
+        latest_run_uuid=None,
+        latest_status=None,
+        latest_finished_at=None,
+        warnings=["news_unavailable", "news_stale"],
+        source_counts={},
+    )
+
+    with _patched_dashboard_dependencies(
+        preopen_dashboard_service,
+        research_run_service,
+        run=run,
+        readiness=readiness,
+    ):
+        result = await preopen_dashboard_service.get_latest_preopen_dashboard(
+            db=AsyncMock(),
+            user_id=7,
+            market_scope="kr",
+        )
+
+    assert result.news is not None
+    assert result.news.status == "unavailable"
+    assert result.news_preview == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_news_summary_none_when_readiness_lookup_raises():
+    from app.services import preopen_dashboard_service, research_run_service
+
+    run = _make_run()
+
+    with _patched_dashboard_dependencies(
+        preopen_dashboard_service,
+        research_run_service,
+        run=run,
+        readiness_error=RuntimeError("redis down"),
+    ):
+        result = await preopen_dashboard_service.get_latest_preopen_dashboard(
+            db=AsyncMock(),
+            user_id=7,
+            market_scope="kr",
+        )
+
+    assert result.news is None
+    assert result.news_preview == []
+    assert "news_readiness_unavailable" in result.source_warnings
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_news_preview_lookup_failure_keeps_readiness_summary():
+    from app.services import preopen_dashboard_service, research_run_service
+
+    run = _make_run()
+    readiness = _make_news_readiness(source_counts={"browser_naver_mainnews": 20})
+
+    with _patched_dashboard_dependencies(
+        preopen_dashboard_service,
+        research_run_service,
+        run=run,
+        readiness=readiness,
+        preview_error=RuntimeError("preview query failed"),
+    ):
+        result = await preopen_dashboard_service.get_latest_preopen_dashboard(
+            db=AsyncMock(),
+            user_id=7,
+            market_scope="kr",
+        )
+
+    assert result.news is not None
+    assert result.news.status == "ready"
+    assert result.news_preview == []
 
 
 @pytest.mark.unit

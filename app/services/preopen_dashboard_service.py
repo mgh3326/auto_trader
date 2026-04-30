@@ -15,11 +15,16 @@ from app.models.trading_decision import TradingDecisionProposal, TradingDecision
 from app.schemas.preopen import (
     CandidateSummary,
     LinkedSessionRef,
+    NewsArticlePreview,
+    NewsReadinessSummary,
     PreopenLatestResponse,
     ReconciliationSummary,
 )
 from app.services import research_run_service
-from app.services.llm_news_service import get_news_readiness
+from app.services.llm_news_service import (
+    get_latest_news_preview,
+    get_news_readiness,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +50,8 @@ _FAIL_OPEN = PreopenLatestResponse(
     candidates=[],
     reconciliations=[],
     linked_sessions=[],
+    news=None,
+    news_preview=[],
 )
 
 
@@ -151,13 +158,30 @@ def _advisory_skipped_reason(run: ResearchRun) -> str | None:
     return None
 
 
-async def _merge_news_readiness(
+def _derive_news_status(readiness) -> str:
+    warnings = list(readiness.warnings or [])
+    if "news_unavailable" in warnings or readiness.latest_run_uuid is None:
+        return "unavailable"
+    if readiness.is_stale or "news_stale" in warnings:
+        return "stale"
+    if readiness.is_ready:
+        return "ready"
+    return "stale"
+
+
+async def _build_news_section(
     db: AsyncSession,
     *,
     market_scope: str,
     source_freshness: dict | None,
     source_warnings: list[str],
-) -> tuple[dict | None, list[str]]:
+) -> tuple[
+    NewsReadinessSummary | None,
+    list[NewsArticlePreview],
+    dict | None,
+    list[str],
+]:
+    """Fetch readiness + latest preview, return both typed and merged-dict views."""
     try:
         readiness = await get_news_readiness(market=market_scope, db=db)
     except Exception:
@@ -169,7 +193,7 @@ async def _merge_news_readiness(
         merged_warnings = list(source_warnings)
         if "news_readiness_unavailable" not in merged_warnings:
             merged_warnings.append("news_readiness_unavailable")
-        return source_freshness, merged_warnings
+        return None, [], source_freshness, merged_warnings
 
     merged_freshness = dict(source_freshness or {})
     merged_freshness["news"] = {
@@ -187,12 +211,40 @@ async def _merge_news_readiness(
         "warnings": readiness.warnings,
         "max_age_minutes": readiness.max_age_minutes,
     }
-
     merged_warnings = list(source_warnings)
     for warning in readiness.warnings:
         if warning not in merged_warnings:
             merged_warnings.append(warning)
-    return merged_freshness, merged_warnings
+
+    summary = NewsReadinessSummary(
+        status=_derive_news_status(readiness),
+        is_ready=readiness.is_ready,
+        is_stale=readiness.is_stale,
+        latest_run_uuid=str(readiness.latest_run_uuid)
+        if readiness.latest_run_uuid
+        else None,
+        latest_status=readiness.latest_status,
+        latest_finished_at=readiness.latest_finished_at,
+        latest_article_published_at=readiness.latest_article_published_at,
+        source_counts=dict(readiness.source_counts or {}),
+        warnings=list(readiness.warnings or []),
+        max_age_minutes=readiness.max_age_minutes,
+    )
+
+    feed_sources = list((readiness.source_counts or {}).keys())
+    try:
+        preview = await get_latest_news_preview(
+            db=db, feed_sources=feed_sources, limit=5
+        )
+    except Exception:
+        logger.warning(
+            "Failed to load news preview for preopen dashboard",
+            exc_info=True,
+            extra={"market_scope": market_scope},
+        )
+        preview = []
+
+    return summary, preview, merged_freshness, merged_warnings
 
 
 async def get_latest_preopen_dashboard(
@@ -214,7 +266,12 @@ async def get_latest_preopen_dashboard(
 
     candidates = _map_candidates(run)
     reconciliations = _map_reconciliations(run)
-    source_freshness, source_warnings = await _merge_news_readiness(
+    (
+        news_summary,
+        news_preview,
+        source_freshness,
+        source_warnings,
+    ) = await _build_news_section(
         db,
         market_scope=market_scope,
         source_freshness=run.source_freshness,
@@ -245,4 +302,6 @@ async def get_latest_preopen_dashboard(
         candidates=candidates,
         reconciliations=reconciliations,
         linked_sessions=linked,
+        news=news_summary,
+        news_preview=news_preview,
     )
