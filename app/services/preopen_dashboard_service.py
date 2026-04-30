@@ -220,7 +220,9 @@ async def _build_news_section(
         status=_derive_news_status(readiness),
         is_ready=readiness.is_ready,
         is_stale=readiness.is_stale,
-        latest_run_uuid=str(readiness.latest_run_uuid) if readiness.latest_run_uuid else None,
+        latest_run_uuid=str(readiness.latest_run_uuid)
+        if readiness.latest_run_uuid
+        else None,
         latest_status=readiness.latest_status,
         latest_finished_at=readiness.latest_finished_at,
         latest_article_published_at=readiness.latest_article_published_at,
@@ -264,7 +266,12 @@ async def get_latest_preopen_dashboard(
 
     candidates = _map_candidates(run)
     reconciliations = _map_reconciliations(run)
-    news_summary, news_preview, source_freshness, source_warnings = await _build_news_section(
+    (
+        news_summary,
+        news_preview,
+        source_freshness,
+        source_warnings,
+    ) = await _build_news_section(
         db,
         market_scope=market_scope,
         source_freshness=run.source_freshness,

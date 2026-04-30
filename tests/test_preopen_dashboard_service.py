@@ -311,7 +311,9 @@ async def test_news_summary_ready_and_preview_attached():
         ),
     ):
         result = await preopen_dashboard_service.get_latest_preopen_dashboard(
-            db=AsyncMock(), user_id=7, market_scope="kr",
+            db=AsyncMock(),
+            user_id=7,
+            market_scope="kr",
         )
 
     assert result.news is not None
@@ -335,17 +337,31 @@ async def test_news_summary_stale_status_when_warning_present():
     )
 
     with (
-        patch.object(research_run_service, "get_latest_research_run",
-                     new=AsyncMock(return_value=run)),
-        patch.object(preopen_dashboard_service, "_linked_sessions",
-                     new=AsyncMock(return_value=[])),
-        patch.object(preopen_dashboard_service, "get_news_readiness",
-                     new=AsyncMock(return_value=readiness)),
-        patch.object(preopen_dashboard_service, "get_latest_news_preview",
-                     new=AsyncMock(return_value=[])),
+        patch.object(
+            research_run_service,
+            "get_latest_research_run",
+            new=AsyncMock(return_value=run),
+        ),
+        patch.object(
+            preopen_dashboard_service,
+            "_linked_sessions",
+            new=AsyncMock(return_value=[]),
+        ),
+        patch.object(
+            preopen_dashboard_service,
+            "get_news_readiness",
+            new=AsyncMock(return_value=readiness),
+        ),
+        patch.object(
+            preopen_dashboard_service,
+            "get_latest_news_preview",
+            new=AsyncMock(return_value=[]),
+        ),
     ):
         result = await preopen_dashboard_service.get_latest_preopen_dashboard(
-            db=AsyncMock(), user_id=7, market_scope="kr",
+            db=AsyncMock(),
+            user_id=7,
+            market_scope="kr",
         )
 
     assert result.news is not None
@@ -370,17 +386,31 @@ async def test_news_summary_unavailable_when_no_run():
     )
 
     with (
-        patch.object(research_run_service, "get_latest_research_run",
-                     new=AsyncMock(return_value=run)),
-        patch.object(preopen_dashboard_service, "_linked_sessions",
-                     new=AsyncMock(return_value=[])),
-        patch.object(preopen_dashboard_service, "get_news_readiness",
-                     new=AsyncMock(return_value=readiness)),
-        patch.object(preopen_dashboard_service, "get_latest_news_preview",
-                     new=AsyncMock(return_value=[])),
+        patch.object(
+            research_run_service,
+            "get_latest_research_run",
+            new=AsyncMock(return_value=run),
+        ),
+        patch.object(
+            preopen_dashboard_service,
+            "_linked_sessions",
+            new=AsyncMock(return_value=[]),
+        ),
+        patch.object(
+            preopen_dashboard_service,
+            "get_news_readiness",
+            new=AsyncMock(return_value=readiness),
+        ),
+        patch.object(
+            preopen_dashboard_service,
+            "get_latest_news_preview",
+            new=AsyncMock(return_value=[]),
+        ),
     ):
         result = await preopen_dashboard_service.get_latest_preopen_dashboard(
-            db=AsyncMock(), user_id=7, market_scope="kr",
+            db=AsyncMock(),
+            user_id=7,
+            market_scope="kr",
         )
 
     assert result.news is not None
@@ -396,17 +426,31 @@ async def test_news_summary_none_when_readiness_lookup_raises():
     run = _make_run()
 
     with (
-        patch.object(research_run_service, "get_latest_research_run",
-                     new=AsyncMock(return_value=run)),
-        patch.object(preopen_dashboard_service, "_linked_sessions",
-                     new=AsyncMock(return_value=[])),
-        patch.object(preopen_dashboard_service, "get_news_readiness",
-                     new=AsyncMock(side_effect=RuntimeError("redis down"))),
-        patch.object(preopen_dashboard_service, "get_latest_news_preview",
-                     new=AsyncMock(return_value=[])),
+        patch.object(
+            research_run_service,
+            "get_latest_research_run",
+            new=AsyncMock(return_value=run),
+        ),
+        patch.object(
+            preopen_dashboard_service,
+            "_linked_sessions",
+            new=AsyncMock(return_value=[]),
+        ),
+        patch.object(
+            preopen_dashboard_service,
+            "get_news_readiness",
+            new=AsyncMock(side_effect=RuntimeError("redis down")),
+        ),
+        patch.object(
+            preopen_dashboard_service,
+            "get_latest_news_preview",
+            new=AsyncMock(return_value=[]),
+        ),
     ):
         result = await preopen_dashboard_service.get_latest_preopen_dashboard(
-            db=AsyncMock(), user_id=7, market_scope="kr",
+            db=AsyncMock(),
+            user_id=7,
+            market_scope="kr",
         )
 
     assert result.news is None
