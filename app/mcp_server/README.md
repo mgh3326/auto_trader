@@ -1003,3 +1003,60 @@ docker compose -f docker-compose.prod.yml up -d mcp
 ```
 
 > Note: current prod compose uses `network_mode: host`, so port publishing is handled by the host network.
+
+---
+
+## MCP Profiles (ROB-56)
+
+### Overview
+
+The `MCP_PROFILE` env var selects which tool subset is registered at startup.
+
+| Profile | Value | Order surface |
+|---|---|---|
+| Default (unchanged) | `default` (or unset) | Legacy `place_order`/`cancel_order`/`modify_order`/`get_order_history` + typed `kis_live_*` + typed `kis_mock_*` |
+| Paper/mock-only | `hermes-paper-kis` | Typed `kis_mock_*` only — live surface **physically absent** |
+
+### Profile: `hermes-paper-kis`
+
+Set `MCP_PROFILE=hermes-paper-kis` on paper-only deployments (e.g., where `KIS_MOCK_ENABLED=true`).
+
+- `kis_live_place_order`, `kis_live_cancel_order`, `kis_live_modify_order`, `kis_live_get_order_history` are **not registered**.
+- The legacy ambiguous `place_order`, `cancel_order`, `modify_order`, `get_order_history` are **not registered**.
+- Only `kis_mock_*` typed order tools are registered.
+- All read-only research and portfolio tools remain available.
+
+**Operator validation:** after deploying with `hermes-paper-kis`, check the MCP `/mcp` listing and confirm that none of `kis_live_*` or the legacy ambiguous order tools appear.
+
+### Typed KIS order tools
+
+Both profiles (including `default`) provide explicitly-named typed variants:
+
+**Mock (KIS official mock / paper):**
+- `kis_mock_place_order` — hard-pinned `is_mock=True`; fails closed if KIS mock config missing
+- `kis_mock_cancel_order`
+- `kis_mock_modify_order`
+- `kis_mock_get_order_history`
+
+**Live (real-money):**
+- `kis_live_place_order` — hard-pinned `is_mock=False`
+- `kis_live_cancel_order`
+- `kis_live_modify_order`
+- `kis_live_get_order_history`
+
+Each typed tool rejects any `account_mode` value other than its own pinned mode.
+
+### Fail-closed behavior
+
+`kis_mock_*` tools return a structured error (without delegating) when KIS mock config is incomplete:
+
+```json
+{
+  "success": false,
+  "error": "KIS mock account is disabled or missing required configuration: KIS_MOCK_ENABLED, KIS_MOCK_APP_KEY",
+  "source": "kis",
+  "account_mode": "kis_mock"
+}
+```
+
+With all mock vars missing, the `hermes-paper-kis` profile is effectively read-only KIS — the safe state for a misconfigured paper deployment.
