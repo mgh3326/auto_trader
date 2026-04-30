@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import ErrorView from "../components/ErrorView";
 import LoadingView from "../components/LoadingView";
+import NewsReadinessSection from "../components/NewsReadinessSection";
 import { ApiError } from "../api/client";
 import {
   createDecisionFromResearchRun,
@@ -130,6 +131,8 @@ export default function PreopenPage() {
           ))}
         </ul>
       ) : null}
+
+      <NewsReadinessSection news={data.news} preview={data.news_preview} />
 
       {data.candidates.length > 0 ? (
         <section className={styles.section}>
