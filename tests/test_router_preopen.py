@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -168,6 +169,78 @@ def test_get_latest_preopen_with_run_returns_full_payload(
     assert len(body["candidates"]) == 1
     assert body["candidates"][0]["symbol"] == "005930"
     assert body["candidates"][0]["side"] == "buy"
+
+
+@pytest.mark.unit
+def test_get_latest_preopen_returns_news_section(monkeypatch: pytest.MonkeyPatch):
+    """GET /preopen/latest returns news + news_preview when run exists."""
+    from app.schemas.preopen import (
+        NewsArticlePreview,
+        NewsReadinessSummary,
+    )
+    from app.services import preopen_dashboard_service
+
+    response_obj = _full_response()
+    response_obj.news = NewsReadinessSummary(
+        status="ready",
+        is_ready=True,
+        is_stale=False,
+        latest_run_uuid="abc",
+        latest_status="success",
+        latest_finished_at=datetime.now(UTC),
+        latest_article_published_at=datetime.now(UTC),
+        source_counts={"mk_stock": 10},
+        warnings=[],
+        max_age_minutes=180,
+    )
+    response_obj.news_preview = [
+        NewsArticlePreview(
+            id=1,
+            title="t",
+            url="u",
+            source="MK",
+            feed_source="mk_stock",
+            published_at=datetime.now(UTC),
+            summary=None,
+        )
+    ]
+
+    monkeypatch.setattr(
+        preopen_dashboard_service,
+        "get_latest_preopen_dashboard",
+        AsyncMock(return_value=response_obj),
+    )
+
+    response = TestClient(_app()).get(ENDPOINT)
+    assert response.status_code == 200
+    body = response.json()
+    assert "news" in body
+    assert "news_preview" in body
+    assert isinstance(body["news_preview"], list)
+    assert body["news"]["status"] == "ready"
+    assert body["news"]["source_counts"] == {"mk_stock": 10}
+    assert body["news_preview"][0]["title"] == "t"
+
+
+@pytest.mark.unit
+def test_get_latest_preopen_news_null_when_readiness_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """news is null and news_preview is [] in the degraded fail-open payload."""
+    from app.services import preopen_dashboard_service
+
+    fail_open = _fail_open_response()
+    monkeypatch.setattr(
+        preopen_dashboard_service,
+        "get_latest_preopen_dashboard",
+        AsyncMock(return_value=fail_open),
+    )
+
+    response = TestClient(_app()).get(ENDPOINT)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["news"] is None
+    assert body["news_preview"] == []
 
 
 @pytest.mark.unit
