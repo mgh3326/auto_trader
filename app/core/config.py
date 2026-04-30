@@ -2,7 +2,7 @@ import json
 import os
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic.fields import FieldInfo
 from pydantic_settings import (
     BaseSettings,
@@ -373,6 +373,31 @@ class Settings(BaseSettings):
     paperclip_api_key: str | None = None
 
     public_base_url: str = "https://mgh3326.duckdns.org"
+
+    # Alpaca paper-trading broker adapter (ROB-57)
+    # Only paper credentials/endpoint — no live trading support.
+    alpaca_paper_api_key: str | None = None
+    alpaca_paper_api_secret: SecretStr | None = None
+    alpaca_paper_base_url: str = "https://paper-api.alpaca.markets"
+    alpaca_paper_data_base_url: str = "https://data.alpaca.markets"
+
+    @field_validator("alpaca_paper_base_url", mode="before")
+    @classmethod
+    def validate_alpaca_paper_base_url(cls, v: Any) -> str:
+        _PAPER_URL = "https://paper-api.alpaca.markets"
+        _FORBIDDEN = {"https://api.alpaca.markets", "https://data.alpaca.markets"}
+        normalised = str(v).rstrip("/")
+        if normalised in _FORBIDDEN:
+            raise ValueError(
+                f"alpaca_paper_base_url must be the paper endpoint "
+                f"({_PAPER_URL}), got '{normalised}' which is a forbidden URL"
+            )
+        if normalised != _PAPER_URL:
+            raise ValueError(
+                f"alpaca_paper_base_url must be exactly '{_PAPER_URL}', "
+                f"got '{normalised}'"
+            )
+        return normalised
 
     @field_validator("SECRET_KEY")
     @classmethod
