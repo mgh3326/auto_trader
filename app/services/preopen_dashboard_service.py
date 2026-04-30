@@ -19,6 +19,7 @@ from app.schemas.preopen import (
     ReconciliationSummary,
 )
 from app.services import research_run_service
+from app.services.llm_news_service import get_news_readiness
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +151,50 @@ def _advisory_skipped_reason(run: ResearchRun) -> str | None:
     return None
 
 
+async def _merge_news_readiness(
+    db: AsyncSession,
+    *,
+    market_scope: str,
+    source_freshness: dict | None,
+    source_warnings: list[str],
+) -> tuple[dict | None, list[str]]:
+    try:
+        readiness = await get_news_readiness(market=market_scope, db=db)
+    except Exception:
+        logger.warning(
+            "Failed to look up news readiness for preopen dashboard",
+            exc_info=True,
+            extra={"market_scope": market_scope},
+        )
+        merged_warnings = list(source_warnings)
+        if "news_readiness_unavailable" not in merged_warnings:
+            merged_warnings.append("news_readiness_unavailable")
+        return source_freshness, merged_warnings
+
+    merged_freshness = dict(source_freshness or {})
+    merged_freshness["news"] = {
+        "is_ready": readiness.is_ready,
+        "is_stale": readiness.is_stale,
+        "latest_run_uuid": readiness.latest_run_uuid,
+        "latest_status": readiness.latest_status,
+        "latest_finished_at": readiness.latest_finished_at.isoformat()
+        if readiness.latest_finished_at
+        else None,
+        "latest_article_published_at": readiness.latest_article_published_at.isoformat()
+        if readiness.latest_article_published_at
+        else None,
+        "source_counts": readiness.source_counts,
+        "warnings": readiness.warnings,
+        "max_age_minutes": readiness.max_age_minutes,
+    }
+
+    merged_warnings = list(source_warnings)
+    for warning in readiness.warnings:
+        if warning not in merged_warnings:
+            merged_warnings.append(warning)
+    return merged_freshness, merged_warnings
+
+
 async def get_latest_preopen_dashboard(
     db: AsyncSession,
     *,
@@ -169,6 +214,12 @@ async def get_latest_preopen_dashboard(
 
     candidates = _map_candidates(run)
     reconciliations = _map_reconciliations(run)
+    source_freshness, source_warnings = await _merge_news_readiness(
+        db,
+        market_scope=market_scope,
+        source_freshness=run.source_freshness,
+        source_warnings=list(run.source_warnings),
+    )
     advisory_reason = _advisory_skipped_reason(run)
     linked = await _linked_sessions(db, run=run, user_id=user_id)
 
@@ -186,8 +237,8 @@ async def get_latest_preopen_dashboard(
         created_at=run.created_at,
         notes=run.notes,
         market_brief=run.market_brief,
-        source_freshness=run.source_freshness,
-        source_warnings=list(run.source_warnings),
+        source_freshness=source_freshness,
+        source_warnings=source_warnings,
         advisory_links=list(run.advisory_links),
         candidate_count=len(candidates),
         reconciliation_count=len(reconciliations),

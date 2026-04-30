@@ -11,13 +11,18 @@ from app.schemas.news import (
     NewsAnalysisResultResponse,
     NewsArticleBulkCreate,
     NewsArticleResponse,
+    NewsBulkIngestRequest,
+    NewsBulkIngestResponse,
     NewsListResponse,
+    NewsReadinessResponse,
 )
 from app.services.llm_news_service import (
     bulk_create_news_articles,
     create_news_article,
     get_news_analysis,
     get_news_articles,
+    get_news_readiness,
+    ingest_news_ingestor_bulk,
 )
 
 router = APIRouter(prefix="/api/v1/news", tags=["News Analysis"])
@@ -69,6 +74,43 @@ async def bulk_create_news(request: NewsArticleBulkCreate):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to bulk create news: {str(e)}",
+        )
+
+
+@router.post(
+    "/ingest/bulk",
+    response_model=NewsBulkIngestResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def bulk_ingest_news_ingestor_payload(request: NewsBulkIngestRequest):
+    try:
+        return await ingest_news_ingestor_bulk(request)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to ingest news-ingestor payload: {str(e)}",
+        )
+
+
+@router.get("/readiness", response_model=NewsReadinessResponse)
+async def get_news_readiness_status(
+    market: str = Query("kr", description="Market scope for news readiness"),
+    max_age_minutes: int = Query(
+        180,
+        ge=1,
+        le=1440,
+        description="Freshness threshold before news is considered stale",
+    ),
+):
+    try:
+        return await get_news_readiness(
+            market=market,
+            max_age_minutes=max_age_minutes,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get news readiness: {str(e)}",
         )
 
 

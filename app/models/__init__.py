@@ -10,7 +10,7 @@ from .manual_holdings import (
     StockAlias,
 )
 from .market_report import MarketReport
-from .news import NewsAnalysisResult, NewsArticle, Sentiment
+from .news import NewsAnalysisResult, NewsArticle, NewsIngestionRun, Sentiment
 from .paper_trading import PaperAccount, PaperPosition, PaperTrade
 from .portfolio_decision_run import PortfolioDecisionRun
 from .prompt import PromptResult
@@ -97,6 +97,7 @@ __all__ = [
     "SymbolTradeSettings",
     "NewsArticle",
     "NewsAnalysisResult",
+    "NewsIngestionRun",
     "Sentiment",
     "BrokerType",
     "MarketType",

@@ -74,6 +74,23 @@ def _make_run(**kwargs) -> SimpleNamespace:
     return SimpleNamespace(**defaults)
 
 
+def _make_news_readiness(**kwargs) -> SimpleNamespace:
+    defaults = {
+        "market": "kr",
+        "is_ready": True,
+        "is_stale": False,
+        "latest_run_uuid": "news-run",
+        "latest_status": "success",
+        "latest_finished_at": datetime.now(UTC),
+        "latest_article_published_at": datetime.now(UTC),
+        "source_counts": {"browser_naver_mainnews": 20},
+        "warnings": [],
+        "max_age_minutes": 180,
+    }
+    defaults.update(kwargs)
+    return SimpleNamespace(**defaults)
+
+
 @pytest.mark.asyncio
 @pytest.mark.unit
 async def test_returns_fail_open_when_no_run():
@@ -131,6 +148,11 @@ async def test_maps_candidates_and_reconciliations():
             "_linked_sessions",
             new=AsyncMock(return_value=[]),
         ),
+        patch.object(
+            preopen_dashboard_service,
+            "get_news_readiness",
+            new=AsyncMock(return_value=_make_news_readiness()),
+        ),
     ):
         result = await preopen_dashboard_service.get_latest_preopen_dashboard(
             db=AsyncMock(),
@@ -168,6 +190,11 @@ async def test_advisory_skipped_reason_when_zero_candidates():
             "_linked_sessions",
             new=AsyncMock(return_value=[]),
         ),
+        patch.object(
+            preopen_dashboard_service,
+            "get_news_readiness",
+            new=AsyncMock(return_value=_make_news_readiness()),
+        ),
     ):
         result = await preopen_dashboard_service.get_latest_preopen_dashboard(
             db=AsyncMock(),
@@ -202,6 +229,11 @@ async def test_advisory_skipped_reason_from_source_warning(warning: str):
             preopen_dashboard_service,
             "_linked_sessions",
             new=AsyncMock(return_value=[]),
+        ),
+        patch.object(
+            preopen_dashboard_service,
+            "get_news_readiness",
+            new=AsyncMock(return_value=_make_news_readiness()),
         ),
     ):
         result = await preopen_dashboard_service.get_latest_preopen_dashboard(

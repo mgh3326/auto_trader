@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class NewsArticleCreate(BaseModel):
@@ -57,6 +57,92 @@ class NewsArticleCreate(BaseModel):
 
 class NewsArticleBulkCreate(BaseModel):
     articles: list[NewsArticleCreate] = Field(..., max_length=500)
+
+
+class NewsIngestionRunCreate(BaseModel):
+    run_uuid: str = Field(..., min_length=1, max_length=64)
+    market: str = Field(..., min_length=1, max_length=20)
+    feed_set: str = Field(..., min_length=1, max_length=100)
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    status: str = Field("success", pattern="^(success|partial|failed|dry_run_ok)$")
+    source_counts: dict[str, int] = Field(default_factory=dict)
+    error_message: str | None = None
+
+    @field_validator("run_uuid", "market", "feed_set", "status")
+    @classmethod
+    def normalize_required_text(cls, v: str) -> str:
+        return v.strip()
+
+
+class NewsIngestArticle(NewsArticleCreate):
+    """news-ingestor article payload mapped into auto_trader article fields."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    fingerprint: str = Field(..., min_length=1, max_length=128)
+    market: str = Field(..., min_length=1, max_length=20)
+    feed_source: str = Field(
+        ...,
+        validation_alias="source",
+        max_length=50,
+        description="news-ingestor source/feed key",
+    )
+    source: str | None = Field(
+        None,
+        validation_alias="publisher",
+        max_length=100,
+        description="Publisher mapped to auto_trader news source",
+    )
+    canonical_url: str | None = Field(None, max_length=2048)
+    published_at: datetime | None = Field(None, description="기사 발행일시")
+    raw: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("canonical_url")
+    @classmethod
+    def normalize_canonical_url(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        value = v.strip()
+        return value or None
+
+    @model_validator(mode="after")
+    def map_ingestor_metadata(self) -> "NewsIngestArticle":
+        if self.canonical_url:
+            self.url = self.canonical_url
+        metadata_keywords = [f"fingerprint:{self.fingerprint.strip()}"]
+        if self.canonical_url:
+            metadata_keywords.append(f"canonical_url:{self.canonical_url}")
+        if self.keywords:
+            metadata_keywords.extend(self.keywords)
+        self.keywords = metadata_keywords
+        return self
+
+
+class NewsBulkIngestRequest(BaseModel):
+    ingestion_run: NewsIngestionRunCreate
+    articles: list[NewsIngestArticle] = Field(..., max_length=500)
+
+
+class NewsBulkIngestResponse(BaseModel):
+    success: bool
+    run_uuid: str
+    inserted_count: int
+    skipped_count: int
+    skipped_urls: list[str]
+
+
+class NewsReadinessResponse(BaseModel):
+    market: str
+    is_ready: bool
+    is_stale: bool
+    latest_run_uuid: str | None
+    latest_status: str | None
+    latest_finished_at: datetime | None
+    latest_article_published_at: datetime | None
+    source_counts: dict[str, int]
+    warnings: list[str]
+    max_age_minutes: int
 
 
 class BulkCreateResponse(BaseModel):

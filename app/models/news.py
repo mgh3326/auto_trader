@@ -7,6 +7,7 @@ import sqlalchemy as sa
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     ForeignKey,
     Index,
     String,
@@ -108,6 +109,39 @@ class NewsArticle(Base):
 
     def __repr__(self) -> str:
         return f"<NewsArticle(id={self.id}, title='{self.title[:50]}...', url='{self.url[:50]}...')>"
+
+
+class NewsIngestionRun(Base):
+    __tablename__ = "news_ingestion_runs"
+
+    __table_args__ = (
+        UniqueConstraint("run_uuid", name="uq_news_ingestion_runs_run_uuid"),
+        CheckConstraint(
+            "status IN ('success', 'partial', 'failed', 'dry_run_ok')",
+            name="ck_news_ingestion_runs_status",
+        ),
+        Index("ix_news_ingestion_runs_market_finished", "market", "finished_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    run_uuid: Mapped[str] = mapped_column(String(64), nullable=False)
+    market: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    feed_set: Mapped[str] = mapped_column(String(100), nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="success")
+    source_counts: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    inserted_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    skipped_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(nullable=False)
+
+    def __repr__(self) -> str:
+        return (
+            "<NewsIngestionRun("
+            f"id={self.id}, run_uuid='{self.run_uuid}', market='{self.market}', "
+            f"status='{self.status}')>"
+        )
 
 
 class NewsAnalysisResult(Base):
