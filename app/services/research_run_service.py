@@ -306,6 +306,83 @@ async def list_user_research_runs(
     return rows, total
 
 
+_FORBIDDEN_CANDIDATE_KEYS = frozenset(
+    {"quantity", "price", "side", "order_type", "dry_run", "watch", "order_intent"}
+)
+
+
+def _validate_news_brief_candidate_payload(payload: dict[str, Any]) -> None:
+    """Raise ValueError if payload contains execution-related keys."""
+    violations = _FORBIDDEN_CANDIDATE_KEYS & set(payload.keys())
+    if violations:
+        raise ValueError(
+            f"News brief candidate payload contains forbidden execution keys: {sorted(violations)}"
+        )
+
+
+async def record_kr_preopen_news_brief(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    market_brief: dict[str, Any] | None = None,
+    source_freshness: dict[str, Any] | None = None,
+    source_warnings: Sequence[str] = (),
+    advisory_links: Sequence[dict[str, Any]] = (),
+    generated_at: datetime,
+    candidate_payloads: Sequence[dict[str, Any]] = (),
+) -> ResearchRun:
+    """Persist a KR preopen news brief as an advisory-only ResearchRun.
+
+    Advisory-only invariants enforced:
+    - All advisory_links must have advisory_only=True, execution_allowed=False.
+    - candidate_payloads must not contain forbidden execution keys.
+    - No writes to trading tables occur here.
+
+    This helper must NOT be called from the GET dashboard path.
+    Invoke only from a scheduled job or admin endpoint (not yet wired in MVP).
+    """
+    for payload in candidate_payloads:
+        _validate_news_brief_candidate_payload(dict(payload))
+
+    run = await create_research_run(
+        session,
+        user_id=user_id,
+        market_scope="kr",
+        stage="preopen",
+        source_profile="kr_preopen_news_brief",
+        strategy_name="hermes_news_brief",
+        market_brief=market_brief,
+        source_freshness=source_freshness,
+        source_warnings=source_warnings,
+        advisory_links=advisory_links,
+        generated_at=generated_at,
+    )
+
+    if candidate_payloads:
+        candidate_creates: list[CandidateCreate] = []
+        for p in candidate_payloads:
+            safe = dict(p)
+            candidate_creates.append(
+                {
+                    "symbol": str(safe.get("symbol", "")),
+                    "instrument_type": InstrumentType.equity_kr,
+                    "side": "none",
+                    "candidate_kind": "proposed",
+                    "confidence": safe.get("confidence"),
+                    "rationale": safe.get("rationale"),
+                    "warnings": list(safe.get("warnings", [])),
+                    "payload": _json_safe(safe),
+                }
+            )
+        await add_research_run_candidates(
+            session,
+            research_run_id=run.id,
+            candidates=candidate_creates,
+        )
+
+    return run
+
+
 def reconciliation_create_from_recon(
     item: PendingReconciliationItem,
     *,

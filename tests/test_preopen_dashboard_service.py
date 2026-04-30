@@ -558,3 +558,146 @@ def test_no_forbidden_imports():
                 assert not any(part in low for part in forbidden_parts), (
                     f"Forbidden import '{name}' found in {mod.__name__}"
                 )
+
+
+# --- ROB-62: news_brief field conformance ---
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_news_brief_present_and_advisory_only_when_run_exists():
+    """news_brief must be populated and advisory_only=True when a run exists (ROB-62)."""
+    from app.services import preopen_dashboard_service, research_run_service
+
+    run = _make_run()
+    readiness = _make_news_readiness(is_ready=True, is_stale=False, warnings=[])
+
+    with _patched_dashboard_dependencies(
+        preopen_dashboard_service,
+        research_run_service,
+        run=run,
+        readiness=readiness,
+    ):
+        result = await preopen_dashboard_service.get_latest_preopen_dashboard(
+            db=AsyncMock(),
+            user_id=7,
+            market_scope="kr",
+        )
+
+    assert result.news_brief is not None, (
+        "news_brief must not be None when a run exists"
+    )
+    assert result.news_brief.advisory_only is True
+    assert result.news_brief.news_readiness in (
+        "ok",
+        "stale",
+        "degraded",
+        "unavailable",
+    )
+    assert 0 <= result.news_brief.confidence.overall <= 100
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_news_brief_none_when_fail_open():
+    """Fail-open response must have news_brief=None (no run found)."""
+    from app.services import preopen_dashboard_service, research_run_service
+
+    with patch.object(
+        research_run_service,
+        "get_latest_research_run",
+        new=AsyncMock(return_value=None),
+    ):
+        result = await preopen_dashboard_service.get_latest_preopen_dashboard(
+            db=AsyncMock(),
+            user_id=7,
+            market_scope="kr",
+        )
+
+    assert result.has_run is False
+    assert result.news_brief is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_news_brief_readiness_ok_when_news_ready():
+    """news_brief.news_readiness must be 'ok' when news is ready (ROB-62)."""
+    from app.services import preopen_dashboard_service, research_run_service
+
+    run = _make_run()
+    readiness = _make_news_readiness(
+        is_ready=True,
+        is_stale=False,
+        warnings=[],
+        source_counts={"browser_naver_mainnews": 20},
+    )
+
+    with _patched_dashboard_dependencies(
+        preopen_dashboard_service,
+        research_run_service,
+        run=run,
+        readiness=readiness,
+    ):
+        result = await preopen_dashboard_service.get_latest_preopen_dashboard(
+            db=AsyncMock(),
+            user_id=7,
+            market_scope="kr",
+        )
+
+    assert result.news_brief is not None
+    assert result.news_brief.news_readiness == "ok"
+    assert result.news_brief.confidence.overall <= 90
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_news_brief_readiness_stale_when_news_stale():
+    """news_brief.news_readiness must be 'stale' when news is stale (ROB-62)."""
+    from app.services import preopen_dashboard_service, research_run_service
+
+    run = _make_run()
+    readiness = _make_news_readiness(
+        is_ready=False,
+        is_stale=True,
+        warnings=["news_stale"],
+    )
+
+    with _patched_dashboard_dependencies(
+        preopen_dashboard_service,
+        research_run_service,
+        run=run,
+        readiness=readiness,
+    ):
+        result = await preopen_dashboard_service.get_latest_preopen_dashboard(
+            db=AsyncMock(),
+            user_id=7,
+            market_scope="kr",
+        )
+
+    assert result.news_brief is not None
+    assert result.news_brief.news_readiness == "stale"
+    assert result.news_brief.confidence.overall <= 60
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_news_brief_none_when_readiness_lookup_raises():
+    """news_brief must be None when readiness lookup raises (graceful degradation, ROB-62)."""
+    from app.services import preopen_dashboard_service, research_run_service
+
+    run = _make_run()
+
+    with _patched_dashboard_dependencies(
+        preopen_dashboard_service,
+        research_run_service,
+        run=run,
+        readiness_error=RuntimeError("redis down"),
+    ):
+        result = await preopen_dashboard_service.get_latest_preopen_dashboard(
+            db=AsyncMock(),
+            user_id=7,
+            market_scope="kr",
+        )
+
+    assert result.news is None
+    assert result.news_brief is None
