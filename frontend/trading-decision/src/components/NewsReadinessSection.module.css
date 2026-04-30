@@ -1,0 +1,106 @@
+.section {
+  border: 1px solid #e2e6ec;
+  background: #ffffff;
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1.25rem;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.25rem;
+  margin: 0.5rem 0 0.75rem;
+}
+
+.meta dt {
+  font-size: 0.75rem;
+  color: #5f6b7a;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.meta dd {
+  margin: 0;
+  font-size: 0.9rem;
+  color: #172033;
+}
+
+.warningLine {
+  background: #fff4e5;
+  color: #a65d00;
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  margin: 0.5rem 0 0.75rem;
+}
+
+.sourceList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  list-style: none;
+  padding: 0;
+  margin: 0 0 0.75rem;
+}
+
+.sourceChip {
+  background: #f1f5f9;
+  color: #1f5f99;
+  border-radius: 999px;
+  padding: 0.15rem 0.6rem;
+  font-size: 0.8rem;
+}
+
+.previewHeading {
+  font-size: 0.95rem;
+  margin: 0.5rem 0 0.4rem;
+}
+
+.previewList {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.previewItem {
+  border-top: 1px solid #f0f3f7;
+  padding: 0.5rem 0;
+}
+
+.previewItem:first-child {
+  border-top: none;
+}
+
+.previewItem a {
+  color: #1f5f99;
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.previewItem a:hover {
+  text-decoration: underline;
+}
+
+.previewMeta {
+  display: block;
+  color: #5f6b7a;
+  font-size: 0.78rem;
+  margin-top: 0.1rem;
+}
+
+.muted {
+  color: #5f6b7a;
+  margin: 0.25rem 0;
+}
