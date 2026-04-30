@@ -1,12 +1,20 @@
 import json
 from datetime import datetime, timedelta
+from typing import Any
 
 from sqlalchemy import cast, func, select
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst_naive, to_kst_naive
-from app.models.news import NewsAnalysisResult, NewsArticle
+from app.models.news import NewsAnalysisResult, NewsArticle, NewsIngestionRun
+from app.schemas.news import (
+    NewsBulkIngestRequest,
+    NewsBulkIngestResponse,
+    NewsReadinessResponse,
+)
 
 
 async def create_news_article(
@@ -173,3 +181,219 @@ async def get_news_analysis(article_id: int) -> NewsAnalysisResult | None:
             .limit(1)
         )
         return result.scalars().first()
+
+
+def _news_readiness_payload(
+    *,
+    market: str,
+    latest_run: NewsIngestionRun | None,
+    latest_article_published_at: datetime | None,
+    max_age_minutes: int,
+) -> NewsReadinessResponse:
+    warnings: list[str] = []
+    latest_finished_at = latest_run.finished_at if latest_run else None
+    if latest_finished_at is not None:
+        latest_finished_at = to_kst_naive(latest_finished_at)
+    if latest_article_published_at is not None:
+        latest_article_published_at = to_kst_naive(latest_article_published_at)
+    source_counts: dict[str, int] = latest_run.source_counts if latest_run else {}
+
+    if latest_run is None:
+        warnings.append("news_unavailable")
+    elif latest_finished_at is None:
+        warnings.append("news_run_unfinished")
+    if latest_run is not None and not source_counts:
+        warnings.append("news_sources_empty")
+
+    freshness_anchor = latest_finished_at
+    is_stale = True
+    if freshness_anchor is not None and source_counts:
+        is_stale = freshness_anchor < now_kst_naive() - timedelta(
+            minutes=max_age_minutes
+        )
+    if is_stale:
+        warnings.append("news_stale")
+
+    is_ready = (
+        latest_run is not None
+        and latest_finished_at is not None
+        and bool(source_counts)
+        and not is_stale
+    )
+
+    return NewsReadinessResponse(
+        market=market,
+        is_ready=is_ready,
+        is_stale=is_stale,
+        latest_run_uuid=latest_run.run_uuid if latest_run else None,
+        latest_status=latest_run.status if latest_run else None,
+        latest_finished_at=latest_finished_at,
+        latest_article_published_at=latest_article_published_at,
+        source_counts=source_counts,
+        warnings=list(dict.fromkeys(warnings)),
+        max_age_minutes=max_age_minutes,
+    )
+
+
+def _article_values_from_ingestor_payload(article_data: Any) -> dict[str, Any]:
+    return {
+        "url": article_data.url.strip(),
+        "title": article_data.title.strip(),
+        "article_content": article_data.content,
+        "summary": article_data.summary,
+        "source": article_data.source,
+        "author": article_data.author,
+        "stock_symbol": article_data.stock_symbol,
+        "stock_name": article_data.stock_name,
+        "article_published_at": to_kst_naive(article_data.published_at)
+        if article_data.published_at
+        else None,
+        "feed_source": article_data.feed_source,
+        "keywords": article_data.keywords,
+        "scraped_at": now_kst_naive(),
+        "created_at": now_kst_naive(),
+    }
+
+
+async def ingest_news_ingestor_bulk(
+    request: NewsBulkIngestRequest,
+) -> NewsBulkIngestResponse:
+    """Persist a news-ingestor normalized payload through auto_trader boundary.
+
+    Articles are deduped by the URL stored in auto_trader (canonical_url if supplied,
+    otherwise url). No auto_trader DB direct insert from news-ingestor is used; this is
+    the HTTP/API service boundary counterpart.
+    """
+    urls = [article.url.strip() for article in request.articles]
+
+    async with AsyncSessionLocal() as db:
+        existing_run_result = await db.execute(
+            select(NewsIngestionRun).where(
+                NewsIngestionRun.run_uuid == request.ingestion_run.run_uuid
+            )
+        )
+        existing_run = existing_run_result.scalars().first()
+        if existing_run is not None:
+            return NewsBulkIngestResponse(
+                success=True,
+                run_uuid=existing_run.run_uuid,
+                inserted_count=existing_run.inserted_count,
+                skipped_count=existing_run.skipped_count,
+                skipped_urls=[],
+            )
+
+        article_values = [
+            _article_values_from_ingestor_payload(article_data)
+            for article_data in request.articles
+        ]
+        article_stmt = (
+            pg_insert(NewsArticle)
+            .values(article_values)
+            .on_conflict_do_nothing(index_elements=[NewsArticle.url])
+            .returning(NewsArticle.url)
+        )
+        article_result = await db.execute(article_stmt)
+        inserted_urls = set(article_result.scalars().all())
+
+        consumed_inserted_urls: set[str] = set()
+        skipped_urls: list[str] = []
+        for url in urls:
+            if url in inserted_urls and url not in consumed_inserted_urls:
+                consumed_inserted_urls.add(url)
+            else:
+                skipped_urls.append(url)
+        inserted_count = len(inserted_urls)
+
+        run = request.ingestion_run
+        run_values = {
+            "run_uuid": run.run_uuid,
+            "market": run.market,
+            "feed_set": run.feed_set,
+            "started_at": to_kst_naive(run.started_at) if run.started_at else None,
+            "finished_at": to_kst_naive(run.finished_at) if run.finished_at else None,
+            "status": run.status,
+            "source_counts": dict(run.source_counts),
+            "inserted_count": inserted_count,
+            "skipped_count": len(skipped_urls),
+            "error_message": run.error_message,
+            "created_at": now_kst_naive(),
+        }
+        run_stmt = (
+            pg_insert(NewsIngestionRun)
+            .values(run_values)
+            .on_conflict_do_nothing(index_elements=[NewsIngestionRun.run_uuid])
+            .returning(NewsIngestionRun.run_uuid)
+        )
+        run_result = await db.execute(run_stmt)
+        inserted_run_uuid = run_result.scalar_one_or_none()
+        if inserted_run_uuid is None:
+            existing_run_result = await db.execute(
+                select(NewsIngestionRun).where(
+                    NewsIngestionRun.run_uuid == request.ingestion_run.run_uuid
+                )
+            )
+            existing_run = existing_run_result.scalars().first()
+            await db.commit()
+            if existing_run is not None:
+                return NewsBulkIngestResponse(
+                    success=True,
+                    run_uuid=existing_run.run_uuid,
+                    inserted_count=existing_run.inserted_count,
+                    skipped_count=existing_run.skipped_count,
+                    skipped_urls=[],
+                )
+        await db.commit()
+
+    return NewsBulkIngestResponse(
+        success=True,
+        run_uuid=request.ingestion_run.run_uuid,
+        inserted_count=inserted_count,
+        skipped_count=len(skipped_urls),
+        skipped_urls=skipped_urls,
+    )
+
+
+async def get_news_readiness(
+    *,
+    market: str = "kr",
+    max_age_minutes: int = 180,
+    db: AsyncSession | None = None,
+) -> NewsReadinessResponse:
+    """Return latest news ingestion freshness for readiness/preopen checks."""
+
+    async def _query(session: AsyncSession) -> NewsReadinessResponse:
+        run_result = await session.execute(
+            select(NewsIngestionRun)
+            .where(
+                NewsIngestionRun.market == market,
+                NewsIngestionRun.status.in_(["success", "partial"]),
+            )
+            .order_by(NewsIngestionRun.finished_at.desc().nulls_last())
+            .limit(1)
+        )
+        latest_run = run_result.scalars().first()
+
+        article_conditions = [NewsArticle.feed_source.is_not(None)]
+        if latest_run and latest_run.source_counts:
+            article_conditions.append(
+                NewsArticle.feed_source.in_(list(latest_run.source_counts.keys()))
+            )
+        article_result = await session.execute(
+            select(func.max(NewsArticle.article_published_at)).where(
+                *article_conditions
+            )
+        )
+        latest_article_published_at = article_result.scalar_one_or_none()
+
+        return _news_readiness_payload(
+            market=market,
+            latest_run=latest_run,
+            latest_article_published_at=latest_article_published_at,
+            max_age_minutes=max_age_minutes,
+        )
+
+    if db is not None:
+        return await _query(db)
+
+    async with AsyncSessionLocal() as session:
+        return await _query(session)
