@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -256,6 +256,34 @@ async def test_advisory_skipped_reason_from_source_warning(warning: str):
 
 @pytest.mark.asyncio
 @pytest.mark.unit
+async def test_linked_sessions_lookup_maps_recent_sessions():
+    """linked_sessions maps DB rows into LinkedSessionRef values."""
+    from app.services import preopen_dashboard_service
+
+    created_at = datetime.now(UTC)
+    session = SimpleNamespace(
+        session_uuid=uuid4(),
+        status="open",
+        created_at=created_at,
+    )
+    result_mock = MagicMock()
+    result_mock.scalars.return_value.all.return_value = [session]
+    db_mock = AsyncMock()
+    db_mock.execute.return_value = result_mock
+
+    run = _make_run()
+    result = await preopen_dashboard_service._linked_sessions(
+        db_mock, run=run, user_id=7
+    )
+
+    assert len(result) == 1
+    assert result[0].session_uuid == session.session_uuid
+    assert result[0].status == "open"
+    assert result[0].created_at == created_at
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
 async def test_linked_sessions_lookup_fail_open():
     """linked_sessions returns [] if query fails."""
     from app.services import preopen_dashboard_service
@@ -268,6 +296,21 @@ async def test_linked_sessions_lookup_fail_open():
         db_mock, run=run, user_id=7
     )
     assert result == []
+
+
+@pytest.mark.unit
+def test_derive_news_status_falls_back_to_stale_for_ambiguous_not_ready():
+    """Ambiguous non-ready readiness payloads must degrade to stale, not ready."""
+    from app.services import preopen_dashboard_service
+
+    readiness = _make_news_readiness(
+        is_ready=False,
+        is_stale=False,
+        warnings=[],
+        latest_run_uuid="run-ambiguous",
+    )
+
+    assert preopen_dashboard_service._derive_news_status(readiness) == "stale"
 
 
 @pytest.mark.asyncio
@@ -426,6 +469,59 @@ async def test_news_preview_lookup_failure_keeps_readiness_summary():
     assert result.news is not None
     assert result.news.status == "ready"
     assert result.news_preview == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_news_unavailable_does_not_demote_other_freshness_signals():
+    """news_unavailable must only modify the 'news' slot of source_freshness.
+
+    Other source freshness entries (e.g. kis, upbit) must be preserved
+    unchanged, and only news_* warnings should be appended to source_warnings.
+    """
+    from app.services import preopen_dashboard_service, research_run_service
+
+    pre_existing_freshness = {
+        "kis": {"ok": True, "latency_ms": 12},
+        "upbit": {"ok": True, "latency_ms": 8},
+    }
+    run = _make_run(
+        source_freshness=pre_existing_freshness,
+        source_warnings=[],
+    )
+    readiness = _make_news_readiness(
+        is_ready=False,
+        is_stale=True,
+        latest_run_uuid=None,
+        latest_status=None,
+        latest_finished_at=None,
+        warnings=["news_unavailable", "news_stale"],
+        source_counts={},
+    )
+
+    with _patched_dashboard_dependencies(
+        preopen_dashboard_service,
+        research_run_service,
+        run=run,
+        readiness=readiness,
+    ):
+        result = await preopen_dashboard_service.get_latest_preopen_dashboard(
+            db=AsyncMock(),
+            user_id=7,
+            market_scope="kr",
+        )
+
+    assert result.source_freshness is not None
+    # Non-news entries must be preserved verbatim
+    assert result.source_freshness["kis"] == {"ok": True, "latency_ms": 12}
+    assert result.source_freshness["upbit"] == {"ok": True, "latency_ms": 8}
+    # Only the 'news' slot should be added
+    assert "news" in result.source_freshness
+    assert result.source_freshness["news"]["is_ready"] is False
+    # No unrelated warnings were injected
+    non_news = [w for w in result.source_warnings if not w.startswith("news_")]
+    assert non_news == [], f"Unexpected non-news warnings injected: {non_news}"
+    assert "news_unavailable" in result.source_warnings
 
 
 @pytest.mark.unit
