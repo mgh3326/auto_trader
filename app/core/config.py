@@ -363,6 +363,11 @@ class Settings(BaseSettings):
     # N8N API Key Authentication
     N8N_API_KEY: str = ""
     PUBLIC_API_PATHS: list[str] = []
+
+    # news-ingestor machine-to-machine bulk ingest authentication
+    NEWS_INGESTOR_INGEST_TOKEN: str = ""
+    NEWS_INGESTOR_INGEST_TOKEN_HEADER: str = "X-News-Ingestor-Token"
+
     trader_agent_id: str = "6b2192cc-14fa-4335-b572-2fe1e0cb54a7"
     paperclip_api_url: str | None = None
     paperclip_api_key: str | None = None
