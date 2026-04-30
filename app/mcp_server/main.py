@@ -2,6 +2,7 @@ import logging
 
 from app.core.config import settings
 from app.mcp_server.env_utils import _env, _env_int, get_mcp_graceful_shutdown_timeout
+from app.mcp_server.profiles import resolve_mcp_profile
 from app.monitoring.sentry import capture_exception, init_sentry
 
 # ──────────────────────────────────────────────────────────────────────
@@ -48,7 +49,8 @@ mcp = FastMCP(
 
 mcp.add_middleware(McpToolCallSentryMiddleware())
 mcp.add_middleware(CallerIdentityMiddleware())
-register_all_tools(mcp)
+_mcp_profile = resolve_mcp_profile(_env("MCP_PROFILE"))
+register_all_tools(mcp, profile=_mcp_profile)
 
 
 def _validate_caller_agent_id_fallback(mcp_type: str) -> None:
