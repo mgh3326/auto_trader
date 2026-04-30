@@ -9,6 +9,8 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
+from app.schemas.preopen_news_brief import KRPreopenNewsBrief
+
 NewsReadinessStatus = Literal["ready", "stale", "unavailable"]
 
 
@@ -93,3 +95,4 @@ class PreopenLatestResponse(BaseModel):
     linked_sessions: list[LinkedSessionRef]
     news: NewsReadinessSummary | None = None
     news_preview: list[NewsArticlePreview] = []
+    news_brief: KRPreopenNewsBrief | None = None

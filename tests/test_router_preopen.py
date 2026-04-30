@@ -256,3 +256,22 @@ def test_market_scope_param_validation_rejects_us_for_now():
 
     response = TestClient(app).get(f"{ENDPOINT}?market_scope=us")
     assert response.status_code == 422
+
+
+@pytest.mark.unit
+def test_response_contains_news_brief_key_for_kr(monkeypatch: pytest.MonkeyPatch):
+    """Smoke: GET /preopen/latest KR response always contains 'news_brief' key (ROB-62)."""
+    from app.services import preopen_dashboard_service
+
+    monkeypatch.setattr(
+        preopen_dashboard_service,
+        "get_latest_preopen_dashboard",
+        AsyncMock(return_value=_fail_open_response()),
+    )
+
+    response = TestClient(_app()).get(ENDPOINT)
+    assert response.status_code == 200
+    body = response.json()
+    assert "news_brief" in body, (
+        "news_brief key must always be present in KR preopen response"
+    )

@@ -20,7 +20,8 @@ from app.schemas.preopen import (
     PreopenLatestResponse,
     ReconciliationSummary,
 )
-from app.services import research_run_service
+from app.schemas.preopen_news_brief import KRPreopenNewsBrief
+from app.services import kr_preopen_news_brief_service, research_run_service
 from app.services.llm_news_service import (
     get_latest_news_preview,
     get_news_readiness,
@@ -52,6 +53,7 @@ _FAIL_OPEN = PreopenLatestResponse(
     linked_sessions=[],
     news=None,
     news_preview=[],
+    news_brief=None,
 )
 
 
@@ -180,6 +182,7 @@ async def _build_news_section(
     list[NewsArticlePreview],
     dict | None,
     list[str],
+    object | None,  # raw readiness object for brief assembly
 ]:
     """Fetch readiness + latest preview, return both typed and merged-dict views."""
     try:
@@ -193,7 +196,7 @@ async def _build_news_section(
         merged_warnings = list(source_warnings)
         if "news_readiness_unavailable" not in merged_warnings:
             merged_warnings.append("news_readiness_unavailable")
-        return None, [], source_freshness, merged_warnings
+        return None, [], source_freshness, merged_warnings, None
 
     merged_freshness = dict(source_freshness or {})
     merged_freshness["news"] = {
@@ -244,7 +247,25 @@ async def _build_news_section(
         )
         preview = []
 
-    return summary, preview, merged_freshness, merged_warnings
+    return summary, preview, merged_freshness, merged_warnings, readiness
+
+
+def _build_news_brief(
+    news_summary: NewsReadinessSummary | None,
+    readiness_raw: object | None,
+    run: ResearchRun | None,
+) -> KRPreopenNewsBrief | None:
+    """Assemble the news brief from already-fetched readiness + run. Never raises."""
+    if readiness_raw is None:
+        return None
+    try:
+        return kr_preopen_news_brief_service.build_brief(
+            readiness=readiness_raw,
+            research_run=run,
+        )
+    except Exception:
+        logger.warning("Failed to build KR preopen news brief", exc_info=True)
+        return None
 
 
 async def get_latest_preopen_dashboard(
@@ -271,12 +292,14 @@ async def get_latest_preopen_dashboard(
         news_preview,
         source_freshness,
         source_warnings,
+        readiness_raw,
     ) = await _build_news_section(
         db,
         market_scope=market_scope,
         source_freshness=run.source_freshness,
         source_warnings=list(run.source_warnings),
     )
+    news_brief = _build_news_brief(news_summary, readiness_raw, run)
     advisory_reason = _advisory_skipped_reason(run)
     linked = await _linked_sessions(db, run=run, user_id=user_id)
 
@@ -304,4 +327,5 @@ async def get_latest_preopen_dashboard(
         linked_sessions=linked,
         news=news_summary,
         news_preview=news_preview,
+        news_brief=news_brief,
     )
