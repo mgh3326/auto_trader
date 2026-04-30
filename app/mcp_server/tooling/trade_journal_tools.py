@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+from datetime import UTC, timedelta
 from decimal import Decimal
 from typing import Any, cast
 
@@ -12,7 +12,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
-from app.core.timezone import now_kst
+from app.core.timezone import KST, now_kst
 from app.mcp_server.tooling.shared import (
     resolve_market_type as _resolve_market_type,
 )
@@ -436,3 +436,101 @@ async def update_trade_journal(
     except Exception as exc:
         logger.exception("update_trade_journal failed")
         return {"success": False, "error": f"update_trade_journal failed: {exc}"}
+
+
+def _extract_daily_allocation_krw(journal: TradeJournal) -> float:
+    """Extract per-day KRW allocation from metadata or model columns."""
+    metadata = (
+        journal.extra_metadata if isinstance(journal.extra_metadata, dict) else {}
+    )
+
+    amount_krw = metadata.get("amount_krw")
+    hold_days = metadata.get("hold_days")
+
+    if amount_krw is None:
+        amount_krw = journal.amount
+    if hold_days is None:
+        hold_days = journal.min_hold_days
+
+    if amount_krw is None or hold_days is None:
+        return 0.0
+
+    try:
+        total_amount = float(amount_krw)
+        total_hold_days = int(hold_days)
+    except (TypeError, ValueError):
+        return 0.0
+
+    if total_amount <= 0 or total_hold_days <= 0:
+        return 0.0
+
+    return total_amount / total_hold_days
+
+
+async def compute_active_dca_daily_burn() -> dict[str, Any]:
+    """Compute current daily burn from active DCA journal records."""
+    try:
+        async with _session_factory()() as db:
+            stmt = (
+                select(TradeJournal)
+                .where(
+                    TradeJournal.status == JournalStatus.active,
+                    TradeJournal.strategy.in_(("dca_oversold", "coinmoogi")),
+                )
+                .order_by(desc(TradeJournal.created_at))
+            )
+            result = await db.execute(stmt)
+            journals = result.scalars().all()
+    except Exception as exc:
+        logger.exception("compute_active_dca_daily_burn failed")
+        return {
+            "daily_burn_krw": 0.0,
+            "active_count": 0,
+            "per_record": [],
+            "days_to_next_obligation": None,
+            "cash_needed_until_obligation": 0.0,
+            "error": f"compute_active_dca_daily_burn failed: {exc}",
+        }
+
+    today = now_kst().date()
+    per_record: list[dict[str, Any]] = []
+    daily_burn = 0.0
+    obligation_days: list[int] = []
+
+    for journal in journals:
+        allocation = _extract_daily_allocation_krw(journal)
+        per_record.append(
+            {
+                "symbol": journal.symbol,
+                "allocation_krw": allocation,
+                "hold_until": journal.hold_until,
+            }
+        )
+        daily_burn += allocation
+
+        if journal.hold_until is not None:
+            hold_until = journal.hold_until
+            hold_until_with_tz = (
+                hold_until
+                if hold_until.tzinfo is not None
+                else hold_until.replace(tzinfo=UTC)
+            )
+            hold_until_kst_date = hold_until_with_tz.astimezone(KST).date()
+            days_to_obligation = (hold_until_kst_date - today).days
+            if days_to_obligation > 0:
+                obligation_days.append(days_to_obligation)
+
+    days_to_next_obligation = min(obligation_days) if obligation_days else None
+    cash_needed_until_obligation = (
+        daily_burn * days_to_next_obligation
+        if days_to_next_obligation is not None
+        else 0.0
+    )
+
+    return {
+        "daily_burn_krw": round(daily_burn, 6),
+        "active_count": len(journals),
+        "per_record": per_record,
+        "days_to_next_obligation": days_to_next_obligation,
+        "cash_needed_until_obligation": round(cash_needed_until_obligation, 6),
+    }

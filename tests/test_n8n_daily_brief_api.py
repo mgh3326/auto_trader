@@ -51,6 +51,30 @@ class TestDailyBriefEndpoint:
         assert "brief_text" in body
         assert "market_overview" in body
 
+    def test_daily_brief_preserves_daily_burn_error_payload(self):
+        client = self._get_client()
+        result = _make_brief_result()
+        result["daily_burn"] = {
+            "daily_burn_krw": 0.0,
+            "active_count": 0,
+            "error": "db unavailable",
+        }
+        result["errors"] = [{"source": "daily_burn", "error": "db unavailable"}]
+        result["brief_text"] = "daily_burn: unavailable (active DCA 재산출 실패)"
+
+        with patch(
+            "app.routers.n8n.fetch_daily_brief",
+            new_callable=AsyncMock,
+            return_value=result,
+        ):
+            resp = client.get("/api/n8n/daily-brief")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["daily_burn"]["error"] == "db unavailable"
+        assert {"source": "daily_burn", "error": "db unavailable"} in body["errors"]
+        assert "daily_burn: unavailable" in body["brief_text"]
+
     def test_daily_brief_custom_markets(self):
         client = self._get_client()
         with patch(

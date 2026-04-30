@@ -17,6 +17,7 @@ __all__ = [
     "N8nDailyBriefPortfolio",
     "N8nFillItem",
     "N8nYesterdayFills",
+    "N8nDailyBurnStatus",
     "N8nDailyBriefResponse",
 ]
 
@@ -81,6 +82,23 @@ class N8nYesterdayFills(BaseModel):
     fills: list[N8nFillItem] = Field(default_factory=list)
 
 
+class N8nDailyBurnStatus(BaseModel):
+    """Recomputed active DCA daily-burn summary."""
+
+    daily_burn_krw: float = Field(0, description="Recomputed daily burn in KRW")
+    active_count: int = Field(0, description="Active DCA journal count")
+    per_record: list[dict[str, object]] = Field(default_factory=list)
+    days_to_next_obligation: int | None = Field(
+        None, description="Days until the next active DCA obligation"
+    )
+    cash_needed_until_obligation: float = Field(
+        0, description="Projected cash needed until next obligation"
+    )
+    error: str | None = Field(
+        None, description="Failure detail when daily-burn recomputation degraded"
+    )
+
+
 class N8nDailyBriefResponse(BaseModel):
     """Daily trading brief response."""
 
@@ -97,6 +115,9 @@ class N8nDailyBriefResponse(BaseModel):
     )
     yesterday_fills: N8nYesterdayFills = Field(
         ..., description="Yesterday's filled orders"
+    )
+    daily_burn: N8nDailyBurnStatus | None = Field(
+        None, description="Recomputed active DCA daily-burn status"
     )
 
     brief_text: str = Field(..., description="Pre-formatted briefing text for Discord")
