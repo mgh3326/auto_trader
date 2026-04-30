@@ -46,8 +46,17 @@ KIS_MOCK_ORDER_TOOL_NAMES: set[str] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Shared guard/delegation helpers
+# ---------------------------------------------------------------------------
+
+
 def _pinned_routing(account_mode: str) -> AccountRouting:
     return AccountRouting(account_mode=account_mode)
+
+
+def _is_mock_mode(pinned_mode: str) -> bool:
+    return pinned_mode == ACCOUNT_MODE_KIS_MOCK
 
 
 def _mock_config_error() -> dict[str, Any] | None:
@@ -92,6 +101,183 @@ def _check_mode_arg(
     return None
 
 
+def _prepare_variant_call(
+    tool_name: str,
+    pinned_mode: str,
+    account_mode: str | None,
+    account_type: str | None,
+) -> tuple[AccountRouting, dict[str, Any] | None]:
+    routing = _pinned_routing(pinned_mode)
+    rejection = _check_mode_arg(tool_name, pinned_mode, account_mode, account_type)
+    if rejection:
+        return routing, rejection
+    if _is_mock_mode(pinned_mode):
+        config_error = _mock_config_error()
+        if config_error:
+            return routing, apply_account_routing_metadata(config_error, routing)
+    return routing, None
+
+
+def _limit_order_error(tool_name: str, symbol: str, order_type: str) -> dict[str, Any]:
+    return {
+        "success": False,
+        "error": f"{tool_name} only supports limit orders.",
+        "source": "mcp",
+        "symbol": symbol,
+        "order_type": order_type,
+    }
+
+
+async def _place_order_variant(
+    *,
+    tool_name: str,
+    pinned_mode: str,
+    symbol: str,
+    side: Literal["buy", "sell"],
+    order_type: Literal["limit"],
+    quantity: float | None,
+    price: float | None,
+    amount: float | None,
+    dry_run: bool,
+    reason: str,
+    exit_reason: str | None,
+    thesis: str | None,
+    strategy: str | None,
+    target_price: float | None,
+    stop_loss: float | None,
+    min_hold_days: int | None,
+    notes: str | None,
+    indicators_snapshot: dict[str, Any] | None,
+    defensive_trim: bool,
+    approval_issue_id: str | None,
+    account_mode: str | None,
+    account_type: str | None,
+) -> dict[str, Any]:  # NOSONAR - mirrors the public MCP order contract.
+    routing, early_response = _prepare_variant_call(
+        tool_name, pinned_mode, account_mode, account_type
+    )
+    if early_response:
+        return early_response
+    if str(order_type).lower().strip() != "limit":
+        return _limit_order_error(tool_name, symbol, order_type)
+    return apply_account_routing_metadata(
+        await order_execution._place_order_impl(
+            symbol=symbol,
+            side=side,
+            order_type=order_type,
+            quantity=quantity,
+            price=price,
+            amount=amount,
+            dry_run=dry_run,
+            reason=reason,
+            exit_reason=exit_reason,
+            thesis=thesis,
+            strategy=strategy,
+            target_price=target_price,
+            stop_loss=stop_loss,
+            min_hold_days=min_hold_days,
+            notes=notes,
+            indicators_snapshot=indicators_snapshot,
+            defensive_trim=defensive_trim,
+            approval_issue_id=approval_issue_id,
+            is_mock=_is_mock_mode(pinned_mode),
+        ),
+        routing,
+    )
+
+
+async def _cancel_order_variant(
+    *,
+    tool_name: str,
+    pinned_mode: str,
+    order_id: str,
+    symbol: str | None,
+    market: str | None,
+    account_mode: str | None,
+    account_type: str | None,
+) -> dict[str, Any]:
+    routing, early_response = _prepare_variant_call(
+        tool_name, pinned_mode, account_mode, account_type
+    )
+    if early_response:
+        return early_response
+    return apply_account_routing_metadata(
+        await cancel_order_impl(
+            order_id=order_id,
+            symbol=symbol,
+            market=market,
+            is_mock=_is_mock_mode(pinned_mode),
+        ),
+        routing,
+    )
+
+
+async def _modify_order_variant(
+    *,
+    tool_name: str,
+    pinned_mode: str,
+    order_id: str,
+    symbol: str,
+    market: str | None,
+    new_price: float | None,
+    new_quantity: float | None,
+    dry_run: bool,
+    account_mode: str | None,
+    account_type: str | None,
+) -> dict[str, Any]:
+    routing, early_response = _prepare_variant_call(
+        tool_name, pinned_mode, account_mode, account_type
+    )
+    if early_response:
+        return early_response
+    return apply_account_routing_metadata(
+        await modify_order_impl(
+            order_id=order_id,
+            symbol=symbol,
+            market=market,
+            new_price=new_price,
+            new_quantity=new_quantity,
+            dry_run=dry_run,
+            is_mock=_is_mock_mode(pinned_mode),
+        ),
+        routing,
+    )
+
+
+async def _get_order_history_variant(
+    *,
+    tool_name: str,
+    pinned_mode: str,
+    symbol: str | None,
+    status: Literal["all", "pending", "filled", "cancelled"],
+    order_id: str | None,
+    market: str | None,
+    side: str | None,
+    days: int | None,
+    limit: int | None,
+    account_mode: str | None,
+    account_type: str | None,
+) -> dict[str, Any]:
+    routing, early_response = _prepare_variant_call(
+        tool_name, pinned_mode, account_mode, account_type
+    )
+    if early_response:
+        return early_response
+    return apply_account_routing_metadata(
+        await orders_history.get_order_history_impl(
+            symbol=symbol,
+            status=status,
+            order_id=order_id,
+            market=market,
+            side=side,
+            days=days,
+            limit=limit,
+            is_mock=_is_mock_mode(pinned_mode),
+        ),
+        routing,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Live variants (is_mock=False hard-pinned)
 # ---------------------------------------------------------------------------
@@ -113,7 +299,7 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
             "any other account_mode value is rejected."
         ),
     )
-    async def kis_live_place_order(
+    async def kis_live_place_order(  # NOSONAR - public MCP order schema mirrors legacy tool.
         symbol: str,
         side: Literal["buy", "sell"],
         order_type: Literal["limit"] = "limit",
@@ -135,43 +321,29 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
         account_mode: str | None = None,
         account_type: str | None = None,
     ) -> dict[str, Any]:
-        rejection = _check_mode_arg(
-            "kis_live_place_order", _PINNED, account_mode, account_type
-        )
-        if rejection:
-            return rejection
-        if str(order_type).lower().strip() != "limit":
-            return {
-                "success": False,
-                "error": "kis_live_place_order only supports limit orders.",
-                "source": "mcp",
-                "symbol": symbol,
-                "order_type": order_type,
-            }
-        routing = _pinned_routing(_PINNED)
-        return apply_account_routing_metadata(
-            await order_execution._place_order_impl(
-                symbol=symbol,
-                side=side,
-                order_type=order_type,
-                quantity=quantity,
-                price=price,
-                amount=amount,
-                dry_run=dry_run,
-                reason=reason,
-                exit_reason=exit_reason,
-                thesis=thesis,
-                strategy=strategy,
-                target_price=target_price,
-                stop_loss=stop_loss,
-                min_hold_days=min_hold_days,
-                notes=notes,
-                indicators_snapshot=indicators_snapshot,
-                defensive_trim=defensive_trim,
-                approval_issue_id=approval_issue_id,
-                is_mock=False,
-            ),
-            routing,
+        return await _place_order_variant(
+            tool_name="kis_live_place_order",
+            pinned_mode=_PINNED,
+            symbol=symbol,
+            side=side,
+            order_type=order_type,
+            quantity=quantity,
+            price=price,
+            amount=amount,
+            dry_run=dry_run,
+            reason=reason,
+            exit_reason=exit_reason,
+            thesis=thesis,
+            strategy=strategy,
+            target_price=target_price,
+            stop_loss=stop_loss,
+            min_hold_days=min_hold_days,
+            notes=notes,
+            indicators_snapshot=indicators_snapshot,
+            defensive_trim=defensive_trim,
+            approval_issue_id=approval_issue_id,
+            account_mode=account_mode,
+            account_type=account_type,
         )
 
     @mcp.tool(
@@ -190,20 +362,14 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
         account_mode: str | None = None,
         account_type: str | None = None,
     ) -> dict[str, Any]:
-        rejection = _check_mode_arg(
-            "kis_live_cancel_order", _PINNED, account_mode, account_type
-        )
-        if rejection:
-            return rejection
-        routing = _pinned_routing(_PINNED)
-        return apply_account_routing_metadata(
-            await cancel_order_impl(
-                order_id=order_id,
-                symbol=symbol,
-                market=market,
-                is_mock=False,
-            ),
-            routing,
+        return await _cancel_order_variant(
+            tool_name="kis_live_cancel_order",
+            pinned_mode=_PINNED,
+            order_id=order_id,
+            symbol=symbol,
+            market=market,
+            account_mode=account_mode,
+            account_type=account_type,
         )
 
     @mcp.tool(
@@ -227,23 +393,17 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
         account_type: str | None = None,
     ) -> dict[str, Any]:
         del reason
-        rejection = _check_mode_arg(
-            "kis_live_modify_order", _PINNED, account_mode, account_type
-        )
-        if rejection:
-            return rejection
-        routing = _pinned_routing(_PINNED)
-        return apply_account_routing_metadata(
-            await modify_order_impl(
-                order_id=order_id,
-                symbol=symbol,
-                market=market,
-                new_price=new_price,
-                new_quantity=new_quantity,
-                dry_run=dry_run,
-                is_mock=False,
-            ),
-            routing,
+        return await _modify_order_variant(
+            tool_name="kis_live_modify_order",
+            pinned_mode=_PINNED,
+            order_id=order_id,
+            symbol=symbol,
+            market=market,
+            new_price=new_price,
+            new_quantity=new_quantity,
+            dry_run=dry_run,
+            account_mode=account_mode,
+            account_type=account_type,
         )
 
     @mcp.tool(
@@ -266,24 +426,18 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
         account_mode: str | None = None,
         account_type: str | None = None,
     ) -> dict[str, Any]:
-        rejection = _check_mode_arg(
-            "kis_live_get_order_history", _PINNED, account_mode, account_type
-        )
-        if rejection:
-            return rejection
-        routing = _pinned_routing(_PINNED)
-        return apply_account_routing_metadata(
-            await orders_history.get_order_history_impl(
-                symbol=symbol,
-                status=status,
-                order_id=order_id,
-                market=market,
-                side=side,
-                days=days,
-                limit=limit,
-                is_mock=False,
-            ),
-            routing,
+        return await _get_order_history_variant(
+            tool_name="kis_live_get_order_history",
+            pinned_mode=_PINNED,
+            symbol=symbol,
+            status=status,
+            order_id=order_id,
+            market=market,
+            side=side,
+            days=days,
+            limit=limit,
+            account_mode=account_mode,
+            account_type=account_type,
         )
 
 
@@ -308,7 +462,7 @@ def register_kis_mock_order_tools(mcp: FastMCP) -> None:
             "any other account_mode value is rejected."
         ),
     )
-    async def kis_mock_place_order(
+    async def kis_mock_place_order(  # NOSONAR - public MCP order schema mirrors legacy tool.
         symbol: str,
         side: Literal["buy", "sell"],
         order_type: Literal["limit"] = "limit",
@@ -330,48 +484,29 @@ def register_kis_mock_order_tools(mcp: FastMCP) -> None:
         account_mode: str | None = None,
         account_type: str | None = None,
     ) -> dict[str, Any]:
-        rejection = _check_mode_arg(
-            "kis_mock_place_order", _PINNED, account_mode, account_type
-        )
-        if rejection:
-            return rejection
-        config_error = _mock_config_error()
-        if config_error:
-            return apply_account_routing_metadata(
-                config_error, _pinned_routing(_PINNED)
-            )
-        if str(order_type).lower().strip() != "limit":
-            return {
-                "success": False,
-                "error": "kis_mock_place_order only supports limit orders.",
-                "source": "mcp",
-                "symbol": symbol,
-                "order_type": order_type,
-            }
-        routing = _pinned_routing(_PINNED)
-        return apply_account_routing_metadata(
-            await order_execution._place_order_impl(
-                symbol=symbol,
-                side=side,
-                order_type=order_type,
-                quantity=quantity,
-                price=price,
-                amount=amount,
-                dry_run=dry_run,
-                reason=reason,
-                exit_reason=exit_reason,
-                thesis=thesis,
-                strategy=strategy,
-                target_price=target_price,
-                stop_loss=stop_loss,
-                min_hold_days=min_hold_days,
-                notes=notes,
-                indicators_snapshot=indicators_snapshot,
-                defensive_trim=defensive_trim,
-                approval_issue_id=approval_issue_id,
-                is_mock=True,
-            ),
-            routing,
+        return await _place_order_variant(
+            tool_name="kis_mock_place_order",
+            pinned_mode=_PINNED,
+            symbol=symbol,
+            side=side,
+            order_type=order_type,
+            quantity=quantity,
+            price=price,
+            amount=amount,
+            dry_run=dry_run,
+            reason=reason,
+            exit_reason=exit_reason,
+            thesis=thesis,
+            strategy=strategy,
+            target_price=target_price,
+            stop_loss=stop_loss,
+            min_hold_days=min_hold_days,
+            notes=notes,
+            indicators_snapshot=indicators_snapshot,
+            defensive_trim=defensive_trim,
+            approval_issue_id=approval_issue_id,
+            account_mode=account_mode,
+            account_type=account_type,
         )
 
     @mcp.tool(
@@ -390,25 +525,14 @@ def register_kis_mock_order_tools(mcp: FastMCP) -> None:
         account_mode: str | None = None,
         account_type: str | None = None,
     ) -> dict[str, Any]:
-        rejection = _check_mode_arg(
-            "kis_mock_cancel_order", _PINNED, account_mode, account_type
-        )
-        if rejection:
-            return rejection
-        config_error = _mock_config_error()
-        if config_error:
-            return apply_account_routing_metadata(
-                config_error, _pinned_routing(_PINNED)
-            )
-        routing = _pinned_routing(_PINNED)
-        return apply_account_routing_metadata(
-            await cancel_order_impl(
-                order_id=order_id,
-                symbol=symbol,
-                market=market,
-                is_mock=True,
-            ),
-            routing,
+        return await _cancel_order_variant(
+            tool_name="kis_mock_cancel_order",
+            pinned_mode=_PINNED,
+            order_id=order_id,
+            symbol=symbol,
+            market=market,
+            account_mode=account_mode,
+            account_type=account_type,
         )
 
     @mcp.tool(
@@ -433,28 +557,17 @@ def register_kis_mock_order_tools(mcp: FastMCP) -> None:
         account_type: str | None = None,
     ) -> dict[str, Any]:
         del reason
-        rejection = _check_mode_arg(
-            "kis_mock_modify_order", _PINNED, account_mode, account_type
-        )
-        if rejection:
-            return rejection
-        config_error = _mock_config_error()
-        if config_error:
-            return apply_account_routing_metadata(
-                config_error, _pinned_routing(_PINNED)
-            )
-        routing = _pinned_routing(_PINNED)
-        return apply_account_routing_metadata(
-            await modify_order_impl(
-                order_id=order_id,
-                symbol=symbol,
-                market=market,
-                new_price=new_price,
-                new_quantity=new_quantity,
-                dry_run=dry_run,
-                is_mock=True,
-            ),
-            routing,
+        return await _modify_order_variant(
+            tool_name="kis_mock_modify_order",
+            pinned_mode=_PINNED,
+            order_id=order_id,
+            symbol=symbol,
+            market=market,
+            new_price=new_price,
+            new_quantity=new_quantity,
+            dry_run=dry_run,
+            account_mode=account_mode,
+            account_type=account_type,
         )
 
     @mcp.tool(
@@ -479,29 +592,18 @@ def register_kis_mock_order_tools(mcp: FastMCP) -> None:
         account_mode: str | None = None,
         account_type: str | None = None,
     ) -> dict[str, Any]:
-        rejection = _check_mode_arg(
-            "kis_mock_get_order_history", _PINNED, account_mode, account_type
-        )
-        if rejection:
-            return rejection
-        config_error = _mock_config_error()
-        if config_error:
-            return apply_account_routing_metadata(
-                config_error, _pinned_routing(_PINNED)
-            )
-        routing = _pinned_routing(_PINNED)
-        return apply_account_routing_metadata(
-            await orders_history.get_order_history_impl(
-                symbol=symbol,
-                status=status,
-                order_id=order_id,
-                market=market,
-                side=side,
-                days=days,
-                limit=limit,
-                is_mock=True,
-            ),
-            routing,
+        return await _get_order_history_variant(
+            tool_name="kis_mock_get_order_history",
+            pinned_mode=_PINNED,
+            symbol=symbol,
+            status=status,
+            order_id=order_id,
+            market=market,
+            side=side,
+            days=days,
+            limit=limit,
+            account_mode=account_mode,
+            account_type=account_type,
         )
 
 

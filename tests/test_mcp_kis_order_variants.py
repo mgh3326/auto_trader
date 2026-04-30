@@ -10,6 +10,7 @@ Verifies:
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, cast
 
 import pytest
@@ -92,6 +93,7 @@ class TestKisMockPlaceOrder:
         captured: dict[str, Any] = {}
 
         async def fake_place_order_impl(**kwargs: Any) -> dict[str, Any]:
+            await asyncio.sleep(0)
             captured.update(kwargs)
             return {"success": True, "dry_run": True}
 
@@ -126,6 +128,7 @@ class TestKisMockPlaceOrder:
         captured: dict[str, Any] = {}
 
         async def fake_place_order_impl(**kwargs: Any) -> dict[str, Any]:
+            await asyncio.sleep(0)
             captured.update(kwargs)
             return {"success": True, "dry_run": True}
 
@@ -165,6 +168,7 @@ class TestKisMockCancelOrder:
         captured: dict[str, Any] = {}
 
         async def fake_cancel_impl(**kwargs: Any) -> dict[str, Any]:
+            await asyncio.sleep(0)
             captured.update(kwargs)
             return {"success": True, "order_id": kwargs.get("order_id")}
 
@@ -218,6 +222,7 @@ class TestKisMockModifyOrder:
         captured: dict[str, Any] = {}
 
         async def fake_modify_impl(**kwargs: Any) -> dict[str, Any]:
+            await asyncio.sleep(0)
             captured.update(kwargs)
             return {"success": True, "dry_run": True}
 
@@ -272,6 +277,7 @@ class TestKisMockGetOrderHistory:
         captured: dict[str, Any] = {}
 
         async def fake_get_history_impl(**kwargs: Any) -> dict[str, Any]:
+            await asyncio.sleep(0)
             captured.update(kwargs)
             return {"success": True, "orders": []}
 
@@ -311,6 +317,7 @@ class TestKisLivePlaceOrder:
         captured: dict[str, Any] = {}
 
         async def fake_place_order_impl(**kwargs: Any) -> dict[str, Any]:
+            await asyncio.sleep(0)
             captured.update(kwargs)
             return {"success": True, "dry_run": True}
 
@@ -348,6 +355,7 @@ class TestKisLiveCancelOrder:
         captured: dict[str, Any] = {}
 
         async def fake_cancel_impl(**kwargs: Any) -> dict[str, Any]:
+            await asyncio.sleep(0)
             captured.update(kwargs)
             return {"success": True, "order_id": kwargs.get("order_id")}
 
@@ -382,6 +390,7 @@ class TestKisLiveModifyOrder:
         captured: dict[str, Any] = {}
 
         async def fake_modify_impl(**kwargs: Any) -> dict[str, Any]:
+            await asyncio.sleep(0)
             captured.update(kwargs)
             return {"success": True, "dry_run": True}
 
@@ -421,6 +430,7 @@ class TestKisLiveGetOrderHistory:
         captured: dict[str, Any] = {}
 
         async def fake_get_history_impl(**kwargs: Any) -> dict[str, Any]:
+            await asyncio.sleep(0)
             captured.update(kwargs)
             return {"success": True, "orders": []}
 
