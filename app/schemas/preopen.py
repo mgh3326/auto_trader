@@ -9,6 +9,31 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
+NewsReadinessStatus = Literal["ready", "stale", "unavailable"]
+
+
+class NewsArticlePreview(BaseModel):
+    id: int
+    title: str
+    url: str
+    source: str | None
+    feed_source: str | None
+    published_at: datetime | None
+    summary: str | None
+
+
+class NewsReadinessSummary(BaseModel):
+    status: NewsReadinessStatus
+    is_ready: bool
+    is_stale: bool
+    latest_run_uuid: str | None
+    latest_status: str | None
+    latest_finished_at: datetime | None
+    latest_article_published_at: datetime | None
+    source_counts: dict[str, int]
+    warnings: list[str]
+    max_age_minutes: int
+
 
 class CandidateSummary(BaseModel):
     candidate_uuid: UUID
@@ -66,3 +91,5 @@ class PreopenLatestResponse(BaseModel):
     candidates: list[CandidateSummary]
     reconciliations: list[ReconciliationSummary]
     linked_sessions: list[LinkedSessionRef]
+    news: NewsReadinessSummary | None = None
+    news_preview: list[NewsArticlePreview] = []
