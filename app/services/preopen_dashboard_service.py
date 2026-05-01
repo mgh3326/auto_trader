@@ -6,10 +6,13 @@ Read-only. Never imports broker, order, watch, intent, or credential modules.
 from __future__ import annotations
 
 import logging
+from inspect import isawaitable
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.news import NewsArticle
 from app.models.research_run import ResearchRun, ResearchRunCandidate
 from app.models.trading_decision import TradingDecisionProposal, TradingDecisionSession
 from app.schemas.preopen import (
@@ -17,7 +20,11 @@ from app.schemas.preopen import (
     LinkedSessionRef,
     NewsArticlePreview,
     NewsReadinessSummary,
+    PreopenBriefingRelevance,
     PreopenLatestResponse,
+    PreopenMarketNewsBriefing,
+    PreopenMarketNewsItem,
+    PreopenMarketNewsSection,
     ReconciliationSummary,
 )
 from app.schemas.preopen_news_brief import KRPreopenNewsBrief
@@ -25,6 +32,10 @@ from app.services import kr_preopen_news_brief_service, research_run_service
 from app.services.llm_news_service import (
     get_latest_news_preview,
     get_news_readiness,
+)
+from app.services.market_news_briefing_formatter import (
+    BriefingItem,
+    format_market_news_briefing,
 )
 
 logger = logging.getLogger(__name__)
@@ -54,6 +65,7 @@ _FAIL_OPEN = PreopenLatestResponse(
     news=None,
     news_preview=[],
     news_brief=None,
+    market_news_briefing=None,
 )
 
 
@@ -250,6 +262,89 @@ async def _build_news_section(
     return summary, preview, merged_freshness, merged_warnings, readiness
 
 
+def _article_field(article: Any, name: str) -> Any:
+    if isinstance(article, dict):
+        return article.get(name)
+    return getattr(article, name, None)
+
+
+def _map_market_news_item(item: BriefingItem) -> PreopenMarketNewsItem:
+    article = item.article
+    relevance = item.relevance
+    published_at = _article_field(article, "article_published_at") or _article_field(
+        article, "published_at"
+    )
+    return PreopenMarketNewsItem(
+        id=int(_article_field(article, "id")),
+        title=str(_article_field(article, "title") or ""),
+        url=str(_article_field(article, "url") or ""),
+        source=_article_field(article, "source"),
+        feed_source=_article_field(article, "feed_source"),
+        published_at=published_at,
+        summary=_article_field(article, "summary"),
+        briefing_relevance=PreopenBriefingRelevance(
+            score=relevance.score,
+            reason=relevance.reason or "matched_section_terms",
+            section_id=relevance.section_id,
+            matched_terms=list(relevance.matched_terms),
+        ),
+        crypto_relevance=_article_field(article, "crypto_relevance"),
+    )
+
+
+async def _build_market_news_briefing(
+    db: AsyncSession,
+    *,
+    market_scope: str,
+) -> PreopenMarketNewsBriefing | None:
+    """Build a read-only market news briefing DTO for the preopen dashboard."""
+    try:
+        stmt = (
+            select(NewsArticle)
+            .where(NewsArticle.market == market_scope)
+            .order_by(
+                NewsArticle.article_published_at.desc().nullslast(),
+                NewsArticle.scraped_at.desc(),
+            )
+            .limit(30)
+        )
+        result = await db.execute(stmt)
+        scalars = result.scalars()
+        if isawaitable(scalars):
+            scalars = await scalars
+        articles = scalars.all()
+        if isawaitable(articles):
+            articles = await articles
+        articles = list(articles)
+        briefing = format_market_news_briefing(
+            articles,
+            market=market_scope,
+            limit=10,
+        )
+        return PreopenMarketNewsBriefing(
+            summary=dict(briefing.summary),
+            sections=[
+                PreopenMarketNewsSection(
+                    section_id=section.section_id,
+                    title=section.title,
+                    items=[_map_market_news_item(item) for item in section.items],
+                )
+                for section in briefing.sections
+            ],
+            excluded_count=len(briefing.excluded),
+            top_excluded=[
+                _map_market_news_item(item) for item in briefing.excluded[:3]
+            ],
+        )
+    except Exception:
+        logger.warning(
+            "Failed to build market news briefing for preopen dashboard",
+            exc_info=True,
+            extra={"market_scope": market_scope},
+        )
+        return None
+
+
 def _build_news_brief(
     readiness_raw: object | None,
     run: ResearchRun | None,
@@ -299,6 +394,10 @@ async def get_latest_preopen_dashboard(
         source_warnings=list(run.source_warnings),
     )
     news_brief = _build_news_brief(readiness_raw, run)
+    market_news_briefing = await _build_market_news_briefing(
+        db,
+        market_scope=market_scope,
+    )
     advisory_reason = _advisory_skipped_reason(run)
     linked = await _linked_sessions(db, run=run, user_id=user_id)
 
@@ -327,4 +426,5 @@ async def get_latest_preopen_dashboard(
         news=news_summary,
         news_preview=news_preview,
         news_brief=news_brief,
+        market_news_briefing=market_news_briefing,
     )
