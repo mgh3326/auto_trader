@@ -115,6 +115,31 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - Analyze multiple symbols in parallel and return compact per-symbol summaries
   - Default `quick=True` returns compact summary with: symbol, current_price, rsi_14, consensus, recommendation, supports (top 3), resistances (top 3)
 
+### Alpaca paper read-only smoke tools
+
+ROB-69 exposes Alpaca paper broker inspection via explicit read-only MCP tool
+names only:
+
+- `alpaca_paper_get_account()`
+- `alpaca_paper_get_cash()`
+- `alpaca_paper_list_positions()`
+- `alpaca_paper_list_orders(status="open", limit=50)`
+- `alpaca_paper_get_order(order_id)`
+- `alpaca_paper_list_assets(status="active", asset_class="us_equity")`
+- `alpaca_paper_list_fills(after=None, until=None, limit=50)`
+
+These tools instantiate `AlpacaPaperBrokerService`, so they inherit the
+service-level endpoint guard: the trading base URL must be exactly
+`https://paper-api.alpaca.markets`. The Alpaca dashboard may display
+`https://paper-api.alpaca.markets/v2`, but runtime env should **not** include
+`/v2`; service methods append `/v2/...` paths internally, and setting the env to
+`.../v2` would produce duplicated `/v2/v2/...` requests.
+
+Safety boundary: there are no Alpaca live MCP tools in this issue and no
+`alpaca_paper_submit_order`, `alpaca_paper_cancel_order`, replace/modify tool,
+or generic Alpaca order-routing surface. These smoke tools are for paper account
+visibility only.
+
 ### Account Routing
 
 MCP account-facing tools use `account_mode` to avoid mixing DB simulation,
