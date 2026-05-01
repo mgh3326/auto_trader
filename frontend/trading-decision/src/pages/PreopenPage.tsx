@@ -166,7 +166,7 @@ export default function PreopenPage() {
   if (!data.has_run) {
     return (
       <main className={styles.page}>
-        <h1>Preopen advisory</h1>
+        <h1>Preopen briefing</h1>
         <div className={styles.banner} role="status">
           <strong>No preopen research run available</strong>
           {data.advisory_skipped_reason ? (
@@ -181,7 +181,7 @@ export default function PreopenPage() {
   return (
     <main className={styles.page}>
       <div className={styles.header}>
-        <h1>Preopen advisory</h1>
+        <h1>Preopen briefing</h1>
         <div className={styles.meta}>
           Generated: {formatDateTime(data.generated_at)}
           {data.strategy_name ? ` · ${data.strategy_name}` : ""}
