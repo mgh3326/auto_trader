@@ -132,6 +132,122 @@ async def test_submit_with_confirm_calls_service_once(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_crypto_submit_without_confirm_is_blocked_no_op(
+    fake_orders_service: FakeOrdersService,
+) -> None:
+    payload = await alpaca_paper_submit_order(
+        symbol="BTC/USD",
+        side="buy",
+        type="limit",
+        notional=Decimal("10"),
+        limit_price=Decimal("50000"),
+        time_in_force="gtc",
+        asset_class="crypto",
+    )
+    assert payload["submitted"] is False
+    assert payload["blocked_reason"] == "confirmation_required"
+    assert payload["order_request"]["asset_class"] == "crypto"
+    assert payload["client_order_id"].startswith("rob74-crypto-")
+    assert fake_orders_service.calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_crypto_submit_omitted_time_in_force_defaults_to_gtc_no_op(
+    fake_orders_service: FakeOrdersService,
+) -> None:
+    payload = await alpaca_paper_submit_order(
+        symbol="BTC/USD",
+        side="buy",
+        type="limit",
+        notional=Decimal("10"),
+        limit_price=Decimal("50000"),
+        asset_class="crypto",
+    )
+
+    assert payload["submitted"] is False
+    assert payload["order_request"]["time_in_force"] == "gtc"
+    assert fake_orders_service.calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_tif", ["day", "fok"])
+async def test_crypto_submit_rejects_invalid_time_in_force_before_service_call(
+    fake_orders_service: FakeOrdersService,
+    bad_tif: str,
+) -> None:
+    with pytest.raises(ValueError, match="crypto time_in_force"):
+        await alpaca_paper_submit_order(
+            symbol="BTC/USD",
+            side="buy",
+            type="limit",
+            notional=Decimal("10"),
+            limit_price=Decimal("50000"),
+            time_in_force=bad_tif,
+            asset_class="crypto",
+            confirm=True,
+        )
+    assert fake_orders_service.calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_crypto_submit_with_confirm_calls_service_once(
+    fake_orders_service: FakeOrdersService,
+) -> None:
+    payload = await alpaca_paper_submit_order(
+        symbol="BTC/USD",
+        side="buy",
+        type="limit",
+        notional=Decimal("10"),
+        limit_price=Decimal("50000"),
+        time_in_force="gtc",
+        asset_class="crypto",
+        confirm=True,
+    )
+    assert payload["submitted"] is True
+    assert payload["client_order_id"].startswith("rob74-crypto-")
+    sent = [c for c in fake_orders_service.calls if c[0] == "submit_order"][0][1][
+        "request"
+    ]
+    assert sent.symbol == "BTC/USD"
+    assert sent.notional == Decimal("10")
+    assert sent.limit_price == Decimal("50000")
+    assert sent.side == "buy"
+    assert sent.type == "limit"
+    assert sent.time_in_force == "gtc"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_crypto_submit_rejects_unsafe_shapes_before_service_call(
+    fake_orders_service: FakeOrdersService,
+) -> None:
+    base = {
+        "symbol": "BTC/USD",
+        "side": "buy",
+        "type": "limit",
+        "notional": Decimal("10"),
+        "limit_price": Decimal("50000"),
+        "asset_class": "crypto",
+        "confirm": True,
+    }
+    cases = [
+        ({"symbol": "DOGE/USD"}, "crypto symbol"),
+        ({"side": "sell"}, "buy-only"),
+        ({"type": "market", "limit_price": None}, "limit-only"),
+        ({"notional": Decimal("51")}, "crypto notional"),
+    ]
+    for kwargs, message in cases:
+        payload = base | kwargs
+        with pytest.raises(ValueError, match=message):
+            await alpaca_paper_submit_order(**payload)
+    assert fake_orders_service.calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_submit_caller_client_order_id_passes_through(
     fake_orders_service: FakeOrdersService,
 ) -> None:
@@ -228,14 +344,6 @@ async def test_submit_propagates_preview_validation_errors(
             type="market",
             qty=Decimal("1"),
             notional=Decimal("100"),
-        )
-    with pytest.raises(ValueError, match="us_equity only"):
-        await alpaca_paper_submit_order(
-            symbol="BTC",
-            side="buy",
-            type="market",
-            qty=Decimal("1"),
-            asset_class="crypto",
         )
     assert fake_orders_service.calls == []
 

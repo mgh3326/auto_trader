@@ -20,7 +20,10 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
-from app.mcp_server.tooling.alpaca_paper_preview import PreviewOrderInput
+from app.mcp_server.tooling.alpaca_paper_preview import (
+    ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD,
+    PreviewOrderInput,
+)
 from app.services.brokers.alpaca.schemas import OrderRequest
 from app.services.brokers.alpaca.service import AlpacaPaperBrokerService
 
@@ -86,7 +89,8 @@ def _canonical_payload(validated: PreviewOrderInput) -> dict[str, Any]:
 def _derive_client_order_id(payload: dict[str, Any]) -> str:
     blob = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     digest = hashlib.sha256(blob).hexdigest()[:16]
-    return f"rob73-{digest}"
+    prefix = "rob74-crypto" if payload.get("asset_class") == "crypto" else "rob73"
+    return f"{prefix}-{digest}"
 
 
 def _validate_exact_order_id(order_id: str) -> str:
@@ -112,13 +116,13 @@ async def alpaca_paper_submit_order(
     type: str,  # noqa: A002
     qty: Decimal | None = None,
     notional: Decimal | None = None,
-    time_in_force: str = "day",
+    time_in_force: str | None = None,
     limit_price: Decimal | None = None,
     client_order_id: str | None = None,
     asset_class: str = "us_equity",
     confirm: bool = False,
 ) -> dict[str, Any]:
-    """Submit a single Alpaca PAPER order (us_equity only).
+    """Submit a single Alpaca PAPER order (us_equity or narrow crypto).
 
     Defaults to ``confirm=False`` which performs no broker call.
     """
@@ -135,20 +139,29 @@ async def alpaca_paper_submit_order(
         asset_class=asset_class,
     )
 
-    if validated.qty is not None and validated.qty > SUBMIT_MAX_QTY:
+    submit_notional_cap = (
+        ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD
+        if validated.asset_class == "crypto"
+        else SUBMIT_MAX_NOTIONAL_USD
+    )
+    if (
+        validated.asset_class != "crypto"
+        and validated.qty is not None
+        and validated.qty > SUBMIT_MAX_QTY
+    ):
         raise ValueError(f"qty {validated.qty} exceeds submit cap ({SUBMIT_MAX_QTY})")
-    if validated.notional is not None and validated.notional > SUBMIT_MAX_NOTIONAL_USD:
+    if validated.notional is not None and validated.notional > submit_notional_cap:
         raise ValueError(
-            f"notional {validated.notional} exceeds submit cap ({SUBMIT_MAX_NOTIONAL_USD})"
+            f"notional {validated.notional} exceeds submit cap ({submit_notional_cap})"
         )
     if (
         validated.qty is not None
         and validated.limit_price is not None
-        and validated.qty * validated.limit_price > SUBMIT_MAX_NOTIONAL_USD
+        and validated.qty * validated.limit_price > submit_notional_cap
     ):
         raise ValueError(
             f"estimated_cost {validated.qty * validated.limit_price} "
-            f"exceeds submit cap ({SUBMIT_MAX_NOTIONAL_USD})"
+            f"exceeds submit cap ({submit_notional_cap})"
         )
 
     canonical = _canonical_payload(validated)
@@ -230,11 +243,12 @@ def register_alpaca_paper_orders_tools(mcp: FastMCP) -> None:
     _ = mcp.tool(
         name="alpaca_paper_submit_order",
         description=(
-            "Submit a single Alpaca PAPER us_equity order. "
+            "Submit a single Alpaca PAPER us_equity or narrow crypto order. "
             "Defaults to confirm=False which validates and returns the request "
             "WITHOUT calling the broker. Use confirm=True to actually submit. "
             "Paper endpoint only; live endpoint cannot be selected. "
-            "Strict caps: qty<=5, notional<=$1000, qty*limit_price<=$1000."
+            "Strict caps: us_equity qty<=5/notional<=$1000/qty*limit_price<=$1000; "
+            "crypto is buy-limit-only, allowlisted, and capped at $50."
         ),
     )(alpaca_paper_submit_order)
     _ = mcp.tool(

@@ -140,9 +140,12 @@ service-level endpoint guard: the trading base URL must be exactly
 Safety boundary: there are no Alpaca live MCP tools. ROB-73 adds explicit
 paper-only, confirm-gated `alpaca_paper_submit_order` and
 `alpaca_paper_cancel_order` tools for dev-owned smoke, with no runtime live
-switch and no bulk/by-symbol cancel. There is still no Alpaca paper
-`place_order`, `replace_order`, `modify_order`, `cancel_all`, or generic
-Alpaca order-routing surface.
+switch and no bulk/by-symbol cancel. ROB-74 extends those explicit paper-only
+surfaces to a narrow crypto contract: buy-only, limit-only, allowlisted symbols
+(`BTC/USD`, `ETH/USD`, `SOL/USD`), `time_in_force` limited to `gtc`/`ioc`,
+and a $50 max notional/estimated-cost cap.
+There is still no Alpaca paper `place_order`, `replace_order`, `modify_order`,
+`cancel_all`, or generic Alpaca order-routing surface.
 
 Read-only operator runbook: [`docs/runbooks/alpaca-paper-readonly-smoke.md`](../../docs/runbooks/alpaca-paper-readonly-smoke.md)
 Read-only smoke helper: `scripts/smoke/alpaca_paper_readonly_smoke.py` (argumentless, read-only, exits non-zero on failure)
@@ -152,20 +155,25 @@ Dev submit/cancel smoke helper: `scripts/smoke/alpaca_paper_dev_smoke.py` (previ
 ### Alpaca paper order preview
 
 ROB-70 adds `alpaca_paper_preview_order`: a side-effect-free validator + echo tool.
+ROB-74 extends preview to a narrow Alpaca paper crypto shape without adding any
+broker side effects: `asset_class="crypto"` supports only `BTC/USD`, `ETH/USD`,
+and `SOL/USD`, is buy-only and limit-only, defaults omitted `time_in_force` to
+`gtc`, rejects crypto `day`/`fok`, and is capped at $50 notional or estimated
+cost.
 
 **Signature:**
 ```
 alpaca_paper_preview_order(
-    symbol,          # US equity ticker (1-10 chars, uppercased)
-    side,            # "buy" | "sell"
-    type,            # "market" | "limit"  (stop/stop_limit deferred)
+    symbol,          # US equity ticker or allowlisted crypto pair (uppercased)
+    side,            # "buy" | "sell" (crypto: buy only)
+    type,            # "market" | "limit"  (crypto: limit only)
     qty=None,        # Decimal quantity (xor notional)
-    notional=None,   # Decimal notional USD (xor qty; market orders only)
-    time_in_force="day",   # "day" | "gtc" | "ioc" | "fok"
-    limit_price=None,      # required for limit orders, forbidden for market
+    notional=None,   # Decimal notional USD (xor qty; crypto limit allowed)
+    time_in_force=None,    # omitted => day for us_equity, gtc for crypto; crypto allows only "gtc" | "ioc"
+    limit_price=None,      # required for limit orders, forbidden for equity market
     stop_price=None,       # always rejected (deferred)
     client_order_id=None,  # optional, 1-48 chars
-    asset_class="us_equity",  # only "us_equity" supported
+    asset_class="us_equity",  # "us_equity" or ROB-74 "crypto"
 )
 ```
 
@@ -174,11 +182,12 @@ alpaca_paper_preview_order(
 - `side`: `"buy"` or `"sell"`; case-insensitive
 - `type`: `"market"` or `"limit"`; stop/stop_limit deferred
 - `qty` xor `notional`: exactly one required
-- `notional` + `type="limit"`: rejected (Alpaca only supports notional for market orders)
-- `limit_price`: required for `type="limit"`, forbidden for `type="market"`, must be > 0
+- `limit_price`: required for limit orders, forbidden for US-equity market orders, must be > 0
 - `stop_price`: always rejected with explicit error
-- `asset_class`: only `"us_equity"`; `"crypto"` and others rejected
-- `time_in_force`: one of `"day"`, `"gtc"`, `"ioc"`, `"fok"`
+- `asset_class`: `"us_equity"` or `"crypto"`; other values rejected
+- `time_in_force`: omitted/blank defaults to `"day"` for US equities and `"gtc"` for crypto; US equities allow `"day"`, `"gtc"`, `"ioc"`, `"fok"`; crypto allows only `"gtc"` or `"ioc"`
+- For `asset_class="us_equity"`, `notional + type="limit"` is rejected (Alpaca only supports equity notional for market orders in this surface)
+- For `asset_class="crypto"`, only `BTC/USD`, `ETH/USD`, and `SOL/USD` are supported; orders are buy-only, limit-only, require `limit_price`, permit `notional + limit_price`, and cap notional or `qty * limit_price` at $50
 
 **Return shape:**
 ```json

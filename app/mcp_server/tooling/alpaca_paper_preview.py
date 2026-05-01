@@ -25,6 +25,18 @@ if TYPE_CHECKING:
     from fastmcp import FastMCP
 
 ALPACA_PAPER_PREVIEW_TOOL_NAMES: set[str] = {"alpaca_paper_preview_order"}
+ALPACA_PAPER_CRYPTO_ALLOWED_SYMBOLS: frozenset[str] = frozenset(
+    {
+        "BTC/USD",
+        "ETH/USD",
+        "SOL/USD",
+    }
+)
+ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD: Decimal = Decimal("50")
+ALPACA_PAPER_EQUITY_TIME_IN_FORCE: frozenset[str] = frozenset(
+    {"day", "gtc", "ioc", "fok"}
+)
+ALPACA_PAPER_CRYPTO_TIME_IN_FORCE: frozenset[str] = frozenset({"gtc", "ioc"})
 
 # Referenced by tests to confirm these methods are never called on the preview path
 _FORBIDDEN_SERVICE_METHODS = ("submit_order", "cancel_order")
@@ -60,11 +72,31 @@ class PreviewOrderInput(BaseModel):
     type: str  # noqa: A003
     qty: Decimal | None = None
     notional: Decimal | None = None
-    time_in_force: str = "day"
+    time_in_force: str | None = None
     limit_price: Decimal | None = None
     stop_price: Decimal | None = None
     client_order_id: str | None = None
     asset_class: str = "us_equity"
+
+    @model_validator(mode="before")
+    @classmethod
+    def default_time_in_force_for_asset_class(cls, data: Any) -> Any:
+        """Default omitted TIF per asset class before field validation.
+
+        Alpaca accepts only gtc/ioc for crypto.  Keep the historical day default
+        for US equities, but ensure omitted crypto TIF never normalizes to day.
+        """
+        if not isinstance(data, dict):
+            return data
+        raw_asset_class = str(data.get("asset_class") or "us_equity").strip().lower()
+        raw_tif = data.get("time_in_force")
+        if raw_tif is None or (isinstance(raw_tif, str) and not raw_tif.strip()):
+            normalized = dict(data)
+            normalized["time_in_force"] = (
+                "gtc" if raw_asset_class == "crypto" else "day"
+            )
+            return normalized
+        return data
 
     @field_validator("symbol")
     @classmethod
@@ -129,8 +161,9 @@ class PreviewOrderInput(BaseModel):
     @classmethod
     def validate_tif(cls, v: str) -> str:
         normalized = v.strip().lower()
-        if normalized not in {"day", "gtc", "ioc", "fok"}:
-            raise ValueError("time_in_force must be one of: day, gtc, ioc, fok")
+        if normalized not in ALPACA_PAPER_EQUITY_TIME_IN_FORCE:
+            allowed = ", ".join(sorted(ALPACA_PAPER_EQUITY_TIME_IN_FORCE))
+            raise ValueError(f"time_in_force must be one of: {allowed}")
         return normalized
 
     @field_validator("client_order_id")
@@ -149,9 +182,9 @@ class PreviewOrderInput(BaseModel):
     @classmethod
     def validate_asset_class(cls, v: str) -> str:
         normalized = v.strip().lower()
-        if normalized != "us_equity":
+        if normalized not in {"us_equity", "crypto"}:
             raise ValueError(
-                f"asset_class '{v}' not supported in preview (us_equity only)"
+                f"asset_class '{v}' not supported in preview (us_equity or crypto only)"
             )
         return normalized
 
@@ -162,26 +195,59 @@ class PreviewOrderInput(BaseModel):
             raise ValueError("limit_price must be > 0")
         return v
 
+    def _validate_quantity_selection(self, has_qty: bool, has_notional: bool) -> None:
+        if has_qty == has_notional:
+            raise ValueError("exactly one of qty or notional is required")
+
+    def _validate_crypto_rules(self) -> None:
+        if self.symbol not in ALPACA_PAPER_CRYPTO_ALLOWED_SYMBOLS:
+            allowed = ", ".join(sorted(ALPACA_PAPER_CRYPTO_ALLOWED_SYMBOLS))
+            raise ValueError(f"crypto symbol must be one of: {allowed}")
+        if self.side != "buy":
+            raise ValueError("crypto preview is buy-only")
+        if self.type != "limit":
+            raise ValueError("crypto preview is limit-only")
+        if self.time_in_force not in ALPACA_PAPER_CRYPTO_TIME_IN_FORCE:
+            allowed_tif = ", ".join(sorted(ALPACA_PAPER_CRYPTO_TIME_IN_FORCE))
+            raise ValueError(f"crypto time_in_force must be one of: {allowed_tif}")
+        if self.limit_price is None:
+            raise ValueError("limit_price is required for crypto limit orders")
+        if (
+            self.notional is not None
+            and self.notional > ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD
+        ):
+            raise ValueError(
+                f"crypto notional exceeds max ({ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD})"
+            )
+        if (
+            self.qty is not None
+            and self.qty * self.limit_price > ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD
+        ):
+            raise ValueError(
+                "crypto estimated_cost exceeds max "
+                f"({ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD})"
+            )
+
+    def _validate_equity_rules(self, has_notional: bool) -> None:
+        # notional + limit type is rejected for US equities — Alpaca only
+        # supports equity notional orders for market orders in this surface.
+        if has_notional and self.type == "limit":
+            raise ValueError("notional is not supported for limit orders")
+        if self.type == "limit" and self.limit_price is None:
+            raise ValueError("limit_price is required for limit orders")
+        if self.type == "market" and self.limit_price is not None:
+            raise ValueError("limit_price is not allowed for market orders")
+
     @model_validator(mode="after")
     def validate_cross_field_rules(self) -> PreviewOrderInput:
         has_qty = self.qty is not None
         has_notional = self.notional is not None
 
-        if has_qty and has_notional:
-            raise ValueError("exactly one of qty or notional is required")
-        if not has_qty and not has_notional:
-            raise ValueError("exactly one of qty or notional is required")
-
-        # notional + limit type is rejected — Alpaca only supports notional for market orders
-        if has_notional and self.type == "limit":
-            raise ValueError("notional is not supported for limit orders")
-
-        if self.type == "limit" and self.limit_price is None:
-            raise ValueError("limit_price is required for limit orders")
-
-        if self.type == "market" and self.limit_price is not None:
-            raise ValueError("limit_price is not allowed for market orders")
-
+        self._validate_quantity_selection(has_qty, has_notional)
+        if self.asset_class == "crypto":
+            self._validate_crypto_rules()
+        else:
+            self._validate_equity_rules(has_notional)
         return self
 
 
@@ -191,13 +257,13 @@ async def alpaca_paper_preview_order(
     type: str,  # noqa: A002
     qty: Decimal | None = None,
     notional: Decimal | None = None,
-    time_in_force: str = "day",
+    time_in_force: str | None = None,
     limit_price: Decimal | None = None,
     stop_price: Decimal | None = None,
     client_order_id: str | None = None,
     asset_class: str = "us_equity",
 ) -> dict[str, Any]:
-    """Preview and validate an Alpaca paper US equity order without submitting it.
+    """Preview and validate an Alpaca paper US equity or narrow crypto order without submitting it.
 
     Pure validator + echo — preview only, no side effects, does not submit.
     Does NOT call POST /v2/orders. Submission goes through the explicit,
@@ -251,14 +317,21 @@ async def alpaca_paper_preview_order(
     except (AlpacaPaperConfigurationError, AlpacaPaperRequestError):
         warnings.append("context_unavailable")
 
-    if (
-        validated.qty is not None
-        and validated.limit_price is not None
-        and account_context is not None
-    ):
+    if validated.qty is not None and validated.limit_price is not None:
         cost = validated.qty * validated.limit_price
         estimated_cost = str(cost)
-        would_exceed_buying_power = cost > Decimal(account_context["buying_power"])
+        would_exceed_buying_power = (
+            cost > Decimal(account_context["buying_power"])
+            if account_context is not None
+            else None
+        )
+    elif validated.asset_class == "crypto" and validated.notional is not None:
+        estimated_cost = str(validated.notional)
+        would_exceed_buying_power = (
+            validated.notional > Decimal(account_context["buying_power"])
+            if account_context is not None
+            else None
+        )
 
     return {
         "success": True,
@@ -279,7 +352,8 @@ def register_alpaca_paper_preview_tools(mcp: FastMCP) -> None:
     _ = mcp.tool(
         name="alpaca_paper_preview_order",
         description=(
-            "Preview and validate an Alpaca paper US equity order without submitting it. "
+            "Preview and validate an Alpaca paper US equity or narrow crypto order "
+            "without submitting it. "
             "Pure validator + echo — preview only, no side effects, does not submit. "
             "Does NOT call POST /v2/orders. "
             "Submission goes through the explicit, paper-only, confirm-gated "
@@ -293,6 +367,8 @@ def register_alpaca_paper_preview_tools(mcp: FastMCP) -> None:
 
 
 __all__ = [
+    "ALPACA_PAPER_CRYPTO_ALLOWED_SYMBOLS",
+    "ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD",
     "ALPACA_PAPER_PREVIEW_TOOL_NAMES",
     "_FORBIDDEN_SERVICE_METHODS",
     "PreviewOrderInput",

@@ -573,17 +573,180 @@ async def test_preview_rejects_blank_symbol(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_preview_rejects_crypto_asset_class(
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"symbol": "TOO-LONG-SYMBOL"}, "1-10 characters"),
+        ({"qty": Decimal("Infinity")}, "finite number"),
+        ({"qty": Decimal("1000001")}, "maximum allowed"),
+        ({"notional": Decimal("NaN"), "qty": None}, "finite number"),
+        ({"notional": Decimal("10000001"), "qty": None}, "maximum allowed"),
+        ({"time_in_force": "opg"}, "time_in_force"),
+        ({"client_order_id": "   "}, "client_order_id"),
+        ({"client_order_id": "x" * 49}, "client_order_id"),
+        ({"asset_class": "option"}, "asset_class"),
+        ({"type": "limit", "limit_price": Decimal("0")}, "limit_price"),
+    ],
+)
+async def test_preview_rejects_additional_invalid_inputs_before_service_call(
+    fake_preview_service: FakeAlpacaPaperService,
+    kwargs: dict[str, object],
+    message: str,
+) -> None:
+    base: dict[str, object] = {
+        "symbol": "AAPL",
+        "side": "buy",
+        "type": "market",
+        "qty": Decimal("1"),
+    }
+    base.update(kwargs)
+    with pytest.raises(ValueError, match=message):
+        await alpaca_paper_preview_order(**base)
+    assert fake_preview_service.calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_preview_crypto_limit_notional_buy_returns_normalized_echo(
     fake_preview_service: FakeAlpacaPaperService,
 ) -> None:
-    with pytest.raises(ValueError, match="crypto"):
+    payload = await alpaca_paper_preview_order(
+        symbol="btc/usd",
+        side="BUY",
+        type="LIMIT",
+        notional=Decimal("10"),
+        limit_price=Decimal("50000"),
+        time_in_force="gtc",
+        asset_class="crypto",
+    )
+
+    assert payload["preview"] is True
+    assert payload["submitted"] is False
+    req = payload["order_request"]
+    assert req["symbol"] == "BTC/USD"
+    assert req["side"] == "buy"
+    assert req["type"] == "limit"
+    assert req["notional"] == "10"
+    assert req["limit_price"] == "50000"
+    assert req["time_in_force"] == "gtc"
+    assert req["asset_class"] == "crypto"
+    assert payload["estimated_cost"] == "10"
+    assert payload["would_exceed_buying_power"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_preview_crypto_omitted_time_in_force_defaults_to_gtc(
+    fake_preview_service: FakeAlpacaPaperService,
+) -> None:
+    payload = await alpaca_paper_preview_order(
+        symbol="BTC/USD",
+        side="buy",
+        type="limit",
+        notional=Decimal("10"),
+        limit_price=Decimal("50000"),
+        asset_class="crypto",
+    )
+
+    assert payload["order_request"]["time_in_force"] == "gtc"
+    assert fake_preview_service.calls == [("get_cash", {})]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_tif", ["day", "fok"])
+async def test_preview_crypto_rejects_invalid_time_in_force_before_service_call(
+    fake_preview_service: FakeAlpacaPaperService,
+    bad_tif: str,
+) -> None:
+    with pytest.raises(ValueError, match="crypto time_in_force"):
         await alpaca_paper_preview_order(
-            symbol="BTC",
+            symbol="BTC/USD",
             side="buy",
-            type="market",
-            qty=Decimal("1"),
+            type="limit",
+            notional=Decimal("10"),
+            limit_price=Decimal("50000"),
+            time_in_force=bad_tif,
             asset_class="crypto",
         )
+    assert fake_preview_service.calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_preview_equity_omitted_time_in_force_keeps_day_default(
+    fake_preview_service: FakeAlpacaPaperService,
+) -> None:
+    payload = await alpaca_paper_preview_order(
+        symbol="AAPL",
+        side="buy",
+        type="market",
+        qty=Decimal("1"),
+    )
+
+    assert payload["order_request"]["time_in_force"] == "day"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_preview_crypto_rejects_non_allowlisted_symbol(
+    fake_preview_service: FakeAlpacaPaperService,
+) -> None:
+    with pytest.raises(ValueError, match="crypto symbol"):
+        await alpaca_paper_preview_order(
+            symbol="DOGE/USD",
+            side="buy",
+            type="limit",
+            notional=Decimal("10"),
+            limit_price=Decimal("1"),
+            asset_class="crypto",
+        )
+    assert fake_preview_service.calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_preview_crypto_rejects_missing_limit_price(
+    fake_preview_service: FakeAlpacaPaperService,
+) -> None:
+    with pytest.raises(ValueError, match="limit_price is required"):
+        await alpaca_paper_preview_order(
+            symbol="BTC/USD",
+            side="buy",
+            type="limit",
+            notional=Decimal("10"),
+            asset_class="crypto",
+        )
+    assert fake_preview_service.calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"side": "sell"}, "buy-only"),
+        ({"type": "market", "limit_price": None}, "limit-only"),
+        ({"notional": Decimal("51")}, "crypto notional"),
+        ({"qty": Decimal("0.002"), "notional": None}, "estimated_cost"),
+    ],
+)
+async def test_preview_crypto_rejects_unsafe_order_shapes(
+    fake_preview_service: FakeAlpacaPaperService,
+    kwargs: dict[str, object],
+    message: str,
+) -> None:
+    base = {
+        "symbol": "BTC/USD",
+        "side": "buy",
+        "type": "limit",
+        "notional": Decimal("10"),
+        "limit_price": Decimal("50000"),
+        "asset_class": "crypto",
+    }
+    base.update(kwargs)
+    with pytest.raises(ValueError, match=message):
+        await alpaca_paper_preview_order(**base)
     assert fake_preview_service.calls == []
 
 

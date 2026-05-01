@@ -16,27 +16,8 @@ This package contains the refactored MCP tools split by domain:
 
 from __future__ import annotations
 
-from app.mcp_server.tooling.market_report_registration import (
-    MARKET_REPORT_TOOL_NAMES,
-    register_market_report_tools,
-)
-from app.mcp_server.tooling.news_registration import (
-    NEWS_TOOL_NAMES,
-    register_news_tools,
-)
-from app.mcp_server.tooling.registry import register_all_tools
-from app.mcp_server.tooling.trade_journal_registration import (
-    TRADE_JOURNAL_TOOL_NAMES,
-    register_trade_journal_tools,
-)
-from app.mcp_server.tooling.trade_profile_registration import (
-    TRADE_PROFILE_TOOL_NAMES,
-    register_trade_profile_tools,
-)
-from app.mcp_server.tooling.watch_alerts_registration import (
-    WATCH_ALERT_TOOL_NAMES,
-    register_watch_alert_tools,
-)
+from importlib import import_module
+from typing import Any
 
 __all__ = [
     "MARKET_REPORT_TOOL_NAMES",
@@ -51,3 +32,66 @@ __all__ = [
     "register_watch_alert_tools",
     "register_news_tools",
 ]
+
+_LAZY_EXPORTS: dict[str, tuple[str, str]] = {
+    "MARKET_REPORT_TOOL_NAMES": (
+        "app.mcp_server.tooling.market_report_registration",
+        "MARKET_REPORT_TOOL_NAMES",
+    ),
+    "register_market_report_tools": (
+        "app.mcp_server.tooling.market_report_registration",
+        "register_market_report_tools",
+    ),
+    "NEWS_TOOL_NAMES": (
+        "app.mcp_server.tooling.news_registration",
+        "NEWS_TOOL_NAMES",
+    ),
+    "register_news_tools": (
+        "app.mcp_server.tooling.news_registration",
+        "register_news_tools",
+    ),
+    "register_all_tools": (
+        "app.mcp_server.tooling.registry",
+        "register_all_tools",
+    ),
+    "TRADE_JOURNAL_TOOL_NAMES": (
+        "app.mcp_server.tooling.trade_journal_registration",
+        "TRADE_JOURNAL_TOOL_NAMES",
+    ),
+    "register_trade_journal_tools": (
+        "app.mcp_server.tooling.trade_journal_registration",
+        "register_trade_journal_tools",
+    ),
+    "TRADE_PROFILE_TOOL_NAMES": (
+        "app.mcp_server.tooling.trade_profile_registration",
+        "TRADE_PROFILE_TOOL_NAMES",
+    ),
+    "register_trade_profile_tools": (
+        "app.mcp_server.tooling.trade_profile_registration",
+        "register_trade_profile_tools",
+    ),
+    "WATCH_ALERT_TOOL_NAMES": (
+        "app.mcp_server.tooling.watch_alerts_registration",
+        "WATCH_ALERT_TOOL_NAMES",
+    ),
+    "register_watch_alert_tools": (
+        "app.mcp_server.tooling.watch_alerts_registration",
+        "register_watch_alert_tools",
+    ),
+}
+
+
+def __getattr__(name: str) -> Any:
+    """Load public registration helpers lazily.
+
+    Importing this package should be side-effect-light so tools such as coverage can
+    resolve a specific submodule without importing the whole MCP registry tree first.
+    """
+    try:
+        module_name, attr_name = _LAZY_EXPORTS[name]
+    except KeyError as exc:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
+
+    value = getattr(import_module(module_name), attr_name)
+    globals()[name] = value
+    return value
