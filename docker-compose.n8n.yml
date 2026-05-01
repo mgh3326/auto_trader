@@ -3,7 +3,7 @@
 name: n8n-automation
 services:
   n8n:
-    image: n8nio/n8n:2.11.4
+    image: n8nio/n8n:2.19.2
     container_name: auto_trader_n8n_prod
     restart: unless-stopped
     network_mode: host # auto_trader API/MCP에 localhost로 직접 접근
