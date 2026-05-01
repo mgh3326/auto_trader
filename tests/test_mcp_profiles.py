@@ -44,6 +44,16 @@ class TestDefaultProfile:
         assert KIS_MOCK_ORDER_TOOL_NAMES <= mcp.tools.keys()
 
 
+class TestAlpacaPaperPreviewProfile:
+    def test_preview_tool_registered_default_profile(self) -> None:
+        mcp = _build_mcp(McpProfile.DEFAULT)
+        assert "alpaca_paper_preview_order" in mcp.tools
+
+    def test_preview_tool_registered_hermes_paper_kis_profile(self) -> None:
+        mcp = _build_mcp(McpProfile.HERMES_PAPER_KIS)
+        assert "alpaca_paper_preview_order" in mcp.tools
+
+
 class TestHermesPaperKisProfile:
     def test_does_not_register_legacy_order_tools(self) -> None:
         mcp = _build_mcp(McpProfile.HERMES_PAPER_KIS)

@@ -143,6 +143,66 @@ visibility only.
 Operator runbook: [`docs/runbooks/alpaca-paper-readonly-smoke.md`](../../docs/runbooks/alpaca-paper-readonly-smoke.md)
 Smoke helper: `scripts/smoke/alpaca_paper_readonly_smoke.py` (argumentless, read-only, exits non-zero on failure)
 
+### Alpaca paper order preview
+
+ROB-70 adds `alpaca_paper_preview_order`: a side-effect-free validator + echo tool.
+
+**Signature:**
+```
+alpaca_paper_preview_order(
+    symbol,          # US equity ticker (1-10 chars, uppercased)
+    side,            # "buy" | "sell"
+    type,            # "market" | "limit"  (stop/stop_limit deferred)
+    qty=None,        # Decimal quantity (xor notional)
+    notional=None,   # Decimal notional USD (xor qty; market orders only)
+    time_in_force="day",   # "day" | "gtc" | "ioc" | "fok"
+    limit_price=None,      # required for limit orders, forbidden for market
+    stop_price=None,       # always rejected (deferred)
+    client_order_id=None,  # optional, 1-48 chars
+    asset_class="us_equity",  # only "us_equity" supported
+)
+```
+
+**Validation rules (enforced before any service call):**
+- `symbol`: non-empty after strip; uppercased; 1–10 chars
+- `side`: `"buy"` or `"sell"`; case-insensitive
+- `type`: `"market"` or `"limit"`; stop/stop_limit deferred
+- `qty` xor `notional`: exactly one required
+- `notional` + `type="limit"`: rejected (Alpaca only supports notional for market orders)
+- `limit_price`: required for `type="limit"`, forbidden for `type="market"`, must be > 0
+- `stop_price`: always rejected with explicit error
+- `asset_class`: only `"us_equity"`; `"crypto"` and others rejected
+- `time_in_force`: one of `"day"`, `"gtc"`, `"ioc"`, `"fok"`
+
+**Return shape:**
+```json
+{
+  "success": true,
+  "account_mode": "alpaca_paper",
+  "source": "alpaca_paper",
+  "preview": true,
+  "submitted": false,
+  "order_request": { "symbol": "AAPL", "side": "buy", "type": "market", ... },
+  "estimated_cost": "360" | null,
+  "account_context": { "cash": "...", "buying_power": "..." } | null,
+  "would_exceed_buying_power": false | null,
+  "warnings": []
+}
+```
+
+**Safety boundary:** Preview is a pure validator + echo. It does NOT call
+POST `/v2/orders`. There is no `alpaca_paper_submit_order` / `place_order` /
+`cancel_order` / `modify_order` / `replace_order` tool.
+
+Account context (cash/buying_power) is fetched via read-only `GET /v2/account`
+and fails soft: if unavailable, `account_context` is `null` and
+`"context_unavailable"` is added to `warnings`. The preview still returns
+`success: true` with the normalized `order_request` echo.
+
+The endpoint guard applies: if `ALPACA_PAPER_BASE_URL` is ever set to the live
+endpoint, the service constructor rejects it and the tool raises
+`AlpacaPaperEndpointError` (fail closed).
+
 ### Account Routing
 
 MCP account-facing tools use `account_mode` to avoid mixing DB simulation,

@@ -18,8 +18,15 @@ from app.mcp_server.tooling.alpaca_paper import (
     reset_alpaca_paper_service_factory,
     set_alpaca_paper_service_factory,
 )
+from app.mcp_server.tooling.alpaca_paper_preview import (
+    _FORBIDDEN_SERVICE_METHODS,
+    alpaca_paper_preview_order,
+    reset_alpaca_paper_preview_service_factory,
+    set_alpaca_paper_preview_service_factory,
+)
 from app.mcp_server.tooling.orders_registration import ORDER_TOOL_NAMES
 from app.mcp_server.tooling.registry import register_all_tools
+from app.services.brokers.alpaca.exceptions import AlpacaPaperRequestError
 from app.services.brokers.alpaca.schemas import (
     AccountSnapshot,
     Asset,
@@ -34,6 +41,7 @@ from tests._mcp_tooling_support import DummyMCP
 class FakeAlpacaPaperService:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.submit_called: bool = False
 
     async def get_account(self) -> AccountSnapshot:
         self.calls.append(("get_account", {}))
@@ -119,6 +127,15 @@ class FakeAlpacaPaperService:
                 asset_class="us_equity",
             )
         ]
+
+    async def submit_order(self, request: Any) -> None:
+        self.submit_called = True
+        self.calls.append(("submit_order", {"request": request}))
+        raise AssertionError("submit_order must not be called on the preview path")
+
+    async def cancel_order(self, order_id: str) -> None:
+        self.calls.append(("cancel_order", {"order_id": order_id}))
+        raise AssertionError("cancel_order must not be called on the preview path")
 
     async def list_fills(
         self, *, after=None, until=None, limit: int | None = None
@@ -302,3 +319,418 @@ async def test_limit_validation_happens_before_service_call(
     with pytest.raises(ValueError, match="limit must be >= 1"):
         await alpaca_paper_list_fills(limit=0)
     assert fake_service.calls == []
+
+
+# ---------------------------------------------------------------------------
+# ROB-70: alpaca_paper_preview_order tests
+# ---------------------------------------------------------------------------
+
+
+class FakeAlpacaPaperServiceWithCashError(FakeAlpacaPaperService):
+    async def get_cash(self) -> CashBalance:
+        self.calls.append(("get_cash", {}))
+        raise AlpacaPaperRequestError("connection failed")
+
+
+@pytest.fixture
+def fake_preview_service() -> FakeAlpacaPaperService:
+    service = FakeAlpacaPaperService()
+    set_alpaca_paper_preview_service_factory(lambda: service)  # type: ignore[arg-type]
+    yield service
+    reset_alpaca_paper_preview_service_factory()
+
+
+@pytest.fixture
+def fake_preview_service_with_cash_error() -> FakeAlpacaPaperServiceWithCashError:
+    service = FakeAlpacaPaperServiceWithCashError()
+    set_alpaca_paper_preview_service_factory(lambda: service)  # type: ignore[arg-type]
+    yield service
+    reset_alpaca_paper_preview_service_factory()
+
+
+# --- 1. Registration / discoverability ---
+
+
+@pytest.mark.unit
+def test_registers_alpaca_paper_preview_tool_default_profile() -> None:
+    mcp = DummyMCP()
+    register_all_tools(mcp, profile=McpProfile.DEFAULT)  # type: ignore[arg-type]
+    assert "alpaca_paper_preview_order" in mcp.tools
+
+
+@pytest.mark.unit
+def test_registers_alpaca_paper_preview_tool_paper_profile() -> None:
+    mcp = DummyMCP()
+    register_all_tools(mcp, profile=McpProfile.HERMES_PAPER_KIS)  # type: ignore[arg-type]
+    assert "alpaca_paper_preview_order" in mcp.tools
+
+
+@pytest.mark.unit
+def test_preview_tool_description_documents_dry_run_and_no_submit() -> None:
+    from app.mcp_server.tooling.alpaca_paper_preview import (
+        register_alpaca_paper_preview_tools,
+    )
+
+    class _DescCapture:
+        def __init__(self) -> None:
+            self.descriptions: dict[str, str] = {}
+
+        def tool(self, name: str, description: str):
+            self.descriptions[name] = description
+
+            def decorator(func):
+                return func
+
+            return decorator
+
+    cap = _DescCapture()
+    register_alpaca_paper_preview_tools(cap)  # type: ignore[arg-type]
+    desc = cap.descriptions["alpaca_paper_preview_order"]
+    assert "preview" in desc.lower()
+    assert any(
+        kw in desc.lower()
+        for kw in ("no submit", "does not submit", "side-effect-free", "side effects")
+    )
+
+
+# --- 2. Forbidden-write absence ---
+
+
+@pytest.mark.unit
+def test_no_alpaca_paper_submit_or_cancel_or_modify_tools() -> None:
+    mcp = DummyMCP()
+    register_all_tools(mcp, profile=McpProfile.DEFAULT)  # type: ignore[arg-type]
+    forbidden = {
+        "alpaca_paper_submit_order",
+        "alpaca_paper_preview_submit",
+        "alpaca_paper_order_submit",
+        "alpaca_paper_replace",
+        "alpaca_paper_modify",
+        "alpaca_paper_cancel_order",
+        "alpaca_paper_place_order",
+    }
+    assert forbidden.isdisjoint(mcp.tools.keys())
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_preview_handler_never_calls_service_submit_or_cancel(
+    fake_preview_service: FakeAlpacaPaperService,
+) -> None:
+    await alpaca_paper_preview_order(
+        symbol="AAPL",
+        side="buy",
+        type="market",
+        qty=Decimal("1"),
+    )
+    assert fake_preview_service.submit_called is False
+    method_names = [c[0] for c in fake_preview_service.calls]
+    assert "submit_order" not in method_names
+    assert "cancel_order" not in method_names
+
+
+@pytest.mark.unit
+def test_forbidden_service_methods_constant_covers_submit_and_cancel() -> None:
+    assert "submit_order" in _FORBIDDEN_SERVICE_METHODS
+    assert "cancel_order" in _FORBIDDEN_SERVICE_METHODS
+
+
+# --- 3. Validation (no service call) ---
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_preview_rejects_invalid_side(
+    fake_preview_service: FakeAlpacaPaperService,
+) -> None:
+    with pytest.raises(ValueError):
+        await alpaca_paper_preview_order(
+            symbol="AAPL", side="hold", type="market", qty=Decimal("1")
+        )
+    assert fake_preview_service.calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_preview_rejects_invalid_order_type(
+    fake_preview_service: FakeAlpacaPaperService,
+) -> None:
+    with pytest.raises(ValueError):
+        await alpaca_paper_preview_order(
+            symbol="AAPL", side="buy", type="stop_limit", qty=Decimal("1")
+        )
+    assert fake_preview_service.calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_preview_rejects_non_positive_qty(
+    fake_preview_service: FakeAlpacaPaperService,
+) -> None:
+    with pytest.raises(ValueError):
+        await alpaca_paper_preview_order(
+            symbol="AAPL", side="buy", type="market", qty=Decimal("0")
+        )
+    with pytest.raises(ValueError):
+        await alpaca_paper_preview_order(
+            symbol="AAPL", side="buy", type="market", qty=Decimal("-1")
+        )
+    assert fake_preview_service.calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_preview_rejects_non_positive_notional(
+    fake_preview_service: FakeAlpacaPaperService,
+) -> None:
+    with pytest.raises(ValueError):
+        await alpaca_paper_preview_order(
+            symbol="AAPL", side="buy", type="market", notional=Decimal("0")
+        )
+    with pytest.raises(ValueError):
+        await alpaca_paper_preview_order(
+            symbol="AAPL", side="buy", type="market", notional=Decimal("-1")
+        )
+    assert fake_preview_service.calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_preview_rejects_both_qty_and_notional(
+    fake_preview_service: FakeAlpacaPaperService,
+) -> None:
+    with pytest.raises(ValueError, match="exactly one"):
+        await alpaca_paper_preview_order(
+            symbol="AAPL",
+            side="buy",
+            type="market",
+            qty=Decimal("1"),
+            notional=Decimal("100"),
+        )
+    assert fake_preview_service.calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_preview_rejects_neither_qty_nor_notional(
+    fake_preview_service: FakeAlpacaPaperService,
+) -> None:
+    with pytest.raises(ValueError, match="exactly one"):
+        await alpaca_paper_preview_order(symbol="AAPL", side="buy", type="market")
+    assert fake_preview_service.calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_preview_rejects_limit_without_limit_price(
+    fake_preview_service: FakeAlpacaPaperService,
+) -> None:
+    with pytest.raises(ValueError, match="limit_price is required"):
+        await alpaca_paper_preview_order(
+            symbol="AAPL", side="buy", type="limit", qty=Decimal("1")
+        )
+    assert fake_preview_service.calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_preview_rejects_market_with_limit_price(
+    fake_preview_service: FakeAlpacaPaperService,
+) -> None:
+    with pytest.raises(ValueError, match="limit_price is not allowed"):
+        await alpaca_paper_preview_order(
+            symbol="AAPL",
+            side="buy",
+            type="market",
+            qty=Decimal("1"),
+            limit_price=Decimal("100"),
+        )
+    assert fake_preview_service.calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_preview_rejects_notional_with_limit_type(
+    fake_preview_service: FakeAlpacaPaperService,
+) -> None:
+    with pytest.raises(ValueError, match="notional is not supported"):
+        await alpaca_paper_preview_order(
+            symbol="AAPL",
+            side="buy",
+            type="limit",
+            notional=Decimal("100"),
+        )
+    assert fake_preview_service.calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_preview_rejects_blank_symbol(
+    fake_preview_service: FakeAlpacaPaperService,
+) -> None:
+    with pytest.raises(ValueError, match="blank"):
+        await alpaca_paper_preview_order(
+            symbol="   ", side="buy", type="market", qty=Decimal("1")
+        )
+    assert fake_preview_service.calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_preview_rejects_crypto_asset_class(
+    fake_preview_service: FakeAlpacaPaperService,
+) -> None:
+    with pytest.raises(ValueError, match="crypto"):
+        await alpaca_paper_preview_order(
+            symbol="BTC",
+            side="buy",
+            type="market",
+            qty=Decimal("1"),
+            asset_class="crypto",
+        )
+    assert fake_preview_service.calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_preview_rejects_stop_price(
+    fake_preview_service: FakeAlpacaPaperService,
+) -> None:
+    with pytest.raises(ValueError, match="stop_price not supported"):
+        await alpaca_paper_preview_order(
+            symbol="AAPL",
+            side="buy",
+            type="market",
+            qty=Decimal("1"),
+            stop_price=Decimal("100"),
+        )
+    assert fake_preview_service.calls == []
+
+
+# --- 4. Happy paths ---
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_preview_market_buy_qty_returns_normalized_echo(
+    fake_preview_service: FakeAlpacaPaperService,
+) -> None:
+    payload = await alpaca_paper_preview_order(
+        symbol="aapl",
+        side="BUY",
+        type="MARKET",
+        qty=Decimal("1"),
+    )
+    assert payload["preview"] is True
+    assert payload["submitted"] is False
+    assert payload["account_mode"] == "alpaca_paper"
+    req = payload["order_request"]
+    assert req["symbol"] == "AAPL"
+    assert req["side"] == "buy"
+    assert req["type"] == "market"
+    assert req["qty"] == "1"
+    assert req["notional"] is None
+    assert req["limit_price"] is None
+    assert req["time_in_force"] == "day"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_preview_limit_buy_returns_estimated_cost_and_buying_power_check(
+    fake_preview_service: FakeAlpacaPaperService,
+) -> None:
+    payload = await alpaca_paper_preview_order(
+        symbol="AAPL",
+        side="buy",
+        type="limit",
+        qty=Decimal("2"),
+        limit_price=Decimal("180"),
+    )
+    assert payload["estimated_cost"] == "360"
+    assert payload["would_exceed_buying_power"] is False
+    assert payload["account_context"] is not None
+    assert payload["account_context"]["buying_power"] == "200000"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_preview_flags_buying_power_exceeded(
+    fake_preview_service: FakeAlpacaPaperService,
+) -> None:
+    payload = await alpaca_paper_preview_order(
+        symbol="AAPL",
+        side="buy",
+        type="limit",
+        qty=Decimal("2000"),
+        limit_price=Decimal("180"),
+    )
+    assert payload["would_exceed_buying_power"] is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_preview_market_notional_buy(
+    fake_preview_service: FakeAlpacaPaperService,
+) -> None:
+    payload = await alpaca_paper_preview_order(
+        symbol="AAPL",
+        side="buy",
+        type="market",
+        notional=Decimal("100"),
+    )
+    assert payload["order_request"]["notional"] == "100"
+    assert payload["order_request"]["qty"] is None
+    assert payload["estimated_cost"] is None
+    assert payload["would_exceed_buying_power"] is None
+
+
+# --- 5. Best-effort context fail-soft ---
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_preview_when_get_cash_unavailable_returns_warning(
+    fake_preview_service_with_cash_error: FakeAlpacaPaperServiceWithCashError,
+) -> None:
+    payload = await alpaca_paper_preview_order(
+        symbol="AAPL",
+        side="buy",
+        type="market",
+        qty=Decimal("1"),
+    )
+    assert payload["success"] is True
+    assert payload["account_context"] is None
+    assert "context_unavailable" in payload["warnings"]
+    assert payload["would_exceed_buying_power"] is None
+
+
+# --- 6. Live endpoint fails closed ---
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_preview_fails_closed_on_live_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.brokers.alpaca.config import AlpacaPaperSettings
+    from app.services.brokers.alpaca.endpoints import LIVE_TRADING_BASE_URL
+    from app.services.brokers.alpaca.exceptions import AlpacaPaperEndpointError
+
+    def fake_from_app_settings() -> AlpacaPaperSettings:
+        return AlpacaPaperSettings(
+            api_key="pk-test",
+            api_secret="sk-test",
+            base_url=LIVE_TRADING_BASE_URL,
+        )
+
+    monkeypatch.setattr(
+        AlpacaPaperSettings, "from_app_settings", fake_from_app_settings
+    )
+
+    with pytest.raises(AlpacaPaperEndpointError):
+        await alpaca_paper_preview_order(
+            symbol="AAPL",
+            side="buy",
+            type="market",
+            qty=Decimal("1"),
+        )
