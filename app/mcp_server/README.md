@@ -26,12 +26,14 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 
 ### News Tools (Pre-Market Briefing Pipeline)
 
-- `get_market_news(hours=24, feed_source=None, source=None, keyword=None, limit=20)`
+- `get_market_news(market=None, hours=24, feed_source=None, source=None, keyword=None, limit=20, briefing_filter=False)`
   - Fetch recent market news for OpenClaw pre-market briefing
-  - `feed_source`: Collection path key (e.g., `browser_naver_mainnews`, `browser_naver_research`, `rss_mk`)
-  - `source`: Publisher label (e.g., `연합뉴스`, `매일경제`, `유안타증권`)
-  - Returns: `count`, `total`, `news` (list), `sources` (unique publishers), `feed_sources` (unique collection paths)
-  - Each article includes `stock_symbol` and `stock_name` for holdings impact analysis
+  - `market`: Optional market scope (`kr`, `us`, `crypto`) for market-separated briefing inputs
+  - `feed_source`: Collection path key (e.g., `browser_naver_mainnews`, `browser_naver_research`, `rss_cointelegraph`)
+  - `source`: Publisher label (e.g., `연합뉴스`, `매일경제`, `Cointelegraph`)
+  - `briefing_filter`: When `market="crypto"`, rank crypto-relevant articles and separate broad-tech/AI noise into `excluded_news`; raw storage is not affected
+  - Returns: `count`, `total`, `news` (list), `sources` (unique publishers), `feed_sources` (unique collection paths), `briefing_filter`, `briefing_summary`, `excluded_news`
+  - Each article includes `stock_symbol` and `stock_name` for holdings impact analysis; crypto articles also include `crypto_relevance` metadata
 
 - `search_news(query, days=7, limit=20)`
   - Search news by keyword in title and keywords field
