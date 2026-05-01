@@ -129,7 +129,7 @@ def test_no_advisory_persists_session_and_proposals_in_db(monkeypatch):
                 persisted = (
                     await session.execute(
                         select(TradingDecisionSession).where(
-                            TradingDecisionSession.user_id == user_id
+                            TradingDecisionSession.session_uuid == body["session_uuid"]
                         )
                     )
                 ).scalar_one()
@@ -232,14 +232,15 @@ def test_advisory_path_persists_synthesis_block(monkeypatch):
             },
         )
         assert resp.status_code == 201, resp.text
-        assert resp.json()["advisory_used"] is True
+        body = resp.json()
+        assert body["advisory_used"] is True
 
         async def _load():
             async with SessionLocal() as session:
                 persisted = (
                     await session.execute(
                         select(TradingDecisionSession).where(
-                            TradingDecisionSession.user_id == user_id
+                            TradingDecisionSession.session_uuid == body["session_uuid"]
                         )
                     )
                 ).scalar_one()
