@@ -21,6 +21,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from app.mcp_server.profiles import McpProfile
+from app.mcp_server.tooling.alpaca_paper import register_alpaca_paper_tools
 from app.mcp_server.tooling.analysis_registration import register_analysis_tools
 from app.mcp_server.tooling.execution_comment_registration import (
     register_execution_comment_tools,
@@ -87,6 +88,7 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     register_user_settings_tools(mcp)
     register_news_tools(mcp)
     register_market_brief_tools(mcp)
+    register_alpaca_paper_tools(mcp)
 
     # Always: read-only with account_mode (mock-safe via ROB-28)
     register_portfolio_tools(mcp)

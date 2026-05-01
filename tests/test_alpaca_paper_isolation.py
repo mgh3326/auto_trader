@@ -38,12 +38,17 @@ def test_no_router_imports_alpaca_paper():
 
 
 @pytest.mark.unit
-def test_no_mcp_tool_imports_alpaca_paper():
-    """No file under app/mcp_server/ imports app.services.brokers.alpaca."""
+def test_only_explicit_readonly_mcp_tool_imports_alpaca_paper():
+    """Only the ROB-69 read-only MCP tooling module may import Alpaca paper service."""
     mcp_dir = REPO_ROOT / "app" / "mcp_server"
-    offenders = [p for p in _collect_python_files(mcp_dir) if _source_imports_alpaca(p)]
+    allowed = {mcp_dir / "tooling" / "alpaca_paper.py"}
+    offenders = [
+        p
+        for p in _collect_python_files(mcp_dir)
+        if _source_imports_alpaca(p) and p not in allowed
+    ]
     assert not offenders, (
-        f"These MCP files import the Alpaca package (not allowed in this issue): "
+        f"Only app/mcp_server/tooling/alpaca_paper.py may import Alpaca package: "
         f"{[str(p) for p in offenders]}"
     )
 
