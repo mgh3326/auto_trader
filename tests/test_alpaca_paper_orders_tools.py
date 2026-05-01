@@ -329,6 +329,54 @@ async def test_cancel_rejects_blank_order_id(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bad_order_id",
+    [
+        "../orders",
+        "/v2/orders",
+        "orders",
+        "all",
+        "*",
+        "paper-order-123?status=open",
+        "paper-order-123#fragment",
+        "paper/order/123",
+        "paper-order-123,other-order",
+        "paper order 123",
+        "paper-order-123\nextra",
+    ],
+)
+async def test_cancel_rejects_unsafe_order_id_path_segments(
+    fake_orders_service: FakeOrdersService,
+    bad_order_id: str,
+) -> None:
+    with pytest.raises(ValueError, match="order_id"):
+        await alpaca_paper_cancel_order(order_id=bad_order_id, confirm=True)
+    assert fake_orders_service.calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancel_rejects_unsafe_order_id_before_confirm_gate(
+    fake_orders_service: FakeOrdersService,
+) -> None:
+    with pytest.raises(ValueError, match="order_id"):
+        await alpaca_paper_cancel_order(order_id="../orders", confirm=False)
+    assert fake_orders_service.calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancel_accepts_uuid_like_order_id(
+    fake_orders_service: FakeOrdersService,
+) -> None:
+    order_id = "61e69015-8549-4bfd-b9c3-01e75843f47d"
+    payload = await alpaca_paper_cancel_order(order_id=order_id, confirm=True)
+    assert payload["cancelled_order_id"] == order_id
+    assert ("cancel_order", {"order_id": order_id}) in fake_orders_service.calls
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_cancel_signature_has_no_bulk_or_filter_params() -> None:
     import inspect
 

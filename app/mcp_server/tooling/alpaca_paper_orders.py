@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Callable
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
@@ -34,6 +35,8 @@ ALPACA_PAPER_MUTATING_TOOL_NAMES: set[str] = {
 
 SUBMIT_MAX_QTY: Decimal = Decimal("5")
 SUBMIT_MAX_NOTIONAL_USD: Decimal = Decimal("1000")
+ORDER_ID_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+ORDER_ID_RESERVED_VALUES = frozenset({"all", "order", "orders", "bulk", "cancel"})
 
 ServiceFactory = Callable[[], AlpacaPaperBrokerService]
 
@@ -84,6 +87,23 @@ def _derive_client_order_id(payload: dict[str, Any]) -> str:
     blob = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     digest = hashlib.sha256(blob).hexdigest()[:16]
     return f"rob73-{digest}"
+
+
+def _validate_exact_order_id(order_id: str) -> str:
+    """Return a safe single-order id path segment or fail closed.
+
+    Alpaca cancel uses ``DELETE /v2/orders/{order_id}``. Keep the id as a
+    single opaque path segment so values cannot normalize into bulk endpoints
+    such as ``/v2/orders`` or add query/fragment/filter semantics.
+    """
+    stripped = (order_id or "").strip()
+    if not stripped:
+        raise ValueError("order_id is required")
+    if stripped.lower() in ORDER_ID_RESERVED_VALUES:
+        raise ValueError("order_id must be an exact Alpaca paper order id")
+    if not ORDER_ID_SAFE_SEGMENT_RE.fullmatch(stripped):
+        raise ValueError("order_id must be a safe single path segment")
+    return stripped
 
 
 async def alpaca_paper_submit_order(
@@ -172,9 +192,7 @@ async def alpaca_paper_cancel_order(
     confirm: bool = False,
 ) -> dict[str, Any]:
     """Cancel exactly one Alpaca PAPER order by id."""
-    stripped = (order_id or "").strip()
-    if not stripped:
-        raise ValueError("order_id is required")
+    stripped = _validate_exact_order_id(order_id)
 
     if confirm is not True:
         return {
@@ -234,6 +252,7 @@ __all__ = [
     "ALPACA_PAPER_MUTATING_TOOL_NAMES",
     "SUBMIT_MAX_NOTIONAL_USD",
     "SUBMIT_MAX_QTY",
+    "ORDER_ID_SAFE_SEGMENT_RE",
     "alpaca_paper_cancel_order",
     "alpaca_paper_submit_order",
     "register_alpaca_paper_orders_tools",

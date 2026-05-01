@@ -197,8 +197,11 @@ alpaca_paper_preview_order(
 ```
 
 **Safety boundary:** Preview is a pure validator + echo. It does NOT call
-POST `/v2/orders`. There is no `alpaca_paper_submit_order` / `place_order` /
-`cancel_order` / `modify_order` / `replace_order` tool.
+POST `/v2/orders`. The only Alpaca paper side-effect tools are the explicit
+confirm-gated `alpaca_paper_submit_order` and `alpaca_paper_cancel_order`
+handlers. There is still no generic/live-capable `place_order`, `cancel_order`,
+`modify_order`, `replace_order`, bulk cancel, or endpoint-switching tool for
+Alpaca paper.
 
 Account context (cash/buying_power) is fetched via read-only `GET /v2/account`
 and fails soft: if unavailable, `account_context` is `null` and
