@@ -200,7 +200,7 @@ _CRYPTO_SECTION_TITLES = {
 }
 _CRYPTO_CATEGORY_TO_SECTION = {
     "market_price": "btc_eth_market",
-    "etf_institutional": "btc_eth_market",
+    "etf_institutional": "etf_institutional",
     "regulation_policy": "regulation_policy",
     "security_risk": "security_defi",
     "stablecoin_defi": "security_defi",

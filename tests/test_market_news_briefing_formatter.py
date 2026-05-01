@@ -144,6 +144,31 @@ def test_format_crypto_news_reuses_crypto_relevance_and_sections():
     assert briefing.excluded[0].relevance.reason == "broad_tech_without_crypto_signal"
 
 
+@pytest.mark.unit
+def test_format_crypto_news_routes_etf_institutional_to_dedicated_section():
+    from app.services.market_news_briefing_formatter import format_market_news_briefing
+
+    etf_flows = _article(
+        "BlackRock ETF inflows accelerate as institutions add to reserves",
+        market="crypto",
+        feed_source="rss_cointelegraph",
+    )
+
+    briefing = format_market_news_briefing([etf_flows], market="crypto", limit=10)
+
+    assert briefing.summary["included"] == 1
+    assert [section.section_id for section in briefing.sections] == [
+        "etf_institutional"
+    ]
+    assert briefing.sections[0].title == "ETF / Institutional Flows"
+    assert briefing.sections[0].items[0].relevance.matched_terms == [
+        "blackrock",
+        "etf",
+        "inflow",
+        "reserve",
+    ]
+
+
 @pytest.mark.asyncio
 @pytest.mark.unit
 async def test_market_news_briefing_filter_formats_us_sections_for_mcp():
