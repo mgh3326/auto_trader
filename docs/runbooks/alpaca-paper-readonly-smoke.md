@@ -79,7 +79,7 @@ print('count=', len(ALPACA_PAPER_READONLY_TOOL_NAMES))
 PY
 ```
 
-Expected exactly 7 names:
+Expected read-only names:
 
 - `alpaca_paper_get_account`
 - `alpaca_paper_get_cash`
@@ -89,7 +89,14 @@ Expected exactly 7 names:
 - `alpaca_paper_list_orders`
 - `alpaca_paper_list_positions`
 
-If any registered Alpaca paper MCP name includes `submit`, `place`, `cancel`, `replace`, or `modify`, mark **BLOCKED**.
+After ROB-73, `alpaca_paper_submit_order` and `alpaca_paper_cancel_order` may
+also be registered as explicit paper-only, confirm-gated tools. This read-only
+smoke must not call them; use `docs/runbooks/alpaca-paper-dev-smoke.md` for the
+separate dev-owned side-effect smoke.
+
+Mark **BLOCKED** if any registered Alpaca MCP name includes `alpaca_live_`,
+`place`, `replace`, `modify`, `cancel_all`, `cancel_orders`, or
+`cancel_by_symbol`, or if Alpaca paper appears in the generic order route.
 
 ## Step 5 — Run `hermes mcp test auto_trader`
 
@@ -105,7 +112,8 @@ Expected:
 - MCP connection succeeds.
 - The 7 Alpaca paper read-only tool names from Step 4 are visible.
 - No `alpaca_live_*` tool is visible.
-- No Alpaca submit/place/cancel/replace/modify tool is visible.
+- No Alpaca paper `place`/`replace`/`modify`/bulk-cancel tool is visible.
+- If `alpaca_paper_submit_order` and `alpaca_paper_cancel_order` are visible after ROB-73, treat them as allowed explicit paper-only tools, but do not exercise them in this read-only smoke.
 
 If the command prints a credential value, redact it before sharing the log and file a follow-up hardening issue. Do not paste unredacted logs into Linear, Discord, or Paperclip.
 
@@ -147,9 +155,9 @@ All of the following are true:
 - Repo/production SHA checks are understood and not blocked.
 - Env presence checks pass and base URL is unset or exactly `https://paper-api.alpaca.markets`.
 - Local guard tests pass.
-- `hermes mcp test auto_trader` connects and lists the expected 7 read-only tools.
+- `hermes mcp test auto_trader` connects and lists the expected read-only tools.
 - Helper script exits `0` and prints `summary: PASS tools_ok=7/7`.
-- No forbidden tool name or write-path endpoint is observed.
+- No forbidden Alpaca live/generic/place/replace/modify/bulk-cancel tool name or write-path endpoint is observed.
 
 ### PARTIAL
 
@@ -169,7 +177,7 @@ Use **BLOCKED** for any safety or prerequisite failure:
 - Base URL contains `/v2`, points to a live/data endpoint, or raises `AlpacaPaperEndpointError`.
 - Local guard tests fail.
 - `hermes mcp test auto_trader` cannot connect.
-- A forbidden tool name appears (`submit`, `place`, `cancel`, `replace`, or `modify`).
+- A forbidden tool name appears (`alpaca_live_*`, `place`, `replace`, `modify`, `cancel_all`, `cancel_orders`, or `cancel_by_symbol`).
 - Any generic Alpaca order route appears.
 - The script or command output contains an unredacted secret.
 
@@ -186,5 +194,5 @@ native_current: <sha>
 hermes_mcp_test: PASS|PARTIAL|BLOCKED
 helper_summary: summary: PASS tools_ok=7/7
 notes: <redacted exception class/tool name only, if any>
-safety: no submit/place/cancel/replace/modify calls; no generic order route; no secrets printed; base URL has no /v2.
+safety: read-only helper made no submit/cancel calls; no forbidden Alpaca live/generic/place/replace/modify/bulk-cancel tool; no secrets printed; base URL has no /v2.
 ```
