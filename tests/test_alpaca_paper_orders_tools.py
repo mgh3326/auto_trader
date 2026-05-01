@@ -1,4 +1,5 @@
 """Unit tests for alpaca_paper_submit_order and alpaca_paper_cancel_order (ROB-73)."""
+
 from __future__ import annotations
 
 from decimal import Decimal
@@ -7,27 +8,7 @@ from typing import Any
 import pytest
 
 from app.mcp_server.profiles import McpProfile
-from app.mcp_server.tooling.registry import register_all_tools
-from tests._mcp_tooling_support import DummyMCP
-from tests.test_mcp_alpaca_paper_tools import FakeAlpacaPaperService
-
-
-def test_module_exposes_expected_surface() -> None:
-    from app.mcp_server.tooling import alpaca_paper_orders as mod
-
-    assert mod.ALPACA_PAPER_MUTATING_TOOL_NAMES == {
-        "alpaca_paper_submit_order",
-        "alpaca_paper_cancel_order",
-    }
-    assert callable(mod.alpaca_paper_submit_order)
-    assert callable(mod.alpaca_paper_cancel_order)
-    assert callable(mod.set_alpaca_paper_orders_service_factory)
-    assert callable(mod.reset_alpaca_paper_orders_service_factory)
-    assert callable(mod.register_alpaca_paper_orders_tools)
-    assert mod.SUBMIT_MAX_QTY == Decimal("5")
-    assert mod.SUBMIT_MAX_NOTIONAL_USD == Decimal("1000")
-
-
+from app.mcp_server.tooling import alpaca_paper_orders as _orders_mod
 from app.mcp_server.tooling.alpaca_paper_orders import (
     ALPACA_PAPER_MUTATING_TOOL_NAMES,
     SUBMIT_MAX_NOTIONAL_USD,
@@ -37,7 +18,24 @@ from app.mcp_server.tooling.alpaca_paper_orders import (
     reset_alpaca_paper_orders_service_factory,
     set_alpaca_paper_orders_service_factory,
 )
+from app.mcp_server.tooling.registry import register_all_tools
 from app.services.brokers.alpaca.schemas import Order
+from tests._mcp_tooling_support import DummyMCP
+from tests.test_mcp_alpaca_paper_tools import FakeAlpacaPaperService
+
+
+def test_module_exposes_expected_surface() -> None:
+    assert _orders_mod.ALPACA_PAPER_MUTATING_TOOL_NAMES == {
+        "alpaca_paper_submit_order",
+        "alpaca_paper_cancel_order",
+    }
+    assert callable(_orders_mod.alpaca_paper_submit_order)
+    assert callable(_orders_mod.alpaca_paper_cancel_order)
+    assert callable(_orders_mod.set_alpaca_paper_orders_service_factory)
+    assert callable(_orders_mod.reset_alpaca_paper_orders_service_factory)
+    assert callable(_orders_mod.register_alpaca_paper_orders_tools)
+    assert _orders_mod.SUBMIT_MAX_QTY == Decimal("5")
+    assert _orders_mod.SUBMIT_MAX_NOTIONAL_USD == Decimal("1000")
 
 
 class FakeOrdersService(FakeAlpacaPaperService):
@@ -95,8 +93,11 @@ async def test_submit_without_confirm_is_blocked_no_op(
     fake_orders_service: FakeOrdersService,
 ) -> None:
     payload = await alpaca_paper_submit_order(
-        symbol="AAPL", side="buy", type="limit",
-        qty=Decimal("1"), limit_price=Decimal("1.00"),
+        symbol="AAPL",
+        side="buy",
+        type="limit",
+        qty=Decimal("1"),
+        limit_price=Decimal("1.00"),
     )
     assert payload["submitted"] is False
     assert payload["blocked_reason"] == "confirmation_required"
@@ -111,8 +112,11 @@ async def test_submit_with_confirm_calls_service_once(
     fake_orders_service: FakeOrdersService,
 ) -> None:
     payload = await alpaca_paper_submit_order(
-        symbol="AAPL", side="buy", type="limit",
-        qty=Decimal("1"), limit_price=Decimal("1.00"),
+        symbol="AAPL",
+        side="buy",
+        type="limit",
+        qty=Decimal("1"),
+        limit_price=Decimal("1.00"),
         confirm=True,
     )
     assert payload["submitted"] is True
@@ -132,12 +136,18 @@ async def test_submit_caller_client_order_id_passes_through(
     fake_orders_service: FakeOrdersService,
 ) -> None:
     payload = await alpaca_paper_submit_order(
-        symbol="AAPL", side="buy", type="limit",
-        qty=Decimal("1"), limit_price=Decimal("1.00"),
-        client_order_id="dev-smoke-001", confirm=True,
+        symbol="AAPL",
+        side="buy",
+        type="limit",
+        qty=Decimal("1"),
+        limit_price=Decimal("1.00"),
+        client_order_id="dev-smoke-001",
+        confirm=True,
     )
     assert payload["client_order_id"] == "dev-smoke-001"
-    sent = [c for c in fake_orders_service.calls if c[0] == "submit_order"][0][1]["request"]
+    sent = [c for c in fake_orders_service.calls if c[0] == "submit_order"][0][1][
+        "request"
+    ]
     assert sent.client_order_id == "dev-smoke-001"
 
 
@@ -148,7 +158,9 @@ async def test_submit_rejects_qty_exceeding_cap(
 ) -> None:
     with pytest.raises(ValueError, match="exceeds submit cap"):
         await alpaca_paper_submit_order(
-            symbol="AAPL", side="buy", type="limit",
+            symbol="AAPL",
+            side="buy",
+            type="limit",
             qty=SUBMIT_MAX_QTY + Decimal("1"),
             limit_price=Decimal("1.00"),
             confirm=True,
@@ -163,7 +175,9 @@ async def test_submit_rejects_notional_exceeding_cap(
 ) -> None:
     with pytest.raises(ValueError, match="exceeds submit cap"):
         await alpaca_paper_submit_order(
-            symbol="AAPL", side="buy", type="market",
+            symbol="AAPL",
+            side="buy",
+            type="market",
             notional=SUBMIT_MAX_NOTIONAL_USD + Decimal("1"),
             confirm=True,
         )
@@ -177,8 +191,11 @@ async def test_submit_rejects_estimated_cost_exceeding_cap(
 ) -> None:
     with pytest.raises(ValueError, match="estimated_cost"):
         await alpaca_paper_submit_order(
-            symbol="AAPL", side="buy", type="limit",
-            qty=Decimal("5"), limit_price=Decimal("250"),  # 5 * 250 = 1250 > 1000
+            symbol="AAPL",
+            side="buy",
+            type="limit",
+            qty=Decimal("5"),
+            limit_price=Decimal("250"),  # 5 * 250 = 1250 > 1000
             confirm=True,
         )
     assert [c for c in fake_orders_service.calls if c[0] == "submit_order"] == []
@@ -191,22 +208,34 @@ async def test_submit_propagates_preview_validation_errors(
 ) -> None:
     with pytest.raises(ValueError):
         await alpaca_paper_submit_order(
-            symbol="AAPL", side="hold", type="limit",
-            qty=Decimal("1"), limit_price=Decimal("1.00"),
+            symbol="AAPL",
+            side="hold",
+            type="limit",
+            qty=Decimal("1"),
+            limit_price=Decimal("1.00"),
         )
     with pytest.raises(ValueError, match="limit_price is required"):
         await alpaca_paper_submit_order(
-            symbol="AAPL", side="buy", type="limit", qty=Decimal("1"),
+            symbol="AAPL",
+            side="buy",
+            type="limit",
+            qty=Decimal("1"),
         )
     with pytest.raises(ValueError, match="exactly one"):
         await alpaca_paper_submit_order(
-            symbol="AAPL", side="buy", type="market",
-            qty=Decimal("1"), notional=Decimal("100"),
+            symbol="AAPL",
+            side="buy",
+            type="market",
+            qty=Decimal("1"),
+            notional=Decimal("100"),
         )
     with pytest.raises(ValueError, match="us_equity only"):
         await alpaca_paper_submit_order(
-            symbol="BTC", side="buy", type="market",
-            qty=Decimal("1"), asset_class="crypto",
+            symbol="BTC",
+            side="buy",
+            type="market",
+            qty=Decimal("1"),
+            asset_class="crypto",
         )
     assert fake_orders_service.calls == []
 
@@ -217,17 +246,26 @@ async def test_submit_client_order_id_is_deterministic(
     fake_orders_service: FakeOrdersService,
 ) -> None:
     a = await alpaca_paper_submit_order(
-        symbol="AAPL", side="buy", type="limit",
-        qty=Decimal("1"), limit_price=Decimal("1.00"),
+        symbol="AAPL",
+        side="buy",
+        type="limit",
+        qty=Decimal("1"),
+        limit_price=Decimal("1.00"),
     )
     b = await alpaca_paper_submit_order(
-        symbol="AAPL", side="buy", type="limit",
-        qty=Decimal("1"), limit_price=Decimal("1.00"),
+        symbol="AAPL",
+        side="buy",
+        type="limit",
+        qty=Decimal("1"),
+        limit_price=Decimal("1.00"),
     )
     assert a["client_order_id"] == b["client_order_id"]
     c = await alpaca_paper_submit_order(
-        symbol="MSFT", side="buy", type="limit",
-        qty=Decimal("1"), limit_price=Decimal("1.00"),
+        symbol="MSFT",
+        side="buy",
+        type="limit",
+        qty=Decimal("1"),
+        limit_price=Decimal("1.00"),
     )
     assert c["client_order_id"] != a["client_order_id"]
 
@@ -255,7 +293,8 @@ async def test_cancel_with_confirm_calls_service_once_and_reads_back(
     fake_orders_service: FakeOrdersService,
 ) -> None:
     payload = await alpaca_paper_cancel_order(
-        order_id="paper-order-123", confirm=True,
+        order_id="paper-order-123",
+        confirm=True,
     )
     assert payload["cancelled"] is True
     assert payload["cancelled_order_id"] == "paper-order-123"
@@ -271,7 +310,8 @@ async def test_cancel_strips_whitespace_from_order_id(
     fake_orders_service: FakeOrdersService,
 ) -> None:
     payload = await alpaca_paper_cancel_order(
-        order_id="  paper-order-123  ", confirm=True,
+        order_id="  paper-order-123  ",
+        confirm=True,
     )
     assert payload["cancelled_order_id"] == "paper-order-123"
 
@@ -291,6 +331,7 @@ async def test_cancel_rejects_blank_order_id(
 @pytest.mark.asyncio
 async def test_cancel_signature_has_no_bulk_or_filter_params() -> None:
     import inspect
+
     sig = inspect.signature(alpaca_paper_cancel_order)
     assert set(sig.parameters.keys()) == {"order_id", "confirm"}
 
@@ -308,7 +349,8 @@ async def test_cancel_read_back_failure_marks_unavailable_but_succeeds(
     fake_orders_service.get_order = _raise  # type: ignore[assignment]
 
     payload = await alpaca_paper_cancel_order(
-        order_id="paper-order-123", confirm=True,
+        order_id="paper-order-123",
+        confirm=True,
     )
     assert payload["cancelled"] is True
     assert payload["read_back_status"] == "unavailable"
@@ -332,7 +374,8 @@ async def test_submit_fails_closed_on_live_endpoint(
 
     def fake_from_app_settings() -> AlpacaPaperSettings:
         return AlpacaPaperSettings(
-            api_key="pk-test", api_secret="sk-test",
+            api_key="pk-test",
+            api_secret="sk-test",
             base_url=LIVE_TRADING_BASE_URL,
         )
 
@@ -343,8 +386,11 @@ async def test_submit_fails_closed_on_live_endpoint(
 
     with pytest.raises(AlpacaPaperEndpointError):
         await alpaca_paper_submit_order(
-            symbol="AAPL", side="buy", type="limit",
-            qty=Decimal("1"), limit_price=Decimal("1.00"),
+            symbol="AAPL",
+            side="buy",
+            type="limit",
+            qty=Decimal("1"),
+            limit_price=Decimal("1.00"),
             confirm=True,
         )
 
@@ -361,7 +407,8 @@ async def test_cancel_fails_closed_on_live_endpoint(
 
     def fake_from_app_settings() -> AlpacaPaperSettings:
         return AlpacaPaperSettings(
-            api_key="pk-test", api_secret="sk-test",
+            api_key="pk-test",
+            api_secret="sk-test",
             base_url=LIVE_TRADING_BASE_URL,
         )
 
@@ -378,6 +425,7 @@ async def test_cancel_fails_closed_on_live_endpoint(
 @pytest.mark.asyncio
 async def test_submit_signature_has_no_endpoint_or_base_url_param() -> None:
     import inspect
+
     sig = inspect.signature(alpaca_paper_submit_order)
     param_names = set(sig.parameters.keys())
     forbidden = {"endpoint", "base_url", "live", "url", "host", "env"}
@@ -439,19 +487,33 @@ async def test_submit_canonical_payload_matches_preview_order_request(
     set_alpaca_paper_preview_service_factory(lambda: fake_orders_service)  # type: ignore[arg-type]
     try:
         preview = await alpaca_paper_preview_order(
-            symbol="AAPL", side="buy", type="limit",
-            qty=Decimal("1"), limit_price=Decimal("1.00"),
+            symbol="AAPL",
+            side="buy",
+            type="limit",
+            qty=Decimal("1"),
+            limit_price=Decimal("1.00"),
         )
     finally:
         reset_alpaca_paper_preview_service_factory()
 
     submit_blocked = await alpaca_paper_submit_order(
-        symbol="AAPL", side="buy", type="limit",
-        qty=Decimal("1"), limit_price=Decimal("1.00"),
+        symbol="AAPL",
+        side="buy",
+        type="limit",
+        qty=Decimal("1"),
+        limit_price=Decimal("1.00"),
     )
 
-    shared = ("symbol", "side", "type", "time_in_force", "qty",
-              "notional", "limit_price", "asset_class")
+    shared = (
+        "symbol",
+        "side",
+        "type",
+        "time_in_force",
+        "qty",
+        "notional",
+        "limit_price",
+        "asset_class",
+    )
     for key in shared:
         assert preview["order_request"][key] == submit_blocked["order_request"][key], (
             f"preview/submit drift on '{key}'"

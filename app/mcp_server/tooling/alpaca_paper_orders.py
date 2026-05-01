@@ -73,7 +73,9 @@ def _canonical_payload(validated: PreviewOrderInput) -> dict[str, Any]:
         "time_in_force": validated.time_in_force,
         "qty": str(validated.qty) if validated.qty is not None else None,
         "notional": str(validated.notional) if validated.notional is not None else None,
-        "limit_price": str(validated.limit_price) if validated.limit_price is not None else None,
+        "limit_price": str(validated.limit_price)
+        if validated.limit_price is not None
+        else None,
         "asset_class": validated.asset_class,
     }
 
@@ -114,9 +116,7 @@ async def alpaca_paper_submit_order(
     )
 
     if validated.qty is not None and validated.qty > SUBMIT_MAX_QTY:
-        raise ValueError(
-            f"qty {validated.qty} exceeds submit cap ({SUBMIT_MAX_QTY})"
-        )
+        raise ValueError(f"qty {validated.qty} exceeds submit cap ({SUBMIT_MAX_QTY})")
     if validated.notional is not None and validated.notional > SUBMIT_MAX_NOTIONAL_USD:
         raise ValueError(
             f"notional {validated.notional} exceeds submit cap ({SUBMIT_MAX_NOTIONAL_USD})"

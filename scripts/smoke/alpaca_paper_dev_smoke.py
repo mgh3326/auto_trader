@@ -18,6 +18,7 @@ Modes:
 This script never prints API keys, secrets, headers, or raw broker payloads.
 Either gate alone is rejected.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -49,36 +50,53 @@ async def _preview_only() -> int:
     lines: list[tuple[str, bool, str]] = []
     try:
         acct = await alpaca_paper_get_account()
-        lines.append(("get_account", True, f"status={acct['account'].get('status', '?')}"))
+        lines.append(
+            ("get_account", True, f"status={acct['account'].get('status', '?')}")
+        )
     except Exception as exc:  # noqa: BLE001
         lines.append(("get_account", False, f"ERROR: {type(exc).__name__}"))
 
     try:
         cash = await alpaca_paper_get_cash()
-        lines.append(("get_cash", True, f"cash_set={cash['cash'].get('cash') is not None}"))
+        lines.append(
+            ("get_cash", True, f"cash_set={cash['cash'].get('cash') is not None}")
+        )
     except Exception as exc:  # noqa: BLE001
         lines.append(("get_cash", False, f"ERROR: {type(exc).__name__}"))
 
     try:
         submit_result = await alpaca_paper_submit_order(
-            symbol=SMOKE_SYMBOL, side="buy", type="limit",
-            qty=SMOKE_QTY, limit_price=SMOKE_LIMIT_PRICE,
+            symbol=SMOKE_SYMBOL,
+            side="buy",
+            type="limit",
+            qty=SMOKE_QTY,
+            limit_price=SMOKE_LIMIT_PRICE,
         )
-        lines.append((
-            "submit_order(confirm=False)", submit_result["submitted"] is False,
-            f"blocked_reason={submit_result.get('blocked_reason')}",
-        ))
+        lines.append(
+            (
+                "submit_order(confirm=False)",
+                submit_result["submitted"] is False,
+                f"blocked_reason={submit_result.get('blocked_reason')}",
+            )
+        )
     except Exception as exc:  # noqa: BLE001
-        lines.append(("submit_order(confirm=False)", False, f"ERROR: {type(exc).__name__}"))
+        lines.append(
+            ("submit_order(confirm=False)", False, f"ERROR: {type(exc).__name__}")
+        )
 
     try:
         cancel_result = await alpaca_paper_cancel_order(order_id="dummy-no-op")
-        lines.append((
-            "cancel_order(confirm=False)", cancel_result["cancelled"] is False,
-            f"blocked_reason={cancel_result.get('blocked_reason')}",
-        ))
+        lines.append(
+            (
+                "cancel_order(confirm=False)",
+                cancel_result["cancelled"] is False,
+                f"blocked_reason={cancel_result.get('blocked_reason')}",
+            )
+        )
     except Exception as exc:  # noqa: BLE001
-        lines.append(("cancel_order(confirm=False)", False, f"ERROR: {type(exc).__name__}"))
+        lines.append(
+            ("cancel_order(confirm=False)", False, f"ERROR: {type(exc).__name__}")
+        )
 
     ok = all(success for _, success, _ in lines)
     for name, success, note in lines:
@@ -94,7 +112,9 @@ async def _side_effect_smoke() -> int:
 
     try:
         acct = await alpaca_paper_get_account()
-        lines.append(("get_account", True, f"status={acct['account'].get('status', '?')}"))
+        lines.append(
+            ("get_account", True, f"status={acct['account'].get('status', '?')}")
+        )
     except Exception as exc:  # noqa: BLE001
         lines.append(("get_account", False, f"ERROR: {type(exc).__name__}"))
         for name, s, note in lines:
@@ -104,32 +124,46 @@ async def _side_effect_smoke() -> int:
 
     try:
         submit_result = await alpaca_paper_submit_order(
-            symbol=SMOKE_SYMBOL, side="buy", type="limit",
-            qty=SMOKE_QTY, limit_price=SMOKE_LIMIT_PRICE,
+            symbol=SMOKE_SYMBOL,
+            side="buy",
+            type="limit",
+            qty=SMOKE_QTY,
+            limit_price=SMOKE_LIMIT_PRICE,
             confirm=True,
         )
         submitted_id = submit_result["order"]["id"]
-        lines.append((
-            "submit_order(confirm=True)", submit_result["submitted"] is True,
-            f"order_id_len={len(submitted_id)} status={submit_result['order'].get('status', '?')}",
-        ))
+        lines.append(
+            (
+                "submit_order(confirm=True)",
+                submit_result["submitted"] is True,
+                f"order_id_len={len(submitted_id)} status={submit_result['order'].get('status', '?')}",
+            )
+        )
     except Exception as exc:  # noqa: BLE001
-        lines.append(("submit_order(confirm=True)", False, f"ERROR: {type(exc).__name__}"))
+        lines.append(
+            ("submit_order(confirm=True)", False, f"ERROR: {type(exc).__name__}")
+        )
 
     if submitted_id:
         try:
             cancel_result = await alpaca_paper_cancel_order(
-                order_id=submitted_id, confirm=True,
+                order_id=submitted_id,
+                confirm=True,
             )
             cancelled = bool(cancel_result.get("cancelled"))
             readback_status = cancel_result.get("read_back_status", "unknown")
             order_info = cancel_result.get("order") or {}
-            lines.append((
-                "cancel_order(confirm=True)", cancelled,
-                f"read_back={readback_status} final_status={order_info.get('status', '?')}",
-            ))
+            lines.append(
+                (
+                    "cancel_order(confirm=True)",
+                    cancelled,
+                    f"read_back={readback_status} final_status={order_info.get('status', '?')}",
+                )
+            )
         except Exception as exc:  # noqa: BLE001
-            lines.append(("cancel_order(confirm=True)", False, f"ERROR: {type(exc).__name__}"))
+            lines.append(
+                ("cancel_order(confirm=True)", False, f"ERROR: {type(exc).__name__}")
+            )
 
     ok = all(success for _, success, _ in lines)
     for name, success, note in lines:

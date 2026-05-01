@@ -1,9 +1,9 @@
 """Safety tests for scripts/smoke/alpaca_paper_dev_smoke.py (ROB-73)."""
+
 from __future__ import annotations
 
 import ast
 import importlib.util
-import os
 from pathlib import Path
 
 import pytest
@@ -19,7 +19,9 @@ from app.mcp_server.tooling.alpaca_paper_orders import (
 
 SCRIPT_PATH = (
     Path(__file__).resolve().parents[1]
-    / "scripts" / "smoke" / "alpaca_paper_dev_smoke.py"
+    / "scripts"
+    / "smoke"
+    / "alpaca_paper_dev_smoke.py"
 )
 
 FORBIDDEN_SECRET_STRINGS = (
@@ -47,8 +49,19 @@ def test_dev_smoke_script_has_no_secret_or_header_strings() -> None:
 def test_dev_smoke_script_no_raw_payload_print() -> None:
     source = SCRIPT_PATH.read_text(encoding="utf-8")
     tree = ast.parse(source)
-    raw_names = {"payload", "result", "orders", "positions", "account",
-                 "fills", "assets", "order", "submit", "cancel", "cash"}
+    raw_names = {
+        "payload",
+        "result",
+        "orders",
+        "positions",
+        "account",
+        "fills",
+        "assets",
+        "order",
+        "submit",
+        "cancel",
+        "cash",
+    }
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             func = node.func
@@ -64,8 +77,13 @@ def test_dev_smoke_script_no_raw_payload_print() -> None:
 @pytest.mark.unit
 def test_dev_smoke_script_does_not_route_through_legacy_order_tools() -> None:
     text = SCRIPT_PATH.read_text(encoding="utf-8")
-    forbidden = ("place_order", "modify_order", "replace_order",
-                 "cancel_all", "cancel_by_symbol")
+    forbidden = (
+        "place_order",
+        "modify_order",
+        "replace_order",
+        "cancel_all",
+        "cancel_by_symbol",
+    )
     hits = [s for s in forbidden if s in text]
     assert not hits, f"dev smoke script references forbidden order routes: {hits}"
 
@@ -84,8 +102,8 @@ async def test_dev_smoke_default_mode_no_broker_calls(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from tests.test_mcp_alpaca_paper_tools import FakeAlpacaPaperService
     from tests.test_alpaca_paper_orders_tools import FakeOrdersService
+    from tests.test_mcp_alpaca_paper_tools import FakeAlpacaPaperService
 
     ro = FakeAlpacaPaperService()
     orders = FakeOrdersService()
@@ -158,8 +176,8 @@ async def test_dev_smoke_both_gates_runs_submit_then_cancel(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from tests.test_mcp_alpaca_paper_tools import FakeAlpacaPaperService
     from tests.test_alpaca_paper_orders_tools import FakeOrdersService
+    from tests.test_mcp_alpaca_paper_tools import FakeAlpacaPaperService
 
     ro = FakeAlpacaPaperService()
     orders = FakeOrdersService()
