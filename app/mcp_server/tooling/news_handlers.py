@@ -15,6 +15,10 @@ from app.services.crypto_news_relevance_service import (
     score_crypto_news_article,
 )
 from app.services.llm_news_service import get_news_articles
+from app.services.market_news_briefing_formatter import (
+    BriefingSection,
+    format_market_news_briefing,
+)
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -26,6 +30,7 @@ def _article_to_dict(
     article: NewsArticle,
     *,
     include_crypto_relevance: bool = False,
+    briefing_relevance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     item = {
         "id": article.id,
@@ -44,7 +49,32 @@ def _article_to_dict(
     }
     if include_crypto_relevance:
         item["crypto_relevance"] = score_crypto_news_article(article).as_dict()
+    if briefing_relevance is not None:
+        item["briefing_relevance"] = briefing_relevance
     return item
+
+
+def _briefing_sections_to_dict(
+    sections: list[BriefingSection],
+    *,
+    include_crypto_relevance: bool = False,
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "section_id": section.section_id,
+            "title": section.title,
+            "count": len(section.items),
+            "items": [
+                _article_to_dict(
+                    item.article,
+                    include_crypto_relevance=include_crypto_relevance,
+                    briefing_relevance=item.relevance.as_dict(),
+                )
+                for item in section.items
+            ],
+        }
+        for section in sections
+    ]
 
 
 async def _get_market_news_impl(
@@ -60,9 +90,9 @@ async def _get_market_news_impl(
     limit = limit or 20
 
     query_limit = limit
-    if market == "crypto" and briefing_filter:
-        # Pull a slightly larger window so ranking can hide low-signal broad-tech
-        # items without returning an under-filled briefing when relevant items exist.
+    if market in {"crypto", "us", "kr"} and briefing_filter:
+        # Pull a slightly larger window so ranking can hide low-signal noise
+        # without returning an under-filled briefing when relevant items exist.
         query_limit = max(limit * 3, limit)
 
     articles, total = await get_news_articles(
@@ -76,6 +106,7 @@ async def _get_market_news_impl(
 
     excluded_news: list[dict[str, Any]] = []
     briefing_summary = None
+    briefing_sections: list[dict[str, Any]] = []
     if market == "crypto":
         if briefing_filter:
             ranking = rank_crypto_news_for_briefing(list(articles), limit=limit)
@@ -88,10 +119,37 @@ async def _get_market_news_impl(
                 for item in ranking.excluded
             ]
             briefing_summary = ranking.summary
+            briefing = format_market_news_briefing(
+                list(articles), market=market, limit=limit
+            )
+            briefing_sections = _briefing_sections_to_dict(
+                briefing.sections, include_crypto_relevance=True
+            )
         else:
             news_list = [
                 _article_to_dict(a, include_crypto_relevance=True) for a in articles
             ]
+    elif briefing_filter and market in {"us", "kr"}:
+        briefing = format_market_news_briefing(
+            list(articles), market=market, limit=limit
+        )
+        news_list = [
+            _article_to_dict(
+                item.article,
+                briefing_relevance=item.relevance.as_dict(),
+            )
+            for section in briefing.sections
+            for item in section.items
+        ]
+        excluded_news = [
+            _article_to_dict(
+                item.article,
+                briefing_relevance=item.relevance.as_dict(),
+            )
+            for item in briefing.excluded
+        ]
+        briefing_summary = briefing.summary
+        briefing_sections = _briefing_sections_to_dict(briefing.sections)
     else:
         news_list = [_article_to_dict(a) for a in articles]
     source_names = list({a.get("source") for a in news_list if a.get("source")})
@@ -108,6 +166,7 @@ async def _get_market_news_impl(
         "feed_sources": sorted(feed_source_names),
         "briefing_filter": bool(briefing_filter),
         "briefing_summary": briefing_summary,
+        "briefing_sections": briefing_sections,
         "excluded_news": excluded_news,
     }
 
@@ -170,8 +229,9 @@ def _register_news_tools_impl(mcp: FastMCP) -> None:
         description=(
             "Get recent market news. Supports filtering by market, publisher (source), "
             "collection path (feed_source), and keyword. Returns both publisher names "
-            "and collection paths for briefing segmentation. For market='crypto', "
-            "briefing_filter=True ranks crypto-relevant items and separates broad-tech noise."
+            "and collection paths for briefing segmentation. briefing_filter=True "
+            "formats market-specific sections for kr/us and ranks crypto-relevant "
+            "items while separating broad-tech noise."
         ),
     )
     async def get_market_news(

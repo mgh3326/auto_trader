@@ -31,9 +31,9 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - `market`: Optional market scope (`kr`, `us`, `crypto`) for market-separated briefing inputs
   - `feed_source`: Collection path key (e.g., `browser_naver_mainnews`, `browser_naver_research`, `rss_cointelegraph`)
   - `source`: Publisher label (e.g., `연합뉴스`, `매일경제`, `Cointelegraph`)
-  - `briefing_filter`: When `market="crypto"`, rank crypto-relevant articles and separate broad-tech/AI noise into `excluded_news`; raw storage is not affected
-  - Returns: `count`, `total`, `news` (list), `sources` (unique publishers), `feed_sources` (unique collection paths), `briefing_filter`, `briefing_summary`, `excluded_news`
-  - Each article includes `stock_symbol` and `stock_name` for holdings impact analysis; crypto articles also include `crypto_relevance` metadata
+  - `briefing_filter`: Format market-specific briefing sections for `kr`/`us`, and rank crypto-relevant articles while separating broad-tech/AI noise into `excluded_news`; raw storage is not affected
+  - Returns: `count`, `total`, `news` (list), `sources` (unique publishers), `feed_sources` (unique collection paths), `briefing_filter`, `briefing_summary`, `briefing_sections`, `excluded_news`
+  - Each article includes `stock_symbol` and `stock_name` for holdings impact analysis; formatted articles include `briefing_relevance`; crypto articles also include `crypto_relevance` metadata
 
 - `search_news(query, days=7, limit=20)`
   - Search news by keyword in title and keywords field
