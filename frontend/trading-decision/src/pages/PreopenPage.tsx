@@ -9,7 +9,7 @@ import {
   createDecisionFromResearchRun,
   getLatestPreopen,
 } from "../api/preopen";
-import type { PreopenLatestResponse } from "../api/types";
+import type { PreopenBriefingArtifact, PreopenLatestResponse } from "../api/types";
 import { formatDateTime } from "../format/datetime";
 import styles from "./PreopenPage.module.css";
 
@@ -17,6 +17,73 @@ type State =
   | { status: "loading" }
   | { status: "error"; message: string }
   | { status: "success"; data: PreopenLatestResponse };
+
+function formatArtifactVersion(version: string): string {
+  return version.startsWith("mvp.") ? version.slice(4) : version;
+}
+
+function PreopenBriefingArtifactSection({
+  artifact,
+}: {
+  artifact: PreopenBriefingArtifact | null;
+}) {
+  if (!artifact) return null;
+
+  return (
+    <section
+      aria-label="Preopen briefing artifact"
+      className={styles.artifactSection}
+    >
+      <div className={styles.artifactHeader}>
+        <div>
+          <h2>Preopen briefing</h2>
+          <p className={styles.meta}>
+            {artifact.artifact_type} {formatArtifactVersion(artifact.artifact_version)}
+          </p>
+        </div>
+        <span className={styles.artifactStatus}>Artifact {artifact.status}</span>
+      </div>
+
+      {artifact.market_summary ? <p>{artifact.market_summary}</p> : null}
+      {artifact.news_summary ? <p>News brief: {artifact.news_summary}</p> : null}
+
+      {artifact.risk_notes.length > 0 ? (
+        <ul aria-label="Preopen artifact risk notes" className={styles.warnings}>
+          {artifact.risk_notes.map((note) => (
+            <li className={styles.warningChip} key={note}>
+              {note}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
+      {artifact.readiness.length > 0 ? (
+        <div className={styles.artifactGrid}>
+          {artifact.readiness.map((item) => (
+            <div className={styles.artifactCard} key={item.key}>
+              <strong>{item.key}</strong>
+              <span>{item.status}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {artifact.sections.length > 0 ? (
+        <div className={styles.artifactGrid}>
+          {artifact.sections.map((section) => (
+            <div className={styles.artifactCard} key={section.section_id}>
+              <strong>{section.title}</strong>
+              <span>
+                {section.status} · {section.item_count}
+              </span>
+              {section.summary ? <small>{section.summary}</small> : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
 
 export default function PreopenPage() {
   const navigate = useNavigate();
@@ -86,6 +153,15 @@ export default function PreopenPage() {
   }
 
   const { data } = state;
+  const artifactCta = data.briefing_artifact?.cta ?? null;
+  const linkedSessionUuid =
+    artifactCta?.state === "linked_session_exists"
+      ? artifactCta.linked_session_uuid
+      : data.linked_sessions[0]?.session_uuid;
+  const createRunUuid =
+    artifactCta?.state === "create_available"
+      ? artifactCta.run_uuid
+      : data.run_uuid;
 
   if (!data.has_run) {
     return (
@@ -97,6 +173,7 @@ export default function PreopenPage() {
             <p>Reason: {data.advisory_skipped_reason}</p>
           ) : null}
         </div>
+        <PreopenBriefingArtifactSection artifact={data.briefing_artifact} />
       </main>
     );
   }
@@ -133,6 +210,7 @@ export default function PreopenPage() {
         </ul>
       ) : null}
 
+      <PreopenBriefingArtifactSection artifact={data.briefing_artifact} />
       <NewsReadinessSection news={data.news} preview={data.news_preview} />
       <MarketNewsBriefingSection briefing={data.market_news_briefing} />
 
@@ -240,26 +318,26 @@ export default function PreopenPage() {
       ) : null}
 
       <div className={styles.ctaRow}>
-        {data.linked_sessions.length > 0 ? (
+        {linkedSessionUuid ? (
           <Link
             className="btn"
-            to={`/sessions/${data.linked_sessions[0]!.session_uuid}`}
+            to={`/sessions/${linkedSessionUuid}`}
           >
             Open session
           </Link>
         ) : null}
-        {data.linked_sessions.length === 0 ? (
+        {!linkedSessionUuid ? (
           <button
             className="btn"
-            disabled={creating || !data.run_uuid}
-            onClick={() => data.run_uuid && handleCreate(String(data.run_uuid))}
+            disabled={creating || !createRunUuid || artifactCta?.state === "unavailable"}
+            onClick={() => createRunUuid && handleCreate(String(createRunUuid))}
             type="button"
           >
             {confirmPending
               ? "Confirm create decision session?"
               : creating
                 ? "Creating…"
-                : "Create decision session"}
+                : artifactCta?.label ?? "Create decision session"}
           </button>
         ) : null}
         {confirmPending ? (
