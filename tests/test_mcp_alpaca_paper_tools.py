@@ -602,6 +602,59 @@ async def test_preview_crypto_limit_notional_buy_returns_normalized_echo(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_preview_crypto_omitted_time_in_force_defaults_to_gtc(
+    fake_preview_service: FakeAlpacaPaperService,
+) -> None:
+    payload = await alpaca_paper_preview_order(
+        symbol="BTC/USD",
+        side="buy",
+        type="limit",
+        notional=Decimal("10"),
+        limit_price=Decimal("50000"),
+        asset_class="crypto",
+    )
+
+    assert payload["order_request"]["time_in_force"] == "gtc"
+    assert fake_preview_service.calls == [("get_cash", {})]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_tif", ["day", "fok"])
+async def test_preview_crypto_rejects_invalid_time_in_force_before_service_call(
+    fake_preview_service: FakeAlpacaPaperService,
+    bad_tif: str,
+) -> None:
+    with pytest.raises(ValueError, match="crypto time_in_force"):
+        await alpaca_paper_preview_order(
+            symbol="BTC/USD",
+            side="buy",
+            type="limit",
+            notional=Decimal("10"),
+            limit_price=Decimal("50000"),
+            time_in_force=bad_tif,
+            asset_class="crypto",
+        )
+    assert fake_preview_service.calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_preview_equity_omitted_time_in_force_keeps_day_default(
+    fake_preview_service: FakeAlpacaPaperService,
+) -> None:
+    payload = await alpaca_paper_preview_order(
+        symbol="AAPL",
+        side="buy",
+        type="market",
+        qty=Decimal("1"),
+    )
+
+    assert payload["order_request"]["time_in_force"] == "day"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_preview_crypto_rejects_non_allowlisted_symbol(
     fake_preview_service: FakeAlpacaPaperService,
 ) -> None:

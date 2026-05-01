@@ -153,6 +153,46 @@ async def test_crypto_submit_without_confirm_is_blocked_no_op(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_crypto_submit_omitted_time_in_force_defaults_to_gtc_no_op(
+    fake_orders_service: FakeOrdersService,
+) -> None:
+    payload = await alpaca_paper_submit_order(
+        symbol="BTC/USD",
+        side="buy",
+        type="limit",
+        notional=Decimal("10"),
+        limit_price=Decimal("50000"),
+        asset_class="crypto",
+    )
+
+    assert payload["submitted"] is False
+    assert payload["order_request"]["time_in_force"] == "gtc"
+    assert fake_orders_service.calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_tif", ["day", "fok"])
+async def test_crypto_submit_rejects_invalid_time_in_force_before_service_call(
+    fake_orders_service: FakeOrdersService,
+    bad_tif: str,
+) -> None:
+    with pytest.raises(ValueError, match="crypto time_in_force"):
+        await alpaca_paper_submit_order(
+            symbol="BTC/USD",
+            side="buy",
+            type="limit",
+            notional=Decimal("10"),
+            limit_price=Decimal("50000"),
+            time_in_force=bad_tif,
+            asset_class="crypto",
+            confirm=True,
+        )
+    assert fake_orders_service.calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_crypto_submit_with_confirm_calls_service_once(
     fake_orders_service: FakeOrdersService,
 ) -> None:

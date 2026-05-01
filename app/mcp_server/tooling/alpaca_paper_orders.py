@@ -116,7 +116,7 @@ async def alpaca_paper_submit_order(
     type: str,  # noqa: A002
     qty: Decimal | None = None,
     notional: Decimal | None = None,
-    time_in_force: str = "day",
+    time_in_force: str | None = None,
     limit_price: Decimal | None = None,
     client_order_id: str | None = None,
     asset_class: str = "us_equity",

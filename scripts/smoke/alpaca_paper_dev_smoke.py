@@ -138,6 +138,8 @@ def _order_payload(args: argparse.Namespace) -> dict[str, object]:
         "side": args.side,
         "type": args.order_type,
         "asset_class": args.asset_class,
+        "time_in_force": args.time_in_force
+        or ("gtc" if args.asset_class == "crypto" else "day"),
     }
     if args.notional is not None:
         payload["notional"] = args.notional
@@ -291,6 +293,17 @@ async def _async_main(args: argparse.Namespace) -> int:
         )
         return 2
 
+    if (
+        args.asset_class == "crypto"
+        and args.time_in_force is not None
+        and args.time_in_force not in {"gtc", "ioc"}
+    ):
+        print(
+            "BLOCKED: crypto --time-in-force must be gtc or ioc.",
+            file=sys.stderr,
+        )
+        return 2
+
     if _both_gates_set(args):
         return await _side_effect_smoke(args)
     if args.asset_class == "crypto" or args.symbol or args.candidate_report:
@@ -319,6 +332,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--qty", type=Decimal, default=SMOKE_QTY)
     parser.add_argument("--notional", type=Decimal)
     parser.add_argument("--limit-price", type=Decimal)
+    parser.add_argument(
+        "--time-in-force",
+        choices=("day", "gtc", "ioc", "fok"),
+        help="Order time_in_force; crypto defaults to gtc and only allows gtc/ioc",
+    )
     parser.add_argument(
         "--candidate-report",
         help=(

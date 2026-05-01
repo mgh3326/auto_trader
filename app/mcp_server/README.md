@@ -142,7 +142,8 @@ paper-only, confirm-gated `alpaca_paper_submit_order` and
 `alpaca_paper_cancel_order` tools for dev-owned smoke, with no runtime live
 switch and no bulk/by-symbol cancel. ROB-74 extends those explicit paper-only
 surfaces to a narrow crypto contract: buy-only, limit-only, allowlisted symbols
-(`BTC/USD`, `ETH/USD`, `SOL/USD`), and a $50 max notional/estimated-cost cap.
+(`BTC/USD`, `ETH/USD`, `SOL/USD`), `time_in_force` limited to `gtc`/`ioc`,
+and a $50 max notional/estimated-cost cap.
 There is still no Alpaca paper `place_order`, `replace_order`, `modify_order`,
 `cancel_all`, or generic Alpaca order-routing surface.
 
@@ -156,8 +157,9 @@ Dev submit/cancel smoke helper: `scripts/smoke/alpaca_paper_dev_smoke.py` (previ
 ROB-70 adds `alpaca_paper_preview_order`: a side-effect-free validator + echo tool.
 ROB-74 extends preview to a narrow Alpaca paper crypto shape without adding any
 broker side effects: `asset_class="crypto"` supports only `BTC/USD`, `ETH/USD`,
-and `SOL/USD`, is buy-only and limit-only, and is capped at $50 notional or
-estimated cost.
+and `SOL/USD`, is buy-only and limit-only, defaults omitted `time_in_force` to
+`gtc`, rejects crypto `day`/`fok`, and is capped at $50 notional or estimated
+cost.
 
 **Signature:**
 ```
@@ -167,7 +169,7 @@ alpaca_paper_preview_order(
     type,            # "market" | "limit"  (crypto: limit only)
     qty=None,        # Decimal quantity (xor notional)
     notional=None,   # Decimal notional USD (xor qty; crypto limit allowed)
-    time_in_force="day",   # "day" | "gtc" | "ioc" | "fok"
+    time_in_force=None,    # omitted => day for us_equity, gtc for crypto; crypto allows only "gtc" | "ioc"
     limit_price=None,      # required for limit orders, forbidden for equity market
     stop_price=None,       # always rejected (deferred)
     client_order_id=None,  # optional, 1-48 chars
@@ -183,7 +185,7 @@ alpaca_paper_preview_order(
 - `limit_price`: required for limit orders, forbidden for US-equity market orders, must be > 0
 - `stop_price`: always rejected with explicit error
 - `asset_class`: `"us_equity"` or `"crypto"`; other values rejected
-- `time_in_force`: one of `"day"`, `"gtc"`, `"ioc"`, `"fok"`
+- `time_in_force`: omitted/blank defaults to `"day"` for US equities and `"gtc"` for crypto; US equities allow `"day"`, `"gtc"`, `"ioc"`, `"fok"`; crypto allows only `"gtc"` or `"ioc"`
 - For `asset_class="us_equity"`, `notional + type="limit"` is rejected (Alpaca only supports equity notional for market orders in this surface)
 - For `asset_class="crypto"`, only `BTC/USD`, `ETH/USD`, and `SOL/USD` are supported; orders are buy-only, limit-only, require `limit_price`, permit `notional + limit_price`, and cap notional or `qty * limit_price` at $50
 

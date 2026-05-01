@@ -33,6 +33,10 @@ ALPACA_PAPER_CRYPTO_ALLOWED_SYMBOLS: frozenset[str] = frozenset(
     }
 )
 ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD: Decimal = Decimal("50")
+ALPACA_PAPER_EQUITY_TIME_IN_FORCE: frozenset[str] = frozenset(
+    {"day", "gtc", "ioc", "fok"}
+)
+ALPACA_PAPER_CRYPTO_TIME_IN_FORCE: frozenset[str] = frozenset({"gtc", "ioc"})
 
 # Referenced by tests to confirm these methods are never called on the preview path
 _FORBIDDEN_SERVICE_METHODS = ("submit_order", "cancel_order")
@@ -68,11 +72,31 @@ class PreviewOrderInput(BaseModel):
     type: str  # noqa: A003
     qty: Decimal | None = None
     notional: Decimal | None = None
-    time_in_force: str = "day"
+    time_in_force: str | None = None
     limit_price: Decimal | None = None
     stop_price: Decimal | None = None
     client_order_id: str | None = None
     asset_class: str = "us_equity"
+
+    @model_validator(mode="before")
+    @classmethod
+    def default_time_in_force_for_asset_class(cls, data: Any) -> Any:
+        """Default omitted TIF per asset class before field validation.
+
+        Alpaca accepts only gtc/ioc for crypto.  Keep the historical day default
+        for US equities, but ensure omitted crypto TIF never normalizes to day.
+        """
+        if not isinstance(data, dict):
+            return data
+        raw_asset_class = str(data.get("asset_class") or "us_equity").strip().lower()
+        raw_tif = data.get("time_in_force")
+        if raw_tif is None or (isinstance(raw_tif, str) and not raw_tif.strip()):
+            normalized = dict(data)
+            normalized["time_in_force"] = (
+                "gtc" if raw_asset_class == "crypto" else "day"
+            )
+            return normalized
+        return data
 
     @field_validator("symbol")
     @classmethod
@@ -137,8 +161,9 @@ class PreviewOrderInput(BaseModel):
     @classmethod
     def validate_tif(cls, v: str) -> str:
         normalized = v.strip().lower()
-        if normalized not in {"day", "gtc", "ioc", "fok"}:
-            raise ValueError("time_in_force must be one of: day, gtc, ioc, fok")
+        if normalized not in ALPACA_PAPER_EQUITY_TIME_IN_FORCE:
+            allowed = ", ".join(sorted(ALPACA_PAPER_EQUITY_TIME_IN_FORCE))
+            raise ValueError(f"time_in_force must be one of: {allowed}")
         return normalized
 
     @field_validator("client_order_id")
@@ -182,6 +207,9 @@ class PreviewOrderInput(BaseModel):
             raise ValueError("crypto preview is buy-only")
         if self.type != "limit":
             raise ValueError("crypto preview is limit-only")
+        if self.time_in_force not in ALPACA_PAPER_CRYPTO_TIME_IN_FORCE:
+            allowed_tif = ", ".join(sorted(ALPACA_PAPER_CRYPTO_TIME_IN_FORCE))
+            raise ValueError(f"crypto time_in_force must be one of: {allowed_tif}")
         if self.limit_price is None:
             raise ValueError("limit_price is required for crypto limit orders")
         if (
@@ -229,7 +257,7 @@ async def alpaca_paper_preview_order(
     type: str,  # noqa: A002
     qty: Decimal | None = None,
     notional: Decimal | None = None,
-    time_in_force: str = "day",
+    time_in_force: str | None = None,
     limit_price: Decimal | None = None,
     stop_price: Decimal | None = None,
     client_order_id: str | None = None,

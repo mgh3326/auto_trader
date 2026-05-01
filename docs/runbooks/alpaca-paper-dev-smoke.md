@@ -12,7 +12,7 @@ intentionally hard to run with side effects by accident.
 - Adapter-specific paper-only tools. No live endpoint, no data endpoint as trading base, no generic order route, no bulk cancel.
 - Default mode: preview only. No broker mutations, no `submit_order` / `cancel_order` HTTP calls.
 - Side-effect mode requires BOTH a CLI flag (`--confirm-paper-side-effect`) AND an env var (`ALPACA_PAPER_SMOKE_ALLOW_SIDE_EFFECTS=1`). Either alone exits with code 2 and zero broker calls.
-- Side-effect smoke places ONE tiny PAPER order. Default equity mode uses `AAPL` buy `1` share `limit @ $1.00`; ROB-74 crypto mode is buy-only, limit-only, allowlisted (`BTC/USD`, `ETH/USD`, `SOL/USD`), capped at $50 notional/estimated cost, and requires an explicit `--limit-price`. If market behaviour fills the order before cancel, mark the result PARTIAL and document in the report.
+- Side-effect smoke places ONE tiny PAPER order. Default equity mode uses `AAPL` buy `1` share `limit @ $1.00`; ROB-74 crypto mode is buy-only, limit-only, allowlisted (`BTC/USD`, `ETH/USD`, `SOL/USD`), capped at $50 notional/estimated cost, defaults omitted `--time-in-force` to `gtc`, accepts only `gtc`/`ioc`, and requires an explicit `--limit-price`. If market behaviour fills the order before cancel, mark the result PARTIAL and document in the report.
 - ROB-74 candidate reports are operator metadata only: pass the path with `--candidate-report`; the script validates that the file exists and prints only `candidate_report_attached=True`, never report contents or derived trade instructions.
 - Never run this from production hosts. This issue is dev-owned smoke.
 - Never paste API keys, secrets, Authorization headers, or raw broker payloads.
@@ -53,7 +53,8 @@ Exit code 0 = PASS. Any FAIL line → BLOCKED.
 
 Crypto mode remains preview-only unless the separate operator approval gate is
 explicitly unblocked. The operator chooses the allowlisted symbol, limit price,
-and notional; the script does not parse candidate reports into orders.
+notional, and optionally `--time-in-force gtc|ioc` (omitted defaults to `gtc`);
+the script does not parse candidate reports into orders.
 
 ```bash
 uv run python scripts/smoke/alpaca_paper_dev_smoke.py \
@@ -81,7 +82,8 @@ contents, secrets, account payloads, and raw broker responses are not emitted.
 
 Only run when explicitly authorised on a dev host. For ROB-74 crypto smoke,
 include `--asset-class crypto`, an allowlisted `--symbol`, `--notional` at or
-below `50`, and an explicit operator-approved `--limit-price`; do not run this
+below `50`, a crypto-valid `--time-in-force` (`gtc`/`ioc`, or omitted for
+`gtc`), and an explicit operator-approved `--limit-price`; do not run this
 until 광현님 unblocks the separate paper submit/cancel approval gate.
 
 ```bash
