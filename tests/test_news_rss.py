@@ -246,11 +246,13 @@ class TestNewsSchemas:
                 "created_at": "2026-03-27T09:00:00",
                 "updated_at": None,
                 "feed_source": "mk_stock",
+                "market": "kr",
                 "keywords": ["반도체"],
                 "is_analyzed": False,
             }
         )
         assert resp.feed_source == "mk_stock"
+        assert resp.market == "kr"
         assert resp.keywords == ["반도체"]
         assert resp.is_analyzed is False
 
@@ -522,6 +524,7 @@ class TestMCPNewsTools:
                 title="Test News 1",
                 source="매일경제",
                 feed_source="mk_stock",
+                market="kr",
                 summary="요약1",
                 article_published_at=datetime(2026, 3, 27, 9, 0, 0),
                 keywords=["반도체"],
@@ -534,6 +537,7 @@ class TestMCPNewsTools:
                 title="Test News 2",
                 source="연합뉴스",
                 feed_source="browser_naver_mainnews",
+                market="kr",
                 summary="요약2",
                 article_published_at=datetime(2026, 3, 27, 9, 30, 0),
                 keywords=["AI"],
@@ -560,7 +564,8 @@ class TestMCPNewsTools:
         # feed_sources should contain collection path keys
         assert "mk_stock" in result["feed_sources"]
         assert "browser_naver_mainnews" in result["feed_sources"]
-        # Each news item should have stock_symbol and stock_name
+        # Each news item should have market, stock_symbol and stock_name
+        assert result["news"][0]["market"] == "kr"
         assert result["news"][0]["stock_symbol"] == "005930"
         assert result["news"][0]["stock_name"] == "삼성전자"
 
@@ -575,6 +580,7 @@ class TestMCPNewsTools:
                 title="Test News",
                 source="매일경제",
                 feed_source="mk_stock",
+                market="kr",
                 summary="요약",
                 article_published_at=datetime(2026, 3, 27, 9, 0, 0),
                 keywords=["반도체"],
@@ -591,6 +597,22 @@ class TestMCPNewsTools:
         assert result["count"] == 1
         assert len(result["news"]) == 1
         assert result["news"][0]["title"] == "Test News"
+
+    @pytest.mark.asyncio
+    async def test_get_market_news_forwards_market_filter(self):
+        from app.mcp_server.tooling.news_handlers import _get_market_news_impl
+
+        with patch(
+            "app.mcp_server.tooling.news_handlers.get_news_articles",
+            new_callable=AsyncMock,
+            return_value=([], 0),
+        ) as mock_get:
+            result = await _get_market_news_impl(
+                market="crypto", hours=24, feed_source=None, limit=20
+            )
+
+        assert result["market"] == "crypto"
+        assert mock_get.call_args.kwargs["market"] == "crypto"
 
     @pytest.mark.asyncio
     async def test_search_news_calls_service(self):
@@ -626,6 +648,7 @@ class TestGetMarketNewsNoneDefaults:
             )
 
         call_kwargs = mock_get.call_args.kwargs
+        assert call_kwargs["market"] is None
         assert call_kwargs["hours"] == 24
         assert call_kwargs["limit"] == 20
         assert result["count"] == 0

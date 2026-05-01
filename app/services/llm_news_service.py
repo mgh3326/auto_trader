@@ -26,6 +26,7 @@ async def create_news_article(
     stock_symbol: str | None = None,
     stock_name: str | None = None,
     published_at: datetime | None = None,
+    market: str = "kr",
     feed_source: str | None = None,
     keywords: list[str] | None = None,
     summary: str | None = None,
@@ -40,6 +41,7 @@ async def create_news_article(
         stock_symbol=stock_symbol,
         stock_name=stock_name,
         article_published_at=to_kst_naive(published_at) if published_at else None,
+        market=market,
         feed_source=feed_source,
         keywords=keywords,
         scraped_at=now_kst_naive(),
@@ -94,6 +96,7 @@ async def bulk_create_news_articles(
                 article_published_at=to_kst_naive(article_data.published_at)
                 if article_data.published_at
                 else None,
+                market=article_data.market,
                 feed_source=article_data.feed_source,
                 keywords=article_data.keywords,
                 scraped_at=now_kst_naive(),
@@ -110,6 +113,7 @@ async def bulk_create_news_articles(
 
 
 async def get_news_articles(
+    market: str | None = None,
     stock_symbol: str | None = None,
     sentiment: str | None = None,
     source: str | None = None,
@@ -132,6 +136,8 @@ async def get_news_articles(
 
         conditions = []
 
+        if market:
+            conditions.append(NewsArticle.market == market)
         if stock_symbol:
             conditions.append(NewsArticle.stock_symbol == stock_symbol)
         if source:
@@ -248,6 +254,7 @@ def _article_values_from_ingestor_payload(article_data: Any) -> dict[str, Any]:
         "article_published_at": to_kst_naive(article_data.published_at)
         if article_data.published_at
         else None,
+        "market": article_data.market,
         "feed_source": article_data.feed_source,
         "keywords": article_data.keywords,
         "scraped_at": now_kst_naive(),

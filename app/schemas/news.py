@@ -16,6 +16,7 @@ class NewsArticleCreate(BaseModel):
     stock_symbol: str | None = Field(None, max_length=20, description="관련 종목 코드")
     stock_name: str | None = Field(None, max_length=100, description="관련 종목명")
     published_at: datetime | None = Field(None, description="기사 발행일시")
+    market: str = Field("kr", min_length=1, max_length=20, description="시장 구분")
     feed_source: str | None = Field(
         None,
         max_length=50,
@@ -44,6 +45,11 @@ class NewsArticleCreate(BaseModel):
             return None
         value = v.strip()
         return value or None
+
+    @field_validator("market")
+    @classmethod
+    def normalize_market(cls, v: str) -> str:
+        return v.strip()
 
     @field_validator("keywords")
     @classmethod
@@ -170,6 +176,7 @@ class NewsArticleResponse(BaseModel):
     created_at: datetime
     updated_at: datetime | None
     feed_source: str | None = None
+    market: str = "kr"
     keywords: list[str] | None = None
     is_analyzed: bool = False
 
@@ -219,6 +226,7 @@ class NewsAnalysisResponse(BaseModel):
 
 
 class NewsQueryParams(BaseModel):
+    market: str | None = Field(None, description="시장 구분으로 필터링 (kr/us/crypto)")
     stock_symbol: str | None = Field(None, description="종목 코드로 필터링")
     sentiment: str | None = Field(
         None, description="감정으로 필터링 (positive/negative/neutral)"

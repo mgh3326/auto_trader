@@ -33,6 +33,7 @@ class NewsArticle(Base):
         UniqueConstraint("url", name="uq_news_article_url"),
         Index("ix_news_articles_keywords", "keywords", postgresql_using="gin"),
         Index("ix_news_articles_published_feed", "article_published_at", "feed_source"),
+        Index("ix_news_articles_market_published", "market", "article_published_at"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -59,6 +60,14 @@ class NewsArticle(Base):
         nullable=True,
         index=True,
         comment="RSS 피드 소스 (mk_stock, yna_market 등)",
+    )
+    market: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="kr",
+        server_default="kr",
+        index=True,
+        comment="Market scope (kr, us, crypto)",
     )
     keywords: Mapped[list | None] = mapped_column(
         JSONB, nullable=True, comment="키워드 배열"

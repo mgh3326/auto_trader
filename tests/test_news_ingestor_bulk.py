@@ -58,6 +58,7 @@ class TestNewsIngestorSchemas:
 
         assert request.ingestion_run.run_uuid == "run-rob-46"
         assert request.ingestion_run.market == "kr"
+        assert request.articles[0].market == "kr"
         assert request.articles[0].feed_source == "browser_naver_mainnews"
         assert request.articles[0].source == "연합뉴스"
         assert request.articles[0].url == "https://n.news.naver.com/mnews/article/001/1"
@@ -97,6 +98,37 @@ class TestNewsIngestorSchemas:
         assert run.inserted_count == 12
         assert run.skipped_count == 39
 
+    def test_news_article_model_has_market_scope(self):
+        from app.models.news import NewsArticle
+
+        article = NewsArticle(
+            url="https://cointelegraph.com/news/example",
+            title="Bitcoin ETF update",
+            market="crypto",
+            feed_source="rss_cointelegraph",
+            scraped_at=datetime(2026, 5, 1, 5, 0, 0),
+            created_at=datetime(2026, 5, 1, 5, 0, 0),
+        )
+
+        assert article.market == "crypto"
+
+    def test_ingestor_article_values_include_market_scope(self):
+        from app.schemas.news import NewsBulkIngestRequest
+        from app.services.llm_news_service import _article_values_from_ingestor_payload
+
+        payload = _sample_payload()
+        payload["ingestion_run"]["market"] = "crypto"
+        payload["ingestion_run"]["feed_set"] = "crypto-core"
+        payload["articles"][0]["market"] = "crypto"
+        payload["articles"][0]["source"] = "rss_cointelegraph"
+        payload["articles"][0]["publisher"] = "Cointelegraph"
+
+        request = NewsBulkIngestRequest.model_validate(payload)
+        values = _article_values_from_ingestor_payload(request.articles[0])
+
+        assert values["market"] == "crypto"
+        assert values["feed_source"] == "rss_cointelegraph"
+
 
 class TestNewsIngestorRouter:
     def test_new_bulk_ingest_endpoint_exists_without_breaking_legacy_bulk(self):
@@ -128,6 +160,20 @@ class TestNewsIngestorRouter:
         assert response.status_code == 201
         assert response.json()["inserted_count"] == 1
         mock_ingest.assert_awaited_once()
+
+    def test_list_news_endpoint_accepts_market_filter(self):
+        app = _make_test_app()
+        client = TestClient(app)
+
+        with patch(
+            "app.routers.news_analysis.get_news_articles",
+            new=AsyncMock(return_value=([], 0)),
+        ) as mock_get_news:
+            response = client.get("/api/v1/news?market=crypto&limit=5")
+
+        assert response.status_code == 200
+        mock_get_news.assert_awaited_once()
+        assert mock_get_news.await_args.kwargs["market"] == "crypto"
 
     def test_readiness_endpoint_returns_service_result(self):
         app = _make_test_app()

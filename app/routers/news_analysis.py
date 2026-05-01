@@ -116,6 +116,7 @@ async def get_news_readiness_status(
 
 @router.get("", response_model=NewsListResponse)
 async def list_news_articles(
+    market: str | None = Query(None, description="시장 구분으로 필터링 (kr/us/crypto)"),
     stock_symbol: str | None = Query(None, description="종목 코드로 필터링"),
     sentiment: str | None = Query(
         None, description="감정 분석으로 필터링 (positive/negative/neutral)"
@@ -136,6 +137,7 @@ async def list_news_articles(
 ):
     try:
         articles, total = await get_news_articles(
+            market=market,
             stock_symbol=stock_symbol,
             sentiment=sentiment,
             source=source,
