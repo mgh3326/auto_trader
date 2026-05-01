@@ -30,6 +30,7 @@ describe("PreopenPage", () => {
     render(<PreopenPage />, { wrapper: MemoryRouter });
 
     expect(await screen.findByText(/No preopen research run available/i)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: /Preopen briefing/i })).toBeInTheDocument();
     expect(screen.getAllByText(/no_open_preopen_run/i).length).toBeGreaterThan(0);
     expect(screen.getByText(/Artifact unavailable/i)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /create decision session/i })).toBeNull();
@@ -47,7 +48,7 @@ describe("PreopenPage", () => {
     expect(await screen.findAllByText("005930")).toHaveLength(2);
     expect(screen.getByText("near_fill")).toBeInTheDocument();
     expect(screen.getByText(/Morning scan/)).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: /Preopen briefing/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: /Preopen briefing/i })).toBeInTheDocument();
     expect(screen.getByText(/Artifact ready/i)).toBeInTheDocument();
     expect(screen.getByText(/preopen_briefing v1/i)).toBeInTheDocument();
     expect(screen.getByText(/News brief: 장전 핵심 뉴스/i)).toBeInTheDocument();
