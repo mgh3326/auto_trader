@@ -186,9 +186,7 @@ def test_no_alpaca_live_or_mutating_alpaca_order_tools_registered() -> None:
     forbidden_names = {
         "alpaca_live_get_account",
         "alpaca_live_list_orders",
-        "alpaca_paper_submit_order",
         "alpaca_paper_place_order",
-        "alpaca_paper_cancel_order",
         "alpaca_paper_replace_order",
         "alpaca_paper_modify_order",
     }
@@ -198,9 +196,7 @@ def test_no_alpaca_live_or_mutating_alpaca_order_tools_registered() -> None:
         name
         for name in mcp.tools
         if name.startswith("alpaca_paper_")
-        and any(
-            verb in name for verb in ("submit", "place", "cancel", "replace", "modify")
-        )
+        and any(verb in name for verb in ("place", "replace", "modify"))
     } == set()
 
 
@@ -397,17 +393,17 @@ def test_preview_tool_description_documents_dry_run_and_no_submit() -> None:
 
 
 @pytest.mark.unit
-def test_no_alpaca_paper_submit_or_cancel_or_modify_tools() -> None:
+def test_no_alpaca_paper_place_or_replace_or_modify_tools() -> None:
     mcp = DummyMCP()
     register_all_tools(mcp, profile=McpProfile.DEFAULT)  # type: ignore[arg-type]
     forbidden = {
-        "alpaca_paper_submit_order",
         "alpaca_paper_preview_submit",
         "alpaca_paper_order_submit",
         "alpaca_paper_replace",
         "alpaca_paper_modify",
-        "alpaca_paper_cancel_order",
         "alpaca_paper_place_order",
+        "alpaca_paper_cancel_all_orders",
+        "alpaca_paper_cancel_orders",
     }
     assert forbidden.isdisjoint(mcp.tools.keys())
 

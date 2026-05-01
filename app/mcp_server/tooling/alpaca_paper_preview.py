@@ -1,8 +1,9 @@
 """Side-effect-free Alpaca paper MCP order preview/validation tool (ROB-70).
 
 alpaca_paper_preview_order is a pure validator + echo. It does NOT call
-POST /v2/orders. There is no alpaca_paper_submit_order / place_order /
-cancel_order / modify_order / replace_order tool.
+POST /v2/orders. Submission and cancellation are handled only by the explicit,
+paper-only, confirm-gated ROB-73 tools; there is no Alpaca paper place_order,
+replace_order, modify_order, bulk-cancel, or generic order-routing surface.
 """
 
 from __future__ import annotations
@@ -199,8 +200,11 @@ async def alpaca_paper_preview_order(
     """Preview and validate an Alpaca paper US equity order without submitting it.
 
     Pure validator + echo — preview only, no side effects, does not submit.
-    Does NOT call POST /v2/orders. There is no alpaca_paper_submit_order,
-    place_order, cancel_order, modify_order, or replace_order tool.
+    Does NOT call POST /v2/orders. Submission goes through the explicit,
+    paper-only, confirm-gated alpaca_paper_submit_order tool; cancellation goes
+    through alpaca_paper_cancel_order. Alpaca paper is never routed through
+    place_order, replace_order, modify_order, bulk-cancel, or generic order
+    tools.
     """
     validated = PreviewOrderInput(
         symbol=symbol,
@@ -278,8 +282,12 @@ def register_alpaca_paper_preview_tools(mcp: FastMCP) -> None:
             "Preview and validate an Alpaca paper US equity order without submitting it. "
             "Pure validator + echo — preview only, no side effects, does not submit. "
             "Does NOT call POST /v2/orders. "
-            "There is no alpaca_paper_submit_order / place_order / cancel_order / "
-            "modify_order / replace_order tool."
+            "Submission goes through the explicit, paper-only, confirm-gated "
+            "alpaca_paper_submit_order tool; cancellation goes through "
+            "alpaca_paper_cancel_order. "
+            "There is no Alpaca paper place_order / replace_order / modify_order / "
+            "bulk-cancel tool, and Alpaca paper is never routed through generic "
+            "place_order / cancel_order / modify_order tools."
         ),
     )(alpaca_paper_preview_order)
 

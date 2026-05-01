@@ -22,6 +22,9 @@ from typing import TYPE_CHECKING
 
 from app.mcp_server.profiles import McpProfile
 from app.mcp_server.tooling.alpaca_paper import register_alpaca_paper_tools
+from app.mcp_server.tooling.alpaca_paper_orders import (
+    register_alpaca_paper_orders_tools,
+)
 from app.mcp_server.tooling.alpaca_paper_preview import (
     register_alpaca_paper_preview_tools,
 )
@@ -93,6 +96,7 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     register_market_brief_tools(mcp)
     register_alpaca_paper_tools(mcp)
     register_alpaca_paper_preview_tools(mcp)
+    register_alpaca_paper_orders_tools(mcp)
 
     # Always: read-only with account_mode (mock-safe via ROB-28)
     register_portfolio_tools(mcp)
