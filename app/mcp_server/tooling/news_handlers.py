@@ -10,6 +10,10 @@ from sqlalchemy.dialects.postgresql import JSONB
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst_naive
 from app.models.news import NewsArticle
+from app.services.crypto_news_relevance_service import (
+    rank_crypto_news_for_briefing,
+    score_crypto_news_article,
+)
 from app.services.llm_news_service import get_news_articles
 
 if TYPE_CHECKING:
@@ -18,8 +22,12 @@ if TYPE_CHECKING:
 NEWS_TOOL_NAMES = ["get_market_news", "search_news"]
 
 
-def _article_to_dict(article: NewsArticle) -> dict[str, Any]:
-    return {
+def _article_to_dict(
+    article: NewsArticle,
+    *,
+    include_crypto_relevance: bool = False,
+) -> dict[str, Any]:
+    item = {
         "id": article.id,
         "title": article.title,
         "url": article.url,
@@ -34,6 +42,9 @@ def _article_to_dict(article: NewsArticle) -> dict[str, Any]:
         "stock_symbol": article.stock_symbol,
         "stock_name": article.stock_name,
     }
+    if include_crypto_relevance:
+        item["crypto_relevance"] = score_crypto_news_article(article).as_dict()
+    return item
 
 
 async def _get_market_news_impl(
@@ -43,9 +54,16 @@ async def _get_market_news_impl(
     source: str | None = None,
     keyword: str | None = None,
     limit: int | None = 20,
+    briefing_filter: bool = False,
 ) -> dict[str, Any]:
     hours = hours or 24
     limit = limit or 20
+
+    query_limit = limit
+    if market == "crypto" and briefing_filter:
+        # Pull a slightly larger window so ranking can hide low-signal broad-tech
+        # items without returning an under-filled briefing when relevant items exist.
+        query_limit = max(limit * 3, limit)
 
     articles, total = await get_news_articles(
         market=market,
@@ -53,10 +71,29 @@ async def _get_market_news_impl(
         feed_source=feed_source,
         source=source,
         keyword=keyword,
-        limit=limit,
+        limit=query_limit,
     )
 
-    news_list = [_article_to_dict(a) for a in articles]
+    excluded_news: list[dict[str, Any]] = []
+    briefing_summary = None
+    if market == "crypto":
+        if briefing_filter:
+            ranking = rank_crypto_news_for_briefing(list(articles), limit=limit)
+            news_list = [
+                _article_to_dict(item.article, include_crypto_relevance=True)
+                for item in ranking.included
+            ]
+            excluded_news = [
+                _article_to_dict(item.article, include_crypto_relevance=True)
+                for item in ranking.excluded
+            ]
+            briefing_summary = ranking.summary
+        else:
+            news_list = [
+                _article_to_dict(a, include_crypto_relevance=True) for a in articles
+            ]
+    else:
+        news_list = [_article_to_dict(a) for a in articles]
     source_names = list({a.get("source") for a in news_list if a.get("source")})
     feed_source_names = list(
         {a.get("feed_source") for a in news_list if a.get("feed_source")}
@@ -69,6 +106,9 @@ async def _get_market_news_impl(
         "news": news_list,
         "sources": sorted(source_names),
         "feed_sources": sorted(feed_source_names),
+        "briefing_filter": bool(briefing_filter),
+        "briefing_summary": briefing_summary,
+        "excluded_news": excluded_news,
     }
 
 
@@ -130,7 +170,8 @@ def _register_news_tools_impl(mcp: FastMCP) -> None:
         description=(
             "Get recent market news. Supports filtering by market, publisher (source), "
             "collection path (feed_source), and keyword. Returns both publisher names "
-            "and collection paths for briefing segmentation."
+            "and collection paths for briefing segmentation. For market='crypto', "
+            "briefing_filter=True ranks crypto-relevant items and separates broad-tech noise."
         ),
     )
     async def get_market_news(
@@ -140,6 +181,7 @@ def _register_news_tools_impl(mcp: FastMCP) -> None:
         source: str | None = None,
         keyword: str | None = None,
         limit: int = 20,
+        briefing_filter: bool = False,
     ) -> dict[str, Any]:
         return await _get_market_news_impl(
             market=market,
@@ -148,6 +190,7 @@ def _register_news_tools_impl(mcp: FastMCP) -> None:
             source=source,
             keyword=keyword,
             limit=limit,
+            briefing_filter=briefing_filter,
         )
 
     @mcp.tool(
