@@ -163,6 +163,12 @@ async def test_returns_fail_open_when_no_run():
     assert result.reconciliations == []
     assert result.linked_sessions == []
     assert result.run_uuid is None
+    assert result.briefing_artifact is not None
+    assert result.briefing_artifact.status == "unavailable"
+    assert result.briefing_artifact.artifact_type == "preopen_briefing"
+    assert result.briefing_artifact.cta.state == "unavailable"
+    assert result.briefing_artifact.cta.requires_confirmation is True
+    assert "no_open_preopen_run" in result.briefing_artifact.risk_notes
 
 
 @pytest.mark.asyncio
@@ -205,6 +211,85 @@ async def test_maps_candidates_and_reconciliations():
     assert result.reconciliations[0].symbol == "005930"
     assert result.reconciliations[0].gap_pct == Decimal("0.50")
     assert result.run_uuid == run.run_uuid
+    assert result.briefing_artifact is not None
+    assert result.briefing_artifact.status == "ready"
+    assert result.briefing_artifact.run_uuid == run.run_uuid
+    assert result.briefing_artifact.market_scope == "kr"
+    assert result.briefing_artifact.stage == "preopen"
+    assert result.briefing_artifact.cta.state == "create_available"
+    assert result.briefing_artifact.cta.run_uuid == run.run_uuid
+    assert result.briefing_artifact.cta.requires_confirmation is True
+    assert {item.key: item.status for item in result.briefing_artifact.readiness}[
+        "news"
+    ] == "ready"
+    sections = {s.section_id: s for s in result.briefing_artifact.sections}
+    assert sections["new_buy_candidates"].item_count == 1
+    assert sections["holdings_actions"].item_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_briefing_artifact_degraded_when_market_news_briefing_is_null():
+    from app.services import preopen_dashboard_service, research_run_service
+
+    run = _make_run()
+    with (
+        _patched_dashboard_dependencies(
+            preopen_dashboard_service, research_run_service, run=run
+        ),
+        patch.object(
+            preopen_dashboard_service,
+            "_build_market_news_briefing",
+            new=AsyncMock(return_value=None),
+        ),
+    ):
+        result = await preopen_dashboard_service.get_latest_preopen_dashboard(
+            db=AsyncMock(),
+            user_id=7,
+            market_scope="kr",
+        )
+
+    assert result.market_news_briefing is None
+    assert result.briefing_artifact is not None
+    assert result.briefing_artifact.status == "degraded"
+    assert "market_news_briefing_unavailable" in result.briefing_artifact.risk_notes
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_briefing_artifact_cta_links_existing_session():
+    from app.schemas.preopen import LinkedSessionRef
+    from app.services import preopen_dashboard_service, research_run_service
+
+    run = _make_run()
+    session_uuid = uuid4()
+    linked = [
+        LinkedSessionRef(
+            session_uuid=session_uuid,
+            status="open",
+            created_at=datetime.now(UTC),
+        )
+    ]
+    with (
+        _patched_dashboard_dependencies(
+            preopen_dashboard_service, research_run_service, run=run
+        ),
+        patch.object(
+            preopen_dashboard_service,
+            "_linked_sessions",
+            new=AsyncMock(return_value=linked),
+        ),
+    ):
+        result = await preopen_dashboard_service.get_latest_preopen_dashboard(
+            db=AsyncMock(),
+            user_id=7,
+            market_scope="kr",
+        )
+
+    assert result.briefing_artifact is not None
+    assert result.briefing_artifact.cta.state == "linked_session_exists"
+    assert result.briefing_artifact.cta.linked_session_uuid == session_uuid
+    assert result.briefing_artifact.cta.requires_confirmation is False
 
 
 @pytest.mark.asyncio

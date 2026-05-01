@@ -269,6 +269,61 @@ export interface PreopenMarketNewsBriefing {
   top_excluded: PreopenMarketNewsItem[];
 }
 
+export type PreopenArtifactStatus = "unavailable" | "draft" | "ready" | "degraded";
+export type PreopenArtifactReadinessStatus =
+  | "ready"
+  | "stale"
+  | "unavailable"
+  | "partial";
+export type PreopenDecisionSessionCtaState =
+  | "unavailable"
+  | "create_available"
+  | "linked_session_exists";
+
+export interface PreopenArtifactReadinessItem {
+  key: string;
+  status: PreopenArtifactReadinessStatus;
+  is_ready: boolean;
+  warnings: string[];
+  details: Record<string, unknown>;
+}
+
+export interface PreopenArtifactSection {
+  section_id: string;
+  title: string;
+  item_count: number;
+  status: PreopenArtifactStatus;
+  summary: string | null;
+  items: Record<string, unknown>[];
+}
+
+export interface PreopenDecisionSessionCta {
+  state: PreopenDecisionSessionCtaState;
+  label: string;
+  run_uuid: Uuid | null;
+  linked_session_uuid: Uuid | null;
+  disabled_reason: string | null;
+  requires_confirmation: boolean;
+}
+
+export interface PreopenBriefingArtifact {
+  artifact_type: "preopen_briefing";
+  artifact_version: "v1";
+  status: PreopenArtifactStatus;
+  run_uuid: Uuid | null;
+  market_scope: "kr" | "us" | "crypto" | null;
+  stage: "preopen" | null;
+  generated_at: IsoDateTime | null;
+  source_run_status: string | null;
+  readiness: PreopenArtifactReadinessItem[];
+  market_summary: string | null;
+  news_summary: string | null;
+  sections: PreopenArtifactSection[];
+  risk_notes: string[];
+  cta: PreopenDecisionSessionCta;
+  qa: Record<string, unknown>;
+}
+
 export interface PreopenLatestResponse {
   has_run: boolean;
   advisory_used: boolean;
@@ -294,6 +349,7 @@ export interface PreopenLatestResponse {
   news: PreopenNewsReadinessSummary | null;
   news_preview: PreopenNewsArticlePreview[];
   market_news_briefing: PreopenMarketNewsBriefing | null;
+  briefing_artifact: PreopenBriefingArtifact | null;
 }
 
 export interface CreateFromResearchRunRequest {

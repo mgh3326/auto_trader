@@ -1,4 +1,5 @@
 import type {
+  PreopenBriefingArtifact,
   PreopenCandidateSummary,
   PreopenLatestResponse,
   PreopenLinkedSession,
@@ -197,6 +198,112 @@ export function makePreopenMarketNewsBriefing(
   };
 }
 
+
+export function makePreopenBriefingArtifact(
+  overrides: Partial<PreopenBriefingArtifact> = {},
+): PreopenBriefingArtifact {
+  return {
+    artifact_type: "preopen_briefing",
+    artifact_version: "v1",
+    status: "ready",
+    run_uuid: "run-1111-2222-3333-444444444444",
+    market_scope: "kr",
+    stage: "preopen",
+    generated_at: now,
+    source_run_status: "open",
+    readiness: [
+      {
+        key: "research_run",
+        status: "ready",
+        is_ready: true,
+        warnings: [],
+        details: { source_run_status: "open" },
+      },
+      {
+        key: "news",
+        status: "ready",
+        is_ready: true,
+        warnings: [],
+        details: { latest_run_uuid: "news-run-1" },
+      },
+    ],
+    market_summary: "Cautious but constructive setup.",
+    news_summary: "장전 핵심 뉴스",
+    sections: [
+      {
+        section_id: "market_news",
+        title: "Market news briefing",
+        item_count: 3,
+        status: "ready",
+        summary: "3 high-signal articles across 2 sections",
+        items: [],
+      },
+      {
+        section_id: "new_buy_candidates",
+        title: "New buy candidates",
+        item_count: 1,
+        status: "ready",
+        summary: "1 buy candidates prepared before decision-session review.",
+        items: [{ symbol: "005930", confidence: 75 }],
+      },
+      {
+        section_id: "holdings_actions",
+        title: "Holdings actions",
+        item_count: 1,
+        status: "ready",
+        summary: "0 candidate actions and 1 pending reconciliations.",
+        items: [{ symbol: "005930", classification: "near_fill" }],
+      },
+    ],
+    risk_notes: [],
+    cta: {
+      state: "create_available",
+      label: "Create decision session",
+      run_uuid: "run-1111-2222-3333-444444444444",
+      linked_session_uuid: null,
+      disabled_reason: null,
+      requires_confirmation: true,
+    },
+    qa: { read_only: true, mutation_paths: [], decision_session_created: false },
+    ...overrides,
+  };
+}
+
+export function makePreopenUnavailableArtifact(
+  overrides: Partial<PreopenBriefingArtifact> = {},
+): PreopenBriefingArtifact {
+  return makePreopenBriefingArtifact({
+    status: "unavailable",
+    run_uuid: null,
+    market_scope: null,
+    stage: null,
+    generated_at: null,
+    source_run_status: null,
+    readiness: [
+      {
+        key: "research_run",
+        status: "unavailable",
+        is_ready: false,
+        warnings: ["no_open_preopen_run"],
+        details: {},
+      },
+    ],
+    market_summary: null,
+    news_summary: null,
+    sections: [],
+    risk_notes: ["no_open_preopen_run"],
+    cta: {
+      state: "unavailable",
+      label: "Create decision session unavailable",
+      run_uuid: null,
+      linked_session_uuid: null,
+      disabled_reason: "no_open_preopen_run",
+      requires_confirmation: true,
+    },
+    ...overrides,
+  });
+}
+
 export function makePreopenResponse(
   overrides: Partial<PreopenLatestResponse> = {},
 ): PreopenLatestResponse {
@@ -225,6 +332,7 @@ export function makePreopenResponse(
     news: makePreopenNewsReady(),
     news_preview: [makePreopenNewsArticle()],
     market_news_briefing: makePreopenMarketNewsBriefing(),
+    briefing_artifact: makePreopenBriefingArtifact(),
     ...overrides,
   };
 }
@@ -257,6 +365,7 @@ export function makePreopenFailOpen(
     news: null,
     news_preview: [],
     market_news_briefing: null,
+    briefing_artifact: makePreopenUnavailableArtifact(),
     ...overrides,
   };
 }

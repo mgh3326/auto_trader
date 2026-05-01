@@ -6,6 +6,7 @@ import PreopenPage from "../pages/PreopenPage";
 import {
   makePreopenFailOpen,
   makePreopenLinkedSession,
+  makePreopenBriefingArtifact,
   makePreopenMarketNewsBriefing,
   makePreopenNewsArticle,
   makePreopenNewsStale,
@@ -29,7 +30,9 @@ describe("PreopenPage", () => {
     render(<PreopenPage />, { wrapper: MemoryRouter });
 
     expect(await screen.findByText(/No preopen research run available/i)).toBeInTheDocument();
-    expect(screen.getByText(/no_open_preopen_run/i)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: /Preopen briefing/i })).toBeInTheDocument();
+    expect(screen.getAllByText(/no_open_preopen_run/i).length).toBeGreaterThan(0);
+    expect(screen.getByText(/Artifact unavailable/i)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /create decision session/i })).toBeNull();
   });
 
@@ -45,6 +48,35 @@ describe("PreopenPage", () => {
     expect(await screen.findAllByText("005930")).toHaveLength(2);
     expect(screen.getByText("near_fill")).toBeInTheDocument();
     expect(screen.getByText(/Morning scan/)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: /Preopen briefing/i })).toBeInTheDocument();
+    expect(screen.getByText(/Artifact ready/i)).toBeInTheDocument();
+    expect(screen.getByText(/preopen_briefing v1/i)).toBeInTheDocument();
+    expect(screen.getByText(/News brief: 장전 핵심 뉴스/i)).toBeInTheDocument();
+  });
+
+  it("renders degraded briefing artifact without hiding ROB-75 market news", async () => {
+    mockFetch({
+      [PREOPEN_URL]: () =>
+        new Response(
+          JSON.stringify(
+            makePreopenResponse({
+              briefing_artifact: makePreopenBriefingArtifact({
+                status: "degraded",
+                risk_notes: ["market_news_briefing_unavailable"],
+              }),
+              market_news_briefing: makePreopenMarketNewsBriefing(),
+            }),
+          ),
+        ),
+    });
+
+    render(<PreopenPage />, { wrapper: MemoryRouter });
+
+    expect(await screen.findByText(/Artifact degraded/i)).toBeInTheDocument();
+    expect(screen.getByText(/market_news_briefing_unavailable/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole("region", { name: /market news briefing/i }),
+    ).toBeInTheDocument();
   });
 
   it("clicking Create decision session calls api with correct args and navigates", async () => {

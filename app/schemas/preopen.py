@@ -70,6 +70,59 @@ class PreopenMarketNewsBriefing(BaseModel):
     top_excluded: list[PreopenMarketNewsItem] = []
 
 
+PreopenArtifactStatus = Literal["unavailable", "draft", "ready", "degraded"]
+PreopenArtifactReadinessStatus = Literal["ready", "stale", "unavailable", "partial"]
+PreopenDecisionSessionCtaState = Literal[
+    "unavailable",
+    "create_available",
+    "linked_session_exists",
+]
+
+
+class PreopenArtifactReadinessItem(BaseModel):
+    key: str
+    status: PreopenArtifactReadinessStatus
+    is_ready: bool
+    warnings: list[str] = []
+    details: dict[str, Any] = {}
+
+
+class PreopenArtifactSection(BaseModel):
+    section_id: str
+    title: str
+    item_count: int
+    status: PreopenArtifactStatus
+    summary: str | None = None
+    items: list[dict[str, Any]] = []
+
+
+class PreopenDecisionSessionCta(BaseModel):
+    state: PreopenDecisionSessionCtaState
+    label: str
+    run_uuid: UUID | None = None
+    linked_session_uuid: UUID | None = None
+    disabled_reason: str | None = None
+    requires_confirmation: bool = True
+
+
+class PreopenBriefingArtifact(BaseModel):
+    artifact_type: Literal["preopen_briefing"] = "preopen_briefing"
+    artifact_version: Literal["v1"] = "v1"
+    status: PreopenArtifactStatus
+    run_uuid: UUID | None = None
+    market_scope: Literal["kr", "us", "crypto"] | None = None
+    stage: Literal["preopen"] | None = None
+    generated_at: datetime | None = None
+    source_run_status: str | None = None
+    readiness: list[PreopenArtifactReadinessItem] = []
+    market_summary: str | None = None
+    news_summary: str | None = None
+    sections: list[PreopenArtifactSection] = []
+    risk_notes: list[str] = []
+    cta: PreopenDecisionSessionCta
+    qa: dict[str, Any] = {}
+
+
 class CandidateSummary(BaseModel):
     candidate_uuid: UUID
     symbol: str
@@ -130,3 +183,4 @@ class PreopenLatestResponse(BaseModel):
     news_preview: list[NewsArticlePreview] = []
     news_brief: KRPreopenNewsBrief | None = None
     market_news_briefing: PreopenMarketNewsBriefing | None = None
+    briefing_artifact: PreopenBriefingArtifact | None = None
