@@ -573,6 +573,40 @@ async def test_preview_rejects_blank_symbol(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"symbol": "TOO-LONG-SYMBOL"}, "1-10 characters"),
+        ({"qty": Decimal("Infinity")}, "finite number"),
+        ({"qty": Decimal("1000001")}, "maximum allowed"),
+        ({"notional": Decimal("NaN"), "qty": None}, "finite number"),
+        ({"notional": Decimal("10000001"), "qty": None}, "maximum allowed"),
+        ({"time_in_force": "opg"}, "time_in_force"),
+        ({"client_order_id": "   "}, "client_order_id"),
+        ({"client_order_id": "x" * 49}, "client_order_id"),
+        ({"asset_class": "option"}, "asset_class"),
+        ({"type": "limit", "limit_price": Decimal("0")}, "limit_price"),
+    ],
+)
+async def test_preview_rejects_additional_invalid_inputs_before_service_call(
+    fake_preview_service: FakeAlpacaPaperService,
+    kwargs: dict[str, object],
+    message: str,
+) -> None:
+    base: dict[str, object] = {
+        "symbol": "AAPL",
+        "side": "buy",
+        "type": "market",
+        "qty": Decimal("1"),
+    }
+    base.update(kwargs)
+    with pytest.raises(ValueError, match=message):
+        await alpaca_paper_preview_order(**base)
+    assert fake_preview_service.calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_preview_crypto_limit_notional_buy_returns_normalized_echo(
     fake_preview_service: FakeAlpacaPaperService,
 ) -> None:
@@ -665,6 +699,22 @@ async def test_preview_crypto_rejects_non_allowlisted_symbol(
             type="limit",
             notional=Decimal("10"),
             limit_price=Decimal("1"),
+            asset_class="crypto",
+        )
+    assert fake_preview_service.calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_preview_crypto_rejects_missing_limit_price(
+    fake_preview_service: FakeAlpacaPaperService,
+) -> None:
+    with pytest.raises(ValueError, match="limit_price is required"):
+        await alpaca_paper_preview_order(
+            symbol="BTC/USD",
+            side="buy",
+            type="limit",
+            notional=Decimal("10"),
             asset_class="crypto",
         )
     assert fake_preview_service.calls == []
