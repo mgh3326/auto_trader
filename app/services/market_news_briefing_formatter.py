@@ -221,6 +221,38 @@ _NOISE_TERMS = (
     "wedding",
     "engagement",
 )
+_US_LOW_SIGNAL_TERMS = (
+    "high-yield savings",
+    "savings account",
+    "savings interest",
+    "apy",
+    "mortgage rates",
+    "home buyers",
+    "home-buying",
+    "streaming in",
+    "netflix",
+    "hulu",
+    "hbo max",
+)
+_US_HIGH_SIGNAL_TERMS = (
+    "fed",
+    "fomc",
+    "cpi",
+    "inflation",
+    "treasury",
+    "s&p",
+    "s&p 500",
+    "nasdaq",
+    "dow",
+    "earnings",
+    "guidance",
+    "stock",
+    "stocks",
+    "shares",
+    "analyst",
+    "upgrade",
+    "downgrade",
+)
 
 
 def _field(article: Any, name: str) -> Any:
@@ -235,6 +267,26 @@ def _article_text(article: Any) -> tuple[str, str]:
     keywords = _field(article, "keywords") or []
     keyword_text = " ".join(str(keyword) for keyword in keywords)
     return title.lower(), f"{title} {summary} {keyword_text}".lower()
+
+
+def _low_signal_us_noise_hit(article: Any) -> bool:
+    if _field(article, "stock_symbol"):
+        return False
+    title, full_text = _article_text(article)
+    if not any(term in full_text for term in _US_LOW_SIGNAL_TERMS):
+        return False
+    return not any(term in title for term in _US_HIGH_SIGNAL_TERMS)
+
+
+def _low_market_relevance() -> BriefingRelevance:
+    return BriefingRelevance(
+        score=0,
+        section_id=None,
+        section_title=None,
+        include_in_briefing=False,
+        matched_terms=[],
+        reason="low_market_relevance",
+    )
 
 
 def _score_rule(article: Any, rules: tuple[_SectionRule, ...]) -> BriefingRelevance:
@@ -307,6 +359,8 @@ def _section_order_for_market(market: str) -> list[str]:
 def _score_article(article: Any, market: str) -> BriefingRelevance:
     if market == "crypto":
         return _score_crypto(article)
+    if market == "us" and _low_signal_us_noise_hit(article):
+        return _low_market_relevance()
     return _score_rule(article, _rules_for_market(market))
 
 

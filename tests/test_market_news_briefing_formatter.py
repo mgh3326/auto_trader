@@ -71,6 +71,41 @@ def test_format_us_news_groups_macro_big_tech_earnings_and_noise():
 
 
 @pytest.mark.unit
+def test_format_us_news_excludes_personal_finance_and_lifestyle_rate_noise():
+    from app.services.market_news_briefing_formatter import format_market_news_briefing
+
+    savings_rate = _article(
+        "Best high-yield savings interest rates today, April 30, 2026",
+        market="us",
+        summary="A personal finance roundup of accounts paying 4.1% APY.",
+    )
+    mortgage_rate = _article(
+        "Mortgage rates increase to 6.3% — but home buyers are not scared away",
+        market="us",
+        summary="Consumer mortgage and home-buying advice rather than market-moving macro.",
+    )
+    fed_rate = _article(
+        "Fed rate cut hopes lift S&P 500 futures before CPI report",
+        market="us",
+        summary="Inflation data and Treasury yields remain the macro focus.",
+    )
+
+    briefing = format_market_news_briefing(
+        [savings_rate, mortgage_rate, fed_rate], market="us", limit=10
+    )
+
+    assert briefing.summary["included"] == 1
+    assert briefing.sections[0].items[0].article.title == fed_rate.title
+    assert {item.article.title for item in briefing.excluded} == {
+        savings_rate.title,
+        mortgage_rate.title,
+    }
+    assert all(
+        item.relevance.reason == "low_market_relevance" for item in briefing.excluded
+    )
+
+
+@pytest.mark.unit
 def test_format_kr_news_groups_preopen_sector_disclosure_and_flow():
     from app.services.market_news_briefing_formatter import format_market_news_briefing
 
