@@ -172,22 +172,37 @@ async def _preview_only_for_args(args: argparse.Namespace) -> int:
 
 
 async def _side_effect_smoke(args: argparse.Namespace) -> int:
-    lines: list[tuple[str, bool, str]] = []
-    submitted_id: str | None = None
-    cancelled = False
+    lines: list[SMOKE_LINE] = []
+    if not await _side_effect_account_ready(lines):
+        _print_lines(lines)
+        print("summary: BLOCKED mode=side_effects reason=account_unreachable")
+        return 1
 
+    submitted_id = await _side_effect_submit(lines, args)
+    cancelled = await _side_effect_cancel(lines, submitted_id)
+
+    ok = all(success for _, success, _ in lines)
+    _print_lines(lines)
+    classification = "PASS" if ok and cancelled else "PARTIAL"
+    print(f"summary: {classification} mode=side_effects")
+    return 0 if classification == "PASS" else 1
+
+
+async def _side_effect_account_ready(lines: list[SMOKE_LINE]) -> bool:
     try:
         acct = await alpaca_paper_get_account()
         lines.append(
             ("get_account", True, f"status={acct['account'].get('status', '?')}")
         )
+        return True
     except Exception as exc:  # noqa: BLE001
         lines.append(("get_account", False, f"ERROR: {type(exc).__name__}"))
-        for name, s, note in lines:
-            print(f"  [{'OK' if s else 'FAIL'}] {name}: {note}")
-        print("summary: BLOCKED mode=side_effects reason=account_unreachable")
-        return 1
+        return False
 
+
+async def _side_effect_submit(
+    lines: list[SMOKE_LINE], args: argparse.Namespace
+) -> str | None:
     try:
         submit_result = await alpaca_paper_submit_order(
             **_order_payload(args),
@@ -201,38 +216,45 @@ async def _side_effect_smoke(args: argparse.Namespace) -> int:
                 f"order_id_len={len(submitted_id)} status={submit_result['order'].get('status', '?')}",
             )
         )
+        return submitted_id
     except Exception as exc:  # noqa: BLE001
         lines.append(
             ("submit_order(confirm=True)", False, f"ERROR: {type(exc).__name__}")
         )
+        return None
 
-    if submitted_id:
-        try:
-            cancel_result = await alpaca_paper_cancel_order(
-                order_id=submitted_id,
-                confirm=True,
-            )
-            cancelled = bool(cancel_result.get("cancelled"))
-            readback_status = cancel_result.get("read_back_status", "unknown")
-            order_info = cancel_result.get("order") or {}
-            lines.append(
-                (
-                    "cancel_order(confirm=True)",
-                    cancelled,
-                    f"read_back={readback_status} final_status={order_info.get('status', '?')}",
-                )
-            )
-        except Exception as exc:  # noqa: BLE001
-            lines.append(
-                ("cancel_order(confirm=True)", False, f"ERROR: {type(exc).__name__}")
-            )
 
-    ok = all(success for _, success, _ in lines)
+async def _side_effect_cancel(
+    lines: list[SMOKE_LINE], submitted_id: str | None
+) -> bool:
+    if not submitted_id:
+        return False
+    try:
+        cancel_result = await alpaca_paper_cancel_order(
+            order_id=submitted_id,
+            confirm=True,
+        )
+        cancelled = bool(cancel_result.get("cancelled"))
+        readback_status = cancel_result.get("read_back_status", "unknown")
+        order_info = cancel_result.get("order") or {}
+        lines.append(
+            (
+                "cancel_order(confirm=True)",
+                cancelled,
+                f"read_back={readback_status} final_status={order_info.get('status', '?')}",
+            )
+        )
+        return cancelled
+    except Exception as exc:  # noqa: BLE001
+        lines.append(
+            ("cancel_order(confirm=True)", False, f"ERROR: {type(exc).__name__}")
+        )
+        return False
+
+
+def _print_lines(lines: list[SMOKE_LINE]) -> None:
     for name, success, note in lines:
         print(f"  [{'OK' if success else 'FAIL'}] {name}: {note}")
-    classification = "PASS" if ok and cancelled else "PARTIAL"
-    print(f"summary: {classification} mode=side_effects")
-    return 0 if classification == "PASS" else 1
 
 
 async def _async_main(args: argparse.Namespace) -> int:
