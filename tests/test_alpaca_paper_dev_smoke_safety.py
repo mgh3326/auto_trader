@@ -97,6 +97,97 @@ def _load_module():
 
 
 @pytest.mark.unit
+def test_dev_smoke_parser_accepts_crypto_operator_metadata() -> None:
+    module = _load_module()
+    args = module.build_parser().parse_args(
+        [
+            "--asset-class",
+            "crypto",
+            "--symbol",
+            "BTC/USD",
+            "--notional",
+            "10",
+            "--limit-price",
+            "50000",
+            "--candidate-report",
+            str(SCRIPT_PATH),
+        ]
+    )
+    assert args.asset_class == "crypto"
+    assert args.symbol == "BTC/USD"
+    assert args.notional == module.Decimal("10")
+    assert args.limit_price == module.Decimal("50000")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_dev_smoke_crypto_preview_uses_confirm_false_and_redacted_report(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.test_alpaca_paper_orders_tools import FakeOrdersService
+    from tests.test_mcp_alpaca_paper_tools import FakeAlpacaPaperService
+
+    ro = FakeAlpacaPaperService()
+    orders = FakeOrdersService()
+    set_alpaca_paper_service_factory(lambda: ro)  # type: ignore[arg-type]
+    set_alpaca_paper_orders_service_factory(lambda: orders)  # type: ignore[arg-type]
+    monkeypatch.delenv("ALPACA_PAPER_SMOKE_ALLOW_SIDE_EFFECTS", raising=False)
+    try:
+        module = _load_module()
+        args = module.build_parser().parse_args(
+            [
+                "--asset-class",
+                "crypto",
+                "--symbol",
+                "BTC/USD",
+                "--notional",
+                "10",
+                "--limit-price",
+                "50000",
+                "--candidate-report",
+                str(SCRIPT_PATH),
+            ]
+        )
+        rc = await module._async_main(args)
+    finally:
+        reset_alpaca_paper_service_factory()
+        reset_alpaca_paper_orders_service_factory()
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "mode=preview_only" in out
+    assert "asset_class=crypto" in out
+    assert "candidate_report_attached=True" in out
+    assert "blocked_reason=confirmation_required" in out
+    assert [c for c in orders.calls if c[0] in ("submit_order", "cancel_order")] == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_dev_smoke_crypto_side_effect_requires_explicit_limit_price(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.test_alpaca_paper_orders_tools import FakeOrdersService
+
+    orders = FakeOrdersService()
+    set_alpaca_paper_orders_service_factory(lambda: orders)  # type: ignore[arg-type]
+    monkeypatch.setenv("ALPACA_PAPER_SMOKE_ALLOW_SIDE_EFFECTS", "1")
+    try:
+        module = _load_module()
+        args = module.build_parser().parse_args(
+            ["--asset-class", "crypto", "--confirm-paper-side-effect"]
+        )
+        rc = await module._async_main(args)
+    finally:
+        reset_alpaca_paper_orders_service_factory()
+        monkeypatch.delenv("ALPACA_PAPER_SMOKE_ALLOW_SIDE_EFFECTS", raising=False)
+
+    assert rc == 2
+    assert [c for c in orders.calls if c[0] in ("submit_order", "cancel_order")] == []
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_dev_smoke_default_mode_no_broker_calls(
     capsys: pytest.CaptureFixture[str],

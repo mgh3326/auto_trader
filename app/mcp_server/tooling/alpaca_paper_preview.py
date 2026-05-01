@@ -25,6 +25,14 @@ if TYPE_CHECKING:
     from fastmcp import FastMCP
 
 ALPACA_PAPER_PREVIEW_TOOL_NAMES: set[str] = {"alpaca_paper_preview_order"}
+ALPACA_PAPER_CRYPTO_ALLOWED_SYMBOLS: frozenset[str] = frozenset(
+    {
+        "BTC/USD",
+        "ETH/USD",
+        "SOL/USD",
+    }
+)
+ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD: Decimal = Decimal("50")
 
 # Referenced by tests to confirm these methods are never called on the preview path
 _FORBIDDEN_SERVICE_METHODS = ("submit_order", "cancel_order")
@@ -149,9 +157,9 @@ class PreviewOrderInput(BaseModel):
     @classmethod
     def validate_asset_class(cls, v: str) -> str:
         normalized = v.strip().lower()
-        if normalized != "us_equity":
+        if normalized not in {"us_equity", "crypto"}:
             raise ValueError(
-                f"asset_class '{v}' not supported in preview (us_equity only)"
+                f"asset_class '{v}' not supported in preview (us_equity or crypto only)"
             )
         return normalized
 
@@ -172,7 +180,36 @@ class PreviewOrderInput(BaseModel):
         if not has_qty and not has_notional:
             raise ValueError("exactly one of qty or notional is required")
 
-        # notional + limit type is rejected — Alpaca only supports notional for market orders
+        if self.asset_class == "crypto":
+            if self.symbol not in ALPACA_PAPER_CRYPTO_ALLOWED_SYMBOLS:
+                allowed = ", ".join(sorted(ALPACA_PAPER_CRYPTO_ALLOWED_SYMBOLS))
+                raise ValueError(f"crypto symbol must be one of: {allowed}")
+            if self.side != "buy":
+                raise ValueError("crypto preview is buy-only")
+            if self.type != "limit":
+                raise ValueError("crypto preview is limit-only")
+            if self.limit_price is None:
+                raise ValueError("limit_price is required for crypto limit orders")
+            if (
+                self.notional is not None
+                and self.notional > ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD
+            ):
+                raise ValueError(
+                    "crypto notional exceeds max "
+                    f"({ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD})"
+                )
+            if (
+                self.qty is not None
+                and self.qty * self.limit_price > ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD
+            ):
+                raise ValueError(
+                    "crypto estimated_cost exceeds max "
+                    f"({ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD})"
+                )
+            return self
+
+        # notional + limit type is rejected for US equities — Alpaca only
+        # supports equity notional orders for market orders in this surface.
         if has_notional and self.type == "limit":
             raise ValueError("notional is not supported for limit orders")
 
@@ -251,14 +288,21 @@ async def alpaca_paper_preview_order(
     except (AlpacaPaperConfigurationError, AlpacaPaperRequestError):
         warnings.append("context_unavailable")
 
-    if (
-        validated.qty is not None
-        and validated.limit_price is not None
-        and account_context is not None
-    ):
+    if validated.qty is not None and validated.limit_price is not None:
         cost = validated.qty * validated.limit_price
         estimated_cost = str(cost)
-        would_exceed_buying_power = cost > Decimal(account_context["buying_power"])
+        would_exceed_buying_power = (
+            cost > Decimal(account_context["buying_power"])
+            if account_context is not None
+            else None
+        )
+    elif validated.asset_class == "crypto" and validated.notional is not None:
+        estimated_cost = str(validated.notional)
+        would_exceed_buying_power = (
+            validated.notional > Decimal(account_context["buying_power"])
+            if account_context is not None
+            else None
+        )
 
     return {
         "success": True,
@@ -293,6 +337,8 @@ def register_alpaca_paper_preview_tools(mcp: FastMCP) -> None:
 
 
 __all__ = [
+    "ALPACA_PAPER_CRYPTO_ALLOWED_SYMBOLS",
+    "ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD",
     "ALPACA_PAPER_PREVIEW_TOOL_NAMES",
     "_FORBIDDEN_SERVICE_METHODS",
     "PreviewOrderInput",
