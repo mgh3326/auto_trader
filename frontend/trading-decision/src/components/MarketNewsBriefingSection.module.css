@@ -1,0 +1,181 @@
+.section {
+  border: 1px solid #dbe5f0;
+  background: #ffffff;
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1.25rem;
+}
+
+.header {
+  align-items: flex-start;
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.subtitle {
+  color: #5f6b7a;
+  margin: 0.2rem 0 0;
+  font-size: 0.85rem;
+}
+
+.summaryChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  list-style: none;
+  margin: 0 0 0.9rem;
+  padding: 0;
+}
+
+.summaryChip {
+  align-items: center;
+  background: #eef6ff;
+  border: 1px solid #cde4ff;
+  border-radius: 999px;
+  color: #174b7c;
+  display: flex;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  padding: 0.2rem 0.65rem;
+  text-transform: capitalize;
+}
+
+.summaryChip strong {
+  color: #0d3155;
+}
+
+.sectionGrid {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.card {
+  border: 1px solid #edf1f5;
+  border-radius: 8px;
+  padding: 0.85rem;
+  background: #fbfdff;
+}
+
+.cardHeader {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.cardHeader h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.count {
+  background: #f1f5f9;
+  border-radius: 999px;
+  color: #5f6b7a;
+  font-size: 0.75rem;
+  padding: 0.15rem 0.5rem;
+  white-space: nowrap;
+}
+
+.itemList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.item {
+  border-top: 1px solid #eef2f6;
+  padding: 0.6rem 0;
+}
+
+.item:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.item:last-child {
+  padding-bottom: 0;
+}
+
+.itemTitle {
+  color: #1f5f99;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.itemTitle:hover {
+  text-decoration: underline;
+}
+
+.itemMeta {
+  color: #5f6b7a;
+  display: block;
+  font-size: 0.78rem;
+  margin-top: 0.1rem;
+}
+
+.itemSummary {
+  color: #27364a;
+  font-size: 0.86rem;
+  margin: 0.35rem 0 0;
+}
+
+.relevance {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+}
+
+.score,
+.terms {
+  border-radius: 999px;
+  font-size: 0.75rem;
+  padding: 0.12rem 0.5rem;
+}
+
+.score {
+  background: #ecfdf3;
+  color: #116534;
+}
+
+.terms {
+  background: #f7f2ff;
+  color: #5b2a86;
+}
+
+.excludedLine {
+  color: #5f6b7a;
+  font-size: 0.85rem;
+  margin-top: 0.8rem;
+}
+
+.excludedDetails {
+  margin-top: 0.4rem;
+}
+
+.excludedDetails summary {
+  color: #1f5f99;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.excludedDetails .itemList {
+  border: 1px solid #eef2f6;
+  border-radius: 8px;
+  margin-top: 0.5rem;
+  padding: 0.65rem;
+}
+
+.muted {
+  color: #5f6b7a;
+  margin: 0.25rem 0;
+}
