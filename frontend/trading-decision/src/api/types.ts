@@ -236,6 +236,39 @@ export interface PreopenNewsArticlePreview {
   summary: string | null;
 }
 
+export interface PreopenBriefingRelevance {
+  score: number;
+  reason: string;
+  section_id: string | null;
+  matched_terms: string[];
+}
+
+export interface PreopenMarketNewsItem {
+  id: number;
+  title: string;
+  url: string;
+  source: string | null;
+  feed_source: string | null;
+  published_at: IsoDateTime | null;
+  summary: string | null;
+  briefing_relevance: PreopenBriefingRelevance | null;
+  crypto_relevance: Record<string, unknown> | null;
+}
+
+export interface PreopenMarketNewsSection {
+  section_id: string;
+  title: string;
+  items: PreopenMarketNewsItem[];
+}
+
+export interface PreopenMarketNewsBriefing {
+  briefing_filter: true;
+  summary: Record<string, unknown>;
+  sections: PreopenMarketNewsSection[];
+  excluded_count: number;
+  top_excluded: PreopenMarketNewsItem[];
+}
+
 export interface PreopenLatestResponse {
   has_run: boolean;
   advisory_used: boolean;
@@ -260,6 +293,7 @@ export interface PreopenLatestResponse {
   linked_sessions: PreopenLinkedSession[];
   news: PreopenNewsReadinessSummary | null;
   news_preview: PreopenNewsArticlePreview[];
+  market_news_briefing: PreopenMarketNewsBriefing | null;
 }
 
 export interface CreateFromResearchRunRequest {

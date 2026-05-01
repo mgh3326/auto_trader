@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import ErrorView from "../components/ErrorView";
 import LoadingView from "../components/LoadingView";
+import MarketNewsBriefingSection from "../components/MarketNewsBriefingSection";
 import NewsReadinessSection from "../components/NewsReadinessSection";
 import { ApiError } from "../api/client";
 import {
@@ -133,6 +134,7 @@ export default function PreopenPage() {
       ) : null}
 
       <NewsReadinessSection news={data.news} preview={data.news_preview} />
+      <MarketNewsBriefingSection briefing={data.market_news_briefing} />
 
       {data.candidates.length > 0 ? (
         <section className={styles.section}>

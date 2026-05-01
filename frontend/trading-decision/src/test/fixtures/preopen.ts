@@ -2,6 +2,8 @@ import type {
   PreopenCandidateSummary,
   PreopenLatestResponse,
   PreopenLinkedSession,
+  PreopenMarketNewsBriefing,
+  PreopenMarketNewsItem,
   PreopenNewsArticlePreview,
   PreopenNewsReadinessSummary,
   PreopenReconciliationSummary,
@@ -122,6 +124,79 @@ export function makePreopenNewsArticle(
   };
 }
 
+export function makePreopenMarketNewsItem(
+  overrides: Partial<PreopenMarketNewsItem> = {},
+): PreopenMarketNewsItem {
+  return {
+    id: 2001,
+    title: "코스피 장전 AI 반도체 강세 전망",
+    url: "https://example.com/briefing/2001",
+    source: "Yonhap",
+    feed_source: "yna_market",
+    published_at: now,
+    summary: "AI 반도체와 대형주 수급을 장전 핵심 변수로 정리했습니다.",
+    briefing_relevance: {
+      score: 82,
+      reason: "matched_section_terms",
+      section_id: "preopen_headlines",
+      matched_terms: ["AI", "반도체"],
+    },
+    crypto_relevance: null,
+    ...overrides,
+  };
+}
+
+export function makePreopenMarketNewsBriefing(
+  overrides: Partial<PreopenMarketNewsBriefing> = {},
+): PreopenMarketNewsBriefing {
+  return {
+    briefing_filter: true,
+    summary: {
+      included: 3,
+      excluded: 2,
+      sections: 2,
+      uncategorized: 1,
+    },
+    sections: [
+      {
+        section_id: "preopen_headlines",
+        title: "Preopen headlines",
+        items: [makePreopenMarketNewsItem()],
+      },
+      {
+        section_id: "sector_theme",
+        title: "Sector themes",
+        items: [
+          makePreopenMarketNewsItem({
+            id: 2002,
+            title: "조선·방산 업종 수주 모멘텀 점검",
+            briefing_relevance: {
+              score: 74,
+              reason: "matched_section_terms",
+              section_id: "sector_theme",
+              matched_terms: ["방산", "수주"],
+            },
+          }),
+        ],
+      },
+    ],
+    excluded_count: 2,
+    top_excluded: [
+      makePreopenMarketNewsItem({
+        id: 2999,
+        title: "저신호 단신 모음",
+        briefing_relevance: {
+          score: 12,
+          reason: "low_relevance",
+          section_id: null,
+          matched_terms: [],
+        },
+      }),
+    ],
+    ...overrides,
+  };
+}
+
 export function makePreopenResponse(
   overrides: Partial<PreopenLatestResponse> = {},
 ): PreopenLatestResponse {
@@ -149,6 +224,7 @@ export function makePreopenResponse(
     linked_sessions: [],
     news: makePreopenNewsReady(),
     news_preview: [makePreopenNewsArticle()],
+    market_news_briefing: makePreopenMarketNewsBriefing(),
     ...overrides,
   };
 }
@@ -180,6 +256,7 @@ export function makePreopenFailOpen(
     linked_sessions: [],
     news: null,
     news_preview: [],
+    market_news_briefing: null,
     ...overrides,
   };
 }

@@ -37,6 +37,39 @@ class NewsReadinessSummary(BaseModel):
     max_age_minutes: int
 
 
+class PreopenBriefingRelevance(BaseModel):
+    score: int
+    reason: str
+    section_id: str | None = None
+    matched_terms: list[str] = []
+
+
+class PreopenMarketNewsItem(BaseModel):
+    id: int
+    title: str
+    url: str
+    source: str | None = None
+    feed_source: str | None = None
+    published_at: datetime | None = None
+    summary: str | None = None
+    briefing_relevance: PreopenBriefingRelevance | None = None
+    crypto_relevance: dict[str, Any] | None = None
+
+
+class PreopenMarketNewsSection(BaseModel):
+    section_id: str
+    title: str
+    items: list[PreopenMarketNewsItem] = []
+
+
+class PreopenMarketNewsBriefing(BaseModel):
+    briefing_filter: Literal[True] = True
+    summary: dict[str, Any]
+    sections: list[PreopenMarketNewsSection] = []
+    excluded_count: int = 0
+    top_excluded: list[PreopenMarketNewsItem] = []
+
+
 class CandidateSummary(BaseModel):
     candidate_uuid: UUID
     symbol: str
@@ -96,3 +129,4 @@ class PreopenLatestResponse(BaseModel):
     news: NewsReadinessSummary | None = None
     news_preview: list[NewsArticlePreview] = []
     news_brief: KRPreopenNewsBrief | None = None
+    market_news_briefing: PreopenMarketNewsBriefing | None = None

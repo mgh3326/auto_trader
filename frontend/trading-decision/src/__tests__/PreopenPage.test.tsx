@@ -6,6 +6,7 @@ import PreopenPage from "../pages/PreopenPage";
 import {
   makePreopenFailOpen,
   makePreopenLinkedSession,
+  makePreopenMarketNewsBriefing,
   makePreopenNewsArticle,
   makePreopenNewsStale,
   makePreopenNewsUnavailable,
@@ -195,6 +196,51 @@ describe("PreopenPage", () => {
     expect(await screen.findByText("Unavailable")).toBeInTheDocument();
     expect(
       screen.getByText(/News readiness lookup failed/i),
+    ).toBeInTheDocument();
+  });
+
+  it("renders market news briefing sections and filtered count", async () => {
+    mockFetch({
+      [PREOPEN_URL]: () =>
+        new Response(
+          JSON.stringify(
+            makePreopenResponse({
+              market_news_briefing: makePreopenMarketNewsBriefing(),
+            }),
+          ),
+        ),
+    });
+
+    render(<PreopenPage />, { wrapper: MemoryRouter });
+
+    expect(
+      await screen.findByRole("region", { name: /market news briefing/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Preopen headlines/i)).toBeInTheDocument();
+    expect(screen.getByText(/Filtered noise: 2/i)).toBeInTheDocument();
+    expect(screen.getByText(/Score 82/i)).toBeInTheDocument();
+    expect(screen.getByText(/Terms: AI, 반도체/i)).toBeInTheDocument();
+  });
+
+  it("renders market news briefing fail-open state when field is null", async () => {
+    mockFetch({
+      [PREOPEN_URL]: () =>
+        new Response(
+          JSON.stringify(
+            makePreopenResponse({
+              market_news_briefing: null,
+            }),
+          ),
+        ),
+    });
+
+    render(<PreopenPage />, { wrapper: MemoryRouter });
+
+    expect(
+      await screen.findByRole("region", { name: /market news briefing/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/No market news briefing available yet/i),
     ).toBeInTheDocument();
   });
 
