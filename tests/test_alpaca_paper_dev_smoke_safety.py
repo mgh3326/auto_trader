@@ -160,7 +160,41 @@ async def test_dev_smoke_crypto_preview_uses_confirm_false_and_redacted_report(
     assert "asset_class=crypto" in out
     assert "candidate_report_attached=True" in out
     assert "blocked_reason=confirmation_required" in out
+    assert "cancel_order(confirm=False)" in out
     assert [c for c in orders.calls if c[0] in ("submit_order", "cancel_order")] == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_dev_smoke_candidate_report_must_exist_before_broker_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.test_alpaca_paper_orders_tools import FakeOrdersService
+    from tests.test_mcp_alpaca_paper_tools import FakeAlpacaPaperService
+
+    ro = FakeAlpacaPaperService()
+    orders = FakeOrdersService()
+    set_alpaca_paper_service_factory(lambda: ro)  # type: ignore[arg-type]
+    set_alpaca_paper_orders_service_factory(lambda: orders)  # type: ignore[arg-type]
+    monkeypatch.delenv("ALPACA_PAPER_SMOKE_ALLOW_SIDE_EFFECTS", raising=False)
+    try:
+        module = _load_module()
+        args = module.build_parser().parse_args(
+            [
+                "--asset-class",
+                "crypto",
+                "--candidate-report",
+                "/tmp/rob74-missing-candidate-report.md",
+            ]
+        )
+        rc = await module._async_main(args)
+    finally:
+        reset_alpaca_paper_service_factory()
+        reset_alpaca_paper_orders_service_factory()
+
+    assert rc == 2
+    assert ro.calls == []
+    assert orders.calls == []
 
 
 @pytest.mark.unit

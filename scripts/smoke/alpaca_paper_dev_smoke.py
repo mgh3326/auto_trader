@@ -30,6 +30,7 @@ import asyncio
 import os
 import sys
 from decimal import Decimal
+from pathlib import Path
 
 from app.mcp_server.tooling.alpaca_paper import (
     alpaca_paper_get_account,
@@ -163,20 +164,19 @@ async def _preview_only_for_args(args: argparse.Namespace) -> int:
             ("submit_order(confirm=False)", False, f"ERROR: {type(exc).__name__}")
         )
 
-    if args.asset_class != "crypto":
-        try:
-            cancel_result = await alpaca_paper_cancel_order(order_id="dummy-no-op")
-            lines.append(
-                (
-                    "cancel_order(confirm=False)",
-                    cancel_result["cancelled"] is False,
-                    f"blocked_reason={cancel_result.get('blocked_reason')}",
-                )
+    try:
+        cancel_result = await alpaca_paper_cancel_order(order_id="dummy-no-op")
+        lines.append(
+            (
+                "cancel_order(confirm=False)",
+                cancel_result["cancelled"] is False,
+                f"blocked_reason={cancel_result.get('blocked_reason')}",
             )
-        except Exception as exc:  # noqa: BLE001
-            lines.append(
-                ("cancel_order(confirm=False)", False, f"ERROR: {type(exc).__name__}")
-            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        lines.append(
+            ("cancel_order(confirm=False)", False, f"ERROR: {type(exc).__name__}")
+        )
 
     ok = all(success for _, success, _ in lines)
     for name, success, note in lines:
@@ -257,6 +257,13 @@ async def _side_effect_smoke(args: argparse.Namespace) -> int:
 
 
 async def _async_main(args: argparse.Namespace) -> int:
+    if args.candidate_report and not Path(args.candidate_report).is_file():
+        print(
+            "BLOCKED: --candidate-report path does not exist or is not a file.",
+            file=sys.stderr,
+        )
+        return 2
+
     if args.confirm_paper_side_effect and os.environ.get(ENV_GATE) != "1":
         print(
             f"BLOCKED: --confirm-paper-side-effect requires {ENV_GATE}=1; "
@@ -313,7 +320,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit-price", type=Decimal)
     parser.add_argument(
         "--candidate-report",
-        help="Path to a candidate report; only its presence is printed, never contents",
+        help=(
+            "Path to a candidate report; existence is validated, but contents are "
+            "never read, parsed, logged, or converted into order parameters"
+        ),
     )
     return parser
 

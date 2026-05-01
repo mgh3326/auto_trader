@@ -234,7 +234,7 @@ async def alpaca_paper_preview_order(
     client_order_id: str | None = None,
     asset_class: str = "us_equity",
 ) -> dict[str, Any]:
-    """Preview and validate an Alpaca paper US equity order without submitting it.
+    """Preview and validate an Alpaca paper US equity or narrow crypto order without submitting it.
 
     Pure validator + echo — preview only, no side effects, does not submit.
     Does NOT call POST /v2/orders. Submission goes through the explicit,
@@ -323,7 +323,8 @@ def register_alpaca_paper_preview_tools(mcp: FastMCP) -> None:
     _ = mcp.tool(
         name="alpaca_paper_preview_order",
         description=(
-            "Preview and validate an Alpaca paper US equity order without submitting it. "
+            "Preview and validate an Alpaca paper US equity or narrow crypto order "
+            "without submitting it. "
             "Pure validator + echo — preview only, no side effects, does not submit. "
             "Does NOT call POST /v2/orders. "
             "Submission goes through the explicit, paper-only, confirm-gated "

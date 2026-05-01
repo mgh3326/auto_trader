@@ -122,7 +122,7 @@ async def alpaca_paper_submit_order(
     asset_class: str = "us_equity",
     confirm: bool = False,
 ) -> dict[str, Any]:
-    """Submit a single Alpaca PAPER order (us_equity only).
+    """Submit a single Alpaca PAPER order (us_equity or narrow crypto).
 
     Defaults to ``confirm=False`` which performs no broker call.
     """
