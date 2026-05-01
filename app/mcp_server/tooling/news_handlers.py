@@ -25,6 +25,7 @@ def _article_to_dict(article: NewsArticle) -> dict[str, Any]:
         "url": article.url,
         "source": article.source,
         "feed_source": article.feed_source,
+        "market": article.market,
         "summary": article.summary,
         "published_at": article.article_published_at.isoformat()
         if article.article_published_at
@@ -36,6 +37,7 @@ def _article_to_dict(article: NewsArticle) -> dict[str, Any]:
 
 
 async def _get_market_news_impl(
+    market: str | None = None,
     hours: int | None = 24,
     feed_source: str | None = None,
     source: str | None = None,
@@ -46,6 +48,7 @@ async def _get_market_news_impl(
     limit = limit or 20
 
     articles, total = await get_news_articles(
+        market=market,
         hours=hours,
         feed_source=feed_source,
         source=source,
@@ -60,6 +63,7 @@ async def _get_market_news_impl(
     )
 
     return {
+        "market": market,
         "count": len(news_list),
         "total": total,
         "news": news_list,
@@ -124,12 +128,13 @@ def _register_news_tools_impl(mcp: FastMCP) -> None:
     @mcp.tool(
         name="get_market_news",
         description=(
-            "Get recent market news. Supports filtering by publisher (source), "
+            "Get recent market news. Supports filtering by market, publisher (source), "
             "collection path (feed_source), and keyword. Returns both publisher names "
             "and collection paths for briefing segmentation."
         ),
     )
     async def get_market_news(
+        market: str | None = None,
         hours: int = 24,
         feed_source: str | None = None,
         source: str | None = None,
@@ -137,6 +142,7 @@ def _register_news_tools_impl(mcp: FastMCP) -> None:
         limit: int = 20,
     ) -> dict[str, Any]:
         return await _get_market_news_impl(
+            market=market,
             hours=hours,
             feed_source=feed_source,
             source=source,
