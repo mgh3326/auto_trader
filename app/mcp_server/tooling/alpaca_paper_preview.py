@@ -170,55 +170,56 @@ class PreviewOrderInput(BaseModel):
             raise ValueError("limit_price must be > 0")
         return v
 
+    def _validate_quantity_selection(self, has_qty: bool, has_notional: bool) -> None:
+        if has_qty == has_notional:
+            raise ValueError("exactly one of qty or notional is required")
+
+    def _validate_crypto_rules(self) -> None:
+        if self.symbol not in ALPACA_PAPER_CRYPTO_ALLOWED_SYMBOLS:
+            allowed = ", ".join(sorted(ALPACA_PAPER_CRYPTO_ALLOWED_SYMBOLS))
+            raise ValueError(f"crypto symbol must be one of: {allowed}")
+        if self.side != "buy":
+            raise ValueError("crypto preview is buy-only")
+        if self.type != "limit":
+            raise ValueError("crypto preview is limit-only")
+        if self.limit_price is None:
+            raise ValueError("limit_price is required for crypto limit orders")
+        if (
+            self.notional is not None
+            and self.notional > ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD
+        ):
+            raise ValueError(
+                f"crypto notional exceeds max ({ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD})"
+            )
+        if (
+            self.qty is not None
+            and self.qty * self.limit_price > ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD
+        ):
+            raise ValueError(
+                "crypto estimated_cost exceeds max "
+                f"({ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD})"
+            )
+
+    def _validate_equity_rules(self, has_notional: bool) -> None:
+        # notional + limit type is rejected for US equities — Alpaca only
+        # supports equity notional orders for market orders in this surface.
+        if has_notional and self.type == "limit":
+            raise ValueError("notional is not supported for limit orders")
+        if self.type == "limit" and self.limit_price is None:
+            raise ValueError("limit_price is required for limit orders")
+        if self.type == "market" and self.limit_price is not None:
+            raise ValueError("limit_price is not allowed for market orders")
+
     @model_validator(mode="after")
     def validate_cross_field_rules(self) -> PreviewOrderInput:
         has_qty = self.qty is not None
         has_notional = self.notional is not None
 
-        if has_qty and has_notional:
-            raise ValueError("exactly one of qty or notional is required")
-        if not has_qty and not has_notional:
-            raise ValueError("exactly one of qty or notional is required")
-
+        self._validate_quantity_selection(has_qty, has_notional)
         if self.asset_class == "crypto":
-            if self.symbol not in ALPACA_PAPER_CRYPTO_ALLOWED_SYMBOLS:
-                allowed = ", ".join(sorted(ALPACA_PAPER_CRYPTO_ALLOWED_SYMBOLS))
-                raise ValueError(f"crypto symbol must be one of: {allowed}")
-            if self.side != "buy":
-                raise ValueError("crypto preview is buy-only")
-            if self.type != "limit":
-                raise ValueError("crypto preview is limit-only")
-            if self.limit_price is None:
-                raise ValueError("limit_price is required for crypto limit orders")
-            if (
-                self.notional is not None
-                and self.notional > ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD
-            ):
-                raise ValueError(
-                    "crypto notional exceeds max "
-                    f"({ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD})"
-                )
-            if (
-                self.qty is not None
-                and self.qty * self.limit_price > ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD
-            ):
-                raise ValueError(
-                    "crypto estimated_cost exceeds max "
-                    f"({ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD})"
-                )
-            return self
-
-        # notional + limit type is rejected for US equities — Alpaca only
-        # supports equity notional orders for market orders in this surface.
-        if has_notional and self.type == "limit":
-            raise ValueError("notional is not supported for limit orders")
-
-        if self.type == "limit" and self.limit_price is None:
-            raise ValueError("limit_price is required for limit orders")
-
-        if self.type == "market" and self.limit_price is not None:
-            raise ValueError("limit_price is not allowed for market orders")
-
+            self._validate_crypto_rules()
+        else:
+            self._validate_equity_rules(has_notional)
         return self
 
 

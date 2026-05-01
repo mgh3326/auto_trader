@@ -46,6 +46,9 @@ DEFAULT_CRYPTO_SYMBOL = "BTC/USD"
 SMOKE_QTY = Decimal("1")
 SMOKE_LIMIT_PRICE = Decimal("1.00")  # far below market — should not fill
 ENV_GATE = "ALPACA_PAPER_SMOKE_ALLOW_SIDE_EFFECTS"
+PREVIEW_SUBMIT_CHECK = "submit_order(confirm=False)"
+PREVIEW_CANCEL_CHECK = "cancel_order(confirm=False)"
+SMOKE_LINE = tuple[str, bool, str]
 
 
 def _both_gates_set(args: argparse.Namespace) -> bool:
@@ -53,7 +56,29 @@ def _both_gates_set(args: argparse.Namespace) -> bool:
 
 
 async def _preview_only() -> int:
-    lines: list[tuple[str, bool, str]] = []
+    lines: list[SMOKE_LINE] = []
+    await _append_account_check(lines)
+    await _append_cash_check(lines)
+    await _append_preview_submit_check(
+        lines,
+        {
+            "symbol": DEFAULT_EQUITY_SYMBOL,
+            "side": "buy",
+            "type": "limit",
+            "qty": SMOKE_QTY,
+            "limit_price": SMOKE_LIMIT_PRICE,
+        },
+    )
+    await _append_preview_cancel_check(lines)
+
+    ok = all(success for _, success, _ in lines)
+    for name, success, note in lines:
+        print(f"  [{'OK' if success else 'FAIL'}] {name}: {note}")
+    print(f"summary: {'PASS' if ok else 'FAIL'} mode=preview_only")
+    return 0 if ok else 1
+
+
+async def _append_account_check(lines: list[SMOKE_LINE]) -> None:
     try:
         acct = await alpaca_paper_get_account()
         lines.append(
@@ -62,6 +87,8 @@ async def _preview_only() -> int:
     except Exception as exc:  # noqa: BLE001
         lines.append(("get_account", False, f"ERROR: {type(exc).__name__}"))
 
+
+async def _append_cash_check(lines: list[SMOKE_LINE]) -> None:
     try:
         cash = await alpaca_paper_get_cash()
         lines.append(
@@ -70,45 +97,36 @@ async def _preview_only() -> int:
     except Exception as exc:  # noqa: BLE001
         lines.append(("get_cash", False, f"ERROR: {type(exc).__name__}"))
 
+
+async def _append_preview_submit_check(
+    lines: list[SMOKE_LINE],
+    payload: dict[str, object],
+) -> None:
     try:
-        submit_result = await alpaca_paper_submit_order(
-            symbol=DEFAULT_EQUITY_SYMBOL,
-            side="buy",
-            type="limit",
-            qty=SMOKE_QTY,
-            limit_price=SMOKE_LIMIT_PRICE,
-        )
+        submit_result = await alpaca_paper_submit_order(**payload)
         lines.append(
             (
-                "submit_order(confirm=False)",
+                PREVIEW_SUBMIT_CHECK,
                 submit_result["submitted"] is False,
                 f"blocked_reason={submit_result.get('blocked_reason')}",
             )
         )
     except Exception as exc:  # noqa: BLE001
-        lines.append(
-            ("submit_order(confirm=False)", False, f"ERROR: {type(exc).__name__}")
-        )
+        lines.append((PREVIEW_SUBMIT_CHECK, False, f"ERROR: {type(exc).__name__}"))
 
+
+async def _append_preview_cancel_check(lines: list[SMOKE_LINE]) -> None:
     try:
         cancel_result = await alpaca_paper_cancel_order(order_id="dummy-no-op")
         lines.append(
             (
-                "cancel_order(confirm=False)",
+                PREVIEW_CANCEL_CHECK,
                 cancel_result["cancelled"] is False,
                 f"blocked_reason={cancel_result.get('blocked_reason')}",
             )
         )
     except Exception as exc:  # noqa: BLE001
-        lines.append(
-            ("cancel_order(confirm=False)", False, f"ERROR: {type(exc).__name__}")
-        )
-
-    ok = all(success for _, success, _ in lines)
-    for name, success, note in lines:
-        print(f"  [{'OK' if success else 'FAIL'}] {name}: {note}")
-    print(f"summary: {'PASS' if ok else 'FAIL'} mode=preview_only")
-    return 0 if ok else 1
+        lines.append((PREVIEW_CANCEL_CHECK, False, f"ERROR: {type(exc).__name__}"))
 
 
 def _order_payload(args: argparse.Namespace) -> dict[str, object]:
@@ -133,50 +151,11 @@ def _order_payload(args: argparse.Namespace) -> dict[str, object]:
 
 
 async def _preview_only_for_args(args: argparse.Namespace) -> int:
-    lines: list[tuple[str, bool, str]] = []
-    try:
-        acct = await alpaca_paper_get_account()
-        lines.append(
-            ("get_account", True, f"status={acct['account'].get('status', '?')}")
-        )
-    except Exception as exc:  # noqa: BLE001
-        lines.append(("get_account", False, f"ERROR: {type(exc).__name__}"))
-
-    try:
-        cash = await alpaca_paper_get_cash()
-        lines.append(
-            ("get_cash", True, f"cash_set={cash['cash'].get('cash') is not None}")
-        )
-    except Exception as exc:  # noqa: BLE001
-        lines.append(("get_cash", False, f"ERROR: {type(exc).__name__}"))
-
-    try:
-        submit_result = await alpaca_paper_submit_order(**_order_payload(args))
-        lines.append(
-            (
-                "submit_order(confirm=False)",
-                submit_result["submitted"] is False,
-                f"blocked_reason={submit_result.get('blocked_reason')}",
-            )
-        )
-    except Exception as exc:  # noqa: BLE001
-        lines.append(
-            ("submit_order(confirm=False)", False, f"ERROR: {type(exc).__name__}")
-        )
-
-    try:
-        cancel_result = await alpaca_paper_cancel_order(order_id="dummy-no-op")
-        lines.append(
-            (
-                "cancel_order(confirm=False)",
-                cancel_result["cancelled"] is False,
-                f"blocked_reason={cancel_result.get('blocked_reason')}",
-            )
-        )
-    except Exception as exc:  # noqa: BLE001
-        lines.append(
-            ("cancel_order(confirm=False)", False, f"ERROR: {type(exc).__name__}")
-        )
+    lines: list[SMOKE_LINE] = []
+    await _append_account_check(lines)
+    await _append_cash_check(lines)
+    await _append_preview_submit_check(lines, _order_payload(args))
+    await _append_preview_cancel_check(lines)
 
     ok = all(success for _, success, _ in lines)
     for name, success, note in lines:
