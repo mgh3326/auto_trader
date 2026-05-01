@@ -168,6 +168,7 @@ async def test_dev_smoke_crypto_preview_uses_confirm_false_and_redacted_report(
 @pytest.mark.asyncio
 async def test_dev_smoke_candidate_report_must_exist_before_broker_calls(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     from tests.test_alpaca_paper_orders_tools import FakeOrdersService
     from tests.test_mcp_alpaca_paper_tools import FakeAlpacaPaperService
@@ -184,7 +185,7 @@ async def test_dev_smoke_candidate_report_must_exist_before_broker_calls(
                 "--asset-class",
                 "crypto",
                 "--candidate-report",
-                "/tmp/rob74-missing-candidate-report.md",
+                str(tmp_path / "rob74-missing-candidate-report.md"),
             ]
         )
         rc = await module._async_main(args)
