@@ -140,6 +140,9 @@ Safety boundary: there are no Alpaca live MCP tools in this issue and no
 or generic Alpaca order-routing surface. These smoke tools are for paper account
 visibility only.
 
+Operator runbook: [`docs/runbooks/alpaca-paper-readonly-smoke.md`](../../docs/runbooks/alpaca-paper-readonly-smoke.md)
+Smoke helper: `scripts/smoke/alpaca_paper_readonly_smoke.py` (argumentless, read-only, exits non-zero on failure)
+
 ### Account Routing
 
 MCP account-facing tools use `account_mode` to avoid mixing DB simulation,
