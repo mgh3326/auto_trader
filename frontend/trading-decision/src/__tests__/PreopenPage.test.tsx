@@ -6,8 +6,10 @@ import PreopenPage from "../pages/PreopenPage";
 import {
   makePreopenFailOpen,
   makePreopenLinkedSession,
+  makePreopenBlockedPaperApprovalBridge,
   makePreopenBriefingArtifact,
   makePreopenMarketNewsBriefing,
+  makePreopenPaperApprovalBridge,
   makePreopenQaEvaluator,
   makePreopenUnavailableQaEvaluator,
   makePreopenNewsArticle,
@@ -357,6 +359,70 @@ describe("PreopenPage", () => {
     expect(
       screen.getByText(/No market news briefing available yet/i),
     ).toBeInTheDocument();
+  });
+
+  it("renders paper approval preview with safety copy and venue provenance", async () => {
+    const { calls } = mockFetch({
+      [PREOPEN_URL]: () =>
+        new Response(
+          JSON.stringify(
+            makePreopenResponse({
+              market_scope: "crypto",
+              paper_approval_bridge: makePreopenPaperApprovalBridge(),
+            }),
+          ),
+        ),
+    });
+
+    render(<PreopenPage />, { wrapper: MemoryRouter });
+
+    expect(
+      await screen.findByRole("region", { name: /paper approval preview/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Preview Available/i)).toBeInTheDocument();
+    expect(screen.getByText(/Advisory-only preview/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Execution is not allowed from this screen/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Explicit operator approval is required before any Alpaca Paper submit/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/does not submit or cancel paper orders/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Signal source")).toBeInTheDocument();
+    expect(screen.getAllByText(/Upbit KRW-BTC/i).length).toBeGreaterThan(0);
+    expect(screen.getByText("Execution venue")).toBeInTheDocument();
+    expect(screen.getAllByText(/Alpaca Paper BTC\/USD/i).length).toBeGreaterThan(0);
+    expect(screen.getByText(/Preview payload: buy limit · \$10 @ 1.00 GTC/i)).toBeInTheDocument();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.method).toBe("GET");
+  });
+
+  it("renders blocked paper approval preview without execution actions", async () => {
+    const { calls } = mockFetch({
+      [PREOPEN_URL]: () =>
+        new Response(
+          JSON.stringify(
+            makePreopenResponse({
+              paper_approval_bridge: makePreopenBlockedPaperApprovalBridge(),
+            }),
+          ),
+        ),
+    });
+
+    render(<PreopenPage />, { wrapper: MemoryRouter });
+
+    expect(
+      await screen.findByRole("region", { name: /paper approval preview/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Preview Blocked/i)).toBeInTheDocument();
+    expect(screen.getByText(/qa evaluator unavailable/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/No paper approval preview candidates are currently available/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /submit|cancel paper|place order/i })).toBeNull();
+    expect(calls).toHaveLength(1);
   });
 
   it("surfaces ApiError detail (research_run_has_no_candidates) inline without throwing", async () => {

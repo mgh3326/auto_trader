@@ -7,6 +7,7 @@ import type {
   PreopenMarketNewsItem,
   PreopenNewsArticlePreview,
   PreopenNewsReadinessSummary,
+  PreopenPaperApprovalBridge,
   PreopenQaEvaluatorSummary,
   PreopenReconciliationSummary,
 } from "../../api/types";
@@ -270,6 +271,71 @@ export function makePreopenBriefingArtifact(
   };
 }
 
+export function makePreopenPaperApprovalBridge(
+  overrides: Partial<PreopenPaperApprovalBridge> = {},
+): PreopenPaperApprovalBridge {
+  return {
+    status: "available",
+    generated_at: now,
+    source: "deterministic_v1",
+    preview_only: true,
+    advisory_only: true,
+    execution_allowed: false,
+    market_scope: "crypto",
+    stage: "preopen",
+    eligible_count: 1,
+    candidate_count: 1,
+    candidates: [
+      {
+        candidate_uuid: "cand-crypto-1111-2222-3333-444444444444",
+        symbol: "KRW-BTC",
+        status: "available",
+        reason: null,
+        warnings: [],
+        signal_symbol: "KRW-BTC",
+        signal_venue: "upbit",
+        execution_symbol: "BTC/USD",
+        execution_venue: "alpaca_paper",
+        execution_asset_class: "crypto",
+        workflow_stage: "crypto_weekend",
+        purpose: "paper_plumbing_smoke",
+        preview_payload: {
+          symbol: "BTC/USD",
+          side: "buy",
+          type: "limit",
+          notional: "10",
+          limit_price: "1.00",
+          time_in_force: "gtc",
+          asset_class: "crypto",
+        },
+        approval_copy: [
+          "Signal source: Upbit KRW-BTC",
+          "Execution venue: Alpaca Paper BTC/USD",
+          "Explicit approval required before any paper submit.",
+        ],
+      },
+    ],
+    blocking_reasons: [],
+    warnings: [],
+    unsupported_reasons: [],
+    ...overrides,
+  };
+}
+
+export function makePreopenBlockedPaperApprovalBridge(
+  overrides: Partial<PreopenPaperApprovalBridge> = {},
+): PreopenPaperApprovalBridge {
+  return makePreopenPaperApprovalBridge({
+    status: "blocked",
+    eligible_count: 0,
+    candidates: [],
+    blocking_reasons: ["qa_evaluator_unavailable"],
+    warnings: [],
+    unsupported_reasons: [],
+    ...overrides,
+  });
+}
+
 export function makePreopenUnavailableArtifact(
   overrides: Partial<PreopenBriefingArtifact> = {},
 ): PreopenBriefingArtifact {
@@ -428,6 +494,7 @@ export function makePreopenResponse(
     market_news_briefing: makePreopenMarketNewsBriefing(),
     briefing_artifact: makePreopenBriefingArtifact(),
     qa_evaluator: makePreopenQaEvaluator(),
+    paper_approval_bridge: null,
     ...overrides,
   };
 }
@@ -462,6 +529,7 @@ export function makePreopenFailOpen(
     market_news_briefing: null,
     briefing_artifact: makePreopenUnavailableArtifact(),
     qa_evaluator: makePreopenUnavailableQaEvaluator(),
+    paper_approval_bridge: null,
     ...overrides,
   };
 }

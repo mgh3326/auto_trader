@@ -169,6 +169,11 @@ async def test_returns_fail_open_when_no_run():
     assert result.briefing_artifact.cta.state == "unavailable"
     assert result.briefing_artifact.cta.requires_confirmation is True
     assert "no_open_preopen_run" in result.briefing_artifact.risk_notes
+    assert result.paper_approval_bridge is not None
+    assert result.paper_approval_bridge.status == "blocked"
+    assert "no_open_preopen_run" in result.paper_approval_bridge.blocking_reasons
+    assert result.paper_approval_bridge.preview_only is True
+    assert result.paper_approval_bridge.execution_allowed is False
 
 
 @pytest.mark.asyncio
@@ -225,6 +230,67 @@ async def test_maps_candidates_and_reconciliations():
     sections = {s.section_id: s for s in result.briefing_artifact.sections}
     assert sections["new_buy_candidates"].item_count == 1
     assert sections["holdings_actions"].item_count == 2
+    assert result.paper_approval_bridge is not None
+    assert result.paper_approval_bridge.status == "unavailable"
+    assert result.paper_approval_bridge.unsupported_reasons == [
+        "unsupported_market_scope:kr"
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_crypto_preopen_response_includes_paper_approval_bridge_preview():
+    from app.services import preopen_dashboard_service, research_run_service
+
+    run = _make_run(
+        market_scope="crypto",
+        candidates=[
+            _make_candidate(
+                symbol="KRW-BTC",
+                instrument_type="crypto",
+                side="buy",
+                currency="KRW",
+            )
+        ],
+        reconciliations=[],
+    )
+
+    with _patched_dashboard_dependencies(
+        preopen_dashboard_service, research_run_service, run=run
+    ):
+        result = await preopen_dashboard_service.get_latest_preopen_dashboard(
+            db=AsyncMock(),
+            user_id=7,
+            market_scope="crypto",
+        )
+
+    assert result.paper_approval_bridge is not None
+    bridge = result.paper_approval_bridge
+    assert bridge.status == "warning"
+    assert (
+        "No linked decision session found; evaluator did not create one."
+        in bridge.warnings
+    )
+    assert bridge.eligible_count == 1
+    item = bridge.candidates[0]
+    assert item.symbol == "KRW-BTC"
+    assert item.signal_symbol == "KRW-BTC"
+    assert item.execution_symbol == "BTC/USD"
+    assert item.execution_venue == "alpaca_paper"
+    assert item.preview_payload == {
+        "symbol": "BTC/USD",
+        "side": "buy",
+        "type": "limit",
+        "notional": "10",
+        "limit_price": "1.00",
+        "time_in_force": "gtc",
+        "asset_class": "crypto",
+    }
+    assert {"confirm", "dry_run", "order_id", "client_order_id"}.isdisjoint(
+        item.preview_payload or {}
+    )
+    assert result.briefing_artifact is not None
+    assert result.briefing_artifact.cta.state == "create_available"
 
 
 @pytest.mark.asyncio

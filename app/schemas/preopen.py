@@ -84,6 +84,13 @@ PreopenQaCheckSeverity = Literal["info", "low", "medium", "high"]
 PreopenQaGrade = Literal["excellent", "good", "watch", "poor", "unavailable"]
 PreopenQaConfidence = Literal["high", "medium", "low", "unavailable"]
 PreopenQaEvaluatorStatus = Literal["ready", "needs_review", "unavailable", "skipped"]
+PreopenPaperApprovalBridgeStatus = Literal[
+    "available",
+    "warning",
+    "blocked",
+    "unavailable",
+]
+PreopenPaperApprovalCandidateStatus = Literal["available", "warning", "unavailable"]
 
 
 class PreopenQaCheck(BaseModel):
@@ -185,6 +192,40 @@ class ReconciliationSummary(BaseModel):
     warnings: list[str]
 
 
+class PreopenPaperApprovalCandidate(BaseModel):
+    candidate_uuid: UUID
+    symbol: str
+    status: PreopenPaperApprovalCandidateStatus
+    reason: str | None = None
+    warnings: list[str] = []
+    signal_symbol: str | None = None
+    signal_venue: str | None = None
+    execution_symbol: str | None = None
+    execution_venue: str | None = None
+    execution_asset_class: str | None = None
+    workflow_stage: str | None = None
+    purpose: str | None = None
+    preview_payload: dict[str, Any] | None = None
+    approval_copy: list[str] = []
+
+
+class PreopenPaperApprovalBridge(BaseModel):
+    status: PreopenPaperApprovalBridgeStatus
+    generated_at: datetime | None = None
+    source: Literal["deterministic_v1"] = "deterministic_v1"
+    preview_only: Literal[True] = True
+    advisory_only: Literal[True] = True
+    execution_allowed: Literal[False] = False
+    market_scope: Literal["kr", "us", "crypto"] | None = None
+    stage: Literal["preopen"] | None = None
+    eligible_count: int = 0
+    candidate_count: int = 0
+    candidates: list[PreopenPaperApprovalCandidate] = []
+    blocking_reasons: list[str] = []
+    warnings: list[str] = []
+    unsupported_reasons: list[str] = []
+
+
 class LinkedSessionRef(BaseModel):
     session_uuid: UUID
     status: str
@@ -219,3 +260,4 @@ class PreopenLatestResponse(BaseModel):
     market_news_briefing: PreopenMarketNewsBriefing | None = None
     briefing_artifact: PreopenBriefingArtifact | None = None
     qa_evaluator: PreopenQaEvaluatorSummary | None = None
+    paper_approval_bridge: PreopenPaperApprovalBridge | None = None

@@ -177,3 +177,66 @@
   gap: 12px;
   padding: 16px;
 }
+
+.paperApprovalSection {
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+
+.paperApprovalSafety {
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 6px;
+  color: #1e3a8a;
+  padding: 10px 12px;
+}
+
+.paperApprovalCandidates {
+  display: grid;
+  gap: 10px;
+}
+
+.paperApprovalCandidate {
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.paperApprovalCandidateHeader {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.provenanceList {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  margin: 0;
+}
+
+.provenanceList div {
+  display: grid;
+  gap: 2px;
+}
+
+.provenanceList dt {
+  color: #475569;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.provenanceList dd {
+  margin: 0;
+}
+
+.approvalCopy {
+  margin: 0;
+  padding-left: 18px;
+}

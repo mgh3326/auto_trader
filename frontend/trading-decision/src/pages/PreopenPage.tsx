@@ -12,6 +12,7 @@ import {
 import type {
   PreopenBriefingArtifact,
   PreopenLatestResponse,
+  PreopenPaperApprovalBridge,
   PreopenQaEvaluatorSummary,
 } from "../api/types";
 import { formatDateTime } from "../format/datetime";
@@ -158,6 +159,183 @@ function PreopenQaEvaluatorPanel({
   );
 }
 
+const PAPER_APPROVAL_STATUS_LABEL: Record<
+  PreopenPaperApprovalBridge["status"],
+  string
+> = {
+  available: "Available",
+  warning: "Warning",
+  blocked: "Blocked",
+  unavailable: "Unavailable",
+};
+
+function formatOperatorToken(value: string | null | undefined): string {
+  return value ? value.replace(/_/g, " ") : "—";
+}
+
+function formatVenueLabel(venue: string | null, symbol: string | null): string {
+  const venueLabel =
+    venue === "upbit"
+      ? "Upbit"
+      : venue === "alpaca_paper"
+        ? "Alpaca Paper"
+        : formatOperatorToken(venue);
+  return [venueLabel, symbol].filter(Boolean).join(" ");
+}
+
+type PreviewPayloadLike = {
+  side?: unknown;
+  type?: unknown;
+  notional?: unknown;
+  limit_price?: unknown;
+  time_in_force?: unknown;
+};
+
+function formatPreviewPayload(payload: PreviewPayloadLike | null): string | null {
+  if (!payload) return null;
+  const side = typeof payload.side === "string" ? payload.side : null;
+  const type = typeof payload.type === "string" ? payload.type : null;
+  const notional = typeof payload.notional === "string" ? payload.notional : null;
+  const limitPrice =
+    typeof payload.limit_price === "string" ? payload.limit_price : null;
+  const tif =
+    typeof payload.time_in_force === "string" ? payload.time_in_force : null;
+  const parts = [side, type].filter(Boolean).join(" ");
+  const price = limitPrice ? ` @ ${limitPrice}` : "";
+  const suffix = tif ? ` ${tif.toUpperCase()}` : "";
+  const order = [parts, notional ? `$${notional}` : null]
+    .filter(Boolean)
+    .join(" · ");
+  return `${order}${price}${suffix}`;
+}
+
+function PreopenPaperApprovalBridgeSection({
+  bridge,
+}: {
+  bridge: PreopenPaperApprovalBridge | null;
+}) {
+  if (!bridge) return null;
+  const statusLabel = PAPER_APPROVAL_STATUS_LABEL[bridge.status] ?? bridge.status;
+
+  return (
+    <section
+      aria-label="Paper approval preview"
+      className={styles.paperApprovalSection}
+    >
+      <div className={styles.artifactHeader}>
+        <div>
+          <h2>Paper approval preview</h2>
+          <p className={styles.meta}>
+            {bridge.source} · {bridge.market_scope ?? "unknown market"} ·{" "}
+            {bridge.eligible_count} eligible / {bridge.candidate_count} candidates
+          </p>
+        </div>
+        <span className={styles.artifactStatus}>Preview {statusLabel}</span>
+      </div>
+
+      <div className={styles.paperApprovalSafety} role="note">
+        Advisory-only preview. Execution is not allowed from this screen. Explicit
+        operator approval is required before any Alpaca Paper submit; this card
+        does not submit or cancel paper orders.
+      </div>
+
+      {bridge.blocking_reasons.length > 0 ? (
+        <ul aria-label="Paper approval blocking reasons" className={styles.warnings}>
+          {bridge.blocking_reasons.map((reason) => (
+            <li className={styles.warningChip} key={reason}>
+              {formatOperatorToken(reason)}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {bridge.warnings.length > 0 || bridge.unsupported_reasons.length > 0 ? (
+        <ul aria-label="Paper approval warnings" className={styles.warnings}>
+          {[...bridge.warnings, ...bridge.unsupported_reasons].map((warning) => (
+            <li className={styles.warningChip} key={warning}>
+              {formatOperatorToken(warning)}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
+      {bridge.candidates.length > 0 ? (
+        <div className={styles.paperApprovalCandidates}>
+          {bridge.candidates.map((candidate) => {
+            const previewPayload = formatPreviewPayload(candidate.preview_payload);
+            return (
+              <article
+                className={styles.paperApprovalCandidate}
+                key={candidate.candidate_uuid}
+              >
+                <div className={styles.paperApprovalCandidateHeader}>
+                  <strong>{candidate.symbol}</strong>
+                  <span>{formatOperatorToken(candidate.status)}</span>
+                </div>
+                <dl className={styles.provenanceList}>
+                  <div>
+                    <dt>Signal source</dt>
+                    <dd>
+                      {formatVenueLabel(
+                        candidate.signal_venue,
+                        candidate.signal_symbol ?? candidate.symbol,
+                      )}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Execution venue</dt>
+                    <dd>
+                      {formatVenueLabel(
+                        candidate.execution_venue,
+                        candidate.execution_symbol,
+                      )}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Asset class</dt>
+                    <dd>{formatOperatorToken(candidate.execution_asset_class)}</dd>
+                  </div>
+                  <div>
+                    <dt>Workflow</dt>
+                    <dd>{formatOperatorToken(candidate.workflow_stage)}</dd>
+                  </div>
+                </dl>
+                {candidate.purpose ? (
+                  <p>Purpose: {formatOperatorToken(candidate.purpose)}</p>
+                ) : null}
+                {previewPayload ? <p>Preview payload: {previewPayload}</p> : null}
+                {candidate.approval_copy.length > 0 ? (
+                  <ul
+                    aria-label={`${candidate.symbol} approval copy`}
+                    className={styles.approvalCopy}
+                  >
+                    {candidate.approval_copy.map((copy) => (
+                      <li key={copy}>{copy}</li>
+                    ))}
+                  </ul>
+                ) : null}
+                {candidate.warnings.length > 0 ? (
+                  <ul
+                    aria-label={`${candidate.symbol} paper approval warnings`}
+                    className={styles.warnings}
+                  >
+                    {candidate.warnings.map((warning) => (
+                      <li className={styles.warningChip} key={warning}>
+                        {formatOperatorToken(warning)}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <p>No paper approval preview candidates are currently available.</p>
+      )}
+    </section>
+  );
+}
+
 export default function PreopenPage() {
   const navigate = useNavigate();
   const [state, setState] = useState<State>({ status: "loading" });
@@ -248,6 +426,7 @@ export default function PreopenPage() {
         </div>
         <PreopenBriefingArtifactSection artifact={data.briefing_artifact} />
         <PreopenQaEvaluatorPanel qa={data.qa_evaluator} />
+        <PreopenPaperApprovalBridgeSection bridge={data.paper_approval_bridge} />
       </main>
     );
   }
@@ -286,6 +465,7 @@ export default function PreopenPage() {
 
       <PreopenBriefingArtifactSection artifact={data.briefing_artifact} />
       <PreopenQaEvaluatorPanel qa={data.qa_evaluator} />
+      <PreopenPaperApprovalBridgeSection bridge={data.paper_approval_bridge} />
       <NewsReadinessSection news={data.news} preview={data.news_preview} />
       <MarketNewsBriefingSection briefing={data.market_news_briefing} />
 

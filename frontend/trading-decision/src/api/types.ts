@@ -335,6 +335,49 @@ export interface PreopenDecisionSessionCta {
   requires_confirmation: boolean;
 }
 
+export type PreopenPaperApprovalBridgeStatus =
+  | "available"
+  | "warning"
+  | "blocked"
+  | "unavailable";
+export type PreopenPaperApprovalCandidateStatus =
+  | "available"
+  | "warning"
+  | "unavailable";
+
+export interface PreopenPaperApprovalCandidate {
+  candidate_uuid: Uuid;
+  symbol: string;
+  status: PreopenPaperApprovalCandidateStatus;
+  reason: string | null;
+  warnings: string[];
+  signal_symbol: string | null;
+  signal_venue: string | null;
+  execution_symbol: string | null;
+  execution_venue: string | null;
+  execution_asset_class: string | null;
+  workflow_stage: string | null;
+  purpose: string | null;
+  preview_payload: CryptoPaperPreviewPayload | Record<string, unknown> | null;
+  approval_copy: string[];
+}
+
+export interface PreopenPaperApprovalBridge {
+  status: PreopenPaperApprovalBridgeStatus;
+  generated_at: IsoDateTime | null;
+  source: "deterministic_v1";
+  preview_only: true;
+  advisory_only: true;
+  execution_allowed: false;
+  market_scope: "kr" | "us" | "crypto" | null;
+  stage: "preopen" | null;
+  eligible_count: number;
+  candidate_count: number;
+  candidates: PreopenPaperApprovalCandidate[];
+  blocking_reasons: string[];
+  warnings: string[];
+  unsupported_reasons: string[];
+}
 
 export type PreopenQaCheckStatus = "pass" | "warn" | "fail" | "unknown" | "skipped";
 export type PreopenQaCheckSeverity = "info" | "low" | "medium" | "high";
@@ -423,6 +466,7 @@ export interface PreopenLatestResponse {
   market_news_briefing: PreopenMarketNewsBriefing | null;
   briefing_artifact: PreopenBriefingArtifact | null;
   qa_evaluator: PreopenQaEvaluatorSummary | null;
+  paper_approval_bridge: PreopenPaperApprovalBridge | null;
 }
 
 export interface CreateFromResearchRunRequest {
