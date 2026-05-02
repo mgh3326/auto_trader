@@ -45,6 +45,9 @@ from app.services.market_news_briefing_formatter import (
     BriefingItem,
     format_market_news_briefing,
 )
+from app.services.preopen_paper_approval_bridge import (
+    build_preopen_paper_approval_bridge,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -970,21 +973,31 @@ async def get_latest_preopen_dashboard(
     )
 
     if run is None:
+        qa_evaluator = _build_qa_evaluator_summary(
+            has_run=False,
+            generated_at=None,
+            candidate_count=0,
+            reconciliation_count=0,
+            candidates=[],
+            reconciliations=[],
+            linked=[],
+            news=None,
+            market_news_briefing=None,
+            briefing_artifact=_FAIL_OPEN.briefing_artifact,
+            advisory_skipped_reason="no_open_preopen_run",
+        )
+        paper_approval_bridge = build_preopen_paper_approval_bridge(
+            has_run=False,
+            market_scope=market_scope,
+            candidates=[],
+            briefing_artifact=_FAIL_OPEN.briefing_artifact,
+            qa_evaluator=qa_evaluator,
+            generated_at=None,
+        )
         return _FAIL_OPEN.model_copy(
             update={
-                "qa_evaluator": _build_qa_evaluator_summary(
-                    has_run=False,
-                    generated_at=None,
-                    candidate_count=0,
-                    reconciliation_count=0,
-                    candidates=[],
-                    reconciliations=[],
-                    linked=[],
-                    news=None,
-                    market_news_briefing=None,
-                    briefing_artifact=_FAIL_OPEN.briefing_artifact,
-                    advisory_skipped_reason="no_open_preopen_run",
-                )
+                "qa_evaluator": qa_evaluator,
+                "paper_approval_bridge": paper_approval_bridge,
             }
         )
 
@@ -1034,6 +1047,14 @@ async def get_latest_preopen_dashboard(
         briefing_artifact=briefing_artifact,
         advisory_skipped_reason=advisory_reason,
     )
+    paper_approval_bridge = build_preopen_paper_approval_bridge(
+        has_run=True,
+        market_scope=run.market_scope,
+        candidates=candidates,
+        briefing_artifact=briefing_artifact,
+        qa_evaluator=qa_evaluator,
+        generated_at=run.generated_at,
+    )
 
     return PreopenLatestResponse(
         has_run=True,
@@ -1063,4 +1084,5 @@ async def get_latest_preopen_dashboard(
         market_news_briefing=market_news_briefing,
         briefing_artifact=briefing_artifact,
         qa_evaluator=qa_evaluator,
+        paper_approval_bridge=paper_approval_bridge,
     )
