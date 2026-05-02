@@ -168,3 +168,12 @@
 .artifactCard small {
   color: #64748b;
 }
+
+
+.qaSection {
+  border: 1px solid #c7d2fe;
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}

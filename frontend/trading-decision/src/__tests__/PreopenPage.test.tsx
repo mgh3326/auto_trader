@@ -8,6 +8,8 @@ import {
   makePreopenLinkedSession,
   makePreopenBriefingArtifact,
   makePreopenMarketNewsBriefing,
+  makePreopenQaEvaluator,
+  makePreopenUnavailableQaEvaluator,
   makePreopenNewsArticle,
   makePreopenNewsStale,
   makePreopenNewsUnavailable,
@@ -77,6 +79,87 @@ describe("PreopenPage", () => {
     expect(
       screen.getByRole("region", { name: /market news briefing/i }),
     ).toBeInTheDocument();
+  });
+
+
+  it("renders QA evaluator score, checks, and guardrail copy", async () => {
+    mockFetch({
+      [PREOPEN_URL]: () =>
+        new Response(JSON.stringify(makePreopenResponse())),
+    });
+
+    render(<PreopenPage />, { wrapper: MemoryRouter });
+
+    expect(
+      await screen.findByRole("region", { name: /preopen qa evaluator/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/QA ready/i)).toBeInTheDocument();
+    expect(screen.getByText(/Overall score: 90/i)).toBeInTheDocument();
+    expect(screen.getByText(/Actionability guardrail/i)).toBeInTheDocument();
+    expect(screen.getByText(/execution remains disabled/i)).toBeInTheDocument();
+  });
+
+  it("renders QA evaluator needs-review operator labels", async () => {
+    mockFetch({
+      [PREOPEN_URL]: () =>
+        new Response(
+          JSON.stringify(
+            makePreopenResponse({
+              qa_evaluator: makePreopenQaEvaluator({
+                status: "needs_review",
+                overall: {
+                  score: 70,
+                  grade: "watch",
+                  confidence: "medium",
+                  reason: "news stale",
+                },
+                blocking_reasons: ["news_readiness"],
+                warnings: ["News readiness is stale; review before relying on recommendations."],
+                checks: [
+                  {
+                    id: "news_readiness",
+                    label: "News readiness",
+                    status: "warn",
+                    severity: "medium",
+                    summary: "News readiness needs review before relying on recommendations.",
+                    details: null,
+                  },
+                ],
+              }),
+            }),
+          ),
+        ),
+    });
+
+    render(<PreopenPage />, { wrapper: MemoryRouter });
+
+    expect(await screen.findByText(/QA needs review/i)).toBeInTheDocument();
+    expect(screen.queryByText(/QA needs_review/i)).toBeNull();
+    expect(
+      screen.getAllByText(/News readiness needs review before relying on recommendations/i).length,
+    ).toBeGreaterThan(0);
+    expect(screen.queryByText("news_readiness")).toBeNull();
+  });
+
+  it("renders unavailable QA evaluator with human-readable blocking reason", async () => {
+    mockFetch({
+      [PREOPEN_URL]: () =>
+        new Response(
+          JSON.stringify(
+            makePreopenResponse({
+              qa_evaluator: makePreopenUnavailableQaEvaluator(),
+            }),
+          ),
+        ),
+    });
+
+    render(<PreopenPage />, { wrapper: MemoryRouter });
+
+    expect(await screen.findByText(/QA unavailable/i)).toBeInTheDocument();
+    expect(
+      screen.getAllByText(/No open preopen research run is available/i).length,
+    ).toBeGreaterThan(0);
+    expect(screen.queryByText("no_open_preopen_run")).toBeNull();
   });
 
   it("clicking Create decision session calls api with correct args and navigates", async () => {

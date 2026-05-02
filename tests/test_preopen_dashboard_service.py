@@ -609,6 +609,90 @@ async def test_news_unavailable_does_not_demote_other_freshness_signals():
     assert "news_unavailable" in result.source_warnings
 
 
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_qa_evaluator_ready_for_complete_fresh_preopen_run():
+    from app.services import preopen_dashboard_service, research_run_service
+
+    run = _make_run()
+    readiness = _make_news_readiness(is_ready=True, is_stale=False, warnings=[])
+
+    with _patched_dashboard_dependencies(
+        preopen_dashboard_service,
+        research_run_service,
+        run=run,
+        readiness=readiness,
+    ):
+        result = await preopen_dashboard_service.get_latest_preopen_dashboard(
+            db=AsyncMock(),
+            user_id=7,
+            market_scope="kr",
+        )
+
+    assert result.qa_evaluator is not None
+    assert result.qa_evaluator.status == "ready"
+    assert result.qa_evaluator.overall.score is not None
+    assert result.qa_evaluator.overall.score >= 75
+    assert result.qa_evaluator.coverage["advisory_only"] is True
+    assert result.qa_evaluator.coverage["execution_allowed"] is False
+    checks = {check.id: check for check in result.qa_evaluator.checks}
+    assert checks["actionability_guardrail"].status == "pass"
+    assert result.qa_evaluator.blocking_reasons == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_qa_evaluator_needs_review_when_news_is_stale():
+    from app.services import preopen_dashboard_service, research_run_service
+
+    run = _make_run()
+    readiness = _make_news_readiness(
+        is_ready=False,
+        is_stale=True,
+        warnings=["news_stale"],
+    )
+
+    with _patched_dashboard_dependencies(
+        preopen_dashboard_service,
+        research_run_service,
+        run=run,
+        readiness=readiness,
+    ):
+        result = await preopen_dashboard_service.get_latest_preopen_dashboard(
+            db=AsyncMock(),
+            user_id=7,
+            market_scope="kr",
+        )
+
+    assert result.qa_evaluator is not None
+    assert result.qa_evaluator.status == "needs_review"
+    assert "news_readiness" in result.qa_evaluator.blocking_reasons
+    checks = {check.id: check for check in result.qa_evaluator.checks}
+    assert checks["news_readiness"].status == "fail"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_qa_evaluator_unavailable_when_no_run():
+    from app.services import preopen_dashboard_service, research_run_service
+
+    with patch.object(
+        research_run_service,
+        "get_latest_research_run",
+        new=AsyncMock(return_value=None),
+    ):
+        result = await preopen_dashboard_service.get_latest_preopen_dashboard(
+            db=AsyncMock(),
+            user_id=7,
+            market_scope="kr",
+        )
+
+    assert result.qa_evaluator is not None
+    assert result.qa_evaluator.status == "unavailable"
+    assert result.qa_evaluator.overall.score is None
+    assert "no_open_preopen_run" in result.qa_evaluator.blocking_reasons
+
+
 @pytest.mark.unit
 def test_no_forbidden_imports():
     """preopen modules must not import broker/order/watch/intent/credential modules."""

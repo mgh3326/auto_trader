@@ -335,6 +335,49 @@ export interface PreopenDecisionSessionCta {
   requires_confirmation: boolean;
 }
 
+
+export type PreopenQaCheckStatus = "pass" | "warn" | "fail" | "unknown" | "skipped";
+export type PreopenQaCheckSeverity = "info" | "low" | "medium" | "high";
+export type PreopenQaGrade =
+  | "excellent"
+  | "good"
+  | "watch"
+  | "poor"
+  | "unavailable";
+export type PreopenQaConfidence = "high" | "medium" | "low" | "unavailable";
+export type PreopenQaEvaluatorStatus =
+  | "ready"
+  | "needs_review"
+  | "unavailable"
+  | "skipped";
+
+export interface PreopenQaCheck {
+  id: string;
+  label: string;
+  status: PreopenQaCheckStatus;
+  severity: PreopenQaCheckSeverity;
+  summary: string;
+  details: Record<string, unknown> | null;
+}
+
+export interface PreopenQaScore {
+  score: number | null;
+  grade: PreopenQaGrade;
+  confidence: PreopenQaConfidence;
+  reason: string | null;
+}
+
+export interface PreopenQaEvaluatorSummary {
+  status: PreopenQaEvaluatorStatus;
+  generated_at: IsoDateTime | null;
+  source: "deterministic_v1";
+  overall: PreopenQaScore;
+  checks: PreopenQaCheck[];
+  blocking_reasons: string[];
+  warnings: string[];
+  coverage: Record<string, unknown>;
+}
+
 export interface PreopenBriefingArtifact {
   artifact_type: "preopen_briefing";
   artifact_version: "v1";
@@ -379,6 +422,7 @@ export interface PreopenLatestResponse {
   news_preview: PreopenNewsArticlePreview[];
   market_news_briefing: PreopenMarketNewsBriefing | null;
   briefing_artifact: PreopenBriefingArtifact | null;
+  qa_evaluator: PreopenQaEvaluatorSummary | null;
 }
 
 export interface CreateFromResearchRunRequest {

@@ -7,6 +7,7 @@ import type {
   PreopenMarketNewsItem,
   PreopenNewsArticlePreview,
   PreopenNewsReadinessSummary,
+  PreopenQaEvaluatorSummary,
   PreopenReconciliationSummary,
 } from "../../api/types";
 
@@ -304,6 +305,99 @@ export function makePreopenUnavailableArtifact(
   });
 }
 
+
+export function makePreopenQaEvaluator(
+  overrides: Partial<PreopenQaEvaluatorSummary> = {},
+): PreopenQaEvaluatorSummary {
+  return {
+    status: "ready",
+    generated_at: now,
+    source: "deterministic_v1",
+    overall: {
+      score: 90,
+      grade: "excellent",
+      confidence: "high",
+      reason: "deterministic checks over already-loaded preopen response data",
+    },
+    checks: [
+      {
+        id: "has_open_run",
+        label: "Open preopen run",
+        status: "pass",
+        severity: "info",
+        summary: "Open preopen research run loaded for read-only evaluation.",
+        details: null,
+      },
+      {
+        id: "actionability_guardrail",
+        label: "Actionability guardrail",
+        status: "pass",
+        severity: "info",
+        summary: "QA evaluator is advisory-only and execution remains disabled.",
+        details: { advisory_only: true, execution_allowed: false },
+      },
+    ],
+    blocking_reasons: [],
+    warnings: [],
+    coverage: {
+      candidate_count: 1,
+      reconciliation_count: 1,
+      advisory_only: true,
+      execution_allowed: false,
+    },
+    ...overrides,
+  };
+}
+
+export function makePreopenUnavailableQaEvaluator(
+  overrides: Partial<PreopenQaEvaluatorSummary> = {},
+): PreopenQaEvaluatorSummary {
+  return makePreopenQaEvaluator({
+    status: "unavailable",
+    generated_at: null,
+    overall: {
+      score: null,
+      grade: "unavailable",
+      confidence: "unavailable",
+      reason: "no_open_preopen_run",
+    },
+    checks: [
+      {
+        id: "has_open_run",
+        label: "Open preopen run",
+        status: "fail",
+        severity: "high",
+        summary: "No open preopen research run is available.",
+        details: { reason: "no_open_preopen_run" },
+      },
+      {
+        id: "actionability_guardrail",
+        label: "Actionability guardrail",
+        status: "pass",
+        severity: "info",
+        summary: "Evaluator is advisory-only and execution remains disabled.",
+        details: { advisory_only: true, execution_allowed: false },
+      },
+    ],
+    blocking_reasons: ["no_open_preopen_run"],
+    warnings: [],
+    coverage: {
+      candidate_count: 0,
+      candidate_items: 0,
+      reconciliation_count: 0,
+      reconciliation_items: 0,
+      linked_session_count: 0,
+      news_status: "unavailable",
+      market_news_sections: 0,
+      briefing_artifact_status: "unavailable",
+      advisory_only: true,
+      execution_allowed: false,
+      advisory_skipped_reason: "no_open_preopen_run",
+    },
+    ...overrides,
+  });
+}
+
 export function makePreopenResponse(
   overrides: Partial<PreopenLatestResponse> = {},
 ): PreopenLatestResponse {
@@ -333,6 +427,7 @@ export function makePreopenResponse(
     news_preview: [makePreopenNewsArticle()],
     market_news_briefing: makePreopenMarketNewsBriefing(),
     briefing_artifact: makePreopenBriefingArtifact(),
+    qa_evaluator: makePreopenQaEvaluator(),
     ...overrides,
   };
 }
@@ -366,6 +461,7 @@ export function makePreopenFailOpen(
     news_preview: [],
     market_news_briefing: null,
     briefing_artifact: makePreopenUnavailableArtifact(),
+    qa_evaluator: makePreopenUnavailableQaEvaluator(),
     ...overrides,
   };
 }
