@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from decimal import Decimal
 
 import pytest
@@ -105,6 +106,32 @@ def test_operator_request_validates_analyst_token_charset():
             candidates=cand,
             analysts=["BAD-TOKEN"],
         )
+
+
+@pytest.mark.unit
+def test_operator_request_accepts_valid_or_missing_analyst_tokens():
+    from app.schemas.operator_decision_session import (
+        OperatorCandidate,
+        OperatorDecisionRequest,
+    )
+
+    cand = [
+        OperatorCandidate(symbol="AAPL", instrument_type="equity_us", confidence=50)
+    ]
+
+    assert (
+        OperatorDecisionRequest(
+            market_scope="us",
+            candidates=cand,
+            analysts=None,
+        ).analysts
+        is None
+    )
+    assert OperatorDecisionRequest(
+        market_scope="us",
+        candidates=cand,
+        analysts=["market_news", "technical"],
+    ).analysts == ["market_news", "technical"]
 
 
 @pytest.mark.unit
@@ -297,4 +324,119 @@ def test_crypto_candidate_rejects_preview_payload_symbol_mismatch():
             instrument_type="crypto",
             confidence=45,
             **metadata,
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("metadata_patch", "error_match"),
+    [
+        ({"approval_copy": []}, "approval_copy must be a non-empty list"),
+        ({"approval_copy": [""]}, "approval_copy must contain non-empty strings"),
+        ({"signal_symbol": "BTC"}, "crypto signal_symbol must be an Upbit KRW symbol"),
+        (
+            {"execution_symbol": "BTC-USDT"},
+            "crypto execution_symbol must be an Alpaca USD pair",
+        ),
+    ],
+)
+def test_crypto_candidate_rejects_invalid_workflow_scalar_or_copy_fields(
+    metadata_patch: dict[str, object], error_match: str
+):
+    from app.schemas.operator_decision_session import OperatorCandidate
+    from app.services.crypto_execution_mapping import (
+        build_operator_candidate_crypto_metadata,
+    )
+
+    metadata = build_operator_candidate_crypto_metadata("KRW-BTC")
+    metadata.update(metadata_patch)
+
+    with pytest.raises(ValueError, match=error_match):
+        OperatorCandidate(
+            symbol="KRW-BTC",
+            instrument_type="crypto",
+            confidence=45,
+            **metadata,
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("preview_patch", "error_match"),
+    [
+        ({"side": "sell"}, "crypto preview side must be buy"),
+        ({"type": "market"}, "crypto preview type must be limit"),
+        ({"asset_class": "us_equity"}, "crypto preview asset_class must be crypto"),
+        ({"time_in_force": "day"}, "crypto preview time_in_force is unsupported"),
+        ({"symbol": "BTC-USDT"}, "crypto preview symbol must be an Alpaca USD pair"),
+        (
+            {"notional": "not-a-number"},
+            "crypto preview notional and limit_price must be numeric",
+        ),
+        ({"notional": "51"}, "crypto preview notional must be > 0 and <= 50"),
+        ({"limit_price": "0"}, "crypto preview limit_price must be > 0"),
+    ],
+)
+def test_crypto_candidate_rejects_invalid_preview_field_values(
+    preview_patch: dict[str, object], error_match: str
+):
+    from app.schemas.operator_decision_session import OperatorCandidate
+    from app.services.crypto_execution_mapping import (
+        build_operator_candidate_crypto_metadata,
+    )
+
+    metadata = build_operator_candidate_crypto_metadata("KRW-BTC")
+    metadata["preview_payload"] = deepcopy(metadata["preview_payload"])
+    metadata["preview_payload"].update(preview_patch)
+
+    with pytest.raises(ValueError, match=error_match):
+        OperatorCandidate(
+            symbol="KRW-BTC",
+            instrument_type="crypto",
+            confidence=45,
+            **metadata,
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("metadata_patch", "error_match"),
+    [
+        ({"signal_venue": "binance"}, "crypto signal_venue must be upbit"),
+        (
+            {"execution_venue": "alpaca_live"},
+            "crypto execution_venue must be alpaca_paper",
+        ),
+        ({"execution_mode": "live"}, "crypto execution_mode must be paper"),
+        (
+            {"execution_asset_class": "us_equity"},
+            "crypto execution_asset_class must be crypto",
+        ),
+        ({"workflow_stage": "weekday_open"}, "crypto workflow_stage is unsupported"),
+        ({"purpose": "submit_order"}, "crypto purpose is unsupported"),
+    ],
+)
+def test_crypto_workflow_scalar_helper_rejects_invalid_values(
+    metadata_patch: dict[str, object], error_match: str
+):
+    from app.schemas.operator_decision_session import OperatorCandidate
+    from app.services.crypto_execution_mapping import (
+        build_operator_candidate_crypto_metadata,
+    )
+
+    metadata = build_operator_candidate_crypto_metadata("KRW-BTC")
+    metadata.update(metadata_patch)
+
+    with pytest.raises(ValueError, match=error_match):
+        OperatorCandidate._validate_crypto_workflow_scalars(metadata)
+
+
+@pytest.mark.unit
+def test_crypto_preview_payload_helper_rejects_non_object_payload():
+    from app.schemas.operator_decision_session import OperatorCandidate
+
+    with pytest.raises(ValueError, match="preview_payload must be an object"):
+        OperatorCandidate._validate_crypto_preview_payload(
+            None,
+            execution_symbol="BTC/USD",
         )
