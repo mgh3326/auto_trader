@@ -51,6 +51,20 @@ def _build_no_advisory_proposal(
     *,
     source_profile: str,
 ) -> dict[str, Any]:
+    original_payload: dict[str, Any] = {
+        "advisory_only": True,
+        "execution_allowed": False,
+        "operator_request": {
+            "source_profile": source_profile,
+            "applied_policies": ["no_advisory"],
+            "candidate": candidate.model_dump(mode="json"),
+        },
+    }
+    workflow = _candidate_crypto_paper_workflow(candidate)
+    if workflow is not None:
+        original_payload["crypto_paper_workflow"] = _serialize_crypto_paper_workflow(
+            workflow
+        )
     return {
         "symbol": candidate.symbol,
         "instrument_type": InstrumentType(candidate.instrument_type),
@@ -64,19 +78,79 @@ def _build_no_advisory_proposal(
         "original_threshold_pct": candidate.threshold_pct,
         "original_currency": candidate.currency,
         "original_rationale": candidate.rationale,
-        "original_payload": {
-            "advisory_only": True,
-            "execution_allowed": False,
-            "operator_request": {
-                "source_profile": source_profile,
-                "applied_policies": ["no_advisory"],
-                "candidate": candidate.model_dump(mode="json"),
-            },
-        },
+        "original_payload": original_payload,
     }
 
 
+def _candidate_crypto_paper_workflow(
+    candidate: OperatorCandidate,
+) -> dict[str, Any] | None:
+    workflow = {
+        "signal_symbol": candidate.signal_symbol,
+        "signal_venue": candidate.signal_venue,
+        "execution_symbol": candidate.execution_symbol,
+        "execution_venue": candidate.execution_venue,
+        "execution_mode": candidate.execution_mode,
+        "execution_asset_class": candidate.execution_asset_class,
+        "workflow_stage": candidate.workflow_stage,
+        "purpose": candidate.purpose,
+        "preview_payload": candidate.preview_payload,
+        "approval_copy": candidate.approval_copy,
+    }
+    if all(value is None for value in workflow.values()):
+        return None
+    return workflow
+
+
+def _serialize_crypto_paper_workflow(workflow: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "signal_symbol": workflow["signal_symbol"],
+        "signal_venue": workflow["signal_venue"],
+        "execution_symbol": workflow["execution_symbol"],
+        "execution_venue": workflow["execution_venue"],
+        "asset_class": workflow["execution_asset_class"],
+        "execution_mode": workflow["execution_mode"],
+        "stage": workflow["workflow_stage"],
+        "purpose": workflow["purpose"],
+        "preview_payload": workflow["preview_payload"],
+        "approval_copy": workflow["approval_copy"],
+    }
+
+
+def _build_no_advisory_market_brief(request: OperatorDecisionRequest) -> dict[str, Any]:
+    market_brief: dict[str, Any] = {
+        "advisory_only": True,
+        "execution_allowed": False,
+        "operator_request": {
+            "applied_policies": ["no_advisory"],
+            "include_tradingagents": False,
+        },
+    }
+    crypto_workflows = [
+        workflow
+        for candidate in request.candidates
+        if (workflow := _candidate_crypto_paper_workflow(candidate)) is not None
+    ]
+    if request.market_scope == "crypto" and crypto_workflows:
+        first_workflow = crypto_workflows[0]
+        market_brief["stage"] = first_workflow.get("workflow_stage")
+        market_brief["crypto_paper_workflow"] = {
+            "stage": first_workflow.get("workflow_stage"),
+            "workflow_count": len(crypto_workflows),
+            "signal_venue": first_workflow.get("signal_venue"),
+            "execution_venue": first_workflow.get("execution_venue"),
+            "execution_mode": first_workflow.get("execution_mode"),
+        }
+    return market_brief
+
+
 def _build_candidate_analysis(candidate: OperatorCandidate) -> CandidateAnalysis:
+    deterministic_payload: dict[str, Any] = {}
+    workflow = _candidate_crypto_paper_workflow(candidate)
+    if workflow is not None:
+        deterministic_payload["crypto_paper_workflow"] = (
+            _serialize_crypto_paper_workflow(workflow)
+        )
     return CandidateAnalysis(
         symbol=candidate.symbol,
         instrument_type=candidate.instrument_type,
@@ -91,6 +165,7 @@ def _build_candidate_analysis(candidate: OperatorCandidate) -> CandidateAnalysis
         trigger_price=candidate.trigger_price,
         threshold_pct=candidate.threshold_pct,
         currency=candidate.currency,
+        deterministic_payload=deterministic_payload,
     )
 
 
@@ -124,14 +199,7 @@ async def _run_without_advisory(
         source_profile=request.source_profile,
         strategy_name=request.strategy_name,
         market_scope=request.market_scope,
-        market_brief={
-            "advisory_only": True,
-            "execution_allowed": False,
-            "operator_request": {
-                "applied_policies": ["no_advisory"],
-                "include_tradingagents": False,
-            },
-        },
+        market_brief=_build_no_advisory_market_brief(request),
         generated_at=generated_at,
         notes=request.notes,
     )
