@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Literal
 from uuid import UUID
 
@@ -204,10 +204,12 @@ class OperatorCandidate(BaseModel):
         try:
             notional = Decimal(str(preview_payload.get("notional")))
             limit_price = Decimal(str(preview_payload.get("limit_price")))
-        except Exception as exc:
+        except (InvalidOperation, TypeError, ValueError) as exc:
             raise ValueError(
                 "crypto preview notional and limit_price must be numeric"
             ) from exc
+        if not notional.is_finite() or not limit_price.is_finite():
+            raise ValueError("crypto preview notional and limit_price must be finite")
         if notional <= 0 or notional > Decimal("50"):
             raise ValueError("crypto preview notional must be > 0 and <= 50")
         if limit_price <= 0:

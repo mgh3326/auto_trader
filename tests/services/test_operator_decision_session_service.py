@@ -2,9 +2,15 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
+
+
+def _mock_async_db_session() -> AsyncSession:
+    return cast(AsyncSession, AsyncMock(spec=AsyncSession))
 
 
 @pytest.mark.asyncio
@@ -70,7 +76,7 @@ async def test_no_advisory_path_persists_via_raw_helpers(monkeypatch):
     )
 
     result = await svc.create_operator_decision_session(
-        SimpleNamespace(), user_id=7, request=req
+        _mock_async_db_session(), user_id=7, request=req
     )
 
     assert result.advisory_used is False
@@ -128,7 +134,7 @@ async def test_no_advisory_path_uses_now_callable(monkeypatch):
     )
     fixed = datetime(2026, 4, 28, 12, 0, tzinfo=UTC)
     await svc.create_operator_decision_session(
-        SimpleNamespace(),
+        _mock_async_db_session(),
         user_id=1,
         request=req,
         now=lambda: fixed,
@@ -192,7 +198,7 @@ async def test_no_advisory_crypto_path_preserves_paper_workflow_metadata(monkeyp
     )
 
     result = await svc.create_operator_decision_session(
-        SimpleNamespace(), user_id=9, request=req
+        _mock_async_db_session(), user_id=9, request=req
     )
 
     assert result.advisory_used is False
@@ -310,7 +316,7 @@ async def test_advisory_crypto_path_preserves_paper_workflow_metadata(monkeypatc
     )
 
     result = await svc.create_operator_decision_session(
-        SimpleNamespace(), user_id=9, request=req
+        _mock_async_db_session(), user_id=9, request=req
     )
 
     assert result.advisory_used is True
@@ -424,7 +430,7 @@ async def test_advisory_path_uses_synthesis_persistence(monkeypatch):
     )
 
     result = await svc.create_operator_decision_session(
-        SimpleNamespace(), user_id=7, request=req
+        _mock_async_db_session(), user_id=7, request=req
     )
 
     assert result.advisory_used is True
@@ -489,7 +495,7 @@ async def test_advisory_missing_config_raises_without_persistence(monkeypatch):
 
     with pytest.raises(TradingAgentsNotConfigured):
         await svc.create_operator_decision_session(
-            SimpleNamespace(), user_id=1, request=req
+            _mock_async_db_session(), user_id=1, request=req
         )
 
 
@@ -529,5 +535,5 @@ async def test_advisory_runner_error_propagates_without_persistence(monkeypatch)
 
     with pytest.raises(TradingAgentsRunnerError):
         await svc.create_operator_decision_session(
-            SimpleNamespace(), user_id=1, request=req
+            _mock_async_db_session(), user_id=1, request=req
         )

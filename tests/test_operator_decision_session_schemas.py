@@ -373,6 +373,14 @@ def test_crypto_candidate_rejects_invalid_workflow_scalar_or_copy_fields(
             {"notional": "not-a-number"},
             "crypto preview notional and limit_price must be numeric",
         ),
+        (
+            {"notional": Decimal("NaN")},
+            "crypto preview notional and limit_price must be finite",
+        ),
+        (
+            {"limit_price": Decimal("Infinity")},
+            "crypto preview notional and limit_price must be finite",
+        ),
         ({"notional": "51"}, "crypto preview notional must be > 0 and <= 50"),
         ({"limit_price": "0"}, "crypto preview limit_price must be > 0"),
     ],
