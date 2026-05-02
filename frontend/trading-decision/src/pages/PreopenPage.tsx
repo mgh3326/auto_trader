@@ -9,7 +9,11 @@ import {
   createDecisionFromResearchRun,
   getLatestPreopen,
 } from "../api/preopen";
-import type { PreopenBriefingArtifact, PreopenLatestResponse } from "../api/types";
+import type {
+  PreopenBriefingArtifact,
+  PreopenLatestResponse,
+  PreopenQaEvaluatorSummary,
+} from "../api/types";
 import { formatDateTime } from "../format/datetime";
 import styles from "./PreopenPage.module.css";
 
@@ -81,6 +85,59 @@ function PreopenBriefingArtifactSection({
           ))}
         </div>
       ) : null}
+    </section>
+  );
+}
+
+
+function PreopenQaEvaluatorPanel({
+  qa,
+}: {
+  qa: PreopenQaEvaluatorSummary | null;
+}) {
+  if (!qa) return null;
+  const scoreLabel = qa.overall.score === null ? "—" : String(qa.overall.score);
+  return (
+    <section aria-label="Preopen QA evaluator" className={styles.qaSection}>
+      <div className={styles.artifactHeader}>
+        <div>
+          <h2>QA evaluator</h2>
+          <p className={styles.meta}>
+            {qa.source} · {qa.overall.grade} · confidence {qa.overall.confidence}
+          </p>
+        </div>
+        <span className={styles.artifactStatus}>QA {qa.status}</span>
+      </div>
+      <p>Overall score: {scoreLabel}</p>
+      {qa.blocking_reasons.length > 0 ? (
+        <ul aria-label="QA blocking reasons" className={styles.warnings}>
+          {qa.blocking_reasons.map((reason) => (
+            <li className={styles.warningChip} key={reason}>
+              {reason}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {qa.warnings.length > 0 ? (
+        <ul aria-label="QA warnings" className={styles.warnings}>
+          {qa.warnings.map((warning) => (
+            <li className={styles.warningChip} key={warning}>
+              {warning}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      <div className={styles.artifactGrid}>
+        {qa.checks.map((check) => (
+          <div className={styles.artifactCard} key={check.id}>
+            <strong>{check.label}</strong>
+            <span>
+              {check.status} · {check.severity}
+            </span>
+            <small>{check.summary}</small>
+          </div>
+        ))}
+      </div>
     </section>
   );
 }
@@ -174,6 +231,7 @@ export default function PreopenPage() {
           ) : null}
         </div>
         <PreopenBriefingArtifactSection artifact={data.briefing_artifact} />
+        <PreopenQaEvaluatorPanel qa={data.qa_evaluator} />
       </main>
     );
   }
@@ -211,6 +269,7 @@ export default function PreopenPage() {
       ) : null}
 
       <PreopenBriefingArtifactSection artifact={data.briefing_artifact} />
+      <PreopenQaEvaluatorPanel qa={data.qa_evaluator} />
       <NewsReadinessSection news={data.news} preview={data.news_preview} />
       <MarketNewsBriefingSection briefing={data.market_news_briefing} />
 

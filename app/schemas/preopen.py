@@ -79,6 +79,40 @@ PreopenDecisionSessionCtaState = Literal[
 ]
 
 
+
+PreopenQaCheckStatus = Literal["pass", "warn", "fail", "unknown", "skipped"]
+PreopenQaCheckSeverity = Literal["info", "low", "medium", "high"]
+PreopenQaGrade = Literal["excellent", "good", "watch", "poor", "unavailable"]
+PreopenQaConfidence = Literal["high", "medium", "low", "unavailable"]
+PreopenQaEvaluatorStatus = Literal["ready", "needs_review", "unavailable", "skipped"]
+
+
+class PreopenQaCheck(BaseModel):
+    id: str
+    label: str
+    status: PreopenQaCheckStatus
+    severity: PreopenQaCheckSeverity
+    summary: str
+    details: dict[str, Any] | None = None
+
+
+class PreopenQaScore(BaseModel):
+    score: int | None
+    grade: PreopenQaGrade
+    confidence: PreopenQaConfidence
+    reason: str | None = None
+
+
+class PreopenQaEvaluatorSummary(BaseModel):
+    status: PreopenQaEvaluatorStatus
+    generated_at: datetime | None = None
+    source: Literal["deterministic_v1"] = "deterministic_v1"
+    overall: PreopenQaScore
+    checks: list[PreopenQaCheck]
+    blocking_reasons: list[str]
+    warnings: list[str]
+    coverage: dict[str, Any]
+
 class PreopenArtifactReadinessItem(BaseModel):
     key: str
     status: PreopenArtifactReadinessStatus
@@ -184,3 +218,4 @@ class PreopenLatestResponse(BaseModel):
     news_brief: KRPreopenNewsBrief | None = None
     market_news_briefing: PreopenMarketNewsBriefing | None = None
     briefing_artifact: PreopenBriefingArtifact | None = None
+    qa_evaluator: PreopenQaEvaluatorSummary | None = None
