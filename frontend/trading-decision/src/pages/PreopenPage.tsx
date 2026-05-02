@@ -90,6 +90,20 @@ function PreopenBriefingArtifactSection({
 }
 
 
+const QA_STATUS_LABEL: Record<PreopenQaEvaluatorSummary["status"], string> = {
+  ready: "Ready",
+  needs_review: "Needs review",
+  unavailable: "Unavailable",
+  skipped: "Skipped",
+};
+
+function getQaReasonLabel(qa: PreopenQaEvaluatorSummary, reason: string) {
+  const matchedCheck = qa.checks.find(
+    (check) => check.id === reason || check.details?.reason === reason,
+  );
+  return matchedCheck?.summary ?? reason;
+}
+
 function PreopenQaEvaluatorPanel({
   qa,
 }: {
@@ -106,14 +120,16 @@ function PreopenQaEvaluatorPanel({
             {qa.source} · {qa.overall.grade} · confidence {qa.overall.confidence}
           </p>
         </div>
-        <span className={styles.artifactStatus}>QA {qa.status}</span>
+        <span className={styles.artifactStatus}>
+          QA {QA_STATUS_LABEL[qa.status] ?? qa.status}
+        </span>
       </div>
       <p>Overall score: {scoreLabel}</p>
       {qa.blocking_reasons.length > 0 ? (
         <ul aria-label="QA blocking reasons" className={styles.warnings}>
           {qa.blocking_reasons.map((reason) => (
             <li className={styles.warningChip} key={reason}>
-              {reason}
+              {getQaReasonLabel(qa, reason)}
             </li>
           ))}
         </ul>
@@ -122,7 +138,7 @@ function PreopenQaEvaluatorPanel({
         <ul aria-label="QA warnings" className={styles.warnings}>
           {qa.warnings.map((warning) => (
             <li className={styles.warningChip} key={warning}>
-              {warning}
+              {getQaReasonLabel(qa, warning)}
             </li>
           ))}
         </ul>

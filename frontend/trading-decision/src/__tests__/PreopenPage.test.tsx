@@ -9,6 +9,7 @@ import {
   makePreopenBriefingArtifact,
   makePreopenMarketNewsBriefing,
   makePreopenQaEvaluator,
+  makePreopenUnavailableQaEvaluator,
   makePreopenNewsArticle,
   makePreopenNewsStale,
   makePreopenNewsUnavailable,
@@ -98,7 +99,7 @@ describe("PreopenPage", () => {
     expect(screen.getByText(/execution remains disabled/i)).toBeInTheDocument();
   });
 
-  it("renders QA evaluator needs-review blocking reason", async () => {
+  it("renders QA evaluator needs-review operator labels", async () => {
     mockFetch({
       [PREOPEN_URL]: () =>
         new Response(
@@ -114,6 +115,16 @@ describe("PreopenPage", () => {
                 },
                 blocking_reasons: ["news_readiness"],
                 warnings: ["News readiness is stale; review before relying on recommendations."],
+                checks: [
+                  {
+                    id: "news_readiness",
+                    label: "News readiness",
+                    status: "warn",
+                    severity: "medium",
+                    summary: "News readiness needs review before relying on recommendations.",
+                    details: null,
+                  },
+                ],
               }),
             }),
           ),
@@ -122,8 +133,33 @@ describe("PreopenPage", () => {
 
     render(<PreopenPage />, { wrapper: MemoryRouter });
 
-    expect(await screen.findByText(/QA needs_review/i)).toBeInTheDocument();
-    expect(screen.getByText(/news_readiness/i)).toBeInTheDocument();
+    expect(await screen.findByText(/QA needs review/i)).toBeInTheDocument();
+    expect(screen.queryByText(/QA needs_review/i)).toBeNull();
+    expect(
+      screen.getAllByText(/News readiness needs review before relying on recommendations/i).length,
+    ).toBeGreaterThan(0);
+    expect(screen.queryByText("news_readiness")).toBeNull();
+  });
+
+  it("renders unavailable QA evaluator with human-readable blocking reason", async () => {
+    mockFetch({
+      [PREOPEN_URL]: () =>
+        new Response(
+          JSON.stringify(
+            makePreopenResponse({
+              qa_evaluator: makePreopenUnavailableQaEvaluator(),
+            }),
+          ),
+        ),
+    });
+
+    render(<PreopenPage />, { wrapper: MemoryRouter });
+
+    expect(await screen.findByText(/QA unavailable/i)).toBeInTheDocument();
+    expect(
+      screen.getAllByText(/No open preopen research run is available/i).length,
+    ).toBeGreaterThan(0);
+    expect(screen.queryByText("no_open_preopen_run")).toBeNull();
   });
 
   it("clicking Create decision session calls api with correct args and navigates", async () => {
