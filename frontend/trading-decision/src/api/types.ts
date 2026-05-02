@@ -126,6 +126,35 @@ export interface SessionAnalyticsResponse {
   cells: SessionAnalyticsCell[];
 }
 
+export interface CryptoPaperPreviewPayload {
+  symbol: string;
+  side: "buy";
+  type: "limit";
+  notional: DecimalString;
+  limit_price: DecimalString;
+  time_in_force: "gtc" | "ioc";
+  asset_class: "crypto";
+}
+
+export interface CryptoPaperWorkflowMetadata {
+  signal_symbol: string;
+  signal_venue: "upbit";
+  execution_symbol: string;
+  execution_venue: "alpaca_paper";
+  execution_mode: "paper";
+  execution_asset_class?: "crypto";
+  asset_class?: "crypto";
+  workflow_stage?: "crypto_weekend" | "crypto_always_open";
+  stage?: "crypto_weekend" | "crypto_always_open";
+  purpose: "paper_plumbing_smoke" | "alpha_candidate_review" | string;
+  preview_payload: CryptoPaperPreviewPayload;
+  approval_copy: string[];
+}
+
+export interface ProposalOriginalPayload extends Record<string, unknown> {
+  crypto_paper_workflow?: CryptoPaperWorkflowMetadata;
+}
+
 export interface ProposalDetail {
   proposal_uuid: Uuid;
   symbol: string;
@@ -144,7 +173,7 @@ export interface ProposalDetail {
   original_threshold_pct: DecimalString | null;
   original_currency: string | null;
   original_rationale: string | null;
-  original_payload: Record<string, unknown>;
+  original_payload: ProposalOriginalPayload;
   user_quantity: DecimalString | null;
   user_quantity_pct: DecimalString | null;
   user_amount: DecimalString | null;

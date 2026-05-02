@@ -111,7 +111,7 @@ def _build_original_payload(
 ) -> dict[str, Any]:
     advisory_dump = advisory.model_dump(mode="json")
     candidate_dump = candidate.model_dump(mode="json")
-    return {
+    payload = {
         "advisory_only": True,
         "execution_allowed": False,
         "synthesis": {
@@ -126,6 +126,10 @@ def _build_original_payload(
             "reflected_action": advisory.advisory_action,
         },
     }
+    crypto_workflow = candidate.deterministic_payload.get("crypto_paper_workflow")
+    if crypto_workflow is not None:
+        payload["crypto_paper_workflow"] = crypto_workflow
+    return payload
 
 
 def build_session_synthesis_meta(

@@ -140,6 +140,218 @@ async def test_no_advisory_path_uses_now_callable(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_no_advisory_crypto_path_preserves_paper_workflow_metadata(monkeypatch):
+    import app.services.operator_decision_session_service as svc
+    from app.schemas.operator_decision_session import (
+        OperatorCandidate,
+        OperatorDecisionRequest,
+    )
+    from app.services.crypto_execution_mapping import (
+        build_operator_candidate_crypto_metadata,
+    )
+
+    fake_session = SimpleNamespace(
+        id=77,
+        session_uuid="cccccccc-cccc-cccc-cccc-cccccccccccc",
+        status="open",
+        market_brief={},
+    )
+    create_session_mock = AsyncMock(return_value=fake_session)
+    add_proposals_mock = AsyncMock(return_value=[SimpleNamespace(id=100)])
+    monkeypatch.setattr(
+        svc.trading_decision_service,
+        "create_decision_session",
+        create_session_mock,
+    )
+    monkeypatch.setattr(
+        svc.trading_decision_service,
+        "add_decision_proposals",
+        add_proposals_mock,
+    )
+    monkeypatch.setattr(
+        svc,
+        "run_tradingagents_research",
+        AsyncMock(side_effect=AssertionError("must not run")),
+    )
+
+    req = OperatorDecisionRequest(
+        market_scope="crypto",
+        candidates=[
+            OperatorCandidate(
+                symbol="KRW-BTC",
+                instrument_type="crypto",
+                side="buy",
+                confidence=55,
+                proposal_kind="pullback_watch",
+                rationale="Weekend plumbing smoke from Upbit signal.",
+                **build_operator_candidate_crypto_metadata("KRW-BTC"),
+            )
+        ],
+        include_tradingagents=False,
+        notes="crypto weekend smoke",
+    )
+
+    result = await svc.create_operator_decision_session(
+        SimpleNamespace(), user_id=9, request=req
+    )
+
+    assert result.advisory_used is False
+    create_kwargs = create_session_mock.await_args.kwargs
+    assert create_kwargs["market_scope"] == "crypto"
+    assert create_kwargs["market_brief"]["execution_allowed"] is False
+    assert create_kwargs["market_brief"]["stage"] == "crypto_weekend"
+
+    proposal = add_proposals_mock.await_args.kwargs["proposals"][0]
+    payload = proposal["original_payload"]
+    workflow = payload["crypto_paper_workflow"]
+    assert workflow == {
+        "signal_symbol": "KRW-BTC",
+        "signal_venue": "upbit",
+        "execution_symbol": "BTC/USD",
+        "execution_venue": "alpaca_paper",
+        "asset_class": "crypto",
+        "execution_mode": "paper",
+        "stage": "crypto_weekend",
+        "purpose": "paper_plumbing_smoke",
+        "preview_payload": {
+            "symbol": "BTC/USD",
+            "side": "buy",
+            "type": "limit",
+            "notional": "10",
+            "limit_price": "1.00",
+            "time_in_force": "gtc",
+            "asset_class": "crypto",
+        },
+        "approval_copy": [
+            "Signal source: Upbit KRW-BTC",
+            "Execution venue: Alpaca Paper BTC/USD",
+            "Purpose: paper_plumbing_smoke",
+            "Order: buy limit $10 @ $1.00 GTC",
+        ],
+    }
+    assert payload["operator_request"]["candidate"]["signal_symbol"] == "KRW-BTC"
+    assert payload["operator_request"]["candidate"]["execution_symbol"] == "BTC/USD"
+
+
+@pytest.mark.asyncio
+async def test_advisory_crypto_path_preserves_paper_workflow_metadata(monkeypatch):
+    import app.services.operator_decision_session_service as svc
+    from app.schemas.operator_decision_session import (
+        OperatorCandidate,
+        OperatorDecisionRequest,
+    )
+    from app.schemas.tradingagents_research import (
+        TradingAgentsConfigSnapshot,
+        TradingAgentsLLM,
+        TradingAgentsRunnerResult,
+        TradingAgentsWarnings,
+    )
+    from app.services.crypto_execution_mapping import (
+        build_operator_candidate_crypto_metadata,
+    )
+
+    fake_runner_result = TradingAgentsRunnerResult(
+        status="ok",
+        symbol="KRW-BTC",
+        as_of_date=date(2026, 5, 2),
+        decision="Neutral",
+        advisory_only=True,
+        execution_allowed=False,
+        analysts=["market"],
+        llm=TradingAgentsLLM(
+            provider="openai-compatible",
+            model="gpt-5.5",
+            base_url="http://127.0.0.1:8796/v1",
+        ),
+        config=TradingAgentsConfigSnapshot(
+            max_debate_rounds=1,
+            max_risk_discuss_rounds=1,
+            max_recur_limit=30,
+            output_language="English",
+            checkpoint_enabled=False,
+        ),
+        warnings=TradingAgentsWarnings(),
+        final_trade_decision="advisory only",
+        raw_state_keys=["market_report"],
+    )
+    fake_session = SimpleNamespace(
+        id=101,
+        session_uuid="dddddddd-dddd-dddd-dddd-dddddddddddd",
+        status="open",
+    )
+    runner_mock = AsyncMock(return_value=fake_runner_result)
+    synth_persist_mock = AsyncMock(
+        return_value=(fake_session, [SimpleNamespace(id=11)])
+    )
+    monkeypatch.setattr(svc, "run_tradingagents_research", runner_mock)
+    monkeypatch.setattr(svc, "create_synthesized_decision_session", synth_persist_mock)
+    monkeypatch.setattr(
+        svc.trading_decision_service,
+        "create_decision_session",
+        AsyncMock(side_effect=AssertionError("must not run")),
+    )
+
+    req = OperatorDecisionRequest(
+        market_scope="crypto",
+        candidates=[
+            OperatorCandidate(
+                symbol="KRW-BTC",
+                instrument_type="crypto",
+                side="buy",
+                confidence=55,
+                proposal_kind="pullback_watch",
+                rationale="Weekend plumbing smoke from Upbit signal.",
+                **build_operator_candidate_crypto_metadata("KRW-BTC"),
+            )
+        ],
+        include_tradingagents=True,
+        analysts=["market"],
+        notes="crypto advisory smoke",
+    )
+
+    result = await svc.create_operator_decision_session(
+        SimpleNamespace(), user_id=9, request=req
+    )
+
+    assert result.advisory_used is True
+    synth_persist_mock.assert_awaited_once()
+    persist_kwargs = synth_persist_mock.await_args.kwargs
+    assert persist_kwargs["market_scope"] == "crypto"
+    synthesized = persist_kwargs["proposals"]
+    assert len(synthesized) == 1
+    payload = synthesized[0].original_payload
+    workflow = payload["crypto_paper_workflow"]
+    assert workflow == {
+        "signal_symbol": "KRW-BTC",
+        "signal_venue": "upbit",
+        "execution_symbol": "BTC/USD",
+        "execution_venue": "alpaca_paper",
+        "asset_class": "crypto",
+        "execution_mode": "paper",
+        "stage": "crypto_weekend",
+        "purpose": "paper_plumbing_smoke",
+        "preview_payload": {
+            "symbol": "BTC/USD",
+            "side": "buy",
+            "type": "limit",
+            "notional": "10",
+            "limit_price": "1.00",
+            "time_in_force": "gtc",
+            "asset_class": "crypto",
+        },
+        "approval_copy": [
+            "Signal source: Upbit KRW-BTC",
+            "Execution venue: Alpaca Paper BTC/USD",
+            "Purpose: paper_plumbing_smoke",
+            "Order: buy limit $10 @ $1.00 GTC",
+        ],
+    }
+    assert payload["synthesis"]["auto_trader"]["deterministic_payload"] == {
+        "crypto_paper_workflow": workflow
+    }
+
+
+@pytest.mark.asyncio
 async def test_advisory_path_uses_synthesis_persistence(monkeypatch):
     import app.services.operator_decision_session_service as svc
     from app.schemas.operator_decision_session import (

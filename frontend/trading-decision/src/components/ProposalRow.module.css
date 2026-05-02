@@ -112,3 +112,25 @@
   margin: 0;
   padding: 10px 12px;
 }
+
+.cryptoPaperWorkflow {
+  margin-top: 1rem;
+  border: 1px solid rgba(59, 130, 246, 0.24);
+  border-radius: 0.75rem;
+  background: rgba(59, 130, 246, 0.08);
+  padding: 0.9rem 1rem;
+}
+
+.cryptoPaperWorkflow h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+}
+
+.cryptoPaperWorkflow ul {
+  margin: 0;
+  padding-left: 1.2rem;
+}
+
+.cryptoPaperWorkflow li + li {
+  margin-top: 0.25rem;
+}

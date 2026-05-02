@@ -55,6 +55,7 @@ export default function ProposalRow({
   const shouldShowSymbol = displayName !== proposal.symbol;
 
   const recon = parseReconciliationPayload(proposal.original_payload);
+  const cryptoPaperWorkflow = proposal.original_payload.crypto_paper_workflow;
   const nonActionable =
     proposal.proposal_kind === "other" &&
     recon !== null &&
@@ -128,6 +129,16 @@ export default function ProposalRow({
           </section>
         ) : null}
       </div>
+      {cryptoPaperWorkflow?.approval_copy?.length ? (
+        <section className={styles.cryptoPaperWorkflow}>
+          <h3>Crypto paper workflow</h3>
+          <ul>
+            {cryptoPaperWorkflow.approval_copy.map((line) => (
+              <li key={line}>{line}</li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
       {recon ? (
         <>
           <WarningChips tokens={recon.warnings} />

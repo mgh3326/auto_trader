@@ -84,6 +84,14 @@ def test_schema_module_does_not_import_forbidden_prefixes_in_subprocess():
 
 
 @pytest.mark.unit
+def test_crypto_mapping_module_does_not_import_forbidden_prefixes_in_subprocess():
+    loaded = _loaded_modules_after_import("app.services.crypto_execution_mapping")
+    violations = _forbidden_violations(loaded)
+    if violations:
+        pytest.fail(f"forbidden modules transitively imported: {violations}")
+
+
+@pytest.mark.unit
 def test_url_helper_module_has_no_settings_or_db_imports_in_subprocess():
     loaded = _loaded_modules_after_import("app.services.trading_decision_session_url")
     forbidden = [

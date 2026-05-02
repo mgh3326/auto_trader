@@ -122,3 +122,179 @@ def test_operator_request_accepts_decimal_quantity():
         amount=Decimal("100000"),
     )
     OperatorDecisionRequest(market_scope="crypto", candidates=[cand])
+
+
+@pytest.mark.unit
+def test_crypto_candidate_accepts_complete_paper_workflow_metadata():
+    from app.schemas.operator_decision_session import OperatorCandidate
+    from app.services.crypto_execution_mapping import (
+        build_operator_candidate_crypto_metadata,
+    )
+
+    cand = OperatorCandidate(
+        symbol="KRW-BTC",
+        instrument_type="crypto",
+        confidence=45,
+        side="buy",
+        proposal_kind="pullback_watch",
+        **build_operator_candidate_crypto_metadata("KRW-BTC"),
+    )
+
+    assert cand.signal_symbol == "KRW-BTC"
+    assert cand.signal_venue == "upbit"
+    assert cand.execution_symbol == "BTC/USD"
+    assert cand.execution_venue == "alpaca_paper"
+    assert cand.execution_mode == "paper"
+    assert cand.execution_asset_class == "crypto"
+    assert cand.workflow_stage == "crypto_weekend"
+    assert cand.purpose == "paper_plumbing_smoke"
+    assert cand.preview_payload == {
+        "symbol": "BTC/USD",
+        "side": "buy",
+        "type": "limit",
+        "notional": "10",
+        "limit_price": "1.00",
+        "time_in_force": "gtc",
+        "asset_class": "crypto",
+    }
+    assert "Signal source: Upbit KRW-BTC" in cand.approval_copy
+
+
+@pytest.mark.unit
+def test_crypto_candidate_rejects_partial_paper_workflow_metadata():
+    from app.schemas.operator_decision_session import OperatorCandidate
+    from app.services.crypto_execution_mapping import (
+        build_operator_candidate_crypto_metadata,
+    )
+
+    metadata = build_operator_candidate_crypto_metadata("KRW-BTC")
+    metadata.pop("execution_venue")
+
+    with pytest.raises(ValueError):
+        OperatorCandidate(
+            symbol="KRW-BTC",
+            instrument_type="crypto",
+            confidence=45,
+            **metadata,
+        )
+
+
+@pytest.mark.unit
+def test_crypto_candidate_rejects_loose_nested_workflow_metadata():
+    from app.schemas.operator_decision_session import OperatorCandidate
+    from app.services.crypto_execution_mapping import (
+        build_operator_candidate_crypto_metadata,
+    )
+
+    with pytest.raises(ValueError):
+        OperatorCandidate(
+            symbol="KRW-BTC",
+            instrument_type="crypto",
+            confidence=45,
+            crypto_paper_workflow=build_operator_candidate_crypto_metadata("KRW-BTC"),
+        )
+
+
+@pytest.mark.unit
+def test_non_crypto_candidate_rejects_crypto_paper_workflow_metadata():
+    from app.schemas.operator_decision_session import OperatorCandidate
+    from app.services.crypto_execution_mapping import (
+        build_operator_candidate_crypto_metadata,
+    )
+
+    with pytest.raises(ValueError):
+        OperatorCandidate(
+            symbol="AAPL",
+            instrument_type="equity_us",
+            confidence=50,
+            **build_operator_candidate_crypto_metadata("KRW-BTC"),
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "bad_preview_payload",
+    [
+        {"symbol": "BTC/USD", "side": "sell"},
+        {"symbol": "BTC/USD", "confirm": True},
+        {"symbol": "BTC/USD", "order_id": "paper-order-1"},
+    ],
+)
+def test_crypto_candidate_rejects_submit_like_or_sell_preview_payload(
+    bad_preview_payload: dict[str, object],
+):
+    from app.schemas.operator_decision_session import OperatorCandidate
+    from app.services.crypto_execution_mapping import (
+        build_operator_candidate_crypto_metadata,
+    )
+
+    metadata = build_operator_candidate_crypto_metadata("KRW-BTC")
+    metadata["preview_payload"] = bad_preview_payload
+
+    with pytest.raises(ValueError):
+        OperatorCandidate(
+            symbol="KRW-BTC",
+            instrument_type="crypto",
+            confidence=45,
+            **metadata,
+        )
+
+
+@pytest.mark.unit
+def test_crypto_candidate_rejects_mismatched_signal_execution_mapping():
+    from app.schemas.operator_decision_session import OperatorCandidate
+    from app.services.crypto_execution_mapping import (
+        build_operator_candidate_crypto_metadata,
+    )
+
+    metadata = build_operator_candidate_crypto_metadata("KRW-BTC")
+    metadata["execution_symbol"] = "ETH/USD"
+    metadata["preview_payload"]["symbol"] = "ETH/USD"
+
+    with pytest.raises(ValueError):
+        OperatorCandidate(
+            symbol="KRW-BTC",
+            instrument_type="crypto",
+            confidence=45,
+            **metadata,
+        )
+
+
+@pytest.mark.unit
+def test_crypto_candidate_rejects_unsupported_signal_execution_mapping():
+    from app.schemas.operator_decision_session import OperatorCandidate
+    from app.services.crypto_execution_mapping import (
+        build_operator_candidate_crypto_metadata,
+    )
+
+    metadata = build_operator_candidate_crypto_metadata("KRW-BTC")
+    metadata["signal_symbol"] = "KRW-XRP"
+    metadata["execution_symbol"] = "XRP/USD"
+    metadata["preview_payload"]["symbol"] = "XRP/USD"
+
+    with pytest.raises(ValueError):
+        OperatorCandidate(
+            symbol="KRW-XRP",
+            instrument_type="crypto",
+            confidence=45,
+            **metadata,
+        )
+
+
+@pytest.mark.unit
+def test_crypto_candidate_rejects_preview_payload_symbol_mismatch():
+    from app.schemas.operator_decision_session import OperatorCandidate
+    from app.services.crypto_execution_mapping import (
+        build_operator_candidate_crypto_metadata,
+    )
+
+    metadata = build_operator_candidate_crypto_metadata("KRW-BTC")
+    metadata["preview_payload"]["symbol"] = "ETH/USD"
+
+    with pytest.raises(ValueError):
+        OperatorCandidate(
+            symbol="KRW-BTC",
+            instrument_type="crypto",
+            confidence=45,
+            **metadata,
+        )

@@ -60,6 +60,56 @@ describe("ProposalRow", () => {
     expect(screen.getByText(/does not send a live trade/i)).toBeInTheDocument();
   });
 
+  it("renders crypto paper workflow provenance from approval copy", () => {
+    render(
+      <ProposalRow
+        proposal={makeProposal({
+          symbol: "KRW-BTC",
+          instrument_type: "crypto",
+          side: "buy",
+          proposal_kind: "pullback_watch",
+          original_payload: {
+            crypto_paper_workflow: {
+              signal_symbol: "KRW-BTC",
+              signal_venue: "upbit",
+              execution_symbol: "BTC/USD",
+              execution_venue: "alpaca_paper",
+              asset_class: "crypto",
+              execution_mode: "paper",
+              stage: "crypto_weekend",
+              purpose: "paper_plumbing_smoke",
+              preview_payload: {
+                symbol: "BTC/USD",
+                side: "buy",
+                type: "limit",
+                notional: "10",
+                limit_price: "1.00",
+                time_in_force: "gtc",
+                asset_class: "crypto",
+              },
+              approval_copy: [
+                "Signal source: Upbit KRW-BTC",
+                "Execution venue: Alpaca Paper BTC/USD",
+                "Purpose: paper_plumbing_smoke",
+                "Order: buy limit $10 @ $1.00 GTC",
+              ],
+            },
+          },
+        })}
+        onRecordOutcome={vi.fn()}
+        onRespond={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Crypto paper workflow")).toBeInTheDocument();
+    expect(screen.getByText("Signal source: Upbit KRW-BTC")).toBeInTheDocument();
+    expect(
+      screen.getByText("Execution venue: Alpaca Paper BTC/USD"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Purpose: paper_plumbing_smoke")).toBeInTheDocument();
+    expect(screen.getByText("Order: buy limit $10 @ $1.00 GTC")).toBeInTheDocument();
+  });
+
   it("pending proposal shows original block only", () => {
     render(
       <ProposalRow
