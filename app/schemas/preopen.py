@@ -79,7 +79,6 @@ PreopenDecisionSessionCtaState = Literal[
 ]
 
 
-
 PreopenQaCheckStatus = Literal["pass", "warn", "fail", "unknown", "skipped"]
 PreopenQaCheckSeverity = Literal["info", "low", "medium", "high"]
 PreopenQaGrade = Literal["excellent", "good", "watch", "poor", "unavailable"]
@@ -112,6 +111,7 @@ class PreopenQaEvaluatorSummary(BaseModel):
     blocking_reasons: list[str]
     warnings: list[str]
     coverage: dict[str, Any]
+
 
 class PreopenArtifactReadinessItem(BaseModel):
     key: str

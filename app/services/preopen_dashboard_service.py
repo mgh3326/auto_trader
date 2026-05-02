@@ -869,7 +869,10 @@ def _build_qa_evaluator_summary(
                 "fail",
                 "high",
                 "Reconciliation count does not match reconciliation list length.",
-                {"reconciliation_count": reconciliation_count, "items": len(reconciliations)},
+                {
+                    "reconciliation_count": reconciliation_count,
+                    "items": len(reconciliations),
+                },
             )
         )
     else:
@@ -894,7 +897,9 @@ def _build_qa_evaluator_summary(
             )
         )
     else:
-        market_news_count = sum(len(section.items) for section in market_news_briefing.sections)
+        market_news_count = sum(
+            len(section.items) for section in market_news_briefing.sections
+        )
         checks.append(
             _qa_check(
                 "market_news_briefing",
@@ -931,7 +936,9 @@ def _build_qa_evaluator_summary(
 
     overall = _score_qa_checks(checks, has_run=True)
     blocking_reasons = [check.id for check in checks if check.status == "fail"]
-    warnings = [check.summary for check in checks if check.status in {"warn", "unknown"}]
+    warnings = [
+        check.summary for check in checks if check.status in {"warn", "unknown"}
+    ]
     status = (
         "ready"
         if not blocking_reasons and overall.score is not None and overall.score >= 75
