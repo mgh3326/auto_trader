@@ -215,6 +215,38 @@ async def test_collect_preflight_snapshot_filters_execution_symbol() -> None:
 
 
 @pytest.mark.asyncio
+async def test_collect_preflight_snapshot_matches_slashless_crypto_symbol() -> None:
+    payload = _payload()
+
+    async def account() -> dict[str, Any]:
+        return {"account": {"status": "ACTIVE"}}
+
+    async def cash() -> dict[str, Any]:
+        return {"cash": {"buying_power": "100"}}
+
+    async def orders(**_: Any) -> dict[str, Any]:
+        return {"orders": [{"symbol": "BTCUSD"}], "count": 1}
+
+    async def positions() -> dict[str, Any]:
+        return {"positions": [{"symbol": "BTCUSD", "qty": "0.001"}], "count": 1}
+
+    async def fills(**_: Any) -> dict[str, Any]:
+        return {"fills": [], "count": 0}
+
+    snapshot = await smoke.collect_preflight_snapshot(
+        payload,
+        get_account_fn=account,
+        get_cash_fn=cash,
+        list_orders_fn=orders,
+        list_positions_fn=positions,
+        list_fills_fn=fills,
+    )
+
+    assert snapshot.execution_symbol_open_order_count == 1
+    assert snapshot.execution_symbol_position_count == 1
+
+
+@pytest.mark.asyncio
 async def test_preview_confirm_false_validation_records_ledger_preview() -> None:
     payload = _payload()
     ledger = FakeLedger()
@@ -317,7 +349,7 @@ async def test_execute_and_reconcile_filled_position_matched() -> None:
         return {
             "positions": [
                 {"symbol": "ETH/USD", "qty": "99"},
-                {"symbol": "BTC/USD", "qty": "0.001"},
+                {"symbol": "BTCUSD", "qty": "0.001"},
             ]
         }
 
@@ -344,9 +376,9 @@ async def test_execute_and_reconcile_filled_position_matched() -> None:
     position_call = next(
         payload for name, payload in ledger.calls if name == "record_position_snapshot"
     )
-    assert position_call["position"] == {"symbol": "BTC/USD", "qty": "0.001"}
+    assert position_call["position"] == {"symbol": "BTCUSD", "qty": "0.001"}
     assert position_call["raw_response"] == {
-        "position": {"symbol": "BTC/USD", "qty": "0.001"},
+        "position": {"symbol": "BTCUSD", "qty": "0.001"},
         "execution_symbol": "BTC/USD",
     }
 

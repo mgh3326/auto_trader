@@ -142,6 +142,15 @@ def _symbol_of(item: dict[str, Any]) -> str:
     return str(item.get("symbol") or item.get("asset") or "").upper()
 
 
+def _symbols_match(broker_symbol: str, execution_symbol: str) -> bool:
+    """Match Alpaca crypto symbols that may omit the slash (BTCUSD == BTC/USD)."""
+    normalized_broker = broker_symbol.upper()
+    normalized_execution = execution_symbol.upper()
+    return normalized_broker == normalized_execution or normalized_broker.replace(
+        "/", ""
+    ) == normalized_execution.replace("/", "")
+
+
 def _status_of(order: dict[str, Any]) -> str | None:
     status = order.get("status")
     return str(status).lower() if status is not None else None
@@ -262,13 +271,14 @@ async def collect_preflight_snapshot(
     matching_open_orders = [
         order
         for order in orders
-        if isinstance(order, dict) and _symbol_of(order) == payload.execution_symbol
+        if isinstance(order, dict)
+        and _symbols_match(_symbol_of(order), payload.execution_symbol)
     ]
     matching_positions = [
         position
         for position in positions
         if isinstance(position, dict)
-        and _symbol_of(position) == payload.execution_symbol
+        and _symbols_match(_symbol_of(position), payload.execution_symbol)
     ]
     return PreflightSnapshot(
         account_status=_safe_account_status(account_payload),
@@ -433,7 +443,8 @@ async def execute_and_reconcile(
         (
             item
             for item in positions
-            if isinstance(item, dict) and _symbol_of(item) == payload.execution_symbol
+            if isinstance(item, dict)
+            and _symbols_match(_symbol_of(item), payload.execution_symbol)
         ),
         None,
     )
