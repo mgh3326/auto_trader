@@ -140,7 +140,9 @@ SourceLookupFn = Callable[[str], Awaitable[Sequence[Any]]]
 SleepFn = Callable[[float], Awaitable[None]]
 
 
-def _parse_decimal(value: Decimal | int | float | str | None, *, field_name: str) -> Decimal:
+def _parse_decimal(
+    value: Decimal | int | float | str | None, *, field_name: str
+) -> Decimal:
     if value is None:
         raise SellCloseStopError(f"{field_name} is required")
     try:
@@ -250,7 +252,9 @@ def _normalize_source_rows(rows: Sequence[Any]) -> SourceLedgerSnapshot:
     )
 
 
-def _validate_source(source: SourceLedgerSnapshot, *, symbol: str, qty: Decimal) -> None:
+def _validate_source(
+    source: SourceLedgerSnapshot, *, symbol: str, qty: Decimal
+) -> None:
     if source.side != "buy":
         raise SellCloseStopError("source ledger row must be a buy")
     if source.lifecycle_state not in ROB86_ALLOWED_SOURCE_LIFECYCLE:
@@ -288,11 +292,15 @@ def _validate_client_order_id(client_order_id: str) -> str:
         raise SellCloseStopError("client_order_id must be <= 48 characters")
     lowered = stripped.lower()
     if any(token in lowered for token in ("all", "bulk", "liquidate", "close-all")):
-        raise SellCloseStopError("client_order_id must not contain bulk/close-all hints")
+        raise SellCloseStopError(
+            "client_order_id must not contain bulk/close-all hints"
+        )
     return stripped
 
 
-async def load_source_ledger_rows(source_client_order_id: str) -> list[AlpacaPaperOrderLedger]:
+async def load_source_ledger_rows(
+    source_client_order_id: str,
+) -> list[AlpacaPaperOrderLedger]:
     """Read source ledger rows by exact client_order_id without mutating state."""
     async with AsyncSessionLocal() as db:
         result = await db.execute(
@@ -429,7 +437,9 @@ def validate_sell_close_preflight(
 ) -> None:
     """Fail closed on account/position/conflict ambiguity before sell submit."""
     if snapshot.account_status and snapshot.account_status not in {"active", "ok"}:
-        raise SellCloseStopError(f"account status is not active: {snapshot.account_status}")
+        raise SellCloseStopError(
+            f"account status is not active: {snapshot.account_status}"
+        )
     if snapshot.conflicting_open_sell_order_count > 0:
         raise SellCloseStopError("conflicting open sell order exists")
     if snapshot.matching_position_count != 1:
@@ -456,7 +466,9 @@ async def validate_sell_close_preview_and_confirm_false(
     if confirm_false.get("submitted") is not False:
         raise SellCloseStopError("confirm=False validation unexpectedly submitted")
     if confirm_false.get("blocked_reason") != "confirmation_required":
-        raise SellCloseStopError("confirm=False did not block with confirmation_required")
+        raise SellCloseStopError(
+            "confirm=False did not block with confirmation_required"
+        )
     if confirm_false.get("client_order_id") != payload.client_order_id:
         raise SellCloseStopError("confirm=False client_order_id mismatch")
 
@@ -570,7 +582,9 @@ async def execute_sell_close_and_reconcile(
         await sleep_fn(poll_sleep_seconds)
 
     fills_payload = await list_fills_fn(after=pre_submit_time.isoformat(), limit=100)
-    fills = _filter_fills_for_order(fills_payload.get("fills") or [], str(broker_order_id))
+    fills = _filter_fills_for_order(
+        fills_payload.get("fills") or [], str(broker_order_id)
+    )
     positions_payload = await list_positions_fn()
     positions = positions_payload.get("positions") or []
     position = next(
@@ -582,7 +596,9 @@ async def execute_sell_close_and_reconcile(
         ),
         None,
     )
-    post_position_qty = _decimal_from_item(position, "qty_available", "available_qty", "qty", "quantity")
+    post_position_qty = _decimal_from_item(
+        position, "qty_available", "available_qty", "qty", "quantity"
+    )
     await ledger.record_position_snapshot(
         payload.client_order_id,
         position,
@@ -659,7 +675,8 @@ def build_report(
             "matching_position_qty": str(preflight.matching_position_qty),
             "recent_fill_count": preflight.recent_fill_count,
         },
-        "preview_ok": validation is not None and validation.preview.get("success") is True,
+        "preview_ok": validation is not None
+        and validation.preview.get("success") is True,
         "confirm_false_ok": validation is not None
         and validation.confirm_false.get("submitted") is False,
         "submitted": reconcile is not None,

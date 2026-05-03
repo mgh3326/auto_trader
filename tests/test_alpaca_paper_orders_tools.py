@@ -278,7 +278,9 @@ async def test_crypto_sell_limit_submit_is_confirm_gated_and_single_order(
 
     assert submitted["submitted"] is True
     assert submitted["client_order_id"] == "rob86-sell-test"
-    submit_calls = [call for call in fake_orders_service.calls if call[0] == "submit_order"]
+    submit_calls = [
+        call for call in fake_orders_service.calls if call[0] == "submit_order"
+    ]
     assert len(submit_calls) == 1
     sent = submit_calls[0][1]["request"]
     assert sent.symbol == "BTC/USD"

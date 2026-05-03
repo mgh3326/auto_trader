@@ -141,7 +141,9 @@ def _preflight(**overrides: Any) -> smoke.SellClosePreflightSnapshot:
 
 
 @pytest.mark.asyncio
-async def test_build_sell_close_payload_requires_exact_source_buy_and_bounded_sell() -> None:
+async def test_build_sell_close_payload_requires_exact_source_buy_and_bounded_sell() -> (
+    None
+):
     payload = await smoke.build_sell_close_payload(
         source_client_order_id="source-buy-1",
         symbol="BTC/USD",
@@ -168,11 +170,15 @@ async def test_build_sell_close_payload_requires_exact_source_buy_and_bounded_se
 
 
 @pytest.mark.asyncio
-async def test_build_sell_close_payload_fails_closed_on_source_and_size_mismatch() -> None:
+async def test_build_sell_close_payload_fails_closed_on_source_and_size_mismatch() -> (
+    None
+):
     async def bad_source(_: str) -> list[FakeSourceRow]:
         return [FakeSourceRow(side="sell")]
 
-    with pytest.raises(smoke.SellCloseStopError, match="source ledger row must be a buy"):
+    with pytest.raises(
+        smoke.SellCloseStopError, match="source ledger row must be a buy"
+    ):
         await smoke.build_sell_close_payload(
             source_client_order_id="source-buy-1",
             symbol="BTC/USD",
