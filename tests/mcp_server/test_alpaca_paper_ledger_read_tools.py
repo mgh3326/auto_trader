@@ -1,4 +1,4 @@
-"""Tests for read-only Alpaca Paper ledger MCP tools (ROB-84)."""
+"""Tests for read-only Alpaca Paper ledger MCP tools (ROB-84/ROB-90)."""
 
 from __future__ import annotations
 
@@ -23,9 +23,11 @@ def _fake_row(**kwargs):
     defaults = {
         "id": 1,
         "client_order_id": "test-client-001",
+        "lifecycle_correlation_id": "test-client-001",
+        "record_kind": "execution",
         "broker": "alpaca",
         "account_mode": "alpaca_paper",
-        "lifecycle_state": "canceled",
+        "lifecycle_state": "anomaly",
         "execution_symbol": "BTCUSD",
         "execution_venue": "alpaca_paper",
         "instrument_type": "crypto",
@@ -36,6 +38,8 @@ def _fake_row(**kwargs):
             columns=[
                 SimpleNamespace(name="id"),
                 SimpleNamespace(name="client_order_id"),
+                SimpleNamespace(name="lifecycle_correlation_id"),
+                SimpleNamespace(name="record_kind"),
                 SimpleNamespace(name="broker"),
                 SimpleNamespace(name="account_mode"),
                 SimpleNamespace(name="lifecycle_state"),
@@ -47,11 +51,14 @@ def _fake_row(**kwargs):
     return ns
 
 
-def _mock_svc(*, row=None, rows=None):
+def _mock_svc(*, row=None, rows=None, corr_rows=None):
     svc = AsyncMock()
     svc.get_by_client_order_id = AsyncMock(return_value=row)
     svc.list_recent = AsyncMock(
         return_value=rows if rows is not None else ([row] if row else [])
+    )
+    svc.list_by_correlation_id = AsyncMock(
+        return_value=corr_rows if corr_rows is not None else []
     )
     return svc
 
@@ -274,6 +281,87 @@ async def test_execution_preflight_check_invalid_inputs_raise():
 
 
 # ---------------------------------------------------------------------------
+# alpaca_paper_ledger_get_by_correlation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_ledger_get_by_correlation_returns_rows(monkeypatch):
+    import app.mcp_server.tooling.alpaca_paper_ledger_read as mod
+
+    buy_row = _fake_row(
+        client_order_id="buy-001",
+        lifecycle_correlation_id="corr-test",
+        side="buy",
+        lifecycle_state="filled",
+    )
+    sell_row = _fake_row(
+        client_order_id="sell-001",
+        lifecycle_correlation_id="corr-test",
+        side="sell",
+        lifecycle_state="closed",
+    )
+    mock_svc = _mock_svc(corr_rows=[buy_row, sell_row])
+
+    class _FakeDB:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            pass
+
+    monkeypatch.setattr(mod, "_session_factory", lambda: lambda: _FakeDB())
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.alpaca_paper_ledger_read.AlpacaPaperLedgerService",
+        lambda db: mock_svc,
+    )
+
+    result = await mod.alpaca_paper_ledger_get_by_correlation("corr-test")
+    assert result["success"] is True
+    assert result["lifecycle_correlation_id"] == "corr-test"
+    assert result["count"] == 2
+    assert len(result["items"]) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_ledger_get_by_correlation_empty_returns_zero_count(monkeypatch):
+    import app.mcp_server.tooling.alpaca_paper_ledger_read as mod
+
+    mock_svc = _mock_svc(corr_rows=[])
+
+    class _FakeDB:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            pass
+
+    monkeypatch.setattr(mod, "_session_factory", lambda: lambda: _FakeDB())
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.alpaca_paper_ledger_read.AlpacaPaperLedgerService",
+        lambda db: mock_svc,
+    )
+
+    result = await mod.alpaca_paper_ledger_get_by_correlation("no-such-corr")
+    assert result["success"] is True
+    assert result["count"] == 0
+    assert result["items"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_ledger_get_by_correlation_empty_id_raises():
+    from app.mcp_server.tooling.alpaca_paper_ledger_read import (
+        alpaca_paper_ledger_get_by_correlation,
+    )
+
+    with pytest.raises(ValueError, match="lifecycle_correlation_id is required"):
+        await alpaca_paper_ledger_get_by_correlation("")
+
+
+# ---------------------------------------------------------------------------
 # Registered as read-only
 # ---------------------------------------------------------------------------
 
@@ -284,6 +372,7 @@ def test_ledger_tool_names_are_in_alpaca_readonly_set():
 
     assert "alpaca_paper_ledger_list_recent" in ALPACA_PAPER_READONLY_TOOL_NAMES
     assert "alpaca_paper_ledger_get" in ALPACA_PAPER_READONLY_TOOL_NAMES
+    assert "alpaca_paper_ledger_get_by_correlation" in ALPACA_PAPER_READONLY_TOOL_NAMES
     assert "alpaca_paper_execution_preflight_check" in ALPACA_PAPER_READONLY_TOOL_NAMES
 
 

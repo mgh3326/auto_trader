@@ -93,6 +93,19 @@ async def test_run_smoke_exits_zero_when_all_tools_succeed(
     async def fake_ledger_get(client_order_id: str) -> dict:
         return {"success": False, "found": False, "client_order_id": client_order_id}
 
+    async def fake_ledger_get_by_correlation(lifecycle_correlation_id: str) -> dict:
+        if (
+            not isinstance(lifecycle_correlation_id, str)
+            or not lifecycle_correlation_id.strip()
+        ):
+            raise ValueError("lifecycle_correlation_id is required")
+        return {
+            "success": True,
+            "lifecycle_correlation_id": lifecycle_correlation_id,
+            "count": 0,
+            "items": [],
+        }
+
     async def fake_preflight_check(*args, **kwargs) -> dict:  # noqa: ANN002, ANN003
         return {"success": True, "should_block": False, "anomalies": []}
 
@@ -105,6 +118,7 @@ async def test_run_smoke_exits_zero_when_all_tools_succeed(
         spec.loader.exec_module(module)  # type: ignore[union-attr]
         module.alpaca_paper_ledger_list_recent = fake_ledger_list_recent
         module.alpaca_paper_ledger_get = fake_ledger_get
+        module.alpaca_paper_ledger_get_by_correlation = fake_ledger_get_by_correlation
         module.alpaca_paper_execution_preflight_check = fake_preflight_check
         exit_code = await module.run_smoke()
     finally:

@@ -8,6 +8,7 @@ from datetime import datetime
 from sqlalchemy import (
     TIMESTAMP,
     BigInteger,
+    Boolean,
     CheckConstraint,
     Enum,
     ForeignKey,
@@ -21,7 +22,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy.sql import func
+from sqlalchemy.sql import func, text
 
 from app.models.base import Base
 from app.models.trading import InstrumentType
@@ -231,16 +232,31 @@ class KISMockOrderLedger(Base):
 
 
 # ---------------------------------------------------------------------------
-# review.alpaca_paper_order_ledger — Alpaca Paper execution lifecycle ledger (ROB-84)
-# Records preview → validation → submit → status/fill → cancel → position → reconcile.
+# review.alpaca_paper_order_ledger — Alpaca Paper execution lifecycle ledger (ROB-84/ROB-90)
+# Records plan → preview → validation → submit → fill → position → close → final reconcile.
 # Fully isolated from live trade paths and review.trades.
 # All writes must go through AlpacaPaperLedgerService. No direct SQL writes.
 # ---------------------------------------------------------------------------
 class AlpacaPaperOrderLedger(Base):
     __tablename__ = "alpaca_paper_order_ledger"
     __table_args__ = (
-        UniqueConstraint(
-            "client_order_id", name="uq_alpaca_paper_ledger_client_order_id"
+        # ROB-90: partial unique indexes replace the old single-column unique constraint.
+        # Non-validation records are unique by (client_order_id, record_kind).
+        Index(
+            "uq_alpaca_paper_ledger_client_order_kind",
+            "client_order_id",
+            "record_kind",
+            unique=True,
+            postgresql_where=text("validation_attempt_no IS NULL"),
+        ),
+        # Validation attempts are unique by (correlation_id, side, attempt_no).
+        Index(
+            "uq_alpaca_paper_ledger_validation_attempt",
+            "lifecycle_correlation_id",
+            "side",
+            "validation_attempt_no",
+            unique=True,
+            postgresql_where=text("record_kind = 'validation_attempt'"),
         ),
         CheckConstraint("broker = 'alpaca'", name="alpaca_paper_ledger_broker"),
         CheckConstraint(
@@ -248,8 +264,8 @@ class AlpacaPaperOrderLedger(Base):
         ),
         CheckConstraint(
             "lifecycle_state IN ("
-            "'previewed','validation_failed','submitted','open',"
-            "'partially_filled','filled','canceled','unexpected'"
+            "'planned','previewed','validated','submitted','filled',"
+            "'position_reconciled','sell_validated','closed','final_reconciled','anomaly'"
             ")",
             name="alpaca_paper_ledger_lifecycle_state",
         ),
@@ -260,6 +276,22 @@ class AlpacaPaperOrderLedger(Base):
         CheckConstraint(
             "currency IN ('USD','KRW')", name="alpaca_paper_ledger_currency"
         ),
+        CheckConstraint(
+            "record_kind IN ('plan','preview','validation_attempt','execution','reconcile','anomaly')",
+            name="alpaca_paper_ledger_record_kind",
+        ),
+        CheckConstraint(
+            "validation_outcome IN ('passed','failed','skipped','n_a')",
+            name="alpaca_paper_ledger_validation_outcome",
+        ),
+        CheckConstraint(
+            "leg_role IS NULL OR leg_role IN ('buy','sell','roundtrip')",
+            name="alpaca_paper_ledger_leg_role",
+        ),
+        CheckConstraint(
+            "settlement_status IN ('pending','settled','failed','n_a')",
+            name="alpaca_paper_ledger_settlement_status",
+        ),
         Index("ix_alpaca_paper_ledger_broker_order_id", "broker_order_id"),
         Index("ix_alpaca_paper_ledger_lifecycle_state", "lifecycle_state"),
         Index("ix_alpaca_paper_ledger_created_at", "created_at"),
@@ -269,13 +301,22 @@ class AlpacaPaperOrderLedger(Base):
             "briefing_artifact_run_uuid",
         ),
         Index("ix_alpaca_paper_ledger_execution_symbol", "execution_symbol"),
+        Index("ix_alpaca_paper_ledger_correlation_id", "lifecycle_correlation_id"),
+        Index("ix_alpaca_paper_ledger_record_kind", "record_kind"),
         {"schema": "review"},
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
 
-    # Correlation key
+    # Correlation key (per order leg)
     client_order_id: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # ROB-90: cross-leg correlation — buy and sell legs share this value.
+    # Defaults to client_order_id for backwards compatibility.
+    lifecycle_correlation_id: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # ROB-90: record type — distinguishes plan/preview/validation/execution/reconcile rows.
+    record_kind: Mapped[str] = mapped_column(Text, nullable=False, default="execution")
 
     # Broker/mode identity — pinned, never live
     broker: Mapped[str] = mapped_column(Text, nullable=False, default="alpaca")
@@ -283,8 +324,27 @@ class AlpacaPaperOrderLedger(Base):
         Text, nullable=False, default="alpaca_paper"
     )
 
-    # Application lifecycle state
+    # Application lifecycle state (ROB-90 canonical)
     lifecycle_state: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # ROB-90: buy/sell leg role — separate from broker `side` (order direction).
+    leg_role: Mapped[str | None] = mapped_column(Text)
+
+    # ROB-90: validation attempt tracking
+    validation_attempt_no: Mapped[int | None] = mapped_column(SmallInteger)
+    validation_outcome: Mapped[str | None] = mapped_column(Text)
+
+    # ROB-90: confirm flag — false=validation-only, true=executed, null=plan/preview
+    confirm_flag: Mapped[bool | None] = mapped_column(Boolean)
+
+    # ROB-90: fee/settlement
+    fee_amount: Mapped[float | None] = mapped_column(Numeric(20, 4))
+    fee_currency: Mapped[str | None] = mapped_column(Text)
+    settlement_status: Mapped[str | None] = mapped_column(Text)
+    settlement_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+
+    # ROB-90: signed quantity effect (buy positive, sell negative, preview/validation null)
+    qty_delta: Mapped[float | None] = mapped_column(Numeric(20, 8))
 
     # Signal provenance (kept separate from execution)
     signal_symbol: Mapped[str | None] = mapped_column(Text)

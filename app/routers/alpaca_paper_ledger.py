@@ -1,4 +1,4 @@
-"""Read-only Alpaca Paper order ledger router (ROB-84).
+"""Read-only Alpaca Paper order ledger router (ROB-84/ROB-90).
 
 GET paths only. No POST/PATCH/DELETE. No broker mutation.
 """
@@ -14,6 +14,7 @@ from app.core.db import get_db
 from app.models.trading import User
 from app.routers.dependencies import get_authenticated_user
 from app.schemas.alpaca_paper_ledger import (
+    AlpacaPaperOrderLedgerCorrelationResponse,
     AlpacaPaperOrderLedgerListResponse,
     AlpacaPaperOrderLedgerRead,
 )
@@ -35,6 +36,25 @@ async def list_recent_ledger_entries(
     svc = AlpacaPaperLedgerService(db)
     rows = await svc.list_recent(limit=limit, lifecycle_state=lifecycle_state)
     return AlpacaPaperOrderLedgerListResponse(
+        count=len(rows),
+        items=[AlpacaPaperOrderLedgerRead.model_validate(r) for r in rows],
+    )
+
+
+@router.get(
+    "/api/alpaca-paper/ledger/by-correlation-id/{lifecycle_correlation_id}",
+    response_model=AlpacaPaperOrderLedgerCorrelationResponse,
+)
+async def get_ledger_by_correlation_id(
+    lifecycle_correlation_id: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_authenticated_user)],
+) -> AlpacaPaperOrderLedgerCorrelationResponse:
+    """Return all ledger rows sharing a lifecycle_correlation_id (buy/sell roundtrip)."""
+    svc = AlpacaPaperLedgerService(db)
+    rows = await svc.list_by_correlation_id(lifecycle_correlation_id)
+    return AlpacaPaperOrderLedgerCorrelationResponse(
+        lifecycle_correlation_id=lifecycle_correlation_id,
         count=len(rows),
         items=[AlpacaPaperOrderLedgerRead.model_validate(r) for r in rows],
     )

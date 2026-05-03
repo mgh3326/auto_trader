@@ -1,4 +1,4 @@
-"""Read-only MCP tools for the Alpaca Paper order ledger (ROB-84).
+"""Read-only MCP tools for the Alpaca Paper order ledger (ROB-84/ROB-90).
 
 No broker mutation. No submit/cancel/replace. Pure record-keeping reads.
 """
@@ -47,8 +47,9 @@ async def alpaca_paper_ledger_list_recent(
 
     Args:
         limit: Maximum number of rows to return (default 50, max 200).
-        lifecycle_state: Optional filter — one of previewed, validation_failed,
-            submitted, open, partially_filled, filled, canceled, unexpected.
+        lifecycle_state: Optional filter — one of the ROB-90 canonical states:
+            planned, previewed, validated, submitted, filled,
+            position_reconciled, sell_validated, closed, final_reconciled, anomaly.
     """
     if limit < 1:
         raise ValueError("limit must be >= 1")
@@ -151,13 +152,42 @@ async def alpaca_paper_execution_preflight_check(
     return data
 
 
+async def alpaca_paper_ledger_get_by_correlation(
+    lifecycle_correlation_id: str,
+) -> dict[str, Any]:
+    """Fetch all Alpaca Paper ledger rows sharing a lifecycle_correlation_id (read-only).
+
+    Returns the buy/sell roundtrip records in chronological order.
+    lifecycle_correlation_id links buy and sell legs of the same paper roundtrip.
+    """
+    if not lifecycle_correlation_id or not lifecycle_correlation_id.strip():
+        raise ValueError("lifecycle_correlation_id is required")
+
+    async with _session_factory()() as db:
+        svc = AlpacaPaperLedgerService(db)
+        rows = await svc.list_by_correlation_id(lifecycle_correlation_id.strip())
+
+    items = [_row_to_dict(r) for r in rows]
+    return {
+        "success": True,
+        "account_mode": "alpaca_paper",
+        "source": "alpaca_paper_ledger",
+        "lifecycle_correlation_id": lifecycle_correlation_id,
+        "count": len(items),
+        "items": items,
+    }
+
+
 def register_alpaca_paper_ledger_read_tools(mcp: FastMCP) -> None:
     """Register read-only Alpaca Paper ledger MCP tools."""
     _ = mcp.tool(
         name="alpaca_paper_ledger_list_recent",
         description=(
             "Read-only list of recent Alpaca Paper order ledger entries. "
-            "Supports optional lifecycle_state filter and limit. No broker mutation."
+            "Supports optional lifecycle_state filter (ROB-90 canonical states: "
+            "planned, previewed, validated, submitted, filled, position_reconciled, "
+            "sell_validated, closed, final_reconciled, anomaly) and limit. "
+            "No broker mutation."
         ),
     )(alpaca_paper_ledger_list_recent)
     _ = mcp.tool(
@@ -175,11 +205,20 @@ def register_alpaca_paper_ledger_read_tools(mcp: FastMCP) -> None:
             "No broker mutation and no repair writes."
         ),
     )(alpaca_paper_execution_preflight_check)
+    _ = mcp.tool(
+        name="alpaca_paper_ledger_get_by_correlation",
+        description=(
+            "Read-only fetch of all Alpaca Paper ledger rows sharing a "
+            "lifecycle_correlation_id. Returns the full buy/sell roundtrip records "
+            "in chronological order. No broker mutation."
+        ),
+    )(alpaca_paper_ledger_get_by_correlation)
 
 
 __all__ = [
     "alpaca_paper_execution_preflight_check",
     "alpaca_paper_ledger_get",
+    "alpaca_paper_ledger_get_by_correlation",
     "alpaca_paper_ledger_list_recent",
     "register_alpaca_paper_ledger_read_tools",
 ]

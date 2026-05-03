@@ -1,4 +1,4 @@
-"""Tests for the read-only Alpaca Paper ledger router (ROB-84)."""
+"""Tests for the read-only Alpaca Paper ledger router (ROB-84/ROB-90)."""
 
 from __future__ import annotations
 
@@ -16,9 +16,12 @@ def _make_fake_row(**kwargs):
     defaults = {
         "id": 1,
         "client_order_id": "test-client-001",
+        "lifecycle_correlation_id": "test-client-001",
+        "record_kind": "execution",
         "broker": "alpaca",
         "account_mode": "alpaca_paper",
-        "lifecycle_state": "canceled",
+        # ROB-90: canonical state (anomaly replaces old 'canceled')
+        "lifecycle_state": "anomaly",
         "signal_symbol": "KRW-BTC",
         "signal_venue": "upbit",
         "execution_symbol": "BTCUSD",
@@ -32,6 +35,15 @@ def _make_fake_row(**kwargs):
         "requested_notional": None,
         "requested_price": "50000",
         "currency": "USD",
+        "leg_role": None,
+        "validation_attempt_no": None,
+        "validation_outcome": None,
+        "confirm_flag": True,
+        "fee_amount": None,
+        "fee_currency": None,
+        "settlement_status": "n_a",
+        "settlement_at": None,
+        "qty_delta": None,
         "broker_order_id": "broker-id-001",
         "submitted_at": datetime(2026, 5, 3, 9, 0, tzinfo=UTC),
         "order_status": "canceled",
@@ -131,7 +143,11 @@ def test_list_recent_returns_200_with_items():
     data = resp.json()
     assert data["count"] == 1
     assert data["items"][0]["client_order_id"] == "test-client-001"
-    assert data["items"][0]["lifecycle_state"] == "canceled"
+    # ROB-90: canonical state
+    assert data["items"][0]["lifecycle_state"] == "anomaly"
+    # ROB-90: new taxonomy fields present
+    assert "lifecycle_correlation_id" in data["items"][0]
+    assert "record_kind" in data["items"][0]
 
 
 @pytest.mark.unit
@@ -149,15 +165,58 @@ def test_list_recent_empty_returns_200_empty_list():
 
 @pytest.mark.unit
 def test_list_recent_lifecycle_state_filter_passes():
-    row = _make_fake_row(lifecycle_state="canceled")
+    row = _make_fake_row(lifecycle_state="anomaly")
     db = _mock_db_for_rows([row])
     app = _make_app_with_db(db)
 
     client = TestClient(app)
-    resp = client.get(
-        "/trading/api/alpaca-paper/ledger/recent?lifecycle_state=canceled"
-    )
+    resp = client.get("/trading/api/alpaca-paper/ledger/recent?lifecycle_state=anomaly")
     assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# get_ledger_by_correlation_id
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_get_by_correlation_id_returns_200():
+    buy_row = _make_fake_row(
+        client_order_id="buy-001",
+        lifecycle_correlation_id="corr-abc",
+        lifecycle_state="filled",
+        side="buy",
+    )
+    sell_row = _make_fake_row(
+        id=2,
+        client_order_id="sell-001",
+        lifecycle_correlation_id="corr-abc",
+        lifecycle_state="closed",
+        side="sell",
+    )
+    db = _mock_db_for_rows([buy_row, sell_row])
+    app = _make_app_with_db(db)
+
+    client = TestClient(app)
+    resp = client.get("/trading/api/alpaca-paper/ledger/by-correlation-id/corr-abc")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["lifecycle_correlation_id"] == "corr-abc"
+    assert "count" in data
+    assert "items" in data
+
+
+@pytest.mark.unit
+def test_get_by_correlation_id_empty_returns_200_zero_count():
+    db = _mock_db_for_rows([])
+    app = _make_app_with_db(db)
+
+    client = TestClient(app)
+    resp = client.get("/trading/api/alpaca-paper/ledger/by-correlation-id/no-such-corr")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["count"] == 0
+    assert data["items"] == []
 
 
 # ---------------------------------------------------------------------------

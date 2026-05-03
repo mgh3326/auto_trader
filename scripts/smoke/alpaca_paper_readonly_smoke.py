@@ -22,6 +22,7 @@ from app.mcp_server.tooling.alpaca_paper import (
 from app.mcp_server.tooling.alpaca_paper_ledger_read import (
     alpaca_paper_execution_preflight_check,
     alpaca_paper_ledger_get,
+    alpaca_paper_ledger_get_by_correlation,
     alpaca_paper_ledger_list_recent,
 )
 
@@ -131,6 +132,29 @@ async def run_smoke() -> int:
         alpaca_paper_ledger_get(client_order_id),
         lambda p: f"found={p.get('found', False)}",
     )
+
+    correlation_id: str | None = None
+    if ledger_payload and ledger_payload.get("items"):
+        raw_correlation_id = ledger_payload["items"][0].get("lifecycle_correlation_id")
+        if isinstance(raw_correlation_id, str):
+            normalized_correlation_id = raw_correlation_id.strip()
+            if normalized_correlation_id:
+                correlation_id = normalized_correlation_id
+
+    if correlation_id:
+        await _probe(
+            "alpaca_paper_ledger_get_by_correlation",
+            alpaca_paper_ledger_get_by_correlation(correlation_id),
+            lambda p: f"count={p.get('count', 0)}",
+        )
+    else:
+        results.append(
+            (
+                "alpaca_paper_ledger_get_by_correlation",
+                True,
+                "skipped: no lifecycle correlation id to inspect",
+            )
+        )
 
     await _probe(
         "alpaca_paper_execution_preflight_check",

@@ -1,4 +1,4 @@
-"""Pydantic read schemas for the Alpaca Paper order ledger (ROB-84)."""
+"""Pydantic read schemas for the Alpaca Paper order ledger (ROB-84/ROB-90)."""
 
 from __future__ import annotations
 
@@ -18,6 +18,19 @@ class AlpacaPaperOrderLedgerRead(BaseModel):
     broker: str
     account_mode: str
     lifecycle_state: str
+
+    # ROB-90 taxonomy fields
+    lifecycle_correlation_id: str
+    record_kind: str
+    leg_role: str | None = None
+    validation_attempt_no: int | None = None
+    validation_outcome: str | None = None
+    confirm_flag: bool | None = None
+    fee_amount: Decimal | None = None
+    fee_currency: str | None = None
+    settlement_status: str | None = None
+    settlement_at: datetime | None = None
+    qty_delta: Decimal | None = None
 
     signal_symbol: str | None = None
     signal_venue: str | None = None
@@ -70,7 +83,16 @@ class AlpacaPaperOrderLedgerListResponse(BaseModel):
     items: list[AlpacaPaperOrderLedgerRead]
 
 
+class AlpacaPaperOrderLedgerCorrelationResponse(BaseModel):
+    """Grouped response for all records sharing a lifecycle_correlation_id."""
+
+    lifecycle_correlation_id: str
+    count: int
+    items: list[AlpacaPaperOrderLedgerRead]
+
+
 __all__ = [
+    "AlpacaPaperOrderLedgerCorrelationResponse",
     "AlpacaPaperOrderLedgerListResponse",
     "AlpacaPaperOrderLedgerRead",
 ]

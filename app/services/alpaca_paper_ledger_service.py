@@ -1,4 +1,4 @@
-"""Alpaca Paper execution state ledger service (ROB-84).
+"""Alpaca Paper execution state ledger service (ROB-84/ROB-90).
 
 Pure record-keeping only. Must not import or call broker mutation services,
 KIS, Upbit, watch alerts, order intents, or scheduler code.
@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,6 +25,43 @@ from app.schemas.preopen import (
     PreopenPaperApprovalBridge,
     PreopenPaperApprovalCandidate,
 )
+
+# ---------------------------------------------------------------------------
+# ROB-90 canonical lifecycle state constants
+# ---------------------------------------------------------------------------
+LIFECYCLE_PLANNED = "planned"
+LIFECYCLE_PREVIEWED = "previewed"
+LIFECYCLE_VALIDATED = "validated"
+LIFECYCLE_SUBMITTED = "submitted"
+LIFECYCLE_FILLED = "filled"
+LIFECYCLE_POSITION_RECONCILED = "position_reconciled"
+LIFECYCLE_SELL_VALIDATED = "sell_validated"
+LIFECYCLE_CLOSED = "closed"
+LIFECYCLE_FINAL_RECONCILED = "final_reconciled"
+LIFECYCLE_ANOMALY = "anomaly"
+
+CANONICAL_LIFECYCLE_STATES: frozenset[str] = frozenset(
+    {
+        LIFECYCLE_PLANNED,
+        LIFECYCLE_PREVIEWED,
+        LIFECYCLE_VALIDATED,
+        LIFECYCLE_SUBMITTED,
+        LIFECYCLE_FILLED,
+        LIFECYCLE_POSITION_RECONCILED,
+        LIFECYCLE_SELL_VALIDATED,
+        LIFECYCLE_CLOSED,
+        LIFECYCLE_FINAL_RECONCILED,
+        LIFECYCLE_ANOMALY,
+    }
+)
+
+# ROB-90 record_kind constants
+RECORD_KIND_PLAN = "plan"
+RECORD_KIND_PREVIEW = "preview"
+RECORD_KIND_VALIDATION_ATTEMPT = "validation_attempt"
+RECORD_KIND_EXECUTION = "execution"
+RECORD_KIND_RECONCILE = "reconcile"
+RECORD_KIND_ANOMALY = "anomaly"
 
 # ---------------------------------------------------------------------------
 # Sensitive key patterns — redact before any JSON persistence
@@ -76,7 +113,7 @@ def _redact_sensitive_text(text: str | None) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Lifecycle state derivation from broker order status
+# Lifecycle state derivation from broker order status (ROB-90 canonical)
 # ---------------------------------------------------------------------------
 _OPEN_STATUSES = frozenset(
     {
@@ -93,35 +130,42 @@ _OPEN_STATUSES = frozenset(
         "calculated",
     }
 )
-_UNEXPECTED_STATUSES = frozenset({"rejected", "expired", "suspended"})
+_ANOMALY_STATUSES = frozenset({"rejected", "expired", "suspended"})
 
 
 def _derive_lifecycle_state(
     order_status: str | None,
     filled_qty: Decimal | float | None = None,
 ) -> str:
+    """Map broker order_status to ROB-90 canonical lifecycle state.
+
+    Mapping:
+    - filled → filled
+    - partially_filled → submitted (broker status preserved in order_status)
+    - open statuses (new/accepted/…) → submitted
+    - open status with filled_qty > 0 → anomaly
+    - canceled → anomaly (ROB-90: no benign cancel state)
+    - rejected/expired/suspended/unknown → anomaly
+    """
     if order_status is None:
-        return "unexpected"
+        return LIFECYCLE_ANOMALY
     status = order_status.lower()
-    if status == "canceled":
-        return "canceled"
     if status == "filled":
-        return "filled"
+        return LIFECYCLE_FILLED
     if status == "partially_filled":
-        return "partially_filled"
+        return LIFECYCLE_SUBMITTED
     if status in _OPEN_STATUSES:
-        # If there is nonzero filled qty with an open status, treat as unexpected
         if filled_qty is not None:
             try:
                 qty = float(filled_qty)
             except (TypeError, ValueError):
                 qty = 0.0
             if qty > 0:
-                return "unexpected"
-        return "open"
-    if status in _UNEXPECTED_STATUSES:
-        return "unexpected"
-    return "unexpected"
+                return LIFECYCLE_ANOMALY
+        return LIFECYCLE_SUBMITTED
+    if status in _ANOMALY_STATUSES or status == "canceled":
+        return LIFECYCLE_ANOMALY
+    return LIFECYCLE_ANOMALY
 
 
 # ---------------------------------------------------------------------------
@@ -201,8 +245,14 @@ class AlpacaPaperLedgerService:
     async def get_by_client_order_id(
         self, client_order_id: str
     ) -> AlpacaPaperOrderLedger | None:
-        stmt = select(AlpacaPaperOrderLedger).where(
-            AlpacaPaperOrderLedger.client_order_id == client_order_id
+        stmt = (
+            select(AlpacaPaperOrderLedger)
+            .where(AlpacaPaperOrderLedger.client_order_id == client_order_id)
+            .order_by(
+                AlpacaPaperOrderLedger.created_at.desc(),
+                AlpacaPaperOrderLedger.id.desc(),
+            )
+            .limit(1)
         )
         result = await self._db.execute(stmt)
         return result.scalar_one_or_none()
@@ -225,6 +275,27 @@ class AlpacaPaperLedgerService:
         if lifecycle_state is not None:
             stmt = stmt.where(AlpacaPaperOrderLedger.lifecycle_state == lifecycle_state)
         stmt = stmt.limit(limit)
+        result = await self._db.execute(stmt)
+        return list(result.scalars().all())
+
+    async def list_by_correlation_id(
+        self,
+        lifecycle_correlation_id: str,
+    ) -> list[AlpacaPaperOrderLedger]:
+        """Return all ledger rows sharing a lifecycle_correlation_id, ordered by created_at, id."""
+        if not lifecycle_correlation_id or not lifecycle_correlation_id.strip():
+            raise ValueError("lifecycle_correlation_id must not be empty")
+        stmt = (
+            select(AlpacaPaperOrderLedger)
+            .where(
+                AlpacaPaperOrderLedger.lifecycle_correlation_id
+                == lifecycle_correlation_id
+            )
+            .order_by(
+                AlpacaPaperOrderLedger.created_at.asc(),
+                AlpacaPaperOrderLedger.id.asc(),
+            )
+        )
         result = await self._db.execute(stmt)
         return list(result.scalars().all())
 
@@ -259,18 +330,101 @@ class AlpacaPaperLedgerService:
         existing[target_key] = sanitized
         await self._db.execute(
             update(AlpacaPaperOrderLedger)
-            .where(AlpacaPaperOrderLedger.client_order_id == client_order_id)
+            .where(AlpacaPaperOrderLedger.id == row.id)
             .values(raw_responses=existing)
         )
+
+    def _build_provenance_values(self, prov: ApprovalProvenance) -> dict[str, Any]:
+        return {
+            "signal_symbol": prov.signal_symbol,
+            "signal_venue": prov.signal_venue,
+            "execution_asset_class": prov.execution_asset_class,
+            "workflow_stage": prov.workflow_stage,
+            "purpose": prov.purpose,
+            "briefing_artifact_run_uuid": prov.briefing_artifact_run_uuid,
+            "briefing_artifact_status": prov.briefing_artifact_status,
+            "qa_evaluator_status": prov.qa_evaluator_status,
+            "approval_bridge_generated_at": prov.approval_bridge_generated_at,
+            "approval_bridge_status": prov.approval_bridge_status,
+            "candidate_uuid": prov.candidate_uuid,
+        }
 
     # ------------------------------------------------------------------
     # Lifecycle write methods
     # ------------------------------------------------------------------
 
+    async def record_plan(
+        self,
+        *,
+        client_order_id: str,
+        lifecycle_correlation_id: str | None = None,
+        execution_symbol: str,
+        execution_venue: str,
+        instrument_type: InstrumentType,
+        side: str,
+        order_type: str = "limit",
+        time_in_force: str | None = None,
+        requested_qty: Decimal | float | None = None,
+        requested_notional: Decimal | float | None = None,
+        requested_price: Decimal | float | None = None,
+        currency: str = "USD",
+        leg_role: str | None = None,
+        provenance: ApprovalProvenance | None = None,
+        notes: str | None = None,
+    ) -> AlpacaPaperOrderLedger:
+        """Insert a planned row (lifecycle_state='planned', record_kind='plan')."""
+        if not client_order_id or not client_order_id.strip():
+            raise ValueError("client_order_id must not be empty")
+
+        prov = provenance or ApprovalProvenance()
+        correlation_id = lifecycle_correlation_id or client_order_id
+
+        values: dict[str, Any] = {
+            "client_order_id": client_order_id,
+            "lifecycle_correlation_id": correlation_id,
+            "record_kind": RECORD_KIND_PLAN,
+            "broker": "alpaca",
+            "account_mode": "alpaca_paper",
+            "lifecycle_state": LIFECYCLE_PLANNED,
+            "execution_symbol": execution_symbol,
+            "execution_venue": execution_venue,
+            "instrument_type": instrument_type,
+            "side": side,
+            "order_type": order_type,
+            "time_in_force": time_in_force,
+            "requested_qty": requested_qty,
+            "requested_notional": requested_notional,
+            "requested_price": requested_price,
+            "currency": currency,
+            "leg_role": leg_role,
+            "confirm_flag": None,
+            "notes": _redact_sensitive_text(notes),
+            **self._build_provenance_values(prov),
+        }
+
+        stmt = (
+            pg_insert(AlpacaPaperOrderLedger)
+            .values(**values)
+            .on_conflict_do_nothing(
+                index_elements=["client_order_id", "record_kind"],
+                index_where=text("validation_attempt_no IS NULL"),
+            )
+        )
+        await self._db.execute(stmt)
+        await self._db.commit()
+
+        row = await self.get_by_client_order_id(client_order_id)
+        if row is None:
+            raise LedgerNotFoundError(
+                f"No ledger row found for client_order_id={client_order_id!r}"
+            )
+        return row
+
     async def record_preview(
         self,
         *,
         client_order_id: str,
+        lifecycle_correlation_id: str | None = None,
         execution_symbol: str,
         execution_venue: str,
         instrument_type: InstrumentType,
@@ -283,15 +437,17 @@ class AlpacaPaperLedgerService:
         currency: str = "USD",
         preview_payload: dict[str, Any] | None = None,
         validation_summary: dict[str, Any] | None = None,
-        lifecycle_state: str = "previewed",
+        lifecycle_state: str = LIFECYCLE_PREVIEWED,
+        leg_role: str | None = None,
         provenance: ApprovalProvenance | None = None,
         raw_response: dict[str, Any] | None = None,
     ) -> AlpacaPaperOrderLedger:
-        """Insert a previewed row; idempotent on duplicate client_order_id."""
+        """Insert a preview row (record_kind='preview'); idempotent on duplicate."""
         if not client_order_id or not client_order_id.strip():
             raise ValueError("client_order_id must not be empty")
 
         prov = provenance or ApprovalProvenance()
+        correlation_id = lifecycle_correlation_id or client_order_id
         sanitized_preview = (
             _redact_sensitive_keys(preview_payload) if preview_payload else None
         )
@@ -304,6 +460,8 @@ class AlpacaPaperLedgerService:
 
         values: dict[str, Any] = {
             "client_order_id": client_order_id,
+            "lifecycle_correlation_id": correlation_id,
+            "record_kind": RECORD_KIND_PREVIEW,
             "broker": "alpaca",
             "account_mode": "alpaca_paper",
             "lifecycle_state": lifecycle_state,
@@ -319,29 +477,120 @@ class AlpacaPaperLedgerService:
             "currency": currency,
             "preview_payload": sanitized_preview,
             "validation_summary": sanitized_validation,
-            "signal_symbol": prov.signal_symbol,
-            "signal_venue": prov.signal_venue,
-            "execution_asset_class": prov.execution_asset_class,
-            "workflow_stage": prov.workflow_stage,
-            "purpose": prov.purpose,
-            "briefing_artifact_run_uuid": prov.briefing_artifact_run_uuid,
-            "briefing_artifact_status": prov.briefing_artifact_status,
-            "qa_evaluator_status": prov.qa_evaluator_status,
-            "approval_bridge_generated_at": prov.approval_bridge_generated_at,
-            "approval_bridge_status": prov.approval_bridge_status,
-            "candidate_uuid": prov.candidate_uuid,
+            "leg_role": leg_role,
+            "confirm_flag": None,
             "raw_responses": initial_raw if initial_raw else None,
+            **self._build_provenance_values(prov),
         }
 
         stmt = (
             pg_insert(AlpacaPaperOrderLedger)
             .values(**values)
-            .on_conflict_do_nothing(constraint="uq_alpaca_paper_ledger_client_order_id")
+            .on_conflict_do_nothing(
+                index_elements=["client_order_id", "record_kind"],
+                index_where=text("validation_attempt_no IS NULL"),
+            )
         )
         await self._db.execute(stmt)
         await self._db.commit()
 
         return await self._require_row(client_order_id)
+
+    async def record_validation_attempt(
+        self,
+        *,
+        client_order_id: str,
+        lifecycle_correlation_id: str | None = None,
+        execution_symbol: str,
+        execution_venue: str,
+        instrument_type: InstrumentType,
+        side: str,
+        order_type: str = "limit",
+        time_in_force: str | None = None,
+        requested_qty: Decimal | float | None = None,
+        requested_notional: Decimal | float | None = None,
+        requested_price: Decimal | float | None = None,
+        currency: str = "USD",
+        validation_attempt_no: int = 1,
+        validation_outcome: str = "failed",
+        validation_summary: dict[str, Any] | None = None,
+        leg_role: str | None = None,
+        provenance: ApprovalProvenance | None = None,
+        raw_response: dict[str, Any] | None = None,
+    ) -> AlpacaPaperOrderLedger:
+        """Insert a validation attempt row (confirm=false).
+
+        Each attempt is distinguished by validation_attempt_no.
+        lifecycle_state is set to 'validated' for passed, 'anomaly' for failed.
+        """
+        if not client_order_id or not client_order_id.strip():
+            raise ValueError("client_order_id must not be empty")
+        if validation_attempt_no < 1:
+            raise ValueError("validation_attempt_no must be >= 1")
+
+        prov = provenance or ApprovalProvenance()
+        correlation_id = lifecycle_correlation_id or client_order_id
+        sanitized_validation = (
+            _redact_sensitive_keys(validation_summary) if validation_summary else None
+        )
+        initial_raw: dict[str, Any] = {}
+        if raw_response is not None:
+            initial_raw[f"validation_{validation_attempt_no}"] = _redact_sensitive_keys(
+                raw_response
+            )
+
+        if validation_outcome == "passed":
+            lc_state = LIFECYCLE_VALIDATED
+        else:
+            lc_state = LIFECYCLE_ANOMALY
+
+        values: dict[str, Any] = {
+            "client_order_id": client_order_id,
+            "lifecycle_correlation_id": correlation_id,
+            "record_kind": RECORD_KIND_VALIDATION_ATTEMPT,
+            "broker": "alpaca",
+            "account_mode": "alpaca_paper",
+            "lifecycle_state": lc_state,
+            "execution_symbol": execution_symbol,
+            "execution_venue": execution_venue,
+            "instrument_type": instrument_type,
+            "side": side,
+            "order_type": order_type,
+            "time_in_force": time_in_force,
+            "requested_qty": requested_qty,
+            "requested_notional": requested_notional,
+            "requested_price": requested_price,
+            "currency": currency,
+            "validation_attempt_no": validation_attempt_no,
+            "validation_outcome": validation_outcome,
+            "validation_summary": sanitized_validation,
+            "leg_role": leg_role,
+            "confirm_flag": False,
+            "raw_responses": initial_raw if initial_raw else None,
+            **self._build_provenance_values(prov),
+        }
+
+        stmt = (
+            pg_insert(AlpacaPaperOrderLedger)
+            .values(**values)
+            .on_conflict_do_nothing(
+                index_elements=[
+                    "lifecycle_correlation_id",
+                    "side",
+                    "validation_attempt_no",
+                ],
+                index_where=text("record_kind = 'validation_attempt'"),
+            )
+        )
+        await self._db.execute(stmt)
+        await self._db.commit()
+
+        row = await self.get_by_client_order_id(client_order_id)
+        if row is None:
+            raise LedgerNotFoundError(
+                f"No ledger row found for client_order_id={client_order_id!r}"
+            )
+        return row
 
     async def record_submit(
         self,
@@ -349,8 +598,8 @@ class AlpacaPaperLedgerService:
         order: dict[str, Any],
         raw_response: dict[str, Any] | None = None,
     ) -> AlpacaPaperOrderLedger:
-        """Update with broker order id, status, and filled quantities after submit."""
-        await self._require_row(client_order_id)
+        """Record a confirmed submit as a distinct execution row."""
+        source_row = await self._require_row(client_order_id)
 
         broker_order_id = (
             order.get("id") or order.get("order_id") or order.get("broker_order_id")
@@ -376,29 +625,70 @@ class AlpacaPaperLedgerService:
                 filled_avg_price = None
 
         lifecycle_state = _derive_lifecycle_state(order_status, filled_qty)
+        raw_responses = None
+        if raw_response is not None:
+            raw_responses = {"submit": _redact_sensitive_keys(raw_response)}
 
-        update_vals: dict[str, Any] = {
+        values: dict[str, Any] = {
+            "client_order_id": client_order_id,
+            "lifecycle_correlation_id": source_row.lifecycle_correlation_id
+            or client_order_id,
+            "record_kind": RECORD_KIND_EXECUTION,
+            "broker": "alpaca",
+            "account_mode": "alpaca_paper",
             "lifecycle_state": lifecycle_state,
+            "execution_symbol": source_row.execution_symbol,
+            "execution_venue": source_row.execution_venue,
+            "instrument_type": source_row.instrument_type,
+            "side": source_row.side,
+            "order_type": source_row.order_type,
+            "time_in_force": source_row.time_in_force,
+            "requested_qty": source_row.requested_qty,
+            "requested_notional": source_row.requested_notional,
+            "requested_price": source_row.requested_price,
+            "currency": source_row.currency,
+            "leg_role": source_row.leg_role,
+            "preview_payload": source_row.preview_payload,
+            "validation_summary": source_row.validation_summary,
+            "signal_symbol": source_row.signal_symbol,
+            "signal_venue": source_row.signal_venue,
+            "execution_asset_class": source_row.execution_asset_class,
+            "workflow_stage": source_row.workflow_stage,
+            "purpose": source_row.purpose,
+            "briefing_artifact_run_uuid": source_row.briefing_artifact_run_uuid,
+            "briefing_artifact_status": source_row.briefing_artifact_status,
+            "qa_evaluator_status": source_row.qa_evaluator_status,
+            "approval_bridge_generated_at": source_row.approval_bridge_generated_at,
+            "approval_bridge_status": source_row.approval_bridge_status,
+            "candidate_uuid": source_row.candidate_uuid,
             "order_status": order_status,
             "broker_order_id": str(broker_order_id) if broker_order_id else None,
             "submitted_at": datetime.now(UTC),
             "filled_qty": filled_qty,
             "filled_avg_price": filled_avg_price,
+            "confirm_flag": True,
+            "raw_responses": raw_responses,
         }
-        if lifecycle_state == "unexpected":
-            update_vals["error_summary"] = (
-                f"unexpected order_status={order_status!r} after submit"
+        if lifecycle_state == LIFECYCLE_ANOMALY:
+            values["error_summary"] = (
+                f"anomaly: order_status={order_status!r} after submit"
             )
 
-        await self._db.execute(
-            update(AlpacaPaperOrderLedger)
-            .where(AlpacaPaperOrderLedger.client_order_id == client_order_id)
-            .values(**update_vals)
+        update_vals = {
+            k: v
+            for k, v in values.items()
+            if k not in {"client_order_id", "record_kind"} and v is not None
+        }
+        stmt = (
+            pg_insert(AlpacaPaperOrderLedger)
+            .values(**values)
+            .on_conflict_do_update(
+                index_elements=["client_order_id", "record_kind"],
+                index_where=text("validation_attempt_no IS NULL"),
+                set_=update_vals,
+            )
         )
-
-        if raw_response is not None:
-            await self._accumulate_raw_response(client_order_id, "submit", raw_response)
-
+        await self._db.execute(stmt)
         await self._db.commit()
         return await self._require_row(client_order_id)
 
@@ -409,7 +699,7 @@ class AlpacaPaperLedgerService:
         raw_response: dict[str, Any] | None = None,
     ) -> AlpacaPaperOrderLedger:
         """Update lifecycle state from a status-check response."""
-        await self._require_row(client_order_id)
+        target_row = await self._require_row(client_order_id)
 
         order_status = order.get("status")
         filled_qty_raw = order.get("filled_qty") or order.get("filled_quantity")
@@ -439,14 +729,14 @@ class AlpacaPaperLedgerService:
             "filled_qty": filled_qty,
             "filled_avg_price": filled_avg_price,
         }
-        if lifecycle_state == "unexpected":
+        if lifecycle_state == LIFECYCLE_ANOMALY:
             update_vals["error_summary"] = (
-                f"unexpected order_status={order_status!r} during status check"
+                f"anomaly: order_status={order_status!r} during status check"
             )
 
         await self._db.execute(
             update(AlpacaPaperOrderLedger)
-            .where(AlpacaPaperOrderLedger.client_order_id == client_order_id)
+            .where(AlpacaPaperOrderLedger.id == target_row.id)
             .values(**update_vals)
         )
 
@@ -464,7 +754,7 @@ class AlpacaPaperLedgerService:
         error_summary: str | None = None,
     ) -> AlpacaPaperOrderLedger:
         """Record cancel metadata. Lifecycle state is set by record_status, not here."""
-        await self._require_row(client_order_id)
+        target_row = await self._require_row(client_order_id)
 
         update_vals: dict[str, Any] = {
             "cancel_status": cancel_status,
@@ -475,7 +765,7 @@ class AlpacaPaperLedgerService:
 
         await self._db.execute(
             update(AlpacaPaperOrderLedger)
-            .where(AlpacaPaperOrderLedger.client_order_id == client_order_id)
+            .where(AlpacaPaperOrderLedger.id == target_row.id)
             .values(**update_vals)
         )
 
@@ -491,12 +781,12 @@ class AlpacaPaperLedgerService:
         position: dict[str, Any] | None,
         raw_response: dict[str, Any] | None = None,
     ) -> AlpacaPaperOrderLedger:
-        """Record position snapshot.
+        """Record position snapshot and advance lifecycle to position_reconciled.
 
         position=None means no position found (explicit zero).
         position=dict means record qty and avg_entry_price from broker response.
         """
-        await self._require_row(client_order_id)
+        target_row = await self._require_row(client_order_id)
 
         if position is None:
             snapshot: dict[str, Any] = {
@@ -520,14 +810,133 @@ class AlpacaPaperLedgerService:
 
         await self._db.execute(
             update(AlpacaPaperOrderLedger)
-            .where(AlpacaPaperOrderLedger.client_order_id == client_order_id)
-            .values(position_snapshot=snapshot)
+            .where(AlpacaPaperOrderLedger.id == target_row.id)
+            .values(
+                position_snapshot=snapshot,
+                lifecycle_state=LIFECYCLE_POSITION_RECONCILED,
+            )
         )
 
         if raw_response is not None:
             await self._accumulate_raw_response(
                 client_order_id, "position", raw_response
             )
+
+        await self._db.commit()
+        return await self._require_row(client_order_id)
+
+    async def record_sell_validation(
+        self,
+        *,
+        client_order_id: str,
+        lifecycle_correlation_id: str | None = None,
+        execution_symbol: str,
+        execution_venue: str,
+        instrument_type: InstrumentType,
+        side: str = "sell",
+        order_type: str = "limit",
+        time_in_force: str | None = None,
+        requested_qty: Decimal | float | None = None,
+        requested_notional: Decimal | float | None = None,
+        requested_price: Decimal | float | None = None,
+        currency: str = "USD",
+        validation_attempt_no: int = 1,
+        validation_outcome: str = "passed",
+        validation_summary: dict[str, Any] | None = None,
+        leg_role: str | None = "sell",
+        provenance: ApprovalProvenance | None = None,
+        raw_response: dict[str, Any] | None = None,
+    ) -> AlpacaPaperOrderLedger:
+        """Insert a sell-side validation attempt row (lifecycle_state='sell_validated')."""
+        if not client_order_id or not client_order_id.strip():
+            raise ValueError("client_order_id must not be empty")
+
+        prov = provenance or ApprovalProvenance()
+        correlation_id = lifecycle_correlation_id or client_order_id
+        sanitized_validation = (
+            _redact_sensitive_keys(validation_summary) if validation_summary else None
+        )
+        initial_raw: dict[str, Any] = {}
+        if raw_response is not None:
+            initial_raw[f"sell_validation_{validation_attempt_no}"] = (
+                _redact_sensitive_keys(raw_response)
+            )
+
+        values: dict[str, Any] = {
+            "client_order_id": client_order_id,
+            "lifecycle_correlation_id": correlation_id,
+            "record_kind": RECORD_KIND_VALIDATION_ATTEMPT,
+            "broker": "alpaca",
+            "account_mode": "alpaca_paper",
+            "lifecycle_state": LIFECYCLE_SELL_VALIDATED,
+            "execution_symbol": execution_symbol,
+            "execution_venue": execution_venue,
+            "instrument_type": instrument_type,
+            "side": side,
+            "order_type": order_type,
+            "time_in_force": time_in_force,
+            "requested_qty": requested_qty,
+            "requested_notional": requested_notional,
+            "requested_price": requested_price,
+            "currency": currency,
+            "validation_attempt_no": validation_attempt_no,
+            "validation_outcome": validation_outcome,
+            "validation_summary": sanitized_validation,
+            "leg_role": leg_role,
+            "confirm_flag": False,
+            "raw_responses": initial_raw if initial_raw else None,
+            **self._build_provenance_values(prov),
+        }
+
+        stmt = (
+            pg_insert(AlpacaPaperOrderLedger)
+            .values(**values)
+            .on_conflict_do_nothing(
+                index_elements=[
+                    "lifecycle_correlation_id",
+                    "side",
+                    "validation_attempt_no",
+                ],
+                index_where=text("record_kind = 'validation_attempt'"),
+            )
+        )
+        await self._db.execute(stmt)
+        await self._db.commit()
+
+        row = await self.get_by_client_order_id(client_order_id)
+        if row is None:
+            raise LedgerNotFoundError(
+                f"No ledger row found for client_order_id={client_order_id!r}"
+            )
+        return row
+
+    async def record_close(
+        self,
+        client_order_id: str,
+        *,
+        qty_delta: Decimal | float | None = None,
+        notes: str | None = None,
+        raw_response: dict[str, Any] | None = None,
+    ) -> AlpacaPaperOrderLedger:
+        """Advance lifecycle to 'closed' after sell execution."""
+        target_row = await self._require_row(client_order_id)
+
+        update_vals: dict[str, Any] = {
+            "lifecycle_state": LIFECYCLE_CLOSED,
+        }
+        if qty_delta is not None:
+            update_vals["qty_delta"] = qty_delta
+        if notes is not None:
+            update_vals["notes"] = _redact_sensitive_text(notes)
+
+        await self._db.execute(
+            update(AlpacaPaperOrderLedger)
+            .where(AlpacaPaperOrderLedger.id == target_row.id)
+            .values(**update_vals)
+        )
+
+        if raw_response is not None:
+            await self._accumulate_raw_response(client_order_id, "close", raw_response)
 
         await self._db.commit()
         return await self._require_row(client_order_id)
@@ -541,7 +950,7 @@ class AlpacaPaperLedgerService:
         raw_response: dict[str, Any] | None = None,
     ) -> AlpacaPaperOrderLedger:
         """Record reconciliation result."""
-        await self._require_row(client_order_id)
+        target_row = await self._require_row(client_order_id)
 
         update_vals: dict[str, Any] = {
             "reconcile_status": reconcile_status,
@@ -555,7 +964,7 @@ class AlpacaPaperLedgerService:
 
         await self._db.execute(
             update(AlpacaPaperOrderLedger)
-            .where(AlpacaPaperOrderLedger.client_order_id == client_order_id)
+            .where(AlpacaPaperOrderLedger.id == target_row.id)
             .values(**update_vals)
         )
 
@@ -567,11 +976,71 @@ class AlpacaPaperLedgerService:
         await self._db.commit()
         return await self._require_row(client_order_id)
 
+    async def record_final_reconcile(
+        self,
+        client_order_id: str,
+        *,
+        reconcile_status: str = "ok",
+        settlement_status: str = "n_a",
+        qty_delta: Decimal | float | None = None,
+        notes: str | None = None,
+        error_summary: str | None = None,
+        raw_response: dict[str, Any] | None = None,
+    ) -> AlpacaPaperOrderLedger:
+        """Record final roundtrip reconciliation (lifecycle_state='final_reconciled')."""
+        target_row = await self._require_row(client_order_id)
+
+        update_vals: dict[str, Any] = {
+            "lifecycle_state": LIFECYCLE_FINAL_RECONCILED,
+            "record_kind": RECORD_KIND_RECONCILE,
+            "reconcile_status": reconcile_status,
+            "reconciled_at": datetime.now(UTC),
+            "settlement_status": settlement_status,
+            "error_summary": _redact_sensitive_text(error_summary)
+            if error_summary is not None
+            else None,
+        }
+        if qty_delta is not None:
+            update_vals["qty_delta"] = qty_delta
+        if notes is not None:
+            update_vals["notes"] = _redact_sensitive_text(notes)
+
+        await self._db.execute(
+            update(AlpacaPaperOrderLedger)
+            .where(AlpacaPaperOrderLedger.id == target_row.id)
+            .values(**update_vals)
+        )
+
+        if raw_response is not None:
+            await self._accumulate_raw_response(
+                client_order_id, "final_reconcile", raw_response
+            )
+
+        await self._db.commit()
+        return await self._require_row(client_order_id)
+
 
 __all__ = [
     "AlpacaPaperLedgerService",
     "ApprovalProvenance",
+    "CANONICAL_LIFECYCLE_STATES",
+    "LIFECYCLE_ANOMALY",
+    "LIFECYCLE_CLOSED",
+    "LIFECYCLE_FILLED",
+    "LIFECYCLE_FINAL_RECONCILED",
+    "LIFECYCLE_PLANNED",
+    "LIFECYCLE_POSITION_RECONCILED",
+    "LIFECYCLE_PREVIEWED",
+    "LIFECYCLE_SELL_VALIDATED",
+    "LIFECYCLE_SUBMITTED",
+    "LIFECYCLE_VALIDATED",
     "LedgerNotFoundError",
+    "RECORD_KIND_ANOMALY",
+    "RECORD_KIND_EXECUTION",
+    "RECORD_KIND_PLAN",
+    "RECORD_KIND_PREVIEW",
+    "RECORD_KIND_RECONCILE",
+    "RECORD_KIND_VALIDATION_ATTEMPT",
     "_derive_lifecycle_state",
     "_redact_sensitive_keys",
     "_redact_sensitive_text",

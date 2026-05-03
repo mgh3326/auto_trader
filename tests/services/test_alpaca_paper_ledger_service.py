@@ -1,7 +1,7 @@
-"""Tests for AlpacaPaperLedgerService lifecycle methods (ROB-84).
+"""Tests for AlpacaPaperLedgerService lifecycle methods (ROB-84/ROB-90).
 
 Covers: model columns/constraints, _derive_lifecycle_state, service method behavior,
-forbidden imports/strings, ORM model shape.
+forbidden imports/strings, ORM model shape, canonical taxonomy constants.
 """
 
 from __future__ import annotations
@@ -30,6 +30,19 @@ def test_alpaca_paper_ledger_model_columns():
     expected = {
         "id",
         "client_order_id",
+        # ROB-90 new columns
+        "lifecycle_correlation_id",
+        "record_kind",
+        "leg_role",
+        "validation_attempt_no",
+        "validation_outcome",
+        "confirm_flag",
+        "fee_amount",
+        "fee_currency",
+        "settlement_status",
+        "settlement_at",
+        "qty_delta",
+        # existing columns
         "broker",
         "account_mode",
         "lifecycle_state",
@@ -81,8 +94,9 @@ def test_alpaca_paper_ledger_model_constraints():
     from app.models.review import AlpacaPaperOrderLedger
 
     constraint_names = {c.name for c in AlpacaPaperOrderLedger.__table__.constraints}
-    assert "uq_alpaca_paper_ledger_client_order_id" in constraint_names
-    # SQLAlchemy may prefix with table name via naming convention
+    # ROB-90: old single-column unique replaced by partial unique indexes
+    assert "uq_alpaca_paper_ledger_client_order_id" not in constraint_names
+    # Core broker/mode/side constraints must still exist
     assert any("alpaca_paper_ledger_broker" in (n or "") for n in constraint_names)
     assert any(
         "alpaca_paper_ledger_account_mode" in (n or "") for n in constraint_names
@@ -92,43 +106,157 @@ def test_alpaca_paper_ledger_model_constraints():
     )
     assert any("alpaca_paper_ledger_side" in (n or "") for n in constraint_names)
     assert any("alpaca_paper_ledger_order_type" in (n or "") for n in constraint_names)
+    # ROB-90 new CHECK constraints
+    assert any("alpaca_paper_ledger_record_kind" in (n or "") for n in constraint_names)
+    assert any(
+        "alpaca_paper_ledger_validation_outcome" in (n or "") for n in constraint_names
+    )
+    assert any(
+        "alpaca_paper_ledger_settlement_status" in (n or "") for n in constraint_names
+    )
+
+
+@pytest.mark.unit
+def test_alpaca_paper_ledger_partial_unique_indexes():
+    from app.models.review import AlpacaPaperOrderLedger
+
+    index_names = {i.name for i in AlpacaPaperOrderLedger.__table__.indexes}
+    # ROB-90 partial unique indexes
+    assert "uq_alpaca_paper_ledger_client_order_kind" in index_names
+    assert "uq_alpaca_paper_ledger_validation_attempt" in index_names
+    # New correlation/record_kind lookup indexes
+    assert "ix_alpaca_paper_ledger_correlation_id" in index_names
+    assert "ix_alpaca_paper_ledger_record_kind" in index_names
+
+
+@pytest.mark.unit
+def test_alpaca_paper_ledger_lifecycle_check_canonical_states():
+    """The lifecycle CHECK must contain exactly the 10 ROB-90 canonical states."""
+    from app.models.review import AlpacaPaperOrderLedger
+
+    lifecycle_check = None
+    for c in AlpacaPaperOrderLedger.__table__.constraints:
+        # SQLAlchemy naming_convention prefixes check names with ck_<table>_.
+        if hasattr(c, "name") and c.name.endswith(
+            "alpaca_paper_ledger_lifecycle_state"
+        ):
+            lifecycle_check = c
+            break
+
+    assert lifecycle_check is not None
+    check_text = str(lifecycle_check.sqltext)
+
+    canonical = [
+        "planned",
+        "previewed",
+        "validated",
+        "submitted",
+        "filled",
+        "position_reconciled",
+        "sell_validated",
+        "closed",
+        "final_reconciled",
+        "anomaly",
+    ]
+    for state in canonical:
+        assert state in check_text, f"Canonical state {state!r} missing from CHECK"
+
+    excluded = [
+        "validation_failed",
+        "open",
+        "partially_filled",
+        "canceled",
+        "unexpected",
+    ]
+    for state in excluded:
+        assert state not in check_text, f"Old state {state!r} should not be in CHECK"
 
 
 # ---------------------------------------------------------------------------
-# _derive_lifecycle_state
+# Canonical lifecycle constants
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_canonical_lifecycle_constants_exported():
+    from app.services.alpaca_paper_ledger_service import (
+        CANONICAL_LIFECYCLE_STATES,
+        LIFECYCLE_ANOMALY,
+        LIFECYCLE_CLOSED,
+        LIFECYCLE_FILLED,
+        LIFECYCLE_FINAL_RECONCILED,
+        LIFECYCLE_PLANNED,
+        LIFECYCLE_POSITION_RECONCILED,
+        LIFECYCLE_PREVIEWED,
+        LIFECYCLE_SELL_VALIDATED,
+        LIFECYCLE_SUBMITTED,
+        LIFECYCLE_VALIDATED,
+    )
+
+    assert LIFECYCLE_PLANNED == "planned"
+    assert LIFECYCLE_PREVIEWED == "previewed"
+    assert LIFECYCLE_VALIDATED == "validated"
+    assert LIFECYCLE_SUBMITTED == "submitted"
+    assert LIFECYCLE_FILLED == "filled"
+    assert LIFECYCLE_POSITION_RECONCILED == "position_reconciled"
+    assert LIFECYCLE_SELL_VALIDATED == "sell_validated"
+    assert LIFECYCLE_CLOSED == "closed"
+    assert LIFECYCLE_FINAL_RECONCILED == "final_reconciled"
+    assert LIFECYCLE_ANOMALY == "anomaly"
+
+    assert len(CANONICAL_LIFECYCLE_STATES) == 10
+    assert CANONICAL_LIFECYCLE_STATES == {
+        "planned",
+        "previewed",
+        "validated",
+        "submitted",
+        "filled",
+        "position_reconciled",
+        "sell_validated",
+        "closed",
+        "final_reconciled",
+        "anomaly",
+    }
+
+
+# ---------------------------------------------------------------------------
+# _derive_lifecycle_state — ROB-90 canonical mapping
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
     "order_status,filled_qty,expected",
     [
-        ("canceled", None, "canceled"),
-        ("canceled", 0, "canceled"),
+        # filled → filled
         ("filled", None, "filled"),
         ("filled", 1.5, "filled"),
-        ("partially_filled", None, "partially_filled"),
-        ("partially_filled", 0.5, "partially_filled"),
-        # open statuses
-        ("new", None, "open"),
-        ("accepted", None, "open"),
-        ("pending_new", None, "open"),
-        ("accepted_for_bidding", None, "open"),
-        ("held", None, "open"),
-        ("pending_cancel", None, "open"),
-        ("pending_replace", None, "open"),
-        ("replaced", None, "open"),
-        # open status with filled_qty > 0 → unexpected
-        ("new", 0.5, "unexpected"),
-        ("accepted", 1.0, "unexpected"),
-        # open status with filled_qty = 0 → open
-        ("new", 0.0, "open"),
-        # unexpected statuses
-        ("rejected", None, "unexpected"),
-        ("expired", None, "unexpected"),
-        ("suspended", None, "unexpected"),
-        # unknown status
-        ("mystery_status", None, "unexpected"),
-        (None, None, "unexpected"),
+        # partially_filled → submitted (broker status preserved in order_status)
+        ("partially_filled", None, "submitted"),
+        ("partially_filled", 0.5, "submitted"),
+        # open statuses → submitted
+        ("new", None, "submitted"),
+        ("accepted", None, "submitted"),
+        ("pending_new", None, "submitted"),
+        ("accepted_for_bidding", None, "submitted"),
+        ("held", None, "submitted"),
+        ("pending_cancel", None, "submitted"),
+        ("pending_replace", None, "submitted"),
+        ("replaced", None, "submitted"),
+        # open status with filled_qty = 0 → submitted (not anomaly)
+        ("new", 0.0, "submitted"),
+        # open status with filled_qty > 0 → anomaly
+        ("new", 0.5, "anomaly"),
+        ("accepted", 1.0, "anomaly"),
+        # canceled → anomaly (ROB-90: no benign cancel state)
+        ("canceled", None, "anomaly"),
+        ("canceled", 0, "anomaly"),
+        # broker anomaly statuses
+        ("rejected", None, "anomaly"),
+        ("expired", None, "anomaly"),
+        ("suspended", None, "anomaly"),
+        # unknown status → anomaly
+        ("mystery_status", None, "anomaly"),
+        (None, None, "anomaly"),
     ],
 )
 @pytest.mark.unit
@@ -148,6 +276,8 @@ def _make_row(**kwargs) -> Any:
     defaults: dict[str, Any] = {
         "id": 1,
         "client_order_id": "test-client-001",
+        "lifecycle_correlation_id": "test-client-001",
+        "record_kind": "execution",
         "broker": "alpaca",
         "account_mode": "alpaca_paper",
         "lifecycle_state": "previewed",
@@ -156,10 +286,31 @@ def _make_row(**kwargs) -> Any:
         "instrument_type": "crypto",
         "side": "buy",
         "order_type": "limit",
+        "time_in_force": "gtc",
+        "requested_qty": None,
+        "requested_notional": None,
+        "requested_price": None,
         "currency": "USD",
+        "preview_payload": None,
+        "validation_summary": None,
         "raw_responses": None,
         "signal_symbol": "KRW-BTC",
         "signal_venue": "upbit",
+        "execution_asset_class": "crypto",
+        "workflow_stage": None,
+        "purpose": None,
+        "briefing_artifact_run_uuid": None,
+        "briefing_artifact_status": None,
+        "qa_evaluator_status": None,
+        "approval_bridge_generated_at": None,
+        "approval_bridge_status": None,
+        "candidate_uuid": None,
+        "validation_attempt_no": None,
+        "validation_outcome": None,
+        "confirm_flag": None,
+        "leg_role": None,
+        "settlement_status": None,
+        "qty_delta": None,
     }
     defaults.update(kwargs)
     return SimpleNamespace(**defaults)
@@ -186,6 +337,58 @@ def _mock_db_with_row(row: Any):
 
 
 # ---------------------------------------------------------------------------
+# record_plan
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_record_plan_inserts_planned_row():
+    from app.models.trading import InstrumentType
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+
+    row = _make_row(lifecycle_state="planned", record_kind="plan")
+    db = _mock_db_with_row(row)
+
+    svc = AlpacaPaperLedgerService(db)
+    result = await svc.record_plan(
+        client_order_id="test-client-001",
+        execution_symbol="BTCUSD",
+        execution_venue="alpaca_paper",
+        instrument_type=InstrumentType.crypto,
+        side="buy",
+    )
+    assert result.lifecycle_state == "planned"
+    assert result.record_kind == "plan"
+    db.execute.assert_called()
+    db.commit.assert_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_record_plan_uses_client_order_id_as_correlation_default():
+    from app.models.trading import InstrumentType
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+
+    row = _make_row(
+        lifecycle_state="planned",
+        record_kind="plan",
+        lifecycle_correlation_id="test-client-001",
+    )
+    db = _mock_db_with_row(row)
+
+    svc = AlpacaPaperLedgerService(db)
+    result = await svc.record_plan(
+        client_order_id="test-client-001",
+        execution_symbol="BTCUSD",
+        execution_venue="alpaca_paper",
+        instrument_type=InstrumentType.crypto,
+        side="buy",
+    )
+    assert result.lifecycle_correlation_id == "test-client-001"
+
+
+# ---------------------------------------------------------------------------
 # record_preview
 # ---------------------------------------------------------------------------
 
@@ -196,7 +399,7 @@ async def test_record_preview_inserts_and_returns_row():
     from app.models.trading import InstrumentType
     from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
 
-    row = _make_row(lifecycle_state="previewed")
+    row = _make_row(lifecycle_state="previewed", record_kind="preview")
     db = _mock_db_with_row(row)
 
     svc = AlpacaPaperLedgerService(db)
@@ -208,6 +411,7 @@ async def test_record_preview_inserts_and_returns_row():
         side="buy",
     )
     assert result.lifecycle_state == "previewed"
+    assert result.record_kind == "preview"
     assert result.client_order_id == "test-client-001"
     db.execute.assert_called()
     db.commit.assert_called()
@@ -234,24 +438,23 @@ async def test_record_preview_empty_client_order_id_raises():
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_record_preview_validation_failed_lifecycle():
+async def test_record_preview_sets_correlation_id():
     from app.models.trading import InstrumentType
     from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
 
-    row = _make_row(lifecycle_state="validation_failed")
+    row = _make_row(lifecycle_state="previewed", lifecycle_correlation_id="corr-999")
     db = _mock_db_with_row(row)
 
     svc = AlpacaPaperLedgerService(db)
     result = await svc.record_preview(
-        client_order_id="test-client-002",
+        client_order_id="test-client-001",
+        lifecycle_correlation_id="corr-999",
         execution_symbol="BTCUSD",
         execution_venue="alpaca_paper",
         instrument_type=InstrumentType.crypto,
         side="buy",
-        lifecycle_state="validation_failed",
-        validation_summary={"reason": "insufficient_buying_power"},
     )
-    assert result.lifecycle_state == "validation_failed"
+    assert result.lifecycle_correlation_id == "corr-999"
 
 
 @pytest.mark.asyncio
@@ -277,8 +480,6 @@ async def test_record_preview_sanitizes_preview_payload():
         side="buy",
         preview_payload={"symbol": "BTCUSD", "api_key": "***"},
     )
-    # The returned row's preview_payload should have no raw secret
-    # (sanitization happens before persistence; we verify the call happened)
     assert result is not None
 
 
@@ -302,18 +503,129 @@ def test_redact_sensitive_text_masks_operator_narrative_values():
 
 
 # ---------------------------------------------------------------------------
+# record_validation_attempt
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_record_validation_attempt_failed_creates_anomaly_row():
+    from app.models.trading import InstrumentType
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+
+    row = _make_row(
+        lifecycle_state="anomaly",
+        record_kind="validation_attempt",
+        validation_attempt_no=1,
+        validation_outcome="failed",
+        confirm_flag=False,
+    )
+    db = _mock_db_with_row(row)
+
+    svc = AlpacaPaperLedgerService(db)
+    result = await svc.record_validation_attempt(
+        client_order_id="test-val-001",
+        execution_symbol="BTCUSD",
+        execution_venue="alpaca_paper",
+        instrument_type=InstrumentType.crypto,
+        side="buy",
+        validation_attempt_no=1,
+        validation_outcome="failed",
+    )
+    assert result.lifecycle_state == "anomaly"
+    assert result.record_kind == "validation_attempt"
+    assert result.validation_attempt_no == 1
+    assert result.validation_outcome == "failed"
+    assert result.confirm_flag is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_record_validation_attempt_passed_creates_validated_row():
+    from app.models.trading import InstrumentType
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+
+    row = _make_row(
+        lifecycle_state="validated",
+        record_kind="validation_attempt",
+        validation_attempt_no=1,
+        validation_outcome="passed",
+        confirm_flag=False,
+    )
+    db = _mock_db_with_row(row)
+
+    svc = AlpacaPaperLedgerService(db)
+    result = await svc.record_validation_attempt(
+        client_order_id="test-val-002",
+        execution_symbol="BTCUSD",
+        execution_venue="alpaca_paper",
+        instrument_type=InstrumentType.crypto,
+        side="buy",
+        validation_attempt_no=1,
+        validation_outcome="passed",
+    )
+    assert result.lifecycle_state == "validated"
+    assert result.confirm_flag is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_record_validation_attempt_increments():
+    from app.models.trading import InstrumentType
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+
+    row2 = _make_row(
+        lifecycle_state="anomaly",
+        record_kind="validation_attempt",
+        validation_attempt_no=2,
+        validation_outcome="failed",
+        confirm_flag=False,
+    )
+    db = _mock_db_with_row(row2)
+
+    svc = AlpacaPaperLedgerService(db)
+    result = await svc.record_validation_attempt(
+        client_order_id="test-val-003",
+        execution_symbol="BTCUSD",
+        execution_venue="alpaca_paper",
+        instrument_type=InstrumentType.crypto,
+        side="buy",
+        validation_attempt_no=2,
+        validation_outcome="failed",
+    )
+    assert result.validation_attempt_no == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_record_validation_attempt_invalid_no_raises():
+    from app.models.trading import InstrumentType
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+
+    db = AsyncMock()
+    svc = AlpacaPaperLedgerService(db)
+    with pytest.raises(ValueError, match="validation_attempt_no must be >= 1"):
+        await svc.record_validation_attempt(
+            client_order_id="test-val-004",
+            execution_symbol="BTCUSD",
+            execution_venue="alpaca_paper",
+            instrument_type=InstrumentType.crypto,
+            side="buy",
+            validation_attempt_no=0,
+        )
+
+
+# ---------------------------------------------------------------------------
 # record_submit
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_record_submit_canceled_order():
-    from app.services.alpaca_paper_ledger_service import (
-        AlpacaPaperLedgerService,
-    )
+async def test_record_submit_anomaly_on_canceled_order():
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
 
-    row = _make_row(lifecycle_state="canceled", order_status="canceled")
+    row = _make_row(lifecycle_state="anomaly", order_status="canceled")
     db = _mock_db_with_row(row)
 
     svc = AlpacaPaperLedgerService(db)
@@ -321,7 +633,7 @@ async def test_record_submit_canceled_order():
         "test-client-001",
         order={"id": "broker-order-id", "status": "canceled", "filled_qty": "0"},
     )
-    assert result.lifecycle_state == "canceled"
+    assert result.lifecycle_state == "anomaly"
 
 
 @pytest.mark.asyncio
@@ -352,10 +664,10 @@ async def test_record_submit_filled_order():
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_record_submit_partially_filled():
+async def test_record_submit_partially_filled_is_submitted():
     from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
 
-    row = _make_row(lifecycle_state="partially_filled", order_status="partially_filled")
+    row = _make_row(lifecycle_state="submitted", order_status="partially_filled")
     db = _mock_db_with_row(row)
 
     svc = AlpacaPaperLedgerService(db)
@@ -363,15 +675,15 @@ async def test_record_submit_partially_filled():
         "test-client-001",
         order={"id": "bid2", "status": "partially_filled", "filled_qty": "0.0005"},
     )
-    assert result.lifecycle_state == "partially_filled"
+    assert result.lifecycle_state == "submitted"
 
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_record_submit_rejected_is_unexpected():
+async def test_record_submit_rejected_is_anomaly():
     from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
 
-    row = _make_row(lifecycle_state="unexpected", order_status="rejected")
+    row = _make_row(lifecycle_state="anomaly", order_status="rejected")
     db = _mock_db_with_row(row)
 
     svc = AlpacaPaperLedgerService(db)
@@ -379,15 +691,15 @@ async def test_record_submit_rejected_is_unexpected():
         "test-client-001",
         order={"id": "bid3", "status": "rejected"},
     )
-    assert result.lifecycle_state == "unexpected"
+    assert result.lifecycle_state == "anomaly"
 
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_record_submit_unknown_status_is_unexpected():
+async def test_record_submit_unknown_status_is_anomaly():
     from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
 
-    row = _make_row(lifecycle_state="unexpected", order_status="mystery")
+    row = _make_row(lifecycle_state="anomaly", order_status="mystery")
     db = _mock_db_with_row(row)
 
     svc = AlpacaPaperLedgerService(db)
@@ -395,7 +707,7 @@ async def test_record_submit_unknown_status_is_unexpected():
         "test-client-001",
         order={"id": "bid4", "status": "mystery"},
     )
-    assert result.lifecycle_state == "unexpected"
+    assert result.lifecycle_state == "anomaly"
 
 
 # ---------------------------------------------------------------------------
@@ -408,13 +720,12 @@ async def test_record_submit_unknown_status_is_unexpected():
 async def test_record_cancel_writes_cancel_metadata():
     from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
 
-    row = _make_row(cancel_status="confirmed", lifecycle_state="canceled")
+    row = _make_row(cancel_status="confirmed", lifecycle_state="anomaly")
     db = _mock_db_with_row(row)
 
     svc = AlpacaPaperLedgerService(db)
     result = await svc.record_cancel("test-client-001", cancel_status="confirmed")
     assert result.cancel_status == "confirmed"
-    # lifecycle_state should come from record_status, not forced here
     db.execute.assert_called()
 
 
@@ -433,7 +744,8 @@ async def test_record_position_snapshot_none_writes_zero_qty():
             "qty": "0",
             "avg_entry_price": None,
             "fetched_at": "2026-05-03T00:00:00+00:00",
-        }
+        },
+        lifecycle_state="position_reconciled",
     )
     db = _mock_db_with_row(row)
 
@@ -441,6 +753,7 @@ async def test_record_position_snapshot_none_writes_zero_qty():
     result = await svc.record_position_snapshot("test-client-001", position=None)
     assert result.position_snapshot["qty"] == "0"
     assert result.position_snapshot["avg_entry_price"] is None
+    assert result.lifecycle_state == "position_reconciled"
 
 
 @pytest.mark.asyncio
@@ -453,7 +766,8 @@ async def test_record_position_snapshot_with_position_writes_qty():
             "qty": "0.001",
             "avg_entry_price": "50000",
             "fetched_at": "2026-05-03T00:00:00+00:00",
-        }
+        },
+        lifecycle_state="position_reconciled",
     )
     db = _mock_db_with_row(row)
 
@@ -464,6 +778,25 @@ async def test_record_position_snapshot_with_position_writes_qty():
     )
     assert result.position_snapshot["qty"] == "0.001"
     assert result.position_snapshot["avg_entry_price"] == "50000"
+
+
+# ---------------------------------------------------------------------------
+# record_close
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_record_close_advances_to_closed():
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+
+    row = _make_row(lifecycle_state="closed", qty_delta="-0.001")
+    db = _mock_db_with_row(row)
+
+    svc = AlpacaPaperLedgerService(db)
+    result = await svc.record_close("test-client-001", qty_delta=-0.001)
+    assert result.lifecycle_state == "closed"
+    db.execute.assert_called()
 
 
 # ---------------------------------------------------------------------------
@@ -528,6 +861,83 @@ async def test_record_reconcile_clears_error_summary_when_omitted():
     update_stmt = db.execute.call_args_list[1].args[0]
     update_params = update_stmt.compile().params
     assert update_params["error_summary"] is None
+
+
+# ---------------------------------------------------------------------------
+# record_final_reconcile
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_record_final_reconcile_advances_to_final_reconciled():
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+
+    row = _make_row(
+        lifecycle_state="final_reconciled",
+        record_kind="reconcile",
+        settlement_status="n_a",
+    )
+    db = _mock_db_with_row(row)
+
+    svc = AlpacaPaperLedgerService(db)
+    result = await svc.record_final_reconcile("test-client-001")
+    assert result.lifecycle_state == "final_reconciled"
+    assert result.settlement_status == "n_a"
+
+
+# ---------------------------------------------------------------------------
+# list_by_correlation_id
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_list_by_correlation_id_returns_rows():
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+
+    buy_row = _make_row(
+        client_order_id="buy-001",
+        lifecycle_correlation_id="corr-abc",
+        side="buy",
+        lifecycle_state="filled",
+    )
+    sell_row = _make_row(
+        client_order_id="sell-001",
+        lifecycle_correlation_id="corr-abc",
+        side="sell",
+        lifecycle_state="closed",
+    )
+
+    class _ScalarResult:
+        def scalar_one_or_none(self):
+            return buy_row
+
+        def scalars(self):
+            class _S:
+                def all(self_inner):
+                    return [buy_row, sell_row]
+
+            return _S()
+
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=_ScalarResult())
+    db.commit = AsyncMock()
+
+    svc = AlpacaPaperLedgerService(db)
+    rows = await svc.list_by_correlation_id("corr-abc")
+    assert isinstance(rows, list)
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_list_by_correlation_id_empty_raises():
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+
+    db = AsyncMock()
+    svc = AlpacaPaperLedgerService(db)
+    with pytest.raises(ValueError, match="lifecycle_correlation_id must not be empty"):
+        await svc.list_by_correlation_id("  ")
 
 
 # ---------------------------------------------------------------------------
@@ -597,7 +1007,6 @@ async def test_raw_responses_accumulate_by_event_key():
 
     def make_execute_mock():
         async def _execute(stmt):
-            # Track update calls that contain raw_responses
             nonlocal accumulated
             return _ScalarResult(
                 _make_row(raw_responses=accumulated if accumulated else None)
@@ -608,32 +1017,63 @@ async def test_raw_responses_accumulate_by_event_key():
     db = AsyncMock()
     db.commit = AsyncMock()
 
-    # Simulate accumulation by tracking the update values
     existing_raw: dict = {}
 
     async def execute_side_effect(stmt):
         nonlocal existing_raw
-        # When it's a select, return row with current raw_responses
         row = _make_row(raw_responses=dict(existing_raw))
         return _ScalarResult(row)
 
     db.execute = AsyncMock(side_effect=execute_side_effect)
 
     svc = AlpacaPaperLedgerService(db)
-    # First accumulation
     existing_raw["submit"] = {"status": "canceled"}
     await svc._accumulate_raw_response("test-client-001", "status", {"status": "new"})
-    # Second accumulation
     existing_raw["status"] = {"status": "new"}
     await svc._accumulate_raw_response("test-client-001", "cancel", {"cancel": "ok"})
 
-    # Verify execute was called multiple times
     assert db.execute.call_count >= 2
 
 
 # ---------------------------------------------------------------------------
-# Static safety: no broker mutation imports
+# Static safety: no broker mutation imports / fan-out ledger updates
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_lifecycle_update_statements_scope_by_primary_key():
+    """Lifecycle updates must not fan out across rows sharing client_order_id."""
+    source = SERVICE_PATH.read_text()
+    tree = ast.parse(source)
+
+    def is_ledger_update_expr(node: ast.AST) -> bool:
+        if isinstance(node, ast.Call):
+            if (
+                isinstance(node.func, ast.Name)
+                and node.func.id == "update"
+                and node.args
+                and ast.unparse(node.args[0]) == "AlpacaPaperOrderLedger"
+            ):
+                return True
+            return is_ledger_update_expr(node.func)
+        if isinstance(node, ast.Attribute):
+            return is_ledger_update_expr(node.value)
+        return False
+
+    update_where_conditions: list[str] = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "where"
+            and is_ledger_update_expr(node.func.value)
+        ):
+            condition = ast.unparse(node.args[0])
+            update_where_conditions.append(condition)
+            assert "AlpacaPaperOrderLedger.id" in condition
+            assert "AlpacaPaperOrderLedger.client_order_id" not in condition
+
+    assert update_where_conditions
 
 
 @pytest.mark.unit
@@ -644,7 +1084,6 @@ def test_service_has_no_broker_mutation_imports():
     source = SERVICE_PATH.read_text()
     tree = _ast.parse(source)
 
-    # Collect all import lines as strings for pattern matching
     import_strings: list[str] = []
     for node in _ast.walk(tree):
         if isinstance(node, (_ast.Import, _ast.ImportFrom)):
@@ -652,7 +1091,6 @@ def test_service_has_no_broker_mutation_imports():
 
     import_source = "\n".join(import_strings)
 
-    # These must not appear in any import statement
     forbidden_imports = [
         "AlpacaPaperBrokerService",
         "app.services.brokers",
@@ -667,7 +1105,6 @@ def test_service_has_no_broker_mutation_imports():
             f"Forbidden import/string found in service imports: {term!r}"
         )
 
-    # These strings must not appear anywhere in the source (including non-import lines)
     forbidden_anywhere = [
         "submit_order",
         "cancel_order",
