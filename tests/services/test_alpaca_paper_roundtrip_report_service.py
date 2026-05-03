@@ -250,6 +250,30 @@ async def test_build_report_by_correlation_returns_complete_read_only_report():
 
 @pytest.mark.asyncio
 @pytest.mark.unit
+async def test_build_report_missing_required_steps_marks_incomplete_read_only():
+    omitted_steps = {LIFECYCLE_CLOSED, LIFECYCLE_FINAL_RECONCILED}
+    rows = [
+        row
+        for row in _complete_roundtrip_rows()
+        if row.lifecycle_state not in omitted_steps
+    ]
+    svc, db = _service_with_rows(rows)
+
+    report = await svc.build_report(
+        lifecycle_correlation_id="corr-rob92",
+        include_ledger_rows=False,
+        now=_ts(30),
+    )
+
+    assert report.status == "incomplete"
+    assert report.completeness.is_complete is False
+    assert omitted_steps.issubset(set(report.completeness.missing_steps))
+    assert report.ledger_rows is None
+    db.commit.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
 async def test_build_report_by_client_order_id_expands_to_correlation_rows():
     rows = _complete_roundtrip_rows()
     svc, _db = _service_with_rows(rows)
