@@ -248,7 +248,7 @@ def register_alpaca_paper_orders_tools(mcp: FastMCP) -> None:
             "WITHOUT calling the broker. Use confirm=True to actually submit. "
             "Paper endpoint only; live endpoint cannot be selected. "
             "Strict caps: us_equity qty<=5/notional<=$1000/qty*limit_price<=$1000; "
-            "crypto is buy-limit-only, allowlisted, and capped at $50."
+            "crypto is buy/sell limit-only, allowlisted, and capped at $50."
         ),
     )(alpaca_paper_submit_order)
     _ = mcp.tool(

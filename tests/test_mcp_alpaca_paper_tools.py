@@ -654,6 +654,27 @@ async def test_preview_crypto_omitted_time_in_force_defaults_to_gtc(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_preview_crypto_sell_limit_is_allowed_for_guarded_paper_close(
+    fake_preview_service: FakeAlpacaPaperService,
+) -> None:
+    payload = await alpaca_paper_preview_order(
+        symbol="BTC/USD",
+        side="sell",
+        type="limit",
+        qty=Decimal("0.0001"),
+        limit_price=Decimal("50000"),
+        asset_class="crypto",
+    )
+
+    assert payload["preview"] is True
+    assert payload["submitted"] is False
+    assert payload["order_request"]["side"] == "sell"
+    assert payload["order_request"]["asset_class"] == "crypto"
+    assert fake_preview_service.calls == [("get_cash", {})]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 @pytest.mark.parametrize("bad_tif", ["day", "fok"])
 async def test_preview_crypto_rejects_invalid_time_in_force_before_service_call(
     fake_preview_service: FakeAlpacaPaperService,
@@ -725,7 +746,6 @@ async def test_preview_crypto_rejects_missing_limit_price(
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
-        ({"side": "sell"}, "buy-only"),
         ({"type": "market", "limit_price": None}, "limit-only"),
         ({"notional": Decimal("51")}, "crypto notional"),
         ({"qty": Decimal("0.002"), "notional": None}, "estimated_cost"),

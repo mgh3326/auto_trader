@@ -203,8 +203,6 @@ class PreviewOrderInput(BaseModel):
         if self.symbol not in ALPACA_PAPER_CRYPTO_ALLOWED_SYMBOLS:
             allowed = ", ".join(sorted(ALPACA_PAPER_CRYPTO_ALLOWED_SYMBOLS))
             raise ValueError(f"crypto symbol must be one of: {allowed}")
-        if self.side != "buy":
-            raise ValueError("crypto preview is buy-only")
         if self.type != "limit":
             raise ValueError("crypto preview is limit-only")
         if self.time_in_force not in ALPACA_PAPER_CRYPTO_TIME_IN_FORCE:
