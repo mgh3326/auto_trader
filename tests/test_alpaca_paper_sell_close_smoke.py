@@ -33,12 +33,17 @@ class FakeLedgerRow:
     reconcile_status: str | None = None
 
 
+async def _async_noop() -> None:
+    await smoke.asyncio.sleep(0)
+
+
 class FakeLedger:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.row = FakeLedgerRow()
 
     async def record_preview(self, **kwargs: Any) -> FakeLedgerRow:
+        await _async_noop()
         self.calls.append(("record_preview", kwargs))
         self.row.client_order_id = kwargs["client_order_id"]
         return self.row
@@ -49,6 +54,7 @@ class FakeLedger:
         order: dict[str, Any],
         raw_response: dict[str, Any] | None = None,
     ) -> FakeLedgerRow:
+        await _async_noop()
         self.calls.append(
             (
                 "record_submit",
@@ -68,6 +74,7 @@ class FakeLedger:
         order: dict[str, Any],
         raw_response: dict[str, Any] | None = None,
     ) -> FakeLedgerRow:
+        await _async_noop()
         self.calls.append(
             (
                 "record_status",
@@ -86,6 +93,7 @@ class FakeLedger:
         position: dict[str, Any] | None,
         raw_response: dict[str, Any] | None = None,
     ) -> FakeLedgerRow:
+        await _async_noop()
         self.calls.append(
             (
                 "record_position_snapshot",
@@ -106,6 +114,7 @@ class FakeLedger:
         error_summary: str | None = None,
         raw_response: dict[str, Any] | None = None,
     ) -> FakeLedgerRow:
+        await _async_noop()
         self.calls.append(
             (
                 "record_reconcile",
@@ -123,6 +132,7 @@ class FakeLedger:
 
 
 async def _source_lookup(_: str) -> list[FakeSourceRow]:
+    await _async_noop()
     return [FakeSourceRow()]
 
 
@@ -174,6 +184,7 @@ async def test_build_sell_close_payload_fails_closed_on_source_and_size_mismatch
     None
 ):
     async def bad_source(_: str) -> list[FakeSourceRow]:
+        await _async_noop()
         return [FakeSourceRow(side="sell")]
 
     with pytest.raises(
@@ -259,10 +270,12 @@ async def test_validate_preview_and_confirm_false_never_submits() -> None:
     calls: list[tuple[str, dict[str, Any]]] = []
 
     async def preview(**kwargs: Any) -> dict[str, Any]:
+        await _async_noop()
         calls.append(("preview", kwargs))
         return {"success": True, "preview": True, "submitted": False}
 
     async def submit(**kwargs: Any) -> dict[str, Any]:
+        await _async_noop()
         calls.append(("submit", kwargs))
         return {
             "success": True,
@@ -301,6 +314,7 @@ async def test_execute_sell_close_submits_exactly_one_order_and_reconciles() -> 
     submit_calls: list[dict[str, Any]] = []
 
     async def submit(**kwargs: Any) -> dict[str, Any]:
+        await _async_noop()
         submit_calls.append(kwargs)
         return {
             "submitted": True,
@@ -316,6 +330,7 @@ async def test_execute_sell_close_submits_exactly_one_order_and_reconciles() -> 
         }
 
     async def get_order(_: str) -> dict[str, Any]:
+        await _async_noop()
         return {
             "order": {
                 "id": "paper-sell-1",
@@ -326,9 +341,11 @@ async def test_execute_sell_close_submits_exactly_one_order_and_reconciles() -> 
         }
 
     async def fills(**_: Any) -> dict[str, Any]:
+        await _async_noop()
         return {"fills": [{"order_id": "paper-sell-1"}]}
 
     async def positions() -> dict[str, Any]:
+        await _async_noop()
         return {"positions": [{"symbol": "BTC/USD", "qty": "0.0005"}]}
 
     result = await smoke.execute_sell_close_and_reconcile(

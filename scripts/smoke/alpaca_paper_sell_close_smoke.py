@@ -520,7 +520,6 @@ def _derive_reconcile_status(
     status: str | None,
     fills: list[dict[str, Any]],
     post_position_qty: Decimal,
-    requested_qty: Decimal,
     poll_timed_out: bool,
 ) -> str:
     if poll_timed_out:
@@ -534,6 +533,45 @@ def _derive_reconcile_status(
     if status in {"rejected", "expired", "canceled"}:
         return "unexpected_state"
     return "unexpected_state"
+
+
+async def _poll_final_order(
+    *,
+    client_order_id: str,
+    broker_order_id: str,
+    initial_order: dict[str, Any],
+    ledger: AlpacaPaperLedgerService,
+    get_order_fn: ReadFn,
+    poll_attempts: int,
+    poll_sleep_seconds: float,
+    sleep_fn: SleepFn,
+) -> tuple[dict[str, Any], bool]:
+    final_order = initial_order
+    max_attempts = max(1, poll_attempts)
+    for attempt in range(max_attempts):
+        status_payload = await get_order_fn(broker_order_id)
+        polled_order = _extract_order(status_payload)
+        if polled_order:
+            final_order = polled_order
+            await ledger.record_status(
+                client_order_id, polled_order, raw_response=status_payload
+            )
+        if _status_of(final_order) in FINAL_ORDER_STATUSES:
+            return final_order, False
+        if attempt < max_attempts - 1:
+            await sleep_fn(poll_sleep_seconds)
+    return final_order, True
+
+
+def _matching_position(
+    positions: Sequence[Any], execution_symbol: str
+) -> dict[str, Any] | None:
+    for item in positions:
+        if isinstance(item, dict) and _symbols_match(
+            _symbol_of(item), execution_symbol
+        ):
+            return item
+    return None
 
 
 async def execute_sell_close_and_reconcile(
@@ -563,23 +601,16 @@ async def execute_sell_close_and_reconcile(
         raise SellCloseStopError("broker order client_order_id mismatch")
     await ledger.record_submit(payload.client_order_id, order, raw_response=submit)
 
-    final_order = order
-    poll_timed_out = False
-    for attempt in range(max(1, poll_attempts)):
-        status_payload = await get_order_fn(str(broker_order_id))
-        polled_order = _extract_order(status_payload)
-        if polled_order:
-            final_order = polled_order
-            await ledger.record_status(
-                payload.client_order_id, polled_order, raw_response=status_payload
-            )
-        status = _status_of(final_order)
-        if status in FINAL_ORDER_STATUSES:
-            break
-        if attempt == max(1, poll_attempts) - 1:
-            poll_timed_out = True
-            break
-        await sleep_fn(poll_sleep_seconds)
+    final_order, poll_timed_out = await _poll_final_order(
+        client_order_id=payload.client_order_id,
+        broker_order_id=str(broker_order_id),
+        initial_order=order,
+        ledger=ledger,
+        get_order_fn=get_order_fn,
+        poll_attempts=poll_attempts,
+        poll_sleep_seconds=poll_sleep_seconds,
+        sleep_fn=sleep_fn,
+    )
 
     fills_payload = await list_fills_fn(after=pre_submit_time.isoformat(), limit=100)
     fills = _filter_fills_for_order(
@@ -587,15 +618,7 @@ async def execute_sell_close_and_reconcile(
     )
     positions_payload = await list_positions_fn()
     positions = positions_payload.get("positions") or []
-    position = next(
-        (
-            item
-            for item in positions
-            if isinstance(item, dict)
-            and _symbols_match(_symbol_of(item), payload.execution_symbol)
-        ),
-        None,
-    )
+    position = _matching_position(positions, payload.execution_symbol)
     post_position_qty = _decimal_from_item(
         position, "qty_available", "available_qty", "qty", "quantity"
     )
@@ -613,7 +636,6 @@ async def execute_sell_close_and_reconcile(
         status=status,
         fills=fills,
         post_position_qty=post_position_qty,
-        requested_qty=payload.qty,
         poll_timed_out=poll_timed_out,
     )
     lifecycle_state = "open" if poll_timed_out else (status or "unexpected")
