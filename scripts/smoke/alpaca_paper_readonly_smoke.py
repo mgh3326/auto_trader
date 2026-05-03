@@ -24,6 +24,7 @@ from app.mcp_server.tooling.alpaca_paper_ledger_read import (
     alpaca_paper_ledger_get,
     alpaca_paper_ledger_get_by_correlation,
     alpaca_paper_ledger_list_recent,
+    alpaca_paper_roundtrip_report,
 )
 
 
@@ -145,10 +146,22 @@ async def run_smoke() -> int:
             alpaca_paper_ledger_get_by_correlation(correlation_id),
             lambda p: f"count={p.get('count', 0)}",
         )
+        await _probe(
+            "alpaca_paper_roundtrip_report",
+            alpaca_paper_roundtrip_report(lifecycle_correlation_id=correlation_id),
+            lambda p: f"success={p.get('success', False)}",
+        )
     else:
         results.append(
             (
                 "alpaca_paper_ledger_get_by_correlation",
+                True,
+                "skipped: no lifecycle correlation id to inspect",
+            )
+        )
+        results.append(
+            (
+                "alpaca_paper_roundtrip_report",
                 True,
                 "skipped: no lifecycle correlation id to inspect",
             )

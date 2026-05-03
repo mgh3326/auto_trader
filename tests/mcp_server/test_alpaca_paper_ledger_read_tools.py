@@ -298,6 +298,93 @@ async def test_ledger_get_by_correlation_empty_id_raises():
 
 
 # ---------------------------------------------------------------------------
+# alpaca_paper_roundtrip_report
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_roundtrip_report_tool_by_correlation_returns_success(monkeypatch):
+    import app.mcp_server.tooling.alpaca_paper_ledger_read as mod
+
+    report = SimpleNamespace(
+        status="complete",
+        model_dump=lambda mode: {  # noqa: ARG005
+            "lookup_key": {"kind": "lifecycle_correlation_id", "value": "corr-test"},
+            "status": "complete",
+            "safety": {"read_only": True},
+        },
+    )
+    svc = SimpleNamespace(build_report=AsyncMock(return_value=report))
+
+    monkeypatch.setattr(mod, "_session_factory", lambda: lambda: _FakeDB())
+    monkeypatch.setattr(mod, "AlpacaPaperRoundtripReportService", lambda db: svc)
+
+    result = await mod.alpaca_paper_roundtrip_report(
+        lifecycle_correlation_id="corr-test",
+        open_orders=[{"id": "order-1", "status": "new"}],
+        include_ledger_rows=False,
+    )
+
+    assert result["success"] is True
+    assert result["account_mode"] == "alpaca_paper"
+    assert result["source"] == "alpaca_paper_roundtrip_report"
+    assert result["read_only"] is True
+    assert result["report"]["safety"]["read_only"] is True
+    svc.build_report.assert_awaited_once_with(
+        lifecycle_correlation_id="corr-test",
+        client_order_id=None,
+        open_orders=[{"id": "order-1", "status": "new"}],
+        positions=[],
+        stale_after_minutes=30,
+        include_ledger_rows=False,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_roundtrip_report_tool_by_candidate_returns_list_payload(monkeypatch):
+    import app.mcp_server.tooling.alpaca_paper_ledger_read as mod
+
+    candidate_uuid = "22222222-2222-4222-8222-222222222222"
+    response = SimpleNamespace(
+        count=1,
+        model_dump=lambda mode: {  # noqa: ARG005
+            "lookup_key": {"kind": "candidate_uuid", "value": candidate_uuid},
+            "count": 1,
+            "items": [],
+        },
+    )
+    svc = SimpleNamespace(
+        build_reports_for_candidate_uuid=AsyncMock(return_value=response)
+    )
+
+    monkeypatch.setattr(mod, "_session_factory", lambda: lambda: _FakeDB())
+    monkeypatch.setattr(mod, "AlpacaPaperRoundtripReportService", lambda db: svc)
+
+    result = await mod.alpaca_paper_roundtrip_report(candidate_uuid=candidate_uuid)
+
+    assert result["success"] is True
+    assert result["report"]["count"] == 1
+    svc.build_reports_for_candidate_uuid.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_roundtrip_report_tool_invalid_lookup_count_raises():
+    from app.mcp_server.tooling.alpaca_paper_ledger_read import (
+        alpaca_paper_roundtrip_report,
+    )
+
+    with pytest.raises(ValueError, match="exactly one lookup key"):
+        await alpaca_paper_roundtrip_report()
+    with pytest.raises(ValueError, match="exactly one lookup key"):
+        await alpaca_paper_roundtrip_report(
+            lifecycle_correlation_id="corr", client_order_id="client"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Registered as read-only
 # ---------------------------------------------------------------------------
 
@@ -309,6 +396,7 @@ def test_ledger_tool_names_are_in_alpaca_readonly_set():
     assert "alpaca_paper_ledger_list_recent" in ALPACA_PAPER_READONLY_TOOL_NAMES
     assert "alpaca_paper_ledger_get" in ALPACA_PAPER_READONLY_TOOL_NAMES
     assert "alpaca_paper_ledger_get_by_correlation" in ALPACA_PAPER_READONLY_TOOL_NAMES
+    assert "alpaca_paper_roundtrip_report" in ALPACA_PAPER_READONLY_TOOL_NAMES
     assert "alpaca_paper_execution_preflight_check" in ALPACA_PAPER_READONLY_TOOL_NAMES
 
 

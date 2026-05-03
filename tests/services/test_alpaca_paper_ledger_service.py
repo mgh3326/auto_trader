@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
 
@@ -938,6 +939,67 @@ async def test_list_by_correlation_id_empty_raises():
     svc = AlpacaPaperLedgerService(db)
     with pytest.raises(ValueError, match="lifecycle_correlation_id must not be empty"):
         await svc.list_by_correlation_id("  ")
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_list_by_candidate_uuid_returns_rows():
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+
+    candidate_uuid = uuid4()
+    row = _make_row(
+        candidate_uuid=candidate_uuid, lifecycle_correlation_id="corr-candidate"
+    )
+
+    class _ScalarResult:
+        def scalars(self):
+            class _S:
+                def all(self_inner):
+                    return [row]
+
+            return _S()
+
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=_ScalarResult())
+    db.commit = AsyncMock()
+
+    svc = AlpacaPaperLedgerService(db)
+    rows = await svc.list_by_candidate_uuid(candidate_uuid)
+
+    assert rows == [row]
+    db.execute.assert_awaited_once()
+    db.commit.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_list_by_briefing_artifact_run_uuid_returns_rows():
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+
+    briefing_uuid = uuid4()
+    row = _make_row(
+        briefing_artifact_run_uuid=briefing_uuid,
+        lifecycle_correlation_id="corr-briefing",
+    )
+
+    class _ScalarResult:
+        def scalars(self):
+            class _S:
+                def all(self_inner):
+                    return [row]
+
+            return _S()
+
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=_ScalarResult())
+    db.commit = AsyncMock()
+
+    svc = AlpacaPaperLedgerService(db)
+    rows = await svc.list_by_briefing_artifact_run_uuid(briefing_uuid)
+
+    assert rows == [row]
+    db.execute.assert_awaited_once()
+    db.commit.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

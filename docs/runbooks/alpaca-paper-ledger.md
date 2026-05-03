@@ -8,7 +8,7 @@ It records the full lifecycle of a paper roundtrip: plan → preview → validat
 
 It was introduced in ROB-84 as a prerequisite for automating the preopen→paper buy/sell roundtrip (ROB-85). ROB-90 normalized the taxonomy to canonical states.
 
-Related: ROB-83 introduced the Alpaca Paper smoke workflow. ROB-84 adds persistent records. ROB-90 normalizes lifecycle states and adds roundtrip correlation.
+Related: ROB-83 introduced the Alpaca Paper smoke workflow. ROB-84 adds persistent records. ROB-90 normalizes lifecycle states and adds roundtrip correlation. ROB-92 adds a read-only structured roundtrip audit report; see `docs/runbooks/alpaca-paper-roundtrip-report.md`.
 
 ---
 
@@ -156,6 +156,10 @@ GET /trading/api/alpaca-paper/ledger/recent?limit=50&lifecycle_state=anomaly
 GET /trading/api/alpaca-paper/ledger/{ledger_id}
 GET /trading/api/alpaca-paper/ledger/by-client-order-id/{client_order_id}
 GET /trading/api/alpaca-paper/ledger/by-correlation-id/{lifecycle_correlation_id}
+GET /trading/api/alpaca-paper/roundtrip-report/by-correlation-id/{lifecycle_correlation_id}
+GET /trading/api/alpaca-paper/roundtrip-report/by-client-order-id/{client_order_id}
+GET /trading/api/alpaca-paper/roundtrip-report/by-candidate-uuid/{candidate_uuid}
+GET /trading/api/alpaca-paper/roundtrip-report/by-briefing-artifact-run-uuid/{briefing_artifact_run_uuid}
 ```
 
 ### MCP tools (read-only, in `ALPACA_PAPER_READONLY_TOOL_NAMES`)
@@ -164,6 +168,7 @@ GET /trading/api/alpaca-paper/ledger/by-correlation-id/{lifecycle_correlation_id
 alpaca_paper_ledger_list_recent(limit=50, lifecycle_state=None)
 alpaca_paper_ledger_get(client_order_id)
 alpaca_paper_ledger_get_by_correlation(lifecycle_correlation_id)
+alpaca_paper_roundtrip_report(lifecycle_correlation_id=None, client_order_id=None, candidate_uuid=None, briefing_artifact_run_uuid=None, open_orders=None, positions=None)
 ```
 
 ---

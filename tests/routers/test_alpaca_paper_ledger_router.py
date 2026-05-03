@@ -278,6 +278,137 @@ def test_get_by_client_order_id_missing_returns_404():
 
 
 # ---------------------------------------------------------------------------
+# ROB-92 roundtrip report endpoints
+# ---------------------------------------------------------------------------
+
+
+def _make_roundtrip_rows_for_router():
+    buy_row = _make_fake_row(
+        client_order_id="buy-rob92",
+        lifecycle_correlation_id="corr-rob92",
+        lifecycle_state="filled",
+        side="buy",
+        order_status="filled",
+        filled_qty="0.001",
+        filled_avg_price="50000",
+        qty_delta="0.001",
+        created_at=datetime(2026, 5, 3, 9, 1, tzinfo=UTC),
+    )
+    sell_row = _make_fake_row(
+        id=2,
+        client_order_id="sell-rob92",
+        lifecycle_correlation_id="corr-rob92",
+        lifecycle_state="closed",
+        side="sell",
+        order_status="filled",
+        filled_qty="0.001",
+        filled_avg_price="51000",
+        qty_delta="-0.001",
+        created_at=datetime(2026, 5, 3, 9, 2, tzinfo=UTC),
+    )
+    return [buy_row, sell_row]
+
+
+@pytest.mark.unit
+def test_roundtrip_report_by_correlation_id_returns_200():
+    db = _mock_db_for_rows(_make_roundtrip_rows_for_router())
+    app = _make_app_with_db(db)
+
+    client = TestClient(app)
+    resp = client.get(
+        "/trading/api/alpaca-paper/roundtrip-report/by-correlation-id/corr-rob92"
+        "?include_ledger_rows=false"
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["lookup_key"] == {
+        "kind": "lifecycle_correlation_id",
+        "value": "corr-rob92",
+    }
+    assert data["lifecycle_correlation_id"] == "corr-rob92"
+    assert data["safety"]["read_only"] is True
+    assert data["ledger_rows"] is None
+    assert data["buy_leg"]["order"]["client_order_id"] == "buy-rob92"
+    assert data["sell_leg"]["order"]["client_order_id"] == "sell-rob92"
+
+
+@pytest.mark.unit
+def test_roundtrip_report_by_correlation_id_missing_returns_404():
+    db = _mock_db_for_rows([])
+    app = _make_app_with_db(db)
+
+    client = TestClient(app)
+    resp = client.get(
+        "/trading/api/alpaca-paper/roundtrip-report/by-correlation-id/missing"
+    )
+
+    assert resp.status_code == 404
+
+
+@pytest.mark.unit
+def test_roundtrip_report_by_client_order_id_returns_200():
+    db = _mock_db_for_rows(_make_roundtrip_rows_for_router())
+    app = _make_app_with_db(db)
+
+    client = TestClient(app)
+    resp = client.get(
+        "/trading/api/alpaca-paper/roundtrip-report/by-client-order-id/buy-rob92"
+        "?include_ledger_rows=false"
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["lookup_key"] == {"kind": "client_order_id", "value": "buy-rob92"}
+    assert data["lifecycle_correlation_id"] == "corr-rob92"
+
+
+@pytest.mark.unit
+def test_roundtrip_report_by_candidate_uuid_returns_list_response():
+    rows = _make_roundtrip_rows_for_router()
+    candidate_uuid = rows[0].candidate_uuid
+    db = _mock_db_for_rows(rows)
+    app = _make_app_with_db(db)
+
+    client = TestClient(app)
+    resp = client.get(
+        f"/trading/api/alpaca-paper/roundtrip-report/by-candidate-uuid/{candidate_uuid}"
+        "?include_ledger_rows=false"
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["lookup_key"] == {
+        "kind": "candidate_uuid",
+        "value": str(candidate_uuid),
+    }
+    assert data["count"] == 1
+    assert data["items"][0]["lifecycle_correlation_id"] == "corr-rob92"
+
+
+@pytest.mark.unit
+def test_roundtrip_report_by_briefing_artifact_run_uuid_returns_list_response():
+    rows = _make_roundtrip_rows_for_router()
+    briefing_uuid = rows[0].briefing_artifact_run_uuid
+    db = _mock_db_for_rows(rows)
+    app = _make_app_with_db(db)
+
+    client = TestClient(app)
+    resp = client.get(
+        "/trading/api/alpaca-paper/roundtrip-report/"
+        f"by-briefing-artifact-run-uuid/{briefing_uuid}?include_ledger_rows=false"
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["lookup_key"] == {
+        "kind": "briefing_artifact_run_uuid",
+        "value": str(briefing_uuid),
+    }
+    assert data["count"] == 1
+
+
+# ---------------------------------------------------------------------------
 # Auth — unauthenticated requests return 401
 # ---------------------------------------------------------------------------
 
