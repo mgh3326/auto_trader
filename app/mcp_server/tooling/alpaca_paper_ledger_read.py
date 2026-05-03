@@ -10,6 +10,9 @@ from typing import TYPE_CHECKING, Any, cast
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
+from app.services.alpaca_paper_anomaly_checks import (
+    build_paper_execution_preflight_report,
+)
 from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
 
 if TYPE_CHECKING:
@@ -100,6 +103,54 @@ async def alpaca_paper_ledger_get(
     }
 
 
+async def alpaca_paper_execution_preflight_check(
+    limit: int = 50,
+    open_orders: list[dict[str, Any]] | None = None,
+    positions: list[dict[str, Any]] | None = None,
+    approval_packet: dict[str, Any] | None = None,
+    expected_signal_symbol: str | None = None,
+    expected_execution_symbol: str | None = None,
+    stale_after_minutes: int = 30,
+) -> dict[str, Any]:
+    """Run read-only Alpaca Paper execution anomaly checks.
+
+    The tool reads recent ledger rows and combines them with optional caller-
+    supplied read-only broker snapshots. It never submits, cancels, repairs, or
+    writes data. The returned ``should_block`` field is intended for runner
+    preflight gates.
+    """
+    if limit < 1:
+        raise ValueError("limit must be >= 1")
+    limit = min(limit, 200)
+    if stale_after_minutes < 1:
+        raise ValueError("stale_after_minutes must be >= 1")
+
+    async with _session_factory()() as db:
+        svc = AlpacaPaperLedgerService(db)
+        rows = await svc.list_recent(limit=limit)
+
+    report = build_paper_execution_preflight_report(
+        ledger_rows=rows,
+        open_orders=open_orders or [],
+        positions=positions or [],
+        approval_packet=approval_packet,
+        expected_signal_symbol=expected_signal_symbol,
+        expected_execution_symbol=expected_execution_symbol,
+        stale_after_minutes=stale_after_minutes,
+    )
+    data = report.to_dict()
+    data.update(
+        {
+            "success": True,
+            "account_mode": "alpaca_paper",
+            "source": "alpaca_paper_execution_preflight",
+            "read_only": True,
+            "limit": limit,
+        }
+    )
+    return data
+
+
 def register_alpaca_paper_ledger_read_tools(mcp: FastMCP) -> None:
     """Register read-only Alpaca Paper ledger MCP tools."""
     _ = mcp.tool(
@@ -116,9 +167,18 @@ def register_alpaca_paper_ledger_read_tools(mcp: FastMCP) -> None:
             "Returns found/not-found shape. No broker mutation."
         ),
     )(alpaca_paper_ledger_get)
+    _ = mcp.tool(
+        name="alpaca_paper_execution_preflight_check",
+        description=(
+            "Read-only Alpaca Paper execution anomaly preflight. Returns "
+            "severity-classified findings and should_block for cycle runners. "
+            "No broker mutation and no repair writes."
+        ),
+    )(alpaca_paper_execution_preflight_check)
 
 
 __all__ = [
+    "alpaca_paper_execution_preflight_check",
     "alpaca_paper_ledger_get",
     "alpaca_paper_ledger_list_recent",
     "register_alpaca_paper_ledger_read_tools",
