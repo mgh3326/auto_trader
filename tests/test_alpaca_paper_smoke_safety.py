@@ -83,6 +83,16 @@ async def test_run_smoke_exits_zero_when_all_tools_succeed(
     """run_smoke() returns 0 when every tool call succeeds via the fake service."""
     from tests.test_mcp_alpaca_paper_tools import FakeAlpacaPaperService
 
+    async def fake_ledger_list_recent(
+        limit: int = 50, lifecycle_state: str | None = None
+    ) -> dict:
+        assert limit == 1
+        assert lifecycle_state is None
+        return {"success": True, "count": 0, "items": []}
+
+    async def fake_ledger_get(client_order_id: str) -> dict:
+        return {"success": False, "found": False, "client_order_id": client_order_id}
+
     service = FakeAlpacaPaperService()
     set_alpaca_paper_service_factory(lambda: service)  # type: ignore[arg-type]
     try:
@@ -90,10 +100,15 @@ async def test_run_smoke_exits_zero_when_all_tools_succeed(
         assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)  # type: ignore[union-attr]
+        module.alpaca_paper_ledger_list_recent = fake_ledger_list_recent
+        module.alpaca_paper_ledger_get = fake_ledger_get
         exit_code = await module.run_smoke()
     finally:
         reset_alpaca_paper_service_factory()
 
+    from app.mcp_server.tooling.alpaca_paper import ALPACA_PAPER_READONLY_TOOL_NAMES
+
     captured = capsys.readouterr()
+    expected_count = len(ALPACA_PAPER_READONLY_TOOL_NAMES)
     assert exit_code == 0
-    assert "summary: PASS tools_ok=7/7" in captured.out
+    assert f"summary: PASS tools_ok={expected_count}/{expected_count}" in captured.out

@@ -24,6 +24,7 @@ from app.monitoring.sentry import capture_exception, init_sentry
 from app.monitoring.trade_notifier import get_trade_notifier
 from app.routers import (
     ai_markdown,
+    alpaca_paper_ledger,
     deprecated_pages,
     health,
     kospi200,
@@ -169,6 +170,7 @@ def create_app() -> FastAPI:
     app.include_router(trading_decisions_spa.router)
     app.include_router(research_run_decision_sessions.router)
     app.include_router(preopen.router)
+    app.include_router(alpaca_paper_ledger.router)
     app.include_router(strategy_events.router)
     app.include_router(kospi200.router)
     app.include_router(websocket.router)

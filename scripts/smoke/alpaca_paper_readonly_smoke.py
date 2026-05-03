@@ -19,6 +19,10 @@ from app.mcp_server.tooling.alpaca_paper import (
     alpaca_paper_list_orders,
     alpaca_paper_list_positions,
 )
+from app.mcp_server.tooling.alpaca_paper_ledger_read import (
+    alpaca_paper_ledger_get,
+    alpaca_paper_ledger_list_recent,
+)
 
 
 async def run_smoke() -> int:
@@ -94,7 +98,41 @@ async def run_smoke() -> int:
         lambda p: f"count={p['count']}",
     )
 
+    # Ledger read tools: list recent rows, then inspect one client_order_id when present.
+    ledger_payload: dict | None = None  # type: ignore[type-arg]
+    try:
+        ledger_payload = await alpaca_paper_ledger_list_recent(limit=1)
+        results.append(
+            (
+                "alpaca_paper_ledger_list_recent",
+                True,
+                f"count={ledger_payload['count']}",
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        results.append(
+            (
+                "alpaca_paper_ledger_list_recent",
+                False,
+                f"ERROR: {type(exc).__name__}: {exc}",
+            )
+        )
+
+    client_order_id: str | None = None
+    if ledger_payload and ledger_payload.get("items"):
+        client_order_id = ledger_payload["items"][0].get("client_order_id")
+
+    if not client_order_id:
+        client_order_id = "alpaca-paper-smoke-missing-client-order-id"
+
+    await _probe(
+        "alpaca_paper_ledger_get",
+        alpaca_paper_ledger_get(client_order_id),
+        lambda p: f"found={p.get('found', False)}",
+    )
+
     # Confirm every expected tool was exercised
+    expected_count = len(ALPACA_PAPER_READONLY_TOOL_NAMES)
     exercised = {name for name, _, _ in results}
     missing = ALPACA_PAPER_READONLY_TOOL_NAMES - exercised
     if missing:
@@ -110,8 +148,8 @@ async def run_smoke() -> int:
         if not ok:
             all_ok = False
 
-    classification = "PASS" if all_ok and ok_tool_count == 7 else "PARTIAL"
-    print(f"summary: {classification} tools_ok={ok_tool_count}/7")
+    classification = "PASS" if all_ok and ok_tool_count == expected_count else "PARTIAL"
+    print(f"summary: {classification} tools_ok={ok_tool_count}/{expected_count}")
     return 0 if classification == "PASS" else 1
 
 
