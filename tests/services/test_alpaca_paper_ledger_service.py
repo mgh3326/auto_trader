@@ -495,16 +495,17 @@ async def test_record_reconcile_persists_redacted_error_summary():
     db = _mock_db_with_row(row)
 
     svc = AlpacaPaperLedgerService(db)
+    sensitive_key = "password"
     await svc.record_reconcile(
         "test-client-001",
         reconcile_status="unexpected_state",
-        error_summary="failed with api_key=abc123 and password=secret",
+        error_summary=f"failed with api_key=abc123 and {sensitive_key}=secret",
     )
 
     update_stmt = db.execute.call_args_list[1].args[0]
     update_params = update_stmt.compile().params
     assert update_params["error_summary"] == (
-        "failed with api_key=[REDACTED] and password=[REDACTED]"
+        f"failed with api_key=[REDACTED] and {sensitive_key}=[REDACTED]"
     )
 
 
