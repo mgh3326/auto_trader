@@ -106,6 +106,9 @@ async def test_run_smoke_exits_zero_when_all_tools_succeed(
     finally:
         reset_alpaca_paper_service_factory()
 
+    from app.mcp_server.tooling.alpaca_paper import ALPACA_PAPER_READONLY_TOOL_NAMES
+
     captured = capsys.readouterr()
+    expected_count = len(ALPACA_PAPER_READONLY_TOOL_NAMES)
     assert exit_code == 0
-    assert "summary: PASS tools_ok=9/9" in captured.out
+    assert f"summary: PASS tools_ok={expected_count}/{expected_count}" in captured.out

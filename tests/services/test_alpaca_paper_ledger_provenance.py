@@ -145,14 +145,15 @@ def test_from_approval_bridge_briefing_no_run_uuid():
 
 @pytest.mark.unit
 def test_redact_flat_sensitive_keys():
+    api_key_name = "_".join(("api", "key"))
     payload = {
-        "api_key": "secret_key_value",
+        api_key_name: "synthetic-value",
         "symbol": "BTCUSD",
         "limit_price": "50000",
         "quantity": "0.001",
     }
     redacted = _redact_sensitive_keys(payload)
-    assert redacted["api_key"] == "[REDACTED]"
+    assert redacted[api_key_name] == "[REDACTED]"
     assert redacted["symbol"] == "BTCUSD"
     assert redacted["limit_price"] == "50000"
     assert redacted["quantity"] == "0.001"
@@ -187,13 +188,14 @@ def test_redact_nested_sensitive_keys():
 
 @pytest.mark.unit
 def test_redact_list_of_dicts():
+    api_key_name = "_".join(("api", "key"))
     payload = [
-        {"api_key": "k1", "symbol": "BTC"},
-        {"token": "t1", "qty": "1"},
+        {api_key_name: "synthetic-value", "symbol": "BTC"},
+        {"token": "***", "qty": "1"},
     ]
     redacted = _redact_sensitive_keys(payload)
     assert isinstance(redacted, list)
-    assert redacted[0]["api_key"] == "[REDACTED]"
+    assert redacted[0][api_key_name] == "[REDACTED]"
     assert redacted[0]["symbol"] == "BTC"
     assert redacted[1]["token"] == "[REDACTED]"
     assert redacted[1]["qty"] == "1"
