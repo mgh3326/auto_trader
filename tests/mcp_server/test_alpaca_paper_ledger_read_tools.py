@@ -63,6 +63,22 @@ def _mock_svc(*, row=None, rows=None, corr_rows=None):
     return svc
 
 
+class _FakeDB:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        pass
+
+
+def _patch_ledger_service(monkeypatch, mod, mock_svc) -> None:
+    monkeypatch.setattr(mod, "_session_factory", lambda: lambda: _FakeDB())
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.alpaca_paper_ledger_read.AlpacaPaperLedgerService",
+        lambda db: mock_svc,
+    )
+
+
 # ---------------------------------------------------------------------------
 # alpaca_paper_ledger_list_recent
 # ---------------------------------------------------------------------------
@@ -76,21 +92,7 @@ async def test_list_recent_returns_success_dict(monkeypatch):
     row = _fake_row()
     mock_svc = _mock_svc(rows=[row])
 
-    class _FakeDB:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            pass
-
-    def fake_factory():
-        return lambda: _FakeDB()
-
-    monkeypatch.setattr(mod, "_session_factory", fake_factory)
-    monkeypatch.setattr(
-        "app.mcp_server.tooling.alpaca_paper_ledger_read.AlpacaPaperLedgerService",
-        lambda db: mock_svc,
-    )
+    _patch_ledger_service(monkeypatch, mod, mock_svc)
 
     result = await mod.alpaca_paper_ledger_list_recent(limit=10)
 
@@ -108,18 +110,7 @@ async def test_list_recent_empty_returns_zero_count(monkeypatch):
 
     mock_svc = _mock_svc(rows=[])
 
-    class _FakeDB:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            pass
-
-    monkeypatch.setattr(mod, "_session_factory", lambda: lambda: _FakeDB())
-    monkeypatch.setattr(
-        "app.mcp_server.tooling.alpaca_paper_ledger_read.AlpacaPaperLedgerService",
-        lambda db: mock_svc,
-    )
+    _patch_ledger_service(monkeypatch, mod, mock_svc)
 
     result = await mod.alpaca_paper_ledger_list_recent(limit=50)
     assert result["count"] == 0
@@ -133,18 +124,7 @@ async def test_list_recent_limit_capped_at_200(monkeypatch):
 
     mock_svc = _mock_svc(rows=[])
 
-    class _FakeDB:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            pass
-
-    monkeypatch.setattr(mod, "_session_factory", lambda: lambda: _FakeDB())
-    monkeypatch.setattr(
-        "app.mcp_server.tooling.alpaca_paper_ledger_read.AlpacaPaperLedgerService",
-        lambda db: mock_svc,
-    )
+    _patch_ledger_service(monkeypatch, mod, mock_svc)
 
     result = await mod.alpaca_paper_ledger_list_recent(limit=999)
     assert result["limit"] == 200
@@ -174,18 +154,7 @@ async def test_ledger_get_found(monkeypatch):
     row = _fake_row()
     mock_svc = _mock_svc(row=row)
 
-    class _FakeDB:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            pass
-
-    monkeypatch.setattr(mod, "_session_factory", lambda: lambda: _FakeDB())
-    monkeypatch.setattr(
-        "app.mcp_server.tooling.alpaca_paper_ledger_read.AlpacaPaperLedgerService",
-        lambda db: mock_svc,
-    )
+    _patch_ledger_service(monkeypatch, mod, mock_svc)
 
     result = await mod.alpaca_paper_ledger_get("test-client-001")
     assert result["success"] is True
@@ -201,18 +170,7 @@ async def test_ledger_get_not_found(monkeypatch):
 
     mock_svc = _mock_svc(row=None)
 
-    class _FakeDB:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            pass
-
-    monkeypatch.setattr(mod, "_session_factory", lambda: lambda: _FakeDB())
-    monkeypatch.setattr(
-        "app.mcp_server.tooling.alpaca_paper_ledger_read.AlpacaPaperLedgerService",
-        lambda db: mock_svc,
-    )
+    _patch_ledger_service(monkeypatch, mod, mock_svc)
 
     result = await mod.alpaca_paper_ledger_get("nonexistent")
     assert result["success"] is False
@@ -304,18 +262,7 @@ async def test_ledger_get_by_correlation_returns_rows(monkeypatch):
     )
     mock_svc = _mock_svc(corr_rows=[buy_row, sell_row])
 
-    class _FakeDB:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            pass
-
-    monkeypatch.setattr(mod, "_session_factory", lambda: lambda: _FakeDB())
-    monkeypatch.setattr(
-        "app.mcp_server.tooling.alpaca_paper_ledger_read.AlpacaPaperLedgerService",
-        lambda db: mock_svc,
-    )
+    _patch_ledger_service(monkeypatch, mod, mock_svc)
 
     result = await mod.alpaca_paper_ledger_get_by_correlation("corr-test")
     assert result["success"] is True
@@ -331,18 +278,7 @@ async def test_ledger_get_by_correlation_empty_returns_zero_count(monkeypatch):
 
     mock_svc = _mock_svc(corr_rows=[])
 
-    class _FakeDB:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            pass
-
-    monkeypatch.setattr(mod, "_session_factory", lambda: lambda: _FakeDB())
-    monkeypatch.setattr(
-        "app.mcp_server.tooling.alpaca_paper_ledger_read.AlpacaPaperLedgerService",
-        lambda db: mock_svc,
-    )
+    _patch_ledger_service(monkeypatch, mod, mock_svc)
 
     result = await mod.alpaca_paper_ledger_get_by_correlation("no-such-corr")
     assert result["success"] is True
