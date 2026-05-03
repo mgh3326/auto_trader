@@ -27,6 +27,9 @@ ALPACA_PAPER_READONLY_TOOL_NAMES: set[str] = {
     "alpaca_paper_get_order",
     "alpaca_paper_list_assets",
     "alpaca_paper_list_fills",
+    # ROB-84 ledger read tools
+    "alpaca_paper_ledger_list_recent",
+    "alpaca_paper_ledger_get",
 }
 
 ServiceFactory = Callable[[], AlpacaPaperBrokerService]
