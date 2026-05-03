@@ -137,9 +137,7 @@ async def run_smoke() -> int:
     if ledger_payload and ledger_payload.get("items"):
         raw_correlation_id = ledger_payload["items"][0].get("lifecycle_correlation_id")
         if isinstance(raw_correlation_id, str):
-            normalized_correlation_id = raw_correlation_id.strip()
-            if normalized_correlation_id:
-                correlation_id = normalized_correlation_id
+            correlation_id = raw_correlation_id.strip() or None
 
     if correlation_id:
         await _probe(
