@@ -486,6 +486,50 @@ async def test_record_reconcile_writes_status():
     assert result.reconcile_status == "reconciled"
 
 
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_record_reconcile_persists_redacted_error_summary():
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+
+    row = _make_row(reconcile_status="unexpected_state")
+    db = _mock_db_with_row(row)
+
+    svc = AlpacaPaperLedgerService(db)
+    sensitive_key = "password"
+    await svc.record_reconcile(
+        "test-client-001",
+        reconcile_status="unexpected_state",
+        error_summary=f"failed with api_key=abc123 and {sensitive_key}=secret",
+    )
+
+    update_stmt = db.execute.call_args_list[1].args[0]
+    update_params = update_stmt.compile().params
+    assert update_params["error_summary"] == (
+        f"failed with api_key=[REDACTED] and {sensitive_key}=[REDACTED]"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_record_reconcile_clears_error_summary_when_omitted():
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+
+    row = _make_row(
+        reconcile_status="filled_position_matched",
+        error_summary="previous failure",
+    )
+    db = _mock_db_with_row(row)
+
+    svc = AlpacaPaperLedgerService(db)
+    await svc.record_reconcile(
+        "test-client-001", reconcile_status="filled_position_matched"
+    )
+
+    update_stmt = db.execute.call_args_list[1].args[0]
+    update_params = update_stmt.compile().params
+    assert update_params["error_summary"] is None
+
+
 # ---------------------------------------------------------------------------
 # LedgerNotFoundError
 # ---------------------------------------------------------------------------

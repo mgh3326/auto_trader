@@ -546,11 +546,12 @@ class AlpacaPaperLedgerService:
         update_vals: dict[str, Any] = {
             "reconcile_status": reconcile_status,
             "reconciled_at": datetime.now(UTC),
+            "error_summary": _redact_sensitive_text(error_summary)
+            if error_summary is not None
+            else None,
         }
         if notes is not None:
             update_vals["notes"] = _redact_sensitive_text(notes)
-        if error_summary is not None:
-            update_vals["error_summary"] = _redact_sensitive_text(error_summary)
 
         await self._db.execute(
             update(AlpacaPaperOrderLedger)
