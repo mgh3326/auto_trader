@@ -55,6 +55,19 @@ CANONICAL_LIFECYCLE_STATES: frozenset[str] = frozenset(
     }
 )
 
+# ROB-91: post-submit executed states used for idempotency checks.
+# Excludes pre-submit (planned/previewed/validated) and anomaly.
+EXECUTED_LIFECYCLE_STATES: frozenset[str] = frozenset(
+    {
+        LIFECYCLE_SUBMITTED,
+        LIFECYCLE_FILLED,
+        LIFECYCLE_POSITION_RECONCILED,
+        LIFECYCLE_SELL_VALIDATED,
+        LIFECYCLE_CLOSED,
+        LIFECYCLE_FINAL_RECONCILED,
+    }
+)
+
 # ROB-90 record_kind constants
 RECORD_KIND_PLAN = "plan"
 RECORD_KIND_PREVIEW = "preview"
@@ -298,6 +311,31 @@ class AlpacaPaperLedgerService:
         )
         result = await self._db.execute(stmt)
         return list(result.scalars().all())
+
+    async def find_executed_by_client_order_id(
+        self,
+        client_order_id: str,
+    ) -> AlpacaPaperOrderLedger | None:
+        """Return the execution row for client_order_id if it is in an executed lifecycle state.
+
+        Returns None if the row does not exist or is in a pre-submit / preview-only state.
+        Filters to record_kind='execution' and lifecycle_state in EXECUTED_LIFECYCLE_STATES.
+        """
+        stmt = (
+            select(AlpacaPaperOrderLedger)
+            .where(
+                AlpacaPaperOrderLedger.client_order_id == client_order_id,
+                AlpacaPaperOrderLedger.record_kind == RECORD_KIND_EXECUTION,
+                AlpacaPaperOrderLedger.lifecycle_state.in_(EXECUTED_LIFECYCLE_STATES),
+            )
+            .order_by(
+                AlpacaPaperOrderLedger.created_at.desc(),
+                AlpacaPaperOrderLedger.id.desc(),
+            )
+            .limit(1)
+        )
+        result = await self._db.execute(stmt)
+        return result.scalar_one_or_none()
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -1024,6 +1062,7 @@ __all__ = [
     "AlpacaPaperLedgerService",
     "ApprovalProvenance",
     "CANONICAL_LIFECYCLE_STATES",
+    "EXECUTED_LIFECYCLE_STATES",
     "LIFECYCLE_ANOMALY",
     "LIFECYCLE_CLOSED",
     "LIFECYCLE_FILLED",

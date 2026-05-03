@@ -228,6 +228,83 @@ The following are explicitly out of scope and must not be added to this ledger o
 
 ---
 
+---
+
+## ROB-91 Paper Approval Packet Contract
+
+`app/services/paper_approval_packet.py` introduces a bounded, frozen approval packet and three deterministic verifiers that run immediately before a confirmed broker submit.
+
+### Purpose
+
+Before calling `alpaca_paper_submit_order(confirm=True)`, producers build a `PaperApprovalPacket` and callers run:
+
+1. `verify_packet_freshness(packet, now=datetime.now(UTC))` — rejects expired packets.
+2. `await verify_packet_idempotency(packet, ledger=svc)` — rejects duplicate `client_order_id` that already executed.
+3. `await verify_sell_packet_source(packet, ledger=svc)` — for sell packets, validates exactly one reconciled buy source.
+
+### PaperApprovalPacket Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `signal_source` | `str` | Source artifact identifier |
+| `artifact_id` | `UUID` | Unique artifact ID |
+| `signal_symbol` | `str` | Signal symbol (e.g. `KRW-BTC`) |
+| `signal_venue` | `"upbit"` | Signal origin venue |
+| `execution_symbol` | `str` | Alpaca Paper symbol (e.g. `BTC/USD`) |
+| `execution_venue` | `"alpaca_paper"` | Always `alpaca_paper` |
+| `execution_asset_class` | `"crypto" \| "us_equity"` | Asset class |
+| `side` | `"buy" \| "sell"` | Order side |
+| `max_notional` | `Decimal \| None` | Exclusive with `max_qty`; must be > 0 |
+| `max_qty` | `Decimal \| None` | Exclusive with `max_notional`; must be > 0 |
+| `qty_source` | `str` | How qty was derived; sell packets restricted to ledger/reconcile values |
+| `expected_lifecycle_step` | `str` | Pre-submit step: `planned/previewed/validated/submitted` |
+| `lifecycle_correlation_id` | `str` | Roundtrip correlation key |
+| `client_order_id` | `str` | Per-leg caller-supplied key |
+| `expires_at` | `datetime` | Timezone-aware expiry; freshness check rejects if `now >= expires_at` |
+
+**Schema constraints:** `extra="forbid"`, `frozen=True`, exactly one of `max_notional`/`max_qty` positive, timezone-aware `expires_at`, `expected_lifecycle_step` in `{planned, previewed, validated, submitted}`. For Upbit crypto packets, `signal_symbol → execution_symbol` is validated via `map_upbit_to_alpaca_paper`.
+
+### Verifier Table
+
+| Verifier | Trigger condition | Error code |
+|----------|------------------|-----------|
+| `verify_packet_freshness` | `now >= expires_at` | `stale_packet` |
+| `verify_packet_freshness` | `now` has no tzinfo | `naive_now` |
+| `verify_packet_idempotency` | `client_order_id` already in executed state | `duplicate_client_order_id` |
+| `verify_sell_packet_source` | sell `qty_source` not in ledger/reconcile values | `invalid_qty_source` |
+| `verify_sell_packet_source` | no buy execution row in correlation scope | `missing_source_order` |
+| `verify_sell_packet_source` | >1 buy execution row in correlation scope | `multiple_source_orders` |
+| `verify_sell_packet_source` | buy source not in reconciled state | `source_not_reconciled` |
+| `verify_sell_packet_source` | execution symbol mismatch | `wrong_symbol` |
+| `verify_sell_packet_source` | `max_qty > source filled_qty` | `qty_exceeds_source` |
+
+### Allowed `qty_source` values for sell packets
+
+Only ledger/reconcile-derived sources are accepted. Manual sources are rejected.
+
+- `ledger_filled_qty`
+- `ledger_position_snapshot`
+- `reconcile_filled_qty`
+- `reconcile_position_snapshot`
+
+### Verifier purity guarantees
+
+- No broker calls, no DB writes, no `datetime.now()` inside verifiers.
+- `find_executed_by_client_order_id` and `list_by_correlation_id` are read-only SELECT helpers.
+- Callers supply wall-clock (`now=`) for deterministic testing.
+
+### New ledger read helpers (ROB-91)
+
+`EXECUTED_LIFECYCLE_STATES` — frozenset of post-submit states used by the idempotency verifier:
+`{submitted, filled, position_reconciled, sell_validated, closed, final_reconciled}`.
+Excludes pre-submit (`planned/previewed/validated`) and `anomaly`.
+
+`find_executed_by_client_order_id(client_order_id)` — returns the execution row if `record_kind='execution'` and `lifecycle_state` is in `EXECUTED_LIFECYCLE_STATES`; else `None`.
+
+`list_by_correlation_id(lifecycle_correlation_id)` — returns all rows sharing the correlation ID, ordered oldest-first. Used by the sell-source verifier.
+
+---
+
 ## Schema Reference
 
 Table: `review.alpaca_paper_order_ledger`

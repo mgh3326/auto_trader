@@ -941,6 +941,143 @@ async def test_list_by_correlation_id_empty_raises():
 
 
 # ---------------------------------------------------------------------------
+# find_executed_by_client_order_id (ROB-91)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_find_executed_returns_none_for_preview_only_row():
+    """A preview-only row (record_kind='preview') must not be returned."""
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+
+    class _ScalarResult:
+        def scalar_one_or_none(self):
+            return None
+
+        def scalars(self):
+            class _S:
+                def all(self_inner):
+                    return []
+
+            return _S()
+
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=_ScalarResult())
+    svc = AlpacaPaperLedgerService(db)
+    result = await svc.find_executed_by_client_order_id("preview-only-001")
+    assert result is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_find_executed_returns_row_after_fill():
+    """An execution row in 'filled' state must be returned."""
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+
+    exec_row = _make_row(
+        client_order_id="buy-exec-001",
+        record_kind="execution",
+        lifecycle_state="filled",
+        filled_qty="0.001",
+    )
+
+    class _ScalarResult:
+        def scalar_one_or_none(self):
+            return exec_row
+
+        def scalars(self):
+            class _S:
+                def all(self_inner):
+                    return [exec_row]
+
+            return _S()
+
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=_ScalarResult())
+    svc = AlpacaPaperLedgerService(db)
+    result = await svc.find_executed_by_client_order_id("buy-exec-001")
+    assert result is not None
+    assert result.lifecycle_state == "filled"
+    assert result.record_kind == "execution"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_find_executed_returns_row_for_position_reconciled():
+    """An execution row in 'position_reconciled' is an executed state."""
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+
+    exec_row = _make_row(
+        client_order_id="buy-exec-002",
+        record_kind="execution",
+        lifecycle_state="position_reconciled",
+    )
+
+    class _ScalarResult:
+        def scalar_one_or_none(self):
+            return exec_row
+
+        def scalars(self):
+            class _S:
+                def all(self_inner):
+                    return [exec_row]
+
+            return _S()
+
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=_ScalarResult())
+    svc = AlpacaPaperLedgerService(db)
+    result = await svc.find_executed_by_client_order_id("buy-exec-002")
+    assert result is not None
+    assert result.lifecycle_state == "position_reconciled"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_find_executed_returns_none_for_anomaly_execution():
+    """An execution row in 'anomaly' state is not an executed state."""
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+
+    class _ScalarResult:
+        def scalar_one_or_none(self):
+            return None
+
+        def scalars(self):
+            class _S:
+                def all(self_inner):
+                    return []
+
+            return _S()
+
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=_ScalarResult())
+    svc = AlpacaPaperLedgerService(db)
+    result = await svc.find_executed_by_client_order_id("anomaly-exec-001")
+    assert result is None
+
+
+@pytest.mark.unit
+def test_executed_lifecycle_states_exported():
+    """EXECUTED_LIFECYCLE_STATES must be exported and contain correct post-submit states."""
+    from app.services.alpaca_paper_ledger_service import EXECUTED_LIFECYCLE_STATES
+
+    assert isinstance(EXECUTED_LIFECYCLE_STATES, frozenset)
+    # All post-submit states included
+    assert "submitted" in EXECUTED_LIFECYCLE_STATES
+    assert "filled" in EXECUTED_LIFECYCLE_STATES
+    assert "position_reconciled" in EXECUTED_LIFECYCLE_STATES
+    assert "sell_validated" in EXECUTED_LIFECYCLE_STATES
+    assert "closed" in EXECUTED_LIFECYCLE_STATES
+    assert "final_reconciled" in EXECUTED_LIFECYCLE_STATES
+    # Pre-submit and anomaly excluded
+    assert "planned" not in EXECUTED_LIFECYCLE_STATES
+    assert "previewed" not in EXECUTED_LIFECYCLE_STATES
+    assert "validated" not in EXECUTED_LIFECYCLE_STATES
+    assert "anomaly" not in EXECUTED_LIFECYCLE_STATES
+
+
+# ---------------------------------------------------------------------------
 # LedgerNotFoundError
 # ---------------------------------------------------------------------------
 
