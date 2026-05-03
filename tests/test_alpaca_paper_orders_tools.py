@@ -235,7 +235,6 @@ async def test_crypto_submit_rejects_unsafe_shapes_before_service_call(
     }
     cases = [
         ({"symbol": "DOGE/USD"}, "crypto symbol"),
-        ({"side": "sell"}, "buy-only"),
         ({"type": "market", "limit_price": None}, "limit-only"),
         ({"notional": Decimal("51")}, "crypto notional"),
     ]
@@ -244,6 +243,49 @@ async def test_crypto_submit_rejects_unsafe_shapes_before_service_call(
         with pytest.raises(ValueError, match=message):
             await alpaca_paper_submit_order(**payload)
     assert fake_orders_service.calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_crypto_sell_limit_submit_is_confirm_gated_and_single_order(
+    fake_orders_service: FakeOrdersService,
+) -> None:
+    dry_run = await alpaca_paper_submit_order(
+        symbol="BTC/USD",
+        side="sell",
+        type="limit",
+        qty=Decimal("0.0001"),
+        limit_price=Decimal("50000"),
+        client_order_id="rob86-sell-test",
+        asset_class="crypto",
+        confirm=False,
+    )
+
+    assert dry_run["submitted"] is False
+    assert dry_run["blocked_reason"] == "confirmation_required"
+    assert fake_orders_service.calls == []
+
+    submitted = await alpaca_paper_submit_order(
+        symbol="BTC/USD",
+        side="sell",
+        type="limit",
+        qty=Decimal("0.0001"),
+        limit_price=Decimal("50000"),
+        client_order_id="rob86-sell-test",
+        asset_class="crypto",
+        confirm=True,
+    )
+
+    assert submitted["submitted"] is True
+    assert submitted["client_order_id"] == "rob86-sell-test"
+    submit_calls = [
+        call for call in fake_orders_service.calls if call[0] == "submit_order"
+    ]
+    assert len(submit_calls) == 1
+    sent = submit_calls[0][1]["request"]
+    assert sent.symbol == "BTC/USD"
+    assert sent.side == "sell"
+    assert sent.type == "limit"
 
 
 @pytest.mark.unit
