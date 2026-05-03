@@ -129,8 +129,22 @@ names only:
 - `alpaca_paper_get_order(order_id)`
 - `alpaca_paper_list_assets(status="active", asset_class="us_equity")`
 - `alpaca_paper_list_fills(after=None, until=None, limit=50)`
+- `alpaca_paper_ledger_list_recent(limit=50, lifecycle_state=None)`
+- `alpaca_paper_ledger_get(client_order_id)`
+- `alpaca_paper_execution_preflight_check(...)`
 
-These tools instantiate `AlpacaPaperBrokerService`, so they inherit the
+`alpaca_paper_execution_preflight_check` is a read-only runner gate for the
+later automated paper cycle. It reads recent ledger rows and accepts optional
+caller-supplied read-only `open_orders`, `positions`, and `approval_packet`
+snapshots, then returns severity-classified anomalies plus `should_block`. ROB-93
+checks include unexpected open orders, residual positions, duplicate
+`client_order_id`, filled buys without linked sells, filled sells without a zero
+final position snapshot, ledger/order/fill mismatches, stale previews/approval
+packets, and signal/execution symbol mismatches. It performs no broker mutation,
+no repair writes, and no direct DB backfill.
+
+The broker inspection tools instantiate `AlpacaPaperBrokerService`, so they
+inherit the
 service-level endpoint guard: the trading base URL must be exactly
 `https://paper-api.alpaca.markets`. The Alpaca dashboard may display
 `https://paper-api.alpaca.markets/v2`, but runtime env should **not** include

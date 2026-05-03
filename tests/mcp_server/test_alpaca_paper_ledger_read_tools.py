@@ -223,6 +223,57 @@ async def test_ledger_get_empty_client_order_id_raises():
 
 
 # ---------------------------------------------------------------------------
+# alpaca_paper_execution_preflight_check
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_execution_preflight_check_returns_blocking_report(monkeypatch):
+    import app.mcp_server.tooling.alpaca_paper_ledger_read as mod
+
+    mock_svc = _mock_svc(rows=[])
+
+    class _FakeDB:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            pass
+
+    monkeypatch.setattr(mod, "_session_factory", lambda: lambda: _FakeDB())
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.alpaca_paper_ledger_read.AlpacaPaperLedgerService",
+        lambda db: mock_svc,
+    )
+
+    result = await mod.alpaca_paper_execution_preflight_check(
+        limit=20,
+        open_orders=[{"id": "order-1", "status": "new", "symbol": "BTCUSD"}],
+    )
+
+    assert result["success"] is True
+    assert result["read_only"] is True
+    assert result["source"] == "alpaca_paper_execution_preflight"
+    assert result["should_block"] is True
+    assert result["anomalies"][0]["check_id"] == "unexpected_open_orders"
+    mock_svc.list_recent.assert_awaited_once_with(limit=20)
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_execution_preflight_check_invalid_inputs_raise():
+    from app.mcp_server.tooling.alpaca_paper_ledger_read import (
+        alpaca_paper_execution_preflight_check,
+    )
+
+    with pytest.raises(ValueError, match="limit must be >= 1"):
+        await alpaca_paper_execution_preflight_check(limit=0)
+    with pytest.raises(ValueError, match="stale_after_minutes must be >= 1"):
+        await alpaca_paper_execution_preflight_check(stale_after_minutes=0)
+
+
+# ---------------------------------------------------------------------------
 # Registered as read-only
 # ---------------------------------------------------------------------------
 
@@ -233,6 +284,7 @@ def test_ledger_tool_names_are_in_alpaca_readonly_set():
 
     assert "alpaca_paper_ledger_list_recent" in ALPACA_PAPER_READONLY_TOOL_NAMES
     assert "alpaca_paper_ledger_get" in ALPACA_PAPER_READONLY_TOOL_NAMES
+    assert "alpaca_paper_execution_preflight_check" in ALPACA_PAPER_READONLY_TOOL_NAMES
 
 
 # ---------------------------------------------------------------------------

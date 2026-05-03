@@ -20,6 +20,7 @@ from app.mcp_server.tooling.alpaca_paper import (
     alpaca_paper_list_positions,
 )
 from app.mcp_server.tooling.alpaca_paper_ledger_read import (
+    alpaca_paper_execution_preflight_check,
     alpaca_paper_ledger_get,
     alpaca_paper_ledger_list_recent,
 )
@@ -129,6 +130,15 @@ async def run_smoke() -> int:
         "alpaca_paper_ledger_get",
         alpaca_paper_ledger_get(client_order_id),
         lambda p: f"found={p.get('found', False)}",
+    )
+
+    await _probe(
+        "alpaca_paper_execution_preflight_check",
+        alpaca_paper_execution_preflight_check(limit=1),
+        lambda p: (
+            f"should_block={p.get('should_block', False)} "
+            f"anomalies={len(p.get('anomalies', []))}"
+        ),
     )
 
     # Confirm every expected tool was exercised
