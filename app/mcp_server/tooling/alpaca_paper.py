@@ -27,10 +27,11 @@ ALPACA_PAPER_READONLY_TOOL_NAMES: set[str] = {
     "alpaca_paper_get_order",
     "alpaca_paper_list_assets",
     "alpaca_paper_list_fills",
-    # ROB-84/ROB-90/ROB-93 ledger read and anomaly preflight tools
+    # ROB-84/ROB-90/ROB-92/ROB-93 ledger read and anomaly preflight tools
     "alpaca_paper_ledger_list_recent",
     "alpaca_paper_ledger_get",
     "alpaca_paper_ledger_get_by_correlation",
+    "alpaca_paper_roundtrip_report",
     "alpaca_paper_execution_preflight_check",
 }
 

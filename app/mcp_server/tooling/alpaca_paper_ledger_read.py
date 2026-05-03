@@ -5,6 +5,7 @@ No broker mutation. No submit/cancel/replace. Pure record-keeping reads.
 
 from __future__ import annotations
 
+import uuid
 from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -14,6 +15,9 @@ from app.services.alpaca_paper_anomaly_checks import (
     build_paper_execution_preflight_report,
 )
 from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+from app.services.alpaca_paper_roundtrip_report_service import (
+    AlpacaPaperRoundtripReportService,
+)
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -178,6 +182,80 @@ async def alpaca_paper_ledger_get_by_correlation(
     }
 
 
+async def alpaca_paper_roundtrip_report(
+    lifecycle_correlation_id: str | None = None,
+    client_order_id: str | None = None,
+    candidate_uuid: str | None = None,
+    briefing_artifact_run_uuid: str | None = None,
+    open_orders: list[dict[str, Any]] | None = None,
+    positions: list[dict[str, Any]] | None = None,
+    stale_after_minutes: int = 30,
+    include_ledger_rows: bool = True,
+) -> dict[str, Any]:
+    """Build a read-only Alpaca Paper roundtrip audit report.
+
+    Exactly one of lifecycle_correlation_id, client_order_id, candidate_uuid, or
+    briefing_artifact_run_uuid is required. open_orders and positions are
+    optional caller-supplied read-only snapshots; this tool never fetches broker
+    state itself.
+    """
+    supplied = [
+        lifecycle_correlation_id is not None,
+        client_order_id is not None,
+        candidate_uuid is not None,
+        briefing_artifact_run_uuid is not None,
+    ]
+    if sum(supplied) != 1:
+        raise ValueError("exactly one lookup key is required")
+    if stale_after_minutes < 1:
+        raise ValueError("stale_after_minutes must be >= 1")
+
+    candidate_lookup = uuid.UUID(candidate_uuid) if candidate_uuid is not None else None
+    briefing_lookup = (
+        uuid.UUID(briefing_artifact_run_uuid)
+        if briefing_artifact_run_uuid is not None
+        else None
+    )
+
+    async with _session_factory()() as db:
+        svc = AlpacaPaperRoundtripReportService(db)
+        if candidate_lookup is not None:
+            response = await svc.build_reports_for_candidate_uuid(
+                candidate_lookup,
+                stale_after_minutes=stale_after_minutes,
+                include_ledger_rows=include_ledger_rows,
+            )
+            payload = response.model_dump(mode="json")
+            success = response.count > 0
+        elif briefing_lookup is not None:
+            response = await svc.build_reports_for_briefing_artifact_run_uuid(
+                briefing_lookup,
+                stale_after_minutes=stale_after_minutes,
+                include_ledger_rows=include_ledger_rows,
+            )
+            payload = response.model_dump(mode="json")
+            success = response.count > 0
+        else:
+            report = await svc.build_report(
+                lifecycle_correlation_id=lifecycle_correlation_id,
+                client_order_id=client_order_id,
+                open_orders=open_orders or [],
+                positions=positions or [],
+                stale_after_minutes=stale_after_minutes,
+                include_ledger_rows=include_ledger_rows,
+            )
+            payload = report.model_dump(mode="json")
+            success = report.status != "not_found"
+
+    return {
+        "success": success,
+        "account_mode": "alpaca_paper",
+        "source": "alpaca_paper_roundtrip_report",
+        "read_only": True,
+        "report": payload,
+    }
+
+
 def register_alpaca_paper_ledger_read_tools(mcp: FastMCP) -> None:
     """Register read-only Alpaca Paper ledger MCP tools."""
     _ = mcp.tool(
@@ -213,6 +291,14 @@ def register_alpaca_paper_ledger_read_tools(mcp: FastMCP) -> None:
             "in chronological order. No broker mutation."
         ),
     )(alpaca_paper_ledger_get_by_correlation)
+    _ = mcp.tool(
+        name="alpaca_paper_roundtrip_report",
+        description=(
+            "Read-only Alpaca Paper roundtrip audit report from persisted ledger "
+            "rows, with optional caller-supplied open_orders/positions snapshots. "
+            "Does not call broker APIs and does not mutate database state."
+        ),
+    )(alpaca_paper_roundtrip_report)
 
 
 __all__ = [
@@ -220,5 +306,6 @@ __all__ = [
     "alpaca_paper_ledger_get",
     "alpaca_paper_ledger_get_by_correlation",
     "alpaca_paper_ledger_list_recent",
+    "alpaca_paper_roundtrip_report",
     "register_alpaca_paper_ledger_read_tools",
 ]

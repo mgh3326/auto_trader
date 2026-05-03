@@ -312,6 +312,41 @@ class AlpacaPaperLedgerService:
         result = await self._db.execute(stmt)
         return list(result.scalars().all())
 
+    async def list_by_candidate_uuid(
+        self,
+        candidate_uuid: uuid.UUID,
+    ) -> list[AlpacaPaperOrderLedger]:
+        """Return all ledger rows for a candidate UUID, ordered by created_at, id."""
+        stmt = (
+            select(AlpacaPaperOrderLedger)
+            .where(AlpacaPaperOrderLedger.candidate_uuid == candidate_uuid)
+            .order_by(
+                AlpacaPaperOrderLedger.created_at.asc(),
+                AlpacaPaperOrderLedger.id.asc(),
+            )
+        )
+        result = await self._db.execute(stmt)
+        return list(result.scalars().all())
+
+    async def list_by_briefing_artifact_run_uuid(
+        self,
+        briefing_artifact_run_uuid: uuid.UUID,
+    ) -> list[AlpacaPaperOrderLedger]:
+        """Return all ledger rows for a briefing artifact UUID, ordered by created_at, id."""
+        stmt = (
+            select(AlpacaPaperOrderLedger)
+            .where(
+                AlpacaPaperOrderLedger.briefing_artifact_run_uuid
+                == briefing_artifact_run_uuid
+            )
+            .order_by(
+                AlpacaPaperOrderLedger.created_at.asc(),
+                AlpacaPaperOrderLedger.id.asc(),
+            )
+        )
+        result = await self._db.execute(stmt)
+        return list(result.scalars().all())
+
     async def find_executed_by_client_order_id(
         self,
         client_order_id: str,
