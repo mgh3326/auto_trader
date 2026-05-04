@@ -53,3 +53,16 @@ def test_continuation_header_names():
     assert k.HEADER_NEXT_KEY == "next-key"
     assert k.HEADER_API_ID == "api-id"
     assert k.HEADER_AUTHORIZATION == "authorization"
+
+
+def test_kiwoom_capability_kr_paper_only():
+    from app.services.brokers.capabilities import (
+        BROKER_CAPABILITIES,
+        Broker,
+        Market,
+    )
+
+    cap = BROKER_CAPABILITIES[Broker.KIWOOM]
+    assert cap.markets == frozenset({Market.KR_EQUITY})
+    assert cap.supports_paper is True
+    assert cap.supports_live is False

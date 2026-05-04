@@ -1,8 +1,8 @@
 """Broker capability metadata registry.
 
 Declares which markets each broker supports and whether paper/live modes are
-available. Metadata-only: no order routing logic consumes this yet.
-Forward-looking Kiwoom entry is included for planning; no Kiwoom client exists.
+available. Kiwoom currently exposes mock-only KR equity support via
+``app/services/brokers/kiwoom`` (see ROB-97); live remains unsupported.
 """
 
 from __future__ import annotations
@@ -41,8 +41,8 @@ BROKER_CAPABILITIES: Mapping[Broker, BrokerCapability] = {
     ),
     Broker.KIWOOM: BrokerCapability(
         broker=Broker.KIWOOM,
-        markets=frozenset({Market.KR_EQUITY, Market.US_EQUITY}),
-        supports_paper=False,
+        markets=frozenset({Market.KR_EQUITY}),
+        supports_paper=True,
         supports_live=False,
     ),
     Broker.UPBIT: BrokerCapability(
