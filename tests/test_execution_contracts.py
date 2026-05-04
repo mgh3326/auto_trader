@@ -392,3 +392,31 @@ class TestSerializationRoundTrip:
 
     def test_module_constant_matches_field_default(self):
         assert ec.CONTRACT_VERSION == "v1"
+
+
+class TestCompatibilityWithExistingSchemas:
+    def test_no_string_overlap_with_existing_order_intent_execution_mode(self):
+        # Existing values in OrderIntentPreviewRequest.execution_mode.
+        # Hard-coded to avoid coupling this test to that schema's import graph.
+        existing_execution_mode_values = {
+            "requires_final_approval",
+            "paper_only",
+            "dry_run_only",
+        }
+        new_vocab = (
+            ec.ACCOUNT_MODES
+            | ec.EXECUTION_SOURCES
+            | ec.ORDER_LIFECYCLE_STATES
+        )
+        overlap = existing_execution_mode_values & new_vocab
+        assert overlap == set(), (
+            f"new vocabulary collides with existing execution_mode values: {overlap}"
+        )
+
+    def test_existing_order_intent_preview_request_still_imports(self):
+        # Sanity check: the existing schema still loads and exposes the same
+        # execution_mode literal we asserted above. Catches accidental damage.
+        from app.schemas.order_intent_preview import OrderIntentPreviewRequest
+
+        req = OrderIntentPreviewRequest()
+        assert req.execution_mode == "requires_final_approval"
