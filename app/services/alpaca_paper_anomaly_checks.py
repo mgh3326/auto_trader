@@ -65,7 +65,11 @@ class PaperExecutionPreflightReport:
 
 
 _OPEN_LEDGER_STATES = frozenset({"submitted", "open", "partially_filled"})
+_CANONICAL_FILLED_LEDGER_STATES = frozenset(
+    {"filled", "position_reconciled", "closed", "final_reconciled"}
+)
 _FILLED_STATES = frozenset({"filled", "partially_filled"})
+_BUY_REQUIRES_LINKED_SELL_STATES = _FILLED_STATES | _CANONICAL_FILLED_LEDGER_STATES
 _TERMINAL_STATES = frozenset({"filled", "canceled"})
 _SELL_SOURCE_KEYS = frozenset(
     {
@@ -320,7 +324,7 @@ def build_paper_execution_preflight_report(
         client_id = str(_get(row, "client_order_id") or "").strip()
         if (
             side == "buy"
-            and state in _FILLED_STATES
+            and state in _BUY_REQUIRES_LINKED_SELL_STATES
             and client_id not in sell_source_ids
         ):
             filled_buys_missing_sell.append(row)
@@ -360,7 +364,11 @@ def build_paper_execution_preflight_report(
             mismatches.append(
                 {"reason": "filled_state_without_filled_qty", **_row_ref(row)}
             )
-        if order_status == "filled" and state != "filled":
+        if (
+            order_status == "filled"
+            and state
+            and state not in _CANONICAL_FILLED_LEDGER_STATES
+        ):
             mismatches.append(
                 {"reason": "order_status_filled_state_mismatch", **_row_ref(row)}
             )

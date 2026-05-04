@@ -130,6 +130,49 @@ def test_linked_sell_prevents_missing_sell_anomaly():
 
 
 @pytest.mark.unit
+def test_canonical_completed_roundtrip_states_do_not_block():
+    report = build_paper_execution_preflight_report(
+        ledger_rows=[
+            _row(
+                client_order_id="buy-reconciled",
+                lifecycle_state="position_reconciled",
+                order_status="filled",
+            ),
+            _row(
+                client_order_id="sell-final-reconciled",
+                side="sell",
+                lifecycle_state="final_reconciled",
+                order_status="filled",
+                raw_responses={"payload": {"source_client_order_id": "buy-reconciled"}},
+            ),
+        ],
+        open_orders=[],
+        positions=[],
+    )
+
+    assert report.status == "pass"
+    assert report.should_block is False
+    assert [a.check_id for a in report.anomalies] == ["preflight_clean"]
+
+
+@pytest.mark.unit
+def test_reconciled_buy_without_linked_sell_blocks_as_missing_sell():
+    report = build_paper_execution_preflight_report(
+        ledger_rows=[
+            _row(
+                client_order_id="buy-reconciled-without-sell",
+                lifecycle_state="position_reconciled",
+                order_status="filled",
+            )
+        ]
+    )
+
+    assert report.should_block is True
+    assert "previous_buy_filled_sell_missing" in _check_ids(report)
+    assert "ledger_order_fill_mismatch" not in _check_ids(report)
+
+
+@pytest.mark.unit
 def test_filled_sell_with_nonzero_final_position_blocks():
     report = build_paper_execution_preflight_report(
         ledger_rows=[
