@@ -25,7 +25,6 @@ from app.monitoring.trade_notifier import get_trade_notifier
 from app.routers import (
     ai_markdown,
     alpaca_paper_ledger,
-    watch_order_intent_ledger,
     deprecated_pages,
     health,
     kospi200,
@@ -46,6 +45,7 @@ from app.routers import (
     trading_decisions,
     trading_decisions_spa,
     user_defaults,
+    watch_order_intent_ledger,
     websocket,
 )
 from app.services.error_serialization import (
