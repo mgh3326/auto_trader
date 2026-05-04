@@ -157,3 +157,81 @@ async def test_manage_watch_alerts_rejects_unknown_action() -> None:
 
     assert result["success"] is False
     assert "unknown action" in str(result["error"]).lower()
+
+
+@pytest.mark.asyncio
+async def test_manage_watch_alerts_add_with_intent_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tools = build_tools()
+    captured: dict = {}
+
+    async def fake_add_watch(self, **kwargs: object) -> dict:
+        captured.update(kwargs)
+        return {
+            "market": kwargs["market"],
+            "target_kind": kwargs.get("target_kind") or "asset",
+            "symbol": kwargs["symbol"],
+            "condition_type": kwargs["condition_type"],
+            "threshold": kwargs["threshold"],
+            "field": "asset:005930:price_below:70000",
+            "created": True,
+            "already_exists": False,
+        }
+
+    from app.mcp_server.tooling import watch_alerts_registration as mod
+    monkeypatch.setattr(mod.WatchAlertService, "add_watch", fake_add_watch)
+
+    result = await mod.manage_watch_alerts_impl(
+        action="add",
+        market="kr",
+        symbol="005930",
+        metric="price",
+        operator="below",
+        threshold=70000,
+        intent_action="create_order_intent",
+        side="buy",
+        quantity=1,
+        max_notional_krw=1500000,
+    )
+    assert result["success"] is True
+    assert captured["action"] == "create_order_intent"
+    assert captured["side"] == "buy"
+    assert captured["quantity"] == 1
+    assert captured["max_notional_krw"] == 1500000
+
+
+@pytest.mark.asyncio
+async def test_manage_watch_alerts_add_default_remains_notify_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tools = build_tools()
+    captured: dict = {}
+
+    async def fake_add_watch(self, **kwargs: object) -> dict:
+        captured.update(kwargs)
+        return {
+            "created": True,
+            "already_exists": False,
+            "field": "asset:BTC:price_above:1",
+            "market": "crypto",
+            "target_kind": "asset",
+            "symbol": "BTC",
+            "condition_type": "price_above",
+            "threshold": 1.0,
+        }
+
+    from app.mcp_server.tooling import watch_alerts_registration as mod
+    monkeypatch.setattr(mod.WatchAlertService, "add_watch", fake_add_watch)
+
+    result = await mod.manage_watch_alerts_impl(
+        action="add",
+        market="crypto",
+        symbol="BTC",
+        metric="price",
+        operator="above",
+        threshold=1,
+    )
+    assert result["success"] is True
+    assert "action" not in captured  # no policy fields forwarded
+    assert "side" not in captured
