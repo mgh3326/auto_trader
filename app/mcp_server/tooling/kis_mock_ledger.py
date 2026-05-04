@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
+from app.jobs.kis_mock_reconciliation_job import run_kis_mock_reconciliation
 from app.mcp_server.tooling.shared import logger
 from app.mcp_server.tooling.shared import to_float as _to_float
 from app.models.review import KISMockOrderLedger
@@ -185,3 +186,23 @@ async def _record_kis_mock_order(
             else "KIS mock order accepted but ledger insert returned no id"
         ),
     }
+
+async def kis_mock_reconciliation_run_impl(
+    *,
+    dry_run: bool = True,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """Execute KIS mock order reconciliation and return summary."""
+    try:
+        async with _order_session_factory()() as db:
+            return await run_kis_mock_reconciliation(
+                db, dry_run=dry_run, limit=limit
+            )
+    except Exception as exc:
+        logger.exception("Failed to run KIS mock reconciliation: %s", exc)
+        return {
+            "success": False,
+            "error": str(exc),
+            "source": "mcp",
+            "account_mode": "kis_mock",
+        }
