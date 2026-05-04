@@ -189,3 +189,133 @@ def test_build_execution_review_no_run_is_unavailable_and_blocked():
     cash_stage = next(s for s in review.stages if s.stage_id == "cash_holdings_quotes")
     assert cash_stage.status == "unavailable"
     assert "not_in_current_preopen_contract" in cash_stage.warnings
+
+
+def _candidate(side: str, symbol: str, qty: str, price: str) -> object:
+    from uuid import uuid4
+
+    from app.schemas.preopen import CandidateSummary
+
+    return CandidateSummary(
+        candidate_uuid=uuid4(),
+        symbol=symbol,
+        instrument_type="equity_kr",
+        side=side,  # type: ignore[arg-type]
+        candidate_kind="proposed",
+        proposed_price=Decimal(price),
+        proposed_qty=Decimal(qty),
+        confidence=70,
+        rationale=f"reason for {symbol}",
+        currency="KRW",
+        warnings=[],
+    )
+
+
+def _ready_news() -> object:
+    from app.schemas.preopen import NewsReadinessSummary
+
+    return NewsReadinessSummary(
+        status="ready",
+        is_ready=True,
+        is_stale=False,
+        latest_run_uuid="news-1",
+        latest_status="success",
+        latest_finished_at=None,
+        latest_article_published_at=None,
+        source_counts={},
+        source_coverage=[],
+        warnings=[],
+        max_age_minutes=180,
+    )
+
+
+@pytest.mark.unit
+def test_build_execution_review_with_buy_candidates_emits_basket_preview():
+    from app.services.preopen_dashboard_service import _build_execution_review
+
+    review = _build_execution_review(
+        has_run=True,
+        market_scope="kr",
+        stage="preopen",
+        candidates=[
+            _candidate("buy", "005930", "10", "70000"),
+            _candidate("buy", "035720", "5", "60000"),
+            _candidate("sell", "000660", "1", "120000"),
+        ],
+        reconciliations=[],
+        news=_ready_news(),
+        briefing_artifact=None,
+    )
+
+    basket = review.basket_preview
+    assert basket is not None
+    assert basket.account_mode == "db_simulated"
+    assert basket.execution_source == "preopen"
+    assert [line.symbol for line in basket.lines] == ["005930", "035720"]
+    for line in basket.lines:
+        assert line.guard.execution_allowed is False
+        assert line.guard.approval_required is True
+
+    candidate_stage = next(s for s in review.stages if s.stage_id == "candidate_review")
+    assert candidate_stage.status == "ready"
+    basket_stage = next(s for s in review.stages if s.stage_id == "basket_preview")
+    assert basket_stage.status == "ready"
+    assert basket_stage.details["line_count"] == 2
+
+    # ``mvp_read_only`` always blocks even when news is fresh and run is open.
+    assert "mvp_read_only" in review.readiness.guard.blocking_reasons
+
+
+@pytest.mark.unit
+def test_build_execution_review_pending_reconciliations_marked_pending():
+    from app.schemas.preopen import ReconciliationSummary
+    from app.services.preopen_dashboard_service import _build_execution_review
+
+    review = _build_execution_review(
+        has_run=True,
+        market_scope="kr",
+        stage="preopen",
+        candidates=[],
+        reconciliations=[
+            ReconciliationSummary(
+                order_id="ORD-1",
+                symbol="005930",
+                market="kr",
+                side="buy",
+                classification="near_fill",
+                nxt_classification=None,
+                nxt_actionable=None,
+                gap_pct=Decimal("0.5"),
+                summary="near fill",
+                reasons=[],
+                warnings=[],
+            )
+        ],
+        news=_ready_news(),
+        briefing_artifact=None,
+    )
+
+    recon_stage = next(s for s in review.stages if s.stage_id == "post_order_reconcile")
+    assert recon_stage.status == "pending"
+    assert recon_stage.details["pending_reconciliation_count"] == 1
+
+
+@pytest.mark.unit
+def test_build_execution_review_lines_match_basket_invariant_holds():
+    """OrderBasketPreview's own validator must accept what we emit."""
+    from app.services.preopen_dashboard_service import _build_execution_review
+
+    review = _build_execution_review(
+        has_run=True,
+        market_scope="kr",
+        stage="preopen",
+        candidates=[_candidate("buy", "005930", "1", "1")],
+        reconciliations=[],
+        news=_ready_news(),
+        briefing_artifact=None,
+    )
+    basket = review.basket_preview
+    assert basket is not None
+    for line in basket.lines:
+        assert line.account_mode == basket.account_mode
+        assert line.execution_source == basket.execution_source
