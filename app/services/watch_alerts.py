@@ -8,6 +8,12 @@ import redis.asyncio as redis
 
 from app.core.config import settings
 from app.core.timezone import now_kst
+from app.services.watch_intent_policy import (
+    IntentPolicy,
+    NotifyOnlyPolicy,
+    WatchPolicyError,
+    parse_policy,
+)
 
 _SUPPORTED_MARKETS = {"crypto", "kr", "us"}
 _SUPPORTED_TARGET_KINDS = {"asset", "index", "fx"}
@@ -181,6 +187,13 @@ class WatchAlertService:
         condition_type: str,
         threshold: float,
         target_kind: str | None = None,
+        *,
+        action: str | None = None,
+        side: str | None = None,
+        quantity: int | None = None,
+        notional_krw: float | None = None,
+        limit_price: float | None = None,
+        max_notional_krw: float | None = None,
     ) -> dict[str, object]:
         normalized_market = self._normalize_market(market)
         watch_key = self.validate_watch_inputs(
@@ -190,6 +203,46 @@ class WatchAlertService:
             threshold=threshold,
             target_kind=target_kind,
         )
+
+        normalized_action = (action or "notify_only").strip().lower() or "notify_only"
+        policy_payload: dict[str, object] = {"action": normalized_action}
+        if normalized_action == "create_order_intent":
+            policy_payload["side"] = side
+            if quantity is not None:
+                policy_payload["quantity"] = quantity
+            if notional_krw is not None:
+                policy_payload["notional_krw"] = notional_krw
+            if limit_price is not None:
+                policy_payload["limit_price"] = limit_price
+            if max_notional_krw is not None:
+                policy_payload["max_notional_krw"] = max_notional_krw
+        else:
+            for forbidden_name, forbidden_value in (
+                ("side", side),
+                ("quantity", quantity),
+                ("notional_krw", notional_krw),
+                ("limit_price", limit_price),
+                ("max_notional_krw", max_notional_krw),
+            ):
+                if forbidden_value is not None:
+                    raise ValueError(
+                        f"notify_only_must_be_bare: {forbidden_name} not allowed"
+                    )
+
+        canonical_payload = {
+            "created_at": now_kst().isoformat(),
+            **policy_payload,
+        }
+        try:
+            parse_policy(
+                market=normalized_market,
+                target_kind=watch_key.target_kind,
+                condition_type=watch_key.condition_type,
+                raw_payload=json.dumps(canonical_payload),
+            )
+        except WatchPolicyError as exc:
+            raise ValueError(str(exc.code)) from exc
+
         redis_client = await self._get_redis()
         redis_key = self._key_for_market(normalized_market)
 
@@ -214,8 +267,9 @@ class WatchAlertService:
                 "already_exists": True,
             }
 
-        payload = {"created_at": now_kst().isoformat()}
-        await redis_client.hset(redis_key, watch_key.field, json.dumps(payload))
+        await redis_client.hset(
+            redis_key, watch_key.field, json.dumps(canonical_payload)
+        )
 
         return {
             "market": normalized_market,
@@ -335,6 +389,14 @@ class WatchAlertService:
                 metric, operator = self._split_condition(normalized_condition)
 
                 created_at: str | None = None
+                policy_fields: dict[str, object] = {
+                    "action": "notify_only",
+                    "side": None,
+                    "quantity": None,
+                    "notional_krw": None,
+                    "limit_price": None,
+                    "max_notional_krw": None,
+                }
                 if raw_payload:
                     try:
                         parsed = json.loads(raw_payload)
@@ -344,6 +406,41 @@ class WatchAlertService:
                         value = parsed.get("created_at")
                         if isinstance(value, str):
                             created_at = value
+
+                        try:
+                            policy = parse_policy(
+                                market=market_name,
+                                target_kind=target_kind,
+                                condition_type=normalized_condition,
+                                raw_payload=raw_payload,
+                            )
+                            if isinstance(policy, IntentPolicy):
+                                policy_fields = {
+                                    "action": policy.action,
+                                    "side": policy.side,
+                                    "quantity": policy.quantity,
+                                    "notional_krw": (
+                                        float(policy.notional_krw)
+                                        if policy.notional_krw is not None
+                                        else None
+                                    ),
+                                    "limit_price": (
+                                        float(policy.limit_price)
+                                        if policy.limit_price is not None
+                                        else None
+                                    ),
+                                    "max_notional_krw": (
+                                        float(policy.max_notional_krw)
+                                        if policy.max_notional_krw is not None
+                                        else None
+                                    ),
+                                }
+                        except WatchPolicyError:
+                            logger.debug(
+                                "invalid policy in Redis for field=%s, "
+                                "falling back to notify_only",
+                                field,
+                            )
 
                 rows.append(
                     {
@@ -356,6 +453,7 @@ class WatchAlertService:
                         "threshold": threshold_value,
                         "field": field,
                         "created_at": created_at,
+                        **policy_fields,
                     }
                 )
 

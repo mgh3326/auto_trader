@@ -222,3 +222,67 @@ async def test_list_watches_skips_malformed_entries() -> None:
     rows = await service.list_watches("crypto")
     assert len(rows["crypto"]) == 1
     assert rows["crypto"][0]["symbol"] == "BTC"
+
+
+@pytest.mark.asyncio
+async def test_add_watch_intent_payload_round_trips() -> None:
+    service = WatchAlertService()
+    fake_redis = _FakeRedisHash()
+    service._get_redis = AsyncMock(return_value=fake_redis)  # type: ignore[method-assign]
+
+    result = await service.add_watch(
+        market="kr",
+        symbol="005930",
+        condition_type="price_below",
+        threshold=70000,
+        action="create_order_intent",
+        side="buy",
+        quantity=1,
+        max_notional_krw=1500000,
+    )
+    assert result["created"] is True
+
+    rows = await service.list_watches("kr")
+    watch = rows["kr"][0]
+    assert watch["action"] == "create_order_intent"
+    assert watch["side"] == "buy"
+    assert watch["quantity"] == 1
+    assert watch["notional_krw"] is None
+    assert watch["max_notional_krw"] == 1500000
+
+
+@pytest.mark.asyncio
+async def test_add_watch_rejects_create_order_intent_for_crypto() -> None:
+    service = WatchAlertService()
+    fake_redis = _FakeRedisHash()
+    service._get_redis = AsyncMock(return_value=fake_redis)  # type: ignore[method-assign]
+
+    with pytest.raises(ValueError) as excinfo:
+        await service.add_watch(
+            market="crypto",
+            symbol="BTC",
+            condition_type="price_below",
+            threshold=90000000,
+            action="create_order_intent",
+            side="buy",
+            quantity=1,
+        )
+    assert "intent_market_unsupported" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_legacy_payload_lists_as_notify_only() -> None:
+    service = WatchAlertService()
+    fake_redis = _FakeRedisHash()
+    service._get_redis = AsyncMock(return_value=fake_redis)  # type: ignore[method-assign]
+
+    # Simulate a row written by the pre-ROB-103 code path.
+    field = "asset:005930:price_below:70000"
+    fake_redis._hashes["watch:alerts:kr"] = {
+        field: '{"created_at": "2026-05-04T00:00:00+09:00"}',
+    }
+
+    rows = await service.list_watches("kr")
+    watch = rows["kr"][0]
+    assert watch["action"] == "notify_only"
+    assert "side" in watch and watch["side"] is None
