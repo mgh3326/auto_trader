@@ -229,6 +229,13 @@ class Settings(BaseSettings):
     discord_webhook_crypto: str | None = None
     discord_webhook_alerts: str | None = None
 
+    # ROB-99 — crypto pending-order reminders
+    crypto_pending_order_alert_enabled: bool = False
+    crypto_pending_order_alert_channel_id: str = "1500719153508515870"
+    crypto_pending_order_failure_channel_id: str = "1500722535678083102"
+    crypto_pending_order_alert_webhook_url: str | None = None
+    crypto_pending_order_failure_webhook_url: str | None = None
+
     # Strategy
     top_n: int = 30
     drop_pct: float = -3.0  # '-3'은 -3 %
