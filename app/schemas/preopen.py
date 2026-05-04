@@ -9,6 +9,10 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
+from app.schemas.execution_contracts import (
+    ExecutionReadiness,
+    OrderBasketPreview,
+)
 from app.schemas.preopen_news_brief import KRPreopenNewsBrief
 
 NewsReadinessStatus = Literal["ready", "stale", "unavailable"]
@@ -247,6 +251,44 @@ class LinkedSessionRef(BaseModel):
     created_at: datetime
 
 
+ExecutionReviewStageId = Literal[
+    "data_news",
+    "candidate_review",
+    "cash_holdings_quotes",
+    "basket_preview",
+    "approval_required",
+    "post_order_reconcile",
+]
+ExecutionReviewStageStatus = Literal[
+    "ready",
+    "degraded",
+    "unavailable",
+    "skipped",
+    "pending",
+]
+
+
+class ExecutionReviewStage(BaseModel):
+    stage_id: ExecutionReviewStageId
+    label: str
+    status: ExecutionReviewStageStatus
+    summary: str
+    warnings: list[str] = []
+    details: dict[str, Any] = {}
+
+
+class ExecutionReviewSummary(BaseModel):
+    contract_version: Literal["v1"] = "v1"
+    advisory_only: Literal[True] = True
+    execution_allowed: Literal[False] = False
+    readiness: ExecutionReadiness
+    stages: list[ExecutionReviewStage] = []
+    basket_preview: OrderBasketPreview | None = None
+    blocking_reasons: list[str] = []
+    warnings: list[str] = []
+    notes: list[str] = []
+
+
 class PreopenLatestResponse(BaseModel):
     has_run: bool
     advisory_used: bool = False
@@ -276,3 +318,4 @@ class PreopenLatestResponse(BaseModel):
     briefing_artifact: PreopenBriefingArtifact | None = None
     qa_evaluator: PreopenQaEvaluatorSummary | None = None
     paper_approval_bridge: PreopenPaperApprovalBridge | None = None
+    execution_review: ExecutionReviewSummary | None = None

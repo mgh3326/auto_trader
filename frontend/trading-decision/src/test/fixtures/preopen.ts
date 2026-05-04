@@ -1,4 +1,7 @@
 import type {
+  ExecutionReviewStage,
+  ExecutionReviewSummary,
+  OrderBasketPreview,
   PreopenBriefingArtifact,
   PreopenCandidateSummary,
   PreopenLatestResponse,
@@ -479,6 +482,175 @@ export function makePreopenUnavailableQaEvaluator(
   });
 }
 
+export function makePreopenExecutionReviewBasket(
+  overrides: Partial<OrderBasketPreview> = {},
+): OrderBasketPreview {
+  return {
+    contract_version: "v1",
+    account_mode: "db_simulated",
+    execution_source: "preopen",
+    readiness: {
+      contract_version: "v1",
+      account_mode: "db_simulated",
+      execution_source: "preopen",
+      is_ready: false,
+      guard: {
+        execution_allowed: false,
+        approval_required: true,
+        blocking_reasons: ["mvp_read_only"],
+        warnings: [],
+      },
+      checked_at: null,
+      notes: ["Advisory read-only review; no broker submit on this page."],
+    },
+    lines: [
+      {
+        contract_version: "v1",
+        symbol: "005930",
+        market: "kr",
+        side: "buy",
+        account_mode: "db_simulated",
+        execution_source: "preopen",
+        lifecycle_state: "previewed",
+        quantity: "10",
+        limit_price: "70000",
+        notional: null,
+        currency: "KRW",
+        guard: {
+          execution_allowed: false,
+          approval_required: true,
+          blocking_reasons: ["mvp_read_only"],
+          warnings: [],
+        },
+        rationale: ["Strong momentum play"],
+        correlation_id: null,
+      },
+    ],
+    basket_warnings: ["mvp_read_only"],
+    ...overrides,
+  };
+}
+
+const DEFAULT_REVIEW_STAGES: ExecutionReviewStage[] = [
+  {
+    stage_id: "data_news",
+    label: "Data / news readiness",
+    status: "ready",
+    summary: "News readiness is fresh.",
+    warnings: [],
+    details: { news_status: "ready" },
+  },
+  {
+    stage_id: "candidate_review",
+    label: "Candidate review",
+    status: "ready",
+    summary: "1 candidates (1 buy).",
+    warnings: [],
+    details: { candidate_count: 1, buy_candidate_count: 1 },
+  },
+  {
+    stage_id: "cash_holdings_quotes",
+    label: "Cash / holdings / quotes check",
+    status: "unavailable",
+    summary: "Live cash, holdings, and quotes lookups are not wired in this MVP.",
+    warnings: ["not_in_current_preopen_contract"],
+    details: {},
+  },
+  {
+    stage_id: "basket_preview",
+    label: "Basket preview",
+    status: "ready",
+    summary: "1 buy candidates rendered as a basket preview.",
+    warnings: [],
+    details: { line_count: 1 },
+  },
+  {
+    stage_id: "approval_required",
+    label: "Approval required",
+    status: "pending",
+    summary:
+      "Mock execution requires later explicit operator approval. This page does not submit orders.",
+    warnings: [],
+    details: { advisory_only: true, execution_allowed: false },
+  },
+  {
+    stage_id: "post_order_reconcile",
+    label: "Post-order reconciliation",
+    status: "skipped",
+    summary: "No pending reconciliations on the latest run.",
+    warnings: [],
+    details: { pending_reconciliation_count: 0 },
+  },
+];
+
+export function makePreopenExecutionReview(
+  overrides: Partial<ExecutionReviewSummary> = {},
+): ExecutionReviewSummary {
+  return {
+    contract_version: "v1",
+    advisory_only: true,
+    execution_allowed: false,
+    readiness: {
+      contract_version: "v1",
+      account_mode: "db_simulated",
+      execution_source: "preopen",
+      is_ready: false,
+      guard: {
+        execution_allowed: false,
+        approval_required: true,
+        blocking_reasons: ["mvp_read_only"],
+        warnings: ["not_in_current_preopen_contract"],
+      },
+      checked_at: null,
+      notes: ["Advisory read-only review; no broker submit on this page."],
+    },
+    stages: DEFAULT_REVIEW_STAGES,
+    basket_preview: makePreopenExecutionReviewBasket(),
+    blocking_reasons: ["mvp_read_only"],
+    warnings: ["not_in_current_preopen_contract"],
+    notes: [
+      "advisory_only",
+      "no_live_execution",
+      "mock_execution_requires_explicit_approval",
+    ],
+    ...overrides,
+  };
+}
+
+export function makePreopenExecutionReviewUnavailable(
+  overrides: Partial<ExecutionReviewSummary> = {},
+): ExecutionReviewSummary {
+  return makePreopenExecutionReview({
+    readiness: {
+      contract_version: "v1",
+      account_mode: "db_simulated",
+      execution_source: "preopen",
+      is_ready: false,
+      guard: {
+        execution_allowed: false,
+        approval_required: true,
+        blocking_reasons: ["mvp_read_only", "no_open_preopen_run"],
+        warnings: [],
+      },
+      checked_at: null,
+      notes: [],
+    },
+    stages: DEFAULT_REVIEW_STAGES.map((stage) => ({
+      ...stage,
+      status: stage.stage_id === "approval_required" ? "pending" : "unavailable",
+      summary:
+        stage.stage_id === "approval_required"
+          ? stage.summary
+          : "No open preopen research run.",
+    })),
+    basket_preview: null,
+    blocking_reasons: ["mvp_read_only", "no_open_preopen_run"],
+    warnings: ["not_in_current_preopen_contract"],
+    ...overrides,
+  });
+}
+
+
 export function makePreopenResponse(
   overrides: Partial<PreopenLatestResponse> = {},
 ): PreopenLatestResponse {
@@ -510,6 +682,7 @@ export function makePreopenResponse(
     briefing_artifact: makePreopenBriefingArtifact(),
     qa_evaluator: makePreopenQaEvaluator(),
     paper_approval_bridge: null,
+    execution_review: makePreopenExecutionReview(),
     ...overrides,
   };
 }
@@ -545,6 +718,7 @@ export function makePreopenFailOpen(
     briefing_artifact: makePreopenUnavailableArtifact(),
     qa_evaluator: makePreopenUnavailableQaEvaluator(),
     paper_approval_bridge: null,
+    execution_review: makePreopenExecutionReviewUnavailable(),
     ...overrides,
   };
 }
