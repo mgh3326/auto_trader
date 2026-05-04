@@ -386,6 +386,7 @@ class OpenClawClient:
         triggered: list[dict[str, Any]],
         as_of: str,
         correlation_id: str | None = None,
+        intents: list[dict[str, Any]] | None = None,
     ) -> WatchAlertDeliveryResult:
         request_id = str(uuid4())
         n8n_webhook_url = settings.N8N_WATCH_ALERT_WEBHOOK_URL.strip()
@@ -408,6 +409,7 @@ class OpenClawClient:
             "market": market,
             "triggered": triggered,
             "message": message,
+            "intents": intents or [],
         }
         headers = {"Content-Type": "application/json"}
 

@@ -75,6 +75,9 @@ from app.mcp_server.tooling.user_settings_registration import (
 from app.mcp_server.tooling.watch_alerts_registration import (
     register_watch_alert_tools,
 )
+from app.mcp_server.tooling.watch_order_intent_ledger_read import (
+    register_watch_order_intent_ledger_tools,
+)
 from app.mcp_server.tooling.weekend_crypto_paper_cycle import (
     register_weekend_crypto_paper_cycle_tools,
 )
@@ -105,6 +108,7 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     register_alpaca_paper_preview_tools(mcp)
     register_alpaca_paper_orders_tools(mcp)
     register_alpaca_paper_ledger_read_tools(mcp)
+    register_watch_order_intent_ledger_tools(mcp)
     register_weekend_crypto_paper_cycle_tools(mcp)
 
     # Always: read-only with account_mode (mock-safe via ROB-28)

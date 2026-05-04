@@ -443,3 +443,90 @@ class AlpacaPaperOrderLedger(Base):
         onupdate=func.now(),
         nullable=False,
     )
+
+
+# ---------------------------------------------------------------------------
+# review.watch_order_intent_ledger — triggered watch intent audit (ROB-103)
+# All writes must go through WatchOrderIntentService. No direct SQL writes.
+# ---------------------------------------------------------------------------
+class WatchOrderIntentLedger(Base):
+    """Watch-driven order intent audit ledger (ROB-103).
+
+    All writes go through ``app.services.watch_order_intent_service``.
+    Direct SQL ``INSERT/UPDATE/DELETE`` is forbidden.
+    """
+
+    __tablename__ = "watch_order_intent_ledger"
+    __table_args__ = (
+        Index(
+            "uq_watch_intent_previewed_idempotency",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("lifecycle_state = 'previewed'"),
+        ),
+        Index("ix_watch_intent_kst_date", "kst_date"),
+        Index("ix_watch_intent_market_symbol", "market", "symbol"),
+        Index("ix_watch_intent_state_created_at", "lifecycle_state", "created_at"),
+        CheckConstraint(
+            "lifecycle_state IN ('previewed','failed')",
+            name="watch_intent_ledger_lifecycle_state",
+        ),
+        CheckConstraint("side IN ('buy','sell')", name="watch_intent_ledger_side"),
+        CheckConstraint(
+            "account_mode = 'kis_mock'", name="watch_intent_ledger_account_mode"
+        ),
+        CheckConstraint(
+            "execution_source = 'watch'", name="watch_intent_ledger_execution_source"
+        ),
+        CheckConstraint(
+            "currency IS NULL OR currency IN ('KRW','USD')",
+            name="watch_intent_ledger_currency",
+        ),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+
+    correlation_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    idempotency_key: Mapped[str] = mapped_column(Text, nullable=False)
+
+    market: Mapped[str] = mapped_column(Text, nullable=False)
+    target_kind: Mapped[str] = mapped_column(Text, nullable=False)
+    symbol: Mapped[str] = mapped_column(Text, nullable=False)
+    condition_type: Mapped[str] = mapped_column(Text, nullable=False)
+    threshold: Mapped[float] = mapped_column(Numeric(18, 8), nullable=False)
+    threshold_key: Mapped[str] = mapped_column(Text, nullable=False)
+
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    side: Mapped[str] = mapped_column(Text, nullable=False)
+    account_mode: Mapped[str] = mapped_column(Text, nullable=False)
+    execution_source: Mapped[str] = mapped_column(Text, nullable=False)
+    lifecycle_state: Mapped[str] = mapped_column(Text, nullable=False)
+
+    quantity: Mapped[float | None] = mapped_column(Numeric(18, 8))
+    limit_price: Mapped[float | None] = mapped_column(Numeric(18, 8))
+    notional: Mapped[float | None] = mapped_column(Numeric(18, 8))
+    currency: Mapped[str | None] = mapped_column(Text)
+
+    notional_krw_input: Mapped[float | None] = mapped_column(Numeric(18, 2))
+    max_notional_krw: Mapped[float | None] = mapped_column(Numeric(18, 2))
+    notional_krw_evaluated: Mapped[float | None] = mapped_column(Numeric(18, 2))
+    fx_usd_krw_used: Mapped[float | None] = mapped_column(Numeric(18, 4))
+
+    approval_required: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true")
+    )
+    execution_allowed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    blocking_reasons: Mapped[list] = mapped_column(JSONB, nullable=False)
+    blocked_by: Mapped[str | None] = mapped_column(Text)
+    detail: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+    preview_line: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    triggered_value: Mapped[float | None] = mapped_column(Numeric(18, 8))
+    kst_date: Mapped[str] = mapped_column(Text, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
+    )

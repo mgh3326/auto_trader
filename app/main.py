@@ -45,6 +45,7 @@ from app.routers import (
     trading_decisions,
     trading_decisions_spa,
     user_defaults,
+    watch_order_intent_ledger,
     websocket,
 )
 from app.services.error_serialization import (
@@ -171,6 +172,7 @@ def create_app() -> FastAPI:
     app.include_router(research_run_decision_sessions.router)
     app.include_router(preopen.router)
     app.include_router(alpaca_paper_ledger.router)
+    app.include_router(watch_order_intent_ledger.router)
     app.include_router(strategy_events.router)
     app.include_router(kospi200.router)
     app.include_router(websocket.router)

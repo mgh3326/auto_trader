@@ -30,14 +30,19 @@ async def async_db_session():
 
 @pytest_asyncio.fixture
 async def integration_user_id(async_db_session):
-    """Return an existing user id (first row in users table)."""
-    from sqlalchemy import text
+    """Create a dedicated FK target user for this integration test."""
+    from app.models.trading import User
 
-    result = await async_db_session.execute(text("SELECT id FROM users LIMIT 1"))
-    row = result.first()
-    if row is None:
-        pytest.skip("No user in DB — skipping integration test")
-    return row[0]
+    suffix = uuid4().hex
+    user = User(
+        email=f"rob41-itest-{suffix}@example.com",
+        username=f"rob41-itest-{suffix}",
+        hashed_password="fakehash",
+    )
+    async_db_session.add(user)
+    await async_db_session.flush()
+    await async_db_session.refresh(user)
+    return user.id
 
 
 @pytest.mark.asyncio

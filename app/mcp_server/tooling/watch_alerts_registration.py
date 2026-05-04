@@ -18,6 +18,13 @@ async def manage_watch_alerts_impl(
     metric: str | None = None,
     operator: str | None = None,
     threshold: float | None = None,
+    *,
+    intent_action: str | None = None,
+    side: str | None = None,
+    quantity: int | None = None,
+    notional_krw: float | None = None,
+    limit_price: float | None = None,
+    max_notional_krw: float | None = None,
 ) -> dict:
     service = WatchAlertService()
     try:
@@ -66,13 +73,27 @@ async def manage_watch_alerts_impl(
         normalized_threshold = float(threshold)
 
         if normalized_action == "add":
-            result = await service.add_watch(
-                market=market,
-                symbol=symbol,
-                condition_type=condition_type,
-                threshold=normalized_threshold,
-                target_kind=target_kind,
-            )
+            add_kwargs: dict[str, object] = {
+                "market": market,
+                "symbol": symbol,
+                "condition_type": condition_type,
+                "threshold": normalized_threshold,
+                "target_kind": target_kind,
+            }
+            if intent_action is not None:
+                add_kwargs["action"] = intent_action
+            if side is not None:
+                add_kwargs["side"] = side
+            if quantity is not None:
+                add_kwargs["quantity"] = quantity
+            if notional_krw is not None:
+                add_kwargs["notional_krw"] = notional_krw
+            if limit_price is not None:
+                add_kwargs["limit_price"] = limit_price
+            if max_notional_krw is not None:
+                add_kwargs["max_notional_krw"] = max_notional_krw
+
+            result = await service.add_watch(**add_kwargs)  # type: ignore[arg-type]
             return {
                 "success": True,
                 "action": "add",
