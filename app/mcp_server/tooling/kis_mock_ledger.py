@@ -14,6 +14,18 @@ from app.mcp_server.tooling.shared import logger
 from app.mcp_server.tooling.shared import to_float as _to_float
 from app.models.review import KISMockOrderLedger
 
+_LEDGER_STATUS_TO_LIFECYCLE: dict[str, str] = {
+    "accepted": "accepted",
+    "rejected": "failed",
+    "unknown": "anomaly",
+}
+
+
+def _status_to_lifecycle_state(status: str | None) -> str:
+    if status is None:
+        return "anomaly"
+    return _LEDGER_STATUS_TO_LIFECYCLE.get(status, "anomaly")
+
 
 def _order_session_factory() -> async_sessionmaker[AsyncSession]:
     return typing_cast(
@@ -42,11 +54,13 @@ async def _save_kis_mock_order_ledger(
     thesis: str | None,
     strategy: str | None,
     notes: str | None,
+    lifecycle_state: str | None = None,
 ) -> int | None:
     """Insert one row into review.kis_mock_order_ledger.
 
     Returns the new primary-key id, or None on conflict / error.
     """
+    resolved_lifecycle = lifecycle_state or _status_to_lifecycle_state(status)
     try:
         async with _order_session_factory()() as db:
             stmt = (
@@ -75,6 +89,7 @@ async def _save_kis_mock_order_ledger(
                     thesis=thesis,
                     strategy=strategy,
                     notes=notes,
+                    lifecycle_state=resolved_lifecycle,
                 )
                 .on_conflict_do_nothing(constraint="uq_kis_mock_ledger_order_no")
             )
@@ -143,6 +158,7 @@ async def _record_kis_mock_order(
         thesis=thesis,
         strategy=strategy,
         notes=notes,
+        lifecycle_state=_status_to_lifecycle_state(status),
     )
 
     return {
