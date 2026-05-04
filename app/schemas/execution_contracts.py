@@ -35,9 +35,7 @@ ACCOUNT_MODES: frozenset[str] = frozenset(
     {"kis_live", "kis_mock", "alpaca_paper", "db_simulated"}
 )
 
-ExecutionSource = Literal[
-    "preopen", "watch", "manual", "websocket", "reconciler"
-]
+ExecutionSource = Literal["preopen", "watch", "manual", "websocket", "reconciler"]
 EXECUTION_SOURCES: frozenset[str] = frozenset(
     {"preopen", "watch", "manual", "websocket", "reconciler"}
 )
@@ -105,7 +103,7 @@ class ExecutionGuard(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def _enforce_block_when_blocking_reasons(self) -> "ExecutionGuard":
+    def _enforce_block_when_blocking_reasons(self) -> ExecutionGuard:
         if self.blocking_reasons and self.execution_allowed:
             raise ValueError(
                 "execution_allowed must be False when blocking_reasons is non-empty"
@@ -125,7 +123,7 @@ class ExecutionReadiness(BaseModel):
     notes: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def _ready_implies_no_blocking(self) -> "ExecutionReadiness":
+    def _ready_implies_no_blocking(self) -> ExecutionReadiness:
         if self.is_ready and self.guard.blocking_reasons:
             raise ValueError(
                 "is_ready cannot be True while guard.blocking_reasons is non-empty"
@@ -163,7 +161,7 @@ class OrderBasketPreview(BaseModel):
     basket_warnings: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def _lines_must_match_basket(self) -> "OrderBasketPreview":
+    def _lines_must_match_basket(self) -> OrderBasketPreview:
         for idx, line in enumerate(self.lines):
             if line.account_mode != self.account_mode:
                 raise ValueError(

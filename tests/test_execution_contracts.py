@@ -1,6 +1,10 @@
 """Tests for shared execution contracts (ROB-100)."""
 
+from datetime import UTC, datetime
+from decimal import Decimal
+
 import pytest
+from pydantic import ValidationError
 
 from app.schemas import execution_contracts as ec
 
@@ -48,8 +52,7 @@ class TestOrderLifecycleState:
 
     def test_terminal_and_in_flight_are_disjoint(self):
         assert (
-            ec.TERMINAL_LIFECYCLE_STATES & ec.IN_FLIGHT_LIFECYCLE_STATES
-            == frozenset()
+            ec.TERMINAL_LIFECYCLE_STATES & ec.IN_FLIGHT_LIFECYCLE_STATES == frozenset()
         )
 
     def test_anomaly_is_in_neither_classification_set(self):
@@ -70,9 +73,6 @@ class TestOrderLifecycleState:
         for state in ec.ORDER_LIFECYCLE_STATES:
             expected = state in ec.IN_FLIGHT_LIFECYCLE_STATES
             assert ec.is_in_flight_state(state) is expected, state
-
-
-from pydantic import ValidationError
 
 
 class TestExecutionGuard:
@@ -104,9 +104,6 @@ class TestExecutionGuard:
         assert guard.warnings == ["soft warn"]
 
 
-from datetime import datetime, timezone
-
-
 class TestExecutionReadiness:
     def test_default_is_not_ready_with_conservative_guard(self):
         readiness = ec.ExecutionReadiness(
@@ -128,7 +125,7 @@ class TestExecutionReadiness:
             execution_source="manual",
             is_ready=True,
             guard=ec.ExecutionGuard(execution_allowed=True, approval_required=False),
-            checked_at=datetime(2026, 5, 4, 10, 0, tzinfo=timezone.utc),
+            checked_at=datetime(2026, 5, 4, 10, 0, tzinfo=UTC),
             notes=["operator confirmed"],
         )
         assert readiness.is_ready is True
@@ -159,18 +156,15 @@ class TestExecutionReadiness:
             )
 
 
-from decimal import Decimal
-
-
 class TestOrderPreviewLine:
     def _minimal_kwargs(self):
-        return dict(
-            symbol="005930",
-            market="KOSPI",
-            side="buy",
-            account_mode="kis_mock",
-            execution_source="preopen",
-        )
+        return {
+            "symbol": "005930",
+            "market": "KOSPI",
+            "side": "buy",
+            "account_mode": "kis_mock",
+            "execution_source": "preopen",
+        }
 
     def test_defaults(self):
         line = ec.OrderPreviewLine(**self._minimal_kwargs())
@@ -222,13 +216,13 @@ class TestOrderBasketPreview:
         )
 
     def _line(self, **overrides):
-        kwargs = dict(
-            symbol="005930",
-            market="KOSPI",
-            side="buy",
-            account_mode="kis_mock",
-            execution_source="preopen",
-        )
+        kwargs = {
+            "symbol": "005930",
+            "market": "KOSPI",
+            "side": "buy",
+            "account_mode": "kis_mock",
+            "execution_source": "preopen",
+        }
         kwargs.update(overrides)
         return ec.OrderPreviewLine(**kwargs)
 
@@ -279,7 +273,7 @@ class TestOrderLifecycleEvent:
             account_mode="kis_mock",
             execution_source="reconciler",
             state="submitted",
-            occurred_at=datetime(2026, 5, 4, 10, 0, tzinfo=timezone.utc),
+            occurred_at=datetime(2026, 5, 4, 10, 0, tzinfo=UTC),
         )
         assert event.contract_version == "v1"
         assert event.state == "submitted"
@@ -293,7 +287,7 @@ class TestOrderLifecycleEvent:
             account_mode="kis_live",
             execution_source="websocket",
             state="fill",
-            occurred_at=datetime(2026, 5, 4, 10, 1, tzinfo=timezone.utc),
+            occurred_at=datetime(2026, 5, 4, 10, 1, tzinfo=UTC),
             broker_order_id="0000123456",
             correlation_id="watch_alert_xyz",
             detail={"raw": {"FILL_QTY": "10"}},
@@ -308,7 +302,7 @@ class TestOrderLifecycleEvent:
                 account_mode="kis_mock",
                 execution_source="reconciler",
                 state="queued",  # not in the literal
-                occurred_at=datetime(2026, 5, 4, 10, 0, tzinfo=timezone.utc),
+                occurred_at=datetime(2026, 5, 4, 10, 0, tzinfo=UTC),
             )
 
 
@@ -326,7 +320,7 @@ class TestSerializationRoundTrip:
                 execution_source="preopen",
                 is_ready=False,
                 guard=ec.ExecutionGuard(blocking_reasons=["news_stale"]),
-                checked_at=datetime(2026, 5, 4, 9, 0, tzinfo=timezone.utc),
+                checked_at=datetime(2026, 5, 4, 9, 0, tzinfo=UTC),
                 notes=["initial check"],
             ),
             ec.OrderPreviewLine(
@@ -365,7 +359,7 @@ class TestSerializationRoundTrip:
                 account_mode="kis_live",
                 execution_source="websocket",
                 state="fill",
-                occurred_at=datetime(2026, 5, 4, 10, 1, tzinfo=timezone.utc),
+                occurred_at=datetime(2026, 5, 4, 10, 1, tzinfo=UTC),
                 broker_order_id="0000123456",
                 correlation_id="watch_alert_xyz",
                 detail={"raw": {"FILL_QTY": "10"}},
@@ -403,11 +397,7 @@ class TestCompatibilityWithExistingSchemas:
             "paper_only",
             "dry_run_only",
         }
-        new_vocab = (
-            ec.ACCOUNT_MODES
-            | ec.EXECUTION_SOURCES
-            | ec.ORDER_LIFECYCLE_STATES
-        )
+        new_vocab = ec.ACCOUNT_MODES | ec.EXECUTION_SOURCES | ec.ORDER_LIFECYCLE_STATES
         overlap = existing_execution_mode_values & new_vocab
         assert overlap == set(), (
             f"new vocabulary collides with existing execution_mode values: {overlap}"
