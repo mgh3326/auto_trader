@@ -51,6 +51,25 @@ OutcomeHorizonLiteral = Literal["1h", "4h", "1d", "3d", "7d", "final"]
 
 SessionStatusLiteral = Literal["open", "closed", "archived"]
 
+WorkflowStatusLiteral = Literal[
+    "created",
+    "evidence_generating",
+    "evidence_ready",
+    "debate_ready",
+    "trader_draft_ready",
+    "risk_review_ready",
+    "auto_approved",
+    "preview_ready",
+    "journal_ready",
+    "completed",
+    "failed_evidence",
+    "failed_trader_draft",
+    "failed_risk_review",
+    "preview_blocked",
+]
+
+AccountModeLiteral = Literal["kis_mock", "alpaca_paper", "kis_live", "db_simulated"]
+
 InstrumentTypeLiteral = Literal[
     "equity_kr",
     "equity_us",
@@ -58,6 +77,58 @@ InstrumentTypeLiteral = Literal[
     "forex",
     "index",
 ]
+
+
+# ========== Committee Sub-Schemas ==========
+
+
+class CommitteeAnalysisSub(BaseModel):
+    summary: str | None = None
+    confidence: int | None = None
+    payload: dict | None = None
+
+
+class CommitteeEvidence(BaseModel):
+    technical_analysis: CommitteeAnalysisSub | None = None
+    news_analysis: CommitteeAnalysisSub | None = None
+    on_chain_analysis: CommitteeAnalysisSub | None = None
+
+
+class CommitteeRiskReview(BaseModel):
+    verdict: Literal["approved", "vetoed", "flagged"]
+    notes: str | None = None
+    reviewed_at: datetime | None = None
+
+
+class CommitteePortfolioApproval(BaseModel):
+    verdict: Literal["approved", "vetoed", "modified"]
+    notes: str | None = None
+    approved_at: datetime | None = None
+
+
+class CommitteeExecutionPreview(BaseModel):
+    is_blocked: bool = False
+    block_reason: str | None = None
+    preview_payload: dict | None = None
+
+
+class CommitteeJournalPlaceholder(BaseModel):
+    journal_uuid: UUID | None = None
+    notes: str | None = None
+
+
+class CommitteeAutomation(BaseModel):
+    enabled: bool = False
+    auto_approve_risk: bool = False
+    auto_execute: bool = False
+
+
+class CommitteeArtifacts(BaseModel):
+    evidence: CommitteeEvidence | None = None
+    risk_review: CommitteeRiskReview | None = None
+    portfolio_approval: CommitteePortfolioApproval | None = None
+    execution_preview: CommitteeExecutionPreview | None = None
+    journal_placeholder: CommitteeJournalPlaceholder | None = None
 
 
 # ========== Session Schemas ==========
@@ -70,6 +141,9 @@ class SessionCreateRequest(BaseModel):
     market_brief: dict | None = None
     generated_at: datetime
     notes: str | None = Field(default=None, max_length=4000)
+    workflow_status: WorkflowStatusLiteral | None = None
+    account_mode: AccountModeLiteral | None = None
+    automation: CommitteeAutomation | None = None
 
 
 class SessionSummary(BaseModel):
@@ -78,6 +152,8 @@ class SessionSummary(BaseModel):
     strategy_name: str | None
     market_scope: str | None
     status: SessionStatusLiteral
+    workflow_status: WorkflowStatusLiteral | None = None
+    account_mode: AccountModeLiteral | None = None
     generated_at: datetime
     created_at: datetime
     updated_at: datetime
@@ -88,6 +164,8 @@ class SessionSummary(BaseModel):
 class SessionDetail(SessionSummary):
     market_brief: dict | None
     notes: str | None
+    automation: CommitteeAutomation | None = None
+    artifacts: CommitteeArtifacts | None = None
     proposals: list["ProposalDetail"]
 
 
