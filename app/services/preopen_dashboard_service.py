@@ -16,6 +16,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.news import NewsArticle
 from app.models.research_run import ResearchRun, ResearchRunCandidate
 from app.models.trading_decision import TradingDecisionProposal, TradingDecisionSession
+from app.schemas.execution_contracts import (
+    ExecutionGuard,
+    ExecutionReadiness,
+    OrderBasketPreview,
+    OrderPreviewLine,
+)
 from app.schemas.preopen import (
     CandidateSummary,
     ExecutionReviewStage,
@@ -39,12 +45,6 @@ from app.schemas.preopen import (
     ReconciliationSummary,
 )
 from app.schemas.preopen_news_brief import KRPreopenNewsBrief
-from app.schemas.execution_contracts import (
-    ExecutionGuard,
-    ExecutionReadiness,
-    OrderBasketPreview,
-    OrderPreviewLine,
-)
 from app.services import kr_preopen_news_brief_service, research_run_service
 from app.services.llm_news_service import (
     get_latest_news_preview,
@@ -1060,9 +1060,7 @@ def _build_execution_review(
         candidate_summary = "Open run has no candidates."
     else:
         candidate_status = "ready"
-        candidate_summary = (
-            f"{len(candidates)} candidates ({len(buy_candidates)} buy)."
-        )
+        candidate_summary = f"{len(candidates)} candidates ({len(buy_candidates)} buy)."
     stages.append(
         ExecutionReviewStage(
             stage_id="candidate_review",

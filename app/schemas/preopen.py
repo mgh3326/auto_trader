@@ -9,12 +9,11 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-from app.schemas.preopen_news_brief import KRPreopenNewsBrief
 from app.schemas.execution_contracts import (
-    ExecutionGuard,
     ExecutionReadiness,
     OrderBasketPreview,
 )
+from app.schemas.preopen_news_brief import KRPreopenNewsBrief
 
 NewsReadinessStatus = Literal["ready", "stale", "unavailable"]
 PreopenStage = Literal["preopen", "us_open"]

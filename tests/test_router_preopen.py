@@ -51,12 +51,11 @@ def _fail_open_response() -> SimpleNamespace:
     )
 
 
-def _fail_open_response_with_review() -> "PreopenLatestResponse":  # noqa: F821
+def _fail_open_response_with_review() -> PreopenLatestResponse:  # noqa: F821
     from app.schemas.execution_contracts import ExecutionGuard, ExecutionReadiness
     from app.schemas.preopen import (
         ExecutionReviewStage,
         ExecutionReviewSummary,
-        PreopenLatestResponse,
     )
 
     base = _fail_open_response()

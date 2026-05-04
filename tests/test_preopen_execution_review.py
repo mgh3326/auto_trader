@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
+from pydantic import ValidationError
 
 
 @pytest.mark.unit
@@ -48,7 +48,7 @@ def test_execution_review_summary_defaults_are_advisory_and_blocked():
 def test_execution_review_stage_status_literal_is_strict():
     from app.schemas.preopen import ExecutionReviewStage
 
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         ExecutionReviewStage(
             stage_id="data_news",
             label="x",
@@ -61,7 +61,7 @@ def test_execution_review_stage_status_literal_is_strict():
 def test_execution_review_stage_id_literal_is_strict():
     from app.schemas.preopen import ExecutionReviewStage
 
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         ExecutionReviewStage(
             stage_id="not_a_stage",  # type: ignore[arg-type]
             label="x",
@@ -367,7 +367,9 @@ def test_dashboard_service_does_not_import_broker_or_order_modules():
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             module = node.module or ""
-            if any(module == p or module.startswith(p + ".") for p in forbidden_prefixes):
+            if any(
+                module == p or module.startswith(p + ".") for p in forbidden_prefixes
+            ):
                 found.append(module)
         elif isinstance(node, ast.Import):
             for alias in node.names:
