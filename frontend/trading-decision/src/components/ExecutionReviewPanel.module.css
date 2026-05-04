@@ -1,0 +1,108 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--border-default, #2c3140);
+  border-radius: 8px;
+  background: var(--surface-default, #161922);
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.headerTitle {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.statusBadge {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--surface-elevated, #232838);
+  font-size: 0.85rem;
+}
+
+.guardrail {
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--surface-warning, rgba(255, 196, 0, 0.08));
+  border: 1px solid var(--border-warning, rgba(255, 196, 0, 0.3));
+  font-size: 0.9rem;
+}
+
+.stages {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.stage {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid var(--border-subtle, #232838);
+  border-radius: 6px;
+}
+
+.stageStatus {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.stageStatus.ready { color: var(--text-success, #4ade80); }
+.stageStatus.degraded { color: var(--text-warning, #facc15); }
+.stageStatus.unavailable { color: var(--text-muted, #94a3b8); }
+.stageStatus.pending { color: var(--text-info, #60a5fa); }
+.stageStatus.skipped { color: var(--text-muted, #94a3b8); }
+
+.basketHeader {
+  margin-top: 4px;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.basketLines {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.basketLine {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto auto;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle, #232838);
+  border-radius: 6px;
+  align-items: center;
+}
+
+.warnings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.warningChip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--surface-elevated, #232838);
+  font-size: 0.78rem;
+}
