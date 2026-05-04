@@ -7,7 +7,7 @@ broker, MCP, KIS client, DB, cache, network, or scheduler modules.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Literal
@@ -158,10 +158,10 @@ def classify_kis_mock_market_open_report(
     return "accepted_but_fill_unknown"
 
 
-def run_kis_mock_market_open_pilot(
+async def run_kis_mock_market_open_pilot(
     request: KisMockMarketOpenPilotRequest,
     *,
-    kis_mock_place_order: Callable[..., Mapping[str, Any]],
+    kis_mock_place_order: Callable[..., Awaitable[Mapping[str, Any]]],
     is_regular_session: Callable[[], bool],
     readiness_probe: Callable[[], Mapping[str, Any]] | None = None,
 ) -> KisMockMarketOpenPilotResult:
@@ -191,7 +191,7 @@ def run_kis_mock_market_open_pilot(
 
     if request.mode == "dry-run":
         response = dict(
-            kis_mock_place_order(
+            await kis_mock_place_order(
                 symbol=request.symbol,
                 side=request.side,
                 order_type=request.order_type,
@@ -245,7 +245,7 @@ def run_kis_mock_market_open_pilot(
         )
 
     response = dict(
-        kis_mock_place_order(
+        await kis_mock_place_order(
             symbol=request.symbol,
             side=request.side,
             order_type=request.order_type,
