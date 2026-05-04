@@ -146,3 +146,82 @@ async def test_post_api_rejects_non_mock_path_traversal():
             path="https://api.kiwoom.com/api/dostk/ordr",
             body={},
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "unsafe_path",
+    [
+        "//api.kiwoom.com/api/dostk/ordr",
+        "//evil.example.com/api/dostk/ordr",
+        "///api/dostk/ordr",
+        "http://api.kiwoom.com/api/dostk/ordr",
+        "https://api.kiwoom.com/api/dostk/ordr",
+        "api/dostk/ordr",
+        "",
+        "/api/dostk\\ordr",
+        "/api/dostk/ordr\nHost: evil.example.com",
+    ],
+)
+async def test_post_api_rejects_unsafe_path_shapes(unsafe_path):
+    """Network-path references and other non-relative shapes must be rejected.
+
+    A leading ``//`` is dangerous because URL-join semantics treat it as a
+    network-path reference and can re-target the request to a different host.
+    """
+
+    from app.services.brokers.kiwoom.client import KiwoomMockClient
+
+    transport_calls = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        transport_calls["count"] += 1
+        return httpx.Response(200, json={"return_code": 0})
+
+    client = KiwoomMockClient(
+        base_url=constants.MOCK_BASE_URL,
+        app_key="ak",
+        app_secret="sk",
+        account_no="123",
+    )
+    client.set_transport_for_test(httpx.MockTransport(handler), token="TKN")
+
+    with pytest.raises(ValueError):
+        await client.post_api(
+            api_id=constants.ORDER_BUY_API_ID,
+            path=unsafe_path,
+            body={},
+        )
+    assert transport_calls["count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_post_api_rejects_request_resolved_to_non_mock_host():
+    """Defense-in-depth: if the resolved request host ever stops being
+    ``mockapi.kiwoom.com``, the send must be aborted before any I/O."""
+
+    transport_calls = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        transport_calls["count"] += 1
+        return httpx.Response(200, json={"return_code": 0})
+
+    client = KiwoomMockClient(
+        base_url=constants.MOCK_BASE_URL,
+        app_key="ak",
+        app_secret="sk",
+        account_no="123",
+    )
+    client.set_transport_for_test(httpx.MockTransport(handler), token="TKN")
+
+    # Simulate post-construction tampering: even if some future code mutates
+    # the base URL away from mockapi, post_api must still refuse to send.
+    client._base_url = "https://api.kiwoom.com"  # type: ignore[attr-defined]
+
+    with pytest.raises(ValueError, match="non-mock host"):
+        await client.post_api(
+            api_id=constants.ORDER_BUY_API_ID,
+            path="/api/dostk/ordr",
+            body={},
+        )
+    assert transport_calls["count"] == 0

@@ -29,7 +29,23 @@ class KiwoomEndpointError(RuntimeError):
 
 
 def _validate_relative_path(path: str) -> None:
-    if not path.startswith("/") or "://" in path:
+    """Reject absolute URLs, network-path references, and other non-relative shapes.
+
+    Network-path references like ``//api.kiwoom.com/...`` are dangerous because
+    URL-join semantics let them re-target the host even though they look
+    relative. Anything other than exactly one leading ``/`` followed by a
+    non-``/`` character is rejected.
+    """
+
+    if (
+        not path
+        or not path.startswith("/")
+        or path.startswith("//")
+        or "://" in path
+        or "\\" in path
+        or "\r" in path
+        or "\n" in path
+    ):
         raise ValueError(f"Kiwoom request path must be a relative path; got {path!r}")
 
 
@@ -123,7 +139,13 @@ class KiwoomMockClient:
             transport=self._transport,
             timeout=self._timeout,
         ) as client:
-            response = await client.post(path, headers=headers, json=body)
+            request = client.build_request("POST", path, headers=headers, json=body)
+            if request.url.host != httpx.URL(constants.MOCK_BASE_URL).host:
+                raise ValueError(
+                    "Kiwoom mock request resolved to non-mock host "
+                    f"{request.url.host!r}; refusing to send."
+                )
+            response = await client.send(request)
         response.raise_for_status()
         payload: dict[str, Any] = dict(response.json())
         payload["continuation"] = {
