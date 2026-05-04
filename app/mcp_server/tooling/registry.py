@@ -48,6 +48,7 @@ from app.mcp_server.tooling.orders_kis_variants import (
     register_kis_live_order_tools,
     register_kis_mock_order_tools,
 )
+from app.mcp_server.tooling import orders_kiwoom_variants
 from app.mcp_server.tooling.orders_registration import register_order_tools
 from app.mcp_server.tooling.paper_account_registration import (
     register_paper_account_tools,
@@ -118,9 +119,11 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         register_order_tools(mcp)
         register_kis_live_order_tools(mcp)
         register_kis_mock_order_tools(mcp)
+        orders_kiwoom_variants.register(mcp)
     elif profile is McpProfile.HERMES_PAPER_KIS:
         # Paper-only: only mock-pinned order surface. Live surface is physically absent.
         register_kis_mock_order_tools(mcp)
+        orders_kiwoom_variants.register(mcp)
         # Intentionally NOT: register_order_tools, register_kis_live_order_tools
 
 
