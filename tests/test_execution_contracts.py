@@ -70,3 +70,35 @@ class TestOrderLifecycleState:
         for state in ec.ORDER_LIFECYCLE_STATES:
             expected = state in ec.IN_FLIGHT_LIFECYCLE_STATES
             assert ec.is_in_flight_state(state) is expected, state
+
+
+from pydantic import ValidationError
+
+
+class TestExecutionGuard:
+    def test_default_is_conservative(self):
+        guard = ec.ExecutionGuard()
+        assert guard.execution_allowed is False
+        assert guard.approval_required is True
+        assert guard.blocking_reasons == []
+        assert guard.warnings == []
+
+    def test_can_allow_execution_when_no_blocking_reasons(self):
+        guard = ec.ExecutionGuard(execution_allowed=True, approval_required=False)
+        assert guard.execution_allowed is True
+        assert guard.approval_required is False
+
+    def test_blocking_reasons_force_execution_not_allowed(self):
+        with pytest.raises(ValidationError) as excinfo:
+            ec.ExecutionGuard(execution_allowed=True, blocking_reasons=["x"])
+        assert "blocking_reasons" in str(excinfo.value)
+
+    def test_blocking_reasons_with_default_execution_allowed_is_ok(self):
+        guard = ec.ExecutionGuard(blocking_reasons=["risk_too_high"])
+        assert guard.execution_allowed is False
+        assert guard.blocking_reasons == ["risk_too_high"]
+
+    def test_warnings_do_not_force_execution_not_allowed(self):
+        guard = ec.ExecutionGuard(execution_allowed=True, warnings=["soft warn"])
+        assert guard.execution_allowed is True
+        assert guard.warnings == ["soft warn"]
