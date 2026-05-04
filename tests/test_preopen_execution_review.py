@@ -342,3 +342,39 @@ async def test_get_latest_dashboard_no_run_includes_execution_review(monkeypatch
     assert review.advisory_only is True
     assert review.execution_allowed is False
     assert "no_open_preopen_run" in review.readiness.guard.blocking_reasons
+
+
+@pytest.mark.unit
+def test_dashboard_service_does_not_import_broker_or_order_modules():
+    """ROB-101 must keep the preopen aggregation read-only."""
+    import ast
+    from pathlib import Path
+
+    src = Path("app/services/preopen_dashboard_service.py").read_text()
+    tree = ast.parse(src)
+
+    forbidden_prefixes = (
+        "app.kis",
+        "app.services.kis",
+        "app.services.kis_trading_service",
+        "app.services.paper_order_handler",
+        "app.services.watch_alerts",
+        "app.services.order_intent",
+        "app.services.alpaca",
+    )
+
+    found: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if any(module == p or module.startswith(p + ".") for p in forbidden_prefixes):
+                found.append(module)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if any(
+                    alias.name == p or alias.name.startswith(p + ".")
+                    for p in forbidden_prefixes
+                ):
+                    found.append(alias.name)
+
+    assert found == [], f"forbidden imports leaked into preopen service: {found}"
