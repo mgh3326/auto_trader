@@ -393,6 +393,110 @@ export interface PreopenPaperApprovalBridge {
   unsupported_reasons: string[];
 }
 
+// ROB-100 contract types mirrored on the client.
+export type ExecutionAccountMode =
+  | "kis_live"
+  | "kis_mock"
+  | "alpaca_paper"
+  | "db_simulated";
+export type ExecutionSource =
+  | "preopen"
+  | "watch"
+  | "manual"
+  | "websocket"
+  | "reconciler";
+export type OrderLifecycleState =
+  | "planned"
+  | "previewed"
+  | "submitted"
+  | "accepted"
+  | "pending"
+  | "fill"
+  | "reconciled"
+  | "stale"
+  | "failed"
+  | "anomaly";
+
+export interface ExecutionGuard {
+  execution_allowed: boolean;
+  approval_required: boolean;
+  blocking_reasons: string[];
+  warnings: string[];
+}
+
+export interface ExecutionReadiness {
+  contract_version: "v1";
+  account_mode: ExecutionAccountMode;
+  execution_source: ExecutionSource;
+  is_ready: boolean;
+  guard: ExecutionGuard;
+  checked_at: IsoDateTime | null;
+  notes: string[];
+}
+
+export interface OrderPreviewLine {
+  contract_version: "v1";
+  symbol: string;
+  market: string;
+  side: "buy" | "sell";
+  account_mode: ExecutionAccountMode;
+  execution_source: ExecutionSource;
+  lifecycle_state: OrderLifecycleState;
+  quantity: DecimalString | null;
+  limit_price: DecimalString | null;
+  notional: DecimalString | null;
+  currency: string | null;
+  guard: ExecutionGuard;
+  rationale: string[];
+  correlation_id: string | null;
+}
+
+export interface OrderBasketPreview {
+  contract_version: "v1";
+  account_mode: ExecutionAccountMode;
+  execution_source: ExecutionSource;
+  readiness: ExecutionReadiness;
+  lines: OrderPreviewLine[];
+  basket_warnings: string[];
+}
+
+// ROB-101 execution review types.
+export type ExecutionReviewStageId =
+  | "data_news"
+  | "candidate_review"
+  | "cash_holdings_quotes"
+  | "basket_preview"
+  | "approval_required"
+  | "post_order_reconcile";
+
+export type ExecutionReviewStageStatus =
+  | "ready"
+  | "degraded"
+  | "unavailable"
+  | "skipped"
+  | "pending";
+
+export interface ExecutionReviewStage {
+  stage_id: ExecutionReviewStageId;
+  label: string;
+  status: ExecutionReviewStageStatus;
+  summary: string;
+  warnings: string[];
+  details: Record<string, unknown>;
+}
+
+export interface ExecutionReviewSummary {
+  contract_version: "v1";
+  advisory_only: true;
+  execution_allowed: false;
+  readiness: ExecutionReadiness;
+  stages: ExecutionReviewStage[];
+  basket_preview: OrderBasketPreview | null;
+  blocking_reasons: string[];
+  warnings: string[];
+  notes: string[];
+}
+
 export type PreopenQaCheckStatus = "pass" | "warn" | "fail" | "unknown" | "skipped";
 export type PreopenQaCheckSeverity = "info" | "low" | "medium" | "high";
 export type PreopenQaGrade =
@@ -481,6 +585,7 @@ export interface PreopenLatestResponse {
   briefing_artifact: PreopenBriefingArtifact | null;
   qa_evaluator: PreopenQaEvaluatorSummary | null;
   paper_approval_bridge: PreopenPaperApprovalBridge | null;
+  execution_review: ExecutionReviewSummary | null;
 }
 
 export interface CreateFromResearchRunRequest {
