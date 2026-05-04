@@ -11,6 +11,7 @@ import websockets
 from websockets.exceptions import ConnectionClosed, WebSocketException
 
 from app.core.config import settings
+from app.schemas.execution_contracts import AccountMode
 
 from . import approval_keys
 from .constants import RECOVERABLE_APPROVAL_MSG_CODES
@@ -38,14 +39,30 @@ class KISExecutionWebSocket:
         self,
         on_execution: Callable[[dict[str, Any]], Any],
         mock_mode: bool = False,
+        *,
+        account_mode: AccountMode | None = None,
     ):
         """
         Args:
             on_execution: 체결 이벤트 발생 시 호출되는 콜백 함수
-            mock_mode: Mock 모드 (테스트용)
+            mock_mode: Mock 모드 (Mock URL/TR 선택)
+            account_mode: 이벤트 태깅에 사용할 ROB-100 account_mode.
+                None 이면 mock_mode 에서 파생 ("kis_mock" / "kis_live").
+                오직 KIS 계열만 허용 — alpaca_paper/db_simulated 거부.
         """
         self.on_execution = on_execution
         self.mock_mode = mock_mode
+
+        resolved_mode: AccountMode = (
+            account_mode
+            if account_mode is not None
+            else ("kis_mock" if mock_mode else "kis_live")
+        )
+        if resolved_mode not in ("kis_live", "kis_mock"):
+            raise ValueError(
+                f"account_mode must be 'kis_live' or 'kis_mock', got {resolved_mode!r}"
+            )
+        self.account_mode: AccountMode = resolved_mode
 
         self.websocket: Any | None = None
         self.websocket_url = ""
@@ -359,6 +376,9 @@ class KISExecutionWebSocket:
                     data.setdefault(
                         "correlation_id", self._parser._new_correlation_id()
                     )
+                    data["broker"] = "kis"
+                    data["account_mode"] = self.account_mode
+                    data["execution_source"] = "websocket"
 
                     if self._parser.is_execution_event(data):
                         self.execution_events_received += 1

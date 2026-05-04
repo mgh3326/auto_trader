@@ -170,3 +170,58 @@ class TestKISWebSocketMonitorSentry:
         mock_init_sentry.assert_called_once_with(service_name="auto-trader-kis-ws")
         mock_capture_exception.assert_called_once()
         mock_monitor.stop.assert_awaited_once()
+
+
+@pytest.mark.unit
+class TestKISWebSocketMonitorAccountMode:
+    @pytest.mark.asyncio
+    async def test_initialize_websocket_passes_kis_mock_account_mode(
+        self, monkeypatch, caplog
+    ):
+        monkeypatch.setattr(
+            "kis_websocket_monitor.settings.kis_ws_is_mock", True, raising=False
+        )
+        captured: dict = {}
+
+        class _StubWS:
+            def __init__(self, on_execution, mock_mode, *, account_mode=None):
+                captured["mock_mode"] = mock_mode
+                captured["account_mode"] = account_mode
+
+        monkeypatch.setattr("kis_websocket_monitor.KISExecutionWebSocket", _StubWS)
+
+        monitor = KISWebSocketMonitor()
+        with caplog.at_level("INFO"):
+            await monitor._initialize_websocket()
+
+        assert captured["mock_mode"] is True
+        assert captured["account_mode"] == "kis_mock"
+        assert any(
+            "account_mode=kis_mock" in record.message for record in caplog.records
+        )
+
+    @pytest.mark.asyncio
+    async def test_initialize_websocket_passes_kis_live_account_mode(
+        self, monkeypatch, caplog
+    ):
+        monkeypatch.setattr(
+            "kis_websocket_monitor.settings.kis_ws_is_mock", False, raising=False
+        )
+        captured: dict = {}
+
+        class _StubWS:
+            def __init__(self, on_execution, mock_mode, *, account_mode=None):
+                captured["mock_mode"] = mock_mode
+                captured["account_mode"] = account_mode
+
+        monkeypatch.setattr("kis_websocket_monitor.KISExecutionWebSocket", _StubWS)
+
+        monitor = KISWebSocketMonitor()
+        with caplog.at_level("INFO"):
+            await monitor._initialize_websocket()
+
+        assert captured["mock_mode"] is False
+        assert captured["account_mode"] == "kis_live"
+        assert any(
+            "account_mode=kis_live" in record.message for record in caplog.records
+        )

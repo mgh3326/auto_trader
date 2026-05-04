@@ -527,3 +527,90 @@ class TestKISWebSocketClient:
         assert client.is_connected is False
         assert client.websocket is None
         close_redis_mock.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_account_mode_defaults_to_kis_live(self, execution_callback):
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=False)
+        assert client.account_mode == "kis_live"
+
+    @pytest.mark.asyncio
+    async def test_account_mode_mock_mode_maps_to_kis_mock(self, execution_callback):
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+        assert client.account_mode == "kis_mock"
+
+    @pytest.mark.asyncio
+    async def test_account_mode_explicit_override(self, execution_callback):
+        client = KISExecutionWebSocket(
+            on_execution=execution_callback,
+            mock_mode=False,
+            account_mode="kis_mock",
+        )
+        assert client.account_mode == "kis_mock"
+        # explicit override should NOT change mock_mode (URL/TR selection still
+        # comes from mock_mode); operators must keep them aligned.
+        assert client.mock_mode is False
+
+    @pytest.mark.asyncio
+    async def test_account_mode_rejects_unknown_value(self, execution_callback):
+        with pytest.raises(ValueError, match="account_mode"):
+            KISExecutionWebSocket(
+                on_execution=execution_callback,
+                mock_mode=False,
+                account_mode="alpaca_paper",  # not a KIS mode
+            )
+
+    @pytest.mark.asyncio
+    async def test_listen_stamps_event_metadata_for_kis_mock(self):
+        captured: list[dict] = []
+
+        async def on_execution(event):
+            captured.append(event)
+
+        client = KISExecutionWebSocket(on_execution=on_execution, mock_mode=True)
+
+        # Hand-crafted unencrypted domestic mock fill; matches official-index branch.
+        # Format: "0|{tr}|{exec_type}|{order_id_field0}^side01^^^^^^^^side(buy)^...
+        # Use the parser directly via a minimal payload that hits _parse_domestic_execution_compact.
+        # index 13 is fill_yn
+        raw = "0|H0STCNI9|005930^02^123456789^10^70000^123000^^^^^^^^2"
+
+        async def _gen():
+            yield raw
+
+        client.websocket = _gen()
+        client.is_connected = True
+
+        await client.listen()
+
+        assert captured, "expected at least one execution event to be delivered"
+        event = captured[0]
+        assert event["broker"] == "kis"
+        assert event["account_mode"] == "kis_mock"
+        assert event["execution_source"] == "websocket"
+        assert event["tr_code"] == "H0STCNI9"
+        assert event["market"] == "kr"
+
+    @pytest.mark.asyncio
+    async def test_listen_stamps_event_metadata_for_kis_live(self):
+        captured: list[dict] = []
+
+        async def on_execution(event):
+            captured.append(event)
+
+        client = KISExecutionWebSocket(on_execution=on_execution, mock_mode=False)
+
+        # index 13 is fill_yn
+        raw = "0|H0STCNI0|005930^02^123456789^10^70000^123000^^^^^^^^2"
+
+        async def _gen():
+            yield raw
+
+        client.websocket = _gen()
+        client.is_connected = True
+
+        await client.listen()
+
+        assert captured
+        event = captured[0]
+        assert event["account_mode"] == "kis_live"
+        assert event["tr_code"] == "H0STCNI0"

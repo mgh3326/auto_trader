@@ -69,11 +69,25 @@ class KISWebSocketMonitor:
         """
         KIS WebSocket 클라이언트 초기화
 
-        체결 이벤트 콜백을 등록합니다.
+        체결 이벤트 콜백을 등록하고 ROB-100 account_mode 를 명시적으로 전달합니다.
         """
+        is_mock = bool(settings.kis_ws_is_mock)
+        account_mode = "kis_mock" if is_mock else "kis_live"
+
+        logger.info(
+            "Initializing KIS WebSocket: account_mode=%s mock_mode=%s "
+            "ws_url=%s",
+            account_mode,
+            is_mock,
+            "ws://ops.koreainvestment.com:31000/tryitout"
+            if is_mock
+            else "ws://ops.koreainvestment.com:21000/tryitout",
+        )
+
         self.websocket_client = KISExecutionWebSocket(
             on_execution=self._on_execution,
-            mock_mode=settings.kis_ws_is_mock,
+            mock_mode=is_mock,
+            account_mode=account_mode,
         )
         logger.info("KIS WebSocket client initialized")
 
