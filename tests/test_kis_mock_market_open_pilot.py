@@ -127,6 +127,31 @@ def test_submit_mock_rejects_missing_exact_approval_text_without_calling_route()
 
 
 @pytest.mark.unit
+def test_submit_mock_rejects_whitespace_variation_in_approval_text() -> None:
+    route = FakeKisMockPlaceOrder()
+    approval = expected_kis_mock_submit_approval_text(
+        symbol="005930", side="buy", quantity=1, price=Decimal("229500")
+    )
+
+    result = run_kis_mock_market_open_pilot(
+        KisMockMarketOpenPilotRequest(
+            mode="submit-mock",
+            symbol="005930",
+            side="buy",
+            quantity=1,
+            price=Decimal("229500"),
+            approval_text=f" {approval} ",
+        ),
+        kis_mock_place_order=route,
+        is_regular_session=lambda: True,
+    )
+
+    assert result.status == "blocked"
+    assert result.blocking_reasons == ["approval_text_mismatch"]
+    assert route.calls == []
+
+
+@pytest.mark.unit
 def test_submit_mock_rejects_non_regular_session_even_with_exact_approval() -> None:
     route = FakeKisMockPlaceOrder()
     approval = expected_kis_mock_submit_approval_text(

@@ -66,10 +66,6 @@ def _is_positive_integer_decimal(value: Decimal) -> bool:
     return value > 0 and value == value.to_integral_value()
 
 
-def _normalized_text(value: str | None) -> str:
-    return " ".join((value or "").split())
-
-
 def _side_ko(side: str) -> str:
     return "매도" if side == "sell" else "매수"
 
@@ -232,7 +228,7 @@ def run_kis_mock_market_open_pilot(
         quantity=request.quantity,
         price=request.price,
     )
-    if _normalized_text(request.approval_text) != _normalized_text(expected_approval):
+    if request.approval_text != expected_approval:
         return _blocked_result(
             request,
             reasons=["approval_text_mismatch"],
