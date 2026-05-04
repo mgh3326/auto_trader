@@ -235,6 +235,7 @@ class Settings(BaseSettings):
     crypto_pending_order_failure_channel_id: str = "1500722535678083102"
     crypto_pending_order_alert_webhook_url: str | None = None
     crypto_pending_order_failure_webhook_url: str | None = None
+    crypto_pending_order_discord_bot_token: SecretStr | None = None
 
     # Strategy
     top_n: int = 30

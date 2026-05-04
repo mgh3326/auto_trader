@@ -24,6 +24,7 @@ def _config() -> CryptoPendingOrderAlertConfig:
         failure_channel_id="1500722535678083102",
         normal_webhook_url="https://discord.example/normal",
         failure_webhook_url="https://discord.example/failure",
+        discord_bot_token=None,
         trader_base_url="https://trader.robinco.dev",
     )
 
@@ -313,6 +314,117 @@ async def test_normal_delivery_failure_is_surfaced_and_failure_alert_sent():
     assert [webhook for webhook, _ in sends] == [
         "https://discord.example/normal",
         "https://discord.example/failure",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_bot_token_fallback_targets_configured_channel_ids():
+    sends: list[tuple[str, str]] = []
+    config = CryptoPendingOrderAlertConfig(
+        enabled=True,
+        normal_channel_id="1500719153508515870",
+        failure_channel_id="1500722535678083102",
+        normal_webhook_url=None,
+        failure_webhook_url=None,
+        discord_bot_token="x",
+        trader_base_url="https://trader.robinco.dev",
+    )
+
+    async def lookup() -> dict[str, Any]:
+        return {"success": True, "orders": [_order()], "errors": []}
+
+    async def prices(symbols: list[str]) -> dict[str, float]:
+        return {"KRW-BTC": 95_000_000}
+
+    async def sender(target: str, content: str) -> bool:
+        sends.append((target, content))
+        return True
+
+    result = await run_crypto_pending_order_alert(
+        execute=True,
+        config=config,
+        order_lookup=lookup,
+        price_lookup=prices,
+        discord_sender=sender,
+        now=NOW,
+    )
+
+    assert result["status"] == "success"
+    assert sends[0][0] == "discord-bot://1500719153508515870/x"
+    assert "KRW-BTC" in sends[0][1]
+
+
+@pytest.mark.asyncio
+async def test_missing_all_discord_targets_routes_to_failure_without_delivery():
+    config = CryptoPendingOrderAlertConfig(
+        enabled=True,
+        normal_channel_id="1500719153508515870",
+        failure_channel_id="1500722535678083102",
+        normal_webhook_url=None,
+        failure_webhook_url=None,
+        discord_bot_token=None,
+        trader_base_url="https://trader.robinco.dev",
+    )
+
+    async def lookup() -> dict[str, Any]:
+        return {"success": True, "orders": [_order()], "errors": []}
+
+    async def prices(symbols: list[str]) -> dict[str, float]:
+        return {"KRW-BTC": 95_000_000}
+
+    result = await run_crypto_pending_order_alert(
+        execute=True,
+        config=config,
+        order_lookup=lookup,
+        price_lookup=prices,
+        now=NOW,
+    )
+
+    assert result["status"] == "failed"
+    assert result["stage"] == "discord_delivery"
+    assert result["failure_alert_sent"] is False
+    assert (
+        "missing failure Discord webhook URL or bot token"
+        in result["failure_delivery_error"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_normal_delivery_failure_uses_bot_token_failure_channel():
+    sends: list[tuple[str, str]] = []
+    config = CryptoPendingOrderAlertConfig(
+        enabled=True,
+        normal_channel_id="1500719153508515870",
+        failure_channel_id="1500722535678083102",
+        normal_webhook_url=None,
+        failure_webhook_url=None,
+        discord_bot_token="x",
+        trader_base_url="https://trader.robinco.dev",
+    )
+
+    async def lookup() -> dict[str, Any]:
+        return {"success": True, "orders": [_order()], "errors": []}
+
+    async def prices(symbols: list[str]) -> dict[str, float]:
+        return {"KRW-BTC": 95_000_000}
+
+    async def sender(target: str, content: str) -> bool:
+        sends.append((target, content))
+        return target.startswith("discord-bot://1500722535678082")
+
+    result = await run_crypto_pending_order_alert(
+        execute=True,
+        config=config,
+        order_lookup=lookup,
+        price_lookup=prices,
+        discord_sender=sender,
+        now=NOW,
+    )
+
+    assert result["status"] == "failed"
+    assert [target for target, _ in sends] == [
+        "discord-bot://1500719153508515870/x",
+        "discord-bot://1500722535678083102/x",
     ]
 
 
