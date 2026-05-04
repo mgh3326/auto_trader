@@ -1,4 +1,5 @@
 from app.tasks import (
+    crypto_pending_order_alert_tasks,
     daily_scan_tasks,
     intraday_order_review_tasks,
     kr_candles_tasks,
@@ -12,6 +13,7 @@ from app.tasks import (
 )
 
 TASKIQ_TASK_MODULES = (
+    crypto_pending_order_alert_tasks,
     daily_scan_tasks,
     intraday_order_review_tasks,
     research_run_refresh_tasks,
