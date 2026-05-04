@@ -26,9 +26,6 @@ from app.mcp_server.tooling.alpaca_paper import register_alpaca_paper_tools
 from app.mcp_server.tooling.alpaca_paper_ledger_read import (
     register_alpaca_paper_ledger_read_tools,
 )
-from app.mcp_server.tooling.watch_order_intent_ledger_read import (
-    register_watch_order_intent_ledger_tools,
-)
 from app.mcp_server.tooling.alpaca_paper_orders import (
     register_alpaca_paper_orders_tools,
 )
@@ -77,6 +74,9 @@ from app.mcp_server.tooling.user_settings_registration import (
 )
 from app.mcp_server.tooling.watch_alerts_registration import (
     register_watch_alert_tools,
+)
+from app.mcp_server.tooling.watch_order_intent_ledger_read import (
+    register_watch_order_intent_ledger_tools,
 )
 from app.mcp_server.tooling.weekend_crypto_paper_cycle import (
     register_weekend_crypto_paper_cycle_tools,
