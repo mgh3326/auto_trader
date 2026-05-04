@@ -148,3 +148,110 @@ async def test_cancel_rejects_unsafe_order_ids(bad_id):
             cancel_quantity=1,
         )
     assert fake.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_quantity", [0, -1])
+async def test_buy_rejects_non_positive_quantity_before_post_api(bad_quantity):
+    fake = FakeClient()
+    orders = KiwoomDomesticOrderClient(fake)
+
+    with pytest.raises(KiwoomOrderRejected, match="quantity"):
+        await orders.place_buy_order(
+            symbol="005930",
+            quantity=bad_quantity,
+            price=70000,
+        )
+    assert fake.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_price", [0, -1])
+async def test_buy_rejects_non_positive_price_before_post_api(bad_price):
+    fake = FakeClient()
+    orders = KiwoomDomesticOrderClient(fake)
+
+    with pytest.raises(KiwoomOrderRejected, match="price"):
+        await orders.place_buy_order(
+            symbol="005930",
+            quantity=1,
+            price=bad_price,
+        )
+    assert fake.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_quantity", [0, -1])
+async def test_sell_rejects_non_positive_quantity_before_post_api(bad_quantity):
+    fake = FakeClient()
+    orders = KiwoomDomesticOrderClient(fake)
+
+    with pytest.raises(KiwoomOrderRejected, match="quantity"):
+        await orders.place_sell_order(
+            symbol="005930",
+            quantity=bad_quantity,
+            price=71000,
+        )
+    assert fake.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_price", [0, -1])
+async def test_sell_rejects_non_positive_price_before_post_api(bad_price):
+    fake = FakeClient()
+    orders = KiwoomDomesticOrderClient(fake)
+
+    with pytest.raises(KiwoomOrderRejected, match="price"):
+        await orders.place_sell_order(
+            symbol="005930",
+            quantity=1,
+            price=bad_price,
+        )
+    assert fake.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_quantity", [0, -1])
+async def test_modify_rejects_non_positive_quantity_before_post_api(bad_quantity):
+    fake = FakeClient()
+    orders = KiwoomDomesticOrderClient(fake)
+
+    with pytest.raises(KiwoomOrderRejected, match="new_quantity"):
+        await orders.modify_order(
+            original_order_no="0000111222",
+            symbol="005930",
+            new_quantity=bad_quantity,
+            new_price=72000,
+        )
+    assert fake.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_price", [0, -1])
+async def test_modify_rejects_non_positive_price_before_post_api(bad_price):
+    fake = FakeClient()
+    orders = KiwoomDomesticOrderClient(fake)
+
+    with pytest.raises(KiwoomOrderRejected, match="new_price"):
+        await orders.modify_order(
+            original_order_no="0000111222",
+            symbol="005930",
+            new_quantity=1,
+            new_price=bad_price,
+        )
+    assert fake.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_quantity", [0, -1])
+async def test_cancel_rejects_non_positive_quantity_before_post_api(bad_quantity):
+    fake = FakeClient()
+    orders = KiwoomDomesticOrderClient(fake)
+
+    with pytest.raises(KiwoomOrderRejected, match="cancel_quantity"):
+        await orders.cancel_order(
+            original_order_no="0000111222",
+            symbol="005930",
+            cancel_quantity=bad_quantity,
+        )
+    assert fake.calls == []
