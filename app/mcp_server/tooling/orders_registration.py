@@ -347,19 +347,28 @@ def register_order_tools(mcp: FastMCP) -> None:
         name="kis_mock_reconciliation_run",
         description=(
             "Manually trigger reconciliation of open KIS mock orders against "
-            "live holdings. Detects fills and updates ledger lifecycle states. "
-            "dry_run=True by default for safety. Set dry_run=False to persist "
-            "lifecycle transitions to the DB. "
+            "KIS mock holdings (read-only, is_mock=True). Detects fills via "
+            "holdings deltas and updates ledger lifecycle states. "
+            "dry_run=True by default for safety. Applying transitions requires "
+            "BOTH dry_run=False AND confirm=True. "
             "Fails closed if KIS mock config is missing."
         ),
     )
     async def kis_mock_reconciliation_run(
         dry_run: bool = True,
+        confirm: bool = False,
         limit: int = 100,
     ):
         config_error = _kis_mock_config_error()
         if config_error:
             return config_error
+        if not dry_run and not confirm:
+            return {
+                "success": False,
+                "account_mode": "kis_mock",
+                "dry_run": dry_run,
+                "error": "confirm=True is required when dry_run=False",
+            }
         return await kis_mock_ledger.kis_mock_reconciliation_run_impl(
             dry_run=dry_run, limit=limit
         )

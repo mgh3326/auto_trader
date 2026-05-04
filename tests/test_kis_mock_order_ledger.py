@@ -66,8 +66,7 @@ def test_model_columns_and_constraints():
     assert any("kis_mock_ledger_broker_kis" in (n or "") for n in constraint_names)
     assert any("kis_mock_ledger_status_allowed" in (n or "") for n in constraint_names)
     assert any(
-        "kis_mock_ledger_lifecycle_state_allowed" in (n or "")
-        for n in constraint_names
+        "kis_mock_ledger_lifecycle_state_allowed" in (n or "") for n in constraint_names
     )
 
 
@@ -547,6 +546,7 @@ async def test_kis_live_path_unchanged_calls_save_order_fill(monkeypatch):
     save_fill.assert_awaited_once()
     save_ledger.assert_not_awaited()
 
+
 # ---------------------------------------------------------------------------
 # ROB-102: lifecycle mapping
 # ---------------------------------------------------------------------------
@@ -617,5 +617,3 @@ async def test_save_helper_persists_lifecycle_state(monkeypatch):
     # Verify that lifecycle_state is in the insert values
     params = captured["stmt"].compile().params
     assert params["lifecycle_state"] == "accepted"
-    
-

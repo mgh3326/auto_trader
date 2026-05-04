@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import ast
-from pathlib import Path
+from datetime import UTC, datetime
 from decimal import Decimal
-from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.review import KISMockOrderLedger
@@ -18,16 +16,13 @@ from app.services.kis_mock_lifecycle_service import (
     LedgerNotFoundError,
 )
 
-SERVICE_PATH = (
-    Path(__file__).parents[2]
-    / "app/services/kis_mock_lifecycle_service.py"
-)
+SERVICE_PATH = Path(__file__).parents[2] / "app/services/kis_mock_lifecycle_service.py"
 
 
 @pytest_asyncio.fixture
 async def seeded_ledger_id(db_session: AsyncSession) -> int:
     row = KISMockOrderLedger(
-        trade_date=datetime(2026, 5, 4, 9, 0, tzinfo=timezone.utc),
+        trade_date=datetime(2026, 5, 4, 9, 0, tzinfo=UTC),
         symbol="005930",
         instrument_type="equity_kr",
         side="buy",
@@ -143,7 +138,7 @@ async def test_list_open_orders_returns_only_inflight_and_fill(
 ):
     # add a terminal row that should be excluded
     terminal = KISMockOrderLedger(
-        trade_date=datetime(2026, 5, 3, tzinfo=timezone.utc),
+        trade_date=datetime(2026, 5, 3, tzinfo=UTC),
         symbol="000660",
         instrument_type="equity_kr",
         side="buy",

@@ -235,7 +235,9 @@ class KISMockOrderLedger(Base):
     notes: Mapped[str | None] = mapped_column(Text)
 
     # ROB-102 lifecycle columns
-    lifecycle_state: Mapped[str] = mapped_column(Text, nullable=False, default="anomaly")
+    lifecycle_state: Mapped[str] = mapped_column(
+        Text, nullable=False, default="anomaly"
+    )
     holdings_baseline_qty: Mapped[float | None] = mapped_column(Numeric(20, 8))
     reconcile_attempts: Mapped[int] = mapped_column(
         BigInteger, nullable=False, default=0

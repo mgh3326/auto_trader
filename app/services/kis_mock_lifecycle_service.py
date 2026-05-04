@@ -10,19 +10,18 @@ Fine-grained reasoning is stored in `last_reconcile_detail.reason_code`.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.review import KISMockOrderLedger
 from app.schemas.execution_contracts import (
     ORDER_LIFECYCLE_STATES,
-    OrderLifecycleState,
     TERMINAL_LIFECYCLE_STATES,
+    OrderLifecycleState,
 )
 
 # These are the lifecycle states the reconciler reads from. anything
@@ -40,16 +39,12 @@ class KISMockLifecycleService:
     def __init__(self, db: AsyncSession) -> None:
         self._db = db
 
-    async def list_open_orders(
-        self, *, limit: int = 100
-    ) -> list[KISMockOrderLedger]:
+    async def list_open_orders(self, *, limit: int = 100) -> list[KISMockOrderLedger]:
         if limit < 1:
             raise ValueError("limit must be >= 1")
         stmt = (
             select(KISMockOrderLedger)
-            .where(
-                KISMockOrderLedger.lifecycle_state.in_(OPEN_LIFECYCLE_STATES)
-            )
+            .where(KISMockOrderLedger.lifecycle_state.in_(OPEN_LIFECYCLE_STATES))
             .order_by(
                 KISMockOrderLedger.trade_date.asc(),
                 KISMockOrderLedger.id.asc(),
@@ -119,7 +114,7 @@ class KISMockLifecycleService:
         row.reconcile_attempts = (row.reconcile_attempts or 0) + 1
         row.last_reconcile_detail = {"reason_code": reason_code, **detail}
         if next_state in TERMINAL_LIFECYCLE_STATES:
-            row.reconciled_at = datetime.now(tz=timezone.utc)
+            row.reconciled_at = datetime.now(tz=UTC)
         await self._db.commit()
 
         return {

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -10,14 +10,13 @@ import pytest
 from app.services.kis_mock_holdings_reconciler import (
     HoldingsSnapshot,
     LedgerOrderInput,
-    LifecycleTransitionProposal,
     ReconcilerThresholds,
     classify_orders,
 )
 
 
 def _now() -> datetime:
-    return datetime(2026, 5, 4, 9, 30, tzinfo=timezone.utc)
+    return datetime(2026, 5, 4, 9, 30, tzinfo=UTC)
 
 
 def _order(
@@ -204,6 +203,7 @@ def test_terminal_states_are_skipped():
 def test_reconciler_does_not_import_db_or_broker():
     """Reconciler must remain pure; no DB / broker imports."""
     import app.services.kis_mock_holdings_reconciler as mod
+
     src = open(mod.__file__).read()
     forbidden = [
         "from app.core.db",

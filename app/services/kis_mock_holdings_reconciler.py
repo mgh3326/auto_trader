@@ -117,12 +117,9 @@ def classify_orders(
         delta = snapshot.quantity - order.holdings_baseline_qty
 
         if order.lifecycle_state == "fill":
-            expected = (
-                order.ordered_qty if order.side == "buy" else -order.ordered_qty
-            )
-            if (
-                (order.side == "buy" and delta >= expected)
-                or (order.side == "sell" and delta <= expected)
+            expected = order.ordered_qty if order.side == "buy" else -order.ordered_qty
+            if (order.side == "buy" and delta >= expected) or (
+                order.side == "sell" and delta <= expected
             ):
                 proposals.append(
                     LifecycleTransitionProposal(
