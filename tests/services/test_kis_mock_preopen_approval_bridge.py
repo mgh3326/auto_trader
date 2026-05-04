@@ -3,82 +3,45 @@
 from __future__ import annotations
 
 import ast
-from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from uuid import uuid4
 
 import pytest
 
-from app.schemas.preopen import (
-    CandidateSummary,
-    PreopenBriefingArtifact,
-    PreopenDecisionSessionCta,
-    PreopenQaCheck,
-    PreopenQaEvaluatorSummary,
-    PreopenQaScore,
-)
+from app.schemas.preopen import CandidateSummary, PreopenQaCheck
 from app.services.kis_mock_preopen_approval_bridge import (
     build_kis_mock_preopen_approval_bridge,
+)
+from tests.services.preopen_approval_bridge_helpers import (
+    preopen_artifact,
+    preopen_candidate,
+    preopen_qa,
 )
 
 
 def _candidate(**kwargs) -> CandidateSummary:
-    defaults = {
-        "candidate_uuid": uuid4(),
+    payload = {
         "symbol": "005930",
         "instrument_type": "equity_kr",
-        "side": "buy",
-        "candidate_kind": "proposed",
-        "proposed_price": Decimal("229500"),
-        "proposed_qty": Decimal("1"),
+        "price": Decimal("229500"),
+        "quantity": Decimal("1"),
         "confidence": 72,
         "rationale": "KR mock pilot candidate",
-        "currency": "KRW",
-        "warnings": [],
     }
-    defaults.update(kwargs)
-    return CandidateSummary(**defaults)
+    if "proposed_price" in kwargs:
+        payload["price"] = kwargs.pop("proposed_price")
+    if "proposed_qty" in kwargs:
+        payload["quantity"] = kwargs.pop("proposed_qty")
+    payload.update(kwargs)
+    return preopen_candidate(**payload)
 
 
-def _artifact(**kwargs) -> PreopenBriefingArtifact:
-    defaults = {
-        "status": "ready",
-        "market_scope": "kr",
-        "stage": "preopen",
-        "risk_notes": [],
-        "cta": PreopenDecisionSessionCta(
-            state="create_available",
-            label="Create decision session",
-            requires_confirmation=True,
-        ),
-        "qa": {"read_only": True},
-    }
-    defaults.update(kwargs)
-    return PreopenBriefingArtifact(**defaults)
+def _artifact(**kwargs):
+    return preopen_artifact(kwargs.pop("market_scope", "kr"), **kwargs)
 
 
-def _qa(**kwargs) -> PreopenQaEvaluatorSummary:
-    defaults = {
-        "status": "ready",
-        "generated_at": datetime.now(UTC),
-        "overall": PreopenQaScore(score=90, grade="excellent", confidence="high"),
-        "checks": [
-            PreopenQaCheck(
-                id="actionability_guardrail",
-                label="Actionability guardrail",
-                status="pass",
-                severity="info",
-                summary="Execution disabled before operator approval.",
-                details={"advisory_only": True, "execution_allowed": False},
-            )
-        ],
-        "blocking_reasons": [],
-        "warnings": [],
-        "coverage": {"advisory_only": True, "execution_allowed": False},
-    }
-    defaults.update(kwargs)
-    return PreopenQaEvaluatorSummary(**defaults)
+def _qa(**kwargs):
+    return preopen_qa("Execution disabled before operator approval.", **kwargs)
 
 
 @pytest.mark.unit
@@ -283,7 +246,7 @@ def test_non_kr_and_crypto_candidates_are_unavailable_without_kis_suggestion(
     briefing_artifact = (
         None
         if market_scope not in {"kr", "us", "crypto"}
-        else _artifact(market_scope="kr" if market_scope == "kr" else market_scope)
+        else _artifact(market_scope=market_scope)
     )
     bridge = build_kis_mock_preopen_approval_bridge(
         has_run=True,
@@ -338,15 +301,13 @@ def test_high_severity_qa_failure_blocks_kis_mock_bridge() -> None:
 @pytest.mark.unit
 def test_kis_mock_bridge_module_imports_only_pure_allowed_modules() -> None:
     path = Path("app/services/kis_mock_preopen_approval_bridge.py")
-    tree = ast.parse(path.read_text())
-    imported_modules: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imported_modules.extend(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            imported_modules.append(node.module)
+    imported_modules = [
+        node.module
+        for node in ast.walk(ast.parse(path.read_text()))
+        if isinstance(node, ast.ImportFrom) and node.module
+    ]
 
-    forbidden_fragments = [
+    forbidden_fragments = {
         "broker",
         "kis",
         "upbit",
@@ -357,16 +318,14 @@ def test_kis_mock_bridge_module_imports_only_pure_allowed_modules() -> None:
         "httpx",
         "requests",
         "paper_trading",
-    ]
-    assert not [
-        module
+    }
+    assert all(
+        not any(fragment in module.lower() for fragment in forbidden_fragments)
         for module in imported_modules
-        if any(fragment in module.lower() for fragment in forbidden_fragments)
-    ]
-    assert set(imported_modules) <= {
+    )
+    assert set(imported_modules) == {
         "__future__",
         "datetime",
-        "decimal",
         "app.schemas.preopen",
         "app.services.preopen_approval_bridge_common",
         "app.services.preopen_approval_safety",
