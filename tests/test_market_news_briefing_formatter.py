@@ -106,6 +106,68 @@ def test_format_us_news_excludes_personal_finance_and_lifestyle_rate_noise():
 
 
 @pytest.mark.unit
+def test_format_us_news_maps_new_cnbc_core_sources_to_briefing_sections():
+    from app.services.market_news_briefing_formatter import format_market_news_briefing
+
+    earnings_feed = _article(
+        "Three companies to watch before the bell",
+        market="us",
+        feed_source="rss_cnbc_earnings",
+    )
+    finance_feed = _article(
+        "Regional bank credit spreads widen as loan losses rise",
+        market="us",
+        feed_source="rss_cnbc_finance",
+    )
+
+    briefing = format_market_news_briefing(
+        [finance_feed, earnings_feed], market="us", limit=10
+    )
+
+    section_ids = [section.section_id for section in briefing.sections]
+    assert section_ids == ["finance_credit_rates", "earnings"]
+    earnings_item = briefing.sections[1].items[0]
+    assert earnings_item.article.title == earnings_feed.title
+    assert "feed_source:rss_cnbc_earnings" in earnings_item.relevance.matched_terms
+    finance_item = briefing.sections[0].items[0]
+    assert finance_item.article.title == finance_feed.title
+    assert "feed_source:rss_cnbc_finance" in finance_item.relevance.matched_terms
+
+
+@pytest.mark.unit
+def test_format_us_news_does_not_force_experimental_sources_into_briefing():
+    from app.services.market_news_briefing_formatter import format_market_news_briefing
+
+    uncategorized_finviz = _article(
+        "Company board announces routine annual meeting",
+        market="us",
+        feed_source="http_finviz_news",
+    )
+    market_relevant_investing = _article(
+        "Analyst upgrade sends chip stocks higher before Nasdaq open",
+        market="us",
+        feed_source="rss_investing_stock_market_news",
+        stock_symbol="NVDA",
+    )
+
+    briefing = format_market_news_briefing(
+        [uncategorized_finviz, market_relevant_investing], market="us", limit=10
+    )
+
+    assert briefing.summary["included"] == 1
+    assert briefing.sections[0].section_id == "big_tech"
+    assert (
+        briefing.sections[0].items[0].article.title == market_relevant_investing.title
+    )
+    assert (
+        "feed_source:rss_investing_stock_market_news"
+        in briefing.sections[0].items[0].relevance.matched_terms
+    )
+    assert briefing.excluded[0].article.title == uncategorized_finviz.title
+    assert briefing.excluded[0].relevance.reason == "uncategorized_market_news"
+
+
+@pytest.mark.unit
 def test_format_kr_news_groups_preopen_sector_disclosure_and_flow():
     from app.services.market_news_briefing_formatter import format_market_news_briefing
 
