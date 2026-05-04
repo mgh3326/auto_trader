@@ -47,6 +47,7 @@ dependencies = [
     "tvscreener>=0.3.0",
     "opendartreader>=0.2.3",
     "starlette-csrf>=3.0.0",
+    "prefect>=3.0.0,<4.0.0",
 ]
 
 [dependency-groups]

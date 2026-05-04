@@ -1,4 +1,5 @@
 from app.tasks import (
+    crypto_pending_order_alert_tasks,
     daily_scan_tasks,
     intraday_order_review_tasks,
     kr_candles_tasks,
@@ -22,4 +23,5 @@ TASKIQ_TASK_MODULES = (
     upbit_symbol_universe_tasks,
     us_candles_tasks,
     us_symbol_universe_tasks,
+    crypto_pending_order_alert_tasks,
 )

@@ -331,6 +331,14 @@ class Settings(BaseSettings):
     # N8N Watch Alert webhook (replaces OpenClaw watch alert route)
     N8N_WATCH_ALERT_WEBHOOK_URL: str = ""
 
+    # Crypto pending-order reminder (ROB-99). Read-only: no order mutation.
+    CRYPTO_PENDING_ORDER_ALERT_ENABLED: bool = False
+    CRYPTO_PENDING_ORDER_ALERT_CHANNEL_ID: str = "1500719153508515870"
+    CRYPTO_PENDING_ORDER_FAILURE_CHANNEL_ID: str = "1500722535678083102"
+    CRYPTO_PENDING_ORDER_DISCORD_BOT_TOKEN: str = ""
+    CRYPTO_PENDING_ORDER_TIMEZONE: str = "Asia/Seoul"
+    CRYPTO_PENDING_ORDER_SCHEDULES: str = "08:30,22:00"
+
     # MCP caller identity fallback for non-HTTP/manual runs
     mcp_caller_agent_id_fallback: str | None = Field(
         default=None,
