@@ -138,6 +138,19 @@ class NewsBulkIngestResponse(BaseModel):
     skipped_urls: list[str]
 
 
+class NewsSourceCoverage(BaseModel):
+    feed_source: str
+    expected_count: int = 0
+    stored_total: int = 0
+    recent_24h: int = 0
+    recent_6h: int = 0
+    latest_published_at: datetime | None = None
+    latest_scraped_at: datetime | None = None
+    published_at_count: int = 0
+    status: str = "unavailable"
+    warnings: list[str] = []
+
+
 class NewsReadinessResponse(BaseModel):
     market: str
     is_ready: bool
@@ -147,6 +160,7 @@ class NewsReadinessResponse(BaseModel):
     latest_finished_at: datetime | None
     latest_article_published_at: datetime | None
     source_counts: dict[str, int]
+    source_coverage: list[NewsSourceCoverage] = []
     warnings: list[str]
     max_age_minutes: int
 

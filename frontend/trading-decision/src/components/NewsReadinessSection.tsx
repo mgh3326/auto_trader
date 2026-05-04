@@ -35,6 +35,7 @@ export default function NewsReadinessSection({
   }
 
   const sourceEntries = Object.entries(news.source_counts);
+  const sourceCoverage = news.source_coverage ?? [];
 
   return (
     <section
@@ -81,6 +82,36 @@ export default function NewsReadinessSection({
       ) : (
         <p className={styles.muted}>No source counts available.</p>
       )}
+
+      {sourceCoverage.length > 0 ? (
+        <div className={styles.coverageTableWrap}>
+          <h3 className={styles.previewHeading}>Source coverage</h3>
+          <table className={styles.coverageTable}>
+            <thead>
+              <tr>
+                <th>Source</th>
+                <th>Status</th>
+                <th>Expected</th>
+                <th>Stored</th>
+                <th>24h</th>
+                <th>Latest article</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sourceCoverage.map((source) => (
+                <tr key={source.feed_source}>
+                  <td>{source.feed_source}</td>
+                  <td>{source.status}</td>
+                  <td>{source.expected_count}</td>
+                  <td>{source.stored_total}</td>
+                  <td>{source.recent_24h}</td>
+                  <td>{formatDateTime(source.latest_published_at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
 
       <h3 className={styles.previewHeading}>
         Latest articles ({preview.length})

@@ -85,6 +85,7 @@ def _make_news_readiness(**kwargs) -> SimpleNamespace:
         "latest_finished_at": datetime.now(UTC),
         "latest_article_published_at": datetime.now(UTC),
         "source_counts": {"browser_naver_mainnews": 20},
+        "source_coverage": [],
         "warnings": [],
         "max_age_minutes": 180,
     }

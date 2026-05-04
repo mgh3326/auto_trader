@@ -154,8 +154,10 @@ def build_preopen_paper_approval_bridge(
     briefing_artifact: PreopenBriefingArtifact | None,
     qa_evaluator: PreopenQaEvaluatorSummary | None,
     generated_at: datetime | None = None,
+    stage: str | None = None,
 ) -> PreopenPaperApprovalBridge:
     """Build deterministic paper approval preview metadata for preopen output."""
+    stage = stage or "preopen"
     blocking_reasons = _qa_blocking_reasons(qa_evaluator, has_run=has_run)
     warnings = _bridge_warnings(qa_evaluator, briefing_artifact, candidates)
     generated_at = generated_at or datetime.now(UTC)
@@ -168,7 +170,7 @@ def build_preopen_paper_approval_bridge(
             status="blocked",
             generated_at=generated_at,
             market_scope=market_scope,  # type: ignore[arg-type]
-            stage="preopen" if has_run else None,
+            stage=stage if has_run else None,  # type: ignore[arg-type]
             candidate_count=len(candidates),
             candidates=[],
             blocking_reasons=blocking_reasons,
@@ -182,7 +184,7 @@ def build_preopen_paper_approval_bridge(
             status="unavailable",
             generated_at=generated_at,
             market_scope=market_scope,  # type: ignore[arg-type]
-            stage="preopen" if has_run else None,
+            stage=stage if has_run else None,  # type: ignore[arg-type]
             candidate_count=len(candidates),
             candidates=[
                 _unsupported_candidate(candidate, reason=reason)
@@ -230,7 +232,7 @@ def build_preopen_paper_approval_bridge(
         status=status,
         generated_at=generated_at,
         market_scope="crypto",
-        stage="preopen" if has_run else None,
+        stage=stage if has_run else None,  # type: ignore[arg-type]
         eligible_count=eligible_count,
         candidate_count=len(candidates),
         candidates=bridge_candidates,

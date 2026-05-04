@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from app.schemas.preopen_news_brief import KRPreopenNewsBrief
 
 NewsReadinessStatus = Literal["ready", "stale", "unavailable"]
+PreopenStage = Literal["preopen", "us_open"]
 
 
 class NewsArticlePreview(BaseModel):
@@ -24,6 +25,19 @@ class NewsArticlePreview(BaseModel):
     summary: str | None
 
 
+class NewsSourceCoverageSummary(BaseModel):
+    feed_source: str
+    expected_count: int = 0
+    stored_total: int = 0
+    recent_24h: int = 0
+    recent_6h: int = 0
+    latest_published_at: datetime | None = None
+    latest_scraped_at: datetime | None = None
+    published_at_count: int = 0
+    status: str = "unavailable"
+    warnings: list[str] = []
+
+
 class NewsReadinessSummary(BaseModel):
     status: NewsReadinessStatus
     is_ready: bool
@@ -33,6 +47,7 @@ class NewsReadinessSummary(BaseModel):
     latest_finished_at: datetime | None
     latest_article_published_at: datetime | None
     source_counts: dict[str, int]
+    source_coverage: list[NewsSourceCoverageSummary] = []
     warnings: list[str]
     max_age_minutes: int
 
@@ -152,7 +167,7 @@ class PreopenBriefingArtifact(BaseModel):
     status: PreopenArtifactStatus
     run_uuid: UUID | None = None
     market_scope: Literal["kr", "us", "crypto"] | None = None
-    stage: Literal["preopen"] | None = None
+    stage: PreopenStage | None = None
     generated_at: datetime | None = None
     source_run_status: str | None = None
     readiness: list[PreopenArtifactReadinessItem] = []
@@ -217,7 +232,7 @@ class PreopenPaperApprovalBridge(BaseModel):
     advisory_only: Literal[True] = True
     execution_allowed: Literal[False] = False
     market_scope: Literal["kr", "us", "crypto"] | None = None
-    stage: Literal["preopen"] | None = None
+    stage: PreopenStage | None = None
     eligible_count: int = 0
     candidate_count: int = 0
     candidates: list[PreopenPaperApprovalCandidate] = []
@@ -238,7 +253,7 @@ class PreopenLatestResponse(BaseModel):
     advisory_skipped_reason: str | None = None
     run_uuid: UUID | None
     market_scope: Literal["kr", "us", "crypto"] | None
-    stage: Literal["preopen"] | None
+    stage: PreopenStage | None
     status: str | None
     strategy_name: str | None
     source_profile: str | None

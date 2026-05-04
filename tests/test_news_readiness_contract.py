@@ -186,6 +186,42 @@ class TestNewsReadinessPayloadContract:
         sig = inspect.signature(get_news_readiness)
         assert sig.parameters["max_age_minutes"].default == 180
 
+    def test_source_coverage_is_preserved_for_dashboard_readiness(self):
+        """Per-feed coverage is additive so US readiness can show source health."""
+        from app.schemas.news import NewsSourceCoverage
+        from app.services.llm_news_service import _news_readiness_payload
+
+        coverage = [
+            NewsSourceCoverage(
+                feed_source="rss_cnbc_earnings",
+                expected_count=30,
+                stored_total=29,
+                recent_24h=29,
+                recent_6h=12,
+                latest_published_at=datetime.now(UTC),
+                latest_scraped_at=datetime.now(UTC),
+                published_at_count=29,
+                status="ready",
+            )
+        ]
+        run = _make_run(
+            market="us",
+            feed_set="us-core",
+            finished_at=datetime.now(UTC),
+            source_counts={"rss_cnbc_earnings": 30},
+        )
+        result = _news_readiness_payload(
+            market="us",
+            latest_run=run,
+            latest_article_published_at=datetime.now(UTC),
+            max_age_minutes=180,
+            source_coverage=coverage,
+        )
+
+        assert result.source_coverage == coverage
+        assert result.source_coverage[0].feed_source == "rss_cnbc_earnings"
+        assert result.source_coverage[0].recent_24h == 29
+
     def test_warnings_are_deduplicated(self):
         """Duplicate warnings must not appear in the returned list."""
         from app.services.llm_news_service import _news_readiness_payload
@@ -273,7 +309,9 @@ class TestGetNewsReadinessStatusWhitelist:
         run_result.scalars.return_value.first.return_value = run
         article_result = MagicMock()
         article_result.scalar_one_or_none.return_value = datetime.now(UTC)
-        db.execute.side_effect = [run_result, article_result]
+        coverage_result = MagicMock()
+        coverage_result.mappings.return_value.all.return_value = []
+        db.execute.side_effect = [run_result, article_result, coverage_result]
 
         result = await get_news_readiness(market="kr", db=db)
 
@@ -294,7 +332,9 @@ class TestGetNewsReadinessStatusWhitelist:
         run_result.scalars.return_value.first.return_value = run
         article_result = MagicMock()
         article_result.scalar_one_or_none.return_value = datetime.now(UTC)
-        db.execute.side_effect = [run_result, article_result]
+        coverage_result = MagicMock()
+        coverage_result.mappings.return_value.all.return_value = []
+        db.execute.side_effect = [run_result, article_result, coverage_result]
 
         result = await get_news_readiness(market="kr", db=db)
 
