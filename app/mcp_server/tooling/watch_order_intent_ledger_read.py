@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from app.core.db import AsyncSessionLocal
 from app.models.review import WatchOrderIntentLedger
-from app.routers.watch_order_intent_ledger import _serialize
+from app.routers.watch_order_intent_ledger import serialize_ledger_row
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -43,7 +43,7 @@ async def watch_order_intent_ledger_list_recent_impl(
         return {
             "success": True,
             "count": len(rows),
-            "items": [_serialize(r) for r in rows],
+            "items": [serialize_ledger_row(r) for r in rows],
         }
 
 
@@ -58,7 +58,7 @@ async def watch_order_intent_ledger_get_impl(correlation_id: str) -> dict:
         ).scalar_one_or_none()
         if row is None:
             return {"success": False, "error": "not_found"}
-        return {"success": True, "item": _serialize(row)}
+        return {"success": True, "item": serialize_ledger_row(row)}
 
 
 def register_watch_order_intent_ledger_tools(mcp: FastMCP) -> None:

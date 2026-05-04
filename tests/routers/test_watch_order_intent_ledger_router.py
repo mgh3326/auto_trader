@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 
@@ -96,6 +96,7 @@ def test_list_recent_returns_200_with_items():
     assert item["lifecycle_state"] == "previewed"
     assert item["account_mode"] == "kis_mock"
     assert item["execution_source"] == "watch"
+    assert item["threshold_key"] == "70000"
 
 
 @pytest.mark.unit
@@ -129,3 +130,38 @@ def test_get_by_correlation_404_when_missing():
     resp = client.get("/trading/api/watch/order-intent/ledger/does-not-exist")
     assert resp.status_code == 404
     assert resp.json()["detail"] == "not_found"
+
+
+@pytest.mark.unit
+def test_unauthenticated_request_is_rejected():
+    """Without overriding get_authenticated_user, the router enforces auth."""
+    from app.core.db import get_db
+    from app.routers import watch_order_intent_ledger
+    from app.routers.dependencies import get_authenticated_user
+
+    app = FastAPI()
+    app.include_router(watch_order_intent_ledger.router)
+
+    def _raise_401():
+        raise HTTPException(status_code=401)
+
+    app.dependency_overrides[get_authenticated_user] = _raise_401
+    app.dependency_overrides[get_db] = lambda: AsyncMock()
+
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.get("/trading/api/watch/order-intent/ledger/recent")
+    assert resp.status_code == 401
+
+
+@pytest.mark.unit
+def test_router_exposes_only_get_methods():
+    from app.routers import watch_order_intent_ledger
+
+    methods_found: set[str] = set()
+    for route in watch_order_intent_ledger.router.routes:
+        for method in getattr(route, "methods", set()):
+            methods_found.add(method)
+
+    # HEAD is auto-added by Starlette for GET endpoints; tolerate it.
+    methods_found.discard("HEAD")
+    assert methods_found == {"GET"}

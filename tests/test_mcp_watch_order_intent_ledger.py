@@ -84,6 +84,7 @@ async def test_list_recent_returns_serialized_rows(
     assert result["success"] is True
     assert result["count"] == 1
     assert result["items"][0]["correlation_id"] == "corr-mcp-1"
+    assert result["items"][0]["threshold_key"] == "70000"
 
 
 @pytest.mark.asyncio

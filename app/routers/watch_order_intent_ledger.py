@@ -19,7 +19,7 @@ from app.routers.dependencies import get_authenticated_user
 router = APIRouter(prefix="/trading", tags=["watch-order-intent-ledger"])
 
 
-def _serialize(row: WatchOrderIntentLedger) -> dict:
+def serialize_ledger_row(row: WatchOrderIntentLedger) -> dict:
     return {
         "id": row.id,
         "correlation_id": row.correlation_id,
@@ -29,6 +29,7 @@ def _serialize(row: WatchOrderIntentLedger) -> dict:
         "symbol": row.symbol,
         "condition_type": row.condition_type,
         "threshold": float(row.threshold) if row.threshold is not None else None,
+        "threshold_key": row.threshold_key,
         "action": row.action,
         "side": row.side,
         "account_mode": row.account_mode,
@@ -89,7 +90,7 @@ async def list_recent(
         stmt = stmt.where(WatchOrderIntentLedger.kst_date == kst_date.strip())
     stmt = stmt.limit(capped)
     rows = (await db.execute(stmt)).scalars().all()
-    return {"count": len(rows), "items": [_serialize(r) for r in rows]}
+    return {"count": len(rows), "items": [serialize_ledger_row(r) for r in rows]}
 
 
 @router.get("/api/watch/order-intent/ledger/{correlation_id}")
@@ -109,4 +110,4 @@ async def get_by_correlation(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="not_found"
         )
-    return _serialize(row)
+    return serialize_ledger_row(row)
