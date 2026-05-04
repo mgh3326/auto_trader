@@ -25,6 +25,9 @@ CONTRACT_VERSION = "v1"
 
 from typing import Literal
 
+from pydantic import BaseModel, Field, model_validator
+
+
 AccountMode = Literal["kis_live", "kis_mock", "alpaca_paper", "db_simulated"]
 ACCOUNT_MODES: frozenset[str] = frozenset(
     {"kis_live", "kis_mock", "alpaca_paper", "db_simulated"}
@@ -86,6 +89,28 @@ def is_in_flight_state(state: OrderLifecycleState) -> bool:
     return state in IN_FLIGHT_LIFECYCLE_STATES
 
 
+class ExecutionGuard(BaseModel):
+    """Approval / execution gating fields shared by readiness, preview, and event models.
+
+    Defaults are conservative. ``bool`` (not ``Literal[False]``) so future
+    broker-submit code can flip values; the validator below keeps the
+    invariant that any blocking reason forces ``execution_allowed=False``.
+    """
+
+    execution_allowed: bool = False
+    approval_required: bool = True
+    blocking_reasons: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _enforce_block_when_blocking_reasons(self) -> "ExecutionGuard":
+        if self.blocking_reasons and self.execution_allowed:
+            raise ValueError(
+                "execution_allowed must be False when blocking_reasons is non-empty"
+            )
+        return self
+
+
 __all__ = [
     "CONTRACT_VERSION",
     "AccountMode",
@@ -98,4 +123,5 @@ __all__ = [
     "IN_FLIGHT_LIFECYCLE_STATES",
     "is_terminal_state",
     "is_in_flight_state",
+    "ExecutionGuard",
 ]
