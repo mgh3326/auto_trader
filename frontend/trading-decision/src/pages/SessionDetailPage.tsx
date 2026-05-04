@@ -1,5 +1,10 @@
 import { Link, useParams } from "react-router-dom";
 import AnalyticsMatrix from "../components/AnalyticsMatrix";
+import { CommitteeEvidenceArtifacts } from "../components/CommitteeEvidenceArtifacts";
+import { CommitteeExecutionPreview } from "../components/CommitteeExecutionPreview";
+import { CommitteePortfolioApproval } from "../components/CommitteePortfolioApproval";
+import { CommitteeRiskReview } from "../components/CommitteeRiskReview";
+import { CommitteeWorkflowTransition } from "../components/CommitteeWorkflowTransition";
 import ErrorView from "../components/ErrorView";
 import LoadingView from "../components/LoadingView";
 import MarketBriefPanel from "../components/MarketBriefPanel";
@@ -8,6 +13,7 @@ import ProposalRow from "../components/ProposalRow";
 import StatusBadge from "../components/StatusBadge";
 import StrategyEventTimeline from "../components/StrategyEventTimeline";
 import { formatDateTime } from "../format/datetime";
+import { useCommitteeWorkflow } from "../hooks/useCommitteeWorkflow";
 import { useDecisionSession } from "../hooks/useDecisionSession";
 import { useSessionAnalytics } from "../hooks/useSessionAnalytics";
 import { useStrategyEvents } from "../hooks/useStrategyEvents";
@@ -18,6 +24,14 @@ export default function SessionDetailPage() {
   const session = useDecisionSession(sessionUuid ?? "");
   const analytics = useSessionAnalytics(sessionUuid ?? "");
   const strategyEvents = useStrategyEvents(sessionUuid ?? "");
+
+  const committeeWorkflow = useCommitteeWorkflow(
+    session.data as any,
+    (_updated) => {
+      // Synchronize back to useDecisionSession cache if needed, 
+      // but useCommitteeWorkflow handles its own state for now.
+    }
+  );
 
   if (!sessionUuid) {
     return <ErrorView message="Session not found" />;
@@ -44,7 +58,9 @@ export default function SessionDetailPage() {
     );
   }
 
-  const data = session.data;
+  const data = committeeWorkflow.session || session.data;
+  const isCommitteeSession = data.source_profile === "committee_mock_paper";
+
   return (
     <main className={styles.page}>
       <header className={styles.header}>
@@ -57,8 +73,31 @@ export default function SessionDetailPage() {
           {data.source_profile} · {data.market_scope ?? "all markets"} ·{" "}
           {formatDateTime(data.generated_at)}
         </p>
+        {isCommitteeSession && data.workflow_status && (
+          <div className={styles.workflowRow}>
+            <strong>Workflow Status:</strong> <span className={styles.workflowStatus}>{data.workflow_status.replace(/_/g, " ").toUpperCase()}</span>
+          </div>
+        )}
       </header>
       <MarketBriefPanel brief={data.market_brief} notes={data.notes} />
+
+      {isCommitteeSession && data.artifacts && (
+        <section className={styles.committeeArtifacts} aria-label="Committee artifacts">
+          <CommitteeEvidenceArtifacts artifacts={data.artifacts} />
+          <CommitteeRiskReview riskReview={data.artifacts.risk_review ?? null} />
+          <CommitteePortfolioApproval portfolioApproval={data.artifacts.portfolio_approval ?? null} />
+          <CommitteeExecutionPreview executionPreview={data.artifacts.execution_preview ?? null} />
+        </section>
+      )}
+
+      {isCommitteeSession && (
+        <CommitteeWorkflowTransition
+          currentStatus={data.workflow_status ?? null}
+          isUpdating={committeeWorkflow.isUpdating}
+          onTransition={committeeWorkflow.transitionTo}
+        />
+      )}
+
       {analytics.status === "loading" ? (
         <section className={styles.analytics} aria-label="Analytics">
           <h2>Outcome analytics</h2>

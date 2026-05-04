@@ -1,17 +1,24 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { updateArtifacts, updateWorkflowStatus } from "../api/decisions";
 import type { SessionDetail, WorkflowStatus } from "../api/types";
 
 export function useCommitteeWorkflow(
-  initialSession: SessionDetail,
+  initialSession: SessionDetail | null,
   onUpdate?: (updated: SessionDetail) => void,
 ) {
-  const [session, setSession] = useState<SessionDetail>(initialSession);
+  const [session, setSession] = useState<SessionDetail | null>(initialSession);
   const [isUpdating, setIsUpdating] = useState(false);
   const [error, setError] = useState<Error | null>(null);
 
+  useEffect(() => {
+    if (initialSession) {
+      setSession(initialSession);
+    }
+  }, [initialSession]);
+
   const transitionTo = useCallback(
     async (nextStatus: WorkflowStatus) => {
+      if (!session) return;
       setIsUpdating(true);
       setError(null);
       try {
@@ -30,11 +37,12 @@ export function useCommitteeWorkflow(
         setIsUpdating(false);
       }
     },
-    [session.session_uuid, onUpdate],
+    [session?.session_uuid, onUpdate],
   );
 
   const patchArtifacts = useCallback(
     async (patch: Record<string, unknown>) => {
+      if (!session) return;
       setIsUpdating(true);
       setError(null);
       try {
@@ -50,7 +58,7 @@ export function useCommitteeWorkflow(
         setIsUpdating(false);
       }
     },
-    [session.session_uuid, onUpdate],
+    [session?.session_uuid, onUpdate],
   );
 
   return {
