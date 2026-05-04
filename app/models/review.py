@@ -189,8 +189,16 @@ class KISMockOrderLedger(Base):
             "status IN ('accepted','rejected','unknown')",
             name="kis_mock_ledger_status_allowed",
         ),
+        CheckConstraint(
+            "lifecycle_state IN ("
+            "'planned','previewed','submitted','accepted','pending','fill',"
+            "'reconciled','stale','failed','anomaly'"
+            ")",
+            name="kis_mock_ledger_lifecycle_state_allowed",
+        ),
         Index("ix_kis_mock_ledger_trade_date", "trade_date"),
         Index("ix_kis_mock_ledger_symbol", "symbol"),
+        Index("ix_kis_mock_ledger_lifecycle_state", "lifecycle_state"),
         {"schema": "review"},
     )
 
@@ -225,6 +233,17 @@ class KISMockOrderLedger(Base):
     thesis: Mapped[str | None] = mapped_column(Text)
     strategy: Mapped[str | None] = mapped_column(Text)
     notes: Mapped[str | None] = mapped_column(Text)
+
+    # ROB-102 lifecycle columns
+    lifecycle_state: Mapped[str] = mapped_column(
+        Text, nullable=False, default="anomaly"
+    )
+    holdings_baseline_qty: Mapped[float | None] = mapped_column(Numeric(20, 8))
+    reconcile_attempts: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0
+    )
+    reconciled_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    last_reconcile_detail: Mapped[dict | None] = mapped_column(JSONB)
 
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now(), nullable=False

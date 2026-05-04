@@ -7,6 +7,7 @@ Business logic lives in order_validation and order_journal.
 from __future__ import annotations
 
 import datetime
+from decimal import Decimal
 from typing import Any, Literal
 from typing import cast as typing_cast
 
@@ -642,6 +643,19 @@ async def _execute_and_record(
     if not await _check_daily_order_limit(_MAX_ORDERS_PER_DAY):
         return order_error_fn(f"Daily order limit ({_MAX_ORDERS_PER_DAY}) exceeded")
 
+    # ROB-102: capture pre-order KIS mock holdings as the reconciler baseline.
+    # Best-effort — failure leaves the column NULL and the reconciler will
+    # surface the row as `baseline_missing → anomaly` for operator review.
+    kis_mock_baseline_qty: Decimal | None = None
+    if is_mock:
+        from app.mcp_server.tooling.kis_mock_ledger import (
+            _fetch_kis_mock_baseline_qty,
+        )
+
+        kis_mock_baseline_qty = await _fetch_kis_mock_baseline_qty(
+            normalized_symbol=normalized_symbol, market_type=market_type
+        )
+
     try:
         execution_result = await _execute_order(
             symbol=normalized_symbol,
@@ -697,6 +711,7 @@ async def _execute_and_record(
             thesis=thesis,
             strategy=strategy,
             notes=notes,
+            holdings_baseline_qty=kis_mock_baseline_qty,
         )
 
     # Record phase: fills + journals

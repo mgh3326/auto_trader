@@ -51,6 +51,38 @@ def _fail_open_response() -> SimpleNamespace:
     )
 
 
+def _fail_open_response_with_review() -> PreopenLatestResponse:  # noqa: F821
+    from app.schemas.execution_contracts import ExecutionGuard, ExecutionReadiness
+    from app.schemas.preopen import (
+        ExecutionReviewStage,
+        ExecutionReviewSummary,
+    )
+
+    base = _fail_open_response()
+    review = ExecutionReviewSummary(
+        readiness=ExecutionReadiness(
+            account_mode="db_simulated",
+            execution_source="preopen",
+            is_ready=False,
+            guard=ExecutionGuard(
+                execution_allowed=False,
+                approval_required=True,
+                blocking_reasons=["mvp_read_only", "no_open_preopen_run"],
+            ),
+        ),
+        stages=[
+            ExecutionReviewStage(
+                stage_id="approval_required",
+                label="Approval required",
+                status="pending",
+                summary="Read-only.",
+            )
+        ],
+        blocking_reasons=["mvp_read_only", "no_open_preopen_run"],
+    )
+    return base.model_copy(update={"execution_review": review})
+
+
 def _full_response() -> SimpleNamespace:
     from datetime import UTC, datetime
     from decimal import Decimal
@@ -316,3 +348,27 @@ def test_response_contains_news_brief_key_for_kr(monkeypatch: pytest.MonkeyPatch
     assert "news_brief" in body, (
         "news_brief key must always be present in KR preopen response"
     )
+
+
+@pytest.mark.unit
+def test_get_latest_preopen_returns_execution_review_field(monkeypatch):
+    """The response payload must include execution_review with advisory-only defaults."""
+    from app.services import preopen_dashboard_service
+
+    monkeypatch.setattr(
+        preopen_dashboard_service,
+        "get_latest_preopen_dashboard",
+        AsyncMock(return_value=_fail_open_response_with_review()),
+    )
+
+    app = _app()
+    client = TestClient(app)
+    res = client.get(ENDPOINT, params={"market_scope": "kr"})
+    assert res.status_code == 200
+    body = res.json()
+    assert "execution_review" in body
+    review = body["execution_review"]
+    assert review is not None
+    assert review["advisory_only"] is True
+    assert review["execution_allowed"] is False
+    assert review["readiness"]["guard"]["execution_allowed"] is False

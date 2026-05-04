@@ -4,6 +4,7 @@ import ErrorView from "../components/ErrorView";
 import LoadingView from "../components/LoadingView";
 import MarketNewsBriefingSection from "../components/MarketNewsBriefingSection";
 import NewsReadinessSection from "../components/NewsReadinessSection";
+import ExecutionReviewPanel from "../components/ExecutionReviewPanel";
 import { ApiError } from "../api/client";
 import {
   createDecisionFromResearchRun,
@@ -427,6 +428,7 @@ export default function PreopenPage() {
         <PreopenBriefingArtifactSection artifact={data.briefing_artifact} />
         <PreopenQaEvaluatorPanel qa={data.qa_evaluator} />
         <PreopenPaperApprovalBridgeSection bridge={data.paper_approval_bridge} />
+        <ExecutionReviewPanel review={data.execution_review} />
       </main>
     );
   }
@@ -466,6 +468,7 @@ export default function PreopenPage() {
       <PreopenBriefingArtifactSection artifact={data.briefing_artifact} />
       <PreopenQaEvaluatorPanel qa={data.qa_evaluator} />
       <PreopenPaperApprovalBridgeSection bridge={data.paper_approval_bridge} />
+      <ExecutionReviewPanel review={data.execution_review} />
       <NewsReadinessSection news={data.news} preview={data.news_preview} />
       <MarketNewsBriefingSection briefing={data.market_news_briefing} />
 
