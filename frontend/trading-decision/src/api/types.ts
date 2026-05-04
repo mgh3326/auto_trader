@@ -3,6 +3,29 @@ export type IsoDateTime = string;
 export type DecimalString = string;
 
 export type SessionStatus = "open" | "closed" | "archived";
+
+export type WorkflowStatus =
+  | "created"
+  | "evidence_generating"
+  | "evidence_ready"
+  | "debate_ready"
+  | "trader_draft_ready"
+  | "risk_review_ready"
+  | "auto_approved"
+  | "preview_ready"
+  | "journal_ready"
+  | "completed"
+  | "failed_evidence"
+  | "failed_trader_draft"
+  | "failed_risk_review"
+  | "preview_blocked";
+
+export type CommitteeAccountMode =
+  | "kis_mock"
+  | "alpaca_paper"
+  | "kis_live"
+  | "db_simulated";
+
 export type ProposalKind =
   | "trim"
   | "add"
@@ -47,6 +70,8 @@ export interface SessionSummary {
   strategy_name: string | null;
   market_scope: string | null;
   status: SessionStatus;
+  workflow_status?: WorkflowStatus | null;
+  account_mode?: CommitteeAccountMode | null;
   generated_at: IsoDateTime;
   created_at: IsoDateTime;
   updated_at: IsoDateTime;
@@ -189,7 +214,58 @@ export interface ProposalDetail {
 export interface SessionDetail extends SessionSummary {
   market_brief: Record<string, unknown> | null;
   notes: string | null;
+  automation?: CommitteeAutomation | null;
+  artifacts?: CommitteeArtifacts | null;
   proposals: ProposalDetail[];
+}
+
+export interface CommitteeAnalysisSub {
+  summary: string | null;
+  confidence: number | null;
+  payload: Record<string, unknown> | null;
+}
+
+export interface CommitteeEvidence {
+  technical_analysis: CommitteeAnalysisSub | null;
+  news_analysis: CommitteeAnalysisSub | null;
+  on_chain_analysis: CommitteeAnalysisSub | null;
+}
+
+export interface CommitteeRiskReview {
+  verdict: "approved" | "vetoed" | "flagged";
+  notes: string | null;
+  reviewed_at: IsoDateTime | null;
+}
+
+export interface CommitteePortfolioApproval {
+  verdict: "approved" | "vetoed" | "modified";
+  notes: string | null;
+  approved_at: IsoDateTime | null;
+}
+
+export interface CommitteeExecutionPreview {
+  is_blocked: boolean;
+  block_reason: string | null;
+  preview_payload: Record<string, unknown> | null;
+}
+
+export interface CommitteeJournalPlaceholder {
+  journal_uuid: Uuid | null;
+  notes: string | null;
+}
+
+export interface CommitteeAutomation {
+  enabled: boolean;
+  auto_approve_risk: boolean;
+  auto_execute: boolean;
+}
+
+export interface CommitteeArtifacts {
+  evidence: CommitteeEvidence | null;
+  risk_review: CommitteeRiskReview | null;
+  portfolio_approval: CommitteePortfolioApproval | null;
+  execution_preview: CommitteeExecutionPreview | null;
+  journal_placeholder: CommitteeJournalPlaceholder | null;
 }
 
 export type RespondAction = Exclude<UserResponseValue, "pending">;
