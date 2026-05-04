@@ -20,6 +20,13 @@ from app.services.crypto_execution_mapping import (
     CryptoExecutionMappingError,
     build_crypto_paper_approval_metadata,
 )
+from app.services.preopen_approval_bridge_common import (
+    bridge_result,
+    bridge_warnings,
+    dedupe,
+    qa_blocking_reasons,
+    unsupported_candidate,
+)
 
 _FORBIDDEN_PREVIEW_KEYS = frozenset(
     {
@@ -34,76 +41,6 @@ _FORBIDDEN_PREVIEW_KEYS = frozenset(
 )
 
 
-def _dedupe(values: list[str]) -> list[str]:
-    seen: set[str] = set()
-    result: list[str] = []
-    for value in values:
-        if value not in seen:
-            seen.add(value)
-            result.append(value)
-    return result
-
-
-def _unsupported_candidate(
-    candidate: CandidateSummary,
-    *,
-    reason: str,
-) -> PreopenPaperApprovalCandidate:
-    return PreopenPaperApprovalCandidate(
-        candidate_uuid=candidate.candidate_uuid,
-        symbol=candidate.symbol,
-        status="unavailable",
-        reason=reason,
-        warnings=list(candidate.warnings),
-    )
-
-
-def _qa_blocking_reasons(
-    qa_evaluator: PreopenQaEvaluatorSummary | None,
-    *,
-    has_run: bool,
-) -> list[str]:
-    if not has_run:
-        return ["no_open_preopen_run"]
-    if qa_evaluator is None:
-        return ["qa_evaluator_unavailable"]
-    if qa_evaluator.status in {"unavailable", "skipped"}:
-        return [f"qa_evaluator_{qa_evaluator.status}"]
-
-    reasons = list(qa_evaluator.blocking_reasons)
-    for check in qa_evaluator.checks:
-        if check.status == "fail" and check.severity == "high":
-            reasons.append(f"high_severity_fail:{check.id}")
-        if check.id == "actionability_guardrail" and check.status != "pass":
-            reasons.append("safety_guardrail_not_passed")
-
-    coverage = qa_evaluator.coverage or {}
-    if coverage.get("advisory_only") is not True:
-        reasons.append("advisory_only_guard_missing")
-    if coverage.get("execution_allowed") is not False:
-        reasons.append("execution_allowed_guard_missing")
-    return _dedupe(reasons)
-
-
-def _bridge_warnings(
-    qa_evaluator: PreopenQaEvaluatorSummary | None,
-    briefing_artifact: PreopenBriefingArtifact | None,
-    candidates: list[CandidateSummary],
-) -> list[str]:
-    warnings: list[str] = []
-    if qa_evaluator is not None:
-        if qa_evaluator.status == "needs_review":
-            warnings.append("qa_needs_review")
-        warnings.extend(qa_evaluator.warnings)
-    if briefing_artifact is not None:
-        if briefing_artifact.status == "degraded":
-            warnings.append("briefing_artifact_degraded")
-        warnings.extend(briefing_artifact.risk_notes)
-    for candidate in candidates:
-        warnings.extend(candidate.warnings)
-    return _dedupe(warnings)
-
-
 def _build_crypto_candidate(
     candidate: CandidateSummary,
     *,
@@ -116,12 +53,12 @@ def _build_crypto_candidate(
             purpose="paper_plumbing_smoke",
         )
     except CryptoExecutionMappingError as exc:
-        return _unsupported_candidate(candidate, reason=str(exc))
+        return unsupported_candidate(candidate, reason=str(exc))
 
     preview_payload = metadata.preview_payload.model_dump(mode="json")
     forbidden = sorted(_FORBIDDEN_PREVIEW_KEYS.intersection(preview_payload))
     if forbidden:
-        return _unsupported_candidate(
+        return unsupported_candidate(
             candidate,
             reason="forbidden_preview_payload_keys:" + ",".join(forbidden),
         )
@@ -158,38 +95,39 @@ def build_preopen_paper_approval_bridge(
 ) -> PreopenPaperApprovalBridge:
     """Build deterministic paper approval preview metadata for preopen output."""
     stage = stage or "preopen"
-    blocking_reasons = _qa_blocking_reasons(qa_evaluator, has_run=has_run)
-    warnings = _bridge_warnings(qa_evaluator, briefing_artifact, candidates)
+    blocking_reasons = qa_blocking_reasons(qa_evaluator, has_run=has_run)
+    warnings = bridge_warnings(qa_evaluator, briefing_artifact, candidates)
     generated_at = generated_at or datetime.now(UTC)
 
     bridge_candidates: list[PreopenPaperApprovalCandidate] = []
     unsupported_reasons: list[str] = []
 
     if blocking_reasons:
-        return PreopenPaperApprovalBridge(
+        return bridge_result(
             status="blocked",
             generated_at=generated_at,
-            market_scope=market_scope,  # type: ignore[arg-type]
-            stage=stage if has_run else None,  # type: ignore[arg-type]
+            market_scope=market_scope,
+            stage=stage,
             candidate_count=len(candidates),
             candidates=[],
+            has_run=has_run,
             blocking_reasons=blocking_reasons,
             warnings=warnings,
-            unsupported_reasons=[],
         )
 
     if market_scope != "crypto":
         reason = f"unsupported_market_scope:{market_scope or 'unknown'}"
-        return PreopenPaperApprovalBridge(
+        return bridge_result(
             status="unavailable",
             generated_at=generated_at,
-            market_scope=market_scope,  # type: ignore[arg-type]
-            stage=stage if has_run else None,  # type: ignore[arg-type]
+            market_scope=market_scope,
+            stage=stage,
             candidate_count=len(candidates),
             candidates=[
-                _unsupported_candidate(candidate, reason=reason)
+                unsupported_candidate(candidate, reason=reason)
                 for candidate in candidates
             ],
+            has_run=has_run,
             warnings=warnings,
             unsupported_reasons=[reason],
         )
@@ -198,12 +136,12 @@ def build_preopen_paper_approval_bridge(
     for candidate in candidates:
         if candidate.instrument_type != "crypto":
             reason = f"unsupported_instrument_type:{candidate.instrument_type}"
-            bridge_candidates.append(_unsupported_candidate(candidate, reason=reason))
+            bridge_candidates.append(unsupported_candidate(candidate, reason=reason))
             unsupported_reasons.append(reason)
             continue
         if candidate.side != "buy":
             reason = f"unsupported_side:{candidate.side}"
-            bridge_candidates.append(_unsupported_candidate(candidate, reason=reason))
+            bridge_candidates.append(unsupported_candidate(candidate, reason=reason))
             unsupported_reasons.append(reason)
             continue
         bridge_candidate = _build_crypto_candidate(
@@ -228,17 +166,17 @@ def build_preopen_paper_approval_bridge(
     else:
         status = "available"
 
-    return PreopenPaperApprovalBridge(
+    return bridge_result(
         status=status,
         generated_at=generated_at,
         market_scope="crypto",
-        stage=stage if has_run else None,  # type: ignore[arg-type]
+        stage=stage,
         eligible_count=eligible_count,
         candidate_count=len(candidates),
         candidates=bridge_candidates,
-        blocking_reasons=[],
+        has_run=has_run,
         warnings=warnings,
-        unsupported_reasons=_dedupe(unsupported_reasons),
+        unsupported_reasons=dedupe(unsupported_reasons),
     )
 
 

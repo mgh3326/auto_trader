@@ -16,80 +16,17 @@ from app.schemas.preopen import (
     PreopenPaperApprovalCandidate,
     PreopenQaEvaluatorSummary,
 )
+from app.services.preopen_approval_bridge_common import (
+    bridge_result,
+    bridge_warnings,
+    dedupe,
+    qa_blocking_reasons,
+    unsupported_candidate,
+)
 from app.services.preopen_approval_safety import (
     is_kr_equity_symbol,
     is_positive_integer_decimal,
 )
-
-
-def _dedupe(values: list[str]) -> list[str]:
-    seen: set[str] = set()
-    result: list[str] = []
-    for value in values:
-        if value not in seen:
-            seen.add(value)
-            result.append(value)
-    return result
-
-
-def _unsupported_candidate(
-    candidate: CandidateSummary,
-    *,
-    reason: str,
-) -> PreopenPaperApprovalCandidate:
-    return PreopenPaperApprovalCandidate(
-        candidate_uuid=candidate.candidate_uuid,
-        symbol=candidate.symbol,
-        status="unavailable",
-        reason=reason,
-        warnings=list(candidate.warnings),
-    )
-
-
-def _qa_blocking_reasons(
-    qa_evaluator: PreopenQaEvaluatorSummary | None,
-    *,
-    has_run: bool,
-) -> list[str]:
-    if not has_run:
-        return ["no_open_preopen_run"]
-    if qa_evaluator is None:
-        return ["qa_evaluator_unavailable"]
-    if qa_evaluator.status in {"unavailable", "skipped"}:
-        return [f"qa_evaluator_{qa_evaluator.status}"]
-
-    reasons = list(qa_evaluator.blocking_reasons)
-    for check in qa_evaluator.checks:
-        if check.status == "fail" and check.severity == "high":
-            reasons.append(f"high_severity_fail:{check.id}")
-        if check.id == "actionability_guardrail" and check.status != "pass":
-            reasons.append("safety_guardrail_not_passed")
-
-    coverage = qa_evaluator.coverage or {}
-    if coverage.get("advisory_only") is not True:
-        reasons.append("advisory_only_guard_missing")
-    if coverage.get("execution_allowed") is not False:
-        reasons.append("execution_allowed_guard_missing")
-    return _dedupe(reasons)
-
-
-def _bridge_warnings(
-    qa_evaluator: PreopenQaEvaluatorSummary | None,
-    briefing_artifact: PreopenBriefingArtifact | None,
-    candidates: list[CandidateSummary],
-) -> list[str]:
-    warnings: list[str] = []
-    if qa_evaluator is not None:
-        if qa_evaluator.status == "needs_review":
-            warnings.append("qa_needs_review")
-        warnings.extend(qa_evaluator.warnings)
-    if briefing_artifact is not None:
-        if briefing_artifact.status == "degraded":
-            warnings.append("briefing_artifact_degraded")
-        warnings.extend(briefing_artifact.risk_notes)
-    for candidate in candidates:
-        warnings.extend(candidate.warnings)
-    return _dedupe(warnings)
 
 
 def _build_approval_copy(
@@ -107,66 +44,39 @@ def _bridge_market_scope(market_scope: str | None) -> str | None:
     return market_scope if market_scope in {"kr", "us", "crypto"} else None
 
 
-def _bridge_result(
-    *,
-    status: str,
-    generated_at: datetime,
-    market_scope: str | None,
-    has_run: bool,
-    candidate_count: int,
-    candidates: list[PreopenPaperApprovalCandidate],
-    warnings: list[str],
-    blocking_reasons: list[str] | None = None,
-    unsupported_reasons: list[str] | None = None,
-    eligible_count: int = 0,
-) -> PreopenPaperApprovalBridge:
-    return PreopenPaperApprovalBridge(
-        status=status,
-        generated_at=generated_at,
-        market_scope=market_scope,
-        stage="preopen" if has_run else None,
-        eligible_count=eligible_count,
-        candidate_count=candidate_count,
-        candidates=candidates,
-        blocking_reasons=blocking_reasons or [],
-        warnings=warnings,
-        unsupported_reasons=unsupported_reasons or [],
-    )
-
-
 def _build_kr_candidate(
     candidate: CandidateSummary,
     *,
     bridge_has_warnings: bool,
 ) -> PreopenPaperApprovalCandidate:
     if candidate.instrument_type != "equity_kr":
-        return _unsupported_candidate(
+        return unsupported_candidate(
             candidate,
             reason=f"unsupported_instrument_type:{candidate.instrument_type}",
         )
 
     if not is_kr_equity_symbol(candidate.symbol):
-        return _unsupported_candidate(
+        return unsupported_candidate(
             candidate,
             reason=f"unsupported_symbol:{candidate.symbol}",
         )
 
     if candidate.side not in {"buy", "sell"}:
-        return _unsupported_candidate(
+        return unsupported_candidate(
             candidate, reason=f"unsupported_side:{candidate.side}"
         )
 
     if candidate.side == "sell" and candidate.proposed_qty is None:
-        return _unsupported_candidate(candidate, reason="missing_quantity")
+        return unsupported_candidate(candidate, reason="missing_quantity")
 
     if candidate.proposed_price is None:
-        return _unsupported_candidate(candidate, reason="missing_price")
+        return unsupported_candidate(candidate, reason="missing_price")
     if not is_positive_integer_decimal(candidate.proposed_price):
-        return _unsupported_candidate(candidate, reason="invalid_price")
+        return unsupported_candidate(candidate, reason="invalid_price")
     if candidate.proposed_qty is not None and not is_positive_integer_decimal(
         candidate.proposed_qty
     ):
-        return _unsupported_candidate(candidate, reason="invalid_quantity")
+        return unsupported_candidate(candidate, reason="invalid_quantity")
 
     quantity = int(candidate.proposed_qty) if candidate.proposed_qty is not None else 1
     price = str(int(candidate.proposed_price))
@@ -219,12 +129,12 @@ def build_kis_mock_preopen_approval_bridge(
     generated_at: datetime | None = None,
 ) -> PreopenPaperApprovalBridge:
     """Build deterministic KIS mock preopen approval preview metadata."""
-    blocking_reasons = _qa_blocking_reasons(qa_evaluator, has_run=has_run)
-    warnings = _bridge_warnings(qa_evaluator, briefing_artifact, candidates)
+    blocking_reasons = qa_blocking_reasons(qa_evaluator, has_run=has_run)
+    warnings = bridge_warnings(qa_evaluator, briefing_artifact, candidates)
     generated_at = generated_at or datetime.now(UTC)
 
     if blocking_reasons:
-        return _bridge_result(
+        return bridge_result(
             status="blocked",
             generated_at=generated_at,
             market_scope=_bridge_market_scope(market_scope),
@@ -237,13 +147,13 @@ def build_kis_mock_preopen_approval_bridge(
 
     if market_scope != "kr":
         reason = f"unsupported_market_scope:{market_scope or 'unknown'}"
-        return _bridge_result(
+        return bridge_result(
             status="unavailable",
             generated_at=generated_at,
             market_scope=_bridge_market_scope(market_scope),
             candidate_count=len(candidates),
             candidates=[
-                _unsupported_candidate(candidate, reason=reason)
+                unsupported_candidate(candidate, reason=reason)
                 for candidate in candidates
             ],
             has_run=has_run,
@@ -275,7 +185,7 @@ def build_kis_mock_preopen_approval_bridge(
     else:
         status = "available"
 
-    return _bridge_result(
+    return bridge_result(
         status=status,
         generated_at=generated_at,
         market_scope="kr",
@@ -284,7 +194,7 @@ def build_kis_mock_preopen_approval_bridge(
         candidates=bridge_candidates,
         has_run=has_run,
         warnings=warnings,
-        unsupported_reasons=_dedupe(unsupported_reasons),
+        unsupported_reasons=dedupe(unsupported_reasons),
     )
 
 

@@ -368,5 +368,6 @@ def test_kis_mock_bridge_module_imports_only_pure_allowed_modules() -> None:
         "datetime",
         "decimal",
         "app.schemas.preopen",
+        "app.services.preopen_approval_bridge_common",
         "app.services.preopen_approval_safety",
     }
