@@ -23,10 +23,12 @@ router = APIRouter(prefix="/trading", tags=["preopen-dashboard"])
 async def get_latest_preopen(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_authenticated_user)],
-    market_scope: Literal["kr"] = "kr",
+    market_scope: Literal["kr", "us"] = "kr",
+    stage: Literal["preopen", "us_open"] | None = None,
 ) -> PreopenLatestResponse:
     return await preopen_dashboard_service.get_latest_preopen_dashboard(
         db,
         user_id=current_user.id,
         market_scope=market_scope,
+        stage=stage,
     )

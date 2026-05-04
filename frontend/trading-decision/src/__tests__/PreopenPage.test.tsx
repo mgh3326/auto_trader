@@ -249,6 +249,8 @@ describe("PreopenPage", () => {
     expect(await screen.findByTestId("news-readiness-section")).toBeInTheDocument();
     expect(screen.getByText("Ready")).toBeInTheDocument();
     expect(screen.getByText(/mk_stock: 12/)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /source coverage/i })).toBeInTheDocument();
+    expect(screen.getByRole("cell", { name: "mk_stock" })).toBeInTheDocument();
     expect(
       screen.getByRole("link", { name: /삼성전자 영업이익/ }),
     ).toHaveAttribute("href", "https://example.com/9001");

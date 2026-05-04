@@ -21,6 +21,7 @@ from app.schemas.preopen import (
     LinkedSessionRef,
     NewsArticlePreview,
     NewsReadinessSummary,
+    NewsSourceCoverageSummary,
     PreopenArtifactReadinessItem,
     PreopenArtifactSection,
     PreopenBriefingArtifact,
@@ -196,6 +197,10 @@ def _map_reconciliations(run: ResearchRun) -> list[ReconciliationSummary]:
     ]
 
 
+def _default_stage_for_market(market_scope: str) -> str:
+    return "us_open" if market_scope == "us" else "preopen"
+
+
 def _advisory_skipped_reason(run: ResearchRun) -> str | None:
     if not run.candidates:
         return "no_candidates"
@@ -249,6 +254,7 @@ async def _build_news_section(
             merged_warnings.append("news_readiness_unavailable")
         return None, [], source_freshness, merged_warnings, None
 
+    source_coverage = list(getattr(readiness, "source_coverage", []) or [])
     merged_freshness = dict(source_freshness or {})
     merged_freshness["news"] = {
         "is_ready": readiness.is_ready,
@@ -262,6 +268,12 @@ async def _build_news_section(
         if readiness.latest_article_published_at
         else None,
         "source_counts": readiness.source_counts,
+        "source_coverage": [
+            coverage.model_dump(mode="json")
+            if hasattr(coverage, "model_dump")
+            else dict(coverage)
+            for coverage in source_coverage
+        ],
         "warnings": readiness.warnings,
         "max_age_minutes": readiness.max_age_minutes,
     }
@@ -281,6 +293,16 @@ async def _build_news_section(
         latest_finished_at=readiness.latest_finished_at,
         latest_article_published_at=readiness.latest_article_published_at,
         source_counts=dict(readiness.source_counts or {}),
+        source_coverage=[
+            NewsSourceCoverageSummary(
+                **(
+                    coverage.model_dump()
+                    if hasattr(coverage, "model_dump")
+                    else dict(coverage)
+                )
+            )
+            for coverage in source_coverage
+        ],
         warnings=list(readiness.warnings or []),
         max_age_minutes=readiness.max_age_minutes,
     )
@@ -388,8 +410,8 @@ def _build_news_brief(
     readiness_raw: object | None,
     run: ResearchRun | None,
 ) -> KRPreopenNewsBrief | None:
-    """Assemble the news brief from already-fetched readiness + run. Never raises."""
-    if readiness_raw is None:
+    """Assemble the KR news brief from already-fetched readiness + run. Never raises."""
+    if readiness_raw is None or run is None or run.market_scope != "kr":
         return None
     try:
         return kr_preopen_news_brief_service.build_brief(
@@ -420,6 +442,7 @@ def _build_briefing_artifact(
     news_brief: KRPreopenNewsBrief | None,
     market_news_briefing: PreopenMarketNewsBriefing | None,
     source_warnings: list[str],
+    stage: str,
 ) -> PreopenBriefingArtifact:
     """Build the additive read-only preopen artifact from already-loaded data.
 
@@ -455,6 +478,10 @@ def _build_briefing_artifact(
                 "latest_run_uuid": news.latest_run_uuid if news else None,
                 "latest_status": news.latest_status if news else None,
                 "source_counts": news.source_counts if news else {},
+                "source_coverage": [
+                    coverage.model_dump(mode="json")
+                    for coverage in (news.source_coverage if news else [])
+                ],
             },
         ),
         PreopenArtifactReadinessItem(
@@ -598,7 +625,7 @@ def _build_briefing_artifact(
         status=status,  # type: ignore[arg-type]
         run_uuid=run.run_uuid,
         market_scope=run.market_scope,  # type: ignore[arg-type]
-        stage="preopen",
+        stage=stage,  # type: ignore[arg-type]
         generated_at=run.generated_at,
         source_run_status=run.status,
         readiness=readiness,
@@ -963,12 +990,14 @@ async def get_latest_preopen_dashboard(
     *,
     user_id: int,
     market_scope: str,
+    stage: str | None = None,
 ) -> PreopenLatestResponse:
+    stage = stage or _default_stage_for_market(market_scope)
     run = await research_run_service.get_latest_research_run(
         db,
         user_id=user_id,
         market_scope=market_scope,
-        stage="preopen",
+        stage=stage,
         status="open",
     )
 
@@ -993,9 +1022,12 @@ async def get_latest_preopen_dashboard(
             briefing_artifact=_FAIL_OPEN.briefing_artifact,
             qa_evaluator=qa_evaluator,
             generated_at=None,
+            stage=stage,
         )
         return _FAIL_OPEN.model_copy(
             update={
+                "market_scope": market_scope,
+                "stage": stage,
                 "qa_evaluator": qa_evaluator,
                 "paper_approval_bridge": paper_approval_bridge,
             }
@@ -1032,6 +1064,7 @@ async def get_latest_preopen_dashboard(
         news_brief=news_brief,
         market_news_briefing=market_news_briefing,
         source_warnings=source_warnings,
+        stage=stage,
     )
 
     qa_evaluator = _build_qa_evaluator_summary(
@@ -1054,6 +1087,7 @@ async def get_latest_preopen_dashboard(
         briefing_artifact=briefing_artifact,
         qa_evaluator=qa_evaluator,
         generated_at=run.generated_at,
+        stage=stage,
     )
 
     return PreopenLatestResponse(
@@ -1062,7 +1096,7 @@ async def get_latest_preopen_dashboard(
         advisory_skipped_reason=advisory_reason,
         run_uuid=run.run_uuid,
         market_scope=run.market_scope,  # type: ignore[arg-type]
-        stage="preopen",
+        stage=stage,  # type: ignore[arg-type]
         status=run.status,
         strategy_name=run.strategy_name,
         source_profile=run.source_profile,

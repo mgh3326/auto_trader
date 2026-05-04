@@ -190,6 +190,16 @@ def test_get_latest_preopen_returns_news_section(monkeypatch: pytest.MonkeyPatch
         latest_finished_at=datetime.now(UTC),
         latest_article_published_at=datetime.now(UTC),
         source_counts={"mk_stock": 10},
+        source_coverage=[
+            {
+                "feed_source": "mk_stock",
+                "expected_count": 10,
+                "stored_total": 10,
+                "recent_24h": 10,
+                "recent_6h": 5,
+                "status": "ready",
+            }
+        ],
         warnings=[],
         max_age_minutes=180,
     )
@@ -219,6 +229,8 @@ def test_get_latest_preopen_returns_news_section(monkeypatch: pytest.MonkeyPatch
     assert isinstance(body["news_preview"], list)
     assert body["news"]["status"] == "ready"
     assert body["news"]["source_counts"] == {"mk_stock": 10}
+    assert body["news"]["source_coverage"][0]["feed_source"] == "mk_stock"
+    assert body["news"]["source_coverage"][0]["recent_24h"] == 10
     assert body["news_preview"][0]["title"] == "t"
 
 
@@ -244,18 +256,47 @@ def test_get_latest_preopen_news_null_when_readiness_unavailable(
 
 
 @pytest.mark.unit
-def test_market_scope_param_validation_rejects_us_for_now():
-    """?market_scope=us returns 422 since only 'kr' is allowed now."""
+def test_market_scope_us_defaults_to_us_open_stage(monkeypatch: pytest.MonkeyPatch):
+    """?market_scope=us is accepted and routed to the us_open read-layer path."""
     from app.services import preopen_dashboard_service
 
-    app = _app()
-    # Patch so we don't hit DB
-    app.dependency_overrides[preopen_dashboard_service.get_latest_preopen_dashboard] = (
-        lambda: _fail_open_response()
+    mock = AsyncMock(return_value=_fail_open_response())
+    monkeypatch.setattr(
+        preopen_dashboard_service,
+        "get_latest_preopen_dashboard",
+        mock,
     )
 
-    response = TestClient(app).get(f"{ENDPOINT}?market_scope=us")
-    assert response.status_code == 422
+    response = TestClient(_app()).get(f"{ENDPOINT}?market_scope=us")
+    assert response.status_code == 200
+    mock.assert_awaited_once()
+    assert mock.await_args.kwargs["market_scope"] == "us"
+    assert mock.await_args.kwargs["stage"] is None
+
+
+@pytest.mark.unit
+def test_market_scope_us_accepts_explicit_us_open_stage(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Explicit stage=us_open is accepted for the US dashboard/readiness path."""
+    from app.services import preopen_dashboard_service
+
+    response_obj = _fail_open_response()
+    response_obj.market_scope = "us"
+    response_obj.stage = "us_open"
+    mock = AsyncMock(return_value=response_obj)
+    monkeypatch.setattr(
+        preopen_dashboard_service,
+        "get_latest_preopen_dashboard",
+        mock,
+    )
+
+    response = TestClient(_app()).get(f"{ENDPOINT}?market_scope=us&stage=us_open")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["market_scope"] == "us"
+    assert body["stage"] == "us_open"
+    assert mock.await_args.kwargs["stage"] == "us_open"
 
 
 @pytest.mark.unit

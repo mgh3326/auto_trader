@@ -14,7 +14,18 @@ from app.schemas.news import (
     NewsBulkIngestRequest,
     NewsBulkIngestResponse,
     NewsReadinessResponse,
+    NewsSourceCoverage,
 )
+
+_CORE_FEED_SOURCES_BY_MARKET: dict[str, tuple[str, ...]] = {
+    "us": (
+        "rss_yahoo_finance_topstories",
+        "rss_marketwatch_topstories",
+        "rss_cnbc_us_markets",
+        "rss_cnbc_earnings",
+        "rss_cnbc_finance",
+    ),
+}
 
 
 async def create_news_article(
@@ -195,6 +206,7 @@ def _news_readiness_payload(
     latest_run: NewsIngestionRun | None,
     latest_article_published_at: datetime | None,
     max_age_minutes: int,
+    source_coverage: list[NewsSourceCoverage] | None = None,
 ) -> NewsReadinessResponse:
     warnings: list[str] = []
     latest_finished_at = latest_run.finished_at if latest_run else None
@@ -236,6 +248,7 @@ def _news_readiness_payload(
         latest_finished_at=latest_finished_at,
         latest_article_published_at=latest_article_published_at,
         source_counts=source_counts,
+        source_coverage=source_coverage or [],
         warnings=list(dict.fromkeys(warnings)),
         max_age_minutes=max_age_minutes,
     )
@@ -360,6 +373,87 @@ async def ingest_news_ingestor_bulk(
     )
 
 
+async def _build_source_coverage(
+    session: AsyncSession,
+    *,
+    market: str,
+    source_counts: dict[str, int],
+) -> list[NewsSourceCoverage]:
+    """Summarize per-feed storage freshness for readiness dashboards."""
+    feed_sources = list(
+        dict.fromkeys(
+            [*source_counts.keys(), *_CORE_FEED_SOURCES_BY_MARKET.get(market, ())]
+        )
+    )
+    if not feed_sources:
+        return []
+    cutoff_24h = now_kst_naive() - timedelta(hours=24)
+    cutoff_6h = now_kst_naive() - timedelta(hours=6)
+    result = await session.execute(
+        select(
+            NewsArticle.feed_source.label("feed_source"),
+            func.count(NewsArticle.id).label("stored_total"),
+            func.count(NewsArticle.article_published_at).label("published_at_count"),
+            func.max(NewsArticle.article_published_at).label("latest_published_at"),
+            func.max(NewsArticle.scraped_at).label("latest_scraped_at"),
+            func.count(NewsArticle.id)
+            .filter(NewsArticle.article_published_at >= cutoff_24h)
+            .label("recent_24h"),
+            func.count(NewsArticle.id)
+            .filter(NewsArticle.article_published_at >= cutoff_6h)
+            .label("recent_6h"),
+        )
+        .where(
+            NewsArticle.market == market,
+            NewsArticle.feed_source.in_(feed_sources),
+        )
+        .group_by(NewsArticle.feed_source)
+    )
+    rows = {row["feed_source"]: row for row in result.mappings().all()}
+
+    coverage: list[NewsSourceCoverage] = []
+    stale_cutoff = now_kst_naive() - timedelta(hours=24)
+    for feed_source in feed_sources:
+        expected_count = source_counts.get(feed_source, 0)
+        row = rows.get(feed_source)
+        warnings: list[str] = []
+        if row is None:
+            coverage.append(
+                NewsSourceCoverage(
+                    feed_source=feed_source,
+                    expected_count=expected_count,
+                    status="unavailable",
+                    warnings=["source_articles_missing"],
+                )
+            )
+            continue
+
+        latest_published_at = row["latest_published_at"]
+        latest_scraped_at = row["latest_scraped_at"]
+        stored_total = int(row["stored_total"] or 0)
+        published_at_count = int(row["published_at_count"] or 0)
+        if published_at_count == 0:
+            warnings.append("published_at_missing")
+        if latest_published_at is None or latest_published_at < stale_cutoff:
+            warnings.append("source_stale")
+        status = "ready" if not warnings else "stale"
+        coverage.append(
+            NewsSourceCoverage(
+                feed_source=feed_source,
+                expected_count=expected_count,
+                stored_total=stored_total,
+                recent_24h=int(row["recent_24h"] or 0),
+                recent_6h=int(row["recent_6h"] or 0),
+                latest_published_at=latest_published_at,
+                latest_scraped_at=latest_scraped_at,
+                published_at_count=published_at_count,
+                status=status,
+                warnings=warnings,
+            )
+        )
+    return coverage
+
+
 async def get_latest_news_preview(
     *,
     db: AsyncSession,
@@ -430,11 +524,18 @@ async def get_news_readiness(
         )
         latest_article_published_at = article_result.scalar_one_or_none()
 
+        source_coverage = await _build_source_coverage(
+            session,
+            market=market,
+            source_counts=latest_run.source_counts if latest_run else {},
+        )
+
         return _news_readiness_payload(
             market=market,
             latest_run=latest_run,
             latest_article_published_at=latest_article_published_at,
             max_age_minutes=max_age_minutes,
+            source_coverage=source_coverage,
         )
 
     if db is not None:

@@ -242,6 +242,19 @@ export interface PreopenLinkedSession {
 
 export type PreopenNewsReadinessStatus = "ready" | "stale" | "unavailable";
 
+export interface PreopenNewsSourceCoverage {
+  feed_source: string;
+  expected_count: number;
+  stored_total: number;
+  recent_24h: number;
+  recent_6h: number;
+  latest_published_at: IsoDateTime | null;
+  latest_scraped_at: IsoDateTime | null;
+  published_at_count: number;
+  status: string;
+  warnings: string[];
+}
+
 export interface PreopenNewsReadinessSummary {
   status: PreopenNewsReadinessStatus;
   is_ready: boolean;
@@ -251,6 +264,7 @@ export interface PreopenNewsReadinessSummary {
   latest_finished_at: IsoDateTime | null;
   latest_article_published_at: IsoDateTime | null;
   source_counts: Record<string, number>;
+  source_coverage: PreopenNewsSourceCoverage[];
   warnings: string[];
   max_age_minutes: number;
 }

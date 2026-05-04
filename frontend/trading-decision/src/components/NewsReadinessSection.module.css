@@ -63,6 +63,30 @@
   font-size: 0.8rem;
 }
 
+.coverageTableWrap {
+  margin: 0.5rem 0 0.9rem;
+  overflow-x: auto;
+}
+
+.coverageTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.coverageTable th,
+.coverageTable td {
+  border-bottom: 1px solid #edf1f5;
+  padding: 0.35rem 0.45rem;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.coverageTable th {
+  color: #5f6b7a;
+  font-weight: 600;
+}
+
 .previewHeading {
   font-size: 0.95rem;
   margin: 0.5rem 0 0.4rem;
