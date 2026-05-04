@@ -34,8 +34,10 @@ from app.schemas.trading_decisions import (
     SessionListResponse,
     SessionStatusLiteral,
     SessionSummary,
+    WorkflowStatusLiteral,
 )
 from app.services import operator_decision_session_service, trading_decision_service
+from app.services.trading_decisions.committee_service import CommitteeSessionService
 from app.services.trading_decision_session_url import (
     build_trading_decision_session_url,
     resolve_trading_decision_base_url,
@@ -248,6 +250,62 @@ async def get_decision(
         )
 
     return _to_session_detail(session_obj)
+
+
+@router.patch("/api/decisions/{session_uuid}/workflow", response_model=SessionDetail)
+async def update_session_workflow(
+    session_uuid: UUID,
+    status_update: WorkflowStatusLiteral,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
+) -> SessionDetail:
+    from app.models.trading_decision import WorkflowStatus
+
+    session_obj = await CommitteeSessionService.update_workflow_status(
+        db,
+        session_uuid=session_uuid,
+        user_id=current_user.id,
+        status=WorkflowStatus(status_update),
+    )
+    if session_obj is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Decision session not found",
+        )
+    await db.commit()
+
+    # Re-fetch to get relationships
+    refetched = await trading_decision_service.get_session_by_uuid(
+        db, session_uuid=session_uuid, user_id=current_user.id
+    )
+    return _to_session_detail(refetched)
+
+
+@router.patch("/api/decisions/{session_uuid}/artifacts", response_model=SessionDetail)
+async def update_session_artifacts(
+    session_uuid: UUID,
+    artifacts_patch: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
+) -> SessionDetail:
+    session_obj = await CommitteeSessionService.update_committee_artifacts(
+        db,
+        session_uuid=session_uuid,
+        user_id=current_user.id,
+        artifacts_patch=artifacts_patch,
+    )
+    if session_obj is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Decision session not found",
+        )
+    await db.commit()
+
+    # Re-fetch
+    refetched = await trading_decision_service.get_session_by_uuid(
+        db, session_uuid=session_uuid, user_id=current_user.id
+    )
+    return _to_session_detail(refetched)
 
 
 @router.post(

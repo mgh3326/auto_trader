@@ -121,5 +121,22 @@ def test_create_and_get_committee_session_router(monkeypatch):
         assert body2["account_mode"] == "kis_mock"
         assert body2["automation"]["enabled"] is True
         
+        # 3. PATCH workflow status
+        resp3 = client.patch(
+            f"/trading/api/decisions/{session_uuid}/workflow",
+            params={"status_update": "evidence_ready"}
+        )
+        assert resp3.status_code == 200
+        assert resp3.json()["workflow_status"] == "evidence_ready"
+        
+        # 4. PATCH artifacts
+        resp4 = client.patch(
+            f"/trading/api/decisions/{session_uuid}/artifacts",
+            json={"evidence": {"technical_analysis": {"summary": "Bullish"}}}
+        )
+        assert resp4.status_code == 200
+        body4 = resp4.json()
+        assert body4["artifacts"]["evidence"]["technical_analysis"]["summary"] == "Bullish"
+        
     finally:
         asyncio.run(_cleanup_user(user_id))
