@@ -48,8 +48,8 @@ describe("PreopenPage", () => {
 
     render(<PreopenPage />, { wrapper: MemoryRouter });
 
-    // Symbol appears in both candidates and reconciliations tables
-    expect(await screen.findAllByText("005930")).toHaveLength(2);
+    // Symbol appears in candidates table, reconciliations table, AND basket preview
+    expect(await screen.findAllByText("005930")).toHaveLength(3);
     expect(screen.getByText("near_fill")).toBeInTheDocument();
     expect(screen.getByText(/Morning scan/)).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 1, name: /Preopen briefing/i })).toBeInTheDocument();
