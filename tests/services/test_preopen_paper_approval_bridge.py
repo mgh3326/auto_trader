@@ -3,80 +3,37 @@
 from __future__ import annotations
 
 import ast
-from datetime import UTC, datetime
-from decimal import Decimal
 from pathlib import Path
-from uuid import uuid4
 
-from app.schemas.preopen import (
-    CandidateSummary,
-    PreopenBriefingArtifact,
-    PreopenDecisionSessionCta,
-    PreopenQaCheck,
-    PreopenQaEvaluatorSummary,
-    PreopenQaScore,
-)
+from app.schemas.preopen import PreopenQaCheck
 from app.services.preopen_paper_approval_bridge import (
     build_preopen_paper_approval_bridge,
 )
+from tests.services.preopen_approval_bridge_helpers import (
+    preopen_artifact,
+    preopen_candidate,
+    preopen_qa,
+)
 
 
-def _candidate(**kwargs) -> CandidateSummary:
-    defaults = {
-        "candidate_uuid": uuid4(),
+def _candidate(**kwargs):
+    payload = {
         "symbol": "KRW-BTC",
         "instrument_type": "crypto",
-        "side": "buy",
-        "candidate_kind": "proposed",
-        "proposed_price": Decimal("100000000"),
-        "proposed_qty": None,
-        "confidence": 70,
+        "price": None,
+        "quantity": None,
         "rationale": "Crypto paper plumbing candidate",
-        "currency": "KRW",
-        "warnings": [],
     }
-    defaults.update(kwargs)
-    return CandidateSummary(**defaults)
+    payload.update(kwargs)
+    return preopen_candidate(**payload)
 
 
-def _artifact(**kwargs) -> PreopenBriefingArtifact:
-    defaults = {
-        "status": "ready",
-        "market_scope": "crypto",
-        "stage": "preopen",
-        "risk_notes": [],
-        "cta": PreopenDecisionSessionCta(
-            state="create_available",
-            label="Create decision session",
-            requires_confirmation=True,
-        ),
-        "qa": {"read_only": True},
-    }
-    defaults.update(kwargs)
-    return PreopenBriefingArtifact(**defaults)
+def _artifact(**kwargs):
+    return preopen_artifact(kwargs.pop("market_scope", "crypto"), **kwargs)
 
 
-def _qa(**kwargs) -> PreopenQaEvaluatorSummary:
-    defaults = {
-        "status": "ready",
-        "generated_at": datetime.now(UTC),
-        "overall": PreopenQaScore(score=90, grade="excellent", confidence="high"),
-        "checks": [
-            PreopenQaCheck(
-                id="actionability_guardrail",
-                label="Actionability guardrail",
-                status="pass",
-                severity="info",
-                summary="Execution disabled.",
-                details={"advisory_only": True, "execution_allowed": False},
-            )
-        ],
-        "blocking_reasons": [],
-        "warnings": [],
-        "coverage": {"advisory_only": True, "execution_allowed": False},
-    }
-    defaults.update(kwargs)
-    return PreopenQaEvaluatorSummary(**defaults)
+def _qa(**kwargs):
+    return preopen_qa(**kwargs)
 
 
 def test_no_run_blocks_bridge() -> None:
