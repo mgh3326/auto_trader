@@ -152,6 +152,32 @@ class OrderPreviewLine(BaseModel):
     correlation_id: str | None = None
 
 
+class OrderBasketPreview(BaseModel):
+    """A previewed basket of lines for one (account_mode, execution_source)."""
+
+    contract_version: Literal["v1"] = "v1"
+    account_mode: AccountMode
+    execution_source: ExecutionSource
+    readiness: ExecutionReadiness
+    lines: list[OrderPreviewLine] = Field(default_factory=list)
+    basket_warnings: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _lines_must_match_basket(self) -> "OrderBasketPreview":
+        for idx, line in enumerate(self.lines):
+            if line.account_mode != self.account_mode:
+                raise ValueError(
+                    f"lines[{idx}].account_mode ({line.account_mode!r}) must match basket "
+                    f"({self.account_mode!r})"
+                )
+            if line.execution_source != self.execution_source:
+                raise ValueError(
+                    f"lines[{idx}].execution_source ({line.execution_source!r}) must match basket "
+                    f"({self.execution_source!r})"
+                )
+        return self
+
+
 __all__ = [
     "CONTRACT_VERSION",
     "AccountMode",
@@ -167,4 +193,5 @@ __all__ = [
     "ExecutionGuard",
     "ExecutionReadiness",
     "OrderPreviewLine",
+    "OrderBasketPreview",
 ]

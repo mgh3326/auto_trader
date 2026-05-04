@@ -212,3 +212,62 @@ class TestOrderPreviewLine:
         kwargs["lifecycle_state"] = "queued"
         with pytest.raises(ValidationError):
             ec.OrderPreviewLine(**kwargs)
+
+
+class TestOrderBasketPreview:
+    def _readiness(self, account="kis_mock", source="preopen"):
+        return ec.ExecutionReadiness(
+            account_mode=account,
+            execution_source=source,
+        )
+
+    def _line(self, **overrides):
+        kwargs = dict(
+            symbol="005930",
+            market="KOSPI",
+            side="buy",
+            account_mode="kis_mock",
+            execution_source="preopen",
+        )
+        kwargs.update(overrides)
+        return ec.OrderPreviewLine(**kwargs)
+
+    def test_empty_basket_defaults(self):
+        basket = ec.OrderBasketPreview(
+            account_mode="kis_mock",
+            execution_source="preopen",
+            readiness=self._readiness(),
+        )
+        assert basket.contract_version == "v1"
+        assert basket.lines == []
+        assert basket.basket_warnings == []
+        assert basket.readiness.is_ready is False
+
+    def test_basket_with_matching_lines(self):
+        basket = ec.OrderBasketPreview(
+            account_mode="kis_mock",
+            execution_source="preopen",
+            readiness=self._readiness(),
+            lines=[self._line(), self._line(symbol="000660")],
+        )
+        assert len(basket.lines) == 2
+
+    def test_line_account_mode_mismatch_rejected(self):
+        with pytest.raises(ValidationError) as excinfo:
+            ec.OrderBasketPreview(
+                account_mode="kis_mock",
+                execution_source="preopen",
+                readiness=self._readiness(),
+                lines=[self._line(account_mode="alpaca_paper")],
+            )
+        assert "account_mode" in str(excinfo.value)
+
+    def test_line_execution_source_mismatch_rejected(self):
+        with pytest.raises(ValidationError) as excinfo:
+            ec.OrderBasketPreview(
+                account_mode="kis_mock",
+                execution_source="preopen",
+                readiness=self._readiness(),
+                lines=[self._line(execution_source="watch")],
+            )
+        assert "execution_source" in str(excinfo.value)
