@@ -93,6 +93,24 @@ def test_ready_kr_buy_candidate_builds_kis_mock_dry_run_preview_metadata() -> No
 
 
 @pytest.mark.unit
+def test_ready_kr_buy_with_implicit_quantity_is_warning_tagged() -> None:
+    bridge = build_kis_mock_preopen_approval_bridge(
+        has_run=True,
+        market_scope="kr",
+        candidates=[_candidate(proposed_qty=None)],
+        briefing_artifact=_artifact(),
+        qa_evaluator=_qa(),
+    )
+
+    assert bridge.status == "warning"
+    item = bridge.candidates[0]
+    assert item.status == "warning"
+    assert item.preview_payload is not None
+    assert item.preview_payload["quantity"] == 1
+    assert item.warnings == ["default_quantity_used:1"]
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("candidate", "expected_reason"),
     [
@@ -300,7 +318,12 @@ def test_high_severity_qa_failure_blocks_kis_mock_bridge() -> None:
 
 @pytest.mark.unit
 def test_kis_mock_bridge_module_imports_only_pure_allowed_modules() -> None:
-    path = Path("app/services/kis_mock_preopen_approval_bridge.py")
+    path = (
+        Path(__file__).parent.parent.parent
+        / "app"
+        / "services"
+        / "kis_mock_preopen_approval_bridge.py"
+    )
     imported_modules = [
         node.module
         for node in ast.walk(ast.parse(path.read_text()))

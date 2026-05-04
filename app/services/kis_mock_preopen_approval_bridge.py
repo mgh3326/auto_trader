@@ -81,6 +81,10 @@ def _build_kr_candidate(
     quantity = int(candidate.proposed_qty) if candidate.proposed_qty is not None else 1
     price = str(int(candidate.proposed_price))
 
+    candidate_warnings = list(candidate.warnings)
+    if candidate.proposed_qty is None:
+        candidate_warnings.append("default_quantity_used:1")
+
     preview_payload = {
         "tool": "kis_mock_place_order",
         "symbol": candidate.symbol,
@@ -96,7 +100,6 @@ def _build_kr_candidate(
         "requires_final_mock_submit_approval": True,
     }
 
-    candidate_warnings = list(candidate.warnings)
     status = "warning" if bridge_has_warnings or candidate_warnings else "available"
 
     return PreopenPaperApprovalCandidate(

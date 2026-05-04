@@ -18,7 +18,7 @@ class FakeKisMockPlaceOrder:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
 
-    def __call__(self, **kwargs: object) -> dict[str, object]:
+    async def __call__(self, **kwargs: object) -> dict[str, object]:
         self.calls.append(kwargs)
         return {
             "ok": True,
@@ -31,10 +31,11 @@ class FakeKisMockPlaceOrder:
 
 
 @pytest.mark.unit
-def test_readiness_mode_is_read_only_and_reports_guard_configuration() -> None:
+@pytest.mark.asyncio
+async def test_readiness_mode_is_read_only_and_reports_guard_configuration() -> None:
     route = FakeKisMockPlaceOrder()
 
-    result = run_kis_mock_market_open_pilot(
+    result = await run_kis_mock_market_open_pilot(
         KisMockMarketOpenPilotRequest(
             mode="readiness",
             symbol="005930",
@@ -58,12 +59,13 @@ def test_readiness_mode_is_read_only_and_reports_guard_configuration() -> None:
 
 
 @pytest.mark.unit
-def test_dry_run_calls_only_typed_kis_mock_place_order_with_forced_dry_run_true() -> (
+@pytest.mark.asyncio
+async def test_dry_run_calls_only_typed_kis_mock_place_order_with_forced_dry_run_true() -> (
     None
 ):
     route = FakeKisMockPlaceOrder()
 
-    result = run_kis_mock_market_open_pilot(
+    result = await run_kis_mock_market_open_pilot(
         KisMockMarketOpenPilotRequest(
             mode="dry-run",
             symbol="005930",
@@ -100,12 +102,13 @@ def test_dry_run_calls_only_typed_kis_mock_place_order_with_forced_dry_run_true(
 
 
 @pytest.mark.unit
-def test_submit_mock_rejects_missing_exact_approval_text_without_calling_route() -> (
+@pytest.mark.asyncio
+async def test_submit_mock_rejects_missing_exact_approval_text_without_calling_route() -> (
     None
 ):
     route = FakeKisMockPlaceOrder()
 
-    result = run_kis_mock_market_open_pilot(
+    result = await run_kis_mock_market_open_pilot(
         KisMockMarketOpenPilotRequest(
             mode="submit-mock",
             symbol="005930",
@@ -127,13 +130,14 @@ def test_submit_mock_rejects_missing_exact_approval_text_without_calling_route()
 
 
 @pytest.mark.unit
-def test_submit_mock_rejects_whitespace_variation_in_approval_text() -> None:
+@pytest.mark.asyncio
+async def test_submit_mock_rejects_whitespace_variation_in_approval_text() -> None:
     route = FakeKisMockPlaceOrder()
     approval = expected_kis_mock_submit_approval_text(
         symbol="005930", side="buy", quantity=1, price=Decimal("229500")
     )
 
-    result = run_kis_mock_market_open_pilot(
+    result = await run_kis_mock_market_open_pilot(
         KisMockMarketOpenPilotRequest(
             mode="submit-mock",
             symbol="005930",
@@ -152,13 +156,16 @@ def test_submit_mock_rejects_whitespace_variation_in_approval_text() -> None:
 
 
 @pytest.mark.unit
-def test_submit_mock_rejects_non_regular_session_even_with_exact_approval() -> None:
+@pytest.mark.asyncio
+async def test_submit_mock_rejects_non_regular_session_even_with_exact_approval() -> (
+    None
+):
     route = FakeKisMockPlaceOrder()
     approval = expected_kis_mock_submit_approval_text(
         symbol="005930", side="buy", quantity=1, price=Decimal("229500")
     )
 
-    result = run_kis_mock_market_open_pilot(
+    result = await run_kis_mock_market_open_pilot(
         KisMockMarketOpenPilotRequest(
             mode="submit-mock",
             symbol="005930",
@@ -177,13 +184,14 @@ def test_submit_mock_rejects_non_regular_session_even_with_exact_approval() -> N
 
 
 @pytest.mark.unit
-def test_submit_mock_rejects_quantity_above_one_by_default() -> None:
+@pytest.mark.asyncio
+async def test_submit_mock_rejects_quantity_above_one_by_default() -> None:
     route = FakeKisMockPlaceOrder()
     approval = expected_kis_mock_submit_approval_text(
         symbol="005930", side="buy", quantity=2, price=Decimal("229500")
     )
 
-    result = run_kis_mock_market_open_pilot(
+    result = await run_kis_mock_market_open_pilot(
         KisMockMarketOpenPilotRequest(
             mode="submit-mock",
             symbol="005930",
@@ -269,7 +277,8 @@ def test_submit_mock_rejects_quantity_above_one_by_default() -> None:
         ),
     ],
 )
-def test_runner_rejects_unsafe_request_shape_before_any_route_call(
+@pytest.mark.asyncio
+async def test_runner_rejects_unsafe_request_shape_before_any_route_call(
     symbol: str,
     side: str,
     quantity: int,
@@ -280,7 +289,7 @@ def test_runner_rejects_unsafe_request_shape_before_any_route_call(
 ) -> None:
     route = FakeKisMockPlaceOrder()
 
-    result = run_kis_mock_market_open_pilot(
+    result = await run_kis_mock_market_open_pilot(
         KisMockMarketOpenPilotRequest(
             mode="dry-run",
             symbol=symbol,
@@ -300,13 +309,16 @@ def test_runner_rejects_unsafe_request_shape_before_any_route_call(
 
 
 @pytest.mark.unit
-def test_submit_mock_with_exact_approval_calls_typed_route_with_dry_run_false() -> None:
+@pytest.mark.asyncio
+async def test_submit_mock_with_exact_approval_calls_typed_route_with_dry_run_false() -> (
+    None
+):
     route = FakeKisMockPlaceOrder()
     approval = expected_kis_mock_submit_approval_text(
         symbol="005930", side="buy", quantity=1, price=Decimal("229500")
     )
 
-    result = run_kis_mock_market_open_pilot(
+    result = await run_kis_mock_market_open_pilot(
         KisMockMarketOpenPilotRequest(
             mode="submit-mock",
             symbol="005930",
@@ -337,7 +349,8 @@ def test_submit_mock_with_exact_approval_calls_typed_route_with_dry_run_false() 
 
 
 @pytest.mark.unit
-def test_report_classification_separates_acceptance_from_inferred_fill() -> None:
+@pytest.mark.asyncio
+async def test_report_classification_separates_acceptance_from_inferred_fill() -> None:
     assert (
         classify_kis_mock_market_open_report(
             response={"ok": True, "fill_recorded": False, "journal_created": False},
