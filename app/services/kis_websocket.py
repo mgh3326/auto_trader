@@ -13,6 +13,7 @@ from app.services.kis_websocket_internal.approval_keys import (
     get_approval_key,
 )
 from app.services.kis_websocket_internal.client import KISExecutionWebSocket
+from app.services.kis_websocket_internal.events import build_lifecycle_event
 from app.services.kis_websocket_internal.constants import (
     APPROVAL_KEY_CACHE_KEY,
     APPROVAL_KEY_TTL_SECONDS,
@@ -64,6 +65,7 @@ __all__ = [
     "_get_cached_approval_key",
     "_is_valid_approval_key",
     "_issue_approval_key",
+    "build_lifecycle_event",
     "close_approval_key_redis",
     "get_approval_key",
 ]
