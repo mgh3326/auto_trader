@@ -110,9 +110,7 @@ def build_lifecycle_event(
 
     state, warnings = _resolve_state(parsed)
 
-    detail: dict[str, Any] = {
-        key: parsed[key] for key in _DETAIL_KEYS if key in parsed
-    }
+    detail: dict[str, Any] = {key: parsed[key] for key in _DETAIL_KEYS if key in parsed}
 
     broker_order_id = parsed.get("order_id")
     if broker_order_id is not None:

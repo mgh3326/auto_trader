@@ -118,6 +118,7 @@ async def test_smoke_does_not_invoke_on_execution(monkeypatch):
 
     assert (
         "app.services.execution_event" not in sys.modules
-        or "publish_execution_event" not in dir(sys.modules["app.services.execution_event"])
+        or "publish_execution_event"
+        not in dir(sys.modules["app.services.execution_event"])
         or True  # final fallback — this assertion is weak; primary check is exit_code
     )
