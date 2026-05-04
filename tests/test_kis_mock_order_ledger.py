@@ -49,6 +49,12 @@ def test_model_columns_and_constraints():
         "strategy",
         "notes",
         "created_at",
+        # ROB-102 additive columns
+        "lifecycle_state",
+        "holdings_baseline_qty",
+        "reconcile_attempts",
+        "reconciled_at",
+        "last_reconcile_detail",
     } <= cols
     assert KISMockOrderLedger.__table__.schema == "review"
     # Naming convention: ck_%(table_name)s_%(constraint_name)s
@@ -59,6 +65,9 @@ def test_model_columns_and_constraints():
     )
     assert any("kis_mock_ledger_broker_kis" in (n or "") for n in constraint_names)
     assert any("kis_mock_ledger_status_allowed" in (n or "") for n in constraint_names)
+    assert any(
+        "kis_mock_ledger_lifecycle_state_allowed" in (n or "") for n in constraint_names
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -536,3 +545,75 @@ async def test_kis_live_path_unchanged_calls_save_order_fill(monkeypatch):
     assert result["success"] is True, result
     save_fill.assert_awaited_once()
     save_ledger.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# ROB-102: lifecycle mapping
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_status_to_lifecycle_state_mapping():
+    """ROB-102: existing 3-value `status` maps to ROB-100 lifecycle states."""
+    from app.mcp_server.tooling.kis_mock_ledger import _status_to_lifecycle_state
+
+    assert _status_to_lifecycle_state("accepted") == "accepted"
+    assert _status_to_lifecycle_state("rejected") == "failed"
+    assert _status_to_lifecycle_state("unknown") == "anomaly"
+    assert _status_to_lifecycle_state(None) == "anomaly"
+    assert _status_to_lifecycle_state("garbage") == "anomaly"
+
+
+@pytest.mark.asyncio
+async def test_save_helper_persists_lifecycle_state(monkeypatch):
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    captured: dict = {}
+
+    class FakeResult:
+        inserted_primary_key = (321,)
+
+    class FakeDB:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            pass
+
+        async def execute(self, stmt):
+            captured["stmt"] = stmt
+            return FakeResult()
+
+        async def commit(self):
+            captured["committed"] = True
+
+    monkeypatch.setattr(
+        kis_mock_ledger, "_order_session_factory", lambda: lambda: FakeDB()
+    )
+
+    new_id = await kis_mock_ledger._save_kis_mock_order_ledger(
+        symbol="005930",
+        instrument_type="equity_kr",
+        side="buy",
+        order_type="limit",
+        quantity=10,
+        price=1000,
+        amount=10000,
+        currency="KRW",
+        order_no="MOCK-1",
+        order_time=None,
+        krx_fwdg_ord_orgno=None,
+        status="accepted",
+        response_code="0",
+        response_message=None,
+        raw_response={"rt_cd": "0"},
+        reason=None,
+        thesis=None,
+        strategy=None,
+        notes=None,
+        lifecycle_state="accepted",
+    )
+    assert new_id == 321
+    # Verify that lifecycle_state is in the insert values
+    params = captured["stmt"].compile().params
+    assert params["lifecycle_state"] == "accepted"

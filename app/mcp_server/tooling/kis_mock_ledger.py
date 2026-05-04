@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
 from typing import Any
 from typing import cast as typing_cast
 
@@ -9,10 +10,69 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
+from app.core.symbol import to_db_symbol
 from app.core.timezone import now_kst
+from app.jobs.kis_mock_reconciliation_job import run_kis_mock_reconciliation
 from app.mcp_server.tooling.shared import logger
 from app.mcp_server.tooling.shared import to_float as _to_float
 from app.models.review import KISMockOrderLedger
+
+_LEDGER_STATUS_TO_LIFECYCLE: dict[str, str] = {
+    "accepted": "accepted",
+    "rejected": "failed",
+    "unknown": "anomaly",
+}
+
+
+def _status_to_lifecycle_state(status: str | None) -> str:
+    if status is None:
+        return "anomaly"
+    return _LEDGER_STATUS_TO_LIFECYCLE.get(status, "anomaly")
+
+
+def _to_decimal(val: Any) -> Decimal | None:
+    if val in ("", None):
+        return None
+    try:
+        return Decimal(str(val))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+
+
+async def _fetch_kis_mock_baseline_qty(
+    *, normalized_symbol: str, market_type: str
+) -> Decimal | None:
+    """Best-effort: read current is_mock holdings qty for ``normalized_symbol``.
+
+    Returns ``Decimal(0)`` when the position simply does not exist (legitimate
+    pre-buy baseline) and ``None`` only on broker/decoding failure so that the
+    reconciler can flag it as ``baseline_missing`` later.
+    """
+    from app.services.brokers.kis import KISClient
+
+    try:
+        kis = KISClient(is_mock=True)
+        if market_type == "equity_us":
+            stocks = await kis.fetch_my_stocks(is_mock=True, is_overseas=True)
+            for stock in stocks or []:
+                if to_db_symbol(str(stock.get("ovrs_pdno") or "")) == normalized_symbol:
+                    qty = _to_decimal(stock.get("ovrs_cblc_qty"))
+                    return qty if qty is not None else Decimal(0)
+            return Decimal(0)
+        stocks = await kis.fetch_my_stocks(is_mock=True, is_overseas=False)
+        for stock in stocks or []:
+            if to_db_symbol(str(stock.get("pdno") or "")) == normalized_symbol:
+                qty = _to_decimal(stock.get("hldg_qty"))
+                return qty if qty is not None else Decimal(0)
+        return Decimal(0)
+    except Exception as exc:
+        logger.warning(
+            "Failed to fetch KIS mock baseline for %s (%s): %s",
+            normalized_symbol,
+            market_type,
+            exc,
+        )
+        return None
 
 
 def _order_session_factory() -> async_sessionmaker[AsyncSession]:
@@ -42,11 +102,14 @@ async def _save_kis_mock_order_ledger(
     thesis: str | None,
     strategy: str | None,
     notes: str | None,
+    lifecycle_state: str | None = None,
+    holdings_baseline_qty: Decimal | None = None,
 ) -> int | None:
     """Insert one row into review.kis_mock_order_ledger.
 
     Returns the new primary-key id, or None on conflict / error.
     """
+    resolved_lifecycle = lifecycle_state or _status_to_lifecycle_state(status)
     try:
         async with _order_session_factory()() as db:
             stmt = (
@@ -75,6 +138,8 @@ async def _save_kis_mock_order_ledger(
                     thesis=thesis,
                     strategy=strategy,
                     notes=notes,
+                    lifecycle_state=resolved_lifecycle,
+                    holdings_baseline_qty=holdings_baseline_qty,
                 )
                 .on_conflict_do_nothing(constraint="uq_kis_mock_ledger_order_no")
             )
@@ -100,6 +165,7 @@ async def _record_kis_mock_order(
     thesis: str | None,
     strategy: str | None,
     notes: str | None,
+    holdings_baseline_qty: Decimal | None = None,
 ) -> dict[str, Any]:
     """Build ledger row from execution result and return the mock-order response dict."""
     price_val = _to_float(dry_run_result.get("price"), default=0.0)
@@ -143,6 +209,8 @@ async def _record_kis_mock_order(
         thesis=thesis,
         strategy=strategy,
         notes=notes,
+        lifecycle_state=_status_to_lifecycle_state(status),
+        holdings_baseline_qty=holdings_baseline_qty,
     )
 
     return {
@@ -169,3 +237,22 @@ async def _record_kis_mock_order(
             else "KIS mock order accepted but ledger insert returned no id"
         ),
     }
+
+
+async def kis_mock_reconciliation_run_impl(
+    *,
+    dry_run: bool = True,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """Execute KIS mock order reconciliation and return summary."""
+    try:
+        async with _order_session_factory()() as db:
+            return await run_kis_mock_reconciliation(db, dry_run=dry_run, limit=limit)
+    except Exception as exc:
+        logger.exception("Failed to run KIS mock reconciliation: %s", exc)
+        return {
+            "success": False,
+            "error": str(exc),
+            "source": "mcp",
+            "account_mode": "kis_mock",
+        }
