@@ -61,7 +61,9 @@ def preopen_artifact(market_scope: str, **overrides) -> PreopenBriefingArtifact:
     return PreopenBriefingArtifact(**payload)
 
 
-def preopen_qa(summary: str = "Execution disabled.", **overrides) -> PreopenQaEvaluatorSummary:
+def preopen_qa(
+    summary: str = "Execution disabled.", **overrides
+) -> PreopenQaEvaluatorSummary:
     payload = {
         "status": "ready",
         "generated_at": datetime.now(UTC),
