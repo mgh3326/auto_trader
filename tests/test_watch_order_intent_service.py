@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import AsyncIterator
 
 import pytest
 from sqlalchemy import select
@@ -16,14 +15,14 @@ from app.services.watch_order_intent_service import (
 
 
 def _intent_policy(**overrides: object) -> IntentPolicy:
-    base = dict(
-        action="create_order_intent",
-        side="buy",
-        quantity=1,
-        notional_krw=None,
-        limit_price=None,
-        max_notional_krw=Decimal("1500000"),
-    )
+    base = {
+        "action": "create_order_intent",
+        "side": "buy",
+        "quantity": 1,
+        "notional_krw": None,
+        "limit_price": None,
+        "max_notional_krw": Decimal("1500000"),
+    }
     base.update(overrides)
     return IntentPolicy(**base)  # type: ignore[arg-type]
 

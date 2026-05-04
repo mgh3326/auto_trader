@@ -10,7 +10,6 @@ from app.core.config import settings
 from app.core.timezone import now_kst
 from app.services.watch_intent_policy import (
     IntentPolicy,
-    NotifyOnlyPolicy,
     WatchPolicyError,
     parse_policy,
 )
