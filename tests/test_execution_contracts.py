@@ -310,3 +310,85 @@ class TestOrderLifecycleEvent:
                 state="queued",  # not in the literal
                 occurred_at=datetime(2026, 5, 4, 10, 0, tzinfo=timezone.utc),
             )
+
+
+class TestSerializationRoundTrip:
+    def _sample_models(self):
+        return [
+            ec.ExecutionGuard(
+                execution_allowed=False,
+                approval_required=True,
+                blocking_reasons=["market_closed"],
+                warnings=["soft warn"],
+            ),
+            ec.ExecutionReadiness(
+                account_mode="kis_mock",
+                execution_source="preopen",
+                is_ready=False,
+                guard=ec.ExecutionGuard(blocking_reasons=["news_stale"]),
+                checked_at=datetime(2026, 5, 4, 9, 0, tzinfo=timezone.utc),
+                notes=["initial check"],
+            ),
+            ec.OrderPreviewLine(
+                symbol="005930",
+                market="KOSPI",
+                side="buy",
+                account_mode="kis_mock",
+                execution_source="preopen",
+                quantity=Decimal("10"),
+                limit_price=Decimal("70000.5"),
+                notional=Decimal("705005"),
+                currency="KRW",
+                rationale=["test"],
+                correlation_id="decision_run_xyz",
+            ),
+            ec.OrderBasketPreview(
+                account_mode="alpaca_paper",
+                execution_source="manual",
+                readiness=ec.ExecutionReadiness(
+                    account_mode="alpaca_paper",
+                    execution_source="manual",
+                ),
+                lines=[
+                    ec.OrderPreviewLine(
+                        symbol="AAPL",
+                        market="NASDAQ",
+                        side="buy",
+                        account_mode="alpaca_paper",
+                        execution_source="manual",
+                        notional=Decimal("100"),
+                        currency="USD",
+                    )
+                ],
+            ),
+            ec.OrderLifecycleEvent(
+                account_mode="kis_live",
+                execution_source="websocket",
+                state="fill",
+                occurred_at=datetime(2026, 5, 4, 10, 1, tzinfo=timezone.utc),
+                broker_order_id="0000123456",
+                correlation_id="watch_alert_xyz",
+                detail={"raw": {"FILL_QTY": "10"}},
+            ),
+        ]
+
+    def test_python_round_trip(self):
+        for model in self._sample_models():
+            dumped = model.model_dump()
+            restored = type(model).model_validate(dumped)
+            assert restored == model
+
+    def test_json_round_trip(self):
+        for model in self._sample_models():
+            dumped_json = model.model_dump_json()
+            restored = type(model).model_validate_json(dumped_json)
+            assert restored == model
+
+    def test_contract_version_present_in_serialized_output(self):
+        for model in self._sample_models():
+            dumped = model.model_dump()
+            if "contract_version" in type(model).model_fields:
+                assert dumped["contract_version"] == "v1"
+
+    def test_module_constant_matches_field_default(self):
+        assert ec.CONTRACT_VERSION == "v1"
