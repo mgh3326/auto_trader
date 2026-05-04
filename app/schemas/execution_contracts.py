@@ -22,6 +22,7 @@ states cannot coexist.
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -132,6 +133,25 @@ class ExecutionReadiness(BaseModel):
         return self
 
 
+class OrderPreviewLine(BaseModel):
+    """A single previewed broker order line. Shared shape for basket previews and intent previews."""
+
+    contract_version: Literal["v1"] = "v1"
+    symbol: str
+    market: str
+    side: Literal["buy", "sell"]
+    account_mode: AccountMode
+    execution_source: ExecutionSource
+    lifecycle_state: OrderLifecycleState = "previewed"
+    quantity: Decimal | None = None
+    limit_price: Decimal | None = None
+    notional: Decimal | None = None
+    currency: str | None = None
+    guard: ExecutionGuard = Field(default_factory=ExecutionGuard)
+    rationale: list[str] = Field(default_factory=list)
+    correlation_id: str | None = None
+
+
 __all__ = [
     "CONTRACT_VERSION",
     "AccountMode",
@@ -146,4 +166,5 @@ __all__ = [
     "is_in_flight_state",
     "ExecutionGuard",
     "ExecutionReadiness",
+    "OrderPreviewLine",
 ]
