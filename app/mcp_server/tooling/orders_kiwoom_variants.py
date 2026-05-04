@@ -71,7 +71,10 @@ def _exchange_error(exchange: str | None) -> dict[str, Any] | None:
     if exchange is None:
         return None
     value = str(exchange).strip().upper()
-    if value in constants.MOCK_REJECTED_EXCHANGES or value != constants.MOCK_EXCHANGE_KRX:
+    if (
+        value in constants.MOCK_REJECTED_EXCHANGES
+        or value != constants.MOCK_EXCHANGE_KRX
+    ):
         return {
             "success": False,
             "error": f"kiwoom_mock supports KRX only; rejected exchange={exchange!r}.",
@@ -174,7 +177,7 @@ async def _kiwoom_mock_orderable_cash_impl(**kwargs: Any) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def register(mcp: "FastMCP") -> None:
+def register(mcp: FastMCP) -> None:
     @mcp.tool(
         name="kiwoom_mock_preview_order",
         description="Preview a KRX-only Kiwoom mock order without sending.",
@@ -300,9 +303,7 @@ def register(mcp: "FastMCP") -> None:
     ) -> dict[str, Any]:
         if (guard := _mock_config_error()) is not None:
             return guard
-        return await _kiwoom_mock_order_history_impl(
-            cont_yn=cont_yn, next_key=next_key
-        )
+        return await _kiwoom_mock_order_history_impl(cont_yn=cont_yn, next_key=next_key)
 
     @mcp.tool(
         name="kiwoom_mock_get_positions",

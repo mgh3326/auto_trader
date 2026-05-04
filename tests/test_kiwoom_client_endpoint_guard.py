@@ -3,12 +3,14 @@
 
 from __future__ import annotations
 
+import httpx
 import pytest
 
+from app.services.brokers.kiwoom import constants
 from app.services.brokers.kiwoom.client import (
-    KiwoomMockClient,
     KiwoomConfigurationError,
     KiwoomEndpointError,
+    KiwoomMockClient,
 )
 
 
@@ -54,9 +56,6 @@ def test_from_app_settings_fails_closed_when_credentials_missing(monkeypatch):
     assert "KIWOOM_MOCK_APP_KEY" in msg
     assert "KIWOOM_MOCK_APP_SECRET" in msg
     assert "KIWOOM_MOCK_ACCOUNT_NO" in msg
-
-import httpx
-from app.services.brokers.kiwoom import constants
 
 
 @pytest.mark.asyncio

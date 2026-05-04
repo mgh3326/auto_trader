@@ -42,9 +42,7 @@ def _ensure_krx(exchange: str | None) -> str:
             f"Kiwoom mock supports KRX only; rejected exchange={value!r}"
         )
     if value != constants.MOCK_EXCHANGE_KRX:
-        raise KiwoomOrderRejected(
-            f"Kiwoom mock supports KRX only; got {value!r}"
-        )
+        raise KiwoomOrderRejected(f"Kiwoom mock supports KRX only; got {value!r}")
     return value
 
 

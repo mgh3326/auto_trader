@@ -30,9 +30,7 @@ class KiwoomEndpointError(RuntimeError):
 
 def _validate_relative_path(path: str) -> None:
     if not path.startswith("/") or "://" in path:
-        raise ValueError(
-            f"Kiwoom request path must be a relative path; got {path!r}"
-        )
+        raise ValueError(f"Kiwoom request path must be a relative path; got {path!r}")
 
 
 class KiwoomMockClient:
@@ -66,7 +64,7 @@ class KiwoomMockClient:
         self._token_override: str | None = None
 
     @classmethod
-    def from_app_settings(cls) -> "KiwoomMockClient":
+    def from_app_settings(cls) -> KiwoomMockClient:
         from app.core.config import settings, validate_kiwoom_mock_config
 
         missing = validate_kiwoom_mock_config(settings)

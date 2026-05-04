@@ -531,6 +531,7 @@ def validate_kis_mock_config(settings_obj: Any = settings) -> list[str]:
         missing.append("KIS_MOCK_ACCOUNT_NO")
     return missing
 
+
 def validate_kiwoom_mock_config(settings_obj: Any = settings) -> list[str]:
     """Return missing Kiwoom mock env names without exposing configured values."""
 
