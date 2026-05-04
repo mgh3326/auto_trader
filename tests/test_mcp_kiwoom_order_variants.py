@@ -158,7 +158,9 @@ async def test_cancel_rejects_unsafe_order_ids(monkeypatch, bad_id):
 
 
 @pytest.mark.asyncio
-async def test_place_order_confirmed_returns_explicit_not_implemented_failure(monkeypatch):
+async def test_place_order_confirmed_returns_explicit_not_implemented_failure(
+    monkeypatch,
+):
     """dry_run=False + confirm=True must NOT return stub success — that would
     trick operators into thinking a real mock order was submitted."""
 
@@ -191,7 +193,9 @@ async def test_place_order_confirmed_returns_explicit_not_implemented_failure(mo
 
 
 @pytest.mark.asyncio
-async def test_cancel_order_confirmed_returns_explicit_not_implemented_failure(monkeypatch):
+async def test_cancel_order_confirmed_returns_explicit_not_implemented_failure(
+    monkeypatch,
+):
     from app.mcp_server.tooling import orders_kiwoom_variants as mod
 
     impl_calls = {"count": 0}
@@ -218,7 +222,9 @@ async def test_cancel_order_confirmed_returns_explicit_not_implemented_failure(m
 
 
 @pytest.mark.asyncio
-async def test_modify_order_confirmed_returns_explicit_not_implemented_failure(monkeypatch):
+async def test_modify_order_confirmed_returns_explicit_not_implemented_failure(
+    monkeypatch,
+):
     from app.mcp_server.tooling import orders_kiwoom_variants as mod
 
     impl_calls = {"count": 0}

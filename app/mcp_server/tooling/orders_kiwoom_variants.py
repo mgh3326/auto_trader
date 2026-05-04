@@ -96,7 +96,9 @@ def _order_id_error(order_id: str) -> dict[str, Any] | None:
     return None
 
 
-def _positive_amount_error(name: str, value: float | int | None) -> dict[str, Any] | None:
+def _positive_amount_error(
+    name: str, value: float | int | None
+) -> dict[str, Any] | None:
     """Reject zero/negative quantities and prices before any broker call."""
 
     if value is None:
@@ -295,7 +297,9 @@ def register(mcp: FastMCP) -> None:
             return guard
         if (guard := _order_id_error(order_id)) is not None:
             return guard
-        if (guard := _positive_amount_error("cancel_quantity", cancel_quantity)) is not None:
+        if (
+            guard := _positive_amount_error("cancel_quantity", cancel_quantity)
+        ) is not None:
             return guard
         if not dry_run:
             if not confirm:
