@@ -420,3 +420,34 @@ class TestCompatibilityWithExistingSchemas:
 
         req = OrderIntentPreviewRequest()
         assert req.execution_mode == "requires_final_approval"
+
+
+class TestModuleIsLeaf:
+    def test_does_not_import_other_app_modules(self):
+        import importlib
+        import sys
+
+        # Drop everything under app.* so we measure only what loading
+        # execution_contracts pulls in. Capture and restore so the rest of
+        # the test session is unaffected.
+        snapshot = {
+            name: mod for name, mod in sys.modules.items() if name.startswith("app")
+        }
+        for name in list(snapshot):
+            del sys.modules[name]
+        try:
+            importlib.import_module("app.schemas.execution_contracts")
+            loaded_app_modules = {
+                name for name in sys.modules if name.startswith("app")
+            }
+            allowed = {"app", "app.schemas", "app.schemas.execution_contracts"}
+            unexpected = loaded_app_modules - allowed
+            assert unexpected == set(), (
+                f"execution_contracts pulled in unexpected app.* modules: {unexpected}"
+            )
+        finally:
+            for name in list(sys.modules):
+                if name.startswith("app"):
+                    del sys.modules[name]
+            for name, mod in snapshot.items():
+                sys.modules[name] = mod
