@@ -49,6 +49,12 @@ def test_model_columns_and_constraints():
         "strategy",
         "notes",
         "created_at",
+        # ROB-102 additive columns
+        "lifecycle_state",
+        "holdings_baseline_qty",
+        "reconcile_attempts",
+        "reconciled_at",
+        "last_reconcile_detail",
     } <= cols
     assert KISMockOrderLedger.__table__.schema == "review"
     # Naming convention: ck_%(table_name)s_%(constraint_name)s
@@ -59,6 +65,10 @@ def test_model_columns_and_constraints():
     )
     assert any("kis_mock_ledger_broker_kis" in (n or "") for n in constraint_names)
     assert any("kis_mock_ledger_status_allowed" in (n or "") for n in constraint_names)
+    assert any(
+        "kis_mock_ledger_lifecycle_state_allowed" in (n or "")
+        for n in constraint_names
+    )
 
 
 # ---------------------------------------------------------------------------
