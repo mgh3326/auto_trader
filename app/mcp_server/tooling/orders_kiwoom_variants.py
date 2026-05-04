@@ -96,6 +96,45 @@ def _order_id_error(order_id: str) -> dict[str, Any] | None:
     return None
 
 
+def _positive_amount_error(name: str, value: float | int | None) -> dict[str, Any] | None:
+    """Reject zero/negative quantities and prices before any broker call."""
+
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return {
+            "success": False,
+            "error": f"kiwoom_mock requires {name} to be numeric; got {value!r}",
+            "source": "kiwoom",
+            "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
+        }
+    if not numeric > 0:
+        return {
+            "success": False,
+            "error": f"kiwoom_mock requires {name} > 0; got {value!r}",
+            "source": "kiwoom",
+            "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
+        }
+    return None
+
+
+_CONFIRMED_NOT_IMPLEMENTED_ERROR = (
+    "kiwoom_mock confirmed execution is not implemented in this PR; "
+    "use dry_run=True to preview."
+)
+
+
+def _confirmed_not_implemented(tool_name: str) -> dict[str, Any]:
+    return {
+        "success": False,
+        "error": f"{tool_name}: {_CONFIRMED_NOT_IMPLEMENTED_ERROR}",
+        "source": "kiwoom",
+        "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Implementation seams (overridable via monkeypatch in tests).
 
@@ -219,16 +258,20 @@ def register(mcp: FastMCP) -> None:
             _mock_config_error(),
             _market_error(market),
             _exchange_error(exchange),
+            _positive_amount_error("quantity", quantity),
+            _positive_amount_error("price", price),
         ):
             if guard:
                 return guard
-        if not dry_run and not confirm:
-            return {
-                "success": False,
-                "error": "kiwoom_mock_place_order requires confirm=True when dry_run=False.",
-                "source": "kiwoom",
-                "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
-            }
+        if not dry_run:
+            if not confirm:
+                return {
+                    "success": False,
+                    "error": "kiwoom_mock_place_order requires confirm=True when dry_run=False.",
+                    "source": "kiwoom",
+                    "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
+                }
+            return _confirmed_not_implemented("kiwoom_mock_place_order")
         return await _kiwoom_mock_place_order_impl(
             symbol=symbol,
             side=side,
@@ -244,6 +287,7 @@ def register(mcp: FastMCP) -> None:
     async def kiwoom_mock_cancel_order(
         order_id: str,
         symbol: str | None = None,
+        cancel_quantity: int | None = None,
         dry_run: bool = True,
         confirm: bool = False,
     ) -> dict[str, Any]:
@@ -251,15 +295,22 @@ def register(mcp: FastMCP) -> None:
             return guard
         if (guard := _order_id_error(order_id)) is not None:
             return guard
-        if not dry_run and not confirm:
-            return {
-                "success": False,
-                "error": "kiwoom_mock_cancel_order requires confirm=True when dry_run=False.",
-                "source": "kiwoom",
-                "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
-            }
+        if (guard := _positive_amount_error("cancel_quantity", cancel_quantity)) is not None:
+            return guard
+        if not dry_run:
+            if not confirm:
+                return {
+                    "success": False,
+                    "error": "kiwoom_mock_cancel_order requires confirm=True when dry_run=False.",
+                    "source": "kiwoom",
+                    "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
+                }
+            return _confirmed_not_implemented("kiwoom_mock_cancel_order")
         return await _kiwoom_mock_cancel_impl(
-            order_id=order_id, symbol=symbol, dry_run=dry_run
+            order_id=order_id,
+            symbol=symbol,
+            cancel_quantity=cancel_quantity,
+            dry_run=dry_run,
         )
 
     @mcp.tool(
@@ -278,13 +329,21 @@ def register(mcp: FastMCP) -> None:
             return guard
         if (guard := _order_id_error(order_id)) is not None:
             return guard
-        if not dry_run and not confirm:
-            return {
-                "success": False,
-                "error": "kiwoom_mock_modify_order requires confirm=True when dry_run=False.",
-                "source": "kiwoom",
-                "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
-            }
+        for guard in (
+            _positive_amount_error("new_quantity", new_quantity),
+            _positive_amount_error("new_price", new_price),
+        ):
+            if guard:
+                return guard
+        if not dry_run:
+            if not confirm:
+                return {
+                    "success": False,
+                    "error": "kiwoom_mock_modify_order requires confirm=True when dry_run=False.",
+                    "source": "kiwoom",
+                    "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
+                }
+            return _confirmed_not_implemented("kiwoom_mock_modify_order")
         return await _kiwoom_mock_modify_impl(
             order_id=order_id,
             symbol=symbol,
