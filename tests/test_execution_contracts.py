@@ -157,3 +157,58 @@ class TestExecutionReadiness:
                 account_mode="kis_mock",
                 execution_source="cron",  # not in the literal
             )
+
+
+from decimal import Decimal
+
+
+class TestOrderPreviewLine:
+    def _minimal_kwargs(self):
+        return dict(
+            symbol="005930",
+            market="KOSPI",
+            side="buy",
+            account_mode="kis_mock",
+            execution_source="preopen",
+        )
+
+    def test_defaults(self):
+        line = ec.OrderPreviewLine(**self._minimal_kwargs())
+        assert line.contract_version == "v1"
+        assert line.lifecycle_state == "previewed"
+        assert line.quantity is None
+        assert line.limit_price is None
+        assert line.notional is None
+        assert line.currency is None
+        assert line.guard.execution_allowed is False
+        assert line.guard.approval_required is True
+        assert line.rationale == []
+        assert line.correlation_id is None
+
+    def test_full_construction(self):
+        line = ec.OrderPreviewLine(
+            **self._minimal_kwargs(),
+            quantity=Decimal("10"),
+            limit_price=Decimal("70000"),
+            notional=Decimal("700000"),
+            currency="KRW",
+            rationale=["RSI oversold", "above MA20"],
+            correlation_id="decision_run_abc123",
+        )
+        assert line.quantity == Decimal("10")
+        assert line.limit_price == Decimal("70000")
+        assert line.notional == Decimal("700000")
+        assert line.currency == "KRW"
+        assert line.correlation_id == "decision_run_abc123"
+
+    def test_invalid_side_rejected(self):
+        kwargs = self._minimal_kwargs()
+        kwargs["side"] = "hold"
+        with pytest.raises(ValidationError):
+            ec.OrderPreviewLine(**kwargs)
+
+    def test_invalid_lifecycle_state_rejected(self):
+        kwargs = self._minimal_kwargs()
+        kwargs["lifecycle_state"] = "queued"
+        with pytest.raises(ValidationError):
+            ec.OrderPreviewLine(**kwargs)
