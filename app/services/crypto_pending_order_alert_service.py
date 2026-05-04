@@ -54,6 +54,7 @@ class CryptoPendingOrderAlertConfig:
     failure_channel_id: str
     normal_webhook_url: str | None
     failure_webhook_url: str | None
+    discord_bot_token: str | None
     trader_base_url: str
 
     @classmethod
@@ -84,8 +85,21 @@ class CryptoPendingOrderAlertConfig:
             failure_webhook_url=getattr(
                 settings_obj, "crypto_pending_order_failure_webhook_url", None
             ),
+            discord_bot_token=_resolve_secret_setting(
+                getattr(settings_obj, "crypto_pending_order_discord_bot_token", None)
+            ),
             trader_base_url=str(getattr(settings_obj, "trader_base_url", "") or ""),
         )
+
+
+def _resolve_secret_setting(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    getter = getattr(value, "get_secret_value", None)
+    if callable(getter):
+        value = getter()
+    raw = str(value).strip()
+    return raw or None
 
 
 def _safe_float(value: Any) -> float | None:
@@ -293,13 +307,52 @@ async def _default_price_lookup(symbols: list[str]) -> dict[str, float]:
     return await fetch_multiple_current_prices(symbols, use_cache=False)
 
 
-async def _default_discord_sender(webhook_url: str, content: str) -> bool:
+async def _send_discord_channel_message(
+    *,
+    http_client: httpx.AsyncClient,
+    bot_token: str,
+    channel_id: str,
+    content: str,
+) -> bool:
+    try:
+        response = await http_client.post(
+            f"https://discord.com/api/v10/channels/{channel_id}/messages",
+            headers={"Authorization": f"Bot {bot_token}"},
+            json={"content": content},
+        )
+        response.raise_for_status()
+        return True
+    except Exception:
+        logger.exception("Failed to send Discord channel message to %s", channel_id)
+        return False
+
+
+async def _default_discord_sender(delivery_target: str, content: str) -> bool:
     async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
+        if delivery_target.startswith("discord-bot://"):
+            _, rest = delivery_target.split("://", maxsplit=1)
+            channel_id, bot_token = rest.split("/", maxsplit=1)
+            return await _send_discord_channel_message(
+                http_client=client,
+                bot_token=bot_token,
+                channel_id=channel_id,
+                content=content,
+            )
         return await send_discord_content_single(
             http_client=client,
-            webhook_url=webhook_url,
+            webhook_url=delivery_target,
             content=content,
         )
+
+
+def _delivery_target(
+    webhook_url: str | None, channel_id: str, bot_token: str | None
+) -> str | None:
+    if webhook_url:
+        return webhook_url
+    if bot_token:
+        return f"discord-bot://{channel_id}/{bot_token}"
+    return None
 
 
 async def _send_failure(
@@ -325,13 +378,18 @@ async def _send_failure(
     )
     if dry_run:
         return {"failure_alert_sent": False, "failure_message": message}
-    if not config.failure_webhook_url:
+    target = _delivery_target(
+        config.failure_webhook_url,
+        config.failure_channel_id,
+        config.discord_bot_token,
+    )
+    if not target:
         return {
             "failure_alert_sent": False,
             "failure_message": message,
-            "failure_delivery_error": "missing failure webhook url",
+            "failure_delivery_error": "missing failure Discord webhook URL or bot token",
         }
-    delivered = await sender(config.failure_webhook_url, message)
+    delivered = await sender(target, message)
     return {"failure_alert_sent": delivered, "failure_message": message}
 
 
@@ -493,17 +551,22 @@ async def run_crypto_pending_order_alert(
             "orders": [asdict(order) for order in normalized],
         }
 
-    if not config.normal_webhook_url:
+    target = _delivery_target(
+        config.normal_webhook_url,
+        config.normal_channel_id,
+        config.discord_bot_token,
+    )
+    if not target:
         failure = await _send_failure(
             config=config,
             sender=discord_sender,
             stage="discord_delivery",
-            reason="missing normal webhook url",
-            failure_class="MissingDiscordWebhook",
+            reason="missing normal Discord webhook URL or bot token",
+            failure_class="MissingDiscordDeliveryTarget",
             partial=True,
             run_ts=run_ts,
             dry_run=False,
-            hint="Configure the dedicated CRYPTO_PENDING_ORDER_ALERT_WEBHOOK_URL for channel 1500719153508515870.",
+            hint="Configure CRYPTO_PENDING_ORDER_ALERT_WEBHOOK_URL or CRYPTO_PENDING_ORDER_DISCORD_BOT_TOKEN for channel 1500719153508515870.",
         )
         return (
             summary
@@ -515,7 +578,7 @@ async def run_crypto_pending_order_alert(
             | failure
         )
 
-    delivered = await discord_sender(config.normal_webhook_url, message)
+    delivered = await discord_sender(target, message)
     if not delivered:
         failure = await _send_failure(
             config=config,
