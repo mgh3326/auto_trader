@@ -94,7 +94,13 @@ def parse_policy(
     action = payload.get("action") or "notify_only"
 
     if action == "notify_only":
-        for forbidden in ("side", "quantity", "notional_krw", "limit_price", "max_notional_krw"):
+        for forbidden in (
+            "side",
+            "quantity",
+            "notional_krw",
+            "limit_price",
+            "max_notional_krw",
+        ):
             if forbidden in payload:
                 raise WatchPolicyError("notify_only_must_be_bare")
         return NotifyOnlyPolicy()

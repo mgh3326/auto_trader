@@ -509,9 +509,7 @@ class TestScannerWithCreateOrderIntent:
             captured_intents.extend(kwargs.get("intents", []))
             return WatchAlertDeliveryResult(status="success", request_id="watch-1")
 
-        monkeypatch.setattr(
-            scanner._openclaw, "send_watch_alert_to_n8n", fake_send_n8n
-        )
+        monkeypatch.setattr(scanner._openclaw, "send_watch_alert_to_n8n", fake_send_n8n)
 
         result = await scanner.scan_market("kr")
 

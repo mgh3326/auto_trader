@@ -56,7 +56,9 @@ class IntentEmissionResult:
             "symbol": self.symbol,
             "side": self.side,
             "quantity": float(self.quantity) if self.quantity is not None else None,
-            "limit_price": float(self.limit_price) if self.limit_price is not None else None,
+            "limit_price": float(self.limit_price)
+            if self.limit_price is not None
+            else None,
             "status": self.status,
             "ledger_id": self.ledger_id,
             "correlation_id": self.correlation_id,
@@ -200,13 +202,17 @@ class WatchOrderIntentService:
         except IntegrityError:
             await self._db.rollback()
             existing = (
-                await self._db.execute(
-                    select(WatchOrderIntentLedger).where(
-                        WatchOrderIntentLedger.idempotency_key == idempotency_key,
-                        WatchOrderIntentLedger.lifecycle_state == "previewed",
+                (
+                    await self._db.execute(
+                        select(WatchOrderIntentLedger).where(
+                            WatchOrderIntentLedger.idempotency_key == idempotency_key,
+                            WatchOrderIntentLedger.lifecycle_state == "previewed",
+                        )
                     )
                 )
-            ).scalars().one()
+                .scalars()
+                .one()
+            )
             return IntentEmissionResult(
                 status="dedupe_hit",
                 ledger_id=existing.id,
@@ -282,7 +288,13 @@ class WatchOrderIntentService:
             execution_allowed=False,
             blocking_reasons=failure.blocking_reasons,
             blocked_by=failure.blocked_by,
-            detail={"failure_input": {"sizing_source": "notional_krw" if policy.quantity is None else "quantity"}},
+            detail={
+                "failure_input": {
+                    "sizing_source": "notional_krw"
+                    if policy.quantity is None
+                    else "quantity"
+                }
+            },
             preview_line=preview_payload,
             triggered_value=triggered_value,
             kst_date=kst_date,

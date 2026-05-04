@@ -34,7 +34,8 @@ async def watch_order_intent_ledger_list_recent_impl(
             stmt = stmt.where(WatchOrderIntentLedger.market == market.strip().lower())
         if lifecycle_state is not None:
             stmt = stmt.where(
-                WatchOrderIntentLedger.lifecycle_state == lifecycle_state.strip().lower()
+                WatchOrderIntentLedger.lifecycle_state
+                == lifecycle_state.strip().lower()
             )
         if kst_date is not None:
             stmt = stmt.where(WatchOrderIntentLedger.kst_date == kst_date.strip())

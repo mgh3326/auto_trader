@@ -83,18 +83,25 @@ class TestParsePolicyIntentMarketCondition:
                 market="crypto",
                 target_kind="asset",
                 condition_type="price_below",
-                raw_payload=_payload(action="create_order_intent", side="buy", quantity=1),
+                raw_payload=_payload(
+                    action="create_order_intent", side="buy", quantity=1
+                ),
             )
         assert excinfo.value.code == "intent_market_unsupported"
 
-    @pytest.mark.parametrize("condition_type", ["rsi_above", "rsi_below", "trade_value_above", "trade_value_below"])
+    @pytest.mark.parametrize(
+        "condition_type",
+        ["rsi_above", "rsi_below", "trade_value_above", "trade_value_below"],
+    )
     def test_non_price_condition_rejected(self, condition_type: str) -> None:
         with pytest.raises(WatchPolicyError) as excinfo:
             parse_policy(
                 market="kr",
                 target_kind="asset",
                 condition_type=condition_type,
-                raw_payload=_payload(action="create_order_intent", side="buy", quantity=1),
+                raw_payload=_payload(
+                    action="create_order_intent", side="buy", quantity=1
+                ),
             )
         assert excinfo.value.code == "intent_condition_unsupported"
 
@@ -116,7 +123,9 @@ class TestParsePolicyIntentSideAndSizing:
                 market="kr",
                 target_kind="asset",
                 condition_type="price_below",
-                raw_payload=_payload(action="create_order_intent", side="long", quantity=1),
+                raw_payload=_payload(
+                    action="create_order_intent", side="long", quantity=1
+                ),
             )
         assert excinfo.value.code == "intent_side_invalid"
 
@@ -127,7 +136,10 @@ class TestParsePolicyIntentSideAndSizing:
                 target_kind="asset",
                 condition_type="price_below",
                 raw_payload=_payload(
-                    action="create_order_intent", side="buy", quantity=1, notional_krw=100000
+                    action="create_order_intent",
+                    side="buy",
+                    quantity=1,
+                    notional_krw=100000,
                 ),
             )
         assert excinfo.value.code == "intent_sizing_xor"
@@ -161,7 +173,9 @@ class TestParsePolicyIntentSideAndSizing:
                 market="kr",
                 target_kind="asset",
                 condition_type="price_below",
-                raw_payload=_payload(action="create_order_intent", side="buy", quantity=bad_qty),
+                raw_payload=_payload(
+                    action="create_order_intent", side="buy", quantity=bad_qty
+                ),
             )
         assert excinfo.value.code == "intent_quantity_invalid"
 
@@ -184,7 +198,10 @@ class TestParsePolicyIntentSideAndSizing:
                 target_kind="asset",
                 condition_type="price_below",
                 raw_payload=_payload(
-                    action="create_order_intent", side="buy", quantity=1, max_notional_krw=0
+                    action="create_order_intent",
+                    side="buy",
+                    quantity=1,
+                    max_notional_krw=0,
                 ),
             )
         assert excinfo.value.code == "intent_max_notional_invalid"
@@ -209,7 +226,10 @@ class TestParsePolicyIntentSuccess:
             target_kind="asset",
             condition_type="price_below",
             raw_payload=_payload(
-                action="create_order_intent", side="buy", quantity=1, max_notional_krw=1500000
+                action="create_order_intent",
+                side="buy",
+                quantity=1,
+                max_notional_krw=1500000,
             ),
         )
         assert isinstance(policy, IntentPolicy)
@@ -238,7 +258,10 @@ class TestParsePolicyIntentSuccess:
             target_kind="asset",
             condition_type="price_above",
             raw_payload=_payload(
-                action="create_order_intent", side="sell", quantity=10, limit_price=190.5
+                action="create_order_intent",
+                side="sell",
+                quantity=10,
+                limit_price=190.5,
             ),
         )
         assert isinstance(policy, IntentPolicy)

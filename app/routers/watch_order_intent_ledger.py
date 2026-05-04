@@ -40,7 +40,9 @@ def serialize_ledger_row(row: WatchOrderIntentLedger) -> dict:
         "notional": float(row.notional) if row.notional is not None else None,
         "currency": row.currency,
         "notional_krw_input": (
-            float(row.notional_krw_input) if row.notional_krw_input is not None else None
+            float(row.notional_krw_input)
+            if row.notional_krw_input is not None
+            else None
         ),
         "max_notional_krw": (
             float(row.max_notional_krw) if row.max_notional_krw is not None else None
@@ -107,7 +109,5 @@ async def get_by_correlation(
         )
     ).scalar_one_or_none()
     if row is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="not_found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
     return serialize_ledger_row(row)
