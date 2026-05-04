@@ -163,7 +163,6 @@ async def test_manage_watch_alerts_rejects_unknown_action() -> None:
 async def test_manage_watch_alerts_add_with_intent_policy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    tools = build_tools()
     captured: dict = {}
 
     async def fake_add_watch(self, **kwargs: object) -> dict:
@@ -180,6 +179,7 @@ async def test_manage_watch_alerts_add_with_intent_policy(
         }
 
     from app.mcp_server.tooling import watch_alerts_registration as mod
+
     monkeypatch.setattr(mod.WatchAlertService, "add_watch", fake_add_watch)
 
     result = await mod.manage_watch_alerts_impl(
@@ -205,7 +205,6 @@ async def test_manage_watch_alerts_add_with_intent_policy(
 async def test_manage_watch_alerts_add_default_remains_notify_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    tools = build_tools()
     captured: dict = {}
 
     async def fake_add_watch(self, **kwargs: object) -> dict:
@@ -222,6 +221,7 @@ async def test_manage_watch_alerts_add_default_remains_notify_only(
         }
 
     from app.mcp_server.tooling import watch_alerts_registration as mod
+
     monkeypatch.setattr(mod.WatchAlertService, "add_watch", fake_add_watch)
 
     result = await mod.manage_watch_alerts_impl(

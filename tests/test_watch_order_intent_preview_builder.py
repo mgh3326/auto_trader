@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-import pytest
-
 from app.services.watch_intent_policy import IntentPolicy
 from app.services.watch_order_intent_preview_builder import (
     IntentBuildFailure,
@@ -12,7 +10,11 @@ from app.services.watch_order_intent_preview_builder import (
 )
 
 
-def _watch(market: str = "kr", symbol: str = "005930", threshold: Decimal = Decimal("70000")) -> dict:
+def _watch(
+    market: str = "kr",
+    symbol: str = "005930",
+    threshold: Decimal = Decimal("70000"),
+) -> dict:
     return {
         "market": market,
         "target_kind": "asset",
@@ -24,14 +26,14 @@ def _watch(market: str = "kr", symbol: str = "005930", threshold: Decimal = Deci
 
 
 def _intent_policy(**overrides: object) -> IntentPolicy:
-    base = dict(
-        action="create_order_intent",
-        side="buy",
-        quantity=1,
-        notional_krw=None,
-        limit_price=None,
-        max_notional_krw=None,
-    )
+    base = {
+        "action": "create_order_intent",
+        "side": "buy",
+        "quantity": 1,
+        "notional_krw": None,
+        "limit_price": None,
+        "max_notional_krw": None,
+    }
     base.update(overrides)
     return IntentPolicy(**base)  # type: ignore[arg-type]
 
