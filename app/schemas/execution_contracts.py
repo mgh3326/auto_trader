@@ -30,8 +30,72 @@ ACCOUNT_MODES: frozenset[str] = frozenset(
     {"kis_live", "kis_mock", "alpaca_paper", "db_simulated"}
 )
 
+ExecutionSource = Literal[
+    "preopen", "watch", "manual", "websocket", "reconciler"
+]
+EXECUTION_SOURCES: frozenset[str] = frozenset(
+    {"preopen", "watch", "manual", "websocket", "reconciler"}
+)
+
+OrderLifecycleState = Literal[
+    "planned",
+    "previewed",
+    "submitted",
+    "accepted",
+    "pending",
+    "fill",
+    "reconciled",
+    "stale",
+    "failed",
+    "anomaly",
+]
+ORDER_LIFECYCLE_STATES: frozenset[str] = frozenset(
+    {
+        "planned",
+        "previewed",
+        "submitted",
+        "accepted",
+        "pending",
+        "fill",
+        "reconciled",
+        "stale",
+        "failed",
+        "anomaly",
+    }
+)
+
+# Terminal: order has reached a final outcome that does not change without
+# explicit operator action. ``anomaly`` is intentionally NOT terminal — it
+# means "needs operator review", which is a hand-off, not a conclusion.
+TERMINAL_LIFECYCLE_STATES: frozenset[str] = frozenset(
+    {"fill", "reconciled", "failed", "stale"}
+)
+
+# In-flight: order has been sent or acknowledged by the broker and is
+# expected to transition without operator input.
+IN_FLIGHT_LIFECYCLE_STATES: frozenset[str] = frozenset(
+    {"submitted", "accepted", "pending"}
+)
+
+
+def is_terminal_state(state: OrderLifecycleState) -> bool:
+    return state in TERMINAL_LIFECYCLE_STATES
+
+
+def is_in_flight_state(state: OrderLifecycleState) -> bool:
+    return state in IN_FLIGHT_LIFECYCLE_STATES
+
+
 __all__ = [
     "CONTRACT_VERSION",
     "AccountMode",
     "ACCOUNT_MODES",
+    "ExecutionSource",
+    "EXECUTION_SOURCES",
+    "OrderLifecycleState",
+    "ORDER_LIFECYCLE_STATES",
+    "TERMINAL_LIFECYCLE_STATES",
+    "IN_FLIGHT_LIFECYCLE_STATES",
+    "is_terminal_state",
+    "is_in_flight_state",
 ]
