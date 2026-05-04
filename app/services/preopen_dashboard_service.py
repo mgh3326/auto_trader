@@ -1257,12 +1257,22 @@ async def get_latest_preopen_dashboard(
             generated_at=None,
             stage=stage,
         )
+        execution_review = _build_execution_review(
+            has_run=False,
+            market_scope=market_scope,
+            stage=stage,
+            candidates=[],
+            reconciliations=[],
+            news=None,
+            briefing_artifact=_FAIL_OPEN.briefing_artifact,
+        )
         return _FAIL_OPEN.model_copy(
             update={
                 "market_scope": market_scope,
                 "stage": stage,
                 "qa_evaluator": qa_evaluator,
                 "paper_approval_bridge": paper_approval_bridge,
+                "execution_review": execution_review,
             }
         )
 
@@ -1323,6 +1333,16 @@ async def get_latest_preopen_dashboard(
         stage=stage,
     )
 
+    execution_review = _build_execution_review(
+        has_run=True,
+        market_scope=run.market_scope,
+        stage=stage,
+        candidates=candidates,
+        reconciliations=reconciliations,
+        news=news_summary,
+        briefing_artifact=briefing_artifact,
+    )
+
     return PreopenLatestResponse(
         has_run=True,
         advisory_used=bool(run.advisory_links) and advisory_reason is None,
@@ -1352,4 +1372,5 @@ async def get_latest_preopen_dashboard(
         briefing_artifact=briefing_artifact,
         qa_evaluator=qa_evaluator,
         paper_approval_bridge=paper_approval_bridge,
+        execution_review=execution_review,
     )

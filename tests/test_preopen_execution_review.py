@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -319,3 +320,25 @@ def test_build_execution_review_lines_match_basket_invariant_holds():
     for line in basket.lines:
         assert line.account_mode == basket.account_mode
         assert line.execution_source == basket.execution_source
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_latest_dashboard_no_run_includes_execution_review(monkeypatch):
+    from app.services import preopen_dashboard_service, research_run_service
+
+    async def _no_run(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(research_run_service, "get_latest_research_run", _no_run)
+
+    fake_db = MagicMock()
+    response = await preopen_dashboard_service.get_latest_preopen_dashboard(
+        fake_db, user_id=1, market_scope="kr", stage="preopen"
+    )
+
+    review = response.execution_review
+    assert review is not None
+    assert review.advisory_only is True
+    assert review.execution_allowed is False
+    assert "no_open_preopen_run" in review.readiness.guard.blocking_reasons
