@@ -68,11 +68,11 @@ ORDER_LIFECYCLE_STATES: frozenset[str] = frozenset(
 )
 
 # Terminal: order has reached a final outcome that does not change without
-# explicit operator action. ``anomaly`` is intentionally NOT terminal — it
-# means "needs operator review", which is a hand-off, not a conclusion.
-TERMINAL_LIFECYCLE_STATES: frozenset[str] = frozenset(
-    {"fill", "reconciled", "failed", "stale"}
-)
+# explicit operator action. ``fill`` is intentionally NOT terminal because
+# follow-up reconcilers may still need to confirm holdings/position state and
+# emit ``reconciled``. ``anomaly`` is also intentionally NOT terminal — it means
+# "needs operator review", which is a hand-off, not a conclusion.
+TERMINAL_LIFECYCLE_STATES: frozenset[str] = frozenset({"reconciled", "failed", "stale"})
 
 # In-flight: order has been sent or acknowledged by the broker and is
 # expected to transition without operator input.

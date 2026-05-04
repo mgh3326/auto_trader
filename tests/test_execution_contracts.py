@@ -42,7 +42,7 @@ class TestOrderLifecycleState:
 
     def test_terminal_states(self):
         assert ec.TERMINAL_LIFECYCLE_STATES == frozenset(
-            {"fill", "reconciled", "failed", "stale"}
+            {"reconciled", "failed", "stale"}
         )
 
     def test_in_flight_states(self):
@@ -58,6 +58,10 @@ class TestOrderLifecycleState:
     def test_anomaly_is_in_neither_classification_set(self):
         assert "anomaly" not in ec.TERMINAL_LIFECYCLE_STATES
         assert "anomaly" not in ec.IN_FLIGHT_LIFECYCLE_STATES
+
+    def test_fill_is_not_terminal_until_position_reconciled(self):
+        assert "fill" not in ec.TERMINAL_LIFECYCLE_STATES
+        assert not ec.is_terminal_state("fill")
 
     def test_planned_and_previewed_are_in_neither_classification_set(self):
         for state in ("planned", "previewed"):
