@@ -102,3 +102,58 @@ class TestExecutionGuard:
         guard = ec.ExecutionGuard(execution_allowed=True, warnings=["soft warn"])
         assert guard.execution_allowed is True
         assert guard.warnings == ["soft warn"]
+
+
+from datetime import datetime, timezone
+
+
+class TestExecutionReadiness:
+    def test_default_is_not_ready_with_conservative_guard(self):
+        readiness = ec.ExecutionReadiness(
+            account_mode="kis_mock",
+            execution_source="preopen",
+        )
+        assert readiness.contract_version == "v1"
+        assert readiness.account_mode == "kis_mock"
+        assert readiness.execution_source == "preopen"
+        assert readiness.is_ready is False
+        assert readiness.guard.execution_allowed is False
+        assert readiness.guard.approval_required is True
+        assert readiness.checked_at is None
+        assert readiness.notes == []
+
+    def test_can_construct_ready_state_with_clean_guard(self):
+        readiness = ec.ExecutionReadiness(
+            account_mode="alpaca_paper",
+            execution_source="manual",
+            is_ready=True,
+            guard=ec.ExecutionGuard(execution_allowed=True, approval_required=False),
+            checked_at=datetime(2026, 5, 4, 10, 0, tzinfo=timezone.utc),
+            notes=["operator confirmed"],
+        )
+        assert readiness.is_ready is True
+        assert readiness.checked_at.year == 2026
+
+    def test_is_ready_with_blocking_reasons_raises(self):
+        with pytest.raises(ValidationError) as excinfo:
+            ec.ExecutionReadiness(
+                account_mode="kis_live",
+                execution_source="watch",
+                is_ready=True,
+                guard=ec.ExecutionGuard(blocking_reasons=["market_closed"]),
+            )
+        assert "is_ready" in str(excinfo.value)
+
+    def test_invalid_account_mode_rejected(self):
+        with pytest.raises(ValidationError):
+            ec.ExecutionReadiness(
+                account_mode="binance_live",  # not in the literal
+                execution_source="manual",
+            )
+
+    def test_invalid_execution_source_rejected(self):
+        with pytest.raises(ValidationError):
+            ec.ExecutionReadiness(
+                account_mode="kis_mock",
+                execution_source="cron",  # not in the literal
+            )

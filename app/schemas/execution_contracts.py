@@ -21,11 +21,12 @@ states cannot coexist.
 
 from __future__ import annotations
 
-CONTRACT_VERSION = "v1"
-
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
+
+CONTRACT_VERSION = "v1"
 
 
 AccountMode = Literal["kis_live", "kis_mock", "alpaca_paper", "db_simulated"]
@@ -111,6 +112,26 @@ class ExecutionGuard(BaseModel):
         return self
 
 
+class ExecutionReadiness(BaseModel):
+    """Whether a given (account_mode, execution_source) is ready to submit orders right now."""
+
+    contract_version: Literal["v1"] = "v1"
+    account_mode: AccountMode
+    execution_source: ExecutionSource
+    is_ready: bool = False
+    guard: ExecutionGuard = Field(default_factory=ExecutionGuard)
+    checked_at: datetime | None = None
+    notes: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _ready_implies_no_blocking(self) -> "ExecutionReadiness":
+        if self.is_ready and self.guard.blocking_reasons:
+            raise ValueError(
+                "is_ready cannot be True while guard.blocking_reasons is non-empty"
+            )
+        return self
+
+
 __all__ = [
     "CONTRACT_VERSION",
     "AccountMode",
@@ -124,4 +145,5 @@ __all__ = [
     "is_terminal_state",
     "is_in_flight_state",
     "ExecutionGuard",
+    "ExecutionReadiness",
 ]
