@@ -107,6 +107,33 @@ def _bridge_market_scope(market_scope: str | None) -> str | None:
     return market_scope if market_scope in {"kr", "us", "crypto"} else None
 
 
+def _bridge_result(
+    *,
+    status: str,
+    generated_at: datetime,
+    market_scope: str | None,
+    has_run: bool,
+    candidate_count: int,
+    candidates: list[PreopenPaperApprovalCandidate],
+    warnings: list[str],
+    blocking_reasons: list[str] | None = None,
+    unsupported_reasons: list[str] | None = None,
+    eligible_count: int = 0,
+) -> PreopenPaperApprovalBridge:
+    return PreopenPaperApprovalBridge(
+        status=status,
+        generated_at=generated_at,
+        market_scope=market_scope,
+        stage="preopen" if has_run else None,
+        eligible_count=eligible_count,
+        candidate_count=candidate_count,
+        candidates=candidates,
+        blocking_reasons=blocking_reasons or [],
+        warnings=warnings,
+        unsupported_reasons=unsupported_reasons or [],
+    )
+
+
 def _build_kr_candidate(
     candidate: CandidateSummary,
     *,
@@ -130,13 +157,7 @@ def _build_kr_candidate(
         )
 
     if candidate.side == "sell" and candidate.proposed_qty is None:
-        return PreopenPaperApprovalCandidate(
-            candidate_uuid=candidate.candidate_uuid,
-            symbol=candidate.symbol,
-            status="unavailable",
-            reason="missing_quantity",
-            warnings=list(candidate.warnings),
-        )
+        return _unsupported_candidate(candidate, reason="missing_quantity")
 
     if candidate.proposed_price is None:
         return _unsupported_candidate(candidate, reason="missing_price")
@@ -203,30 +224,29 @@ def build_kis_mock_preopen_approval_bridge(
     generated_at = generated_at or datetime.now(UTC)
 
     if blocking_reasons:
-        return PreopenPaperApprovalBridge(
+        return _bridge_result(
             status="blocked",
             generated_at=generated_at,
             market_scope=_bridge_market_scope(market_scope),
-            stage="preopen" if has_run else None,
             candidate_count=len(candidates),
             candidates=[],
+            has_run=has_run,
             blocking_reasons=blocking_reasons,
             warnings=warnings,
-            unsupported_reasons=[],
         )
 
     if market_scope != "kr":
         reason = f"unsupported_market_scope:{market_scope or 'unknown'}"
-        return PreopenPaperApprovalBridge(
+        return _bridge_result(
             status="unavailable",
             generated_at=generated_at,
             market_scope=_bridge_market_scope(market_scope),
-            stage="preopen" if has_run else None,
             candidate_count=len(candidates),
             candidates=[
                 _unsupported_candidate(candidate, reason=reason)
                 for candidate in candidates
             ],
+            has_run=has_run,
             warnings=warnings,
             unsupported_reasons=[reason],
         )
@@ -255,15 +275,14 @@ def build_kis_mock_preopen_approval_bridge(
     else:
         status = "available"
 
-    return PreopenPaperApprovalBridge(
+    return _bridge_result(
         status=status,
         generated_at=generated_at,
         market_scope="kr",
-        stage="preopen" if has_run else None,
         eligible_count=eligible_count,
         candidate_count=len(candidates),
         candidates=bridge_candidates,
-        blocking_reasons=[],
+        has_run=has_run,
         warnings=warnings,
         unsupported_reasons=_dedupe(unsupported_reasons),
     )
