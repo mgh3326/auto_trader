@@ -453,6 +453,7 @@ class WatchAlertService:
                         "threshold": threshold_value,
                         "field": field,
                         "created_at": created_at,
+                        "raw_payload": raw_payload,
                         **policy_fields,
                     }
                 )

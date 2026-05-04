@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
+from decimal import Decimal
 from functools import lru_cache
 from uuid import uuid4
 
@@ -8,20 +10,34 @@ import exchange_calendars as xcals
 import pandas as pd
 from pandas import Timestamp
 
+from app.core.db import AsyncSessionLocal
+from app.core.timezone import now_kst
 from app.mcp_server.tooling.market_data_indicators import _calculate_rsi
 from app.services import exchange_rate_service, market_index_service
 from app.services import market_data as market_data_service
 from app.services.openclaw_client import OpenClawClient, WatchAlertDeliveryResult
 from app.services.watch_alerts import WatchAlertService
+from app.services.watch_intent_policy import (
+    IntentPolicy,
+    NotifyOnlyPolicy,
+    WatchPolicyError,
+    parse_policy,
+)
+from app.services.watch_order_intent_service import WatchOrderIntentService
 
 logger = logging.getLogger(__name__)
 _CRYPTO_RSI_LOOKBACK_DAYS = 200
 
 
 class WatchScanner:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        intent_service_factory: Any | None = None,
+    ) -> None:
         self._watch_service = WatchAlertService()
         self._openclaw = OpenClawClient()
+        self._intent_service_factory = intent_service_factory
 
     @staticmethod
     @lru_cache(maxsize=2)
@@ -183,6 +199,7 @@ class WatchScanner:
     def _build_batched_message(
         market: str,
         triggered: list[dict[str, object]],
+        intents: list[dict[str, object]] | None = None,
     ) -> str:
         lines = [f"Watch alerts ({market})"]
         for row in triggered:
@@ -193,6 +210,31 @@ class WatchScanner:
             lines.append(
                 f"- {symbol} {condition_type}: current={current:.4f}, threshold={threshold:.4f}"
             )
+
+        if intents:
+            lines.append("")
+            lines.append(f"Order intents ({market}, kis_mock)")
+            for intent in intents:
+                status = intent["status"]
+                symbol = intent["symbol"]
+                side = intent["side"]
+                if status == "previewed":
+                    lines.append(
+                        f"- previewed: {symbol} {side} "
+                        f"qty={intent['quantity']} limit={intent['limit_price']} "
+                        f"ledger={intent['ledger_id']}"
+                    )
+                elif status == "dedupe_hit":
+                    lines.append(
+                        f"- dedupe_hit: {symbol} {side} "
+                        f"(already previewed today, ledger={intent['ledger_id']})"
+                    )
+                else:  # failed
+                    lines.append(
+                        f"- failed: {symbol} {side} "
+                        f"qty={intent['quantity']} limit={intent['limit_price']} "
+                        f"(blocked_by={intent['blocked_by']}, watch kept)"
+                    )
         return "\n".join(lines)
 
     async def _get_current_value(
@@ -227,6 +269,7 @@ class WatchScanner:
         market: str,
         triggered: list[dict[str, object]],
         message: str,
+        intents: list[dict[str, object]] | None = None,
     ) -> WatchAlertDeliveryResult:
         correlation_id = str(uuid4())
         as_of = Timestamp.now("UTC").isoformat()
@@ -237,10 +280,16 @@ class WatchScanner:
                 triggered=triggered,
                 as_of=as_of,
                 correlation_id=correlation_id,
+                intents=intents or [],
             )
         except Exception as exc:
             logger.error("Failed to send watch scan alert: %s", exc)
             return WatchAlertDeliveryResult(status="failed", reason="request_failed")
+
+    def _intent_session(self):
+        if self._intent_service_factory is not None:
+            return self._intent_service_factory()
+        return _default_intent_session()
 
     async def scan_market(self, market: str) -> dict[str, object]:
         normalized_market = str(market).strip().lower()
@@ -264,7 +313,9 @@ class WatchScanner:
             }
 
         triggered: list[dict[str, object]] = []
+        intents: list[dict[str, object]] = []
         triggered_fields: list[str] = []
+        kst_date = now_kst().date().isoformat()
 
         for watch in watches:
             target_kind = str(watch.get("target_kind") or "asset").strip().lower()
@@ -293,18 +344,57 @@ class WatchScanner:
             if not self._is_triggered(current, operator, threshold):
                 continue
 
-            triggered.append(
-                {
-                    "target_kind": target_kind,
-                    "symbol": symbol,
-                    "condition_type": condition_type,
-                    "threshold": threshold,
-                    "current": current,
-                }
-            )
-            triggered_fields.append(field)
+            try:
+                policy = parse_policy(
+                    market=normalized_market,
+                    target_kind=target_kind,
+                    condition_type=condition_type,
+                    raw_payload=watch.get("raw_payload"),
+                )
+            except WatchPolicyError as exc:
+                logger.warning(
+                    "Skipping watch with invalid policy: market=%s field=%s code=%s",
+                    normalized_market,
+                    field,
+                    exc.code,
+                )
+                continue
 
-        if not triggered:
+            if isinstance(policy, NotifyOnlyPolicy):
+                triggered.append(
+                    {
+                        "target_kind": target_kind,
+                        "symbol": symbol,
+                        "condition_type": condition_type,
+                        "threshold": threshold,
+                        "current": current,
+                    }
+                )
+                triggered_fields.append(field)
+                continue
+
+            assert isinstance(policy, IntentPolicy)
+            async with self._intent_session() as (db, factory):
+                service = factory(db)
+                emission = await service.emit_intent(
+                    watch={
+                        "market": normalized_market,
+                        "target_kind": target_kind,
+                        "symbol": symbol,
+                        "condition_type": condition_type,
+                        "threshold": Decimal(str(threshold)),
+                        "threshold_key": str(threshold),
+                    },
+                    policy=policy,
+                    triggered_value=Decimal(str(current)),
+                    kst_date=kst_date,
+                    correlation_id=uuid4().hex,
+                )
+            intents.append(emission.to_alert_dict())
+            if emission.status in {"previewed", "dedupe_hit"}:
+                triggered_fields.append(field)
+
+        if not triggered and not intents:
             if not market_open:
                 return {
                     "market": normalized_market,
@@ -320,10 +410,13 @@ class WatchScanner:
                 "details": [],
             }
 
-        message = self._build_batched_message(normalized_market, triggered)
+        message = self._build_batched_message(
+            normalized_market, triggered, intents=intents
+        )
         result = await self._send_alert(
             market=normalized_market,
             triggered=triggered,
+            intents=intents,
             message=message,
         )
         if result.status != "success":
@@ -348,7 +441,7 @@ class WatchScanner:
             "market": normalized_market,
             "status": "success",
             "request_id": result.request_id,
-            "alerts_sent": len(triggered_fields),
+            "alerts_sent": len(triggered) + len(intents),
             "details": [message],
         }
 
@@ -361,3 +454,9 @@ class WatchScanner:
 
     async def close(self) -> None:
         await self._watch_service.close()
+
+
+@asynccontextmanager
+async def _default_intent_session():
+    async with AsyncSessionLocal() as db:
+        yield db, lambda session: WatchOrderIntentService(session)

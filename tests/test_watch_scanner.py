@@ -52,8 +52,9 @@ class _FakeOpenClawClient:
         triggered: list[dict[str, object]],
         as_of: str,
         correlation_id: str | None = None,
+        intents: list[dict[str, object]] | None = None,
     ) -> WatchAlertDeliveryResult:
-        _ = market, as_of, correlation_id
+        _ = market, as_of, correlation_id, intents
         self.messages.append(message)
         self.triggered_payloads.append(triggered)
         if self._status == "success":
@@ -449,3 +450,184 @@ async def test_scan_market_keeps_watch_records_when_n8n_delivery_skipped(
     assert result["status"] == "skipped"
     assert result["reason"] == "n8n_webhook_not_configured"
     assert scanner._watch_service.removed_fields == []
+
+
+class TestScannerWithCreateOrderIntent:
+    @pytest.mark.asyncio
+    async def test_create_order_intent_previewed_branches(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from contextlib import asynccontextmanager
+        from decimal import Decimal
+
+        from app.services.watch_order_intent_service import IntentEmissionResult
+
+        scanner = WatchScanner()
+        scanner._watch_service = _FakeWatchService()
+        field = "asset:005930:price_below:70000"
+        scanner._watch_service._rows_by_market["kr"] = [
+            {
+                "market": "kr",
+                "target_kind": "asset",
+                "symbol": "005930",
+                "condition_type": "price_below",
+                "threshold": 70000.0,
+                "field": field,
+                "raw_payload": '{"action":"create_order_intent","side":"buy","quantity":1}',
+            }
+        ]
+        scanner._openclaw = _FakeOpenClawClient(status="success")
+
+        monkeypatch.setattr(scanner, "_is_market_open", lambda market: True)
+        monkeypatch.setattr(scanner, "_get_price", AsyncMock(return_value=69000.0))
+
+        emission = IntentEmissionResult(
+            status="previewed",
+            ledger_id=123,
+            correlation_id="corr-1",
+            idempotency_key="key-1",
+            market="kr",
+            symbol="005930",
+            side="buy",
+            quantity=Decimal("1"),
+            limit_price=Decimal("70000"),
+            blocked_by=None,
+            reason=None,
+        )
+        mock_emit = AsyncMock(return_value=emission)
+
+        @asynccontextmanager
+        async def fake_session():
+            yield None, lambda db: SimpleNamespace(emit_intent=mock_emit)
+
+        monkeypatch.setattr(scanner, "_intent_session", fake_session)
+
+        # Patch send_watch_alert_to_n8n to capture intents
+        captured_intents = []
+
+        async def fake_send_n8n(**kwargs):
+            captured_intents.extend(kwargs.get("intents", []))
+            return WatchAlertDeliveryResult(status="success", request_id="watch-1")
+
+        monkeypatch.setattr(
+            scanner._openclaw, "send_watch_alert_to_n8n", fake_send_n8n
+        )
+
+        result = await scanner.scan_market("kr")
+
+        assert result["alerts_sent"] == 1
+        assert scanner._watch_service.removed_fields == [("kr", field)]
+        assert len(captured_intents) == 1
+        assert captured_intents[0]["status"] == "previewed"
+        assert captured_intents[0]["ledger_id"] == 123
+
+    @pytest.mark.asyncio
+    async def test_failed_intent_keeps_watch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from contextlib import asynccontextmanager
+        from decimal import Decimal
+
+        from app.services.watch_order_intent_service import IntentEmissionResult
+
+        scanner = WatchScanner()
+        scanner._watch_service = _FakeWatchService()
+        field = "asset:005930:price_below:70000"
+        scanner._watch_service._rows_by_market["kr"] = [
+            {
+                "market": "kr",
+                "target_kind": "asset",
+                "symbol": "005930",
+                "condition_type": "price_below",
+                "threshold": 70000.0,
+                "field": field,
+                "raw_payload": '{"action":"create_order_intent","side":"buy","quantity":100,"max_notional_krw":10000}',
+            }
+        ]
+        scanner._openclaw = _FakeOpenClawClient(status="success")
+
+        monkeypatch.setattr(scanner, "_is_market_open", lambda market: True)
+        monkeypatch.setattr(scanner, "_get_price", AsyncMock(return_value=69000.0))
+
+        emission = IntentEmissionResult(
+            status="failed",
+            ledger_id=456,
+            correlation_id="corr-fail",
+            idempotency_key="key-fail",
+            market="kr",
+            symbol="005930",
+            side="buy",
+            quantity=Decimal("100"),
+            limit_price=Decimal("70000"),
+            blocked_by="max_notional_krw_cap",
+            reason="max_notional_krw_cap",
+        )
+        mock_emit = AsyncMock(return_value=emission)
+
+        @asynccontextmanager
+        async def fake_session():
+            yield None, lambda db: SimpleNamespace(emit_intent=mock_emit)
+
+        monkeypatch.setattr(scanner, "_intent_session", fake_session)
+
+        result = await scanner.scan_market("kr")
+
+        assert result["alerts_sent"] == 1
+        assert scanner._watch_service.removed_fields == []  # Watch KEPT
+        assert "failed" in scanner._openclaw.messages[0]
+        assert "max_notional_krw_cap" in scanner._openclaw.messages[0]
+
+    @pytest.mark.asyncio
+    async def test_dedupe_hit_still_deletes_watch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from contextlib import asynccontextmanager
+        from decimal import Decimal
+
+        from app.services.watch_order_intent_service import IntentEmissionResult
+
+        scanner = WatchScanner()
+        scanner._watch_service = _FakeWatchService()
+        field = "asset:005930:price_below:70000"
+        scanner._watch_service._rows_by_market["kr"] = [
+            {
+                "market": "kr",
+                "target_kind": "asset",
+                "symbol": "005930",
+                "condition_type": "price_below",
+                "threshold": 70000.0,
+                "field": field,
+                "raw_payload": '{"action":"create_order_intent","side":"buy","quantity":1}',
+            }
+        ]
+        scanner._openclaw = _FakeOpenClawClient(status="success")
+
+        monkeypatch.setattr(scanner, "_is_market_open", lambda market: True)
+        monkeypatch.setattr(scanner, "_get_price", AsyncMock(return_value=69000.0))
+
+        emission = IntentEmissionResult(
+            status="dedupe_hit",
+            ledger_id=123,
+            correlation_id="corr-old",
+            idempotency_key="key-1",
+            market="kr",
+            symbol="005930",
+            side="buy",
+            quantity=Decimal("1"),
+            limit_price=Decimal("70000"),
+            blocked_by=None,
+            reason="already_previewed_today",
+        )
+        mock_emit = AsyncMock(return_value=emission)
+
+        @asynccontextmanager
+        async def fake_session():
+            yield None, lambda db: SimpleNamespace(emit_intent=mock_emit)
+
+        monkeypatch.setattr(scanner, "_intent_session", fake_session)
+
+        result = await scanner.scan_market("kr")
+
+        assert result["alerts_sent"] == 1
+        assert scanner._watch_service.removed_fields == [("kr", field)]
+        assert "dedupe_hit" in scanner._openclaw.messages[0]
