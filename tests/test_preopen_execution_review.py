@@ -152,3 +152,40 @@ def test_preopen_response_execution_review_is_optional_for_backward_compat():
         linked_sessions=[],
     )
     assert response.execution_review is None
+
+
+@pytest.mark.unit
+def test_build_execution_review_no_run_is_unavailable_and_blocked():
+    from app.services.preopen_dashboard_service import _build_execution_review
+
+    review = _build_execution_review(
+        has_run=False,
+        market_scope="kr",
+        stage="preopen",
+        candidates=[],
+        reconciliations=[],
+        news=None,
+        briefing_artifact=None,
+    )
+
+    assert review.advisory_only is True
+    assert review.execution_allowed is False
+    assert review.readiness.is_ready is False
+    assert "mvp_read_only" in review.readiness.guard.blocking_reasons
+    assert "no_open_preopen_run" in review.readiness.guard.blocking_reasons
+    assert review.basket_preview is None
+
+    stage_ids = {s.stage_id for s in review.stages}
+    assert stage_ids == {
+        "data_news",
+        "candidate_review",
+        "cash_holdings_quotes",
+        "basket_preview",
+        "approval_required",
+        "post_order_reconcile",
+    }
+    candidate_stage = next(s for s in review.stages if s.stage_id == "candidate_review")
+    assert candidate_stage.status == "unavailable"
+    cash_stage = next(s for s in review.stages if s.stage_id == "cash_holdings_quotes")
+    assert cash_stage.status == "unavailable"
+    assert "not_in_current_preopen_contract" in cash_stage.warnings
