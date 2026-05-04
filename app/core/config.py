@@ -179,6 +179,17 @@ class Settings(BaseSettings):
     kis_mock_account_no: str | None = None
     kis_mock_access_token: str | None = None
 
+    # Kiwoom Securities mock account. Disabled by default; mock-only foundation
+    # added in ROB-97. Live URL is recorded so the runtime can defensively
+    # reject it — no code path may target the live host in this PR.
+    kiwoom_mock_enabled: bool = False
+    kiwoom_mock_app_key: str | None = None
+    kiwoom_mock_app_secret: str | None = None
+    kiwoom_mock_account_no: str | None = None
+    kiwoom_mock_base_url: str = "https://mockapi.kiwoom.com"
+    kiwoom_base_url: str = "https://api.kiwoom.com"  # live disabled in this PR
+    kiwoom_mock_access_token: str | None = None
+
     # KIS WebSocket
     kis_ws_is_mock: bool = False  # Mock 모드 (테스트용)
     kis_ws_hts_id: str = ""  # HTS ID (WebSocket 인증용)
@@ -518,4 +529,18 @@ def validate_kis_mock_config(settings_obj: Any = settings) -> list[str]:
         missing.append("KIS_MOCK_APP_SECRET")
     if not _has_nonempty_value(getattr(settings_obj, "kis_mock_account_no", None)):
         missing.append("KIS_MOCK_ACCOUNT_NO")
+    return missing
+
+def validate_kiwoom_mock_config(settings_obj: Any = settings) -> list[str]:
+    """Return missing Kiwoom mock env names without exposing configured values."""
+
+    missing: list[str] = []
+    if not bool(getattr(settings_obj, "kiwoom_mock_enabled", False)):
+        missing.append("KIWOOM_MOCK_ENABLED")
+    if not _has_nonempty_value(getattr(settings_obj, "kiwoom_mock_app_key", None)):
+        missing.append("KIWOOM_MOCK_APP_KEY")
+    if not _has_nonempty_value(getattr(settings_obj, "kiwoom_mock_app_secret", None)):
+        missing.append("KIWOOM_MOCK_APP_SECRET")
+    if not _has_nonempty_value(getattr(settings_obj, "kiwoom_mock_account_no", None)):
+        missing.append("KIWOOM_MOCK_ACCOUNT_NO")
     return missing
