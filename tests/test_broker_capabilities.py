@@ -38,14 +38,18 @@ class TestKisCapabilities:
 
 
 class TestKiwoomCapabilities:
-    def test_kiwoom_capability_metadata_only(self) -> None:
+    """ROB-97 introduced a Kiwoom mock-only foundation; live remains unsupported."""
+
+    def test_kiwoom_supports_paper_only(self) -> None:
         cap = BROKER_CAPABILITIES[Broker.KIWOOM]
-        assert cap.supports_paper is False
+        assert cap.supports_paper is True
         assert cap.supports_live is False
 
-    def test_kiwoom_supports_kr_and_us_equity(self) -> None:
+    def test_kiwoom_supports_kr_equity_only(self) -> None:
         cap = BROKER_CAPABILITIES[Broker.KIWOOM]
-        assert cap.markets == frozenset({Market.KR_EQUITY, Market.US_EQUITY})
+        assert cap.markets == frozenset({Market.KR_EQUITY})
+        assert Market.US_EQUITY not in cap.markets
+        assert Market.CRYPTO not in cap.markets
 
     def test_kiwoom_broker_field(self) -> None:
         cap = BROKER_CAPABILITIES[Broker.KIWOOM]

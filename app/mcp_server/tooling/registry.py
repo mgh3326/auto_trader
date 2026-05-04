@@ -21,6 +21,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from app.mcp_server.profiles import McpProfile
+from app.mcp_server.tooling import orders_kiwoom_variants
 from app.mcp_server.tooling.alpaca_paper import register_alpaca_paper_tools
 from app.mcp_server.tooling.alpaca_paper_ledger_read import (
     register_alpaca_paper_ledger_read_tools,
@@ -122,9 +123,11 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         register_order_tools(mcp)
         register_kis_live_order_tools(mcp)
         register_kis_mock_order_tools(mcp)
+        orders_kiwoom_variants.register(mcp)
     elif profile is McpProfile.HERMES_PAPER_KIS:
         # Paper-only: only mock-pinned order surface. Live surface is physically absent.
         register_kis_mock_order_tools(mcp)
+        orders_kiwoom_variants.register(mcp)
         # Intentionally NOT: register_order_tools, register_kis_live_order_tools
 
 
