@@ -376,6 +376,9 @@ class KISExecutionWebSocket:
                     data.setdefault(
                         "correlation_id", self._parser._new_correlation_id()
                     )
+                    data["broker"] = "kis"
+                    data["account_mode"] = self.account_mode
+                    data["execution_source"] = "websocket"
 
                     if self._parser.is_execution_event(data):
                         self.execution_events_received += 1
