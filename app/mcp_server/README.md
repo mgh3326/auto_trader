@@ -29,9 +29,10 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `get_market_news(market=None, hours=24, feed_source=None, source=None, keyword=None, limit=20, briefing_filter=False)`
   - Fetch recent market news for OpenClaw pre-market briefing
   - `market`: Optional market scope (`kr`, `us`, `crypto`) for market-separated briefing inputs
-  - `feed_source`: Collection path key (e.g., `browser_naver_mainnews`, `browser_naver_research`, `rss_cointelegraph`)
-  - `source`: Publisher label (e.g., `연합뉴스`, `매일경제`, `Cointelegraph`)
+  - `feed_source`: Collection path key (e.g., `browser_naver_mainnews`, `browser_naver_research`, `rss_cointelegraph`, `rss_cnbc_earnings`, `rss_cnbc_finance`)
+  - `source`: Publisher label (e.g., `연합뉴스`, `매일경제`, `CNBC`, `Cointelegraph`)
   - `briefing_filter`: Format market-specific briefing sections for `kr`/`us`, and rank crypto-relevant articles while separating broad-tech/AI noise into `excluded_news`; raw storage is not affected
+  - US briefing sections include `macro_fed`, `finance_credit_rates`, `big_tech`, `earnings`, `market_sentiment`, and `watchlist_analyst`; `rss_cnbc_earnings` is source-hinted into `earnings`, `rss_cnbc_finance` into `finance_credit_rates`, while `http_finviz_news` and `rss_investing_stock_market_news` remain experimental and are only boosted when already market-relevant
   - Returns: `count`, `total`, `news` (list), `sources` (unique publishers), `feed_sources` (unique collection paths), `briefing_filter`, `briefing_summary`, `briefing_sections`, `excluded_news`
   - Each article includes `stock_symbol` and `stock_name` for holdings impact analysis; formatted articles include `briefing_relevance`; crypto articles also include `crypto_relevance` metadata
 

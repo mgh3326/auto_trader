@@ -94,6 +94,31 @@ _US_RULES: tuple[_SectionRule, ...] = (
         ),
     ),
     _SectionRule(
+        "finance_credit_rates",
+        "Finance / Credit / Rates",
+        (
+            "finance",
+            "financial",
+            "credit",
+            "credit market",
+            "credit markets",
+            "bank",
+            "banks",
+            "banking",
+            "lending",
+            "loan",
+            "loans",
+            "debt",
+            "bond",
+            "bonds",
+            "liquidity",
+            "default",
+            "spreads",
+            "regional bank",
+            "commercial real estate",
+        ),
+    ),
+    _SectionRule(
         "big_tech",
         "Big Tech / AI / Semis",
         (
@@ -253,6 +278,14 @@ _US_HIGH_SIGNAL_TERMS = (
     "upgrade",
     "downgrade",
 )
+_US_FEED_SOURCE_SECTION_HINTS = {
+    "rss_cnbc_earnings": ("earnings", "Earnings / Guidance", 64),
+    "rss_cnbc_finance": ("finance_credit_rates", "Finance / Credit / Rates", 60),
+}
+_US_EXPERIMENTAL_FEED_SOURCES = {
+    "http_finviz_news",
+    "rss_investing_stock_market_news",
+}
 
 
 def _field(article: Any, name: str) -> Any:
@@ -326,6 +359,45 @@ def _score_rule(article: Any, rules: tuple[_SectionRule, ...]) -> BriefingReleva
     )
 
 
+def _apply_us_feed_source_hints(
+    article: Any,
+    relevance: BriefingRelevance,
+) -> BriefingRelevance:
+    feed_source = str(_field(article, "feed_source") or "")
+    source_hint = f"feed_source:{feed_source}" if feed_source else ""
+
+    if feed_source in _US_FEED_SOURCE_SECTION_HINTS:
+        section_id, section_title, minimum_score = _US_FEED_SOURCE_SECTION_HINTS[
+            feed_source
+        ]
+        matched_terms = list(relevance.matched_terms)
+        if source_hint:
+            matched_terms.append(source_hint)
+        return BriefingRelevance(
+            score=max(relevance.score, minimum_score),
+            section_id=section_id,
+            section_title=section_title,
+            include_in_briefing=True,
+            matched_terms=sorted(set(matched_terms)),
+            reason=None,
+        )
+
+    if feed_source in _US_EXPERIMENTAL_FEED_SOURCES and relevance.include_in_briefing:
+        matched_terms = list(relevance.matched_terms)
+        if source_hint:
+            matched_terms.append(source_hint)
+        return BriefingRelevance(
+            score=min(100, relevance.score + 4),
+            section_id=relevance.section_id,
+            section_title=relevance.section_title,
+            include_in_briefing=relevance.include_in_briefing,
+            matched_terms=sorted(set(matched_terms)),
+            reason=relevance.reason,
+        )
+
+    return relevance
+
+
 def _score_crypto(article: Any) -> BriefingRelevance:
     crypto = score_crypto_news_article(article)
     section_id = _CRYPTO_CATEGORY_TO_SECTION.get(crypto.category or "")
@@ -361,7 +433,10 @@ def _score_article(article: Any, market: str) -> BriefingRelevance:
         return _score_crypto(article)
     if market == "us" and _low_signal_us_noise_hit(article):
         return _low_market_relevance()
-    return _score_rule(article, _rules_for_market(market))
+    relevance = _score_rule(article, _rules_for_market(market))
+    if market == "us":
+        return _apply_us_feed_source_hints(article, relevance)
+    return relevance
 
 
 def format_market_news_briefing(
