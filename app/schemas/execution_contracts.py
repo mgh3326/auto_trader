@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -178,6 +178,24 @@ class OrderBasketPreview(BaseModel):
         return self
 
 
+class OrderLifecycleEvent(BaseModel):
+    """Vocabulary-shaped lifecycle event emitted by reconciler / websocket / broker code.
+
+    ``detail`` carries broker-raw payload and is intentionally untyped; each
+    follow-up branch fills it in its own format.
+    """
+
+    contract_version: Literal["v1"] = "v1"
+    account_mode: AccountMode
+    execution_source: ExecutionSource
+    state: OrderLifecycleState
+    occurred_at: datetime
+    broker_order_id: str | None = None
+    correlation_id: str | None = None
+    detail: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+
+
 __all__ = [
     "CONTRACT_VERSION",
     "AccountMode",
@@ -194,4 +212,5 @@ __all__ = [
     "ExecutionReadiness",
     "OrderPreviewLine",
     "OrderBasketPreview",
+    "OrderLifecycleEvent",
 ]

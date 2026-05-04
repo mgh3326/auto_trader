@@ -271,3 +271,42 @@ class TestOrderBasketPreview:
                 lines=[self._line(execution_source="watch")],
             )
         assert "execution_source" in str(excinfo.value)
+
+
+class TestOrderLifecycleEvent:
+    def test_minimal_event(self):
+        event = ec.OrderLifecycleEvent(
+            account_mode="kis_mock",
+            execution_source="reconciler",
+            state="submitted",
+            occurred_at=datetime(2026, 5, 4, 10, 0, tzinfo=timezone.utc),
+        )
+        assert event.contract_version == "v1"
+        assert event.state == "submitted"
+        assert event.broker_order_id is None
+        assert event.correlation_id is None
+        assert event.detail == {}
+        assert event.warnings == []
+
+    def test_full_event(self):
+        event = ec.OrderLifecycleEvent(
+            account_mode="kis_live",
+            execution_source="websocket",
+            state="fill",
+            occurred_at=datetime(2026, 5, 4, 10, 1, tzinfo=timezone.utc),
+            broker_order_id="0000123456",
+            correlation_id="watch_alert_xyz",
+            detail={"raw": {"FILL_QTY": "10"}},
+            warnings=["partial_then_full"],
+        )
+        assert event.broker_order_id == "0000123456"
+        assert event.detail["raw"]["FILL_QTY"] == "10"
+
+    def test_invalid_state_rejected(self):
+        with pytest.raises(ValidationError):
+            ec.OrderLifecycleEvent(
+                account_mode="kis_mock",
+                execution_source="reconciler",
+                state="queued",  # not in the literal
+                occurred_at=datetime(2026, 5, 4, 10, 0, tzinfo=timezone.utc),
+            )
