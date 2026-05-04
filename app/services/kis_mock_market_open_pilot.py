@@ -12,6 +12,11 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Literal
 
+from app.services.preopen_approval_safety import (
+    is_kr_equity_symbol,
+    is_positive_integer_decimal,
+)
+
 PilotMode = Literal["readiness", "dry-run", "submit-mock"]
 PilotStatus = Literal["ready", "submitted", "blocked"]
 PilotSide = Literal["buy", "sell"]
@@ -58,15 +63,7 @@ class KisMockMarketOpenPilotResult:
     report_status: ReportStatus | None = None
 
 
-def _is_kr_equity_symbol(symbol: str) -> bool:
-    return len(symbol) == 6 and symbol.isdigit()
-
-
-def _is_positive_integer_decimal(value: Decimal) -> bool:
-    return value > 0 and value == value.to_integral_value()
-
-
-def _side_ko(side: str) -> str:
+def _side_ko(side: PilotSide) -> str:
     return "매도" if side == "sell" else "매수"
 
 
@@ -93,11 +90,11 @@ def _base_safety_checks(request: KisMockMarketOpenPilotRequest) -> dict[str, boo
         "no_kis_live_route": not request.tool_name.startswith("kis_live"),
         "kis_mock_account_mode": request.account_mode == _ALLOWED_ACCOUNT_MODE,
         "limit_order_only": request.order_type == _ALLOWED_ORDER_TYPE,
-        "kr_equity_symbol": _is_kr_equity_symbol(request.symbol),
+        "kr_equity_symbol": is_kr_equity_symbol(request.symbol),
         "supported_side": request.side in {"buy", "sell"},
         "positive_integer_quantity": isinstance(request.quantity, int)
         and request.quantity > 0,
-        "positive_integer_limit_price": _is_positive_integer_decimal(request.price),
+        "positive_integer_limit_price": is_positive_integer_decimal(request.price),
     }
 
 
@@ -109,13 +106,13 @@ def _blocking_reasons(request: KisMockMarketOpenPilotRequest) -> list[str]:
         reasons.append("invalid_account_mode")
     if request.order_type != _ALLOWED_ORDER_TYPE:
         reasons.append("invalid_order_type")
-    if not _is_kr_equity_symbol(request.symbol):
+    if not is_kr_equity_symbol(request.symbol):
         reasons.append("unsupported_kr_equity_symbol")
     if request.side not in {"buy", "sell"}:
         reasons.append("unsupported_side")
     if not isinstance(request.quantity, int) or request.quantity <= 0:
         reasons.append("invalid_quantity")
-    if not _is_positive_integer_decimal(request.price):
+    if not is_positive_integer_decimal(request.price):
         reasons.append("invalid_limit_price")
     return reasons
 
@@ -126,7 +123,7 @@ def _blocked_result(
     reasons: list[str],
     expected_approval_text: str | None = None,
 ) -> KisMockMarketOpenPilotResult:
-    price = int(request.price) if _is_positive_integer_decimal(request.price) else None
+    price = int(request.price) if is_positive_integer_decimal(request.price) else None
     return KisMockMarketOpenPilotResult(
         status="blocked",
         mode=request.mode,

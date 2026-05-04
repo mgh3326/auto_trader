@@ -8,7 +8,6 @@ network, cache, scheduler, persistence, or approval systems.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from decimal import Decimal
 
 from app.schemas.preopen import (
     CandidateSummary,
@@ -16,6 +15,10 @@ from app.schemas.preopen import (
     PreopenPaperApprovalBridge,
     PreopenPaperApprovalCandidate,
     PreopenQaEvaluatorSummary,
+)
+from app.services.preopen_approval_safety import (
+    is_kr_equity_symbol,
+    is_positive_integer_decimal,
 )
 
 
@@ -100,16 +103,6 @@ def _build_approval_copy(
     ]
 
 
-def _is_positive_integer_decimal(value: Decimal | None) -> bool:
-    if value is None:
-        return False
-    return value > 0 and value == value.to_integral_value()
-
-
-def _is_kr_equity_symbol(symbol: str) -> bool:
-    return len(symbol) == 6 and symbol.isdigit()
-
-
 def _bridge_market_scope(market_scope: str | None) -> str | None:
     return market_scope if market_scope in {"kr", "us", "crypto"} else None
 
@@ -125,7 +118,7 @@ def _build_kr_candidate(
             reason=f"unsupported_instrument_type:{candidate.instrument_type}",
         )
 
-    if not _is_kr_equity_symbol(candidate.symbol):
+    if not is_kr_equity_symbol(candidate.symbol):
         return _unsupported_candidate(
             candidate,
             reason=f"unsupported_symbol:{candidate.symbol}",
@@ -147,9 +140,9 @@ def _build_kr_candidate(
 
     if candidate.proposed_price is None:
         return _unsupported_candidate(candidate, reason="missing_price")
-    if not _is_positive_integer_decimal(candidate.proposed_price):
+    if not is_positive_integer_decimal(candidate.proposed_price):
         return _unsupported_candidate(candidate, reason="invalid_price")
-    if candidate.proposed_qty is not None and not _is_positive_integer_decimal(
+    if candidate.proposed_qty is not None and not is_positive_integer_decimal(
         candidate.proposed_qty
     ):
         return _unsupported_candidate(candidate, reason="invalid_quantity")
