@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 import pytest_asyncio
@@ -31,7 +32,7 @@ async def seeded_ledger_id(db_session: AsyncSession) -> int:
         price=Decimal("70000"),
         amount=Decimal("700000"),
         currency="KRW",
-        order_no="MOCK-1",
+        order_no=f"MOCK-{uuid4()}",
         account_mode="kis_mock",
         broker="kis",
         status="accepted",
@@ -147,7 +148,7 @@ async def test_list_open_orders_returns_only_inflight_and_fill(
         price=Decimal("100"),
         amount=Decimal("100"),
         currency="KRW",
-        order_no="MOCK-2",
+        order_no=f"MOCK-{uuid4()}",
         account_mode="kis_mock",
         broker="kis",
         status="accepted",
