@@ -8,6 +8,7 @@ describe("CommitteeWorkflowTransition", () => {
     render(
       <CommitteeWorkflowTransition
         currentStatus="created"
+        accountMode="kis_mock"
         isUpdating={false}
         onTransition={onTransition}
       />
@@ -24,6 +25,7 @@ describe("CommitteeWorkflowTransition", () => {
     render(
       <CommitteeWorkflowTransition
         currentStatus="created"
+        accountMode="kis_mock"
         isUpdating={true}
         onTransition={() => {}}
       />
@@ -76,20 +78,18 @@ describe("CommitteeWorkflowTransition", () => {
     expect(onTransition).toHaveBeenCalledWith("auto_approved");
   });
 
-  it("skips auto_approved for non-simulation modes (kis_live, db_simulated)", () => {
+  it("renders nothing for non-simulation modes (kis_live, db_simulated)", () => {
     const onTransition = vi.fn();
-    render(
+    const { container } = render(
       <CommitteeWorkflowTransition
         currentStatus="risk_review_ready"
         accountMode="kis_live"
         isUpdating={false}
         onTransition={onTransition}
-      />
+      />,
     );
-    fireEvent.click(
-      screen.getByRole("button", { name: /Advance to preview ready/i }),
-    );
-    expect(onTransition).toHaveBeenCalledWith("preview_ready");
+    expect(container.firstChild).toBeNull();
+    expect(onTransition).not.toHaveBeenCalled();
   });
 
   it("advances auto_approved to preview_ready", () => {
