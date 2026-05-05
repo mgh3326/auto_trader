@@ -13,8 +13,43 @@ const SEVERITY_LABEL: Record<NewsRadarItem["severity"], string> = {
   low: "Low",
 };
 
+const ENTITY_MAP: Record<string, string> = {
+  amp: "&",
+  apos: "'",
+  gt: ">",
+  lt: "<",
+  nbsp: " ",
+  quot: '\"',
+};
+
+function decodeHtmlEntities(value: string): string {
+  return value.replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (match, entity: string) => {
+    const normalized = entity.toLowerCase();
+    if (normalized.startsWith("#x")) {
+      return String.fromCodePoint(Number.parseInt(normalized.slice(2), 16));
+    }
+    if (normalized.startsWith("#")) {
+      return String.fromCodePoint(Number.parseInt(normalized.slice(1), 10));
+    }
+    return ENTITY_MAP[normalized] ?? match;
+  });
+}
+
+function stripHtml(value: string | null): string | null {
+  if (!value) {
+    return null;
+  }
+  const text = decodeHtmlEntities(value)
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return text || null;
+}
+
 export default function NewsRiskHeadlineCard({ item }: NewsRiskHeadlineCardProps) {
   const sourceLabel = item.source ?? item.feed_source ?? "—";
+  const title = stripHtml(item.title) ?? item.title;
+  const snippet = stripHtml(item.snippet);
   const inclusionLabel = item.included_in_briefing
     ? "In briefing"
     : "Collected · not in briefing";
@@ -33,13 +68,13 @@ export default function NewsRiskHeadlineCard({ item }: NewsRiskHeadlineCardProps
         rel="noreferrer noopener"
         target="_blank"
       >
-        {item.title}
+        {title}
       </a>
       <p className={styles.meta}>
         {sourceLabel} · {formatDateTime(item.published_at)} ·{" "}
         {item.market || "—"}
       </p>
-      {item.snippet ? <p className={styles.snippet}>{item.snippet}</p> : null}
+      {snippet ? <p className={styles.snippet}>{snippet}</p> : null}
       {item.themes.length > 0 ? (
         <ul aria-label="themes" className={styles.chips}>
           {item.themes.map((t) => (

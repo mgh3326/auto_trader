@@ -6,7 +6,9 @@ Read-only. No DB writes. No broker calls. No mutation.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
+from html import unescape
 from typing import Any
 
 from app.schemas.news import NewsReadinessResponse, NewsSourceCoverage
@@ -51,6 +53,21 @@ _SECTION_ORDER: tuple[NewsRadarRiskCategory, ...] = (
 _BRIEFING_INCLUDE_THRESHOLD = 40
 _AGGREGATE_MARKETS = ("kr", "us", "crypto")
 _MAX_INTERNAL_FETCH_LIMIT = 500
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _plain_text(value: Any, *, max_length: int | None = None) -> str | None:
+    if value is None:
+        return None
+    text = unescape(str(value))
+    text = _HTML_TAG_RE.sub(" ", text)
+    text = _WHITESPACE_RE.sub(" ", text).strip()
+    if not text:
+        return None
+    if max_length is not None and len(text) > max_length:
+        return text[: max_length - 1].rstrip() + "…"
+    return text
 
 
 def _field(article: Any, name: str) -> Any:
@@ -120,12 +137,10 @@ def _classification_to_item(
 ) -> NewsRadarItem:
     article_id = _field(article, "id")
     symbol = _field(article, "stock_symbol")
-    snippet = _field(article, "summary")
-    if isinstance(snippet, str) and len(snippet) > 280:
-        snippet = snippet[:277] + "…"
+    snippet = _plain_text(_field(article, "summary"), max_length=280)
     return NewsRadarItem(
         id=str(article_id) if article_id is not None else _field(article, "url") or "",
-        title=str(_field(article, "title") or ""),
+        title=_plain_text(_field(article, "title")) or "",
         source=_field(article, "source"),
         feed_source=_field(article, "feed_source"),
         url=str(_field(article, "url") or ""),

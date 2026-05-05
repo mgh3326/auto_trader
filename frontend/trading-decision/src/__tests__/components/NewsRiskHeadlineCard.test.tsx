@@ -35,4 +35,21 @@ describe("NewsRiskHeadlineCard", () => {
     expect(screen.getByText(/shipping/)).toBeInTheDocument();
     expect(screen.getByText(/uae/)).toBeInTheDocument();
   });
+
+  it("strips HTML from API-provided title and snippets before display", () => {
+    const item = makeNewsRadarItem({
+      title: "<b>Bitcoin</b> around $80K",
+      snippet:
+        '<p><a rel="nofollow" href="https://bitcoinmagazine.com">Bitcoin Magazine</a><br /> <img src="https://example.test/image.jpg" />Risk assets &amp; oil move.</p>',
+    });
+    render(<NewsRiskHeadlineCard item={item} />);
+
+    expect(
+      screen.getByRole("link", { name: "Bitcoin around $80K" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Bitcoin Magazine Risk assets & oil move."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/<p>|href=|src=/i)).not.toBeInTheDocument();
+  });
 });
