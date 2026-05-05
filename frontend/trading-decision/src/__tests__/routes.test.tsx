@@ -24,4 +24,9 @@ describe("trading decision routes", () => {
     expect(isTradingDecisionSessionUuid("settings")).toBe(false);
     expect(isTradingDecisionSessionUuid("session-1")).toBe(false);
   });
+
+  it("registers the news-radar route", () => {
+    const matches = matchRoutes(tradingDecisionRoutes, "/news-radar");
+    expect(matches?.at(-1)?.route.path).toBe("/news-radar");
+  });
 });
