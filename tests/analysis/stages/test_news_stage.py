@@ -32,7 +32,11 @@ async def test_news_stage_analyzer_bull_verdict():
     }
 
     ctx = StageContext(
-        session_id=1, symbol="AAPL", instrument_type="equity_us", user_id=1
+        session_id=1,
+        symbol="AAPL",
+        symbol_name="Apple",
+        instrument_type="equity_us",
+        user_id=1,
     )
     analyzer = NewsStageAnalyzer()
 
@@ -55,7 +59,11 @@ async def test_news_stage_analyzer_bull_verdict():
 @pytest.mark.asyncio
 async def test_news_stage_analyzer_unavailable():
     ctx = StageContext(
-        session_id=1, symbol="UNKNOWN", instrument_type="equity_us", user_id=1
+        session_id=1,
+        symbol="UNKNOWN",
+        symbol_name="Unknown",
+        instrument_type="equity_us",
+        user_id=1,
     )
     analyzer = NewsStageAnalyzer()
 

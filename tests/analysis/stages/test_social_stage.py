@@ -10,8 +10,14 @@ from app.schemas.research_pipeline import SocialSignals, StageVerdict
 async def test_social_stage_placeholder():
     stage = SocialStageAnalyzer()
     out = await stage.run(
-        StageContext(session_id=1, symbol="X", instrument_type="equity_kr")
+        StageContext(
+            session_id=1,
+            symbol="X",
+            symbol_name="X Corp",
+            instrument_type="equity_kr",
+        )
     )
+
     assert out.verdict == StageVerdict.UNAVAILABLE
     assert out.confidence == 0
     assert isinstance(out.signals, SocialSignals)

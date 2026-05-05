@@ -43,8 +43,14 @@ class _DummyMarketStage(BaseStageAnalyzer):
 async def test_dummy_stage_returns_validated_output():
     stage = _DummyMarketStage()
     out = await stage.analyze(
-        StageContext(session_id=1, symbol="005930", instrument_type="equity_kr")
+        StageContext(
+            session_id=1,
+            symbol="005930",
+            symbol_name="Samsung",
+            instrument_type="equity_kr",
+        )
     )
+
     assert out.stage_type == "market"
     assert isinstance(out.signals, MarketSignals)
 
@@ -75,6 +81,12 @@ def test_base_stage_rejects_wrong_stage_type():
     with pytest.raises(ValueError, match="stage_type mismatch"):
         asyncio.run(
             stage.run(
-                StageContext(session_id=1, symbol="X", instrument_type="equity_kr")
+                StageContext(
+                    session_id=1,
+                    symbol="X",
+                    symbol_name="X Corp",
+                    instrument_type="equity_kr",
+                )
             )
         )
+

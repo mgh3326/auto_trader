@@ -29,8 +29,14 @@ async def test_market_stage_basic_signals(monkeypatch):
 
     stage = MarketStageAnalyzer()
     out = await stage.run(
-        StageContext(session_id=1, symbol="005930", instrument_type="equity_kr")
+        StageContext(
+            session_id=1,
+            symbol="005930",
+            symbol_name="Samsung",
+            instrument_type="equity_kr",
+        )
     )
+
     assert isinstance(out.signals, MarketSignals)
     assert out.signals.last_close == pytest.approx(100.0)
     assert out.verdict in {StageVerdict.BULL, StageVerdict.NEUTRAL, StageVerdict.BEAR}

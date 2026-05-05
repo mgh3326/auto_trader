@@ -72,6 +72,7 @@ async def run_research_session(
         symbol=symbol,
         instrument_type=instrument_type,
         user_id=user_id,
+        symbol_name=name,
     )
 
     analyzers = [

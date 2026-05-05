@@ -12,6 +12,7 @@ class StageContext:
     symbol: str
     instrument_type: str
     user_id: int | None = None
+    symbol_name: str | None = None
 
 
 class BaseStageAnalyzer(ABC):
