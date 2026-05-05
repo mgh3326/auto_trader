@@ -857,3 +857,198 @@ export interface NewsRadarResponse {
   excluded_items: NewsRadarItem[];
   source_coverage: NewsRadarSourceCoverage[];
 }
+
+// --- ROB-113 Research Pipeline Phase 3 types ---
+
+export type ResearchSessionStatus =
+  | "open"
+  | "running"
+  | "finalized"
+  | "failed"
+  | "cancelled";
+
+export type StageType = "market" | "news" | "fundamentals" | "social";
+
+export type StageVerdict = "bull" | "bear" | "neutral" | "unavailable";
+
+export type SummaryDecision = "buy" | "hold" | "sell";
+
+export type LinkDirection = "support" | "contradict" | "context";
+
+export type ResearchInstrumentType = "equity_kr" | "equity_us" | "crypto";
+
+export interface ResearchSessionListItem {
+  id: number;
+  stock_info_id: number;
+  status: ResearchSessionStatus | string;
+  created_at: IsoDateTime;
+  decision: SummaryDecision | null;
+  confidence: number | null;
+}
+
+export interface ResearchSessionHeader {
+  id: number;
+  stock_info_id: number;
+  research_run_id: number | null;
+  status: ResearchSessionStatus | string;
+  started_at: IsoDateTime | null;
+  finalized_at: IsoDateTime | null;
+  created_at: IsoDateTime;
+  updated_at: IsoDateTime | null;
+  symbol: string | null;
+  instrument_type: string | null;
+}
+
+export interface MarketSignals {
+  last_close?: number;
+  change_pct?: number;
+  rsi_14?: number;
+  atr_14?: number;
+  volume_ratio_20d?: number;
+  trend?: "uptrend" | "downtrend" | "flat" | "unknown";
+  price_change_pct_1d?: number;
+  price_change_pct_5d?: number;
+  price_change_pct_20d?: number;
+  macd_signal?: string;
+  bollinger_position?: string;
+  supports?: number[];
+  resistances?: number[];
+  trend_short?: string;
+  trend_mid?: string;
+  trend_long?: string;
+  [key: string]: unknown;
+}
+
+export interface NewsSignals {
+  headline_count?: number;
+  sentiment_score?: number;
+  top_themes?: string[];
+  urgent_flags?: string[];
+  articles?: Array<{
+    title?: string;
+    url?: string;
+    source?: string;
+    published_at?: IsoDateTime;
+    sentiment?: "positive" | "negative" | "neutral";
+  }>;
+  [key: string]: unknown;
+}
+
+export interface FundamentalsSignals {
+  per?: number | null;
+  pbr?: number | null;
+  peg?: number | null;
+  ev_ebitda?: number | null;
+  market_cap?: number | null;
+  sector?: string | null;
+  peer_count?: number;
+  relative_per_vs_peers?: number | null;
+  disclosures?: Array<{ title: string; url?: string; reported_at?: IsoDateTime }>;
+  analyst_consensus?: string | null;
+  insider_flow?: string | null;
+  [key: string]: unknown;
+}
+
+export interface SocialSignals {
+  available: boolean;
+  reason: string;
+  phase: string;
+  [key: string]: unknown;
+}
+
+export interface SourceFreshness {
+  newest_age_minutes: number;
+  oldest_age_minutes: number;
+  missing_sources: string[];
+  stale_flags: string[];
+  source_count: number;
+}
+
+export interface StageAnalysis {
+  id: number;
+  stage_type: StageType;
+  verdict: StageVerdict;
+  confidence: number;
+  signals: MarketSignals | NewsSignals | FundamentalsSignals | SocialSignals;
+  raw_payload: Record<string, unknown> | null;
+  source_freshness: SourceFreshness | null;
+  executed_at: IsoDateTime;
+  snapshot_at: IsoDateTime | null;
+}
+
+export interface BullBearArgument {
+  text: string;
+  cited_stage_ids: number[];
+  direction: LinkDirection;
+  weight: number;
+}
+
+export interface PriceAnalysis {
+  appropriate_buy_min?: number | null;
+  appropriate_buy_max?: number | null;
+  appropriate_sell_min?: number | null;
+  appropriate_sell_max?: number | null;
+  buy_hope_min?: number | null;
+  buy_hope_max?: number | null;
+  sell_target_min?: number | null;
+  sell_target_max?: number | null;
+}
+
+export interface SummaryStageLink {
+  stage_analysis_id: number;
+  stage_type: StageType;
+  direction: LinkDirection;
+  weight: number;
+  rationale: string | null;
+}
+
+export interface ResearchSummary {
+  id: number;
+  session_id: number;
+  decision: SummaryDecision;
+  confidence: number;
+  bull_arguments: BullBearArgument[];
+  bear_arguments: BullBearArgument[];
+  price_analysis: PriceAnalysis | null;
+  reasons: string[] | null;
+  detailed_text: string | null;
+  warnings: string[] | null;
+  executed_at: IsoDateTime;
+  summary_stage_links: SummaryStageLink[];
+}
+
+export interface ResearchSessionFullResponse {
+  session: ResearchSessionHeader;
+  stages: StageAnalysis[];
+  summary: ResearchSummary | null;
+}
+
+export interface ResearchSessionCreateRequest {
+  symbol: string;
+  name?: string | null;
+  instrument_type: ResearchInstrumentType;
+  research_run_id?: number | null;
+  triggered_by?: "user" | "scheduler";
+}
+
+export interface ResearchSessionCreateResponse {
+  session_id: number;
+  status: ResearchSessionStatus;
+  started_at: IsoDateTime;
+}
+
+export interface SymbolTimelineEntry {
+  session_id: number;
+  status: ResearchSessionStatus | string;
+  started_at: IsoDateTime | null;
+  finalized_at: IsoDateTime | null;
+  decision: SummaryDecision | null;
+  confidence: number | null;
+  stage_verdicts: Partial<Record<StageType, StageVerdict>>;
+}
+
+export interface SymbolTimelineResponse {
+  symbol: string;
+  days: number;
+  entries: SymbolTimelineEntry[];
+}
