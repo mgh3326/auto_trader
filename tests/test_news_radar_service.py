@@ -358,3 +358,84 @@ async def test_service_aggregates_all_market_readiness(
     assert response.readiness.status == "stale"
     assert response.readiness.source_count == 3
     assert "crypto: news readiness is not ready" in response.readiness.warnings
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_service_returns_plain_text_snippets_for_html_summaries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services import news_radar_service
+    from app.services.market_news_briefing_formatter import (
+        BriefingItem,
+        BriefingRelevance,
+        BriefingSection,
+        MarketNewsBriefing,
+    )
+
+    html_article = FakeArticle(
+        id=9,
+        title="<b>Iran</b> oil shock",
+        url="https://example.test/html",
+        market="crypto",
+        source="Bitcoin Magazine",
+        summary=(
+            '<p><a rel="nofollow" href="https://bitcoinmagazine.com">'
+            'Bitcoin Magazine</a><br /> <img src="https://example.test/image.jpg" />'
+            "Bitcoin bounces as Iran strike unsettles risk assets &amp; oil.</p>"
+        ),
+        article_published_at=_now() - timedelta(hours=1),
+    )
+
+    async def fake_get_news_articles(**_: Any) -> tuple[list[Any], int]:
+        return ([html_article], 1)
+
+    async def fake_get_news_readiness(**_: Any) -> NewsReadinessResponse:
+        return _readiness()
+
+    def fake_format_market_news_briefing(articles, market, limit=None):
+        item = BriefingItem(
+            article=articles[0],
+            relevance=BriefingRelevance(
+                score=80,
+                section_id="geo",
+                section_title="Geo",
+                include_in_briefing=True,
+                matched_terms=["iran"],
+            ),
+        )
+        return MarketNewsBriefing(
+            market=market,
+            sections=[BriefingSection(section_id="geo", title="Geo", items=[item])],
+            excluded=[],
+            summary={},
+        )
+
+    monkeypatch.setattr(news_radar_service, "get_news_articles", fake_get_news_articles)
+    monkeypatch.setattr(
+        news_radar_service, "get_news_readiness", fake_get_news_readiness
+    )
+    monkeypatch.setattr(
+        news_radar_service,
+        "format_market_news_briefing",
+        fake_format_market_news_briefing,
+    )
+
+    response = await news_radar_service.build_news_radar(
+        market="crypto",
+        hours=24,
+        q=None,
+        risk_category=None,
+        include_excluded=True,
+        limit=50,
+    )
+
+    item = response.items[0]
+    assert item.title == "Iran oil shock"
+    assert item.snippet is not None
+    assert "<" not in item.snippet
+    assert "href=" not in item.snippet
+    assert "src=" not in item.snippet
+    assert "&amp;" not in item.snippet
+    assert "Bitcoin Magazine" in item.snippet
+    assert "risk assets & oil" in item.snippet
