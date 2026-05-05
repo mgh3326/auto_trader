@@ -15,9 +15,28 @@ from app.schemas.research_pipeline import (
 
 def create_mock_stage(stage_type, verdict, stale=False):
     signals_map = {
-        "market": MarketSignals(last_close=100.0, change_pct=1.0, rsi_14=50.0, atr_14=2.0, volume_ratio_20d=1.0, trend="uptrend"),
-        "news": NewsSignals(headline_count=5, sentiment_score=0.5, top_themes=["bullish"], urgent_flags=[]),
-        "fundamentals": FundamentalsSignals(per=15.0, pbr=1.5, market_cap=1000000, sector="Tech", peer_count=5, relative_per_vs_peers=1.0),
+        "market": MarketSignals(
+            last_close=100.0,
+            change_pct=1.0,
+            rsi_14=50.0,
+            atr_14=2.0,
+            volume_ratio_20d=1.0,
+            trend="uptrend",
+        ),
+        "news": NewsSignals(
+            headline_count=5,
+            sentiment_score=0.5,
+            top_themes=["bullish"],
+            urgent_flags=[],
+        ),
+        "fundamentals": FundamentalsSignals(
+            per=15.0,
+            pbr=1.5,
+            market_cap=1000000,
+            sector="Tech",
+            peer_count=5,
+            relative_per_vs_peers=1.0,
+        ),
         "social": SocialSignals(available=True, reason="ok", phase="production"),
     }
 
@@ -33,9 +52,10 @@ def create_mock_stage(stage_type, verdict, stale=False):
             oldest_age_minutes=10,
             missing_sources=[],
             stale_flags=stale_flags,
-            source_count=1
-        )
+            source_count=1,
+        ),
     )
+
 
 @pytest.mark.asyncio
 async def test_build_summary_deterministic_buy():
@@ -58,6 +78,7 @@ async def test_build_summary_deterministic_buy():
 
     assert any("social: UNAVAILABLE" in w for w in summary.warnings)
 
+
 @pytest.mark.asyncio
 async def test_build_summary_stale_to_hold():
     # 2 stale stages -> force HOLD
@@ -72,6 +93,7 @@ async def test_build_summary_stale_to_hold():
 
     assert summary.decision == SummaryDecision.HOLD
     assert any("stale" in w.lower() for w in summary.warnings)
+
 
 @pytest.mark.asyncio
 async def test_build_summary_citation_invariant():
@@ -88,6 +110,7 @@ async def test_build_summary_citation_invariant():
     if summary.bear_arguments:
         assert all(len(arg.cited_stage_ids) > 0 for arg in summary.bear_arguments)
 
+
 @pytest.mark.asyncio
 async def test_build_summary_unavailable_warning():
     stage_outputs = {
@@ -95,6 +118,7 @@ async def test_build_summary_unavailable_warning():
     }
     summary, links = await build_summary(stage_outputs)
     assert any("market: UNAVAILABLE" in w for w in summary.warnings)
+
 
 @pytest.mark.asyncio
 async def test_build_summary_llm_path():

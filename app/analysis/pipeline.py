@@ -24,6 +24,7 @@ from app.services.stock_info_service import create_stock_if_not_exists
 
 logger = logging.getLogger(__name__)
 
+
 async def run_research_session(
     db: AsyncSession,
     symbol: str,
@@ -73,8 +74,7 @@ async def run_research_session(
 
     # Run analyzers concurrently
     stage_results = await asyncio.gather(
-        *(analyzer.run(ctx) for analyzer in analyzers),
-        return_exceptions=True
+        *(analyzer.run(ctx) for analyzer in analyzers), return_exceptions=True
     )
 
     # 4. Validate each StageOutput, insert StageAnalysis row, capture DB id
@@ -93,7 +93,9 @@ async def run_research_session(
             confidence=res.confidence,
             signals=res.signals.model_dump(),
             raw_payload=res.raw_payload,
-            source_freshness=res.source_freshness.model_dump() if res.source_freshness else None,
+            source_freshness=res.source_freshness.model_dump()
+            if res.source_freshness
+            else None,
             model_name=res.model_name,
             prompt_version=res.prompt_version,
             snapshot_at=res.snapshot_at,
@@ -116,7 +118,9 @@ async def run_research_session(
             confidence=summary_output.confidence,
             bull_arguments=[arg.model_dump() for arg in summary_output.bull_arguments],
             bear_arguments=[arg.model_dump() for arg in summary_output.bear_arguments],
-            price_analysis=summary_output.price_analysis.model_dump() if summary_output.price_analysis else None,
+            price_analysis=summary_output.price_analysis.model_dump()
+            if summary_output.price_analysis
+            else None,
             reasons=summary_output.reasons,
             detailed_text=summary_output.detailed_text,
             warnings=summary_output.warnings,

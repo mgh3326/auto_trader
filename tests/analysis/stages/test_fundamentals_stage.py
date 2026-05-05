@@ -26,18 +26,22 @@ async def test_fundamentals_stage_bull_verdict():
         ],
     }
 
-    with patch("app.analysis.stages.fundamentals_stage._fetch_fundamentals", new_callable=AsyncMock) as mock_fetch:
+    with patch(
+        "app.analysis.stages.fundamentals_stage._fetch_fundamentals",
+        new_callable=AsyncMock,
+    ) as mock_fetch:
         mock_fetch.return_value = mock_data
         output = await analyzer.analyze(ctx)
 
         assert output.stage_type == "fundamentals"
         assert output.verdict == StageVerdict.BULL
         assert isinstance(output.signals, FundamentalsSignals)
-        assert output.signals.per == 10.0
+        assert output.signals.per == pytest.approx(10.0)
         assert output.signals.relative_per_vs_peers is not None
         # Median of [10, 12, 15, 18, 20] is 15.0
         # 10.0 / 15.0 = 0.666...
         assert output.signals.relative_per_vs_peers < 0.8
+
 
 @pytest.mark.asyncio
 async def test_fundamentals_stage_bear_verdict():
@@ -58,12 +62,16 @@ async def test_fundamentals_stage_bear_verdict():
         ],
     }
 
-    with patch("app.analysis.stages.fundamentals_stage._fetch_fundamentals", new_callable=AsyncMock) as mock_fetch:
+    with patch(
+        "app.analysis.stages.fundamentals_stage._fetch_fundamentals",
+        new_callable=AsyncMock,
+    ) as mock_fetch:
         mock_fetch.return_value = mock_data
         output = await analyzer.analyze(ctx)
 
         assert output.stage_type == "fundamentals"
         assert output.verdict == StageVerdict.BEAR
+
 
 @pytest.mark.asyncio
 async def test_fundamentals_stage_unavailable_for_crypto():

@@ -80,6 +80,7 @@ class BullBearArgument(BaseModel):
 
 class StageOutput(BaseModel):
     """Stage analyzer return type — pre-DB write contract."""
+
     model_config = ConfigDict(extra="forbid")
 
     stage_type: Literal["market", "news", "fundamentals", "social"]

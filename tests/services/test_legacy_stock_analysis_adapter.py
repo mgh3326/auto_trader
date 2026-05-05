@@ -30,7 +30,7 @@ async def async_db():
         # Create only the tables needed for this test to avoid issues with other models
         await conn.run_sync(
             Base.metadata.create_all,
-            tables=[StockInfo.__table__, StockAnalysisResult.__table__]
+            tables=[StockInfo.__table__, StockAnalysisResult.__table__],
         )
 
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -38,13 +38,12 @@ async def async_db():
         yield session
     await engine.dispose()
 
+
 @pytest.mark.asyncio
 async def test_legacy_stock_analysis_adapter_mapping(async_db: AsyncSession):
     # Setup: Create StockInfo
     stock_info = StockInfo(
-        symbol="005930",
-        name="삼성전자",
-        instrument_type="equity_kr"
+        symbol="005930", name="삼성전자", instrument_type="equity_kr"
     )
     async_db.add(stock_info)
     await async_db.commit()
@@ -64,12 +63,12 @@ async def test_legacy_stock_analysis_adapter_mapping(async_db: AsyncSession):
             buy_hope_min=48000.0,
             buy_hope_max=52000.0,
             sell_target_min=80000.0,
-            sell_target_max=85000.0
+            sell_target_max=85000.0,
         ),
         reasons=["Reason 1", "Reason 2"],
         detailed_text="Detailed analysis text",
         model_name="test-model",
-        prompt_version="v1"
+        prompt_version="v1",
     )
 
     summary_id = 123
@@ -82,19 +81,20 @@ async def test_legacy_stock_analysis_adapter_mapping(async_db: AsyncSession):
     assert result.stock_info_id == stock_info.id
     assert result.decision == "buy"
     assert result.confidence == 85
-    assert result.appropriate_buy_min == 50000.0
-    assert result.appropriate_buy_max == 55000.0
-    assert result.appropriate_sell_min == 70000.0
-    assert result.appropriate_sell_max == 75000.0
-    assert result.buy_hope_min == 48000.0
-    assert result.buy_hope_max == 52000.0
-    assert result.sell_target_min == 80000.0
-    assert result.sell_target_max == 85000.0
+    assert result.appropriate_buy_min == pytest.approx(50000.0)
+    assert result.appropriate_buy_max == pytest.approx(55000.0)
+    assert result.appropriate_sell_min == pytest.approx(70000.0)
+    assert result.appropriate_sell_max == pytest.approx(75000.0)
+    assert result.buy_hope_min == pytest.approx(48000.0)
+    assert result.buy_hope_max == pytest.approx(52000.0)
+    assert result.sell_target_min == pytest.approx(80000.0)
+    assert result.sell_target_max == pytest.approx(85000.0)
     assert result.reasons == ["Reason 1", "Reason 2"]
     assert result.detailed_text == "Detailed analysis text"
     assert result.model_name == "test-model"
     # prompt should encode summary id and prompt version
     assert result.prompt == "research_summary:123/prompt_version:v1"
+
 
 @pytest.mark.asyncio
 async def test_legacy_stock_analysis_adapter_default_model_name(async_db: AsyncSession):
@@ -110,8 +110,8 @@ async def test_legacy_stock_analysis_adapter_default_model_name(async_db: AsyncS
         bull_arguments=[],
         bear_arguments=[],
         reasons=[],
-        model_name=None, # Testing default
-        prompt_version="v2"
+        model_name=None,  # Testing default
+        prompt_version="v2",
     )
 
     # Act

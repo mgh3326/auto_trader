@@ -26,10 +26,7 @@ async def _fetch_recent_headlines(symbol: str, instrument_type: str) -> dict[str
 
     # Fetch articles from last 24 hours
     articles, total = await get_news_articles(
-        stock_symbol=symbol,
-        market=market,
-        hours=24,
-        limit=20
+        stock_symbol=symbol, market=market, hours=24, limit=20
     )
 
     if not articles:
@@ -47,8 +44,42 @@ async def _fetch_recent_headlines(symbol: str, instrument_type: str) -> dict[str
     newest_dt = None
 
     # V1 Rule-based sentiment keywords
-    POS_KEYWORDS = {"상승", "호재", "급등", "매수", "수익", "성장", "실적발표", "흑자", "soaring", "positive", "bullish", "buy", "growth", "earnings", "beat", "outperform"}
-    NEG_KEYWORDS = {"하락", "악재", "급락", "매도", "손실", "위기", "적자", "전망하치", "falling", "negative", "bearish", "sell", "loss", "crisis", "miss", "underperform"}
+    POS_KEYWORDS = {
+        "상승",
+        "호재",
+        "급등",
+        "매수",
+        "수익",
+        "성장",
+        "실적발표",
+        "흑자",
+        "soaring",
+        "positive",
+        "bullish",
+        "buy",
+        "growth",
+        "earnings",
+        "beat",
+        "outperform",
+    }
+    NEG_KEYWORDS = {
+        "하락",
+        "악재",
+        "급락",
+        "매도",
+        "손실",
+        "위기",
+        "적자",
+        "전망하치",
+        "falling",
+        "negative",
+        "bearish",
+        "sell",
+        "loss",
+        "crisis",
+        "miss",
+        "underperform",
+    }
 
     for article in articles:
         # Freshness
@@ -91,7 +122,9 @@ async def _fetch_recent_headlines(symbol: str, instrument_type: str) -> dict[str
         newest_age_minutes = max(0, int(diff.total_seconds() / 60))
 
     return {
-        "headlines": [{"title": a.title, "published_at": a.article_published_at} for a in articles],
+        "headlines": [
+            {"title": a.title, "published_at": a.article_published_at} for a in articles
+        ],
         "headline_count": len(articles),
         "sentiment_score": round(avg_sentiment, 2),
         "top_themes": top_themes,

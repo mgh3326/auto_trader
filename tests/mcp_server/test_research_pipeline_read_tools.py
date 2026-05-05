@@ -44,7 +44,9 @@ async def test_research_session_get_impl_success():
     mock_session.stage_analyses = [mock_stage]
     mock_session.summaries = [mock_summary]
 
-    with patch("app.mcp_server.tooling.research_pipeline_read.AsyncSessionLocal") as mock_db_factory:
+    with patch(
+        "app.mcp_server.tooling.research_pipeline_read.AsyncSessionLocal"
+    ) as mock_db_factory:
         mock_db = AsyncMock()
         mock_db_factory.return_value.__aenter__.return_value = mock_db
 
@@ -60,9 +62,12 @@ async def test_research_session_get_impl_success():
         assert result["stage_analyses"][0]["stage_type"] == "market"
         assert len(result["summaries"]) == 1
 
+
 @pytest.mark.asyncio
 async def test_research_session_get_impl_not_found():
-    with patch("app.mcp_server.tooling.research_pipeline_read.AsyncSessionLocal") as mock_db_factory:
+    with patch(
+        "app.mcp_server.tooling.research_pipeline_read.AsyncSessionLocal"
+    ) as mock_db_factory:
         mock_db = AsyncMock()
         mock_db_factory.return_value.__aenter__.return_value = mock_db
 
@@ -73,6 +78,7 @@ async def test_research_session_get_impl_not_found():
         result = await research_session_get_impl(999)
         assert "error" in result
         assert result["error_type"] == "not_found"
+
 
 @pytest.mark.asyncio
 async def test_research_session_list_recent_impl():
@@ -89,7 +95,9 @@ async def test_research_session_list_recent_impl():
 
     mock_session.summaries = [mock_summary]
 
-    with patch("app.mcp_server.tooling.research_pipeline_read.AsyncSessionLocal") as mock_db_factory:
+    with patch(
+        "app.mcp_server.tooling.research_pipeline_read.AsyncSessionLocal"
+    ) as mock_db_factory:
         mock_db = AsyncMock()
         mock_db_factory.return_value.__aenter__.return_value = mock_db
 
@@ -102,6 +110,7 @@ async def test_research_session_list_recent_impl():
         assert "sessions" in result
         assert len(result["sessions"]) == 1
         assert result["sessions"][0]["decision"] == "buy"
+
 
 @pytest.mark.asyncio
 async def test_stage_analysis_get_impl():
@@ -119,7 +128,9 @@ async def test_stage_analysis_get_impl():
     mock_stage.snapshot_at = datetime(2023, 1, 1, tzinfo=UTC)
     mock_stage.executed_at = datetime(2023, 1, 1, tzinfo=UTC)
 
-    with patch("app.mcp_server.tooling.research_pipeline_read.AsyncSessionLocal") as mock_db_factory:
+    with patch(
+        "app.mcp_server.tooling.research_pipeline_read.AsyncSessionLocal"
+    ) as mock_db_factory:
         mock_db = AsyncMock()
         mock_db_factory.return_value.__aenter__.return_value = mock_db
 
@@ -132,6 +143,7 @@ async def test_stage_analysis_get_impl():
         assert result["id"] == 1
         assert result["stage_type"] == "market"
         assert result["model_name"] == "gpt-4"
+
 
 @pytest.mark.asyncio
 async def test_research_summary_get_impl():
@@ -151,7 +163,9 @@ async def test_research_summary_get_impl():
     mock_summary.executed_at = datetime(2023, 1, 1, tzinfo=UTC)
     mock_summary.stage_links = []
 
-    with patch("app.mcp_server.tooling.research_pipeline_read.AsyncSessionLocal") as mock_db_factory:
+    with patch(
+        "app.mcp_server.tooling.research_pipeline_read.AsyncSessionLocal"
+    ) as mock_db_factory:
         mock_db = AsyncMock()
         mock_db_factory.return_value.__aenter__.return_value = mock_db
 

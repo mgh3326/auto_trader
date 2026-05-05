@@ -29,38 +29,59 @@ async def test_run_research_session_flow():
     mock_stock.instrument_type = "us_stock"
 
     # Mock create_stock_if_not_exists
-    with patch("app.analysis.pipeline.create_stock_if_not_exists", AsyncMock(return_value=mock_stock)) as mock_create_stock, \
-         patch("app.analysis.pipeline.MarketStageAnalyzer") as mock_market_analyzer, \
-         patch("app.analysis.pipeline.NewsStageAnalyzer") as mock_news_analyzer, \
-         patch("app.analysis.pipeline.FundamentalsStageAnalyzer") as mock_fundamentals_analyzer, \
-         patch("app.analysis.pipeline.SocialStageAnalyzer") as mock_social_analyzer, \
-         patch("app.analysis.pipeline.build_summary") as mock_build_summary:
-
+    with (
+        patch(
+            "app.analysis.pipeline.create_stock_if_not_exists",
+            AsyncMock(return_value=mock_stock),
+        ) as mock_create_stock,
+        patch("app.analysis.pipeline.MarketStageAnalyzer") as mock_market_analyzer,
+        patch("app.analysis.pipeline.NewsStageAnalyzer") as mock_news_analyzer,
+        patch(
+            "app.analysis.pipeline.FundamentalsStageAnalyzer"
+        ) as mock_fundamentals_analyzer,
+        patch("app.analysis.pipeline.SocialStageAnalyzer") as mock_social_analyzer,
+        patch("app.analysis.pipeline.build_summary") as mock_build_summary,
+    ):
         # Setup analyzer returns
-        mock_market_analyzer.return_value.run = AsyncMock(return_value=StageOutput(
-            stage_type="market",
-            verdict=StageVerdict.BULL,
-            confidence=80,
-            signals=MarketSignals(last_close=150.0, change_pct=1.5, rsi_14=60.0, atr_14=2.0, volume_ratio_20d=1.2, trend="uptrend")
-        ))
-        mock_news_analyzer.return_value.run = AsyncMock(return_value=StageOutput(
-            stage_type="news",
-            verdict=StageVerdict.BULL,
-            confidence=70,
-            signals=NewsSignals(headline_count=10, sentiment_score=0.5)
-        ))
-        mock_fundamentals_analyzer.return_value.run = AsyncMock(return_value=StageOutput(
-            stage_type="fundamentals",
-            verdict=StageVerdict.NEUTRAL,
-            confidence=50,
-            signals=FundamentalsSignals(peer_count=5)
-        ))
-        mock_social_analyzer.return_value.run = AsyncMock(return_value=StageOutput(
-            stage_type="social",
-            verdict=StageVerdict.UNAVAILABLE,
-            confidence=0,
-            signals=SocialSignals(available=False, reason="placeholder")
-        ))
+        mock_market_analyzer.return_value.run = AsyncMock(
+            return_value=StageOutput(
+                stage_type="market",
+                verdict=StageVerdict.BULL,
+                confidence=80,
+                signals=MarketSignals(
+                    last_close=150.0,
+                    change_pct=1.5,
+                    rsi_14=60.0,
+                    atr_14=2.0,
+                    volume_ratio_20d=1.2,
+                    trend="uptrend",
+                ),
+            )
+        )
+        mock_news_analyzer.return_value.run = AsyncMock(
+            return_value=StageOutput(
+                stage_type="news",
+                verdict=StageVerdict.BULL,
+                confidence=70,
+                signals=NewsSignals(headline_count=10, sentiment_score=0.5),
+            )
+        )
+        mock_fundamentals_analyzer.return_value.run = AsyncMock(
+            return_value=StageOutput(
+                stage_type="fundamentals",
+                verdict=StageVerdict.NEUTRAL,
+                confidence=50,
+                signals=FundamentalsSignals(peer_count=5),
+            )
+        )
+        mock_social_analyzer.return_value.run = AsyncMock(
+            return_value=StageOutput(
+                stage_type="social",
+                verdict=StageVerdict.UNAVAILABLE,
+                confidence=0,
+                signals=SocialSignals(available=False, reason="placeholder"),
+            )
+        )
 
         # Setup build_summary return
         mock_summary_output = SummaryOutput(
@@ -68,7 +89,7 @@ async def test_run_research_session_flow():
             confidence=75,
             bull_arguments=[],
             bear_arguments=[],
-            reasons=["Mock reason"]
+            reasons=["Mock reason"],
         )
         mock_links = [MagicMock()]
         mock_build_summary.return_value = (mock_summary_output, mock_links)
@@ -80,7 +101,13 @@ async def test_run_research_session_flow():
                 obj.id = 100
             elif isinstance(obj, StageAnalysis):
                 # Assign unique ID for each stage
-                obj.id = 200 + len([x for x in mock_db.add.call_args_list if isinstance(x[0][0], StageAnalysis)])
+                obj.id = 200 + len(
+                    [
+                        x
+                        for x in mock_db.add.call_args_list
+                        if isinstance(x[0][0], StageAnalysis)
+                    ]
+                )
             elif isinstance(obj, ResearchSummary):
                 obj.id = 300
 
@@ -88,16 +115,13 @@ async def test_run_research_session_flow():
 
         # Execute
         session_id = await run_research_session(
-            db=mock_db,
-            symbol="AAPL",
-            name="Apple Inc.",
-            instrument_type="us_stock"
+            db=mock_db, symbol="AAPL", name="Apple Inc.", instrument_type="us_stock"
         )
 
         # Assertions
         assert session_id == 100
         assert mock_create_stock.called
-        assert mock_db.add.call_count >= 6 # 1 session + 4 stages + 1 summary + links
+        assert mock_db.add.call_count >= 6  # 1 session + 4 stages + 1 summary + links
         assert mock_db.commit.called
         assert mock_db.flush.called
 

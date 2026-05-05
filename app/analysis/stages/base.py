@@ -18,8 +18,7 @@ class BaseStageAnalyzer(ABC):
     stage_type: ClassVar[str]  # override in subclass
 
     @abstractmethod
-    async def analyze(self, ctx: StageContext) -> StageOutput:
-        ...
+    async def analyze(self, ctx: StageContext) -> StageOutput: ...
 
     async def run(self, ctx: StageContext) -> StageOutput:
         out = await self.analyze(ctx)

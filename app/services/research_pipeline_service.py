@@ -48,15 +48,19 @@ class ResearchPipelineService:
 
         items = []
         for s in sessions:
-            latest_summary = sorted(s.summaries, key=lambda x: x.executed_at, reverse=True)[0] if s.summaries else None
-            items.append({
-                "id": s.id,
-                "stock_info_id": s.stock_info_id,
-                "status": s.status,
-                "created_at": s.created_at,
-                "decision": latest_summary.decision if latest_summary else None,
-                "confidence": latest_summary.confidence if latest_summary else None,
-            })
+            latest_summary = (
+                max(s.summaries, key=lambda x: x.executed_at) if s.summaries else None
+            )
+            items.append(
+                {
+                    "id": s.id,
+                    "stock_info_id": s.stock_info_id,
+                    "status": s.status,
+                    "created_at": s.created_at,
+                    "decision": latest_summary.decision if latest_summary else None,
+                    "confidence": latest_summary.confidence if latest_summary else None,
+                }
+            )
 
         return items
 
@@ -111,13 +115,16 @@ class ResearchPipelineService:
         """Returns latest summary + cited stage_analysis ids."""
         result = await self.db.execute(
             select(ResearchSummary)
-            .where(ResearchSummary.id == (
-                select(ResearchSummary.id)
-                .where(ResearchSummary.session_id == session_id)
-                .order_by(ResearchSummary.executed_at.desc())
-                .limit(1)
-                .scalar_subquery()
-            ))
+            .where(
+                ResearchSummary.id
+                == (
+                    select(ResearchSummary.id)
+                    .where(ResearchSummary.session_id == session_id)
+                    .order_by(ResearchSummary.executed_at.desc())
+                    .limit(1)
+                    .scalar_subquery()
+                )
+            )
             .options(selectinload(ResearchSummary.stage_links))
         )
         summary = result.scalar_one_or_none()

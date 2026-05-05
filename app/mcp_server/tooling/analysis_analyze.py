@@ -12,7 +12,6 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
-from app.models.research_pipeline import ResearchSession, ResearchSummary, StageAnalysis
 from app.mcp_server.tooling.fundamentals_sources_finnhub import (
     _fetch_company_profile_finnhub,
     _fetch_news_finnhub,
@@ -43,6 +42,7 @@ from app.mcp_server.tooling.shared import (
     normalize_symbol_input as _normalize_symbol_input,
 )
 from app.mcp_server.tooling.shared import resolve_market_type as _resolve_market_type
+from app.models.research_pipeline import ResearchSession, ResearchSummary
 from app.monitoring import build_yfinance_tracing_session
 
 logger = logging.getLogger(__name__)
@@ -417,7 +417,10 @@ def _map_pipeline_to_analysis(
     pa = summary.price_analysis or {}
 
     buy_zones = []
-    if pa.get("appropriate_buy_min") is not None or pa.get("appropriate_buy_max") is not None:
+    if (
+        pa.get("appropriate_buy_min") is not None
+        or pa.get("appropriate_buy_max") is not None
+    ):
         buy_zones.append(
             {
                 "price": pa.get("appropriate_buy_max") or pa.get("appropriate_buy_min"),
@@ -441,7 +444,8 @@ def _map_pipeline_to_analysis(
     ):
         sell_targets.append(
             {
-                "price": pa.get("appropriate_sell_min") or pa.get("appropriate_sell_max"),
+                "price": pa.get("appropriate_sell_min")
+                or pa.get("appropriate_sell_max"),
                 "type": "appropriate_sell",
                 "reasoning": f"Appropriate sell range: {pa.get('appropriate_sell_min')} - {pa.get('appropriate_sell_max')}",
             }
@@ -528,8 +532,7 @@ async def _get_pipeline_result(
         if not session or not session.summaries:
             return {}
 
-        # Get latest summary
-        summary = sorted(session.summaries, key=lambda s: s.executed_at, reverse=True)[0]
+        summary = max(session.summaries, key=lambda s: s.executed_at)
         return _map_pipeline_to_analysis(session, summary, symbol, market_type)
 
 
@@ -551,7 +554,10 @@ async def analyze_stock_impl(
         )
 
     # ROB-112: Research Pipeline Integration
-    if settings.RESEARCH_PIPELINE_ANALYZE_STOCK_ENABLED and settings.RESEARCH_PIPELINE_ENABLED:
+    if (
+        settings.RESEARCH_PIPELINE_ANALYZE_STOCK_ENABLED
+        and settings.RESEARCH_PIPELINE_ENABLED
+    ):
         try:
             from app.analysis.pipeline import run_research_session
 
@@ -559,10 +565,12 @@ async def analyze_stock_impl(
                 session_id = await run_research_session(
                     db=db,
                     symbol=normalized_symbol,
-                    name=normalized_symbol,  # TODO: Resolve proper name
+                    name=normalized_symbol,
                     instrument_type=market_type,
                 )
-            return await _get_pipeline_result(session_id, normalized_symbol, market_type)
+            return await _get_pipeline_result(
+                session_id, normalized_symbol, market_type
+            )
         except Exception as exc:
             logger.warning("research_pipeline.analyze_stock fallback: %s", exc)
             # Fall through to legacy path

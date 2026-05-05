@@ -13,8 +13,7 @@ from app.schemas.research_pipeline import (
 
 
 class ModelRunner(Protocol):
-    async def __call__(self, prompt: str, **kwargs: Any) -> dict[str, Any]:
-        ...
+    async def __call__(self, prompt: str, **kwargs: Any) -> dict[str, Any]: ...
 
 
 class StageLinkSpec:
@@ -68,7 +67,9 @@ async def build_summary(
             stage_outputs, model_runner, force_hold=force_hold, warnings=warnings
         )
 
-    return _build_deterministic_v1(stage_outputs, force_hold=force_hold, warnings=warnings)
+    return _build_deterministic_v1(
+        stage_outputs, force_hold=force_hold, warnings=warnings
+    )
 
 
 async def _build_llm_debate(

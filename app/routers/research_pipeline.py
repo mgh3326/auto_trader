@@ -48,7 +48,9 @@ async def get_session(
     return session
 
 
-@router.get("/sessions/{session_id}/stages", dependencies=[Depends(check_pipeline_enabled)])
+@router.get(
+    "/sessions/{session_id}/stages", dependencies=[Depends(check_pipeline_enabled)]
+)
 async def get_session_stages(
     session_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -58,7 +60,9 @@ async def get_session_stages(
     return await service.get_latest_stages(session_id)
 
 
-@router.get("/sessions/{session_id}/summary", dependencies=[Depends(check_pipeline_enabled)])
+@router.get(
+    "/sessions/{session_id}/summary", dependencies=[Depends(check_pipeline_enabled)]
+)
 async def get_session_summary(
     session_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],

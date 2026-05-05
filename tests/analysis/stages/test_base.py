@@ -20,12 +20,19 @@ class _DummyMarketStage(BaseStageAnalyzer):
             verdict=StageVerdict.NEUTRAL,
             confidence=50,
             signals=MarketSignals(
-                last_close=100.0, change_pct=0.0, rsi_14=50.0,
-                atr_14=1.0, volume_ratio_20d=1.0, trend="flat",
+                last_close=100.0,
+                change_pct=0.0,
+                rsi_14=50.0,
+                atr_14=1.0,
+                volume_ratio_20d=1.0,
+                trend="flat",
             ),
             source_freshness=SourceFreshness(
-                newest_age_minutes=1, oldest_age_minutes=1,
-                missing_sources=[], stale_flags=[], source_count=1,
+                newest_age_minutes=1,
+                oldest_age_minutes=1,
+                missing_sources=[],
+                stale_flags=[],
+                source_count=1,
             ),
             snapshot_at=datetime.now(tz=UTC),
         )
@@ -35,8 +42,9 @@ class _DummyMarketStage(BaseStageAnalyzer):
 @pytest.mark.asyncio
 async def test_dummy_stage_returns_validated_output():
     stage = _DummyMarketStage()
-    out = await stage.analyze(StageContext(session_id=1, symbol="005930",
-                                           instrument_type="equity_kr"))
+    out = await stage.analyze(
+        StageContext(session_id=1, symbol="005930", instrument_type="equity_kr")
+    )
     assert out.stage_type == "market"
     assert isinstance(out.signals, MarketSignals)
 
@@ -52,13 +60,21 @@ def test_base_stage_rejects_wrong_stage_type():
                 verdict=StageVerdict.NEUTRAL,
                 confidence=10,
                 signals=MarketSignals(
-                    last_close=1.0, change_pct=0.0, rsi_14=10.0,
-                    atr_14=0.1, volume_ratio_20d=1.0, trend="flat",
+                    last_close=1.0,
+                    change_pct=0.0,
+                    rsi_14=10.0,
+                    atr_14=0.1,
+                    volume_ratio_20d=1.0,
+                    trend="flat",
                 ),
             )
 
     import asyncio
+
     stage = _Bad()
     with pytest.raises(ValueError, match="stage_type mismatch"):
-        asyncio.run(stage.run(StageContext(session_id=1, symbol="X",
-                                           instrument_type="equity_kr")))
+        asyncio.run(
+            stage.run(
+                StageContext(session_id=1, symbol="X", instrument_type="equity_kr")
+            )
+        )

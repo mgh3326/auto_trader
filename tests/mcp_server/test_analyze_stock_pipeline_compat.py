@@ -10,14 +10,18 @@ from app.models.research_pipeline import ResearchSession, ResearchSummary, Stage
 
 @pytest.fixture
 def mock_ohlcv_df():
-    return pd.DataFrame({
-        "open": [100.0],
-        "high": [110.0],
-        "low": [90.0],
-        "close": [105.0],
-        "volume": [1000],
-        "value": [105000.0]
-    }, index=[pd.Timestamp.now()])
+    return pd.DataFrame(
+        {
+            "open": [100.0],
+            "high": [110.0],
+            "low": [90.0],
+            "close": [105.0],
+            "volume": [1000],
+            "value": [105000.0],
+        },
+        index=[pd.Timestamp.now()],
+    )
+
 
 @pytest.mark.asyncio
 async def test_analyze_stock_pipeline_compat_success():
@@ -62,10 +66,14 @@ async def test_analyze_stock_pipeline_compat_success():
         mock_settings.RESEARCH_PIPELINE_ENABLED = True
 
         # Patch the source module since it's imported locally in analyze_stock_impl
-        with patch("app.analysis.pipeline.run_research_session", new_callable=AsyncMock) as mock_run:
+        with patch(
+            "app.analysis.pipeline.run_research_session", new_callable=AsyncMock
+        ) as mock_run:
             mock_run.return_value = mock_session_id
 
-            with patch("app.mcp_server.tooling.analysis_analyze.AsyncSessionLocal") as mock_db_factory:
+            with patch(
+                "app.mcp_server.tooling.analysis_analyze.AsyncSessionLocal"
+            ) as mock_db_factory:
                 mock_db = AsyncMock()
                 mock_db_factory.return_value.__aenter__.return_value = mock_db
 
@@ -82,7 +90,8 @@ async def test_analyze_stock_pipeline_compat_success():
                 assert result["recommendation"]["action"] == "buy"
                 assert result["recommendation"]["confidence"] == "high"
                 assert len(result["recommendation"]["buy_zones"]) > 0
-                assert result["quote"]["price"] == 105.0
+                assert result["quote"]["price"] == pytest.approx(105.0)
+
 
 @pytest.mark.asyncio
 async def test_analyze_stock_pipeline_compat_fallback(mock_ohlcv_df):
@@ -93,19 +102,38 @@ async def test_analyze_stock_pipeline_compat_fallback(mock_ohlcv_df):
         mock_settings.RESEARCH_PIPELINE_ENABLED = True
 
         # Force an error in the pipeline path
-        with patch("app.analysis.pipeline.run_research_session", side_effect=Exception("Pipeline Crash")):
-
+        with patch(
+            "app.analysis.pipeline.run_research_session",
+            side_effect=Exception("Pipeline Crash"),
+        ):
             # We need to mock the legacy path components to avoid real API calls
-            with patch("app.mcp_server.tooling.analysis_analyze._fetch_ohlcv_for_indicators", new_callable=AsyncMock) as mock_ohlcv:
+            with patch(
+                "app.mcp_server.tooling.analysis_analyze._fetch_ohlcv_for_indicators",
+                new_callable=AsyncMock,
+            ) as mock_ohlcv:
                 mock_ohlcv.return_value = mock_ohlcv_df
 
-                with patch("app.mcp_server.tooling.analysis_analyze._get_quote_impl", new_callable=AsyncMock) as mock_quote:
-                    mock_quote.return_value = {"price": 105.0, "symbol": "AAPL", "instrument_type": "equity_us", "source": "yahoo"}
+                with patch(
+                    "app.mcp_server.tooling.analysis_analyze._get_quote_impl",
+                    new_callable=AsyncMock,
+                ) as mock_quote:
+                    mock_quote.return_value = {
+                        "price": 105.0,
+                        "symbol": "AAPL",
+                        "instrument_type": "equity_us",
+                        "source": "yahoo",
+                    }
 
-                    with patch("app.mcp_server.tooling.analysis_analyze._get_indicators_impl", new_callable=AsyncMock) as mock_ind:
+                    with patch(
+                        "app.mcp_server.tooling.analysis_analyze._get_indicators_impl",
+                        new_callable=AsyncMock,
+                    ) as mock_ind:
                         mock_ind.return_value = {"rsi": {"value": 50}}
 
-                        with patch("app.mcp_server.tooling.analysis_analyze._get_support_resistance_impl", new_callable=AsyncMock) as mock_sr:
+                        with patch(
+                            "app.mcp_server.tooling.analysis_analyze._get_support_resistance_impl",
+                            new_callable=AsyncMock,
+                        ) as mock_sr:
                             mock_sr.return_value = {}
 
                             # Execute

@@ -19,8 +19,8 @@ from app.mcp_server.tooling.analysis_tool_handlers import (
 from app.mcp_server.tooling.research_pipeline_read import (
     research_session_get_impl,
     research_session_list_recent_impl,
-    stage_analysis_get_impl,
     research_summary_get_impl,
+    stage_analysis_get_impl,
 )
 
 if TYPE_CHECKING:

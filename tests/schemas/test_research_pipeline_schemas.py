@@ -19,14 +19,20 @@ def test_market_signals_valid():
         volume_ratio_20d=1.8,
         trend="uptrend",
     )
-    assert sig.last_close == 12345.0
+    assert sig.last_close == pytest.approx(12345.0)
 
 
 @pytest.mark.unit
 def test_market_signals_rejects_out_of_range_rsi():
     with pytest.raises(ValidationError):
-        MarketSignals(last_close=1.0, change_pct=0.0, rsi_14=120.0,
-                      atr_14=0.1, volume_ratio_20d=1.0, trend="flat")
+        MarketSignals(
+            last_close=1.0,
+            change_pct=0.0,
+            rsi_14=120.0,
+            atr_14=0.1,
+            volume_ratio_20d=1.0,
+            trend="flat",
+        )
 
 
 @pytest.mark.unit

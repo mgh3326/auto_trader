@@ -33,7 +33,9 @@ class LegacyStockAnalysisAdapter:
         legacy_result = StockAnalysisResult(
             stock_info_id=stock_info_id,
             model_name=summary.model_name or "research_pipeline",
-            decision=summary.decision.value if hasattr(summary.decision, "value") else str(summary.decision),
+            decision=summary.decision.value
+            if hasattr(summary.decision, "value")
+            else str(summary.decision),
             confidence=summary.confidence,
             appropriate_buy_min=pa.appropriate_buy_min if pa else None,
             appropriate_buy_max=pa.appropriate_buy_max if pa else None,

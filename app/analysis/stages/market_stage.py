@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from app.analysis.stages.base import BaseStageAnalyzer, StageContext
@@ -66,7 +66,7 @@ async def _fetch_market_snapshot(symbol: str, instrument_type: str) -> dict[str,
         "atr_14": atr_14 if atr_14 is not None else 0.0,
         "volume_ratio_20d": round(volume_ratio_20d, 2),
         "trend": trend,
-        "snapshot_at_iso": datetime.utcnow().isoformat() + "Z",
+        "snapshot_at_iso": datetime.now(UTC).isoformat(),
     }
 
 
@@ -106,9 +106,17 @@ class MarketStageAnalyzer(BaseStageAnalyzer):
         # BEAR: change_pct < -0.5 and rsi_14 > 25 and trend == 'downtrend'
         # NEUTRAL: otherwise
         verdict = StageVerdict.NEUTRAL
-        if signals.change_pct > 0.5 and signals.rsi_14 < 75 and signals.trend == "uptrend":
+        if (
+            signals.change_pct > 0.5
+            and signals.rsi_14 < 75
+            and signals.trend == "uptrend"
+        ):
             verdict = StageVerdict.BULL
-        elif signals.change_pct < -0.5 and signals.rsi_14 > 25 and signals.trend == "downtrend":
+        elif (
+            signals.change_pct < -0.5
+            and signals.rsi_14 > 25
+            and signals.trend == "downtrend"
+        ):
             verdict = StageVerdict.BEAR
 
         return StageOutput(
@@ -116,7 +124,9 @@ class MarketStageAnalyzer(BaseStageAnalyzer):
             verdict=verdict,
             confidence=70,  # Static confidence for now
             signals=signals,
-            snapshot_at=datetime.fromisoformat(raw["snapshot_at_iso"].replace("Z", "+00:00")),
+            snapshot_at=datetime.fromisoformat(
+                raw["snapshot_at_iso"].replace("Z", "+00:00")
+            ),
             source_freshness=SourceFreshness(
                 newest_age_minutes=0,
                 oldest_age_minutes=0,
