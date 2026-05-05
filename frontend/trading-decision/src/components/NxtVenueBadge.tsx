@@ -22,10 +22,10 @@ export default function NxtVenueBadge({
   if (marketScope !== "kr") return null;
 
   if (nxtClassification === "data_mismatch_requires_review") {
-    const badgeLabel = "NXT review needed";
+    const badgeLabel = "NXT 검토 필요";
     return (
       <span
-        aria-label={`NXT venue: ${badgeLabel}`}
+        aria-label={`NXT 거래소: ${badgeLabel}`}
         className={`${styles.badge} ${styles.review}`}
       >
         {badgeLabel}
@@ -33,10 +33,10 @@ export default function NxtVenueBadge({
     );
   }
   if (nxtEligible === false) {
-    const badgeLabel = "Non-NXT (KR broker)";
+    const badgeLabel = "비-NXT (국내 브로커)";
     return (
       <span
-        aria-label={`NXT venue: ${badgeLabel}`}
+        aria-label={`NXT 거래소: ${badgeLabel}`}
         className={`${styles.badge} ${styles.nonNxt}`}
       >
         {badgeLabel}
@@ -44,10 +44,10 @@ export default function NxtVenueBadge({
     );
   }
   if (nxtEligible === null) {
-    const badgeLabel = "NXT eligibility unknown";
+    const badgeLabel = "NXT 자격 알 수 없음";
     return (
       <span
-        aria-label={`NXT venue: ${badgeLabel}`}
+        aria-label={`NXT 거래소: ${badgeLabel}`}
         className={`${styles.badge} ${styles.unknown}`}
       >
         {badgeLabel}
@@ -58,20 +58,20 @@ export default function NxtVenueBadge({
     nxtClassification !== null &&
     ACTIONABLE.indexOf(nxtClassification) >= 0
   ) {
-    const badgeLabel = "NXT actionable";
+    const badgeLabel = "NXT 실행 가능";
     return (
       <span
-        aria-label={`NXT venue: ${badgeLabel}`}
+        aria-label={`NXT 거래소: ${badgeLabel}`}
         className={`${styles.badge} ${styles.actionable}`}
       >
         {badgeLabel}
       </span>
     );
   }
-  const badgeLabel = "NXT not actionable";
+  const badgeLabel = "NXT 실행 불가";
   return (
     <span
-      aria-label={`NXT venue: ${badgeLabel}`}
+      aria-label={`NXT 거래소: ${badgeLabel}`}
       className={`${styles.badge} ${styles.notActionable}`}
     >
       {badgeLabel}
