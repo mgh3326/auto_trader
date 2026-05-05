@@ -27,6 +27,17 @@ def _session_factory() -> async_sessionmaker[AsyncSession]:
     return cast(async_sessionmaker[AsyncSession], cast(object, AsyncSessionLocal))
 
 
+def _clean_scope_value(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _packet_scope_value(packet: dict[str, Any] | None, key: str) -> str | None:
+    if not isinstance(packet, dict):
+        return None
+    return _clean_scope_value(packet.get(key))
+
+
 def _row_to_dict(row: Any) -> dict[str, Any]:
     if row is None:
         return {}
@@ -116,13 +127,25 @@ async def alpaca_paper_execution_preflight_check(
     expected_signal_symbol: str | None = None,
     expected_execution_symbol: str | None = None,
     stale_after_minutes: int = 30,
+    lifecycle_correlation_id: str | None = None,
+    client_order_id: str | None = None,
+    candidate_uuid: str | None = None,
+    briefing_artifact_run_uuid: str | None = None,
+    session_uuid: str | None = None,
 ) -> dict[str, Any]:
     """Run read-only Alpaca Paper execution anomaly checks.
 
-    The tool reads recent ledger rows and combines them with optional caller-
-    supplied read-only broker snapshots. It never submits, cancels, repairs, or
-    writes data. The returned ``should_block`` field is intended for runner
-    preflight gates.
+    The tool reads recent or scope-specific ledger rows and combines them with
+    optional caller-supplied read-only broker snapshots. It never submits,
+    cancels, repairs, or writes data. The returned ``should_block`` field is
+    intended for runner preflight gates.
+
+    When a correlation/candidate/client/briefing scope is provided directly or
+    via approval_packet, stale and symbol-context checks evaluate only rows in
+    that scope. Calls without scope preserve the global recent-ledger safety
+    behavior used by broad cycle runners. ``session_uuid`` is surfaced as a
+    response scope marker for decision-session callers; ledger scoping still
+    uses correlation/provenance keys because the Alpaca ledger has no session FK.
     """
     if limit < 1:
         raise ValueError("limit must be >= 1")
@@ -130,9 +153,47 @@ async def alpaca_paper_execution_preflight_check(
     if stale_after_minutes < 1:
         raise ValueError("stale_after_minutes must be >= 1")
 
+    scope = {
+        "lifecycle_correlation_id": _clean_scope_value(lifecycle_correlation_id)
+        or _packet_scope_value(approval_packet, "lifecycle_correlation_id"),
+        "client_order_id": _clean_scope_value(client_order_id)
+        or _packet_scope_value(approval_packet, "client_order_id"),
+        "candidate_uuid": _clean_scope_value(candidate_uuid)
+        or _packet_scope_value(approval_packet, "candidate_uuid"),
+        "briefing_artifact_run_uuid": _clean_scope_value(briefing_artifact_run_uuid)
+        or _packet_scope_value(approval_packet, "briefing_artifact_run_uuid")
+        or _packet_scope_value(approval_packet, "artifact_id"),
+        "session_uuid": _clean_scope_value(session_uuid)
+        or _packet_scope_value(approval_packet, "session_uuid")
+        or _packet_scope_value(approval_packet, "decision_session_uuid"),
+    }
+    scoped_by: dict[str, str] | None = None
+
     async with _session_factory()() as db:
         svc = AlpacaPaperLedgerService(db)
-        rows = await svc.list_recent(limit=limit)
+        if scope["lifecycle_correlation_id"]:
+            scoped_by = {
+                "kind": "lifecycle_correlation_id",
+                "value": scope["lifecycle_correlation_id"],
+            }
+            rows = await svc.list_by_correlation_id(scope["lifecycle_correlation_id"])
+        elif scope["client_order_id"]:
+            scoped_by = {"kind": "client_order_id", "value": scope["client_order_id"]}
+            row = await svc.get_by_client_order_id(scope["client_order_id"])
+            rows = [row] if row is not None else []
+        elif scope["candidate_uuid"]:
+            scoped_by = {"kind": "candidate_uuid", "value": scope["candidate_uuid"]}
+            rows = await svc.list_by_candidate_uuid(uuid.UUID(scope["candidate_uuid"]))
+        elif scope["briefing_artifact_run_uuid"]:
+            scoped_by = {
+                "kind": "briefing_artifact_run_uuid",
+                "value": scope["briefing_artifact_run_uuid"],
+            }
+            rows = await svc.list_by_briefing_artifact_run_uuid(
+                uuid.UUID(scope["briefing_artifact_run_uuid"])
+            )
+        else:
+            rows = await svc.list_recent(limit=limit)
 
     report = build_paper_execution_preflight_report(
         ledger_rows=rows,
@@ -151,6 +212,8 @@ async def alpaca_paper_execution_preflight_check(
             "source": "alpaca_paper_execution_preflight",
             "read_only": True,
             "limit": limit,
+            "scoped_by": scoped_by,
+            "session_uuid": scope["session_uuid"],
         }
     )
     return data
@@ -280,6 +343,8 @@ def register_alpaca_paper_ledger_read_tools(mcp: FastMCP) -> None:
         description=(
             "Read-only Alpaca Paper execution anomaly preflight. Returns "
             "severity-classified findings and should_block for cycle runners. "
+            "Supports direct or approval_packet-derived correlation/client/"
+            "candidate/briefing/session scope to avoid unrelated ledger rows. "
             "No broker mutation and no repair writes."
         ),
     )(alpaca_paper_execution_preflight_check)

@@ -16,6 +16,7 @@ from app.services.alpaca_paper_anomaly_checks import (
 def _row(**kwargs):
     defaults = {
         "client_order_id": "rob93-buy-001",
+        "lifecycle_correlation_id": "corr-btc",
         "side": "buy",
         "lifecycle_state": "filled",
         "order_status": "filled",
@@ -252,3 +253,98 @@ def test_report_to_dict_is_operator_readable():
     assert data["should_block"] is True
     assert data["counts"]["block"] == 1
     assert data["anomalies"][0]["check_id"] == "unexpected_open_orders"
+
+
+@pytest.mark.unit
+def test_scoped_preflight_ignores_unrelated_stale_and_symbol_rows():
+    now = datetime(2026, 5, 3, 12, 0, tzinfo=UTC)
+    report = build_paper_execution_preflight_report(
+        ledger_rows=[
+            _row(
+                client_order_id="eth-preview-old",
+                lifecycle_correlation_id="corr-eth",
+                lifecycle_state="previewed",
+                order_status=None,
+                execution_symbol="ETHUSD",
+                signal_symbol="KRW-ETH",
+                filled_qty=None,
+                created_at=now - timedelta(minutes=90),
+            ),
+            _row(
+                client_order_id="btc-preview-fresh",
+                lifecycle_correlation_id="corr-btc",
+                lifecycle_state="previewed",
+                order_status=None,
+                execution_symbol="BTCUSD",
+                signal_symbol="KRW-BTC",
+                filled_qty=None,
+                created_at=now - timedelta(minutes=5),
+            ),
+        ],
+        approval_packet={
+            "client_order_id": "btc-submit",
+            "lifecycle_correlation_id": "corr-btc",
+            "signal_symbol": "KRW-BTC",
+            "execution_symbol": "BTC/USD",
+        },
+        now=now,
+        stale_after_minutes=30,
+    )
+
+    assert report.status == "pass"
+    assert report.should_block is False
+    assert _check_ids(report) == {"preflight_clean"}
+    assert report.counts["ledger_rows"] == 1
+    assert report.counts["unscoped_ledger_rows"] == 2
+
+
+@pytest.mark.unit
+def test_scoped_preflight_still_blocks_stale_row_inside_same_correlation():
+    now = datetime(2026, 5, 3, 12, 0, tzinfo=UTC)
+    report = build_paper_execution_preflight_report(
+        ledger_rows=[
+            _row(
+                client_order_id="btc-preview-old",
+                lifecycle_correlation_id="corr-btc",
+                lifecycle_state="previewed",
+                order_status=None,
+                filled_qty=None,
+                created_at=now - timedelta(minutes=90),
+            )
+        ],
+        approval_packet={
+            "client_order_id": "btc-submit",
+            "lifecycle_correlation_id": "corr-btc",
+        },
+        now=now,
+        stale_after_minutes=30,
+    )
+
+    assert report.should_block is True
+    assert "stale_preview_or_approval_packet" in _check_ids(report)
+
+
+@pytest.mark.unit
+def test_scoped_preflight_still_blocks_symbol_mismatch_inside_same_correlation():
+    report = build_paper_execution_preflight_report(
+        ledger_rows=[
+            _row(
+                client_order_id="btc-preview-wrong-symbol",
+                lifecycle_correlation_id="corr-btc",
+                lifecycle_state="previewed",
+                order_status=None,
+                signal_symbol="KRW-SOL",
+                execution_symbol="SOLUSD",
+                filled_qty=None,
+            )
+        ],
+        approval_packet={
+            "client_order_id": "btc-submit",
+            "lifecycle_correlation_id": "corr-btc",
+            "signal_symbol": "KRW-BTC",
+            "execution_symbol": "BTC/USD",
+        },
+    )
+
+    assert report.should_block is True
+    assert "signal_execution_symbol_mismatch" in _check_ids(report)
