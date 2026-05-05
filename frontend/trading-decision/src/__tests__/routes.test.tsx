@@ -29,4 +29,26 @@ describe("trading decision routes", () => {
     const matches = matchRoutes(tradingDecisionRoutes, "/news-radar");
     expect(matches?.at(-1)?.route.path).toBe("/news-radar");
   });
+
+  it("registers /research home route", () => {
+    const matches = matchRoutes(tradingDecisionRoutes, "/research");
+    expect(matches?.at(-1)?.route.path).toBe("/research");
+  });
+
+  it("registers /research/sessions/:sessionId detail route", () => {
+    const matches = matchRoutes(tradingDecisionRoutes, "/research/sessions/42");
+    expect(matches?.at(-1)?.route.path).toBe("/research/sessions/:sessionId");
+    expect(matches?.at(-1)?.params.sessionId).toBe("42");
+  });
+
+  it("registers /research/symbols/:symbol/timeline route", () => {
+    const matches = matchRoutes(
+      tradingDecisionRoutes,
+      "/research/symbols/AAPL/timeline",
+    );
+    expect(matches?.at(-1)?.route.path).toBe(
+      "/research/symbols/:symbol/timeline",
+    );
+    expect(matches?.at(-1)?.params.symbol).toBe("AAPL");
+  });
 });
