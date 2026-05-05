@@ -95,6 +95,8 @@ class WorkflowStatus(enum.StrEnum):
 class CommitteeAccountMode(enum.StrEnum):
     kis_mock = "kis_mock"
     alpaca_paper = "alpaca_paper"
+    kis_live = "kis_live"
+    db_simulated = "db_simulated"
 
 
 class TradingDecisionSession(Base):
