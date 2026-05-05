@@ -292,7 +292,10 @@ describe("PreopenPage", () => {
 
     render(<PreopenPage />, { wrapper: MemoryRouter });
 
-    expect(await screen.findByText("미사용")).toBeInTheDocument();
+    const newsBadge = await screen.findByTestId("news-readiness-section");
+    expect(
+      newsBadge.querySelector('[data-status="unavailable"]'),
+    ).toHaveTextContent("미사용");
     expect(
       screen.getByText(/미리 볼 최근 기사가 없습니다/i),
     ).toBeInTheDocument();
@@ -313,7 +316,10 @@ describe("PreopenPage", () => {
 
     render(<PreopenPage />, { wrapper: MemoryRouter });
 
-    expect(await screen.findByText("미사용")).toBeInTheDocument();
+    const newsBadge = await screen.findByTestId("news-readiness-section");
+    expect(
+      newsBadge.querySelector('[data-status="unavailable"]'),
+    ).toHaveTextContent("미사용");
     expect(
       screen.getByText(/뉴스 준비도 조회에 실패했습니다/i),
     ).toBeInTheDocument();

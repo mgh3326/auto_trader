@@ -1,5 +1,7 @@
 import { formatDateTime } from "../format/datetime";
 import type { StrategyEventDetail } from "../api/types";
+import { STRATEGY_EVENT_TYPE_LABEL } from "../i18n";
+import { labelOrToken } from "../i18n/formatters";
 import styles from "./StrategyEventTimeline.module.css";
 
 interface StrategyEventTimelineProps {
@@ -11,21 +13,21 @@ export default function StrategyEventTimeline({
 }: StrategyEventTimelineProps) {
   if (events.length === 0) {
     return (
-      <p className={styles.empty}>
-        No strategy events yet for this session.
-      </p>
+      <p className={styles.empty}>이 세션에는 전략 이벤트가 없습니다.</p>
     );
   }
   return (
-    <ol className={styles.timeline} aria-label="Strategy events">
+    <ol className={styles.timeline} aria-label="전략 이벤트">
       {events.map((event) => {
         const summary = event.normalized_summary ?? event.source_text;
         return (
           <li key={event.event_uuid} className={styles.event}>
             <div className={styles.eventHeader}>
-              <span className={styles.type}>{event.event_type}</span>
-              <span>severity {event.severity}</span>
-              <span>confidence {event.confidence}</span>
+              <span className={styles.type}>
+                {labelOrToken(STRATEGY_EVENT_TYPE_LABEL, event.event_type)}
+              </span>
+              <span>심각도 {event.severity}</span>
+              <span>신뢰도 {event.confidence}</span>
               <span className={styles.meta}>
                 {formatDateTime(event.created_at)}
               </span>

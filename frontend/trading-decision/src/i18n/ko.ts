@@ -19,6 +19,7 @@ import type {
   ProposalKind,
   SessionStatus,
   Side,
+  StrategyEventType,
   TrackKind,
   UserResponseValue,
   WorkflowStatus,
@@ -295,6 +296,17 @@ export const SAFETY_SCOPE_LABEL: Record<string, string> = {
 export const PURPOSE_LABEL: Record<string, string> = {
   paper_plumbing_smoke: "페이퍼 배관 점검",
   alpha_candidate_review: "알파 후보 리뷰",
+};
+
+export const STRATEGY_EVENT_TYPE_LABEL: Record<StrategyEventType, string> = {
+  operator_market_event: "운영자 시장 이벤트",
+  earnings_event: "실적 이벤트",
+  macro_event: "매크로 이벤트",
+  sector_rotation: "섹터 로테이션",
+  technical_break: "기술적 돌파",
+  risk_veto: "리스크 거부",
+  cash_budget_change: "현금 예산 변경",
+  position_change: "포지션 변경",
 };
 
 export const COMMON = {

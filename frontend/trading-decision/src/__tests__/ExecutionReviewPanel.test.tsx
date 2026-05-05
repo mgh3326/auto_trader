@@ -16,15 +16,14 @@ describe("ExecutionReviewPanel", () => {
     render(<ExecutionReviewPanel review={makePreopenExecutionReview()} />);
 
     expect(
-      screen.getByRole("region", { name: /execution review/i }),
+      screen.getByRole("region", { name: "실행 리뷰" }),
     ).toBeInTheDocument();
-    expect(screen.getByText(/advisory.*read[- ]only/i)).toBeInTheDocument();
-    expect(screen.getByText(/no live execution/i)).toBeInTheDocument();
-    // This text appears in guardrail and stage summary.
+    expect(screen.getByText(/자문 \/ 읽기 전용/)).toBeInTheDocument();
+    expect(screen.getByText(/실주문 실행 없음/)).toBeInTheDocument();
     expect(
-      screen.getAllByText(/requires later explicit operator approval/i).length,
+      screen.getAllByText(/명시적인 운영자 승인이 필요/).length,
     ).toBeGreaterThan(0);
-    expect(screen.getByText(/Execution disabled/i)).toBeInTheDocument();
+    expect(screen.getByText(/실행 비활성화/)).toBeInTheDocument();
   });
 
   it("renders all six stages with their statuses", () => {
@@ -38,26 +37,29 @@ describe("ExecutionReviewPanel", () => {
     ]) {
       expect(screen.getByText(label)).toBeInTheDocument();
     }
-    // "Approval required" appears as a stage label and inside basket lines.
-    expect(screen.getAllByText(/approval required/i).length).toBeGreaterThan(1);
-    // "Basket preview" appears multiple times (stage label and section header).
-    expect(screen.getAllByText(/basket preview/i).length).toBeGreaterThan(1);
+    // "Approval required" stage label (fixture) + "승인 필요" basket-line cell.
+    expect(screen.getByText(/approval required/i)).toBeInTheDocument();
+    expect(screen.getAllByText("승인 필요").length).toBeGreaterThan(0);
+    // "Basket preview" stage label (fixture) + "바스켓 미리보기" section header.
+    expect(screen.getAllByText(/basket preview/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("바스켓 미리보기").length).toBeGreaterThan(0);
 
-    expect(screen.getAllByText(/ready/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/unavailable/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("준비 완료").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("미사용").length).toBeGreaterThan(0);
   });
 
   it("renders basket preview lines when present", () => {
     render(<ExecutionReviewPanel review={makePreopenExecutionReview()} />);
 
     expect(screen.getByText("005930")).toBeInTheDocument();
-    // side "buy" appears in multiple places; use getAll or be specific.
-    expect(screen.getAllByText(/buy/i).length).toBeGreaterThan(0);
-    expect(screen.getByText(/db_simulated/i)).toBeInTheDocument();
+    // side rendered as Korean "매수" in basket lines.
+    expect(screen.getAllByText("매수").length).toBeGreaterThan(0);
+    // account_mode rendered through EXECUTION_ACCOUNT_MODE_LABEL.
+    expect(screen.getByText(/DB 시뮬레이션/)).toBeInTheDocument();
     expect(screen.getByText("70000")).toBeInTheDocument();
     expect(screen.getByText("10")).toBeInTheDocument();
-    // Per-line guard rendered.
-    expect(screen.getAllByText(/approval required/i).length).toBeGreaterThan(0);
+    // Per-line guard rendered as Korean "승인 필요".
+    expect(screen.getAllByText("승인 필요").length).toBeGreaterThan(0);
   });
 
   it("hides basket preview block when basket is null and shows degraded copy", () => {

@@ -6,7 +6,7 @@ import { makeOutcome } from "../test/fixtures";
 describe("OutcomesPanel", () => {
   it("shows an empty state when no outcomes are recorded", () => {
     render(<OutcomesPanel outcomes={[]} />);
-    expect(screen.getByText(/no outcome marks/i)).toBeInTheDocument();
+    expect(screen.getByText(/결과 마크가 없습니다/)).toBeInTheDocument();
   });
 
   it("renders pnl_pct in the cell for the matching track and horizon", () => {
@@ -26,7 +26,7 @@ describe("OutcomesPanel", () => {
     ];
     render(<OutcomesPanel outcomes={outcomes} />);
     expect(
-      screen.getByRole("table", { name: /outcome marks/i }),
+      screen.getByRole("table", { name: "결과 마크" }),
     ).toBeInTheDocument();
     expect(screen.getByText("2.5%")).toBeInTheDocument();
     expect(screen.getByText("-0.75%")).toBeInTheDocument();

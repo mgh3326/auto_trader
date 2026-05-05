@@ -152,7 +152,7 @@ describe("SessionDetailPage", () => {
     expect(await screen.findByText("전략 이벤트")).toBeInTheDocument();
     expect(await screen.findByText(/fed hike confirmed/i)).toBeInTheDocument();
     expect(screen.getByText("TSLA")).toBeInTheDocument();
-    expect(screen.getByText(/operator_market_event/i)).toBeInTheDocument();
+    expect(screen.getByText("운영자 시장 이벤트")).toBeInTheDocument();
   });
 
   it("renders an empty state when there are no strategy events", async () => {
@@ -173,7 +173,7 @@ describe("SessionDetailPage", () => {
     renderDetail();
 
     expect(
-      await screen.findByText(/no strategy events yet/i),
+      await screen.findByText(/전략 이벤트가 없습니다/),
     ).toBeInTheDocument();
   });
 
@@ -227,18 +227,18 @@ describe("SessionDetailPage", () => {
 
     renderDetail();
 
-    await screen.findByText(/no strategy events yet/i);
+    await screen.findByText(/전략 이벤트가 없습니다/);
 
     await userEvent.type(
-      screen.getByLabelText(/source text/i),
+      screen.getByLabelText(/소스 텍스트/),
       "OpenAI earnings missed",
     );
     await userEvent.type(
-      screen.getByLabelText(/affected symbols/i),
+      screen.getByLabelText(/영향 종목/),
       "MSFT",
     );
     await userEvent.click(
-      screen.getByRole("button", { name: /add event/i }),
+      screen.getByRole("button", { name: /이벤트 추가/ }),
     );
 
     await waitFor(() => expect(recorded.length).toBe(1));
@@ -280,10 +280,10 @@ describe("SessionDetailPage", () => {
 
     renderDetail();
 
-    await screen.findByText(/no strategy events yet/i);
-    await userEvent.type(screen.getByLabelText(/source text/i), "msg");
+    await screen.findByText(/전략 이벤트가 없습니다/);
+    await userEvent.type(screen.getByLabelText(/소스 텍스트/), "msg");
     await userEvent.click(
-      screen.getByRole("button", { name: /add event/i }),
+      screen.getByRole("button", { name: /이벤트 추가/ }),
     );
 
     expect(
