@@ -10,7 +10,6 @@ import yfinance as yf
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from app.analysis.pipeline import run_research_session
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.models.research_pipeline import ResearchSession, ResearchSummary, StageAnalysis
@@ -554,6 +553,8 @@ async def analyze_stock_impl(
     # ROB-112: Research Pipeline Integration
     if settings.RESEARCH_PIPELINE_ANALYZE_STOCK_ENABLED and settings.RESEARCH_PIPELINE_ENABLED:
         try:
+            from app.analysis.pipeline import run_research_session
+
             async with AsyncSessionLocal() as db:
                 session_id = await run_research_session(
                     db=db,

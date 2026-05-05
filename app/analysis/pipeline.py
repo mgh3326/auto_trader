@@ -99,57 +99,74 @@ async def run_research_session(
             executed_at=datetime.now(timezone.utc),
         )
         db.add(stage_analysis)
-        await db.flush()
+        # Commit stages individually so we don't lose them if LLM summary fails later
+        await db.commit()
+        await db.refresh(stage_analysis)
         stage_outputs_map[stage_analysis.id] = res
 
     # 5. Build summary with app.analysis.debate.build_summary(stage_outputs)
     summary_output, link_specs = await build_summary(stage_outputs_map)
 
-    # 6. Insert ResearchSummary row, then SummaryStageLink rows referencing the DB ids
-    summary = ResearchSummary(
-        session_id=session_id,
-        decision=summary_output.decision,
-        confidence=summary_output.confidence,
-        bull_arguments=[arg.model_dump() for arg in summary_output.bull_arguments],
-        bear_arguments=[arg.model_dump() for arg in summary_output.bear_arguments],
-        price_analysis=summary_output.price_analysis.model_dump() if summary_output.price_analysis else None,
-        reasons=summary_output.reasons,
-        detailed_text=summary_output.detailed_text,
-        warnings=summary_output.warnings,
-        model_name=summary_output.model_name,
-        prompt_version=summary_output.prompt_version,
-        raw_payload=summary_output.raw_payload,
-        token_input=summary_output.token_input,
-        token_output=summary_output.token_output,
-        executed_at=datetime.now(timezone.utc),
-    )
-    db.add(summary)
-    await db.flush()
-
-    for spec in link_specs:
-        link = SummaryStageLink(
-            summary_id=summary.id,
-            stage_analysis_id=spec.stage_analysis_id,
-            weight=spec.weight,
-            direction=spec.direction,
-            rationale=spec.rationale,
+    # 6. Atomic block for Summary + Links + Dual-write
+    try:
+        summary = ResearchSummary(
+            session_id=session_id,
+            decision=summary_output.decision,
+            confidence=summary_output.confidence,
+            bull_arguments=[arg.model_dump() for arg in summary_output.bull_arguments],
+            bear_arguments=[arg.model_dump() for arg in summary_output.bear_arguments],
+            price_analysis=summary_output.price_analysis.model_dump() if summary_output.price_analysis else None,
+            reasons=summary_output.reasons,
+            detailed_text=summary_output.detailed_text,
+            warnings=summary_output.warnings,
+            model_name=summary_output.model_name,
+            prompt_version=summary_output.prompt_version,
+            raw_payload=summary_output.raw_payload,
+            token_input=summary_output.token_input,
+            token_output=summary_output.token_output,
+            executed_at=datetime.now(timezone.utc),
         )
-        db.add(link)
+        db.add(summary)
+        await db.flush()
 
-    # 7. If RESEARCH_PIPELINE_DUAL_WRITE_ENABLED, call adapter
-    if settings.RESEARCH_PIPELINE_DUAL_WRITE_ENABLED:
-        adapter = LegacyStockAnalysisAdapter()
-        await adapter.write(
-            db=db,
-            summary=summary_output,
-            summary_id=summary.id,
-            stock_info_id=stock_info.id,
-        )
+        for spec in link_specs:
+            link = SummaryStageLink(
+                summary_id=summary.id,
+                stage_analysis_id=spec.stage_analysis_id,
+                weight=spec.weight,
+                direction=spec.direction,
+                rationale=spec.rationale,
+            )
+            db.add(link)
+
+        # 7. If RESEARCH_PIPELINE_DUAL_WRITE_ENABLED, call adapter
+        if settings.RESEARCH_PIPELINE_DUAL_WRITE_ENABLED:
+            adapter = LegacyStockAnalysisAdapter()
+            await adapter.write(
+                db=db,
+                summary=summary_output,
+                summary_id=summary.id,
+                stock_info_id=stock_info.id,
+            )
+        
+        await db.commit()
+    except Exception as e:
+        logger.error(f"Failed to commit summary atomic block: {e}")
+        await db.rollback()
+        raise
 
     # 8. Update ResearchSession.status='finalized', set finalized_at
+    # This is the final step, committed separately.
     session.status = "finalized"
     session.finalized_at = datetime.now(timezone.utc)
     
-    await db.commit()
+    try:
+        await db.commit()
+    except Exception as e:
+        logger.error(f"Failed to commit finalized status: {e}")
+        # Revert status in memory to reflect that it wasn't persisted
+        session.status = "open"
+        session.finalized_at = None
+        raise
     
     return session_id
