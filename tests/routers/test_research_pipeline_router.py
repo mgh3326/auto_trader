@@ -61,6 +61,22 @@ async def test_get_sessions_list(override_deps):
 
 
 @pytest.mark.asyncio
+async def test_trading_workspace_alias_get_sessions_list(override_deps):
+    with patch.object(settings, "RESEARCH_PIPELINE_ENABLED", True):
+        with patch(
+            "app.routers.research_pipeline.ResearchPipelineService.list_recent_sessions",
+            new_callable=AsyncMock,
+        ) as mock_service:
+            mock_service.return_value = [{"id": 1, "status": "finalized"}]
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as ac:
+                response = await ac.get("/trading/api/research-pipeline/sessions")
+                assert response.status_code == status.HTTP_200_OK
+                assert response.json()[0]["id"] == 1
+
+
+@pytest.mark.asyncio
 async def test_get_session_by_id(override_deps):
     with patch.object(settings, "RESEARCH_PIPELINE_ENABLED", True):
         mock_session = {"id": 1, "status": "open", "stock_info_id": 123}

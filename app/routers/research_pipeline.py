@@ -15,7 +15,8 @@ from app.schemas.research_pipeline import (
 )
 from app.services.research_pipeline_service import ResearchPipelineService
 
-router = APIRouter(prefix="/api/research-pipeline", tags=["research-pipeline"])
+api_router = APIRouter(prefix="/api/research-pipeline", tags=["research-pipeline"])
+router = APIRouter()
 
 
 def check_pipeline_enabled():
@@ -26,7 +27,7 @@ def check_pipeline_enabled():
         )
 
 
-@router.post(
+@api_router.post(
     "/sessions",
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(check_pipeline_enabled)],
@@ -46,7 +47,7 @@ async def create_session(
     )
 
 
-@router.get("/sessions", dependencies=[Depends(check_pipeline_enabled)])
+@api_router.get("/sessions", dependencies=[Depends(check_pipeline_enabled)])
 async def list_sessions(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_authenticated_user)],
@@ -56,7 +57,9 @@ async def list_sessions(
     return await service.list_recent_sessions(limit=limit)
 
 
-@router.get("/sessions/{session_id}", dependencies=[Depends(check_pipeline_enabled)])
+@api_router.get(
+    "/sessions/{session_id}", dependencies=[Depends(check_pipeline_enabled)]
+)
 async def get_session(
     session_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -82,7 +85,7 @@ async def get_session(
     return session
 
 
-@router.get(
+@api_router.get(
     "/sessions/{session_id}/stages", dependencies=[Depends(check_pipeline_enabled)]
 )
 async def get_session_stages(
@@ -94,7 +97,7 @@ async def get_session_stages(
     return await service.get_latest_stages(session_id)
 
 
-@router.get(
+@api_router.get(
     "/sessions/{session_id}/summary", dependencies=[Depends(check_pipeline_enabled)]
 )
 async def get_session_summary(
@@ -112,7 +115,7 @@ async def get_session_summary(
     return summary
 
 
-@router.get(
+@api_router.get(
     "/symbols/{symbol}/timeline",
     dependencies=[Depends(check_pipeline_enabled)],
 )
@@ -129,3 +132,10 @@ async def get_symbol_timeline(
         )
     service = ResearchPipelineService(db)
     return await service.get_symbol_timeline(symbol, days=days)
+
+
+# Keep the legacy `/api/research-pipeline` surface from ROB-112 and expose the
+# Trading Decision Workspace alias used by the React app's shared API client
+# (`/trading/api/...`).
+router.include_router(api_router)
+router.include_router(api_router, prefix="/trading")
