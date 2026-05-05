@@ -1,0 +1,15 @@
+/* frontend/trading-decision/src/components/PortfolioActionRow.module.css */
+.row td { padding: 8px 12px; vertical-align: top; border-top: 1px solid #1f2937; }
+.symbol div { font-weight: 600; }
+.symbol small { color: #94a3b8; display: block; }
+.gain { color: #22c55e; }
+.loss { color: #ef4444; }
+.badge { padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+.action_sell { background: #7f1d1d; color: #fee2e2; }
+.action_trim { background: #92400e; color: #fef3c7; }
+.action_hold { background: #1e3a8a; color: #dbeafe; }
+.action_add { background: #166534; color: #dcfce7; }
+.action_watch { background: #334155; color: #e2e8f0; }
+.reasonList, .missingList { margin: 0; padding-left: 16px; font-size: 12px; }
+.missingList { color: #fbbf24; }
+.actions { display: flex; flex-direction: column; gap: 4px; }
