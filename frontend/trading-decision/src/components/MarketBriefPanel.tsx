@@ -1,3 +1,10 @@
+import {
+  COMMON,
+  RECONCILIATION_STATUS_LABEL,
+  NXT_CLASSIFICATION_LABEL,
+} from "../i18n";
+import { labelOrToken } from "../i18n/formatters";
+import { formatDateTime } from "../format/datetime";
 import styles from "./MarketBriefPanel.module.css";
 
 interface MarketBriefPanelProps {
@@ -14,26 +21,6 @@ interface ResearchRunSummary {
   snapshot_warnings: string[];
   source_warnings: string[];
 }
-
-const RECON_LABEL: Record<string, string> = {
-  maintain: "Maintain",
-  near_fill: "Near fill",
-  too_far: "Too far",
-  chasing_risk: "Chasing risk",
-  data_mismatch: "Data mismatch",
-  kr_pending_non_nxt: "KR broker only",
-  unknown_venue: "Unknown venue",
-  unknown: "Unknown",
-};
-
-const NXT_LABEL: Record<string, string> = {
-  actionable: "Actionable",
-  too_far: "Too far",
-  non_nxt: "Non-NXT",
-  watch_only: "Watch only",
-  data_mismatch_requires_review: "Review needed",
-  unknown: "Unknown",
-};
 
 function tryParseSummary(brief: Record<string, unknown>): ResearchRunSummary | null {
   if (!("research_run_uuid" in brief)) return null;
@@ -85,50 +72,57 @@ export default function MarketBriefPanel({ brief, notes }: MarketBriefPanelProps
   const summary = brief ? tryParseSummary(brief) : null;
   return (
     <details className={styles.panel} open>
-      <summary>Market brief</summary>
+      <summary>시장 브리핑</summary>
       {notes ? <p className={styles.notes}>{notes}</p> : null}
       {summary ? (
         <div className={styles.summary}>
           <p>
-            <strong>Research run:</strong>{" "}
+            <strong>리서치 실행:</strong>{" "}
             {summary.research_run_uuid ?? "—"}
-            {summary.refreshed_at ? ` · refreshed ${summary.refreshed_at}` : ""}
+            {summary.refreshed_at ? ` · 갱신 ${formatDateTime(summary.refreshed_at)}` : ""}
           </p>
           {summary.counts ? (
             <p>
-              <strong>Counts:</strong> candidates {summary.counts.candidates ?? "—"} ·
-              reconciliations {summary.counts.reconciliations ?? "—"}
+              <strong>건수:</strong> 후보 {summary.counts.candidates ?? "—"} ·
+              조정 {summary.counts.reconciliations ?? "—"}
             </p>
           ) : null}
           {summary.reconciliation_summary ? (
             <SummaryList
-              title="Reconciliation summary"
+              title="조정 요약"
               entries={summary.reconciliation_summary}
-              labels={RECON_LABEL}
+              labels={RECONCILIATION_STATUS_LABEL}
             />
           ) : null}
           {summary.nxt_summary ? (
             <SummaryList
-              title="NXT summary"
+              title="NXT 요약"
               entries={summary.nxt_summary}
-              labels={NXT_LABEL}
+              labels={NXT_CLASSIFICATION_LABEL}
             />
           ) : null}
           {summary.snapshot_warnings.length > 0 ? (
             <p>
-              <strong>Snapshot warnings:</strong>{" "}
+              <strong>스냅샷 경고:</strong>{" "}
               {summary.snapshot_warnings.join(", ")}
             </p>
           ) : null}
           {summary.source_warnings.length > 0 ? (
             <p>
-              <strong>Source warnings:</strong>{" "}
+              <strong>소스 경고:</strong>{" "}
               {summary.source_warnings.join(", ")}
             </p>
           ) : null}
+          <details className={styles.rawDetails}>
+            <summary>{COMMON.rawData}</summary>
+            <pre>{JSON.stringify(brief, null, 2)}</pre>
+          </details>
         </div>
       ) : brief ? (
-        <pre>{JSON.stringify(brief, null, 2)}</pre>
+        <details className={styles.rawDetails}>
+          <summary>{COMMON.rawData}</summary>
+          <pre>{JSON.stringify(brief, null, 2)}</pre>
+        </details>
       ) : null}
     </details>
   );
@@ -149,7 +143,7 @@ function SummaryList({
       <ul className={styles.summaryList}>
         {Object.entries(entries).map(([k, v]) => (
           <li key={k}>
-            {labels[k] ?? k}: {v}
+            {labelOrToken(labels, k)}: {v}
           </li>
         ))}
       </ul>
