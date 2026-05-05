@@ -1216,12 +1216,13 @@ async def test_send_watch_alert_success(
 
 
 @pytest.mark.asyncio
-async def test_send_watch_alert_to_n8n_skips_when_webhook_missing(
+async def test_send_watch_alert_to_router_skips_when_no_url_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(settings, "WATCH_ALERT_ROUTER_URL", "")
     monkeypatch.setattr(settings, "N8N_WATCH_ALERT_WEBHOOK_URL", "")
 
-    result = await OpenClawClient().send_watch_alert_to_n8n(
+    result = await OpenClawClient().send_watch_alert_to_router(
         message="watch message",
         market="crypto",
         triggered=[{"symbol": "BTC", "condition_type": "price_above"}],
@@ -1230,21 +1231,22 @@ async def test_send_watch_alert_to_n8n_skips_when_webhook_missing(
     )
 
     assert result.status == "skipped"
-    assert result.reason == "n8n_webhook_not_configured"
+    assert result.reason == "router_not_configured"
     assert result.request_id is None
 
 
 @pytest.mark.asyncio
 @patch("app.services.openclaw_client.httpx.AsyncClient")
-async def test_send_watch_alert_to_n8n_posts_payload(
+async def test_send_watch_alert_to_router_posts_payload(
     mock_httpx_client_cls: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
         settings,
-        "N8N_WATCH_ALERT_WEBHOOK_URL",
+        "WATCH_ALERT_ROUTER_URL",
         "http://127.0.0.1:5678/webhook/watch-alert",
     )
+    monkeypatch.setattr(settings, "N8N_WATCH_ALERT_WEBHOOK_URL", "")
 
     mock_cli = AsyncMock()
     mock_res = MagicMock(status_code=200)
@@ -1256,7 +1258,7 @@ async def test_send_watch_alert_to_n8n_posts_payload(
     mock_client_instance.__aexit__.return_value = None
     mock_httpx_client_cls.return_value = mock_client_instance
 
-    result = await OpenClawClient().send_watch_alert_to_n8n(
+    result = await OpenClawClient().send_watch_alert_to_router(
         message="watch summary",
         market="kr",
         triggered=[
@@ -1295,15 +1297,16 @@ async def test_send_watch_alert_to_n8n_posts_payload(
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("zero_delay_openclaw_retry_wait")
 @patch("app.services.openclaw_client.httpx.AsyncClient")
-async def test_send_watch_alert_to_n8n_returns_failed_on_retries_exhausted(
+async def test_send_watch_alert_to_router_returns_failed_on_retries_exhausted(
     mock_httpx_client_cls: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
         settings,
-        "N8N_WATCH_ALERT_WEBHOOK_URL",
+        "WATCH_ALERT_ROUTER_URL",
         "http://127.0.0.1:5678/webhook/watch-alert",
     )
+    monkeypatch.setattr(settings, "N8N_WATCH_ALERT_WEBHOOK_URL", "")
 
     mock_cli = AsyncMock()
     mock_res_fail = MagicMock()
@@ -1315,7 +1318,7 @@ async def test_send_watch_alert_to_n8n_returns_failed_on_retries_exhausted(
     mock_client_instance.__aexit__.return_value = None
     mock_httpx_client_cls.return_value = mock_client_instance
 
-    result = await OpenClawClient().send_watch_alert_to_n8n(
+    result = await OpenClawClient().send_watch_alert_to_router(
         message="watch summary",
         market="crypto",
         triggered=[{"symbol": "BTC", "condition_type": "price_above"}],
@@ -1327,6 +1330,80 @@ async def test_send_watch_alert_to_n8n_returns_failed_on_retries_exhausted(
     assert result.reason == "request_failed"
     assert result.request_id is None
     assert mock_cli.post.call_count == 4
+
+
+@pytest.mark.asyncio
+@patch("app.services.openclaw_client.httpx.AsyncClient")
+async def test_send_watch_alert_to_router_prefers_router_url_over_legacy(
+    mock_httpx_client_cls: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        settings,
+        "WATCH_ALERT_ROUTER_URL",
+        "http://127.0.0.1:9999/router/watch-alert",
+    )
+    monkeypatch.setattr(
+        settings,
+        "N8N_WATCH_ALERT_WEBHOOK_URL",
+        "http://127.0.0.1:5678/webhook/watch-alert",
+    )
+
+    mock_cli = AsyncMock()
+    mock_res = MagicMock(status_code=200)
+    mock_res.raise_for_status.return_value = None
+    mock_cli.post.return_value = mock_res
+    mock_client_instance = AsyncMock()
+    mock_client_instance.__aenter__.return_value = mock_cli
+    mock_client_instance.__aexit__.return_value = None
+    mock_httpx_client_cls.return_value = mock_client_instance
+
+    result = await OpenClawClient().send_watch_alert_to_router(
+        message="m",
+        market="kr",
+        triggered=[{"symbol": "X", "condition_type": "price_below"}],
+        as_of="2026-04-17T00:00:00Z",
+        correlation_id="corr-prefer-router",
+    )
+
+    assert result.status == "success"
+    assert mock_cli.post.call_args.args[0] == "http://127.0.0.1:9999/router/watch-alert"
+
+
+@pytest.mark.asyncio
+@patch("app.services.openclaw_client.httpx.AsyncClient")
+async def test_send_watch_alert_to_router_falls_back_to_legacy_n8n_url(
+    mock_httpx_client_cls: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "WATCH_ALERT_ROUTER_URL", "")
+    monkeypatch.setattr(
+        settings,
+        "N8N_WATCH_ALERT_WEBHOOK_URL",
+        "http://127.0.0.1:5678/webhook/watch-alert",
+    )
+
+    mock_cli = AsyncMock()
+    mock_res = MagicMock(status_code=200)
+    mock_res.raise_for_status.return_value = None
+    mock_cli.post.return_value = mock_res
+    mock_client_instance = AsyncMock()
+    mock_client_instance.__aenter__.return_value = mock_cli
+    mock_client_instance.__aexit__.return_value = None
+    mock_httpx_client_cls.return_value = mock_client_instance
+
+    result = await OpenClawClient().send_watch_alert_to_router(
+        message="m",
+        market="kr",
+        triggered=[{"symbol": "X", "condition_type": "price_below"}],
+        as_of="2026-04-17T00:00:00Z",
+        correlation_id="corr-fallback",
+    )
+
+    assert result.status == "success"
+    assert (
+        mock_cli.post.call_args.args[0] == "http://127.0.0.1:5678/webhook/watch-alert"
+    )
 
 
 def test_watch_alert_delivery_result_enforces_request_id_contract() -> None:

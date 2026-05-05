@@ -99,7 +99,7 @@ class OpenClawProximityNotifier:
             }
             for result in results
         ]
-        return await self._client.send_watch_alert_to_n8n(
+        return await self._client.send_watch_alert_to_router(
             message=message,
             market=market,
             triggered=triggered,

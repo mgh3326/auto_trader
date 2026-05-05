@@ -122,6 +122,18 @@ def _build_n8n_fill_payload(
     }
 
 
+def _resolve_watch_alert_url() -> str:
+    """Resolve the watch-alert router URL.
+
+    WATCH_ALERT_ROUTER_URL wins when set; otherwise falls through to the
+    deprecated N8N_WATCH_ALERT_WEBHOOK_URL for backward compatibility.
+    """
+    router = settings.WATCH_ALERT_ROUTER_URL.strip()
+    if router:
+        return router
+    return settings.N8N_WATCH_ALERT_WEBHOOK_URL.strip()
+
+
 class OpenClawClient:
     """Client for OpenClaw Gateway webhook (POST /hooks/agent)."""
 
@@ -378,7 +390,7 @@ class OpenClawClient:
 
         return result
 
-    async def send_watch_alert_to_n8n(
+    async def send_watch_alert_to_router(
         self,
         *,
         message: str,
@@ -389,17 +401,17 @@ class OpenClawClient:
         intents: list[dict[str, Any]] | None = None,
     ) -> WatchAlertDeliveryResult:
         request_id = str(uuid4())
-        n8n_webhook_url = settings.N8N_WATCH_ALERT_WEBHOOK_URL.strip()
+        router_url = _resolve_watch_alert_url()
 
-        if not n8n_webhook_url:
+        if not router_url:
             logger.debug(
-                "N8N watch alert skipped: correlation_id=%s market=%s reason=n8n_webhook_not_configured",
+                "Watch alert router skipped: correlation_id=%s market=%s reason=router_not_configured",
                 correlation_id,
                 market,
             )
             return WatchAlertDeliveryResult(
                 status="skipped",
-                reason="n8n_webhook_not_configured",
+                reason="router_not_configured",
             )
 
         payload = {
@@ -418,7 +430,7 @@ class OpenClawClient:
                 attempt_number = attempt.retry_state.attempt_number
                 with attempt:
                     logger.info(
-                        "N8N watch alert send start: correlation_id=%s request_id=%s market=%s attempt=%s",
+                        "Watch alert router send start: correlation_id=%s request_id=%s market=%s attempt=%s",
                         correlation_id,
                         request_id,
                         market,
@@ -427,14 +439,14 @@ class OpenClawClient:
                     try:
                         async with httpx.AsyncClient(timeout=10) as cli:
                             res = await cli.post(
-                                n8n_webhook_url,
+                                router_url,
                                 json=payload,
                                 headers=headers,
                             )
                             _ = res.raise_for_status()
                     except Exception as exc:
                         logger.warning(
-                            "N8N watch alert attempt failed: correlation_id=%s request_id=%s market=%s attempt=%s error=%s",
+                            "Watch alert router attempt failed: correlation_id=%s request_id=%s market=%s attempt=%s error=%s",
                             correlation_id,
                             request_id,
                             market,
@@ -443,7 +455,7 @@ class OpenClawClient:
                         )
                         raise
                     logger.info(
-                        "N8N watch alert sent: correlation_id=%s request_id=%s market=%s attempt=%s status=%s",
+                        "Watch alert router sent: correlation_id=%s request_id=%s market=%s attempt=%s status=%s",
                         correlation_id,
                         request_id,
                         market,
@@ -456,7 +468,7 @@ class OpenClawClient:
                     )
         except RetryError as exc:
             logger.error(
-                "N8N watch alert failed after retries: correlation_id=%s request_id=%s market=%s error=%s",
+                "Watch alert router failed after retries: correlation_id=%s request_id=%s market=%s error=%s",
                 correlation_id,
                 request_id,
                 market,
@@ -464,7 +476,7 @@ class OpenClawClient:
             )
         except Exception as exc:
             logger.error(
-                "N8N watch alert error: correlation_id=%s request_id=%s market=%s error=%s",
+                "Watch alert router error: correlation_id=%s request_id=%s market=%s error=%s",
                 correlation_id,
                 request_id,
                 market,
@@ -480,7 +492,7 @@ class OpenClawClient:
         *,
         mirror_to_telegram: bool = True,
     ) -> str | None:
-        # Deprecated: watch category is replaced by send_watch_alert_to_n8n (ROB-171)
+        # Deprecated: watch category is replaced by send_watch_alert_to_router (ROB-171)
         if not settings.OPENCLAW_ENABLED:
             logger.debug("OpenClaw disabled, skipping %s alert", category)
             return None
@@ -549,7 +561,7 @@ class OpenClawClient:
         )
 
     async def send_watch_alert(self, message: str) -> str | None:
-        # Deprecated: replaced by send_watch_alert_to_n8n (ROB-171)
+        # Deprecated: replaced by send_watch_alert_to_router (ROB-171)
         return await self._send_market_alert(message, category="watch")
 
 
