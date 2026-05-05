@@ -135,6 +135,40 @@ class ResearchPipelineService:
             "updated_at": session.updated_at,
         }
 
+    async def get_session_full(self, session_id: int) -> dict[str, Any] | None:
+        """Returns session header with symbol + instrument_type, all stages, and latest summary."""
+        from app.models.analysis import StockInfo
+
+        session_result = await self.db.execute(
+            select(ResearchSession, StockInfo)
+            .join(StockInfo, ResearchSession.stock_info_id == StockInfo.id)
+            .where(ResearchSession.id == session_id)
+        )
+        row = session_result.first()
+        if not row:
+            return None
+        session, stock_info = row
+
+        stages = await self.get_latest_stages(session_id)
+        summary = await self.get_latest_summary(session_id)
+
+        return {
+            "session": {
+                "id": session.id,
+                "stock_info_id": session.stock_info_id,
+                "research_run_id": session.research_run_id,
+                "status": session.status,
+                "started_at": session.started_at,
+                "finalized_at": session.finalized_at,
+                "created_at": session.created_at,
+                "updated_at": session.updated_at,
+                "symbol": stock_info.symbol,
+                "instrument_type": stock_info.instrument_type,
+            },
+            "stages": stages,
+            "summary": summary,
+        }
+
     async def get_latest_stages(self, session_id: int) -> list[dict[str, Any]]:
         """Returns latest stage row per stage_type."""
         # Use DISTINCT ON or manual grouping to get latest per stage_type
@@ -156,8 +190,10 @@ class ResearchPipelineService:
                     "verdict": stage.verdict,
                     "confidence": stage.confidence,
                     "signals": stage.signals,
+                    "raw_payload": stage.raw_payload,
                     "source_freshness": stage.source_freshness,
                     "executed_at": stage.executed_at,
+                    "snapshot_at": stage.snapshot_at,
                 }
 
         return list(latest_stages.values())

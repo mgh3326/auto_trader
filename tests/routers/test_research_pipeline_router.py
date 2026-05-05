@@ -156,3 +156,54 @@ async def test_create_session_403_when_disabled(override_deps):
                 json={"symbol": "KRW-BTC", "instrument_type": "crypto"},
             )
             assert response.status_code == status.HTTP_403_FORBIDDEN
+
+
+@pytest.mark.asyncio
+async def test_get_session_full_returns_session_stages_summary(override_deps):
+    from datetime import UTC, datetime
+
+    full = {
+        "session": {
+            "id": 1,
+            "stock_info_id": 99,
+            "research_run_id": None,
+            "status": "finalized",
+            "started_at": datetime.now(UTC).isoformat(),
+            "finalized_at": datetime.now(UTC).isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
+            "updated_at": None,
+            "symbol": "KRW-BTC",
+            "instrument_type": "crypto",
+        },
+        "stages": [
+            {
+                "id": 10,
+                "stage_type": "market",
+                "verdict": "bull",
+                "confidence": 70,
+                "signals": {},
+                "raw_payload": None,
+                "source_freshness": None,
+                "executed_at": datetime.now(UTC).isoformat(),
+                "snapshot_at": None,
+            }
+        ],
+        "summary": None,
+    }
+
+    with patch.object(settings, "RESEARCH_PIPELINE_ENABLED", True):
+        with patch(
+            "app.routers.research_pipeline.ResearchPipelineService.get_session_full",
+            new_callable=AsyncMock,
+        ) as mock_service:
+            mock_service.return_value = full
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as ac:
+                response = await ac.get("/api/research-pipeline/sessions/1?include=full")
+                assert response.status_code == status.HTTP_200_OK
+                body = response.json()
+                assert body["session"]["id"] == 1
+                assert len(body["stages"]) == 1
+                assert body["summary"] is None
+                assert mock_service.call_count == 1

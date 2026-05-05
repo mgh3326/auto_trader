@@ -61,8 +61,18 @@ async def get_session(
     session_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_authenticated_user)],
+    include: str | None = None,
 ) -> dict[str, Any]:
     service = ResearchPipelineService(db)
+    if include == "full":
+        full = await service.get_session_full(session_id)
+        if not full:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="session_not_found",
+            )
+        return full
+
     session = await service.get_session(session_id)
     if not session:
         raise HTTPException(
