@@ -3,6 +3,7 @@
 
 Read-only. No order/watch/intent/broker imports allowed in this file.
 """
+
 from __future__ import annotations
 
 from typing import Annotated

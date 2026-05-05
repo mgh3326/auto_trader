@@ -1,5 +1,6 @@
 # app/schemas/news_radar.py
 """Schemas for the Market Risk News Radar read-only contract (ROB-109)."""
+
 from __future__ import annotations
 
 from datetime import datetime

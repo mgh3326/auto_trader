@@ -86,4 +86,8 @@ def test_classification_is_a_dataclass_with_themes_list() -> None:
     result = classify_news_radar_item(article, briefing_score=0)
     assert isinstance(result, NewsRadarItemClassification)
     assert isinstance(result.themes, list)
-    assert "shipping" in result.themes or "oil" in result.themes or "defense" in result.themes
+    assert (
+        "shipping" in result.themes
+        or "oil" in result.themes
+        or "defense" in result.themes
+    )

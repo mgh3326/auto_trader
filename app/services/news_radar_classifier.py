@@ -3,6 +3,7 @@
 
 Pure functions. No I/O. No LLM. No DB. No broker calls.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -20,22 +21,64 @@ RiskCategory = Literal[
 # Severity is decided by which bucket fires first AND whether high-priority
 # terms are present. Buckets are evaluated top-down; first match wins.
 _GEOPOLITICAL_OIL_HIGH = (
-    "uae", "iran", "israel", "hormuz", "gulf",
-    "missile", "drone", "airstrike", "warship",
-    "sanctions", "tanker", "ceasefire",
+    "uae",
+    "iran",
+    "israel",
+    "hormuz",
+    "gulf",
+    "missile",
+    "drone",
+    "airstrike",
+    "warship",
+    "sanctions",
+    "tanker",
+    "ceasefire",
 )
 _GEOPOLITICAL_OIL_OIL = ("opec", "brent", "wti", "crude", "oil")
 _MACRO_POLICY = (
-    "fed", "fomc", "rate cut", "rate hike", "rates", "cpi", "pce",
-    "tariff", "treasury yield", "treasury", "yields",
+    "fed",
+    "fomc",
+    "rate cut",
+    "rate hike",
+    "rates",
+    "cpi",
+    "pce",
+    "tariff",
+    "treasury yield",
+    "treasury",
+    "yields",
 )
-_CRYPTO_SECURITY = ("hack", "exploit", "sec", "etf", "binance", "coinbase", "stablecoin")
+_CRYPTO_SECURITY = (
+    "hack",
+    "exploit",
+    "sec",
+    "etf",
+    "binance",
+    "coinbase",
+    "stablecoin",
+)
 _EARNINGS_BIGTECH = (
-    "earnings", "guidance", "nvidia", "microsoft", "apple", "alphabet",
-    "google", "amazon", "meta", "tesla", "semiconductor", "chip",
+    "earnings",
+    "guidance",
+    "nvidia",
+    "microsoft",
+    "apple",
+    "alphabet",
+    "google",
+    "amazon",
+    "meta",
+    "tesla",
+    "semiconductor",
+    "chip",
 )
 _KOREA_MARKET = (
-    "환율", "코스피", "코스닥", "반도체", "2차전지", "관세", "수출",
+    "환율",
+    "코스피",
+    "코스닥",
+    "반도체",
+    "2차전지",
+    "관세",
+    "수출",
 )
 
 # Themes are independent of the section the item lands in; useful for chips.

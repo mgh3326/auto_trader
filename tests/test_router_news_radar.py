@@ -1,5 +1,5 @@
 # tests/test_router_news_radar.py
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -15,9 +15,9 @@ from app.schemas.news_radar import (
 def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     from app.main import app
     from app.middleware.auth import AuthMiddleware
+    from app.models.trading import User
     from app.routers import news_radar
     from app.routers.dependencies import get_authenticated_user
-    from app.models.trading import User
 
     user = User(id=1, email="op@example.test", is_active=True)
 
@@ -32,7 +32,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     async def fake_build(**kwargs):
         return NewsRadarResponse(
             market=kwargs.get("market", "all"),
-            as_of=datetime(2026, 5, 5, 0, 0, tzinfo=timezone.utc),
+            as_of=datetime(2026, 5, 5, 0, 0, tzinfo=UTC),
             readiness=NewsRadarReadiness(
                 status="ready",
                 latest_scraped_at=None,

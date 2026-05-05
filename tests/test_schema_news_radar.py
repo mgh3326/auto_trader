@@ -1,5 +1,5 @@
 # tests/test_schema_news_radar.py
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -17,7 +17,7 @@ from app.schemas.news_radar import (
 def test_radar_response_round_trips() -> None:
     payload = {
         "market": "all",
-        "as_of": datetime(2026, 5, 5, 0, 0, tzinfo=timezone.utc).isoformat(),
+        "as_of": datetime(2026, 5, 5, 0, 0, tzinfo=UTC).isoformat(),
         "readiness": {
             "status": "ready",
             "latest_scraped_at": None,

@@ -3,12 +3,13 @@
 
 Read-only. No DB writes. No broker calls. No mutation.
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
-from app.schemas.news import NewsReadinessResponse
+from app.schemas.news import NewsReadinessResponse, NewsSourceCoverage
 from app.schemas.news_radar import (
     NewsRadarItem,
     NewsRadarMarket,
@@ -48,6 +49,8 @@ _SECTION_ORDER: tuple[NewsRadarRiskCategory, ...] = (
     "korea_market",
 )
 _BRIEFING_INCLUDE_THRESHOLD = 40
+_AGGREGATE_MARKETS = ("kr", "us", "crypto")
+_MAX_INTERNAL_FETCH_LIMIT = 500
 
 
 def _field(article: Any, name: str) -> Any:
@@ -171,6 +174,77 @@ def _readiness_to_radar(
     )
 
 
+def _latest_datetime(values: list[datetime | None]) -> datetime | None:
+    present = [value for value in values if value is not None]
+    return max(present) if present else None
+
+
+def _prefix_source_coverage(
+    market: str, coverage: list[NewsSourceCoverage]
+) -> list[NewsSourceCoverage]:
+    return [
+        cov.model_copy(update={"feed_source": f"{market}:{cov.feed_source}"})
+        for cov in coverage
+    ]
+
+
+def _aggregate_readiness(
+    readiness_by_market: list[NewsReadinessResponse],
+) -> NewsReadinessResponse:
+    source_counts: dict[str, int] = {}
+    source_coverage: list[NewsSourceCoverage] = []
+    warnings: list[str] = []
+    for readiness in readiness_by_market:
+        market = readiness.market
+        for source, count in readiness.source_counts.items():
+            source_counts[f"{market}:{source}"] = count
+        source_coverage.extend(
+            _prefix_source_coverage(market, readiness.source_coverage or [])
+        )
+        warnings.extend(f"{market}: {warning}" for warning in readiness.warnings)
+        if not readiness.is_ready:
+            warnings.append(f"{market}: news readiness is not ready")
+
+    return NewsReadinessResponse(
+        market="all",
+        is_ready=all(readiness.is_ready for readiness in readiness_by_market),
+        is_stale=any(readiness.is_stale for readiness in readiness_by_market),
+        latest_run_uuid=None,
+        latest_status="success"
+        if all(
+            readiness.latest_status == "success" for readiness in readiness_by_market
+        )
+        else "partial",
+        latest_finished_at=_latest_datetime(
+            [readiness.latest_finished_at for readiness in readiness_by_market]
+        ),
+        latest_article_published_at=_latest_datetime(
+            [readiness.latest_article_published_at for readiness in readiness_by_market]
+        ),
+        source_counts=source_counts,
+        source_coverage=source_coverage,
+        warnings=warnings,
+        max_age_minutes=max(
+            (readiness.max_age_minutes for readiness in readiness_by_market),
+            default=180,
+        ),
+    )
+
+
+async def _get_readiness_for_radar(
+    market_filter: str | None,
+) -> NewsReadinessResponse:
+    if market_filter is not None:
+        return await get_news_readiness(market=market_filter, max_age_minutes=180)
+
+    return _aggregate_readiness(
+        [
+            await get_news_readiness(market=market, max_age_minutes=180)
+            for market in _AGGREGATE_MARKETS
+        ]
+    )
+
+
 def _build_sections(
     items: list[NewsRadarItem],
 ) -> list[NewsRadarSection]:
@@ -217,22 +291,17 @@ async def build_news_radar(
 ) -> NewsRadarResponse:
     market_filter: str | None = None if market == "all" else market
 
+    fetch_limit = min(max(limit * 5, limit), _MAX_INTERNAL_FETCH_LIMIT)
     articles, _total = await get_news_articles(
         market=market_filter,
         hours=hours,
-        limit=limit,
+        limit=fetch_limit,
         offset=0,
     )
-    readiness_market = market_filter or "kr"
-    readiness = await get_news_readiness(
-        market=readiness_market,
-        max_age_minutes=180,
-    )
+    readiness = await _get_readiness_for_radar(market_filter)
 
     filtered_articles = [a for a in articles if _matches_query(a, q)]
-    scores = _briefing_score_lookup(
-        filtered_articles, market_filter or "all"
-    )
+    scores = _briefing_score_lookup(filtered_articles, market_filter or "all")
 
     items: list[NewsRadarItem] = []
     excluded_items: list[NewsRadarItem] = []
@@ -242,13 +311,8 @@ async def build_news_radar(
             int(article_id) if article_id is not None else -1, (0, False)
         )
         included_in_briefing = included and score >= _BRIEFING_INCLUDE_THRESHOLD
-        classification = classify_news_radar_item(
-            article, briefing_score=score
-        )
-        if (
-            risk_category is not None
-            and classification.risk_category != risk_category
-        ):
+        classification = classify_news_radar_item(article, briefing_score=score)
+        if risk_category is not None and classification.risk_category != risk_category:
             continue
         radar_item = _classification_to_item(
             article,
@@ -258,11 +322,13 @@ async def build_news_radar(
         )
         if included_in_briefing:
             items.append(radar_item)
-        else:
-            if include_excluded:
-                excluded_items.append(radar_item)
+            continue
+        if include_excluded:
             items.append(radar_item)
+            excluded_items.append(radar_item)
 
+    items = items[:limit]
+    excluded_items = excluded_items[:limit]
     sections = _build_sections(items)
 
     high_risk_count = sum(1 for i in items if i.severity == "high")
@@ -297,7 +363,7 @@ async def build_news_radar(
 
     return NewsRadarResponse(
         market=market,
-        as_of=datetime.now(tz=timezone.utc),
+        as_of=datetime.now(tz=UTC),
         readiness=radar_readiness,
         summary=summary,
         sections=sections,
