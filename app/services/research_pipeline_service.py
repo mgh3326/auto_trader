@@ -1,5 +1,8 @@
 """ROB-112 — Research pipeline service."""
 
+import asyncio
+import logging
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -7,7 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.analysis.pipeline import run_research_session
+from app.core.db import AsyncSessionLocal
 from app.models.research_pipeline import ResearchSession, ResearchSummary, StageAnalysis
+from app.schemas.research_pipeline import ResearchSessionCreateResponse
+from app.services.stock_info_service import create_stock_if_not_exists
+
+logger = logging.getLogger(__name__)
 
 
 class ResearchPipelineService:
@@ -34,6 +42,49 @@ class ResearchPipelineService:
             instrument_type=instrument_type,
             research_run_id=research_run_id,
             user_id=user_id,
+        )
+
+    async def create_session_and_dispatch(
+        self,
+        *,
+        symbol: str,
+        name: str | None,
+        instrument_type: str,
+        research_run_id: int | None,
+        user_id: int | None,
+    ) -> ResearchSessionCreateResponse:
+        stock_info = await create_stock_if_not_exists(
+            symbol=symbol,
+            name=name or symbol,
+            instrument_type=instrument_type,
+            db=self.db,
+        )
+        session = ResearchSession(
+            stock_info_id=stock_info.id,
+            research_run_id=research_run_id,
+            status="open",
+            started_at=datetime.now(UTC),
+        )
+        self.db.add(session)
+        await self.db.flush()
+        await self.db.commit()
+        session_id = session.id
+
+        asyncio.create_task(
+            _run_session_in_background(
+                session_id=session_id,
+                symbol=symbol,
+                name=name or symbol,
+                instrument_type=instrument_type,
+                research_run_id=research_run_id,
+                user_id=user_id,
+            )
+        )
+
+        return ResearchSessionCreateResponse(
+            session_id=session_id,
+            status="running",
+            started_at=session.started_at,
         )
 
     async def list_recent_sessions(self, limit: int = 20) -> list[dict[str, Any]]:
@@ -147,3 +198,42 @@ class ResearchPipelineService:
                 link.stage_analysis_id for link in summary.stage_links
             ],
         }
+
+
+async def _run_session_in_background(
+    *,
+    session_id: int,
+    symbol: str,
+    name: str,
+    instrument_type: str,
+    research_run_id: int | None,
+    user_id: int | None,
+) -> None:
+    from app.analysis.pipeline import run_research_session as _run_research_session
+
+    async with AsyncSessionLocal() as db:
+        try:
+            await _run_research_session(
+                db=db,
+                symbol=symbol,
+                name=name,
+                instrument_type=instrument_type,
+                research_run_id=research_run_id,
+                user_id=user_id,
+                existing_session_id=session_id,
+            )
+        except Exception:
+            logger.exception(
+                "research pipeline background run failed session_id=%s", session_id
+            )
+            try:
+                from sqlalchemy import update as sa_update
+
+                await db.execute(
+                    sa_update(ResearchSession)
+                    .where(ResearchSession.id == session_id)
+                    .values(status="failed", finalized_at=datetime.now(UTC))
+                )
+                await db.commit()
+            except Exception:
+                logger.exception("failed to mark session_id=%s failed", session_id)
