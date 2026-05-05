@@ -1,5 +1,6 @@
-import pytest
 from unittest.mock import AsyncMock
+
+import pytest
 
 from app.analysis.stages.base import StageContext
 from app.analysis.stages.market_stage import MarketStageAnalyzer
@@ -36,9 +37,9 @@ async def test_market_stage_basic_signals(monkeypatch):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_fetch_market_snapshot(monkeypatch):
-    import pandas as pd
     import numpy as np
-    
+    import pandas as pd
+
     # Mock OHLCV data: 70 days of increasing prices
     dates = pd.date_range(end="2026-05-05", periods=70)
     df = pd.DataFrame({
@@ -49,16 +50,16 @@ async def test_fetch_market_snapshot(monkeypatch):
         "close": np.linspace(50, 120, 70),
         "volume": [1000] * 70
     })
-    
+
     mock_fetch = AsyncMock(return_value=df)
     monkeypatch.setattr(
         "app.analysis.stages.market_stage._fetch_ohlcv_for_indicators",
         mock_fetch
     )
-    
+
     from app.analysis.stages.market_stage import _fetch_market_snapshot
     res = await _fetch_market_snapshot("005930", "equity_kr")
-    
+
     assert res["last_close"] == 120.0
     assert res["change_pct"] > 0
     assert "rsi_14" in res

@@ -3,8 +3,8 @@ from sqlalchemy import inspect
 
 from app.models.research_pipeline import (
     ResearchSession,
-    StageAnalysis,
     ResearchSummary,
+    StageAnalysis,
     SummaryStageLink,
     UserResearchNote,
 )

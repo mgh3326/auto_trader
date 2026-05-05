@@ -1,5 +1,5 @@
-from datetime import datetime, timezone
 import logging
+from datetime import UTC, datetime
 from typing import Any
 
 from app.analysis.stages.base import BaseStageAnalyzer, StageContext
@@ -63,7 +63,7 @@ async def _fetch_recent_headlines(symbol: str, instrument_type: str) -> dict[str
             score += 0.5
         if any(kw in title_lower for kw in NEG_KEYWORDS):
             score -= 0.5
-        
+
         # Cap score
         score = max(-1.0, min(1.0, score))
         sentiments.append(score)
@@ -75,7 +75,7 @@ async def _fetch_recent_headlines(symbol: str, instrument_type: str) -> dict[str
                 themes.extend(article.keywords)
 
     avg_sentiment = sum(sentiments) / len(sentiments) if sentiments else 0.0
-    
+
     # Dedupe and limit themes
     unique_themes = []
     for t in themes:
@@ -118,7 +118,7 @@ class NewsStageAnalyzer(BaseStageAnalyzer):
                     top_themes=[],
                     urgent_flags=[],
                 ),
-                snapshot_at=datetime.now(timezone.utc),
+                snapshot_at=datetime.now(UTC),
             )
 
         signals = NewsSignals(
@@ -144,7 +144,7 @@ class NewsStageAnalyzer(BaseStageAnalyzer):
             verdict=verdict,
             confidence=65,  # Moderate confidence for news stage
             signals=signals,
-            snapshot_at=datetime.now(timezone.utc),
+            snapshot_at=datetime.now(UTC),
             source_freshness=SourceFreshness(
                 newest_age_minutes=raw["newest_age_minutes"],
                 oldest_age_minutes=0,

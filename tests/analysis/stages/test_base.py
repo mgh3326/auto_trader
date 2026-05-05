@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -27,7 +27,7 @@ class _DummyMarketStage(BaseStageAnalyzer):
                 newest_age_minutes=1, oldest_age_minutes=1,
                 missing_sources=[], stale_flags=[], source_count=1,
             ),
-            snapshot_at=datetime.now(tz=timezone.utc),
+            snapshot_at=datetime.now(tz=UTC),
         )
 
 

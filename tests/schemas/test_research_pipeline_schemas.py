@@ -3,8 +3,6 @@ from pydantic import ValidationError
 
 from app.schemas.research_pipeline import (
     MarketSignals,
-    NewsSignals,
-    FundamentalsSignals,
     SocialSignals,
     SourceFreshness,
     StageVerdict,

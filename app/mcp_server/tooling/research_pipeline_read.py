@@ -9,8 +9,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.core.db import AsyncSessionLocal
-from app.models.research_pipeline import ResearchSession, StageAnalysis, ResearchSummary
 from app.mcp_server.tooling.shared import error_payload as _error_payload
+from app.models.research_pipeline import ResearchSession, ResearchSummary, StageAnalysis
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +92,7 @@ async def research_session_list_recent_impl(limit: int = 10) -> dict[str, Any]:
                 .limit(limit)
             )
             sessions = result.scalars().all()
-            
+
             items = []
             for s in sessions:
                 latest_summary = sorted(s.summaries, key=lambda x: x.executed_at, reverse=True)[0] if s.summaries else None
@@ -104,7 +104,7 @@ async def research_session_list_recent_impl(limit: int = 10) -> dict[str, Any]:
                     "decision": latest_summary.decision if latest_summary else None,
                     "confidence": latest_summary.confidence if latest_summary else None,
                 })
-            
+
             return {"sessions": items}
     except Exception as exc:
         logger.error(f"research_session_list_recent failed: {exc}")
@@ -124,7 +124,7 @@ async def stage_analysis_get_impl(stage_id: int) -> dict[str, Any]:
                     source="research_pipeline_read",
                     error_type="not_found"
                 )
-            
+
             return {
                 "id": stage.id,
                 "session_id": stage.session_id,
@@ -159,7 +159,7 @@ async def research_summary_get_impl(summary_id: int) -> dict[str, Any]:
                     source="research_pipeline_read",
                     error_type="not_found"
                 )
-            
+
             return {
                 "id": summary.id,
                 "session_id": summary.session_id,

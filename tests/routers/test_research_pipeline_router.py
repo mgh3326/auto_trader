@@ -1,12 +1,14 @@
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 from fastapi import status
-from httpx import AsyncClient, ASGITransport
-from unittest.mock import AsyncMock, patch, MagicMock
+from httpx import ASGITransport, AsyncClient
 
-from app.main import app
 from app.core.config import settings
-from app.routers.dependencies import get_authenticated_user
 from app.core.db import get_db
+from app.main import app
+from app.routers.dependencies import get_authenticated_user
+
 
 @pytest.fixture
 def mock_user():
@@ -19,11 +21,11 @@ def mock_user():
 def override_deps(mock_user):
     app.dependency_overrides[get_authenticated_user] = lambda: mock_user
     app.dependency_overrides[get_db] = lambda: AsyncMock()
-    
+
     # Patch AuthMiddleware to bypass authentication
     with patch("app.middleware.auth.AuthMiddleware._maybe_authenticate", return_value=None):
         yield
-    
+
     app.dependency_overrides = {}
 
 @pytest.mark.asyncio

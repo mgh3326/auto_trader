@@ -2,24 +2,25 @@
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.analysis.debate import build_summary
 from app.analysis.stages.base import StageContext
+from app.analysis.stages.fundamentals_stage import FundamentalsStageAnalyzer
 from app.analysis.stages.market_stage import MarketStageAnalyzer
 from app.analysis.stages.news_stage import NewsStageAnalyzer
-from app.analysis.stages.fundamentals_stage import FundamentalsStageAnalyzer
 from app.analysis.stages.social_stage import SocialStageAnalyzer
 from app.core.config import settings
 from app.models.research_pipeline import (
     ResearchSession,
-    StageAnalysis,
     ResearchSummary,
+    StageAnalysis,
     SummaryStageLink,
 )
-from app.services.stock_info_service import create_stock_if_not_exists
 from app.services.legacy_stock_analysis_adapter import LegacyStockAnalysisAdapter
+from app.services.stock_info_service import create_stock_if_not_exists
 
 logger = logging.getLogger(__name__)
 
@@ -32,10 +33,10 @@ async def run_research_session(
     user_id: int | None = None,
 ) -> int:
     """
-    Orchestrates the entire research pipeline: session creation, 
+    Orchestrates the entire research pipeline: session creation,
     parallel stage execution, result persistence, and summary generation.
     """
-    
+
     # 1. create_stock_if_not_exists
     stock_info = await create_stock_if_not_exists(
         symbol=symbol,
@@ -49,7 +50,7 @@ async def run_research_session(
         stock_info_id=stock_info.id,
         research_run_id=research_run_id,
         status="open",
-        started_at=datetime.now(timezone.utc),
+        started_at=datetime.now(UTC),
     )
     db.add(session)
     await db.flush()
@@ -83,7 +84,7 @@ async def run_research_session(
             logger.error(f"Stage analyzer failed: {res}")
             # We continue to allow partial results
             continue
-        
+
         # Insert StageAnalysis row
         stage_analysis = StageAnalysis(
             session_id=session_id,
@@ -96,7 +97,7 @@ async def run_research_session(
             model_name=res.model_name,
             prompt_version=res.prompt_version,
             snapshot_at=res.snapshot_at,
-            executed_at=datetime.now(timezone.utc),
+            executed_at=datetime.now(UTC),
         )
         db.add(stage_analysis)
         # Commit stages individually so we don't lose them if LLM summary fails later
@@ -124,7 +125,7 @@ async def run_research_session(
             raw_payload=summary_output.raw_payload,
             token_input=summary_output.token_input,
             token_output=summary_output.token_output,
-            executed_at=datetime.now(timezone.utc),
+            executed_at=datetime.now(UTC),
         )
         db.add(summary)
         await db.flush()
@@ -148,7 +149,7 @@ async def run_research_session(
                 summary_id=summary.id,
                 stock_info_id=stock_info.id,
             )
-        
+
         await db.commit()
     except Exception as e:
         logger.error(f"Failed to commit summary atomic block: {e}")
@@ -158,8 +159,8 @@ async def run_research_session(
     # 8. Update ResearchSession.status='finalized', set finalized_at
     # This is the final step, committed separately.
     session.status = "finalized"
-    session.finalized_at = datetime.now(timezone.utc)
-    
+    session.finalized_at = datetime.now(UTC)
+
     try:
         await db.commit()
     except Exception as e:
@@ -168,5 +169,5 @@ async def run_research_session(
         session.status = "open"
         session.finalized_at = None
         raise
-    
+
     return session_id

@@ -1,4 +1,5 @@
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.models.analysis import StockAnalysisResult
 from app.schemas.research_pipeline import SummaryOutput
 
@@ -15,19 +16,19 @@ class LegacyStockAnalysisAdapter:
     ) -> StockAnalysisResult:
         """
         Map SummaryOutput to StockAnalysisResult and write to database.
-        
+
         Args:
             db: Database session
             summary: The SummaryOutput from the research pipeline
             summary_id: The ID of the research summary record
             stock_info_id: The ID of the stock_info record
-            
+
         Returns:
             The created StockAnalysisResult instance
         """
         # Extract price analysis fields safely
         pa = summary.price_analysis
-        
+
         # Prepare mapping
         legacy_result = StockAnalysisResult(
             stock_info_id=stock_info_id,
@@ -46,7 +47,7 @@ class LegacyStockAnalysisAdapter:
             detailed_text=summary.detailed_text,
             prompt=f"research_summary:{summary_id}/prompt_version:{summary.prompt_version}",
         )
-        
+
         db.add(legacy_result)
         await db.flush()
         # We don't commit here as it's usually part of a larger transaction

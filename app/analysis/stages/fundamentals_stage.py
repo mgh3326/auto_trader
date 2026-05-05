@@ -1,6 +1,6 @@
-from datetime import datetime, UTC
 import logging
 import statistics
+from datetime import UTC, datetime
 from typing import Any
 
 from app.analysis.stages.base import BaseStageAnalyzer, StageContext
@@ -51,7 +51,7 @@ class FundamentalsStageAnalyzer(BaseStageAnalyzer):
 
         target_per = raw.get("per")
         peers = raw.get("peers", [])
-        
+
         all_pers = []
         if target_per is not None and target_per > 0:
             all_pers.append(target_per)
@@ -82,7 +82,7 @@ class FundamentalsStageAnalyzer(BaseStageAnalyzer):
         # NEUTRAL: otherwise
         verdict = StageVerdict.NEUTRAL
         confidence = 0
-        
+
         if relative_per is not None:
             confidence = 70
             if relative_per < 0.8:

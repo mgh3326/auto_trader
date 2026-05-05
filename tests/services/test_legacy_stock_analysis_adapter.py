@@ -1,23 +1,26 @@
 import pytest
 import pytest_asyncio
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy import Integer, JSON, Text
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.models.analysis import StockAnalysisResult, StockInfo
 from app.models.base import Base
-from app.models.analysis import StockInfo, StockAnalysisResult
-from app.schemas.research_pipeline import SummaryOutput, SummaryDecision, PriceAnalysis, BullBearArgument
+from app.schemas.research_pipeline import (
+    BullBearArgument,
+    PriceAnalysis,
+    SummaryDecision,
+    SummaryOutput,
+)
 from app.services.legacy_stock_analysis_adapter import LegacyStockAnalysisAdapter
+
 
 @pytest_asyncio.fixture
 async def async_db():
     """In-memory SQLite async session."""
     engine = create_async_engine("sqlite+aiosqlite://")
-    
+
     # Handle PostgreSQL-specific JSONB for SQLite
     from sqlalchemy.ext.compiler import compiles
-    from sqlalchemy.dialects.postgresql import JSONB
-    from sqlalchemy.types import JSON
 
     @compiles(JSONB, "sqlite")
     def compile_jsonb_sqlite(type_, compiler, **kw):
@@ -29,7 +32,7 @@ async def async_db():
             Base.metadata.create_all,
             tables=[StockInfo.__table__, StockAnalysisResult.__table__]
         )
-        
+
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     async with session_factory() as session:
         yield session
@@ -46,7 +49,7 @@ async def test_legacy_stock_analysis_adapter_mapping(async_db: AsyncSession):
     async_db.add(stock_info)
     await async_db.commit()
     await async_db.refresh(stock_info)
-    
+
     # Setup: Create SummaryOutput
     summary = SummaryOutput(
         decision=SummaryDecision.BUY,
@@ -68,13 +71,13 @@ async def test_legacy_stock_analysis_adapter_mapping(async_db: AsyncSession):
         model_name="test-model",
         prompt_version="v1"
     )
-    
+
     summary_id = 123
-    
+
     # Act
     adapter = LegacyStockAnalysisAdapter()
     result = await adapter.write(async_db, summary, summary_id, stock_info.id)
-    
+
     # Assert
     assert result.stock_info_id == stock_info.id
     assert result.decision == "buy"
@@ -100,7 +103,7 @@ async def test_legacy_stock_analysis_adapter_default_model_name(async_db: AsyncS
     async_db.add(stock_info)
     await async_db.commit()
     await async_db.refresh(stock_info)
-    
+
     summary = SummaryOutput(
         decision=SummaryDecision.HOLD,
         confidence=50,
@@ -110,11 +113,11 @@ async def test_legacy_stock_analysis_adapter_default_model_name(async_db: AsyncS
         model_name=None, # Testing default
         prompt_version="v2"
     )
-    
+
     # Act
     adapter = LegacyStockAnalysisAdapter()
     result = await adapter.write(async_db, summary, 456, stock_info.id)
-    
+
     # Assert
     assert result.model_name == "research_pipeline"
     assert result.prompt == "research_summary:456/prompt_version:v2"

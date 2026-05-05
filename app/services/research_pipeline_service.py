@@ -1,11 +1,14 @@
 """ROB-112 — Research pipeline service."""
 
 from typing import Any
+
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
 from app.analysis.pipeline import run_research_session
-from app.models.research_pipeline import ResearchSession, StageAnalysis, ResearchSummary
+from app.models.research_pipeline import ResearchSession, ResearchSummary, StageAnalysis
+
 
 class ResearchPipelineService:
     """Service to wrap and export research pipeline functionality."""
@@ -42,7 +45,7 @@ class ResearchPipelineService:
             .limit(limit)
         )
         sessions = result.scalars().all()
-        
+
         items = []
         for s in sessions:
             latest_summary = sorted(s.summaries, key=lambda x: x.executed_at, reverse=True)[0] if s.summaries else None
@@ -54,7 +57,7 @@ class ResearchPipelineService:
                 "decision": latest_summary.decision if latest_summary else None,
                 "confidence": latest_summary.confidence if latest_summary else None,
             })
-        
+
         return items
 
     async def get_session(self, session_id: int) -> dict[str, Any] | None:
@@ -80,7 +83,7 @@ class ResearchPipelineService:
     async def get_latest_stages(self, session_id: int) -> list[dict[str, Any]]:
         """Returns latest stage row per stage_type."""
         # Use DISTINCT ON or manual grouping to get latest per stage_type
-        # For simplicity and compatibility, we'll fetch all and group in Python 
+        # For simplicity and compatibility, we'll fetch all and group in Python
         # as there are only 4 types.
         result = await self.db.execute(
             select(StageAnalysis)
@@ -88,7 +91,7 @@ class ResearchPipelineService:
             .order_by(StageAnalysis.stage_type, StageAnalysis.executed_at.desc())
         )
         stages = result.scalars().all()
-        
+
         latest_stages = {}
         for stage in stages:
             if stage.stage_type not in latest_stages:
@@ -101,7 +104,7 @@ class ResearchPipelineService:
                     "source_freshness": stage.source_freshness,
                     "executed_at": stage.executed_at,
                 }
-        
+
         return list(latest_stages.values())
 
     async def get_latest_summary(self, session_id: int) -> dict[str, Any] | None:
@@ -120,7 +123,7 @@ class ResearchPipelineService:
         summary = result.scalar_one_or_none()
         if not summary:
             return None
-        
+
         return {
             "id": summary.id,
             "session_id": summary.session_id,

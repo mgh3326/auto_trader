@@ -1,20 +1,20 @@
 """ROB-112 — Pydantic schemas for the research pipeline."""
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
-class StageVerdict(str, Enum):
+class StageVerdict(StrEnum):
     BULL = "bull"
     BEAR = "bear"
     NEUTRAL = "neutral"
     UNAVAILABLE = "unavailable"
 
 
-class SummaryDecision(str, Enum):
+class SummaryDecision(StrEnum):
     BUY = "buy"
     HOLD = "hold"
     SELL = "sell"

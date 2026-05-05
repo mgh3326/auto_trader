@@ -1,5 +1,5 @@
-from datetime import datetime
 import logging
+from datetime import datetime
 from typing import Any
 
 from app.analysis.stages.base import BaseStageAnalyzer, StageContext
@@ -15,7 +15,6 @@ from app.schemas.research_pipeline import (
     StageOutput,
     StageVerdict,
 )
-from app.services.market_data.service import get_quote
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +39,7 @@ async def _fetch_market_snapshot(symbol: str, instrument_type: str) -> dict[str,
     # Indicators
     rsi_14 = _calculate_rsi(close, period=14)["14"]
     atr_14 = _calculate_atr(high, low, close, period=14)["14"]
-    
+
     # Volume ratio: last day volume / 20-day avg volume (excluding today)
     avg_vol_20d = volume.iloc[-21:-1].mean()
     volume_ratio_20d = float(volume.iloc[-1] / avg_vol_20d) if avg_vol_20d > 0 else 0.0
