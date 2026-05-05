@@ -14,7 +14,6 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.mcp_server.tooling.analysis_tool_handlers import screen_stocks_impl
 from app.schemas.candidate_discovery import (
     CandidateScreenResponse,
     ScreenedCandidate,
@@ -24,6 +23,17 @@ from app.schemas.candidate_discovery import (
 class CandidateScreeningService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
+
+    async def _screen_stocks(
+        self,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        # Keep this import lazy so importing app.main / API routers does not pull the
+        # full MCP tooling graph into the FastAPI process before the Candidate
+        # Discovery endpoint is actually used.
+        from app.mcp_server.tooling.analysis_tool_handlers import screen_stocks_impl
+
+        return await screen_stocks_impl(**kwargs)
 
     async def screen(
         self,
@@ -48,7 +58,7 @@ class CandidateScreeningService:
         exclude_warnings: bool = False,
         limit: int = 50,
     ) -> CandidateScreenResponse:
-        raw = await screen_stocks_impl(
+        raw = await self._screen_stocks(
             market=market,  # type: ignore[arg-type]
             asset_type=asset_type,  # type: ignore[arg-type]
             strategy=strategy,
@@ -71,7 +81,9 @@ class CandidateScreeningService:
         rows = list(raw.get("stocks") or raw.get("results") or [])
 
         if krw_only and market == "crypto":
-            rows = [r for r in rows if str(r.get("symbol", "")).upper().startswith("KRW-")]
+            rows = [
+                r for r in rows if str(r.get("symbol", "")).upper().startswith("KRW-")
+            ]
 
         candidates: list[ScreenedCandidate] = []
         for r in rows:
@@ -138,6 +150,7 @@ class CandidateScreeningService:
                 from app.services.upbit_holdings_service import (
                     fetch_upbit_holdings_for_user,
                 )
+
                 rows = await fetch_upbit_holdings_for_user(self.db, user_id)
                 held.update(str(r.ticker).upper() for r in rows if r.quantity)
             except Exception:

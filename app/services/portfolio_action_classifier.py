@@ -61,9 +61,15 @@ def classify_position(inputs: ClassifierInputs) -> ClassifierResult:
     else:
         reasons.append("research_missing")
 
-    if inputs.nearest_resistance_pct is not None and inputs.nearest_resistance_pct <= NEAR_LEVEL_PCT:
+    if (
+        inputs.nearest_resistance_pct is not None
+        and inputs.nearest_resistance_pct <= NEAR_LEVEL_PCT
+    ):
         reasons.append("near_resistance")
-    if inputs.nearest_support_pct is not None and inputs.nearest_support_pct >= -NEAR_LEVEL_PCT:
+    if (
+        inputs.nearest_support_pct is not None
+        and inputs.nearest_support_pct >= -NEAR_LEVEL_PCT
+    ):
         reasons.append("near_support")
 
     if inputs.journal_status != "present":
@@ -81,7 +87,11 @@ def classify_position(inputs: ClassifierInputs) -> ClassifierResult:
     elif weight >= OVERWEIGHT_PCT and decision != "buy":
         action = "trim"
         suggested_trim_pct = 20
-    elif inputs.profit_rate is not None and inputs.profit_rate <= LOSS_THRESHOLD_PCT and decision != "buy":
+    elif (
+        inputs.profit_rate is not None
+        and inputs.profit_rate <= LOSS_THRESHOLD_PCT
+        and decision != "buy"
+    ):
         action = "trim"
         suggested_trim_pct = 25
     elif decision == "hold":

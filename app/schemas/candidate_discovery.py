@@ -11,9 +11,17 @@ class CandidateScreenRequest(BaseModel):
     market: Literal["kr", "kospi", "kosdaq", "konex", "all", "us", "crypto"] = "crypto"
     asset_type: Literal["stock", "etf", "etn"] | None = None
     strategy: Literal["oversold", "momentum", "high_volume"] | None = None
-    sort_by: Literal[
-        "volume", "trade_amount", "market_cap", "change_rate", "dividend_yield", "rsi"
-    ] | None = None
+    sort_by: (
+        Literal[
+            "volume",
+            "trade_amount",
+            "market_cap",
+            "change_rate",
+            "dividend_yield",
+            "rsi",
+        ]
+        | None
+    ) = None
     sort_order: Literal["asc", "desc"] = "desc"
 
     min_market_cap: float | None = None

@@ -6,8 +6,8 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
-from app.routers.portfolio_actions import get_portfolio_action_service
 from app.routers.dependencies import get_authenticated_user
+from app.routers.portfolio_actions import get_portfolio_action_service
 from app.schemas.portfolio_actions import (
     PortfolioActionCandidate,
     PortfolioActionsResponse,
@@ -39,8 +39,12 @@ async def test_get_portfolio_actions_returns_payload() -> None:
     app.dependency_overrides[get_portfolio_action_service] = lambda: fake_service
 
     try:
-        with patch("app.middleware.auth.AuthMiddleware._maybe_authenticate", return_value=None):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        with patch(
+            "app.middleware.auth.AuthMiddleware._maybe_authenticate", return_value=None
+        ):
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://t"
+            ) as c:
                 res = await c.get("/trading/api/portfolio-actions")
         assert res.status_code == 200
         body = res.json()
@@ -63,8 +67,12 @@ async def test_get_portfolio_actions_passes_market_filter() -> None:
     app.dependency_overrides[get_portfolio_action_service] = lambda: fake_service
 
     try:
-        with patch("app.middleware.auth.AuthMiddleware._maybe_authenticate", return_value=None):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        with patch(
+            "app.middleware.auth.AuthMiddleware._maybe_authenticate", return_value=None
+        ):
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://t"
+            ) as c:
                 await c.get("/trading/api/portfolio-actions?market=CRYPTO")
         fake_service.build_action_board.assert_awaited_once_with(
             user_id=1, market_filter="CRYPTO"

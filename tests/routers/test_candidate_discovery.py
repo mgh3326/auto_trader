@@ -26,7 +26,9 @@ async def test_post_screen_returns_payload() -> None:
         sort_by="rsi",
         total=1,
         candidates=[
-            ScreenedCandidate(symbol="KRW-ETH", name="이더리움", rsi=28.0, is_held=False)
+            ScreenedCandidate(
+                symbol="KRW-ETH", name="이더리움", rsi=28.0, is_held=False
+            )
         ],
         warnings=[],
     )
@@ -35,8 +37,12 @@ async def test_post_screen_returns_payload() -> None:
     app.dependency_overrides[get_candidate_screening_service] = lambda: fake_service
 
     try:
-        with patch("app.middleware.auth.AuthMiddleware._maybe_authenticate", return_value=None):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        with patch(
+            "app.middleware.auth.AuthMiddleware._maybe_authenticate", return_value=None
+        ):
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://t"
+            ) as c:
                 res = await c.post(
                     "/trading/api/candidates/screen",
                     json={"market": "crypto", "strategy": "oversold", "limit": 10},
@@ -59,8 +65,12 @@ async def test_post_screen_validates_limit_range() -> None:
     app.dependency_overrides[get_candidate_screening_service] = lambda: fake_service
 
     try:
-        with patch("app.middleware.auth.AuthMiddleware._maybe_authenticate", return_value=None):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        with patch(
+            "app.middleware.auth.AuthMiddleware._maybe_authenticate", return_value=None
+        ):
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://t"
+            ) as c:
                 res = await c.post(
                     "/trading/api/candidates/screen",
                     json={"market": "crypto", "limit": 500},

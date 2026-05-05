@@ -27,12 +27,9 @@ async def test_wraps_screen_stocks_and_annotates_held(monkeypatch) -> None:
             "warnings": ["rsi_enrichment_skipped"],
         }
     )
-    monkeypatch.setattr(
-        "app.services.candidate_screening_service.screen_stocks_impl", fake_screen
-    )
-
     db = MagicMock()
     service = CandidateScreeningService(db)
+    monkeypatch.setattr(service, "_screen_stocks", fake_screen)
     monkeypatch.setattr(
         service, "_load_held_symbols", AsyncMock(return_value={"KRW-BTC"})
     )
@@ -54,11 +51,8 @@ async def test_wraps_screen_stocks_and_annotates_held(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_passes_filters_through(monkeypatch) -> None:
     fake_screen = AsyncMock(return_value={"stocks": [], "warnings": []})
-    monkeypatch.setattr(
-        "app.services.candidate_screening_service.screen_stocks_impl", fake_screen
-    )
-
     service = CandidateScreeningService(MagicMock())
+    monkeypatch.setattr(service, "_screen_stocks", fake_screen)
     monkeypatch.setattr(service, "_load_held_symbols", AsyncMock(return_value=set()))
 
     await service.screen(

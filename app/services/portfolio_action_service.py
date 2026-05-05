@@ -114,9 +114,13 @@ class PortfolioActionService:
         holdings: list[Any] = []
 
         if market_filter in (None, "KR"):
-            holdings.extend(await service.get_merged_portfolio_domestic(user_id, kis_client))
+            holdings.extend(
+                await service.get_merged_portfolio_domestic(user_id, kis_client)
+            )
         if market_filter in (None, "US"):
-            holdings.extend(await service.get_merged_portfolio_overseas(user_id, kis_client))
+            holdings.extend(
+                await service.get_merged_portfolio_overseas(user_id, kis_client)
+            )
         if market_filter in (None, "CRYPTO"):
             holdings.extend(await self._load_crypto_holdings(user_id))
 

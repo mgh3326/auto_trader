@@ -43,7 +43,9 @@ async def test_aggregates_holdings_with_research_and_journal(monkeypatch) -> Non
             }
         ),
     )
-    monkeypatch.setattr(service, "_load_journal_status", AsyncMock(return_value="missing"))
+    monkeypatch.setattr(
+        service, "_load_journal_status", AsyncMock(return_value="missing")
+    )
 
     result = await service.build_action_board(user_id=user_id)
 
@@ -62,7 +64,9 @@ async def test_skips_zero_quantity_holdings(monkeypatch) -> None:
     db = MagicMock()
     holdings = [MagicMock(ticker="ZERO", quantity=0.0)]
     service = PortfolioActionService(db)
-    monkeypatch.setattr(service, "_load_holdings", AsyncMock(return_value=(holdings, 0.0)))
+    monkeypatch.setattr(
+        service, "_load_holdings", AsyncMock(return_value=(holdings, 0.0))
+    )
 
     result = await service.build_action_board(user_id=1)
     assert result.total == 0
