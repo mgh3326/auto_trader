@@ -4,6 +4,7 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.analysis.debate import build_summary
@@ -32,6 +33,7 @@ async def run_research_session(
     instrument_type: str,
     research_run_id: int | None = None,
     user_id: int | None = None,
+    existing_session_id: int | None = None,
 ) -> int:
     """
     Orchestrates the entire research pipeline: session creation,
@@ -46,16 +48,23 @@ async def run_research_session(
         db=db,
     )
 
-    # 2. Insert ResearchSession(status='open')
-    session = ResearchSession(
-        stock_info_id=stock_info.id,
-        research_run_id=research_run_id,
-        status="open",
-        started_at=datetime.now(UTC),
-    )
-    db.add(session)
-    await db.flush()
-    session_id = session.id
+    # 2. Insert ResearchSession(status='open') or reuse an existing one
+    if existing_session_id is not None:
+        result = await db.execute(
+            select(ResearchSession).where(ResearchSession.id == existing_session_id)
+        )
+        session = result.scalar_one()
+        session_id = session.id
+    else:
+        session = ResearchSession(
+            stock_info_id=stock_info.id,
+            research_run_id=research_run_id,
+            status="open",
+            started_at=datetime.now(UTC),
+        )
+        db.add(session)
+        await db.flush()
+        session_id = session.id
 
     # 3. Run 4 stage analyzers concurrently via asyncio.gather
     ctx = StageContext(

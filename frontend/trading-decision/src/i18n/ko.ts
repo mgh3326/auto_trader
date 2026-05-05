@@ -5,6 +5,7 @@ import type {
   ExecutionReviewStageStatus,
   ExecutionSource,
   InstrumentType,
+  LinkDirection,
   OutcomeHorizon,
   PreopenArtifactReadinessStatus,
   PreopenArtifactStatus,
@@ -17,9 +18,13 @@ import type {
   PreopenQaEvaluatorStatus,
   PreopenQaGrade,
   ProposalKind,
+  ResearchSessionStatus,
   SessionStatus,
   Side,
+  StageType,
+  StageVerdict,
   StrategyEventType,
+  SummaryDecision,
   TrackKind,
   UserResponseValue,
   WorkflowStatus,
@@ -324,4 +329,56 @@ export const COMMON = {
   unknown: "알 수 없음",
   rawData: "원본 데이터 보기",
   somethingWentWrong: "오류가 발생했습니다. 다시 시도해 주세요.",
+} as const;
+
+export const STAGE_TYPE_LABEL: Record<StageType, string> = {
+  market: "시장",
+  news: "뉴스",
+  fundamentals: "펀더멘털",
+  social: "소셜",
+};
+
+export const STAGE_VERDICT_LABEL: Record<StageVerdict, string> = {
+  bull: "강세",
+  bear: "약세",
+  neutral: "중립",
+  unavailable: "준비 중",
+};
+
+export const SUMMARY_DECISION_LABEL: Record<SummaryDecision, string> = {
+  buy: "매수",
+  hold: "보유",
+  sell: "매도",
+};
+
+export const LINK_DIRECTION_LABEL: Record<LinkDirection, string> = {
+  support: "지지",
+  contradict: "반대",
+  context: "맥락",
+};
+
+export const RESEARCH_SESSION_STATUS_LABEL: Record<
+  ResearchSessionStatus,
+  string
+> = {
+  open: "열림",
+  running: "분석 중",
+  finalized: "완료",
+  failed: "실패",
+  cancelled: "취소됨",
+};
+
+export const RESEARCH_TAB_LABEL = {
+  summary: "종합",
+  market: "시장",
+  news: "뉴스",
+  fundamentals: "펀더멘털",
+  social: "소셜",
+  raw: "원본",
+} as const;
+
+export const RESEARCH_INSTRUMENT_TYPE_LABEL = {
+  equity_kr: "국내주식",
+  equity_us: "해외주식",
+  crypto: "암호화폐",
 } as const;

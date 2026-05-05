@@ -1,0 +1,16 @@
+.page {
+  padding: 16px;
+}
+
+.startCard {
+  border: 1px solid #e5e7eb;
+  padding: 12px;
+  border-radius: 6px;
+  margin-bottom: 16px;
+}
+
+.refreshRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
