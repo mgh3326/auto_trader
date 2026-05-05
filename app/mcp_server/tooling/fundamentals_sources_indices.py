@@ -10,7 +10,7 @@ import httpx
 import pandas as pd
 import yfinance as yf
 
-from app.monitoring import build_yfinance_tracing_session
+from app.monitoring import yfinance_tracing_session
 
 _INDEX_META: dict[str, dict[str, str]] = {
     "KOSPI": {"name": "코스피", "source": "naver", "naver_code": "KOSPI"},
@@ -120,9 +120,9 @@ async def _fetch_index_us_current(
     yf_ticker: str, name: str, symbol: str
 ) -> dict[str, Any]:
     loop = asyncio.get_running_loop()
-    session = build_yfinance_tracing_session()
-    ticker_obj = yf.Ticker(yf_ticker, session=session)
-    info = await loop.run_in_executor(None, lambda: ticker_obj.fast_info)
+    with yfinance_tracing_session() as session:
+        ticker_obj = yf.Ticker(yf_ticker, session=session)
+        info = await loop.run_in_executor(None, lambda: ticker_obj.fast_info)
 
     current = getattr(info, "last_price", None)
     previous_close = getattr(info, "regular_market_previous_close", None)
@@ -151,7 +151,6 @@ async def _fetch_index_us_history(
     yf_ticker: str, count: int, period: str
 ) -> list[dict[str, Any]]:
     loop = asyncio.get_running_loop()
-    session = build_yfinance_tracing_session()
     period_map = {"day": "1d", "week": "1wk", "month": "1mo"}
     interval = period_map.get(period, "1d")
 
@@ -179,7 +178,8 @@ async def _fetch_index_us_history(
             df.columns = [c.lower() for c in df.columns]
         return df.reset_index(names="date")
 
-    df = await loop.run_in_executor(None, download)
+    with yfinance_tracing_session() as session:
+        df = await loop.run_in_executor(None, download)
     if df.empty:
         return []
 

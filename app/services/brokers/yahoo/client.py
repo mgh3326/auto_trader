@@ -2,6 +2,8 @@
 import asyncio
 import logging
 import urllib.error
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -10,7 +12,7 @@ import yfinance as yf
 
 from app.core.config import settings
 from app.core.symbol import to_yahoo_symbol
-from app.monitoring import build_yfinance_tracing_session
+from app.monitoring import build_yfinance_tracing_session, close_yfinance_session
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +70,20 @@ def _to_int_or_none(value: Any) -> int | None:
 
 
 _CRUMB_RETRY_MAX = 1
+
+
+@contextmanager
+def yfinance_tracing_session() -> Iterator[Any]:
+    """Create a Yahoo/yfinance session and close it after each attempt.
+
+    Keep this wrapper local so tests and retry paths that monkeypatch
+    build_yfinance_tracing_session still exercise fresh-session behavior.
+    """
+    session = build_yfinance_tracing_session()
+    try:
+        yield session
+    finally:
+        close_yfinance_session(session)
 
 
 def _is_crumb_auth_error(exc: BaseException) -> bool:
@@ -130,17 +146,17 @@ async def _fetch_ohlcv_raw(
 
     last_exc: BaseException | None = None
     for attempt in range(_CRUMB_RETRY_MAX + 1):
-        session = build_yfinance_tracing_session()
         try:
-            df = yf.download(
-                yahoo_ticker,
-                start=start,
-                end=end,
-                interval=period_map[period],
-                progress=False,
-                auto_adjust=False,
-                session=session,
-            )
+            with yfinance_tracing_session() as session:
+                df = yf.download(
+                    yahoo_ticker,
+                    start=start,
+                    end=end,
+                    interval=period_map[period],
+                    progress=False,
+                    auto_adjust=False,
+                    session=session,
+                )
             df = _flatten_cols(df).reset_index(names="date")
             df = (
                 df.assign(date=lambda d: pd.to_datetime(d["date"]).dt.date)
@@ -201,9 +217,9 @@ def _fetch_fast_info_sync(ticker: str) -> dict[str, Any]:
     last_exc: BaseException | None = None
 
     for attempt in range(_CRUMB_RETRY_MAX + 1):
-        session = build_yfinance_tracing_session()
         try:
-            info = yf.Ticker(yahoo_ticker, session=session).fast_info
+            with yfinance_tracing_session() as session:
+                info = yf.Ticker(yahoo_ticker, session=session).fast_info
             return {
                 "symbol": ticker,
                 "previous_close": _to_float_or_none(
@@ -279,9 +295,9 @@ async def fetch_fundamental_info(ticker: str) -> dict:
     def _fetch_sync() -> dict:
         last_exc: BaseException | None = None
         for attempt in range(_CRUMB_RETRY_MAX + 1):
-            session = build_yfinance_tracing_session()
             try:
-                info = yf.Ticker(yahoo_ticker, session=session).info
+                with yfinance_tracing_session() as session:
+                    info = yf.Ticker(yahoo_ticker, session=session).info
                 return {
                     "PER": info.get("trailingPE"),
                     "PBR": info.get("priceToBook"),

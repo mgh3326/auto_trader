@@ -36,7 +36,7 @@ from app.mcp_server.tooling.screening.tvscreener_support import (
     _get_tvscreener_stock_capability_snapshot,
 )
 from app.mcp_server.tooling.shared import error_payload as _error_payload
-from app.monitoring import build_yfinance_tracing_session
+from app.monitoring import yfinance_tracing_session
 from app.services.exchange_rate_service import get_usd_krw_rate
 from app.services.tvscreener_service import (
     TvScreenerError,
@@ -172,17 +172,16 @@ async def _screen_us(
         }
         sort_field = sort_field_map.get(sort_by, "dayvolume")
         fetch_size = min(limit * 3, 150) if max_rsi is not None else limit
-        session = build_yfinance_tracing_session()
-
-        screen_result = await asyncio.to_thread(
-            lambda: yf.screen(
-                query,
-                size=fetch_size,
-                sortField=sort_field,
-                sortAsc=(sort_order == "asc"),
-                session=session,
+        with yfinance_tracing_session() as session:
+            screen_result = await asyncio.to_thread(
+                lambda: yf.screen(
+                    query,
+                    size=fetch_size,
+                    sortField=sort_field,
+                    sortAsc=(sort_order == "asc"),
+                    session=session,
+                )
             )
-        )
 
         if screen_result is None:
             _complete_filters_applied()

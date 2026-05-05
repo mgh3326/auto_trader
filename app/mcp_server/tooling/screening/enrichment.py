@@ -21,7 +21,7 @@ from app.mcp_server.tooling.screening.common import (
     _to_optional_float,
     _to_optional_int,
 )
-from app.monitoring import build_yfinance_tracing_session
+from app.monitoring import build_yfinance_tracing_session, close_yfinance_session
 
 logger = logging.getLogger(__name__)
 
@@ -190,9 +190,7 @@ async def _decorate_screen_rows_with_equity_enrichment(
         )
     finally:
         if yfinance_session is not None:
-            close = getattr(yfinance_session, "close", None)
-            if callable(close):
-                close()
+            close_yfinance_session(yfinance_session)
     return normalized_rows, warnings
 
 

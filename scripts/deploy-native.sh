@@ -39,6 +39,7 @@ SOURCE_REPO="${AUTO_TRADER_SOURCE_REPO:-$HOME/work/auto_trader}"
 SHARED_ENV="${AUTO_TRADER_ENV_FILE:-$BASE/shared/.env.prod.native}"
 LOG_DIR="$BASE/logs"
 PLIST_DIR="${AUTO_TRADER_PLIST_DIR:-$BASE/plists}"
+MCP_NOFILE_LIMIT="${AUTO_TRADER_MCP_NOFILE_LIMIT:-4096}"
 SERVER_HEALTHCHECK="$BASE/scripts/healthcheck-native.sh"
 
 LABELS=(
@@ -64,6 +65,22 @@ require_file() {
     echo "Missing required file: $path" >&2
     exit 78
   fi
+}
+
+apply_mcp_plist_fd_limit() {
+  local plist="$1"
+
+  if [[ "$(basename "$plist")" != com.robinco.auto-trader.mcp*.plist ]]; then
+    return 0
+  fi
+
+  /usr/libexec/PlistBuddy -c 'Delete :SoftResourceLimits:NumberOfFiles' "$plist" 2>/dev/null || true
+  /usr/libexec/PlistBuddy -c 'Delete :HardResourceLimits:NumberOfFiles' "$plist" 2>/dev/null || true
+  /usr/libexec/PlistBuddy -c 'Add :SoftResourceLimits dict' "$plist" 2>/dev/null || true
+  /usr/libexec/PlistBuddy -c 'Add :HardResourceLimits dict' "$plist" 2>/dev/null || true
+  /usr/libexec/PlistBuddy -c "Add :SoftResourceLimits:NumberOfFiles integer $MCP_NOFILE_LIMIT" "$plist"
+  /usr/libexec/PlistBuddy -c "Add :HardResourceLimits:NumberOfFiles integer $MCP_NOFILE_LIMIT" "$plist"
+  plutil -lint "$plist" >/dev/null
 }
 
 build_frontend() {
@@ -112,6 +129,7 @@ restart_services() {
       return 78
     fi
 
+    apply_mcp_plist_fd_limit "$plist"
     install -m 0644 "$plist" "$target"
     launchctl bootout "gui/$uid_num/$label" 2>/dev/null || true
     launchctl bootout "gui/$uid_num" "$target" 2>/dev/null || true
