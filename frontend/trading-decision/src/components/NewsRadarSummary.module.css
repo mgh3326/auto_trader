@@ -1,0 +1,14 @@
+/* NewsRadarSummary.module.css */
+.section { display: grid; gap: 12px; padding: 12px 0; }
+.row { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.subtitle { color: #6b7280; margin: 4px 0 0; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0; margin: 0; list-style: none; }
+.chip {
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #eef0f4;
+}
+.status_ready { background: #def7e3; color: #1f7a3a; }
+.status_stale { background: #fff1d6; color: #8a5a06; }
+.status_unavailable { background: #fde0e0; color: #8b1f1f; }

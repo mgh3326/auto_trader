@@ -1,0 +1,27 @@
+/* frontend/trading-decision/src/components/NewsRiskHeadlineCard.module.css */
+.card {
+  border: 1px solid var(--color-border, #d0d4dc);
+  border-radius: 8px;
+  padding: 12px;
+  display: grid;
+  gap: 8px;
+  background: var(--color-surface, #ffffff);
+}
+.severity_high { border-left: 4px solid #d94f4f; }
+.severity_medium { border-left: 4px solid #d9a64f; }
+.severity_low { border-left: 4px solid #6b7280; }
+.header { display: flex; justify-content: space-between; gap: 8px; }
+.severity { font-weight: 600; text-transform: uppercase; font-size: 12px; }
+.inclusion { font-size: 12px; color: #6b7280; }
+.title { font-weight: 600; color: inherit; text-decoration: none; }
+.title:hover { text-decoration: underline; }
+.meta { font-size: 12px; color: #6b7280; margin: 0; }
+.snippet { margin: 0; font-size: 13px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0; margin: 0; list-style: none; }
+.chip {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: #eef0f4;
+}
+.chipMuted { background: #f6f7f9; color: #6b7280; }

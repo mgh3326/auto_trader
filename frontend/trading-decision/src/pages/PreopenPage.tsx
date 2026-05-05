@@ -576,6 +576,9 @@ export default function PreopenPage() {
       ) : null}
 
       <div className={styles.ctaRow}>
+        <Link className="btn" to="/news-radar">
+          Open news radar
+        </Link>
         {linkedSessionUuid ? (
           <Link
             className="btn"

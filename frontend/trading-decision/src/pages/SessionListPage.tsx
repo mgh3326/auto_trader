@@ -20,6 +20,9 @@ export default function SessionListPage() {
       <div className={styles.topbar}>
         <h1>Decision inbox</h1>
         <div className={styles.controls}>
+          <Link className="btn" to="/news-radar">
+            News radar
+          </Link>
           <label>
             Status filter{" "}
             <select

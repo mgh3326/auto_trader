@@ -31,6 +31,7 @@ from app.routers import (
     n8n,
     n8n_scan,
     news_analysis,
+    news_radar,
     openclaw_callback,
     order_estimation,
     pending_orders,
@@ -171,6 +172,7 @@ def create_app() -> FastAPI:
     app.include_router(trading_decisions_spa.router)
     app.include_router(research_run_decision_sessions.router)
     app.include_router(preopen.router)
+    app.include_router(news_radar.router)
     app.include_router(alpaca_paper_ledger.router)
     app.include_router(watch_order_intent_ledger.router)
     app.include_router(strategy_events.router)

@@ -1,0 +1,6 @@
+/* NewsRadarPage.module.css */
+.page { display: grid; gap: 16px; padding: 16px; }
+.headlineStrip { display: grid; gap: 8px; }
+.headlineGrid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+.empty { color: #6b7280; padding: 24px; text-align: center; border: 1px dashed #d0d4dc; border-radius: 8px; }
+.excluded { display: grid; gap: 8px; padding-top: 16px; border-top: 1px solid #d0d4dc; }
