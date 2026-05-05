@@ -83,3 +83,64 @@ class TestFetchSymbolNewsUS:
         assert first.summary == "Amazon reported revenue of $X."
         assert first.provider == "finnhub"
         assert first.published_at == datetime(2026, 5, 5, 13, 30, 0)
+
+
+class TestFetchSymbolNewsDegrade:
+    @pytest.mark.asyncio
+    async def test_naver_exception_returns_empty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            research_news_service,
+            "_naver_fetch_news",
+            AsyncMock(side_effect=RuntimeError("scrape blocked")),
+        )
+        result = await research_news_service.fetch_symbol_news(
+            "005930", "equity_kr"
+        )
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_finnhub_value_error_returns_empty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            research_news_service,
+            "_finnhub_fetch_news",
+            AsyncMock(
+                side_effect=ValueError("FINNHUB_API_KEY environment variable is not set")
+            ),
+        )
+        result = await research_news_service.fetch_symbol_news(
+            "AMZN", "equity_us"
+        )
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_timeout_returns_empty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def _slow(*_args: object, **_kwargs: object) -> list[dict[str, str]]:
+            await asyncio.sleep(2.0)
+            return []
+        monkeypatch.setattr(
+            research_news_service, "_naver_fetch_news", _slow
+        )
+        result = await research_news_service.fetch_symbol_news(
+            "005930", "equity_kr", timeout_s=0.05
+        )
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_crypto_returns_empty(self) -> None:
+        result = await research_news_service.fetch_symbol_news(
+            "BTC", "crypto"
+        )
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_unknown_instrument_type_returns_empty(self) -> None:
+        result = await research_news_service.fetch_symbol_news(
+            "X", "equity_unknown"
+        )
+        assert result == []
