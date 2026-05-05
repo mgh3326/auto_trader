@@ -7,7 +7,11 @@ from typing import Any
 import pandas as pd
 import sentry_sdk
 import yfinance as yf
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
+from app.core.config import settings
+from app.core.db import AsyncSessionLocal
 from app.mcp_server.tooling.fundamentals_sources_finnhub import (
     _fetch_company_profile_finnhub,
     _fetch_news_finnhub,
@@ -38,6 +42,7 @@ from app.mcp_server.tooling.shared import (
     normalize_symbol_input as _normalize_symbol_input,
 )
 from app.mcp_server.tooling.shared import resolve_market_type as _resolve_market_type
+from app.models.research_pipeline import ResearchSession, ResearchSummary
 from app.monitoring import build_yfinance_tracing_session
 
 logger = logging.getLogger(__name__)
@@ -394,6 +399,143 @@ def _apply_recommendation(
         analysis["recommendation"] = recommendation
 
 
+def _map_confidence_score(score: int) -> str:
+    if score >= 70:
+        return "high"
+    if score >= 40:
+        return "medium"
+    return "low"
+
+
+def _map_pipeline_to_analysis(
+    session: ResearchSession,
+    summary: ResearchSummary,
+    symbol: str,
+    market_type: str,
+) -> dict[str, Any]:
+    # Extract price analysis fields
+    pa = summary.price_analysis or {}
+
+    buy_zones = []
+    if (
+        pa.get("appropriate_buy_min") is not None
+        or pa.get("appropriate_buy_max") is not None
+    ):
+        buy_zones.append(
+            {
+                "price": pa.get("appropriate_buy_max") or pa.get("appropriate_buy_min"),
+                "type": "appropriate_buy",
+                "reasoning": f"Appropriate buy range: {pa.get('appropriate_buy_min')} - {pa.get('appropriate_buy_max')}",
+            }
+        )
+    if pa.get("buy_hope_min") is not None or pa.get("buy_hope_max") is not None:
+        buy_zones.append(
+            {
+                "price": pa.get("buy_hope_max") or pa.get("buy_hope_min"),
+                "type": "buy_hope",
+                "reasoning": f"Buy hope range: {pa.get('buy_hope_min')} - {pa.get('buy_hope_max')}",
+            }
+        )
+
+    sell_targets = []
+    if (
+        pa.get("appropriate_sell_min") is not None
+        or pa.get("appropriate_sell_max") is not None
+    ):
+        sell_targets.append(
+            {
+                "price": pa.get("appropriate_sell_min")
+                or pa.get("appropriate_sell_max"),
+                "type": "appropriate_sell",
+                "reasoning": f"Appropriate sell range: {pa.get('appropriate_sell_min')} - {pa.get('appropriate_sell_max')}",
+            }
+        )
+    if pa.get("sell_target_min") is not None or pa.get("sell_target_max") is not None:
+        sell_targets.append(
+            {
+                "price": pa.get("sell_target_min") or pa.get("sell_target_max"),
+                "type": "sell_target",
+                "reasoning": f"Sell target range: {pa.get('sell_target_min')} - {pa.get('sell_target_max')}",
+            }
+        )
+
+    # Sort and limit
+    buy_zones.sort(key=lambda x: x["price"] if x["price"] is not None else 0)
+    sell_targets.sort(key=lambda x: x["price"] if x["price"] is not None else 0)
+
+    # Recommendation
+    recommendation = {
+        "action": (
+            summary.decision.value
+            if hasattr(summary.decision, "value")
+            else str(summary.decision)
+        ),
+        "confidence": _map_confidence_score(summary.confidence),
+        "buy_zones": buy_zones[:3],
+        "sell_targets": sell_targets[:3],
+        "stop_loss": None,  # PriceAnalysis doesn't have it explicitly yet
+        "reasoning": "; ".join(summary.reasons) if summary.reasons else "",
+        "detailed_text": summary.detailed_text,
+        "bull_arguments": summary.bull_arguments,
+        "bear_arguments": summary.bear_arguments,
+    }
+
+    # Map stages back to indicators/news/etc if possible
+    analysis = {
+        "symbol": symbol,
+        "market_type": market_type,
+        "source": "research_pipeline",
+        "session_id": session.id,
+        "recommendation": recommendation,
+        "errors": summary.warnings or [],
+        "pipeline_metadata": {
+            "model_name": summary.model_name,
+            "prompt_version": summary.prompt_version,
+            "executed_at": (
+                summary.executed_at.isoformat() if summary.executed_at else None
+            ),
+        },
+    }
+
+    # Try to extract some quote/indicators from stages if available
+    for stage in session.stage_analyses:
+        if stage.stage_type == "market":
+            analysis["quote"] = {
+                "price": stage.signals.get("last_close"),
+                "change_pct": stage.signals.get("change_pct"),
+                "symbol": symbol,
+                "instrument_type": market_type,
+                "source": "research_pipeline",
+            }
+            analysis["indicators"] = stage.signals
+        elif stage.stage_type == "news":
+            analysis["news"] = stage.signals
+        elif stage.stage_type == "fundamentals":
+            analysis["valuation"] = stage.signals
+
+    return analysis
+
+
+async def _get_pipeline_result(
+    session_id: int, symbol: str, market_type: str
+) -> dict[str, Any]:
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(ResearchSession)
+            .where(ResearchSession.id == session_id)
+            .options(
+                selectinload(ResearchSession.summaries),
+                selectinload(ResearchSession.stage_analyses),
+            )
+        )
+        session = result.scalar_one_or_none()
+        if not session or not session.summaries:
+            return {}
+
+        summary = max(session.summaries, key=lambda s: s.executed_at)
+        return _map_pipeline_to_analysis(session, summary, symbol, market_type)
+
+
 async def analyze_stock_impl(
     symbol: str,
     market: str | None = None,
@@ -410,6 +552,29 @@ async def analyze_stock_impl(
             f"Unsupported symbol format: '{symbol}'. "
             "Use ticker codes (e.g., AAPL, 005930, KRW-BTC)."
         )
+
+    # ROB-112: Research Pipeline Integration
+    if (
+        settings.RESEARCH_PIPELINE_ANALYZE_STOCK_ENABLED
+        and settings.RESEARCH_PIPELINE_ENABLED
+    ):
+        try:
+            from app.analysis.pipeline import run_research_session
+
+            async with AsyncSessionLocal() as db:
+                session_id = await run_research_session(
+                    db=db,
+                    symbol=normalized_symbol,
+                    name=normalized_symbol,
+                    instrument_type=market_type,
+                )
+            return await _get_pipeline_result(
+                session_id, normalized_symbol, market_type
+            )
+        except Exception as exc:
+            logger.warning("research_pipeline.analyze_stock fallback: %s", exc)
+            # Fall through to legacy path
+
     analysis = _build_analysis_payload(normalized_symbol, market_type)
     loop = asyncio.get_running_loop()
 

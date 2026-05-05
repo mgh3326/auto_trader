@@ -1,0 +1,78 @@
+"""Research pipeline API router."""
+
+from typing import Annotated, Any
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.config import settings
+from app.core.db import get_db
+from app.models.trading import User
+from app.routers.dependencies import get_authenticated_user
+from app.services.research_pipeline_service import ResearchPipelineService
+
+router = APIRouter(prefix="/api/research-pipeline", tags=["research-pipeline"])
+
+
+def check_pipeline_enabled():
+    if not settings.RESEARCH_PIPELINE_ENABLED:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="research_pipeline_disabled",
+        )
+
+
+@router.get("/sessions", dependencies=[Depends(check_pipeline_enabled)])
+async def list_sessions(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_authenticated_user)],
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    service = ResearchPipelineService(db)
+    return await service.list_recent_sessions(limit=limit)
+
+
+@router.get("/sessions/{session_id}", dependencies=[Depends(check_pipeline_enabled)])
+async def get_session(
+    session_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_authenticated_user)],
+) -> dict[str, Any]:
+    service = ResearchPipelineService(db)
+    session = await service.get_session(session_id)
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="session_not_found",
+        )
+    return session
+
+
+@router.get(
+    "/sessions/{session_id}/stages", dependencies=[Depends(check_pipeline_enabled)]
+)
+async def get_session_stages(
+    session_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_authenticated_user)],
+) -> list[dict[str, Any]]:
+    service = ResearchPipelineService(db)
+    return await service.get_latest_stages(session_id)
+
+
+@router.get(
+    "/sessions/{session_id}/summary", dependencies=[Depends(check_pipeline_enabled)]
+)
+async def get_session_summary(
+    session_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_authenticated_user)],
+) -> dict[str, Any]:
+    service = ResearchPipelineService(db)
+    summary = await service.get_latest_summary(session_id)
+    if not summary:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="summary_not_found",
+        )
+    return summary
