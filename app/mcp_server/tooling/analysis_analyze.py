@@ -43,7 +43,7 @@ from app.mcp_server.tooling.shared import (
 )
 from app.mcp_server.tooling.shared import resolve_market_type as _resolve_market_type
 from app.models.research_pipeline import ResearchSession, ResearchSummary
-from app.monitoring import build_yfinance_tracing_session
+from app.monitoring import build_yfinance_tracing_session, close_yfinance_session
 
 logger = logging.getLogger(__name__)
 
@@ -229,7 +229,7 @@ async def _append_market_specific_tasks(
     normalized_symbol: str,
     market_type: str,
     loop: asyncio.AbstractEventLoop,
-) -> None:
+) -> Any | None:
     if market_type == "equity_kr":
         named_tasks.append(
             (
@@ -239,7 +239,7 @@ async def _append_market_specific_tasks(
                 ),
             )
         )
-        return
+        return None
 
     if market_type == "crypto":
         named_tasks.append(
@@ -250,7 +250,7 @@ async def _append_market_specific_tasks(
                 ),
             )
         )
-        return
+        return None
 
     yf_session = build_yfinance_tracing_session()
     yf_ticker = yf.Ticker(normalized_symbol, session=yf_session)
@@ -290,6 +290,7 @@ async def _append_market_specific_tasks(
             ),
         ]
     )
+    return yf_session
 
 
 def _append_sector_peers_task(
@@ -593,18 +594,22 @@ async def analyze_stock_impl(
         ohlcv_df,
     )
     _append_common_tasks(named_tasks, normalized_symbol, ohlcv_df, ohlcv_60d)
-    await _append_market_specific_tasks(
+    yfinance_session_to_close = await _append_market_specific_tasks(
         named_tasks, normalized_symbol, market_type, loop
     )
     _append_sector_peers_task(
         named_tasks, normalized_symbol, market_type, include_peers
     )
 
-    with sentry_sdk.start_span(
-        op="analyze_stock.gather_tasks",
-        name=f"gather tasks {market_type} {normalized_symbol}",
-    ):
-        task_results = await _gather_task_results(named_tasks)
+    try:
+        with sentry_sdk.start_span(
+            op="analyze_stock.gather_tasks",
+            name=f"gather tasks {market_type} {normalized_symbol}",
+        ):
+            task_results = await _gather_task_results(named_tasks)
+    finally:
+        if yfinance_session_to_close is not None:
+            close_yfinance_session(yfinance_session_to_close)
 
     with sentry_sdk.start_span(
         op="analyze_stock.assemble_response",

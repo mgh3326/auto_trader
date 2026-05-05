@@ -26,7 +26,7 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import (
     is_korean_equity_code as _is_korean_equity_code,
 )
-from app.monitoring import build_yfinance_tracing_session
+from app.monitoring import yfinance_tracing_session
 from app.services.brokers.kis.client import KISClient
 
 logger = logging.getLogger(__name__)
@@ -682,10 +682,7 @@ async def get_dividends_impl(symbol: str) -> dict[str, Any]:
     if not symbol:
         raise ValueError("symbol is required")
 
-    session = build_yfinance_tracing_session()
-    ticker = yf.Ticker(symbol.upper(), session=session)
-
-    def fetch_sync() -> dict[str, Any]:
+    def fetch_sync(ticker: yf.Ticker) -> dict[str, Any]:
         try:
             info = ticker.info or {}
 
@@ -721,7 +718,9 @@ async def get_dividends_impl(symbol: str) -> dict[str, Any]:
                 "symbol": symbol.upper(),
             }
 
-    return await asyncio.to_thread(fetch_sync)
+    with yfinance_tracing_session() as session:
+        ticker = yf.Ticker(symbol.upper(), session=session)
+        return await asyncio.to_thread(fetch_sync, ticker)
 
 
 async def get_fear_greed_index_impl(days: int = 7) -> dict[str, Any]:

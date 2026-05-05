@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -36,4 +38,26 @@ def build_yfinance_tracing_session() -> Session:
     return SentryTracingCurlSession(impersonate="chrome")
 
 
-__all__ = ["SentryTracingCurlSession", "build_yfinance_tracing_session"]
+def close_yfinance_session(session: Any) -> None:
+    """Close a yfinance HTTP session without masking the caller's result/error."""
+    close = getattr(session, "close", None)
+    if callable(close):
+        close()
+
+
+@contextmanager
+def yfinance_tracing_session() -> Iterator[Session]:
+    """Create a traced curl_cffi session and always release its sockets."""
+    session = build_yfinance_tracing_session()
+    try:
+        yield session
+    finally:
+        close_yfinance_session(session)
+
+
+__all__ = [
+    "SentryTracingCurlSession",
+    "build_yfinance_tracing_session",
+    "close_yfinance_session",
+    "yfinance_tracing_session",
+]

@@ -17,7 +17,11 @@ from app.mcp_server.tooling.fundamentals_sources_finnhub import (
     _get_finnhub_client,
 )
 from app.mcp_server.tooling.shared import normalize_value as _normalize_value
-from app.monitoring import build_yfinance_tracing_session
+from app.monitoring import (
+    build_yfinance_tracing_session,
+    close_yfinance_session,
+    yfinance_tracing_session,
+)
 from app.services.analyst_normalizer import (
     normalize_rating_label,
     rating_to_bucket,
@@ -193,10 +197,7 @@ def _empty_analyst_consensus(current_price: float | None) -> dict[str, Any]:
 async def _fetch_financials_yfinance(
     symbol: str, statement: str, freq: str
 ) -> dict[str, Any]:
-    session = build_yfinance_tracing_session()
-    ticker = yf.Ticker(symbol, session=session)
-
-    def fetch_sync() -> dict[str, Any]:
+    def fetch_sync(ticker: yf.Ticker) -> dict[str, Any]:
         statement_map = {
             "income": "income_stmt",
             "balance": "balance_sheet",
@@ -234,7 +235,9 @@ async def _fetch_financials_yfinance(
 
         return financials
 
-    financials = await asyncio.to_thread(fetch_sync)
+    with yfinance_tracing_session() as session:
+        ticker = yf.Ticker(symbol, session=session)
+        financials = await asyncio.to_thread(fetch_sync, ticker)
 
     return {
         "symbol": symbol.upper(),
@@ -252,9 +255,11 @@ async def _fetch_investment_opinions_yfinance(
     snapshot: _YFinanceSnapshot | None = None,
     session: Any | None = None,
 ) -> dict[str, Any]:
-    if session is None:
-        session = build_yfinance_tracing_session()
-    ticker = yf.Ticker(symbol, session=session)
+    owns_session = session is None and snapshot is None
+    if snapshot is None:
+        if session is None:
+            session = build_yfinance_tracing_session()
+        ticker = yf.Ticker(symbol, session=session)
 
     def _collect() -> tuple[dict[str, Any] | None, Any, Any, dict[str, Any] | None]:
         targets = None
@@ -289,7 +294,11 @@ async def _fetch_investment_opinions_yfinance(
         ud = snapshot.upgrades_downgrades
         info = snapshot.info
     else:
-        targets, trend, ud, info = await asyncio.to_thread(_collect)
+        try:
+            targets, trend, ud, info = await asyncio.to_thread(_collect)
+        finally:
+            if owns_session and session is not None:
+                close_yfinance_session(session)
 
     current_price = _normalize_yahoo_numeric((info or {}).get("currentPrice"))
     opinions: list[dict[str, Any]] = []
@@ -354,6 +363,7 @@ async def _fetch_investment_opinions_yfinance_screen(
     current_price: float | None = None,
     session: Any | None = None,
 ) -> dict[str, Any]:
+    owns_session = session is None
     if session is None:
         session = build_yfinance_tracing_session()
     ticker = yf.Ticker(symbol, session=session)
@@ -373,7 +383,11 @@ async def _fetch_investment_opinions_yfinance_screen(
 
         return targets, recommendations
 
-    targets, trend = await asyncio.to_thread(_collect)
+    try:
+        targets, trend = await asyncio.to_thread(_collect)
+    finally:
+        if owns_session:
+            close_yfinance_session(session)
 
     target_consensus = _build_yahoo_target_consensus(
         targets,
@@ -415,13 +429,20 @@ async def _fetch_valuation_yfinance(
     snapshot: _YFinanceSnapshot | None = None,
     session: Any | None = None,
 ) -> dict[str, Any]:
-    if session is None:
-        session = build_yfinance_tracing_session()
-    ticker = yf.Ticker(symbol, session=session)
+    owns_session = session is None and not (
+        snapshot is not None and snapshot.info is not None
+    )
     if snapshot is not None and snapshot.info is not None:
         info = snapshot.info
     else:
-        info: dict[str, Any] = await asyncio.to_thread(lambda: ticker.info)
+        if session is None:
+            session = build_yfinance_tracing_session()
+        ticker = yf.Ticker(symbol, session=session)
+        try:
+            info: dict[str, Any] = await asyncio.to_thread(lambda: ticker.info)
+        finally:
+            if owns_session:
+                close_yfinance_session(session)
 
     current_price = info.get("currentPrice")
     high_52w = info.get("fiftyTwoWeekHigh")
@@ -545,12 +566,14 @@ async def _fetch_sector_peers_us(
 
     async def _fetch_yf_info(ticker: str) -> tuple[str, dict[str, Any] | None]:
         try:
-            session = build_yfinance_tracing_session()
+            with yfinance_tracing_session() as session:
 
-            def _fetch_info(symbol: str = ticker, yf_session=session) -> dict[str, Any]:
-                return yf.Ticker(symbol, session=yf_session).info
+                def _fetch_info(
+                    symbol: str = ticker, yf_session=session
+                ) -> dict[str, Any]:
+                    return yf.Ticker(symbol, session=yf_session).info
 
-            info: dict[str, Any] = await asyncio.to_thread(_fetch_info)
+                info: dict[str, Any] = await asyncio.to_thread(_fetch_info)
             return (ticker, info)
         except Exception:
             return (ticker, None)

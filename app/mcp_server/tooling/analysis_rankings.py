@@ -9,7 +9,7 @@ from typing import Any
 import yfinance as yf
 
 import app.services.brokers.upbit.client as upbit_service
-from app.monitoring import build_yfinance_tracing_session
+from app.monitoring import yfinance_tracing_session
 
 
 async def get_us_rankings_impl(
@@ -24,9 +24,8 @@ async def get_us_rankings_impl(
     }
 
     screener_id = screener_ids.get(ranking_type)
-    session = build_yfinance_tracing_session()
 
-    def fetch_sync():
+    def fetch_sync(session):
         if ranking_type == "market_cap":
             query = yf.EquityQuery(
                 "and",
@@ -46,7 +45,8 @@ async def get_us_rankings_impl(
             )
         return yf.screen(screener_id, session=session)
 
-    results = await asyncio.to_thread(fetch_sync)
+    with yfinance_tracing_session() as session:
+        results = await asyncio.to_thread(fetch_sync, session)
 
     temp_rankings: list[dict[str, Any]] = []
     if isinstance(results, dict):
