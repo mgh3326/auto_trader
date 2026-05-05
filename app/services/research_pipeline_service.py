@@ -182,6 +182,15 @@ class ResearchPipelineService:
         if not summary:
             return None
 
+        stage_ids = [link.stage_analysis_id for link in summary.stage_links]
+        stage_type_by_id: dict[int, str] = {}
+        if stage_ids:
+            stage_rows = await self.db.execute(
+                select(StageAnalysis).where(StageAnalysis.id.in_(stage_ids))
+            )
+            for stage in stage_rows.scalars().all():
+                stage_type_by_id[stage.id] = stage.stage_type
+
         return {
             "id": summary.id,
             "session_id": summary.session_id,
@@ -194,8 +203,16 @@ class ResearchPipelineService:
             "detailed_text": summary.detailed_text,
             "warnings": summary.warnings,
             "executed_at": summary.executed_at,
-            "cited_stage_analysis_ids": [
-                link.stage_analysis_id for link in summary.stage_links
+            "cited_stage_analysis_ids": stage_ids,
+            "summary_stage_links": [
+                {
+                    "stage_analysis_id": link.stage_analysis_id,
+                    "stage_type": stage_type_by_id.get(link.stage_analysis_id, "unknown"),
+                    "direction": link.direction,
+                    "weight": link.weight,
+                    "rationale": link.rationale,
+                }
+                for link in summary.stage_links
             ],
         }
 
