@@ -1,0 +1,11 @@
+/* frontend/trading-decision/src/components/CandidateRow.module.css */
+.row td { padding: 8px 12px; vertical-align: top; border-top: 1px solid #1f2937; }
+.symbol div { font-weight: 600; }
+.symbol small { color: #94a3b8; display: block; }
+.gain { color: #22c55e; }
+.loss { color: #ef4444; }
+.heldBadge { background: #1e3a8a; color: #dbeafe; padding: 2px 8px; border-radius: 999px; font-size: 12px; }
+.warnList { margin: 0; padding-left: 16px; font-size: 12px; color: #fbbf24; }
+.actions { display: flex; flex-direction: column; gap: 4px; }
+.actions button { padding: 4px 8px; cursor: pointer; }
+.actions button:disabled { opacity: 0.5; cursor: not-allowed; }

@@ -1052,3 +1052,104 @@ export interface SymbolTimelineResponse {
   days: number;
   entries: SymbolTimelineEntry[];
 }
+
+// === ROB-116 portfolio actions ===
+
+export type CandidateAction = "sell" | "trim" | "hold" | "add" | "watch";
+export type MarketVerdict = "bull" | "bear" | "neutral" | "unavailable";
+export type JournalStatus = "present" | "missing" | "stale";
+export type Market = "KR" | "US" | "CRYPTO";
+
+export interface PortfolioActionCandidate {
+  symbol: string;
+  name: string | null;
+  market: Market;
+  instrument_type: string | null;
+  position_weight_pct: number | null;
+  profit_rate: number | null;
+  quantity: number | null;
+  sellable_quantity: number | null;
+  staked_quantity: number | null;
+  latest_research_session_id: number | null;
+  summary_decision: SummaryDecision | null;
+  summary_confidence: number | null;
+  market_verdict: MarketVerdict | null;
+  nearest_support_pct: number | null;
+  nearest_resistance_pct: number | null;
+  journal_status: JournalStatus;
+  candidate_action: CandidateAction;
+  suggested_trim_pct: number | null;
+  reason_codes: string[];
+  missing_context_codes: string[];
+}
+
+export interface PortfolioActionsResponse {
+  generated_at: string;
+  total: number;
+  candidates: PortfolioActionCandidate[];
+  warnings: string[];
+}
+
+// === ROB-117 candidate discovery ===
+
+export type CandidateMarket =
+  | "kr" | "kospi" | "kosdaq" | "konex" | "all" | "us" | "crypto";
+export type CandidateStrategy = "oversold" | "momentum" | "high_volume";
+export type CandidateSortBy =
+  | "volume" | "trade_amount" | "market_cap" | "change_rate" | "dividend_yield" | "rsi";
+export type ResearchStatus = "new" | "watch" | "exclude";
+
+export interface CandidateScreenRequest {
+  market: CandidateMarket;
+  asset_type?: "stock" | "etf" | "etn" | null;
+  strategy?: CandidateStrategy | null;
+  sort_by?: CandidateSortBy | null;
+  sort_order?: "asc" | "desc";
+  min_market_cap?: number | null;
+  max_per?: number | null;
+  max_pbr?: number | null;
+  min_dividend_yield?: number | null;
+  max_rsi?: number | null;
+  adv_krw_min?: number | null;
+  market_cap_min_krw?: number | null;
+  market_cap_max_krw?: number | null;
+  exclude_sectors?: string[] | null;
+  instrument_types?: string[] | null;
+  krw_only?: boolean;
+  exclude_warnings?: boolean;
+  limit?: number;
+}
+
+export interface ScreenedCandidate {
+  symbol: string;
+  name: string | null;
+  market: string | null;
+  instrument_type: string | null;
+  price: number | null;
+  change_rate: number | null;
+  volume: number | null;
+  trade_amount_24h: number | null;
+  volume_ratio: number | null;
+  rsi: number | null;
+  market_cap: number | null;
+  per: number | null;
+  pbr: number | null;
+  sector: string | null;
+  is_held: boolean;
+  held_quantity: number | null;
+  latest_research_session_id: number | null;
+  research_status: ResearchStatus | null;
+  data_warnings: string[];
+}
+
+export interface CandidateScreenResponse {
+  generated_at: string;
+  market: string;
+  strategy: string | null;
+  sort_by: string | null;
+  total: number;
+  candidates: ScreenedCandidate[];
+  warnings: string[];
+  rsi_enrichment_attempted: number;
+  rsi_enrichment_succeeded: number;
+}
