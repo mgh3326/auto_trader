@@ -35,10 +35,65 @@ describe("trading decision routes", () => {
     expect(matches?.at(-1)?.route.path).toBe("/research");
   });
 
-  it("registers /research/sessions/:sessionId detail route", () => {
-    const matches = matchRoutes(tradingDecisionRoutes, "/research/sessions/42");
-    expect(matches?.at(-1)?.route.path).toBe("/research/sessions/:sessionId");
-    expect(matches?.at(-1)?.params.sessionId).toBe("42");
+  it("registers /research/sessions/:sessionId/summary stage route", () => {
+    const matches = matchRoutes(
+      tradingDecisionRoutes,
+      "/research/sessions/42/summary",
+    );
+    expect(matches?.at(-1)?.route.path).toBe("summary");
+    expect(matches?.at(-2)?.route.path).toBe("/research/sessions/:sessionId");
+    expect(matches?.at(-2)?.params.sessionId).toBe("42");
+  });
+
+  it("registers /research/sessions/:sessionId/market stage route", () => {
+    const matches = matchRoutes(
+      tradingDecisionRoutes,
+      "/research/sessions/42/market",
+    );
+    expect(matches?.at(-1)?.route.path).toBe("market");
+  });
+
+  it("registers /research/sessions/:sessionId/news stage route", () => {
+    const matches = matchRoutes(
+      tradingDecisionRoutes,
+      "/research/sessions/42/news",
+    );
+    expect(matches?.at(-1)?.route.path).toBe("news");
+  });
+
+  it("registers /research/sessions/:sessionId/fundamentals stage route", () => {
+    const matches = matchRoutes(
+      tradingDecisionRoutes,
+      "/research/sessions/42/fundamentals",
+    );
+    expect(matches?.at(-1)?.route.path).toBe("fundamentals");
+  });
+
+  it("registers /research/sessions/:sessionId/social stage route", () => {
+    const matches = matchRoutes(
+      tradingDecisionRoutes,
+      "/research/sessions/42/social",
+    );
+    expect(matches?.at(-1)?.route.path).toBe("social");
+  });
+
+  it("legacy /research/sessions/:sessionId still matches the layout", () => {
+    const matches = matchRoutes(
+      tradingDecisionRoutes,
+      "/research/sessions/42",
+    );
+    // layout match + index child
+    expect(matches?.at(0)?.route.path).toBe("/research/sessions/:sessionId");
+    expect(matches?.at(-1)?.route.index).toBe(true);
+  });
+
+  it("falls back to a stage-not-found child for unknown segments under a session", () => {
+    const matches = matchRoutes(
+      tradingDecisionRoutes,
+      "/research/sessions/42/bogus",
+    );
+    expect(matches?.at(-1)?.route.path).toBe("*");
+    expect(matches?.at(0)?.route.path).toBe("/research/sessions/:sessionId");
   });
 
   it("registers /research/symbols/:symbol/timeline route", () => {
