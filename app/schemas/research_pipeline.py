@@ -123,3 +123,108 @@ class SummaryOutput(BaseModel):
     raw_payload: dict | None = None
     token_input: int | None = None
     token_output: int | None = None
+
+
+# --- ROB-113 Phase 3 schemas ---
+
+
+class ResearchSessionCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    symbol: str = Field(min_length=1, max_length=64)
+    name: str | None = None
+    instrument_type: Literal["equity_kr", "equity_us", "crypto"]
+    research_run_id: int | None = None
+    triggered_by: Literal["user", "scheduler"] = "user"
+
+
+class ResearchSessionCreateResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: int
+    status: Literal["open", "running", "finalized", "failed", "cancelled"]
+    started_at: datetime
+
+
+class SummaryStageLinkOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    stage_analysis_id: int
+    stage_type: Literal["market", "news", "fundamentals", "social"]
+    direction: Literal["support", "contradict", "context"]
+    weight: float = Field(ge=0.0, le=1.0)
+    rationale: str | None = None
+
+
+class StageAnalysisOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: int
+    stage_type: Literal["market", "news", "fundamentals", "social"]
+    verdict: StageVerdict
+    confidence: int = Field(ge=0, le=100)
+    signals: dict
+    raw_payload: dict | None = None
+    source_freshness: dict | None = None
+    executed_at: datetime
+    snapshot_at: datetime | None = None
+
+
+class ResearchSummaryOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: int
+    session_id: int
+    decision: SummaryDecision
+    confidence: int = Field(ge=0, le=100)
+    bull_arguments: list[dict]
+    bear_arguments: list[dict]
+    price_analysis: dict | None = None
+    reasons: list[str] | None = None
+    detailed_text: str | None = None
+    warnings: list[str] | None = None
+    executed_at: datetime
+    summary_stage_links: list[SummaryStageLinkOut] = Field(default_factory=list)
+
+
+class ResearchSessionOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: int
+    stock_info_id: int
+    research_run_id: int | None = None
+    status: str
+    started_at: datetime | None = None
+    finalized_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime | None = None
+    symbol: str | None = None
+    instrument_type: str | None = None
+
+
+class SessionFullResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session: ResearchSessionOut
+    stages: list[StageAnalysisOut] = Field(default_factory=list)
+    summary: ResearchSummaryOut | None = None
+
+
+class SymbolTimelineEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: int
+    status: str
+    started_at: datetime | None = None
+    finalized_at: datetime | None = None
+    decision: SummaryDecision | None = None
+    confidence: int | None = Field(default=None, ge=0, le=100)
+    stage_verdicts: dict[str, StageVerdict] = Field(default_factory=dict)
+
+
+class SymbolTimelineResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    symbol: str
+    days: int = Field(ge=1, le=365)
+    entries: list[SymbolTimelineEntry] = Field(default_factory=list)
