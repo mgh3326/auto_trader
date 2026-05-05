@@ -95,7 +95,10 @@ async def test_committee_session_updates() -> None:
                 artifacts_patch=patch2,
             )
             assert updated3 is not None
-            assert updated3.artifacts["evidence"]["technical_analysis"]["summary"] == "Bullish"
+            assert (
+                updated3.artifacts["evidence"]["technical_analysis"]["summary"]
+                == "Bullish"
+            )
             assert updated3.artifacts["risk_review"]["verdict"] == "approved"
     finally:
         await _cleanup_user(user_id)

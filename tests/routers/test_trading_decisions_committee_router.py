@@ -12,7 +12,6 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import engine
-from app.models.trading_decision import WorkflowStatus
 
 SessionLocal = async_sessionmaker(
     bind=engine, class_=AsyncSession, expire_on_commit=False
@@ -86,7 +85,7 @@ def test_create_and_get_committee_session_router(monkeypatch):
     user_id = asyncio.run(_create_user())
     try:
         client = _make_client(user_id, monkeypatch)
-        
+
         # 1. Create a session with committee fields
         generated_at = datetime.now(UTC).isoformat()
         resp = client.post(
@@ -101,8 +100,8 @@ def test_create_and_get_committee_session_router(monkeypatch):
                 "automation": {
                     "enabled": True,
                     "auto_approve_risk": False,
-                    "auto_execute": False
-                }
+                    "auto_execute": False,
+                },
             },
         )
         assert resp.status_code == 201, resp.text
@@ -110,9 +109,9 @@ def test_create_and_get_committee_session_router(monkeypatch):
         assert body["workflow_status"] == "created"
         assert body["account_mode"] == "kis_mock"
         assert body["automation"]["enabled"] is True
-        
+
         session_uuid = body["session_uuid"]
-        
+
         # 2. Get the session and verify fields
         resp2 = client.get(f"/trading/api/decisions/{session_uuid}")
         assert resp2.status_code == 200
@@ -120,23 +119,25 @@ def test_create_and_get_committee_session_router(monkeypatch):
         assert body2["workflow_status"] == "created"
         assert body2["account_mode"] == "kis_mock"
         assert body2["automation"]["enabled"] is True
-        
+
         # 3. PATCH workflow status
         resp3 = client.patch(
             f"/trading/api/decisions/{session_uuid}/workflow",
-            params={"status_update": "evidence_ready"}
+            params={"status_update": "evidence_ready"},
         )
         assert resp3.status_code == 200
         assert resp3.json()["workflow_status"] == "evidence_ready"
-        
+
         # 4. PATCH artifacts
         resp4 = client.patch(
             f"/trading/api/decisions/{session_uuid}/artifacts",
-            json={"evidence": {"technical_analysis": {"summary": "Bullish"}}}
+            json={"evidence": {"technical_analysis": {"summary": "Bullish"}}},
         )
         assert resp4.status_code == 200
         body4 = resp4.json()
-        assert body4["artifacts"]["evidence"]["technical_analysis"]["summary"] == "Bullish"
-        
+        assert (
+            body4["artifacts"]["evidence"]["technical_analysis"]["summary"] == "Bullish"
+        )
+
     finally:
         asyncio.run(_cleanup_user(user_id))

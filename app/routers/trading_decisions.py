@@ -37,11 +37,11 @@ from app.schemas.trading_decisions import (
     WorkflowStatusLiteral,
 )
 from app.services import operator_decision_session_service, trading_decision_service
-from app.services.trading_decisions.committee_service import CommitteeSessionService
 from app.services.trading_decision_session_url import (
     build_trading_decision_session_url,
     resolve_trading_decision_base_url,
 )
+from app.services.trading_decisions.committee_service import CommitteeSessionService
 from app.services.tradingagents_research_service import (
     TradingAgentsNotConfigured,
     TradingAgentsRunnerError,
