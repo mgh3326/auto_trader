@@ -25,6 +25,7 @@ from app.monitoring.trade_notifier import get_trade_notifier
 from app.routers import (
     ai_markdown,
     alpaca_paper_ledger,
+    candidate_discovery,
     deprecated_pages,
     health,
     kospi200,
@@ -36,6 +37,7 @@ from app.routers import (
     order_estimation,
     pending_orders,
     portfolio,
+    portfolio_actions,
     preopen,
     research_pipeline,
     research_run_decision_sessions,
@@ -172,6 +174,8 @@ def create_app() -> FastAPI:
     app.include_router(trading_decisions.router)
     app.include_router(trading_decisions_spa.router)
     app.include_router(research_pipeline.router)
+    app.include_router(portfolio_actions.router)
+    app.include_router(candidate_discovery.router)
     app.include_router(research_run_decision_sessions.router)
     app.include_router(preopen.router)
     app.include_router(news_radar.router)

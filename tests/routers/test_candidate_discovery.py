@@ -1,6 +1,6 @@
 """ROB-117 — Candidate discovery router tests."""
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -35,11 +35,12 @@ async def test_post_screen_returns_payload() -> None:
     app.dependency_overrides[get_candidate_screening_service] = lambda: fake_service
 
     try:
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
-            res = await c.post(
-                "/trading/api/candidates/screen",
-                json={"market": "crypto", "strategy": "oversold", "limit": 10},
-            )
+        with patch("app.middleware.auth.AuthMiddleware._maybe_authenticate", return_value=None):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+                res = await c.post(
+                    "/trading/api/candidates/screen",
+                    json={"market": "crypto", "strategy": "oversold", "limit": 10},
+                )
         assert res.status_code == 200
         body = res.json()
         assert body["total"] == 1
@@ -58,11 +59,12 @@ async def test_post_screen_validates_limit_range() -> None:
     app.dependency_overrides[get_candidate_screening_service] = lambda: fake_service
 
     try:
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
-            res = await c.post(
-                "/trading/api/candidates/screen",
-                json={"market": "crypto", "limit": 500},
-            )
+        with patch("app.middleware.auth.AuthMiddleware._maybe_authenticate", return_value=None):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+                res = await c.post(
+                    "/trading/api/candidates/screen",
+                    json={"market": "crypto", "limit": 500},
+                )
         assert res.status_code == 422
     finally:
         app.dependency_overrides.clear()

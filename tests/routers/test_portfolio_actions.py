@@ -1,6 +1,6 @@
 """ROB-116 — Portfolio actions router tests."""
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -39,8 +39,9 @@ async def test_get_portfolio_actions_returns_payload() -> None:
     app.dependency_overrides[get_portfolio_action_service] = lambda: fake_service
 
     try:
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
-            res = await c.get("/trading/api/portfolio-actions")
+        with patch("app.middleware.auth.AuthMiddleware._maybe_authenticate", return_value=None):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+                res = await c.get("/trading/api/portfolio-actions")
         assert res.status_code == 200
         body = res.json()
         assert body["total"] == 1
@@ -62,8 +63,9 @@ async def test_get_portfolio_actions_passes_market_filter() -> None:
     app.dependency_overrides[get_portfolio_action_service] = lambda: fake_service
 
     try:
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
-            await c.get("/trading/api/portfolio-actions?market=CRYPTO")
+        with patch("app.middleware.auth.AuthMiddleware._maybe_authenticate", return_value=None):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+                await c.get("/trading/api/portfolio-actions?market=CRYPTO")
         fake_service.build_action_board.assert_awaited_once_with(
             user_id=1, market_filter="CRYPTO"
         )
