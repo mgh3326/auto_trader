@@ -507,6 +507,11 @@ class Settings(BaseSettings):
     tradingagents_checkpoint_enabled: bool = False
     tradingagents_memory_log_path: str | None = None
 
+    # Research Pipeline (ROB-112)
+    RESEARCH_PIPELINE_ENABLED: bool = False
+    RESEARCH_PIPELINE_ANALYZE_STOCK_ENABLED: bool = False
+    RESEARCH_PIPELINE_DUAL_WRITE_ENABLED: bool = False
+
     model_config = SettingsConfigDict(
         env_file=os.getenv("ENV_FILE", ".env"),
         env_file_encoding="utf-8",
