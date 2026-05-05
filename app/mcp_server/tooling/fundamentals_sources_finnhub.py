@@ -8,6 +8,7 @@ import logging
 from typing import Any
 
 from app.core.config import settings
+from app.services.finnhub_news import fetch_news_finnhub
 
 logger = logging.getLogger(__name__)
 
@@ -27,48 +28,7 @@ def _get_finnhub_client() -> Any:
 
 
 async def _fetch_news_finnhub(symbol: str, market: str, limit: int) -> dict[str, Any]:
-    client = _get_finnhub_client()
-    to_date = datetime.date.today()
-    from_date = to_date - datetime.timedelta(days=7)
-
-    def fetch_sync() -> list[dict[str, Any]]:
-        if market == "crypto":
-            news = client.general_news("crypto", min_id=0)
-        else:
-            news = client.company_news(
-                symbol.upper(),
-                _from=from_date.strftime("%Y-%m-%d"),
-                to=to_date.strftime("%Y-%m-%d"),
-            )
-        return news[:limit] if news else []
-
-    news_items = await asyncio.to_thread(fetch_sync)
-
-    result_items = []
-    for item in news_items:
-        result_items.append(
-            {
-                "title": item.get("headline", ""),
-                "source": item.get("source", ""),
-                "datetime": datetime.datetime.fromtimestamp(
-                    item.get("datetime", 0)
-                ).isoformat()
-                if item.get("datetime")
-                else None,
-                "url": item.get("url", ""),
-                "summary": item.get("summary", ""),
-                "sentiment": item.get("sentiment"),
-                "related": item.get("related", ""),
-            }
-        )
-
-    return {
-        "symbol": symbol,
-        "market": market,
-        "source": "finnhub",
-        "count": len(result_items),
-        "news": result_items,
-    }
+    return await fetch_news_finnhub(symbol, market, limit)
 
 
 async def _fetch_company_profile_finnhub(symbol: str) -> dict[str, Any]:

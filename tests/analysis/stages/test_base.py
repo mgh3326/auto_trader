@@ -89,4 +89,3 @@ def test_base_stage_rejects_wrong_stage_type():
                 )
             )
         )
-

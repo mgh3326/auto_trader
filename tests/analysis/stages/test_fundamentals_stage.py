@@ -12,7 +12,10 @@ async def test_fundamentals_stage_bull_verdict():
     # PER 10, Sector Median 15 -> 10 < 15 * 0.8 (12) -> BULL
     analyzer = FundamentalsStageAnalyzer()
     ctx = StageContext(
-        session_id=1, symbol="005930", symbol_name="Samsung", instrument_type="equity_kr"
+        session_id=1,
+        symbol="005930",
+        symbol_name="Samsung",
+        instrument_type="equity_kr",
     )
 
     mock_data = {
@@ -50,7 +53,10 @@ async def test_fundamentals_stage_bear_verdict():
     # PER 30, Sector Median 15 -> 30 > 15 * 1.5 (22.5) -> BEAR
     analyzer = FundamentalsStageAnalyzer()
     ctx = StageContext(
-        session_id=1, symbol="005930", symbol_name="Samsung", instrument_type="equity_kr"
+        session_id=1,
+        symbol="005930",
+        symbol_name="Samsung",
+        instrument_type="equity_kr",
     )
 
     mock_data = {

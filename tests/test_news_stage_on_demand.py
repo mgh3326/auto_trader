@@ -142,3 +142,41 @@ class TestNewsStageOnDemandFetch:
         assert out.signals.headline_count == 0
         # bulk_create skipped because fetched=[]
         bulk_create.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_uses_fetched_headlines_when_persisted_requery_is_empty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        get_articles = AsyncMock(side_effect=[([], 0), ([], 0)])
+        fetch = AsyncMock(
+            return_value=[
+                NormalizedArticle(
+                    url="https://reuters.com/amzn-q1",
+                    title="Amazon beats Q1 earnings",
+                    source="Reuters",
+                    summary="Amazon reported revenue of $X.",
+                    published_at=datetime(2026, 5, 5, 13, 30, 0),
+                    provider="finnhub",
+                )
+            ]
+        )
+        bulk_create = AsyncMock(return_value=(0, 1, ["https://reuters.com/amzn-q1"]))
+        monkeypatch.setattr(news_stage, "get_news_articles", get_articles)
+        monkeypatch.setattr(news_stage, "fetch_symbol_news", fetch)
+        monkeypatch.setattr(news_stage, "bulk_create_news_articles", bulk_create)
+
+        analyzer = NewsStageAnalyzer()
+        out = await analyzer.analyze(
+            StageContext(
+                session_id=1,
+                symbol="AMZN",
+                instrument_type="equity_us",
+                symbol_name="Amazon.com Inc.",
+            )
+        )
+
+        fetch.assert_awaited_once()
+        bulk_create.assert_awaited_once()
+        assert get_articles.await_count == 2
+        assert out.signals.headline_count == 1
+        assert out.signals.sentiment_score > 0

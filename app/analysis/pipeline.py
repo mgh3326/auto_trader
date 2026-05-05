@@ -65,7 +65,7 @@ async def run_research_session(
         await db.flush()
         session_id = session.id
 
-    # 3. Run 4 stage analyzers concurrently via asyncio.gather
+    # 3. Run stage analyzers concurrently via asyncio.gather
     ctx = StageContext(
         session_id=session_id,
         symbol=symbol,

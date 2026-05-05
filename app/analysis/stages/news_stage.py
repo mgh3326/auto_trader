@@ -45,6 +45,15 @@ class _OnDemandArticlePayload:
     keywords: list[str] | None
 
 
+@dataclass
+class _SignalArticle:
+    """Minimal article shape consumed by _compute_signals_from_articles."""
+
+    title: str
+    article_published_at: datetime | None
+    keywords: list[str]
+
+
 def _to_persist_payloads(
     articles: list[NormalizedArticle],
     *,
@@ -71,6 +80,17 @@ def _to_persist_payloads(
             )
         )
     return payloads
+
+
+def _to_signal_articles(articles: list[NormalizedArticle]) -> list[_SignalArticle]:
+    return [
+        _SignalArticle(
+            title=art.title,
+            article_published_at=art.published_at,
+            keywords=[],
+        )
+        for art in articles
+    ]
 
 
 async def _fetch_recent_headlines(
@@ -104,9 +124,14 @@ async def _fetch_recent_headlines(
             articles, _total = await get_news_articles(
                 stock_symbol=symbol, market=market, hours=24, limit=20
             )
+            if not articles:
+                logger.info(
+                    "news_stage: using fetched headlines as signal fallback: symbol=%s",
+                    symbol,
+                )
+                return _compute_signals_from_articles(_to_signal_articles(fetched))
 
     return _compute_signals_from_articles(articles)
-
 
 
 def _compute_signals_from_articles(articles: list[Any]) -> dict[str, Any]:

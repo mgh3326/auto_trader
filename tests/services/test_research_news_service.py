@@ -1,10 +1,15 @@
 """Tests for app.services.research_news_service (ROB-115)."""
+
 from __future__ import annotations
+
 import asyncio
 from datetime import datetime
 from unittest.mock import AsyncMock
+
 import pytest
+
 from app.services import research_news_service
+
 
 class TestFetchSymbolNewsKR:
     @pytest.mark.asyncio
@@ -95,9 +100,7 @@ class TestFetchSymbolNewsDegrade:
             "_naver_fetch_news",
             AsyncMock(side_effect=RuntimeError("scrape blocked")),
         )
-        result = await research_news_service.fetch_symbol_news(
-            "005930", "equity_kr"
-        )
+        result = await research_news_service.fetch_symbol_news("005930", "equity_kr")
         assert result == []
 
     @pytest.mark.asyncio
@@ -108,24 +111,21 @@ class TestFetchSymbolNewsDegrade:
             research_news_service,
             "_finnhub_fetch_news",
             AsyncMock(
-                side_effect=ValueError("FINNHUB_API_KEY environment variable is not set")
+                side_effect=ValueError(
+                    "FINNHUB_API_KEY environment variable is not set"
+                )
             ),
         )
-        result = await research_news_service.fetch_symbol_news(
-            "AMZN", "equity_us"
-        )
+        result = await research_news_service.fetch_symbol_news("AMZN", "equity_us")
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_timeout_returns_empty(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_timeout_returns_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
         async def _slow(*_args: object, **_kwargs: object) -> list[dict[str, str]]:
             await asyncio.sleep(2.0)
             return []
-        monkeypatch.setattr(
-            research_news_service, "_naver_fetch_news", _slow
-        )
+
+        monkeypatch.setattr(research_news_service, "_naver_fetch_news", _slow)
         result = await research_news_service.fetch_symbol_news(
             "005930", "equity_kr", timeout_s=0.05
         )
@@ -133,14 +133,10 @@ class TestFetchSymbolNewsDegrade:
 
     @pytest.mark.asyncio
     async def test_crypto_returns_empty(self) -> None:
-        result = await research_news_service.fetch_symbol_news(
-            "BTC", "crypto"
-        )
+        result = await research_news_service.fetch_symbol_news("BTC", "crypto")
         assert result == []
 
     @pytest.mark.asyncio
     async def test_unknown_instrument_type_returns_empty(self) -> None:
-        result = await research_news_service.fetch_symbol_news(
-            "X", "equity_unknown"
-        )
+        result = await research_news_service.fetch_symbol_news("X", "equity_unknown")
         assert result == []
