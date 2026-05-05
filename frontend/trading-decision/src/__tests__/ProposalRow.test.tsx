@@ -42,7 +42,7 @@ describe("ProposalRow", () => {
     );
 
     expect(screen.queryByText("0 KRW")).not.toBeInTheDocument();
-    expect(screen.getByText("Current quote estimate needed")).toBeInTheDocument();
+    expect(screen.getByText("현재 시세 추정이 필요합니다")).toBeInTheDocument();
   });
 
   it("explains that accepting records a decision only", () => {
@@ -55,9 +55,9 @@ describe("ProposalRow", () => {
     );
 
     expect(
-      screen.getByText(/Accept records this decision only/i),
+      screen.getByText(/수락은 결정만 기록합니다/i),
     ).toBeInTheDocument();
-    expect(screen.getByText(/does not send a live trade/i)).toBeInTheDocument();
+    expect(screen.getByText(/실주문을 전송하지 않습니다/i)).toBeInTheDocument();
   });
 
   it("renders crypto paper workflow provenance from approval copy", () => {
@@ -101,7 +101,7 @@ describe("ProposalRow", () => {
       />,
     );
 
-    expect(screen.getByText("Crypto paper workflow")).toBeInTheDocument();
+    expect(screen.getByText("암호화폐 모의 워크플로우")).toBeInTheDocument();
     expect(screen.getByText("Signal source: Upbit KRW-BTC")).toBeInTheDocument();
     expect(
       screen.getByText("Execution venue: Alpaca Paper BTC/USD"),
@@ -119,8 +119,8 @@ describe("ProposalRow", () => {
       />,
     );
 
-    expect(screen.getByText("Original")).toBeInTheDocument();
-    expect(screen.queryByText("Your decision")).not.toBeInTheDocument();
+    expect(screen.getByText("원본")).toBeInTheDocument();
+    expect(screen.queryByText("내 결정")).not.toBeInTheDocument();
   });
 
   it("accepted proposal shows decision and responded time", () => {
@@ -135,8 +135,8 @@ describe("ProposalRow", () => {
       />,
     );
 
-    expect(screen.getAllByText("accept").length).toBeGreaterThan(0);
-    expect(screen.getByText("Your decision")).toBeInTheDocument();
+    expect(screen.getAllByText("수락").length).toBeGreaterThan(0);
+    expect(screen.getByText("내 결정")).toBeInTheDocument();
   });
 
   it("shows original and adjusted values for modify", () => {
@@ -182,7 +182,7 @@ describe("ProposalRow", () => {
     );
 
     expect(
-      screen.getByRole("table", { name: /outcome marks/i }),
+      screen.getByRole("region", { name: /결과 마크/i }),
     ).toBeInTheDocument();
     expect(screen.getByText("2.5%")).toBeInTheDocument();
   });
@@ -204,9 +204,9 @@ describe("ProposalRow", () => {
       />,
     );
 
-    await userEvent.click(screen.getByText(/record outcome mark/i));
-    await userEvent.type(screen.getByLabelText(/price at mark/i), "100");
-    await userEvent.click(screen.getByRole("button", { name: /record mark/i }));
+    await userEvent.click(screen.getByText(/결과 마크 기록/i));
+    await userEvent.type(screen.getByLabelText(/마크 시점 가격/i), "100");
+    await userEvent.click(screen.getByRole("button", { name: /마크 기록/i }));
 
     expect(onRecordOutcome).toHaveBeenCalledWith(
       "proposal-btc",
@@ -234,8 +234,8 @@ describe("ProposalRow — reconciliation/NXT badges", () => {
         onRespond={vi.fn()}
       />,
     );
-    expect(screen.getByText("Near fill")).toBeInTheDocument();
-    expect(screen.getByText("NXT actionable")).toBeInTheDocument();
+    expect(screen.getByText("체결 임박")).toBeInTheDocument();
+    expect(screen.getByText("NXT 실행 가능")).toBeInTheDocument();
   });
 
   it("renders the Too far badge for too_far", () => {
@@ -252,8 +252,8 @@ describe("ProposalRow — reconciliation/NXT badges", () => {
         onRespond={vi.fn()}
       />,
     );
-    expect(screen.getByText("Too far")).toBeInTheDocument();
-    expect(screen.getByText("NXT not actionable")).toBeInTheDocument();
+    expect(screen.getByText("괴리 큼")).toBeInTheDocument();
+    expect(screen.getByText("NXT 실행 불가")).toBeInTheDocument();
   });
 
   it("marks kr_pending_non_nxt rows non-actionable and shows non_nxt_venue chip", () => {
@@ -273,14 +273,14 @@ describe("ProposalRow — reconciliation/NXT badges", () => {
         onRespond={vi.fn()}
       />,
     );
-    expect(screen.getByText("KR broker only")).toBeInTheDocument();
-    expect(screen.getByText("Non-NXT (KR broker)")).toBeInTheDocument();
-    expect(screen.getByText("Non-NXT venue")).toBeInTheDocument();
+    expect(screen.getByText("국내 브로커 전용")).toBeInTheDocument();
+    expect(screen.getByText("비-NXT (국내 브로커)")).toBeInTheDocument();
+    expect(screen.getByText("비-NXT 거래소")).toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent(
-      /Non-NXT pending order/,
+      /비-NXT 대기 주문/,
     );
     expect(
-      screen.queryByText(/Accept records this decision only/i),
+      screen.queryByText(/수락은 결정만 기록합니다/i),
     ).not.toBeInTheDocument();
   });
 
@@ -301,9 +301,9 @@ describe("ProposalRow — reconciliation/NXT badges", () => {
         onRespond={vi.fn()}
       />,
     );
-    expect(screen.getByText("NXT review needed")).toBeInTheDocument();
+    expect(screen.getByText("NXT 검토 필요")).toBeInTheDocument();
     expect(
-      screen.getByText("KR universe row missing"),
+      screen.getByText("국내 유니버스 누락"),
     ).toBeInTheDocument();
   });
 
@@ -324,7 +324,7 @@ describe("ProposalRow — reconciliation/NXT badges", () => {
       />,
     );
     expect(
-      screen.queryByText(/Non-NXT pending order/),
+      screen.queryByText(/비-NXT 대기 주문/),
     ).not.toBeInTheDocument();
   });
 });
