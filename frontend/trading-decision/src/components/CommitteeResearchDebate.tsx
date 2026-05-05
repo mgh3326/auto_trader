@@ -17,7 +17,7 @@ export const CommitteeResearchDebate: React.FC<Props> = ({ researchDebate }) => 
       <h3>리서치 토론</h3>
       <div className="debate-cols">
         <div className="bull-col">
-          <h4 className="bull">상승(Bull) 근거</h4>
+          <h4 className="bull">상승 근거</h4>
           {bull_case.length === 0 ? (
             <p className="empty">아직 상승 근거가 없습니다.</p>
           ) : (
@@ -34,7 +34,7 @@ export const CommitteeResearchDebate: React.FC<Props> = ({ researchDebate }) => 
           )}
         </div>
         <div className="bear-col">
-          <h4 className="bear">하락(Bear) 근거</h4>
+          <h4 className="bear">하락 근거</h4>
           {bear_case.length === 0 ? (
             <p className="empty">아직 하락 근거가 없습니다.</p>
           ) : (

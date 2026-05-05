@@ -51,6 +51,16 @@ function formatArtifactVersion(version: string): string {
   return version.startsWith("mvp.") ? version.slice(4) : version;
 }
 
+function labelArtifactCta(
+  cta: PreopenBriefingArtifact["cta"] | null,
+): string {
+  if (!cta) return "의사결정 세션 생성";
+  if (cta.state === "create_available") return "의사결정 세션 생성";
+  if (cta.state === "linked_session_exists") return "의사결정 세션 열기";
+  if (cta.state === "unavailable") return "의사결정 세션 생성 불가";
+  return "의사결정 세션 생성";
+}
+
 function PreopenBriefingArtifactSection({
   artifact,
 }: {
@@ -587,7 +597,7 @@ export default function PreopenPage() {
               ? "의사결정 세션을 생성하시겠습니까?"
               : creating
                 ? "생성 중…"
-                : artifactCta?.label ?? "의사결정 세션 생성"}
+                : labelArtifactCta(artifactCta)}
           </button>
         ) : null}
         {confirmPending ? (

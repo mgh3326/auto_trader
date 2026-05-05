@@ -18,8 +18,8 @@ describe("CommitteeResearchDebate", () => {
     render(<CommitteeResearchDebate researchDebate={debate} />);
 
     expect(screen.getByText("리서치 토론")).toBeInTheDocument();
-    expect(screen.getByText("상승(Bull) 근거")).toBeInTheDocument();
-    expect(screen.getByText("하락(Bear) 근거")).toBeInTheDocument();
+    expect(screen.getByText("상승 근거")).toBeInTheDocument();
+    expect(screen.getByText("하락 근거")).toBeInTheDocument();
     expect(screen.getByText("Support bounce")).toBeInTheDocument();
     expect(screen.getByText("RSI overbought")).toBeInTheDocument();
     expect(screen.getByText("1 bull / 1 bear")).toBeInTheDocument();

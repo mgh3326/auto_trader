@@ -186,8 +186,8 @@ describe("PreopenPage", () => {
 
     render(<PreopenPage />, { wrapper: MemoryRouter });
 
-    // Wait for page to load. Label "Create decision session" comes from makePreopenBriefingArtifact fixture.
-    const createBtn = await screen.findByRole("button", { name: /Create decision session/i });
+    // Backend CTA labels may be English; the React chrome renders the localized label.
+    const createBtn = await screen.findByRole("button", { name: /의사결정 세션 생성/i });
     expect(createBtn).toBeInTheDocument();
 
     // First click triggers confirm prompt
@@ -223,7 +223,7 @@ describe("PreopenPage", () => {
 
     expect(await screen.findByRole("link", { name: /세션 열기/i })).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: /Create decision session/i }),
+      screen.queryByRole("button", { name: /의사결정 세션 생성/i }),
     ).toBeNull();
   });
 
@@ -448,7 +448,7 @@ describe("PreopenPage", () => {
     });
 
     render(<PreopenPage />, { wrapper: MemoryRouter });
-    const createBtn = await screen.findByRole("button", { name: /Create decision session/i });
+    const createBtn = await screen.findByRole("button", { name: /의사결정 세션 생성/i });
 
     // First click → confirm
     await user.click(createBtn);

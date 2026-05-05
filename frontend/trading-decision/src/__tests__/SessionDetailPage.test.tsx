@@ -53,6 +53,44 @@ describe("SessionDetailPage", () => {
     expect(screen.getByText(/국내 브로커 전용: 1/)).toBeInTheDocument();
   });
 
+  it("renders structured workflow market brief fields with Korean labels", async () => {
+    mockFetch({
+      "/trading/api/decisions/session-1": () =>
+        new Response(
+          JSON.stringify(
+            makeSessionDetail({
+              notes: null,
+              market_brief: {
+                title: "BTC paper preview via Upbit signal plus Alpaca Paper execution",
+                safety_scope: "preview_only_confirm_false_no_broker_submit",
+                purpose: "paper_plumbing_smoke",
+                signal_venue: "Upbit",
+                signal_symbol: "KRW-BTC",
+                execution_venue: "Alpaca Paper",
+                execution_symbol: "BTC/USD",
+                created_from_prompt: "BTC paper preview 만들어줘",
+              },
+            }),
+          ),
+        ),
+      "/trading/api/decisions/session-1/analytics": () =>
+        new Response(JSON.stringify(makeAnalyticsResponse())),
+    });
+
+    renderDetail();
+
+    expect(await screen.findByText("시장 브리핑")).toBeInTheDocument();
+    expect(screen.getByText(/브리핑 유형:/)).toBeInTheDocument();
+    expect(screen.getByText(/페이퍼 배관 점검/)).toBeInTheDocument();
+    expect(screen.getByText(/안전 범위:/)).toBeInTheDocument();
+    expect(screen.getByText(/브로커 제출 없는 preview 전용/)).toBeInTheDocument();
+    expect(screen.getByText(/신호 기준:/)).toBeInTheDocument();
+    expect(screen.getAllByText(/KRW-BTC/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/실행 대상:/)).toBeInTheDocument();
+    expect(screen.getAllByText(/BTC\/USD/).length).toBeGreaterThan(0);
+    expect(screen.getByText("원본 데이터 보기")).toBeInTheDocument();
+  });
+
   it("successful respond refetches and updates row", async () => {
     let detailCalls = 0;
     mockFetch({

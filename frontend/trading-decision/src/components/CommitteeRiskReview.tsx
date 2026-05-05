@@ -9,7 +9,7 @@ interface Props {
 const VERDICT_LABEL: Record<string, string> = {
   approved: "승인됨",
   vetoed: "거부됨",
-  flagged: "주의(Flagged)",
+  flagged: "주의",
   pending: "대기 중",
 };
 

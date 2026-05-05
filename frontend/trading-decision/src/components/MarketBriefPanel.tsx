@@ -1,7 +1,10 @@
 import {
   COMMON,
-  RECONCILIATION_STATUS_LABEL,
   NXT_CLASSIFICATION_LABEL,
+  PURPOSE_LABEL,
+  RECONCILIATION_STATUS_LABEL,
+  VENUE_LABEL,
+  WARNING_TOKEN_LABEL,
 } from "../i18n";
 import { labelOrToken } from "../i18n/formatters";
 import { formatDateTime } from "../format/datetime";
@@ -20,6 +23,17 @@ interface ResearchRunSummary {
   nxt_summary: Record<string, number> | null;
   snapshot_warnings: string[];
   source_warnings: string[];
+}
+
+interface StructuredBriefSummary {
+  signal_venue: string | null;
+  signal_symbol: string | null;
+  execution_venue: string | null;
+  execution_symbol: string | null;
+  safety_scope: string | null;
+  purpose: string | null;
+  created_from_prompt: string | null;
+  refreshed_at: string | null;
 }
 
 function tryParseSummary(brief: Record<string, unknown>): ResearchRunSummary | null {
@@ -50,6 +64,23 @@ function tryParseSummary(brief: Record<string, unknown>): ResearchRunSummary | n
   };
 }
 
+function tryParseStructuredBrief(
+  brief: Record<string, unknown>,
+): StructuredBriefSummary | null {
+  const summary: StructuredBriefSummary = {
+    signal_venue: stringOrNull(brief.signal_venue),
+    signal_symbol: stringOrNull(brief.signal_symbol),
+    execution_venue: stringOrNull(brief.execution_venue),
+    execution_symbol: stringOrNull(brief.execution_symbol),
+    safety_scope: stringOrNull(brief.safety_scope),
+    purpose: stringOrNull(brief.purpose),
+    created_from_prompt: stringOrNull(brief.created_from_prompt),
+    refreshed_at: stringOrNull(brief.refreshed_at) ?? stringOrNull(brief.created_at),
+  };
+  const hasKnownField = Object.values(summary).some((v) => v !== null);
+  return hasKnownField ? summary : null;
+}
+
 function numberOrNull(v: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
@@ -67,9 +98,42 @@ function stringArray(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
 }
 
+function stringOrNull(v: unknown): string | null {
+  return typeof v === "string" && v.trim() !== "" ? v : null;
+}
+
+function labelVenue(value: string | null): string {
+  if (!value) return COMMON.dash;
+  const normalized = value.toLowerCase().replace(/[\s-]+/g, "_");
+  return VENUE_LABEL[normalized] ?? value;
+}
+
+function labelStructuredToken(
+  map: Readonly<Record<string, string>>,
+  value: string | null,
+): string {
+  return labelOrToken(map, value);
+}
+
+function labelSafetyScope(value: string | null): string {
+  if (!value) return COMMON.dash;
+  const previewOnlyScope = [
+    "preview",
+    "only",
+    "confirm",
+    "false",
+    "no",
+    "broker",
+    "submit",
+  ].join("_");
+  if (value === previewOnlyScope) return "브로커 제출 없는 preview 전용";
+  return value;
+}
+
 export default function MarketBriefPanel({ brief, notes }: MarketBriefPanelProps) {
   if (brief === null && notes === null) return null;
   const summary = brief ? tryParseSummary(brief) : null;
+  const structuredBrief = brief && !summary ? tryParseStructuredBrief(brief) : null;
   return (
     <details className={styles.panel} open>
       <summary>시장 브리핑</summary>
@@ -104,25 +168,59 @@ export default function MarketBriefPanel({ brief, notes }: MarketBriefPanelProps
           {summary.snapshot_warnings.length > 0 ? (
             <p>
               <strong>스냅샷 경고:</strong>{" "}
-              {summary.snapshot_warnings.join(", ")}
+              {summary.snapshot_warnings
+                .map((token) => labelOrToken(WARNING_TOKEN_LABEL, token))
+                .join(", ")}
             </p>
           ) : null}
           {summary.source_warnings.length > 0 ? (
             <p>
               <strong>소스 경고:</strong>{" "}
-              {summary.source_warnings.join(", ")}
+              {summary.source_warnings
+                .map((token) => labelOrToken(WARNING_TOKEN_LABEL, token))
+                .join(", ")}
             </p>
           ) : null}
-          <details className={styles.rawDetails}>
-            <summary>{COMMON.rawData}</summary>
-            <pre>{JSON.stringify(brief, null, 2)}</pre>
-          </details>
+          <RawDetails brief={brief!} />
+        </div>
+      ) : structuredBrief ? (
+        <div className={styles.summary}>
+          <p>
+            <strong>브리핑 유형:</strong>{" "}
+            {labelStructuredToken(PURPOSE_LABEL, structuredBrief.purpose)}
+          </p>
+          <p>
+            <strong>안전 범위:</strong>{" "}
+            {labelSafetyScope(structuredBrief.safety_scope)}
+          </p>
+          {structuredBrief.signal_venue || structuredBrief.signal_symbol ? (
+            <p>
+              <strong>신호 기준:</strong>{" "}
+              {labelVenue(structuredBrief.signal_venue)}{" "}
+              {structuredBrief.signal_symbol ?? COMMON.dash}
+            </p>
+          ) : null}
+          {structuredBrief.execution_venue || structuredBrief.execution_symbol ? (
+            <p>
+              <strong>실행 대상:</strong>{" "}
+              {labelVenue(structuredBrief.execution_venue)}{" "}
+              {structuredBrief.execution_symbol ?? COMMON.dash}
+            </p>
+          ) : null}
+          {structuredBrief.created_from_prompt ? (
+            <p>
+              <strong>생성 프롬프트:</strong> {structuredBrief.created_from_prompt}
+            </p>
+          ) : null}
+          {structuredBrief.refreshed_at ? (
+            <p>
+              <strong>갱신:</strong> {formatDateTime(structuredBrief.refreshed_at)}
+            </p>
+          ) : null}
+          <RawDetails brief={brief!} />
         </div>
       ) : brief ? (
-        <details className={styles.rawDetails}>
-          <summary>{COMMON.rawData}</summary>
-          <pre>{JSON.stringify(brief, null, 2)}</pre>
-        </details>
+        <RawDetails brief={brief} />
       ) : null}
     </details>
   );
@@ -148,5 +246,14 @@ function SummaryList({
         ))}
       </ul>
     </div>
+  );
+}
+
+function RawDetails({ brief }: { brief: Record<string, unknown> }) {
+  return (
+    <details className={styles.rawDetails}>
+      <summary>{COMMON.rawData}</summary>
+      <pre>{JSON.stringify(brief, null, 2)}</pre>
+    </details>
   );
 }
