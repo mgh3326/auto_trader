@@ -23,10 +23,10 @@ describe("useCommitteeWorkflow", () => {
 
     await act(async () => {
       const updated = await result.current.transitionTo("evidence_ready");
-      expect(updated.workflow_status).toBe("evidence_ready");
+      expect(updated?.workflow_status).toBe("evidence_ready");
     });
 
-    expect(result.current.session.workflow_status).toBe("evidence_ready");
+    expect(result.current.session?.workflow_status).toBe("evidence_ready");
     expect(api.updateWorkflowStatus).toHaveBeenCalledWith(
       initialSession.session_uuid,
       "evidence_ready"
@@ -44,7 +44,7 @@ describe("useCommitteeWorkflow", () => {
       await result.current.patchArtifacts(patch);
     });
 
-    expect(result.current.session.artifacts).toEqual(patch);
+    expect(result.current.session?.artifacts).toEqual(patch);
     expect(api.updateArtifacts).toHaveBeenCalledWith(
       initialSession.session_uuid,
       patch

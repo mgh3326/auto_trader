@@ -231,6 +231,39 @@ export interface CommitteeEvidence {
   on_chain_analysis: CommitteeAnalysisSub | null;
 }
 
+export type CommitteeTraderAction =
+  | "BUY"
+  | "HOLD"
+  | "TRIM"
+  | "SELL"
+  | "AVOID"
+  | "WATCH"
+  | "REBALANCE";
+
+export interface CommitteeDebateClaim {
+  text: string;
+  weight: "low" | "medium" | "high";
+  source: "technical" | "news" | "portfolio" | "fundamentals" | "sentiment";
+}
+
+export interface CommitteeResearchDebate {
+  bull_case: CommitteeDebateClaim[];
+  bear_case: CommitteeDebateClaim[];
+  summary: string | null;
+}
+
+export interface CommitteeTraderDraft {
+  symbol: string;
+  action: CommitteeTraderAction;
+  price_plan: string | null;
+  size_plan: string | null;
+  rationale: string | null;
+  confidence: "low" | "medium" | "high";
+  invalidation_condition: string | null;
+  next_step_recommendation: string | null;
+  is_live_order: false;
+}
+
 export interface CommitteeRiskReview {
   verdict: "approved" | "vetoed" | "flagged";
   notes: string | null;
@@ -262,6 +295,8 @@ export interface CommitteeAutomation {
 
 export interface CommitteeArtifacts {
   evidence: CommitteeEvidence | null;
+  research_debate: CommitteeResearchDebate | null;
+  trader_draft: CommitteeTraderDraft[] | null;
   risk_review: CommitteeRiskReview | null;
   portfolio_approval: CommitteePortfolioApproval | null;
   execution_preview: CommitteeExecutionPreview | null;

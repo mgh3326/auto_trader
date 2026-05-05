@@ -2,8 +2,11 @@ import { Link, useParams } from "react-router-dom";
 import AnalyticsMatrix from "../components/AnalyticsMatrix";
 import { CommitteeEvidenceArtifacts } from "../components/CommitteeEvidenceArtifacts";
 import { CommitteeExecutionPreview } from "../components/CommitteeExecutionPreview";
+import { CommitteeJournalPlaceholder } from "../components/CommitteeJournalPlaceholder";
 import { CommitteePortfolioApproval } from "../components/CommitteePortfolioApproval";
+import { CommitteeResearchDebate } from "../components/CommitteeResearchDebate";
 import { CommitteeRiskReview } from "../components/CommitteeRiskReview";
+import { CommitteeTraderDraft } from "../components/CommitteeTraderDraft";
 import { CommitteeWorkflowTransition } from "../components/CommitteeWorkflowTransition";
 import ErrorView from "../components/ErrorView";
 import LoadingView from "../components/LoadingView";
@@ -84,15 +87,25 @@ export default function SessionDetailPage() {
       {isCommitteeSession && data.artifacts && (
         <section className={styles.committeeArtifacts} aria-label="Committee artifacts">
           <CommitteeEvidenceArtifacts artifacts={data.artifacts} />
+          <CommitteeResearchDebate
+            researchDebate={data.artifacts.research_debate ?? null}
+          />
+          <CommitteeTraderDraft
+            traderDraft={data.artifacts.trader_draft ?? null}
+          />
           <CommitteeRiskReview riskReview={data.artifacts.risk_review ?? null} />
           <CommitteePortfolioApproval portfolioApproval={data.artifacts.portfolio_approval ?? null} />
           <CommitteeExecutionPreview executionPreview={data.artifacts.execution_preview ?? null} />
+          <CommitteeJournalPlaceholder
+            journalPlaceholder={data.artifacts.journal_placeholder ?? null}
+          />
         </section>
       )}
 
       {isCommitteeSession && (
         <CommitteeWorkflowTransition
           currentStatus={data.workflow_status ?? null}
+          accountMode={data.account_mode ?? null}
           isUpdating={committeeWorkflow.isUpdating}
           onTransition={committeeWorkflow.transitionTo}
         />

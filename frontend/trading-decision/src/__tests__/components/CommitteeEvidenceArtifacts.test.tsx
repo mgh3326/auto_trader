@@ -11,6 +11,8 @@ describe("CommitteeEvidenceArtifacts", () => {
         news_analysis: { summary: "Positive earnings", confidence: 90, payload: null },
         on_chain_analysis: null,
       },
+      research_debate: null,
+      trader_draft: null,
       risk_review: null,
       portfolio_approval: null,
       execution_preview: null,
