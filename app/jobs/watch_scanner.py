@@ -275,7 +275,7 @@ class WatchScanner:
         correlation_id = str(uuid4())
         as_of = Timestamp.now("UTC").isoformat()
         try:
-            return await self._openclaw.send_watch_alert_to_n8n(
+            return await self._openclaw.send_watch_alert_to_router(
                 message=message,
                 market=market,
                 triggered=triggered,
@@ -304,6 +304,7 @@ class WatchScanner:
                     "status": "skipped",
                     "skipped": True,
                     "reason": "market_closed",
+                    "failed_lookups": 0,
                 }
             return {
                 "market": normalized_market,
@@ -311,89 +312,101 @@ class WatchScanner:
                 "reason": "no_watch_records",
                 "alerts_sent": 0,
                 "details": [],
+                "failed_lookups": 0,
             }
 
         triggered: list[dict[str, object]] = []
         intents: list[dict[str, object]] = []
         triggered_fields: list[str] = []
+        failed_lookups = 0
         kst_date = now_kst().date().isoformat()
 
         for watch in watches:
-            target_kind = str(watch.get("target_kind") or "asset").strip().lower()
-            if not market_open and target_kind != "fx":
-                continue
-            symbol = str(watch.get("symbol") or "").strip().upper()
-            condition_type = str(watch.get("condition_type") or "").strip().lower()
-            field = str(watch.get("field") or "")
-            threshold = self._to_float(watch.get("threshold"))
-
-            if not symbol or not condition_type or not field or threshold is None:
-                continue
-
             try:
-                metric, operator = condition_type.rsplit("_", 1)
-            except ValueError:
-                continue
+                target_kind = str(watch.get("target_kind") or "asset").strip().lower()
+                if not market_open and target_kind != "fx":
+                    continue
+                symbol = str(watch.get("symbol") or "").strip().upper()
+                condition_type = str(watch.get("condition_type") or "").strip().lower()
+                field = str(watch.get("field") or "")
+                threshold = self._to_float(watch.get("threshold"))
 
-            current = await self._get_current_value(
-                target_kind=target_kind,
-                metric=metric,
-                symbol=symbol,
-                market=normalized_market,
-            )
+                if not symbol or not condition_type or not field or threshold is None:
+                    continue
 
-            if not self._is_triggered(current, operator, threshold):
-                continue
+                try:
+                    metric, operator = condition_type.rsplit("_", 1)
+                except ValueError:
+                    continue
 
-            try:
-                policy = parse_policy(
-                    market=normalized_market,
+                current = await self._get_current_value(
                     target_kind=target_kind,
-                    condition_type=condition_type,
-                    raw_payload=watch.get("raw_payload"),
+                    metric=metric,
+                    symbol=symbol,
+                    market=normalized_market,
                 )
-            except WatchPolicyError as exc:
+
+                if not self._is_triggered(current, operator, threshold):
+                    continue
+
+                try:
+                    policy = parse_policy(
+                        market=normalized_market,
+                        target_kind=target_kind,
+                        condition_type=condition_type,
+                        raw_payload=watch.get("raw_payload"),
+                    )
+                except WatchPolicyError as exc:
+                    logger.warning(
+                        "Skipping watch with invalid policy: market=%s field=%s code=%s",
+                        normalized_market,
+                        field,
+                        exc.code,
+                    )
+                    continue
+
+                if isinstance(policy, NotifyOnlyPolicy):
+                    triggered.append(
+                        {
+                            "target_kind": target_kind,
+                            "symbol": symbol,
+                            "condition_type": condition_type,
+                            "threshold": threshold,
+                            "current": current,
+                        }
+                    )
+                    triggered_fields.append(field)
+                    continue
+
+                assert isinstance(policy, IntentPolicy)
+                async with self._intent_session() as (db, factory):
+                    service = factory(db)
+                    emission = await service.emit_intent(
+                        watch={
+                            "market": normalized_market,
+                            "target_kind": target_kind,
+                            "symbol": symbol,
+                            "condition_type": condition_type,
+                            "threshold": Decimal(str(threshold)),
+                            "threshold_key": str(threshold),
+                        },
+                        policy=policy,
+                        triggered_value=Decimal(str(current)),
+                        kst_date=kst_date,
+                        correlation_id=uuid4().hex,
+                    )
+                intents.append(emission.to_alert_dict())
+                if emission.status in {"previewed", "dedupe_hit"}:
+                    triggered_fields.append(field)
+            except Exception as exc:
                 logger.warning(
-                    "Skipping watch with invalid policy: market=%s field=%s code=%s",
+                    "Watch lookup failed (continuing): market=%s symbol=%s error=%s",
                     normalized_market,
-                    field,
-                    exc.code,
+                    str(watch.get("symbol") or "").strip().upper(),
+                    exc,
                 )
+                failed_lookups += 1
                 continue
-
-            if isinstance(policy, NotifyOnlyPolicy):
-                triggered.append(
-                    {
-                        "target_kind": target_kind,
-                        "symbol": symbol,
-                        "condition_type": condition_type,
-                        "threshold": threshold,
-                        "current": current,
-                    }
-                )
-                triggered_fields.append(field)
-                continue
-
-            assert isinstance(policy, IntentPolicy)
-            async with self._intent_session() as (db, factory):
-                service = factory(db)
-                emission = await service.emit_intent(
-                    watch={
-                        "market": normalized_market,
-                        "target_kind": target_kind,
-                        "symbol": symbol,
-                        "condition_type": condition_type,
-                        "threshold": Decimal(str(threshold)),
-                        "threshold_key": str(threshold),
-                    },
-                    policy=policy,
-                    triggered_value=Decimal(str(current)),
-                    kst_date=kst_date,
-                    correlation_id=uuid4().hex,
-                )
-            intents.append(emission.to_alert_dict())
-            if emission.status in {"previewed", "dedupe_hit"}:
-                triggered_fields.append(field)
 
         if not triggered and not intents:
             if not market_open:
@@ -402,6 +415,7 @@ class WatchScanner:
                     "status": "skipped",
                     "skipped": True,
                     "reason": "market_closed",
+                    "failed_lookups": failed_lookups,
                 }
             return {
                 "market": normalized_market,
@@ -409,6 +423,7 @@ class WatchScanner:
                 "reason": "no_triggered_alerts",
                 "alerts_sent": 0,
                 "details": [],
+                "failed_lookups": failed_lookups,
             }
 
         message = self._build_batched_message(
@@ -433,6 +448,7 @@ class WatchScanner:
                 "reason": result.reason,
                 "alerts_sent": 0,
                 "details": [message],
+                "failed_lookups": failed_lookups,
             }
 
         for field in triggered_fields:
@@ -444,12 +460,28 @@ class WatchScanner:
             "request_id": result.request_id,
             "alerts_sent": len(triggered) + len(intents),
             "details": [message],
+            "failed_lookups": failed_lookups,
         }
 
     async def run(self) -> dict[str, dict[str, object]]:
         results: dict[str, dict[str, object]] = {}
         for market in ("crypto", "kr", "us"):
-            market_result = await self.scan_market(market)
+            try:
+                market_result = await self.scan_market(market)
+            except Exception as exc:
+                logger.error(
+                    "scan_market raised unexpectedly: market=%s error=%s",
+                    market,
+                    exc,
+                )
+                market_result = {
+                    "market": market,
+                    "status": "failed",
+                    "reason": "scan_aborted",
+                    "alerts_sent": 0,
+                    "details": [],
+                    "failed_lookups": 0,
+                }
             results[market] = dict(market_result)
         return results
 

@@ -347,7 +347,11 @@ class Settings(BaseSettings):
 
     # N8N Fill Notification webhook (replaces OPENCLAW_THREAD_* for fills)
     N8N_FILL_WEBHOOK_URL: str = ""
-    # N8N Watch Alert webhook (replaces OpenClaw watch alert route)
+    # Watch Alert router (Phase 0 of ROB-122 — transport-neutral seam).
+    # When set, takes precedence over N8N_WATCH_ALERT_WEBHOOK_URL.
+    # N8N_WATCH_ALERT_WEBHOOK_URL is the deprecated backward-compat fallback.
+    WATCH_ALERT_ROUTER_URL: str = ""
+    # N8N Watch Alert webhook (deprecated fallback for WATCH_ALERT_ROUTER_URL).
     N8N_WATCH_ALERT_WEBHOOK_URL: str = ""
 
     # MCP caller identity fallback for non-HTTP/manual runs

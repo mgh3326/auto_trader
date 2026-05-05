@@ -44,7 +44,7 @@ class _FakeOpenClawClient:
         self.messages.append(message)
         return "watch-1" if self._status == "success" else None
 
-    async def send_watch_alert_to_n8n(
+    async def send_watch_alert_to_router(
         self,
         *,
         message: str,
@@ -62,7 +62,7 @@ class _FakeOpenClawClient:
         if self._status == "skipped":
             return WatchAlertDeliveryResult(
                 status="skipped",
-                reason="n8n_webhook_not_configured",
+                reason="router_not_configured",
             )
         return WatchAlertDeliveryResult(status="failed", reason="request_failed")
 
@@ -256,6 +256,7 @@ async def test_run_scans_all_markets_and_skips_closed_market(
         "status": "skipped",
         "skipped": True,
         "reason": "market_closed",
+        "failed_lookups": 0,
     }
     assert result["crypto"]["alerts_sent"] == 0
     assert result["kr"]["alerts_sent"] == 0
@@ -324,20 +325,117 @@ async def test_get_price_and_rsi_use_market_specific_sources(
 
 
 @pytest.mark.asyncio
-async def test_get_price_us_raises_when_yahoo_fails(
+async def test_scan_market_us_yahoo_failure_does_not_abort_other_watches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.jobs import watch_scanner as watch_scanner_module
-
     scanner = WatchScanner()
+    scanner._watch_service = _FakeWatchService()
+    scanner._watch_service._rows_by_market["us"] = [
+        {
+            "target_kind": "asset",
+            "symbol": "BADTKR",
+            "condition_type": "price_below",
+            "threshold": 100.0,
+            "field": "asset:BADTKR:price_below:100",
+        },
+        {
+            "target_kind": "asset",
+            "symbol": "AAPL",
+            "condition_type": "price_below",
+            "threshold": 200.0,
+            "field": "asset:AAPL:price_below:200",
+        },
+    ]
+    scanner._openclaw = _FakeOpenClawClient(status="success")
+
+    monkeypatch.setattr(scanner, "_is_market_open", lambda market: True)
+
+    async def _price_side_effect(symbol: str, market: str) -> float:
+        if symbol == "BADTKR":
+            raise RuntimeError("US watch price fetch failed for BADTKR: invalid close")
+        return 150.0
+
     monkeypatch.setattr(
-        watch_scanner_module.market_data_service,
-        "get_quote",
-        AsyncMock(side_effect=RuntimeError("timeout")),
+        scanner, "_get_price", AsyncMock(side_effect=_price_side_effect)
     )
 
-    with pytest.raises(RuntimeError, match="timeout"):
-        await scanner._get_price("AAPL", "us")
+    result = await scanner.scan_market("us")
+
+    assert result["alerts_sent"] == 1
+    assert result["status"] == "success"
+    assert result.get("failed_lookups") == 1
+    assert scanner._watch_service.removed_fields == [
+        ("us", "asset:AAPL:price_below:200"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_continues_other_markets_when_scan_market_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scanner = WatchScanner()
+    scanner._watch_service = _FakeWatchService(rows=[])
+    scanner._openclaw = _FakeOpenClawClient(status="success")
+
+    original_scan_market = scanner.scan_market
+
+    async def _scan_market(market: str) -> dict[str, object]:
+        if market == "us":
+            raise RuntimeError("simulated unexpected scanner error")
+        return await original_scan_market(market)
+
+    monkeypatch.setattr(scanner, "scan_market", _scan_market)
+    monkeypatch.setattr(scanner, "_is_market_open", lambda market: True)
+    monkeypatch.setattr(scanner, "_get_price", AsyncMock(return_value=None))
+
+    result = await scanner.run()
+
+    assert set(result.keys()) == {"crypto", "kr", "us"}
+    assert result["us"]["status"] == "failed"
+    assert result["us"]["reason"] == "scan_aborted"
+    assert result["crypto"]["alerts_sent"] == 0
+    assert result["kr"]["alerts_sent"] == 0
+
+
+@pytest.mark.asyncio
+async def test_scan_market_records_failed_lookups_in_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scanner = WatchScanner()
+    scanner._watch_service = _FakeWatchService()
+    scanner._watch_service._rows_by_market["crypto"] = [
+        {
+            "target_kind": "asset",
+            "symbol": "BTC",
+            "condition_type": "price_below",
+            "threshold": 100.0,
+            "field": "asset:BTC:price_below:100",
+        },
+        {
+            "target_kind": "asset",
+            "symbol": "ETH",
+            "condition_type": "price_below",
+            "threshold": 50.0,
+            "field": "asset:ETH:price_below:50",
+        },
+    ]
+    scanner._openclaw = _FakeOpenClawClient(status="success")
+
+    monkeypatch.setattr(scanner, "_is_market_open", lambda market: True)
+
+    async def _price_side_effect(symbol: str, market: str) -> float:
+        raise RuntimeError(f"simulated failure for {symbol}")
+
+    monkeypatch.setattr(
+        scanner, "_get_price", AsyncMock(side_effect=_price_side_effect)
+    )
+
+    result = await scanner.scan_market("crypto")
+
+    assert "failed_lookups" in result
+    assert result["failed_lookups"] == 2
+    assert result["status"] == "skipped"
+    assert result["reason"] == "no_triggered_alerts"
 
 
 @pytest.mark.asyncio
@@ -448,7 +546,7 @@ async def test_scan_market_keeps_watch_records_when_n8n_delivery_skipped(
 
     assert result["alerts_sent"] == 0
     assert result["status"] == "skipped"
-    assert result["reason"] == "n8n_webhook_not_configured"
+    assert result["reason"] == "router_not_configured"
     assert scanner._watch_service.removed_fields == []
 
 
@@ -502,14 +600,16 @@ class TestScannerWithCreateOrderIntent:
 
         monkeypatch.setattr(scanner, "_intent_session", fake_session)
 
-        # Patch send_watch_alert_to_n8n to capture intents
+        # Patch send_watch_alert_to_router to capture intents
         captured_intents = []
 
-        async def fake_send_n8n(**kwargs):
+        async def fake_send_router(**kwargs):
             captured_intents.extend(kwargs.get("intents", []))
             return WatchAlertDeliveryResult(status="success", request_id="watch-1")
 
-        monkeypatch.setattr(scanner._openclaw, "send_watch_alert_to_n8n", fake_send_n8n)
+        monkeypatch.setattr(
+            scanner._openclaw, "send_watch_alert_to_router", fake_send_router
+        )
 
         result = await scanner.scan_market("kr")
 
