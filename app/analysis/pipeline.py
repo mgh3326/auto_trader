@@ -12,7 +12,6 @@ from app.analysis.stages.base import StageContext
 from app.analysis.stages.fundamentals_stage import FundamentalsStageAnalyzer
 from app.analysis.stages.market_stage import MarketStageAnalyzer
 from app.analysis.stages.news_stage import NewsStageAnalyzer
-from app.analysis.stages.social_stage import SocialStageAnalyzer
 from app.core.config import settings
 from app.models.research_pipeline import (
     ResearchSession,
@@ -79,7 +78,6 @@ async def run_research_session(
         MarketStageAnalyzer(),
         NewsStageAnalyzer(),
         FundamentalsStageAnalyzer(),
-        SocialStageAnalyzer(),
     ]
 
     # Run analyzers concurrently
