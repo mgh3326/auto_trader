@@ -1,4 +1,5 @@
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -10,26 +11,102 @@ from app.schemas.research_pipeline import (
     StageOutput,
     StageVerdict,
 )
-from app.services.llm_news_service import get_news_articles
+from app.services.llm_news_service import bulk_create_news_articles, get_news_articles
+from app.services.research_news_service import NormalizedArticle, fetch_symbol_news
 
 logger = logging.getLogger(__name__)
 
+MIN_DB_ARTICLES_BEFORE_ON_DEMAND_FETCH = 3
 
-async def _fetch_recent_headlines(symbol: str, instrument_type: str) -> dict[str, Any]:
-    """Fetch recent headlines and compute basic sentiment/themes."""
-    # Map instrument_type to market
-    market = "kr"
+
+def _market_from_instrument(instrument_type: str) -> str:
     if instrument_type == "equity_us":
-        market = "us"
-    elif instrument_type == "crypto":
-        market = "crypto"
+        return "us"
+    if instrument_type == "crypto":
+        return "crypto"
+    return "kr"
 
-    # Fetch articles from last 24 hours
-    articles, total = await get_news_articles(
+
+@dataclass
+class _OnDemandArticlePayload:
+    """Shape compatible with bulk_create_news_articles input contract."""
+
+    url: str
+    title: str
+    content: str | None
+    summary: str | None
+    source: str | None
+    author: str | None
+    stock_symbol: str | None
+    stock_name: str | None
+    published_at: datetime | None
+    market: str
+    feed_source: str
+    keywords: list[str] | None
+
+
+def _to_persist_payloads(
+    articles: list[NormalizedArticle],
+    *,
+    symbol: str,
+    stock_name: str | None,
+    market: str,
+) -> list[_OnDemandArticlePayload]:
+    payloads: list[_OnDemandArticlePayload] = []
+    for art in articles:
+        payloads.append(
+            _OnDemandArticlePayload(
+                url=art.url,
+                title=art.title,
+                content=None,
+                summary=art.summary,
+                source=art.source,
+                author=None,
+                stock_symbol=symbol,
+                stock_name=stock_name,
+                published_at=art.published_at,
+                market=market,
+                feed_source=f"research_on_demand_{art.provider}",
+                keywords=None,
+            )
+        )
+    return payloads
+
+
+async def _fetch_recent_headlines(
+    symbol: str,
+    instrument_type: str,
+    *,
+    stock_name: str | None,
+) -> dict[str, Any]:
+    """Fetch recent headlines, augmenting DB with on-demand provider fetch
+    when symbol-tagged news is below threshold."""
+    market = _market_from_instrument(instrument_type)
+
+    articles, _total = await get_news_articles(
         stock_symbol=symbol, market=market, hours=24, limit=20
     )
 
+    if len(articles) < MIN_DB_ARTICLES_BEFORE_ON_DEMAND_FETCH:
+        fetched = await fetch_symbol_news(symbol, instrument_type, limit=20)
+        if fetched:
+            payloads = _to_persist_payloads(
+                fetched, symbol=symbol, stock_name=stock_name, market=market
+            )
+            try:
+                await bulk_create_news_articles(payloads)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "news_stage: bulk_create_news_articles failed: symbol=%s err=%s",
+                    symbol,
+                    exc,
+                )
+            articles, _total = await get_news_articles(
+                stock_symbol=symbol, market=market, hours=24, limit=20
+            )
+
     return _compute_signals_from_articles(articles)
+
 
 
 def _compute_signals_from_articles(articles: list[Any]) -> dict[str, Any]:
@@ -143,7 +220,11 @@ class NewsStageAnalyzer(BaseStageAnalyzer):
 
     async def analyze(self, ctx: StageContext) -> StageOutput:
         try:
-            raw = await _fetch_recent_headlines(ctx.symbol, ctx.instrument_type)
+            raw = await _fetch_recent_headlines(
+                ctx.symbol,
+                ctx.instrument_type,
+                stock_name=ctx.symbol_name,
+            )
         except Exception as exc:
             logger.error(f"News analysis failed for {ctx.symbol}: {exc}")
             return StageOutput(
