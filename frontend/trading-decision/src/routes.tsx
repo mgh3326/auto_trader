@@ -1,10 +1,21 @@
-import { createBrowserRouter, type RouteObject, useParams } from "react-router-dom";
+import {
+  createBrowserRouter,
+  Navigate,
+  type RouteObject,
+  useParams,
+} from "react-router-dom";
 import PreopenPage from "./pages/PreopenPage";
 import NewsRadarPage from "./pages/NewsRadarPage";
 import SessionDetailPage from "./pages/SessionDetailPage";
 import SessionListPage from "./pages/SessionListPage";
 import ResearchHomePage from "./pages/ResearchHomePage";
-import ResearchSessionDetailPage from "./pages/ResearchSessionDetailPage";
+import ResearchSessionLayout from "./pages/research/ResearchSessionLayout";
+import ResearchSummaryPage from "./pages/research/ResearchSummaryPage";
+import ResearchMarketPage from "./pages/research/ResearchMarketPage";
+import ResearchNewsPage from "./pages/research/ResearchNewsPage";
+import ResearchFundamentalsPage from "./pages/research/ResearchFundamentalsPage";
+import ResearchSocialPage from "./pages/research/ResearchSocialPage";
+import ResearchSessionNotFoundPage from "./pages/research/ResearchSessionNotFoundPage";
 import SymbolTimelinePage from "./pages/SymbolTimelinePage";
 
 const SESSION_UUID_RE =
@@ -30,7 +41,19 @@ export const tradingDecisionRoutes: RouteObject[] = [
   { path: "/news-radar", element: <NewsRadarPage /> },
   { path: "/sessions/:sessionUuid", element: <SessionDetailPage /> },
   { path: "/research", element: <ResearchHomePage /> },
-  { path: "/research/sessions/:sessionId", element: <ResearchSessionDetailPage /> },
+  {
+    path: "/research/sessions/:sessionId",
+    element: <ResearchSessionLayout />,
+    children: [
+      { index: true, element: <Navigate to="summary" replace /> },
+      { path: "summary", element: <ResearchSummaryPage /> },
+      { path: "market", element: <ResearchMarketPage /> },
+      { path: "news", element: <ResearchNewsPage /> },
+      { path: "fundamentals", element: <ResearchFundamentalsPage /> },
+      { path: "social", element: <ResearchSocialPage /> },
+      { path: "*", element: <ResearchSessionNotFoundPage /> },
+    ],
+  },
   { path: "/research/symbols/:symbol/timeline", element: <SymbolTimelinePage /> },
   // Backward-compatible alias for UUID session URLs generated before the
   // canonical /sessions/:sessionUuid route was adopted. Keep arbitrary
