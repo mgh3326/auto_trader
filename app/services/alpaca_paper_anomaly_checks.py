@@ -15,6 +15,9 @@ from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from typing import Any
 
+STALE_PREVIEW_CLEANUP_REQUIRED_STATE = "stale_preview_cleanup_required"
+STALE_PREVIEW_CLEANUP_ACTION = "mark_stale_preview_cleanup_required"
+
 
 class PaperExecutionAnomalySeverity(StrEnum):
     """Severity used by runner gates and operator reports."""
@@ -259,6 +262,9 @@ def _latest_preview_time(row: Any) -> datetime | None:
 def _row_ref(row: Any) -> dict[str, Any]:
     return {
         "client_order_id": _get(row, "client_order_id"),
+        "lifecycle_correlation_id": _get(row, "lifecycle_correlation_id"),
+        "candidate_uuid": _get(row, "candidate_uuid"),
+        "briefing_artifact_run_uuid": _get(row, "briefing_artifact_run_uuid"),
         "side": _get(row, "side"),
         "lifecycle_state": _get(row, "lifecycle_state"),
         "order_status": _get(row, "order_status"),
@@ -269,6 +275,13 @@ def _row_ref(row: Any) -> dict[str, Any]:
         else None,
         "created_at": _iso(_get(row, "created_at")),
     }
+
+
+def _cleanup_required_row_ref(row: Any) -> dict[str, Any]:
+    ref = _row_ref(row)
+    ref["recommended_lifecycle_state"] = STALE_PREVIEW_CLEANUP_REQUIRED_STATE
+    ref["recommended_action"] = STALE_PREVIEW_CLEANUP_ACTION
+    return ref
 
 
 def build_paper_execution_preflight_report(
@@ -488,7 +501,19 @@ def build_paper_execution_preflight_report(
             {
                 "stale_after_minutes": stale_after_minutes,
                 "cutoff": stale_cutoff.isoformat(),
-                "rows": [_row_ref(r) for r in stale_rows[:10]],
+                "lifecycle_state": STALE_PREVIEW_CLEANUP_REQUIRED_STATE,
+                "recommended_lifecycle_state": STALE_PREVIEW_CLEANUP_REQUIRED_STATE,
+                "recommended_action": STALE_PREVIEW_CLEANUP_ACTION,
+                "cleanup_plan": {
+                    "mode": "dry_run",
+                    "mutates_broker": False,
+                    "mutates_db": False,
+                    "description": (
+                        "Mark same-scope stale preview rows cleanup-required only "
+                        "through a separately approved cleanup operation."
+                    ),
+                },
+                "rows": [_cleanup_required_row_ref(r) for r in stale_rows[:10]],
             },
         )
 
@@ -566,6 +591,8 @@ def build_paper_execution_preflight_report(
 
 
 __all__ = [
+    "STALE_PREVIEW_CLEANUP_ACTION",
+    "STALE_PREVIEW_CLEANUP_REQUIRED_STATE",
     "PaperExecutionAnomaly",
     "PaperExecutionAnomalySeverity",
     "PaperExecutionPreflightReport",
