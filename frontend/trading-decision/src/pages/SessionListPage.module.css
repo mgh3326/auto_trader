@@ -32,3 +32,11 @@
   display: flex;
   gap: 8px;
 }
+
+.workflowStatusMini {
+  font-size: 0.8em;
+  background: #e9ecef;
+  padding: 1px 4px;
+  border-radius: 4px;
+  font-weight: 500;
+}

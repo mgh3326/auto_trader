@@ -51,6 +51,25 @@ OutcomeHorizonLiteral = Literal["1h", "4h", "1d", "3d", "7d", "final"]
 
 SessionStatusLiteral = Literal["open", "closed", "archived"]
 
+WorkflowStatusLiteral = Literal[
+    "created",
+    "evidence_generating",
+    "evidence_ready",
+    "debate_ready",
+    "trader_draft_ready",
+    "risk_review_ready",
+    "auto_approved",
+    "preview_ready",
+    "journal_ready",
+    "completed",
+    "failed_evidence",
+    "failed_trader_draft",
+    "failed_risk_review",
+    "preview_blocked",
+]
+
+AccountModeLiteral = Literal["kis_mock", "alpaca_paper", "kis_live", "db_simulated"]
+
 InstrumentTypeLiteral = Literal[
     "equity_kr",
     "equity_us",
@@ -58,6 +77,109 @@ InstrumentTypeLiteral = Literal[
     "forex",
     "index",
 ]
+
+
+# ========== Committee Sub-Schemas ==========
+
+
+class CommitteeAnalysisSub(BaseModel):
+    summary: str | None = None
+    confidence: int | None = None
+    payload: dict | None = None
+
+
+class CommitteeEvidence(BaseModel):
+    technical_analysis: CommitteeAnalysisSub | None = None
+    news_analysis: CommitteeAnalysisSub | None = None
+    on_chain_analysis: CommitteeAnalysisSub | None = None
+
+
+class CommitteeDebateClaim(BaseModel):
+    text: str
+    weight: Literal["low", "medium", "high"] = "medium"
+    source: Literal["technical", "news", "portfolio", "fundamentals", "sentiment"] = (
+        "technical"
+    )
+
+
+class CommitteeResearchDebate(BaseModel):
+    bull_case: list[CommitteeDebateClaim] = Field(default_factory=list)
+    bear_case: list[CommitteeDebateClaim] = Field(default_factory=list)
+    summary: str | None = None
+
+
+CommitteeTraderActionLiteral = Literal[
+    "BUY", "HOLD", "TRIM", "SELL", "AVOID", "WATCH", "REBALANCE"
+]
+
+
+class CommitteeTraderDraft(BaseModel):
+    symbol: str
+    action: CommitteeTraderActionLiteral
+    price_plan: str | None = None
+    size_plan: str | None = None
+    rationale: str | None = None
+    confidence: Literal["low", "medium", "high"] = "medium"
+    invalidation_condition: str | None = None
+    next_step_recommendation: str | None = None
+    is_live_order: Literal[False] = False
+
+
+class CommitteeRiskReview(BaseModel):
+    verdict: Literal["approved", "vetoed", "flagged"]
+    notes: str | None = None
+    reviewed_at: datetime | None = None
+
+
+class CommitteePortfolioApproval(BaseModel):
+    verdict: Literal["approved", "vetoed", "modified"]
+    notes: str | None = None
+    approved_at: datetime | None = None
+
+
+class CommitteeExecutionPreview(BaseModel):
+    is_blocked: bool = False
+    block_reason: str | None = None
+    preview_payload: dict | None = None
+
+
+class CommitteeJournalPlaceholder(BaseModel):
+    journal_uuid: UUID | None = None
+    notes: str | None = None
+
+
+COMMITTEE_SOURCE_PROFILE = "committee_mock_paper"
+COMMITTEE_ALLOWED_ACCOUNT_MODES: frozenset[str] = frozenset(
+    {"kis_mock", "alpaca_paper"}
+)
+
+
+class CommitteeAutomation(BaseModel):
+    enabled: bool = False
+    auto_approve_risk: bool = False
+    auto_execute: bool = False
+
+    @model_validator(mode="after")
+    def _enforce_no_live_auto_execute(self) -> Self:
+        # ROB-107 safety: committee MVP must never auto-execute live orders.
+        # auto_execute=True would mean a live broker submit on auto-approval,
+        # which is explicitly out of scope for KIS mock / Alpaca paper sessions.
+        if self.auto_execute:
+            raise ValueError(
+                "auto_execute must be False for committee MVP "
+                "(live execution is disabled)"
+            )
+        return self
+
+
+class CommitteeArtifacts(BaseModel):
+    evidence: CommitteeEvidence | None = None
+    research_debate: CommitteeResearchDebate | None = None
+    trader_draft: list[CommitteeTraderDraft] | None = None
+    risk_review: CommitteeRiskReview | None = None
+    portfolio_approval: CommitteePortfolioApproval | None = None
+    execution_preview: CommitteeExecutionPreview | None = None
+    journal_placeholder: CommitteeJournalPlaceholder | None = None
 
 
 # ========== Session Schemas ==========
@@ -70,6 +192,28 @@ class SessionCreateRequest(BaseModel):
     market_brief: dict | None = None
     generated_at: datetime
     notes: str | None = Field(default=None, max_length=4000)
+    workflow_status: WorkflowStatusLiteral | None = None
+    account_mode: AccountModeLiteral | None = None
+    automation: CommitteeAutomation | None = None
+
+    @model_validator(mode="after")
+    def _enforce_committee_simulation_only(self) -> Self:
+        # ROB-107 safety: a committee_mock_paper session must restrict
+        # account_mode to simulation broker accounts. kis_live and db_simulated
+        # are rejected at the contract layer so the live trading code paths
+        # cannot be reached even by a malformed client.
+        if self.source_profile == COMMITTEE_SOURCE_PROFILE:
+            if self.account_mode is None:
+                raise ValueError(
+                    "committee sessions require account_mode "
+                    "(one of: kis_mock, alpaca_paper)"
+                )
+            if self.account_mode not in COMMITTEE_ALLOWED_ACCOUNT_MODES:
+                raise ValueError(
+                    f"committee sessions reject account_mode={self.account_mode!r}; "
+                    f"only kis_mock and alpaca_paper are allowed"
+                )
+        return self
 
 
 class SessionSummary(BaseModel):
@@ -78,6 +222,8 @@ class SessionSummary(BaseModel):
     strategy_name: str | None
     market_scope: str | None
     status: SessionStatusLiteral
+    workflow_status: WorkflowStatusLiteral | None = None
+    account_mode: AccountModeLiteral | None = None
     generated_at: datetime
     created_at: datetime
     updated_at: datetime
@@ -88,6 +234,8 @@ class SessionSummary(BaseModel):
 class SessionDetail(SessionSummary):
     market_brief: dict | None
     notes: str | None
+    automation: CommitteeAutomation | None = None
+    artifacts: CommitteeArtifacts | None = None
     proposals: list["ProposalDetail"]
 
 

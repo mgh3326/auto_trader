@@ -23,6 +23,16 @@
 - Reuse shared utilities in `app/core/` for symbols, config, rate limiting, and time handling.
 - Preserve model/schema separation: DB entities in `app/models/`, API contracts in `app/schemas/`.
 
+## DOMAIN SPECIFICS
+
+### Committee Decision Workflow (ROB-107)
+- **Workflow Control:** Committee sessions use `workflow_status` for state transitions and `account_mode` for execution targeting.
+- **Service Layer:** Use `CommitteeSessionService` in `app/services/trading_decisions/committee_service.py` for state management.
+- **Persistence:**
+  - `automation` (JSONB): Control flags for auto-approval and execution.
+  - `artifacts` (JSONB): Structured store for `evidence`, `risk_review`, `portfolio_approval`, and `execution_preview`.
+- **Frontend:** Mirror types in `frontend/trading-decision/src/api/types.ts`.
+
 ## ANTI-PATTERNS
 - Do not duplicate app bootstrap wiring across random modules.
 - Do not call external providers directly from routers when service abstractions already exist.

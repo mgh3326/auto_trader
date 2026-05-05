@@ -75,6 +75,30 @@ class OutcomeHorizon(enum.StrEnum):
     final = "final"
 
 
+class WorkflowStatus(enum.StrEnum):
+    created = "created"
+    evidence_generating = "evidence_generating"
+    evidence_ready = "evidence_ready"
+    debate_ready = "debate_ready"
+    trader_draft_ready = "trader_draft_ready"
+    risk_review_ready = "risk_review_ready"
+    auto_approved = "auto_approved"
+    preview_ready = "preview_ready"
+    journal_ready = "journal_ready"
+    completed = "completed"
+    failed_evidence = "failed_evidence"
+    failed_trader_draft = "failed_trader_draft"
+    failed_risk_review = "failed_risk_review"
+    preview_blocked = "preview_blocked"
+
+
+class CommitteeAccountMode(enum.StrEnum):
+    kis_mock = "kis_mock"
+    alpaca_paper = "alpaca_paper"
+    kis_live = "kis_live"
+    db_simulated = "db_simulated"
+
+
 class TradingDecisionSession(Base):
     __tablename__ = "trading_decision_sessions"
     __table_args__ = (
@@ -104,6 +128,10 @@ class TradingDecisionSession(Base):
     market_brief: Mapped[dict | None] = mapped_column(JSONB)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="open")
     notes: Mapped[str | None] = mapped_column(Text)
+    workflow_status: Mapped[str | None] = mapped_column(Text)
+    account_mode: Mapped[str | None] = mapped_column(Text)
+    automation: Mapped[dict | None] = mapped_column(JSONB)
+    artifacts: Mapped[dict | None] = mapped_column(JSONB)
     generated_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False
     )
@@ -311,7 +339,6 @@ class TradingDecisionOutcome(Base):
             "track_kind",
             "horizon",
             unique=True,
-            postgresql_nulls_not_distinct=True,  # PG ≥ 15; NULLs equal → prevents duplicate accepted_live marks (see plan §4.6)
         ),
     )
 

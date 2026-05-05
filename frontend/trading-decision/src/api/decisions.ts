@@ -8,6 +8,7 @@ import type {
   SessionDetail,
   SessionListResponse,
   SessionStatus,
+  WorkflowStatus,
 } from "./types";
 
 export async function getDecisions(args: {
@@ -56,5 +57,30 @@ export async function createOutcomeMark(
   return apiFetch<OutcomeDetail>(
     `/proposals/${encodeURIComponent(proposalUuid)}/outcomes`,
     { method: "POST", body: JSON.stringify(body) },
+  );
+}
+
+export async function updateWorkflowStatus(
+  sessionUuid: string,
+  status: WorkflowStatus,
+): Promise<SessionDetail> {
+  const params = new URLSearchParams();
+  params.set("status_update", status);
+  return apiFetch<SessionDetail>(
+    `/decisions/${encodeURIComponent(sessionUuid)}/workflow?${params.toString()}`,
+    { method: "PATCH" },
+  );
+}
+
+export async function updateArtifacts(
+  sessionUuid: string,
+  artifactsPatch: Record<string, unknown>,
+): Promise<SessionDetail> {
+  return apiFetch<SessionDetail>(
+    `/decisions/${encodeURIComponent(sessionUuid)}/artifacts`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(artifactsPatch),
+    },
   );
 }

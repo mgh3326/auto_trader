@@ -34,11 +34,16 @@ from app.schemas.trading_decisions import (
     SessionListResponse,
     SessionStatusLiteral,
     SessionSummary,
+    WorkflowStatusLiteral,
 )
 from app.services import operator_decision_session_service, trading_decision_service
 from app.services.trading_decision_session_url import (
     build_trading_decision_session_url,
     resolve_trading_decision_base_url,
+)
+from app.services.trading_decisions.committee_service import (
+    CommitteeSessionService,
+    CommitteeWorkflowError,
 )
 from app.services.tradingagents_research_service import (
     TradingAgentsNotConfigured,
@@ -134,6 +139,8 @@ def _to_session_summary(
         strategy_name=session.strategy_name,
         market_scope=session.market_scope,
         status=session.status,
+        workflow_status=session.workflow_status,
+        account_mode=session.account_mode,
         generated_at=session.generated_at,
         created_at=session.created_at,
         updated_at=session.updated_at,
@@ -149,11 +156,15 @@ def _to_session_detail(session) -> SessionDetail:
         strategy_name=session.strategy_name,
         market_scope=session.market_scope,
         status=session.status,
+        workflow_status=session.workflow_status,
+        account_mode=session.account_mode,
         generated_at=session.generated_at,
         created_at=session.created_at,
         updated_at=session.updated_at,
         market_brief=session.market_brief,
         notes=session.notes,
+        automation=session.automation,
+        artifacts=session.artifacts,
         proposals_count=len(session.proposals),
         pending_count=sum(1 for p in session.proposals if p.user_response == "pending"),
         proposals=[_to_proposal_detail(p) for p in session.proposals],
@@ -206,6 +217,9 @@ async def create_decision(
         market_brief=request.market_brief,
         generated_at=request.generated_at,
         notes=request.notes,
+        workflow_status=request.workflow_status,
+        account_mode=request.account_mode,
+        automation=request.automation.model_dump() if request.automation else None,
     )
     await db.commit()
 
@@ -239,6 +253,76 @@ async def get_decision(
         )
 
     return _to_session_detail(session_obj)
+
+
+@router.patch("/api/decisions/{session_uuid}/workflow", response_model=SessionDetail)
+async def update_session_workflow(
+    session_uuid: UUID,
+    status_update: WorkflowStatusLiteral,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
+) -> SessionDetail:
+    from app.models.trading_decision import WorkflowStatus
+
+    try:
+        session_obj = await CommitteeSessionService.update_workflow_status(
+            db,
+            session_uuid=session_uuid,
+            user_id=current_user.id,
+            status=WorkflowStatus(status_update),
+        )
+    except CommitteeWorkflowError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    if session_obj is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Decision session not found",
+        )
+    await db.commit()
+
+    # Re-fetch to get relationships
+    refetched = await trading_decision_service.get_session_by_uuid(
+        db, session_uuid=session_uuid, user_id=current_user.id
+    )
+    return _to_session_detail(refetched)
+
+
+@router.patch("/api/decisions/{session_uuid}/artifacts", response_model=SessionDetail)
+async def update_session_artifacts(
+    session_uuid: UUID,
+    artifacts_patch: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
+) -> SessionDetail:
+    try:
+        session_obj = await CommitteeSessionService.update_committee_artifacts(
+            db,
+            session_uuid=session_uuid,
+            user_id=current_user.id,
+            artifacts_patch=artifacts_patch,
+        )
+    except CommitteeWorkflowError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    if session_obj is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Decision session not found",
+        )
+    await db.commit()
+
+    # Re-fetch
+    refetched = await trading_decision_service.get_session_by_uuid(
+        db, session_uuid=session_uuid, user_id=current_user.id
+    )
+    return _to_session_detail(refetched)
 
 
 @router.post(

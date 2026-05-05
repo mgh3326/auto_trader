@@ -65,6 +65,8 @@ export default function SessionListPage() {
                 <th>Strategy</th>
                 <th>Scope</th>
                 <th>Status</th>
+                <th>Workflow</th>
+                <th>Account</th>
                 <th>Proposals</th>
                 <th>Pending</th>
               </tr>
@@ -83,6 +85,16 @@ export default function SessionListPage() {
                   <td>
                     <StatusBadge value={session.status} />
                   </td>
+                  <td>
+                    {session.workflow_status ? (
+                      <span className={styles.workflowStatusMini}>
+                        {session.workflow_status.replace(/_/g, " ").toUpperCase()}
+                      </span>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+                  <td>{session.account_mode ?? "—"}</td>
                   <td>{session.proposals_count}</td>
                   <td>{session.pending_count}</td>
                 </tr>

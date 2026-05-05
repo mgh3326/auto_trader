@@ -21,6 +21,7 @@ from app.models.trading_decision import (
     TradingDecisionProposal,
     TradingDecisionSession,
     UserResponse,
+    WorkflowStatus,
 )
 
 
@@ -50,6 +51,9 @@ async def create_decision_session(
     market_brief: dict | None = None,
     generated_at: datetime,
     notes: str | None = None,
+    workflow_status: WorkflowStatus | None = None,
+    account_mode: str | None = None,
+    automation: dict | None = None,
 ) -> TradingDecisionSession:
     """Create a new trading decision session."""
     db_session = TradingDecisionSession(
@@ -60,6 +64,9 @@ async def create_decision_session(
         market_brief=market_brief,
         generated_at=generated_at,
         notes=notes,
+        workflow_status=workflow_status,
+        account_mode=account_mode,
+        automation=automation,
     )
     session.add(db_session)
     await session.flush()

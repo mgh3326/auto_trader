@@ -41,3 +41,34 @@
 .strategyEvents h2 {
   margin: 0;
 }
+
+.workflowRow {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 0.9em;
+  margin-top: 4px;
+}
+
+.workflowStatus {
+  background: #e9ecef;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-weight: 600;
+  color: #495057;
+}
+
+.committeeArtifacts {
+  display: grid;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+
+.committeeError {
+  background: #fff3cd;
+  border: 1px solid #ffe69c;
+  border-radius: 8px;
+  color: #664d03;
+  margin: 0;
+  padding: 12px 14px;
+}

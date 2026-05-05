@@ -63,6 +63,10 @@ def test_authenticated_create_session(monkeypatch: pytest.MonkeyPatch):
         strategy_name=None,
         market_scope=None,
         status="open",
+        workflow_status=None,
+        account_mode=None,
+        automation=None,
+        artifacts=None,
         notes=None,
         market_brief=None,
         generated_at=datetime.utcnow(),
@@ -859,6 +863,8 @@ def test_list_decisions_pagination():
                 strategy_name=None,
                 market_scope=None,
                 status="open",
+                workflow_status=None,
+                account_mode=None,
                 generated_at=datetime.utcnow(),
                 created_at=datetime.utcnow(),
                 updated_at=datetime.utcnow(),
@@ -874,6 +880,8 @@ def test_list_decisions_pagination():
                 strategy_name="test_strategy",
                 market_scope="KR",
                 status="closed",
+                workflow_status=None,
+                account_mode=None,
                 generated_at=datetime.utcnow(),
                 created_at=datetime.utcnow(),
                 updated_at=datetime.utcnow(),
@@ -925,6 +933,10 @@ def test_get_session_detail_includes_nested_actions_and_outcomes():
         strategy_name=None,
         market_scope=None,
         status="open",
+        workflow_status=None,
+        account_mode=None,
+        automation=None,
+        artifacts=None,
         notes=None,
         market_brief={},
         generated_at=datetime.utcnow(),
@@ -1121,13 +1133,16 @@ def test_pydantic_literals_match_db_enums():
     from app.models.trading import InstrumentType
     from app.models.trading_decision import (
         ActionKind,
+        CommitteeAccountMode,
         OutcomeHorizon,
         ProposalKind,
         SessionStatus,
         TrackKind,
         UserResponse,
+        WorkflowStatus,
     )
     from app.schemas.trading_decisions import (
+        AccountModeLiteral,
         ActionKindLiteral,
         InstrumentTypeLiteral,
         OutcomeHorizonLiteral,
@@ -1135,6 +1150,7 @@ def test_pydantic_literals_match_db_enums():
         SessionStatusLiteral,
         TrackKindLiteral,
         UserResponseLiteral,
+        WorkflowStatusLiteral,
     )
 
     assert set(InstrumentType) == set(get_args(InstrumentTypeLiteral))
@@ -1144,3 +1160,5 @@ def test_pydantic_literals_match_db_enums():
     assert set(TrackKind) == set(get_args(TrackKindLiteral))
     assert set(OutcomeHorizon) == set(get_args(OutcomeHorizonLiteral))
     assert set(SessionStatus) == set(get_args(SessionStatusLiteral))
+    assert set(WorkflowStatus) == set(get_args(WorkflowStatusLiteral))
+    assert set(CommitteeAccountMode) == set(get_args(AccountModeLiteral))
