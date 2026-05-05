@@ -51,7 +51,9 @@ def _fake_row(**kwargs):
     return ns
 
 
-def _mock_svc(*, row=None, rows=None, corr_rows=None):
+def _mock_svc(
+    *, row=None, rows=None, corr_rows=None, candidate_rows=None, briefing_rows=None
+):
     svc = AsyncMock()
     svc.get_by_client_order_id = AsyncMock(return_value=row)
     svc.list_recent = AsyncMock(
@@ -59,6 +61,12 @@ def _mock_svc(*, row=None, rows=None, corr_rows=None):
     )
     svc.list_by_correlation_id = AsyncMock(
         return_value=corr_rows if corr_rows is not None else []
+    )
+    svc.list_by_candidate_uuid = AsyncMock(
+        return_value=candidate_rows if candidate_rows is not None else []
+    )
+    svc.list_by_briefing_artifact_run_uuid = AsyncMock(
+        return_value=briefing_rows if briefing_rows is not None else []
     )
     return svc
 
@@ -223,6 +231,42 @@ async def test_execution_preflight_check_returns_blocking_report(monkeypatch):
     assert result["should_block"] is True
     assert result["anomalies"][0]["check_id"] == "unexpected_open_orders"
     mock_svc.list_recent.assert_awaited_once_with(limit=20)
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_execution_preflight_check_uses_approval_packet_correlation_scope(
+    monkeypatch,
+):
+    import app.mcp_server.tooling.alpaca_paper_ledger_read as mod
+
+    row = _fake_row(
+        client_order_id="btc-preview",
+        lifecycle_correlation_id="corr-btc",
+        lifecycle_state="previewed",
+    )
+    mock_svc = _mock_svc(corr_rows=[row])
+    _patch_ledger_service(monkeypatch, mod, mock_svc)
+
+    result = await mod.alpaca_paper_execution_preflight_check(
+        approval_packet={
+            "client_order_id": "btc-submit",
+            "lifecycle_correlation_id": "corr-btc",
+            "signal_symbol": "KRW-BTC",
+            "execution_symbol": "BTC/USD",
+            "session_uuid": "0b3bbeb4-c0fc-4316-beed-3a871e17f7da",
+        },
+        expected_signal_symbol="KRW-BTC",
+        expected_execution_symbol="BTC/USD",
+    )
+
+    assert result["scoped_by"] == {
+        "kind": "lifecycle_correlation_id",
+        "value": "corr-btc",
+    }
+    assert result["session_uuid"] == "0b3bbeb4-c0fc-4316-beed-3a871e17f7da"
+    mock_svc.list_by_correlation_id.assert_awaited_once_with("corr-btc")
+    mock_svc.list_recent.assert_not_awaited()
 
 
 @pytest.mark.asyncio

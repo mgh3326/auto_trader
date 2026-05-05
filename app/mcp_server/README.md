@@ -137,7 +137,12 @@ names only:
 `alpaca_paper_execution_preflight_check` is a read-only runner gate for the
 later automated paper cycle. It reads recent ledger rows and accepts optional
 caller-supplied read-only `open_orders`, `positions`, and `approval_packet`
-snapshots, then returns severity-classified anomalies plus `should_block`. ROB-93
+snapshots, then returns severity-classified anomalies plus `should_block`. Scoped
+callers may pass `lifecycle_correlation_id`, `client_order_id`, `candidate_uuid`,
+`briefing_artifact_run_uuid`, or an `approval_packet` containing those keys; the
+tool then reads only matching ledger rows and returns `scoped_by` so decision
+sessions do not get blocked by unrelated recent ETH/SOL/BTC rows. Calls without
+scope keep the broad recent-ledger safety behavior for global runners. ROB-93
 checks include unexpected open orders, residual positions, duplicate
 `client_order_id`, filled buys without linked sells, filled sells without a zero
 final position snapshot, ledger/order/fill mismatches, stale previews/approval

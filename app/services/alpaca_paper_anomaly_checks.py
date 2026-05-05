@@ -150,6 +150,75 @@ def _source_client_order_ids(row: Any) -> set[str]:
     return ids
 
 
+def _packet_value(packet: Any, key: str) -> Any:
+    if isinstance(packet, dict):
+        return packet.get(key)
+    return getattr(packet, key, None)
+
+
+def _scope_value(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _preflight_scope_from_packet(packet: Any) -> dict[str, str]:
+    """Extract stable per-order/session scope keys from an approval packet.
+
+    ``lifecycle_correlation_id`` is the preferred ledger scope. Candidate and
+    briefing UUIDs cover preopen/decision-session provenance, and
+    ``client_order_id`` keeps duplicate/idempotency checks tied to the packet.
+    """
+    scope: dict[str, str] = {}
+    for key in (
+        "lifecycle_correlation_id",
+        "candidate_uuid",
+        "briefing_artifact_run_uuid",
+        "artifact_id",
+    ):
+        value = _scope_value(_packet_value(packet, key))
+        if value:
+            scope[key] = value
+
+    # A packet's new client_order_id alone is not enough to narrow historical
+    # ledger checks; otherwise a broad preflight with a candidate packet would
+    # accidentally skip unrelated open round-trip anomalies. Once a stable
+    # correlation/session/provenance key exists, include the client ID as an
+    # additional match key for mixed old/new ledger rows.
+    client_order_id = _scope_value(_packet_value(packet, "client_order_id"))
+    if scope and client_order_id:
+        scope["client_order_id"] = client_order_id
+    return scope
+
+
+def _row_matches_preflight_scope(row: Any, scope: dict[str, str]) -> bool:
+    """Return whether a ledger row belongs to the selected packet scope.
+
+    The matching is intentionally OR-based across stable provenance keys because
+    older rows may have only client_order_id/correlation while newer rows may
+    carry candidate or briefing UUID provenance.
+    """
+    if not scope:
+        return True
+
+    checks = {
+        "lifecycle_correlation_id": _scope_value(_get(row, "lifecycle_correlation_id")),
+        "client_order_id": _scope_value(_get(row, "client_order_id")),
+        "candidate_uuid": _scope_value(_get(row, "candidate_uuid")),
+        "briefing_artifact_run_uuid": _scope_value(
+            _get(row, "briefing_artifact_run_uuid")
+        ),
+    }
+    # The packet artifact_id is commonly the same value as
+    # briefing_artifact_run_uuid for preopen approval packets.
+    if (
+        scope.get("artifact_id")
+        and checks.get("briefing_artifact_run_uuid") == scope["artifact_id"]
+    ):
+        return True
+
+    return any(checks.get(key) == value for key, value in scope.items())
+
+
 def _is_open_order(order: dict[str, Any]) -> bool:
     status = str(order.get("status") or "").lower()
     if not status:
@@ -230,10 +299,16 @@ def build_paper_execution_preflight_report(
         stale_after_minutes: Preview/approval max age before blocking.
     """
     checked_at = _as_aware_utc(now) or datetime.now(UTC)
-    ledger = list(ledger_rows)
+    unscoped_ledger = list(ledger_rows)
     orders = list(open_orders)
     position_rows = list(positions)
     packet = approval_packet or {}
+    preflight_scope = _preflight_scope_from_packet(packet)
+    ledger = [
+        row
+        for row in unscoped_ledger
+        if _row_matches_preflight_scope(row, preflight_scope)
+    ]
     anomalies: list[PaperExecutionAnomaly] = []
 
     def add(
@@ -474,6 +549,7 @@ def build_paper_execution_preflight_report(
         anomalies=tuple(anomalies),
         counts={
             "ledger_rows": len(ledger),
+            "unscoped_ledger_rows": len(unscoped_ledger),
             "open_orders": len(orders),
             "positions": len(position_rows),
             "block": sum(
