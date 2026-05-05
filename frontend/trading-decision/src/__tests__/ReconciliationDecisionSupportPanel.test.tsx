@@ -14,16 +14,16 @@ describe("ReconciliationDecisionSupportPanel", () => {
       />,
     );
 
-    expect(screen.getByText(/Gap to current/)).toBeInTheDocument();
+    expect(screen.getByText(/현재가 대비 괴리/)).toBeInTheDocument();
     expect(screen.getByText("+0.29%")).toBeInTheDocument();
-    expect(screen.getByText(/Distance to fill/)).toBeInTheDocument();
+    expect(screen.getByText(/체결까지 거리/)).toBeInTheDocument();
     expect(screen.getByText("-0.29%")).toBeInTheDocument();
-    expect(screen.getByText(/Nearest support/)).toBeInTheDocument();
+    expect(screen.getByText(/가까운 지지선/)).toBeInTheDocument();
     expect(screen.getByText(/69,500/)).toBeInTheDocument();
-    expect(screen.getByText(/Nearest resistance/)).toBeInTheDocument();
-    expect(screen.getByText(/Live quote/)).toBeInTheDocument();
+    expect(screen.getByText(/가까운 저항선/)).toBeInTheDocument();
+    expect(screen.getByText(/실시간 시세/)).toBeInTheDocument();
     expect(screen.getByText(/70,200/)).toBeInTheDocument();
-    expect(screen.getByText(/Pending order/)).toBeInTheDocument();
+    expect(screen.getByText(/대기 주문/)).toBeInTheDocument();
     expect(screen.getByText(/ORD-1/)).toBeInTheDocument();
   });
 

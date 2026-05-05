@@ -19,7 +19,7 @@ export default function OriginalVsAdjustedSummary({
           <dd>
             <span>{pair.original ?? "—"}</span>
             {" → "}
-            <strong>{pair.user ?? "(unchanged)"}</strong>
+            <strong>{pair.user ?? "(변경 없음)"}</strong>
           </dd>
         </div>
       ))}

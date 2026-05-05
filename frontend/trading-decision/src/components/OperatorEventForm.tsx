@@ -41,7 +41,7 @@ export default function OperatorEventForm({
     setError(null);
     const trimmed = sourceText.trim();
     if (!trimmed) {
-      setError("Source text is required.");
+      setError("소스 텍스트는 필수입니다.");
       return;
     }
 
@@ -61,7 +61,7 @@ export default function OperatorEventForm({
     const res = await onSubmit(body);
     setSubmitting(false);
     if (!res.ok) {
-      setError(res.detail ?? "Could not submit strategy event.");
+      setError(res.detail ?? "전략 이벤트를 제출할 수 없습니다.");
       return;
     }
     setSourceText("");
@@ -74,29 +74,29 @@ export default function OperatorEventForm({
     <form
       className={styles.form}
       onSubmit={handleSubmit}
-      aria-label="Add operator market event"
+      aria-label="운영자 시장 이벤트 추가"
       noValidate
     >
       <label className={styles.fullWidth}>
-        Source text
+        소스 텍스트
         <textarea
           value={sourceText}
           onChange={(e) => setSourceText(e.target.value)}
-          placeholder="e.g. OpenAI earnings missed expectations"
+          placeholder="예: OpenAI 실적이 기대치 하회"
         />
       </label>
 
       <label className={styles.fullWidth}>
-        Affected symbols (comma-separated, optional)
+        영향 종목 (쉼표로 구분, 선택)
         <input
           value={symbolsRaw}
           onChange={(e) => setSymbolsRaw(e.target.value)}
-          placeholder="e.g. MSFT, NVDA"
+          placeholder="예: MSFT, NVDA"
         />
       </label>
 
       <label>
-        Severity (1–5)
+        심각도 (1–5)
         <input
           type="number"
           min={1}
@@ -108,7 +108,7 @@ export default function OperatorEventForm({
       </label>
 
       <label>
-        Confidence (0–100)
+        신뢰도 (0–100)
         <input
           type="number"
           min={0}
@@ -126,7 +126,7 @@ export default function OperatorEventForm({
       ) : null}
 
       <button type="submit" disabled={submitting}>
-        {submitting ? "Submitting..." : "Add event"}
+        {submitting ? "제출 중…" : "이벤트 추가"}
       </button>
     </form>
   );

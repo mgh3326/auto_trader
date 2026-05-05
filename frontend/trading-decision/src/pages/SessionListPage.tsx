@@ -6,6 +6,13 @@ import StatusBadge from "../components/StatusBadge";
 import type { SessionStatus } from "../api/types";
 import { formatDateTime } from "../format/datetime";
 import { useDecisionInbox } from "../hooks/useDecisionInbox";
+import {
+  COMMON,
+  SESSION_STATUS_LABEL,
+  WORKFLOW_STATUS_LABEL,
+  ACCOUNT_MODE_LABEL,
+} from "../i18n";
+import { labelOrToken } from "../i18n/formatters";
 import styles from "./SessionListPage.module.css";
 
 const pageSize = 50;
@@ -18,15 +25,15 @@ export default function SessionListPage() {
   return (
     <main className={styles.page}>
       <div className={styles.topbar}>
-        <h1>Decision inbox</h1>
+        <h1>의사결정함</h1>
         <div className={styles.controls}>
           <Link className="btn" to="/news-radar">
             News radar
           </Link>
           <label>
-            Status filter{" "}
+            상태 필터{" "}
             <select
-              aria-label="Status filter"
+              aria-label="상태 필터"
               onChange={(event) => {
                 setOffset(0);
                 setStatusFilter(
@@ -37,41 +44,43 @@ export default function SessionListPage() {
               }}
               value={statusFilter ?? ""}
             >
-              <option value="">All</option>
-              <option value="open">open</option>
-              <option value="closed">closed</option>
-              <option value="archived">archived</option>
+              <option value="">{COMMON.all}</option>
+              {(Object.keys(SESSION_STATUS_LABEL) as SessionStatus[]).map((status) => (
+                <option key={status} value={status}>
+                  {SESSION_STATUS_LABEL[status]}
+                </option>
+              ))}
             </select>
           </label>
           <button className="btn" onClick={inbox.refetch} type="button">
-            Refresh
+            {COMMON.refresh}
           </button>
         </div>
       </div>
       {inbox.status === "loading" ? <LoadingView /> : null}
       {inbox.status === "error" ? (
         <ErrorView
-          message={inbox.error ?? "Something went wrong. Try again."}
+          message={inbox.error ?? COMMON.somethingWentWrong}
           onRetry={inbox.refetch}
         />
       ) : null}
       {inbox.status === "success" && inbox.data?.sessions.length === 0 ? (
-        <p>No decision sessions yet.</p>
+        <p>아직 의사결정 세션이 없습니다.</p>
       ) : null}
       {inbox.data && inbox.data.sessions.length > 0 ? (
         <>
           <table className={styles.table}>
             <thead>
               <tr>
-                <th>Generated</th>
-                <th>Profile</th>
-                <th>Strategy</th>
-                <th>Scope</th>
-                <th>Status</th>
-                <th>Workflow</th>
-                <th>Account</th>
-                <th>Proposals</th>
-                <th>Pending</th>
+                <th>생성 시각</th>
+                <th>프로필</th>
+                <th>전략</th>
+                <th>범위</th>
+                <th>상태</th>
+                <th>워크플로우</th>
+                <th>계정</th>
+                <th>제안</th>
+                <th>대기</th>
               </tr>
             </thead>
             <tbody>
@@ -84,20 +93,20 @@ export default function SessionListPage() {
                       {session.strategy_name ?? session.source_profile}
                     </Link>
                   </td>
-                  <td>{session.market_scope ?? "—"}</td>
+                  <td>
+                    {session.market_scope
+                      ? session.market_scope.toUpperCase()
+                      : COMMON.dash}
+                  </td>
                   <td>
                     <StatusBadge value={session.status} />
                   </td>
                   <td>
-                    {session.workflow_status ? (
-                      <span className={styles.workflowStatusMini}>
-                        {session.workflow_status.replace(/_/g, " ").toUpperCase()}
-                      </span>
-                    ) : (
-                      "—"
-                    )}
+                    <span className={styles.workflowStatusMini}>
+                      {labelOrToken(WORKFLOW_STATUS_LABEL, session.workflow_status)}
+                    </span>
                   </td>
-                  <td>{session.account_mode ?? "—"}</td>
+                  <td>{labelOrToken(ACCOUNT_MODE_LABEL, session.account_mode)}</td>
                   <td>{session.proposals_count}</td>
                   <td>{session.pending_count}</td>
                 </tr>
@@ -111,7 +120,7 @@ export default function SessionListPage() {
               onClick={() => setOffset(Math.max(0, offset - pageSize))}
               type="button"
             >
-              Previous
+              {COMMON.previous}
             </button>
             <button
               className="btn"
@@ -119,7 +128,7 @@ export default function SessionListPage() {
               onClick={() => setOffset(offset + pageSize)}
               type="button"
             >
-              Next
+              {COMMON.next}
             </button>
           </div>
         </>

@@ -1,9 +1,17 @@
 import React from "react";
 import type { CommitteePortfolioApproval as PortfolioApprovalType } from "../api/types";
+import { formatDateTime } from "../format/datetime";
 
 interface Props {
   portfolioApproval: PortfolioApprovalType | null;
 }
+
+const VERDICT_LABEL: Record<string, string> = {
+  approved: "승인됨",
+  vetoed: "거부됨",
+  modified: "수정 승인",
+  pending: "대기 중",
+};
 
 export const CommitteePortfolioApproval: React.FC<Props> = ({ portfolioApproval }) => {
   if (!portfolioApproval) return null;
@@ -19,10 +27,10 @@ export const CommitteePortfolioApproval: React.FC<Props> = ({ portfolioApproval 
 
   return (
     <div className="committee-portfolio-approval">
-      <h3>Portfolio Approval</h3>
+      <h3>포트폴리오 승인</h3>
       <div className="approval-status">
-        Verdict: <strong style={{ color: getStatusColor(portfolioApproval.verdict) }}>
-          {portfolioApproval.verdict.toUpperCase()}
+        결정: <strong style={{ color: getStatusColor(portfolioApproval.verdict) }}>
+          {VERDICT_LABEL[portfolioApproval.verdict] ?? portfolioApproval.verdict.toUpperCase()}
         </strong>
       </div>
       {portfolioApproval.notes && (
@@ -32,7 +40,7 @@ export const CommitteePortfolioApproval: React.FC<Props> = ({ portfolioApproval 
       )}
       {portfolioApproval.approved_at && (
         <div className="approved-at">
-          Approved at: {new Date(portfolioApproval.approved_at).toLocaleString()}
+          승인 일시: {formatDateTime(portfolioApproval.approved_at)}
         </div>
       )}
       <style>{`

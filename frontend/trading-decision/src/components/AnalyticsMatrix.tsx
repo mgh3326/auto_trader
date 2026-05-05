@@ -4,6 +4,7 @@ import type {
   TrackKind,
 } from "../api/types";
 import { formatDecimal } from "../format/decimal";
+import { OUTCOME_HORIZON_LABEL, TRACK_KIND_LABEL } from "../i18n";
 import styles from "./AnalyticsMatrix.module.css";
 
 interface AnalyticsMatrixProps {
@@ -12,7 +13,7 @@ interface AnalyticsMatrixProps {
 
 export default function AnalyticsMatrix({ data }: AnalyticsMatrixProps) {
   if (data.cells.length === 0) {
-    return <p className={styles.empty}>No outcomes yet for this session.</p>;
+    return <p className={styles.empty}>이 세션에는 아직 결과가 없습니다.</p>;
   }
 
   const lookup = new Map<string, (typeof data.cells)[number]>();
@@ -21,13 +22,13 @@ export default function AnalyticsMatrix({ data }: AnalyticsMatrixProps) {
     lookup.get(`${track}|${h}`);
 
   return (
-    <table className={styles.table} aria-label="Outcome analytics">
+    <table className={styles.table} aria-label="결과 분석">
       <thead>
         <tr>
-          <th scope="col">Track</th>
+          <th scope="col">트랙</th>
           {data.horizons.map((h) => (
             <th key={h} scope="col">
-              {h}
+              {OUTCOME_HORIZON_LABEL[h]}
             </th>
           ))}
         </tr>
@@ -36,7 +37,7 @@ export default function AnalyticsMatrix({ data }: AnalyticsMatrixProps) {
         {data.tracks.map((track) => (
           <tr key={track}>
             <th scope="row" className={styles.trackCell}>
-              {track}
+              {TRACK_KIND_LABEL[track]}
             </th>
             {data.horizons.map((h) => {
               const c = cell(track, h);

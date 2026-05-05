@@ -7,7 +7,7 @@ describe("StrategyEventTimeline", () => {
   it("renders an empty state when there are no events", () => {
     render(<StrategyEventTimeline events={[]} />);
     expect(
-      screen.getByText(/no strategy events yet/i),
+      screen.getByText(/전략 이벤트가 없습니다/),
     ).toBeInTheDocument();
   });
 
@@ -26,11 +26,11 @@ describe("StrategyEventTimeline", () => {
     render(<StrategyEventTimeline events={[event]} />);
 
     expect(
-      screen.getByText(/operator_market_event/i),
+      screen.getByText("운영자 시장 이벤트"),
     ).toBeInTheDocument();
     expect(screen.getByText(/openai earnings miss/i)).toBeInTheDocument();
-    expect(screen.getByText(/severity\s*4/i)).toBeInTheDocument();
-    expect(screen.getByText(/confidence\s*75/i)).toBeInTheDocument();
+    expect(screen.getByText(/심각도\s*4/)).toBeInTheDocument();
+    expect(screen.getByText(/신뢰도\s*75/)).toBeInTheDocument();
     expect(screen.getByText("MSFT")).toBeInTheDocument();
     expect(screen.getByText("NVDA")).toBeInTheDocument();
     expect(screen.getByText(/us/)).toBeInTheDocument();

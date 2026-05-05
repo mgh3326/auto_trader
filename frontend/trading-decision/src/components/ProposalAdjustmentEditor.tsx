@@ -4,6 +4,7 @@ import type {
   ProposalRespondRequest,
   RespondAction,
 } from "../api/types";
+import { COMMON } from "../i18n";
 import styles from "./ProposalAdjustmentEditor.module.css";
 
 type AdjustResponse = Extract<RespondAction, "modify" | "partial_accept">;
@@ -26,33 +27,33 @@ interface FieldSpec {
 }
 
 const specs: FieldSpec[] = [
-  { label: "Quantity", userKey: "user_quantity", originalKey: "original_quantity" },
+  { label: "수량", userKey: "user_quantity", originalKey: "original_quantity" },
   {
-    label: "Quantity percent",
+    label: "수량 비율(%)",
     userKey: "user_quantity_pct",
     originalKey: "original_quantity_pct",
     percent: true,
   },
   {
-    label: "Amount",
+    label: "금액",
     userKey: "user_amount",
     originalKey: "original_amount",
     nonNegative: true,
   },
   {
-    label: "Price",
+    label: "가격",
     userKey: "user_price",
     originalKey: "original_price",
     nonNegative: true,
   },
   {
-    label: "Trigger price",
+    label: "트리거 가격",
     userKey: "user_trigger_price",
     originalKey: "original_trigger_price",
     nonNegative: true,
   },
   {
-    label: "Threshold percent",
+    label: "임계 비율(%)",
     userKey: "user_threshold_pct",
     originalKey: "original_threshold_pct",
     percent: true,
@@ -100,16 +101,16 @@ export default function ProposalAdjustmentEditor({
       const value = values[spec.userKey].trim();
       if (!value) continue;
       if (!decimalPattern.test(value)) {
-        setError(`${spec.label} must be a decimal string.`);
+        setError(`${spec.label}은(는) 소수 문자열이어야 합니다.`);
         return;
       }
       const parsed = Number(value);
       if (spec.nonNegative && parsed < 0) {
-        setError(`${spec.label} must be greater than or equal to 0.`);
+        setError(`${spec.label}은(는) 0 이상이어야 합니다.`);
         return;
       }
       if (spec.percent && (parsed < 0 || parsed > 100)) {
-        setError(`${spec.label} must be between 0 and 100.`);
+        setError(`${spec.label}은(는) 0 이상 100 이하이어야 합니다.`);
         return;
       }
       body[spec.userKey] = value;
@@ -117,7 +118,7 @@ export default function ProposalAdjustmentEditor({
     }
 
     if (!hasNumeric) {
-      setError("Enter at least one adjusted numeric value.");
+      setError("조정된 숫자 값을 하나 이상 입력해 주세요.");
       return;
     }
     if (userNote.trim()) body.user_note = userNote.trim();
@@ -125,7 +126,7 @@ export default function ProposalAdjustmentEditor({
     setIsSubmitting(true);
     const result = await onSubmit(body);
     setIsSubmitting(false);
-    if (!result.ok) setError(result.detail ?? "Something went wrong. Try again.");
+    if (!result.ok) setError(result.detail ?? COMMON.somethingWentWrong);
   }
 
   return (
@@ -156,7 +157,7 @@ export default function ProposalAdjustmentEditor({
         ))}
       </div>
       <label className={styles.field}>
-        <span>Note</span>
+        <span>메모</span>
         <textarea
           maxLength={4000}
           onChange={(event) => setUserNote(event.target.value)}
@@ -166,10 +167,10 @@ export default function ProposalAdjustmentEditor({
       </label>
       <div className={styles.actions}>
         <button className="btn btn-primary" disabled={isSubmitting} type="submit">
-          Save {response === "partial_accept" ? "partial accept" : "modify"}
+          {response === "partial_accept" ? "부분 수락 저장" : "수정 저장"}
         </button>
         <button className="btn btn-ghost" disabled={isSubmitting} onClick={onCancel} type="button">
-          Cancel
+          취소
         </button>
       </div>
     </form>

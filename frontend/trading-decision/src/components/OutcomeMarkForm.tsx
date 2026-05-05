@@ -6,6 +6,7 @@ import type {
   OutcomeHorizon,
   TrackKind,
 } from "../api/types";
+import { COMMON, OUTCOME_HORIZON_LABEL, TRACK_KIND_LABEL } from "../i18n";
 import styles from "./OutcomeMarkForm.module.css";
 
 const TRACKS: TrackKind[] = [
@@ -42,15 +43,15 @@ export default function OutcomeMarkForm({
     setError(null);
 
     if (!price || !Number.isFinite(Number(price)) || Number(price) < 0) {
-      setError("price_at_mark must be a non-negative number");
+      setError("마크 시점 가격은 0 이상의 숫자여야 합니다");
       return;
     }
     if (trackKind === "accepted_live" && counterfactualId) {
-      setError("accepted_live must not have a counterfactual selected");
+      setError("accepted_live 트랙은 대조군을 선택할 수 없습니다");
       return;
     }
     if (trackKind !== "accepted_live" && !counterfactualId) {
-      setError("counterfactual is required for this track");
+      setError("이 트랙에서는 대조군이 필요합니다");
       return;
     }
 
@@ -68,7 +69,7 @@ export default function OutcomeMarkForm({
     const res = await onSubmit(body);
     setSubmitting(false);
     if (!res.ok) {
-      setError(res.detail ?? "Could not record outcome mark.");
+      setError(res.detail ?? "결과 마크를 기록할 수 없습니다.");
       return;
     }
     setPrice("");
@@ -80,10 +81,10 @@ export default function OutcomeMarkForm({
     <form
       className={styles.form}
       onSubmit={handleSubmit}
-      aria-label="Record outcome mark"
+      aria-label="결과 마크 기록"
     >
       <label>
-        Track
+        트랙
         <select
           value={trackKind}
           onChange={(e) => {
@@ -94,21 +95,21 @@ export default function OutcomeMarkForm({
         >
           {TRACKS.map((t) => (
             <option key={t} value={t}>
-              {t}
+              {TRACK_KIND_LABEL[t]}
             </option>
           ))}
         </select>
       </label>
 
       <label>
-        Horizon
+        기간
         <select
           value={horizon}
           onChange={(e) => setHorizon(e.target.value as OutcomeHorizon)}
         >
           {HORIZONS.map((h) => (
             <option key={h} value={h}>
-              {h}
+              {OUTCOME_HORIZON_LABEL[h]}
             </option>
           ))}
         </select>
@@ -116,17 +117,17 @@ export default function OutcomeMarkForm({
 
       {trackKind !== "accepted_live" ? (
         <label>
-          Counterfactual
+          대조군
           <select
             value={counterfactualId}
             onChange={(e) => setCounterfactualId(e.target.value)}
           >
-            <option value="">— select —</option>
+            <option value="">— 선택 —</option>
             {counterfactuals
               .filter((c) => c.track_kind === trackKind)
               .map((c) => (
                 <option key={c.id} value={c.id}>
-                  #{c.id} · baseline {c.baseline_price}
+                  #{c.id} · 기준가 {c.baseline_price}
                 </option>
               ))}
           </select>
@@ -134,29 +135,29 @@ export default function OutcomeMarkForm({
       ) : null}
 
       <label>
-        Price at mark
+        마크 시점 가격
         <input
           value={price}
           onChange={(e) => setPrice(e.target.value)}
-          placeholder="e.g. 118000000"
+          placeholder="예: 118000000"
         />
       </label>
 
       <label>
-        PnL %
+        손익(%)
         <input
           value={pnlPct}
           onChange={(e) => setPnlPct(e.target.value)}
-          placeholder="optional"
+          placeholder="선택"
         />
       </label>
 
       <label>
-        PnL amount
+        손익 금액
         <input
           value={pnlAmount}
           onChange={(e) => setPnlAmount(e.target.value)}
-          placeholder="optional"
+          placeholder="선택"
         />
       </label>
 
@@ -167,7 +168,7 @@ export default function OutcomeMarkForm({
       ) : null}
 
       <button type="submit" disabled={submitting}>
-        {submitting ? "Saving..." : "Record mark"}
+        {submitting ? COMMON.saving : "마크 기록"}
       </button>
     </form>
   );

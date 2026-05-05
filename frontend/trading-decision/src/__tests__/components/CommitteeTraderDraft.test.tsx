@@ -21,8 +21,8 @@ describe("CommitteeTraderDraft", () => {
 
     render(<CommitteeTraderDraft traderDraft={drafts} />);
 
-    expect(screen.getByText("Trader Draft")).toBeInTheDocument();
-    expect(screen.getByText("BUY")).toBeInTheDocument();
+    expect(screen.getByText("트레이더 초안")).toBeInTheDocument();
+    expect(screen.getByText("매수")).toBeInTheDocument();
     expect(screen.getByText("AAPL")).toBeInTheDocument();
     expect(screen.getByText("limit @ 180.00")).toBeInTheDocument();
     expect(screen.getByText("close below 175")).toBeInTheDocument();
@@ -46,7 +46,7 @@ describe("CommitteeTraderDraft", () => {
     render(<CommitteeTraderDraft traderDraft={drafts} />);
 
     expect(
-      screen.getByText(/no live order is created/i),
+      screen.getByText(/실주문이 생성되지 않습니다/i),
     ).toBeInTheDocument();
   });
 

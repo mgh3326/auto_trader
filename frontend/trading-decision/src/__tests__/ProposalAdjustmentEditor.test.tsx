@@ -15,9 +15,9 @@ describe("ProposalAdjustmentEditor", () => {
       />,
     );
 
-    expect(screen.getByLabelText("Quantity percent")).toBeInTheDocument();
-    expect(screen.getByLabelText("Price")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Amount")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("수량 비율(%)")).toBeInTheDocument();
+    expect(screen.getByLabelText("가격")).toBeInTheDocument();
+    expect(screen.queryByLabelText("금액")).not.toBeInTheDocument();
   });
 
   it("uses original values as placeholders", () => {
@@ -30,7 +30,7 @@ describe("ProposalAdjustmentEditor", () => {
       />,
     );
 
-    expect(screen.getByLabelText("Quantity percent")).toHaveAttribute(
+    expect(screen.getByLabelText("수량 비율(%)")).toHaveAttribute(
       "placeholder",
       "20",
     );
@@ -47,11 +47,11 @@ describe("ProposalAdjustmentEditor", () => {
       />,
     );
 
-    await userEvent.click(screen.getByRole("button", { name: "Save modify" }));
+    await userEvent.click(screen.getByRole("button", { name: "수정 저장" }));
 
     expect(onSubmit).not.toHaveBeenCalled();
     expect(screen.getByRole("alert")).toHaveTextContent(
-      "Enter at least one adjusted numeric value.",
+      "조정된 숫자 값을 하나 이상 입력해 주세요.",
     );
   });
 
@@ -66,8 +66,8 @@ describe("ProposalAdjustmentEditor", () => {
       />,
     );
 
-    await userEvent.type(screen.getByLabelText("Quantity percent"), "10");
-    await userEvent.click(screen.getByRole("button", { name: "Save modify" }));
+    await userEvent.type(screen.getByLabelText("수량 비율(%)"), "10");
+    await userEvent.click(screen.getByRole("button", { name: "수정 저장" }));
 
     expect(onSubmit).toHaveBeenCalledWith({
       response: "modify",
@@ -89,12 +89,12 @@ describe("ProposalAdjustmentEditor", () => {
       />,
     );
 
-    await userEvent.type(screen.getByLabelText("Quantity percent"), "10");
-    await userEvent.click(screen.getByRole("button", { name: "Save modify" }));
+    await userEvent.type(screen.getByLabelText("수량 비율(%)"), "10");
+    await userEvent.click(screen.getByRole("button", { name: "수정 저장" }));
 
     expect(screen.getByRole("alert")).toHaveTextContent(
       "modify/partial_accept requires at least one user_* numeric field",
     );
-    expect(screen.getByLabelText("Quantity percent")).toBeInTheDocument();
+    expect(screen.getByLabelText("수량 비율(%)")).toBeInTheDocument();
   });
 });

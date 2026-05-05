@@ -35,7 +35,7 @@ describe("LinkedActionsPanel", () => {
   it("renders empty state", () => {
     render(<LinkedActionsPanel actions={[]} counterfactuals={[]} />);
 
-    expect(screen.getByText("No linked actions yet.")).toBeInTheDocument();
+    expect(screen.getByText("연결된 액션이 없습니다.")).toBeInTheDocument();
   });
 
   it("renders counterfactuals but no outcomes", () => {
@@ -46,7 +46,7 @@ describe("LinkedActionsPanel", () => {
       />,
     );
 
-    expect(screen.getByText("rejected_counterfactual")).toBeInTheDocument();
+    expect(screen.getByText("거절 대조")).toBeInTheDocument();
     expect(screen.queryByTestId("outcome-row")).not.toBeInTheDocument();
   });
 });

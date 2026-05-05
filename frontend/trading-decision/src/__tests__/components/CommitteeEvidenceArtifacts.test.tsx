@@ -21,11 +21,11 @@ describe("CommitteeEvidenceArtifacts", () => {
 
     render(<CommitteeEvidenceArtifacts artifacts={artifacts} />);
 
-    expect(screen.getByText("Committee Evidence")).toBeInTheDocument();
+    expect(screen.getByText("위원회 근거 자료")).toBeInTheDocument();
     expect(screen.getByText("Bullish trend")).toBeInTheDocument();
-    expect(screen.getByText("Confidence: 80%")).toBeInTheDocument();
+    expect(screen.getByText("신뢰도: 80%")).toBeInTheDocument();
     expect(screen.getByText("Positive earnings")).toBeInTheDocument();
-    expect(screen.getByText("Confidence: 90%")).toBeInTheDocument();
+    expect(screen.getByText("신뢰도: 90%")).toBeInTheDocument();
   });
 
   it("renders nothing if evidence is missing", () => {

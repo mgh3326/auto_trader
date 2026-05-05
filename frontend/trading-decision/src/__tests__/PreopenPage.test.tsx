@@ -33,11 +33,11 @@ describe("PreopenPage", () => {
 
     render(<PreopenPage />, { wrapper: MemoryRouter });
 
-    expect(await screen.findByText(/No preopen research run available/i)).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 1, name: /Preopen briefing/i })).toBeInTheDocument();
-    expect(screen.getAllByText(/no_open_preopen_run/i).length).toBeGreaterThan(0);
-    expect(screen.getByText(/Artifact unavailable/i)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /create decision session/i })).toBeNull();
+    expect(await screen.findByText(/사용 가능한 장전 리서치 실행 결과가 없습니다/i)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: /장전 브리핑/i })).toBeInTheDocument();
+    expect(screen.getAllByText(/no open preopen run/i).length).toBeGreaterThan(0);
+    expect(screen.getByText(/산출물 미사용/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /의사결정 세션 생성/i })).toBeNull();
   });
 
   it("renders run summary, candidates, reconciliations from fixture", async () => {
@@ -50,12 +50,12 @@ describe("PreopenPage", () => {
 
     // Symbol appears in candidates table, reconciliations table, AND basket preview
     expect(await screen.findAllByText("005930")).toHaveLength(3);
-    expect(screen.getByText("near_fill")).toBeInTheDocument();
+    expect(screen.getByText("체결 임박")).toBeInTheDocument();
     expect(screen.getByText(/Morning scan/)).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 1, name: /Preopen briefing/i })).toBeInTheDocument();
-    expect(screen.getByText(/Artifact ready/i)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: /장전 브리핑/i })).toBeInTheDocument();
+    expect(screen.getByText(/산출물 준비 완료/i)).toBeInTheDocument();
     expect(screen.getByText(/preopen_briefing v1/i)).toBeInTheDocument();
-    expect(screen.getByText(/News brief: 장전 핵심 뉴스/i)).toBeInTheDocument();
+    expect(screen.getByText(/뉴스 요약: 장전 핵심 뉴스/i)).toBeInTheDocument();
   });
 
   it("renders degraded briefing artifact without hiding ROB-75 market news", async () => {
@@ -76,10 +76,10 @@ describe("PreopenPage", () => {
 
     render(<PreopenPage />, { wrapper: MemoryRouter });
 
-    expect(await screen.findByText(/Artifact degraded/i)).toBeInTheDocument();
-    expect(screen.getByText(/market_news_briefing_unavailable/i)).toBeInTheDocument();
+    expect(await screen.findByText(/산출물 주의/i)).toBeInTheDocument();
+    expect(screen.getByText(/market news briefing unavailable/i)).toBeInTheDocument();
     expect(
-      screen.getByRole("region", { name: /market news briefing/i }),
+      screen.getByRole("region", { name: /시장 뉴스 브리핑/i }),
     ).toBeInTheDocument();
   });
 
@@ -93,10 +93,10 @@ describe("PreopenPage", () => {
     render(<PreopenPage />, { wrapper: MemoryRouter });
 
     expect(
-      await screen.findByRole("region", { name: /preopen qa evaluator/i }),
+      await screen.findByRole("region", { name: /장전 QA 평가기/i }),
     ).toBeInTheDocument();
-    expect(screen.getByText(/QA ready/i)).toBeInTheDocument();
-    expect(screen.getByText(/Overall score: 90/i)).toBeInTheDocument();
+    expect(screen.getByText(/QA 준비 완료/i)).toBeInTheDocument();
+    expect(screen.getByText(/종합 점수: 90/i)).toBeInTheDocument();
     expect(screen.getByText(/Actionability guardrail/i)).toBeInTheDocument();
     expect(screen.getByText(/execution remains disabled/i)).toBeInTheDocument();
   });
@@ -135,7 +135,7 @@ describe("PreopenPage", () => {
 
     render(<PreopenPage />, { wrapper: MemoryRouter });
 
-    expect(await screen.findByText(/QA needs review/i)).toBeInTheDocument();
+    expect(await screen.findByText(/QA 검토 필요/i)).toBeInTheDocument();
     expect(screen.queryByText(/QA needs_review/i)).toBeNull();
     expect(
       screen.getAllByText(/News readiness needs review before relying on recommendations/i).length,
@@ -157,14 +157,14 @@ describe("PreopenPage", () => {
 
     render(<PreopenPage />, { wrapper: MemoryRouter });
 
-    expect(await screen.findByText(/QA unavailable/i)).toBeInTheDocument();
+    expect(await screen.findByText(/QA 미사용/i)).toBeInTheDocument();
     expect(
       screen.getAllByText(/No open preopen research run is available/i).length,
     ).toBeGreaterThan(0);
     expect(screen.queryByText("no_open_preopen_run")).toBeNull();
   });
 
-  it("clicking Create decision session calls api with correct args and navigates", async () => {
+  it("clicking 의사결정 세션 생성 calls api with correct args and navigates", async () => {
     const user = userEvent.setup();
     const sessionUuid = "sess-aaaa-1111-2222-333333333333";
 
@@ -186,15 +186,16 @@ describe("PreopenPage", () => {
 
     render(<PreopenPage />, { wrapper: MemoryRouter });
 
-    // Wait for page to load
-    expect(await screen.findByRole("button", { name: /create decision session/i })).toBeInTheDocument();
+    // Backend CTA labels may be English; the React chrome renders the localized label.
+    const createBtn = await screen.findByRole("button", { name: /의사결정 세션 생성/i });
+    expect(createBtn).toBeInTheDocument();
 
     // First click triggers confirm prompt
-    await user.click(screen.getByRole("button", { name: /create decision session/i }));
-    expect(screen.getByRole("button", { name: /confirm/i })).toBeInTheDocument();
+    await user.click(createBtn);
+    expect(screen.getByRole("button", { name: /의사결정 세션을 생성하시겠습니까/i })).toBeInTheDocument();
 
     // Second click (confirm) submits
-    await user.click(screen.getByRole("button", { name: /confirm/i }));
+    await user.click(screen.getByRole("button", { name: /의사결정 세션을 생성하시겠습니까/i }));
 
     await waitFor(() => {
       const postCall = calls.find((c) => c.method === "POST");
@@ -206,7 +207,7 @@ describe("PreopenPage", () => {
     });
   });
 
-  it("hides Create decision session when a linked session already exists", async () => {
+  it("hides 의사결정 세션 생성 when a linked session already exists", async () => {
     mockFetch({
       [PREOPEN_URL]: () =>
         new Response(
@@ -220,13 +221,13 @@ describe("PreopenPage", () => {
 
     render(<PreopenPage />, { wrapper: MemoryRouter });
 
-    expect(await screen.findByRole("link", { name: /open session/i })).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: /세션 열기/i })).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: /create decision session/i }),
+      screen.queryByRole("button", { name: /의사결정 세션 생성/i }),
     ).toBeNull();
   });
 
-  it("renders Ready badge with source counts and a news preview link", async () => {
+  it("renders 정상 badge with source counts and a news preview link", async () => {
     mockFetch({
       [PREOPEN_URL]: () =>
         new Response(
@@ -247,16 +248,16 @@ describe("PreopenPage", () => {
     render(<PreopenPage />, { wrapper: MemoryRouter });
 
     expect(await screen.findByTestId("news-readiness-section")).toBeInTheDocument();
-    expect(screen.getByText("Ready")).toBeInTheDocument();
+    expect(screen.getByText("정상")).toBeInTheDocument();
     expect(screen.getByText(/mk_stock: 12/)).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: /source coverage/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /소스 커버리지/i })).toBeInTheDocument();
     expect(screen.getByRole("cell", { name: "mk_stock" })).toBeInTheDocument();
     expect(
       screen.getByRole("link", { name: /삼성전자 영업이익/ }),
     ).toHaveAttribute("href", "https://example.com/9001");
   });
 
-  it("renders Stale badge with explicit warning text", async () => {
+  it("renders 오래됨 badge with explicit warning text", async () => {
     mockFetch({
       [PREOPEN_URL]: () =>
         new Response(
@@ -270,13 +271,13 @@ describe("PreopenPage", () => {
 
     render(<PreopenPage />, { wrapper: MemoryRouter });
 
-    expect(await screen.findByText("Stale")).toBeInTheDocument();
+    expect(await screen.findByText("오래됨")).toBeInTheDocument();
     expect(
-      screen.getByText(/News is older than 180 min/i),
+      screen.getByText(/뉴스가 180분 이상 경과했습니다/i),
     ).toBeInTheDocument();
   });
 
-  it("renders Unavailable badge when news section reports no data", async () => {
+  it("renders 미사용 badge when news section reports no data", async () => {
     mockFetch({
       [PREOPEN_URL]: () =>
         new Response(
@@ -291,13 +292,16 @@ describe("PreopenPage", () => {
 
     render(<PreopenPage />, { wrapper: MemoryRouter });
 
-    expect(await screen.findByText("Unavailable")).toBeInTheDocument();
+    const newsBadge = await screen.findByTestId("news-readiness-section");
     expect(
-      screen.getByText(/No recent articles to preview/i),
+      newsBadge.querySelector('[data-status="unavailable"]'),
+    ).toHaveTextContent("미사용");
+    expect(
+      screen.getByText(/미리 볼 최근 기사가 없습니다/i),
     ).toBeInTheDocument();
   });
 
-  it("renders Unavailable badge with degraded message when news is null", async () => {
+  it("renders 미사용 badge with degraded message when news is null", async () => {
     mockFetch({
       [PREOPEN_URL]: () =>
         new Response(
@@ -312,9 +316,12 @@ describe("PreopenPage", () => {
 
     render(<PreopenPage />, { wrapper: MemoryRouter });
 
-    expect(await screen.findByText("Unavailable")).toBeInTheDocument();
+    const newsBadge = await screen.findByTestId("news-readiness-section");
     expect(
-      screen.getByText(/News readiness lookup failed/i),
+      newsBadge.querySelector('[data-status="unavailable"]'),
+    ).toHaveTextContent("미사용");
+    expect(
+      screen.getByText(/뉴스 준비도 조회에 실패했습니다/i),
     ).toBeInTheDocument();
   });
 
@@ -333,12 +340,12 @@ describe("PreopenPage", () => {
     render(<PreopenPage />, { wrapper: MemoryRouter });
 
     expect(
-      await screen.findByRole("region", { name: /market news briefing/i }),
+      await screen.findByRole("region", { name: /시장 뉴스 브리핑/i }),
     ).toBeInTheDocument();
     expect(screen.getByText(/Preopen headlines/i)).toBeInTheDocument();
-    expect(screen.getByText(/Filtered noise: 2/i)).toBeInTheDocument();
-    expect(screen.getByText(/Score 82/i)).toBeInTheDocument();
-    expect(screen.getByText(/Terms: AI, 반도체/i)).toBeInTheDocument();
+    expect(screen.getByText(/필터링된 노이즈: 2/i)).toBeInTheDocument();
+    expect(screen.getByText(/점수 82/i)).toBeInTheDocument();
+    expect(screen.getByText(/매칭 키워드: AI, 반도체/i)).toBeInTheDocument();
   });
 
   it("renders market news briefing fail-open state when field is null", async () => {
@@ -356,10 +363,10 @@ describe("PreopenPage", () => {
     render(<PreopenPage />, { wrapper: MemoryRouter });
 
     expect(
-      await screen.findByRole("region", { name: /market news briefing/i }),
+      await screen.findByRole("region", { name: /시장 뉴스 브리핑/i }),
     ).toBeInTheDocument();
     expect(
-      screen.getByText(/No market news briefing available yet/i),
+      screen.getByText(/아직 시장 뉴스 브리핑이 없습니다/i),
     ).toBeInTheDocument();
   });
 
@@ -379,24 +386,24 @@ describe("PreopenPage", () => {
     render(<PreopenPage />, { wrapper: MemoryRouter });
 
     expect(
-      await screen.findByRole("region", { name: /paper approval preview/i }),
+      await screen.findByRole("region", { name: /모의 승인 프리뷰/i }),
     ).toBeInTheDocument();
-    expect(screen.getByText(/Preview Available/i)).toBeInTheDocument();
-    expect(screen.getByText(/Advisory-only preview/i)).toBeInTheDocument();
+    expect(screen.getByText(/프리뷰 사용 가능/i)).toBeInTheDocument();
+    expect(screen.getByText(/자문 전용 프리뷰/i)).toBeInTheDocument();
     expect(
-      screen.getByText(/Execution is not allowed from this screen/i),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(/Explicit operator approval is required before any Alpaca Paper submit/i),
+      screen.getByText(/이 화면에서 실행할 수 없습니다/i),
     ).toBeInTheDocument();
     expect(
-      screen.getByText(/does not submit or cancel paper orders/i),
+      screen.getByText(/Alpaca Paper 제출 전에 트레이더의 명시적 승인이 필요합니다/i),
     ).toBeInTheDocument();
-    expect(screen.getByText("Signal source")).toBeInTheDocument();
+    expect(
+      screen.getByText(/이 카드는 모의 주문을 제출하거나 취소하지 않습니다/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText("시그널 소스")).toBeInTheDocument();
     expect(screen.getAllByText(/Upbit KRW-BTC/i).length).toBeGreaterThan(0);
-    expect(screen.getByText("Execution venue")).toBeInTheDocument();
+    expect(screen.getByText("실행 거래소")).toBeInTheDocument();
     expect(screen.getAllByText(/Alpaca Paper BTC\/USD/i).length).toBeGreaterThan(0);
-    expect(screen.getByText(/Preview payload: buy limit · \$10 @ 1.00 GTC/i)).toBeInTheDocument();
+    expect(screen.getByText(/프리뷰 페이로드: 매수 limit · \$10 @ 1.00 GTC/i)).toBeInTheDocument();
     expect(calls).toHaveLength(1);
     expect(calls[0]?.method).toBe("GET");
   });
@@ -416,12 +423,12 @@ describe("PreopenPage", () => {
     render(<PreopenPage />, { wrapper: MemoryRouter });
 
     expect(
-      await screen.findByRole("region", { name: /paper approval preview/i }),
+      await screen.findByRole("region", { name: /모의 승인 프리뷰/i }),
     ).toBeInTheDocument();
-    expect(screen.getByText(/Preview Blocked/i)).toBeInTheDocument();
+    expect(screen.getByText(/프리뷰 차단됨/i)).toBeInTheDocument();
     expect(screen.getByText(/qa evaluator unavailable/i)).toBeInTheDocument();
     expect(
-      screen.getByText(/No paper approval preview candidates are currently available/i),
+      screen.getByText(/현재 사용 가능한 모의 승인 프리뷰 후보가 없습니다/i),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /submit|cancel paper|place order/i })).toBeNull();
     expect(calls).toHaveLength(1);
@@ -441,12 +448,12 @@ describe("PreopenPage", () => {
     });
 
     render(<PreopenPage />, { wrapper: MemoryRouter });
-    await screen.findByRole("button", { name: /create decision session/i });
+    const createBtn = await screen.findByRole("button", { name: /의사결정 세션 생성/i });
 
     // First click → confirm
-    await user.click(screen.getByRole("button", { name: /create decision session/i }));
+    await user.click(createBtn);
     // Second click → submit
-    await user.click(screen.getByRole("button", { name: /confirm/i }));
+    await user.click(screen.getByRole("button", { name: /의사결정 세션을 생성하시겠습니까/i }));
 
     expect(
       await screen.findByText(/research_run_has_no_candidates/i),

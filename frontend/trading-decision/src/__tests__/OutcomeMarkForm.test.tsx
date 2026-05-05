@@ -10,12 +10,12 @@ describe("OutcomeMarkForm", () => {
     render(<OutcomeMarkForm counterfactuals={[]} onSubmit={onSubmit} />);
 
     await userEvent.selectOptions(
-      screen.getByLabelText(/track/i),
-      "accepted_live",
+      screen.getByLabelText(/트랙/i),
+      "수락(실주문)",
     );
-    await userEvent.selectOptions(screen.getByLabelText(/horizon/i), "1h");
-    await userEvent.type(screen.getByLabelText(/price at mark/i), "100");
-    await userEvent.click(screen.getByRole("button", { name: /record mark/i }));
+    await userEvent.selectOptions(screen.getByLabelText(/기간/i), "1시간");
+    await userEvent.type(screen.getByLabelText(/마크 시점 가격/i), "100");
+    await userEvent.click(screen.getByRole("button", { name: /마크 기록/i }));
 
     expect(onSubmit).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -32,16 +32,16 @@ describe("OutcomeMarkForm", () => {
     render(<OutcomeMarkForm counterfactuals={[]} onSubmit={onSubmit} />);
 
     await userEvent.selectOptions(
-      screen.getByLabelText(/track/i),
-      "rejected_counterfactual",
+      screen.getByLabelText(/트랙/i),
+      "거절 대조",
     );
-    await userEvent.selectOptions(screen.getByLabelText(/horizon/i), "1h");
-    await userEvent.type(screen.getByLabelText(/price at mark/i), "100");
-    await userEvent.click(screen.getByRole("button", { name: /record mark/i }));
+    await userEvent.selectOptions(screen.getByLabelText(/기간/i), "1시간");
+    await userEvent.type(screen.getByLabelText(/마크 시점 가격/i), "100");
+    await userEvent.click(screen.getByRole("button", { name: /마크 기록/i }));
 
     expect(onSubmit).not.toHaveBeenCalled();
     expect(
-      screen.getByText(/counterfactual is required/i),
+      screen.getByText(/이 트랙에서는 대조군이 필요합니다/i),
     ).toBeInTheDocument();
   });
 
@@ -52,9 +52,9 @@ describe("OutcomeMarkForm", () => {
     });
     render(<OutcomeMarkForm counterfactuals={[cf]} onSubmit={vi.fn()} />);
     await userEvent.selectOptions(
-      screen.getByLabelText(/track/i),
-      "rejected_counterfactual",
+      screen.getByLabelText(/트랙/i),
+      "거절 대조",
     );
-    expect(screen.getByLabelText(/counterfactual/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/대조군/i)).toBeInTheDocument();
   });
 });

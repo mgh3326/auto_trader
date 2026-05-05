@@ -7,6 +7,11 @@ import type {
 import { parseReconciliationPayload } from "../api/reconciliation";
 import { formatDateTime } from "../format/datetime";
 import { formatDecimal } from "../format/decimal";
+import {
+  COMMON,
+  PROPOSAL_KIND_LABEL,
+  SIDE_LABEL,
+} from "../i18n";
 import LinkedActionsPanel from "./LinkedActionsPanel";
 import NxtVenueBadge from "./NxtVenueBadge";
 import OriginalVsAdjustedSummary from "./OriginalVsAdjustedSummary";
@@ -33,12 +38,12 @@ interface ProposalRowProps {
 }
 
 const valuePairs = [
-  ["Quantity", "original_quantity", "user_quantity"],
-  ["Quantity percent", "original_quantity_pct", "user_quantity_pct"],
-  ["Amount", "original_amount", "user_amount"],
-  ["Price", "original_price", "user_price"],
-  ["Trigger price", "original_trigger_price", "user_trigger_price"],
-  ["Threshold percent", "original_threshold_pct", "user_threshold_pct"],
+  ["수량", "original_quantity", "user_quantity"],
+  ["수량 비율(%)", "original_quantity_pct", "user_quantity_pct"],
+  ["금액", "original_amount", "user_amount"],
+  ["가격", "original_price", "user_price"],
+  ["트리거 가격", "original_trigger_price", "user_trigger_price"],
+  ["임계 비율(%)", "original_threshold_pct", "user_threshold_pct"],
 ] as const;
 
 export default function ProposalRow({
@@ -72,8 +77,8 @@ export default function ProposalRow({
     if (!result.ok) {
       const message =
         result.status === 409
-          ? "Session is archived. You can no longer respond."
-          : (result.detail ?? "Something went wrong. Try again.");
+          ? "세션이 보관되었습니다. 더 이상 응답할 수 없습니다."
+          : (result.detail ?? COMMON.somethingWentWrong);
       setBanner(message);
       return { ok: false, detail: message };
     }
@@ -90,8 +95,8 @@ export default function ProposalRow({
             <span className={styles.symbol}>{proposal.symbol}</span>
           ) : null}
         </div>
-        <span className={styles.chip}>{proposal.side}</span>
-        <span className={styles.chip}>{proposal.proposal_kind}</span>
+        <span className={styles.chip}>{SIDE_LABEL[proposal.side]}</span>
+        <span className={styles.chip}>{PROPOSAL_KIND_LABEL[proposal.proposal_kind]}</span>
         <StatusBadge value={proposal.user_response} />
         {recon ? (
           <>
@@ -111,7 +116,7 @@ export default function ProposalRow({
       ) : null}
       <div className={styles.panels}>
         <section className={styles.panel}>
-          <h3>Original</h3>
+          <h3>원본</h3>
           <ValueList proposal={proposal} prefix="original" />
           {proposal.original_rationale ? (
             <p className={styles.rationale}>{proposal.original_rationale}</p>
@@ -119,7 +124,7 @@ export default function ProposalRow({
         </section>
         {proposal.user_response !== "pending" ? (
           <section className={styles.panel}>
-            <h3>Your decision</h3>
+            <h3>내 결정</h3>
             <p>
               <StatusBadge value={proposal.user_response} /> ·{" "}
               {formatDateTime(proposal.responded_at)}
@@ -131,7 +136,7 @@ export default function ProposalRow({
       </div>
       {cryptoPaperWorkflow?.approval_copy?.length ? (
         <section className={styles.cryptoPaperWorkflow}>
-          <h3>Crypto paper workflow</h3>
+          <h3>암호화폐 모의 워크플로우</h3>
           <ul>
             {cryptoPaperWorkflow.approval_copy.map((line) => (
               <li key={line}>{line}</li>
@@ -150,9 +155,7 @@ export default function ProposalRow({
           />
           {nonActionable ? (
             <p className={styles.nonActionableAlert} role="alert">
-              Non-NXT pending order — KR broker routing only. Review before
-              deciding; recording a response on this row does not place or
-              cancel a broker order.
+              비-NXT 대기 주문 — 국내 브로커 라우팅 전용. 결정 전에 검토하세요. 이 행의 응답 기록은 브로커 주문을 제출하거나 취소하지 않습니다.
             </p>
           ) : null}
         </>
@@ -165,7 +168,7 @@ export default function ProposalRow({
       />
       {!nonActionable ? (
         <p className={styles.safetyNote}>
-          Accept records this decision only; it does not send a live trade.
+          수락은 결정만 기록합니다. 실주문을 전송하지 않습니다.
         </p>
       ) : null}
       {adjustResponse ? (
@@ -180,10 +183,10 @@ export default function ProposalRow({
         actions={proposal.actions}
         counterfactuals={proposal.counterfactuals}
       />
-      <section className={styles.outcomes} aria-label="Outcome marks">
+      <section className={styles.outcomes} aria-label="결과 마크">
         <OutcomesPanel outcomes={proposal.outcomes} />
         <details>
-          <summary>Record outcome mark</summary>
+          <summary>결과 마크 기록</summary>
           <OutcomeMarkForm
             counterfactuals={proposal.counterfactuals}
             onSubmit={(body) => onRecordOutcome(proposal.proposal_uuid, body)}
@@ -241,7 +244,7 @@ function isMissingSellAmount(
   proposal: ProposalDetail,
 ) {
   return (
-    label === "Amount" &&
+    label === "금액" &&
     proposal.side === "sell" &&
     Number(value) === 0 &&
     proposal.original_price === null
@@ -254,10 +257,10 @@ function formatProposalValue(
   proposal: ProposalDetail,
 ) {
   if (isMissingSellAmount(label, value, proposal)) {
-    return "Current quote estimate needed";
+    return "현재 시세 추정이 필요합니다";
   }
   return `${formatDecimal(value)}${
-    label === "Amount" && proposal.original_currency
+    label === "금액" && proposal.original_currency
       ? ` ${proposal.original_currency}`
       : ""
   }`;

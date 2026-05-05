@@ -1,5 +1,7 @@
 import React from "react";
 import type { CommitteeAccountMode, WorkflowStatus } from "../api/types";
+import { COMMON, WORKFLOW_STATUS_LABEL } from "../i18n";
+import { labelOrToken } from "../i18n/formatters";
 
 interface Props {
   currentStatus: WorkflowStatus | null;
@@ -69,7 +71,7 @@ export const CommitteeWorkflowTransition: React.FC<Props> = ({
         disabled={isUpdating}
         className="transition-button"
       >
-        {isUpdating ? "Updating..." : `Advance to ${nextStatus.replace(/_/g, " ")}`}
+        {isUpdating ? COMMON.saving : `${labelOrToken(WORKFLOW_STATUS_LABEL, nextStatus)} 단계로 진행`}
       </button>
       <style>{`
         .committee-workflow-transition {

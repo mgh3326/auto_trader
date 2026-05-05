@@ -1,6 +1,7 @@
 import type { OutcomeDetail, OutcomeHorizon, TrackKind } from "../api/types";
 import { formatDateTime } from "../format/datetime";
 import { formatDecimal } from "../format/decimal";
+import { OUTCOME_HORIZON_LABEL, TRACK_KIND_LABEL } from "../i18n";
 import styles from "./OutcomesPanel.module.css";
 
 const TRACKS: TrackKind[] = [
@@ -18,20 +19,20 @@ interface OutcomesPanelProps {
 
 export default function OutcomesPanel({ outcomes }: OutcomesPanelProps) {
   if (outcomes.length === 0) {
-    return <p className={styles.empty}>No outcome marks yet.</p>;
+    return <p className={styles.empty}>아직 결과 마크가 없습니다.</p>;
   }
 
   const cell = (track: TrackKind, horizon: OutcomeHorizon) =>
     outcomes.find((o) => o.track_kind === track && o.horizon === horizon);
 
   return (
-    <table className={styles.table} aria-label="Outcome marks">
+    <table className={styles.table} aria-label="결과 마크">
       <thead>
         <tr>
-          <th scope="col">Track</th>
+          <th scope="col">트랙</th>
           {HORIZONS.map((h) => (
             <th key={h} scope="col">
-              {h}
+              {OUTCOME_HORIZON_LABEL[h]}
             </th>
           ))}
         </tr>
@@ -40,7 +41,7 @@ export default function OutcomesPanel({ outcomes }: OutcomesPanelProps) {
         {TRACKS.map((track) => (
           <tr key={track}>
             <th scope="row" className={styles.trackCell}>
-              {track}
+              {TRACK_KIND_LABEL[track]}
             </th>
             {HORIZONS.map((h) => {
               const o = cell(track, h);
@@ -73,9 +74,9 @@ function formatPct(pct: string | null | undefined): string {
 
 function tooltip(o: OutcomeDetail): string {
   return [
-    `price_at_mark: ${formatDecimal(o.price_at_mark)}`,
-    o.pnl_amount ? `pnl_amount: ${formatDecimal(o.pnl_amount)}` : null,
-    `marked_at: ${formatDateTime(o.marked_at)}`,
+    `마크 시점 가격: ${formatDecimal(o.price_at_mark)}`,
+    o.pnl_amount ? `손익 금액: ${formatDecimal(o.pnl_amount)}` : null,
+    `기록 시각: ${formatDateTime(o.marked_at)}`,
   ]
     .filter(Boolean)
     .join(" · ");

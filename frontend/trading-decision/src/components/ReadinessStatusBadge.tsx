@@ -1,11 +1,6 @@
 import type { PreopenNewsReadinessStatus } from "../api/types";
+import { NEWS_READINESS_LABEL } from "../i18n";
 import styles from "./ReadinessStatusBadge.module.css";
-
-const LABELS: Record<PreopenNewsReadinessStatus, string> = {
-  ready: "Ready",
-  stale: "Stale",
-  unavailable: "Unavailable",
-};
 
 export interface ReadinessStatusBadgeProps {
   status: PreopenNewsReadinessStatus;
@@ -20,7 +15,7 @@ export default function ReadinessStatusBadge({
       data-status={status}
       role="status"
     >
-      {LABELS[status]}
+      {NEWS_READINESS_LABEL[status]}
     </span>
   );
 }

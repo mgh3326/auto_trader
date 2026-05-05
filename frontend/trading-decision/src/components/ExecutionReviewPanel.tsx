@@ -3,6 +3,11 @@ import type {
   ExecutionReviewSummary,
   OrderBasketPreview,
 } from "../api/types";
+import {
+  EXECUTION_ACCOUNT_MODE_LABEL,
+  EXECUTION_REVIEW_STAGE_STATUS_LABEL,
+} from "../i18n";
+import { labelOrToken, labelOrderSide } from "../i18n/formatters";
 import styles from "./ExecutionReviewPanel.module.css";
 
 interface Props {
@@ -12,7 +17,7 @@ interface Props {
 function StatusPill({ status }: { status: ExecutionReviewStage["status"] }) {
   return (
     <span className={`${styles.stageStatus} ${styles[status] ?? ""}`}>
-      {status}
+      {EXECUTION_REVIEW_STAGE_STATUS_LABEL[status]}
     </span>
   );
 }
@@ -20,11 +25,12 @@ function StatusPill({ status }: { status: ExecutionReviewStage["status"] }) {
 function BasketPreviewBlock({ basket }: { basket: OrderBasketPreview | null }) {
   if (!basket) return null;
   return (
-    <div aria-label="Basket preview" role="group">
+    <div aria-label="바스켓 미리보기" role="group">
       <div className={styles.basketHeader}>
-        <strong>Basket preview</strong>
+        <strong>바스켓 미리보기</strong>
         <span>
-          {basket.account_mode} · {basket.lines.length} lines
+          {labelOrToken(EXECUTION_ACCOUNT_MODE_LABEL, basket.account_mode)} ·{" "}
+          {basket.lines.length}건
         </span>
       </div>
       <ul className={styles.basketLines}>
@@ -34,17 +40,17 @@ function BasketPreviewBlock({ basket }: { basket: OrderBasketPreview | null }) {
               <strong>{line.symbol}</strong>
               <span> · {line.market}</span>
             </span>
-            <span>{line.side}</span>
+            <span>{labelOrderSide(line.side)}</span>
             <span>{line.quantity ?? "—"}</span>
             <span>{line.limit_price ?? "—"}</span>
             <span>
-              {line.guard.approval_required ? "Approval required" : "—"}
+              {line.guard.approval_required ? "승인 필요" : "—"}
             </span>
           </li>
         ))}
       </ul>
       {basket.basket_warnings.length > 0 ? (
-        <ul className={styles.warnings} aria-label="Basket warnings">
+        <ul className={styles.warnings} aria-label="바스켓 경고">
           {basket.basket_warnings.map((w) => (
             <li className={styles.warningChip} key={w}>
               {w}
@@ -61,28 +67,28 @@ export default function ExecutionReviewPanel({ review }: Props) {
 
   return (
     <section
-      aria-label="Execution review"
+      aria-label="실행 리뷰"
       className={styles.panel}
     >
       <div className={styles.header}>
         <div>
-          <h2 className={styles.headerTitle}>Execution review</h2>
+          <h2 className={styles.headerTitle}>실행 리뷰</h2>
           <p>
-            Read-only stage view of preopen execution readiness. This page does
-            not submit orders.
+            장전 실행 준비 상태의 읽기 전용 단계 뷰입니다. 이 페이지는 주문을
+            제출하지 않습니다.
           </p>
         </div>
-        <span className={styles.statusBadge}>Execution disabled</span>
+        <span className={styles.statusBadge}>실행 비활성화</span>
       </div>
 
       <div className={styles.guardrail} role="note">
         <p>
-          <strong>Advisory / read-only.</strong> No live execution. Mock
-          execution requires later explicit operator approval.
+          <strong>자문 / 읽기 전용.</strong> 실주문 실행 없음. 모의 실행은
+          이후 명시적인 운영자 승인이 필요합니다.
         </p>
       </div>
 
-      <ul className={styles.stages} aria-label="Execution review stages">
+      <ul className={styles.stages} aria-label="실행 리뷰 단계">
         {review.stages.map((stage) => (
           <li className={styles.stage} key={stage.stage_id}>
             <strong>{stage.label}</strong>
@@ -91,7 +97,7 @@ export default function ExecutionReviewPanel({ review }: Props) {
             {stage.warnings.length > 0 ? (
               <ul
                 className={styles.warnings}
-                aria-label={`${stage.label} warnings`}
+                aria-label={`${stage.label} 경고`}
               >
                 {stage.warnings.map((w) => (
                   <li className={styles.warningChip} key={w}>
@@ -107,7 +113,7 @@ export default function ExecutionReviewPanel({ review }: Props) {
       <BasketPreviewBlock basket={review.basket_preview} />
 
       {review.blocking_reasons.length > 0 ? (
-        <ul className={styles.warnings} aria-label="Execution blocking reasons">
+        <ul className={styles.warnings} aria-label="실행 차단 사유">
           {review.blocking_reasons.map((reason) => (
             <li className={styles.warningChip} key={reason}>
               {reason}

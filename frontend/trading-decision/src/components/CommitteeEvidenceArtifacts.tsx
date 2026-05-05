@@ -12,22 +12,22 @@ export const CommitteeEvidenceArtifacts: React.FC<Props> = ({ artifacts }) => {
 
   return (
     <div className="committee-evidence-artifacts">
-      <h3>Committee Evidence</h3>
+      <h3>위원회 근거 자료</h3>
       {evidence.technical_analysis && (
         <div className="evidence-item">
-          <h4>Technical Analysis</h4>
+          <h4>기술적 분석</h4>
           <p>{evidence.technical_analysis.summary}</p>
           {evidence.technical_analysis.confidence && (
-            <span className="confidence">Confidence: {evidence.technical_analysis.confidence}%</span>
+            <span className="confidence">신뢰도: {evidence.technical_analysis.confidence}%</span>
           )}
         </div>
       )}
       {evidence.news_analysis && (
         <div className="evidence-item">
-          <h4>News Analysis</h4>
+          <h4>뉴스 분석</h4>
           <p>{evidence.news_analysis.summary}</p>
           {evidence.news_analysis.confidence && (
-            <span className="confidence">Confidence: {evidence.news_analysis.confidence}%</span>
+            <span className="confidence">신뢰도: {evidence.news_analysis.confidence}%</span>
           )}
         </div>
       )}

@@ -1,9 +1,17 @@
 import React from "react";
 import type { CommitteeRiskReview as RiskReviewType } from "../api/types";
+import { formatDateTime } from "../format/datetime";
 
 interface Props {
   riskReview: RiskReviewType | null;
 }
+
+const VERDICT_LABEL: Record<string, string> = {
+  approved: "승인됨",
+  vetoed: "거부됨",
+  flagged: "주의",
+  pending: "대기 중",
+};
 
 export const CommitteeRiskReview: React.FC<Props> = ({ riskReview }) => {
   if (!riskReview) return null;
@@ -19,10 +27,10 @@ export const CommitteeRiskReview: React.FC<Props> = ({ riskReview }) => {
 
   return (
     <div className="committee-risk-review">
-      <h3>Risk Review</h3>
+      <h3>리스크 리뷰</h3>
       <div className="risk-status">
-        Verdict: <strong style={{ color: getStatusColor(riskReview.verdict) }}>
-          {riskReview.verdict.toUpperCase()}
+        결정: <strong style={{ color: getStatusColor(riskReview.verdict) }}>
+          {VERDICT_LABEL[riskReview.verdict] ?? riskReview.verdict.toUpperCase()}
         </strong>
       </div>
       {riskReview.notes && (
@@ -32,7 +40,7 @@ export const CommitteeRiskReview: React.FC<Props> = ({ riskReview }) => {
       )}
       {riskReview.reviewed_at && (
         <div className="reviewed-at">
-          Reviewed at: {new Date(riskReview.reviewed_at).toLocaleString()}
+          리뷰 일시: {formatDateTime(riskReview.reviewed_at)}
         </div>
       )}
       <style>{`

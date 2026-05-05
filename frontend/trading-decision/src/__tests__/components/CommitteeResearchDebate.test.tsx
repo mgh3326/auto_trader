@@ -17,9 +17,9 @@ describe("CommitteeResearchDebate", () => {
 
     render(<CommitteeResearchDebate researchDebate={debate} />);
 
-    expect(screen.getByText("Research Debate")).toBeInTheDocument();
-    expect(screen.getByText("Bull case")).toBeInTheDocument();
-    expect(screen.getByText("Bear case")).toBeInTheDocument();
+    expect(screen.getByText("리서치 토론")).toBeInTheDocument();
+    expect(screen.getByText("상승 근거")).toBeInTheDocument();
+    expect(screen.getByText("하락 근거")).toBeInTheDocument();
     expect(screen.getByText("Support bounce")).toBeInTheDocument();
     expect(screen.getByText("RSI overbought")).toBeInTheDocument();
     expect(screen.getByText("1 bull / 1 bear")).toBeInTheDocument();
@@ -34,8 +34,8 @@ describe("CommitteeResearchDebate", () => {
 
     render(<CommitteeResearchDebate researchDebate={debate} />);
 
-    expect(screen.getByText("No bull-case claims yet.")).toBeInTheDocument();
-    expect(screen.getByText("No bear-case claims yet.")).toBeInTheDocument();
+    expect(screen.getByText("아직 상승 근거가 없습니다.")).toBeInTheDocument();
+    expect(screen.getByText("아직 하락 근거가 없습니다.")).toBeInTheDocument();
   });
 
   it("renders nothing when debate is null", () => {

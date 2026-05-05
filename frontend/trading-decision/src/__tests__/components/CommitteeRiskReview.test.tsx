@@ -13,8 +13,8 @@ describe("CommitteeRiskReview", () => {
 
     render(<CommitteeRiskReview riskReview={riskReview} />);
 
-    expect(screen.getByText("Risk Review")).toBeInTheDocument();
-    expect(screen.getByText("APPROVED")).toBeInTheDocument();
+    expect(screen.getByText("리스크 리뷰")).toBeInTheDocument();
+    expect(screen.getByText("승인됨")).toBeInTheDocument();
     expect(screen.getByText("All checks passed")).toBeInTheDocument();
   });
 

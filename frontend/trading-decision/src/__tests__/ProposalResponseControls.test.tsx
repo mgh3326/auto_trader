@@ -14,12 +14,12 @@ describe("ProposalResponseControls", () => {
       />,
     );
 
-    for (const name of ["Accept", "Partial accept", "Modify", "Defer", "Reject"]) {
+    for (const name of ["수락", "부분 수락", "수정", "보류", "거절"]) {
       expect(screen.getByRole("button", { name })).toBeInTheDocument();
     }
   });
 
-  it("clicking accept calls onSimpleResponse", async () => {
+  it("clicking 수락 calls onSimpleResponse", async () => {
     const onSimpleResponse = vi.fn();
     render(
       <ProposalResponseControls
@@ -30,12 +30,12 @@ describe("ProposalResponseControls", () => {
       />,
     );
 
-    await userEvent.click(screen.getByRole("button", { name: "Accept" }));
+    await userEvent.click(screen.getByRole("button", { name: "수락" }));
 
     expect(onSimpleResponse).toHaveBeenCalledWith("accept");
   });
 
-  it("clicking modify opens the adjustment editor", async () => {
+  it("clicking 수정 opens the adjustment editor", async () => {
     const onOpenAdjust = vi.fn();
     render(
       <ProposalResponseControls
@@ -46,7 +46,7 @@ describe("ProposalResponseControls", () => {
       />,
     );
 
-    await userEvent.click(screen.getByRole("button", { name: "Modify" }));
+    await userEvent.click(screen.getByRole("button", { name: "수정" }));
 
     expect(onOpenAdjust).toHaveBeenCalledWith("modify");
   });
@@ -61,7 +61,7 @@ describe("ProposalResponseControls", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: "Accept" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Modify" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "수락" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "수정" })).toBeDisabled();
   });
 });

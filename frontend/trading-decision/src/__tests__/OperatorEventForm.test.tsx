@@ -11,11 +11,11 @@ describe("OperatorEventForm", () => {
     );
 
     await userEvent.type(
-      screen.getByLabelText(/source text/i),
+      screen.getByLabelText(/소스 텍스트/),
       "  OpenAI earnings missed  ",
     );
     await userEvent.click(
-      screen.getByRole("button", { name: /add event/i }),
+      screen.getByRole("button", { name: /이벤트 추가/ }),
     );
 
     expect(onSubmit).toHaveBeenCalledTimes(1);
@@ -38,12 +38,12 @@ describe("OperatorEventForm", () => {
     );
 
     await userEvent.click(
-      screen.getByRole("button", { name: /add event/i }),
+      screen.getByRole("button", { name: /이벤트 추가/ }),
     );
 
     expect(onSubmit).not.toHaveBeenCalled();
     expect(screen.getByRole("alert")).toHaveTextContent(
-      /source text is required/i,
+      /소스 텍스트는 필수입니다/,
     );
   });
 
@@ -53,13 +53,13 @@ describe("OperatorEventForm", () => {
       <OperatorEventForm sessionUuid="session-1" onSubmit={onSubmit} />,
     );
 
-    await userEvent.type(screen.getByLabelText(/source text/i), "msg");
+    await userEvent.type(screen.getByLabelText(/소스 텍스트/), "msg");
     await userEvent.type(
-      screen.getByLabelText(/affected symbols/i),
+      screen.getByLabelText(/영향 종목/),
       "MSFT, NVDA ,  AAPL",
     );
     await userEvent.click(
-      screen.getByRole("button", { name: /add event/i }),
+      screen.getByRole("button", { name: /이벤트 추가/ }),
     );
 
     expect(onSubmit).toHaveBeenCalledWith(
@@ -76,11 +76,11 @@ describe("OperatorEventForm", () => {
     );
 
     const textarea = screen.getByLabelText(
-      /source text/i,
+      /소스 텍스트/,
     ) as HTMLTextAreaElement;
     await userEvent.type(textarea, "abc");
     await userEvent.click(
-      screen.getByRole("button", { name: /add event/i }),
+      screen.getByRole("button", { name: /이벤트 추가/ }),
     );
 
     expect(textarea.value).toBe("");
@@ -97,11 +97,11 @@ describe("OperatorEventForm", () => {
     );
 
     const textarea = screen.getByLabelText(
-      /source text/i,
+      /소스 텍스트/,
     ) as HTMLTextAreaElement;
     await userEvent.type(textarea, "abc");
     await userEvent.click(
-      screen.getByRole("button", { name: /add event/i }),
+      screen.getByRole("button", { name: /이벤트 추가/ }),
     );
 
     expect(screen.getByRole("alert")).toHaveTextContent(/validation failed/i);
@@ -114,17 +114,17 @@ describe("OperatorEventForm", () => {
       <OperatorEventForm sessionUuid="session-1" onSubmit={onSubmit} />,
     );
 
-    await userEvent.type(screen.getByLabelText(/source text/i), "msg");
-    const severity = screen.getByLabelText(/severity/i) as HTMLInputElement;
+    await userEvent.type(screen.getByLabelText(/소스 텍스트/), "msg");
+    const severity = screen.getByLabelText(/심각도/) as HTMLInputElement;
     await userEvent.clear(severity);
     await userEvent.type(severity, "9");
     const confidence = screen.getByLabelText(
-      /confidence/i,
+      /신뢰도/,
     ) as HTMLInputElement;
     await userEvent.clear(confidence);
     await userEvent.type(confidence, "150");
     await userEvent.click(
-      screen.getByRole("button", { name: /add event/i }),
+      screen.getByRole("button", { name: /이벤트 추가/ }),
     );
 
     expect(onSubmit).toHaveBeenCalledWith(

@@ -16,10 +16,10 @@ export const CommitteeJournalPlaceholder: React.FC<Props> = ({
 
   return (
     <div className="committee-journal-placeholder">
-      <h3>Journal / Retrospective</h3>
+      <h3>기록 / 사후 검토</h3>
       {journalPlaceholder.journal_uuid && (
         <div className="journal-uuid">
-          Journal UUID: <code>{journalPlaceholder.journal_uuid}</code>
+          기록 UUID: <code>{journalPlaceholder.journal_uuid}</code>
         </div>
       )}
       {journalPlaceholder.notes && (

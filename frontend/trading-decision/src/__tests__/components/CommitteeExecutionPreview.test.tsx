@@ -13,8 +13,8 @@ describe("CommitteeExecutionPreview", () => {
 
     render(<CommitteeExecutionPreview executionPreview={preview} />);
 
-    expect(screen.getByText("Execution Preview")).toBeInTheDocument();
-    expect(screen.getByText(/BLOCKED:/)).toBeInTheDocument();
+    expect(screen.getByText("실행 프리뷰")).toBeInTheDocument();
+    expect(screen.getByText(/차단됨:/)).toBeInTheDocument();
     expect(screen.getByText("Insufficient balance")).toBeInTheDocument();
   });
 

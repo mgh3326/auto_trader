@@ -11,6 +11,13 @@ export interface MarketNewsBriefingSectionProps {
 
 type SummaryKey = "included" | "excluded" | "sections" | "uncategorized";
 
+const SUMMARY_CHIP_LABEL: Record<SummaryKey, string> = {
+  included: "포함",
+  excluded: "제외",
+  sections: "섹션",
+  uncategorized: "미분류",
+};
+
 function summaryNumber(
   summary: Record<string, unknown>,
   key: SummaryKey,
@@ -42,9 +49,9 @@ function NewsItem({ item }: { item: PreopenMarketNewsItem }) {
       ) : null}
       {relevance ? (
         <div className={styles.relevance}>
-          <span className={styles.score}>Score {relevance.score}</span>
+          <span className={styles.score}>점수 {relevance.score}</span>
           {matchedTerms.length > 0 ? (
-            <span className={styles.terms}>Terms: {matchedTerms.join(", ")}</span>
+            <span className={styles.terms}>매칭 키워드: {matchedTerms.join(", ")}</span>
           ) : null}
         </div>
       ) : null}
@@ -57,11 +64,11 @@ export default function MarketNewsBriefingSection({
 }: MarketNewsBriefingSectionProps) {
   if (briefing === null) {
     return (
-      <section aria-label="Market news briefing" className={styles.section}>
+      <section aria-label="시장 뉴스 브리핑" className={styles.section}>
         <header className={styles.header}>
-          <h2>Market news briefing</h2>
+          <h2>시장 뉴스 브리핑</h2>
         </header>
-        <p className={styles.muted}>No market news briefing available yet.</p>
+        <p className={styles.muted}>아직 시장 뉴스 브리핑이 없습니다.</p>
       </section>
     );
   }
@@ -75,22 +82,21 @@ export default function MarketNewsBriefingSection({
     );
 
   return (
-    <section aria-label="Market news briefing" className={styles.section}>
+    <section aria-label="시장 뉴스 브리핑" className={styles.section}>
       <header className={styles.header}>
         <div>
-          <h2>Market news briefing</h2>
+          <h2>시장 뉴스 브리핑</h2>
           <p className={styles.subtitle}>
-            Market-aware sections from recent news, filtered before trading
-            review.
+            최근 뉴스에서 시장 관련 섹션을 추출해 트레이딩 리뷰 전에 필터링했습니다.
           </p>
         </div>
       </header>
 
       {summaryChips.length > 0 ? (
-        <ul aria-label="Market news briefing summary" className={styles.summaryChips}>
+        <ul aria-label="시장 뉴스 브리핑 요약" className={styles.summaryChips}>
           {summaryChips.map(([key, value]) => (
             <li className={styles.summaryChip} key={key}>
-              <span>{key}</span>
+              <span>{SUMMARY_CHIP_LABEL[key]}</span>
               <strong>{value}</strong>
             </li>
           ))}
@@ -98,17 +104,17 @@ export default function MarketNewsBriefingSection({
       ) : null}
 
       {briefing.sections.length === 0 ? (
-        <p className={styles.muted}>No high-signal briefing sections found.</p>
+        <p className={styles.muted}>시그널이 강한 브리핑 섹션이 없습니다.</p>
       ) : (
         <div className={styles.sectionGrid}>
           {briefing.sections.map((section) => (
             <article className={styles.card} key={section.section_id}>
               <header className={styles.cardHeader}>
                 <h3>{section.title}</h3>
-                <span className={styles.count}>{section.items.length} items</span>
+                <span className={styles.count}>{section.items.length}건</span>
               </header>
               {section.items.length === 0 ? (
-                <p className={styles.muted}>No articles in this section.</p>
+                <p className={styles.muted}>이 섹션에는 기사가 없습니다.</p>
               ) : (
                 <ul className={styles.itemList}>
                   {section.items.map((item) => (
@@ -122,11 +128,11 @@ export default function MarketNewsBriefingSection({
       )}
 
       <div className={styles.excludedLine}>
-        Filtered noise: {briefing.excluded_count}
+        필터링된 노이즈: {briefing.excluded_count}
       </div>
       {briefing.top_excluded.length > 0 ? (
         <details className={styles.excludedDetails}>
-          <summary>Show top excluded articles ({briefing.top_excluded.length})</summary>
+          <summary>상위 제외 기사 보기 ({briefing.top_excluded.length})</summary>
           <ul className={styles.itemList}>
             {briefing.top_excluded.map((item) => (
               <NewsItem item={item} key={item.id} />

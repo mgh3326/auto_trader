@@ -18,21 +18,19 @@ describe("WarningChips", () => {
         ]}
       />,
     );
-    expect(screen.getByText("Quote missing")).toBeInTheDocument();
-    expect(screen.getByText("Quote stale")).toBeInTheDocument();
-    expect(screen.getByText("Orderbook missing")).toBeInTheDocument();
-    expect(
-      screen.getByText("Support / resistance unavailable"),
-    ).toBeInTheDocument();
-    expect(screen.getByText("KR universe row missing")).toBeInTheDocument();
-    expect(screen.getByText("Non-NXT venue")).toBeInTheDocument();
-    expect(screen.getByText("Unknown venue")).toBeInTheDocument();
-    expect(screen.getByText("Unknown side")).toBeInTheDocument();
+    expect(screen.getByText("시세 누락")).toBeInTheDocument();
+    expect(screen.getByText("시세 오래됨")).toBeInTheDocument();
+    expect(screen.getByText("호가 누락")).toBeInTheDocument();
+    expect(screen.getByText("지지/저항선 미사용")).toBeInTheDocument();
+    expect(screen.getByText("국내 유니버스 누락")).toBeInTheDocument();
+    expect(screen.getByText("비-NXT 거래소")).toBeInTheDocument();
+    expect(screen.getByText("거래소 알 수 없음")).toBeInTheDocument();
+    expect(screen.getByText("방향 알 수 없음")).toBeInTheDocument();
   });
 
-  it("renders unknown-but-allowlist-shaped tokens verbatim as text", () => {
+  it("renders unknown-but-allowlist-shaped tokens verbatim as text (with underscore replacement)", () => {
     render(<WarningChips tokens={["custom_warning_token"]} />);
-    expect(screen.getByText("custom_warning_token")).toBeInTheDocument();
+    expect(screen.getByText("custom warning token")).toBeInTheDocument();
   });
 
   it("ignores tokens that fail the allowlist", () => {
