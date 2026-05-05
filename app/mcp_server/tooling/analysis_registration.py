@@ -16,6 +16,12 @@ from app.mcp_server.tooling.analysis_tool_handlers import (
     recommend_stocks_impl,
     screen_stocks_impl,
 )
+from app.mcp_server.tooling.research_pipeline_read import (
+    research_session_get_impl,
+    research_session_list_recent_impl,
+    stage_analysis_get_impl,
+    research_summary_get_impl,
+)
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -31,6 +37,10 @@ ANALYSIS_TOOL_NAMES: set[str] = {
     "get_correlation",
     "get_dividends",
     "get_fear_greed_index",
+    "research_session_get",
+    "research_session_list_recent",
+    "stage_analysis_get",
+    "research_summary_get",
 }
 
 
@@ -258,6 +268,34 @@ def register_analysis_tools(mcp: FastMCP) -> None:
     )
     async def get_fear_greed_index(days: int = 7) -> dict[str, Any]:
         return await get_fear_greed_index_impl(days=days)
+
+    @mcp.tool(
+        name="research_session_get",
+        description="Returns 1 research session with its 4 latest stage rows and summary.",
+    )
+    async def research_session_get(session_id: int) -> dict[str, Any]:
+        return await research_session_get_impl(session_id=session_id)
+
+    @mcp.tool(
+        name="research_session_list_recent",
+        description="Returns recent N research sessions with status, decision, and confidence.",
+    )
+    async def research_session_list_recent(limit: int = 10) -> dict[str, Any]:
+        return await research_session_list_recent_impl(limit=limit)
+
+    @mcp.tool(
+        name="stage_analysis_get",
+        description="Returns one research stage analysis row by id.",
+    )
+    async def stage_analysis_get(stage_id: int) -> dict[str, Any]:
+        return await stage_analysis_get_impl(stage_id=stage_id)
+
+    @mcp.tool(
+        name="research_summary_get",
+        description="Returns one research summary with its linked stage rows by summary id.",
+    )
+    async def research_summary_get(summary_id: int) -> dict[str, Any]:
+        return await research_summary_get_impl(summary_id=summary_id)
 
 
 __all__ = ["ANALYSIS_TOOL_NAMES", "register_analysis_tools"]

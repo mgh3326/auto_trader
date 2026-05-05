@@ -11,6 +11,7 @@ from app.analysis.stages.market_stage import MarketStageAnalyzer
 from app.analysis.stages.news_stage import NewsStageAnalyzer
 from app.analysis.stages.fundamentals_stage import FundamentalsStageAnalyzer
 from app.analysis.stages.social_stage import SocialStageAnalyzer
+from app.core.config import settings
 from app.models.research_pipeline import (
     ResearchSession,
     StageAnalysis,
@@ -18,6 +19,7 @@ from app.models.research_pipeline import (
     SummaryStageLink,
 )
 from app.services.stock_info_service import create_stock_if_not_exists
+from app.services.legacy_stock_analysis_adapter import LegacyStockAnalysisAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -134,9 +136,16 @@ async def run_research_session(
         )
         db.add(link)
 
-    # 7. If RESEARCH_PIPELINE_DUAL_WRITE_ENABLED, call adapter (defer actual implementation to Task 10)
-    # Placeholder for dual-write logic
-    
+    # 7. If RESEARCH_PIPELINE_DUAL_WRITE_ENABLED, call adapter
+    if settings.RESEARCH_PIPELINE_DUAL_WRITE_ENABLED:
+        adapter = LegacyStockAnalysisAdapter()
+        await adapter.write(
+            db=db,
+            summary=summary_output,
+            summary_id=summary.id,
+            stock_info_id=stock_info.id,
+        )
+
     # 8. Update ResearchSession.status='finalized', set finalized_at
     session.status = "finalized"
     session.finalized_at = datetime.now(timezone.utc)
