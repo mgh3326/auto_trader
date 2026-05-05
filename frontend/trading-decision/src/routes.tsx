@@ -14,7 +14,6 @@ import ResearchSummaryPage from "./pages/research/ResearchSummaryPage";
 import ResearchMarketPage from "./pages/research/ResearchMarketPage";
 import ResearchNewsPage from "./pages/research/ResearchNewsPage";
 import ResearchFundamentalsPage from "./pages/research/ResearchFundamentalsPage";
-import ResearchSocialPage from "./pages/research/ResearchSocialPage";
 import ResearchSessionNotFoundPage from "./pages/research/ResearchSessionNotFoundPage";
 import SymbolTimelinePage from "./pages/SymbolTimelinePage";
 
@@ -50,7 +49,6 @@ export const tradingDecisionRoutes: RouteObject[] = [
       { path: "market", element: <ResearchMarketPage /> },
       { path: "news", element: <ResearchNewsPage /> },
       { path: "fundamentals", element: <ResearchFundamentalsPage /> },
-      { path: "social", element: <ResearchSocialPage /> },
       { path: "*", element: <ResearchSessionNotFoundPage /> },
     ],
   },

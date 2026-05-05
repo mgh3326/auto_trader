@@ -16,7 +16,6 @@ const STAGE_NAV = [
   { to: "market", label: RESEARCH_TAB_LABEL.market },
   { to: "news", label: RESEARCH_TAB_LABEL.news },
   { to: "fundamentals", label: RESEARCH_TAB_LABEL.fundamentals },
-  { to: "social", label: RESEARCH_TAB_LABEL.social },
 ] as const;
 
 export default function ResearchSessionLayout() {

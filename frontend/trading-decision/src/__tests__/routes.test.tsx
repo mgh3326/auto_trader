@@ -69,12 +69,14 @@ describe("trading decision routes", () => {
     expect(matches?.at(-1)?.route.path).toBe("fundamentals");
   });
 
-  it("registers /research/sessions/:sessionId/social stage route", () => {
+  it("does not register /research/sessions/:sessionId/social as a stage route", () => {
     const matches = matchRoutes(
       tradingDecisionRoutes,
       "/research/sessions/42/social",
     );
-    expect(matches?.at(-1)?.route.path).toBe("social");
+    // Falls through to the wildcard not-found child instead of a 'social' path.
+    expect(matches?.at(-1)?.route.path).toBe("*");
+    expect(matches?.at(0)?.route.path).toBe("/research/sessions/:sessionId");
   });
 
   it("legacy /research/sessions/:sessionId still matches the layout", () => {

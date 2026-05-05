@@ -7,7 +7,6 @@ import ResearchSummaryPage from "../pages/research/ResearchSummaryPage";
 import ResearchMarketPage from "../pages/research/ResearchMarketPage";
 import ResearchNewsPage from "../pages/research/ResearchNewsPage";
 import ResearchFundamentalsPage from "../pages/research/ResearchFundamentalsPage";
-import ResearchSocialPage from "../pages/research/ResearchSocialPage";
 import ResearchSessionNotFoundPage from "../pages/research/ResearchSessionNotFoundPage";
 import { makeSessionFull } from "../test/fixtures/research";
 import { mockFetch } from "../test/server";
@@ -25,7 +24,6 @@ function renderAt(path: string) {
           <Route path="market" element={<ResearchMarketPage />} />
           <Route path="news" element={<ResearchNewsPage />} />
           <Route path="fundamentals" element={<ResearchFundamentalsPage />} />
-          <Route path="social" element={<ResearchSocialPage />} />
           <Route path="*" element={<ResearchSessionNotFoundPage />} />
         </Route>
       </Routes>
@@ -89,14 +87,15 @@ describe("Research session stage routes", () => {
     );
   });
 
-  it("renders the social placeholder at /social", async () => {
+  it("does not render a social link in the stage navigation", async () => {
     mockSessionOk();
-    renderAt("/research/sessions/1/social");
+    renderAt("/research/sessions/1/summary");
     await waitFor(() =>
-      expect(
-        screen.getByText(/소셜 신호 분석은 준비 중입니다/),
-      ).toBeInTheDocument(),
+      expect(screen.getByText("매수")).toBeInTheDocument(),
     );
+    expect(
+      screen.queryByRole("link", { name: /소셜/ }),
+    ).not.toBeInTheDocument();
   });
 
   it("renders the not-found body for unknown stage segments", async () => {

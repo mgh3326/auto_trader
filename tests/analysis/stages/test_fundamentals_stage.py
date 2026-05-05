@@ -11,7 +11,12 @@ from app.schemas.research_pipeline import FundamentalsSignals, StageVerdict
 async def test_fundamentals_stage_bull_verdict():
     # PER 10, Sector Median 15 -> 10 < 15 * 0.8 (12) -> BULL
     analyzer = FundamentalsStageAnalyzer()
-    ctx = StageContext(session_id=1, symbol="005930", instrument_type="equity_kr")
+    ctx = StageContext(
+        session_id=1,
+        symbol="005930",
+        symbol_name="Samsung",
+        instrument_type="equity_kr",
+    )
 
     mock_data = {
         "per": 10.0,
@@ -47,7 +52,12 @@ async def test_fundamentals_stage_bull_verdict():
 async def test_fundamentals_stage_bear_verdict():
     # PER 30, Sector Median 15 -> 30 > 15 * 1.5 (22.5) -> BEAR
     analyzer = FundamentalsStageAnalyzer()
-    ctx = StageContext(session_id=1, symbol="005930", instrument_type="equity_kr")
+    ctx = StageContext(
+        session_id=1,
+        symbol="005930",
+        symbol_name="Samsung",
+        instrument_type="equity_kr",
+    )
 
     mock_data = {
         "per": 30.0,
@@ -76,7 +86,9 @@ async def test_fundamentals_stage_bear_verdict():
 @pytest.mark.asyncio
 async def test_fundamentals_stage_unavailable_for_crypto():
     analyzer = FundamentalsStageAnalyzer()
-    ctx = StageContext(session_id=1, symbol="BTC", instrument_type="crypto")
+    ctx = StageContext(
+        session_id=1, symbol="BTC", symbol_name="Bitcoin", instrument_type="crypto"
+    )
 
     output = await analyzer.analyze(ctx)
     assert output.verdict == StageVerdict.UNAVAILABLE

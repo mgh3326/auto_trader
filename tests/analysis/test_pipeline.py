@@ -9,7 +9,6 @@ from app.schemas.research_pipeline import (
     FundamentalsSignals,
     MarketSignals,
     NewsSignals,
-    SocialSignals,
     StageOutput,
     StageVerdict,
     SummaryDecision,
@@ -39,7 +38,6 @@ async def test_run_research_session_flow():
         patch(
             "app.analysis.pipeline.FundamentalsStageAnalyzer"
         ) as mock_fundamentals_analyzer,
-        patch("app.analysis.pipeline.SocialStageAnalyzer") as mock_social_analyzer,
         patch("app.analysis.pipeline.build_summary") as mock_build_summary,
     ):
         # Setup analyzer returns
@@ -72,14 +70,6 @@ async def test_run_research_session_flow():
                 verdict=StageVerdict.NEUTRAL,
                 confidence=50,
                 signals=FundamentalsSignals(peer_count=5),
-            )
-        )
-        mock_social_analyzer.return_value.run = AsyncMock(
-            return_value=StageOutput(
-                stage_type="social",
-                verdict=StageVerdict.UNAVAILABLE,
-                confidence=0,
-                signals=SocialSignals(available=False, reason="placeholder"),
             )
         )
 
@@ -121,7 +111,7 @@ async def test_run_research_session_flow():
         # Assertions
         assert session_id == 100
         assert mock_create_stock.called
-        assert mock_db.add.call_count >= 6  # 1 session + 4 stages + 1 summary + links
+        assert mock_db.add.call_count >= 5  # 1 session + 3 stages + 1 summary + links
         assert mock_db.commit.called
         assert mock_db.flush.called
 

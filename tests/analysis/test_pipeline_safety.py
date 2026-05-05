@@ -9,7 +9,6 @@ from app.schemas.research_pipeline import (
     FundamentalsSignals,
     MarketSignals,
     NewsSignals,
-    SocialSignals,
     StageOutput,
     StageVerdict,
     SummaryDecision,
@@ -39,7 +38,6 @@ async def test_stage_failure_graceful_degradation():
         patch(
             "app.analysis.pipeline.FundamentalsStageAnalyzer"
         ) as mock_fundamentals_analyzer,
-        patch("app.analysis.pipeline.SocialStageAnalyzer") as mock_social_analyzer,
         patch("app.analysis.pipeline.build_summary") as mock_build_summary,
     ):
         # Market fails
@@ -64,14 +62,6 @@ async def test_stage_failure_graceful_degradation():
                 signals=FundamentalsSignals(peer_count=2),
             )
         )
-        mock_social_analyzer.return_value.run = AsyncMock(
-            return_value=StageOutput(
-                stage_type="social",
-                verdict=StageVerdict.UNAVAILABLE,
-                confidence=0,
-                signals=SocialSignals(available=False, reason="none"),
-            )
-        )
 
         mock_summary_output = SummaryOutput(
             decision=SummaryDecision.HOLD,
@@ -90,11 +80,12 @@ async def test_stage_failure_graceful_degradation():
         # Verify build_summary was called despite market failure
         assert mock_build_summary.called
 
-        # Verify 3 StageAnalysis rows were added (excluding Market)
+        # Verify 2 StageAnalysis rows were added (excluding Market)
+        # Social is removed, so only News and Fundamentals remain.
         stage_adds = [
             c for c in mock_db.add.call_args_list if isinstance(c[0][0], StageAnalysis)
         ]
-        assert len(stage_adds) == 3
+        assert len(stage_adds) == 2
         added_stages = {c[0][0].stage_type for c in stage_adds}
         assert "market" not in added_stages
         assert "news" in added_stages
@@ -130,7 +121,6 @@ async def test_commit_failure_safety():
         patch("app.analysis.pipeline.MarketStageAnalyzer") as mock_m,
         patch("app.analysis.pipeline.NewsStageAnalyzer") as mock_n,
         patch("app.analysis.pipeline.FundamentalsStageAnalyzer") as mock_f,
-        patch("app.analysis.pipeline.SocialStageAnalyzer") as mock_s,
         patch("app.analysis.pipeline.build_summary") as mock_build_summary,
     ):
         mock_m.return_value.run = AsyncMock(
@@ -164,14 +154,6 @@ async def test_commit_failure_safety():
                 signals=FundamentalsSignals(peer_count=2),
             )
         )
-        mock_s.return_value.run = AsyncMock(
-            return_value=StageOutput(
-                stage_type="social",
-                verdict=StageVerdict.UNAVAILABLE,
-                confidence=0,
-                signals=SocialSignals(available=False, reason="none"),
-            )
-        )
 
         mock_summary_output = SummaryOutput(
             decision=SummaryDecision.HOLD,
@@ -187,7 +169,7 @@ async def test_commit_failure_safety():
         # Mock commit to fail on the final call (status update)
         # We need to know which commit call it is.
         # In the refined implementation, we expect:
-        # 1. commit per stage (4 stages -> 4 commits)
+        # 1. commit per stage (3 stages -> 3 commits)
         # 2. commit for summary + links (1 commit)
         # 3. commit for status (1 commit)
 
@@ -196,7 +178,7 @@ async def test_commit_failure_safety():
         async def mock_commit():
             nonlocal commit_count
             commit_count += 1
-            if commit_count == 6:  # The 6th commit is the final status update
+            if commit_count == 5:  # The 5th commit is the final status update
                 raise Exception("DB Connection Lost")
 
         mock_db.commit.side_effect = mock_commit

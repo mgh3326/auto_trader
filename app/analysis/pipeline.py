@@ -12,7 +12,6 @@ from app.analysis.stages.base import StageContext
 from app.analysis.stages.fundamentals_stage import FundamentalsStageAnalyzer
 from app.analysis.stages.market_stage import MarketStageAnalyzer
 from app.analysis.stages.news_stage import NewsStageAnalyzer
-from app.analysis.stages.social_stage import SocialStageAnalyzer
 from app.core.config import settings
 from app.models.research_pipeline import (
     ResearchSession,
@@ -66,19 +65,19 @@ async def run_research_session(
         await db.flush()
         session_id = session.id
 
-    # 3. Run 4 stage analyzers concurrently via asyncio.gather
+    # 3. Run stage analyzers concurrently via asyncio.gather
     ctx = StageContext(
         session_id=session_id,
         symbol=symbol,
         instrument_type=instrument_type,
         user_id=user_id,
+        symbol_name=name,
     )
 
     analyzers = [
         MarketStageAnalyzer(),
         NewsStageAnalyzer(),
         FundamentalsStageAnalyzer(),
-        SocialStageAnalyzer(),
     ]
 
     # Run analyzers concurrently
