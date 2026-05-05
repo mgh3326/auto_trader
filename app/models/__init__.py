@@ -20,6 +20,13 @@ from .research_backtest import (
     ResearchPromotionCandidate,
     ResearchSyncJob,
 )
+from .research_pipeline import (
+    ResearchSession,
+    ResearchSummary,
+    StageAnalysis,
+    SummaryStageLink,
+    UserResearchNote,
+)
 from .research_run import (
     ResearchRun,
     ResearchRunCandidate,
@@ -134,6 +141,11 @@ __all__ = [
     "ResearchRunStage",
     "ResearchRunMarketScope",
     "ResearchRunCandidateKind",
+    "ResearchSession",
+    "StageAnalysis",
+    "ResearchSummary",
+    "SummaryStageLink",
+    "UserResearchNote",
     # "AlertRule", "AlertEvent",
     # "PricesLatest", "PricesOHLCV", "FxRate",
 ]
