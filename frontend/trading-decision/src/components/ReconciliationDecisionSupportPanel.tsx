@@ -2,6 +2,7 @@ import type { ReconciliationPayload } from "../api/reconciliation";
 import { formatDateTime } from "../format/datetime";
 import { formatDecimal } from "../format/decimal";
 import { formatPercent } from "../format/percent";
+import { labelOrderSide } from "../i18n/formatters";
 import styles from "./ReconciliationDecisionSupportPanel.module.css";
 
 interface Props {
@@ -21,16 +22,16 @@ export default function ReconciliationDecisionSupportPanel({
   const ds = payload.decision_support;
   return (
     <section
-      aria-label="Reconciliation decision support"
+      aria-label="조정 의사결정 지원"
       className={styles.panel}
     >
       <dl className={styles.list}>
-        <Item label="Pending side" value={side} />
-        <Item label="Pending price" value={formatDecimal(originalPrice)} />
-        <Item label="Pending qty" value={formatDecimal(originalQuantity)} />
-        <Item label="Pending order" value={payload.pending_order_id ?? "—"} />
+        <Item label="대기 방향" value={labelOrderSide(side)} />
+        <Item label="대기 가격" value={formatDecimal(originalPrice)} />
+        <Item label="대기 수량" value={formatDecimal(originalQuantity)} />
+        <Item label="대기 주문" value={payload.pending_order_id ?? "—"} />
         <Item
-          label="Live quote"
+          label="실시간 시세"
           value={
             payload.live_quote === null
               ? "—"
@@ -39,13 +40,13 @@ export default function ReconciliationDecisionSupportPanel({
                 )})`
           }
         />
-        <Item label="Gap to current" value={formatPercent(ds.gap_pct)} />
+        <Item label="현재가 대비 괴리" value={formatPercent(ds.gap_pct)} />
         <Item
-          label="Distance to fill"
+          label="체결까지 거리"
           value={formatPercent(ds.signed_distance_to_fill)}
         />
         <Item
-          label="Nearest support"
+          label="가까운 지지선"
           value={
             ds.nearest_support_price === null
               ? "—"
@@ -55,7 +56,7 @@ export default function ReconciliationDecisionSupportPanel({
           }
         />
         <Item
-          label="Nearest resistance"
+          label="가까운 저항선"
           value={
             ds.nearest_resistance_price === null
               ? "—"
@@ -65,7 +66,7 @@ export default function ReconciliationDecisionSupportPanel({
           }
         />
         <Item
-          label="Bid/ask spread"
+          label="매수/매도 스프레드"
           value={formatPercent(ds.bid_ask_spread_pct)}
         />
       </dl>
