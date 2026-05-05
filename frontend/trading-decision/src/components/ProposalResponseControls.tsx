@@ -1,4 +1,5 @@
 import type { RespondAction, UserResponseValue } from "../api/types";
+import { RESPONSE_BUTTON_LABEL } from "../i18n";
 
 interface ProposalResponseControlsProps {
   currentResponse: UserResponseValue;
@@ -7,16 +8,12 @@ interface ProposalResponseControlsProps {
   onOpenAdjust: (response: "modify" | "partial_accept") => void;
 }
 
-const buttons: Array<{
-  label: string;
-  value: RespondAction;
-  kind: "simple" | "adjust";
-}> = [
-  { label: "Accept", value: "accept", kind: "simple" },
-  { label: "Partial accept", value: "partial_accept", kind: "adjust" },
-  { label: "Modify", value: "modify", kind: "adjust" },
-  { label: "Defer", value: "defer", kind: "simple" },
-  { label: "Reject", value: "reject", kind: "simple" },
+const buttons: Array<{ value: RespondAction; kind: "simple" | "adjust" }> = [
+  { value: "accept", kind: "simple" },
+  { value: "partial_accept", kind: "adjust" },
+  { value: "modify", kind: "adjust" },
+  { value: "defer", kind: "simple" },
+  { value: "reject", kind: "simple" },
 ];
 
 export default function ProposalResponseControls({
@@ -26,7 +23,7 @@ export default function ProposalResponseControls({
   onOpenAdjust,
 }: ProposalResponseControlsProps) {
   return (
-    <div className="response-controls" aria-label="Proposal response controls">
+    <div className="response-controls" aria-label="제안 응답 컨트롤">
       {buttons.map((button) => (
         <button
           aria-pressed={currentResponse === button.value}
@@ -37,12 +34,12 @@ export default function ProposalResponseControls({
             if (button.value === "modify" || button.value === "partial_accept") {
               onOpenAdjust(button.value);
             } else {
-              onSimpleResponse(button.value);
+              onSimpleResponse(button.value as "accept" | "reject" | "defer");
             }
           }}
           type="button"
         >
-          {button.label}
+          {RESPONSE_BUTTON_LABEL[button.value]}
         </button>
       ))}
     </div>
