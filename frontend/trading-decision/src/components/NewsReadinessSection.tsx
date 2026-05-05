@@ -18,17 +18,16 @@ export default function NewsReadinessSection({
   if (news === null) {
     return (
       <section
-        aria-label="News readiness"
+        aria-label="뉴스 준비도"
         className={styles.section}
         data-testid="news-readiness-section"
       >
         <header className={styles.header}>
-          <h2>News readiness</h2>
+          <h2>뉴스 준비도</h2>
           <ReadinessStatusBadge status="unavailable" />
         </header>
         <p className={styles.muted}>
-          News readiness lookup failed. Treat this preopen as if news is
-          unavailable.
+          뉴스 준비도 조회에 실패했습니다. 뉴스를 미사용으로 간주하세요.
         </p>
       </section>
     );
@@ -39,40 +38,40 @@ export default function NewsReadinessSection({
 
   return (
     <section
-      aria-label="News readiness"
+      aria-label="뉴스 준비도"
       className={styles.section}
       data-testid="news-readiness-section"
     >
       <header className={styles.header}>
-        <h2>News readiness</h2>
+        <h2>뉴스 준비도</h2>
         <ReadinessStatusBadge status={news.status} />
       </header>
 
       <dl className={styles.meta}>
         <div>
-          <dt>Latest run</dt>
+          <dt>최근 실행</dt>
           <dd>{formatDateTime(news.latest_finished_at)}</dd>
         </div>
         <div>
-          <dt>Latest article</dt>
+          <dt>최근 기사</dt>
           <dd>{formatDateTime(news.latest_article_published_at)}</dd>
         </div>
         <div>
-          <dt>Freshness window</dt>
-          <dd>{news.max_age_minutes} min</dd>
+          <dt>신선도 기준</dt>
+          <dd>{news.max_age_minutes}분</dd>
         </div>
       </dl>
 
       {news.status !== "ready" ? (
         <p className={styles.warningLine} role="status">
           {news.status === "stale"
-            ? `News is older than ${news.max_age_minutes} min — verify before acting.`
-            : "News pipeline did not report a recent successful run."}
+            ? `뉴스가 ${news.max_age_minutes}분 이상 경과했습니다. 행동 전에 확인하세요.`
+            : "뉴스 파이프라인의 최근 실행 성공 기록이 없습니다."}
         </p>
       ) : null}
 
       {sourceEntries.length > 0 ? (
-        <ul aria-label="News source counts" className={styles.sourceList}>
+        <ul aria-label="뉴스 소스 건수" className={styles.sourceList}>
           {sourceEntries.map(([source, count]) => (
             <li className={styles.sourceChip} key={source}>
               {source}: {count}
@@ -80,21 +79,21 @@ export default function NewsReadinessSection({
           ))}
         </ul>
       ) : (
-        <p className={styles.muted}>No source counts available.</p>
+        <p className={styles.muted}>소스 건수가 없습니다.</p>
       )}
 
       {sourceCoverage.length > 0 ? (
         <div className={styles.coverageTableWrap}>
-          <h3 className={styles.previewHeading}>Source coverage</h3>
+          <h3 className={styles.previewHeading}>소스 커버리지</h3>
           <table className={styles.coverageTable}>
             <thead>
               <tr>
-                <th>Source</th>
-                <th>Status</th>
-                <th>Expected</th>
-                <th>Stored</th>
-                <th>24h</th>
-                <th>Latest article</th>
+                <th>소스</th>
+                <th>상태</th>
+                <th>예상</th>
+                <th>저장됨</th>
+                <th>24시간</th>
+                <th>최근 기사</th>
               </tr>
             </thead>
             <tbody>
@@ -114,10 +113,10 @@ export default function NewsReadinessSection({
       ) : null}
 
       <h3 className={styles.previewHeading}>
-        Latest articles ({preview.length})
+        최근 기사 ({preview.length})
       </h3>
       {preview.length === 0 ? (
-        <p className={styles.muted}>No recent articles to preview.</p>
+        <p className={styles.muted}>미리 볼 최근 기사가 없습니다.</p>
       ) : (
         <ul className={styles.previewList}>
           {preview.map((item) => (
