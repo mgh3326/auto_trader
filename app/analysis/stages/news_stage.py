@@ -29,6 +29,11 @@ async def _fetch_recent_headlines(symbol: str, instrument_type: str) -> dict[str
         stock_symbol=symbol, market=market, hours=24, limit=20
     )
 
+    return _compute_signals_from_articles(articles)
+
+
+def _compute_signals_from_articles(articles: list[Any]) -> dict[str, Any]:
+    """Pure logic to compute sentiment/signals from a list of articles."""
     if not articles:
         return {
             "headlines": [],
