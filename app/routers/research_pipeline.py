@@ -9,6 +9,10 @@ from app.core.config import settings
 from app.core.db import get_db
 from app.models.trading import User
 from app.routers.dependencies import get_authenticated_user
+from app.schemas.research_pipeline import (
+    ResearchSessionCreateRequest,
+    ResearchSessionCreateResponse,
+)
 from app.services.research_pipeline_service import ResearchPipelineService
 
 router = APIRouter(prefix="/api/research-pipeline", tags=["research-pipeline"])
@@ -20,6 +24,26 @@ def check_pipeline_enabled():
             status_code=status.HTTP_403_FORBIDDEN,
             detail="research_pipeline_disabled",
         )
+
+
+@router.post(
+    "/sessions",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(check_pipeline_enabled)],
+)
+async def create_session(
+    payload: ResearchSessionCreateRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_authenticated_user)],
+) -> ResearchSessionCreateResponse:
+    service = ResearchPipelineService(db)
+    return await service.create_session_and_dispatch(
+        symbol=payload.symbol,
+        name=payload.name,
+        instrument_type=payload.instrument_type,
+        research_run_id=payload.research_run_id,
+        user_id=current_user.id,
+    )
 
 
 @router.get("/sessions", dependencies=[Depends(check_pipeline_enabled)])
