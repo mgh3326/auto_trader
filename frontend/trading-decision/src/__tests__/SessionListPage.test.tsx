@@ -17,7 +17,7 @@ describe("SessionListPage", () => {
 
     render(<SessionListPage />, { wrapper: MemoryRouter });
 
-    expect(await screen.findByText("No decision sessions yet.")).toBeInTheDocument();
+    expect(await screen.findByText("아직 의사결정 세션이 없습니다.")).toBeInTheDocument();
   });
 
   it("shows session rows with proposal counters", async () => {
@@ -42,7 +42,7 @@ describe("SessionListPage", () => {
     render(<SessionListPage />, { wrapper: MemoryRouter });
     await screen.findByText("Momentum rebalance");
 
-    await userEvent.selectOptions(screen.getByLabelText("Status filter"), "open");
+    await userEvent.selectOptions(screen.getByLabelText("상태 필터"), "open");
 
     await waitFor(() => expect(calls.length).toBeGreaterThan(1));
   });
