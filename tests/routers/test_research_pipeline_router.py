@@ -200,7 +200,9 @@ async def test_get_session_full_returns_session_stages_summary(override_deps):
             async with AsyncClient(
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as ac:
-                response = await ac.get("/api/research-pipeline/sessions/1?include=full")
+                response = await ac.get(
+                    "/api/research-pipeline/sessions/1?include=full"
+                )
                 assert response.status_code == status.HTTP_200_OK
                 body = response.json()
                 assert body["session"]["id"] == 1

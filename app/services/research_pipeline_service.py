@@ -198,9 +198,7 @@ class ResearchPipelineService:
 
         return list(latest_stages.values())
 
-    async def get_symbol_timeline(
-        self, symbol: str, days: int = 30
-    ) -> dict[str, Any]:
+    async def get_symbol_timeline(self, symbol: str, days: int = 30) -> dict[str, Any]:
         from datetime import timedelta
 
         from app.models.analysis import StockInfo
@@ -299,7 +297,9 @@ class ResearchPipelineService:
             "summary_stage_links": [
                 {
                     "stage_analysis_id": link.stage_analysis_id,
-                    "stage_type": stage_type_by_id.get(link.stage_analysis_id, "unknown"),
+                    "stage_type": stage_type_by_id.get(
+                        link.stage_analysis_id, "unknown"
+                    ),
                     "direction": link.direction,
                     "weight": link.weight,
                     "rationale": link.rationale,

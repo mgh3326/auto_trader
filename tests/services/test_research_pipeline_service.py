@@ -51,6 +51,7 @@ async def test_create_session_and_dispatch_returns_session_id_without_awaiting_r
 @pytest.mark.asyncio
 async def test_get_latest_summary_includes_summary_stage_links(monkeypatch):
     from datetime import UTC, datetime
+
     from app.models.research_pipeline import (
         ResearchSummary,
         StageAnalysis,
