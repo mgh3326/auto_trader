@@ -40,17 +40,17 @@ describe("SessionDetailPage", () => {
 
     renderDetail();
 
-    expect(await screen.findByText("Market brief")).toBeInTheDocument();
+    expect(await screen.findByText("시장 브리핑")).toBeInTheDocument();
     expect(screen.getByText("BTC")).toBeInTheDocument();
     expect(screen.getByText("ETH")).toBeInTheDocument();
     expect(screen.getByText("SOL")).toBeInTheDocument();
-    expect(await screen.findByText("Outcome analytics")).toBeInTheDocument();
+    expect(await screen.findByText("결과 분석")).toBeInTheDocument();
     expect(screen.getByText("1.25%")).toBeInTheDocument();
-    expect(screen.getByText(/Research run/)).toBeInTheDocument();
-    expect(screen.getByText(/Reconciliation summary/)).toBeInTheDocument();
-    expect(screen.getByText(/Maintain: 1/)).toBeInTheDocument();
-    expect(screen.getByText(/Near fill: 1/)).toBeInTheDocument();
-    expect(screen.getByText(/KR broker only: 1/)).toBeInTheDocument();
+    expect(screen.getByText(/리서치 실행/)).toBeInTheDocument();
+    expect(screen.getByText(/조정 요약/)).toBeInTheDocument();
+    expect(screen.getByText(/유지: 1/)).toBeInTheDocument();
+    expect(screen.getByText(/체결 임박: 1/)).toBeInTheDocument();
+    expect(screen.getByText(/국내 브로커 전용: 1/)).toBeInTheDocument();
   });
 
   it("successful respond refetches and updates row", async () => {
@@ -77,9 +77,9 @@ describe("SessionDetailPage", () => {
 
     renderDetail();
     await screen.findByText("BTC");
-    await userEvent.click(screen.getByRole("button", { name: "Accept" }));
+    await userEvent.click(screen.getByRole("button", { name: "수락" }));
 
-    await waitFor(() => expect(screen.getAllByText("accept").length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getAllByText("수락").length).toBeGreaterThan(0));
   });
 
   it("renders not found on 404", async () => {
@@ -96,7 +96,7 @@ describe("SessionDetailPage", () => {
 
     renderDetail();
 
-    expect(await screen.findByText("Session not found")).toBeInTheDocument();
+    expect(await screen.findByText("세션을 찾을 수 없습니다")).toBeInTheDocument();
   });
 
   it("shows archived banner on 409 respond", async () => {
@@ -118,10 +118,10 @@ describe("SessionDetailPage", () => {
 
     renderDetail();
     await screen.findByText("BTC");
-    await userEvent.click(screen.getByRole("button", { name: "Accept" }));
+    await userEvent.click(screen.getByRole("button", { name: "수락" }));
 
     expect(
-      await screen.findByText("Session is archived. You can no longer respond."),
+      await screen.findByText("세션이 보관되었습니다. 더 이상 응답할 수 없습니다."),
     ).toBeInTheDocument();
   });
 
@@ -149,7 +149,7 @@ describe("SessionDetailPage", () => {
 
     renderDetail();
 
-    expect(await screen.findByText("Strategy events")).toBeInTheDocument();
+    expect(await screen.findByText("전략 이벤트")).toBeInTheDocument();
     expect(await screen.findByText(/fed hike confirmed/i)).toBeInTheDocument();
     expect(screen.getByText("TSLA")).toBeInTheDocument();
     expect(screen.getByText(/operator_market_event/i)).toBeInTheDocument();
