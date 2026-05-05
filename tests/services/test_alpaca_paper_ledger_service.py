@@ -132,7 +132,7 @@ def test_alpaca_paper_ledger_partial_unique_indexes():
 
 @pytest.mark.unit
 def test_alpaca_paper_ledger_lifecycle_check_canonical_states():
-    """The lifecycle CHECK must contain exactly the 10 ROB-90 canonical states."""
+    """The lifecycle CHECK contains ROB-90 states plus stale cleanup-required."""
     from app.models.review import AlpacaPaperOrderLedger
 
     lifecycle_check = None
@@ -158,6 +158,7 @@ def test_alpaca_paper_ledger_lifecycle_check_canonical_states():
         "closed",
         "final_reconciled",
         "anomaly",
+        "stale_preview_cleanup_required",
     ]
     for state in canonical:
         assert state in check_text, f"Canonical state {state!r} missing from CHECK"
@@ -190,6 +191,7 @@ def test_canonical_lifecycle_constants_exported():
         LIFECYCLE_POSITION_RECONCILED,
         LIFECYCLE_PREVIEWED,
         LIFECYCLE_SELL_VALIDATED,
+        LIFECYCLE_STALE_PREVIEW_CLEANUP_REQUIRED,
         LIFECYCLE_SUBMITTED,
         LIFECYCLE_VALIDATED,
     )
@@ -204,8 +206,9 @@ def test_canonical_lifecycle_constants_exported():
     assert LIFECYCLE_CLOSED == "closed"
     assert LIFECYCLE_FINAL_RECONCILED == "final_reconciled"
     assert LIFECYCLE_ANOMALY == "anomaly"
+    assert LIFECYCLE_STALE_PREVIEW_CLEANUP_REQUIRED == "stale_preview_cleanup_required"
 
-    assert len(CANONICAL_LIFECYCLE_STATES) == 10
+    assert len(CANONICAL_LIFECYCLE_STATES) == 11
     assert CANONICAL_LIFECYCLE_STATES == {
         "planned",
         "previewed",
@@ -217,6 +220,7 @@ def test_canonical_lifecycle_constants_exported():
         "closed",
         "final_reconciled",
         "anomaly",
+        "stale_preview_cleanup_required",
     }
 
 

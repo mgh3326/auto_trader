@@ -8,6 +8,8 @@ from types import SimpleNamespace
 import pytest
 
 from app.services.alpaca_paper_anomaly_checks import (
+    STALE_PREVIEW_CLEANUP_ACTION,
+    STALE_PREVIEW_CLEANUP_REQUIRED_STATE,
     PaperExecutionAnomalySeverity,
     build_paper_execution_preflight_report,
 )
@@ -227,6 +229,23 @@ def test_stale_preview_blocks():
 
     assert report.should_block is True
     assert "stale_preview_or_approval_packet" in _check_ids(report)
+    anomaly = next(
+        a for a in report.anomalies if a.check_id == "stale_preview_or_approval_packet"
+    )
+    assert anomaly.details["lifecycle_state"] == STALE_PREVIEW_CLEANUP_REQUIRED_STATE
+    assert anomaly.details["recommended_action"] == STALE_PREVIEW_CLEANUP_ACTION
+    assert anomaly.details["cleanup_plan"] == {
+        "mode": "dry_run",
+        "mutates_broker": False,
+        "mutates_db": False,
+        "description": (
+            "Mark same-scope stale preview rows cleanup-required only "
+            "through a separately approved cleanup operation."
+        ),
+    }
+    assert anomaly.details["rows"][0]["recommended_lifecycle_state"] == (
+        STALE_PREVIEW_CLEANUP_REQUIRED_STATE
+    )
 
 
 @pytest.mark.unit
@@ -322,6 +341,17 @@ def test_scoped_preflight_still_blocks_stale_row_inside_same_correlation():
 
     assert report.should_block is True
     assert "stale_preview_or_approval_packet" in _check_ids(report)
+    anomaly = next(
+        a for a in report.anomalies if a.check_id == "stale_preview_or_approval_packet"
+    )
+    assert anomaly.details["lifecycle_state"] == STALE_PREVIEW_CLEANUP_REQUIRED_STATE
+    assert anomaly.details["recommended_action"] == STALE_PREVIEW_CLEANUP_ACTION
+    assert anomaly.details["cleanup_plan"]["mutates_broker"] is False
+    assert anomaly.details["cleanup_plan"]["mutates_db"] is False
+    assert anomaly.details["rows"][0]["lifecycle_correlation_id"] == "corr-btc"
+    assert anomaly.details["rows"][0]["recommended_action"] == (
+        STALE_PREVIEW_CLEANUP_ACTION
+    )
 
 
 @pytest.mark.unit

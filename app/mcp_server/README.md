@@ -146,8 +146,13 @@ scope keep the broad recent-ledger safety behavior for global runners. ROB-93
 checks include unexpected open orders, residual positions, duplicate
 `client_order_id`, filled buys without linked sells, filled sells without a zero
 final position snapshot, ledger/order/fill mismatches, stale previews/approval
-packets, and signal/execution symbol mismatches. It performs no broker mutation,
-no repair writes, and no direct DB backfill.
+packets, and signal/execution symbol mismatches. Stale same-scope preview
+findings return the dry-run action hint
+`recommended_action="mark_stale_preview_cleanup_required"` and
+`lifecycle_state="stale_preview_cleanup_required"`; operators can use this to
+surface an explicit cleanup-required state before any separately approved repair
+write. The preflight itself performs no broker mutation, no repair writes, and
+no direct DB backfill.
 
 The broker inspection tools instantiate `AlpacaPaperBrokerService`, so they
 inherit the
