@@ -8,6 +8,16 @@ interface Props {
   traderDraft: TraderDraftType[] | null;
 }
 
+const ACTION_LABEL: Record<CommitteeTraderAction, string> = {
+  BUY: "매수",
+  REBALANCE: "리밸런스",
+  HOLD: "보유",
+  WATCH: "관찰",
+  TRIM: "축소",
+  SELL: "매도",
+  AVOID: "회피",
+};
+
 const ACTION_COLORS: Record<CommitteeTraderAction, string> = {
   BUY: "#28a745",
   REBALANCE: "#17a2b8",
@@ -23,9 +33,9 @@ export const CommitteeTraderDraft: React.FC<Props> = ({ traderDraft }) => {
 
   return (
     <div className="committee-trader-draft">
-      <h3>Trader Draft</h3>
+      <h3>트레이더 초안</h3>
       <p className="advisory">
-        Draft only — no live order is created.
+        초안일 뿐이며, 실주문이 생성되지 않습니다.
       </p>
       <ul className="drafts">
         {traderDraft.map((draft, i) => (
@@ -35,7 +45,7 @@ export const CommitteeTraderDraft: React.FC<Props> = ({ traderDraft }) => {
                 className="action"
                 style={{ background: ACTION_COLORS[draft.action] }}
               >
-                {draft.action}
+                {ACTION_LABEL[draft.action] ?? draft.action}
               </span>
               <span className="symbol">{draft.symbol}</span>
               <span className={`confidence confidence-${draft.confidence}`}>
@@ -45,31 +55,31 @@ export const CommitteeTraderDraft: React.FC<Props> = ({ traderDraft }) => {
             <dl className="details">
               {draft.price_plan && (
                 <>
-                  <dt>Price plan</dt>
+                  <dt>가격 계획</dt>
                   <dd>{draft.price_plan}</dd>
                 </>
               )}
               {draft.size_plan && (
                 <>
-                  <dt>Size plan</dt>
+                  <dt>수량 계획</dt>
                   <dd>{draft.size_plan}</dd>
                 </>
               )}
               {draft.rationale && (
                 <>
-                  <dt>Rationale</dt>
+                  <dt>근거</dt>
                   <dd>{draft.rationale}</dd>
                 </>
               )}
               {draft.invalidation_condition && (
                 <>
-                  <dt>Invalidation</dt>
+                  <dt>무효화 조건</dt>
                   <dd>{draft.invalidation_condition}</dd>
                 </>
               )}
               {draft.next_step_recommendation && (
                 <>
-                  <dt>Next step</dt>
+                  <dt>다음 단계</dt>
                   <dd>{draft.next_step_recommendation}</dd>
                 </>
               )}

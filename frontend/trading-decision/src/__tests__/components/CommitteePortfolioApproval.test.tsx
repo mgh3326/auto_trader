@@ -13,8 +13,8 @@ describe("CommitteePortfolioApproval", () => {
 
     render(<CommitteePortfolioApproval portfolioApproval={portfolioApproval} />);
 
-    expect(screen.getByText("Portfolio Approval")).toBeInTheDocument();
-    expect(screen.getByText("APPROVED")).toBeInTheDocument();
+    expect(screen.getByText("포트폴리오 승인")).toBeInTheDocument();
+    expect(screen.getByText("승인됨")).toBeInTheDocument();
     expect(screen.getByText("Portfolio weight adjusted")).toBeInTheDocument();
   });
 

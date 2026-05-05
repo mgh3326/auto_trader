@@ -14,7 +14,7 @@ describe("CommitteeWorkflowTransition", () => {
       />
     );
 
-    const button = screen.getByRole("button", { name: /Advance to evidence generating/i });
+    const button = screen.getByRole("button", { name: /근거 수집 중 단계로 진행/i });
     expect(button).toBeInTheDocument();
     
     fireEvent.click(button);
@@ -31,7 +31,7 @@ describe("CommitteeWorkflowTransition", () => {
       />
     );
 
-    const button = screen.getByRole("button", { name: /Updating.../i });
+    const button = screen.getByRole("button", { name: /저장 중…/i });
     expect(button).toBeDisabled();
   });
 
@@ -57,7 +57,7 @@ describe("CommitteeWorkflowTransition", () => {
       />
     );
     fireEvent.click(
-      screen.getByRole("button", { name: /Advance to auto approved/i }),
+      screen.getByRole("button", { name: /자동 승인 단계로 진행/i }),
     );
     expect(onTransition).toHaveBeenCalledWith("auto_approved");
   });
@@ -73,7 +73,7 @@ describe("CommitteeWorkflowTransition", () => {
       />
     );
     fireEvent.click(
-      screen.getByRole("button", { name: /Advance to auto approved/i }),
+      screen.getByRole("button", { name: /자동 승인 단계로 진행/i }),
     );
     expect(onTransition).toHaveBeenCalledWith("auto_approved");
   });
@@ -103,7 +103,7 @@ describe("CommitteeWorkflowTransition", () => {
       />
     );
     fireEvent.click(
-      screen.getByRole("button", { name: /Advance to preview ready/i }),
+      screen.getByRole("button", { name: /프리뷰 준비 단계로 진행/i }),
     );
     expect(onTransition).toHaveBeenCalledWith("preview_ready");
   });

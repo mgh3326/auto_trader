@@ -10,10 +10,10 @@ export const CommitteeExecutionPreview: React.FC<Props> = ({ executionPreview })
 
   return (
     <div className="committee-execution-preview">
-      <h3>Execution Preview</h3>
+      <h3>실행 프리뷰</h3>
       {executionPreview.is_blocked && (
         <div className="block-warning">
-          <strong>BLOCKED:</strong> {executionPreview.block_reason}
+          <strong>차단됨:</strong> {executionPreview.block_reason}
         </div>
       )}
       {executionPreview.preview_payload && (

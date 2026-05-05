@@ -12,7 +12,7 @@ describe("CommitteeJournalPlaceholder", () => {
 
     render(<CommitteeJournalPlaceholder journalPlaceholder={journal} />);
 
-    expect(screen.getByText("Journal / Retrospective")).toBeInTheDocument();
+    expect(screen.getByText("기록 / 사후 검토")).toBeInTheDocument();
     expect(
       screen.getByText("11111111-1111-4111-8111-111111111111"),
     ).toBeInTheDocument();
