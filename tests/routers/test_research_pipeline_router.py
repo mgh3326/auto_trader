@@ -207,3 +207,46 @@ async def test_get_session_full_returns_session_stages_summary(override_deps):
                 assert len(body["stages"]) == 1
                 assert body["summary"] is None
                 assert mock_service.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_get_symbol_timeline_returns_recent_sessions(override_deps):
+    from datetime import UTC, datetime
+
+    payload = {
+        "symbol": "AAPL",
+        "days": 30,
+        "entries": [
+            {
+                "session_id": 11,
+                "status": "finalized",
+                "started_at": datetime.now(UTC).isoformat(),
+                "finalized_at": datetime.now(UTC).isoformat(),
+                "decision": "buy",
+                "confidence": 75,
+                "stage_verdicts": {
+                    "market": "bull",
+                    "news": "neutral",
+                    "fundamentals": "bull",
+                    "social": "unavailable",
+                },
+            }
+        ],
+    }
+    with patch.object(settings, "RESEARCH_PIPELINE_ENABLED", True):
+        with patch(
+            "app.routers.research_pipeline.ResearchPipelineService.get_symbol_timeline",
+            new_callable=AsyncMock,
+        ) as mock_service:
+            mock_service.return_value = payload
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as ac:
+                response = await ac.get(
+                    "/api/research-pipeline/symbols/AAPL/timeline?days=30"
+                )
+                assert response.status_code == status.HTTP_200_OK
+                body = response.json()
+                assert body["symbol"] == "AAPL"
+                assert body["entries"][0]["session_id"] == 11
+                assert body["entries"][0]["stage_verdicts"]["market"] == "bull"

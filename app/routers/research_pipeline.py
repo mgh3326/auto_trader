@@ -110,3 +110,22 @@ async def get_session_summary(
             detail="summary_not_found",
         )
     return summary
+
+
+@router.get(
+    "/symbols/{symbol}/timeline",
+    dependencies=[Depends(check_pipeline_enabled)],
+)
+async def get_symbol_timeline(
+    symbol: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_authenticated_user)],
+    days: int = 30,
+) -> dict[str, Any]:
+    if days < 1 or days > 365:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="days_out_of_range",
+        )
+    service = ResearchPipelineService(db)
+    return await service.get_symbol_timeline(symbol, days=days)

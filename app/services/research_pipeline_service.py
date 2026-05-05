@@ -198,6 +198,62 @@ class ResearchPipelineService:
 
         return list(latest_stages.values())
 
+    async def get_symbol_timeline(
+        self, symbol: str, days: int = 30
+    ) -> dict[str, Any]:
+        from datetime import timedelta
+
+        from app.models.analysis import StockInfo
+
+        cutoff = datetime.now(UTC) - timedelta(days=days)
+
+        stock_result = await self.db.execute(
+            select(StockInfo).where(StockInfo.symbol == symbol)
+        )
+        stock_info = stock_result.scalar_one_or_none()
+        if not stock_info:
+            return {"symbol": symbol, "days": days, "entries": []}
+
+        sessions_result = await self.db.execute(
+            select(ResearchSession)
+            .where(ResearchSession.stock_info_id == stock_info.id)
+            .where(ResearchSession.created_at >= cutoff)
+            .options(
+                selectinload(ResearchSession.summaries),
+                selectinload(ResearchSession.stage_analyses),
+            )
+            .order_by(ResearchSession.created_at.desc())
+        )
+        sessions = sessions_result.scalars().all()
+
+        entries = []
+        for s in sessions:
+            latest_summary = (
+                max(s.summaries, key=lambda x: x.executed_at) if s.summaries else None
+            )
+            latest_per_stage: dict[str, Any] = {}
+            for stage in s.stage_analyses:
+                current = latest_per_stage.get(stage.stage_type)
+                if current is None or stage.executed_at > current.executed_at:
+                    latest_per_stage[stage.stage_type] = stage
+
+            entries.append(
+                {
+                    "session_id": s.id,
+                    "status": s.status,
+                    "started_at": s.started_at,
+                    "finalized_at": s.finalized_at,
+                    "decision": latest_summary.decision if latest_summary else None,
+                    "confidence": latest_summary.confidence if latest_summary else None,
+                    "stage_verdicts": {
+                        stype: stage.verdict
+                        for stype, stage in latest_per_stage.items()
+                    },
+                }
+            )
+
+        return {"symbol": symbol, "days": days, "entries": entries}
+
     async def get_latest_summary(self, session_id: int) -> dict[str, Any] | None:
         """Returns latest summary + cited stage_analysis ids."""
         result = await self.db.execute(
