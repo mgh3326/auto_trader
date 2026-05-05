@@ -63,3 +63,12 @@
   gap: 16px;
   margin-bottom: 8px;
 }
+
+.committeeError {
+  background: #fff3cd;
+  border: 1px solid #ffe69c;
+  border-radius: 8px;
+  color: #664d03;
+  margin: 0;
+  padding: 12px 14px;
+}

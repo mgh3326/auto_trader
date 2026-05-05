@@ -5,7 +5,7 @@ interface Props {
   currentStatus: WorkflowStatus | null;
   accountMode?: CommitteeAccountMode | null;
   isUpdating: boolean;
-  onTransition: (next: WorkflowStatus) => void;
+  onTransition: (next: WorkflowStatus) => Promise<unknown> | void;
 }
 
 const SIMULATION_MODES: ReadonlySet<CommitteeAccountMode> = new Set([
@@ -13,14 +13,17 @@ const SIMULATION_MODES: ReadonlySet<CommitteeAccountMode> = new Set([
   "alpaca_paper",
 ]);
 
-// ROB-107: For KIS mock / Alpaca paper sessions, the Portfolio Manager step
-// is auto-approved by simulation policy, so the workflow advances through
-// `auto_approved` before reaching `preview_ready`. For non-simulation modes,
-// auto-approval is out of scope and the step is skipped.
+// ROB-107: Committee workflow transitions are enabled only for KIS mock /
+// Alpaca paper sessions. Live or unsupported modes must stay disabled so the
+// mock/paper auto-approval UX cannot be confused with live execution.
 function nextStatusFor(
   current: WorkflowStatus,
   accountMode: CommitteeAccountMode | null | undefined,
 ): WorkflowStatus | null {
+  if (!accountMode || !SIMULATION_MODES.has(accountMode)) {
+    return null;
+  }
+
   switch (current) {
     case "created":
       return "evidence_generating";
@@ -33,9 +36,7 @@ function nextStatusFor(
     case "trader_draft_ready":
       return "risk_review_ready";
     case "risk_review_ready":
-      return accountMode && SIMULATION_MODES.has(accountMode)
-        ? "auto_approved"
-        : "preview_ready";
+      return "auto_approved";
     case "auto_approved":
       return "preview_ready";
     case "preview_ready":
@@ -62,7 +63,9 @@ export const CommitteeWorkflowTransition: React.FC<Props> = ({
   return (
     <div className="committee-workflow-transition">
       <button
-        onClick={() => onTransition(nextStatus)}
+        onClick={() => {
+          void onTransition(nextStatus);
+        }}
         disabled={isUpdating}
         className="transition-button"
       >

@@ -32,7 +32,7 @@ export function useCommitteeWorkflow(
       } catch (err) {
         const error = err instanceof Error ? err : new Error("Failed to transition");
         setError(error);
-        throw error;
+        return undefined;
       } finally {
         setIsUpdating(false);
       }
@@ -53,7 +53,7 @@ export function useCommitteeWorkflow(
       } catch (err) {
         const error = err instanceof Error ? err : new Error("Failed to update artifacts");
         setError(error);
-        throw error;
+        return undefined;
       } finally {
         setIsUpdating(false);
       }

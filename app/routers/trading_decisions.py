@@ -41,7 +41,10 @@ from app.services.trading_decision_session_url import (
     build_trading_decision_session_url,
     resolve_trading_decision_base_url,
 )
-from app.services.trading_decisions.committee_service import CommitteeSessionService
+from app.services.trading_decisions.committee_service import (
+    CommitteeSessionService,
+    CommitteeWorkflowError,
+)
 from app.services.tradingagents_research_service import (
     TradingAgentsNotConfigured,
     TradingAgentsRunnerError,
@@ -261,12 +264,19 @@ async def update_session_workflow(
 ) -> SessionDetail:
     from app.models.trading_decision import WorkflowStatus
 
-    session_obj = await CommitteeSessionService.update_workflow_status(
-        db,
-        session_uuid=session_uuid,
-        user_id=current_user.id,
-        status=WorkflowStatus(status_update),
-    )
+    try:
+        session_obj = await CommitteeSessionService.update_workflow_status(
+            db,
+            session_uuid=session_uuid,
+            user_id=current_user.id,
+            status=WorkflowStatus(status_update),
+        )
+    except CommitteeWorkflowError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
     if session_obj is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -288,12 +298,19 @@ async def update_session_artifacts(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_authenticated_user),
 ) -> SessionDetail:
-    session_obj = await CommitteeSessionService.update_committee_artifacts(
-        db,
-        session_uuid=session_uuid,
-        user_id=current_user.id,
-        artifacts_patch=artifacts_patch,
-    )
+    try:
+        session_obj = await CommitteeSessionService.update_committee_artifacts(
+            db,
+            session_uuid=session_uuid,
+            user_id=current_user.id,
+            artifacts_patch=artifacts_patch,
+        )
+    except CommitteeWorkflowError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
     if session_obj is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

@@ -22,10 +22,20 @@ async def _ensure_tables() -> None:
     try:
         async with SessionLocal() as session:
             row = await session.execute(
-                text("SELECT to_regclass('trading_decision_sessions')")
+                text(
+                    """
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_name = 'trading_decision_sessions'
+                      AND column_name IN (
+                        'workflow_status', 'account_mode', 'artifacts'
+                      )
+                    HAVING count(*) = 3
+                    """
+                )
             )
             if row.scalar_one_or_none() is None:
-                pytest.skip("trading_decision tables are not migrated")
+                pytest.skip("trading_decision committee columns are not migrated")
     except Exception:
         pytest.skip("database is not available for integration persistence checks")
 

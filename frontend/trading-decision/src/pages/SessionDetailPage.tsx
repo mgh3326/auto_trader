@@ -15,6 +15,7 @@ import OperatorEventForm from "../components/OperatorEventForm";
 import ProposalRow from "../components/ProposalRow";
 import StatusBadge from "../components/StatusBadge";
 import StrategyEventTimeline from "../components/StrategyEventTimeline";
+import type { SessionDetail } from "../api/types";
 import { formatDateTime } from "../format/datetime";
 import { useCommitteeWorkflow } from "../hooks/useCommitteeWorkflow";
 import { useDecisionSession } from "../hooks/useDecisionSession";
@@ -29,11 +30,11 @@ export default function SessionDetailPage() {
   const strategyEvents = useStrategyEvents(sessionUuid ?? "");
 
   const committeeWorkflow = useCommitteeWorkflow(
-    session.data as any,
+    session.data as SessionDetail | null,
     (_updated) => {
-      // Synchronize back to useDecisionSession cache if needed, 
+      // Synchronize back to useDecisionSession cache if needed,
       // but useCommitteeWorkflow handles its own state for now.
-    }
+    },
   );
 
   if (!sessionUuid) {
@@ -101,6 +102,12 @@ export default function SessionDetailPage() {
           />
         </section>
       )}
+
+      {isCommitteeSession && committeeWorkflow.error ? (
+        <p className={styles.committeeError} role="alert">
+          {committeeWorkflow.error.message}
+        </p>
+      ) : null}
 
       {isCommitteeSession && (
         <CommitteeWorkflowTransition
