@@ -1,0 +1,181 @@
+"""ROB-116 — Read-only aggregator for the holdings action board.
+
+Combines:
+  - MergedPortfolioService (KIS + manual holdings, KR + US)
+  - Upbit balances via existing helpers (CRYPTO)
+  - ResearchPipelineService latest summary (decision/verdict/levels)
+  - PortfolioDashboardService journal snapshot (journal_status)
+
+NEVER mutates broker state. NEVER writes order-intent / watch / trade rows.
+"""
+
+from datetime import UTC, datetime
+from typing import Any
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.research_pipeline import ResearchSession, ResearchSummary
+from app.schemas.portfolio_actions import (
+    PortfolioActionCandidate,
+    PortfolioActionsResponse,
+)
+from app.services.portfolio_action_classifier import (
+    ClassifierInputs,
+    classify_position,
+)
+
+
+class PortfolioActionService:
+    def __init__(self, db: AsyncSession) -> None:
+        self.db = db
+
+    async def build_action_board(
+        self,
+        *,
+        user_id: int,
+        market_filter: str | None = None,
+    ) -> PortfolioActionsResponse:
+        holdings, total_value = await self._load_holdings(user_id, market_filter)
+        candidates: list[PortfolioActionCandidate] = []
+        warnings: list[str] = []
+
+        for holding in holdings:
+            quantity = float(getattr(holding, "quantity", 0.0) or 0.0)
+            if quantity <= 0.0:
+                continue
+
+            symbol = str(getattr(holding, "ticker", "") or "")
+            if not symbol:
+                continue
+
+            evaluation = float(getattr(holding, "evaluation", 0.0) or 0.0)
+            weight = (evaluation / total_value * 100.0) if total_value else None
+            profit_rate = getattr(holding, "profit_loss_rate", None)
+            market_value = getattr(holding.market_type, "value", "KR")
+
+            summary = await self._load_latest_summary(symbol)
+            journal_status = await self._load_journal_status(symbol)
+
+            inputs = ClassifierInputs(
+                symbol=symbol,
+                position_weight_pct=weight,
+                profit_rate=float(profit_rate) if profit_rate is not None else None,
+                summary_decision=(summary or {}).get("decision"),
+                summary_confidence=(summary or {}).get("confidence"),
+                market_verdict=(summary or {}).get("market_verdict"),
+                nearest_support_pct=(summary or {}).get("nearest_support_pct"),
+                nearest_resistance_pct=(summary or {}).get("nearest_resistance_pct"),
+                journal_status=journal_status,
+                sellable_quantity=getattr(holding, "sellable_quantity", None),
+                staked_quantity=getattr(holding, "staked_quantity", None),
+            )
+            verdict = classify_position(inputs)
+
+            candidates.append(
+                PortfolioActionCandidate(
+                    symbol=symbol,
+                    name=getattr(holding, "name", None),
+                    market=market_value,
+                    instrument_type=getattr(holding, "instrument_type", None),
+                    position_weight_pct=weight,
+                    profit_rate=inputs.profit_rate,
+                    quantity=quantity,
+                    sellable_quantity=inputs.sellable_quantity,
+                    staked_quantity=inputs.staked_quantity,
+                    latest_research_session_id=(summary or {}).get("session_id"),
+                    summary_decision=inputs.summary_decision,
+                    summary_confidence=inputs.summary_confidence,
+                    market_verdict=inputs.market_verdict,
+                    nearest_support_pct=inputs.nearest_support_pct,
+                    nearest_resistance_pct=inputs.nearest_resistance_pct,
+                    journal_status=journal_status,
+                    candidate_action=verdict.candidate_action,
+                    suggested_trim_pct=verdict.suggested_trim_pct,
+                    reason_codes=verdict.reason_codes,
+                    missing_context_codes=verdict.missing_context_codes,
+                )
+            )
+
+        return PortfolioActionsResponse(
+            generated_at=datetime.now(UTC).isoformat(),
+            total=len(candidates),
+            candidates=candidates,
+            warnings=warnings,
+        )
+
+    async def _load_holdings(
+        self, user_id: int, market_filter: str | None
+    ) -> tuple[list[Any], float]:
+        from app.services.kis import KISClient
+        from app.services.merged_portfolio_service import MergedPortfolioService
+
+        service = MergedPortfolioService(self.db)
+        kis_client = KISClient()
+        holdings: list[Any] = []
+
+        if market_filter in (None, "KR"):
+            holdings.extend(await service.get_merged_portfolio_domestic(user_id, kis_client))
+        if market_filter in (None, "US"):
+            holdings.extend(await service.get_merged_portfolio_overseas(user_id, kis_client))
+        if market_filter in (None, "CRYPTO"):
+            holdings.extend(await self._load_crypto_holdings(user_id))
+
+        total = sum(float(getattr(h, "evaluation", 0.0) or 0.0) for h in holdings)
+        return holdings, total
+
+    async def _load_crypto_holdings(self, user_id: int) -> list[Any]:
+        try:
+            from app.services.upbit_holdings_service import (
+                fetch_upbit_holdings_for_user,
+            )
+        except ImportError:
+            return []
+        try:
+            return await fetch_upbit_holdings_for_user(self.db, user_id)
+        except Exception:
+            return []
+
+    async def _load_latest_summary(self, symbol: str) -> dict[str, Any] | None:
+        from sqlalchemy import select
+        from sqlalchemy.orm import selectinload
+
+        from app.models.stock_info import StockInfo
+
+        stmt = (
+            select(ResearchSession)
+            .join(ResearchSession.stock_info)
+            .where(StockInfo.symbol == symbol)
+            .options(selectinload(ResearchSession.summaries))
+            .order_by(ResearchSession.created_at.desc())
+            .limit(1)
+        )
+        row = (await self.db.execute(stmt)).scalars().first()
+        if row is None or not row.summaries:
+            return None
+
+        summary: ResearchSummary = row.summaries[-1]
+        price_analysis = summary.price_analysis or {}
+        return {
+            "session_id": row.id,
+            "decision": summary.decision,
+            "confidence": summary.confidence,
+            "market_verdict": price_analysis.get("market_verdict"),
+            "nearest_support_pct": price_analysis.get("nearest_support_pct"),
+            "nearest_resistance_pct": price_analysis.get("nearest_resistance_pct"),
+        }
+
+    async def _load_journal_status(self, symbol: str) -> str:
+        try:
+            from app.services.portfolio_dashboard_service import (
+                PortfolioDashboardService,
+            )
+        except ImportError:
+            return "missing"
+        try:
+            service = PortfolioDashboardService(self.db)
+            snapshot = await service.get_latest_journal_snapshot(symbol)
+        except Exception:
+            return "missing"
+        if snapshot is None:
+            return "missing"
+        return "present"
