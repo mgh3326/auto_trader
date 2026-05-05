@@ -9,6 +9,7 @@ import type {
   CandidateScreenResponse,
   CandidateSortBy,
   CandidateStrategy,
+  ResearchInstrumentType,
   ScreenedCandidate,
 } from "../api/types";
 import { candidates as t } from "../i18n/ko";
@@ -54,10 +55,21 @@ export default function CandidatesPage() {
     setBusySymbols((prev) => new Set(prev).add(c.symbol));
     setConfirmation(null);
     try {
+      // Map CandidateMarket or string to ResearchInstrumentType
+      let instrumentType: ResearchInstrumentType = "equity_kr";
+      const target = c.instrument_type ?? market;
+      if (target === "crypto") {
+        instrumentType = "crypto";
+      } else if (target === "us") {
+        instrumentType = "equity_us";
+      } else {
+        instrumentType = "equity_kr";
+      }
+
       const res = await createSession({
         symbol: c.symbol,
         name: c.name ?? c.symbol,
-        instrument_type: c.instrument_type ?? market,
+        instrument_type: instrumentType,
         triggered_by: "user",
       });
       setConfirmation(`${t.researchStarted}${res.session_id})`);

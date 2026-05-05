@@ -17,6 +17,8 @@ import ResearchFundamentalsPage from "./pages/research/ResearchFundamentalsPage"
 import ResearchSocialPage from "./pages/research/ResearchSocialPage";
 import ResearchSessionNotFoundPage from "./pages/research/ResearchSessionNotFoundPage";
 import SymbolTimelinePage from "./pages/SymbolTimelinePage";
+import PortfolioActionsPage from "./pages/PortfolioActionsPage";
+import CandidatesPage from "./pages/CandidatesPage";
 
 const SESSION_UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -39,6 +41,8 @@ export const tradingDecisionRoutes: RouteObject[] = [
   { path: "/", element: <SessionListPage /> },
   { path: "/preopen", element: <PreopenPage /> },
   { path: "/news-radar", element: <NewsRadarPage /> },
+  { path: "/portfolio-actions", element: <PortfolioActionsPage /> },
+  { path: "/candidates", element: <CandidatesPage /> },
   { path: "/sessions/:sessionUuid", element: <SessionDetailPage /> },
   { path: "/research", element: <ResearchHomePage /> },
   {
