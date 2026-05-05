@@ -36,6 +36,7 @@ from app.routers import (
     pending_orders,
     portfolio,
     preopen,
+    research_pipeline,
     research_run_decision_sessions,
     screener,
     strategy_events,
@@ -169,6 +170,7 @@ def create_app() -> FastAPI:
     app.include_router(trading.router)
     app.include_router(trading_decisions.router)
     app.include_router(trading_decisions_spa.router)
+    app.include_router(research_pipeline.router)
     app.include_router(research_run_decision_sessions.router)
     app.include_router(preopen.router)
     app.include_router(alpaca_paper_ledger.router)
