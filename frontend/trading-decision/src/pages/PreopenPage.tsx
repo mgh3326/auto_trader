@@ -17,6 +17,29 @@ import type {
   PreopenQaEvaluatorSummary,
 } from "../api/types";
 import { formatDateTime } from "../format/datetime";
+import {
+  ARTIFACT_READINESS_LABEL,
+  ARTIFACT_STATUS_LABEL,
+  CANDIDATE_KIND_LABEL,
+  COMMON,
+  NXT_CLASSIFICATION_LABEL,
+  PAPER_APPROVAL_CANDIDATE_STATUS_LABEL,
+  PAPER_APPROVAL_STATUS_LABEL,
+  QA_CHECK_STATUS_LABEL,
+  QA_CONFIDENCE_LABEL,
+  QA_GRADE_LABEL,
+  QA_SEVERITY_LABEL,
+  QA_STATUS_LABEL,
+  RECONCILIATION_STATUS_LABEL,
+  SIDE_LABEL,
+  VENUE_LABEL,
+} from "../i18n";
+import {
+  labelOperatorToken,
+  labelOrToken,
+  labelOrderSide,
+  labelYesNo,
+} from "../i18n/formatters";
 import styles from "./PreopenPage.module.css";
 
 type State =
@@ -37,27 +60,29 @@ function PreopenBriefingArtifactSection({
 
   return (
     <section
-      aria-label="Preopen briefing artifact"
+      aria-label="장전 브리핑 산출물"
       className={styles.artifactSection}
     >
       <div className={styles.artifactHeader}>
         <div>
-          <h2>Preopen briefing</h2>
+          <h2>장전 브리핑</h2>
           <p className={styles.meta}>
             {artifact.artifact_type} {formatArtifactVersion(artifact.artifact_version)}
           </p>
         </div>
-        <span className={styles.artifactStatus}>Artifact {artifact.status}</span>
+        <span className={styles.artifactStatus}>
+          산출물 {labelOrToken(ARTIFACT_STATUS_LABEL, artifact.status)}
+        </span>
       </div>
 
       {artifact.market_summary ? <p>{artifact.market_summary}</p> : null}
-      {artifact.news_summary ? <p>News brief: {artifact.news_summary}</p> : null}
+      {artifact.news_summary ? <p>뉴스 요약: {artifact.news_summary}</p> : null}
 
       {artifact.risk_notes.length > 0 ? (
-        <ul aria-label="Preopen artifact risk notes" className={styles.warnings}>
+        <ul aria-label="장전 산출물 리스크 노트" className={styles.warnings}>
           {artifact.risk_notes.map((note) => (
             <li className={styles.warningChip} key={note}>
-              {note}
+              {labelOperatorToken(note)}
             </li>
           ))}
         </ul>
@@ -67,8 +92,8 @@ function PreopenBriefingArtifactSection({
         <div className={styles.artifactGrid}>
           {artifact.readiness.map((item) => (
             <div className={styles.artifactCard} key={item.key}>
-              <strong>{item.key}</strong>
-              <span>{item.status}</span>
+              <strong>{labelOperatorToken(item.key)}</strong>
+              <span>{labelOrToken(ARTIFACT_READINESS_LABEL, item.status)}</span>
             </div>
           ))}
         </div>
@@ -80,7 +105,7 @@ function PreopenBriefingArtifactSection({
             <div className={styles.artifactCard} key={section.section_id}>
               <strong>{section.title}</strong>
               <span>
-                {section.status} · {section.item_count}
+                {labelOrToken(ARTIFACT_STATUS_LABEL, section.status)} · {section.item_count}
               </span>
               {section.summary ? <small>{section.summary}</small> : null}
             </div>
@@ -91,19 +116,11 @@ function PreopenBriefingArtifactSection({
   );
 }
 
-
-const QA_STATUS_LABEL: Record<PreopenQaEvaluatorSummary["status"], string> = {
-  ready: "Ready",
-  needs_review: "Needs review",
-  unavailable: "Unavailable",
-  skipped: "Skipped",
-};
-
 function getQaReasonLabel(qa: PreopenQaEvaluatorSummary, reason: string) {
   const matchedCheck = qa.checks.find(
     (check) => check.id === reason || check.details?.reason === reason,
   );
-  return matchedCheck?.summary ?? reason;
+  return matchedCheck?.summary ?? labelOperatorToken(reason);
 }
 
 function PreopenQaEvaluatorPanel({
@@ -114,21 +131,21 @@ function PreopenQaEvaluatorPanel({
   if (!qa) return null;
   const scoreLabel = qa.overall.score === null ? "—" : String(qa.overall.score);
   return (
-    <section aria-label="Preopen QA evaluator" className={styles.qaSection}>
+    <section aria-label="장전 QA 평가기" className={styles.qaSection}>
       <div className={styles.artifactHeader}>
         <div>
-          <h2>QA evaluator</h2>
+          <h2>QA 평가기</h2>
           <p className={styles.meta}>
-            {qa.source} · {qa.overall.grade} · confidence {qa.overall.confidence}
+            {qa.source} · {labelOrToken(QA_GRADE_LABEL, qa.overall.grade)} · 신뢰도 {labelOrToken(QA_CONFIDENCE_LABEL, qa.overall.confidence)}
           </p>
         </div>
         <span className={styles.artifactStatus}>
-          QA {QA_STATUS_LABEL[qa.status] ?? qa.status}
+          QA {labelOrToken(QA_STATUS_LABEL, qa.status)}
         </span>
       </div>
-      <p>Overall score: {scoreLabel}</p>
+      <p>종합 점수: {scoreLabel}</p>
       {qa.blocking_reasons.length > 0 ? (
-        <ul aria-label="QA blocking reasons" className={styles.warnings}>
+        <ul aria-label="QA 차단 사유" className={styles.warnings}>
           {qa.blocking_reasons.map((reason) => (
             <li className={styles.warningChip} key={reason}>
               {getQaReasonLabel(qa, reason)}
@@ -137,7 +154,7 @@ function PreopenQaEvaluatorPanel({
         </ul>
       ) : null}
       {qa.warnings.length > 0 ? (
-        <ul aria-label="QA warnings" className={styles.warnings}>
+        <ul aria-label="QA 경고" className={styles.warnings}>
           {qa.warnings.map((warning) => (
             <li className={styles.warningChip} key={warning}>
               {getQaReasonLabel(qa, warning)}
@@ -150,7 +167,7 @@ function PreopenQaEvaluatorPanel({
           <div className={styles.artifactCard} key={check.id}>
             <strong>{check.label}</strong>
             <span>
-              {check.status} · {check.severity}
+              {labelOrToken(QA_CHECK_STATUS_LABEL, check.status)} · {labelOrToken(QA_SEVERITY_LABEL, check.severity)}
             </span>
             <small>{check.summary}</small>
           </div>
@@ -160,27 +177,8 @@ function PreopenQaEvaluatorPanel({
   );
 }
 
-const PAPER_APPROVAL_STATUS_LABEL: Record<
-  PreopenPaperApprovalBridge["status"],
-  string
-> = {
-  available: "Available",
-  warning: "Warning",
-  blocked: "Blocked",
-  unavailable: "Unavailable",
-};
-
-function formatOperatorToken(value: string | null | undefined): string {
-  return value ? value.replace(/_/g, " ") : "—";
-}
-
 function formatVenueLabel(venue: string | null, symbol: string | null): string {
-  const venueLabel =
-    venue === "upbit"
-      ? "Upbit"
-      : venue === "alpaca_paper"
-        ? "Alpaca Paper"
-        : formatOperatorToken(venue);
+  const venueLabel = labelOrToken(VENUE_LABEL, venue);
   return [venueLabel, symbol].filter(Boolean).join(" ");
 }
 
@@ -194,7 +192,7 @@ type PreviewPayloadLike = {
 
 function formatPreviewPayload(payload: PreviewPayloadLike | null): string | null {
   if (!payload) return null;
-  const side = typeof payload.side === "string" ? payload.side : null;
+  const side = typeof payload.side === "string" ? labelOrderSide(payload.side) : null;
   const type = typeof payload.type === "string" ? payload.type : null;
   const notional = typeof payload.notional === "string" ? payload.notional : null;
   const limitPrice =
@@ -216,44 +214,42 @@ function PreopenPaperApprovalBridgeSection({
   bridge: PreopenPaperApprovalBridge | null;
 }) {
   if (!bridge) return null;
-  const statusLabel = PAPER_APPROVAL_STATUS_LABEL[bridge.status] ?? bridge.status;
+  const statusLabel = labelOrToken(PAPER_APPROVAL_STATUS_LABEL, bridge.status);
 
   return (
     <section
-      aria-label="Paper approval preview"
+      aria-label="모의 승인 프리뷰"
       className={styles.paperApprovalSection}
     >
       <div className={styles.artifactHeader}>
         <div>
-          <h2>Paper approval preview</h2>
+          <h2>모의 승인 프리뷰</h2>
           <p className={styles.meta}>
-            {bridge.source} · {bridge.market_scope ?? "unknown market"} ·{" "}
-            {bridge.eligible_count} eligible / {bridge.candidate_count} candidates
+            {bridge.source} · {bridge.market_scope?.toUpperCase() ?? "시장 알 수 없음"} ·{" "}
+            {bridge.eligible_count}개 대상 / {bridge.candidate_count}개 후보
           </p>
         </div>
-        <span className={styles.artifactStatus}>Preview {statusLabel}</span>
+        <span className={styles.artifactStatus}>프리뷰 {statusLabel}</span>
       </div>
 
       <div className={styles.paperApprovalSafety} role="note">
-        Advisory-only preview. Execution is not allowed from this screen. Explicit
-        operator approval is required before any Alpaca Paper submit; this card
-        does not submit or cancel paper orders.
+        자문 전용 프리뷰입니다. 이 화면에서 실행할 수 없습니다. Alpaca Paper 제출 전에 트레이더의 명시적 승인이 필요합니다. 이 카드는 모의 주문을 제출하거나 취소하지 않습니다.
       </div>
 
       {bridge.blocking_reasons.length > 0 ? (
-        <ul aria-label="Paper approval blocking reasons" className={styles.warnings}>
+        <ul aria-label="모의 승인 차단 사유" className={styles.warnings}>
           {bridge.blocking_reasons.map((reason) => (
             <li className={styles.warningChip} key={reason}>
-              {formatOperatorToken(reason)}
+              {labelOperatorToken(reason)}
             </li>
           ))}
         </ul>
       ) : null}
       {bridge.warnings.length > 0 || bridge.unsupported_reasons.length > 0 ? (
-        <ul aria-label="Paper approval warnings" className={styles.warnings}>
+        <ul aria-label="모의 승인 경고" className={styles.warnings}>
           {[...bridge.warnings, ...bridge.unsupported_reasons].map((warning) => (
             <li className={styles.warningChip} key={warning}>
-              {formatOperatorToken(warning)}
+              {labelOperatorToken(warning)}
             </li>
           ))}
         </ul>
@@ -270,11 +266,11 @@ function PreopenPaperApprovalBridgeSection({
               >
                 <div className={styles.paperApprovalCandidateHeader}>
                   <strong>{candidate.symbol}</strong>
-                  <span>{formatOperatorToken(candidate.status)}</span>
+                  <span>{labelOrToken(PAPER_APPROVAL_CANDIDATE_STATUS_LABEL, candidate.status)}</span>
                 </div>
                 <dl className={styles.provenanceList}>
                   <div>
-                    <dt>Signal source</dt>
+                    <dt>시그널 소스</dt>
                     <dd>
                       {formatVenueLabel(
                         candidate.signal_venue,
@@ -283,7 +279,7 @@ function PreopenPaperApprovalBridgeSection({
                     </dd>
                   </div>
                   <div>
-                    <dt>Execution venue</dt>
+                    <dt>실행 거래소</dt>
                     <dd>
                       {formatVenueLabel(
                         candidate.execution_venue,
@@ -292,21 +288,21 @@ function PreopenPaperApprovalBridgeSection({
                     </dd>
                   </div>
                   <div>
-                    <dt>Asset class</dt>
-                    <dd>{formatOperatorToken(candidate.execution_asset_class)}</dd>
+                    <dt>자산 분류</dt>
+                    <dd>{labelOperatorToken(candidate.execution_asset_class)}</dd>
                   </div>
                   <div>
-                    <dt>Workflow</dt>
-                    <dd>{formatOperatorToken(candidate.workflow_stage)}</dd>
+                    <dt>워크플로우</dt>
+                    <dd>{labelOperatorToken(candidate.workflow_stage)}</dd>
                   </div>
                 </dl>
                 {candidate.purpose ? (
-                  <p>Purpose: {formatOperatorToken(candidate.purpose)}</p>
+                  <p>목적: {labelOperatorToken(candidate.purpose)}</p>
                 ) : null}
-                {previewPayload ? <p>Preview payload: {previewPayload}</p> : null}
+                {previewPayload ? <p>프리뷰 페이로드: {previewPayload}</p> : null}
                 {candidate.approval_copy.length > 0 ? (
                   <ul
-                    aria-label={`${candidate.symbol} approval copy`}
+                    aria-label={`${candidate.symbol} 승인 문구`}
                     className={styles.approvalCopy}
                   >
                     {candidate.approval_copy.map((copy) => (
@@ -316,12 +312,12 @@ function PreopenPaperApprovalBridgeSection({
                 ) : null}
                 {candidate.warnings.length > 0 ? (
                   <ul
-                    aria-label={`${candidate.symbol} paper approval warnings`}
+                    aria-label={`${candidate.symbol} 모의 승인 경고`}
                     className={styles.warnings}
                   >
                     {candidate.warnings.map((warning) => (
                       <li className={styles.warningChip} key={warning}>
-                        {formatOperatorToken(warning)}
+                        {labelOperatorToken(warning)}
                       </li>
                     ))}
                   </ul>
@@ -331,7 +327,7 @@ function PreopenPaperApprovalBridgeSection({
           })}
         </div>
       ) : (
-        <p>No paper approval preview candidates are currently available.</p>
+        <p>현재 사용 가능한 모의 승인 프리뷰 후보가 없습니다.</p>
       )}
     </section>
   );
@@ -367,7 +363,7 @@ export default function PreopenPage() {
         setState({
           status: "error",
           message:
-            err instanceof ApiError ? err.detail : "Something went wrong. Try again.",
+            err instanceof ApiError ? err.detail : COMMON.somethingWentWrong,
         });
       });
     return () => controller.abort();
@@ -385,7 +381,7 @@ export default function PreopenPage() {
         setCreateError(
           err instanceof ApiError
             ? err.detail
-            : "Failed to create decision session.",
+            : "의사결정 세션 생성에 실패했습니다.",
         );
       } finally {
         setCreating(false);
@@ -418,11 +414,11 @@ export default function PreopenPage() {
   if (!data.has_run) {
     return (
       <main className={styles.page}>
-        <h1>Preopen briefing</h1>
+        <h1>장전 브리핑</h1>
         <div className={styles.banner} role="status">
-          <strong>No preopen research run available</strong>
+          <strong>사용 가능한 장전 리서치 실행 결과가 없습니다</strong>
           {data.advisory_skipped_reason ? (
-            <p>Reason: {data.advisory_skipped_reason}</p>
+            <p>사유: {data.advisory_skipped_reason}</p>
           ) : null}
         </div>
         <PreopenBriefingArtifactSection artifact={data.briefing_artifact} />
@@ -436,13 +432,13 @@ export default function PreopenPage() {
   return (
     <main className={styles.page}>
       <div className={styles.header}>
-        <h1>Preopen briefing</h1>
+        <h1>장전 브리핑</h1>
         <div className={styles.meta}>
-          Generated: {formatDateTime(data.generated_at)}
+          생성 시각: {formatDateTime(data.generated_at)}
           {data.strategy_name ? ` · ${data.strategy_name}` : ""}
           {data.source_profile ? ` · ${data.source_profile}` : ""}
           {data.market_scope ? ` · ${data.market_scope.toUpperCase()}` : ""}
-          {` · Advisory ${data.advisory_used ? "used" : "not used"}`}
+          {` · 자문 ${data.advisory_used ? "사용됨" : "사용되지 않음"}`}
         </div>
         {data.market_brief && typeof data.market_brief.summary === "string" ? (
           <p>{data.market_brief.summary}</p>
@@ -451,12 +447,12 @@ export default function PreopenPage() {
 
       {data.advisory_skipped_reason ? (
         <div className={styles.banner} role="status">
-          Advisory notice: {data.advisory_skipped_reason}
+          자문 알림: {data.advisory_skipped_reason}
         </div>
       ) : null}
 
       {data.source_warnings.length > 0 ? (
-        <ul aria-label="Source warnings" className={styles.warnings}>
+        <ul aria-label="소스 경고" className={styles.warnings}>
           {data.source_warnings.map((w, i) => (
             <li className={styles.warningChip} key={i}>
               {w}
@@ -474,17 +470,17 @@ export default function PreopenPage() {
 
       {data.candidates.length > 0 ? (
         <section className={styles.section}>
-          <h2>Candidates ({data.candidate_count})</h2>
+          <h2>후보 ({data.candidate_count}건)</h2>
           <table className={styles.table}>
             <thead>
               <tr>
-                <th>Symbol</th>
-                <th>Side</th>
-                <th>Kind</th>
-                <th>Confidence</th>
-                <th>Price</th>
-                <th>Qty</th>
-                <th>Rationale</th>
+                <th>심볼</th>
+                <th>방향</th>
+                <th>종류</th>
+                <th>신뢰도</th>
+                <th>가격</th>
+                <th>수량</th>
+                <th>근거</th>
               </tr>
             </thead>
             <tbody>
@@ -501,10 +497,10 @@ export default function PreopenPage() {
                             : styles.sideNone
                       }
                     >
-                      {c.side}
+                      {labelOrToken(SIDE_LABEL, c.side)}
                     </span>
                   </td>
-                  <td>{c.candidate_kind}</td>
+                  <td>{labelOrToken(CANDIDATE_KIND_LABEL, c.candidate_kind)}</td>
                   <td>{c.confidence !== null ? `${c.confidence}%` : "—"}</td>
                   <td>
                     {c.proposed_price !== null
@@ -524,30 +520,26 @@ export default function PreopenPage() {
 
       {data.reconciliations.length > 0 ? (
         <section className={styles.section}>
-          <h2>Pending reconciliations ({data.reconciliation_count})</h2>
+          <h2>대기 조정 ({data.reconciliation_count}건)</h2>
           <table className={styles.table}>
             <thead>
               <tr>
-                <th>Symbol</th>
-                <th>Classification</th>
-                <th>NXT class</th>
-                <th>Actionable</th>
-                <th>Gap %</th>
-                <th>Summary</th>
+                <th>심볼</th>
+                <th>분류</th>
+                <th>NXT 분류</th>
+                <th>실행 가능</th>
+                <th>괴리 %</th>
+                <th>요약</th>
               </tr>
             </thead>
             <tbody>
               {data.reconciliations.map((r, i) => (
                 <tr key={i}>
                   <td>{r.symbol}</td>
-                  <td>{r.classification}</td>
-                  <td>{r.nxt_classification ?? "—"}</td>
+                  <td>{labelOrToken(RECONCILIATION_STATUS_LABEL, r.classification)}</td>
+                  <td>{labelOrToken(NXT_CLASSIFICATION_LABEL, r.nxt_classification)}</td>
                   <td>
-                    {r.nxt_actionable === null
-                      ? "—"
-                      : r.nxt_actionable
-                        ? "Yes"
-                        : "No"}
+                    {labelYesNo(r.nxt_actionable)}
                   </td>
                   <td>{r.gap_pct !== null ? `${r.gap_pct}%` : "—"}</td>
                   <td>{r.summary ?? "—"}</td>
@@ -560,7 +552,7 @@ export default function PreopenPage() {
 
       {data.linked_sessions.length > 0 ? (
         <section className={styles.section}>
-          <h2>Linked decision sessions</h2>
+          <h2>연결된 의사결정 세션</h2>
           <ul className={styles.linkedSessions}>
             {data.linked_sessions.map((s) => (
               <li className={styles.linkedSessionItem} key={String(s.session_uuid)}>
@@ -581,7 +573,7 @@ export default function PreopenPage() {
             className="btn"
             to={`/sessions/${linkedSessionUuid}`}
           >
-            Open session
+            세션 열기
           </Link>
         ) : null}
         {!linkedSessionUuid ? (
@@ -592,10 +584,10 @@ export default function PreopenPage() {
             type="button"
           >
             {confirmPending
-              ? "Confirm create decision session?"
+              ? "의사결정 세션을 생성하시겠습니까?"
               : creating
-                ? "Creating…"
-                : artifactCta?.label ?? "Create decision session"}
+                ? "생성 중…"
+                : artifactCta?.label ?? "의사결정 세션 생성"}
           </button>
         ) : null}
         {confirmPending ? (
@@ -604,7 +596,7 @@ export default function PreopenPage() {
             onClick={() => setConfirmPending(false)}
             type="button"
           >
-            Cancel
+            {COMMON.cancel}
           </button>
         ) : null}
         {createError ? (
