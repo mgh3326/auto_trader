@@ -1,6 +1,6 @@
 export function formatDateTime(
   iso: string | null | undefined,
-  locale = "en-US",
+  locale = "ko-KR",
 ): string {
   if (!iso) return "—";
   const d = new Date(iso);
