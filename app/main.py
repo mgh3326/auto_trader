@@ -28,6 +28,8 @@ from app.routers import (
     candidate_discovery,
     deprecated_pages,
     health,
+    invest_api,
+    invest_app_spa,
     kospi200,
     n8n,
     n8n_scan,
@@ -177,6 +179,8 @@ def create_app() -> FastAPI:
     app.include_router(trading.router)
     app.include_router(trading_decisions.router)
     app.include_router(trading_decisions_spa.router)
+    app.include_router(invest_api.router)
+    app.include_router(invest_app_spa.router)
     app.include_router(trade_journals.router)
     app.include_router(research_retrospective.router)
     app.include_router(research_pipeline.router)
