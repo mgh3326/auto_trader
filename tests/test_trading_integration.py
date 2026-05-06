@@ -397,7 +397,9 @@ class TestExpectedProfit:
 
         # 한투 기준 수익률: (77700 - 74000) / 74000 * 100 = 5%
         expected_percent = (77700 - 74000) / 74000 * 100
-        assert result["based_on_kis_avg"].percent == pytest.approx(expected_percent, abs=0.01)
+        assert result["based_on_kis_avg"].percent == pytest.approx(
+            expected_percent, abs=0.01
+        )
 
 
 @pytest.mark.unit
