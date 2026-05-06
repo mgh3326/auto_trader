@@ -97,3 +97,16 @@
 .primaryBtn:disabled {
   background: #ccc !important;
 }
+
+.symbolLine {
+  margin: 0 0 8px;
+  color: #666;
+  font-family: monospace;
+  font-size: 13px;
+}
+
+.error {
+  color: #b91c1c;
+  margin: 8px 0 0;
+  font-size: 13px;
+}

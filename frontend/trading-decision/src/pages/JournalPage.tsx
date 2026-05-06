@@ -1,63 +1,86 @@
-import React, { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+
+import {
+  createJournal,
+  getJournalCoverage,
+  updateJournal,
+} from "../api/tradeJournals";
+import type {
+  JournalCoverageResponse,
+  JournalCoverageRow,
+  JournalCreateRequest,
+  JournalUpdateRequest,
+  Market,
+} from "../api/types";
+import {
+  JournalModal,
+  type JournalModalSubmitPayload,
+} from "../components/JournalModal";
 import { tradeJournal, COMMON } from "../i18n";
-import { JournalModal } from "../components/JournalModal";
 import styles from "./JournalPage.module.css";
+
+type MarketFilter = Market | "ALL";
+
+const MARKETS: MarketFilter[] = ["ALL", "KR", "US", "CRYPTO"];
+
+function formatNumber(n: number | null, digits = 2): string {
+  return n === null || Number.isNaN(n) ? "—" : n.toFixed(digits);
+}
+
+function statusLabel(status: JournalCoverageRow["journal_status"]): string {
+  switch (status) {
+    case "present":
+      return tradeJournal.statusPresent;
+    case "missing":
+      return tradeJournal.statusMissing;
+    case "stale":
+      return tradeJournal.statusStale;
+  }
+}
 
 export default function JournalPage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const marketFilter = searchParams.get("market") || "ALL";
+  const marketParam = searchParams.get("market");
+  const marketFilter: MarketFilter = (
+    (MARKETS as string[]).includes(marketParam ?? "ALL") ? marketParam : "ALL"
+  ) as MarketFilter;
 
+  const [data, setData] = useState<JournalCoverageResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  const [data, setData] = useState<any>(null);
-  const [selectedRow, setSelectedRow] = useState<any>(null);
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [selectedRow, setSelectedRow] = useState<JournalCoverageRow | null>(null);
+  const [modalOpen, setModalOpen] = useState(false);
 
-  const fetchData = async () => {
+  const fetchData = useCallback(() => {
     setLoading(true);
-    try {
-      const url = marketFilter === "ALL" 
-        ? "/api/v1/trade-journals/coverage"
-        : `/api/v1/trade-journals/coverage?market=${marketFilter}`;
-      const res = await fetch(url);
-      if (!res.ok) throw new Error("Load failed");
-      setData(await res.json());
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
-  };
+    setError(null);
+    getJournalCoverage(marketFilter === "ALL" ? undefined : marketFilter)
+      .then((res) => setData(res))
+      .catch((err: unknown) => {
+        console.error(err);
+        setError(tradeJournal.loadError);
+      })
+      .finally(() => setLoading(false));
+  }, [marketFilter]);
 
   useEffect(() => {
     fetchData();
-  }, [marketFilter]);
+  }, [fetchData]);
 
-  const handleSave = async (payload: any) => {
-    const isUpdate = !!selectedRow.journal_id;
-    const url = isUpdate 
-      ? `/api/v1/trade-journals/${selectedRow.journal_id}`
-      : "/api/v1/trade-journals";
-    const method = isUpdate ? "PATCH" : "POST";
-    
-    const body = isUpdate ? payload : {
-      ...payload,
-      symbol: selectedRow.symbol,
-      instrument_type: selectedRow.instrument_type,
-    };
-
-    const res = await fetch(url, {
-      method,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-
-    if (!res.ok) throw new Error("Save failed");
-    await fetchData();
+  const handleSave = async (payload: JournalModalSubmitPayload) => {
+    if (selectedRow === null) return;
+    if (selectedRow.journal_id !== null) {
+      await updateJournal(selectedRow.journal_id, payload as JournalUpdateRequest);
+    } else {
+      await createJournal(payload as JournalCreateRequest);
+    }
+    fetchData();
   };
 
   if (loading) return <div className={styles.loading}>{COMMON.loading}</div>;
-  if (!data) return <div className={styles.error}>{tradeJournal.loadError}</div>;
+  if (error) return <div className={styles.error}>{error}</div>;
+  if (data === null) return <div className={styles.error}>{tradeJournal.loadError}</div>;
 
   return (
     <div className={styles.container}>
@@ -67,9 +90,12 @@ export default function JournalPage() {
           <p>{tradeJournal.pageSubtitle}</p>
         </div>
         <div className={styles.filters}>
-          <label>{tradeJournal.filterMarket}</label>
-          <select 
-            value={marketFilter} 
+          <label htmlFor="journal-market-filter">
+            {tradeJournal.filterMarket}
+          </label>
+          <select
+            id="journal-market-filter"
+            value={marketFilter}
             onChange={(e) => setSearchParams({ market: e.target.value })}
           >
             <option value="ALL">{tradeJournal.marketAll}</option>
@@ -95,63 +121,94 @@ export default function JournalPage() {
           </tr>
         </thead>
         <tbody>
-          {data.rows.map((row: any) => (
-            <tr key={row.symbol} className={row.thesis_conflict_with_summary ? styles.conflictRow : ""}>
+          {data.rows.map((row) => (
+            <tr
+              key={row.symbol}
+              className={
+                row.thesis_conflict_with_summary ? styles.conflictRow : undefined
+              }
+            >
               <td>
                 <div className={styles.symbolCell}>
                   <span className={styles.symbol}>{row.symbol}</span>
-                  <span className={styles.name}>{row.name}</span>
+                  {row.name ? (
+                    <span className={styles.name}>{row.name}</span>
+                  ) : null}
                 </div>
               </td>
-              <td>{row.position_weight_pct?.toFixed(1)}%</td>
+              <td>{formatNumber(row.position_weight_pct, 1)}%</td>
               <td>
-                <span className={`${styles.statusBadge} ${styles[`status_${row.journal_status}`]}`}>
-                  {tradeJournal[`status${row.journal_status.charAt(0).toUpperCase() + row.journal_status.slice(1)}` as keyof typeof tradeJournal]}
+                <span
+                  className={`${styles.statusBadge} ${
+                    styles[`status_${row.journal_status}`] ?? ""
+                  }`}
+                >
+                  {statusLabel(row.journal_status)}
                 </span>
+                {row.thesis_conflict_with_summary ? (
+                  <span className={styles.conflictBadge}>
+                    {tradeJournal.conflictWarning}
+                  </span>
+                ) : null}
               </td>
-              <td className={styles.thesisCell}>{row.thesis || "—"}</td>
-              <td>{row.target_price || "—"}</td>
-              <td>{row.stop_loss || "—"}</td>
-              <td>{row.min_hold_days ? `${row.min_hold_days}d` : "—"}</td>
+              <td className={styles.thesisCell}>{row.thesis ?? "—"}</td>
+              <td>{formatNumber(row.target_price)}</td>
+              <td>{formatNumber(row.stop_loss)}</td>
+              <td>{row.min_hold_days !== null ? `${row.min_hold_days}d` : "—"}</td>
               <td>
-                {row.latest_summary_decision && (
-                  <span className={`${styles.decisionBadge} ${styles[`decision_${row.latest_summary_decision}`]}`}>
+                {row.latest_summary_decision ? (
+                  <span
+                    className={`${styles.decisionBadge} ${
+                      styles[`decision_${row.latest_summary_decision}`] ?? ""
+                    }`}
+                  >
                     {row.latest_summary_decision.toUpperCase()}
                   </span>
+                ) : (
+                  "—"
                 )}
               </td>
               <td>
-                <button 
+                <button
+                  type="button"
                   onClick={() => {
                     setSelectedRow(row);
-                    setIsModalOpen(true);
+                    setModalOpen(true);
                   }}
                 >
-                  {row.journal_id ? tradeJournal.actionEdit : tradeJournal.actionCreate}
+                  {row.journal_id !== null
+                    ? tradeJournal.actionEdit
+                    : tradeJournal.actionCreate}
                 </button>
+                {row.latest_research_session_id !== null ? (
+                  <a
+                    className={styles.researchLink}
+                    href={`/trading/decisions/research/sessions/${row.latest_research_session_id}/summary`}
+                  >
+                    {tradeJournal.actionResearch}
+                  </a>
+                ) : null}
               </td>
             </tr>
           ))}
         </tbody>
       </table>
 
-      {data.total === 0 && <div className={styles.empty}>{tradeJournal.empty}</div>}
+      {data.total === 0 ? (
+        <div className={styles.empty}>{tradeJournal.empty}</div>
+      ) : null}
 
-      {isModalOpen && (
+      {modalOpen && selectedRow !== null ? (
         <JournalModal
-          isOpen={isModalOpen}
-          onClose={() => setIsModalOpen(false)}
+          isOpen={modalOpen}
+          mode={selectedRow.journal_id !== null ? "edit" : "create"}
+          symbol={selectedRow.symbol}
+          instrumentType={selectedRow.instrument_type ?? "equity_kr"}
+          initialRow={selectedRow}
+          onClose={() => setModalOpen(false)}
           onSave={handleSave}
-          initialData={selectedRow.journal_id ? {
-            id: selectedRow.journal_id,
-            thesis: selectedRow.thesis,
-            target_price: selectedRow.target_price,
-            stop_loss: selectedRow.stop_loss,
-            min_hold_days: selectedRow.min_hold_days,
-            // ... rest of fields if needed
-          } : null}
         />
-      )}
+      ) : null}
     </div>
   );
-};
+}
