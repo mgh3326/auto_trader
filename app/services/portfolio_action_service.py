@@ -35,9 +35,11 @@ class PortfolioActionService:
         user_id: int,
         market_filter: str | None = None,
     ) -> PortfolioActionsResponse:
-        holdings, total_value = await self._load_holdings(user_id, market_filter)
+        holdings, total_value, load_warnings = await self._load_holdings(
+            user_id, market_filter
+        )
         candidates: list[PortfolioActionCandidate] = []
-        warnings: list[str] = []
+        warnings: list[str] = list(load_warnings)
 
         for holding in holdings:
             quantity = float(getattr(holding, "quantity", 0.0) or 0.0)
@@ -50,8 +52,10 @@ class PortfolioActionService:
 
             evaluation = float(getattr(holding, "evaluation", 0.0) or 0.0)
             weight = (evaluation / total_value * 100.0) if total_value else None
+            market_value = _normalize_market(getattr(holding, "market_type", None))
             profit_rate = getattr(holding, "profit_loss_rate", None)
-            market_value = getattr(holding.market_type, "value", "KR")
+            if profit_rate is None:
+                profit_rate = getattr(holding, "profit_rate", None)
 
             summary = await self._load_latest_summary(symbol)
             journal_status = await self._load_journal_status(symbol)
@@ -105,27 +109,33 @@ class PortfolioActionService:
 
     async def _load_holdings(
         self, user_id: int, market_filter: str | None
-    ) -> tuple[list[Any], float]:
-        from app.services.kis import KISClient
+    ) -> tuple[list[Any], float, list[str]]:
+        from app.services.brokers.kis import KISClient
         from app.services.merged_portfolio_service import MergedPortfolioService
 
         service = MergedPortfolioService(self.db)
-        kis_client = KISClient()
         holdings: list[Any] = []
+        warnings: list[str] = []
 
         if market_filter in (None, "KR"):
-            holdings.extend(
-                await service.get_merged_portfolio_domestic(user_id, kis_client)
-            )
+            try:
+                holdings.extend(
+                    await service.get_merged_portfolio_domestic(user_id, KISClient())
+                )
+            except Exception as exc:
+                warnings.append(f"KR holdings unavailable: {type(exc).__name__}")
         if market_filter in (None, "US"):
-            holdings.extend(
-                await service.get_merged_portfolio_overseas(user_id, kis_client)
-            )
+            try:
+                holdings.extend(
+                    await service.get_merged_portfolio_overseas(user_id, KISClient())
+                )
+            except Exception as exc:
+                warnings.append(f"US holdings unavailable: {type(exc).__name__}")
         if market_filter in (None, "CRYPTO"):
             holdings.extend(await self._load_crypto_holdings(user_id))
 
         total = sum(float(getattr(h, "evaluation", 0.0) or 0.0) for h in holdings)
-        return holdings, total
+        return holdings, total, warnings
 
     async def _load_crypto_holdings(self, user_id: int) -> list[Any]:
         try:
@@ -183,3 +193,13 @@ class PortfolioActionService:
         if snapshot is None:
             return "missing"
         return "present"
+
+
+def _normalize_market(value: Any) -> str:
+    raw = getattr(value, "value", value)
+    text = str(raw or "KR").strip().lower()
+    if text in {"crypto", "cr", "coin"}:
+        return "CRYPTO"
+    if text in {"us", "usa", "overseas"}:
+        return "US"
+    return "KR"

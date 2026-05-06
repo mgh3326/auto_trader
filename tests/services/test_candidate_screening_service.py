@@ -16,14 +16,16 @@ async def test_wraps_screen_stocks_and_annotates_held(monkeypatch) -> None:
                 {
                     "symbol": "KRW-BTC",
                     "name": "비트코인",
+                    "close": 123.4,
+                    "volume_24h": 123456.0,
                     "trade_amount_24h": 0.0,
                     "volume_ratio": None,
                     "rsi": 28.5,
-                    "warnings": ["KRW-BTC ticker not found"],
+                    "market_warning": "KRW-BTC ticker not found",
                 },
                 {"symbol": "KRW-ETH", "name": "이더리움", "rsi": 32.1},
             ],
-            "rsi_enrichment": {"attempted": 0, "succeeded": 0},
+            "meta": {"rsi_enrichment": {"attempted": 2, "succeeded": 1}},
             "warnings": ["rsi_enrichment_skipped"],
         }
     )
@@ -41,9 +43,13 @@ async def test_wraps_screen_stocks_and_annotates_held(monkeypatch) -> None:
     assert res.total == 2
     btc = next(c for c in res.candidates if c.symbol == "KRW-BTC")
     eth = next(c for c in res.candidates if c.symbol == "KRW-ETH")
+    assert btc.price == 123.4
+    assert btc.volume == 123456.0
     assert btc.is_held is True
     assert eth.is_held is False
     assert "rsi_enrichment_skipped" in res.warnings
+    assert res.rsi_enrichment_attempted == 2
+    assert res.rsi_enrichment_succeeded == 1
     assert any("KRW-BTC" in w for w in btc.data_warnings)
 
 
