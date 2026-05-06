@@ -289,12 +289,11 @@ export const WARNING_TOKEN_LABEL: Record<string, string> = {
   missing_kr_universe: "국내 유니버스 누락",
   non_nxt_venue: "비-NXT 거래소",
   unknown_venue: "거래소 알 수 없음",
-  unknown_side: "방향 알 수 없음",
+  unknown_side: "方向 알 수 없음",
 };
 
 export const SAFETY_SCOPE_LABEL: Record<string, string> = {
-  preview_only_confirm_false_no_broker_submit:
-    "브로커 제출 없는 preview 전용",
+  preview_only_confirm_false_no_broker_submit: "브로커 제출 없는 preview 전용",
   advisory_only: "자문 전용",
 };
 
@@ -466,4 +465,61 @@ export const candidates = {
   loadError: "후보 데이터를 불러오지 못했습니다.",
   rsiEnrichmentNote: "RSI enrichment ",
   warningsHeader: "Screening 경고",
+};
+
+export const tradeJournal = {
+  pageTitle: "Position Thesis Journal",
+  pageSubtitle: "보유 종목별 투자 가설과 전략을 기록하고 관리합니다.",
+  filterMarket: "시장",
+  marketAll: "전체",
+  marketKR: "국내",
+  marketUS: "해외",
+  marketCRYPTO: "암호화폐",
+  colSymbol: "종목",
+  colWeight: "비중",
+  colStatus: "상태",
+  colThesis: "투자 가설",
+  colTarget: "목표가",
+  colStop: "손절가",
+  colMinHold: "최소 보유",
+  colResearch: "Research",
+  colActions: "액션",
+  statusPresent: "작성됨",
+  statusMissing: "미작성",
+  statusStale: "오래됨",
+  actionEdit: "수정",
+  actionCreate: "작성",
+  actionResearch: "Research",
+  conflictWarning: "Research 의견(SELL)과 Thesis가 충돌합니다.",
+  empty: "보유 종목이 없습니다.",
+  loadError: "데이터를 불러오지 못했습니다.",
+  saveSuccess: "저장되었습니다.",
+  saveError: "저장 실패",
+  modalTitleEdit: "Thesis 수정",
+  modalTitleCreate: "Thesis 작성",
+  labelThesis: "투자 가설 (필수)",
+  labelStrategy: "매매 전략",
+  labelTargetPrice: "목표가",
+  labelStopLoss: "손절가",
+  labelMinHoldDays: "최소 보유 일수",
+  labelStatus: "상태",
+  labelNotes: "추가 메모",
+  btnSave: "저장",
+  placeholderThesis: "이 종목을 보유하는 핵심 이유를 입력하세요...",
+};
+
+export const retrospective = {
+  pageTitle: "Trade Retrospective",
+  pageSubtitle: "종료된 포지션의 복기와 수익률을 검토합니다.",
+  colSymbol: "종목",
+  colThesis: "투자 가설",
+  colSide: "방향",
+  colPnL: "수익률",
+  colStatus: "결과",
+  colDate: "종료일",
+  statusClosed: "익절/종료",
+  statusStopped: "손절",
+  statusExpired: "만기",
+  empty: "복기할 데이터가 없습니다.",
+  loadError: "데이터를 불러오지 못했습니다.",
 };
