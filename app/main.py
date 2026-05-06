@@ -40,6 +40,7 @@ from app.routers import (
     portfolio_actions,
     preopen,
     research_pipeline,
+    research_retrospective,
     research_run_decision_sessions,
     screener,
     strategy_events,
@@ -174,7 +175,8 @@ def create_app() -> FastAPI:
     app.include_router(trading.router)
     app.include_router(trading_decisions.router)
     app.include_router(trading_decisions_spa.router)
-    app.include_router(trade_journals.router, prefix="/api/v1")
+    app.include_router(trade_journals.router)
+    app.include_router(research_retrospective.router)
     app.include_router(research_pipeline.router)
     app.include_router(portfolio_actions.router)
     app.include_router(candidate_discovery.router)
