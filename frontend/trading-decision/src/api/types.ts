@@ -1153,3 +1153,153 @@ export interface CandidateScreenResponse {
   rsi_enrichment_attempted: number;
   rsi_enrichment_succeeded: number;
 }
+
+// ROB-120 — Trade journal DTOs
+export type JournalStatusValue =
+  | "draft"
+  | "active"
+  | "closed"
+  | "stopped"
+  | "expired";
+export type WritableJournalStatus = "draft" | "active";
+export type JournalCoverageStatus = "present" | "missing" | "stale";
+
+export interface JournalCoverageRow {
+  symbol: string;
+  name: string | null;
+  market: Market;
+  instrument_type: string | null;
+  quantity: number | null;
+  position_weight_pct: number | null;
+  journal_status: JournalCoverageStatus;
+  journal_id: number | null;
+  thesis: string | null;
+  target_price: number | null;
+  stop_loss: number | null;
+  min_hold_days: number | null;
+  hold_until: string | null;
+  latest_research_session_id: number | null;
+  latest_research_summary_id: number | null;
+  latest_summary_decision: SummaryDecision | null;
+  thesis_conflict_with_summary: boolean;
+}
+
+export interface JournalCoverageResponse {
+  generated_at: string;
+  total: number;
+  rows: JournalCoverageRow[];
+  warnings: string[];
+}
+
+export interface JournalReadResponse {
+  id: number;
+  symbol: string;
+  instrument_type: string;
+  side: "buy" | "sell";
+  thesis: string;
+  strategy: string | null;
+  target_price: number | null;
+  stop_loss: number | null;
+  min_hold_days: number | null;
+  hold_until: string | null;
+  status: JournalStatusValue;
+  account: string | null;
+  account_type: "live" | "paper";
+  notes: string | null;
+  research_session_id: number | null;
+  research_summary_id: number | null;
+  pnl_pct?: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface JournalCreateRequest {
+  symbol: string;
+  instrument_type: string;
+  side?: "buy" | "sell";
+  thesis: string;
+  strategy?: string | null;
+  target_price?: number | null;
+  stop_loss?: number | null;
+  min_hold_days?: number | null;
+  status?: WritableJournalStatus;
+  account?: string | null;
+  notes?: string | null;
+  research_session_id?: number | null;
+  research_summary_id?: number | null;
+}
+
+export interface JournalUpdateRequest {
+  thesis?: string;
+  strategy?: string | null;
+  target_price?: number | null;
+  stop_loss?: number | null;
+  min_hold_days?: number | null;
+  status?: WritableJournalStatus;
+  notes?: string | null;
+  research_session_id?: number | null;
+  research_summary_id?: number | null;
+}
+
+// ROB-121 — Research retrospective DTOs
+export type DecisionVerdict = "buy" | "hold" | "sell";
+
+export interface RetrospectiveStageCoverageStat {
+  stage_type: StageType;
+  coverage_pct: number;
+  stale_pct: number;
+  unavailable_pct: number;
+}
+
+export interface RetrospectiveDecisionDistribution {
+  ai_buy: number;
+  ai_hold: number;
+  ai_sell: number;
+  user_accept: number;
+  user_reject: number;
+  user_modify: number;
+  user_defer: number;
+  user_pending: number;
+}
+
+export interface RetrospectivePnlSummary {
+  realized_pnl_pct_avg: number | null;
+  unrealized_pnl_pct_avg: number | null;
+  sample_size: number;
+}
+
+export interface RetrospectiveOverview {
+  period_start: string;
+  period_end: string;
+  market: Market | null;
+  strategy: string | null;
+  sessions_total: number;
+  summaries_total: number;
+  decision_distribution: RetrospectiveDecisionDistribution;
+  stage_coverage: RetrospectiveStageCoverageStat[];
+  pnl: RetrospectivePnlSummary;
+  warnings: string[];
+}
+
+export interface RetrospectiveStagePerformanceRow {
+  stage_combo: string;
+  sample_size: number;
+  win_rate_pct: number | null;
+  avg_realized_pnl_pct: number | null;
+}
+
+export interface RetrospectiveDecisionRow {
+  research_session_id: number;
+  symbol: string;
+  market: Market;
+  decided_at: string;
+  ai_decision: DecisionVerdict | null;
+  user_response: string | null;
+  realized_pnl_pct: number | null;
+  proposal_id: number | null;
+}
+
+export interface RetrospectiveDecisionsResponse {
+  total: number;
+  rows: RetrospectiveDecisionRow[];
+}
