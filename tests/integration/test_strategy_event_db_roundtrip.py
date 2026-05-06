@@ -37,7 +37,7 @@ async def integration_user_id(async_db_session):
     user = User(
         email=f"rob41-itest-{suffix}@example.com",
         username=f"rob41-itest-{suffix}",
-        hashed_password="fakehash",
+        hashed_password="fakehash",  # noqa: S105 -- NOSONAR: Test fixture, not a real credential.
     )
     async_db_session.add(user)
     await async_db_session.flush()
