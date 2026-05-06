@@ -1154,6 +1154,7 @@ export interface CandidateScreenResponse {
   rsi_enrichment_succeeded: number;
 }
 
+
 // ROB-120 — Trade journal DTOs
 export type JournalStatusValue =
   | "draft"
@@ -1303,3 +1304,69 @@ export interface RetrospectiveDecisionsResponse {
   total: number;
   rows: RetrospectiveDecisionRow[];
 }
+// === ROB-118 order preview ===
+
+export type OrderPreviewStatus =
+  | "created"
+  | "preview_passed"
+  | "preview_failed"
+  | "submitted"
+  | "submit_failed"
+  | "canceled";
+
+export type OrderPreviewLeg = {
+  leg_index: number;
+  quantity: string;
+  price: string | null;
+  order_type: "limit" | "market";
+  estimated_value: string | null;
+  estimated_fee: string | null;
+  expected_pnl: string | null;
+  dry_run_status: "passed" | "failed" | "skipped" | null;
+  dry_run_error: Record<string, unknown> | null;
+};
+
+export type OrderExecutionRequest = {
+  leg_index: number;
+  broker_order_id: string | null;
+  status: "submitted" | "rejected" | "failed";
+  error_payload: Record<string, unknown> | null;
+  submitted_at: string;
+};
+
+export type OrderPreviewSession = {
+  preview_uuid: string;
+  source_kind: "portfolio_action" | "candidate" | "research_run";
+  source_ref: string | null;
+  research_session_id: string | null;
+  symbol: string;
+  market: "equity_kr" | "equity_us" | "crypto";
+  venue: string;
+  side: "buy" | "sell";
+  status: OrderPreviewStatus;
+  approval_token: string | null;
+  legs: OrderPreviewLeg[];
+  executions: OrderExecutionRequest[];
+  dry_run_error: Record<string, unknown> | null;
+  approved_at: string | null;
+  submitted_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CreateOrderPreviewRequest = {
+  source_kind: OrderPreviewSession["source_kind"];
+  source_ref?: string | null;
+  research_session_id?: string | null;
+  symbol: string;
+  market: OrderPreviewSession["market"];
+  venue: string;
+  side: "buy" | "sell";
+  legs: Array<{
+    leg_index: number;
+    quantity: string;
+    price?: string | null;
+    order_type?: "limit" | "market";
+  }>;
+};
+
