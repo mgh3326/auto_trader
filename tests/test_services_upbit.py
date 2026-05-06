@@ -151,7 +151,7 @@ class TestUpbitService:
 
         assert summary["balance"] == pytest.approx(700000.0)
         assert summary["orderable"] == pytest.approx(500000.0)
-        assert summary["balance"] == summary["orderable"] + 200000.0
+        assert summary["balance"] == pytest.approx(summary["orderable"] + 200000.0)
 
     @pytest.mark.asyncio
     async def test_fetch_krw_orderable_balance_reads_summary(self, monkeypatch):
@@ -181,4 +181,4 @@ class TestUpbitService:
 
         summary = await upbit_service_module.fetch_krw_cash_summary()
 
-        assert summary == {"balance": 0.0, "orderable": 0.0}
+        assert summary == pytest.approx({"balance": 0.0, "orderable": 0.0})

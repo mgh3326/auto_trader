@@ -758,7 +758,7 @@ class TestMetrics:
         returns = [0.0, 0.0, 0.0, 0.0, 0.0]
         sharpe = prepare._calc_sharpe(returns)
 
-        assert sharpe == 0.0 or np.isnan(sharpe)
+        assert sharpe == pytest.approx(0.0) or np.isnan(sharpe)
 
     def test_score_penalty_when_few_trades(self):
         """Test that score includes trade count penalty when round_trips < 15."""

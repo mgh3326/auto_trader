@@ -57,7 +57,7 @@ def test_resolve_runtime_config_reads_instance_config_when_context_missing(
 
     config = probe.resolve_runtime_config()
 
-    assert config.api_base == "http://127.0.0.1:3100"
+    assert config.api_base == pytest.approx("http://127.0.0.1:3100")
     assert config.paperclip_home == paperclip_home
 
 
@@ -798,7 +798,7 @@ def test_fetch_issue_blockers_returns_blocked_by_relation(
         api_key="token-1",
     )
 
-    assert called["url"] == "http://127.0.0.1:3100/api/issues/i1"
+    assert called["url"] == pytest.approx("http://127.0.0.1:3100/api/issues/i1")
     assert called["headers"]["Authorization"] == "Bearer token-1"
     assert len(rows) == 1
     assert rows[0]["identifier"] == "ROB-90"

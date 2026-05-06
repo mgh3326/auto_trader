@@ -442,6 +442,8 @@ async def test_get_dividends_uses_session_and_keeps_payload(monkeypatch):
     assert result["dividend_yield"] == pytest.approx(0.0123)
     assert result["dividend_rate"] == pytest.approx(1.11)
     assert result["ex_dividend_date"] == "2024-01-01"
-    assert result["last_dividend"] == {"date": "2024-04-01", "amount": 1.2}
+    assert result["last_dividend"] == pytest.approx(
+        {"date": "2024-04-01", "amount": 1.2}
+    )
     assert captured["symbol"] == "AAPL"
     assert captured["session"] is not None

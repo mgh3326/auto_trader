@@ -902,7 +902,9 @@ class TestScreenStocksCrypto:
             "KRW-XRP",
             "KRW-BTC",
         ]
-        assert [item["market_cap"] for item in result["results"]] == [100.0, 50.0, 20.0]
+        assert [item["market_cap"] for item in result["results"]] == pytest.approx(
+            [100.0, 50.0, 20.0]
+        )
 
     @pytest.mark.asyncio
     async def test_crypto_market_warning_filter_counts(self, monkeypatch):

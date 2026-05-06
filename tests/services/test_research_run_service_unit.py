@@ -100,10 +100,10 @@ async def test_create_research_run_json_safes_metadata_and_advisories() -> None:
     )
 
     assert run.id == 1
-    assert run.market_brief == {"score": "1.25"}
-    assert run.source_freshness == {"quote_age_sec": "3.5"}
+    assert run.market_brief == pytest.approx({"score": "1.25"})
+    assert run.source_freshness == pytest.approx({"quote_age_sec": "3.5"})
     assert run.source_warnings == ["missing_orderbook"]
-    assert run.advisory_links[0]["confidence"] == "0.70"
+    assert run.advisory_links[0]["confidence"] == pytest.approx("0.70")
 
 
 @pytest.mark.unit
@@ -193,7 +193,9 @@ def test_reconciliation_create_from_recon_preserves_recon_fields() -> None:
 
     assert payload["candidate_id"] == 3
     assert payload["classification"] == "near_fill"
-    assert payload["decision_support"] == {"current_price": Decimal("70140")}
+    assert payload["decision_support"] == pytest.approx(
+        {"current_price": Decimal("70140")}
+    )
     assert payload["summary"] == "요약"
 
 

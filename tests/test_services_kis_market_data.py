@@ -252,7 +252,7 @@ async def test_kis_inquire_overseas_minute_chart_parses_rows(monkeypatch):
         "value",
     ]
     assert len(page.frame) == 2
-    assert list(page.frame["close"]) == [180.5, 180.4]
+    assert list(page.frame["close"]) == pytest.approx([180.5, 180.4])
     assert list(page.frame["volume"]) == [100, 80]
     assert list(page.frame["value"]) == [18050, 14432]
     assert page.frame.iloc[0]["datetime"] == pd.Timestamp("2026-02-19 09:30:00")
@@ -1181,8 +1181,8 @@ class TestKISRateLimitLookup:
             first = client._get_rate_limit_for_api(api_key)
             second = client._get_rate_limit_for_api(api_key)
 
-        assert first == (19, 1.0)
-        assert second == (19, 1.0)
+        assert first == pytest.approx((19, 1.0))
+        assert second == pytest.approx((19, 1.0))
         warnings = [
             record
             for record in caplog.records

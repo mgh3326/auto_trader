@@ -87,7 +87,7 @@ class TestExecutionEventSerialization:
         ]
         result = _serialize_for_redis(test_list)
 
-        assert result == [100.50, 200.75, "2026-02-12T10:47:27"]
+        assert result == pytest.approx([100.50, 200.75, "2026-02-12T10:47:27"])
 
 
 @pytest.mark.unit

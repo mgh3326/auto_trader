@@ -454,7 +454,7 @@ class TestCalculateCryptoMetricsFromOhlcv:
         assert "volume_ratio" in metrics
         assert "candle_type" in metrics
         assert "adx" in metrics
-        assert metrics["volume_24h"] == 1000.0 + (n - 1) * 10
+        assert metrics["volume_24h"] == pytest.approx(1000.0 + (n - 1) * 10)
 
     def test_handles_empty_df(self):
         df = pd.DataFrame()

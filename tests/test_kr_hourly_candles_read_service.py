@@ -1299,16 +1299,22 @@ async def test_hour_aggregation_from_minutes():
     row = result.iloc[0]
 
     # open: first minute's open (100.0)
-    assert row["open"] == 100.0, f"Expected open=100.0, got {row['open']}"
+    assert row["open"] == pytest.approx(100.0), (
+        f"Expected open=100.0, got {row['open']}"
+    )
 
     # high: max of all highs (259.0)
-    assert row["high"] == 259.0, f"Expected high=259.0, got {row['high']}"
+    assert row["high"] == pytest.approx(259.0), (
+        f"Expected high=259.0, got {row['high']}"
+    )
 
     # low: min of all lows (50.0)
-    assert row["low"] == 50.0, f"Expected low=50.0, got {row['low']}"
+    assert row["low"] == pytest.approx(50.0), f"Expected low=50.0, got {row['low']}"
 
     # close: last minute's close (209.0)
-    assert row["close"] == 209.0, f"Expected close=209.0, got {row['close']}"
+    assert row["close"] == pytest.approx(209.0), (
+        f"Expected close=209.0, got {row['close']}"
+    )
 
     # volume: sum of all volumes (1000 + 1010 + ... + 1590 = 60 * (1000 + 1590) / 2 = 77700)
     expected_volume = sum(1000 + i * 10 for i in range(60))
@@ -1911,26 +1917,38 @@ async def test_partial_db_data_filled_by_api(monkeypatch):
 
     # Verify DB data is preserved (12:00 and 13:00 hours from DB)
     row_12 = out[out["datetime"] == datetime.datetime(2026, 2, 23, 12, 0, 0)].iloc[0]
-    assert row_12["open"] == 102.0, "DB data for 12:00 should be preserved"
-    assert row_12["close"] == 103.0, "DB data for 12:00 should be preserved"
+    assert row_12["open"] == pytest.approx(102.0), (
+        "DB data for 12:00 should be preserved"
+    )
+    assert row_12["close"] == pytest.approx(103.0), (
+        "DB data for 12:00 should be preserved"
+    )
 
     row_13 = out[out["datetime"] == datetime.datetime(2026, 2, 23, 13, 0, 0)].iloc[0]
-    assert row_13["open"] == 103.0, "DB data for 13:00 should be preserved"
-    assert row_13["close"] == 104.0, "DB data for 13:00 should be preserved"
+    assert row_13["open"] == pytest.approx(103.0), (
+        "DB data for 13:00 should be preserved"
+    )
+    assert row_13["close"] == pytest.approx(104.0), (
+        "DB data for 13:00 should be preserved"
+    )
 
     # Verify API data filled the missing hours (10:00, 11:00)
     # Note: The aggregated hourly close is the last minute's close (minute 59)
     # For 10:00 hour: last minute (10:59) has close = 100.0 + 0*10 + 59*0.1 + 0.5 = 106.4
     # For 11:00 hour: last minute (11:59) has close = 100.0 + 1*10 + 59*0.1 + 0.5 = 116.4
     row_10 = out[out["datetime"] == datetime.datetime(2026, 2, 23, 10, 0, 0)].iloc[0]
-    assert row_10["open"] == 100.0, "API data for 10:00 should be present"
-    assert row_10["close"] == 106.4, (
+    assert row_10["open"] == pytest.approx(100.0), (
+        "API data for 10:00 should be present"
+    )
+    assert row_10["close"] == pytest.approx(106.4), (
         f"API data for 10:00 close should be 106.4, got {row_10['close']}"
     )
 
     row_11 = out[out["datetime"] == datetime.datetime(2026, 2, 23, 11, 0, 0)].iloc[0]
-    assert row_11["open"] == 110.0, "API data for 11:00 should be present"
-    assert row_11["close"] == 116.4, (
+    assert row_11["open"] == pytest.approx(110.0), (
+        "API data for 11:00 should be present"
+    )
+    assert row_11["close"] == pytest.approx(116.4), (
         f"API data for 11:00 close should be 116.4, got {row_11['close']}"
     )
 

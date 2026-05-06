@@ -156,7 +156,7 @@ def test_redact_flat_sensitive_keys():
     assert redacted[sensitive_key_name] == "[REDACTED]"
     assert redacted["symbol"] == "BTCUSD"
     assert redacted["limit_price"] == "50000"
-    assert redacted["quantity"] == "0.001"
+    assert redacted["quantity"] == pytest.approx("0.001")
 
 
 @pytest.mark.unit

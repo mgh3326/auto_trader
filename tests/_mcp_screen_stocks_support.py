@@ -2959,7 +2959,9 @@ class TestScreenStocksFundamentalsExpansion:
             "KRW-XRP",
             "KRW-BTC",
         ]
-        assert [item["market_cap"] for item in result["results"]] == [100.0, 50.0, 20.0]
+        assert [item["market_cap"] for item in result["results"]] == pytest.approx(
+            [100.0, 50.0, 20.0]
+        )
 
 
 class TestScreenStocksRsiLogging:

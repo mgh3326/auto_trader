@@ -31,7 +31,7 @@ class TestDailyBriefFormatting:
         assert fmt_value(15_000_000, "KRW") == "1,500만"
 
     def test_fmt_value_krw_eok(self):
-        assert fmt_value(150_000_000, "KRW") == "1.5억"
+        assert fmt_value(150_000_000, "KRW") == pytest.approx("1.5억")
 
     def test_fmt_value_usd(self):
         assert fmt_value(42_000, "USD") == "$42,000"
@@ -40,10 +40,10 @@ class TestDailyBriefFormatting:
         assert fmt_value(None, "KRW") == "-"
 
     def test_fmt_pnl_negative(self):
-        assert fmt_pnl(-5.2) == "-5.2%"
+        assert fmt_pnl(-5.2) == pytest.approx("-5.2%")
 
     def test_fmt_pnl_positive(self):
-        assert fmt_pnl(3.1) == "+3.1%"
+        assert fmt_pnl(3.1) == pytest.approx("+3.1%")
 
     def test_fmt_pnl_none(self):
         assert fmt_pnl(None) == "-"

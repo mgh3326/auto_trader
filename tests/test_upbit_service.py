@@ -213,8 +213,8 @@ async def test_fetch_multiple_current_prices_inflight_dedupe_for_overlapping_bat
         upbit.fetch_multiple_current_prices(["KRW-BTC"]),
     )
 
-    assert full_batch == {"KRW-BTC": 123.0, "KRW-ETH": 123.0}
-    assert overlap_batch == {"KRW-BTC": 123.0}
+    assert full_batch == pytest.approx({"KRW-BTC": 123.0, "KRW-ETH": 123.0})
+    assert overlap_batch == pytest.approx({"KRW-BTC": 123.0})
     assert len(requested_batches) == 1
     assert requested_batches[0] == ["KRW-BTC", "KRW-ETH"]
 

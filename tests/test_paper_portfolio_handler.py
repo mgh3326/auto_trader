@@ -391,7 +391,7 @@ async def test_collect_paper_cash_balances_all_accounts(monkeypatch):
     )
     assert d_usd["balance"] == pytest.approx(500.0)
     assert d_usd["exchange_rate"] is None
-    assert d_usd["formatted"] == "$500.00 USD"
+    assert d_usd["formatted"] == pytest.approx("$500.00 USD")
 
 
 @pytest.mark.asyncio

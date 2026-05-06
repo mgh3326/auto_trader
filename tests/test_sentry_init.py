@@ -457,7 +457,9 @@ def test_before_send_log_keeps_non_healthz_uvicorn_access_log():
     kept = sentry_module._before_send_log(sentry_log, {})
 
     assert kept is not None
-    assert kept.get("body") == '127.0.0.1:52778 - "GET /api/v1/orders HTTP/1.1" 200'
+    assert kept.get("body") == pytest.approx(
+        '127.0.0.1:52778 - "GET /api/v1/orders HTTP/1.1" 200'
+    )
 
 
 @pytest.mark.unit

@@ -62,4 +62,4 @@ class TestIntradayCryptoReview:
         assert result["market"] == "crypto"
         assert result["order_count"] == 3
         assert len(result["orders"]) == 1
-        assert result["orders"][0]["indicators"] == {"rsi_14": 55.0}
+        assert result["orders"][0]["indicators"] == pytest.approx({"rsi_14": 55.0})

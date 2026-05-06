@@ -229,7 +229,9 @@ async def test_send_fill_notification_posts_fill_payload_to_n8n(
     called_url = mock_cli.post.call_args.args[0]
     called_json = mock_cli.post.call_args.kwargs["json"]
 
-    assert called_url == "http://127.0.0.1:5678/webhook/fill-notification"
+    assert called_url == pytest.approx(
+        "http://127.0.0.1:5678/webhook/fill-notification"
+    )
     assert called_json["display_name"] == "한화에어로"
     assert called_json["market_type"] == "kr"
     assert called_json["symbol"] == "012450"
@@ -1278,7 +1280,7 @@ async def test_send_watch_alert_to_router_posts_payload(
     assert result.request_id is not None
     called_url = mock_cli.post.call_args.args[0]
     called_json = mock_cli.post.call_args.kwargs["json"]
-    assert called_url == "http://127.0.0.1:5678/webhook/watch-alert"
+    assert called_url == pytest.approx("http://127.0.0.1:5678/webhook/watch-alert")
     assert called_json["alert_type"] == "watch"
     assert called_json["correlation_id"] == "corr-watch-ok"
     assert called_json["as_of"] == "2026-04-17T09:30:00+09:00"
@@ -1367,7 +1369,9 @@ async def test_send_watch_alert_to_router_prefers_router_url_over_legacy(
     )
 
     assert result.status == "success"
-    assert mock_cli.post.call_args.args[0] == "http://127.0.0.1:9999/router/watch-alert"
+    assert mock_cli.post.call_args.args[0] == pytest.approx(
+        "http://127.0.0.1:9999/router/watch-alert"
+    )
 
 
 @pytest.mark.asyncio

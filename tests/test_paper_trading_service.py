@@ -659,7 +659,9 @@ class TestQueries:
         )
         monkeypatch.setattr(service, "get_account", AsyncMock(return_value=account))
         balance = await service.get_cash_balance(account_id=1)
-        assert balance == {"krw": Decimal("8000000"), "usd": Decimal("1234.5")}
+        assert balance == pytest.approx(
+            {"krw": Decimal("8000000"), "usd": Decimal("1234.5")}
+        )
 
     @pytest.mark.asyncio
     async def test_get_cash_balance_missing_raises(self, service, monkeypatch):

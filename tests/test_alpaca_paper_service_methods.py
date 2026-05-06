@@ -213,7 +213,7 @@ async def test_submit_order_marshals_request():
     assert body["side"] == "buy"
     assert body["type"] == "limit"
     assert body["qty"] == "10"
-    assert body["limit_price"] == "150.00"
+    assert body["limit_price"] == pytest.approx("150.00")
     assert order.id == "order-001"
 
 

@@ -318,7 +318,7 @@ def test_format_sell_notification():
     assert fields["종목"] == "이더리움 (ETH)"
     assert fields["시장"] == "암호화폐"
     assert fields["주문 수"] == "2건"
-    assert fields["총 수량"] == "0.5"
+    assert fields["총 수량"] == pytest.approx("0.5")
     assert fields["예상 금액"] == "1,025,000원"
 
     # Verify order details
@@ -352,7 +352,7 @@ def test_format_sell_notification_without_volumes():
     assert fields["종목"] == "이더리움 (ETH)"
     assert fields["시장"] == "암호화폐"
     assert fields["주문 수"] == "2건"
-    assert fields["총 수량"] == "0.5"
+    assert fields["총 수량"] == pytest.approx("0.5")
     assert fields["예상 금액"] == "1,025,000원"
 
     # Verify price range (no volumes, so shows price range)
@@ -413,7 +413,7 @@ def test_format_analysis_notification():
     assert fields["종목"] == "비트코인 (BTC)"
     assert fields["시장"] == "암호화폐"
     assert fields["판단"] == "🟢 매수"
-    assert fields["신뢰도"] == "85.5%"
+    assert fields["신뢰도"] == pytest.approx("85.5%")
 
     # Verify reasons (numbered list)
     assert "주요 근거" in fields
@@ -444,7 +444,7 @@ def test_format_analysis_notification_hold():
 
     assert fields["종목"] == "이더리움 (ETH)"
     assert fields["판단"] == "🟡 보유"
-    assert fields["신뢰도"] == "70.0%"
+    assert fields["신뢰도"] == pytest.approx("70.0%")
 
 
 @pytest.mark.unit
@@ -469,7 +469,7 @@ def test_format_analysis_notification_sell():
 
     assert fields["종목"] == "리플 (XRP)"
     assert fields["판단"] == "🔴 매도"
-    assert fields["신뢰도"] == "90.0%"
+    assert fields["신뢰도"] == pytest.approx("90.0%")
 
 
 @pytest.mark.unit
@@ -495,7 +495,7 @@ def test_format_automation_summary():
     assert fields["분석 완료"] == "10개"
     assert fields["매수 주문"] == "3건"
     assert fields["매도 주문"] == "2건"
-    assert fields["실행 시간"] == "45.5초"
+    assert fields["실행 시간"] == pytest.approx("45.5초")
 
 
 @pytest.mark.unit
@@ -521,7 +521,7 @@ def test_format_automation_summary_with_errors():
     assert fields["분석 완료"] == "5개"
     assert fields["매수 주문"] == "1건"
     assert fields["매도 주문"] == "1건"
-    assert fields["실행 시간"] == "30.0초"
+    assert fields["실행 시간"] == pytest.approx("30.0초")
     assert fields["오류 발생"] == "2건"
 
 

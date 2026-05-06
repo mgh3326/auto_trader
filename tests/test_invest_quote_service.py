@@ -28,7 +28,7 @@ async def test_fetch_kr_prices() -> None:
 
     prices = await service.fetch_kr_prices(["005930"])
 
-    assert prices == {"005930": 70000.0}
+    assert prices == pytest.approx({"005930": 70000.0})
     service._market_data.inquire_price.assert_called_once_with("005930", market="J")
 
 
@@ -53,7 +53,7 @@ async def test_fetch_us_prices(monkeypatch: pytest.MonkeyPatch) -> None:
 
     prices = await service.fetch_us_prices(["AAPL"])
 
-    assert prices == {"AAPL": 150.0}
+    assert prices == pytest.approx({"AAPL": 150.0})
     mock_get_exchange.assert_called_once_with("AAPL", db)
     service._market_data.inquire_overseas_daily_price.assert_called_once_with(
         "AAPL", exchange_code="NASD", n=1, period="D"

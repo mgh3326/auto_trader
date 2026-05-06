@@ -97,8 +97,8 @@ class TestAIMarkdownService:
         assert "목표가" in result["content"]
 
     def test_format_price(self, service):
-        assert service._format_price(100.5, "US") == "$100.50"
-        assert service._format_price(100500, "KR") == "₩100,500.00"
+        assert service._format_price(100.5, "US") == pytest.approx("$100.50")
+        assert service._format_price(100500, "KR") == pytest.approx("₩100,500.00")
         assert service._format_price(None, "US") == "N/A"
 
     def test_empty_positions(self, service):

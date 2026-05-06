@@ -52,7 +52,7 @@ class TestStrategyScanEndpoint:
         assert body["scan_type"] == "strategy"
         assert body["alerts_sent"] == 1
         assert body["message"]
-        assert body["details"]["buy_signals"] == ["📉 TEST RSI 29.8"]
+        assert body["details"]["buy_signals"] == pytest.approx(["📉 TEST RSI 29.8"])
 
     def test_strategy_scan_no_signals(self, client):
         mock_result = {

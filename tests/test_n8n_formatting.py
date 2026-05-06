@@ -18,28 +18,28 @@ class TestFmtPrice:
     def test_krw_exact_boundary_10000(self) -> None:
         from app.services.n8n_formatting import fmt_price
 
-        assert fmt_price(10000) == "1.0만"
+        assert fmt_price(10000) == pytest.approx("1.0만")
 
     def test_krw_10000_to_1m(self) -> None:
         from app.services.n8n_formatting import fmt_price
 
-        assert fmt_price(16500) == "1.65만"
-        assert fmt_price(70000) == "7.0만"
-        assert fmt_price(999999) == "100.0만"
+        assert fmt_price(16500) == pytest.approx("1.65만")
+        assert fmt_price(70000) == pytest.approx("7.0만")
+        assert fmt_price(999999) == pytest.approx("100.0만")
 
     def test_krw_1m_to_100m(self) -> None:
         from app.services.n8n_formatting import fmt_price
 
-        assert fmt_price(1080000) == "108.0만"
-        assert fmt_price(5_500_000) == "550.0만"
-        assert fmt_price(99_999_999) == "10000.0만"
+        assert fmt_price(1080000) == pytest.approx("108.0만")
+        assert fmt_price(5_500_000) == pytest.approx("550.0만")
+        assert fmt_price(99_999_999) == pytest.approx("10000.0만")
 
     def test_krw_100m_plus_uses_eok(self) -> None:
         from app.services.n8n_formatting import fmt_price
 
-        assert fmt_price(108_000_000) == "1.08억"
-        assert fmt_price(148_500_000) == "1.49억"
-        assert fmt_price(1_500_000_000) == "15.0억"
+        assert fmt_price(108_000_000) == pytest.approx("1.08억")
+        assert fmt_price(148_500_000) == pytest.approx("1.49억")
+        assert fmt_price(1_500_000_000) == pytest.approx("15.0억")
 
     def test_krw_zero(self) -> None:
         from app.services.n8n_formatting import fmt_price
@@ -60,13 +60,13 @@ class TestFmtPrice:
     def test_usd_below_1000_two_decimals(self) -> None:
         from app.services.n8n_formatting import fmt_price
 
-        assert fmt_price(12.5, "USD") == "$12.50"
-        assert fmt_price(180.5, "USD") == "$180.50"
+        assert fmt_price(12.5, "USD") == pytest.approx("$12.50")
+        assert fmt_price(180.5, "USD") == pytest.approx("$180.50")
 
     def test_usd_zero(self) -> None:
         from app.services.n8n_formatting import fmt_price
 
-        assert fmt_price(0, "USD") == "$0.00"
+        assert fmt_price(0, "USD") == pytest.approx("$0.00")
 
     # --- None handling ---
     def test_none_returns_dash(self) -> None:
@@ -82,17 +82,17 @@ class TestFmtGap:
     def test_positive(self) -> None:
         from app.services.n8n_formatting import fmt_gap
 
-        assert fmt_gap(14.0) == "+14.0%"
+        assert fmt_gap(14.0) == pytest.approx("+14.0%")
 
     def test_negative(self) -> None:
         from app.services.n8n_formatting import fmt_gap
 
-        assert fmt_gap(-3.2) == "-3.2%"
+        assert fmt_gap(-3.2) == pytest.approx("-3.2%")
 
     def test_zero(self) -> None:
         from app.services.n8n_formatting import fmt_gap
 
-        assert fmt_gap(0.0) == "0.0%"
+        assert fmt_gap(0.0) == pytest.approx("0.0%")
 
     def test_none_returns_dash(self) -> None:
         from app.services.n8n_formatting import fmt_gap
@@ -107,13 +107,13 @@ class TestFmtAmount:
     def test_above_10000_uses_man(self) -> None:
         from app.services.n8n_formatting import fmt_amount
 
-        assert fmt_amount(312000) == "31.2만"
-        assert fmt_amount(6480000) == "648.0만"
+        assert fmt_amount(312000) == pytest.approx("31.2만")
+        assert fmt_amount(6480000) == pytest.approx("648.0만")
 
     def test_large_amount(self) -> None:
         from app.services.n8n_formatting import fmt_amount
 
-        assert fmt_amount(34603720) == "3,460.4만"
+        assert fmt_amount(34603720) == pytest.approx("3,460.4만")
 
     def test_below_10000_uses_comma(self) -> None:
         from app.services.n8n_formatting import fmt_amount
@@ -208,7 +208,9 @@ class TestBuildSummaryLine:
             "currency": "KRW",
         }
         result = build_summary_line(order)
-        assert result == "APT buy @2,470 (현재 2,166, -12.3%, 31.2만, 1일)"
+        assert result == pytest.approx(
+            "APT buy @2,470 (현재 2,166, -12.3%, 31.2만, 1일)"
+        )
 
     def test_missing_current_price(self) -> None:
         from app.services.n8n_formatting import build_summary_line
@@ -224,7 +226,7 @@ class TestBuildSummaryLine:
             "currency": "KRW",
         }
         result = build_summary_line(order)
-        assert result == "BTC sell @1.49억 (현재 -, -, 29.7만, 6시간)"
+        assert result == pytest.approx("BTC sell @1.49억 (현재 -, -, 29.7만, 6시간)")
 
     def test_usd_order(self) -> None:
         from app.services.n8n_formatting import build_summary_line
@@ -240,7 +242,9 @@ class TestBuildSummaryLine:
             "currency": "USD",
         }
         result = build_summary_line(order)
-        assert result == "AAPL buy @$180.50 (현재 $181.00, +0.3%, 126.4만, 3시간)"
+        assert result == pytest.approx(
+            "AAPL buy @$180.50 (현재 $181.00, +0.3%, 126.4만, 3시간)"
+        )
 
 
 @pytest.mark.unit
@@ -346,5 +350,5 @@ class TestSchemaFmtFields:
             total_sell_fmt="3,460.4만",
             title="📋 미체결 리뷰 — 03/16 (13건, 매수 4 / 매도 9)",
         )
-        assert summary.total_buy_fmt == "47.8만"
+        assert summary.total_buy_fmt == pytest.approx("47.8만")
         assert summary.title.startswith("📋")

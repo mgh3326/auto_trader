@@ -166,8 +166,8 @@ def test_runner_result_normalization_preserves_metadata_and_invariants():
     assert evidence.advisory_only is True
     assert evidence.execution_allowed is False
     assert evidence.advisory_action == "Underweight"
-    assert evidence.model == "gpt-5.5"
-    assert str(evidence.base_url) == "http://127.0.0.1:8796/v1"
+    assert evidence.model == pytest.approx("gpt-5.5")
+    assert str(evidence.base_url) == pytest.approx("http://127.0.0.1:8796/v1")
     assert evidence.warnings == ["fallback used"]
 
 

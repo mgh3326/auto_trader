@@ -376,7 +376,9 @@ async def test_execute_and_reconcile_filled_position_matched() -> None:
     position_call = next(
         payload for name, payload in ledger.calls if name == "record_position_snapshot"
     )
-    assert position_call["position"] == {"symbol": "BTCUSD", "qty": "0.001"}
+    assert position_call["position"] == pytest.approx(
+        {"symbol": "BTCUSD", "qty": "0.001"}
+    )
     assert position_call["raw_response"] == {
         "position": {"symbol": "BTCUSD", "qty": "0.001"},
         "execution_symbol": "BTC/USD",

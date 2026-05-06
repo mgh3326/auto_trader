@@ -106,10 +106,10 @@ class TestAnalysisWorkflow:
 class TestPromptFormatting:
     def test_format_decimal_preserves_existing_krw_precision_bands(self):
         assert format_decimal(1_500_000, "₩") == "1,500,000"
-        assert format_decimal(15_000, "₩") == "15,000.0"
-        assert format_decimal(1_500, "₩") == "1,500.00"
-        assert format_decimal(150, "₩") == "150.00"
-        assert format_decimal(15, "₩") == "15.00"
+        assert format_decimal(15_000, "₩") == pytest.approx("15,000.0")
+        assert format_decimal(1_500, "₩") == pytest.approx("1,500.00")
+        assert format_decimal(150, "₩") == pytest.approx("150.00")
+        assert format_decimal(15, "₩") == pytest.approx("15.00")
 
     def test_format_quantity_formats_stock_units_as_whole_numbers(self):
         assert format_quantity(1_500, "주") == "1,500"
