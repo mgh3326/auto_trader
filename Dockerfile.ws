@@ -51,7 +51,9 @@ RUN useradd -u 10001 -m appuser
 COPY --from=builder /app/.venv /app/.venv
 
 # 앱 소스 코드 복사 (Copy application source code)
-COPY . .
+COPY app/ ./app/
+COPY pyproject.toml uv.lock README.md ./
+COPY upbit_websocket_monitor.py kis_websocket_monitor.py websocket_monitor.py ./
 
 # 환경 변수 설정 (Set PATH for virtual environment)
 ENV PATH="/app/.venv/bin:$PATH"

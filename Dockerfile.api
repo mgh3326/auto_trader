@@ -68,7 +68,11 @@ RUN useradd -u 10001 -m appuser
 COPY --from=builder /app/.venv /app/.venv
 
 # 앱 소스 코드 복사
-COPY . .
+COPY app/ ./app/
+COPY alembic/ ./alembic/
+COPY alembic.ini pyproject.toml README.md ./
+COPY scripts/ ./scripts/
+COPY static/ ./static/
 COPY --from=frontend-builder /build/dist /app/frontend/trading-decision/dist
 
 # tmp 디렉토리 생성 및 권한 설정

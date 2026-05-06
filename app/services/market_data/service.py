@@ -8,6 +8,7 @@ import httpx
 import pandas as pd
 
 from app.core.async_rate_limiter import RateLimitExceededError
+from app.core.log_sanitize import safe_log_value
 from app.core.timezone import KST, now_kst
 from app.services import naver_finance
 from app.services.brokers.kis.client import KISClient
@@ -205,7 +206,7 @@ def _extract_expected_match_metadata(
     if output2 is None:
         logger.info(
             "Orderbook expected_qty unavailable: symbol=%s session_hint=%s antc_cnpr=%r antc_cnqn=%r output2_keys=%s",
-            symbol,
+            safe_log_value(symbol),
             _get_orderbook_session_hint(),
             None,
             None,
@@ -221,7 +222,7 @@ def _extract_expected_match_metadata(
     if raw_expected_qty in (None, ""):
         logger.info(
             "Orderbook expected_qty unavailable: symbol=%s session_hint=%s antc_cnpr=%r antc_cnqn=%r output2_keys=%s",
-            symbol,
+            safe_log_value(symbol),
             _get_orderbook_session_hint(),
             raw_expected_price,
             raw_expected_qty,

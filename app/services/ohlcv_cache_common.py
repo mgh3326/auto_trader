@@ -15,6 +15,7 @@ import pandas as pd
 import redis.asyncio as redis
 
 from app.core.config import settings
+from app.core.log_sanitize import safe_log_value
 
 logger = logging.getLogger(__name__)
 
@@ -419,7 +420,7 @@ async def backfill_loop(
         logger.info(
             "%s forward_fill symbol=%s rows=%d requested=%d",
             log_prefix,
-            symbol,
+            safe_log_value(symbol),
             inserted,
             batch_size,
         )
@@ -428,7 +429,12 @@ async def backfill_loop(
             redis_client, dates_key, rows_key, max_days
         )
         if trimmed > 0:
-            logger.info("%s trimmed symbol=%s removed=%d", log_prefix, symbol, trimmed)
+            logger.info(
+                "%s trimmed symbol=%s removed=%d",
+                log_prefix,
+                safe_log_value(symbol),
+                trimmed,
+            )
 
         latest_after = await _read_latest_date(redis_client, dates_key)
         if latest_cached is not None and (
@@ -484,7 +490,7 @@ async def backfill_loop(
                 logger.info(
                     "%s oldest_confirmed symbol=%s reason=empty_batch",
                     log_prefix,
-                    symbol,
+                    safe_log_value(symbol),
                 )
             oldest_confirmed = True
             break
@@ -495,7 +501,7 @@ async def backfill_loop(
                 logger.info(
                     "%s oldest_confirmed symbol=%s reason=no_closed_rows",
                     log_prefix,
-                    symbol,
+                    safe_log_value(symbol),
                 )
             oldest_confirmed = True
             break
@@ -504,7 +510,7 @@ async def backfill_loop(
         logger.info(
             "%s backfill symbol=%s rows=%d requested=%d",
             log_prefix,
-            symbol,
+            safe_log_value(symbol),
             inserted,
             batch_size,
         )
@@ -513,7 +519,12 @@ async def backfill_loop(
             redis_client, dates_key, rows_key, max_days
         )
         if trimmed > 0:
-            logger.info("%s trimmed symbol=%s removed=%d", log_prefix, symbol, trimmed)
+            logger.info(
+                "%s trimmed symbol=%s removed=%d",
+                log_prefix,
+                safe_log_value(symbol),
+                trimmed,
+            )
 
         if inserted <= 0:
             oldest_confirmed = True
@@ -524,7 +535,7 @@ async def backfill_loop(
                 logger.info(
                     "%s oldest_confirmed symbol=%s reason=short_batch returned=%d requested=%d",
                     log_prefix,
-                    symbol,
+                    safe_log_value(symbol),
                     len(fetched),
                     batch_size,
                 )
@@ -577,8 +588,8 @@ async def get_closed_candles_flow(
         logger.info(
             "%s trimmed symbol=%s period=%s removed=%d",
             log_prefix,
-            symbol,
-            period,
+            safe_log_value(symbol),
+            safe_log_value(period),
             trimmed,
         )
 
@@ -606,8 +617,8 @@ async def get_closed_candles_flow(
         logger.info(
             "%s hit symbol=%s period=%s cached=%d requested=%d",
             log_prefix,
-            symbol,
-            period,
+            safe_log_value(symbol),
+            safe_log_value(period),
             len(cached),
             requested_count,
         )
@@ -616,8 +627,8 @@ async def get_closed_candles_flow(
     logger.info(
         "%s miss symbol=%s period=%s cached=%d requested=%d",
         log_prefix,
-        symbol,
-        period,
+        safe_log_value(symbol),
+        safe_log_value(period),
         len(cached),
         requested_count,
     )
