@@ -11,6 +11,7 @@ import pandas as pd
 import yfinance as yf
 
 from app.core.config import settings
+from app.core.log_sanitize import safe_log_value
 from app.core.symbol import to_yahoo_symbol
 from app.monitoring import build_yfinance_tracing_session, close_yfinance_session
 
@@ -172,7 +173,7 @@ async def _fetch_ohlcv_raw(
             if _is_crumb_auth_error(exc) and attempt < _CRUMB_RETRY_MAX:
                 logger.warning(
                     "Yahoo crumb/auth error for %s OHLCV (attempt %d/%d), retrying: %s",
-                    yahoo_ticker,
+                    safe_log_value(yahoo_ticker),
                     attempt + 1,
                     _CRUMB_RETRY_MAX + 1,
                     exc,

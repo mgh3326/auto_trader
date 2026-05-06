@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
+from app.core.log_sanitize import safe_log_value
 from app.core.timezone import now_kst
 from app.schemas.n8n.board_brief import (
     BoardBriefContext,
@@ -865,7 +866,9 @@ async def get_sell_signal(
             bb_upper_ref=final_bb_upper_ref,
         )
     except Exception as exc:  # noqa: BLE001
-        logger.exception("Failed to evaluate sell signal for %s", symbol)
+        logger.exception(
+            "Failed to evaluate sell signal for %s", safe_log_value(symbol)
+        )
         payload = N8nSellSignalResponse(
             success=False,
             as_of=as_of,

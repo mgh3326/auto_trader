@@ -436,8 +436,8 @@ def detect_cash_balance_call(md: str) -> bool:
     return bool(CASH_CALL_RE.search(md))
 
 
-ORDER_TOTAL_RE = re.compile(r"총\s*[~≈]?\s*₩?([\d.,]+)\s*M", re.IGNORECASE)
-ACTUAL_CASH_RE = re.compile(r"예수금\s*[~≈:]?\s*₩?([\d.,]+)\s*M", re.IGNORECASE)
+ORDER_TOTAL_RE = re.compile(r"총\s*[~≈]?\s*₩?([\d.,]{1,20})\s*M", re.IGNORECASE)
+ACTUAL_CASH_RE = re.compile(r"예수금\s*[~≈:]?\s*₩?([\d.,]{1,20})\s*M", re.IGNORECASE)
 
 
 def sum_order_amount(md: str) -> float | None:
@@ -599,7 +599,9 @@ def run_gates(
 
     # ---- G5 Comparison ----
     has_compare = any(c.items.get(8, False) for c in cands)
-    if not has_compare and re.search(r"(대비|우위|열위|기존.*DCA.*대비)", md):
+    if not has_compare and re.search(
+        r"(대비|우위|열위|기존[^\n]{0,40}DCA[^\n]{0,40}대비)", md
+    ):
         has_compare = True
     results.append(
         GateResult(

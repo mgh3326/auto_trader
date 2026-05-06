@@ -10,6 +10,7 @@ import pandas as pd
 import redis.asyncio as redis
 
 from app.core.config import settings
+from app.core.log_sanitize import safe_log_value
 from app.core.timezone import KST, now_kst
 from app.services.ohlcv_cache_common import (
     _acquire_lock,
@@ -478,8 +479,8 @@ async def get_candles(
         _FALLBACK_COUNT += 1
         logger.warning(
             "kis_ohlcv_cache fallback symbol=%s period=%s fallback_count=%d error=%s",
-            normalized_symbol,
-            normalized_period,
+            safe_log_value(normalized_symbol),
+            safe_log_value(normalized_period),
             _FALLBACK_COUNT,
             exc,
         )
