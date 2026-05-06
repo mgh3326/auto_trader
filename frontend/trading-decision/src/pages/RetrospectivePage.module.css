@@ -1,0 +1,85 @@
+.container {
+  padding: 24px;
+}
+
+.header {
+  margin-bottom: 32px;
+}
+
+.header h1 {
+  margin: 0;
+  font-size: 2rem;
+}
+
+.header p {
+  margin: 8px 0 0;
+  color: #666;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  background: white;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.table th, .table td {
+  padding: 16px;
+  text-align: left;
+  border-bottom: 1px solid #eee;
+}
+
+.table th {
+  background: #f8f9fa;
+  font-weight: 600;
+  color: #333;
+}
+
+.symbol {
+  font-weight: 700;
+  color: #007bff;
+}
+
+.thesisCell {
+  max-width: 400px;
+}
+
+.profit {
+  color: #1e7e34;
+  font-weight: 600;
+}
+
+.loss {
+  color: #d32f2f;
+  font-weight: 600;
+}
+
+.statusBadge {
+  padding: 4px 8px;
+  border-radius: 12px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.status_closed {
+  background: #e6f4ea;
+  color: #1e7e34;
+}
+
+.status_stopped {
+  background: #fdf2f2;
+  color: #d32f2f;
+}
+
+.status_expired {
+  background: #f1f3f4;
+  color: #666;
+}
+
+.loading, .empty {
+  padding: 48px;
+  text-align: center;
+  color: #666;
+}

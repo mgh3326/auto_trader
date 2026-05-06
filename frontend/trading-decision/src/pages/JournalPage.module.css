@@ -1,0 +1,122 @@
+.container {
+  padding: 24px;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 32px;
+}
+
+.header h1 {
+  margin: 0;
+  font-size: 2rem;
+}
+
+.header p {
+  margin: 8px 0 0;
+  color: #666;
+}
+
+.filters {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.filters select {
+  padding: 8px;
+  border-radius: 4px;
+  border: 1px solid #ccc;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  background: white;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.table th, .table td {
+  padding: 16px;
+  text-align: left;
+  border-bottom: 1px solid #eee;
+}
+
+.table th {
+  background: #f8f9fa;
+  font-weight: 600;
+  color: #333;
+}
+
+.symbolCell {
+  display: flex;
+  flex-direction: column;
+}
+
+.symbol {
+  font-weight: 700;
+  color: #007bff;
+}
+
+.name {
+  font-size: 0.85rem;
+  color: #666;
+}
+
+.statusBadge {
+  padding: 4px 8px;
+  border-radius: 12px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.status_present {
+  background: #e6f4ea;
+  color: #1e7e34;
+}
+
+.status_missing {
+  background: #fdf2f2;
+  color: #d32f2f;
+}
+
+.status_stale {
+  background: #fff4e5;
+  color: #ef6c00;
+}
+
+.thesisCell {
+  max-width: 300px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.decisionBadge {
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.decision_buy { background: #d4edda; color: #155724; }
+.decision_hold { background: #fff3cd; color: #856404; }
+.decision_sell { background: #f8d7da; color: #721c24; }
+
+.conflictRow {
+  background: #fff8f8;
+}
+
+.loading, .error, .empty {
+  padding: 48px;
+  text-align: center;
+  color: #666;
+}
+
+.error {
+  color: #d32f2f;
+}
