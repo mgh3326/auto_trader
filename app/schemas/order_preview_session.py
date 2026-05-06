@@ -79,6 +79,7 @@ class PreviewSessionOut(BaseModel):
     venue: str
     side: Side
     status: Status
+    approval_token: str | None = None
     legs: list[PreviewLegOut]
     executions: list[ExecutionRequestOut] = []
     dry_run_error: dict | None = None
