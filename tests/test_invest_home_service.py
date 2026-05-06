@@ -11,6 +11,7 @@ from app.services.invest_home_service import (
     HOME_INCLUDED_SOURCES,
     build_grouped_holdings,
     build_home_summary,
+    build_manual_account_from_holdings,
     classify_account_kind,
 )
 
@@ -319,7 +320,68 @@ async def test_invest_home_service_synthesizes_toss_manual_account() -> None:
     assert toss_account is not None
     assert toss_account.displayName == "Toss 수동"
     assert toss_account.valueKrw == 100_000
+    assert toss_account.costBasisKrw is None
+    assert toss_account.pnlKrw is None
     assert toss_account.accountKind == "manual"
+
+
+@pytest.mark.unit
+def test_manual_account_calculates_krw_and_usd_cost_basis_without_nulling_summary() -> (
+    None
+):
+    kr = _h(
+        holdingId="kr",
+        source="toss_manual",
+        accountKind="manual",
+        symbol="005930",
+        market="KR",
+        currency="KRW",
+        quantity=10,
+        costBasis=700_000,
+        valueNative=720_000,
+        valueKrw=720_000,
+        pnlKrw=20_000,
+    )
+    us = _h(
+        holdingId="us",
+        source="toss_manual",
+        accountKind="manual",
+        symbol="AAPL",
+        market="US",
+        currency="USD",
+        quantity=2,
+        costBasis=200,
+        valueNative=220,
+        valueKrw=286_000,
+        pnlKrw=26_000,
+    )
+    unpriced = _h(
+        holdingId="missing",
+        source="toss_manual",
+        accountKind="manual",
+        symbol="MSFT",
+        market="US",
+        currency="USD",
+        quantity=1,
+        costBasis=300,
+        valueNative=None,
+        valueKrw=None,
+        pnlKrw=None,
+        priceState="missing",
+    )
+
+    account = build_manual_account_from_holdings([kr, us, unpriced])
+
+    assert account is not None
+    assert account.valueKrw == 1_006_000
+    assert account.costBasisKrw == pytest.approx(960_000)
+    assert account.pnlKrw == pytest.approx(46_000)
+    assert account.pnlRate == pytest.approx(46_000 / 960_000)
+
+    summary = build_home_summary([account])
+    assert summary.costBasisKrw == pytest.approx(960_000)
+    assert summary.pnlKrw == pytest.approx(46_000)
+    assert summary.pnlRate == pytest.approx(46_000 / 960_000)
 
 
 @pytest.mark.unit

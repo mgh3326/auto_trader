@@ -199,6 +199,61 @@ def build_home_summary(accounts: Iterable[Account]) -> HomeSummary:
     )
 
 
+def _holding_cost_basis_krw(h: Holding) -> float | None:
+    """Return cost basis converted to KRW when reliable conversion is available."""
+
+    if h.costBasis is None:
+        return None
+    if h.currency == "KRW":
+        return h.costBasis
+    if h.currency == "USD":
+        if h.valueKrw is not None and h.valueNative is not None and h.valueNative > 0:
+            return h.costBasis * (h.valueKrw / h.valueNative)
+        if h.valueKrw is not None and h.pnlKrw is not None:
+            return h.valueKrw - h.pnlKrw
+    return None
+
+
+def build_manual_account_from_holdings(holdings: Iterable[Holding]) -> Account | None:
+    """Build the synthetic Toss/manual account without poisoning home PnL.
+
+    Only holdings with a reliable current KRW value are included in value/cost/PnL
+    math. Unpriced manual holdings stay visible in the holdings list with warnings,
+    but they must not fabricate losses by contributing cost basis without value.
+    """
+
+    toss_holdings = [h for h in holdings if h.source == "toss_manual"]
+    if not toss_holdings:
+        return None
+
+    valued_holdings = [h for h in toss_holdings if h.valueKrw is not None]
+    toss_value_krw = sum(h.valueKrw for h in valued_holdings if h.valueKrw is not None)
+
+    converted_costs = [_holding_cost_basis_krw(h) for h in valued_holdings]
+    toss_cost_basis_krw: float | None = None
+    toss_pnl_krw: float | None = None
+    toss_pnl_rate: float | None = None
+    if valued_holdings and all(v is not None for v in converted_costs):
+        toss_cost_basis_krw = sum(v for v in converted_costs if v is not None)
+        toss_pnl_krw = toss_value_krw - toss_cost_basis_krw
+        if toss_cost_basis_krw > 0:
+            toss_pnl_rate = toss_pnl_krw / toss_cost_basis_krw
+
+    return Account(
+        accountId="toss_manual_account",
+        displayName="Toss 수동",
+        source="toss_manual",
+        accountKind="manual",
+        includedInHome=True,
+        valueKrw=toss_value_krw,
+        costBasisKrw=toss_cost_basis_krw,
+        pnlKrw=toss_pnl_krw,
+        pnlRate=toss_pnl_rate,
+        cashBalances=Account.model_fields["cashBalances"].default_factory(),
+        buyingPower=Account.model_fields["buyingPower"].default_factory(),
+    )
+
+
 @dataclass(frozen=True)
 class _SourceFetchResult:
     accounts: list[Account]
@@ -249,42 +304,9 @@ class InvestHomeService:
 
                 # Synthetic Toss Manual Account
                 if src == "toss_manual":
-                    toss_holdings = [
-                        h for h in result.holdings if h.source == "toss_manual"
-                    ]
-                    if toss_holdings:
-                        toss_value_krw = sum(
-                            h.valueKrw for h in toss_holdings if h.valueKrw is not None
-                        )
-                        toss_cost_basis_krw = None
-                        toss_pnl_krw = None
-                        toss_pnl_rate = None
-
-                        # Calculate cost basis and pnl if all holdings have cost basis
-                        if all(h.costBasis is not None for h in toss_holdings):
-                            # This is tricky because US holdings costBasis is in USD
-                            # We'll just keep it simple or leave as None if it's mixed
-                            pass
-
-                        accounts.append(
-                            Account(
-                                accountId="toss_manual_account",
-                                displayName="Toss 수동",
-                                source="toss_manual",
-                                accountKind="manual",
-                                includedInHome=True,
-                                valueKrw=toss_value_krw,
-                                costBasisKrw=toss_cost_basis_krw,
-                                pnlKrw=toss_pnl_krw,
-                                pnlRate=toss_pnl_rate,
-                                cashBalances=Account.model_fields[
-                                    "cashBalances"
-                                ].default_factory(),
-                                buyingPower=Account.model_fields[
-                                    "buyingPower"
-                                ].default_factory(),
-                            )
-                        )
+                    toss_account = build_manual_account_from_holdings(result.holdings)
+                    if toss_account is not None:
+                        accounts.append(toss_account)
 
             except Exception as exc:  # 부분 실패 — 전체 API 는 살림
                 logger.warning(

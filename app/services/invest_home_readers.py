@@ -42,6 +42,17 @@ from app.services.upbit_symbol_universe_service import (
 logger = logging.getLogger(__name__)
 
 
+def _is_missing_money(value: object) -> bool:
+    """Treat None/zero-like money values as unavailable for fallback checks."""
+
+    if value is None:
+        return True
+    try:
+        return float(value) == 0
+    except (TypeError, ValueError):
+        return False
+
+
 class HomeReader(Protocol):
     async def fetch(self, *, user_id: int) -> _SourceFetchResult: ...
 
@@ -175,8 +186,10 @@ class KISHomeReader:
             usd_balance = margin.get("usd_balance")
             usd_buying_power = margin.get("usd_ord_psbl_amt")
 
-            # Fallback for USD cash if integrated margin returns 0/None but US holdings exist
-            if (not usd_balance or usd_balance == 0) and stocks_us:
+            # Fallback for USD cash/orderable even when there are no US holdings.
+            # USD cash can exist without a current overseas-stock position, so this
+            # must not be gated by ``stocks_us``.
+            if _is_missing_money(usd_balance) or _is_missing_money(usd_buying_power):
                 try:
                     overseas_margin = (
                         await self._client.account.inquire_overseas_margin()
@@ -197,7 +210,7 @@ class KISHomeReader:
                 except Exception as exc:
                     logger.warning("KIS overseas margin fallback failed: %s", exc)
 
-            if (not usd_balance or usd_balance == 0) and stocks_us:
+            if _is_missing_money(usd_balance) or _is_missing_money(usd_buying_power):
                 if fx_warning is None:
                     fx_warning = InvestHomeWarning(
                         source="kis",

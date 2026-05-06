@@ -145,6 +145,57 @@ async def test_kis_reader_overseas_margin_fallback(
 
 @pytest.mark.asyncio
 @pytest.mark.unit
+async def test_kis_reader_overseas_margin_fallback_without_us_holdings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeKISAccountUsdOnly:
+        async def fetch_my_stocks(self, *, is_overseas: bool) -> list[dict[str, Any]]:
+            return []
+
+        async def inquire_integrated_margin(self) -> dict[str, Any]:
+            return {
+                "stck_cash_objt_amt": "100000",
+                "stck_cash100_max_ord_psbl_amt": "50000",
+                "usd_balance": "0",
+                "usd_ord_psbl_amt": None,
+            }
+
+        async def fetch_my_overseas_stocks(
+            self, *, exchange_code: str
+        ) -> list[dict[str, Any]]:
+            return []
+
+        async def inquire_overseas_margin(self) -> list[dict[str, Any]]:
+            return [
+                {
+                    "natn_name": "US",
+                    "crcy_cd": "USD",
+                    "frcr_dncl_amt1": 49.25,
+                    "frcr_ord_psbl_amt1": 49.25,
+                }
+            ]
+
+    class _FakeKISClient:
+        def __init__(self) -> None:
+            self.account = _FakeKISAccountUsdOnly()
+
+    monkeypatch.setattr(readers, "SafeKISClient", _FakeKISClient)
+
+    async def _fx() -> float:
+        return 1_300.0
+
+    monkeypatch.setattr(readers, "get_usd_krw_rate", _fx)
+
+    result = await readers.KISHomeReader(db=None).fetch(user_id=1)  # type: ignore[arg-type]
+
+    account = result.accounts[0]
+    assert account.cashBalances.usd == 49.25
+    assert account.buyingPower.usd == 49.25
+    assert result.warning is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
 async def test_upbit_reader_uses_coin_value_not_krw_cash(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
