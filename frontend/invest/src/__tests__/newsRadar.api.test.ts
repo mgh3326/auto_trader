@@ -46,7 +46,7 @@ test("fetchNewsRadar uses default query params and credentials", async () => {
   await fetchNewsRadar();
 
   expect(fetchMock).toHaveBeenCalledTimes(1);
-  const [url, init] = fetchMock.mock.calls[0];
+  const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
   expect(url).toBe(
     "/trading/api/news-radar?market=all&hours=24&include_excluded=true&limit=20",
   );
@@ -61,7 +61,7 @@ test("fetchNewsRadar throws on non-ok response", async () => {
 test("fetchNewsRadar overrides params", async () => {
   fetchMock.mockResolvedValueOnce({ ok: true, json: async () => baseResponse });
   await fetchNewsRadar({ market: "kr", hours: 12, limit: 5, includeExcluded: false });
-  const [url] = fetchMock.mock.calls[0];
+  const [url] = fetchMock.mock.calls[0] as [string];
   expect(url).toBe(
     "/trading/api/news-radar?market=kr&hours=12&include_excluded=false&limit=5",
   );
