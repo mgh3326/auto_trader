@@ -62,16 +62,16 @@ class TestUSPortfolioCurrencyConversion:
 
         # avg_price should be weighted average in USD
         # (10 * 150 + 5 * 150) / 15 = 150 (after KRW conversion: 195000/1300 = 150)
-        assert abs(position["avg_price"] - 150.0) < 0.01
+        assert position["avg_price"] == pytest.approx(150.0, abs=0.01)
 
         # Cost basis should be reasonable (2250 USD, not ~977K)
         expected_cost_basis = 15.0 * 150.0
         actual_cost_basis = position["quantity"] * position["avg_price"]
-        assert abs(actual_cost_basis - expected_cost_basis) < 0.01
+        assert actual_cost_basis == pytest.approx(expected_cost_basis, abs=0.01)
 
         # PnL should be positive (bought at 150, now at 200)
         assert position["profit_rate"] > 0
-        assert abs(position["profit_rate"] - 0.333) < 0.01  # ~33.3% gain
+        assert position["profit_rate"] == pytest.approx(0.333, abs=0.01)  # ~33.3% gain
 
     def test_aggregate_positions_without_conversion_gives_wrong_result(
         self, mock_components_mixed_currency
@@ -209,11 +209,11 @@ class TestMergedPortfolioCurrencyConversion:
         service._finalize_holdings(merged, usd_krw=usd_krw)
 
         # Toss avg_price should be converted from KRW to USD
-        assert abs(holding.toss_avg_price - 150.0) < 0.01  # 195000/1300
+        assert holding.toss_avg_price == pytest.approx(150.0, abs=0.01)  # 195000/1300
 
         # Combined avg should be weighted average in USD
-        assert abs(holding.combined_avg_price - 150.0) < 0.01
+        assert holding.combined_avg_price == pytest.approx(150.0, abs=0.01)
 
         # PnL should be calculated correctly
         expected_profit_rate = (200.0 - 150.0) / 150.0  # ~33.3%
-        assert abs(holding.profit_rate - expected_profit_rate) < 0.01
+        assert holding.profit_rate == pytest.approx(expected_profit_rate, abs=0.01)

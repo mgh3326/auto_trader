@@ -171,7 +171,7 @@ class TestCheckStochRsi:
             cond, errors = await _check_stoch_rsi("000660", 80)
             assert cond.name == "stoch_rsi"
             assert cond.met is True
-            assert cond.value == 25.0
+            assert cond.value == pytest.approx(25.0)
             assert not errors
 
     @pytest.mark.asyncio

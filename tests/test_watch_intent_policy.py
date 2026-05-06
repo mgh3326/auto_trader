@@ -267,4 +267,4 @@ class TestParsePolicyIntentSuccess:
         assert isinstance(policy, IntentPolicy)
         assert policy.side == "sell"
         assert policy.quantity == 10
-        assert policy.limit_price == 190.5
+        assert policy.limit_price == pytest.approx(190.5)

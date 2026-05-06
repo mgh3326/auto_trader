@@ -192,8 +192,8 @@ async def test_get_quote_korean_equity(monkeypatch):
 
     assert result["instrument_type"] == "equity_kr"
     assert result["source"] == "kis"
-    assert result["price"] == 105.0  # price = close
-    assert result["open"] == 100.0
+    assert result["price"] == pytest.approx(105.0)  # price = close
+    assert result["open"] == pytest.approx(100.0)
     assert called["code"] == "005930"
     assert called["market"] == "J"
     assert called["n"] == 1
@@ -235,7 +235,7 @@ async def test_get_quote_korean_etf(monkeypatch):
 
     assert result["instrument_type"] == "equity_kr"
     assert result["source"] == "kis"
-    assert result["price"] == 105.0
+    assert result["price"] == pytest.approx(105.0)
 
 
 @pytest.mark.asyncio
@@ -284,7 +284,7 @@ async def test_fetch_quote_equity_kr_passes_market_j(monkeypatch, symbol, label)
     assert called["market"] == "J", f"Expected market='J' for {label} symbol {symbol}"
     assert result["instrument_type"] == "equity_kr"
     assert result["source"] == "kis"
-    assert result["price"] == 105.0
+    assert result["price"] == pytest.approx(105.0)
     assert result["symbol"] == symbol
 
 
@@ -314,11 +314,11 @@ async def test_get_quote_us_equity(monkeypatch):
 
     assert result["instrument_type"] == "equity_us"
     assert result["source"] == "yahoo"
-    assert result["price"] == 205.0
-    assert result["previous_close"] == 201.5
-    assert result["open"] == 202.0
-    assert result["high"] == 206.2
-    assert result["low"] == 200.8
+    assert result["price"] == pytest.approx(205.0)
+    assert result["previous_close"] == pytest.approx(201.5)
+    assert result["open"] == pytest.approx(202.0)
+    assert result["high"] == pytest.approx(206.2)
+    assert result["low"] == pytest.approx(200.8)
     assert result["volume"] == 123456789
     mock_fetch_fast_info.assert_awaited_once_with("AAPL")
 
@@ -439,8 +439,8 @@ async def test_get_dividends_uses_session_and_keeps_payload(monkeypatch):
 
     assert result["success"] is True
     assert result["symbol"] == "AAPL"
-    assert result["dividend_yield"] == 0.0123
-    assert result["dividend_rate"] == 1.11
+    assert result["dividend_yield"] == pytest.approx(0.0123)
+    assert result["dividend_rate"] == pytest.approx(1.11)
     assert result["ex_dividend_date"] == "2024-01-01"
     assert result["last_dividend"] == {"date": "2024-04-01", "amount": 1.2}
     assert captured["symbol"] == "AAPL"

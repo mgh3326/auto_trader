@@ -147,14 +147,14 @@ async def test_screen_stocks_tool_forwards_new_fundamentals_filters(
     assert called["asset_type"] == "stock"
     assert called["sector"] == "반도체"
     assert called["min_analyst_buy"] == 8
-    assert called["min_dividend"] == 3.0
+    assert called["min_dividend"] == pytest.approx(3.0)
     first = result["results"][0]
     assert first["sector"] == "반도체"
     assert first["analyst_buy"] == 16
     assert first["analyst_hold"] == 2
     assert first["analyst_sell"] == 0
-    assert first["avg_target"] == 98000.0
-    assert first["upside_pct"] == 18.7
+    assert first["avg_target"] == pytest.approx(98000.0)
+    assert first["upside_pct"] == pytest.approx(18.7)
 
 
 @pytest.mark.asyncio
@@ -180,7 +180,7 @@ async def test_screen_stocks_crypto_strategy_default_uses_trade_amount(
     await tools["screen_stocks"](market="crypto", strategy="oversold", limit=5)
 
     assert called["market"] == "crypto"
-    assert called["max_rsi"] == 30.0
+    assert called["max_rsi"] == pytest.approx(30.0)
     assert called["sort_by"] == "trade_amount"
     assert called["sort_order"] == "desc"
 
@@ -214,6 +214,6 @@ async def test_screen_stocks_crypto_strategy_preserves_explicit_sort(
     )
 
     assert called["market"] == "crypto"
-    assert called["max_rsi"] == 30.0
+    assert called["max_rsi"] == pytest.approx(30.0)
     assert called["sort_by"] == "rsi"
     assert called["sort_order"] == "desc"

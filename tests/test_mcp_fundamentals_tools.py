@@ -4193,7 +4193,7 @@ class TestComputeRsiWeights:
         result = market_data_indicators._compute_rsi_weights(25.0, 3)
 
         assert len(result) == 3
-        assert abs(sum(result) - 1.0) < 0.001
+        assert sum(result) == pytest.approx(1.0, abs=0.001)
         # Front-heavy: first step gets most weight
         assert result[0] > result[1] > result[2]
 
@@ -4202,7 +4202,7 @@ class TestComputeRsiWeights:
         result = market_data_indicators._compute_rsi_weights(28.0, 4)
 
         assert len(result) == 4
-        assert abs(sum(result) - 1.0) < 0.001
+        assert sum(result) == pytest.approx(1.0, abs=0.001)
         # Front-heavy: first > last, monotonically decreasing
         assert result[0] > result[-1]
         assert result[0] > result[1] > result[2] > result[3]
@@ -4212,7 +4212,7 @@ class TestComputeRsiWeights:
         result = market_data_indicators._compute_rsi_weights(65.0, 3)
 
         assert len(result) == 3
-        assert abs(sum(result) - 1.0) < 0.001
+        assert sum(result) == pytest.approx(1.0, abs=0.001)
         # Back-heavy: last step gets most weight
         assert result[2] > result[1] > result[0]
 
@@ -4221,19 +4221,19 @@ class TestComputeRsiWeights:
         result = market_data_indicators._compute_rsi_weights(40.0, 3)
 
         assert len(result) == 3
-        assert abs(sum(result) - 1.0) < 0.001
+        assert sum(result) == pytest.approx(1.0, abs=0.001)
         # All weights equal
-        assert all(abs(w - result[0]) < 0.001 for w in result)
+        assert result == pytest.approx([result[0]] * len(result), abs=0.001)
 
     def test_none_rsi_returns_equal_weights(self):
         """None RSI: equal distribution (same as neutral)."""
         result = market_data_indicators._compute_rsi_weights(None, 3)
 
         assert len(result) == 3
-        assert abs(sum(result) - 1.0) < 0.001
+        assert sum(result) == pytest.approx(1.0, abs=0.001)
         # All weights equal
         expected_weight = 1.0 / 3
-        assert all(abs(w - expected_weight) < 0.001 for w in result)
+        assert result == pytest.approx([expected_weight] * 3, abs=0.001)
 
 
 # ---------------------------------------------------------------------------

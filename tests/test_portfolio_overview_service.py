@@ -238,7 +238,7 @@ async def test_get_overview_filters_by_selected_account_keys() -> None:
     assert overview["summary"]["by_market"] == {"KR": 1, "US": 0, "CRYPTO": 0}
     position = overview["positions"][0]
     assert position["symbol"] == "005930"
-    assert position["quantity"] == 15.0
+    assert position["quantity"] == pytest.approx(15.0)
     assert len(position["components"]) == 2
 
 
@@ -356,11 +356,11 @@ def test_aggregate_positions_recalculates_totals_when_some_components_missing_ev
     )
 
     assert len(rows) == 1
-    assert rows[0]["quantity"] == 15.0
+    assert rows[0]["quantity"] == pytest.approx(15.0)
     # (10 + 5) * 75,000
-    assert rows[0]["evaluation"] == 1125000.0
+    assert rows[0]["evaluation"] == pytest.approx(1125000.0)
     # 1,125,000 - ((10 * 70,000) + (5 * 72,000))
-    assert rows[0]["profit_loss"] == 65000.0
+    assert rows[0]["profit_loss"] == pytest.approx(65000.0)
 
 
 @pytest.mark.asyncio
@@ -403,9 +403,9 @@ async def test_fill_missing_prices_uses_us_provider_for_missing_us_prices(
     await service._fill_missing_prices(AsyncMock(), components, warnings)
 
     mock_fetch_price.assert_awaited_once_with("AAPL")
-    assert components[0]["current_price"] == 195.0
-    assert components[0]["evaluation"] == 390.0
-    assert components[0]["profit_loss"] == 90.0
+    assert components[0]["current_price"] == pytest.approx(195.0)
+    assert components[0]["evaluation"] == pytest.approx(390.0)
+    assert components[0]["profit_loss"] == pytest.approx(90.0)
     assert warnings == []
 
 
@@ -528,7 +528,7 @@ async def test_fill_missing_prices_filters_invalid_us_symbols_before_provider_fe
     await service._fill_missing_prices(AsyncMock(), components, warnings)
 
     mock_fetch_price.assert_awaited_once_with("AAPL")
-    assert components[0]["current_price"] == 205.0
+    assert components[0]["current_price"] == pytest.approx(205.0)
     assert components[1]["current_price"] is None
     assert warnings == []
 
@@ -728,8 +728,8 @@ async def test_collect_upbit_components_uses_resilient_fetch_helper(
 
     assert len(components) == 1
     assert components[0]["symbol"] == "KRW-BTC"
-    assert components[0]["current_price"] == 100000000.0
-    assert components[0]["evaluation"] == 10000000.0
+    assert components[0]["current_price"] == pytest.approx(100000000.0)
+    assert components[0]["evaluation"] == pytest.approx(10000000.0)
     service._fetch_upbit_prices_resilient.assert_awaited_once_with(
         ["KRW-BTC"],
         warnings,
@@ -776,9 +776,9 @@ async def test_fill_missing_prices_uses_resilient_fetch_helper_for_manual_crypto
         active_upbit_markets=None,
         enforce_upbit_universe=True,
     )
-    assert components[0]["current_price"] == 115000000.0
-    assert components[0]["evaluation"] == 23000000.0
-    assert components[0]["profit_loss"] == 3000000.0
+    assert components[0]["current_price"] == pytest.approx(115000000.0)
+    assert components[0]["evaluation"] == pytest.approx(23000000.0)
+    assert components[0]["profit_loss"] == pytest.approx(3000000.0)
 
 
 @pytest.mark.asyncio
@@ -1303,7 +1303,7 @@ class TestNormalizeUsCurrency:
             {"avg_price": 200000.0, "current_price": 150.0, "quantity": 3.0},
         ]
         result = service._normalize_us_currency(components, usd_krw=1350.0)
-        assert abs(result[0]["avg_price"] - (200000.0 / 1350.0)) < 0.01
+        assert result[0]["avg_price"] == pytest.approx(200000.0 / 1350.0, abs=0.01)
 
     def test_leaves_usd_avg_price_unchanged(self):
         service = PortfolioOverviewService(AsyncMock())
@@ -1311,7 +1311,7 @@ class TestNormalizeUsCurrency:
             {"avg_price": 145.0, "current_price": 150.0, "quantity": 3.0},
         ]
         result = service._normalize_us_currency(components, usd_krw=1350.0)
-        assert result[0]["avg_price"] == 145.0
+        assert result[0]["avg_price"] == pytest.approx(145.0)
 
     def test_noop_when_usd_krw_is_none(self):
         service = PortfolioOverviewService(AsyncMock())
@@ -1319,7 +1319,7 @@ class TestNormalizeUsCurrency:
             {"avg_price": 200000.0, "current_price": 150.0, "quantity": 3.0},
         ]
         result = service._normalize_us_currency(components, usd_krw=None)
-        assert result[0]["avg_price"] == 200000.0
+        assert result[0]["avg_price"] == pytest.approx(200000.0)
 
     def test_falls_back_to_canonical_price_when_component_has_none(self):
         service = PortfolioOverviewService(AsyncMock())
@@ -1329,7 +1329,7 @@ class TestNormalizeUsCurrency:
         result = service._normalize_us_currency(
             components, usd_krw=1300.0, canonical_price=200.0
         )
-        assert abs(result[0]["avg_price"] - (195000.0 / 1300.0)) < 0.01
+        assert result[0]["avg_price"] == pytest.approx(195000.0 / 1300.0, abs=0.01)
 
 
 class TestCalculatePositionTotals:
@@ -1348,7 +1348,7 @@ class TestCalculatePositionTotals:
         assert result["quantity"] == 15
         assert result["evaluation"] == 15 * 120.0
         cost_basis = 10 * 100.0 + 5 * 110.0
-        assert abs(result["profit_loss"] - (15 * 120.0 - cost_basis)) < 0.01
+        assert result["profit_loss"] == pytest.approx(15 * 120.0 - cost_basis, abs=0.01)
         assert result["evaluation_krw"] == result["evaluation"]
 
     def test_us_market_converts_to_krw(self):
@@ -1400,4 +1400,6 @@ class TestCalculatePositionTotals:
             market_type="KR",
             usd_krw=None,
         )
-        assert result["evaluation"] == 1100.0  # only item with non-None evaluation
+        assert result["evaluation"] == pytest.approx(
+            1100.0
+        )  # only item with non-None evaluation

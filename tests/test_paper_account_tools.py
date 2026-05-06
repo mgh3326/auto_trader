@@ -48,7 +48,7 @@ def test_serialize_account_basic_fields() -> None:
     assert out["name"] == "default"
     assert out["initial_capital"] == 100_000_000.0
     assert out["cash_krw"] == 95_000_000.0
-    assert out["cash_usd"] == 0.0
+    assert out["cash_usd"] == pytest.approx(0.0)
     assert out["strategy_name"] is None
     assert out["created_at"] == "2026-04-13T10:00:00+00:00"
     # Summary fields absent when not provided
@@ -67,7 +67,7 @@ def test_serialize_account_with_summary() -> None:
     )
     assert out["positions_count"] == 3
     assert out["total_evaluated_krw"] == 98_500_000.0
-    assert out["total_pnl_pct"] == -1.5
+    assert out["total_pnl_pct"] == pytest.approx(-1.5)
 
 
 def test_serialize_account_none_totals_become_null() -> None:
@@ -264,10 +264,10 @@ async def test_list_paper_accounts_returns_enriched(monkeypatch) -> None:
     assert first["id"] == 1
     assert first["positions_count"] == 3
     assert first["total_evaluated_krw"] == 98_500_000.0
-    assert first["total_pnl_pct"] == -1.5
+    assert first["total_pnl_pct"] == pytest.approx(-1.5)
     second = result["accounts"][1]
     assert second["id"] == 2
-    assert second["cash_usd"] == 5000.0
+    assert second["cash_usd"] == pytest.approx(5000.0)
 
 
 @pytest.mark.asyncio

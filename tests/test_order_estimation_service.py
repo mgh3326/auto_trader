@@ -91,8 +91,8 @@ class TestCalculateEstimatedOrderCost:
             quantity_per_order=2.5,
             currency="USD",
         )
-        assert result["buy_prices"][0]["quantity"] == 2.5
-        assert result["total_cost"] == 375.0
+        assert result["buy_prices"][0]["quantity"] == pytest.approx(2.5)
+        assert result["total_cost"] == pytest.approx(375.0)
 
     def test_empty_prices(self):
         """빈 가격 목록"""
@@ -165,7 +165,7 @@ class TestFetchPendingBuyCost:
 
             result = await fetch_pending_domestic_buy_cost()
 
-            assert result == 0.0
+            assert result == pytest.approx(0.0)
 
     @pytest.mark.asyncio
     async def test_fetch_pending_overseas_buy_cost(self):
@@ -216,4 +216,4 @@ class TestFetchPendingBuyCost:
         ):
             result = await fetch_pending_crypto_buy_cost()
 
-            assert result == 100000.0
+            assert result == pytest.approx(100000.0)
