@@ -40,8 +40,8 @@ function stripHtml(value: string | null): string | null {
     return null;
   }
   const text = decodeHtmlEntities(value)
-    .replace(/<[^>]*>/g, " ")
-    .replace(/\s+/g, " ")
+    .replace(/<[^>]{0,2000}>/g, " ")
+    .replace(/\s{1,200}/g, " ")
     .trim();
   return text || null;
 }

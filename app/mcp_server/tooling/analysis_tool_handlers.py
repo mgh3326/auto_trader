@@ -463,8 +463,9 @@ def _summarize_analysis_result(
         "rsi_14": rsi,
         "consensus": ((analysis.get("opinions") or {}).get("consensus")),
         "recommendation": analysis.get("recommendation"),
-        "supports": (sr.get("supports") or [])[:3],
-        "resistances": (sr.get("resistances") or [])[:3],
+        # NOSONAR python:S6466 — list slicing never raises IndexError
+        "supports": (sr.get("supports") or [])[:3],  # NOSONAR
+        "resistances": (sr.get("resistances") or [])[:3],  # NOSONAR
     }
 
 
