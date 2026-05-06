@@ -1,5 +1,6 @@
 """ROB-116 — PortfolioActionService aggregation tests."""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -73,6 +74,55 @@ async def test_skips_zero_quantity_holdings(monkeypatch) -> None:
 
     result = await service.build_action_board(user_id=1)
     assert result.total == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_action_board_uses_total_quantity_for_merged_holdings(
+    monkeypatch,
+) -> None:
+    db = MagicMock()
+    holding = SimpleNamespace(
+        ticker="005930",
+        name="삼성전자",
+        market_type="KR",
+        total_quantity=3,
+        evaluation=804_000.0,
+        profit_rate=0.3747,
+        instrument_type="stock",
+    )
+    service = PortfolioActionService(db)
+    monkeypatch.setattr(
+        service,
+        "_load_holdings",
+        AsyncMock(return_value=([holding], 10_000_000.0, [])),
+    )
+    monkeypatch.setattr(service, "_load_latest_summary", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        service, "_load_journal_status", AsyncMock(return_value="missing")
+    )
+
+    result = await service.build_action_board(user_id=1)
+
+    assert result.total == 1
+    candidate = result.candidates[0]
+    assert candidate.symbol == "005930"
+    assert candidate.quantity == 3.0
+    assert candidate.market == "KR"
+    assert candidate.profit_rate == 0.3747
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_load_latest_summary_imports_stock_info_model() -> None:
+    db = MagicMock()
+    result = MagicMock()
+    result.scalars.return_value.first.return_value = None
+    db.execute = AsyncMock(return_value=result)
+    service = PortfolioActionService(db)
+
+    assert await service._load_latest_summary("005930") is None
+    db.execute.assert_awaited_once()
 
 
 @pytest.mark.unit
