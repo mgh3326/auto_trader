@@ -1,4 +1,4 @@
-import {
+import type {
   CreateOrderPreviewRequest,
   OrderPreviewSession,
 } from "./types";

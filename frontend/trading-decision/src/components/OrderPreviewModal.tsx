@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import styles from "./OrderPreviewModal.module.css";
-import { OrderPreviewSession, CreateOrderPreviewRequest } from "../api/types";
+import type { OrderPreviewSession, CreateOrderPreviewRequest } from "../api/types";
 import { orderPreviewsApi } from "../api/orderPreviews";
 
 interface Props {
