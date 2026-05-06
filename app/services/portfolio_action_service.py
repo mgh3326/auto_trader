@@ -42,7 +42,7 @@ class PortfolioActionService:
         warnings: list[str] = list(load_warnings)
 
         for holding in holdings:
-            quantity = float(getattr(holding, "quantity", 0.0) or 0.0)
+            quantity = _holding_quantity(holding)
             if quantity <= 0.0:
                 continue
 
@@ -153,7 +153,7 @@ class PortfolioActionService:
         from sqlalchemy import select
         from sqlalchemy.orm import selectinload
 
-        from app.models.stock_info import StockInfo
+        from app.models.analysis import StockInfo
 
         stmt = (
             select(ResearchSession)
@@ -193,6 +193,24 @@ class PortfolioActionService:
         if snapshot is None:
             return "missing"
         return "present"
+
+
+def _holding_quantity(value: Any) -> float:
+    """Return the displayed position quantity for heterogeneous holding DTOs.
+
+    MergedPortfolioService.MergedHolding exposes ``total_quantity`` instead of
+    ``quantity``; Upbit/manual DTOs may expose ``quantity`` directly.
+    """
+
+    for attr in ("quantity", "total_quantity"):
+        raw = getattr(value, attr, None)
+        if raw is None:
+            continue
+        try:
+            return float(raw or 0.0)
+        except (TypeError, ValueError):
+            continue
+    return 0.0
 
 
 def _normalize_market(value: Any) -> str:
