@@ -48,6 +48,7 @@ from app.routers import (
     trading,
     trading_decisions,
     trading_decisions_spa,
+    trade_journals,
     user_defaults,
     watch_order_intent_ledger,
     websocket,
@@ -173,6 +174,7 @@ def create_app() -> FastAPI:
     app.include_router(trading.router)
     app.include_router(trading_decisions.router)
     app.include_router(trading_decisions_spa.router)
+    app.include_router(trade_journals.router, prefix="/api/v1")
     app.include_router(research_pipeline.router)
     app.include_router(portfolio_actions.router)
     app.include_router(candidate_discovery.router)
@@ -210,7 +212,9 @@ def create_app() -> FastAPI:
             re.compile(r"^/stock/"),
             re.compile(r"^/symbol/"),
             re.compile(r"^/trading/"),
+            re.compile(r"^/trade-journals/"),
             re.compile(r"^/kospi200/"),
+
             *deprecated_pages.legacy_exempt_url_patterns(),
         ],
     )

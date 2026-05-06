@@ -437,6 +437,19 @@ async def user(db_session):
     return u
 
 
+@pytest.fixture
+def auth_headers(user):
+    """Create authentication headers for a test user."""
+    from datetime import timedelta
+
+    from app.auth.security import create_access_token
+
+    access_token = create_access_token(
+        data={"sub": user.username}, expires_delta=timedelta(minutes=15)
+    )
+    return {"Authorization": f"Bearer {access_token}"}
+
+
 @pytest_asyncio.fixture
 async def other_user(db_session):
     """Create another test user for isolation tests."""
