@@ -14,6 +14,7 @@ from app.schemas.trade_journal import (
     JournalUpdateRequest,
 )
 from app.services.trade_journal_coverage_service import TradeJournalCoverageService
+from app.services.trade_journal_read_service import TradeJournalReadService
 from app.services.trade_journal_write_service import (
     JournalWriteError,
     TradeJournalWriteService,
@@ -30,6 +31,15 @@ async def get_journal_coverage(
 ) -> JournalCoverageResponse:
     svc = TradeJournalCoverageService(db)
     return await svc.build_coverage(user_id=user.id, market_filter=market)
+
+
+@router.get("/retrospective", response_model=list[JournalReadResponse])
+async def get_retrospective(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[JournalReadResponse]:
+    svc = TradeJournalReadService(db)
+    return await svc.list_retrospective()
 
 
 @router.post("", response_model=JournalReadResponse)

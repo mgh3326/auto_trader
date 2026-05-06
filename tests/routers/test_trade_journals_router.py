@@ -79,6 +79,16 @@ async def test_update_journal_success(app, seed_active_journal_005930) -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_retrospective_returns_200(app) -> None:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as ac:
+        resp = await ac.get("/api/v1/trade-journals/retrospective")
+    assert resp.status_code == 200
+    assert isinstance(resp.json(), list)
+
+
+@pytest.mark.asyncio
 async def test_update_journal_not_found(app) -> None:
     payload = {"thesis": "updated thesis"}
     async with AsyncClient(
