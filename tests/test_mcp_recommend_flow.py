@@ -190,7 +190,7 @@ class TestRecommendStocksIntegration:
             "strategy": "growth",
         }
         assert result["recommendations"][0]["reason"] == "phase seam"
-        assert result["remaining_budget"] == 400.0
+        assert result["remaining_budget"] == pytest.approx(400.0)
         assert result["strategy"] == "growth"
 
     @pytest.mark.asyncio
@@ -1427,6 +1427,6 @@ class TestScreenUsBehavior:
         first = result["results"][0]
         assert first["code"] == "IVDA"
         assert first["name"] == "Iveda Solutions"
-        assert first["close"] == 5.12
+        assert first["close"] == pytest.approx(5.12)
         assert first["volume"] == 1_234_567
         assert first["market_cap"] == 500_000_000

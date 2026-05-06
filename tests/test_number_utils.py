@@ -16,8 +16,8 @@ class TestParseKoreanNumber:
         assert parse_korean_number("1,234,567") == 1234567
 
     def test_simple_float(self) -> None:
-        assert parse_korean_number("12.34") == 12.34
-        assert parse_korean_number("1,234.56") == 1234.56
+        assert parse_korean_number("12.34") == pytest.approx(12.34)
+        assert parse_korean_number("1,234.56") == pytest.approx(1234.56)
 
     def test_percentage(self) -> None:
         result = parse_korean_number("5.67%")
@@ -51,7 +51,7 @@ class TestParseKoreanNumber:
 
     def test_negative_number_with_minus(self) -> None:
         assert parse_korean_number("-1,234") == -1234
-        assert parse_korean_number("-5.67") == -5.67
+        assert parse_korean_number("-5.67") == pytest.approx(-5.67)
 
     def test_negative_number_with_arrow(self) -> None:
         assert parse_korean_number("▼1,234") == -1234

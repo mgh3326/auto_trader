@@ -62,7 +62,7 @@ class TestKISOverseasDailyPrice:
             "close",
             "volume",
         ]
-        assert float(result.iloc[-1]["close"]) == 193.8
+        assert float(result.iloc[-1]["close"]) == pytest.approx(193.8)
 
         params = mock_client.get.call_args.kwargs["params"]
         assert params["GUBN"] == "0"
@@ -1428,7 +1428,7 @@ class TestBuildOhlcvDataframe:
             "value",
         ]
         assert df.iloc[0]["datetime"] == pd.Timestamp("2026-02-19 10:00:00")
-        assert df.iloc[0]["close"] == 70100.0
+        assert df.iloc[0]["close"] == pytest.approx(70100.0)
         assert df.iloc[0]["volume"] == 100
 
     def test_deduplicates_by_datetime(self):
@@ -1606,5 +1606,5 @@ class TestBuildOhlcvDataframe:
 
         assert len(df) == 2
         assert df.iloc[0]["datetime"] == pd.Timestamp("2026-02-19 09:30:00")
-        assert df.iloc[0]["close"] == 180.5
+        assert df.iloc[0]["close"] == pytest.approx(180.5)
         assert df.iloc[1]["volume"] == 80

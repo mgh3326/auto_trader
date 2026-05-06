@@ -209,7 +209,7 @@ async def test_get_order_history_pending_crypto(monkeypatch):
     assert order["symbol"] == "KRW-BTC"
     assert order["side"] == "buy"
     assert order["status"] == "pending"
-    assert order["remaining_qty"] == 0.001
+    assert order["remaining_qty"] == pytest.approx(0.001)
 
 
 @pytest.mark.asyncio
@@ -1755,8 +1755,8 @@ async def test_get_order_history_us_pending_uppercase_fields(monkeypatch):
     assert order["ordered_qty"] == 100
     assert order["filled_qty"] == 60
     assert order["remaining_qty"] == 40
-    assert order["ordered_price"] == 195.5
-    assert order["filled_avg_price"] == 196.0
+    assert order["ordered_price"] == pytest.approx(195.5)
+    assert order["filled_avg_price"] == pytest.approx(196.0)
     assert order["ordered_at"] == "20250210 093000"
     assert order["currency"] == "USD"
 

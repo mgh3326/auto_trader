@@ -1413,7 +1413,7 @@ class TestSinglePriceLevelSmartSelection:
             assert result["orders_placed"] == 1
             # 신규 진입이므로 max(160) 사용
             call_args = mock_kis_client.order_overseas_stock.call_args
-            assert call_args.kwargs["price"] == 160.0
+            assert call_args.kwargs["price"] == pytest.approx(160.0)
 
     @pytest.mark.asyncio
     async def test_overseas_single_level_uses_min_when_max_below_avg(
@@ -1470,4 +1470,4 @@ class TestSinglePriceLevelSmartSelection:
             assert result["orders_placed"] == 1
             # max(155) < avg(180) 이므로 min(150) 사용
             call_args = mock_kis_client.order_overseas_stock.call_args
-            assert call_args.kwargs["price"] == 150.0
+            assert call_args.kwargs["price"] == pytest.approx(150.0)

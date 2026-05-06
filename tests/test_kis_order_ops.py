@@ -77,7 +77,7 @@ class TestOverseasOrderOps:
             kis, "AAPL", "buy", 1, 175.99, exchange_code="NASD"
         )
         call_args = kis.order_overseas_stock.call_args
-        assert call_args.kwargs["price"] == 175.99
+        assert call_args.kwargs["price"] == pytest.approx(175.99)
 
     @pytest.mark.asyncio
     async def test_adjust_sell_qty_reduces_when_account_has_less(self):

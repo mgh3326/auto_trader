@@ -670,8 +670,8 @@ def test_run_per_domestic_stock_automation_refreshes_holdings(monkeypatch):
     assert sell_calls, "매도 단계가 호출되어야 합니다."
     # 매수 이후 최신 잔고(12주)와 갱신된 가격을 사용해야 한다.
     assert sell_calls[0]["qty"] == 12
-    assert sell_calls[0]["avg_price"] == 50500.0
-    assert sell_calls[0]["current_price"] == 51500.0
+    assert sell_calls[0]["avg_price"] == pytest.approx(50500.0)
+    assert sell_calls[0]["current_price"] == pytest.approx(51500.0)
 
 
 def test_execute_overseas_buy_order_fetches_price_for_new_symbol(monkeypatch):
@@ -723,8 +723,10 @@ def test_execute_overseas_buy_order_fetches_price_for_new_symbol(monkeypatch):
 
     assert result["success"] is True
     assert captured["symbol"] == "AAPL"
-    assert captured["avg_price"] == 0.0  # 신규 매수이므로 평단가는 0으로 전달
-    assert captured["current_price"] == 123.45
+    assert captured["avg_price"] == pytest.approx(
+        0.0
+    )  # 신규 매수이므로 평단가는 0으로 전달
+    assert captured["current_price"] == pytest.approx(123.45)
 
 
 @pytest.mark.parametrize(

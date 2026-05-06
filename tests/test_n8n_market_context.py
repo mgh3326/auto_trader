@@ -148,8 +148,10 @@ class TestMarketContextEndpoint:
             assert response.status_code == 200
             data = response.json()
 
-            assert data["market_overview"]["btc_dominance"] == 61.5
-            assert data["market_overview"]["total_market_cap_change_24h"] == 2.3
+            assert data["market_overview"]["btc_dominance"] == pytest.approx(61.5)
+            assert data["market_overview"][
+                "total_market_cap_change_24h"
+            ] == pytest.approx(2.3)
 
     @pytest.mark.integration
     @pytest.mark.asyncio
@@ -485,8 +487,8 @@ class TestBtcDominanceService:
         ):
             result = await fetch_btc_dominance()
             assert result is not None
-            assert result["btc_dominance"] == 61.2
-            assert result["total_market_cap_change_24h"] == 2.3
+            assert result["btc_dominance"] == pytest.approx(61.2)
+            assert result["total_market_cap_change_24h"] == pytest.approx(2.3)
 
     @pytest.mark.asyncio
     async def test_fetch_btc_dominance_handles_error(self) -> None:

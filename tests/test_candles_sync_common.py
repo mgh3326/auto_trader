@@ -46,7 +46,7 @@ class TestParseFloat:
     def test_parses_int(self) -> None:
         from app.services.candles_sync_common import parse_float
 
-        assert parse_float(42) == 42.0
+        assert parse_float(42) == pytest.approx(42.0)
 
     def test_returns_none_for_none(self) -> None:
         from app.services.candles_sync_common import parse_float

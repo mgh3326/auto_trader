@@ -244,7 +244,7 @@ class TestAnalyzeStock:
         }
         rec = shared.build_recommendation_for_equity(analysis, "equity_us")
         assert rec is not None
-        assert rec["rsi14"] == 45.8
+        assert rec["rsi14"] == pytest.approx(45.8)
 
     async def test_build_recommendation_for_equity_keeps_zero_rsi(self):
         """Test that rsi14=0.0 is NOT treated as missing."""
@@ -255,7 +255,7 @@ class TestAnalyzeStock:
         }
         rec = shared.build_recommendation_for_equity(analysis, "equity_us")
         assert rec is not None
-        assert rec["rsi14"] == 0.0
+        assert rec["rsi14"] == pytest.approx(0.0)
 
     async def test_apply_common_results_normalizes_indicator_wrapper(self):
         """Test that _apply_common_results flattens provider-style indicator payload."""
@@ -338,9 +338,9 @@ class TestAnalyzeStock:
         result = await tools["analyze_stock"]("AAPL", market="us")
 
         # Verify indicators shape is normalized (flat indicator map)
-        assert result["indicators"]["rsi"]["14"] == 45.8
+        assert result["indicators"]["rsi"]["14"] == pytest.approx(45.8)
         # Verify recommendation.rsi14 tracks the indicator value
-        assert result["recommendation"]["rsi14"] == 45.8
+        assert result["recommendation"]["rsi14"] == pytest.approx(45.8)
         assert result["recommendation"]["rsi14"] == result["indicators"]["rsi"]["14"]
 
     @pytest.mark.parametrize("symbol", ["AAPL", "MSFT"])
@@ -701,7 +701,7 @@ async def test_get_correlation_tool_uses_analysis_screening_correlation_alias(
 
     assert result["success"] is True
     assert result["symbols"] == ["AAPL", "MSFT"]
-    assert result["correlation_matrix"][0][1] == 0.42
+    assert result["correlation_matrix"][0][1] == pytest.approx(0.42)
 
 
 # ---------------------------------------------------------------------------
@@ -758,14 +758,14 @@ class TestGetValuation:
         assert result["symbol"] == "005930"
         assert result["name"] == "삼성전자"
         assert result["current_price"] == 75000
-        assert result["per"] == 12.5
-        assert result["pbr"] == 1.2
-        assert result["roe"] == 18.5
-        assert result["roe_controlling"] == 17.2
-        assert result["dividend_yield"] == 0.02
+        assert result["per"] == pytest.approx(12.5)
+        assert result["pbr"] == pytest.approx(1.2)
+        assert result["roe"] == pytest.approx(18.5)
+        assert result["roe_controlling"] == pytest.approx(17.2)
+        assert result["dividend_yield"] == pytest.approx(0.02)
         assert result["high_52w"] == 90000
         assert result["low_52w"] == 60000
-        assert result["current_position_52w"] == 0.5
+        assert result["current_position_52w"] == pytest.approx(0.5)
         assert result["instrument_type"] == "equity_kr"
         assert result["source"] == "naver"
 
@@ -795,14 +795,14 @@ class TestGetValuation:
 
         assert result["symbol"] == "AAPL"
         assert result["name"] == "Apple Inc."
-        assert result["current_price"] == 185.5
-        assert result["per"] == 28.5
-        assert result["pbr"] == 45.2
-        assert result["roe"] == 147.3
-        assert result["dividend_yield"] == 0.005
-        assert result["high_52w"] == 199.62
-        assert result["low_52w"] == 164.08
-        assert result["current_position_52w"] == 0.6
+        assert result["current_price"] == pytest.approx(185.5)
+        assert result["per"] == pytest.approx(28.5)
+        assert result["pbr"] == pytest.approx(45.2)
+        assert result["roe"] == pytest.approx(147.3)
+        assert result["dividend_yield"] == pytest.approx(0.005)
+        assert result["high_52w"] == pytest.approx(199.62)
+        assert result["low_52w"] == pytest.approx(164.08)
+        assert result["current_position_52w"] == pytest.approx(0.6)
         assert result["instrument_type"] == "equity_us"
         assert result["source"] == "yfinance"
 
@@ -832,7 +832,7 @@ class TestGetValuation:
 
         assert result["symbol"] == "NVDA"
         assert result["instrument_type"] == "equity_us"
-        assert result["roe"] == 85.0
+        assert result["roe"] == pytest.approx(85.0)
 
     async def test_rejects_crypto_symbol(self):
         """Test that crypto symbol raises ValueError."""
@@ -876,7 +876,7 @@ class TestGetValuation:
         assert result["symbol"] == "298040"
         assert result["per"] is None
         assert result["roe"] is None
-        assert result["current_position_52w"] == 0.83
+        assert result["current_position_52w"] == pytest.approx(0.83)
 
     async def test_error_handling(self, monkeypatch):
         """Test error handling when fetch fails."""
@@ -971,8 +971,8 @@ class TestGetShortInterest:
         assert len(result["short_data"]) == 2
         assert result["short_data"][0]["date"] == "2024-01-15"
         assert result["short_data"][0]["short_amount"] == 1_000_000_000
-        assert result["short_data"][0]["short_ratio"] == 5.0
-        assert result["avg_short_ratio"] == 5.17
+        assert result["short_data"][0]["short_ratio"] == pytest.approx(5.0)
+        assert result["avg_short_ratio"] == pytest.approx(5.17)
         assert "short_balance" not in result
 
     async def test_rejects_us_equity(self):
@@ -1144,12 +1144,12 @@ class TestGetKimchiPremium:
         result = await tools["get_kimchi_premium"]("BTC")
 
         assert result["source"] == "upbit+binance"
-        assert result["exchange_rate"] == 1450.0
+        assert result["exchange_rate"] == pytest.approx(1450.0)
         assert result["count"] == 1
         item = result["data"][0]
         assert item["symbol"] == "BTC"
         assert item["upbit_krw"] == 150_000_000
-        assert item["binance_usdt"] == 102000.50
+        assert item["binance_usdt"] == pytest.approx(102000.50)
         # (150_000_000 - 102000.50*1450) / (102000.50*1450) * 100
         expected_premium = round(
             (150_000_000 - 102000.50 * 1450) / (102000.50 * 1450) * 100, 2
@@ -1186,7 +1186,7 @@ class TestGetKimchiPremium:
         symbols = [d["symbol"] for d in result]
         assert symbols == ["BTC", "ETH"]
         assert result[0]["upbit_price"] == 150_000_000
-        assert result[0]["binance_price"] == 102000.0
+        assert result[0]["binance_price"] == pytest.approx(102000.0)
         assert "premium_pct" in result[0]
 
     async def test_strips_krw_prefix(self, monkeypatch):
@@ -1293,12 +1293,12 @@ class TestGetFundingRate:
         result = await tools["get_funding_rate"]("BTC")
 
         assert result["symbol"] == "BTCUSDT"
-        assert result["current_funding_rate"] == 0.0001
-        assert result["current_funding_rate_pct"] == 0.01
+        assert result["current_funding_rate"] == pytest.approx(0.0001)
+        assert result["current_funding_rate_pct"] == pytest.approx(0.01)
         assert result["next_funding_time"] is not None
         assert len(result["funding_history"]) == 2
-        assert result["funding_history"][0]["rate"] == 0.0001
-        assert result["funding_history"][0]["rate_pct"] == 0.01
+        assert result["funding_history"][0]["rate"] == pytest.approx(0.0001)
+        assert result["funding_history"][0]["rate_pct"] == pytest.approx(0.01)
         assert result["avg_funding_rate_pct"] is not None
         assert "interpretation" in result
 
@@ -1429,7 +1429,7 @@ class TestGetFundingRate:
         assert isinstance(result, list)
         assert len(result) == 2
         assert result[0]["symbol"] == "BTC"
-        assert result[0]["funding_rate"] == 0.0001
+        assert result[0]["funding_rate"] == pytest.approx(0.0001)
         assert result[0]["next_funding_time"] is not None
         assert "interpretation" in result[0]
 
@@ -1502,7 +1502,7 @@ class TestGetFundingRate:
 
         result = await tools["get_funding_rate"]("BTC", limit=2)
 
-        assert result["avg_funding_rate_pct"] == 0.03
+        assert result["avg_funding_rate_pct"] == pytest.approx(0.03)
 
     async def test_empty_history(self, monkeypatch):
         tools = build_tools()
@@ -1681,14 +1681,14 @@ class TestGetMarketIndex:
         idx = result["indices"][0]
         assert idx["symbol"] == "KOSPI"
         assert idx["name"] == "코스피"
-        assert idx["current"] == 2450.50
-        assert idx["change"] == -45.30
-        assert idx["change_pct"] == -1.82
+        assert idx["current"] == pytest.approx(2450.50)
+        assert idx["change"] == pytest.approx(-45.30)
+        assert idx["change_pct"] == pytest.approx(-1.82)
         assert idx["source"] == "naver"
         # open/high/low come from the first price record
-        assert idx["open"] == 2390.0
-        assert idx["high"] == 2420.0
-        assert idx["low"] == 2380.0
+        assert idx["open"] == pytest.approx(2390.0)
+        assert idx["high"] == pytest.approx(2420.0)
+        assert idx["low"] == pytest.approx(2380.0)
 
         assert "history" in result
         assert len(result["history"]) == 3
@@ -1707,8 +1707,8 @@ class TestGetMarketIndex:
         idx = result["indices"][0]
         assert idx["symbol"] == "NASDAQ"
         assert idx["name"] == "NASDAQ Composite"
-        assert idx["current"] == 17500.0
-        assert idx["change"] == 100.0
+        assert idx["current"] == pytest.approx(17500.0)
+        assert idx["change"] == pytest.approx(100.0)
         assert idx["change_pct"] == pytest.approx(0.57, abs=0.01)
         assert idx["source"] == "yfinance"
 
@@ -2154,8 +2154,8 @@ class TestGetSectorPeers:
 
         assert comp["target_per_rank"] == "1/3"
         assert comp["target_pbr_rank"] == "2/3"
-        assert comp["avg_per"] == 30.0
-        assert comp["avg_pbr"] == 6.0
+        assert comp["avg_per"] == pytest.approx(30.0)
+        assert comp["avg_pbr"] == pytest.approx(6.0)
 
 
 @pytest.mark.asyncio
@@ -2276,7 +2276,7 @@ class TestGetCryptoProfile:
         assert result_first["market_cap_rank"] == 1
         assert result_first["total_volume_24h"] == 50_000_000_000_000
         assert result_first["ath"] == 140_000_000
-        assert result_first["price_change_percentage_7d"] == 2.5
+        assert result_first["price_change_percentage_7d"] == pytest.approx(2.5)
         assert "<" not in (result_first["description"] or "")
         assert result_second["symbol"] == "BTC"
         assert detail_calls["count"] == 1
@@ -2797,9 +2797,9 @@ class TestGetInvestmentOpinions:
         result = await tools["get_investment_opinions"]("AAPL", market="us")
 
         assert result["symbol"] == "AAPL"
-        assert result["consensus"]["avg_target_price"] == 195.5
-        assert result["consensus"]["current_price"] == 185.5
-        assert result["consensus"]["upside_pct"] == 5.4
+        assert result["consensus"]["avg_target_price"] == pytest.approx(195.5)
+        assert result["consensus"]["current_price"] == pytest.approx(185.5)
+        assert result["consensus"]["upside_pct"] == pytest.approx(5.4)
 
     async def test_us_market_skips_upside_when_avg_target_not_numeric(
         self, monkeypatch
@@ -2827,7 +2827,7 @@ class TestGetInvestmentOpinions:
         )
 
         assert result["consensus"]["avg_target_price"] is None
-        assert result["consensus"]["current_price"] == 185.5
+        assert result["consensus"]["current_price"] == pytest.approx(185.5)
         assert result["consensus"]["upside_pct"] is None
 
     async def test_us_market_uses_recommendation_trend_counts_and_normalized_targets(
@@ -2882,12 +2882,12 @@ class TestGetInvestmentOpinions:
         assert result["consensus"]["sell_count"] == 5
         assert result["consensus"]["strong_buy_count"] == 5
         assert result["consensus"]["total_count"] == 25
-        assert result["consensus"]["avg_target_price"] == 200.0
-        assert result["consensus"]["median_target_price"] == 198.0
-        assert result["consensus"]["min_target_price"] == 180.0
-        assert result["consensus"]["max_target_price"] == 220.0
-        assert result["consensus"]["current_price"] == 185.0
-        assert result["consensus"]["upside_pct"] == 8.11
+        assert result["consensus"]["avg_target_price"] == pytest.approx(200.0)
+        assert result["consensus"]["median_target_price"] == pytest.approx(198.0)
+        assert result["consensus"]["min_target_price"] == pytest.approx(180.0)
+        assert result["consensus"]["max_target_price"] == pytest.approx(220.0)
+        assert result["consensus"]["current_price"] == pytest.approx(185.0)
+        assert result["consensus"]["upside_pct"] == pytest.approx(8.11)
 
     async def test_us_market_returns_warning_for_unavailable_yahoo_consensus(
         self, monkeypatch
@@ -2976,12 +2976,12 @@ class TestGetInvestmentOpinions:
             )
         )
 
-        assert result["consensus"]["avg_target_price"] == 200.0
-        assert result["consensus"]["median_target_price"] == 198.0
-        assert result["consensus"]["min_target_price"] == 180.0
-        assert result["consensus"]["max_target_price"] == 220.0
-        assert result["consensus"]["current_price"] == 185.0
-        assert result["consensus"]["upside_pct"] == 8.11
+        assert result["consensus"]["avg_target_price"] == pytest.approx(200.0)
+        assert result["consensus"]["median_target_price"] == pytest.approx(198.0)
+        assert result["consensus"]["min_target_price"] == pytest.approx(180.0)
+        assert result["consensus"]["max_target_price"] == pytest.approx(220.0)
+        assert result["consensus"]["current_price"] == pytest.approx(185.0)
+        assert result["consensus"]["upside_pct"] == pytest.approx(8.11)
 
     async def test_us_market_keeps_partial_recommendation_counts_unavailable(
         self, monkeypatch
@@ -3025,8 +3025,8 @@ class TestGetInvestmentOpinions:
         assert result["consensus"]["sell_count"] is None
         assert result["consensus"]["strong_buy_count"] is None
         assert result["consensus"]["total_count"] is None
-        assert result["consensus"]["avg_target_price"] == 200.0
-        assert result["consensus"]["current_price"] == 185.0
+        assert result["consensus"]["avg_target_price"] == pytest.approx(200.0)
+        assert result["consensus"]["current_price"] == pytest.approx(185.0)
 
 
 @pytest.mark.asyncio
@@ -3330,7 +3330,7 @@ class TestScreenEnrichmentHelpers:
         assert decorated[1]["sector"] is None
         assert decorated[1]["analyst_buy"] is None
         assert decorated[2]["sector"] == "Technology"
-        assert decorated[2]["avg_target"] == 250.0
+        assert decorated[2]["avg_target"] == pytest.approx(250.0)
         assert decorated[3]["sector"] is None
         assert decorated[3]["analyst_buy"] is None
         assert warnings == ["kr:035420: RuntimeError: kr enrichment failed"]
@@ -4020,13 +4020,19 @@ class TestParseNaverNum:
         assert fundamentals_sources_common._parse_naver_int(None) is None
 
     def test_numeric(self):
-        assert fundamentals_sources_common._parse_naver_num(1234.5) == 1234.5
-        assert fundamentals_sources_common._parse_naver_num(100) == 100.0
+        assert fundamentals_sources_common._parse_naver_num(1234.5) == pytest.approx(
+            1234.5
+        )
+        assert fundamentals_sources_common._parse_naver_num(100) == pytest.approx(100.0)
         assert fundamentals_sources_common._parse_naver_int(42) == 42
 
     def test_string_with_commas(self):
-        assert fundamentals_sources_common._parse_naver_num("2,450.50") == 2450.50
-        assert fundamentals_sources_common._parse_naver_num("-45.30") == -45.30
+        assert fundamentals_sources_common._parse_naver_num(
+            "2,450.50"
+        ) == pytest.approx(2450.50)
+        assert fundamentals_sources_common._parse_naver_num("-45.30") == pytest.approx(
+            -45.30
+        )
         assert fundamentals_sources_common._parse_naver_int("450,000,000") == 450000000
 
     def test_invalid_string(self):

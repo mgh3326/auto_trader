@@ -141,12 +141,12 @@ class TestAsyncSlidingWindowRateLimiter:
 
         assert stats["name"] == "test_stats"
         assert stats["rate"] == 10
-        assert stats["period"] == 1.0
+        assert stats["period"] == pytest.approx(1.0)
         assert stats["total_requests"] == 0
         assert stats["throttled_requests"] == 0
-        assert stats["throttle_rate"] == 0.0
-        assert stats["total_wait_time"] == 0.0
-        assert stats["avg_wait_time"] == 0.0
+        assert stats["throttle_rate"] == pytest.approx(0.0)
+        assert stats["total_wait_time"] == pytest.approx(0.0)
+        assert stats["avg_wait_time"] == pytest.approx(0.0)
         assert stats["current_window_count"] == 0
 
     @pytest.mark.asyncio
@@ -173,7 +173,7 @@ class TestAsyncSlidingWindowRateLimiter:
 
         assert limiter._total_requests == 0
         assert limiter._throttled_requests == 0
-        assert limiter._total_wait_time == 0.0
+        assert limiter._total_wait_time == pytest.approx(0.0)
 
     @pytest.mark.asyncio
     async def test_callback_exception_does_not_break_acquire(self):
@@ -224,13 +224,13 @@ class TestPerApiRateLimiters:
     async def test_get_limiter_uses_custom_rate_and_period(self):
         limiter = await get_limiter("kis", "CUSTOM_RATE", rate=5, period=2.0)
         assert limiter.rate == 5
-        assert limiter.period == 2.0
+        assert limiter.period == pytest.approx(2.0)
 
     @pytest.mark.asyncio
     async def test_get_limiter_uses_default_when_not_specified(self):
         limiter = await get_limiter("kis", "DEFAULT_RATE")
         assert limiter.rate == 19  # Default for KIS
-        assert limiter.period == 1.0
+        assert limiter.period == pytest.approx(1.0)
 
     @pytest.mark.asyncio
     async def test_get_all_limiters_returns_copy(self):

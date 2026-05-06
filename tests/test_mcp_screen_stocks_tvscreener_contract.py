@@ -123,19 +123,19 @@ class TestScreenStocksTvScreenerContract:
         assert result["total_count"] == 3
         assert result["returned_count"] == 1
         assert result["results"][0]["code"] == "005930"
-        assert result["results"][0]["close"] == 70000.0
-        assert result["results"][0]["change_rate"] == 2.5
+        assert result["results"][0]["close"] == pytest.approx(70000.0)
+        assert result["results"][0]["change_rate"] == pytest.approx(2.5)
         assert result["results"][0]["market"] == "KOSPI"
         assert result["results"][0]["market_cap"] == 4800000
-        assert result["results"][0]["per"] == 12.5
-        assert result["results"][0]["pbr"] == 1.2
-        assert result["results"][0]["dividend_yield"] == 0.0256
-        assert result["results"][0]["adx"] == 24.8
+        assert result["results"][0]["per"] == pytest.approx(12.5)
+        assert result["results"][0]["pbr"] == pytest.approx(1.2)
+        assert result["results"][0]["dividend_yield"] == pytest.approx(0.0256)
+        assert result["results"][0]["adx"] == pytest.approx(24.8)
         assert result["filters_applied"]["sort_order"] == "desc"
         assert result["filters_applied"]["min_market_cap"] == 300000
-        assert result["filters_applied"]["max_per"] == 15.0
-        assert result["filters_applied"]["max_pbr"] == 2.0
-        assert result["filters_applied"]["min_dividend_yield"] == 0.02
+        assert result["filters_applied"]["max_per"] == pytest.approx(15.0)
+        assert result["filters_applied"]["max_pbr"] == pytest.approx(2.0)
+        assert result["filters_applied"]["min_dividend_yield"] == pytest.approx(0.02)
         assert result["meta"]["source"] == "tvscreener"
         assert result["meta"]["rsi_enrichment"]["error_samples"] == []
 
@@ -200,17 +200,17 @@ class TestScreenStocksTvScreenerContract:
         assert result["total_count"] == 4
         assert result["returned_count"] == 1
         assert result["results"][0]["code"] == "AAPL"
-        assert result["results"][0]["close"] == 175.5
-        assert result["results"][0]["change_rate"] == 1.2
+        assert result["results"][0]["close"] == pytest.approx(175.5)
+        assert result["results"][0]["change_rate"] == pytest.approx(1.2)
         assert result["results"][0]["market"] == "us"
         assert result["results"][0]["market_cap"] == 2800000000000
-        assert result["results"][0]["per"] == 28.5
-        assert result["results"][0]["dividend_yield"] == 0.005
-        assert result["results"][0]["adx"] == 31.4
+        assert result["results"][0]["per"] == pytest.approx(28.5)
+        assert result["results"][0]["dividend_yield"] == pytest.approx(0.005)
+        assert result["results"][0]["adx"] == pytest.approx(31.4)
         assert result["filters_applied"]["sort_order"] == "asc"
         assert result["filters_applied"]["min_market_cap"] == 1000000000
-        assert result["filters_applied"]["max_per"] == 30.0
-        assert result["filters_applied"]["min_dividend_yield"] == 0.004
+        assert result["filters_applied"]["max_per"] == pytest.approx(30.0)
+        assert result["filters_applied"]["min_dividend_yield"] == pytest.approx(0.004)
         assert result["meta"]["source"] == "tvscreener"
 
     @pytest.mark.asyncio
@@ -273,8 +273,8 @@ class TestScreenStocksTvScreenerContract:
         )
 
         assert result["meta"]["source"] == "tvscreener"
-        assert result["results"][0]["rsi"] == 41.2
-        assert result["results"][0]["adx"] == 23.5
+        assert result["results"][0]["rsi"] == pytest.approx(41.2)
+        assert result["results"][0]["adx"] == pytest.approx(23.5)
         assert result["meta"]["rsi_enrichment"]["error_samples"] == []
 
     @pytest.mark.asyncio
@@ -335,7 +335,7 @@ class TestScreenStocksTvScreenerContract:
         )
 
         assert result["meta"]["source"] == "tvscreener"
-        assert result["results"][0]["adx"] == 31.4
+        assert result["results"][0]["adx"] == pytest.approx(31.4)
 
     @pytest.mark.asyncio
     async def test_kr_stock_request_with_max_rsi_still_uses_tvscreener(
@@ -344,7 +344,7 @@ class TestScreenStocksTvScreenerContract:
         async def mock_screen_kr_via_tvscreener(**kwargs):
             assert kwargs["market"] == "kr"
             assert kwargs["asset_type"] == "stock"
-            assert kwargs["max_rsi"] == 35.0
+            assert kwargs["max_rsi"] == pytest.approx(35.0)
             return {
                 "stocks": [
                     {
@@ -400,8 +400,8 @@ class TestScreenStocksTvScreenerContract:
         )
 
         assert result["meta"]["source"] == "tvscreener"
-        assert result["results"][0]["rsi"] == 32.0
-        assert result["results"][0]["adx"] == 21.5
+        assert result["results"][0]["rsi"] == pytest.approx(32.0)
+        assert result["results"][0]["adx"] == pytest.approx(21.5)
 
     @pytest.mark.asyncio
     async def test_us_stock_request_with_max_rsi_still_uses_tvscreener(
@@ -410,7 +410,7 @@ class TestScreenStocksTvScreenerContract:
         async def mock_screen_us_via_tvscreener(**kwargs):
             assert kwargs["market"] == "us"
             assert kwargs["asset_type"] is None
-            assert kwargs["max_rsi"] == 40.0
+            assert kwargs["max_rsi"] == pytest.approx(40.0)
             return {
                 "stocks": [
                     {
@@ -464,8 +464,8 @@ class TestScreenStocksTvScreenerContract:
         )
 
         assert result["meta"]["source"] == "tvscreener"
-        assert result["results"][0]["rsi"] == 35.2
-        assert result["results"][0]["adx"] == 31.4
+        assert result["results"][0]["rsi"] == pytest.approx(35.2)
+        assert result["results"][0]["adx"] == pytest.approx(31.4)
 
     @pytest.mark.asyncio
     async def test_us_tvscreener_error_falls_back_to_legacy_path(self, monkeypatch):
@@ -487,7 +487,7 @@ class TestScreenStocksTvScreenerContract:
 
         async def mock_screen_us(**kwargs):
             assert kwargs["market"] == "us"
-            assert kwargs["max_rsi"] == 40.0
+            assert kwargs["max_rsi"] == pytest.approx(40.0)
             return {
                 "results": [
                     {
@@ -939,7 +939,7 @@ class TestScreenStocksTvScreenerContract:
         )
 
         assert result["meta"]["source"] == "tvscreener"
-        assert result["results"][0]["adx"] == 23.5
+        assert result["results"][0]["adx"] == pytest.approx(23.5)
 
     @pytest.mark.asyncio
     async def test_kr_request_falls_back_to_legacy_when_capability_unverified(

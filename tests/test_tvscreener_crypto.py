@@ -243,7 +243,7 @@ async def test_screen_crypto_via_tvscreener_uses_upbit_value_traded_contract(
     assert [item["symbol"] for item in result["results"]] == ["KRW-ETH", "KRW-BTC"]
     assert result["results"][0]["trade_amount_24h"] == 1_200_000_000_000.0
     assert result["results"][0]["volume_24h"] == 9_500.0
-    assert result["results"][0]["adx"] == 18.7
+    assert result["results"][0]["adx"] == pytest.approx(18.7)
     assert result["results"][0]["market_cap"] == 1_200_000_000_000_000.0
 
 
@@ -326,7 +326,7 @@ async def test_screen_crypto_via_tvscreener_prefers_value_traded_over_usd_volume
     first = result["results"][0]
     assert first["symbol"] == "KRW-BTC"
     assert first["trade_amount_24h"] == 900_000_000_000.0
-    assert first["volume_24h"] == 777.0
+    assert first["volume_24h"] == pytest.approx(777.0)
 
 
 @pytest.mark.asyncio

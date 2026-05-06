@@ -320,9 +320,9 @@ class TestKISRankingAPIParams:
         )
 
         assert len(result) == 3
-        assert float(result[0]["prdy_ctrt"]) == 5.0
-        assert float(result[1]["prdy_ctrt"]) == 3.0
-        assert float(result[2]["prdy_ctrt"]) == 1.5
+        assert float(result[0]["prdy_ctrt"]) == pytest.approx(5.0)
+        assert float(result[1]["prdy_ctrt"]) == pytest.approx(3.0)
+        assert float(result[2]["prdy_ctrt"]) == pytest.approx(1.5)
 
     async def test_api_error_handling(self, monkeypatch):
         """API 에러 시 RuntimeError가 발생하는지 검증"""
@@ -763,7 +763,7 @@ class TestKISRankingDirection:
         assert req["params"]["FID_RANK_SORT_CLS_CODE"] == "3"
         assert req["params"]["FID_PRC_CLS_CODE"] == "0"
         assert len(result) == 1
-        assert float(result[0]["prdy_ctrt"]) == -3.0
+        assert float(result[0]["prdy_ctrt"]) == pytest.approx(-3.0)
 
     async def test_fluctuation_rank_down_strict_negative_filtering(self, monkeypatch):
         captured_requests = []
@@ -819,8 +819,8 @@ class TestKISRankingDirection:
         assert len(captured_requests) == 1
         assert len(result) == 2
         assert all(float(r["prdy_ctrt"]) < 0 for r in result)
-        assert float(result[0]["prdy_ctrt"]) == -3.0
-        assert float(result[1]["prdy_ctrt"]) == -1.5
+        assert float(result[0]["prdy_ctrt"]) == pytest.approx(-3.0)
+        assert float(result[1]["prdy_ctrt"]) == pytest.approx(-1.5)
 
     async def test_fluctuation_rank_down_returns_empty_when_no_negatives(
         self, monkeypatch

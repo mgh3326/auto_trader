@@ -90,7 +90,7 @@ class TestMCPTopStocks:
         assert result["rankings"][0]["rank"] == 1
         assert result["rankings"][0]["symbol"] == "005930"
         assert result["rankings"][0]["name"] == "삼성전자"
-        assert result["rankings"][0]["change_rate"] == 2.5
+        assert result["rankings"][0]["change_rate"] == pytest.approx(2.5)
         assert result["source"] == "kis"
 
     async def test_kr_volume_rank_fallback_to_mksc_shrn_iscd(self, monkeypatch):
@@ -188,7 +188,7 @@ class TestMCPTopStocks:
         assert len(result["rankings"]) == 1
         assert result["rankings"][0]["symbol"] == "900210"
         assert result["rankings"][0]["name"] == "KODEX 200"
-        assert result["rankings"][0]["change_rate"] == 5.0
+        assert result["rankings"][0]["change_rate"] == pytest.approx(5.0)
 
     async def test_kr_market_cap_ranking_fallback_to_mksc_shrn_iscd(self, monkeypatch):
         """market_cap 랭킹에서 mksc_shrn_iscd fallback 테스트"""
@@ -269,7 +269,7 @@ class TestMCPTopStocks:
 
         assert result["ranking_type"] == "gainers"
         assert len(result["rankings"]) == 1
-        assert result["rankings"][0]["change_rate"] == 5.0
+        assert result["rankings"][0]["change_rate"] == pytest.approx(5.0)
 
     async def test_kr_losers_routing(self, monkeypatch):
         tools = build_tools()
@@ -296,7 +296,7 @@ class TestMCPTopStocks:
 
         assert result["ranking_type"] == "losers"
         assert len(result["rankings"]) == 1
-        assert result["rankings"][0]["change_rate"] == -3.0
+        assert result["rankings"][0]["change_rate"] == pytest.approx(-3.0)
 
     async def test_kr_foreigners_routing(self, monkeypatch):
         tools = build_tools()
@@ -616,7 +616,7 @@ class TestMCPTopStocks:
         assert result["ranking_type"] == "gainers"
         assert len(result["rankings"]) == 2
         assert result["rankings"][0]["symbol"] == "KRW-ETH"
-        assert result["rankings"][0]["change_rate"] == 5.0
+        assert result["rankings"][0]["change_rate"] == pytest.approx(5.0)
 
     async def test_crypto_rankings_losers_sort(self, monkeypatch):
         tools = build_tools()
@@ -652,7 +652,7 @@ class TestMCPTopStocks:
         assert result["ranking_type"] == "losers"
         assert len(result["rankings"]) == 2
         assert result["rankings"][0]["symbol"] == "KRW-BTC"
-        assert result["rankings"][0]["change_rate"] == -1.0
+        assert result["rankings"][0]["change_rate"] == pytest.approx(-1.0)
 
     async def test_crypto_ratio_to_percent_conversion(self, monkeypatch):
         tools = build_tools()
@@ -678,7 +678,7 @@ class TestMCPTopStocks:
             market="crypto", ranking_type="volume", limit=1
         )
 
-        assert result["rankings"][0]["change_rate"] == 2.5
+        assert result["rankings"][0]["change_rate"] == pytest.approx(2.5)
 
     async def test_upstream_exception_returns_error_payload(self, monkeypatch):
         tools = build_tools()
@@ -752,12 +752,12 @@ class TestMCPTopStocks:
         assert result["rankings"][0]["symbol"] == "005930"
         assert result["rankings"][0]["name"] == "삼성전자"
         assert result["rankings"][0]["volume"] == 5000000
-        assert result["rankings"][0]["trade_amount"] == 400000000000.0
+        assert result["rankings"][0]["trade_amount"] == pytest.approx(400000000000.0)
 
         assert result["rankings"][1]["symbol"] == "005380"
         assert result["rankings"][1]["name"] == "LG전자"
         assert result["rankings"][1]["volume"] == 3000000
-        assert result["rankings"][1]["trade_amount"] == 360000000000.0
+        assert result["rankings"][1]["trade_amount"] == pytest.approx(360000000000.0)
 
 
 @pytest.mark.asyncio
@@ -798,8 +798,8 @@ class TestMCPLosers:
         assert result["ranking_type"] == "losers"
         assert len(result["rankings"]) == 2
         assert all(float(r["change_rate"]) < 0 for r in result["rankings"])
-        assert float(result["rankings"][0]["change_rate"]) == -3.0
-        assert float(result["rankings"][1]["change_rate"]) == -2.0
+        assert float(result["rankings"][0]["change_rate"]) == pytest.approx(-3.0)
+        assert float(result["rankings"][1]["change_rate"]) == pytest.approx(-2.0)
 
     async def test_get_top_stocks_kr_gainers_returns_positives(self, monkeypatch):
         tools = build_tools()
@@ -932,7 +932,7 @@ class TestMCPRegressionTests:
         assert result["ranking_type"] == "gainers"
         assert len(result["rankings"]) == 2
         assert result["rankings"][0]["symbol"] == "005930"
-        assert float(result["rankings"][0]["change_rate"]) == 5.0
+        assert float(result["rankings"][0]["change_rate"]) == pytest.approx(5.0)
 
     async def test_us_losers_unchanged(self, monkeypatch):
         """US losers should return only negatives, sorted by change_rate ascending"""
@@ -1009,6 +1009,10 @@ class TestMCPRegressionTests:
         assert len(result["rankings"]) == 2
         # Sorted by change_rate ascending: -0.02 before -0.01
         assert result["rankings"][0]["symbol"] == "KRW-ETH"
-        assert result["rankings"][0]["change_rate"] == -2.0  # -0.02 * 100
+        assert result["rankings"][0]["change_rate"] == pytest.approx(
+            -2.0
+        )  # -0.02 * 100
         assert result["rankings"][1]["symbol"] == "KRW-BTC"
-        assert result["rankings"][1]["change_rate"] == -1.0  # -0.01 * 100
+        assert result["rankings"][1]["change_rate"] == pytest.approx(
+            -1.0
+        )  # -0.01 * 100

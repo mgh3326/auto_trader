@@ -135,17 +135,17 @@ class TestNormalizeValue:
 
     def test_timedelta_returns_seconds(self):
         td = pd.Timedelta(hours=1, minutes=30)
-        assert shared.normalize_value(td) == 5400.0
+        assert shared.normalize_value(td) == pytest.approx(5400.0)
 
     def test_numpy_scalar_returns_python_type(self):
         import numpy as np
 
         assert shared.normalize_value(np.int64(42)) == 42
-        assert shared.normalize_value(np.float64(3.14)) == 3.14
+        assert shared.normalize_value(np.float64(3.14)) == pytest.approx(3.14)
 
     def test_regular_values_pass_through(self):
         assert shared.normalize_value(42) == 42
-        assert shared.normalize_value(3.14) == 3.14
+        assert shared.normalize_value(3.14) == pytest.approx(3.14)
         assert shared.normalize_value("hello") == "hello"
 
 

@@ -322,7 +322,7 @@ class TestKRXChangeRate:
         result = await krx.fetch_stock_all(market="STK")
 
         assert len(result) == 1
-        assert result[0]["change_rate"] == 2.5
+        assert result[0]["change_rate"] == pytest.approx(2.5)
         assert result[0]["change_price"] == 2000
 
     @pytest.mark.asyncio
@@ -361,7 +361,7 @@ class TestKRXChangeRate:
         result = await krx.fetch_stock_all(market="STK")
 
         assert len(result) == 1
-        assert result[0]["change_rate"] == -1.2
+        assert result[0]["change_rate"] == pytest.approx(-1.2)
         assert result[0]["change_price"] == -1800
 
     @pytest.mark.asyncio
@@ -400,8 +400,8 @@ class TestKRXChangeRate:
         result = await krx.fetch_stock_all(market="STK")
 
         assert len(result) == 1
-        assert result[0]["change_rate"] == 0.0
-        assert result[0]["change_price"] == 0.0
+        assert result[0]["change_rate"] == pytest.approx(0.0)
+        assert result[0]["change_price"] == pytest.approx(0.0)
 
     @pytest.mark.asyncio
     async def test_etf_parse_change_rate_positive(self, monkeypatch):
@@ -438,7 +438,7 @@ class TestKRXChangeRate:
         result = await krx.fetch_etf_all()
 
         assert len(result) == 1
-        assert result[0]["change_rate"] == 1.5
+        assert result[0]["change_rate"] == pytest.approx(1.5)
         assert result[0]["change_price"] == 700
 
 
@@ -491,18 +491,18 @@ class TestKRXValuation:
         result = await krx.fetch_valuation_all(market="ALL")
 
         assert len(result) == 3
-        assert result["005930"]["per"] == 12.5
-        assert result["005930"]["pbr"] == 1.2
+        assert result["005930"]["per"] == pytest.approx(12.5)
+        assert result["005930"]["pbr"] == pytest.approx(1.2)
         assert result["005930"]["eps"] == 6400
         assert result["005930"]["bps"] == 66000
-        assert result["005930"]["dividend_yield"] == 0.0256
+        assert result["005930"]["dividend_yield"] == pytest.approx(0.0256)
         assert result["000660"]["per"] is None
         assert result["000660"]["pbr"] is None
         assert result["035420"]["per"] is None
-        assert result["035420"]["pbr"] == 0.8
+        assert result["035420"]["pbr"] == pytest.approx(0.8)
         assert result["035420"]["eps"] == 12000
         assert result["035420"]["bps"] == 80000
-        assert result["035420"]["dividend_yield"] == 0.035
+        assert result["035420"]["dividend_yield"] == pytest.approx(0.035)
 
     @pytest.mark.asyncio
     async def test_valuation_cache_key_format(self, monkeypatch):
@@ -838,7 +838,7 @@ class TestKRXValuationCacheRecovery:
         result = await krx.fetch_valuation_all(market="ALL")
 
         assert "005930" in result
-        assert result["005930"]["per"] == 12.5
+        assert result["005930"]["per"] == pytest.approx(12.5)
 
     @pytest.mark.asyncio
     async def test_valuation_cache_new_format_with_isu_srt_cd(self, monkeypatch):
@@ -880,7 +880,7 @@ class TestKRXValuationCacheRecovery:
         assert len(result) == 2
         assert "005930" in result
         assert "000660" in result
-        assert result["005930"]["per"] == 12.5
+        assert result["005930"]["per"] == pytest.approx(12.5)
         assert not fetch_called, "Should use cache, not call API"
 
     @pytest.mark.asyncio
@@ -919,7 +919,7 @@ class TestKRXValuationCacheRecovery:
         cached_entry = captured_cache_data[0]  # NOSONAR
         assert isinstance(cached_entry, dict)
         assert cached_entry["ISU_SRT_CD"] == "005930"
-        assert cached_entry["per"] == 12.5
+        assert cached_entry["per"] == pytest.approx(12.5)
 
 
 class TestGetStockNameByCode:

@@ -37,7 +37,7 @@ async def test_fetch_multiple_tickers_keeps_comma_unescaped(monkeypatch):
 def test_get_upbit_rate_limit_candles_wildcard_is_fixed():
     rate, period = upbit._get_upbit_rate_limit(upbit.UPBIT_CANDLES_RATE_LIMIT_KEY)
     assert rate == 10
-    assert period == 1.0
+    assert period == pytest.approx(1.0)
 
 
 @pytest.mark.parametrize(
@@ -115,7 +115,7 @@ async def test_request_json_uses_candles_wildcard_limiter_key(monkeypatch):
     assert captured["provider"] == "upbit"
     assert captured["api_key"] == upbit.UPBIT_CANDLES_RATE_LIMIT_KEY
     assert captured["rate"] == 10
-    assert captured["period"] == 1.0
+    assert captured["period"] == pytest.approx(1.0)
 
 
 @pytest.mark.asyncio

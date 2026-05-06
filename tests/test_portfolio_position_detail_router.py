@@ -223,7 +223,7 @@ def test_position_detail_indicators_api_returns_payload() -> None:
     response = client.get("/portfolio/api/positions/us/NVDA/indicators")
 
     assert response.status_code == 200
-    assert response.json()["indicators"]["rsi"]["14"] == 28.4
+    assert response.json()["indicators"]["rsi"]["14"] == pytest.approx(28.4)
 
 
 @pytest.mark.unit
@@ -252,8 +252,8 @@ def test_position_detail_orders_api_returns_payload() -> None:
     assert response.status_code == 200
     data = response.json()
     assert data["summary"]["pending_count"] == 1
-    assert data["recent_fills"][0]["amount"] == 455.5
-    assert data["pending_orders"][0]["remaining_quantity"] == 1.5
+    assert data["recent_fills"][0]["amount"] == pytest.approx(455.5)
+    assert data["pending_orders"][0]["remaining_quantity"] == pytest.approx(1.5)
 
 
 @pytest.mark.unit

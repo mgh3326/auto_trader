@@ -194,7 +194,9 @@ class TestFilterByMinAnalystBuy:
         from app.mcp_server.tooling.screening.common import _filter_by_min_analyst_buy
 
         stocks = [{"analyst_buy": 5}, {"analyst_buy": 1}]
-        assert _filter_by_min_analyst_buy(stocks, None) is stocks
+        # NOSONAR python:S5796 — intentionally testing object identity:
+        # function should return the same list (no copy) when threshold is None.
+        assert _filter_by_min_analyst_buy(stocks, None) is stocks  # NOSONAR
 
     def test_filters_below_threshold(self):
         from app.mcp_server.tooling.screening.common import _filter_by_min_analyst_buy

@@ -45,8 +45,8 @@ class TestTradeJournalModel:
             account="kis",
         )
         assert journal.strategy == "momentum"
-        assert journal.target_price == Decimal("200.00")
-        assert journal.stop_loss == Decimal("160.00")
+        assert journal.target_price == pytest.approx(Decimal("200.00"))
+        assert journal.stop_loss == pytest.approx(Decimal("160.00"))
         assert journal.min_hold_days == 14
         assert journal.indicators_snapshot == {"rsi_14": 42, "adx": 25}
 
