@@ -4,6 +4,7 @@ Helpers for fetching KIS holdings data.
 
 import logging
 
+from app.core.log_sanitize import safe_log_value
 from app.core.symbol import to_db_symbol
 from app.models.manual_holdings import MarketType
 from app.services.brokers.kis.client import KISClient
@@ -41,8 +42,8 @@ async def get_kis_holding_for_ticker(
     except Exception as exc:
         logger.warning(
             "Failed to fetch KIS holdings for %s (%s): %s",
-            normalized_ticker,
-            market_type.value,
+            safe_log_value(normalized_ticker),
+            safe_log_value(market_type.value),
             exc,
         )
 

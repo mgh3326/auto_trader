@@ -915,7 +915,8 @@ class TestKRXValuationCacheRecovery:
 
         assert isinstance(captured_cache_data, list)
         assert len(captured_cache_data) == 1
-        cached_entry = captured_cache_data[0]
+        # NOSONAR python:S5644 — closure-captured list, Sonar can't infer subscript
+        cached_entry = captured_cache_data[0]  # NOSONAR
         assert isinstance(cached_entry, dict)
         assert cached_entry["ISU_SRT_CD"] == "005930"
         assert cached_entry["per"] == 12.5
