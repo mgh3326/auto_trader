@@ -35,6 +35,7 @@ from app.routers import (
     news_radar,
     openclaw_callback,
     order_estimation,
+    order_previews,
     pending_orders,
     portfolio,
     portfolio_actions,
@@ -168,6 +169,7 @@ def create_app() -> FastAPI:
     app.include_router(openclaw_callback.router)
     app.include_router(user_defaults.router)
     app.include_router(order_estimation.router)
+    app.include_router(order_previews.router)
     app.include_router(symbol_settings.router)
     app.include_router(portfolio.router)
     app.include_router(ai_markdown.router)
