@@ -103,7 +103,7 @@ class TestContractConstants:
 
     def test_slippage_bps_constant(self):
         """Test that SLIPPAGE_BPS matches approved value."""
-        assert prepare.SLIPPAGE_BPS == 2.0
+        assert prepare.SLIPPAGE_BPS == pytest.approx(2.0)
 
     def test_lookback_bars_constant(self):
         """Test that LOOKBACK_BARS matches approved value."""
@@ -145,7 +145,7 @@ class TestContractDataclasses:
             weight=0.5,
             reason="RSI oversold",
         )
-        assert signal.weight == 0.5
+        assert signal.weight == pytest.approx(0.5)
         assert signal.reason == "RSI oversold"
 
     def test_portfolio_state_has_equity_and_date(self):
@@ -159,7 +159,7 @@ class TestContractDataclasses:
             date="2025-04-01",
             trade_log=[],
         )
-        assert state.equity == 150000.0
+        assert state.equity == pytest.approx(150000.0)
         assert state.date == "2025-04-01"
 
     def test_backtest_result_has_win_rate_pct_and_backtest_seconds(self):
@@ -177,8 +177,8 @@ class TestContractDataclasses:
             equity_curve=[100000.0, 105000.0],
             equity_dates=["2025-04-01", "2025-04-02"],
         )
-        assert result.win_rate_pct == 0.6
-        assert result.backtest_seconds == 1.23
+        assert result.win_rate_pct == pytest.approx(0.6)
+        assert result.backtest_seconds == pytest.approx(1.23)
         assert result.equity_dates == ["2025-04-01", "2025-04-02"]
 
 
@@ -511,8 +511,8 @@ class TestFeeAwarePnL:
 
         assert result.num_trades == 2
         assert result.trade_log[1]["realized_pnl"] < 0
-        assert result.win_rate_pct == 0.0
-        assert result.profit_factor == 0.0
+        assert result.win_rate_pct == pytest.approx(0.0)
+        assert result.profit_factor == pytest.approx(0.0)
 
     def test_buy_fee_affects_cost_basis(self, tmp_path, monkeypatch):
         """Test that buy-side fees affect the eventual realized PnL."""
@@ -684,7 +684,7 @@ class TestExecutionCosts:
         trade = result.trade_log[0]
         cost = trade["price"] * trade["quantity"]
         weight = cost / initial_value
-        assert pytest.approx(weight, abs=0.05) == 0.5
+        assert pytest.approx(weight, abs=0.05) == pytest.approx(0.5)
 
     def test_partial_sell_sizing(self):
         """Test partial sell sizing using weight as fraction of position."""
@@ -921,7 +921,7 @@ class TestRunBacktest:
         result = prepare.run_backtest(data, strategy)
 
         assert len(result.equity_curve) == 4  # Initial + 3 days
-        assert result.equity_curve[0] == 10_000_000.0  # Initial capital
+        assert result.equity_curve[0] == pytest.approx(10_000_000.0)  # Initial capital
         assert result.equity_dates == [
             "2025-04-01",
             "2025-04-01",
@@ -1317,8 +1317,8 @@ class TestCVResult:
             min_score=0.5,
             cv_score=0.855,
         )
-        assert result.mean_score == 1.167
-        assert result.cv_score == 0.855
+        assert result.mean_score == pytest.approx(1.167)
+        assert result.cv_score == pytest.approx(0.855)
         assert len(result.fold_scores) == 3
         assert result.fold_indices == [0, 1, 2]
 
@@ -1392,7 +1392,7 @@ class TestCrossValidate:
                 return []
 
         result = prepare.cross_validate(DummyStrategy, folds=empty_folds)
-        assert result.cv_score == -999.0
+        assert result.cv_score == pytest.approx(-999.0)
         assert result.fold_scores == []
         assert result.fold_indices == []
 

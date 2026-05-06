@@ -220,7 +220,7 @@ def test_stale_quote_warning_still_classifies() -> None:
 def test_decision_support_includes_gap_and_signed_distance() -> None:
     item = reconcile_pending_order(_order(), _ctx_with_quote("68000"))
     ds = item.decision_support
-    assert ds["current_price"] == Decimal("68000")
+    assert ds["current_price"] == pytest.approx(Decimal("68000"))
     assert ds["gap_pct"] is not None
     assert ds["signed_distance_to_fill"] is not None
 

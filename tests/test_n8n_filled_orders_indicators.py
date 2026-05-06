@@ -177,7 +177,7 @@ class TestEnrichWithIndicators:
         ):
             result = await _enrich_with_indicators(orders)
 
-        assert result[0]["indicators"]["rsi_14"] == 42.0
+        assert result[0]["indicators"]["rsi_14"] == pytest.approx(42.0)
         assert result[0]["indicators"]["fear_greed"] == 25
         assert result[1]["indicators"]["fear_greed"] == 25
 
@@ -371,8 +371,8 @@ class TestEnrichWithIndicators:
             call("KRW-BTC", "crypto"),
             call("USDT-BTC", "crypto"),
         ]
-        assert result[0]["indicators"]["rsi_14"] == 10.0
-        assert result[1]["indicators"]["rsi_14"] == 20.0
+        assert result[0]["indicators"]["rsi_14"] == pytest.approx(10.0)
+        assert result[1]["indicators"]["rsi_14"] == pytest.approx(20.0)
 
 
 @pytest.mark.unit
@@ -418,7 +418,7 @@ class TestFilledOrderSchema:
             indicators=indicators,
         )
         assert item.indicators is not None
-        assert item.indicators.rsi_14 == 42.3
+        assert item.indicators.rsi_14 == pytest.approx(42.3)
 
 
 @pytest.mark.unit

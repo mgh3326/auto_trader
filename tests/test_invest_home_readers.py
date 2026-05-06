@@ -139,8 +139,8 @@ async def test_kis_reader_overseas_margin_fallback(
 
     account = result.accounts[0]
     # Fallback should have picked up 50.0 and 40.0
-    assert account.cashBalances.usd == 50.0
-    assert account.buyingPower.usd == 40.0
+    assert account.cashBalances.usd == pytest.approx(50.0)
+    assert account.buyingPower.usd == pytest.approx(40.0)
 
 
 @pytest.mark.asyncio
@@ -189,8 +189,8 @@ async def test_kis_reader_overseas_margin_fallback_without_us_holdings(
     result = await readers.KISHomeReader(db=None).fetch(user_id=1)  # type: ignore[arg-type]
 
     account = result.accounts[0]
-    assert account.cashBalances.usd == 49.25
-    assert account.buyingPower.usd == 49.25
+    assert account.cashBalances.usd == pytest.approx(49.25)
+    assert account.buyingPower.usd == pytest.approx(49.25)
     assert result.warning is None
 
 
@@ -408,8 +408,8 @@ async def test_manual_reader_valuates_with_quote_service(
 
     h = result.holdings[0]
     assert h.symbol == "005930"
-    assert h.valueKrw == 720_000.0
-    assert h.pnlKrw == 20_000.0
+    assert h.valueKrw == pytest.approx(720_000.0)
+    assert h.pnlKrw == pytest.approx(20_000.0)
     assert h.priceState == "live"
     assert result.warning is None
 

@@ -388,10 +388,10 @@ class TestTossNotificationData:
 
         assert data.kis_quantity is None
         assert data.kis_avg_price is None
-        assert data.recommended_price == 0.0
+        assert data.recommended_price == pytest.approx(0.0)
         assert data.recommended_quantity == 1
-        assert data.expected_profit == 0.0
-        assert data.profit_percent == 0.0
+        assert data.expected_profit == pytest.approx(0.0)
+        assert data.profit_percent == pytest.approx(0.0)
         assert data.currency == "원"
         assert data.market_type == "국내주식"
 
@@ -936,8 +936,8 @@ class TestIntegrationScenarios:
         )
         assert call_kwargs["toss_quantity"] == 10
         assert call_kwargs["kis_quantity"] == 5
-        assert call_kwargs["toss_avg_price"] == 52000.0
-        assert call_kwargs["kis_avg_price"] == 48000.0
+        assert call_kwargs["toss_avg_price"] == pytest.approx(52000.0)
+        assert call_kwargs["kis_avg_price"] == pytest.approx(48000.0)
 
     @pytest.mark.asyncio
     async def test_scenario_kis_only_no_notification(
@@ -1013,6 +1013,6 @@ class TestIntegrationScenarios:
             mock_trade_notifier.notify_toss_sell_recommendation.call_args.kwargs
         )
         # Expected profit: (55000 - 50000) / 50000 * 100 = 10%
-        assert call_kwargs["profit_percent"] == 10.0
+        assert call_kwargs["profit_percent"] == pytest.approx(10.0)
         # Expected amount: (55000 - 50000) * 5 = 25000
-        assert call_kwargs["expected_profit"] == 25000.0
+        assert call_kwargs["expected_profit"] == pytest.approx(25000.0)

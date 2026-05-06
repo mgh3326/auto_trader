@@ -52,10 +52,10 @@ async def test_get_latest_journal_snapshot_adds_distance_fields(monkeypatch):
 
     assert result is not None
     assert result["symbol"] == "AAPL"
-    assert result["target_price"] == 110.0
-    assert result["stop_loss"] == 90.0
-    assert result["target_distance_pct"] == 10.0
-    assert result["stop_distance_pct"] == -10.0
+    assert result["target_price"] == pytest.approx(110.0)
+    assert result["stop_loss"] == pytest.approx(90.0)
+    assert result["target_distance_pct"] == pytest.approx(10.0)
+    assert result["stop_distance_pct"] == pytest.approx(-10.0)
 
 
 @pytest.mark.asyncio
@@ -141,24 +141,24 @@ async def test_get_cash_snapshot_maps_available_capital_to_dashboard_shape(monke
 
     assert accounts["kis_krw"]["broker"] == "kis"
     assert accounts["kis_krw"]["currency"] == "KRW"
-    assert accounts["kis_krw"]["balance"] == 1000000.0
-    assert accounts["kis_krw"]["orderable"] == 900000.0
+    assert accounts["kis_krw"]["balance"] == pytest.approx(1000000.0)
+    assert accounts["kis_krw"]["orderable"] == pytest.approx(900000.0)
 
     assert accounts["kis_usd"]["broker"] == "kis"
     assert accounts["kis_usd"]["currency"] == "USD"
-    assert accounts["kis_usd"]["balance"] == 1000.0
-    assert accounts["kis_usd"]["orderable"] == 900.0
+    assert accounts["kis_usd"]["balance"] == pytest.approx(1000.0)
+    assert accounts["kis_usd"]["orderable"] == pytest.approx(900.0)
 
     assert accounts["upbit_krw"]["broker"] == "upbit"
     assert accounts["upbit_krw"]["currency"] == "KRW"
-    assert accounts["upbit_krw"]["balance"] == 500000.0
+    assert accounts["upbit_krw"]["balance"] == pytest.approx(500000.0)
 
-    assert result["manual_cash"]["amount"] == 1000000.0
+    assert result["manual_cash"]["amount"] == pytest.approx(1000000.0)
     assert result["manual_cash"]["updated_at"] == "2026-04-01T00:00:00+00:00"
     assert result["manual_cash"]["stale_warning"] is False
 
-    assert result["summary"]["total_available_krw"] == 3570000.0
-    assert result["summary"]["exchange_rate_usd_krw"] == 1300.0
+    assert result["summary"]["total_available_krw"] == pytest.approx(3570000.0)
+    assert result["summary"]["exchange_rate_usd_krw"] == pytest.approx(1300.0)
     assert "as_of" in result["summary"]
 
 
@@ -297,8 +297,8 @@ async def test_get_journals_batch_returns_latest_active_or_draft_per_symbol() ->
 
     assert sorted(result) == ["AAPL", "MSFT"]
     assert result["AAPL"]["strategy"] == "trend"
-    assert result["AAPL"]["target_price"] == 170.0
-    assert result["MSFT"]["target_price"] == 330.0
+    assert result["AAPL"]["target_price"] == pytest.approx(170.0)
+    assert result["MSFT"]["target_price"] == pytest.approx(330.0)
 
 
 @pytest.mark.asyncio

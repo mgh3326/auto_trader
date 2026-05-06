@@ -643,7 +643,7 @@ class TestUpdateTradeJournal:
 
         assert result["success"] is True
         assert journal.status == "closed"
-        assert journal.exit_price == Decimal("200.0")
+        assert journal.exit_price == pytest.approx(Decimal("200.0"))
         assert journal.exit_reason == "target_reached"
         assert journal.exit_date is not None
         # pnl_pct = (200 / 175.5 - 1) * 100 ≈ 13.96
@@ -1079,7 +1079,7 @@ class TestCloseJournalsOnSell:
             )
 
         assert first.status == "closed"
-        assert first.exit_price == Decimal("130.0")
+        assert first.exit_price == pytest.approx(Decimal("130.0"))
         assert second.status == "active"
         assert second.exit_price is None
         assert result == {
@@ -1133,7 +1133,7 @@ class TestCloseJournalsOnSell:
         assert null_qty_journal.exit_reason == "sold_via_place_order"
         assert result["journals_closed"] == 1
         # No weighted PnL since quantity is None
-        assert result["total_pnl_pct"] == 0.0
+        assert result["total_pnl_pct"] == pytest.approx(0.0)
 
     @pytest.mark.asyncio
     async def test_close_journals_on_sell_fully_consumes_multiple(self) -> None:

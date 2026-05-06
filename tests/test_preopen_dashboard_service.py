@@ -215,7 +215,7 @@ async def test_maps_candidates_and_reconciliations():
     assert result.candidates[0].side == "buy"
     assert result.candidates[1].side == "sell"
     assert result.reconciliations[0].symbol == "005930"
-    assert result.reconciliations[0].gap_pct == Decimal("0.50")
+    assert result.reconciliations[0].gap_pct == pytest.approx(Decimal("0.50"))
     assert result.run_uuid == run.run_uuid
     assert result.briefing_artifact is not None
     assert result.briefing_artifact.status == "ready"

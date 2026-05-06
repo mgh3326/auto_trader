@@ -329,8 +329,8 @@ async def test_screen_us_queries_and_maps_optional_analyst_fields(
     assert result["stocks"][0]["analyst_buy"] == 22
     assert result["stocks"][0]["analyst_hold"] == 14
     assert result["stocks"][0]["analyst_sell"] == 2
-    assert result["stocks"][0]["avg_target"] == 205.0
-    assert result["stocks"][0]["upside_pct"] == 16.81
+    assert result["stocks"][0]["avg_target"] == pytest.approx(205.0)
+    assert result["stocks"][0]["upside_pct"] == pytest.approx(16.81)
 
 
 @pytest.mark.asyncio
@@ -414,9 +414,9 @@ async def test_screen_kr_joins_requested_submarket_and_valuation_data(
     stock = result["stocks"][0]
     assert stock["market"] == "KOSPI"
     assert stock["market_cap"] == 4800000
-    assert stock["per"] == 12.5
-    assert stock["pbr"] == 1.2
-    assert stock["dividend_yield"] == 0.0256
+    assert stock["per"] == pytest.approx(12.5)
+    assert stock["pbr"] == pytest.approx(1.2)
+    assert stock["dividend_yield"] == pytest.approx(0.0256)
 
 
 @pytest.mark.asyncio
@@ -502,9 +502,9 @@ async def test_screen_us_adds_valuation_filters_and_applies_missing_value_backst
     ]
     assert result["count"] == 1
     assert [stock["symbol"] for stock in result["stocks"]] == ["AAPL"]
-    assert result["stocks"][0]["market_cap"] == 2_800_000_000_000.0
-    assert result["stocks"][0]["per"] == 28.5
-    assert result["stocks"][0]["dividend_yield"] == 0.005
+    assert result["stocks"][0]["market_cap"] == pytest.approx(2_800_000_000_000.0)
+    assert result["stocks"][0]["per"] == pytest.approx(28.5)
+    assert result["stocks"][0]["dividend_yield"] == pytest.approx(0.005)
 
 
 @pytest.mark.asyncio
@@ -544,7 +544,7 @@ async def test_screen_us_drops_rows_without_usable_price(
 
     assert result["count"] == 1
     assert [stock["symbol"] for stock in result["stocks"]] == ["AAPL"]
-    assert result["stocks"][0]["price"] == 175.5
+    assert result["stocks"][0]["price"] == pytest.approx(175.5)
 
 
 @pytest.mark.asyncio

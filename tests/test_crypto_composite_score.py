@@ -685,8 +685,8 @@ class TestCryptoScreenStocksTvScreenerContract:
 
         item = result["results"][0]
         assert item["name"] == "비트코인"
-        assert item["trade_amount_24h"] == 900_000_000_000.0
-        assert item["volume_24h"] == 10_000.0
+        assert item["trade_amount_24h"] == pytest.approx(900_000_000_000.0)
+        assert item["volume_24h"] == pytest.approx(10_000.0)
         assert "rsi_bucket" in item
         assert "volume_ratio" in item
         assert "candle_type" in item

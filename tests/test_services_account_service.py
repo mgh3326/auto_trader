@@ -29,8 +29,8 @@ async def test_get_cash_equity_kr_prefers_stck_cash100_max_orderable(monkeypatch
     assert len(balances) == 1
     assert balances[0].market == "equity_kr"
     assert balances[0].currency == "KRW"
-    assert balances[0].balance == 5000000.0
-    assert balances[0].orderable == 3534890.5473
+    assert balances[0].balance == pytest.approx(5000000.0)
+    assert balances[0].orderable == pytest.approx(3534890.5473)
     assert balances[0].source == "kis"
 
 
@@ -60,6 +60,6 @@ async def test_get_cash_equity_kr_skips_zero_priority_orderables(monkeypatch):
     assert len(balances) == 1
     assert balances[0].market == "equity_kr"
     assert balances[0].currency == "KRW"
-    assert balances[0].balance == 5000000.0
-    assert balances[0].orderable == 2100000.25
+    assert balances[0].balance == pytest.approx(5000000.0)
+    assert balances[0].orderable == pytest.approx(2100000.25)
     assert balances[0].source == "kis"

@@ -163,7 +163,7 @@ class TestExchangeRateService:
 
         rate = await service.get_usd_krw_rate()
 
-        assert rate == 1350.5
+        assert rate == pytest.approx(1350.5)
         assert calls == [
             {"url": "https://open.er-api.com/v6/latest/USD", "timeout": 10}
         ]
@@ -188,7 +188,7 @@ class TestExchangeRateService:
 
         rate = await service.get_usd_krw_rate()
 
-        assert rate == 1400.0
+        assert rate == pytest.approx(1400.0)
 
     @pytest.mark.asyncio
     async def test_refetches_after_ttl_expires(
@@ -224,9 +224,9 @@ class TestExchangeRateService:
 
         rate = await service.get_usd_krw_rate()
 
-        assert rate == 1412.25
+        assert rate == pytest.approx(1412.25)
         assert calls == ["https://open.er-api.com/v6/latest/USD"]
-        assert service._cache["usd_krw"]["rate"] == 1412.25
+        assert service._cache["usd_krw"]["rate"] == pytest.approx(1412.25)
         assert service._cache["usd_krw"]["expires_at"] > 0
 
     @pytest.mark.asyncio
@@ -515,7 +515,7 @@ class TestN8nPendingOrdersService:
                 market="crypto", include_current_price=True
             )
 
-        assert result["orders"][0]["gap_pct"] == 5.0
+        assert result["orders"][0]["gap_pct"] == pytest.approx(5.0)
 
     @pytest.mark.asyncio
     async def test_age_hours_and_days(self) -> None:
@@ -651,7 +651,7 @@ class TestN8nPendingOrdersService:
         ):
             result = await fetch_pending_orders(market="us", include_current_price=True)
 
-        assert result["orders"][0]["amount_krw"] == 280_000.0
+        assert result["orders"][0]["amount_krw"] == pytest.approx(280_000.0)
 
     @pytest.mark.asyncio
     async def test_exchange_rate_failure_preserves_us_order_and_records_error(
@@ -725,8 +725,8 @@ class TestN8nPendingOrdersService:
         assert summary["total"] == 2
         assert summary["buy_count"] == 1
         assert summary["sell_count"] == 1
-        assert summary["total_buy_krw"] == 0.0
-        assert summary["total_sell_krw"] == 60_000.0
+        assert summary["total_buy_krw"] == pytest.approx(0.0)
+        assert summary["total_sell_krw"] == pytest.approx(60_000.0)
 
     @pytest.mark.asyncio
     async def test_min_amount_keeps_us_orders_with_null_amount_krw(self) -> None:
@@ -812,8 +812,8 @@ class TestN8nPendingOrdersService:
         assert summary["total"] == 2
         assert summary["buy_count"] == 1
         assert summary["sell_count"] == 1
-        assert summary["total_buy_krw"] == 50_000.0
-        assert summary["total_sell_krw"] == 60_000.0
+        assert summary["total_buy_krw"] == pytest.approx(50_000.0)
+        assert summary["total_sell_krw"] == pytest.approx(60_000.0)
 
     @pytest.mark.asyncio
     async def test_side_filter_passthrough(self) -> None:
@@ -1097,7 +1097,7 @@ class TestN8nPendingOrdersEndpoint:
             )
 
         assert mock_service.call_args.kwargs["market"] == "crypto"
-        assert mock_service.call_args.kwargs["min_amount"] == 10.0
+        assert mock_service.call_args.kwargs["min_amount"] == pytest.approx(10.0)
         assert mock_service.call_args.kwargs["include_current_price"] is False
         assert mock_service.call_args.kwargs["side"] is None
         assert mock_service.call_args.kwargs["as_of"].microsecond == 0
@@ -1265,9 +1265,9 @@ class TestN8nPendingOrdersEndpoint:
         assert data["summary"]["title"].startswith("📋")
 
         # Backward compatibility: raw fields still present
-        assert order["order_price"] == 70000.0
-        assert order["gap_pct"] == 1.43
-        assert data["summary"]["total_buy_krw"] == 700000.0
+        assert order["order_price"] == pytest.approx(70000.0)
+        assert order["gap_pct"] == pytest.approx(1.43)
+        assert data["summary"]["total_buy_krw"] == pytest.approx(700000.0)
 
 
 class TestN8nKrMorningReportEndpoint:

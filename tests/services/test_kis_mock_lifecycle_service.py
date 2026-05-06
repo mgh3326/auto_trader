@@ -130,7 +130,7 @@ async def test_record_holdings_baseline(
         ledger_id=seeded_ledger_id, baseline_qty=Decimal("3")
     )
     row = await db_session.get(KISMockOrderLedger, seeded_ledger_id)
-    assert row.holdings_baseline_qty == Decimal("3")
+    assert row.holdings_baseline_qty == pytest.approx(Decimal("3"))
 
 
 @pytest.mark.asyncio

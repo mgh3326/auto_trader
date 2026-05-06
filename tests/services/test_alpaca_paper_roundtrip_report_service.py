@@ -235,11 +235,11 @@ async def test_build_report_by_correlation_returns_complete_read_only_report():
     assert report.qa_result.briefing_artifact_run_uuid == str(_BRIEFING_UUID)
     assert report.approval_packet.preview_payload == {"symbol": "BTCUSD", "side": "buy"}
     assert report.buy_leg is not None
-    assert report.buy_leg.fill.filled_qty == Decimal("0.001")
+    assert report.buy_leg.fill.filled_qty == pytest.approx(Decimal("0.001"))
     assert report.sell_leg is not None
-    assert report.sell_leg.fill.filled_avg_price == Decimal("51000")
+    assert report.sell_leg.fill.filled_avg_price == pytest.approx(Decimal("51000"))
     assert report.final_position.source == "ledger_snapshot"
-    assert report.final_position.qty == Decimal("0")
+    assert report.final_position.qty == pytest.approx(Decimal("0"))
     assert report.open_orders.source == "missing"
     assert report.anomalies.should_block is False
     assert report.safety.read_only is True

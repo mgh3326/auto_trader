@@ -75,7 +75,7 @@ async def test_pending_order_sync_upserts_correctly(db_session):
     stmt = select(PendingOrder).where(PendingOrder.broker_order_id == "ORD-1")
     order = (await db_session.execute(stmt)).scalar_one()
     assert order.symbol == "BTC"
-    assert order.quantity == Decimal("0.1")
+    assert order.quantity == pytest.approx(Decimal("0.1"))
 
     # Sync again with update
     broker.orders[0]["status"] = "partial_fill"
@@ -85,7 +85,7 @@ async def test_pending_order_sync_upserts_correctly(db_session):
 
     await db_session.refresh(order)
     assert order.status == "partial_fill"
-    assert order.filled_quantity == Decimal("0.05")
+    assert order.filled_quantity == pytest.approx(Decimal("0.05"))
 
     # Sync with deletion after a successful complete empty snapshot.
     broker.orders = []

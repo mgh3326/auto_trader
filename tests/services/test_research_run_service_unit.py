@@ -170,7 +170,7 @@ async def test_attach_pending_reconciliations_json_safes_decision_support() -> N
     )
 
     assert items[0].id == 1
-    assert items[0].gap_pct == Decimal("0.20")
+    assert items[0].gap_pct == pytest.approx(Decimal("0.20"))
     assert items[0].decision_support == {"current_price": "70140"}
 
 

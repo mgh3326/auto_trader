@@ -3,6 +3,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 # Add backtest directory to path for imports
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "backtest"))
 
@@ -28,7 +30,7 @@ def test_get_best_cv_score_reads_only_keep_rows(tmp_path: Path) -> None:
         ],
     )
 
-    assert orchestrator.get_best_cv_score(results_path) == 4.4
+    assert orchestrator.get_best_cv_score(results_path) == pytest.approx(4.4)
 
 
 def test_read_last_result_row_returns_latest_entry(tmp_path: Path) -> None:
@@ -45,7 +47,7 @@ def test_read_last_result_row_returns_latest_entry(tmp_path: Path) -> None:
 
     assert result is not None
     assert result.experiment == "exp11"
-    assert result.cv_score == 4.3
+    assert result.cv_score == pytest.approx(4.3)
     assert result.status == "revert"
     assert result.description == "beta"
 
@@ -65,7 +67,7 @@ def test_read_best_result_row_returns_top_kept_entry(tmp_path: Path) -> None:
 
     assert result is not None
     assert result.experiment == "exp12"
-    assert result.cv_score == 4.5
+    assert result.cv_score == pytest.approx(4.5)
     assert result.status == "kept"
     assert result.description == "gamma"
 

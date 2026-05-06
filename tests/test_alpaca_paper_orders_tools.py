@@ -34,8 +34,8 @@ def test_module_exposes_expected_surface() -> None:
     assert callable(_orders_mod.set_alpaca_paper_orders_service_factory)
     assert callable(_orders_mod.reset_alpaca_paper_orders_service_factory)
     assert callable(_orders_mod.register_alpaca_paper_orders_tools)
-    assert _orders_mod.SUBMIT_MAX_QTY == Decimal("5")
-    assert _orders_mod.SUBMIT_MAX_NOTIONAL_USD == Decimal("1000")
+    assert _orders_mod.SUBMIT_MAX_QTY == pytest.approx(Decimal("5"))
+    assert _orders_mod.SUBMIT_MAX_NOTIONAL_USD == pytest.approx(Decimal("1000"))
 
 
 class FakeOrdersService(FakeAlpacaPaperService):
@@ -125,8 +125,8 @@ async def test_submit_with_confirm_calls_service_once(
     assert len(submit_calls) == 1
     sent = submit_calls[0][1]["request"]
     assert sent.symbol == "AAPL"
-    assert sent.qty == Decimal("1")
-    assert sent.limit_price == Decimal("1.00")
+    assert sent.qty == pytest.approx(Decimal("1"))
+    assert sent.limit_price == pytest.approx(Decimal("1.00"))
     assert sent.client_order_id.startswith("rob73-")
 
 
@@ -212,8 +212,8 @@ async def test_crypto_submit_with_confirm_calls_service_once(
         "request"
     ]
     assert sent.symbol == "BTC/USD"
-    assert sent.notional == Decimal("10")
-    assert sent.limit_price == Decimal("50000")
+    assert sent.notional == pytest.approx(Decimal("10"))
+    assert sent.limit_price == pytest.approx(Decimal("50000"))
     assert sent.side == "buy"
     assert sent.type == "limit"
     assert sent.time_in_force == "gtc"

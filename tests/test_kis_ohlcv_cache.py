@@ -171,7 +171,7 @@ async def test_get_candles_refreshes_when_cached_rows_are_stale(monkeypatch):
     raw_fetcher.assert_awaited_once_with(2)
     assert len(result) == 2
     assert result["date"].max() == fresh["date"].max()
-    assert result.iloc[-1]["close"] == 201.5
+    assert result.iloc[-1]["close"] == pytest.approx(201.5)
 
 
 @pytest.mark.asyncio

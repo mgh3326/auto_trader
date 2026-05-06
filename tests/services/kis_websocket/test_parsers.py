@@ -37,8 +37,8 @@ def test_parse_overseas_execution(client):
 
     assert result is not None
     assert result["symbol"] == "AAPL"
-    assert result["filled_qty"] == 5.0
-    assert result["filled_price"] == 150.25
+    assert result["filled_qty"] == pytest.approx(5.0)
+    assert result["filled_price"] == pytest.approx(150.25)
     assert result["market"] == "us"
 
 
@@ -154,10 +154,10 @@ class TestH0GSCNI0SyntheticContract:
         assert result["market"] == "us"
         assert result["symbol"] == "TSLA"
         assert result["side"] == "bid"
-        assert result["filled_qty"] == 10.0
-        assert result["filled_price"] == 248.50
-        assert result["filled_amount"] == 2485.0
-        assert result["order_qty"] == 10.0
+        assert result["filled_qty"] == pytest.approx(10.0)
+        assert result["filled_price"] == pytest.approx(248.50)
+        assert result["filled_amount"] == pytest.approx(2485.0)
+        assert result["order_qty"] == pytest.approx(10.0)
         assert result["currency"] == "USD"
         assert result["execution_status"] == "filled"
         assert client._is_execution_event(result) is True
@@ -176,9 +176,9 @@ class TestH0GSCNI0SyntheticContract:
         assert result is not None
         assert result["symbol"] == "AAPL"
         assert result["side"] == "ask"
-        assert result["filled_qty"] == 5.0
-        assert result["filled_price"] == 175.25
-        assert result["order_qty"] == 10.0
+        assert result["filled_qty"] == pytest.approx(5.0)
+        assert result["filled_price"] == pytest.approx(175.25)
+        assert result["order_qty"] == pytest.approx(10.0)
         assert result["currency"] == "USD"
         assert result["execution_status"] == "partial"
         assert client._is_execution_event(result) is True

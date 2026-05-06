@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 # Add backtest directory to path for imports
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "backtest"))
@@ -286,7 +287,7 @@ class TestIndicatorHelpers:
         volumes = np.array([1000.0] * 20 + [2000.0])
         avg_vol = indicators._calc_average_volume(volumes, lookback=20)
         assert avg_vol is not None
-        assert avg_vol == 1050.0  # Average of 20 1000s and 1 2000
+        assert avg_vol == pytest.approx(1050.0)  # Average of 20 1000s and 1 2000
 
     def test_calc_average_volume_insufficient_history_returns_none(self):
         """Test average volume returns None with insufficient history."""
@@ -1165,12 +1166,12 @@ class TestParamsConfig:
         assert strategy.PARAMS["rsi_period_slow"] == 14
         assert strategy.PARAMS["rsi_oversold"] == 30
         assert strategy.PARAMS["rsi_exit"] == 55
-        assert strategy.PARAMS["bb_std"] == 1.5
+        assert strategy.PARAMS["bb_std"] == pytest.approx(1.5)
         assert strategy.PARAMS["min_votes"] == 4
         assert strategy.PARAMS["min_weighted_buy_votes"] == 4
         assert strategy.PARAMS["min_sell_votes"] == 2
         assert strategy.PARAMS["max_positions"] == 5
-        assert strategy.PARAMS["position_size"] == 0.10
+        assert strategy.PARAMS["position_size"] == pytest.approx(0.10)
 
     def test_min_history_bars_calculation(self):
         """Test MIN_HISTORY_BARS matches the prior warmup requirement."""
@@ -1271,8 +1272,8 @@ class TestSignalRegistry:
             momentum=2.0,
             avg_volume=1100.0,
         )
-        assert ctx.rsi_slow == 28.0
-        assert ctx.current_close == 102.0
+        assert ctx.rsi_slow == pytest.approx(28.0)
+        assert ctx.current_close == pytest.approx(102.0)
 
 
 class TestStrategyContractFreezing:
@@ -1416,7 +1417,7 @@ class TestStrategyContractFreezing:
         assert len(buy_signals) == 1
         # Strong reversion should use 0.15 weight
         assert buy_signals[0].weight == strategy.STRONG_REVERSION_POSITION_SIZE
-        assert buy_signals[0].weight == 0.15
+        assert buy_signals[0].weight == pytest.approx(0.15)
 
     def test_symbol_specific_weight_btc_hot_stall_trend(self, monkeypatch):
         """Test BTC hot-stall trend position size."""
@@ -1464,7 +1465,7 @@ class TestStrategyContractFreezing:
         assert len(buy_signals) == 1
         # BTC hot-stall trend should use 0.0025 weight
         assert buy_signals[0].weight == strategy.BTC_HOT_STALL_TREND_POSITION_SIZE
-        assert buy_signals[0].weight == 0.0025
+        assert buy_signals[0].weight == pytest.approx(0.0025)
 
     def test_symbol_specific_weight_dot_mild_reversion(self, monkeypatch):
         """Test DOT mild reversion position size."""
@@ -1514,7 +1515,7 @@ class TestStrategyContractFreezing:
         assert len(buy_signals) == 1
         # DOT mild reversion should use 0.00015625 weight
         assert buy_signals[0].weight == strategy.DOT_MILD_REVERSION_POSITION_SIZE
-        assert buy_signals[0].weight == 0.00015625
+        assert buy_signals[0].weight == pytest.approx(0.00015625)
 
     def test_symbol_specific_weight_avax_pure_trend(self, monkeypatch):
         """Test AVAX pure trend position size."""
@@ -1562,7 +1563,7 @@ class TestStrategyContractFreezing:
         assert len(buy_signals) == 1
         # AVAX pure trend should use 0.04 weight
         assert buy_signals[0].weight == strategy.AVAX_TREND_POSITION_SIZE
-        assert buy_signals[0].weight == 0.04
+        assert buy_signals[0].weight == pytest.approx(0.04)
 
     def test_buy_uses_symbol_weight_resolver(self, monkeypatch):
         """Test that on_bar delegates final buy sizing to _resolve_symbol_buy_weight."""
@@ -1609,7 +1610,7 @@ class TestStrategyContractFreezing:
         buy_signals = [s for s in signals if s.action == "buy"]
 
         assert len(buy_signals) == 1
-        assert buy_signals[0].weight == 0.123
+        assert buy_signals[0].weight == pytest.approx(0.123)
 
     def test_cooldown_blocks_reentry_after_stop_loss(self, monkeypatch):
         """Test that cooldown blocks re-entry after stop-loss exit."""

@@ -46,8 +46,8 @@ def test_serialize_account_basic_fields() -> None:
     out = _serialize_account(acc)
     assert out["id"] == 1
     assert out["name"] == "default"
-    assert out["initial_capital"] == 100_000_000.0
-    assert out["cash_krw"] == 95_000_000.0
+    assert out["initial_capital"] == pytest.approx(100_000_000.0)
+    assert out["cash_krw"] == pytest.approx(95_000_000.0)
     assert out["cash_usd"] == pytest.approx(0.0)
     assert out["strategy_name"] is None
     assert out["created_at"] == "2026-04-13T10:00:00+00:00"
@@ -66,7 +66,7 @@ def test_serialize_account_with_summary() -> None:
         total_pnl_pct=Decimal("-1.50"),
     )
     assert out["positions_count"] == 3
-    assert out["total_evaluated_krw"] == 98_500_000.0
+    assert out["total_evaluated_krw"] == pytest.approx(98_500_000.0)
     assert out["total_pnl_pct"] == pytest.approx(-1.5)
 
 
@@ -129,8 +129,8 @@ async def test_create_paper_account_success(monkeypatch) -> None:
     assert result["success"] is True
     assert result["account"]["id"] == 42
     assert result["account"]["name"] == "bot-1"
-    assert result["account"]["initial_capital"] == 50_000_000.0
-    assert result["account"]["cash_krw"] == 50_000_000.0
+    assert result["account"]["initial_capital"] == pytest.approx(50_000_000.0)
+    assert result["account"]["cash_krw"] == pytest.approx(50_000_000.0)
     assert result["account"]["description"] == "test"
 
 
@@ -263,7 +263,7 @@ async def test_list_paper_accounts_returns_enriched(monkeypatch) -> None:
     first = result["accounts"][0]
     assert first["id"] == 1
     assert first["positions_count"] == 3
-    assert first["total_evaluated_krw"] == 98_500_000.0
+    assert first["total_evaluated_krw"] == pytest.approx(98_500_000.0)
     assert first["total_pnl_pct"] == pytest.approx(-1.5)
     second = result["accounts"][1]
     assert second["id"] == 2
@@ -317,7 +317,7 @@ async def test_reset_paper_account_success(monkeypatch) -> None:
     svc.reset_account.assert_awaited_once_with(7)
     assert result["success"] is True
     assert result["account"]["id"] == 7
-    assert result["account"]["cash_krw"] == 100_000_000.0
+    assert result["account"]["cash_krw"] == pytest.approx(100_000_000.0)
 
 
 @pytest.mark.asyncio

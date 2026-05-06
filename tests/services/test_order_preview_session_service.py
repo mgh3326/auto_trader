@@ -187,7 +187,7 @@ async def test_refresh_recomputes_dry_run(db_session) -> None:
         "legs": [{"leg_index": 0, "estimated_value": "200", "estimated_fee": "0.2"}],
     }
     refreshed = await service.refresh_preview(user_id=1, preview_uuid=out.preview_uuid)
-    assert refreshed.legs[0].estimated_value == Decimal("200")
+    assert refreshed.legs[0].estimated_value == pytest.approx(Decimal("200"))
 
 
 @pytest.mark.unit

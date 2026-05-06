@@ -382,8 +382,8 @@ async def test_collect_paper_cash_balances_all_accounts(monkeypatch):
     d_krw = next(
         r for r in rows if r["account"] == "paper:default" and r["currency"] == "KRW"
     )
-    assert d_krw["balance"] == 10_000_000.0
-    assert d_krw["orderable"] == 10_000_000.0
+    assert d_krw["balance"] == pytest.approx(10_000_000.0)
+    assert d_krw["orderable"] == pytest.approx(10_000_000.0)
     assert d_krw["broker"] == "paper"
     assert d_krw["formatted"] == "10,000,000 KRW"
     d_usd = next(

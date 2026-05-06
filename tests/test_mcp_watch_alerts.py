@@ -94,7 +94,7 @@ async def test_manage_watch_alerts_add_maps_metric_operator(
     assert result["symbol"] == "BTC"
     assert fake_service.add_calls[0][2] == "price_below"
     assert result["condition_type"] == "price_below"
-    assert result["threshold"] == 90000000.0
+    assert result["threshold"] == pytest.approx(90000000.0)
     assert fake_service.closed is True
 
 

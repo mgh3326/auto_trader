@@ -52,7 +52,7 @@ class TestCalculateCombinedAvg:
         """단일 보유 정보의 평단가"""
         holdings = [HoldingInfo(broker="kis", quantity=100, avg_price=50000)]
         result = MergedPortfolioService.calculate_combined_avg(holdings)
-        assert result == 50000.0
+        assert result == pytest.approx(50000.0)
 
     def test_multiple_holdings_same_avg(self):
         """동일 평단가 다중 보유"""
@@ -61,7 +61,7 @@ class TestCalculateCombinedAvg:
             HoldingInfo(broker="toss", quantity=100, avg_price=50000),
         ]
         result = MergedPortfolioService.calculate_combined_avg(holdings)
-        assert result == 50000.0
+        assert result == pytest.approx(50000.0)
 
     def test_multiple_holdings_different_avg(self):
         """다른 평단가 다중 보유 - 가중 평균 계산"""
@@ -71,18 +71,18 @@ class TestCalculateCombinedAvg:
         ]
         # 총 금액: 14,000,000 / 총 수량: 300 = 46,666.67
         result = MergedPortfolioService.calculate_combined_avg(holdings)
-        assert round(result, 2) == 46666.67
+        assert round(result, 2) == pytest.approx(46666.67)
 
     def test_empty_holdings(self):
         """빈 보유 목록"""
         result = MergedPortfolioService.calculate_combined_avg([])
-        assert result == 0.0
+        assert result == pytest.approx(0.0)
 
     def test_zero_quantity(self):
         """수량이 0인 경우"""
         holdings = [HoldingInfo(broker="kis", quantity=0, avg_price=50000)]
         result = MergedPortfolioService.calculate_combined_avg(holdings)
-        assert result == 0.0
+        assert result == pytest.approx(0.0)
 
 
 class TestGetOrCreateHolding:
@@ -97,7 +97,7 @@ class TestGetOrCreateHolding:
         assert holding.ticker == "005930"
         assert holding.name == "삼성전자"
         assert holding.market_type == "KR"
-        assert holding.current_price == 77800.0
+        assert holding.current_price == pytest.approx(77800.0)
         assert "005930" in merged
 
     def test_get_existing_holding(self):
@@ -114,7 +114,7 @@ class TestGetOrCreateHolding:
             merged, "005930", "삼성전자", MarketType.KR, 77800.0
         )
         assert holding is existing
-        assert holding.current_price == 77800.0  # 현재가 업데이트
+        assert holding.current_price == pytest.approx(77800.0)  # 현재가 업데이트
 
     def test_get_existing_holding_no_price_update(self):
         """기존 종목 조회 - 현재가 미전달 시 유지"""
@@ -129,7 +129,7 @@ class TestGetOrCreateHolding:
         holding = MergedPortfolioService._get_or_create_holding(
             merged, "005930", "삼성전자", MarketType.KR
         )
-        assert holding.current_price == 77000.0  # 현재가 유지
+        assert holding.current_price == pytest.approx(77000.0)  # 현재가 유지
 
 
 class TestApplyKISHoldings:
@@ -157,11 +157,11 @@ class TestApplyKISHoldings:
         holding = merged["005930"]
         assert holding.name == "삼성전자"
         assert holding.kis_quantity == 100
-        assert holding.kis_avg_price == 70000.0
-        assert holding.current_price == 77800.0
-        assert holding.evaluation == 7780000.0
-        assert holding.profit_loss == 780000.0
-        assert holding.profit_rate == 11.14
+        assert holding.kis_avg_price == pytest.approx(70000.0)
+        assert holding.current_price == pytest.approx(77800.0)
+        assert holding.evaluation == pytest.approx(7780000.0)
+        assert holding.profit_loss == pytest.approx(780000.0)
+        assert holding.profit_rate == pytest.approx(11.14)
         assert len(holding.holdings) == 1
         assert holding.holdings[0].broker == "kis"
 
@@ -187,8 +187,8 @@ class TestApplyKISHoldings:
         holding = merged["AAPL"]
         assert holding.name == "Apple Inc"
         assert holding.kis_quantity == 10
-        assert holding.current_price == 175.0
-        assert holding.profit_rate == 16.67
+        assert holding.current_price == pytest.approx(175.0)
+        assert holding.profit_rate == pytest.approx(16.67)
 
 
 class TestApplyManualHoldings:
@@ -220,7 +220,7 @@ class TestApplyManualHoldings:
         holding = merged["005380"]
         assert holding.name == "현대차"
         assert holding.toss_quantity == 50
-        assert holding.toss_avg_price == 220000.0
+        assert holding.toss_avg_price == pytest.approx(220000.0)
         assert len(holding.holdings) == 1
         assert holding.holdings[0].broker == "toss"
 
@@ -290,7 +290,7 @@ class TestFetchMissingPrices:
             merged, MarketType.KR, mock_kis_client
         )
 
-        assert merged["005380"].current_price == 230000.0
+        assert merged["005380"].current_price == pytest.approx(230000.0)
         mock_kis_client.inquire_price.assert_called_once_with("005380")
 
     @pytest.mark.asyncio
@@ -358,7 +358,7 @@ class TestFetchMissingPrices:
         )
 
         # 현재가는 0으로 유지
-        assert merged["005380"].current_price == 0.0
+        assert merged["005380"].current_price == pytest.approx(0.0)
 
     @pytest.mark.asyncio
     async def test_fetch_multiple_missing_prices(
@@ -393,8 +393,8 @@ class TestFetchMissingPrices:
             merged, MarketType.KR, mock_kis_client
         )
 
-        assert merged["005380"].current_price == 230000.0
-        assert merged["010140"].current_price == 21800.0
+        assert merged["005380"].current_price == pytest.approx(230000.0)
+        assert merged["010140"].current_price == pytest.approx(21800.0)
         assert mock_kis_client.inquire_price.call_count == 2
 
 
@@ -440,7 +440,7 @@ class TestFinalizeHoldings:
 
         holding = merged["005930"]
         # (100 * 70000 + 50 * 76000) / 150 = 10,800,000 / 150 = 72000
-        assert holding.combined_avg_price == 72000.0
+        assert holding.combined_avg_price == pytest.approx(72000.0)
 
     def test_calculate_evaluation_and_profit(self, merged_portfolio_service):
         """평가금액 및 손익 계산"""
@@ -461,11 +461,11 @@ class TestFinalizeHoldings:
 
         holding = merged["005930"]
         # 평가금액: 77800 * 150 = 11,670,000
-        assert holding.evaluation == 11670000.0
+        assert holding.evaluation == pytest.approx(11670000.0)
         # 손익: (77800 - 72000) * 150 = 870,000
-        assert holding.profit_loss == 870000.0
+        assert holding.profit_loss == pytest.approx(870000.0)
         # 수익률: (77800 - 72000) / 72000 = 0.0806
-        assert round(holding.profit_rate, 4) == 0.0806
+        assert round(holding.profit_rate, 4) == pytest.approx(0.0806)
 
     def test_skip_calculation_without_price(self, merged_portfolio_service):
         """현재가가 없으면 평가금액 계산하지 않음"""
@@ -484,9 +484,9 @@ class TestFinalizeHoldings:
         merged_portfolio_service._finalize_holdings(merged)
 
         holding = merged["005380"]
-        assert holding.evaluation == 0.0
-        assert holding.profit_loss == 0.0
-        assert holding.profit_rate == 0.0
+        assert holding.evaluation == pytest.approx(0.0)
+        assert holding.profit_loss == pytest.approx(0.0)
+        assert holding.profit_rate == pytest.approx(0.0)
 
 
 class TestBuildMergedPortfolio:
@@ -528,13 +528,13 @@ class TestBuildMergedPortfolio:
         assert len(result) == 1
         holding = result[0]
         assert holding.ticker == "005380"
-        assert holding.current_price == 230000.0
+        assert holding.current_price == pytest.approx(230000.0)
         assert holding.toss_quantity == 50
         assert holding.total_quantity == 50
         # 평가금액: 230000 * 50 = 11,500,000
-        assert holding.evaluation == 11500000.0
+        assert holding.evaluation == pytest.approx(11500000.0)
         # 손익: (230000 - 220000) * 50 = 500,000
-        assert holding.profit_loss == 500000.0
+        assert holding.profit_loss == pytest.approx(500000.0)
 
     @pytest.mark.asyncio
     async def test_mixed_kis_and_toss_holdings(
@@ -584,12 +584,12 @@ class TestBuildMergedPortfolio:
 
         # 삼성전자 - KIS에서 현재가 제공됨
         samsung = next(h for h in result if h.ticker == "005930")
-        assert samsung.current_price == 77800.0
+        assert samsung.current_price == pytest.approx(77800.0)
         assert samsung.kis_quantity == 100
 
         # 현대차 - KIS API로 현재가 조회됨
         hyundai = next(h for h in result if h.ticker == "005380")
-        assert hyundai.current_price == 230000.0
+        assert hyundai.current_price == pytest.approx(230000.0)
         assert hyundai.toss_quantity == 50
 
 
@@ -609,11 +609,11 @@ class TestReferencePrices:
 
         result = ref.to_dict()
 
-        assert result["kis_avg"] == 70000.0
+        assert result["kis_avg"] == pytest.approx(70000.0)
         assert result["kis_quantity"] == 100
-        assert result["toss_avg"] == 75000.0
+        assert result["toss_avg"] == pytest.approx(75000.0)
         assert result["toss_quantity"] == 50
-        assert result["combined_avg"] == 71666.67
+        assert result["combined_avg"] == pytest.approx(71666.67)
         assert result["total_quantity"] == 150
 
 
@@ -647,8 +647,8 @@ class TestMergedHoldingToDict:
 
         assert result["ticker"] == "005930"
         assert result["name"] == "삼성전자"
-        assert result["current_price"] == 77800.0
-        assert result["evaluation"] == 11670000.0
+        assert result["current_price"] == pytest.approx(77800.0)
+        assert result["evaluation"] == pytest.approx(11670000.0)
         assert result["analysis_id"] == 123
         assert len(result["holdings"]) == 1
 
@@ -683,7 +683,7 @@ class TestFetchMissingPricesOverseas:
             merged, MarketType.US, mock_kis_client
         )
 
-        assert merged["CONY"].current_price == 18.50
+        assert merged["CONY"].current_price == pytest.approx(18.50)
         mock_kis_client.inquire_overseas_price.assert_called_once_with("CONY")
 
     @pytest.mark.asyncio
@@ -721,8 +721,8 @@ class TestFetchMissingPricesOverseas:
             merged, MarketType.US, mock_kis_client
         )
 
-        assert merged["CONY"].current_price == 18.50
-        assert merged["BRK-B"].current_price == 474.17
+        assert merged["CONY"].current_price == pytest.approx(18.50)
+        assert merged["BRK-B"].current_price == pytest.approx(474.17)
         assert mock_kis_client.inquire_overseas_price.call_count == 2
 
     @pytest.mark.asyncio
@@ -773,4 +773,4 @@ class TestFetchMissingPricesOverseas:
         )
 
         # 현재가는 0으로 유지
-        assert merged["INVALID"].current_price == 0.0
+        assert merged["INVALID"].current_price == pytest.approx(0.0)

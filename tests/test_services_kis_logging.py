@@ -181,7 +181,7 @@ class TestKISFailureLogging:
             for record in caplog.records
             if record.levelno == logging.WARNING
         )
-        assert result["dnca_tot_amt"] == 500000.0
+        assert result["dnca_tot_amt"] == pytest.approx(500000.0)
 
     @pytest.mark.asyncio
     @patch("app.services.brokers.kis.base.httpx.AsyncClient")

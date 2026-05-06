@@ -157,7 +157,7 @@ async def test_get_indicators_crypto_uses_ticker_price(monkeypatch):
     result = await tools["get_indicators"]("KRW-BTC", indicators=["rsi"])
 
     assert "error" not in result
-    assert result["price"] == 123456789.0
+    assert result["price"] == pytest.approx(123456789.0)
     ticker_mock.assert_awaited_once_with(["KRW-BTC"])
 
 
@@ -639,7 +639,7 @@ async def test_get_support_resistance_clusters_levels(monkeypatch):
     result = await tools["get_support_resistance"]("KRW-BTC")
 
     assert result["symbol"] == "KRW-BTC"
-    assert result["current_price"] == 100.0
+    assert result["current_price"] == pytest.approx(100.0)
     assert result["supports"]
     assert result["resistances"]
 

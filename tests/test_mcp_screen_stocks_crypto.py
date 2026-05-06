@@ -159,8 +159,8 @@ class TestScreenStocksCrypto:
         first = result["results"][0]
         assert first["symbol"] == "KRW-BTC"
         assert first["name"] == "비트코인"
-        assert first["trade_amount_24h"] == 900_000_000_000.0
-        assert first["volume_24h"] == 12_345.0
+        assert first["trade_amount_24h"] == pytest.approx(900_000_000_000.0)
+        assert first["volume_24h"] == pytest.approx(12_345.0)
         assert first["market_cap"] == 3_000_000_000_000_000
         assert first["market_cap_rank"] == 1
         assert first["rsi_bucket"] == 45
