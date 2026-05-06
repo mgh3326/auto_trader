@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Literal
+from collections.abc import Coroutine
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
+from app.core.log_sanitize import safe_log_value
 from app.core.timezone import now_kst
 from app.schemas.n8n.board_brief import (
     BoardBriefContext,
@@ -89,6 +91,21 @@ from app.services.sell_conditions_service import (
 from app.services.sell_signal_service import evaluate_sell_signal
 
 logger = logging.getLogger(__name__)
+
+# Module-level to hold strong references to background tasks to prevent GC.
+# SonarCloud python:S7502: ensures tasks complete.
+_BACKGROUND_TASKS: set[asyncio.Task[Any]] = set()
+
+
+def _spawn_background(
+    coro: Coroutine[Any, Any, Any], *, name: str
+) -> asyncio.Task[Any]:
+    """Spawn a background task and hold a strong reference until it completes."""
+    task = asyncio.create_task(coro, name=name)
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+    return task
+
 
 router = APIRouter(prefix="/api/n8n", tags=["n8n"])
 
@@ -379,7 +396,7 @@ async def get_daily_brief(
         )
         return JSONResponse(status_code=500, content=payload.model_dump())
 
-    asyncio.ensure_future(save_daily_brief_report(result))
+    _spawn_background(save_daily_brief_report(result), name="n8n-daily-brief")
     return N8nDailyBriefResponse(**result)
 
 
@@ -643,7 +660,7 @@ async def get_crypto_scan(
         )
         return JSONResponse(status_code=500, content=payload.model_dump())
 
-    asyncio.ensure_future(save_crypto_scan_report(result))
+    _spawn_background(save_crypto_scan_report(result), name="n8n-crypto-scan")
     return N8nCryptoScanResponse(
         success=result.get("success", True),
         as_of=as_of,
@@ -686,7 +703,7 @@ async def get_kr_morning_report(
         )
         return JSONResponse(status_code=500, content=payload.model_dump())
 
-    asyncio.ensure_future(save_kr_morning_report(result))
+    _spawn_background(save_kr_morning_report(result), name="n8n-kr-morning")
     return N8nKrMorningReportResponse(**result)
 
 
@@ -849,7 +866,9 @@ async def get_sell_signal(
             bb_upper_ref=final_bb_upper_ref,
         )
     except Exception as exc:  # noqa: BLE001
-        logger.exception("Failed to evaluate sell signal for %s", symbol)
+        logger.exception(
+            "Failed to evaluate sell signal for %s", safe_log_value(symbol)
+        )
         payload = N8nSellSignalResponse(
             success=False,
             as_of=as_of,

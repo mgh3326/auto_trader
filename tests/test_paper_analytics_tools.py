@@ -122,7 +122,7 @@ async def test_get_paper_performance_all_period(monkeypatch):
     assert result["success"] is True
     assert result["account_name"] == "bot"
     assert result["period"] == "all"
-    assert result["performance"]["total_return_pct"] == 10.0
+    assert result["performance"]["total_return_pct"] == pytest.approx(10.0)
     assert result["performance"]["best_trade"]["symbol"] == "005930"
 
 
@@ -223,9 +223,9 @@ async def test_get_paper_trade_log_basic(monkeypatch):
     assert len(result["trades"]) == 1
     t = result["trades"][0]
     assert t["symbol"] == "005930"
-    assert t["quantity"] == 10.0
-    assert t["price"] == 60000.0
-    assert t["fee"] == 90.0
+    assert t["quantity"] == pytest.approx(10.0)
+    assert t["price"] == pytest.approx(60000.0)
+    assert t["fee"] == pytest.approx(90.0)
     assert t["realized_pnl"] is None
     assert t["executed_at"] == "2026-04-01T09:00:00+00:00"
 
@@ -353,8 +353,8 @@ async def test_compare_paper_accounts_all_found(monkeypatch):
     assert result["success"] is True
     rows = result["comparison"]
     assert [r["account_name"] for r in rows] == ["bot-a", "bot-b"]
-    assert rows[0]["performance"]["total_return_pct"] == 5.0
-    assert rows[1]["performance"]["total_return_pct"] == -2.0
+    assert rows[0]["performance"]["total_return_pct"] == pytest.approx(5.0)
+    assert rows[1]["performance"]["total_return_pct"] == pytest.approx(-2.0)
 
 
 @pytest.mark.asyncio
@@ -403,7 +403,7 @@ async def test_compare_paper_accounts_skips_missing(monkeypatch):
     assert len(result["comparison"]) == 2
     first, second = result["comparison"]
     assert first["account_name"] == "bot-a"
-    assert first["performance"]["total_return_pct"] == 0.0
+    assert first["performance"]["total_return_pct"] == pytest.approx(0.0)
     assert first.get("error") is None
     assert second == {
         "account_name": "ghost",

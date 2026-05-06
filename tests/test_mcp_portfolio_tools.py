@@ -61,26 +61,26 @@ async def test_get_cash_balance_all_accounts(monkeypatch):
     result = await tools["get_cash_balance"]()
 
     assert len(result["accounts"]) == 3
-    assert result["summary"]["total_krw"] == 1700000.0
-    assert result["summary"]["total_usd"] == 500.0
+    assert result["summary"]["total_krw"] == pytest.approx(1700000.0)
+    assert result["summary"]["total_usd"] == pytest.approx(500.0)
     assert len(result["errors"]) == 0
 
     upbit_account = next(acc for acc in result["accounts"] if acc["account"] == "upbit")
-    assert upbit_account["balance"] == 700000.0
-    assert upbit_account["orderable"] == 500000.0
+    assert upbit_account["balance"] == pytest.approx(700000.0)
+    assert upbit_account["orderable"] == pytest.approx(500000.0)
     assert upbit_account["formatted"] == "700,000 KRW"
 
     kis_domestic_account = next(
         acc for acc in result["accounts"] if acc["account"] == "kis_domestic"
     )
-    assert kis_domestic_account["balance"] == 1000000.0
-    assert kis_domestic_account["orderable"] == 800000.0
+    assert kis_domestic_account["balance"] == pytest.approx(1000000.0)
+    assert kis_domestic_account["orderable"] == pytest.approx(800000.0)
 
     kis_overseas_account = next(
         acc for acc in result["accounts"] if acc["account"] == "kis_overseas"
     )
-    assert kis_overseas_account["balance"] == 500.0
-    assert kis_overseas_account["orderable"] == 450.0
+    assert kis_overseas_account["balance"] == pytest.approx(500.0)
+    assert kis_overseas_account["orderable"] == pytest.approx(450.0)
     assert kis_overseas_account["exchange_rate"] is None
 
 
@@ -184,7 +184,7 @@ async def test_get_cash_balance_with_account_filter(monkeypatch):
 
     result = await tools["get_cash_balance"](account="upbit")
     assert len(result["accounts"]) == 0
-    assert result["summary"]["total_krw"] == 0.0
+    assert result["summary"]["total_krw"] == pytest.approx(0.0)
 
     result = await tools["get_cash_balance"](account="kis")
     assert len(result["accounts"]) == 2
@@ -207,10 +207,10 @@ async def test_get_cash_balance_with_account_filter_upbit_success(monkeypatch):
     assert len(result["accounts"]) == 1
     upbit_account = result["accounts"][0]
     assert upbit_account["account"] == "upbit"
-    assert upbit_account["balance"] == 700000.0
-    assert upbit_account["orderable"] == 500000.0
+    assert upbit_account["balance"] == pytest.approx(700000.0)
+    assert upbit_account["orderable"] == pytest.approx(500000.0)
     assert result["summary"]["total_krw"] == upbit_account["balance"]
-    assert result["summary"]["total_usd"] == 0.0
+    assert result["summary"]["total_usd"] == pytest.approx(0.0)
     assert len(result["errors"]) == 0
 
 
@@ -256,8 +256,8 @@ async def test_get_cash_balance_partial_failure(monkeypatch):
     kis_overseas_account = next(
         acc for acc in result["accounts"] if acc["account"] == "kis_overseas"
     )
-    assert kis_overseas_account["balance"] == 500.0
-    assert kis_overseas_account["orderable"] == 450.0
+    assert kis_overseas_account["balance"] == pytest.approx(500.0)
+    assert kis_overseas_account["orderable"] == pytest.approx(450.0)
     assert kis_overseas_account["exchange_rate"] is None
 
 
@@ -339,8 +339,8 @@ async def test_get_cash_balance_kis_domestic_prefers_stck_cash100_max_orderable(
         acc for acc in kis_only["accounts"] if acc["account"] == "kis_domestic"
     )
 
-    assert kis_domestic_account["orderable"] == 3534890.5473
-    assert kis_domestic_only["accounts"][0]["orderable"] == 3534890.5473
+    assert kis_domestic_account["orderable"] == pytest.approx(3534890.5473)
+    assert kis_domestic_only["accounts"][0]["orderable"] == pytest.approx(3534890.5473)
     assert "stck_cash100_max_ord_psbl_amt" not in kis_domestic_account
 
 
@@ -386,10 +386,10 @@ async def test_get_cash_balance_kis_domestic_skips_zero_priority_orderables(
         acc for acc in kis_only["accounts"] if acc["account"] == "kis_domestic"
     )
 
-    assert kis_domestic_account["balance"] == 5000000.0
-    assert kis_domestic_account["orderable"] == 2100000.25
-    assert kis_domestic_only["accounts"][0]["balance"] == 5000000.0
-    assert kis_domestic_only["accounts"][0]["orderable"] == 2100000.25
+    assert kis_domestic_account["balance"] == pytest.approx(5000000.0)
+    assert kis_domestic_account["orderable"] == pytest.approx(2100000.25)
+    assert kis_domestic_only["accounts"][0]["balance"] == pytest.approx(5000000.0)
+    assert kis_domestic_only["accounts"][0]["orderable"] == pytest.approx(2100000.25)
 
 
 @pytest.mark.asyncio
@@ -419,8 +419,8 @@ async def test_get_cash_balance_kis_domestic_deducts_pending_buy_orders(monkeypa
 
     result = await tools["get_cash_balance"](account="kis_domestic")
 
-    assert result["accounts"][0]["balance"] == 4300000.0
-    assert result["accounts"][0]["orderable"] == 980000.0
+    assert result["accounts"][0]["balance"] == pytest.approx(4300000.0)
+    assert result["accounts"][0]["orderable"] == pytest.approx(980000.0)
 
 
 @pytest.mark.asyncio
@@ -444,7 +444,7 @@ async def test_get_cash_balance_kis_domestic_pending_lookup_failure_keeps_raw_or
 
     result = await tools["get_cash_balance"](account="kis_domestic")
 
-    assert result["accounts"][0]["orderable"] == 4300000.0
+    assert result["accounts"][0]["orderable"] == pytest.approx(4300000.0)
 
 
 @pytest.mark.asyncio
@@ -468,7 +468,7 @@ async def test_get_cash_balance_kis_domestic_clamps_orderable_at_zero(monkeypatc
 
     result = await tools["get_cash_balance"](account="kis_domestic")
 
-    assert result["accounts"][0]["orderable"] == 0.0
+    assert result["accounts"][0]["orderable"] == pytest.approx(0.0)
 
 
 @pytest.mark.asyncio
@@ -563,8 +563,8 @@ async def test_get_cash_balance_kis_overseas_prefers_usd_us_row_for_orderable(
         None,
     )
     assert kis_overseas is not None
-    assert kis_overseas["balance"] == 5856.2
-    assert kis_overseas["orderable"] == 5824.17
+    assert kis_overseas["balance"] == pytest.approx(5856.2)
+    assert kis_overseas["orderable"] == pytest.approx(5824.17)
 
 
 @pytest.mark.asyncio
@@ -606,8 +606,8 @@ async def test_get_cash_balance_kis_overseas_us_row_missing_falls_back_to_usd_ma
         None,
     )
     assert kis_overseas is not None
-    assert kis_overseas["balance"] == 5856.2
-    assert kis_overseas["orderable"] == 5824.27
+    assert kis_overseas["balance"] == pytest.approx(5856.2)
+    assert kis_overseas["orderable"] == pytest.approx(5824.27)
 
 
 @pytest.mark.asyncio
@@ -669,8 +669,8 @@ async def test_get_cash_balance_uses_new_kis_field_names(monkeypatch):
     result = await tools["get_cash_balance"](account="kis_overseas")
 
     assert len(result["accounts"]) == 1
-    assert result["accounts"][0]["balance"] == 3500.0
-    assert result["accounts"][0]["orderable"] == 3200.0
+    assert result["accounts"][0]["balance"] == pytest.approx(3500.0)
+    assert result["accounts"][0]["orderable"] == pytest.approx(3200.0)
 
 
 @pytest.mark.asyncio
@@ -712,8 +712,8 @@ async def test_get_cash_balance_kis_overseas_avoids_duplicate_deduction_from_us_
 
     result = await tools["get_cash_balance"](account="kis_overseas")
 
-    assert result["accounts"][0]["balance"] == 1000.0
-    assert result["accounts"][0]["orderable"] == 700.0
+    assert result["accounts"][0]["balance"] == pytest.approx(1000.0)
+    assert result["accounts"][0]["orderable"] == pytest.approx(700.0)
 
 
 @pytest.mark.asyncio
@@ -742,7 +742,7 @@ async def test_get_cash_balance_kis_overseas_pending_lookup_failure_keeps_raw_or
     with caplog.at_level("WARNING"):
         result = await tools["get_cash_balance"](account="kis_overseas")
 
-    assert result["accounts"][0]["orderable"] == 1000.0
+    assert result["accounts"][0]["orderable"] == pytest.approx(1000.0)
     assert "USD pending order deduction failed" in caplog.text
 
 
@@ -772,8 +772,8 @@ class TestSimulateAvgCost:
         assert cp["avg_price"] == 2400000
         assert cp["total_quantity"] == 1
         assert cp["total_invested"] == 2400000
-        assert cp["unrealized_pnl"] == -243000.0
-        assert cp["unrealized_pnl_pct"] == -10.12
+        assert cp["unrealized_pnl"] == pytest.approx(-243000.0)
+        assert cp["unrealized_pnl_pct"] == pytest.approx(-10.12)
 
         assert result["current_market_price"] == 2157000
 
@@ -785,24 +785,24 @@ class TestSimulateAvgCost:
         assert s1["new_avg_price"] == 2225000
         assert s1["total_quantity"] == 2
         assert s1["total_invested"] == 4450000
-        assert s1["breakeven_change_pct"] == 3.15
-        assert s1["unrealized_pnl"] == -136000.0
-        assert s1["unrealized_pnl_pct"] == -3.06
+        assert s1["breakeven_change_pct"] == pytest.approx(3.15)
+        assert s1["unrealized_pnl"] == pytest.approx(-136000.0)
+        assert s1["unrealized_pnl_pct"] == pytest.approx(-3.06)
 
         # step 2
         s2 = result["steps"][1]
         assert s2["step"] == 2
-        assert s2["new_avg_price"] == 2116666.67
+        assert s2["new_avg_price"] == pytest.approx(2116666.67)
         assert s2["total_quantity"] == 3
         assert s2["total_invested"] == 6350000
         # avg 2116666.67 / mkt 2157000 - 1 = -1.87%
-        assert s2["breakeven_change_pct"] == -1.87
+        assert s2["breakeven_change_pct"] == pytest.approx(-1.87)
 
         # target_analysis
         ta = result["target_analysis"]
         assert ta["target_price"] == 3080000
-        assert ta["final_avg_price"] == 2116666.67
-        assert ta["total_return_pct"] == 45.51
+        assert ta["final_avg_price"] == pytest.approx(2116666.67)
+        assert ta["total_return_pct"] == pytest.approx(45.51)
 
     async def test_without_market_price(self):
         """Without current_market_price, P&L and breakeven fields are absent."""
@@ -835,7 +835,7 @@ class TestSimulateAvgCost:
         assert ta["final_avg_price"] == 90
         assert ta["profit_per_unit"] == 30
         assert ta["total_profit"] == 300
-        assert ta["total_return_pct"] == 33.33
+        assert ta["total_return_pct"] == pytest.approx(33.33)
 
     async def test_validation_missing_holdings_fields(self):
         tools = build_tools()
@@ -882,8 +882,8 @@ class TestSimulateAvgCost:
         assert s["new_avg_price"] == 900
         assert s["total_quantity"] == 4
         # avg == market → breakeven 0%
-        assert s["breakeven_change_pct"] == 0.0
-        assert s["unrealized_pnl"] == 0.0
+        assert s["breakeven_change_pct"] == pytest.approx(0.0)
+        assert s["unrealized_pnl"] == pytest.approx(0.0)
 
     async def test_accepts_zero_initial_quantity_and_adds_target_metrics(self):
         tools = build_tools()
@@ -898,10 +898,10 @@ class TestSimulateAvgCost:
         )
 
         assert result["current_position"]["avg_price"] is None
-        assert result["steps"][0]["target_return_pct"] == 20.0
+        assert result["steps"][0]["target_return_pct"] == pytest.approx(20.0)
         assert "pnl_vs_current" in result["steps"][0]
-        assert result["steps"][1]["new_avg_price"] == 95.0
-        assert result["steps"][1]["target_return_pct"] == 26.32
+        assert result["steps"][1]["new_avg_price"] == pytest.approx(95.0)
+        assert result["steps"][1]["target_return_pct"] == pytest.approx(26.32)
 
     async def test_requested_scenario_contains_step_target_return(self):
         tools = build_tools()
@@ -1045,16 +1045,16 @@ async def test_get_holdings_groups_by_account_and_calculates_pnl(monkeypatch):
     kis_kr = next(
         item for item in kis_account["positions"] if item["symbol"] == "005930"
     )
-    assert kis_kr["current_price"] == 71000.0
-    assert kis_kr["evaluation_amount"] == 142000.0
-    assert kis_kr["profit_loss"] == 2000.0
-    assert kis_kr["profit_rate"] == 1.43
+    assert kis_kr["current_price"] == pytest.approx(71000.0)
+    assert kis_kr["evaluation_amount"] == pytest.approx(142000.0)
+    assert kis_kr["profit_loss"] == pytest.approx(2000.0)
+    assert kis_kr["profit_rate"] == pytest.approx(1.43)
 
     kis_us = next(item for item in kis_account["positions"] if item["symbol"] == "AAPL")
-    assert kis_us["current_price"] == 210.0
-    assert kis_us["evaluation_amount"] == 210.0
-    assert kis_us["profit_loss"] == 10.0
-    assert kis_us["profit_rate"] == 5.0
+    assert kis_us["current_price"] == pytest.approx(210.0)
+    assert kis_us["evaluation_amount"] == pytest.approx(210.0)
+    assert kis_us["profit_loss"] == pytest.approx(10.0)
+    assert kis_us["profit_rate"] == pytest.approx(5.0)
     us_quote_mock.assert_not_awaited()
 
     upbit_account = next(
@@ -1063,8 +1063,8 @@ async def test_get_holdings_groups_by_account_and_calculates_pnl(monkeypatch):
     btc = upbit_account["positions"][0]
     assert btc["symbol"] == "KRW-BTC"
     assert btc["name"] == "비트코인"
-    assert btc["current_price"] == 60000000.0
-    assert btc["evaluation_amount"] == 6000000.0
+    assert btc["current_price"] == pytest.approx(60000000.0)
+    assert btc["evaluation_amount"] == pytest.approx(6000000.0)
 
 
 @pytest.mark.asyncio
@@ -1143,8 +1143,8 @@ async def test_get_holdings_crypto_prices_batch_fetch(monkeypatch):
     positions_by_symbol = {
         position["symbol"]: position for position in result["accounts"][0]["positions"]
     }
-    assert positions_by_symbol["KRW-BTC"]["current_price"] == 61000000.0
-    assert positions_by_symbol["KRW-ETH"]["current_price"] == 4200000.0
+    assert positions_by_symbol["KRW-BTC"]["current_price"] == pytest.approx(61000000.0)
+    assert positions_by_symbol["KRW-ETH"]["current_price"] == pytest.approx(4200000.0)
     quote_mock.assert_awaited_once()
     assert result["errors"] == []
 
@@ -1227,7 +1227,7 @@ async def test_get_holdings_includes_crypto_price_errors(monkeypatch):
     positions_by_symbol = {
         position["symbol"]: position for position in result["accounts"][0]["positions"]
     }
-    assert positions_by_symbol["KRW-BTC"]["current_price"] == 62000000.0
+    assert positions_by_symbol["KRW-BTC"]["current_price"] == pytest.approx(62000000.0)
     assert "KRW-DOGE" not in positions_by_symbol
 
     assert len(result["errors"]) == 1
@@ -1432,7 +1432,7 @@ async def test_get_holdings_filters_delisted_markets_before_batch_fetch(monkeypa
         position["symbol"]: position for position in result["accounts"][0]["positions"]
     }
     assert positions_by_symbol["KRW-BTC"]["symbol"] == "KRW-BTC"
-    assert positions_by_symbol["KRW-BTC"]["current_price"] == 62000000.0
+    assert positions_by_symbol["KRW-BTC"]["current_price"] == pytest.approx(62000000.0)
     assert "KRW-PCI" not in positions_by_symbol
 
     assert result["errors"] == []
@@ -1857,14 +1857,14 @@ async def test_get_holdings_includes_top_level_summary(monkeypatch):
 
     summary = result["summary"]
     assert summary["position_count"] == 2
-    assert summary["total_buy_amount"] == 8000000.0
-    assert summary["total_evaluation"] == 10000000.0
-    assert summary["total_profit_loss"] == 2000000.0
-    assert summary["total_profit_rate"] == 25.0
+    assert summary["total_buy_amount"] == pytest.approx(8000000.0)
+    assert summary["total_evaluation"] == pytest.approx(10000000.0)
+    assert summary["total_profit_loss"] == pytest.approx(2000000.0)
+    assert summary["total_profit_rate"] == pytest.approx(25.0)
     assert summary["weights"][0]["symbol"] == "KRW-BTC"
-    assert summary["weights"][0]["weight_pct"] == 60.0
+    assert summary["weights"][0]["weight_pct"] == pytest.approx(60.0)
     assert summary["weights"][1]["symbol"] == "KRW-ETH"
-    assert summary["weights"][1]["weight_pct"] == 40.0
+    assert summary["weights"][1]["weight_pct"] == pytest.approx(40.0)
 
 
 @pytest.mark.asyncio
@@ -1903,7 +1903,7 @@ async def test_get_holdings_summary_sets_price_dependent_fields_null(monkeypatch
     )
 
     summary = result["summary"]
-    assert summary["total_buy_amount"] == 3000000.0
+    assert summary["total_buy_amount"] == pytest.approx(3000000.0)
     assert summary["total_evaluation"] is None
     assert summary["total_profit_loss"] is None
     assert summary["total_profit_rate"] is None
@@ -1967,23 +1967,23 @@ async def test_get_holdings_preserves_kis_values_on_yahoo_failure(monkeypatch):
 
     amzn = positions_by_symbol["AMZN"]
     assert amzn["symbol"] == "AMZN"
-    assert amzn["quantity"] == 10.0
-    assert amzn["avg_buy_price"] == 150.0
+    assert amzn["quantity"] == pytest.approx(10.0)
+    assert amzn["avg_buy_price"] == pytest.approx(150.0)
     assert amzn["current_price"] is None
     assert amzn["price_error"] == "Symbol 'AMZN' not found"
-    assert amzn["evaluation_amount"] == 1600.0
-    assert amzn["profit_loss"] == 100.0
-    assert amzn["profit_rate"] == 6.67
+    assert amzn["evaluation_amount"] == pytest.approx(1600.0)
+    assert amzn["profit_loss"] == pytest.approx(100.0)
+    assert amzn["profit_rate"] == pytest.approx(6.67)
 
     aapl = positions_by_symbol["AAPL"]
     assert aapl["symbol"] == "AAPL"
-    assert aapl["quantity"] == 5.0
-    assert aapl["avg_buy_price"] == 180.0
+    assert aapl["quantity"] == pytest.approx(5.0)
+    assert aapl["avg_buy_price"] == pytest.approx(180.0)
     assert aapl["current_price"] is None
     assert aapl["price_error"] == "Symbol 'AAPL' not found"
-    assert aapl["evaluation_amount"] == 9500.0
-    assert aapl["profit_loss"] == -500.0
-    assert aapl["profit_rate"] == -5.26
+    assert aapl["evaluation_amount"] == pytest.approx(9500.0)
+    assert aapl["profit_loss"] == pytest.approx(-500.0)
+    assert aapl["profit_rate"] == pytest.approx(-5.26)
 
     assert len(result["errors"]) == 2
     error_symbols = {error["symbol"] for error in result["errors"]}
@@ -2056,10 +2056,10 @@ async def test_collect_portfolio_positions_skips_yahoo_for_kis_us_with_valid_num
 
     assert result_errors == []
     assert result_positions == positions
-    assert result_positions[0]["current_price"] == 210.0
-    assert result_positions[0]["evaluation_amount"] == 210.0
-    assert result_positions[0]["profit_loss"] == 0.0
-    assert result_positions[0]["profit_rate"] == 0.0
+    assert result_positions[0]["current_price"] == pytest.approx(210.0)
+    assert result_positions[0]["evaluation_amount"] == pytest.approx(210.0)
+    assert result_positions[0]["profit_loss"] == pytest.approx(0.0)
+    assert result_positions[0]["profit_rate"] == pytest.approx(0.0)
     quote_mock.assert_not_awaited()
 
 
@@ -2118,17 +2118,17 @@ async def test_get_holdings_fetches_yahoo_only_for_kis_us_missing_price_and_reca
     }
 
     aapl = positions_by_symbol["AAPL"]
-    assert aapl["current_price"] == 210.0
-    assert aapl["evaluation_amount"] == 210.0
-    assert aapl["profit_loss"] == 10.0
-    assert aapl["profit_rate"] == 5.0
+    assert aapl["current_price"] == pytest.approx(210.0)
+    assert aapl["evaluation_amount"] == pytest.approx(210.0)
+    assert aapl["profit_loss"] == pytest.approx(10.0)
+    assert aapl["profit_rate"] == pytest.approx(5.0)
     assert "price_error" not in aapl
 
     amzn = positions_by_symbol["AMZN"]
-    assert amzn["current_price"] == 165.0
-    assert amzn["evaluation_amount"] == 1650.0
-    assert amzn["profit_loss"] == 150.0
-    assert amzn["profit_rate"] == 10.0
+    assert amzn["current_price"] == pytest.approx(165.0)
+    assert amzn["evaluation_amount"] == pytest.approx(1650.0)
+    assert amzn["profit_loss"] == pytest.approx(150.0)
+    assert amzn["profit_rate"] == pytest.approx(10.0)
     assert "price_error" not in amzn
 
     quote_mock.assert_awaited_once_with("AMZN")
@@ -2175,10 +2175,10 @@ async def test_get_holdings_fetches_yahoo_for_kis_us_with_missing_kis_metrics(
 
     aapl = result["accounts"][0]["positions"][0]
     assert aapl["symbol"] == "AAPL"
-    assert aapl["current_price"] == 220.0
-    assert aapl["evaluation_amount"] == 220.0
-    assert aapl["profit_loss"] == 20.0
-    assert aapl["profit_rate"] == 10.0
+    assert aapl["current_price"] == pytest.approx(220.0)
+    assert aapl["evaluation_amount"] == pytest.approx(220.0)
+    assert aapl["profit_loss"] == pytest.approx(20.0)
+    assert aapl["profit_rate"] == pytest.approx(10.0)
     assert "price_error" not in aapl
 
     quote_mock.assert_awaited_once_with("AAPL")
@@ -2227,10 +2227,10 @@ async def test_get_holdings_fetches_yahoo_for_kis_us_with_invalid_evaluation_amo
 
     aapl = result["accounts"][0]["positions"][0]
     assert aapl["symbol"] == "AAPL"
-    assert aapl["current_price"] == 220.0
-    assert aapl["evaluation_amount"] == 220.0
-    assert aapl["profit_loss"] == 20.0
-    assert aapl["profit_rate"] == 10.0
+    assert aapl["current_price"] == pytest.approx(220.0)
+    assert aapl["evaluation_amount"] == pytest.approx(220.0)
+    assert aapl["profit_loss"] == pytest.approx(20.0)
+    assert aapl["profit_rate"] == pytest.approx(10.0)
     assert "price_error" not in aapl
 
     quote_mock.assert_awaited_once_with("AAPL")
@@ -2283,10 +2283,10 @@ async def test_get_holdings_fetches_yahoo_for_kis_us_with_invalid_profit_metrics
 
     aapl = result["accounts"][0]["positions"][0]
     assert aapl["symbol"] == "AAPL"
-    assert aapl["current_price"] == 220.0
-    assert aapl["evaluation_amount"] == 220.0
-    assert aapl["profit_loss"] == 20.0
-    assert aapl["profit_rate"] == 10.0
+    assert aapl["current_price"] == pytest.approx(220.0)
+    assert aapl["evaluation_amount"] == pytest.approx(220.0)
+    assert aapl["profit_loss"] == pytest.approx(20.0)
+    assert aapl["profit_rate"] == pytest.approx(10.0)
     assert "price_error" not in aapl
 
     quote_mock.assert_awaited_once_with("AAPL")
@@ -2356,16 +2356,16 @@ async def test_get_holdings_keeps_kis_us_price_when_manual_same_symbol_uses_yaho
     kis_aapl = accounts_by_id["kis"]["positions"][0]
     manual_aapl = accounts_by_id["toss"]["positions"][0]
 
-    assert kis_aapl["current_price"] == 210.0
-    assert kis_aapl["evaluation_amount"] == 210.0
-    assert kis_aapl["profit_loss"] == 10.0
-    assert kis_aapl["profit_rate"] == 5.0
+    assert kis_aapl["current_price"] == pytest.approx(210.0)
+    assert kis_aapl["evaluation_amount"] == pytest.approx(210.0)
+    assert kis_aapl["profit_loss"] == pytest.approx(10.0)
+    assert kis_aapl["profit_rate"] == pytest.approx(5.0)
     assert "price_error" not in kis_aapl
 
-    assert manual_aapl["current_price"] == 225.0
-    assert manual_aapl["evaluation_amount"] == 450.0
-    assert manual_aapl["profit_loss"] == 70.0
-    assert manual_aapl["profit_rate"] == 18.42
+    assert manual_aapl["current_price"] == pytest.approx(225.0)
+    assert manual_aapl["evaluation_amount"] == pytest.approx(450.0)
+    assert manual_aapl["profit_loss"] == pytest.approx(70.0)
+    assert manual_aapl["profit_rate"] == pytest.approx(18.42)
     assert "price_error" not in manual_aapl
 
     quote_mock.assert_awaited_once_with("AAPL")
@@ -2435,10 +2435,10 @@ async def test_get_holdings_only_records_yahoo_error_for_same_symbol_manual_fall
     kis_aapl = accounts_by_id["kis"]["positions"][0]
     manual_aapl = accounts_by_id["toss"]["positions"][0]
 
-    assert kis_aapl["current_price"] == 210.0
-    assert kis_aapl["evaluation_amount"] == 210.0
-    assert kis_aapl["profit_loss"] == 10.0
-    assert kis_aapl["profit_rate"] == 5.0
+    assert kis_aapl["current_price"] == pytest.approx(210.0)
+    assert kis_aapl["evaluation_amount"] == pytest.approx(210.0)
+    assert kis_aapl["profit_loss"] == pytest.approx(10.0)
+    assert kis_aapl["profit_rate"] == pytest.approx(5.0)
     assert "price_error" not in kis_aapl
 
     assert manual_aapl["current_price"] is None
@@ -2617,7 +2617,7 @@ async def test_get_holdings_crypto_stop_loss_signal(monkeypatch):
     assert btc_position.get("strategy_signal") is not None
     assert btc_position["strategy_signal"]["action"] == "sell"
     assert btc_position["strategy_signal"]["reason"] == "stop_loss"
-    assert btc_position["strategy_signal"]["threshold_pct"] == -4.5
+    assert btc_position["strategy_signal"]["threshold_pct"] == pytest.approx(-4.5)
 
 
 @pytest.mark.asyncio
@@ -2660,7 +2660,7 @@ async def test_get_holdings_crypto_mean_reversion_signal(monkeypatch):
     assert btc_position.get("strategy_signal") is not None
     assert btc_position["strategy_signal"]["action"] == "sell"
     assert btc_position["strategy_signal"]["reason"] == "mean_reversion_exit"
-    assert btc_position["strategy_signal"]["rsi_14"] == 50.0
+    assert btc_position["strategy_signal"]["rsi_14"] == pytest.approx(50.0)
 
 
 @pytest.mark.asyncio
@@ -3102,8 +3102,8 @@ async def test_get_holdings_with_paper_account_filter(monkeypatch):
     pos = result["accounts"][0]["positions"][0]
     assert pos["symbol"] == "005930"
     assert pos["name"] == "삼성전자"
-    assert pos["quantity"] == 10.0
-    assert pos["avg_buy_price"] == 72000.0
+    assert pos["quantity"] == pytest.approx(10.0)
+    assert pos["avg_buy_price"] == pytest.approx(72000.0)
 
 
 @pytest.mark.asyncio
@@ -3257,7 +3257,7 @@ async def test_get_cash_balance_paper_all(monkeypatch):
 
     assert {r["currency"] for r in result["accounts"]} == {"KRW", "USD"}
     assert result["summary"]["total_krw"] == 10_000_000.0
-    assert result["summary"]["total_usd"] == 500.0
+    assert result["summary"]["total_usd"] == pytest.approx(500.0)
     assert result["errors"] == []
 
 
@@ -3305,7 +3305,7 @@ async def test_get_available_capital_paper(monkeypatch):
     assert result["manual_cash"] is None
     # 10,000,000 KRW + 500 USD * 1400 = 10,700,000
     assert result["summary"]["total_orderable_krw"] == 10_700_000.0
-    assert result["summary"]["exchange_rate_usd_krw"] == 1400.0
+    assert result["summary"]["exchange_rate_usd_krw"] == pytest.approx(1400.0)
     # paper USD row must have krw_equivalent injected
     usd_row = next(r for r in result["accounts"] if r["currency"] == "USD")
     assert usd_row["krw_equivalent"] == 700_000.0

@@ -235,10 +235,10 @@ async def test_stage_coverage_reports_stale_and_unavailable(db_session) -> None:
     )
 
     coverage = {s.stage_type: s for s in out.stage_coverage}
-    assert coverage["market"].coverage_pct == 100.0
-    assert coverage["news"].stale_pct == 100.0
-    assert coverage["social"].unavailable_pct == 100.0
-    assert coverage["social"].coverage_pct == 100.0
+    assert coverage["market"].coverage_pct == pytest.approx(100.0)
+    assert coverage["news"].stale_pct == pytest.approx(100.0)
+    assert coverage["social"].unavailable_pct == pytest.approx(100.0)
+    assert coverage["social"].coverage_pct == pytest.approx(100.0)
 
 
 @pytest.mark.asyncio

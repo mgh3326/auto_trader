@@ -1,4 +1,5 @@
 import { render, screen, fireEvent } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { HomePage } from "../pages/HomePage";
 import type { InvestHomeResponse } from "../types/invest";
 import { expect, test } from "vitest";
@@ -78,12 +79,20 @@ const data: InvestHomeResponse = {
 };
 
 test("renders meta.warnings as a single line", () => {
-  render(<HomePage state={{ status: "ready", data }} reload={() => {}} />);
+  render(
+    <MemoryRouter basename="/invest/app" initialEntries={["/invest/app/"]}>
+      <HomePage state={{ status: "ready", data }} reload={() => {}} />
+    </MemoryRouter>
+  );
   expect(screen.getByText(/cache only/)).toBeInTheDocument();
 });
 
 test("account selector toggles between groupedHoldings and raw holdings", () => {
-  render(<HomePage state={{ status: "ready", data }} reload={() => {}} />);
+  render(
+    <MemoryRouter basename="/invest/app" initialEntries={["/invest/app/"]}>
+      <HomePage state={{ status: "ready", data }} reload={() => {}} />
+    </MemoryRouter>
+  );
   expect(screen.getByTestId("grouped-row")).toBeInTheDocument();
   // "Toss 수동" is now in AccountSelector which uses buttons
   fireEvent.click(screen.getByRole("button", { name: "Toss 수동" }));
@@ -93,23 +102,25 @@ test("account selector toggles between groupedHoldings and raw holdings", () => 
 
 test("renders empty account state with portfolio deeplink", () => {
   render(
-    <HomePage
-      state={{
-        status: "ready",
-        data: {
-          ...data,
-          accounts: [],
-          holdings: [],
-          groupedHoldings: [],
-          meta: {
-            warnings: [],
-            hiddenCounts: { upbitInactive: 0, upbitDust: 0 },
-            hiddenHoldings: [],
+    <MemoryRouter basename="/invest/app" initialEntries={["/invest/app/"]}>
+      <HomePage
+        state={{
+          status: "ready",
+          data: {
+            ...data,
+            accounts: [],
+            holdings: [],
+            groupedHoldings: [],
+            meta: {
+              warnings: [],
+              hiddenCounts: { upbitInactive: 0, upbitDust: 0 },
+              hiddenHoldings: [],
+            },
           },
-        },
-      }}
-      reload={() => {}}
-    />,
+        }}
+        reload={() => {}}
+      />
+    </MemoryRouter>
   );
 
   expect(screen.getByText("연결된 계좌가 없습니다")).toBeInTheDocument();

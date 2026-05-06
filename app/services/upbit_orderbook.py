@@ -10,6 +10,7 @@ from typing import Any
 import httpx
 from httpx import HTTPStatusError
 
+from app.core.log_sanitize import safe_log_value
 from app.services.upbit_symbol_universe_service import get_upbit_market_by_coin
 
 logger = logging.getLogger(__name__)
@@ -71,7 +72,7 @@ async def fetch_orderbook(market: str = "KRW-BTC") -> dict[str, Any]:
     """
     normalized_market = await _normalize_market_code(market)
     if not normalized_market:
-        logger.warning("지원하지 않는 마켓 코드: %s", market)
+        logger.warning("지원하지 않는 마켓 코드: %s", safe_log_value(market))
         return {}
 
     try:
@@ -84,21 +85,26 @@ async def fetch_orderbook(market: str = "KRW-BTC") -> dict[str, Any]:
 
             if not data or len(data) == 0:
                 logger.warning(
-                    "마켓 %s에 대한 호가 데이터가 없습니다.", normalized_market
+                    "마켓 %s에 대한 호가 데이터가 없습니다.",
+                    safe_log_value(normalized_market),
                 )
                 return {}
 
             return _build_orderbook_result(data).get(normalized_market, {})
     except httpx.HTTPStatusError as e:
         logger.error(
-            "Upbit API 호출 실패 (%s): %s", normalized_market, e.response.status_code
+            "Upbit API 호출 실패 (%s): %s",
+            safe_log_value(normalized_market),
+            e.response.status_code,
         )
         raise
     except httpx.RequestError as e:
-        logger.error("요청 에러 (%s): %s", normalized_market, e)
+        logger.error("요청 에러 (%s): %s", safe_log_value(normalized_market), e)
         raise
     except Exception as e:
-        logger.error("호가 데이터 가져오기 실패 (%s): %s", normalized_market, e)
+        logger.error(
+            "호가 데이터 가져오기 실패 (%s): %s", safe_log_value(normalized_market), e
+        )
         raise
 
 

@@ -165,7 +165,7 @@ def test_near_fill_buy() -> None:
     item = reconcile_pending_order(_order(), _ctx_with_quote("70200"))
     assert item.classification == "near_fill"
     assert item.gap_pct is not None
-    assert abs(item.gap_pct - Decimal("0.2857")) < Decimal("0.001")
+    assert item.gap_pct == pytest.approx(Decimal("0.2857"), abs=1e-3)
 
 
 @pytest.mark.unit

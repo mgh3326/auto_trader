@@ -316,7 +316,7 @@ class TestBuildPortfolioSummary:
         # PnL should be approximately +6.67%, NOT -99.8%
         assert us["pnl_pct"] is not None
         assert us["pnl_pct"] > 0, f"Expected positive PnL, got {us['pnl_pct']}"
-        assert abs(us["pnl_pct"] - 6.67) < 1.0
+        assert us["pnl_pct"] == pytest.approx(6.67, abs=1.0)
 
     def test_kr_pnl_still_works(self):
         """KR positions should still calculate PnL correctly."""
@@ -341,7 +341,7 @@ class TestBuildPortfolioSummary:
         assert kr is not None
         assert kr["pnl_pct"] is not None
         assert kr["pnl_pct"] > 0
-        assert abs(kr["pnl_pct"] - 7.14) < 1.0
+        assert kr["pnl_pct"] == pytest.approx(7.14, abs=1.0)
 
     def test_crypto_pnl_still_works(self):
         """Crypto positions should still calculate PnL correctly."""
@@ -365,7 +365,7 @@ class TestBuildPortfolioSummary:
         crypto = result.get("crypto")
         assert crypto is not None
         assert crypto["pnl_pct"] is not None
-        assert abs(crypto["pnl_pct"] - 10.0) < 1.0
+        assert crypto["pnl_pct"] == pytest.approx(10.0, abs=1.0)
 
     def test_position_without_profit_rate_falls_back(self):
         """Positions missing profit_rate should fall back gracefully."""
@@ -391,7 +391,7 @@ class TestBuildPortfolioSummary:
         # When profit_rate is None, fall back to avg_price * qty calculation
         # $950 - $900 = $50, $50/$900 = 5.56%
         assert us["pnl_pct"] is not None
-        assert abs(us["pnl_pct"] - 5.56) < 1.0
+        assert us["pnl_pct"] == pytest.approx(5.56, abs=1.0)
 
     def test_zero_evaluation_returns_none_pnl(self):
         """Zero evaluation should not cause division errors."""

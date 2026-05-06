@@ -644,12 +644,12 @@ async def test_current_hour_is_reaggregated_from_minutes_not_from_db_hour(monkey
     assert len(out) == 1
     row = out.iloc[0]
     assert row["datetime"] == current_bucket
-    assert row["open"] == 100.0
-    assert row["high"] == 102.0
-    assert row["low"] == 99.0
-    assert row["close"] == 101.0
-    assert row["volume"] == 30.0
-    assert row["value"] == 3000.0
+    assert row["open"] == pytest.approx(100.0)
+    assert row["high"] == pytest.approx(102.0)
+    assert row["low"] == pytest.approx(99.0)
+    assert row["close"] == pytest.approx(101.0)
+    assert row["volume"] == pytest.approx(30.0)
+    assert row["value"] == pytest.approx(3000.0)
 
 
 @pytest.mark.asyncio
@@ -729,9 +729,9 @@ async def test_api_overrides_db_minutes_for_same_minute_and_venue(monkeypatch):
     assert len(out) == 1
     row = out.iloc[0]
     assert row["datetime"] == current_bucket
-    assert row["open"] == 200.0
-    assert row["close"] == 200.0
-    assert row["volume"] == 1.0
+    assert row["open"] == pytest.approx(200.0)
+    assert row["close"] == pytest.approx(200.0)
+    assert row["volume"] == pytest.approx(1.0)
 
 
 @pytest.mark.asyncio
@@ -805,10 +805,10 @@ async def test_same_minute_both_venues_price_krx_priority_volume_sum(monkeypatch
     assert len(out) == 1
     row = out.iloc[0]
     assert row["datetime"] == current_bucket
-    assert row["open"] == 100.0
-    assert row["close"] == 105.0
-    assert row["volume"] == 15.0
-    assert row["value"] == 1500.0
+    assert row["open"] == pytest.approx(100.0)
+    assert row["close"] == pytest.approx(105.0)
+    assert row["volume"] == pytest.approx(15.0)
+    assert row["value"] == pytest.approx(1500.0)
     assert row["venues"] == ["KRX", "NTX"]
 
 

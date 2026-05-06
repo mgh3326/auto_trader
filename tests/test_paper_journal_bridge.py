@@ -134,8 +134,8 @@ class TestCompareStrategies:
         assert s["total_trades"] == 2  # active excluded
         assert s["win_count"] == 1
         assert s["loss_count"] == 1
-        assert s["win_rate"] == 50.0
-        assert s["total_return_pct"] == 2.0  # 5.0 + (-3.0)
+        assert s["win_rate"] == pytest.approx(50.0)
+        assert s["total_return_pct"] == pytest.approx(2.0)  # 5.0 + (-3.0)
         assert s["best_trade"]["symbol"] == "005930"
         assert s["worst_trade"]["symbol"] == "AAPL"
 
@@ -239,8 +239,8 @@ class TestCompareStrategies:
         assert len(result["live_vs_paper"]) == 1
         comp = result["live_vs_paper"][0]
         assert comp["symbol"] == "005930"
-        assert comp["paper_pnl_pct"] == 5.0
-        assert comp["live_pnl_pct"] == 3.0
+        assert comp["paper_pnl_pct"] == pytest.approx(5.0)
+        assert comp["live_pnl_pct"] == pytest.approx(3.0)
         assert comp["delta_pnl_pct"] == pytest.approx(2.0)
 
     @pytest.mark.asyncio

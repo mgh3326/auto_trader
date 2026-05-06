@@ -185,10 +185,10 @@ async def test_place_order_upbit_buy_limit_dry_run(monkeypatch):
     assert result["symbol"] == "KRW-BTC"
     assert result["side"] == "buy"
     assert result["order_type"] == "limit"
-    assert result["price"] == 45000000.0
-    assert result["quantity"] == 0.02
-    assert result["estimated_value"] == 900000.0
-    assert result["fee"] == 4500.0
+    assert result["price"] == pytest.approx(45000000.0)
+    assert result["quantity"] == pytest.approx(0.02)
+    assert result["estimated_value"] == pytest.approx(900000.0)
+    assert result["fee"] == pytest.approx(4500.0)
 
 
 @pytest.mark.asyncio
@@ -628,7 +628,7 @@ async def test_place_order_nyse_exchange_code(monkeypatch):
     assert buy_calls[0]["symbol"] == "TSM"
     assert buy_calls[0]["exchange_code"] == "NYSE"
     assert buy_calls[0]["quantity"] == 10
-    assert buy_calls[0]["price"] == 150.0
+    assert buy_calls[0]["price"] == pytest.approx(150.0)
 
 
 @pytest.mark.asyncio
@@ -669,7 +669,7 @@ class TestPlaceOrderHighAmount:
 
         price = await order_execution._get_current_price_for_order("KRW-BTC", "crypto")
 
-        assert price == 50000000.0
+        assert price == pytest.approx(50000000.0)
         ticker_mock.assert_awaited_once_with(["KRW-BTC"], use_cache=False)
 
     @pytest.mark.asyncio
@@ -897,7 +897,7 @@ class TestPlaceOrderHighAmount:
         assert buy_calls[0]["symbol"] == "AAPL"
         assert buy_calls[0]["exchange_code"] == "NASD"
         assert buy_calls[0]["quantity"] == 10000
-        assert buy_calls[0]["price"] == 250.0
+        assert buy_calls[0]["price"] == pytest.approx(250.0)
 
     @pytest.mark.asyncio
     async def test_place_order_high_amount_crypto_dry_run_false(self, monkeypatch):
@@ -1223,7 +1223,7 @@ async def test_place_order_kr_equity_balance_precheck_skips_zero_priority_ordera
 
     assert result["success"] is True
     assert result["dry_run"] is True
-    assert result["estimated_value"] == 700000.0
+    assert result["estimated_value"] == pytest.approx(700000.0)
     assert "warning" not in result
 
 
@@ -1348,8 +1348,8 @@ async def test_place_order_kis_mock_sell_preview_uses_mock_holdings(monkeypatch)
     assert result["success"] is True
     assert result["dry_run"] is True
     assert result["account_mode"] == "kis_mock"
-    assert result["avg_buy_price"] == 227000.0
-    assert result["realized_pnl"] == 2500.0
+    assert result["avg_buy_price"] == pytest.approx(227000.0)
+    assert result["realized_pnl"] == pytest.approx(2500.0)
     assert kis_calls
     assert all(kis_calls)
 
@@ -1450,7 +1450,7 @@ async def test_place_order_crypto_sell_locked_zero_still_works(monkeypatch):
     )
 
     assert result["success"] is True
-    assert result["quantity"] == 0.5
+    assert result["quantity"] == pytest.approx(0.5)
 
 
 # ------------------------------------------------------------------------------

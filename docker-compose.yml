@@ -5,7 +5,7 @@ services:
     container_name: auto_trader_pg
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: auto_trader
     ports: [ "5434:5432" ]
     volumes:
