@@ -4,7 +4,6 @@
 broker mutation / order / watch / scheduler / worker 경로는 import / 호출 금지.
 DB write / backfill 금지 — read-only 조회만 사용.
 """
-
 from __future__ import annotations
 
 import logging
@@ -19,7 +18,12 @@ from app.schemas.invest_home import (
     Holding,
     InvestHomeWarning,
 )
-from app.services.account.service import get_cash, get_positions
+from app.services.brokers.kis.account import (
+    AccountClient,
+    extract_domestic_cash_summary_from_integrated_margin,
+)
+from app.services.brokers.kis.base import BaseKISClient
+from app.services.brokers.upbit.client import fetch_my_coins
 from app.services.invest_home_service import _SourceFetchResult
 from app.services.manual_holdings_service import ManualHoldingsService
 
@@ -30,60 +34,85 @@ class HomeReader(Protocol):
     async def fetch(self, *, user_id: int) -> _SourceFetchResult: ...
 
 
+class SafeKISClient(BaseKISClient):
+    """Mutation-safe KIS client for read-only use."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.account = AccountClient(self)  # type: ignore
+
+    async def _ensure_token(self) -> None:
+        # Avoid module-level settings.kis_access_token side effects if possible,
+        # but BaseKISClient already handles it via redis_token_manager.
+        return await super()._ensure_token()
+
+
 class KISHomeReader:
-    """KIS 실계좌 read-only reader. 잔고/평단/현금/매수가능만."""
+    """KIS 실계좌 read-only reader."""
 
     def __init__(self, db: AsyncSession) -> None:
         self._db = db
+        self._client = SafeKISClient()
 
     async def fetch(self, *, user_id: int) -> _SourceFetchResult:
         try:
-            # 1. Positions (Domestic & Overseas)
-            pos_kr = await get_positions(market="equity_kr")
-            pos_us = await get_positions(market="equity_us")
-            all_pos = pos_kr + pos_us
+            # 1. Domestic
+            stocks_kr = await self._client.account.fetch_my_stocks(is_overseas=False)
+            margin = await self._client.account.inquire_integrated_margin()
+            domestic_cash = extract_domestic_cash_summary_from_integrated_margin(margin)
 
-            holdings = [
-                Holding(
-                    holdingId=f"kis:{p.symbol}",
-                    accountId="kis_account",  # KIS integrated account
-                    source="kis",
-                    accountKind="live",
-                    symbol=p.symbol,
-                    market="KR" if p.market == "equity_kr" else "US",
-                    assetType="equity",
-                    displayName=p.name or p.symbol,
-                    quantity=p.quantity,
-                    averageCost=p.avg_price,
-                    costBasis=(p.avg_price * p.quantity)
-                    if p.avg_price is not None
-                    else None,
-                    currency="KRW" if p.market == "equity_kr" else "USD",
-                    valueNative=p.evaluation_amount
-                    if p.market == "equity_us"
-                    else None,
-                    valueKrw=p.evaluation_amount
-                    if p.market == "equity_kr"
-                    else None,  # US evaluation needs FX, but Position usually has it if fetched via integrated margin
-                    pnlKrw=p.profit_loss,
-                    pnlRate=p.profit_rate,
+            # 2. Overseas (simplified to NASD for now as per account.py common usage)
+            stocks_us = await self._client.account.fetch_my_overseas_stocks(exchange_code="NASD")
+
+            holdings = []
+            # Map KR
+            for s in stocks_kr:
+                qty = float(s.get("hldg_qty", 0))
+                avg_price = float(s.get("pchs_avg_pric", 0))
+                holdings.append(
+                    Holding(
+                        holdingId=f"kis:kr:{s.get('pdno')}",
+                        accountId="kis_account",
+                        source="kis",
+                        accountKind="live",
+                        symbol=str(s.get("pdno")),
+                        market="KR",
+                        assetType="equity",
+                        displayName=str(s.get("prdt_name")),
+                        quantity=qty,
+                        averageCost=avg_price,
+                        costBasis=float(s.get("pchs_amt", 0)) or (qty * avg_price),
+                        currency="KRW",
+                        valueNative=float(s.get("evlu_amt", 0)),
+                        valueKrw=float(s.get("evlu_amt", 0)),
+                        pnlKrw=float(s.get("evlu_pfls_amt", 0)),
+                        pnlRate=float(s.get("evlu_pfls_rt", 0)) / 100.0,
+                    )
                 )
-                for p in all_pos
-                if p.source == "kis"
-            ]
-
-            # 2. Cash & Buying Power
-            cash_list = await get_cash()
-            kis_cash = [c for c in cash_list if c.source == "kis"]
-
-            krw_cash = next((c for c in kis_cash if c.currency == "KRW"), None)
-            usd_cash = next((c for c in kis_cash if c.currency == "USD"), None)
-
-            value_krw = sum(h.valueKrw for h in holdings if h.valueKrw is not None)
-            # US holdings valueKrw calculation (simplified or using Position evaluation_amount if it's already KRW)
-            # Note: app.services.account.service Position.evaluation_amount for US is usually USD.
-            # We might need FX rate here, but to keep it simple and follow the "read-only" spirit,
-            # we'll use evaluation_amount as is for valueNative and handle KRW conversion if possible.
+            # Map US
+            for s in stocks_us:
+                qty = float(s.get("ovrs_cblc_qty", 0))
+                avg_price = float(s.get("pchs_avg_pric", 0))
+                holdings.append(
+                    Holding(
+                        holdingId=f"kis:us:{s.get('ovrs_pdno')}",
+                        accountId="kis_account",
+                        source="kis",
+                        accountKind="live",
+                        symbol=str(s.get("ovrs_pdno")),
+                        market="US",
+                        assetType="equity",
+                        displayName=str(s.get("ovrs_item_name")),
+                        quantity=qty,
+                        averageCost=avg_price,
+                        costBasis=float(s.get("frcr_pchs_amt1", 0)) or (qty * avg_price),
+                        currency="USD",
+                        valueNative=float(s.get("ovrs_stck_evlu_amt", 0)),
+                        valueKrw=None,  # Needs FX
+                        pnlKrw=float(s.get("frcr_evlu_pfls_amt", 0)),
+                        pnlRate=float(s.get("evlu_pfls_rt", 0)) / 100.0,
+                    )
+                )
 
             account = Account(
                 accountId="kis_account",
@@ -91,27 +120,21 @@ class KISHomeReader:
                 source="kis",
                 accountKind="live",
                 includedInHome=True,
-                valueKrw=value_krw + (krw_cash.balance if krw_cash else 0),
-                costBasisKrw=sum(
-                    h.costBasis for h in holdings if h.costBasis is not None
-                ),
+                valueKrw=sum(h.valueKrw for h in holdings if h.valueKrw) + domestic_cash["balance"],
+                costBasisKrw=sum(h.costBasis for h in holdings if h.currency == "KRW"),
                 cashBalances=CashAmounts(
-                    krw=krw_cash.balance if krw_cash else None,
-                    usd=usd_cash.balance if usd_cash else None,
+                    krw=domestic_cash["balance"],
+                    usd=margin.get("usd_balance"),
                 ),
                 buyingPower=CashAmounts(
-                    krw=krw_cash.orderable if krw_cash else None,
-                    usd=usd_cash.orderable if usd_cash else None,
+                    krw=domestic_cash["orderable"],
+                    usd=margin.get("usd_ord_psbl_amt"),
                 ),
             )
-            # Recalculate account pnl
-            if account.costBasisKrw:
-                account.pnlKrw = account.valueKrw - account.costBasisKrw
-                account.pnlRate = account.pnlKrw / account.costBasisKrw
-
             return _SourceFetchResult(accounts=[account], holdings=holdings)
+
         except Exception as exc:
-            logger.warning("KIS fetch failed: %s", exc)
+            logger.warning("KIS fetch failed: %s", exc, exc_info=True)
             return _SourceFetchResult(
                 accounts=[],
                 holdings=[],
@@ -120,66 +143,61 @@ class KISHomeReader:
 
 
 class UpbitHomeReader:
-    """Upbit read-only reader. 잔고/평단/원화 매수가능만."""
+    """Upbit read-only reader."""
 
     def __init__(self, db: AsyncSession) -> None:
         self._db = db
 
     async def fetch(self, *, user_id: int) -> _SourceFetchResult:
         try:
-            pos = await get_positions(market="crypto")
-            cash_list = await get_cash(market="crypto")
-            upbit_cash = next(
-                (c for c in cash_list if c.source == "upbit" and c.currency == "KRW"),
-                None,
-            )
+            coins = await fetch_my_coins()
+            krw_row = next((c for c in coins if c.get("currency") == "KRW"), None)
 
-            holdings = [
-                Holding(
-                    holdingId=f"upbit:{p.symbol}",
-                    accountId="upbit_account",
-                    source="upbit",
-                    accountKind="live",
-                    symbol=p.symbol,
-                    market="CRYPTO",
-                    assetType="crypto",
-                    displayName=p.name or p.symbol,
-                    quantity=p.quantity,
-                    averageCost=p.avg_price,
-                    costBasis=(p.avg_price * p.quantity)
-                    if p.avg_price is not None
-                    else None,
-                    currency="KRW",
-                    valueNative=None,
-                    valueKrw=None,  # We need current price for this
-                    pnlKrw=None,
-                    pnlRate=None,
+            holdings = []
+            for c in coins:
+                currency = str(c.get("currency"))
+                if currency == "KRW":
+                    continue
+                qty = float(c.get("balance", 0)) + float(c.get("locked", 0))
+                avg_price = float(c.get("avg_buy_price", 0))
+                holdings.append(
+                    Holding(
+                        holdingId=f"upbit:{currency}",
+                        accountId="upbit_account",
+                        source="upbit",
+                        accountKind="live",
+                        symbol=currency,
+                        market="CRYPTO",
+                        assetType="crypto",
+                        displayName=currency,
+                        quantity=qty,
+                        averageCost=avg_price,
+                        costBasis=qty * avg_price,
+                        currency="KRW",
+                        valueNative=None,
+                        valueKrw=None,
+                        pnlKrw=None,
+                        pnlRate=None,
+                    )
                 )
-                for p in pos
-                if p.source == "upbit"
-            ]
 
-            # Account value calculation (Upbit)
             account = Account(
                 accountId="upbit_account",
                 displayName="Upbit",
                 source="upbit",
                 accountKind="live",
                 includedInHome=True,
-                valueKrw=upbit_cash.balance
-                if upbit_cash
-                else 0,  # Should add crypto value
+                valueKrw=float(krw_row.get("balance", 0)) if krw_row else 0,
                 cashBalances=CashAmounts(
-                    krw=upbit_cash.balance if upbit_cash else None
+                    krw=float(krw_row.get("balance", 0)) if krw_row else None
                 ),
                 buyingPower=CashAmounts(
-                    krw=upbit_cash.orderable if upbit_cash else None
+                    krw=float(krw_row.get("balance", 0)) if krw_row else None
                 ),
             )
-
             return _SourceFetchResult(accounts=[account], holdings=holdings)
         except Exception as exc:
-            logger.warning("Upbit fetch failed: %s", exc)
+            logger.warning("Upbit fetch failed: %s", exc, exc_info=True)
             return _SourceFetchResult(
                 accounts=[],
                 holdings=[],
@@ -196,12 +214,9 @@ class ManualHomeReader:
 
     async def fetch(self, *, user_id: int) -> _SourceFetchResult:
         try:
-            # Plan: Use ManualHoldingsService.get_holdings_by_user(user_id=...)
-            # broker_account.broker_type == "toss" only.
             raw_holdings = await self._service.get_holdings_by_user(user_id)
             toss_holdings = [
-                h
-                for h in raw_holdings
+                h for h in raw_holdings
                 if str(getattr(h.broker_account, "broker_type", "")).lower() == "toss"
             ]
 
@@ -217,9 +232,7 @@ class ManualHomeReader:
                     displayName=h.display_name or h.ticker,
                     quantity=float(h.quantity),
                     averageCost=float(h.avg_price) if h.avg_price else None,
-                    costBasis=(float(h.quantity) * float(h.avg_price))
-                    if h.avg_price
-                    else None,
+                    costBasis=(float(h.quantity) * float(h.avg_price)) if h.avg_price else None,
                     currency="KRW" if h.market_type == MarketType.KR else "USD",
                     valueNative=None,
                     valueKrw=None,
@@ -229,7 +242,6 @@ class ManualHomeReader:
                 for h in toss_holdings
             ]
 
-            # Aggregate into Account objects (per broker_account_id)
             accounts_map: dict[int, Account] = {}
             for h in toss_holdings:
                 ba = h.broker_account
@@ -246,19 +258,14 @@ class ManualHomeReader:
                         buyingPower=CashAmounts(),
                     )
                 acc = accounts_map[ba.id]
-                # Note: Manual holdings don't have current value easily available here without FX and price fetching.
-                # For MVP, we use costBasis as a placeholder or leave it 0 if unknown.
                 if h.avg_price:
                     acc.costBasisKrw += float(h.quantity) * float(h.avg_price)
-                    # For KR, valueKrw can be same as costBasis for placeholder
                     if h.market_type == MarketType.KR:
                         acc.valueKrw += float(h.quantity) * float(h.avg_price)
 
-            return _SourceFetchResult(
-                accounts=list(accounts_map.values()), holdings=holdings
-            )
+            return _SourceFetchResult(accounts=list(accounts_map.values()), holdings=holdings)
         except Exception as exc:
-            logger.warning("Manual fetch failed: %s", exc)
+            logger.warning("Manual fetch failed: %s", exc, exc_info=True)
             return _SourceFetchResult(
                 accounts=[],
                 holdings=[],
