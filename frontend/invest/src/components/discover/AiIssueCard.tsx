@@ -4,12 +4,12 @@ import { formatRelativeTime } from "../../format/relativeTime";
 import type { NewsRadarItem } from "../../types/newsRadar";
 import { describeSeverity } from "./severity";
 
-export interface AiIssueCardProps {
+export type AiIssueCardProps = Readonly<{
   rank: number;
   item: NewsRadarItem;
   relatedCount: number;
   now?: Date;
-}
+}>;
 
 function buildSubtitle(item: NewsRadarItem): string {
   if (item.snippet && item.snippet.trim().length > 0) return item.snippet;

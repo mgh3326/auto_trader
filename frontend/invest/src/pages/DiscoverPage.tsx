@@ -61,8 +61,8 @@ export function DiscoverPage(props: DiscoverPageProps = {}) {
       <TodayEventCard />
       <AiIssueTicker asOf={data.as_of} />
       {isStale && (
-        <div
-          role="status"
+        <output
+          aria-live="polite"
           style={{
             padding: 8,
             background: "rgba(246,193,119,0.08)",
@@ -73,7 +73,7 @@ export function DiscoverPage(props: DiscoverPageProps = {}) {
           }}
         >
           데이터가 최신이 아닐 수 있습니다.
-        </div>
+        </output>
       )}
       {sorted.length === 0 ? (
         <div className="subtle">표시할 이슈가 없습니다.</div>

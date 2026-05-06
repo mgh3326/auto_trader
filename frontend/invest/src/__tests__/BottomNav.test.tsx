@@ -27,7 +27,7 @@ test("증권 link points to /invest/app", () => {
 
 test("관심 and 피드 are aria-disabled and do not call alert when clicked", async () => {
   const user = userEvent.setup();
-  const alertSpy = vi.spyOn(window, "alert").mockImplementation(() => {});
+  const alertSpy = vi.spyOn(globalThis, "alert").mockImplementation(() => {});
   renderAt("/");
 
   const watch = screen.getByRole("button", { name: "관심" });

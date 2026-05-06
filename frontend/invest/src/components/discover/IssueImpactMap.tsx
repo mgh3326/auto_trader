@@ -9,7 +9,15 @@ const TONE_STYLES: Record<ImpactTone, CSSProperties> = {
   watch: { background: "var(--pill-up)", color: "var(--pill-up-fg)" },
 };
 
-export function IssueImpactMap({ category }: { category: NewsRadarRiskCategory | null }) {
+type IssueImpactMapProps = Readonly<{
+  category: NewsRadarRiskCategory | null;
+}>;
+
+type ImpactRowProps = Readonly<{
+  pill: ImpactPill;
+}>;
+
+export function IssueImpactMap({ category }: IssueImpactMapProps) {
   const pills = lookupImpact(category);
   return (
     <section aria-labelledby="impact-heading" style={{ marginTop: 16 }}>
@@ -43,7 +51,7 @@ export function IssueImpactMap({ category }: { category: NewsRadarRiskCategory |
   );
 }
 
-function ImpactRow({ pill }: { pill: ImpactPill }) {
+function ImpactRow({ pill }: ImpactRowProps) {
   return (
     <li
       style={{

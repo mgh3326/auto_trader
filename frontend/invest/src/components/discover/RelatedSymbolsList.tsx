@@ -1,5 +1,9 @@
 // frontend/invest/src/components/discover/RelatedSymbolsList.tsx
-export function RelatedSymbolsList({ symbols }: { symbols: string[] }) {
+type RelatedSymbolsListProps = Readonly<{
+  symbols: readonly string[];
+}>;
+
+export function RelatedSymbolsList({ symbols }: RelatedSymbolsListProps) {
   return (
     <section aria-labelledby="symbols-heading" style={{ marginTop: 16 }}>
       <h2 id="symbols-heading" style={{ margin: 0, fontSize: 14, fontWeight: 700 }}>

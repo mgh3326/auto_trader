@@ -1,5 +1,9 @@
 // frontend/invest/src/components/discover/AiIssueTicker.tsx
-export function AiIssueTicker({ asOf }: { asOf?: string | null }) {
+type AiIssueTickerProps = Readonly<{
+  asOf?: string | null;
+}>;
+
+export function AiIssueTicker({ asOf }: AiIssueTickerProps) {
   return (
     <header style={{ marginTop: 8 }}>
       <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>
