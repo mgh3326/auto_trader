@@ -10,6 +10,40 @@ from app.core.timezone import format_datetime
 from .types import COLORS, DECISION_EMOJI, DECISION_TEXT, DiscordEmbed, DiscordField
 
 
+def _price_fmt(price: float, is_usd: bool, currency: str) -> str:
+    return f"${price:,.2f}" if is_usd else f"{price:,.0f}{currency}"
+
+
+def _append_order_details(
+    fields: list[DiscordField],
+    prices: list[float],
+    volumes: list[float],
+    price_label: str,
+) -> None:
+    if prices and volumes and len(prices) == len(volumes):
+        order_details: list[str] = []
+        for i, (price, volume) in enumerate(zip(prices, volumes, strict=True), 1):
+            order_details.append(f"{i}. {price:,.2f}원 × {volume:.8g}")
+        fields.append(
+            {
+                "name": "주문 상세",
+                "value": "\n".join(order_details),
+                "inline": False,
+            }
+        )
+    elif prices:
+        price_list: list[str] = []
+        for i, price in enumerate(prices, 1):
+            price_list.append(f"{i}. {price:,.2f}원")
+        fields.append(
+            {
+                "name": price_label,
+                "value": "\n".join(price_list),
+                "inline": False,
+            }
+        )
+
+
 def format_buy_notification(
     symbol: str,
     korean_name: str,
@@ -28,28 +62,7 @@ def format_buy_notification(
         {"name": "총 금액", "value": f"{total_amount:,.0f}원", "inline": False},
     ]
 
-    if prices and volumes and len(prices) == len(volumes):
-        order_details: list[str] = []
-        for i, (price, volume) in enumerate(zip(prices, volumes, strict=True), 1):
-            order_details.append(f"{i}. {price:,.2f}원 × {volume:.8g}")
-        fields.append(
-            {
-                "name": "주문 상세",
-                "value": "\n".join(order_details),
-                "inline": False,
-            }
-        )
-    elif prices:
-        price_list: list[str] = []
-        for i, price in enumerate(prices, 1):
-            price_list.append(f"{i}. {price:,.2f}원")
-        fields.append(
-            {
-                "name": "매수 가격대",
-                "value": "\n".join(price_list),
-                "inline": False,
-            }
-        )
+    _append_order_details(fields, prices, volumes, "매수 가격대")
 
     return {
         "title": "💰 매수 주문 접수",
@@ -83,28 +96,7 @@ def format_sell_notification(
         },
     ]
 
-    if prices and volumes and len(prices) == len(volumes):
-        order_details: list[str] = []
-        for i, (price, volume) in enumerate(zip(prices, volumes, strict=True), 1):
-            order_details.append(f"{i}. {price:,.2f}원 × {volume:.8g}")
-        fields.append(
-            {
-                "name": "주문 상세",
-                "value": "\n".join(order_details),
-                "inline": False,
-            }
-        )
-    elif prices:
-        price_list: list[str] = []
-        for i, price in enumerate(prices, 1):
-            price_list.append(f"{i}. {price:,.2f}원")
-        fields.append(
-            {
-                "name": "매도 가격대",
-                "value": "\n".join(price_list),
-                "inline": False,
-            }
-        )
+    _append_order_details(fields, prices, volumes, "매도 가격대")
 
     return {
         "title": "💸 매도 주문 접수",
@@ -136,6 +128,44 @@ def format_cancel_notification(
         "color": COLORS["cancel"],
         "fields": fields,
     }
+
+
+def _base_toss_fields(
+    symbol: str,
+    korean_name: str,
+    market_type: str,
+    current_price: float,
+    toss_quantity: int,
+    toss_avg_price: float,
+    kis_quantity: int | None,
+    kis_avg_price: float | None,
+    is_usd: bool,
+    currency: str,
+) -> list[DiscordField]:
+    fields: list[DiscordField] = [
+        {"name": "종목", "value": f"{korean_name} ({symbol})", "inline": True},
+        {"name": "시장", "value": market_type, "inline": True},
+        {
+            "name": "현재가",
+            "value": _price_fmt(current_price, is_usd, currency),
+            "inline": False,
+        },
+        {
+            "name": "토스 보유",
+            "value": f"{toss_quantity}주 (평단가 {_price_fmt(toss_avg_price, is_usd, currency)})",
+            "inline": False,
+        },
+    ]
+
+    if kis_quantity and kis_quantity > 0 and kis_avg_price:
+        fields.append(
+            {
+                "name": "한투 보유",
+                "value": f"{kis_quantity}주 (평단가 {_price_fmt(kis_avg_price, is_usd, currency)})",
+                "inline": False,
+            }
+        )
+    return fields
 
 
 def format_analysis_notification(
@@ -252,34 +282,24 @@ def format_toss_buy_recommendation(
     timestamp = format_datetime()
     is_usd = currency == "$"
 
-    def price_fmt(price: float) -> str:
-        return f"${price:,.2f}" if is_usd else f"{price:,.0f}{currency}"
-
-    fields: list[DiscordField] = [
-        {"name": "종목", "value": f"{korean_name} ({symbol})", "inline": True},
-        {"name": "시장", "value": market_type, "inline": True},
-        {"name": "현재가", "value": price_fmt(current_price), "inline": False},
-        {
-            "name": "토스 보유",
-            "value": f"{toss_quantity}주 (평단가 {price_fmt(toss_avg_price)})",
-            "inline": False,
-        },
-    ]
-
-    if kis_quantity and kis_quantity > 0 and kis_avg_price:
-        fields.append(
-            {
-                "name": "한투 보유",
-                "value": f"{kis_quantity}주 (평단가 {price_fmt(kis_avg_price)})",
-                "inline": False,
-            }
-        )
+    fields = _base_toss_fields(
+        symbol,
+        korean_name,
+        market_type,
+        current_price,
+        toss_quantity,
+        toss_avg_price,
+        kis_quantity,
+        kis_avg_price,
+        is_usd,
+        currency,
+    )
 
     fields.extend(
         [
             {
                 "name": "💡 추천 매수가",
-                "value": price_fmt(recommended_price),
+                "value": _price_fmt(recommended_price, is_usd, currency),
                 "inline": False,
             },
             {
@@ -320,36 +340,26 @@ def format_toss_sell_recommendation(
     timestamp = format_datetime()
     is_usd = currency == "$"
 
-    def price_fmt(price: float) -> str:
-        return f"${price:,.2f}" if is_usd else f"{price:,.0f}{currency}"
-
     profit_sign = "+" if profit_percent >= 0 else ""
 
-    fields: list[DiscordField] = [
-        {"name": "종목", "value": f"{korean_name} ({symbol})", "inline": True},
-        {"name": "시장", "value": market_type, "inline": True},
-        {"name": "현재가", "value": price_fmt(current_price), "inline": False},
-        {
-            "name": "토스 보유",
-            "value": f"{toss_quantity}주 (평단가 {price_fmt(toss_avg_price)})",
-            "inline": False,
-        },
-    ]
-
-    if kis_quantity and kis_quantity > 0 and kis_avg_price:
-        fields.append(
-            {
-                "name": "한투 보유",
-                "value": f"{kis_quantity}주 (평단가 {price_fmt(kis_avg_price)})",
-                "inline": False,
-            }
-        )
+    fields = _base_toss_fields(
+        symbol,
+        korean_name,
+        market_type,
+        current_price,
+        toss_quantity,
+        toss_avg_price,
+        kis_quantity,
+        kis_avg_price,
+        is_usd,
+        currency,
+    )
 
     fields.extend(
         [
             {
                 "name": "💡 추천 매도가",
-                "value": f"{price_fmt(recommended_price)} ({profit_sign}{profit_percent:.1f}%)",
+                "value": f"{_price_fmt(recommended_price, is_usd, currency)} ({profit_sign}{profit_percent:.1f}%)",
                 "inline": False,
             },
             {
@@ -359,7 +369,7 @@ def format_toss_sell_recommendation(
             },
             {
                 "name": "예상 수익",
-                "value": price_fmt(expected_profit),
+                "value": _price_fmt(expected_profit, is_usd, currency),
                 "inline": False,
             },
         ]
@@ -401,7 +411,7 @@ def format_toss_price_recommendation(
     is_usd = currency == "$"
 
     def price_fmt(price: float) -> str:
-        return f"${price:,.2f}" if is_usd else f"{price:,.0f}{currency}"
+        return _price_fmt(price, is_usd, currency)
 
     profit_percent = (
         ((current_price / toss_avg_price) - 1) * 100 if toss_avg_price > 0 else 0
