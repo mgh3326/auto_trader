@@ -110,11 +110,17 @@ class TradeJournalCoverageService:
             summary_row = await self._latest_summary_for_symbol(symbol)
 
             journal_status = "present" if journal is not None else "missing"
+            if journal is not None and summary_row is not None:
+                # summary_row = (summary_id, session_id, decision, executed_at)
+                summary_executed_at = summary_row[3]
+                if journal.updated_at < summary_executed_at:
+                    journal_status = "stale"
+
             decision: str | None = None
             session_id: int | None = None
             summary_id: int | None = None
             if summary_row is not None:
-                summary_id, session_id, decision = summary_row
+                summary_id, session_id, decision, _ = summary_row
 
             conflict = bool(
                 journal is not None
@@ -182,12 +188,17 @@ class TradeJournalCoverageService:
 
     async def _latest_summary_for_symbol(
         self, symbol: str
-    ) -> tuple[int, int, str] | None:
+    ) -> tuple[int, int, str, datetime] | None:
         # research_summaries → research_sessions → stock_info.symbol
         from app.models.analysis import StockInfo  # local import to avoid cycle
 
         stmt = (
-            select(ResearchSummary.id, ResearchSession.id, ResearchSummary.decision)
+            select(
+                ResearchSummary.id,
+                ResearchSession.id,
+                ResearchSummary.decision,
+                ResearchSummary.executed_at,
+            )
             .join(ResearchSession, ResearchSummary.session_id == ResearchSession.id)
             .join(StockInfo, ResearchSession.stock_info_id == StockInfo.id)
             .where(StockInfo.symbol == symbol)
@@ -197,4 +208,4 @@ class TradeJournalCoverageService:
         row = (await self.db.execute(stmt)).first()
         if row is None:
             return None
-        return (int(row[0]), int(row[1]), str(row[2]))
+        return (int(row[0]), int(row[1]), str(row[2]), row[3])

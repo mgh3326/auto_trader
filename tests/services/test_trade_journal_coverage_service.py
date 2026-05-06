@@ -62,3 +62,22 @@ async def test_thesis_conflict_when_summary_decision_is_sell_and_journal_active(
     row = resp.rows[0]
     assert row.thesis_conflict_with_summary is True
     assert row.latest_summary_decision == "sell"
+
+
+@pytest.mark.asyncio
+async def test_journal_updated_before_summary_is_stale(
+    db_session,
+    user,
+    seed_holding_005930,
+    seed_active_journal_005930,
+    seed_summary_sell_005930,
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    # Force summary to be newer than journal
+    seed_summary_sell_005930.executed_at = datetime.now(UTC) + timedelta(minutes=5)
+    await db_session.flush()
+
+    svc = TradeJournalCoverageService(db_session)
+    resp = await svc.build_coverage(user_id=user.id)
+    assert resp.rows[0].journal_status == "stale"
