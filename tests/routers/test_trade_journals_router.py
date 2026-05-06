@@ -30,9 +30,8 @@ def mock_external_clients():
 @pytest.fixture
 def app(db_session, user):
     _app = FastAPI()
-    _app.include_router(router, prefix="/api/v1")
+    _app.include_router(router)
 
-    # Override dependencies to bypass real auth and DB lookup
     _app.dependency_overrides[get_current_user] = lambda: user
     _app.dependency_overrides[get_db] = lambda: db_session
     return _app
@@ -43,11 +42,20 @@ async def test_get_coverage_returns_200(app, seed_holding_005930) -> None:
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as ac:
-        resp = await ac.get("/api/v1/trade-journals/coverage")
+        resp = await ac.get("/trading/api/trade-journals/coverage")
     assert resp.status_code == 200
     data = resp.json()
     assert "rows" in data
     assert data["total"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_get_coverage_market_filter_validation(app) -> None:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as ac:
+        resp = await ac.get("/trading/api/trade-journals/coverage?market=INVALID")
+    assert resp.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -61,9 +69,24 @@ async def test_create_journal_success(app) -> None:
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as ac:
-        resp = await ac.post("/api/v1/trade-journals", json=payload)
+        resp = await ac.post("/api/trade-journals", json=payload)
     assert resp.status_code == 200
     assert resp.json()["symbol"] == "AAPL"
+
+
+@pytest.mark.asyncio
+async def test_create_journal_rejects_terminal_status(app) -> None:
+    payload = {
+        "symbol": "AAPL",
+        "instrument_type": "equity_us",
+        "thesis": "AI supercycle",
+        "status": "closed",
+    }
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as ac:
+        resp = await ac.post("/trading/api/trade-journals", json=payload)
+    assert resp.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -73,7 +96,9 @@ async def test_update_journal_success(app, seed_active_journal_005930) -> None:
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as ac:
-        resp = await ac.patch(f"/api/v1/trade-journals/{journal_id}", json=payload)
+        resp = await ac.patch(
+            f"/trading/api/trade-journals/{journal_id}", json=payload
+        )
     assert resp.status_code == 200
     assert resp.json()["thesis"] == "updated thesis"
 
@@ -83,7 +108,7 @@ async def test_get_retrospective_returns_200(app) -> None:
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as ac:
-        resp = await ac.get("/api/v1/trade-journals/retrospective")
+        resp = await ac.get("/trading/api/trade-journals/retrospective")
     assert resp.status_code == 200
     assert isinstance(resp.json(), list)
 
@@ -94,5 +119,7 @@ async def test_update_journal_not_found(app) -> None:
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as ac:
-        resp = await ac.patch("/api/v1/trade-journals/99999", json=payload)
+        resp = await ac.patch(
+            "/trading/api/trade-journals/99999", json=payload
+        )
     assert resp.status_code == 404
