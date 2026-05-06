@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from app.schemas.invest_home import (
     Account,
@@ -18,6 +18,7 @@ from app.schemas.invest_home import (
     GroupedSourceBreakdown,
     Holding,
     HomeSummary,
+    InvestHomeHiddenCounts,
     InvestHomeResponse,
     InvestHomeResponseMeta,
     InvestHomeWarning,
@@ -127,12 +128,21 @@ def build_grouped_holdings(holdings: Iterable[Holding]) -> list[GroupedHolding]:
         if cost_basis is not None and cost_basis > 0 and value_native is not None:
             pnl_rate = (value_native - cost_basis) / cost_basis
 
+        price_states = {h.priceState for h in items}
+        if "live" in price_states:
+            price_state = "live"
+        elif "stale" in price_states:
+            price_state = "stale"
+        else:
+            price_state = "missing"
+
         out.append(
             GroupedHolding(
                 groupId=gid,
                 symbol=_normalize_symbol(first.symbol),
                 market=first.market,
                 assetType=first.assetType,
+                assetCategory=first.assetCategory,
                 displayName=first.displayName,
                 currency=first.currency,
                 totalQuantity=total_qty,
@@ -142,6 +152,7 @@ def build_grouped_holdings(holdings: Iterable[Holding]) -> list[GroupedHolding]:
                 valueKrw=value_krw,
                 pnlKrw=pnl_krw,
                 pnlRate=pnl_rate,
+                priceState=price_state,
                 includedSources=sorted({h.source for h in items}),
                 sourceBreakdown=[
                     GroupedSourceBreakdown(
@@ -193,6 +204,10 @@ class _SourceFetchResult:
     accounts: list[Account]
     holdings: list[Holding]
     warning: InvestHomeWarning | None = None
+    hidden_holdings: list[Holding] = field(default_factory=list)
+    hidden_counts: InvestHomeHiddenCounts = field(
+        default_factory=InvestHomeHiddenCounts
+    )
 
 
 class InvestHomeService:
@@ -207,17 +222,70 @@ class InvestHomeService:
         warnings: list[InvestHomeWarning] = []
         accounts: list[Account] = []
         holdings: list[Holding] = []
+        hidden_holdings: list[Holding] = []
+        hidden_counts = InvestHomeHiddenCounts()
+
         for fetcher, src in (
             (self._kis.fetch, "kis"),
             (self._upbit.fetch, "upbit"),
             (self._manual.fetch, "toss_manual"),
         ):
             try:
-                result: _SourceFetchResult = await fetcher(user_id=user_id)
+                if src == "kis" or src == "upbit":
+                    result: _SourceFetchResult = await fetcher(user_id=user_id)
+                else:
+                    result: _SourceFetchResult = await self._manual.fetch(
+                        user_id=user_id
+                    )
+
                 accounts.extend(result.accounts)
                 holdings.extend(result.holdings)
+                hidden_holdings.extend(result.hidden_holdings)
+                hidden_counts.upbitInactive += result.hidden_counts.upbitInactive
+                hidden_counts.upbitDust += result.hidden_counts.upbitDust
+
                 if result.warning is not None:
                     warnings.append(result.warning)
+
+                # Synthetic Toss Manual Account
+                if src == "toss_manual":
+                    toss_holdings = [
+                        h for h in result.holdings if h.source == "toss_manual"
+                    ]
+                    if toss_holdings:
+                        toss_value_krw = sum(
+                            h.valueKrw for h in toss_holdings if h.valueKrw is not None
+                        )
+                        toss_cost_basis_krw = None
+                        toss_pnl_krw = None
+                        toss_pnl_rate = None
+
+                        # Calculate cost basis and pnl if all holdings have cost basis
+                        if all(h.costBasis is not None for h in toss_holdings):
+                            # This is tricky because US holdings costBasis is in USD
+                            # We'll just keep it simple or leave as None if it's mixed
+                            pass
+
+                        accounts.append(
+                            Account(
+                                accountId="toss_manual_account",
+                                displayName="Toss 수동",
+                                source="toss_manual",
+                                accountKind="manual",
+                                includedInHome=True,
+                                valueKrw=toss_value_krw,
+                                costBasisKrw=toss_cost_basis_krw,
+                                pnlKrw=toss_pnl_krw,
+                                pnlRate=toss_pnl_rate,
+                                cashBalances=Account.model_fields[
+                                    "cashBalances"
+                                ].default_factory(),
+                                buyingPower=Account.model_fields[
+                                    "buyingPower"
+                                ].default_factory(),
+                            )
+                        )
+
             except Exception as exc:  # 부분 실패 — 전체 API 는 살림
                 logger.warning(
                     "[invest_home] %s fetch failed: %s", src, exc, exc_info=True
@@ -232,5 +300,9 @@ class InvestHomeService:
             accounts=accounts,
             holdings=holdings,
             groupedHoldings=build_grouped_holdings(holdings),
-            meta=InvestHomeResponseMeta(warnings=warnings),
+            meta=InvestHomeResponseMeta(
+                warnings=warnings,
+                hiddenCounts=hidden_counts,
+                hiddenHoldings=hidden_holdings,
+            ),
         )

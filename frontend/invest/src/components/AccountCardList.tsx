@@ -1,4 +1,4 @@
-import type { Account } from "../types/invest";
+import type { Account, InvestHomeWarning } from "../types/invest";
 import { formatKrw, formatUsd } from "../format/currency";
 import { formatPercent } from "../format/percent";
 
@@ -7,8 +7,11 @@ function gainClass(rate: number | null | undefined): string {
   return rate >= 0 ? "gain-pos" : "gain-neg";
 }
 
-function AccountCard({ a }: { a: Account }) {
-  const isToss = a.source === "toss_manual";
+function AccountCard({ a, warnings = [] }: { a: Account; warnings?: InvestHomeWarning[] }) {
+  const isManual = a.accountKind === "manual";
+  const kisUsdWarning =
+    a.source === "kis" && warnings.some((w) => w.source === "kis" && w.message.includes("USD"));
+
   return (
     <div
       data-testid="account-card"
@@ -20,12 +23,11 @@ function AccountCard({ a }: { a: Account }) {
         flex: "0 0 auto",
       }}
     >
-      <div style={{ fontWeight: 600, fontSize: 12 }}>
-        {a.displayName}
-        {isToss && (
+      <div style={{ fontWeight: 600, fontSize: 12, display: "flex", justifyContent: "space-between" }}>
+        <span>{a.displayName}</span>
+        {isManual && (
           <span
             style={{
-              marginLeft: 6,
               padding: "1px 6px",
               borderRadius: 5,
               background: "#1c1e24",
@@ -45,6 +47,7 @@ function AccountCard({ a }: { a: Account }) {
           <span className="subtle"> · 원금 정보 부족</span>
         )}
       </div>
+
       <div
         style={{
           marginTop: 10,
@@ -58,9 +61,17 @@ function AccountCard({ a }: { a: Account }) {
         {a.source === "kis" && (
           <>
             <Cell k="원화 · 현금" v={formatKrw(a.cashBalances.krw ?? null)} />
-            <Cell k="달러 · 현금" v={formatUsd(a.cashBalances.usd ?? null)} />
+            <Cell
+              k="달러 · 현금"
+              v={kisUsdWarning ? "확인 필요" : formatUsd(a.cashBalances.usd ?? null)}
+              warn={kisUsdWarning}
+            />
             <Cell k="원화 · 매수 가능" v={formatKrw(a.buyingPower.krw ?? null)} />
-            <Cell k="달러 · 매수 가능" v={formatUsd(a.buyingPower.usd ?? null)} />
+            <Cell
+              k="달러 · 매수 가능"
+              v={kisUsdWarning ? "확인 필요" : formatUsd(a.buyingPower.usd ?? null)}
+              warn={kisUsdWarning}
+            />
           </>
         )}
         {a.source === "upbit" && (
@@ -69,16 +80,10 @@ function AccountCard({ a }: { a: Account }) {
             <Cell k="원화 · 매수 가능" v={formatKrw(a.buyingPower.krw ?? null)} />
           </>
         )}
-        {isToss && (
+        {isManual && (
           <>
-            <Cell
-              k="원화 · 현금"
-              v={a.cashBalances.krw === undefined ? "-" : formatKrw(a.cashBalances.krw)}
-            />
-            <Cell
-              k="원화 · 매수 가능"
-              v={a.buyingPower.krw === undefined ? "-" : formatKrw(a.buyingPower.krw)}
-            />
+            <Cell k="원화 · 현금" v={a.cashBalances.krw != null ? formatKrw(a.cashBalances.krw) : "-"} />
+            <Cell k="원화 · 매수 가능" v={a.buyingPower.krw != null ? formatKrw(a.buyingPower.krw) : "-"} />
           </>
         )}
       </div>
@@ -86,24 +91,44 @@ function AccountCard({ a }: { a: Account }) {
   );
 }
 
-function Cell({ k, v }: { k: string; v: string }) {
+function Cell({ k, v, warn }: { k: string; v: string; warn?: boolean }) {
   return (
     <div style={{ display: "flex", justifyContent: "space-between" }}>
       <span style={{ color: "var(--muted)", fontSize: 10 }}>{k}</span>
-      <span style={{ fontSize: 11, textAlign: "right" }}>{v}</span>
+      <span style={{ fontSize: 11, textAlign: "right", color: warn ? "var(--warn)" : "inherit" }}>
+        {v}
+      </span>
     </div>
   );
 }
 
-export function AccountCardList({ accounts }: { accounts: Account[] }) {
+export function AccountCardList({
+  accounts,
+  warnings = [],
+}: {
+  accounts: Account[];
+  warnings?: InvestHomeWarning[];
+}) {
   return (
-    <div>
-      <div className="subtle" style={{ padding: "0 4px 4px" }}>
+    <div style={{ padding: "0 16px" }}>
+      <div className="subtle" style={{ padding: "0 4px 6px" }}>
         계좌
       </div>
-      <div style={{ display: "flex", gap: 8, overflowX: "auto" }}>
+      <div
+        style={{
+          display: "flex",
+          gap: 8,
+          overflowX: "auto",
+          WebkitOverflowScrolling: "touch",
+          scrollbarWidth: "none",
+          msOverflowStyle: "none",
+        }}
+      >
+        <style>
+          {`div::-webkit-scrollbar { display: none; }`}
+        </style>
         {accounts.map((a) => (
-          <AccountCard key={a.accountId} a={a} />
+          <AccountCard key={a.accountId} a={a} warnings={warnings} />
         ))}
       </div>
     </div>

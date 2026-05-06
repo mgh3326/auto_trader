@@ -17,7 +17,9 @@ from app.schemas.invest_home import (
     Account,
     CashAmounts,
     Holding,
+    InvestHomeHiddenCounts,
     InvestHomeWarning,
+    PriceStateLiteral,
 )
 from app.services.brokers.kis.account import (
     AccountClient,
@@ -30,7 +32,12 @@ from app.services.brokers.upbit.client import (
 )
 from app.services.exchange_rate_service import get_usd_krw_rate
 from app.services.invest_home_service import _SourceFetchResult
+from app.services.invest_quote_service import InvestQuoteService
 from app.services.manual_holdings_service import ManualHoldingsService
+from app.services.upbit_symbol_universe_service import (
+    get_active_upbit_markets,
+    get_upbit_warning_markets,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +103,7 @@ class KISHomeReader:
                         symbol=str(s.get("pdno")),
                         market="KR",
                         assetType="equity",
+                        assetCategory="kr_stock",
                         displayName=str(s.get("prdt_name")),
                         quantity=qty,
                         averageCost=avg_price,
@@ -128,6 +136,7 @@ class KISHomeReader:
                         symbol=str(s.get("ovrs_pdno")),
                         market="US",
                         assetType="equity",
+                        assetCategory="us_stock",
                         displayName=str(s.get("ovrs_item_name")),
                         quantity=qty,
                         averageCost=avg_price,
@@ -163,6 +172,42 @@ class KISHomeReader:
                 else None
             )
 
+            usd_balance = margin.get("usd_balance")
+            usd_buying_power = margin.get("usd_ord_psbl_amt")
+
+            # Fallback for USD cash if integrated margin returns 0/None but US holdings exist
+            if (not usd_balance or usd_balance == 0) and stocks_us:
+                try:
+                    overseas_margin = (
+                        await self._client.account.inquire_overseas_margin()
+                    )
+                    # US row: crcy_cd=USD and natn_name in {미국, US, USA}
+                    us_margin = next(
+                        (
+                            m
+                            for m in overseas_margin
+                            if m.get("crcy_cd") == "USD"
+                            and m.get("natn_name") in ["미국", "US", "USA"]
+                        ),
+                        None,
+                    )
+                    if us_margin:
+                        usd_balance = us_margin.get("frcr_dncl_amt1")
+                        usd_buying_power = us_margin.get("frcr_ord_psbl_amt1")
+                except Exception as exc:
+                    logger.warning("KIS overseas margin fallback failed: %s", exc)
+
+            if (not usd_balance or usd_balance == 0) and stocks_us:
+                if fx_warning is None:
+                    fx_warning = InvestHomeWarning(
+                        source="kis",
+                        message="USD 예수금/주문가능 금액을 확인할 수 없습니다.",
+                    )
+                else:
+                    fx_warning.message += (
+                        " USD 예수금/주문가능 금액을 확인할 수 없습니다."
+                    )
+
             account = Account(
                 accountId="kis_account",
                 displayName="KIS 실계좌",
@@ -175,11 +220,11 @@ class KISHomeReader:
                 pnlRate=account_pnl_rate,
                 cashBalances=CashAmounts(
                     krw=domestic_cash["balance"],
-                    usd=margin.get("usd_balance"),
+                    usd=usd_balance if usd_balance is not None else None,
                 ),
                 buyingPower=CashAmounts(
                     krw=domestic_cash["orderable"],
-                    usd=margin.get("usd_ord_psbl_amt"),
+                    usd=usd_buying_power if usd_buying_power is not None else None,
                 ),
             )
             return _SourceFetchResult(
@@ -227,7 +272,6 @@ class UpbitHomeReader:
             coins = await fetch_my_coins()
             krw_row = next((c for c in coins if c.get("currency") == "KRW"), None)
 
-            holdings = []
             crypto_rows = [
                 c
                 for c in coins
@@ -235,7 +279,25 @@ class UpbitHomeReader:
                 and (float(c.get("balance", 0) or 0) + float(c.get("locked", 0) or 0))
                 > 0
             ]
-            market_codes = [f"KRW-{c.get('currency')}" for c in crypto_rows]
+
+            # Inactive filter
+            active_markets = await get_active_upbit_markets(
+                self._db, quote_currency="KRW"
+            )
+            caution_markets = await get_upbit_warning_markets(
+                self._db, quote_currency="KRW"
+            )
+
+            tradable_rows = []
+            inactive_rows = []
+            for c in crypto_rows:
+                market_code = f"KRW-{c.get('currency')}"
+                if market_code in active_markets and market_code not in caution_markets:
+                    tradable_rows.append(c)
+                else:
+                    inactive_rows.append(c)
+
+            market_codes = [f"KRW-{c.get('currency')}" for c in tradable_rows]
             price_warning: InvestHomeWarning | None = None
             current_prices: dict[str, float] = {}
             if market_codes:
@@ -257,7 +319,35 @@ class UpbitHomeReader:
                         source="upbit",
                         message="일부 코인은 현재가가 없어 평가금액에서 제외했습니다.",
                     )
-            for c in crypto_rows:
+
+            holdings = []
+            hidden_holdings = []
+            hidden_counts = InvestHomeHiddenCounts()
+            hidden_counts.upbitInactive = len(inactive_rows)
+
+            # Process inactive
+            for c in inactive_rows:
+                currency = str(c.get("currency"))
+                qty = float(c.get("balance", 0)) + float(c.get("locked", 0))
+                hidden_holdings.append(
+                    Holding(
+                        holdingId=f"upbit:hidden:{currency}",
+                        accountId="upbit_account",
+                        source="upbit",
+                        accountKind="live",
+                        symbol=currency,
+                        market="CRYPTO",
+                        assetType="crypto",
+                        assetCategory="crypto",
+                        displayName=currency,
+                        quantity=qty,
+                        currency="KRW",
+                        priceState="missing",
+                    )
+                )
+
+            # Process tradable
+            for c in tradable_rows:
                 currency = str(c.get("currency"))
                 market_code = f"KRW-{currency}"
                 qty = float(c.get("balance", 0)) + float(c.get("locked", 0))
@@ -275,26 +365,33 @@ class UpbitHomeReader:
                     if pnl_krw is not None and cost_basis is not None and cost_basis > 0
                     else None
                 )
-                holdings.append(
-                    Holding(
-                        holdingId=f"upbit:{currency}",
-                        accountId="upbit_account",
-                        source="upbit",
-                        accountKind="live",
-                        symbol=currency,
-                        market="CRYPTO",
-                        assetType="crypto",
-                        displayName=currency,
-                        quantity=qty,
-                        averageCost=avg_price if avg_price > 0 else None,
-                        costBasis=cost_basis,
-                        currency="KRW",
-                        valueNative=value_krw,
-                        valueKrw=value_krw,
-                        pnlKrw=pnl_krw,
-                        pnlRate=pnl_rate,
-                    )
+
+                h = Holding(
+                    holdingId=f"upbit:{currency}",
+                    accountId="upbit_account",
+                    source="upbit",
+                    accountKind="live",
+                    symbol=currency,
+                    market="CRYPTO",
+                    assetType="crypto",
+                    assetCategory="crypto",
+                    displayName=currency,
+                    quantity=qty,
+                    averageCost=avg_price if avg_price > 0 else None,
+                    costBasis=cost_basis,
+                    currency="KRW",
+                    valueNative=value_krw,
+                    valueKrw=value_krw,
+                    pnlKrw=pnl_krw,
+                    pnlRate=pnl_rate,
+                    priceState="live" if current_price is not None else "missing",
                 )
+
+                if value_krw is not None and value_krw < 5000:
+                    hidden_holdings.append(h)
+                    hidden_counts.upbitDust += 1
+                else:
+                    holdings.append(h)
 
             priced_holdings = [h for h in holdings if h.valueKrw is not None]
             coin_value_krw = sum(
@@ -334,7 +431,11 @@ class UpbitHomeReader:
                 ),
             )
             return _SourceFetchResult(
-                accounts=[account], holdings=holdings, warning=price_warning
+                accounts=[account],
+                holdings=holdings,
+                warning=price_warning,
+                hidden_holdings=hidden_holdings,
+                hidden_counts=hidden_counts,
             )
         except Exception as exc:
             logger.warning("Upbit fetch failed: %s", exc, exc_info=True)
@@ -348,9 +449,12 @@ class UpbitHomeReader:
 class ManualHomeReader:
     """manual_holdings (Toss 등) read-only reader."""
 
-    def __init__(self, db: AsyncSession) -> None:
+    def __init__(
+        self, db: AsyncSession, quote_service: InvestQuoteService | None = None
+    ) -> None:
         self._db = db
         self._service = ManualHoldingsService(db)
+        self._quote_service = quote_service
 
     async def fetch(self, *, user_id: int) -> _SourceFetchResult:
         try:
@@ -361,38 +465,106 @@ class ManualHomeReader:
                 if str(getattr(h.broker_account, "broker_type", "")).lower() == "toss"
             ]
 
-            holdings = [
-                Holding(
-                    holdingId=f"manual:{h.id}",
-                    accountId=str(h.broker_account_id),
-                    source="toss_manual",
-                    accountKind="manual",
-                    symbol=h.ticker,
-                    market="KR" if h.market_type == MarketType.KR else "US",
-                    assetType="equity",
-                    displayName=h.display_name or h.ticker,
-                    quantity=float(h.quantity),
-                    averageCost=float(h.avg_price) if h.avg_price else None,
-                    costBasis=(float(h.quantity) * float(h.avg_price))
-                    if h.avg_price
-                    else None,
-                    currency="KRW" if h.market_type == MarketType.KR else "USD",
-                    valueNative=None,
-                    valueKrw=None,
-                    pnlKrw=None,
-                    pnlRate=None,
-                )
-                for h in toss_holdings
+            kr_tickers = [
+                h.ticker for h in toss_holdings if h.market_type == MarketType.KR
+            ]
+            us_tickers = [
+                h.ticker for h in toss_holdings if h.market_type == MarketType.US
             ]
 
-            manual_warning = (
-                InvestHomeWarning(
+            kr_prices: dict[str, float | None] = {}
+            us_prices: dict[str, float | None] = {}
+            usd_krw_rate: float | None = None
+
+            if self._quote_service:
+                kr_prices = await self._quote_service.fetch_kr_prices(kr_tickers)
+                us_prices = await self._quote_service.fetch_us_prices(us_tickers)
+                if us_tickers:
+                    try:
+                        usd_krw_rate = await get_usd_krw_rate()
+                    except Exception:
+                        logger.warning("FX fetch failed for ManualHomeReader")
+
+            holdings = []
+            partial_valuation_failure = False
+
+            for h in toss_holdings:
+                qty = float(h.quantity)
+                avg_price = float(h.avg_price) if h.avg_price else None
+                cost_basis = (qty * avg_price) if avg_price else None
+                market = "KR" if h.market_type == MarketType.KR else "US"
+                currency = "KRW" if market == "KR" else "USD"
+
+                price = (
+                    kr_prices.get(h.ticker)
+                    if market == "KR"
+                    else us_prices.get(h.ticker)
+                )
+                price_state: PriceStateLiteral = (
+                    "live" if price is not None else "missing"
+                )
+
+                value_native = qty * price if price is not None else None
+                value_krw: float | None = None
+                if value_native is not None:
+                    if currency == "KRW":
+                        value_krw = value_native
+                    elif usd_krw_rate:
+                        value_krw = value_native * usd_krw_rate
+
+                if price is None and (kr_tickers or us_tickers):
+                    partial_valuation_failure = True
+
+                pnl_krw: float | None = None
+                pnl_rate: float | None = None
+                if value_krw is not None and cost_basis is not None:
+                    # For US, cost_basis is in USD. We need cost_basis_krw for pnl_krw.
+                    if currency == "KRW":
+                        pnl_krw = value_krw - cost_basis
+                        if cost_basis > 0:
+                            pnl_rate = pnl_krw / cost_basis
+                    elif usd_krw_rate:
+                        cost_basis_krw = cost_basis * usd_krw_rate
+                        pnl_krw = value_krw - cost_basis_krw
+                        if cost_basis_krw > 0:
+                            pnl_rate = pnl_krw / cost_basis_krw
+
+                holdings.append(
+                    Holding(
+                        holdingId=f"manual:{h.id}",
+                        accountId=str(h.broker_account_id),
+                        source="toss_manual",
+                        accountKind="manual",
+                        symbol=h.ticker,
+                        market=market,
+                        assetType="equity",
+                        assetCategory="kr_stock" if market == "KR" else "us_stock",
+                        displayName=h.display_name or h.ticker,
+                        quantity=qty,
+                        averageCost=avg_price,
+                        costBasis=cost_basis,
+                        currency=currency,
+                        valueNative=value_native,
+                        valueKrw=value_krw,
+                        pnlKrw=pnl_krw,
+                        pnlRate=pnl_rate,
+                        priceState=price_state,
+                    )
+                )
+
+            manual_warning: InvestHomeWarning | None = None
+            if partial_valuation_failure:
+                manual_warning = InvestHomeWarning(
+                    source="toss_manual",
+                    message="일부 Toss 수동 보유는 현재가 조회에 실패해 평가에서 제외했습니다.",
+                )
+            elif not (kr_tickers or us_tickers) and holdings:
+                # This case shouldn't happen with the logic above, but for safety
+                manual_warning = InvestHomeWarning(
                     source="toss_manual",
                     message="Toss 수동 보유는 현재가가 없어 평가금액에서 제외했습니다.",
                 )
-                if holdings
-                else None
-            )
+
             return _SourceFetchResult(
                 accounts=[],
                 holdings=holdings,

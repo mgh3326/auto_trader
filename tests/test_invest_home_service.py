@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import pytest
 
 from app.schemas.invest_home import Holding
@@ -22,6 +24,7 @@ def _h(**kw) -> Holding:
         "symbol": "AAA",
         "market": "KR",
         "assetType": "equity",
+        "assetCategory": "kr_stock",
         "displayName": "AAA",
         "quantity": 1.0,
         "averageCost": None,
@@ -31,6 +34,7 @@ def _h(**kw) -> Holding:
         "valueKrw": None,
         "pnlKrw": None,
         "pnlRate": None,
+        "priceState": "live",
     }
     base.update(kw)
     return Holding(**base)
@@ -91,6 +95,8 @@ def test_grouped_merges_same_market_assettype_currency_symbol() -> None:
     assert len(grouped) == 1
     g = grouped[0]
     assert g.groupId == "KR:equity:KRW:005930"
+    assert g.assetCategory == "kr_stock"
+    assert g.priceState == "live"
     assert g.totalQuantity == 50
     assert g.costBasis == 2_100_000 + 1_376_000
     assert g.averageCost == pytest.approx((2_100_000 + 1_376_000) / 50)
@@ -130,6 +136,7 @@ def test_grouped_null_costbasis_propagates() -> None:
     assert len(grouped) == 1
     g = grouped[0]
     assert g.totalQuantity == 7
+    assert g.priceState == "live"
     assert g.costBasis is None
     assert g.averageCost is None
     assert g.pnlKrw is None
@@ -173,6 +180,7 @@ def test_grouped_infers_manual_value_from_live_same_symbol_price() -> None:
 
     g = grouped[0]
     assert g.totalQuantity == 10
+    assert g.priceState == "live"
     assert g.valueKrw == 500_000
     assert g.costBasis == 420_000
     assert g.pnlKrw == 80_000
@@ -276,6 +284,42 @@ def test_home_summary_uses_account_value_sum() -> None:
     assert summary.pnlRate is None
     assert sorted(summary.includedSources) == ["kis", "toss_manual"]
     assert "kis_mock" in summary.excludedSources
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_invest_home_service_synthesizes_toss_manual_account() -> None:
+    from app.services.invest_home_service import InvestHomeService, _SourceFetchResult
+
+    kis_reader = AsyncMock()
+    kis_reader.fetch.return_value = _SourceFetchResult(accounts=[], holdings=[])
+    upbit_reader = AsyncMock()
+    upbit_reader.fetch.return_value = _SourceFetchResult(accounts=[], holdings=[])
+
+    manual_reader = AsyncMock()
+    h = _h(
+        holdingId="m1",
+        source="toss_manual",
+        accountKind="manual",
+        valueKrw=100_000,
+    )
+    manual_reader.fetch.return_value = _SourceFetchResult(accounts=[], holdings=[h])
+
+    service = InvestHomeService(
+        kis_reader=kis_reader,
+        upbit_reader=upbit_reader,
+        manual_reader=manual_reader,
+    )
+
+    response = await service.get_home(user_id=1)
+
+    toss_account = next(
+        (a for a in response.accounts if a.source == "toss_manual"), None
+    )
+    assert toss_account is not None
+    assert toss_account.displayName == "Toss 수동"
+    assert toss_account.valueKrw == 100_000
+    assert toss_account.accountKind == "manual"
 
 
 @pytest.mark.unit

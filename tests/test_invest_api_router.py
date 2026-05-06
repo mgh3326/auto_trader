@@ -57,6 +57,7 @@ class _StubService:
                 symbol="005930",
                 market="KR",
                 assetType="equity",
+                assetCategory="kr_stock",
                 displayName="삼성전자",
                 quantity=10,
                 averageCost=70000,
