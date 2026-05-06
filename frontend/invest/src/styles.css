@@ -1,0 +1,61 @@
+:root {
+  --bg: #0F1115;
+  --surface: #181B22;
+  --surface-2: #1f232b;
+  --text: #E6E8EB;
+  --muted: #8A8F98;
+  --gain: #FF5C5C;
+  --loss: #3B82F6;
+  --warn: #f6c177;
+  --pill-toss: #2a1f2c;
+  --pill-toss-fg: #d6a3ff;
+  --pill-kis: #1f2a3a;
+  --pill-kis-fg: #7eb6ff;
+  --pill-up: #2a2218;
+  --pill-up-fg: #f6c177;
+  --pill-mix: #1f2a25;
+  --pill-mix-fg: #86d2a3;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Apple SD Gothic Neo", sans-serif;
+}
+
+.app-shell {
+  max-width: 420px;
+  margin: 0 auto;
+  min-height: 100vh;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.gain-pos {
+  color: var(--gain);
+  font-weight: 600;
+}
+
+.gain-neg {
+  color: var(--loss);
+  font-weight: 600;
+}
+
+.fallback {
+  color: var(--muted);
+}
+
+.subtle {
+  color: var(--muted);
+  font-size: 12px;
+}
