@@ -1,9 +1,8 @@
 // frontend/invest/src/__tests__/DiscoverIssueDetailPage.test.tsx
-import type { ComponentProps } from "react";
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { expect, test } from "vitest";
-import { DiscoverIssueDetailPage } from "../pages/DiscoverIssueDetailPage";
+import { DiscoverIssueDetailPage, type DiscoverIssueDetailPageProps } from "../pages/DiscoverIssueDetailPage";
 import type { NewsRadarItem, NewsRadarResponse } from "../types/newsRadar";
 
 function makeItem(over: Partial<NewsRadarItem>): NewsRadarItem {
@@ -56,7 +55,7 @@ function response(items: NewsRadarItem[]): NewsRadarResponse {
   };
 }
 
-function renderAt(path: string, state: ComponentProps<typeof DiscoverIssueDetailPage>["state"]) {
+function renderAt(path: string, state: DiscoverIssueDetailPageProps["state"]) {
   return render(
     <MemoryRouter initialEntries={[`/invest/app${path}`]} basename="/invest/app">
       <Routes>
