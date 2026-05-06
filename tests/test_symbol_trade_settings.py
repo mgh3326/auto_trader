@@ -101,7 +101,7 @@ class TestCalculateEstimatedOrderCost:
         )
 
         # USD는 소수점 유지
-        assert result["buy_prices"][0]["quantity"] == 2.5
+        assert result["buy_prices"][0]["quantity"] == pytest.approx(2.5)
 
 
 class TestSymbolTradeSettingsService:
@@ -306,7 +306,7 @@ class TestGetBuyQuantityFunctions:
                 fallback_amount=100000,
             )
 
-            assert result == 0.001
+            assert result == pytest.approx(0.001)
 
     @pytest.mark.asyncio
     async def test_get_buy_quantity_for_crypto_without_settings(self):

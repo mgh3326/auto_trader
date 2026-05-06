@@ -118,7 +118,7 @@ async def test_fetch_kr_morning_report_groups_kis_and_toss_kr_holdings():
     assert result["holdings"]["kis"]["total_count"] == 1
     assert result["holdings"]["toss"]["total_count"] == 1
     assert result["holdings"]["combined"]["total_count"] == 2
-    assert result["cash_balance"]["kis_krw"] == 45000.0
+    assert result["cash_balance"]["kis_krw"] == pytest.approx(45000.0)
     assert result["cash_balance"]["toss_krw"] is None
     assert result["cash_balance"]["toss_krw_fmt"] == "수동 관리"
 
@@ -474,7 +474,7 @@ async def test_fetch_kr_morning_report_default_screening_uses_oversold_semantics
     kwargs = screen_mock.await_args.kwargs
     assert kwargs["sort_by"] == "rsi"
     assert kwargs["sort_order"] == "asc"
-    assert kwargs["max_rsi"] == 30.0
+    assert kwargs["max_rsi"] == pytest.approx(30.0)
 
 
 @pytest.mark.asyncio
@@ -501,7 +501,7 @@ async def test_fetch_kr_morning_report_explicit_oversold_matches_default_semanti
     kwargs = screen_mock.await_args.kwargs
     assert kwargs["sort_by"] == "rsi"
     assert kwargs["sort_order"] == "asc"
-    assert kwargs["max_rsi"] == 30.0
+    assert kwargs["max_rsi"] == pytest.approx(30.0)
 
 
 @pytest.mark.asyncio

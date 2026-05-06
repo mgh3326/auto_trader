@@ -35,7 +35,7 @@ class TestCalculateRetryDelay:
     def test_uses_retry_after_when_positive(self):
         client = _make_client()
         delay = client._calculate_retry_delay(attempt=0, retry_after=2.5)
-        assert delay == 2.5
+        assert delay == pytest.approx(2.5)
 
     def test_exponential_backoff_when_no_retry_after(self):
         client = _make_client()

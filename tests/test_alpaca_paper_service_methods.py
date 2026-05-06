@@ -129,9 +129,9 @@ async def test_get_account_returns_snapshot():
     account = await svc.get_account()
 
     assert account.id == "acct-001"
-    assert account.buying_power == Decimal("100000")
-    assert account.cash == Decimal("50000")
-    assert account.portfolio_value == Decimal("150000")
+    assert account.buying_power == pytest.approx(Decimal("100000"))
+    assert account.cash == pytest.approx(Decimal("50000"))
+    assert account.portfolio_value == pytest.approx(Decimal("150000"))
     assert account.status == "ACTIVE"
     transport.request.assert_called_once_with("GET", "/v2/account")
 
@@ -144,8 +144,8 @@ async def test_get_cash_returns_cash_balance():
 
     cash = await svc.get_cash()
 
-    assert cash.cash == Decimal("50000")
-    assert cash.buying_power == Decimal("100000")
+    assert cash.cash == pytest.approx(Decimal("50000"))
+    assert cash.buying_power == pytest.approx(Decimal("100000"))
     transport.request.assert_called_once_with("GET", "/v2/account")
 
 

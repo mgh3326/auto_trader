@@ -113,7 +113,7 @@ async def test_full_reconciliation_cycle_acceptance(monkeypatch):
     save_ledger_mock.assert_awaited_once()
     save_kwargs = save_ledger_mock.call_args.kwargs
     assert save_kwargs["lifecycle_state"] == "accepted"
-    assert save_kwargs["holdings_baseline_qty"] == Decimal("0")
+    assert save_kwargs["holdings_baseline_qty"] == pytest.approx(Decimal("0"))
 
     # Step B: dry_run=False without confirm is rejected.
     rejected = await tools["kis_mock_reconciliation_run"](dry_run=False, confirm=False)

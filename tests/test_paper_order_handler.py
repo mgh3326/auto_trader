@@ -85,7 +85,7 @@ class TestPlacePaperOrderDryRun:
         service.create_account.assert_awaited_once()
         call_kwargs = service.create_account.await_args.kwargs
         assert call_kwargs["name"] == "default"
-        assert call_kwargs["initial_capital_krw"] == Decimal("100000000")
+        assert call_kwargs["initial_capital_krw"] == pytest.approx(Decimal("100000000"))
         service.preview_order.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -263,7 +263,7 @@ class TestPlacePaperOrderExecute:
         assert result["account_type"] == "paper"
         assert result["paper_account"] == "default"
         assert result["preview"]["symbol"] == "005930"
-        assert result["execution"]["quantity"] == Decimal("10")
+        assert result["execution"]["quantity"] == pytest.approx(Decimal("10"))
         assert result["message"] == "[Paper] Order placed successfully"
         service.execute_order.assert_awaited_once()
         kwargs = service.execute_order.await_args.kwargs

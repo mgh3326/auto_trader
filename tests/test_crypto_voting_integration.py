@@ -2,6 +2,7 @@
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from app.services.crypto_voting_signals import CryptoVotingSignals
 
@@ -40,12 +41,12 @@ class TestVotingBacktestConsistency:
         assert MACD_SLOW == 26
         assert MACD_SIGNAL == 9
         assert BB_PERIOD == 15
-        assert BB_STD == 2.0
+        assert BB_STD == pytest.approx(2.0)
         assert EMA_FAST == 8
         assert EMA_SLOW == 24
         assert MOMENTUM_PERIOD == 5
         assert VOLUME_LOOKBACK == 20
-        assert VOLUME_THRESHOLD == 1.5
+        assert VOLUME_THRESHOLD == pytest.approx(1.5)
 
     def test_bull_signal_count_is_six(self):
         evaluator = CryptoVotingSignals()

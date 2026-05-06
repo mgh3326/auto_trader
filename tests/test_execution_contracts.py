@@ -193,9 +193,9 @@ class TestOrderPreviewLine:
             rationale=["RSI oversold", "above MA20"],
             correlation_id="decision_run_abc123",
         )
-        assert line.quantity == Decimal("10")
-        assert line.limit_price == Decimal("70000")
-        assert line.notional == Decimal("700000")
+        assert line.quantity == pytest.approx(Decimal("10"))
+        assert line.limit_price == pytest.approx(Decimal("70000"))
+        assert line.notional == pytest.approx(Decimal("700000"))
         assert line.currency == "KRW"
         assert line.correlation_id == "decision_run_abc123"
 

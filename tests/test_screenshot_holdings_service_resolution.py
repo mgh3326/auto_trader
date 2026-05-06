@@ -242,7 +242,7 @@ async def test_avg_buy_price_direct_input(
 
     assert result["success"] is True
     holding = result["holdings"][0]
-    assert holding["avg_buy_price"] == 3500000.0
+    assert holding["avg_buy_price"] == pytest.approx(3500000.0)
     assert holding["resolution_method"] == "direct"
 
 
@@ -270,7 +270,7 @@ async def test_avg_buy_price_calculated_from_eval_profit_qty(
 
     assert result["success"] is True
     holding = result["holdings"][0]
-    assert holding["avg_buy_price"] == 2900000.0
+    assert holding["avg_buy_price"] == pytest.approx(2900000.0)
 
 
 @pytest.mark.asyncio
@@ -654,7 +654,7 @@ async def test_calculate_avg_buy_price_zero_quantity(service):
     avg_price = await service._calculate_avg_buy_price(
         eval_amount=1000000, profit_loss=100000, quantity=0
     )
-    assert avg_price == 0.0
+    assert avg_price == pytest.approx(0.0)
 
 
 @pytest.mark.asyncio
@@ -663,7 +663,7 @@ async def test_calculate_avg_buy_price_normal(service):
     avg_price = await service._calculate_avg_buy_price(
         eval_amount=1500000, profit_loss=100000, quantity=10
     )
-    assert avg_price == 140000.0
+    assert avg_price == pytest.approx(140000.0)
 
 
 @pytest.mark.asyncio

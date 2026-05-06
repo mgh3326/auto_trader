@@ -117,9 +117,11 @@ def test_live_refresh_snapshot_round_trips_decimal_as_string():
     round_tripped = LiveRefreshSnapshot.model_validate_json(json_payload)
 
     assert round_tripped == snapshot
-    assert round_tripped.quote_by_symbol["AAPL"].price == Decimal("123.4500")
-    assert round_tripped.cash_balances["USD"] == Decimal("1000.75")
-    assert round_tripped.holdings_by_symbol["AAPL"] == Decimal("3.500")
+    assert round_tripped.quote_by_symbol["AAPL"].price == pytest.approx(
+        Decimal("123.4500")
+    )
+    assert round_tripped.cash_balances["USD"] == pytest.approx(Decimal("1000.75"))
+    assert round_tripped.holdings_by_symbol["AAPL"] == pytest.approx(Decimal("3.500"))
 
 
 @pytest.mark.unit

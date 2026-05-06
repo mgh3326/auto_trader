@@ -149,8 +149,8 @@ class TestUpbitService:
 
         summary = await upbit_service_module.fetch_krw_cash_summary()
 
-        assert summary["balance"] == 700000.0
-        assert summary["orderable"] == 500000.0
+        assert summary["balance"] == pytest.approx(700000.0)
+        assert summary["orderable"] == pytest.approx(500000.0)
         assert summary["balance"] == summary["orderable"] + 200000.0
 
     @pytest.mark.asyncio
@@ -166,7 +166,7 @@ class TestUpbitService:
 
         result = await upbit_service_module.fetch_krw_orderable_balance()
 
-        assert result == 500000.0
+        assert result == pytest.approx(500000.0)
         mock_summary.assert_awaited_once()
 
     @pytest.mark.asyncio

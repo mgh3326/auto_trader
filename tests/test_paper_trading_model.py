@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 
+import pytest
+
 from app.models.paper_trading import PaperAccount, PaperPosition, PaperTrade
 from app.models.trading import InstrumentType
 
@@ -17,8 +19,8 @@ class TestPaperAccountModel:
             cash_krw=Decimal("10000000"),
         )
         assert account.name == "기본 모의계좌"
-        assert account.initial_capital == Decimal("10000000")
-        assert account.cash_krw == Decimal("10000000")
+        assert account.initial_capital == pytest.approx(Decimal("10000000"))
+        assert account.cash_krw == pytest.approx(Decimal("10000000"))
 
     def test_create_full_account(self) -> None:
         account = PaperAccount(
@@ -53,7 +55,7 @@ class TestPaperPositionModel:
         assert position.account_id == 1
         assert position.symbol == "KRW-BTC"
         assert position.instrument_type == InstrumentType.crypto
-        assert position.quantity == Decimal("0.00123456")
+        assert position.quantity == pytest.approx(Decimal("0.00123456"))
 
     def test_table_args(self) -> None:
         assert PaperPosition.__table_args__[-1] == {"schema": "paper"}
@@ -95,7 +97,7 @@ class TestPaperTradeModel:
             realized_pnl=Decimal("244.12"),
             executed_at=datetime.now(UTC),
         )
-        assert trade.realized_pnl == Decimal("244.12")
+        assert trade.realized_pnl == pytest.approx(Decimal("244.12"))
 
     def test_table_args(self) -> None:
         assert PaperTrade.__table_args__[-1] == {"schema": "paper"}
@@ -118,5 +120,5 @@ def test_paper_daily_snapshot_constructor() -> None:
         daily_return_pct=Decimal("0.25"),
     )
     assert snap.account_id == 1
-    assert snap.total_equity == Decimal("1500000")
-    assert snap.daily_return_pct == Decimal("0.25")
+    assert snap.total_equity == pytest.approx(Decimal("1500000"))
+    assert snap.daily_return_pct == pytest.approx(Decimal("0.25"))

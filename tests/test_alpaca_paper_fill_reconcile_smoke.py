@@ -206,7 +206,7 @@ async def test_collect_preflight_snapshot_filters_execution_symbol() -> None:
     )
 
     assert snapshot.account_status == "active"
-    assert snapshot.buying_power == Decimal("100")
+    assert snapshot.buying_power == pytest.approx(Decimal("100"))
     assert snapshot.open_order_count == 1
     assert snapshot.execution_symbol_open_order_count == 0
     assert snapshot.position_count == 1

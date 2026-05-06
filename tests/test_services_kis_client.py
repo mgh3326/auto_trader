@@ -123,8 +123,8 @@ class TestKISService:
         with patch.object(client, "_ensure_token"):
             result = await client.inquire_domestic_cash_balance(is_mock=False)
 
-        assert result["dnca_tot_amt"] == 1140000.0
-        assert result["stck_cash_ord_psbl_amt"] == 1110000.0
+        assert result["dnca_tot_amt"] == pytest.approx(1140000.0)
+        assert result["stck_cash_ord_psbl_amt"] == pytest.approx(1110000.0)
         assert result["raw"]["dnca_tot_amt"] == "1140000"
 
         call_args = mock_client.get.call_args
@@ -165,8 +165,8 @@ class TestKISService:
         with patch.object(client, "_ensure_token"):
             result = await client.inquire_domestic_cash_balance(is_mock=False)
 
-        assert result["dnca_tot_amt"] == 1140000.0
-        assert result["stck_cash_ord_psbl_amt"] == 950000.0
+        assert result["dnca_tot_amt"] == pytest.approx(1140000.0)
+        assert result["stck_cash_ord_psbl_amt"] == pytest.approx(950000.0)
 
     @pytest.mark.asyncio
     @patch("app.services.brokers.kis.base.httpx.AsyncClient")
@@ -239,10 +239,10 @@ class TestKISService:
         assert len(result) == 1
         assert result[0]["natn_name"] == "미국"
         assert result[0]["crcy_cd"] == "USD"
-        assert result[0]["frcr_dncl_amt1"] == 5856.2
-        assert result[0]["frcr_ord_psbl_amt1"] == 0.0
-        assert result[0]["frcr_gnrl_ord_psbl_amt"] == 5824.17
-        assert result[0]["itgr_ord_psbl_amt"] == 5824.27
+        assert result[0]["frcr_dncl_amt1"] == pytest.approx(5856.2)
+        assert result[0]["frcr_ord_psbl_amt1"] == pytest.approx(0.0)
+        assert result[0]["frcr_gnrl_ord_psbl_amt"] == pytest.approx(5824.17)
+        assert result[0]["itgr_ord_psbl_amt"] == pytest.approx(5824.27)
 
     @pytest.mark.asyncio
     @patch("app.services.brokers.kis.base.httpx.AsyncClient")
@@ -284,10 +284,10 @@ class TestKISService:
             result = await client.inquire_overseas_margin(is_mock=False)
 
         assert len(result) == 1
-        assert result[0]["frcr_dncl_amt1"] == 0.0
-        assert result[0]["frcr_ord_psbl_amt1"] == 0.0
-        assert result[0]["frcr_gnrl_ord_psbl_amt"] == 0.0
-        assert result[0]["itgr_ord_psbl_amt"] == 0.0
+        assert result[0]["frcr_dncl_amt1"] == pytest.approx(0.0)
+        assert result[0]["frcr_ord_psbl_amt1"] == pytest.approx(0.0)
+        assert result[0]["frcr_gnrl_ord_psbl_amt"] == pytest.approx(0.0)
+        assert result[0]["itgr_ord_psbl_amt"] == pytest.approx(0.0)
 
 
 class TestKISIntegratedMarginParams:
@@ -377,7 +377,7 @@ class TestKISIntegratedMarginParams:
 
         result = await client.inquire_integrated_margin()
 
-        assert result["stck_cash100_max_ord_psbl_amt"] == 3534890.5473
+        assert result["stck_cash100_max_ord_psbl_amt"] == pytest.approx(3534890.5473)
 
     @pytest.mark.asyncio
     @patch("app.services.brokers.kis.base.httpx.AsyncClient")
@@ -430,9 +430,9 @@ class TestKISIntegratedMarginParams:
         second_call_params = mock_client.get.call_args_list[1].kwargs["params"]
         assert second_call_params["CMA_EVLU_AMT_ICLD_YN"] == "Y"
 
-        assert result["dnca_tot_amt"] == 1000000.0
-        assert result["stck_cash_objt_amt"] == 850000.0
-        assert result["stck_itgr_cash100_ord_psbl_amt"] == 800000.0
+        assert result["dnca_tot_amt"] == pytest.approx(1000000.0)
+        assert result["stck_cash_objt_amt"] == pytest.approx(850000.0)
+        assert result["stck_itgr_cash100_ord_psbl_amt"] == pytest.approx(800000.0)
 
     @pytest.mark.asyncio
     @patch("app.services.brokers.kis.base.httpx.AsyncClient")
@@ -468,8 +468,8 @@ class TestKISIntegratedMarginParams:
 
         result = await client.inquire_integrated_margin()
 
-        assert result["stck_cash_objt_amt"] == 0.0
-        assert result["stck_itgr_cash100_ord_psbl_amt"] == 0.0
+        assert result["stck_cash_objt_amt"] == pytest.approx(0.0)
+        assert result["stck_itgr_cash100_ord_psbl_amt"] == pytest.approx(0.0)
 
     def test_extract_domestic_cash_summary_from_integrated_margin(self):
         from app.services.brokers.kis.client import (
@@ -487,8 +487,8 @@ class TestKISIntegratedMarginParams:
             }
         )
 
-        assert summary["balance"] == 777000.0
-        assert summary["orderable"] == 555000.0
+        assert summary["balance"] == pytest.approx(777000.0)
+        assert summary["orderable"] == pytest.approx(555000.0)
         assert summary["raw"]["stck_cash_objt_amt"] == "777000"
 
     def test_extract_domestic_cash_summary_prefers_stck_cash100_max_orderable(self):
@@ -509,8 +509,8 @@ class TestKISIntegratedMarginParams:
             }
         )
 
-        assert summary["balance"] == 5000000.0
-        assert summary["orderable"] == 3534890.5473
+        assert summary["balance"] == pytest.approx(5000000.0)
+        assert summary["orderable"] == pytest.approx(3534890.5473)
 
     def test_extract_domestic_cash_summary_falls_back_to_stck_cash_ord_psbl_amt(self):
         from app.services.brokers.kis.client import (
@@ -528,7 +528,7 @@ class TestKISIntegratedMarginParams:
             }
         )
 
-        assert summary["orderable"] == 2100000.25
+        assert summary["orderable"] == pytest.approx(2100000.25)
 
     def test_extract_domestic_cash_summary_skips_zero_priority_orderables_for_lower_positive(
         self,
@@ -552,8 +552,8 @@ class TestKISIntegratedMarginParams:
             }
         )
 
-        assert summary["balance"] == 5000000.0
-        assert summary["orderable"] == 2100000.25
+        assert summary["balance"] == pytest.approx(5000000.0)
+        assert summary["orderable"] == pytest.approx(2100000.25)
 
     def test_extract_domestic_cash_summary_returns_zero_when_all_orderables_zero(self):
         from app.services.brokers.kis.client import (
@@ -575,8 +575,8 @@ class TestKISIntegratedMarginParams:
             }
         )
 
-        assert summary["balance"] == 0.0
-        assert summary["orderable"] == 0.0
+        assert summary["balance"] == pytest.approx(0.0)
+        assert summary["orderable"] == pytest.approx(0.0)
 
     def test_extract_domestic_cash_summary_falls_back_to_stck_cash_objt_amt(self):
         from app.services.brokers.kis.client import (
@@ -592,4 +592,4 @@ class TestKISIntegratedMarginParams:
             }
         )
 
-        assert summary["orderable"] == 5000000.0
+        assert summary["orderable"] == pytest.approx(5000000.0)

@@ -134,14 +134,14 @@ class TestCandleCoefficient:
         coef, ctype = calculate_candle_coefficient(
             open_price=100.0, high=110.0, low=95.0, close=108.0
         )
-        assert coef == 1.0
+        assert coef == pytest.approx(1.0)
         assert ctype == BULLISH
 
     def test_bearish_strong_candle(self):
         coef, ctype = calculate_candle_coefficient(
             open_price=110.0, high=112.0, low=90.0, close=92.0
         )
-        assert coef == 0.0
+        assert coef == pytest.approx(0.0)
         assert ctype == BEARISH_STRONG
 
     def test_bullish_with_long_lower_shadow_prioritizes_bullish(self):
@@ -155,37 +155,37 @@ class TestCandleCoefficient:
         coef, ctype = calculate_candle_coefficient(
             open_price=open_price, high=high, low=low, close=close
         )
-        assert coef == 1.0
+        assert coef == pytest.approx(1.0)
         assert ctype == BULLISH
 
     def test_hammer_candle(self):
         coef, ctype = calculate_candle_coefficient(
             open_price=101.0, high=105.0, low=80.0, close=100.0
         )
-        assert coef == 0.8
+        assert coef == pytest.approx(0.8)
         assert ctype == HAMMER
 
     def test_bearish_normal_candle(self):
         coef, ctype = calculate_candle_coefficient(
             open_price=100.0, high=105.0, low=90.0, close=95.0
         )
-        assert coef == 0.5
+        assert coef == pytest.approx(0.5)
         assert ctype == BEARISH_NORMAL
 
     def test_flat_candle_zero_range(self):
         coef, ctype = calculate_candle_coefficient(
             open_price=100.0, high=100.0, low=100.0, close=100.0
         )
-        assert coef == 0.5
+        assert coef == pytest.approx(0.5)
         assert ctype == FLAT
 
     def test_none_values_return_flat(self):
         coef, ctype = calculate_candle_coefficient(None, 100.0, 90.0, 95.0)
-        assert coef == 0.5
+        assert coef == pytest.approx(0.5)
         assert ctype == FLAT
 
         coef, ctype = calculate_candle_coefficient(100.0, None, 90.0, 95.0)
-        assert coef == 0.5
+        assert coef == pytest.approx(0.5)
         assert ctype == FLAT
 
 
@@ -196,63 +196,63 @@ class TestVolumeScore:
 
     def test_high_ratio_capped_at_100(self):
         score = calculate_volume_score(10000.0, 1000.0)
-        assert score == 100.0
+        assert score == pytest.approx(100.0)
 
     def test_none_today_volume(self):
         score = calculate_volume_score(None, 1000.0)
-        assert score == 0.0
+        assert score == pytest.approx(0.0)
 
     def test_none_avg_volume(self):
         score = calculate_volume_score(1000.0, None)
-        assert score == 0.0
+        assert score == pytest.approx(0.0)
 
     def test_zero_avg_volume(self):
         score = calculate_volume_score(1000.0, 0.0)
-        assert score == 0.0
+        assert score == pytest.approx(0.0)
 
 
 class TestTrendScore:
     def test_uptrend_plus_di_greater(self):
         score = calculate_trend_score(adx=25.0, plus_di=30.0, minus_di=20.0)
-        assert score == 90.0
+        assert score == pytest.approx(90.0)
 
     def test_weak_trend_adx_below_35(self):
         score = calculate_trend_score(adx=25.0, plus_di=20.0, minus_di=30.0)
-        assert score == 60.0
+        assert score == pytest.approx(60.0)
 
     def test_moderate_trend_adx_35_to_50(self):
         score = calculate_trend_score(adx=40.0, plus_di=20.0, minus_di=30.0)
-        assert score == 30.0
+        assert score == pytest.approx(30.0)
 
     def test_strong_trend_adx_above_50(self):
         score = calculate_trend_score(adx=55.0, plus_di=20.0, minus_di=30.0)
-        assert score == 10.0
+        assert score == pytest.approx(10.0)
 
     def test_none_adx_returns_conservative(self):
         score = calculate_trend_score(adx=None, plus_di=20.0, minus_di=30.0)
-        assert score == 30.0
+        assert score == pytest.approx(30.0)
 
     def test_none_di_with_low_adx(self):
         score = calculate_trend_score(adx=25.0, plus_di=None, minus_di=None)
-        assert score == 60.0
+        assert score == pytest.approx(60.0)
 
 
 class TestRsiScore:
     def test_low_rsi_oversold(self):
         score = calculate_rsi_score(20.0)
-        assert score == 80.0
+        assert score == pytest.approx(80.0)
 
     def test_high_rsi_overbought(self):
         score = calculate_rsi_score(80.0)
-        assert score == 20.0
+        assert score == pytest.approx(20.0)
 
     def test_neutral_rsi(self):
         score = calculate_rsi_score(50.0)
-        assert score == 50.0
+        assert score == pytest.approx(50.0)
 
     def test_none_rsi_returns_neutral(self):
         score = calculate_rsi_score(None)
-        assert score == 50.0
+        assert score == pytest.approx(50.0)
 
 
 class TestCompositeScore:
@@ -333,12 +333,12 @@ class TestCalculate20dAvgVolume:
     def test_calculates_average(self):
         df = pd.DataFrame({"volume": [100.0] * 20})
         avg = calculate_20d_avg_volume(df)
-        assert avg == 100.0
+        assert avg == pytest.approx(100.0)
 
     def test_uses_last_20_days(self):
         df = pd.DataFrame({"volume": [50.0] * 10 + [100.0] * 20})
         avg = calculate_20d_avg_volume(df)
-        assert avg == 100.0
+        assert avg == pytest.approx(100.0)
 
     def test_returns_none_for_empty_df(self):
         df = pd.DataFrame()
@@ -362,10 +362,10 @@ class TestExtractCandleValues:
             }
         )
         o, h, lo, c = extract_candle_values(df, -2)
-        assert o == 105.0
-        assert h == 110.0
-        assert lo == 100.0
-        assert c == 108.0
+        assert o == pytest.approx(105.0)
+        assert h == pytest.approx(110.0)
+        assert lo == pytest.approx(100.0)
+        assert c == pytest.approx(108.0)
 
     def test_fallback_to_last_candle(self):
         df = pd.DataFrame(
@@ -377,8 +377,8 @@ class TestExtractCandleValues:
             }
         )
         o, h, lo, c = extract_candle_values(df, -1)
-        assert o == 100.0
-        assert h == 105.0
+        assert o == pytest.approx(100.0)
+        assert h == pytest.approx(105.0)
 
     def test_returns_none_for_missing_columns(self):
         df = pd.DataFrame({"close": [100.0] * 5})

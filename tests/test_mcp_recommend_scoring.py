@@ -21,13 +21,13 @@ from tests._mcp_tooling_support import build_tools
 
 class TestScoringFunctions:
     def test_calc_rsi_score_handles_none(self):
-        assert calc_rsi_score(None) == 50.0
+        assert calc_rsi_score(None) == pytest.approx(50.0)
 
     def test_calc_valuation_score_handles_none(self):
-        assert calc_valuation_score(None, None) == 50.0
+        assert calc_valuation_score(None, None) == pytest.approx(50.0)
 
     def test_calc_momentum_score_handles_none(self):
-        assert calc_momentum_score(None) == 50.0
+        assert calc_momentum_score(None) == pytest.approx(50.0)
 
     def test_calc_dividend_score_accepts_percent_input(self):
         score_decimal = calc_dividend_score(0.05)
@@ -246,7 +246,7 @@ class TestCandidateNormalization:
             "acc_trade_volume_24h": 12345,
         }
         normalized_from_acc = normalize_candidate(item_with_acc_trade_volume, "crypto")
-        assert normalized_from_acc["volume_24h"] == 12345.0
+        assert normalized_from_acc["volume_24h"] == pytest.approx(12345.0)
 
         item_with_volume_only = {
             "symbol": "KRW-ETH",
@@ -254,4 +254,4 @@ class TestCandidateNormalization:
             "volume": 6789,
         }
         normalized_from_volume = normalize_candidate(item_with_volume_only, "crypto")
-        assert normalized_from_volume["volume_24h"] == 6789.0
+        assert normalized_from_volume["volume_24h"] == pytest.approx(6789.0)

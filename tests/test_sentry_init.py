@@ -80,8 +80,8 @@ def test_init_sentry_uses_build_vcs_ref_release_with_fastapi(monkeypatch):
     assert kwargs["dsn"] == "https://public@example.ingest.sentry.io/1"
     assert kwargs["environment"] == "development"
     assert kwargs["release"] == expected_release
-    assert kwargs["traces_sample_rate"] == 1.0
-    assert kwargs["profiles_sample_rate"] == 1.0
+    assert kwargs["traces_sample_rate"] == pytest.approx(1.0)
+    assert kwargs["profiles_sample_rate"] == pytest.approx(1.0)
     assert kwargs["send_default_pii"] is True
     assert kwargs["before_send_transaction"] is sentry_module._before_send_transaction
     mock_run.assert_not_called()

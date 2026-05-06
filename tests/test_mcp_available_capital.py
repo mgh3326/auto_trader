@@ -62,7 +62,7 @@ async def test_get_available_capital_aggregates_accounts_and_manual_cash(monkeyp
     assert result["accounts"][0]["account"] == "upbit"
     assert result["accounts"][1]["account"] == "kis_domestic"
     assert result["accounts"][2]["account"] == "kis_overseas"
-    assert result["accounts"][2].get("krw_equivalent") == 130000.0
+    assert result["accounts"][2].get("krw_equivalent") == pytest.approx(130000.0)
 
     assert result["manual_cash"]["amount"] == 15000000
     assert result["manual_cash"]["stale_warning"] is False
@@ -71,7 +71,7 @@ async def test_get_available_capital_aggregates_accounts_and_manual_cash(monkeyp
         result["summary"]["total_orderable_krw"]
         == 1000000.0 + 2000000.0 + 130000.0 + 15000000.0
     )
-    assert result["summary"]["exchange_rate_usd_krw"] == 1300.0
+    assert result["summary"]["exchange_rate_usd_krw"] == pytest.approx(1300.0)
     assert result["summary"]["as_of"] == "2026-04-01T09:00:00+00:00"
 
     assert result["errors"] == []
@@ -112,7 +112,7 @@ async def test_get_available_capital_excludes_manual_when_flag_disabled(monkeypa
     result = await get_available_capital_impl(include_manual=False)
 
     assert result["manual_cash"] is None
-    assert result["summary"]["total_orderable_krw"] == 1000000.0
+    assert result["summary"]["total_orderable_krw"] == pytest.approx(1000000.0)
 
 
 @pytest.mark.asyncio
@@ -146,7 +146,7 @@ async def test_get_available_capital_handles_missing_manual_cash(monkeypatch):
     result = await get_available_capital_impl()
 
     assert result["manual_cash"] is None
-    assert result["summary"]["total_orderable_krw"] == 1000000.0
+    assert result["summary"]["total_orderable_krw"] == pytest.approx(1000000.0)
 
 
 @pytest.mark.asyncio

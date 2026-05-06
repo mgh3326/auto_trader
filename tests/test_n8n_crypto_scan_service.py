@@ -385,7 +385,7 @@ class TestFetchCryptoScan:
         btc = next(c for c in result["coins"] if c["symbol"] == "KRW-BTC")
         assert btc["crash"] is not None
         assert btc["crash"]["triggered"] is True
-        assert btc["crash"]["threshold"] == 0.06  # top 10 threshold
+        assert btc["crash"]["threshold"] == pytest.approx(0.06)  # top 10 threshold
 
     @pytest.mark.asyncio
     async def test_sma_cross_detection(self) -> None:

@@ -290,9 +290,9 @@ async def test_get_price_and_rsi_use_market_specific_sources(
         watch_scanner_module.market_data_service, "get_ohlcv", mock_get_ohlcv
     )
 
-    assert await scanner._get_price("005930", "kr") == 55000.0
-    assert await scanner._get_price("AMZN", "us") == 190.0
-    assert await scanner._get_price("BTC", "crypto") == 91000000.0
+    assert await scanner._get_price("005930", "kr") == pytest.approx(55000.0)
+    assert await scanner._get_price("AMZN", "us") == pytest.approx(190.0)
+    assert await scanner._get_price("BTC", "crypto") == pytest.approx(91000000.0)
 
     kr_rsi = await scanner._get_rsi("005930", "kr")
     us_rsi = await scanner._get_rsi("AMZN", "us")
@@ -483,7 +483,7 @@ async def test_watch_scanner_uses_market_data_domain_service(
         raising=False,
     )
 
-    assert await scanner._get_price("BTC", "crypto") == 91000000.0
+    assert await scanner._get_price("BTC", "crypto") == pytest.approx(91000000.0)
     assert await scanner._get_rsi("BTC", "crypto") is not None
 
     domain_get_quote.assert_awaited_once_with(symbol="KRW-BTC", market="crypto")

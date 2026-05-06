@@ -18,8 +18,8 @@ def test_to_optional_float_treats_nan_values_as_missing() -> None:
 
 
 def test_to_optional_float_preserves_normal_numbers() -> None:
-    assert _to_optional_float(12) == 12.0
-    assert _to_optional_float("12.5") == 12.5
+    assert _to_optional_float(12) == pytest.approx(12.0)
+    assert _to_optional_float("12.5") == pytest.approx(12.5)
 
 
 def test_to_optional_int_treats_nan_values_as_missing() -> None:

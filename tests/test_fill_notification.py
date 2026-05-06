@@ -27,7 +27,7 @@ class TestNormalizeUpbitFill:
         assert order.symbol == "KRW-BTC"
         assert order.side == "bid"
         assert order.filled_price == 50_000_000
-        assert order.filled_qty == 0.1
+        assert order.filled_qty == pytest.approx(0.1)
         assert order.filled_amount == 5_000_000
         assert order.account == "upbit"
         assert order.market_type == "crypto"
@@ -90,9 +90,9 @@ class TestNormalizeKisFill:
 
         assert order.symbol == "AAPL"
         assert order.side == "ask"
-        assert order.filled_price == 195.5
+        assert order.filled_price == pytest.approx(195.5)
         assert order.filled_qty == 2
-        assert order.filled_amount == 391.0
+        assert order.filled_amount == pytest.approx(391.0)
         assert order.order_id == "US-ORDER-1234"
         assert order.account == "kis"
         assert order.market_type == "us"
