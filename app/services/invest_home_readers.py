@@ -156,6 +156,13 @@ class KISHomeReader:
                     if h.currency == "USD" and h.costBasis is not None
                 )
 
+            account_pnl_krw = investment_value_krw - account_cost_basis_krw
+            account_pnl_rate = (
+                account_pnl_krw / account_cost_basis_krw
+                if account_cost_basis_krw > 0
+                else None
+            )
+
             account = Account(
                 accountId="kis_account",
                 displayName="KIS 실계좌",
@@ -164,6 +171,8 @@ class KISHomeReader:
                 includedInHome=True,
                 valueKrw=investment_value_krw,
                 costBasisKrw=account_cost_basis_krw,
+                pnlKrw=account_pnl_krw,
+                pnlRate=account_pnl_rate,
                 cashBalances=CashAmounts(
                     krw=domestic_cash["balance"],
                     usd=margin.get("usd_balance"),
@@ -192,24 +201,61 @@ class UpbitHomeReader:
     def __init__(self, db: AsyncSession) -> None:
         self._db = db
 
+    async def _fetch_current_prices(self, market_codes: list[str]) -> dict[str, float]:
+        """Fetch Upbit prices without letting one delisted code blank the whole batch."""
+
+        try:
+            prices = await fetch_multiple_current_prices(market_codes)
+        except Exception:
+            prices = {}
+
+        missing_codes = [code for code in market_codes if code not in prices]
+        if not missing_codes:
+            return prices
+
+        for code in missing_codes:
+            try:
+                single = await fetch_multiple_current_prices([code])
+            except Exception:
+                continue
+            if code in single:
+                prices[code] = single[code]
+        return prices
+
     async def fetch(self, *, user_id: int) -> _SourceFetchResult:
         try:
             coins = await fetch_my_coins()
             krw_row = next((c for c in coins if c.get("currency") == "KRW"), None)
 
             holdings = []
-            crypto_rows = [c for c in coins if str(c.get("currency")) != "KRW"]
+            crypto_rows = [
+                c
+                for c in coins
+                if str(c.get("currency")) != "KRW"
+                and (float(c.get("balance", 0) or 0) + float(c.get("locked", 0) or 0))
+                > 0
+            ]
             market_codes = [f"KRW-{c.get('currency')}" for c in crypto_rows]
             price_warning: InvestHomeWarning | None = None
             current_prices: dict[str, float] = {}
             if market_codes:
                 try:
-                    current_prices = await fetch_multiple_current_prices(market_codes)
+                    current_prices = await self._fetch_current_prices(market_codes)
                 except Exception as exc:
                     logger.warning("Upbit price fetch failed: %s", exc, exc_info=True)
                     price_warning = InvestHomeWarning(
                         source="upbit",
                         message="코인 평가금액 산출을 위한 현재가 조회에 실패했습니다.",
+                    )
+                missing_price_codes = sorted(set(market_codes) - set(current_prices))
+                if missing_price_codes and price_warning is None:
+                    logger.warning(
+                        "Upbit missing current prices for %s",
+                        ",".join(missing_price_codes),
+                    )
+                    price_warning = InvestHomeWarning(
+                        source="upbit",
+                        message="일부 코인은 현재가가 없어 평가금액에서 제외했습니다.",
                     )
             for c in crypto_rows:
                 currency = str(c.get("currency"))
@@ -250,10 +296,24 @@ class UpbitHomeReader:
                     )
                 )
 
-            coin_value_krw = sum(h.valueKrw for h in holdings if h.valueKrw is not None)
+            priced_holdings = [h for h in holdings if h.valueKrw is not None]
+            coin_value_krw = sum(
+                h.valueKrw for h in priced_holdings if h.valueKrw is not None
+            )
+            priced_cost_vals = [h.costBasis for h in priced_holdings]
             coin_cost_basis_krw = (
-                sum(h.costBasis for h in holdings if h.costBasis is not None)
-                if holdings and all(h.costBasis is not None for h in holdings)
+                sum(v for v in priced_cost_vals if v is not None)
+                if priced_cost_vals and all(v is not None for v in priced_cost_vals)
+                else None
+            )
+            account_pnl_krw = (
+                coin_value_krw - coin_cost_basis_krw
+                if coin_cost_basis_krw is not None
+                else None
+            )
+            account_pnl_rate = (
+                account_pnl_krw / coin_cost_basis_krw
+                if account_pnl_krw is not None and coin_cost_basis_krw > 0
                 else None
             )
             account = Account(
@@ -264,6 +324,8 @@ class UpbitHomeReader:
                 includedInHome=True,
                 valueKrw=coin_value_krw,
                 costBasisKrw=coin_cost_basis_krw,
+                pnlKrw=account_pnl_krw,
+                pnlRate=account_pnl_rate,
                 cashBalances=CashAmounts(
                     krw=float(krw_row.get("balance", 0)) if krw_row else None
                 ),
@@ -323,22 +385,6 @@ class ManualHomeReader:
                 for h in toss_holdings
             ]
 
-            accounts_map: dict[int, Account] = {}
-            for h in toss_holdings:
-                ba = h.broker_account
-                if ba.id not in accounts_map:
-                    accounts_map[ba.id] = Account(
-                        accountId=str(ba.id),
-                        displayName=ba.account_name or "Toss 수동",
-                        source="toss_manual",
-                        accountKind="manual",
-                        includedInHome=True,
-                        valueKrw=0,
-                        costBasisKrw=None,
-                        cashBalances=CashAmounts(),
-                        buyingPower=CashAmounts(),
-                    )
-
             manual_warning = (
                 InvestHomeWarning(
                     source="toss_manual",
@@ -348,7 +394,7 @@ class ManualHomeReader:
                 else None
             )
             return _SourceFetchResult(
-                accounts=list(accounts_map.values()),
+                accounts=[],
                 holdings=holdings,
                 warning=manual_warning,
             )

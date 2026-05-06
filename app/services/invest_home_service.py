@@ -65,30 +65,67 @@ def build_grouped_holdings(holdings: Iterable[Holding]) -> list[GroupedHolding]:
             cost_basis = sum(v for v in cost_vals if v is not None)
             avg_cost = cost_basis / total_qty
 
-        native_vals = [h.valueNative for h in items]
+        known_native_values = [
+            h.valueNative for h in items if h.valueNative is not None and h.quantity > 0
+        ]
+        known_native_quantities = [
+            h.quantity for h in items if h.valueNative is not None and h.quantity > 0
+        ]
+        inferred_native_unit: float | None = None
+        if known_native_values and sum(known_native_quantities) > 0:
+            inferred_native_unit = sum(known_native_values) / sum(
+                known_native_quantities
+            )
+
+        native_parts: list[float] = []
+        for h in items:
+            if h.valueNative is not None:
+                native_parts.append(h.valueNative)
+            elif inferred_native_unit is not None:
+                native_parts.append(h.quantity * inferred_native_unit)
         value_native: float | None = (
-            sum(v for v in native_vals if v is not None)
-            if all(v is not None for v in native_vals)
-            else None
+            sum(native_parts) if len(native_parts) == len(items) else None
         )
-        krw_vals = [h.valueKrw for h in items]
+
+        fx_rate: float | None = None
+        fx_candidates = [
+            h.valueKrw / h.valueNative
+            for h in items
+            if h.currency == "USD"
+            and h.valueKrw is not None
+            and h.valueNative is not None
+            and h.valueNative > 0
+        ]
+        if fx_candidates:
+            fx_rate = sum(fx_candidates) / len(fx_candidates)
+
+        krw_parts: list[float] = []
+        for h in items:
+            if h.valueKrw is not None:
+                krw_parts.append(h.valueKrw)
+            elif h.currency == "KRW" and inferred_native_unit is not None:
+                krw_parts.append(h.quantity * inferred_native_unit)
+            elif h.currency == "USD" and inferred_native_unit is not None and fx_rate:
+                krw_parts.append(h.quantity * inferred_native_unit * fx_rate)
         value_krw: float | None = (
-            sum(v for v in krw_vals if v is not None)
-            if all(v is not None for v in krw_vals)
-            else None
+            sum(krw_parts) if len(krw_parts) == len(items) else None
         )
+
         pnl_vals = [h.pnlKrw for h in items]
         pnl_krw: float | None = (
             sum(v for v in pnl_vals if v is not None)
             if all(v is not None for v in pnl_vals)
             else None
         )
+        if pnl_krw is None and cost_basis is not None and value_krw is not None:
+            if first.currency == "KRW":
+                pnl_krw = value_krw - cost_basis
+            elif first.currency == "USD" and fx_rate:
+                pnl_krw = value_krw - cost_basis * fx_rate
+
         pnl_rate: float | None = None
-        if cost_basis is not None and cost_basis > 0:
-            if value_native is not None:
-                pnl_rate = (value_native - cost_basis) / cost_basis
-            elif first.currency == "KRW" and value_krw is not None:
-                pnl_rate = (value_krw - cost_basis) / cost_basis
+        if cost_basis is not None and cost_basis > 0 and value_native is not None:
+            pnl_rate = (value_native - cost_basis) / cost_basis
 
         out.append(
             GroupedHolding(

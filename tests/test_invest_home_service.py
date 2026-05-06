@@ -138,6 +138,48 @@ def test_grouped_null_costbasis_propagates() -> None:
 
 
 @pytest.mark.unit
+def test_grouped_infers_manual_value_from_live_same_symbol_price() -> None:
+    kis = _h(
+        holdingId="kis-kakao",
+        source="kis",
+        symbol="035720",
+        market="KR",
+        currency="KRW",
+        quantity=6,
+        averageCost=40_000,
+        costBasis=240_000,
+        valueNative=300_000,
+        valueKrw=300_000,
+        pnlKrw=60_000,
+        pnlRate=0.25,
+    )
+    toss = _h(
+        holdingId="toss-kakao",
+        source="toss_manual",
+        accountKind="manual",
+        symbol="035720",
+        market="KR",
+        currency="KRW",
+        quantity=4,
+        averageCost=45_000,
+        costBasis=180_000,
+        valueNative=None,
+        valueKrw=None,
+        pnlKrw=None,
+        pnlRate=None,
+    )
+
+    grouped = build_grouped_holdings([kis, toss])
+
+    g = grouped[0]
+    assert g.totalQuantity == 10
+    assert g.valueKrw == 500_000
+    assert g.costBasis == 420_000
+    assert g.pnlKrw == 80_000
+    assert g.pnlRate == pytest.approx(80_000 / 420_000)
+
+
+@pytest.mark.unit
 def test_grouped_never_merges_crypto_with_equity() -> None:
     eq = _h(symbol="BTC", market="US", assetType="equity", currency="USD")
     cx = _h(

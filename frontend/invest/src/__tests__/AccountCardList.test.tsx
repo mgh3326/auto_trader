@@ -37,8 +37,8 @@ test("Upbit card does not render a live badge and shows KRW cash + buying power"
     />
   );
   expect(screen.queryByText(/^live$/i)).toBeNull();
-  expect(screen.getByText(/원화 현금/)).toBeInTheDocument();
-  expect(screen.getByText(/원화 매수/)).toBeInTheDocument();
+  expect(screen.getByText(/원화 · 현금/)).toBeInTheDocument();
+  expect(screen.getByText(/원화 · 매수 가능/)).toBeInTheDocument();
 });
 
 test("Toss manual card shows quiet 수동 badge and falls back to '-' when empty", () => {
@@ -65,7 +65,7 @@ test("Toss manual card shows quiet 수동 badge and falls back to '-' when empty
 
 test("buyingPower rendering does not attach onClick handlers", () => {
   render(<AccountCardList accounts={[acct()]} />);
-  const buyingPowerLabel = screen.getByText(/원화 매수/);
+  const buyingPowerLabel = screen.getByText(/원화 · 매수 가능/);
   // buyingPower 행과 그 자식 어디에도 button 또는 onClick 없음
   const cell = buyingPowerLabel.closest('[data-testid="account-card"]')!;
   expect(cell.querySelector("button, [role='button']")).toBeNull();

@@ -23,7 +23,9 @@ export function HeroCard({ summary }: { summary: HomeSummary }) {
         {formatPercent(summary.pnlRate)}
       </div>
       <div className="subtle" style={{ marginTop: 4 }}>
-        원금 {summary.costBasisKrw === null ? "정보 부족" : formatKrw(summary.costBasisKrw)} 기준
+        {summary.costBasisKrw === null
+          ? "원금 산정 불가"
+          : `원금 ${formatKrw(summary.costBasisKrw)} 기준`}
       </div>
     </div>
   );

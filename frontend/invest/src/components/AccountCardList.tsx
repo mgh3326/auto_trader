@@ -57,26 +57,26 @@ function AccountCard({ a }: { a: Account }) {
       >
         {a.source === "kis" && (
           <>
-            <Cell k="원화 현금" v={formatKrw(a.cashBalances.krw ?? null)} />
-            <Cell k="달러 현금" v={formatUsd(a.cashBalances.usd ?? null)} />
-            <Cell k="원화 매수" v={formatKrw(a.buyingPower.krw ?? null)} />
-            <Cell k="달러 매수" v={formatUsd(a.buyingPower.usd ?? null)} />
+            <Cell k="원화 · 현금" v={formatKrw(a.cashBalances.krw ?? null)} />
+            <Cell k="달러 · 현금" v={formatUsd(a.cashBalances.usd ?? null)} />
+            <Cell k="원화 · 매수 가능" v={formatKrw(a.buyingPower.krw ?? null)} />
+            <Cell k="달러 · 매수 가능" v={formatUsd(a.buyingPower.usd ?? null)} />
           </>
         )}
         {a.source === "upbit" && (
           <>
-            <Cell k="원화 현금" v={formatKrw(a.cashBalances.krw ?? null)} />
-            <Cell k="원화 매수" v={formatKrw(a.buyingPower.krw ?? null)} />
+            <Cell k="원화 · 현금" v={formatKrw(a.cashBalances.krw ?? null)} />
+            <Cell k="원화 · 매수 가능" v={formatKrw(a.buyingPower.krw ?? null)} />
           </>
         )}
         {isToss && (
           <>
             <Cell
-              k="원화 현금"
+              k="원화 · 현금"
               v={a.cashBalances.krw === undefined ? "-" : formatKrw(a.cashBalances.krw)}
             />
             <Cell
-              k="원화 매수"
+              k="원화 · 매수 가능"
               v={a.buyingPower.krw === undefined ? "-" : formatKrw(a.buyingPower.krw)}
             />
           </>
