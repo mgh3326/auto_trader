@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from app.services.analyst_normalizer import (
     build_consensus,
     is_strong_buy,
@@ -147,7 +149,7 @@ class TestBuildConsensus:
         assert consensus["total_count"] == 3
         assert consensus["avg_target_price"] == 101
         assert consensus["current_price"] == 90
-        assert consensus["upside_pct"] == 12.22
+        assert consensus["upside_pct"] == pytest.approx(12.22)
 
     def test_mixed_consensus(self) -> None:
         opinions = [
@@ -228,7 +230,7 @@ class TestBuildConsensus:
         opinions = [{"rating": "Buy", "target_price": 110}]
         consensus = build_consensus(opinions, 100)
 
-        assert consensus["upside_pct"] == 10.0
+        assert consensus["upside_pct"] == pytest.approx(10.0)
 
     def test_upside_percentage_none_without_current_price(self) -> None:
         opinions = [{"rating": "Buy", "target_price": 100}]

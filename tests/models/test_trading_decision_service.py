@@ -144,7 +144,7 @@ async def test_create_session_with_btc_eth_sol_proposals() -> None:
             symbols = {p.symbol for p in added}
             assert symbols == {"KRW-BTC", "KRW-ETH", "KRW-SOL"}
             btc = next(p for p in added if p.symbol == "KRW-BTC")
-            assert btc.original_quantity_pct == Decimal("20.0000")
+            assert btc.original_quantity_pct == pytest.approx(Decimal("20.0000"))
             assert btc.user_response == UserResponse.pending
     finally:
         await _cleanup_user(user_id)
@@ -191,8 +191,8 @@ async def test_modify_btc_proposal_20_to_10() -> None:
             )
             await session.commit()
 
-            assert updated.original_quantity_pct == Decimal("20.0000")
-            assert updated.user_quantity_pct == Decimal("10.0000")
+            assert updated.original_quantity_pct == pytest.approx(Decimal("20.0000"))
+            assert updated.user_quantity_pct == pytest.approx(Decimal("10.0000"))
             assert updated.user_response == UserResponse.modify
             assert updated.responded_at is not None
     finally:
@@ -494,7 +494,7 @@ async def test_record_1h_and_1d_outcome_marks() -> None:
             assert m1.horizon == OutcomeHorizon.h1
             assert m2.horizon == OutcomeHorizon.d1
             assert m1.pnl_pct is not None
-            assert m2.price_at_mark == Decimal("95000000")
+            assert m2.price_at_mark == pytest.approx(Decimal("95000000"))
     finally:
         await _cleanup_user(user_id)
 
@@ -581,8 +581,8 @@ async def test_aggregate_session_outcomes_groups_by_track_and_horizon() -> None:
             live_1h = keyed[(TrackKind.accepted_live.value, OutcomeHorizon.h1.value)]
             assert live_1h.outcome_count == 2
             assert live_1h.proposal_count == 2
-            assert live_1h.mean_pnl_pct == Decimal("2.0000")
-            assert live_1h.sum_pnl_amount == Decimal("20.0000")
+            assert live_1h.mean_pnl_pct == pytest.approx(Decimal("2.0000"))
+            assert live_1h.sum_pnl_amount == pytest.approx(Decimal("20.0000"))
 
             rej_1d = keyed[
                 (TrackKind.rejected_counterfactual.value, OutcomeHorizon.d1.value)

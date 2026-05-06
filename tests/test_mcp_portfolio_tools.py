@@ -2815,7 +2815,7 @@ async def test_get_holdings_strategy_signal_reuses_portfolio_snapshot_price(
     btc_position = result["accounts"][0]["positions"][0]
 
     assert price_fetch_count == 1
-    assert btc_position["current_price"] == 47_000_000.0
+    assert btc_position["current_price"] == pytest.approx(47_000_000.0)
     assert btc_position["strategy_signal"]["reason"] == "stop_loss"
 
 
@@ -3256,7 +3256,7 @@ async def test_get_cash_balance_paper_all(monkeypatch):
     result = await tools["get_cash_balance"](account="paper")
 
     assert {r["currency"] for r in result["accounts"]} == {"KRW", "USD"}
-    assert result["summary"]["total_krw"] == 10_000_000.0
+    assert result["summary"]["total_krw"] == pytest.approx(10_000_000.0)
     assert result["summary"]["total_usd"] == pytest.approx(500.0)
     assert result["errors"] == []
 
@@ -3277,7 +3277,7 @@ async def test_get_cash_balance_paper_named(monkeypatch):
     result = await tools["get_cash_balance"](account="paper:day")
 
     assert all(r["account"] == "paper:day" for r in result["accounts"])
-    assert result["summary"]["total_krw"] == 1_000_000.0
+    assert result["summary"]["total_krw"] == pytest.approx(1_000_000.0)
 
 
 @pytest.mark.asyncio
@@ -3304,8 +3304,8 @@ async def test_get_available_capital_paper(monkeypatch):
 
     assert result["manual_cash"] is None
     # 10,000,000 KRW + 500 USD * 1400 = 10,700,000
-    assert result["summary"]["total_orderable_krw"] == 10_700_000.0
+    assert result["summary"]["total_orderable_krw"] == pytest.approx(10_700_000.0)
     assert result["summary"]["exchange_rate_usd_krw"] == pytest.approx(1400.0)
     # paper USD row must have krw_equivalent injected
     usd_row = next(r for r in result["accounts"] if r["currency"] == "USD")
-    assert usd_row["krw_equivalent"] == 700_000.0
+    assert usd_row["krw_equivalent"] == pytest.approx(700_000.0)

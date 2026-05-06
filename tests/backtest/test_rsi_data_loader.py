@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "backtest"))
 
@@ -45,8 +46,8 @@ class TestNormalizeCandles:
         df = normalize_candles(raw)
         assert len(df) == 1
         assert df.iloc[0]["datetime"] == "2024-01-01T09:00:00"
-        assert df.iloc[0]["close"] == 105.0
-        assert df.iloc[0]["value"] == 5000.0
+        assert df.iloc[0]["close"] == pytest.approx(105.0)
+        assert df.iloc[0]["value"] == pytest.approx(5000.0)
 
     def test_sorts_by_datetime_ascending(self):
         raw = [
@@ -97,7 +98,7 @@ class TestMergeWithExisting:
         assert len(result) == 2
         # New data should overwrite existing for same datetime
         row = result[result["datetime"] == "2024-01-01T09:00:00"]
-        assert row.iloc[0]["close"] == 101.0
+        assert row.iloc[0]["close"] == pytest.approx(101.0)
 
 
 class TestLoadCandles:

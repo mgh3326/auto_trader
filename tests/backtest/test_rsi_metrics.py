@@ -71,7 +71,7 @@ class TestSharpe:
     def test_flat_equity_zero_sharpe(self):
         result = _make_result([100, 100, 100, 100])
         m = compute_metrics(result)
-        assert m.sharpe == 0.0
+        assert m.sharpe == pytest.approx(0.0)
 
     def test_positive_sharpe_for_steady_gains(self):
         curve = [10_000_000 + i * 10_000 for i in range(100)]

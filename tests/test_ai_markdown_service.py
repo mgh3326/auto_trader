@@ -158,8 +158,8 @@ class TestAIMarkdownService:
         # 10M + 2.6M + 4M = 16.6M
         assert summary["total_evaluation"] == 16_600_000
         # US weight: 2.6M / 16.6M * 100 = 15.66... -> 15.7
-        assert round(summary["allocation"]["US"], 1) == 15.7
-        assert round(sum(summary["allocation"].values()), 1) == 100.0
+        assert round(summary["allocation"]["US"], 1) == pytest.approx(15.7)
+        assert round(sum(summary["allocation"].values()), 1) == pytest.approx(100.0)
 
     def test_format_top_holdings_uses_normalized_krw_for_sorting_and_display(
         self, service

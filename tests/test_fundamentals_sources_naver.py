@@ -16,4 +16,4 @@ def test_coerce_optional_number_treats_missing_and_nan_values_as_none() -> None:
 
 def test_coerce_optional_number_preserves_real_numbers() -> None:
     assert _coerce_optional_number(12) == 12
-    assert _coerce_optional_number(12.5) == 12.5
+    assert _coerce_optional_number(12.5) == pytest.approx(12.5)

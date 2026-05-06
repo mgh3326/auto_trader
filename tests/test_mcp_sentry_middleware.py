@@ -66,7 +66,7 @@ class TestTruncateForSentry:
 
     def test_non_container_passthrough(self):
         assert _truncate_for_sentry(42) == 42
-        assert _truncate_for_sentry(3.14) == 3.14
+        assert _truncate_for_sentry(3.14) == pytest.approx(3.14)
         assert _truncate_for_sentry(None) is None
         assert _truncate_for_sentry(True) is True
 

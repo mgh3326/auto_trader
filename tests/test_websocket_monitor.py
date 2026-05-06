@@ -569,7 +569,7 @@ class TestUnifiedWebSocketMonitor:
             last_pingpong_at="2026-03-09T14:01:10+00:00",
         )
 
-        assert monitor._health_log_interval_seconds == 123.0
+        assert monitor._health_log_interval_seconds == pytest.approx(123.0)
 
         caplog.set_level("INFO")
         monitor._log_health_status(force=True)
@@ -819,7 +819,7 @@ class TestAutoReconnect:
         monitor = UnifiedWebSocketMonitor(mode="upbit")
         monitor._reconnect_delay_seconds = 5.0
 
-        assert monitor._reconnect_delay_seconds == 5.0
+        assert monitor._reconnect_delay_seconds == pytest.approx(5.0)
 
     def test_heartbeat_path_configurable(
         self, mock_settings: None, monkeypatch: pytest.MonkeyPatch
@@ -839,7 +839,7 @@ class TestAutoReconnect:
 
         monkeypatch.setenv("WS_MONITOR_HEARTBEAT_INTERVAL_SECONDS", "30")
         monitor = UnifiedWebSocketMonitor()
-        assert monitor._heartbeat_interval_seconds == 30.0
+        assert monitor._heartbeat_interval_seconds == pytest.approx(30.0)
 
     def test_health_log_interval_defaults_to_five_minutes(
         self, mock_settings: None, monkeypatch: pytest.MonkeyPatch
@@ -848,7 +848,7 @@ class TestAutoReconnect:
 
         monkeypatch.delenv("WS_MONITOR_HEALTH_LOG_INTERVAL_SECONDS", raising=False)
         monitor = UnifiedWebSocketMonitor()
-        assert monitor._health_log_interval_seconds == 300.0
+        assert monitor._health_log_interval_seconds == pytest.approx(300.0)
 
     @pytest.mark.asyncio
     async def test_supervisor_exits_on_stop_before_start(

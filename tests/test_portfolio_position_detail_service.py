@@ -87,7 +87,7 @@ async def test_get_page_payload_returns_summary_components_and_journal() -> None
     assert payload["summary"]["symbol"] == "NVDA"
     assert payload["summary"]["account_count"] == 2
     assert payload["journal"]["strategy"] == "trend"
-    assert payload["summary"]["target_distance_pct"] == 9.85
+    assert payload["summary"]["target_distance_pct"] == pytest.approx(9.85)
 
 
 @pytest.mark.unit
@@ -153,7 +153,7 @@ async def test_get_indicators_payload_builds_summary_cards(
 
     payload = await service.get_indicators_payload(market_type="us", symbol="NVDA")
 
-    assert payload["price"] == 100.0
+    assert payload["price"] == pytest.approx(100.0)
     assert len(payload["summary_cards"]) >= 5
     assert payload["summary_cards"][0]["label"] == "RSI(14)"
     assert payload["summary_cards"][0]["tone"] == "oversold"
@@ -190,8 +190,8 @@ async def test_get_opinions_payload_flattens_consensus_fields(
     payload = await service.get_opinions_payload(market_type="us", symbol="NVDA")
 
     assert payload["supported"] is True
-    assert payload["avg_target_price"] == 155.0
-    assert payload["upside_pct"] == 12.3
+    assert payload["avg_target_price"] == pytest.approx(155.0)
+    assert payload["upside_pct"] == pytest.approx(12.3)
     assert payload["buy_count"] == 8
     assert payload["opinions"][0]["firm"] == "Alpha Research"
 
@@ -284,8 +284,8 @@ async def test_get_page_payload_includes_weights_and_action_summary() -> None:
             user_id=7, market_type="us", symbol="NVDA"
         )
 
-    assert payload["weights"]["portfolio_weight_pct"] == 10.0
-    assert payload["weights"]["market_weight_pct"] == 22.5
+    assert payload["weights"]["portfolio_weight_pct"] == pytest.approx(10.0)
+    assert payload["weights"]["market_weight_pct"] == pytest.approx(22.5)
     assert payload["action_summary"]["status"] == "관망"
     assert "비중 큼" in payload["action_summary"]["tags"]
     assert "목표가까지 여유" in payload["action_summary"]["tags"]
@@ -703,8 +703,8 @@ async def test_get_orders_payload_splits_recent_fills_and_pending_orders(
 
     assert payload["summary"]["last_fill"]["side"] == "buy"
     assert payload["summary"]["pending_count"] == 1
-    assert payload["recent_fills"][0]["amount"] == 452.0
-    assert payload["pending_orders"][0]["remaining_quantity"] == 1.5
+    assert payload["recent_fills"][0]["amount"] == pytest.approx(452.0)
+    assert payload["pending_orders"][0]["remaining_quantity"] == pytest.approx(1.5)
 
 
 @pytest.mark.unit
@@ -748,8 +748,8 @@ async def test_get_orders_payload_prefers_filled_timestamp_and_avg_price(
     payload = await service.get_orders_payload(market_type="us", symbol="NVDA")
 
     assert payload["summary"]["last_fill"]["ordered_at"] == "2026-04-01T09:19:00+09:00"
-    assert payload["recent_fills"][0]["price"] == 455.5
-    assert payload["recent_fills"][0]["amount"] == 911.0
+    assert payload["recent_fills"][0]["price"] == pytest.approx(455.5)
+    assert payload["recent_fills"][0]["amount"] == pytest.approx(911.0)
 
 
 @pytest.mark.unit
@@ -1342,7 +1342,7 @@ def test_build_weights_prefers_evaluation_krw_for_portfolio_weight():
     )
     weights = service._build_weights(positions, base)
 
-    assert weights["portfolio_weight_pct"] == 20.6
+    assert weights["portfolio_weight_pct"] == pytest.approx(20.6)
 
 
 def test_build_weights_returns_none_when_us_position_lacks_krw_normalization():
@@ -1404,9 +1404,9 @@ async def test_get_page_payload_summary_includes_evaluation_krw() -> None:
         )
 
     summary = payload["summary"]
-    assert summary["evaluation"] == 1700.0
-    assert summary["evaluation_krw"] == 2_295_000.0
-    assert summary["profit_loss_krw"] == 270_000.0
+    assert summary["evaluation"] == pytest.approx(1700.0)
+    assert summary["evaluation_krw"] == pytest.approx(2_295_000.0)
+    assert summary["profit_loss_krw"] == pytest.approx(270_000.0)
     assert payload["exchange_rate"] == {"usd_krw": 1350.0}
 
 

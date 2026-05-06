@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 import pandas as pd
+import pytest
 
 backtest_dir = Path(__file__).resolve().parent.parent.parent / "backtest"
 spec = importlib.util.spec_from_file_location(
@@ -289,8 +290,8 @@ class TestDataQuality:
             }
         )
         result = fetch_data._validate_data_quality(df, "1h")
-        assert result["missing_pct"] == 0.0
-        assert result["max_gap_hours"] == 0.0
+        assert result["missing_pct"] == pytest.approx(0.0)
+        assert result["max_gap_hours"] == pytest.approx(0.0)
         assert result["total_bars"] == 24
 
     def test_validate_1h_with_gap(self):
@@ -344,7 +345,7 @@ class TestDataQuality:
         )
         result = fetch_data._validate_data_quality(df, "1h")
         assert result["total_bars"] == 1
-        assert result["missing_pct"] == 0.0
+        assert result["missing_pct"] == pytest.approx(0.0)
 
 
 class TestMinuteCandleFetch:

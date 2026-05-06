@@ -265,8 +265,8 @@ class TestScreenStocksKRRegression:
         )
 
         assert result["returned_count"] == 2
-        assert result["results"][0]["change_rate"] == 2.5
-        assert result["results"][-1]["change_rate"] == -1.2
+        assert result["results"][0]["change_rate"] == pytest.approx(2.5)
+        assert result["results"][-1]["change_rate"] == pytest.approx(-1.2)
 
     @pytest.mark.asyncio
     async def test_submarket_routing_kospi_and_kosdaq(self, monkeypatch):
@@ -398,9 +398,9 @@ class TestScreenStocksKRRegression:
         )
 
         merged = {item["code"]: item for item in result["results"]}
-        assert merged["005930"]["per"] == 12.5
-        assert merged["005930"]["pbr"] == 1.2
-        assert merged["005930"]["dividend_yield"] == 0.0256
+        assert merged["005930"]["per"] == pytest.approx(12.5)
+        assert merged["005930"]["pbr"] == pytest.approx(1.2)
+        assert merged["005930"]["dividend_yield"] == pytest.approx(0.0256)
         assert merged["000660"]["per"] is None
         assert merged["000660"]["pbr"] is None
         assert merged["000660"]["dividend_yield"] is None
@@ -713,19 +713,19 @@ class TestScreenStocksTvScreenerContract:
         assert result["total_count"] == 3
         assert result["returned_count"] == 1
         assert result["results"][0]["code"] == "005930"
-        assert result["results"][0]["close"] == 70000.0
-        assert result["results"][0]["change_rate"] == 2.5
+        assert result["results"][0]["close"] == pytest.approx(70000.0)
+        assert result["results"][0]["change_rate"] == pytest.approx(2.5)
         assert result["results"][0]["market"] == "KOSPI"
         assert result["results"][0]["market_cap"] == 4800000
-        assert result["results"][0]["per"] == 12.5
-        assert result["results"][0]["pbr"] == 1.2
-        assert result["results"][0]["dividend_yield"] == 0.0256
-        assert result["results"][0]["adx"] == 24.8
+        assert result["results"][0]["per"] == pytest.approx(12.5)
+        assert result["results"][0]["pbr"] == pytest.approx(1.2)
+        assert result["results"][0]["dividend_yield"] == pytest.approx(0.0256)
+        assert result["results"][0]["adx"] == pytest.approx(24.8)
         assert result["filters_applied"]["sort_order"] == "desc"
         assert result["filters_applied"]["min_market_cap"] == 300000
-        assert result["filters_applied"]["max_per"] == 15.0
-        assert result["filters_applied"]["max_pbr"] == 2.0
-        assert result["filters_applied"]["min_dividend_yield"] == 0.02
+        assert result["filters_applied"]["max_per"] == pytest.approx(15.0)
+        assert result["filters_applied"]["max_pbr"] == pytest.approx(2.0)
+        assert result["filters_applied"]["min_dividend_yield"] == pytest.approx(0.02)
         assert result["meta"]["source"] == "tvscreener"
         assert result["meta"]["rsi_enrichment"]["error_samples"] == []
 
@@ -789,17 +789,17 @@ class TestScreenStocksTvScreenerContract:
         assert result["total_count"] == 4
         assert result["returned_count"] == 1
         assert result["results"][0]["code"] == "AAPL"
-        assert result["results"][0]["close"] == 175.5
-        assert result["results"][0]["change_rate"] == 1.2
+        assert result["results"][0]["close"] == pytest.approx(175.5)
+        assert result["results"][0]["change_rate"] == pytest.approx(1.2)
         assert result["results"][0]["market"] == "us"
         assert result["results"][0]["market_cap"] == 2800000000000
-        assert result["results"][0]["per"] == 28.5
-        assert result["results"][0]["dividend_yield"] == 0.005
-        assert result["results"][0]["adx"] == 31.4
+        assert result["results"][0]["per"] == pytest.approx(28.5)
+        assert result["results"][0]["dividend_yield"] == pytest.approx(0.005)
+        assert result["results"][0]["adx"] == pytest.approx(31.4)
         assert result["filters_applied"]["sort_order"] == "asc"
         assert result["filters_applied"]["min_market_cap"] == 1000000000
-        assert result["filters_applied"]["max_per"] == 30.0
-        assert result["filters_applied"]["min_dividend_yield"] == 0.004
+        assert result["filters_applied"]["max_per"] == pytest.approx(30.0)
+        assert result["filters_applied"]["min_dividend_yield"] == pytest.approx(0.004)
         assert result["meta"]["source"] == "tvscreener"
 
     @pytest.mark.asyncio
@@ -861,8 +861,8 @@ class TestScreenStocksTvScreenerContract:
         )
 
         assert result["meta"]["source"] == "tvscreener"
-        assert result["results"][0]["rsi"] == 41.2
-        assert result["results"][0]["adx"] == 23.5
+        assert result["results"][0]["rsi"] == pytest.approx(41.2)
+        assert result["results"][0]["adx"] == pytest.approx(23.5)
         assert result["meta"]["rsi_enrichment"]["error_samples"] == []
 
     @pytest.mark.asyncio
@@ -922,7 +922,7 @@ class TestScreenStocksTvScreenerContract:
         )
 
         assert result["meta"]["source"] == "tvscreener"
-        assert result["results"][0]["adx"] == 31.4
+        assert result["results"][0]["adx"] == pytest.approx(31.4)
 
     @pytest.mark.asyncio
     async def test_kr_tvscreener_enriched_rows_preserve_sector_and_analyst_fields(
@@ -1111,8 +1111,8 @@ class TestScreenStocksTvScreenerContract:
         assert first["analyst_buy"] == 18
         assert first["analyst_hold"] == 4
         assert first["analyst_sell"] == 1
-        assert first["avg_target"] == 210.0
-        assert first["upside_pct"] == 19.66
+        assert first["avg_target"] == pytest.approx(210.0)
+        assert first["upside_pct"] == pytest.approx(19.66)
 
     @pytest.mark.asyncio
     async def test_us_enrichment_fallback_only_runs_for_rows_missing_tvscreener_fields(
@@ -1168,13 +1168,13 @@ class TestScreenStocksTvScreenerContract:
         assert fetch_enrichment.await_args.args[0] == "MSFT"
         assert rows[0]["sector"] == "Technology"
         assert rows[0]["analyst_buy"] == 20
-        assert rows[0]["avg_target"] == 225.0
+        assert rows[0]["avg_target"] == pytest.approx(225.0)
         assert rows[1]["sector"] == "Software"
         assert rows[1]["analyst_buy"] == 16
         assert rows[1]["analyst_hold"] == 5
         assert rows[1]["analyst_sell"] == 1
-        assert rows[1]["avg_target"] == 470.0
-        assert rows[1]["upside_pct"] == 14.63
+        assert rows[1]["avg_target"] == pytest.approx(470.0)
+        assert rows[1]["upside_pct"] == pytest.approx(14.63)
 
     @pytest.mark.asyncio
     async def test_us_enrichment_fallback_preserves_existing_tvscreener_values(
@@ -1221,8 +1221,8 @@ class TestScreenStocksTvScreenerContract:
         assert rows[0]["analyst_buy"] == 18
         assert rows[0]["analyst_hold"] == 4
         assert rows[0]["analyst_sell"] == 1
-        assert rows[0]["avg_target"] == 220.0
-        assert rows[0]["upside_pct"] == 10.0
+        assert rows[0]["avg_target"] == pytest.approx(220.0)
+        assert rows[0]["upside_pct"] == pytest.approx(10.0)
 
     @pytest.mark.asyncio
     async def test_us_category_preserves_acronym_case_for_tvscreener_filter(
@@ -1386,7 +1386,7 @@ class TestScreenStocksTvScreenerContract:
         async def mock_screen_kr_via_tvscreener(**kwargs):
             assert kwargs["market"] == "kr"
             assert kwargs["asset_type"] == "stock"
-            assert kwargs["max_rsi"] == 35.0
+            assert kwargs["max_rsi"] == pytest.approx(35.0)
             return {
                 "stocks": [
                     {
@@ -1441,8 +1441,8 @@ class TestScreenStocksTvScreenerContract:
         )
 
         assert result["meta"]["source"] == "tvscreener"
-        assert result["results"][0]["rsi"] == 32.0
-        assert result["results"][0]["adx"] == 21.5
+        assert result["results"][0]["rsi"] == pytest.approx(32.0)
+        assert result["results"][0]["adx"] == pytest.approx(21.5)
 
     @pytest.mark.asyncio
     async def test_us_stock_request_with_max_rsi_still_uses_tvscreener(
@@ -1451,7 +1451,7 @@ class TestScreenStocksTvScreenerContract:
         async def mock_screen_us_via_tvscreener(**kwargs):
             assert kwargs["market"] == "us"
             assert kwargs["asset_type"] is None
-            assert kwargs["max_rsi"] == 40.0
+            assert kwargs["max_rsi"] == pytest.approx(40.0)
             return {
                 "stocks": [
                     {
@@ -1504,8 +1504,8 @@ class TestScreenStocksTvScreenerContract:
         )
 
         assert result["meta"]["source"] == "tvscreener"
-        assert result["results"][0]["rsi"] == 35.2
-        assert result["results"][0]["adx"] == 31.4
+        assert result["results"][0]["rsi"] == pytest.approx(35.2)
+        assert result["results"][0]["adx"] == pytest.approx(31.4)
 
     @pytest.mark.asyncio
     async def test_us_tvscreener_error_falls_back_to_legacy_path(self, monkeypatch):
@@ -1527,7 +1527,7 @@ class TestScreenStocksTvScreenerContract:
 
         async def mock_screen_us(**kwargs):
             assert kwargs["market"] == "us"
-            assert kwargs["max_rsi"] == 40.0
+            assert kwargs["max_rsi"] == pytest.approx(40.0)
             return {
                 "results": [
                     {
@@ -1930,8 +1930,8 @@ class TestScreenStocksCrypto:
         first = result["results"][0]
         assert first["symbol"] == "KRW-BTC"
         assert first["name"] == "비트코인"
-        assert first["trade_amount_24h"] == 900_000_000_000.0
-        assert first["volume_24h"] == 12_345.0
+        assert first["trade_amount_24h"] == pytest.approx(900_000_000_000.0)
+        assert first["volume_24h"] == pytest.approx(12_345.0)
         assert first["market_cap"] == 3_000_000_000_000_000
         assert first["market_cap_rank"] == 1
         assert first["rsi_bucket"] == 45
@@ -2078,18 +2078,20 @@ class TestScreenStocksFundamentalsExpansion:
 
         assert captured["sector"] == "Technology"
         assert captured["min_analyst_buy"] == 10
-        assert captured["min_dividend"] == 2.5
+        assert captured["min_dividend"] == pytest.approx(2.5)
         first = result["results"][0]
         assert first["sector"] == "Technology"
         assert first["analyst_buy"] == 18
         assert first["analyst_hold"] == 6
         assert first["analyst_sell"] == 1
-        assert first["avg_target"] == 245.0
-        assert first["upside_pct"] == 12.4
+        assert first["avg_target"] == pytest.approx(245.0)
+        assert first["upside_pct"] == pytest.approx(12.4)
         assert result["filters_applied"]["sector"] == "Technology"
         assert result["filters_applied"]["min_analyst_buy"] == 10
-        assert result["filters_applied"]["min_dividend_input"] == 2.5
-        assert result["filters_applied"]["min_dividend_normalized"] == 0.025
+        assert result["filters_applied"]["min_dividend_input"] == pytest.approx(2.5)
+        assert result["filters_applied"]["min_dividend_normalized"] == pytest.approx(
+            0.025
+        )
 
     @pytest.mark.asyncio
     async def test_us_plain_tvscreener_requests_enrich_only_limited_rows(
@@ -2178,8 +2180,8 @@ class TestScreenStocksFundamentalsExpansion:
         assert result["meta"]["source"] == "tvscreener"
         assert result["results"][0]["sector"] == "Technology"
         assert result["results"][0]["analyst_buy"] == 12
-        assert result["results"][0]["avg_target"] == 250.0
-        assert result["results"][1]["upside_pct"] == 10.0
+        assert result["results"][0]["avg_target"] == pytest.approx(250.0)
+        assert result["results"][1]["upside_pct"] == pytest.approx(10.0)
 
     @pytest.mark.asyncio
     async def test_kr_sector_and_analyst_filters_apply_after_overfetch_enrichment(
@@ -3029,7 +3031,7 @@ class TestScreenStocksRsiLogging:
         assert called_symbols, "OHLCV fetch should be called for RSI enrichment"
         assert called_symbols[0][0] == "005930"
         assert called_symbols[0][1] == "equity_kr"
-        assert result["results"][0]["rsi"] == 42.0
+        assert result["results"][0]["rsi"] == pytest.approx(42.0)
 
     @pytest.mark.asyncio
     async def test_crypto_rsi_falls_back_to_market_field(self, monkeypatch, caplog):
@@ -3692,8 +3694,12 @@ class TestScreenStocksDividendYieldNormalization:
         )
 
         assert result is not None
-        assert result["filters_applied"]["min_dividend_yield_input"] == 0.03
-        assert result["filters_applied"]["min_dividend_yield_normalized"] == 0.03
+        assert result["filters_applied"]["min_dividend_yield_input"] == pytest.approx(
+            0.03
+        )
+        assert result["filters_applied"][
+            "min_dividend_yield_normalized"
+        ] == pytest.approx(0.03)
 
     @pytest.mark.asyncio
     async def test_kr_dividend_yield_normalization_percent_input(
@@ -3727,8 +3733,12 @@ class TestScreenStocksDividendYieldNormalization:
         )
 
         assert result is not None
-        assert result["filters_applied"]["min_dividend_yield_input"] == 3.0
-        assert result["filters_applied"]["min_dividend_yield_normalized"] == 0.03
+        assert result["filters_applied"]["min_dividend_yield_input"] == pytest.approx(
+            3.0
+        )
+        assert result["filters_applied"][
+            "min_dividend_yield_normalized"
+        ] == pytest.approx(0.03)
 
     @pytest.mark.asyncio
     async def test_kr_dividend_yield_normalization_one_percent_input(
@@ -3762,8 +3772,12 @@ class TestScreenStocksDividendYieldNormalization:
         )
 
         assert result is not None
-        assert result["filters_applied"]["min_dividend_yield_input"] == 1.0
-        assert result["filters_applied"]["min_dividend_yield_normalized"] == 0.01
+        assert result["filters_applied"]["min_dividend_yield_input"] == pytest.approx(
+            1.0
+        )
+        assert result["filters_applied"][
+            "min_dividend_yield_normalized"
+        ] == pytest.approx(0.01)
 
     @pytest.mark.asyncio
     async def test_kr_dividend_yield_equivalence(self, mock_krx_stocks, monkeypatch):
@@ -3811,8 +3825,12 @@ class TestScreenStocksDividendYieldNormalization:
             result_decimal["filters_applied"]["min_dividend_yield_normalized"]
             == result_percent["filters_applied"]["min_dividend_yield_normalized"]
         )
-        assert result_decimal["filters_applied"]["min_dividend_yield_input"] == 0.03
-        assert result_percent["filters_applied"]["min_dividend_yield_input"] == 3.0
+        assert result_decimal["filters_applied"][
+            "min_dividend_yield_input"
+        ] == pytest.approx(0.03)
+        assert result_percent["filters_applied"][
+            "min_dividend_yield_input"
+        ] == pytest.approx(3.0)
 
     @pytest.mark.asyncio
     async def test_kr_dividend_yield_none_input(self, mock_krx_stocks, monkeypatch):

@@ -206,7 +206,7 @@ def test_screener_list_min_volume_e2e(
     assert [item["code"] for item in body["results"]] == ["MSFT", "NVDA"]
     assert body["returned_count"] == 2
     assert body["total_count"] == 3
-    assert body["filters_applied"]["min_volume"] == 1000.0
+    assert body["filters_applied"]["min_volume"] == pytest.approx(1000.0)
 
     await_args = screen_mock.await_args
     assert await_args is not None

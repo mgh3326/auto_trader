@@ -1,4 +1,6 @@
 # tests/test_kis_market_adapters_helpers.py
+import pytest
+
 from app.jobs.kis_market_adapters import (
     extract_domestic_stock_info,
     extract_overseas_stock_info,
@@ -19,8 +21,8 @@ class TestExtractDomesticStockInfo:
         ctx = extract_domestic_stock_info(stock)
         assert ctx.symbol == "005930"
         assert ctx.name == "삼성전자"
-        assert ctx.avg_price == 50000.0
-        assert ctx.current_price == 51000.0
+        assert ctx.avg_price == pytest.approx(50000.0)
+        assert ctx.current_price == pytest.approx(51000.0)
         assert ctx.qty == 10
         assert ctx.is_manual is False
         assert ctx.exchange_code is None
@@ -63,8 +65,8 @@ class TestExtractOverseasStockInfo:
         ctx = extract_overseas_stock_info(stock)
         assert ctx.symbol == "AAPL"
         assert ctx.name == "애플"
-        assert ctx.avg_price == 170.0
-        assert ctx.current_price == 175.0
+        assert ctx.avg_price == pytest.approx(170.0)
+        assert ctx.current_price == pytest.approx(175.0)
         assert ctx.qty == 10
         assert ctx.is_manual is False
         assert ctx.exchange_code == "NASD"

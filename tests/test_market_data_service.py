@@ -964,7 +964,7 @@ async def test_get_short_interest_drops_rows_with_malformed_dates(
             "total_amount": 1200,
         }
     ]
-    assert result["avg_short_ratio"] == 2.5
+    assert result["avg_short_ratio"] == pytest.approx(2.5)
 
 
 @pytest.mark.asyncio

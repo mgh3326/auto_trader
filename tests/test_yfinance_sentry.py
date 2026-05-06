@@ -247,7 +247,7 @@ class TestYahooRetryOnCrumbError:
         monkeypatch.setattr("app.services.brokers.yahoo.client.yf.Ticker", fake_ticker)
 
         result = _fetch_fast_info_sync("BRK.B")
-        assert result["close"] == 101.5
+        assert result["close"] == pytest.approx(101.5)
         assert call_count == 2
         assert len(sessions_created) == 2  # fresh session for retry
 
@@ -340,5 +340,5 @@ class TestFetchFundamentalInfoRetry:
         monkeypatch.setattr("app.services.brokers.yahoo.client.yf.Ticker", fake_ticker)
 
         result = await fetch_fundamental_info("AAPL")
-        assert result["PER"] == 25.0
+        assert result["PER"] == pytest.approx(25.0)
         assert call_count == 2

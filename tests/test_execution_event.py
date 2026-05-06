@@ -47,7 +47,7 @@ class TestExecutionEventSerialization:
         test_decimal = Decimal("12345.67")
         result = _serialize_for_redis(test_decimal)
 
-        assert result == 12345.67
+        assert result == pytest.approx(12345.67)
 
     def test_serialize_string(self):
         """문자열 그대로 반환 테스트"""

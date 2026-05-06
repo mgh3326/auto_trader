@@ -338,8 +338,12 @@ class TestScreenStocksDividendYieldNormalization:
         )
 
         assert result is not None
-        assert result["filters_applied"]["min_dividend_yield_input"] == 0.03
-        assert result["filters_applied"]["min_dividend_yield_normalized"] == 0.03
+        assert result["filters_applied"]["min_dividend_yield_input"] == pytest.approx(
+            0.03
+        )
+        assert result["filters_applied"][
+            "min_dividend_yield_normalized"
+        ] == pytest.approx(0.03)
 
     @pytest.mark.asyncio
     async def test_kr_dividend_yield_normalization_percent_input(
@@ -370,8 +374,12 @@ class TestScreenStocksDividendYieldNormalization:
         )
 
         assert result is not None
-        assert result["filters_applied"]["min_dividend_yield_input"] == 3.0
-        assert result["filters_applied"]["min_dividend_yield_normalized"] == 0.03
+        assert result["filters_applied"]["min_dividend_yield_input"] == pytest.approx(
+            3.0
+        )
+        assert result["filters_applied"][
+            "min_dividend_yield_normalized"
+        ] == pytest.approx(0.03)
 
     @pytest.mark.asyncio
     async def test_kr_dividend_yield_normalization_one_percent_input(
@@ -402,8 +410,12 @@ class TestScreenStocksDividendYieldNormalization:
         )
 
         assert result is not None
-        assert result["filters_applied"]["min_dividend_yield_input"] == 1.0
-        assert result["filters_applied"]["min_dividend_yield_normalized"] == 0.01
+        assert result["filters_applied"]["min_dividend_yield_input"] == pytest.approx(
+            1.0
+        )
+        assert result["filters_applied"][
+            "min_dividend_yield_normalized"
+        ] == pytest.approx(0.01)
 
     @pytest.mark.asyncio
     async def test_kr_dividend_yield_equivalence(self, mock_krx_stocks, monkeypatch):
@@ -447,8 +459,12 @@ class TestScreenStocksDividendYieldNormalization:
             result_decimal["filters_applied"]["min_dividend_yield_normalized"]
             == result_percent["filters_applied"]["min_dividend_yield_normalized"]
         )
-        assert result_decimal["filters_applied"]["min_dividend_yield_input"] == 0.03
-        assert result_percent["filters_applied"]["min_dividend_yield_input"] == 3.0
+        assert result_decimal["filters_applied"][
+            "min_dividend_yield_input"
+        ] == pytest.approx(0.03)
+        assert result_percent["filters_applied"][
+            "min_dividend_yield_input"
+        ] == pytest.approx(3.0)
 
     @pytest.mark.asyncio
     async def test_kr_dividend_yield_none_input(self, mock_krx_stocks, monkeypatch):

@@ -374,7 +374,7 @@ class TestRedisTokenManagerToken:
             assert await manager.get_token() is None
 
         assert manager._local_token is None
-        assert manager._local_expires_at == 0.0
+        assert manager._local_expires_at == pytest.approx(0.0)
 
     @pytest.mark.asyncio
     async def test_local_token_within_expiry_buffer_is_invalid(self):

@@ -193,8 +193,10 @@ def test_portfolio_overview_api_merges_batch_journal_snapshots() -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["positions"][0]["journal"]["target_price"] == 165.0
-    assert payload["positions"][0]["journal"]["target_distance_pct"] == 3.12
+    assert payload["positions"][0]["journal"]["target_price"] == pytest.approx(165.0)
+    assert payload["positions"][0]["journal"]["target_distance_pct"] == pytest.approx(
+        3.12
+    )
     fake_dashboard.get_journals_batch.assert_awaited_once_with(
         ["AAPL"],
         current_prices={"AAPL": 160.0},
@@ -218,7 +220,9 @@ def test_portfolio_enrich_api_returns_only_requested_positions() -> None:
     assert payload["success"] is True
     assert len(payload["positions"]) == 1
     assert payload["positions"][0]["symbol"] == "AAPL"
-    assert payload["positions"][0]["journal"]["target_distance_pct"] == 3.12
+    assert payload["positions"][0]["journal"]["target_distance_pct"] == pytest.approx(
+        3.12
+    )
 
     fake_service.enrich_manual_positions.assert_awaited_once_with(
         user_id=7,
@@ -334,10 +338,10 @@ def test_portfolio_journal_api_returns_detail_payload() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["symbol"] == "AAPL"
-    assert payload["target_price"] == 165.0
-    assert payload["stop_loss"] == 135.0
-    assert payload["target_distance_pct"] == 10.0
-    assert payload["stop_distance_pct"] == -10.0
+    assert payload["target_price"] == pytest.approx(165.0)
+    assert payload["stop_loss"] == pytest.approx(135.0)
+    assert payload["target_distance_pct"] == pytest.approx(10.0)
+    assert payload["stop_distance_pct"] == pytest.approx(-10.0)
 
     fake_dashboard.get_latest_journal_snapshot.assert_awaited_once_with(
         "AAPL", current_price=160.0
@@ -367,7 +371,7 @@ def test_portfolio_cash_api_returns_dashboard_cash_summary() -> None:
     assert "upbit_krw" in payload["accounts"]
     assert "manual_cash" in payload
     assert "summary" in payload
-    assert payload["summary"]["total_available_krw"] == 3570000.0
+    assert payload["summary"]["total_available_krw"] == pytest.approx(3570000.0)
 
     fake_dashboard.get_cash_snapshot.assert_awaited_once()
 

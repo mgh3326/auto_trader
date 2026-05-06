@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+import pytest
+
 from app.services.watch_intent_policy import IntentPolicy
 from app.services.watch_order_intent_preview_builder import (
     IntentBuildFailure,
@@ -55,13 +57,13 @@ class TestKrQuantitySuccess:
         assert line.account_mode == "kis_mock"
         assert line.execution_source == "watch"
         assert line.lifecycle_state == "previewed"
-        assert line.quantity == Decimal("1")
-        assert line.limit_price == Decimal("70000")
-        assert line.notional == Decimal("70000")
+        assert line.quantity == pytest.approx(Decimal("1"))
+        assert line.limit_price == pytest.approx(Decimal("70000"))
+        assert line.notional == pytest.approx(Decimal("70000"))
         assert line.currency == "KRW"
         assert line.guard.execution_allowed is False
         assert line.guard.approval_required is True
-        assert result.notional_krw_evaluated == Decimal("70000")
+        assert result.notional_krw_evaluated == pytest.approx(Decimal("70000"))
         assert result.fx_usd_krw_used is None
 
     def test_static_limit_price_override_used(self) -> None:
@@ -73,9 +75,9 @@ class TestKrQuantitySuccess:
             kst_date="2026-05-04",
         )
         assert isinstance(result, IntentBuildSuccess)
-        assert result.preview_line.limit_price == Decimal("69000")
-        assert result.preview_line.notional == Decimal("138000")
-        assert result.notional_krw_evaluated == Decimal("138000")
+        assert result.preview_line.limit_price == pytest.approx(Decimal("69000"))
+        assert result.preview_line.notional == pytest.approx(Decimal("138000"))
+        assert result.notional_krw_evaluated == pytest.approx(Decimal("138000"))
 
 
 class TestKrNotionalKrwSizing:
@@ -89,8 +91,8 @@ class TestKrNotionalKrwSizing:
         )
         assert isinstance(result, IntentBuildSuccess)
         # floor(141000 / 70000) == 2
-        assert result.preview_line.quantity == Decimal("2")
-        assert result.preview_line.notional == Decimal("140000")
+        assert result.preview_line.quantity == pytest.approx(Decimal("2"))
+        assert result.preview_line.notional == pytest.approx(Decimal("140000"))
 
     def test_notional_krw_floor_below_one_is_qty_zero_failure(self) -> None:
         result = build_preview(
@@ -116,11 +118,11 @@ class TestUsWithFxAndCap:
         assert isinstance(result, IntentBuildSuccess)
         line = result.preview_line
         assert line.currency == "USD"
-        assert line.limit_price == Decimal("180")
-        assert line.notional == Decimal("1800")
+        assert line.limit_price == pytest.approx(Decimal("180"))
+        assert line.notional == pytest.approx(Decimal("1800"))
         # 10 * 180 * 1400 = 2_520_000
-        assert result.notional_krw_evaluated == Decimal("2520000")
-        assert result.fx_usd_krw_used == Decimal("1400")
+        assert result.notional_krw_evaluated == pytest.approx(Decimal("2520000"))
+        assert result.fx_usd_krw_used == pytest.approx(Decimal("1400"))
 
     def test_us_without_fx_quote_is_fx_unavailable_failure(self) -> None:
         result = build_preview(
@@ -144,5 +146,5 @@ class TestUsWithFxAndCap:
         assert isinstance(result, IntentBuildFailure)
         assert result.blocked_by == "max_notional_krw_cap"
         # Failure still records evaluated KRW so the ledger row carries it
-        assert result.notional_krw_evaluated == Decimal("2520000")
-        assert result.fx_usd_krw_used == Decimal("1400")
+        assert result.notional_krw_evaluated == pytest.approx(Decimal("2520000"))
+        assert result.fx_usd_krw_used == pytest.approx(Decimal("1400"))

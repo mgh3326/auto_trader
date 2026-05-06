@@ -659,8 +659,8 @@ class TestTossRecommendationNotification:
         assert notification_sent[0]["korean_name"] == "한국전력"
         assert notification_sent[0]["decision"] == "buy"
         assert notification_sent[0]["confidence"] == 75
-        assert notification_sent[0]["appropriate_buy_min"] == 23000.0
-        assert notification_sent[0]["appropriate_sell_max"] == 30000.0
+        assert notification_sent[0]["appropriate_buy_min"] == pytest.approx(23000.0)
+        assert notification_sent[0]["appropriate_sell_max"] == pytest.approx(30000.0)
 
     @pytest.mark.asyncio
     async def test_send_toss_price_recommendation_with_sell_decision(self, monkeypatch):
@@ -723,8 +723,8 @@ class TestTossRecommendationNotification:
         # 가격 제안 알림이 발송되어야 함
         assert len(notification_sent) == 1
         assert notification_sent[0]["decision"] == "sell"
-        assert notification_sent[0]["appropriate_sell_min"] == 26000.0
-        assert notification_sent[0]["appropriate_sell_max"] == 28000.0
+        assert notification_sent[0]["appropriate_sell_min"] == pytest.approx(26000.0)
+        assert notification_sent[0]["appropriate_sell_max"] == pytest.approx(28000.0)
 
     @pytest.mark.asyncio
     async def test_send_toss_price_recommendation_with_hold_decision(self, monkeypatch):
@@ -786,8 +786,8 @@ class TestTossRecommendationNotification:
         # hold 결정이어도 알림이 발송되어야 함 (AI 결정과 무관)
         assert len(notification_sent) == 1
         assert notification_sent[0]["decision"] == "hold"
-        assert notification_sent[0]["appropriate_buy_min"] == 23000.0
-        assert notification_sent[0]["appropriate_sell_max"] == 28000.0
+        assert notification_sent[0]["appropriate_buy_min"] == pytest.approx(23000.0)
+        assert notification_sent[0]["appropriate_sell_max"] == pytest.approx(28000.0)
 
     @pytest.mark.asyncio
     async def test_send_toss_price_recommendation_parses_json_reasons(

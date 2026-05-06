@@ -56,7 +56,7 @@ class TestMergedPortfolioService:
         """보유 종목이 없을 때"""
         result = MergedPortfolioService.calculate_combined_avg([])
 
-        assert result == 0.0
+        assert result == pytest.approx(0.0)
 
     def test_calculate_combined_avg_three_brokers(self):
         """3개 브로커 보유 시"""

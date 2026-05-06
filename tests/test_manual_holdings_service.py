@@ -45,7 +45,7 @@ async def test_create_holding(mock_db, monkeypatch):
     # Verify
     assert holding.ticker == "AAPL"
     assert holding.quantity == 10
-    assert holding.avg_price == 150.0
+    assert holding.avg_price == pytest.approx(150.0)
 
     # Verify DB interactions
     mock_db.add.assert_called_once()

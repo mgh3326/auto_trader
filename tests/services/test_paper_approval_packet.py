@@ -92,14 +92,14 @@ def test_packet_constructs_with_max_notional():
     packet = _make_packet()
     assert packet.signal_symbol == "KRW-BTC"
     assert packet.execution_symbol == "BTC/USD"
-    assert packet.max_notional == Decimal("10")
+    assert packet.max_notional == pytest.approx(Decimal("10"))
     assert packet.max_qty is None
 
 
 @pytest.mark.unit
 def test_packet_constructs_with_max_qty():
     packet = _make_packet(max_notional=None, max_qty=Decimal("0.001"))
-    assert packet.max_qty == Decimal("0.001")
+    assert packet.max_qty == pytest.approx(Decimal("0.001"))
     assert packet.max_notional is None
 
 

@@ -14,10 +14,10 @@ class TestToJsonValue:
         assert common._to_json_value(float("nan")) is None
 
     def test_int_returns_float(self):
-        assert common._to_json_value(42) == 42.0
+        assert common._to_json_value(42) == pytest.approx(42.0)
 
     def test_float_passthrough(self):
-        assert common._to_json_value(3.14) == 3.14
+        assert common._to_json_value(3.14) == pytest.approx(3.14)
 
     def test_string_passthrough(self):
         assert common._to_json_value("hello") == "hello"

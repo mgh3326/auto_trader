@@ -172,7 +172,7 @@ async def test_update_manual_holdings_calculate_avg_buy_price():
         eval_amount=1500000, profit_loss=100000, quantity=10
     )
 
-    assert avg_price == 140000.0
+    assert avg_price == pytest.approx(140000.0)
 
 
 @pytest.mark.asyncio
@@ -184,7 +184,7 @@ async def test_update_manual_holdings_calculate_avg_buy_price_zero_quantity():
         eval_amount=0, profit_loss=0, quantity=0
     )
 
-    assert avg_price == 0.0
+    assert avg_price == pytest.approx(0.0)
 
 
 @pytest.mark.asyncio

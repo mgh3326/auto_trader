@@ -59,7 +59,7 @@ class TestFetchCurrentPrice:
         kis = AsyncMock()
         kis.inquire_price.return_value = pd.DataFrame({"close": [1_150_000.0]})
         price, err = await _fetch_current_price(kis, "000660")
-        assert price == 1_150_000.0
+        assert price == pytest.approx(1_150_000.0)
         assert err is None
 
     @pytest.mark.asyncio
@@ -113,7 +113,7 @@ class TestCheckTrailingStop:
         cond, price, errors = await _check_trailing_stop(kis, "000660", 1_150_000)
         assert cond.name == "trailing_stop"
         assert cond.met is True
-        assert price == 1_100_000.0
+        assert price == pytest.approx(1_100_000.0)
         assert not errors
 
     @pytest.mark.asyncio
@@ -129,7 +129,7 @@ class TestCheckTrailingStop:
         kis.inquire_price.return_value = pd.DataFrame({"close": [1_200_000.0]})
         cond, price, errors = await _check_trailing_stop(kis, "000660", 1_150_000)
         assert cond.met is False
-        assert price == 1_200_000.0
+        assert price == pytest.approx(1_200_000.0)
 
     @pytest.mark.asyncio
     async def test_not_met_when_price_unavailable(self):

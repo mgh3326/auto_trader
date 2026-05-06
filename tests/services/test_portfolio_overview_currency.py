@@ -58,7 +58,7 @@ class TestUSPortfolioCurrencyConversion:
         position = positions[0]
 
         # Total quantity should be 15 (10 + 5)
-        assert position["quantity"] == 15.0
+        assert position["quantity"] == pytest.approx(15.0)
 
         # avg_price should be weighted average in USD
         # (10 * 150 + 5 * 150) / 15 = 150 (after KRW conversion: 195000/1300 = 150)
@@ -115,10 +115,10 @@ class TestUSPortfolioCurrencyConversion:
 
         assert len(positions) == 1
         pos = positions[0]
-        assert pos["evaluation"] == 2000.0
-        assert pos["evaluation_krw"] == 2600000.0
-        assert pos["profit_loss"] == 500.0
-        assert pos["profit_loss_krw"] == 650000.0
+        assert pos["evaluation"] == pytest.approx(2000.0)
+        assert pos["evaluation_krw"] == pytest.approx(2600000.0)
+        assert pos["profit_loss"] == pytest.approx(500.0)
+        assert pos["profit_loss_krw"] == pytest.approx(650000.0)
 
     def test_aggregate_positions_copies_evaluation_krw_for_kr_and_crypto_positions(
         self,
@@ -147,8 +147,8 @@ class TestUSPortfolioCurrencyConversion:
 
         assert len(positions) == 1
         pos = positions[0]
-        assert pos["evaluation"] == 750000.0
-        assert pos["evaluation_krw"] == 750000.0
+        assert pos["evaluation"] == pytest.approx(750000.0)
+        assert pos["evaluation_krw"] == pytest.approx(750000.0)
 
     def test_aggregate_positions_handles_missing_usd_krw_for_us_positions(self):
         """Test that US positions have None for evaluation_krw when usd_krw is missing."""
@@ -175,7 +175,7 @@ class TestUSPortfolioCurrencyConversion:
 
         assert len(positions) == 1
         pos = positions[0]
-        assert pos["evaluation"] == 2000.0
+        assert pos["evaluation"] == pytest.approx(2000.0)
         assert pos["evaluation_krw"] is None
 
 
