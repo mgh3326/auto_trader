@@ -93,7 +93,7 @@ class TestBuildMcpToolCallContext:
                 "authorization": "Bearer secret",
                 "token": "abc123",
                 "secret": "mysecret",
-                "password": "mypass",
+                "password": "mypass",  # noqa: S105 -- NOSONAR: fixture asserts redaction, not a real secret
                 "normal_key": "visible",
             },
         )

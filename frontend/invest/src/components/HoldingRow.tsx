@@ -95,5 +95,5 @@ function SourceChip({ text }: { text: string }) {
 
 function unitFor(market: Market): string {
   if (market === "CRYPTO") return "";
-  return market === "KR" ? "주" : "주";
+  return market === "KR" ? "주" : "shares";
 }

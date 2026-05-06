@@ -194,6 +194,8 @@ class ExecutionMessageParser:
             iv_bytes = self._decode_aes_material(iv_raw, iv=True)
             cipher_bytes = base64.b64decode(payload)
 
+            # NOTE: KIS WebSocket protocol mandates AES/CBC + PKCS7. Cannot change cipher mode.
+            # SonarCloud python:S5542: marked Safe (external protocol requirement).
             decryptor = Cipher(
                 algorithms.AES(key_bytes), modes.CBC(iv_bytes)
             ).decryptor()
