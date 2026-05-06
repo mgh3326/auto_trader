@@ -155,3 +155,65 @@ async def test_screen_stocks_tool_forwards_new_fundamentals_filters(
     assert first["analyst_sell"] == 0
     assert first["avg_target"] == 98000.0
     assert first["upside_pct"] == 18.7
+
+
+@pytest.mark.asyncio
+async def test_screen_stocks_crypto_strategy_default_uses_trade_amount(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tools = build_tools()
+    called: dict[str, Any] = {}
+
+    async def fake_screen(**kwargs: Any) -> dict[str, Any]:
+        called.update(kwargs)
+        return {
+            "results": [],
+            "total_count": 0,
+            "returned_count": 0,
+            "filters_applied": {"market": kwargs["market"]},
+            "market": kwargs["market"],
+            "timestamp": "2026-05-06T00:00:00Z",
+        }
+
+    monkeypatch.setattr(analysis_screening, "screen_stocks_unified", fake_screen)
+
+    await tools["screen_stocks"](market="crypto", strategy="oversold", limit=5)
+
+    assert called["market"] == "crypto"
+    assert called["max_rsi"] == 30.0
+    assert called["sort_by"] == "trade_amount"
+    assert called["sort_order"] == "desc"
+
+
+@pytest.mark.asyncio
+async def test_screen_stocks_crypto_strategy_preserves_explicit_sort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tools = build_tools()
+    called: dict[str, Any] = {}
+
+    async def fake_screen(**kwargs: Any) -> dict[str, Any]:
+        called.update(kwargs)
+        return {
+            "results": [],
+            "total_count": 0,
+            "returned_count": 0,
+            "filters_applied": {"market": kwargs["market"]},
+            "market": kwargs["market"],
+            "timestamp": "2026-05-06T00:00:00Z",
+        }
+
+    monkeypatch.setattr(analysis_screening, "screen_stocks_unified", fake_screen)
+
+    await tools["screen_stocks"](
+        market="crypto",
+        strategy="oversold",
+        sort_by="rsi",
+        sort_order="asc",
+        limit=5,
+    )
+
+    assert called["market"] == "crypto"
+    assert called["max_rsi"] == 30.0
+    assert called["sort_by"] == "rsi"
+    assert called["sort_order"] == "desc"

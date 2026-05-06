@@ -572,7 +572,8 @@ async def screen_stocks_impl(
             raise ValueError(f"screen strategy must be one of: {valid}")
         preset = strategy_presets[strategy_key]
         strategy_applied = True
-        sort_by = preset.get("sort_by", sort_by)
+        if not (sort_by_specified and str(market).strip().lower() == "crypto"):
+            sort_by = preset.get("sort_by", sort_by)
         sort_order = preset.get("sort_order", sort_order)
         if max_rsi is None and "max_rsi" in preset:
             max_rsi = preset["max_rsi"]
