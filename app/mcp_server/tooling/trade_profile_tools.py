@@ -180,9 +180,7 @@ async def _find_existing_asset_profile(
     else:
         candidate_pairs: list[tuple[InstrumentType, str]] = []
         if symbol_input.isdigit() and len(symbol_input) <= 6:
-            candidate_pairs.append(
-                (InstrumentType.equity_kr, symbol_input.zfill(6))
-            )
+            candidate_pairs.append((InstrumentType.equity_kr, symbol_input.zfill(6)))
         upper_symbol = symbol_input.upper()
         if upper_symbol.startswith("KRW-"):
             candidate_pairs.append((InstrumentType.crypto, upper_symbol))
@@ -366,10 +364,12 @@ async def set_asset_profile(
 
         async with _session_factory()() as db:
             async with db.begin():
-                existing, instrument_type, normalized_symbol = (
-                    await _find_existing_asset_profile(
-                        db, symbol_input, explicit_instrument_type
-                    )
+                (
+                    existing,
+                    instrument_type,
+                    normalized_symbol,
+                ) = await _find_existing_asset_profile(
+                    db, symbol_input, explicit_instrument_type
                 )
 
                 if existing is None:
