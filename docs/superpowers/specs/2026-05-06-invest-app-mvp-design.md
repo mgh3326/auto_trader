@@ -215,10 +215,12 @@ export interface InvestHomeResponse {
 
 ### Hero 의미 (homeSummary)
 
-- `totalValueKrw` = **홈 포함 계좌의 보유 평가금액 합계**. 현금/buyingPower 는 포함하지 않는다.
-- `costBasisKrw` = `Σ holdings[i].costBasis`(KRW 환산), 모든 holdings 의 costBasis 가 not null 일 때만. 하나라도 null 이면 `costBasisKrw=null`.
-- `pnlKrw = totalValueKrw - costBasisKrw` (둘 다 not null 일 때만), else null.
-- `pnlRate = pnlKrw / costBasisKrw` (둘 다 not null, costBasis>0), else null.
+`Account.valueKrw` 는 그 계좌의 보유 평가금액 합계 (현금/buyingPower 제외) 로 정의한다. 이를 기반으로:
+
+- `totalValueKrw = Σ accounts[i].valueKrw` (`includedInHome === true` 인 계좌만). 현금/buyingPower 는 포함하지 않는다.
+- `costBasisKrw = Σ accounts[i].costBasisKrw` (포함 계좌 모두 not null 일 때만). 하나라도 null 이면 `costBasisKrw = null`.
+- `pnlKrw = totalValueKrw - costBasisKrw` (둘 다 not null), else `null`.
+- `pnlRate = pnlKrw / costBasisKrw` (둘 다 not null, `costBasisKrw > 0`), else `null`.
 
 향후 "총 자산 = 투자 평가금액 + 현금" 같은 별도 metric 이 필요해지면 다른 필드로 추가한다 (이번 MVP 범위 외).
 
@@ -300,10 +302,22 @@ placeholder 4개(증권/관심/발견/피드). MVP 에서는 클릭 시 `"준비
 - live trading smoke 금지.
 - realtime quote / websocket / chart 구현 금지.
 
-이 안전 경계는 다음으로 강제한다:
+이 안전 경계는 모듈별로 다음 import-safety pytest 로 강제한다:
 
-- `app/routers/invest_app_spa.py` import-safety pytest (broker/watch/redis/kis/upbit/task-queue import 금지).
-- `app/routers/invest_api.py` 및 `app/services/invest_home_service.py` 도 동일한 import-safety pytest.
+- `app/routers/invest_app_spa.py` — SPA static serving only.
+  - broker / watch / redis / kis / upbit / task-queue 모듈 import 금지.
+
+- `app/routers/invest_api.py` — thin router.
+  - `InvestHomeService` 만 의존한다.
+  - broker client / KIS client / Upbit client 직접 import 금지.
+  - order / watch / scheduler / mutation 경로 import 금지.
+
+- `app/services/invest_home_service.py` — read-only 합성 서비스.
+  - KIS / Upbit / manual(toss) holdings 의 read-only service / client / adapter 는 사용 가능.
+  - mutation 경로 (`submit*`, `cancel*`, `modify*`, `place_order*`, watch, order-intent, scheduler / worker mutation) import 또는 호출 금지.
+  - DB write / backfill / update / delete 금지 — read-only ORM/조회 쿼리만 허용.
+
+Safety pytest 는 read-only 의존성 차단이 아니라 mutation 경로 차단에 초점을 맞춘다.
 
 ## 테스트 전략
 
