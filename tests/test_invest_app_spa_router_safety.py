@@ -1,4 +1,5 @@
 """Safety: invest_app_spa.py must not import broker/watch/redis/kis/upbit/task-queue."""
+
 from __future__ import annotations
 
 import json
@@ -36,10 +37,17 @@ print(json.dumps(sorted(sys.modules)))
 """
     env = os.environ.copy()
     env["PYTHONPATH"] = str(project_root)
-    result = subprocess.run([sys.executable, "-c", script], cwd=project_root,
-                            env=env, check=True, capture_output=True, text=True)
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=project_root,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     loaded = set(json.loads(result.stdout))
-    violations = sorted(m for m in loaded for f in FORBIDDEN_PREFIXES
-                        if m == f or m.startswith(f"{f}."))
+    violations = sorted(
+        m for m in loaded for f in FORBIDDEN_PREFIXES if m == f or m.startswith(f"{f}.")
+    )
     if violations:
         pytest.fail(f"Forbidden execution-path imports: {violations}")

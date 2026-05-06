@@ -2,6 +2,7 @@
 
 Read-only KIS/Upbit/manual *holdings* services are allowed; only mutation modules are forbidden.
 """
+
 from __future__ import annotations
 
 import json
@@ -36,13 +37,21 @@ def _loaded(module: str, project_root: Path) -> set[str]:
     script = f"import importlib, json, sys; importlib.import_module({module!r}); print(json.dumps(sorted(sys.modules)))"
     env = os.environ.copy()
     env["PYTHONPATH"] = str(project_root)
-    result = subprocess.run([sys.executable, "-c", script], cwd=project_root,
-                            env=env, check=True, capture_output=True, text=True)
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=project_root,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     return set(json.loads(result.stdout))
 
 
 def _violations(loaded: set[str], forbidden: list[str]) -> list[str]:
-    return sorted(m for m in loaded for f in forbidden if m == f or m.startswith(f"{f}."))
+    return sorted(
+        m for m in loaded for f in forbidden if m == f or m.startswith(f"{f}.")
+    )
 
 
 @pytest.mark.unit

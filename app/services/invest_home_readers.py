@@ -4,6 +4,7 @@
 broker mutation / order / watch / scheduler / worker 경로는 import / 호출 금지.
 DB write / backfill 금지 — read-only 조회만 사용.
 """
+
 from __future__ import annotations
 
 import logging
@@ -62,7 +63,9 @@ class KISHomeReader:
             domestic_cash = extract_domestic_cash_summary_from_integrated_margin(margin)
 
             # 2. Overseas (simplified to NASD for now as per account.py common usage)
-            stocks_us = await self._client.account.fetch_my_overseas_stocks(exchange_code="NASD")
+            stocks_us = await self._client.account.fetch_my_overseas_stocks(
+                exchange_code="NASD"
+            )
 
             holdings = []
             # Map KR
@@ -105,7 +108,8 @@ class KISHomeReader:
                         displayName=str(s.get("ovrs_item_name")),
                         quantity=qty,
                         averageCost=avg_price,
-                        costBasis=float(s.get("frcr_pchs_amt1", 0)) or (qty * avg_price),
+                        costBasis=float(s.get("frcr_pchs_amt1", 0))
+                        or (qty * avg_price),
                         currency="USD",
                         valueNative=float(s.get("ovrs_stck_evlu_amt", 0)),
                         valueKrw=None,  # Needs FX
@@ -120,7 +124,8 @@ class KISHomeReader:
                 source="kis",
                 accountKind="live",
                 includedInHome=True,
-                valueKrw=sum(h.valueKrw for h in holdings if h.valueKrw) + domestic_cash["balance"],
+                valueKrw=sum(h.valueKrw for h in holdings if h.valueKrw)
+                + domestic_cash["balance"],
                 costBasisKrw=sum(h.costBasis for h in holdings if h.currency == "KRW"),
                 cashBalances=CashAmounts(
                     krw=domestic_cash["balance"],
@@ -216,7 +221,8 @@ class ManualHomeReader:
         try:
             raw_holdings = await self._service.get_holdings_by_user(user_id)
             toss_holdings = [
-                h for h in raw_holdings
+                h
+                for h in raw_holdings
                 if str(getattr(h.broker_account, "broker_type", "")).lower() == "toss"
             ]
 
@@ -232,7 +238,9 @@ class ManualHomeReader:
                     displayName=h.display_name or h.ticker,
                     quantity=float(h.quantity),
                     averageCost=float(h.avg_price) if h.avg_price else None,
-                    costBasis=(float(h.quantity) * float(h.avg_price)) if h.avg_price else None,
+                    costBasis=(float(h.quantity) * float(h.avg_price))
+                    if h.avg_price
+                    else None,
                     currency="KRW" if h.market_type == MarketType.KR else "USD",
                     valueNative=None,
                     valueKrw=None,
@@ -263,7 +271,9 @@ class ManualHomeReader:
                     if h.market_type == MarketType.KR:
                         acc.valueKrw += float(h.quantity) * float(h.avg_price)
 
-            return _SourceFetchResult(accounts=list(accounts_map.values()), holdings=holdings)
+            return _SourceFetchResult(
+                accounts=list(accounts_map.values()), holdings=holdings
+            )
         except Exception as exc:
             logger.warning("Manual fetch failed: %s", exc, exc_info=True)
             return _SourceFetchResult(
