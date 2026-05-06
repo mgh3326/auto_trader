@@ -156,6 +156,60 @@ def _serialize_profile(model: AssetProfile) -> dict[str, object]:
     }
 
 
+async def _find_existing_asset_profile(
+    db: AsyncSession,
+    symbol_input: str,
+    explicit_instrument_type: InstrumentType | None,
+) -> tuple[AssetProfile | None, InstrumentType | None, str | None]:
+    existing: AssetProfile | None = None
+    instrument_type: InstrumentType | None = None
+    normalized_symbol: str | None = None
+
+    if explicit_instrument_type is not None:
+        instrument_type = explicit_instrument_type
+        normalized_symbol = _normalize_symbol_for_instrument(
+            symbol_input, instrument_type
+        )
+        existing_stmt = select(AssetProfile).where(
+            AssetProfile.user_id == MCP_USER_ID,
+            AssetProfile.symbol == normalized_symbol,
+            AssetProfile.instrument_type == instrument_type,
+        )
+        existing_result = await db.execute(existing_stmt)
+        existing = existing_result.scalar_one_or_none()
+    else:
+        candidate_pairs: list[tuple[InstrumentType, str]] = []
+        if symbol_input.isdigit() and len(symbol_input) <= 6:
+            candidate_pairs.append(
+                (InstrumentType.equity_kr, symbol_input.zfill(6))
+            )
+        upper_symbol = symbol_input.upper()
+        if upper_symbol.startswith("KRW-"):
+            candidate_pairs.append((InstrumentType.crypto, upper_symbol))
+        if not candidate_pairs:
+            candidate_pairs.append((InstrumentType.equity_us, upper_symbol))
+
+        predicates = [
+            and_(
+                AssetProfile.instrument_type == candidate_type,
+                AssetProfile.symbol == candidate_symbol,
+            )
+            for candidate_type, candidate_symbol in candidate_pairs
+        ]
+        existing_stmt = select(AssetProfile).where(
+            AssetProfile.user_id == MCP_USER_ID,
+            or_(*predicates),
+        )
+        existing_result = await db.execute(existing_stmt)
+        existing = existing_result.scalar_one_or_none()
+
+        if existing is not None:
+            instrument_type = existing.instrument_type
+            normalized_symbol = existing.symbol
+
+    return existing, instrument_type, normalized_symbol
+
+
 def _serialize_rule(model: TierRuleParam) -> dict[str, object]:
     return {
         "id": model.id,
@@ -309,55 +363,21 @@ async def set_asset_profile(
         requested_decimal_pct = _to_decimal_pct(max_position_pct)
 
         explicit_instrument_type = _parse_market_type(market_type)
-        existing: AssetProfile | None = None
-        instrument_type: InstrumentType
-        normalized_symbol: str
 
         async with _session_factory()() as db:
             async with db.begin():
-                if explicit_instrument_type is not None:
-                    instrument_type = explicit_instrument_type
-                    normalized_symbol = _normalize_symbol_for_instrument(
-                        symbol_input, instrument_type
+                existing, instrument_type, normalized_symbol = (
+                    await _find_existing_asset_profile(
+                        db, symbol_input, explicit_instrument_type
                     )
-                    existing_stmt = select(AssetProfile).where(
-                        AssetProfile.user_id == MCP_USER_ID,
-                        AssetProfile.symbol == normalized_symbol,
-                        AssetProfile.instrument_type == instrument_type,
-                    )
-                    existing_result = await db.execute(existing_stmt)
-                    existing = existing_result.scalar_one_or_none()
-                else:
-                    candidate_pairs: list[tuple[InstrumentType, str]] = []
-                    if symbol_input.isdigit() and len(symbol_input) <= 6:
-                        candidate_pairs.append(
-                            (InstrumentType.equity_kr, symbol_input.zfill(6))
-                        )
-                    upper_symbol = symbol_input.upper()
-                    if upper_symbol.startswith("KRW-"):
-                        candidate_pairs.append((InstrumentType.crypto, upper_symbol))
-                    if not candidate_pairs:
-                        candidate_pairs.append((InstrumentType.equity_us, upper_symbol))
+                )
 
-                    predicates = [
-                        and_(
-                            AssetProfile.instrument_type == candidate_type,
-                            AssetProfile.symbol == candidate_symbol,
-                        )
-                        for candidate_type, candidate_symbol in candidate_pairs
-                    ]
-                    existing_stmt = select(AssetProfile).where(
-                        AssetProfile.user_id == MCP_USER_ID,
-                        or_(*predicates),
-                    )
-                    existing_result = await db.execute(existing_stmt)
-                    existing = existing_result.scalar_one_or_none()
-
-                    if existing is not None:
-                        instrument_type = existing.instrument_type
-                        normalized_symbol = existing.symbol
-                    else:
+                if existing is None:
+                    if instrument_type is None:
                         raise ValueError("market_type is required for new profile")
+                    if normalized_symbol is None:
+                        # Should not happen if instrument_type is set
+                        raise ValueError("symbol could not be normalized")
 
                 if existing is None:
                     if tier is None:
@@ -772,53 +792,12 @@ async def delete_asset_profile(
             raise ValueError("symbol is required")
 
         explicit_instrument_type = _parse_market_type(market_type)
-        existing: AssetProfile | None = None
-        instrument_type: InstrumentType
-        normalized_symbol: str
 
         async with _session_factory()() as db:
             async with db.begin():
-                if explicit_instrument_type is not None:
-                    instrument_type = explicit_instrument_type
-                    normalized_symbol = _normalize_symbol_for_instrument(
-                        symbol_input, instrument_type
-                    )
-                    existing_stmt = select(AssetProfile).where(
-                        AssetProfile.user_id == MCP_USER_ID,
-                        AssetProfile.symbol == normalized_symbol,
-                        AssetProfile.instrument_type == instrument_type,
-                    )
-                    existing_result = await db.execute(existing_stmt)
-                    existing = existing_result.scalar_one_or_none()
-                else:
-                    candidate_pairs: list[tuple[InstrumentType, str]] = []
-                    if symbol_input.isdigit() and len(symbol_input) <= 6:
-                        candidate_pairs.append(
-                            (InstrumentType.equity_kr, symbol_input.zfill(6))
-                        )
-                    upper_symbol = symbol_input.upper()
-                    if upper_symbol.startswith("KRW-"):
-                        candidate_pairs.append((InstrumentType.crypto, upper_symbol))
-                    if not candidate_pairs:
-                        candidate_pairs.append((InstrumentType.equity_us, upper_symbol))
-
-                    predicates = [
-                        and_(
-                            AssetProfile.instrument_type == candidate_type,
-                            AssetProfile.symbol == candidate_symbol,
-                        )
-                        for candidate_type, candidate_symbol in candidate_pairs
-                    ]
-                    existing_stmt = select(AssetProfile).where(
-                        AssetProfile.user_id == MCP_USER_ID,
-                        or_(*predicates),
-                    )
-                    existing_result = await db.execute(existing_stmt)
-                    existing = existing_result.scalar_one_or_none()
-
-                    if existing is not None:
-                        instrument_type = existing.instrument_type
-                        normalized_symbol = existing.symbol
+                existing, _, _ = await _find_existing_asset_profile(
+                    db, symbol_input, explicit_instrument_type
+                )
 
                 if existing is None:
                     return {"success": False, "error": "not found"}
