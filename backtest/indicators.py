@@ -50,9 +50,10 @@ def _calc_macd(
         return None
     ema_fast = pd.Series(closes).ewm(span=fast, adjust=False).mean()
     ema_slow = pd.Series(closes).ewm(span=slow, adjust=False).mean()
-    macd_line = ema_fast - ema_slow
+    # NOSONAR python:S5607 — Sonar mis-types pandas Series subtraction.
+    macd_line = ema_fast - ema_slow  # NOSONAR
     signal_line = macd_line.ewm(span=signal, adjust=False).mean()
-    histogram = macd_line - signal_line
+    histogram = macd_line - signal_line  # NOSONAR python:S5607
     return (
         float(macd_line.iloc[-1]),
         float(signal_line.iloc[-1]),
