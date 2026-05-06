@@ -41,8 +41,8 @@ class TestBuildLifecycleEvent:
         assert event.detail["market"] == "kr"
         assert event.detail["symbol"] == "005930"
         assert event.detail["side"] == "bid"
-        assert event.detail["filled_qty"] == 10.0
-        assert event.detail["filled_price"] == 70000.0
+        assert event.detail["filled_qty"] == pytest.approx(10.0)
+        assert event.detail["filled_price"] == pytest.approx(70000.0)
         assert event.detail["fill_yn"] == "2"
 
     def test_domestic_acknowledgement_maps_to_pending(self):

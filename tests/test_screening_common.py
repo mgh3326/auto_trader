@@ -10,7 +10,7 @@ class TestCommonReExports:
     def test_timeout_seconds(self):
         from app.mcp_server.tooling.screening.common import _timeout_seconds
 
-        assert _timeout_seconds("tvscreener") == 30.0
+        assert _timeout_seconds("tvscreener") == pytest.approx(30.0)
 
     def test_to_optional_float_valid(self):
         from app.mcp_server.tooling.screening.common import _to_optional_float
@@ -109,7 +109,7 @@ class TestCommonReExports:
         )
 
         original, normalized = _normalize_dividend_yield_threshold(3.0)
-        assert original == 3.0
+        assert original == pytest.approx(3.0)
         assert normalized == pytest.approx(0.03)
 
     def test_empty_rsi_enrichment_diagnostics(self):
@@ -134,7 +134,7 @@ class TestCommonReExports:
             DROP_THRESHOLD,
         )
 
-        assert DROP_THRESHOLD == -0.30
+        assert DROP_THRESHOLD == pytest.approx(-0.30)
         assert "tvscreener" in DEFAULT_TIMEOUTS
         assert CRYPTO_TOP_BY_VOLUME == 100
 
@@ -257,8 +257,8 @@ class TestComputeAvgTargetAndUpside:
             "price_target_1y_delta": 10.5,
         }
         avg, upside = _compute_avg_target_and_upside(row, current_price=100.0)
-        assert avg == 150.0
-        assert upside == 10.5
+        assert avg == pytest.approx(150.0)
+        assert upside == pytest.approx(10.5)
 
     def test_fallback_computed(self):
         from app.mcp_server.tooling.screening.common import (
@@ -267,8 +267,8 @@ class TestComputeAvgTargetAndUpside:
 
         row = {"price_target_1y": 120.0}
         avg, upside = _compute_avg_target_and_upside(row, current_price=100.0)
-        assert avg == 120.0
-        assert upside == 20.0
+        assert avg == pytest.approx(120.0)
+        assert upside == pytest.approx(20.0)
 
     def test_no_target(self):
         from app.mcp_server.tooling.screening.common import (

@@ -43,8 +43,8 @@ async def test_wraps_screen_stocks_and_annotates_held(monkeypatch) -> None:
     assert res.total == 2
     btc = next(c for c in res.candidates if c.symbol == "KRW-BTC")
     eth = next(c for c in res.candidates if c.symbol == "KRW-ETH")
-    assert btc.price == 123.4
-    assert btc.volume == 123456.0
+    assert btc.price == pytest.approx(123.4)
+    assert btc.volume == pytest.approx(123456.0)
     assert btc.is_held is True
     assert eth.is_held is False
     assert "rsi_enrichment_skipped" in res.warnings
@@ -76,5 +76,5 @@ async def test_passes_filters_through(monkeypatch) -> None:
     assert kwargs["strategy"] == "momentum"
     assert kwargs["sort_by"] == "change_rate"
     assert kwargs["limit"] == 20
-    assert kwargs["max_per"] == 15.0
+    assert kwargs["max_per"] == pytest.approx(15.0)
     assert kwargs["adv_krw_min"] == 1_000_000_000

@@ -83,10 +83,10 @@ class TestParseFinancialMetrics:
     def test_extracts_all_metrics(self) -> None:
         soup = BeautifulSoup(SAMPLE_VALUATION_MAIN_HTML, "lxml")
         result = naver_finance._parse_financial_metrics(soup)
-        assert result["per"] == 12.5
-        assert result["pbr"] == 1.2
-        assert result["roe"] == 18.5
-        assert result["roe_controlling"] == 17.2
+        assert result["per"] == pytest.approx(12.5)
+        assert result["pbr"] == pytest.approx(1.2)
+        assert result["roe"] == pytest.approx(18.5)
+        assert result["roe_controlling"] == pytest.approx(17.2)
         assert result["dividend_yield"] == pytest.approx(0.02, abs=0.001)
 
     def test_skips_zero_per(self) -> None:
@@ -99,7 +99,7 @@ class TestParseFinancialMetrics:
         soup = BeautifulSoup(SAMPLE_VALUATION_MINIMAL_MAIN_HTML, "lxml")
         result = naver_finance._parse_financial_metrics(soup)
         assert result["per"] is None
-        assert result["pbr"] == 2.1
+        assert result["pbr"] == pytest.approx(2.1)
         assert result["roe"] is None
         assert result["dividend_yield"] is None
 
@@ -569,8 +569,8 @@ class TestFetchCompanyProfile:
         assert result["sector"] == "전기전자"
         # Market cap: 400조 1,234억
         assert result["market_cap"] == 400 * 1_0000_0000_0000 + 1234 * 1_0000_0000
-        assert result["per"] == 15.23
-        assert result["pbr"] == 1.45
+        assert result["per"] == pytest.approx(15.23)
+        assert result["pbr"] == pytest.approx(1.45)
         assert result["eps"] == 5432
 
     async def test_filters_none_values(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -888,7 +888,9 @@ class TestFetchKrSnapshot:
         assert snapshot["opinions"]["count"] == 2
         assert snapshot["opinions"]["consensus"]["avg_target_price"] == 87500
         assert snapshot["opinions"]["consensus"]["current_price"] == 75000
-        assert snapshot["opinions"]["consensus"]["upside_pct"] == pytest.approx(16.67, abs=0.01)
+        assert snapshot["opinions"]["consensus"]["upside_pct"] == pytest.approx(
+            16.67, abs=0.01
+        )
 
     async def test_snapshot_keeps_other_sections_when_one_page_fails(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1010,15 +1012,17 @@ class TestFetchValuation:
         assert result["symbol"] == "005930"
         assert result["name"] == "삼성전자"
         assert result["current_price"] == 75000
-        assert result["per"] == 12.5
-        assert result["pbr"] == 1.2
-        assert result["roe"] == 18.5  # ROE(%)
-        assert result["roe_controlling"] == 17.2  # ROE(지배주주)
-        assert result["dividend_yield"] == pytest.approx(0.02, abs=0.001)  # 2.00% -> 0.02
+        assert result["per"] == pytest.approx(12.5)
+        assert result["pbr"] == pytest.approx(1.2)
+        assert result["roe"] == pytest.approx(18.5)  # ROE(%)
+        assert result["roe_controlling"] == pytest.approx(17.2)  # ROE(지배주주)
+        assert result["dividend_yield"] == pytest.approx(
+            0.02, abs=0.001
+        )  # 2.00% -> 0.02
         assert result["high_52w"] == 90000
         assert result["low_52w"] == 60000
         # Position: (75000 - 60000) / (90000 - 60000) = 0.5
-        assert result["current_position_52w"] == 0.5
+        assert result["current_position_52w"] == pytest.approx(0.5)
 
     async def test_minimal_data(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test with minimal HTML data (some values missing)."""
@@ -1039,7 +1043,7 @@ class TestFetchValuation:
         assert result["name"] == "효성중공업"
         assert result["current_price"] == 450000
         assert result["per"] is None  # N/A parsed as None
-        assert result["pbr"] == 2.1
+        assert result["pbr"] == pytest.approx(2.1)
         assert result["roe"] is None  # Not in HTML
         assert result["roe_controlling"] is None  # Not in HTML
         assert result["dividend_yield"] is None
@@ -1077,7 +1081,7 @@ class TestFetchValuation:
 
         result = await naver_finance.fetch_valuation("000000")
 
-        assert result["current_position_52w"] == 0.0
+        assert result["current_position_52w"] == pytest.approx(0.0)
 
     async def test_position_calculation_at_high(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1108,7 +1112,7 @@ class TestFetchValuation:
 
         result = await naver_finance.fetch_valuation("000000")
 
-        assert result["current_position_52w"] == 1.0
+        assert result["current_position_52w"] == pytest.approx(1.0)
 
     async def test_empty_html(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test with empty HTML."""

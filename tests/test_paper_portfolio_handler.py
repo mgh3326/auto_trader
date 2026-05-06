@@ -224,11 +224,11 @@ async def test_collect_paper_positions_all_active(monkeypatch):
     assert p["market"] == "kr"
     assert p["symbol"] == "005930"
     assert p["name"] == "삼성전자"
-    assert p["quantity"] == 10.0
-    assert p["avg_buy_price"] == 72000.0
-    assert p["current_price"] == 73500.0
-    assert p["evaluation_amount"] == 735000.0
-    assert p["profit_loss"] == 15000.0
+    assert p["quantity"] == pytest.approx(10.0)
+    assert p["avg_buy_price"] == pytest.approx(72000.0)
+    assert p["current_price"] == pytest.approx(73500.0)
+    assert p["evaluation_amount"] == pytest.approx(735000.0)
+    assert p["profit_loss"] == pytest.approx(15000.0)
     assert p["profit_rate"] == pytest.approx(2.08)
 
 
@@ -389,7 +389,7 @@ async def test_collect_paper_cash_balances_all_accounts(monkeypatch):
     d_usd = next(
         r for r in rows if r["account"] == "paper:default" and r["currency"] == "USD"
     )
-    assert d_usd["balance"] == 500.0
+    assert d_usd["balance"] == pytest.approx(500.0)
     assert d_usd["exchange_rate"] is None
     assert d_usd["formatted"] == "$500.00 USD"
 

@@ -116,15 +116,15 @@ class TestParseMarginResponse:
         }
         result = client._parse_margin_response(output)
         assert result["dnca_tot_amt"] == 5_000_000.0
-        assert result["usd_ord_psbl_amt"] == 1500.50
-        assert result["usd_balance"] == 2000.00
+        assert result["usd_ord_psbl_amt"] == pytest.approx(1500.50)
+        assert result["usd_balance"] == pytest.approx(2000.00)
         assert result["raw"] is output
 
     def test_handles_empty_strings(self):
         client = AccountClient(FakeParent())
         output = {"dnca_tot_amt": "", "stck_cash_objt_amt": ""}
         result = client._parse_margin_response(output)
-        assert result["dnca_tot_amt"] == 0.0
+        assert result["dnca_tot_amt"] == pytest.approx(0.0)
 
     def test_fallback_fields(self):
         client = AccountClient(FakeParent())
@@ -137,5 +137,5 @@ class TestParseMarginResponse:
         result = client._parse_margin_response(output)
         assert result["dnca_tot_amt"] == 4_000_000.0
         assert result["stck_cash_ord_psbl_amt"] == 3_000_000.0
-        assert result["usd_ord_psbl_amt"] == 1200.00
-        assert result["usd_balance"] == 900.00
+        assert result["usd_ord_psbl_amt"] == pytest.approx(1200.00)
+        assert result["usd_balance"] == pytest.approx(900.00)

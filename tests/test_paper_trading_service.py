@@ -26,41 +26,41 @@ class TestCalculateFee:
     def test_equity_kr_buy(self):
         # 1,000,000원 매수 → 0.015% = 150원
         fee = calculate_fee("equity_kr", "buy", Decimal("1000000"))
-        assert fee == Decimal("150.0000")
+        assert fee == pytest.approx(Decimal("150.0000"))
 
     def test_equity_kr_sell_includes_tax(self):
         # 1,000,000원 매도 → 수수료 0.015% + 세금 0.18% = 1,950원
         fee = calculate_fee("equity_kr", "sell", Decimal("1000000"))
-        assert fee == Decimal("1950.0000")
+        assert fee == pytest.approx(Decimal("1950.0000"))
 
     def test_equity_us_buy_min_fee(self):
         # 작은 금액: 100 USD * 0.07% = $0.07 → min $1
         fee = calculate_fee("equity_us", "buy", Decimal("100"))
-        assert fee == Decimal("1.0000")
+        assert fee == pytest.approx(Decimal("1.0000"))
 
     def test_equity_us_buy_above_min(self):
         # 10,000 USD * 0.07% = $7
         fee = calculate_fee("equity_us", "buy", Decimal("10000"))
-        assert fee == Decimal("7.0000")
+        assert fee == pytest.approx(Decimal("7.0000"))
 
     def test_crypto_buy(self):
         # 1,000,000 KRW * 0.05% = 500 KRW
         fee = calculate_fee("crypto", "buy", Decimal("1000000"))
-        assert fee == Decimal("500.0000")
+        assert fee == pytest.approx(Decimal("500.0000"))
 
     def test_crypto_sell(self):
         fee = calculate_fee("crypto", "sell", Decimal("2000000"))
-        assert fee == Decimal("1000.0000")
+        assert fee == pytest.approx(Decimal("1000.0000"))
 
     def test_unsupported_market_raises(self):
         with pytest.raises(ValueError, match="Unsupported instrument_type"):
             calculate_fee("forex", "buy", Decimal("100"))
 
     def test_fee_rates_structure(self):
-        assert FEE_RATES["equity_kr"]["buy"] == 0.00015
-        assert FEE_RATES["equity_kr"]["tax_sell"] == 0.0018
-        assert FEE_RATES["equity_us"]["min_fee_usd"] == 1.0
-        assert FEE_RATES["crypto"]["sell"] == 0.0005
+        assert FEE_RATES["equity_kr"]["buy"] == pytest.approx(0.00015)
+        assert FEE_RATES["equity_kr"]["tax_sell"] == pytest.approx(0.0018)
+        assert FEE_RATES["equity_us"]["min_fee_usd"] == pytest.approx(1.0)
+        assert FEE_RATES["crypto"]["sell"] == pytest.approx(0.0005)
 
 
 class TestAccountManagement:
@@ -75,9 +75,9 @@ class TestAccountManagement:
             initial_capital_krw=Decimal("10000000"),
         )
         assert account.name == "Test"
-        assert account.initial_capital == Decimal("10000000")
-        assert account.cash_krw == Decimal("10000000")
-        assert account.cash_usd == Decimal("0")
+        assert account.initial_capital == pytest.approx(Decimal("10000000"))
+        assert account.cash_krw == pytest.approx(Decimal("10000000"))
+        assert account.cash_usd == pytest.approx(Decimal("0"))
         assert account.is_active is True
         mock_db.add.assert_called_once_with(account)
         mock_db.commit.assert_awaited_once()
@@ -92,7 +92,7 @@ class TestAccountManagement:
             description="dollar-cost averaging",
             strategy_name="dca-us",
         )
-        assert account.cash_usd == Decimal("5000")
+        assert account.cash_usd == pytest.approx(Decimal("5000"))
         assert account.description == "dollar-cost averaging"
         assert account.strategy_name == "dca-us"
 
@@ -118,8 +118,8 @@ class TestAccountManagement:
         mock_db.execute = AsyncMock()
         result = await service.reset_account(1)
 
-        assert result.cash_krw == Decimal("10000000")
-        assert result.cash_usd == Decimal("0")
+        assert result.cash_krw == pytest.approx(Decimal("10000000"))
+        assert result.cash_usd == pytest.approx(Decimal("0"))
         # DELETE FROM paper_positions WHERE account_id = 1
         mock_db.execute.assert_awaited_once()
         mock_db.commit.assert_awaited_once()
@@ -172,7 +172,7 @@ class TestFetchCurrentPrice:
             AsyncMock(return_value={"price": 70000.0}),
         )
         price = await service._fetch_current_price("005930", "equity_kr")
-        assert price == Decimal("70000.0")
+        assert price == pytest.approx(Decimal("70000.0"))
 
     @pytest.mark.asyncio
     async def test_fetch_equity_us_uses_yahoo_quote(self, service, monkeypatch):
@@ -181,7 +181,7 @@ class TestFetchCurrentPrice:
             AsyncMock(return_value={"price": 190.5}),
         )
         price = await service._fetch_current_price("AAPL", "equity_us")
-        assert price == Decimal("190.5")
+        assert price == pytest.approx(Decimal("190.5"))
 
     @pytest.mark.asyncio
     async def test_fetch_crypto_uses_upbit_batch(self, service, monkeypatch):
@@ -190,7 +190,7 @@ class TestFetchCurrentPrice:
             AsyncMock(return_value={"KRW-BTC": 95000000.0}),
         )
         price = await service._fetch_current_price("KRW-BTC", "crypto")
-        assert price == Decimal("95000000.0")
+        assert price == pytest.approx(Decimal("95000000.0"))
 
     @pytest.mark.asyncio
     async def test_fetch_crypto_missing_raises(self, service, monkeypatch):
@@ -237,12 +237,12 @@ class TestPreviewOrder:
         ex = preview["preview"]
         assert ex["instrument_type"] == "equity_kr"
         assert ex["side"] == "buy"
-        assert ex["quantity"] == Decimal("20")
-        assert ex["price"] == Decimal("70000")
-        assert ex["gross"] == Decimal("1400000")
+        assert ex["quantity"] == pytest.approx(Decimal("20"))
+        assert ex["price"] == pytest.approx(Decimal("70000"))
+        assert ex["gross"] == pytest.approx(Decimal("1400000"))
         # fee: 1,400,000 * 0.00015 = 210
-        assert ex["fee"] == Decimal("210.0000")
-        assert ex["total_cost"] == Decimal("1400210.0000")
+        assert ex["fee"] == pytest.approx(Decimal("210.0000"))
+        assert ex["total_cost"] == pytest.approx(Decimal("1400210.0000"))
         assert ex["currency"] == "KRW"
 
     @pytest.mark.asyncio
@@ -272,11 +272,11 @@ class TestPreviewOrder:
         )
         ex = preview["preview"]
         assert ex["instrument_type"] == "crypto"
-        assert ex["quantity"] == Decimal("0.01000000")
-        assert ex["price"] == Decimal("95000000")
-        assert ex["gross"] == Decimal("950000")
+        assert ex["quantity"] == pytest.approx(Decimal("0.01000000"))
+        assert ex["price"] == pytest.approx(Decimal("95000000"))
+        assert ex["gross"] == pytest.approx(Decimal("950000"))
         # fee: 950,000 * 0.0005 = 475
-        assert ex["fee"] == Decimal("475.0000")
+        assert ex["fee"] == pytest.approx(Decimal("475.0000"))
 
     @pytest.mark.asyncio
     async def test_preview_rejects_inactive_account(self, mock_db, monkeypatch):
@@ -362,19 +362,19 @@ class TestExecuteOrderBuy:
         assert result["success"] is True
         assert result["dry_run"] is False
         exec_ = result["execution"]
-        assert exec_["quantity"] == Decimal("20")
-        assert exec_["price"] == Decimal("70000")
+        assert exec_["quantity"] == pytest.approx(Decimal("20"))
+        assert exec_["price"] == pytest.approx(Decimal("70000"))
         # cash after: 10,000,000 - (1,400,000 + 210)
-        assert account.cash_krw == Decimal("8599790.0000")
+        assert account.cash_krw == pytest.approx(Decimal("8599790.0000"))
         # PaperPosition + PaperTrade were added
         assert mock_db.add.call_count == 2
         added = [c.args[0] for c in mock_db.add.call_args_list]
         assert any(isinstance(x, PaperPosition) for x in added)
         trade = next(x for x in added if isinstance(x, PaperTrade))
         assert trade.side == "buy"
-        assert trade.quantity == Decimal("20")
-        assert trade.total_amount == Decimal("1400000.0000")
-        assert trade.fee == Decimal("210.0000")
+        assert trade.quantity == pytest.approx(Decimal("20"))
+        assert trade.total_amount == pytest.approx(Decimal("1400000.0000"))
+        assert trade.fee == pytest.approx(Decimal("210.0000"))
         assert trade.reason == "test buy"
         mock_db.commit.assert_awaited_once()
 
@@ -420,9 +420,9 @@ class TestExecuteOrderBuy:
         )
 
         # weighted avg: (10*60000 + 10*70000) / 20 = 65000
-        assert existing.quantity == Decimal("20")
-        assert existing.avg_price == Decimal("65000")
-        assert existing.total_invested == Decimal("1300000.0000")
+        assert existing.quantity == pytest.approx(Decimal("20"))
+        assert existing.avg_price == pytest.approx(Decimal("65000"))
+        assert existing.total_invested == pytest.approx(Decimal("1300000.0000"))
         # Only PaperTrade appended (position already existed)
         added = [c.args[0] for c in mock_db.add.call_args_list]
         assert sum(1 for x in added if isinstance(x, PaperTrade)) == 1
@@ -453,8 +453,8 @@ class TestExecuteOrderBuy:
             quantity=Decimal("10"),
         )
         # gross 1000, fee = max(1000*0.0007, 1) = 1.0
-        assert account.cash_usd == Decimal("8999.0000")
-        assert account.cash_krw == Decimal("0")
+        assert account.cash_usd == pytest.approx(Decimal("8999.0000"))
+        assert account.cash_krw == pytest.approx(Decimal("0"))
 
 
 class TestExecuteOrderSell:
@@ -506,15 +506,15 @@ class TestExecuteOrderSell:
         # net proceeds: 798,440
         # realized pnl: (80,000 - 60,000) * 10 - 1,560 = 198,440
         assert result["success"] is True
-        assert account.cash_krw == Decimal("1798440.0000")
-        assert position.quantity == Decimal("10")
+        assert account.cash_krw == pytest.approx(Decimal("1798440.0000"))
+        assert position.quantity == pytest.approx(Decimal("10"))
         # avg_price unchanged on sell; total_invested drops proportionally
-        assert position.avg_price == Decimal("60000")
-        assert position.total_invested == Decimal("600000.0000")
+        assert position.avg_price == pytest.approx(Decimal("60000"))
+        assert position.total_invested == pytest.approx(Decimal("600000.0000"))
 
         added = [c.args[0] for c in mock_db.add.call_args_list]
         trade = next(x for x in added if isinstance(x, PaperTrade))
-        assert trade.realized_pnl == Decimal("198440.0000")
+        assert trade.realized_pnl == pytest.approx(Decimal("198440.0000"))
 
     @pytest.mark.asyncio
     async def test_sell_full_quantity_deletes_position(
@@ -615,13 +615,13 @@ class TestQueries:
         assert len(positions) == 1
         p = positions[0]
         assert p["symbol"] == "005930"
-        assert p["quantity"] == Decimal("10")
-        assert p["avg_price"] == Decimal("60000")
-        assert p["current_price"] == Decimal("70000")
-        assert p["evaluation_amount"] == Decimal("700000.0000")
-        assert p["unrealized_pnl"] == Decimal("100000.0000")
+        assert p["quantity"] == pytest.approx(Decimal("10"))
+        assert p["avg_price"] == pytest.approx(Decimal("60000"))
+        assert p["current_price"] == pytest.approx(Decimal("70000"))
+        assert p["evaluation_amount"] == pytest.approx(Decimal("700000.0000"))
+        assert p["unrealized_pnl"] == pytest.approx(Decimal("100000.0000"))
         # (70000 - 60000) / 60000 * 100 = 16.6666...
-        assert p["pnl_pct"] == Decimal("16.67")
+        assert p["pnl_pct"] == pytest.approx(Decimal("16.67"))
 
     @pytest.mark.asyncio
     async def test_get_positions_swallows_price_errors(
@@ -690,7 +690,7 @@ class TestQueries:
         assert len(history) == 1
         assert history[0]["symbol"] == "005930"
         assert history[0]["side"] == "buy"
-        assert history[0]["quantity"] == Decimal("10")
+        assert history[0]["quantity"] == pytest.approx(Decimal("10"))
 
 
 class TestPortfolioSummary:
@@ -734,13 +734,13 @@ class TestPortfolioSummary:
 
         summary = await service.get_portfolio_summary(account_id=1)
 
-        assert summary["total_invested"] == Decimal("900000")
-        assert summary["total_evaluated"] == Decimal("980000")
-        assert summary["total_pnl"] == Decimal("80000")
+        assert summary["total_invested"] == pytest.approx(Decimal("900000"))
+        assert summary["total_evaluated"] == pytest.approx(Decimal("980000"))
+        assert summary["total_pnl"] == pytest.approx(Decimal("80000"))
         # 80000 / 900000 * 100 = 8.8888...
-        assert summary["total_pnl_pct"] == Decimal("8.89")
-        assert summary["cash_krw"] == Decimal("1000000")
-        assert summary["cash_usd"] == Decimal("200")
+        assert summary["total_pnl_pct"] == pytest.approx(Decimal("8.89"))
+        assert summary["cash_krw"] == pytest.approx(Decimal("1000000"))
+        assert summary["cash_usd"] == pytest.approx(Decimal("200"))
         assert summary["positions_count"] == 2
 
     @pytest.mark.asyncio
@@ -757,9 +757,9 @@ class TestPortfolioSummary:
         monkeypatch.setattr(service, "get_positions", AsyncMock(return_value=[]))
 
         summary = await service.get_portfolio_summary(account_id=1)
-        assert summary["total_invested"] == Decimal("0")
-        assert summary["total_evaluated"] == Decimal("0")
-        assert summary["total_pnl"] == Decimal("0")
+        assert summary["total_invested"] == pytest.approx(Decimal("0"))
+        assert summary["total_evaluated"] == pytest.approx(Decimal("0"))
+        assert summary["total_pnl"] == pytest.approx(Decimal("0"))
         assert summary["total_pnl_pct"] is None
         assert summary["positions_count"] == 0
 
@@ -807,10 +807,10 @@ class TestDailySnapshots:
 
         snapshot = await service.record_daily_snapshot(account_id=1)
 
-        assert snapshot.cash_krw == Decimal("5000000")
-        assert snapshot.positions_value == Decimal("6000000")
-        assert snapshot.total_equity == Decimal("11000000")
-        assert snapshot.daily_return_pct == Decimal("10.0000")
+        assert snapshot.cash_krw == pytest.approx(Decimal("5000000"))
+        assert snapshot.positions_value == pytest.approx(Decimal("6000000"))
+        assert snapshot.total_equity == pytest.approx(Decimal("11000000"))
+        assert snapshot.daily_return_pct == pytest.approx(Decimal("10.0000"))
         mock_db.add.assert_called_once()
         mock_db.commit.assert_awaited_once()
 
@@ -837,7 +837,7 @@ class TestDailySnapshots:
 
         snapshot = await service.record_daily_snapshot(account_id=1)
         assert snapshot.daily_return_pct is None
-        assert snapshot.total_equity == Decimal("10000000")
+        assert snapshot.total_equity == pytest.approx(Decimal("10000000"))
 
     @pytest.mark.asyncio
     async def test_calculate_daily_returns_filters_by_date_range(
@@ -946,8 +946,8 @@ class TestRoundTrips:
         trip = trips[0]
         assert trip["symbol"] == "005930"
         assert trip["holding_days"] == 5
-        assert trip["pnl"] == 98635.0
-        assert round(trip["return_pct"], 2) == 16.44
+        assert trip["pnl"] == pytest.approx(98635.0)
+        assert round(trip["return_pct"], 2) == pytest.approx(16.44)
         assert trip["entry_reason"] == "entry"
         assert trip["exit_reason"] == "exit"
 
@@ -1016,14 +1016,16 @@ class TestRiskMetrics:
             Decimal("80"),
         ]
         dd = PaperTradingService._calc_max_drawdown_pct(equities)
-        assert round(dd, 2) == 33.33
+        assert round(dd, 2) == pytest.approx(33.33)
 
     def test_max_drawdown_empty_returns_none(self):
         assert PaperTradingService._calc_max_drawdown_pct([]) is None
 
     def test_max_drawdown_monotonic_returns_zero(self):
         equities = [Decimal("100"), Decimal("110"), Decimal("120")]
-        assert PaperTradingService._calc_max_drawdown_pct(equities) == 0.0
+        assert PaperTradingService._calc_max_drawdown_pct(equities) == pytest.approx(
+            0.0
+        )
 
     def test_sharpe_ratio_with_uniform_returns(self):
         rets = [Decimal("1.0"), Decimal("1.0"), Decimal("1.0")]
@@ -1150,14 +1152,14 @@ class TestCalculatePerformance:
 
         perf = await service.calculate_performance(account_id=1)
 
-        assert perf["total_return_pct"] == 10.0
-        assert perf["realized_pnl"] == 98635.0
-        assert perf["unrealized_pnl"] == 400000.0
+        assert perf["total_return_pct"] == pytest.approx(10.0)
+        assert perf["realized_pnl"] == pytest.approx(98635.0)
+        assert perf["unrealized_pnl"] == pytest.approx(400000.0)
         assert perf["total_trades"] == 1
-        assert perf["win_rate"] == 100.0
-        assert perf["avg_holding_days"] == 5.0
+        assert perf["win_rate"] == pytest.approx(100.0)
+        assert perf["avg_holding_days"] == pytest.approx(5.0)
         assert perf["max_drawdown_pct"] is not None
-        assert round(perf["max_drawdown_pct"], 2) == 1.49
+        assert round(perf["max_drawdown_pct"], 2) == pytest.approx(1.49)
         assert perf["sharpe_ratio"] is not None
         assert perf["best_trade"] is not None
         assert perf["best_trade"]["symbol"] == "A"
@@ -1186,12 +1188,12 @@ class TestCalculatePerformance:
         mock_db.execute = AsyncMock(return_value=empty)
 
         perf = await service.calculate_performance(account_id=1)
-        assert perf["total_return_pct"] == 0.0
-        assert perf["realized_pnl"] == 0.0
-        assert perf["unrealized_pnl"] == 0.0
+        assert perf["total_return_pct"] == pytest.approx(0.0)
+        assert perf["realized_pnl"] == pytest.approx(0.0)
+        assert perf["unrealized_pnl"] == pytest.approx(0.0)
         assert perf["total_trades"] == 0
-        assert perf["win_rate"] == 0.0
-        assert perf["avg_holding_days"] == 0.0
+        assert perf["win_rate"] == pytest.approx(0.0)
+        assert perf["avg_holding_days"] == pytest.approx(0.0)
         assert perf["max_drawdown_pct"] is None
         assert perf["sharpe_ratio"] is None
         assert perf["best_trade"] is None

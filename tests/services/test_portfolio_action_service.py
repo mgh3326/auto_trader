@@ -55,7 +55,7 @@ async def test_aggregates_holdings_with_research_and_journal(monkeypatch) -> Non
     candidate = result.candidates[0]
     assert candidate.symbol == "KRW-SOL"
     assert candidate.market == "CRYPTO"
-    assert candidate.profit_rate == -0.1225
+    assert candidate.profit_rate == pytest.approx(-0.1225)
     assert candidate.latest_research_session_id == 32
     assert candidate.summary_decision == "hold"
     assert candidate.candidate_action in {"trim", "hold", "watch"}
@@ -107,9 +107,9 @@ async def test_build_action_board_uses_total_quantity_for_merged_holdings(
     assert result.total == 1
     candidate = result.candidates[0]
     assert candidate.symbol == "005930"
-    assert candidate.quantity == 3.0
+    assert candidate.quantity == pytest.approx(3.0)
     assert candidate.market == "KR"
-    assert candidate.profit_rate == 0.3747
+    assert candidate.profit_rate == pytest.approx(0.3747)
 
 
 @pytest.mark.unit
@@ -143,6 +143,6 @@ async def test_load_holdings_keeps_crypto_when_kis_unavailable(monkeypatch) -> N
     holdings, total, warnings = await service._load_holdings(1, None)
 
     assert holdings == [crypto_holding]
-    assert total == 100.0
+    assert total == pytest.approx(100.0)
     assert any(w.startswith("KR holdings unavailable") for w in warnings)
     assert any(w.startswith("US holdings unavailable") for w in warnings)
