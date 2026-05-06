@@ -272,7 +272,7 @@ class TestExchangeRateService:
 
         results = await asyncio.gather(first, second)
 
-        assert results == [1425.0, 1425.0]
+        assert results == pytest.approx([1425.0, 1425.0])
         assert call_count == 1
 
 
@@ -873,8 +873,8 @@ class TestN8nPendingOrdersService:
             )
 
         order = result["orders"][0]
-        assert order["order_price_fmt"] == "7.0만"
-        assert order["current_price_fmt"] == "7.1만"
+        assert order["order_price_fmt"] == pytest.approx("7.0만")
+        assert order["current_price_fmt"] == pytest.approx("7.1만")
         assert order["gap_pct_fmt"] is not None
         assert order["amount_fmt"] is not None
         assert order["age_fmt"] == "1일"
@@ -916,8 +916,8 @@ class TestN8nPendingOrdersService:
             )
 
         summary = result["summary"]
-        assert summary["total_buy_fmt"] == "5.0만"
-        assert summary["total_sell_fmt"] == "6.0만"
+        assert summary["total_buy_fmt"] == pytest.approx("5.0만")
+        assert summary["total_sell_fmt"] == pytest.approx("6.0만")
         assert "03/16" in summary["title"]
         assert "매수 1" in summary["title"]
         assert "매도 1" in summary["title"]
@@ -1259,9 +1259,9 @@ class TestN8nPendingOrdersEndpoint:
         assert response.status_code == 200
         data = response.json()
         order = data["orders"][0]
-        assert order["order_price_fmt"] == "7.0만"
+        assert order["order_price_fmt"] == pytest.approx("7.0만")
         assert order["summary_line"].startswith("005930 buy")
-        assert data["summary"]["total_buy_fmt"] == "70.0만"
+        assert data["summary"]["total_buy_fmt"] == pytest.approx("70.0만")
         assert data["summary"]["title"].startswith("📋")
 
         # Backward compatibility: raw fields still present

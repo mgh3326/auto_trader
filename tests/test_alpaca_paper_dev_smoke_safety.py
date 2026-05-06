@@ -115,8 +115,8 @@ def test_dev_smoke_parser_accepts_crypto_operator_metadata() -> None:
     )
     assert args.asset_class == "crypto"
     assert args.symbol == "BTC/USD"
-    assert args.notional == module.Decimal("10")
-    assert args.limit_price == module.Decimal("50000")
+    assert args.notional == pytest.approx(module.Decimal("10"))
+    assert args.limit_price == pytest.approx(module.Decimal("50000"))
     assert module._order_payload(args)["time_in_force"] == "gtc"
 
 

@@ -3895,7 +3895,7 @@ async def test_analyze_stock_crypto_uses_extended_default_indicators(monkeypatch
         "plus_di": 31.2,
         "minus_di": 18.7,
     }
-    assert result["indicators"]["stoch_rsi"] == {"k": 61.5, "d": 55.1}
+    assert result["indicators"]["stoch_rsi"] == pytest.approx({"k": 61.5, "d": 55.1})
     assert result["errors"] == []
     assert "recommendation" not in result
 

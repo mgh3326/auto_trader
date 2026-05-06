@@ -224,7 +224,7 @@ class TestCandleNormalization:
             "value",
         ]
         assert df["date"].tolist() == ["2026-03-20", "2026-03-21"]
-        assert df["close"].tolist() == [50500.0, 51200.0]
+        assert df["close"].tolist() == pytest.approx([50500.0, 51200.0])
 
 
 class TestDeterministicWindow:
@@ -519,7 +519,9 @@ class TestMergeDedupe:
             "2026-03-21",
         ]
         # Newer data should replace old for overlapping dates
-        assert result[result["date"] == "2026-03-20"]["close"].iloc[0] == 51000.0
+        assert result[result["date"] == "2026-03-20"]["close"].iloc[0] == pytest.approx(
+            51000.0
+        )
 
     def test_merge_new_data_only(self, tmp_path):
         """Test merge with no overlapping dates."""

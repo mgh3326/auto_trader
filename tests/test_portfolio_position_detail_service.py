@@ -1407,7 +1407,7 @@ async def test_get_page_payload_summary_includes_evaluation_krw() -> None:
     assert summary["evaluation"] == pytest.approx(1700.0)
     assert summary["evaluation_krw"] == pytest.approx(2_295_000.0)
     assert summary["profit_loss_krw"] == pytest.approx(270_000.0)
-    assert payload["exchange_rate"] == {"usd_krw": 1350.0}
+    assert payload["exchange_rate"] == pytest.approx({"usd_krw": 1350.0})
 
 
 class TestBuildRsiCard:

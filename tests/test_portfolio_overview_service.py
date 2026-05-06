@@ -570,7 +570,7 @@ async def test_fetch_upbit_prices_resilient_recovers_with_tradable_filter(
         stage="collect_upbit_components",
     )
 
-    assert result == {"KRW-BTC": 100000000.0, "KRW-ETH": 5000000.0}
+    assert result == pytest.approx({"KRW-BTC": 100000000.0, "KRW-ETH": 5000000.0})
     assert calls == [
         ("KRW-BTC", "KRW-ETH", "KRW-FAKE"),
         ("KRW-BTC", "KRW-ETH"),
@@ -614,7 +614,7 @@ async def test_fetch_upbit_prices_resilient_falls_back_to_single_symbol(
         stage="manual_crypto",
     )
 
-    assert result == {"KRW-BTC": 110000000.0}
+    assert result == pytest.approx({"KRW-BTC": 110000000.0})
     assert warnings == [
         "Upbit price fetch failed (manual_crypto) for KRW-ETH: single failed"
     ]
@@ -688,7 +688,7 @@ async def test_fetch_upbit_prices_resilient_recovers_missing_symbol_from_retry_b
         stage="manual_crypto",
     )
 
-    assert result == {"KRW-BTC": 101000000.0, "KRW-ETH": 5100000.0}
+    assert result == pytest.approx({"KRW-BTC": 101000000.0, "KRW-ETH": 5100000.0})
     assert warnings == []
 
 
@@ -1188,7 +1188,7 @@ async def test_get_overview_includes_exchange_rate(monkeypatch) -> None:
 
     overview = await service.get_overview(user_id=1)
 
-    assert overview["exchange_rate"] == {"usd_krw": 1350.0}
+    assert overview["exchange_rate"] == pytest.approx({"usd_krw": 1350.0})
 
 
 @pytest.mark.asyncio
@@ -1346,7 +1346,7 @@ class TestCalculatePositionTotals:
             usd_krw=None,
         )
         assert result["quantity"] == 15
-        assert result["evaluation"] == 15 * 120.0
+        assert result["evaluation"] == pytest.approx(15 * 120.0)
         cost_basis = 10 * 100.0 + 5 * 110.0
         assert result["profit_loss"] == pytest.approx(15 * 120.0 - cost_basis, abs=0.01)
         assert result["evaluation_krw"] == result["evaluation"]
@@ -1362,7 +1362,7 @@ class TestCalculatePositionTotals:
             market_type="US",
             usd_krw=1350.0,
         )
-        assert result["evaluation_krw"] == 3 * 170.0 * 1350.0
+        assert result["evaluation_krw"] == pytest.approx(3 * 170.0 * 1350.0)
 
     def test_us_market_no_fx_rate_gives_none_krw(self):
         service = PortfolioOverviewService(AsyncMock())

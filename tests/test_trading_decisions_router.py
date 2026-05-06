@@ -822,7 +822,7 @@ def test_get_session_analytics_happy_path():
     ]
     assert body["horizons"] == ["1h", "4h", "1d", "3d", "7d", "final"]
     assert len(body["cells"]) == 1
-    assert body["cells"][0]["mean_pnl_pct"] == "1.5"
+    assert body["cells"][0]["mean_pnl_pct"] == pytest.approx("1.5")
 
 
 @pytest.mark.unit
@@ -1120,8 +1120,8 @@ def test_session_analytics_response_serializes_decimal_strings():
         ],
     )
     body = payload.model_dump(mode="json")
-    assert body["cells"][0]["mean_pnl_pct"] == "1.5"
-    assert body["cells"][0]["sum_pnl_amount"] == "12.34"
+    assert body["cells"][0]["mean_pnl_pct"] == pytest.approx("1.5")
+    assert body["cells"][0]["sum_pnl_amount"] == pytest.approx("12.34")
     assert body["tracks"][0] == "accepted_live"
 
 

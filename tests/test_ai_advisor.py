@@ -182,7 +182,7 @@ class TestGeminiProvider:
         with patch("app.services.ai_providers.gemini_provider.genai") as mock_genai:
             provider = GeminiProvider(api_key="test-key")
             assert provider.provider_name == "gemini"
-            assert provider.default_model == "gemini-2.5-flash"
+            assert provider.default_model == pytest.approx("gemini-2.5-flash")
             mock_genai.Client.assert_called_once_with(api_key="test-key")
 
     @pytest.mark.asyncio

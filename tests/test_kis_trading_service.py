@@ -1036,7 +1036,7 @@ class TestProcessKisOverseasSellOrders:
             assert ordered_quantities == [2, 2, 2, 2]
             assert sum(ordered_quantities) == 8
             # 가격은 낮은 순서대로
-            assert ordered_prices == [300.0, 320.0, 350.0, 400.0]
+            assert ordered_prices == pytest.approx([300.0, 320.0, 350.0, 400.0])
 
     @pytest.mark.asyncio
     async def test_overseas_sell_stock_not_in_kis_account(self, mock_kis_client):

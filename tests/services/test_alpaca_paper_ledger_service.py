@@ -781,7 +781,7 @@ async def test_record_position_snapshot_with_position_writes_qty():
         "test-client-001",
         position={"qty": "0.001", "avg_entry_price": "50000"},
     )
-    assert result.position_snapshot["qty"] == "0.001"
+    assert result.position_snapshot["qty"] == pytest.approx("0.001")
     assert result.position_snapshot["avg_entry_price"] == "50000"
 
 

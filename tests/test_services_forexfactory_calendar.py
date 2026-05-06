@@ -61,8 +61,8 @@ async def test_fetch_forexfactory_events_today_filters_today_and_normalizes_fiel
             assert event["country"] == "USD"
             assert event["time"] == "22:30 KST"  # 8:30am + 14h
             assert event["impact"] == "high"
-            assert event["forecast"] == "0.3%"
-            assert event["previous"] == "0.4%"
+            assert event["forecast"] == pytest.approx("0.3%")
+            assert event["previous"] == pytest.approx("0.4%")
             assert event["actual"] is None
 
 

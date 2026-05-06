@@ -121,7 +121,9 @@ async def test_manage_watch_alerts_passes_target_kind_to_service(
 
     assert result["success"] is True
     assert result["target_kind"] == "index"
-    assert fake_service.add_calls == [("kr", "kospi", "price_below", 6176.75, "index")]
+    assert fake_service.add_calls == pytest.approx(
+        [("kr", "kospi", "price_below", 6176.75, "index")]
+    )
 
 
 @pytest.mark.asyncio

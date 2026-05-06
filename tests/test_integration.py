@@ -47,7 +47,7 @@ class TestApplicationIntegration:
         """Test application structure and configuration."""
         app = client.app
         assert app.title == "KIS Auto Screener"
-        assert app.version == "0.2.0"
+        assert app.version == pytest.approx("0.2.0")
 
     @patch("app.services.brokers.upbit.client.httpx.AsyncClient")
     @patch("app.services.brokers.yahoo.client.yf.Ticker")

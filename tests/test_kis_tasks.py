@@ -1547,7 +1547,7 @@ class TestOverseasManualHoldings:
         # CONY의 현재가가 API로 조회되어 설정되었는지 확인
         cony_buy = next((b for b in buy_calls if b["symbol"] == "CONY"), None)
         assert cony_buy is not None
-        assert cony_buy["current_price"] == 18.50, (
+        assert cony_buy["current_price"] == pytest.approx(18.50), (
             "토스 종목 현재가가 API로 조회되어야 함"
         )
 

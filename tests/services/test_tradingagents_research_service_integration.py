@@ -108,7 +108,9 @@ async def test_ingest_creates_session_and_single_proposal(stub_runner) -> None:
             await session.commit()
 
             assert ds.source_profile == "tradingagents"
-            assert ds.strategy_name == "tradingagents:gpt-5.5:market,news"
+            assert ds.strategy_name == pytest.approx(
+                "tradingagents:gpt-5.5:market,news"
+            )
             assert ds.market_scope == "us"
             assert proposal.proposal_kind == ProposalKind.other
             assert proposal.side == "none"

@@ -68,12 +68,12 @@ async def test_add_watch_stores_target_kind_in_field_identity() -> None:
     )
 
     assert result["target_kind"] == "index"
-    assert result["field"] == "index:KOSPI:price_below:6176.75"
+    assert result["field"] == pytest.approx("index:KOSPI:price_below:6176.75")
 
     rows = await service.list_watches("kr")
     assert rows["kr"][0]["target_kind"] == "index"
     assert rows["kr"][0]["symbol"] == "KOSPI"
-    assert rows["kr"][0]["field"] == "index:KOSPI:price_below:6176.75"
+    assert rows["kr"][0]["field"] == pytest.approx("index:KOSPI:price_below:6176.75")
 
 
 @pytest.mark.asyncio

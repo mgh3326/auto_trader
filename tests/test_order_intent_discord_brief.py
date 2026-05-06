@@ -46,7 +46,7 @@ def test_resolve_base_url_falls_back_when_configured_is_none() -> None:
         configured=None,
         request_base_url="http://127.0.0.1:8000/",
     )
-    assert resolved == "http://127.0.0.1:8000/"
+    assert resolved == pytest.approx("http://127.0.0.1:8000/")
 
 
 @pytest.mark.unit
@@ -55,7 +55,7 @@ def test_resolve_base_url_falls_back_when_configured_is_empty() -> None:
         configured="",
         request_base_url="http://127.0.0.1:8000/",
     )
-    assert resolved == "http://127.0.0.1:8000/"
+    assert resolved == pytest.approx("http://127.0.0.1:8000/")
 
 
 @pytest.mark.unit
@@ -64,7 +64,7 @@ def test_resolve_base_url_falls_back_when_configured_is_whitespace() -> None:
         configured="   ",
         request_base_url="http://127.0.0.1:8000/",
     )
-    assert resolved == "http://127.0.0.1:8000/"
+    assert resolved == pytest.approx("http://127.0.0.1:8000/")
 
 
 @pytest.mark.unit

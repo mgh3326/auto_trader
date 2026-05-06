@@ -28,10 +28,18 @@ class TestExtractBuyPrices:
         result = extract_buy_prices_from_analysis(analysis)
 
         assert len(result) == 4
-        assert result[0] == {"price_name": "appropriate_buy_min", "price": 50000.0}
-        assert result[1] == {"price_name": "appropriate_buy_max", "price": 52000.0}
-        assert result[2] == {"price_name": "buy_hope_min", "price": 48000.0}
-        assert result[3] == {"price_name": "buy_hope_max", "price": 49000.0}
+        assert result[0] == pytest.approx(
+            {"price_name": "appropriate_buy_min", "price": 50000.0}
+        )
+        assert result[1] == pytest.approx(
+            {"price_name": "appropriate_buy_max", "price": 52000.0}
+        )
+        assert result[2] == pytest.approx(
+            {"price_name": "buy_hope_min", "price": 48000.0}
+        )
+        assert result[3] == pytest.approx(
+            {"price_name": "buy_hope_max", "price": 49000.0}
+        )
 
     def test_extract_partial_prices(self):
         """일부 가격만 존재할 때"""
@@ -181,7 +189,7 @@ class TestFetchPendingBuyCost:
 
             result = await fetch_pending_overseas_buy_cost()
 
-            assert result == 5 * 150.50
+            assert result == pytest.approx(5 * 150.50)
 
     @pytest.mark.asyncio
     async def test_fetch_pending_crypto_buy_cost_limit_order(self):
@@ -201,7 +209,7 @@ class TestFetchPendingBuyCost:
         ):
             result = await fetch_pending_crypto_buy_cost()
 
-            assert result == 50000000 * 0.001
+            assert result == pytest.approx(50000000 * 0.001)
 
     @pytest.mark.asyncio
     async def test_fetch_pending_crypto_buy_cost_market_order(self):

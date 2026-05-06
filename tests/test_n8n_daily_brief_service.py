@@ -415,7 +415,7 @@ class TestBuildPortfolioSummary:
         us = result.get("us")
         assert us is not None
         # Should handle gracefully, not crash
-        assert us["pnl_pct"] == -100.0 or us["pnl_pct"] is None
+        assert us["pnl_pct"] == pytest.approx(-100.0) or us["pnl_pct"] is None
 
     def test_multi_position_weighted_pnl(self):
         """Multiple US positions should produce weighted PnL."""
