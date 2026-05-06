@@ -74,6 +74,8 @@ async def test_kis_reader_excludes_cash_from_value_and_converts_usd(
 
     account = result.accounts[0]
     assert account.valueKrw == 720_000 + 220 * 1_300
+    assert account.costBasisKrw == 700_000 + 200 * 1_300
+    assert account.pnlKrw == (720_000 + 220 * 1_300) - (700_000 + 200 * 1_300)
     assert account.cashBalances.krw == 100_000
     assert account.buyingPower.krw == 50_000
     assert account.cashBalances.krw not in (account.valueKrw, account.costBasisKrw)
@@ -111,11 +113,97 @@ async def test_upbit_reader_uses_coin_value_not_krw_cash(
 
     account = result.accounts[0]
     assert account.valueKrw == 10_000_000
+    assert account.costBasisKrw == 8_000_000
+    assert account.pnlKrw == 2_000_000
     assert account.cashBalances.krw == 90_000
     assert account.buyingPower.krw == 90_000
     assert account.valueKrw != account.cashBalances.krw
     assert result.holdings[0].valueKrw == 10_000_000
     assert result.holdings[0].pnlKrw == 2_000_000
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_upbit_reader_falls_back_per_market_and_skips_zero_quantity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _coins() -> list[dict[str, Any]]:
+        return [
+            {"currency": "KRW", "balance": "90000", "locked": "0"},
+            {
+                "currency": "BTC",
+                "balance": "0.1",
+                "locked": "0",
+                "avg_buy_price": "80000000",
+            },
+            {
+                "currency": "XYM",
+                "balance": "0",
+                "locked": "0",
+                "avg_buy_price": "10",
+            },
+            {
+                "currency": "PCI",
+                "balance": "1",
+                "locked": "0",
+                "avg_buy_price": "1000",
+            },
+        ]
+
+    calls: list[list[str]] = []
+
+    async def _prices(markets: list[str]) -> dict[str, float]:
+        calls.append(markets)
+        if markets == ["KRW-BTC", "KRW-PCI"]:
+            return {}
+        if markets == ["KRW-BTC"]:
+            return {"KRW-BTC": 100_000_000.0}
+        return {}
+
+    monkeypatch.setattr(readers, "fetch_my_coins", _coins)
+    monkeypatch.setattr(readers, "fetch_multiple_current_prices", _prices)
+
+    result = await readers.UpbitHomeReader(db=None).fetch(user_id=1)  # type: ignore[arg-type]
+
+    assert [h.symbol for h in result.holdings] == ["BTC", "PCI"]
+    assert calls == [["KRW-BTC", "KRW-PCI"], ["KRW-BTC"], ["KRW-PCI"]]
+    assert result.holdings[0].valueKrw == 10_000_000
+    assert result.accounts[0].valueKrw == 10_000_000
+    assert result.accounts[0].costBasisKrw == 8_000_000
+    assert result.accounts[0].pnlKrw == 2_000_000
+    assert result.warning is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_upbit_reader_does_not_show_loss_when_all_prices_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _coins() -> list[dict[str, Any]]:
+        return [
+            {"currency": "KRW", "balance": "90000", "locked": "0"},
+            {
+                "currency": "PCI",
+                "balance": "1",
+                "locked": "0",
+                "avg_buy_price": "1000",
+            },
+        ]
+
+    async def _prices(markets: list[str]) -> dict[str, float]:
+        assert markets == ["KRW-PCI"]
+        return {}
+
+    monkeypatch.setattr(readers, "fetch_my_coins", _coins)
+    monkeypatch.setattr(readers, "fetch_multiple_current_prices", _prices)
+
+    result = await readers.UpbitHomeReader(db=None).fetch(user_id=1)  # type: ignore[arg-type]
+
+    assert result.accounts[0].valueKrw == 0
+    assert result.accounts[0].costBasisKrw is None
+    assert result.accounts[0].pnlKrw is None
+    assert result.accounts[0].pnlRate is None
+    assert result.warning is not None
 
 
 @pytest.mark.asyncio
@@ -147,8 +235,7 @@ async def test_manual_reader_does_not_fabricate_value_from_cost_basis(
 
     result = await readers.ManualHomeReader(db=None).fetch(user_id=1)  # type: ignore[arg-type]
 
-    assert result.accounts[0].valueKrw == 0
-    assert result.accounts[0].costBasisKrw is None
+    assert result.accounts == []
     assert result.holdings[0].costBasis == 700_000
     assert result.holdings[0].valueKrw is None
     assert result.warning is not None
