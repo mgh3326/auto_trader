@@ -88,7 +88,7 @@ class CandidateScreeningService:
         candidates: list[ScreenedCandidate] = []
         for r in rows:
             symbol = str(r.get("symbol") or "")
-            warnings = list(r.get("warnings") or [])
+            warnings = _row_warnings(r)
             if exclude_warnings and warnings:
                 continue
             candidates.append(
@@ -97,10 +97,12 @@ class CandidateScreeningService:
                     name=r.get("name"),
                     market=r.get("market"),
                     instrument_type=r.get("instrument_type"),
-                    price=_to_float(r.get("price")),
+                    price=_to_float(_pick_first(r, "price", "close", "current_price")),
                     change_rate=_to_float(r.get("change_rate")),
-                    volume=_to_float(r.get("volume")),
-                    trade_amount_24h=_to_float(r.get("trade_amount_24h")),
+                    volume=_to_float(_pick_first(r, "volume", "volume_24h")),
+                    trade_amount_24h=_to_float(
+                        _pick_first(r, "trade_amount_24h", "trade_amount")
+                    ),
                     volume_ratio=_to_float(r.get("volume_ratio")),
                     rsi=_to_float(r.get("rsi")),
                     market_cap=_to_float(r.get("market_cap")),
@@ -112,7 +114,7 @@ class CandidateScreeningService:
                 )
             )
 
-        rsi_enrichment = raw.get("rsi_enrichment") or {}
+        rsi_enrichment = _rsi_enrichment(raw)
         return CandidateScreenResponse(
             generated_at=datetime.now(UTC).isoformat(),
             market=market,
@@ -127,7 +129,7 @@ class CandidateScreeningService:
 
     async def _load_held_symbols(self, user_id: int, market: str) -> set[str]:
         try:
-            from app.services.kis import KISClient
+            from app.services.brokers.kis import KISClient
             from app.services.merged_portfolio_service import MergedPortfolioService
         except ImportError:
             return set()
@@ -157,6 +159,34 @@ class CandidateScreeningService:
                 pass
 
         return held
+
+
+def _pick_first(row: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = row.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def _row_warnings(row: dict[str, Any]) -> list[str]:
+    warnings = list(row.get("warnings") or [])
+    market_warning = row.get("market_warning")
+    if market_warning and str(market_warning) not in warnings:
+        warnings.append(str(market_warning))
+    return warnings
+
+
+def _rsi_enrichment(raw: dict[str, Any]) -> dict[str, Any]:
+    direct = raw.get("rsi_enrichment")
+    if isinstance(direct, dict):
+        return direct
+    meta = raw.get("meta")
+    if isinstance(meta, dict):
+        nested = meta.get("rsi_enrichment")
+        if isinstance(nested, dict):
+            return nested
+    return {}
 
 
 def _to_float(value: Any) -> float | None:
