@@ -501,7 +501,7 @@ class UnifiedWebSocketMonitor:
                 task.cancel()
                 try:
                     await task
-                except asyncio.CancelledError:
+                except asyncio.CancelledError:  # NOSONAR python:S7497 — cleanup loop, cancellation already handled by task.cancel()
                     pass
                 except Exception as exc:
                     logger.debug("Child task cleanup ignored error: %s", exc)

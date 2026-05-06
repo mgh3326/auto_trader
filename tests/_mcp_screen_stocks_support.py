@@ -634,7 +634,7 @@ class TestScreenStocksUS:
 
         assert result is not None
         assert result["market"] == "us"
-        assert len(result["results"]) >= 0
+        assert isinstance(result["results"], list)
         assert "error" not in result, f"Unexpected error: {result.get('error')}"
 
 

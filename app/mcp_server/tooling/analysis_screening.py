@@ -162,7 +162,8 @@ def _map_crypto_row(row: dict[str, Any], rank: int) -> dict[str, Any]:
         "symbol": symbol,
         "name": name,
         "price": price,
-        "change_rate": round(change_rate, 2) if change_rate is not None else None,
+        # _normalize_change_rate_crypto always returns float (defaults to 0.0)
+        "change_rate": round(change_rate, 2),
         "volume": volume,
         "market_cap": market_cap,
         "trade_amount": trade_amount,

@@ -59,7 +59,7 @@ async def require_admin(
             extra=_security_log_extra(
                 request,
                 user_id=user.id,
-                user_role=user.role.value if user else None,
+                user_role=user.role.value,
                 event="admin_access_denied",
             ),
         )
