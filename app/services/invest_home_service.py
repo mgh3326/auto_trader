@@ -77,11 +77,18 @@ def build_grouped_holdings(holdings: Iterable[Holding]) -> list[GroupedHolding]:
             if all(v is not None for v in krw_vals)
             else None
         )
-        pnl_krw: float | None = None
+        pnl_vals = [h.pnlKrw for h in items]
+        pnl_krw: float | None = (
+            sum(v for v in pnl_vals if v is not None)
+            if all(v is not None for v in pnl_vals)
+            else None
+        )
         pnl_rate: float | None = None
-        if value_krw is not None and cost_basis is not None and cost_basis > 0:
-            pnl_krw = value_krw - cost_basis
-            pnl_rate = pnl_krw / cost_basis
+        if cost_basis is not None and cost_basis > 0:
+            if value_native is not None:
+                pnl_rate = (value_native - cost_basis) / cost_basis
+            elif first.currency == "KRW" and value_krw is not None:
+                pnl_rate = (value_krw - cost_basis) / cost_basis
 
         out.append(
             GroupedHolding(

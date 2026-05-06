@@ -162,6 +162,27 @@ def test_grouped_never_merges_different_currency() -> None:
 
 
 @pytest.mark.unit
+def test_grouped_uses_native_cost_basis_for_usd_rate_and_sums_krw_pnl() -> None:
+    a = _h(
+        symbol="AAPL",
+        market="US",
+        currency="USD",
+        quantity=2,
+        averageCost=100,
+        costBasis=200,
+        valueNative=220,
+        valueKrw=286_000,
+        pnlKrw=26_000,
+    )
+    grouped = build_grouped_holdings([a])
+    assert len(grouped) == 1
+    g = grouped[0]
+    assert g.costBasis == 200
+    assert g.pnlKrw == 26_000
+    assert g.pnlRate == pytest.approx(0.1)
+
+
+@pytest.mark.unit
 def test_home_summary_uses_account_value_sum() -> None:
     from app.schemas.invest_home import Account, CashAmounts
 
@@ -213,3 +234,26 @@ def test_home_summary_uses_account_value_sum() -> None:
     assert summary.pnlRate is None
     assert sorted(summary.includedSources) == ["kis", "toss_manual"]
     assert "kis_mock" in summary.excludedSources
+
+
+@pytest.mark.unit
+def test_home_summary_does_not_include_cash_balances_or_buying_power() -> None:
+    from app.schemas.invest_home import Account, CashAmounts
+
+    accounts = [
+        Account(
+            accountId="kis",
+            displayName="KIS",
+            source="kis",
+            accountKind="live",
+            includedInHome=True,
+            valueKrw=720_000,
+            costBasisKrw=700_000,
+            cashBalances=CashAmounts(krw=100_000, usd=5),
+            buyingPower=CashAmounts(krw=50_000, usd=3),
+        )
+    ]
+
+    summary = build_home_summary(accounts)
+    assert summary.totalValueKrw == 720_000
+    assert summary.totalValueKrw != 720_000 + 100_000 + 50_000
