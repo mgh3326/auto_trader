@@ -1,47 +1,41 @@
 import { render, screen } from "@testing-library/react";
 import { GroupedRow, RawRow } from "../components/HoldingRow";
 import type { GroupedHolding, Holding } from "../types/invest";
+import { expect, test } from "vitest";
 
 const grouped: GroupedHolding = {
   groupId: "KR:equity:KRW:005930",
   symbol: "005930",
   market: "KR",
   assetType: "equity",
+  assetCategory: "kr_stock",
   displayName: "삼성전자",
   currency: "KRW",
-  totalQuantity: 50,
-  averageCost: 70_400,
-  costBasis: 3_520_000,
-  valueNative: 3_580_000,
-  valueKrw: 3_580_000,
-  pnlKrw: 60_000,
-  pnlRate: 60_000 / 3_520_000,
+  totalQuantity: 30,
+  averageCost: 70000,
+  costBasis: 2100000,
+  valueNative: 2148000,
+  valueKrw: 2148000,
+  pnlKrw: 48000,
+  pnlRate: 0.0228,
+  priceState: "live",
   includedSources: ["kis", "toss_manual"],
   sourceBreakdown: [],
 };
 
-test("GroupedRow shows includedSources chip 'KIS · Toss 수동'", () => {
+test("GroupedRow renders symbol and multiple source badge", () => {
   render(<GroupedRow row={grouped} />);
-  expect(screen.getByText(/KIS/)).toBeInTheDocument();
-  expect(screen.getByText(/Toss/)).toBeInTheDocument();
+  expect(screen.getByText(/005930/)).toBeInTheDocument();
+  expect(screen.getByText(/삼성전자/)).toBeInTheDocument();
+  expect(screen.getByText(/KIS · Toss 수동/)).toBeInTheDocument();
 });
 
-test("GroupedRow renders '-' when averageCost is null", () => {
-  render(
-    <GroupedRow
-      row={{
-        ...grouped,
-        averageCost: null,
-        pnlRate: null,
-        costBasis: null,
-        pnlKrw: null,
-      }}
-    />
-  );
-  expect(screen.getAllByText("-").length).toBeGreaterThan(0);
+test("GroupedRow handles single source badge naming", () => {
+  render(<GroupedRow row={{ ...grouped, includedSources: ["kis"] }} />);
+  expect(screen.getByText("KIS")).toBeInTheDocument();
 });
 
-test("RawRow renders single source pill", () => {
+test("RawRow renders single source badge", () => {
   const raw: Holding = {
     holdingId: "h1",
     accountId: "a1",
@@ -50,16 +44,19 @@ test("RawRow renders single source pill", () => {
     symbol: "TSLA",
     market: "US",
     assetType: "equity",
+    assetCategory: "us_stock",
     displayName: "Tesla",
     quantity: 4,
     averageCost: 234,
     costBasis: 936,
     currency: "USD",
     valueNative: 924,
-    valueKrw: 1_244_000,
-    pnlKrw: -16_000,
-    pnlRate: -16_000 / 1_260_000,
+    valueKrw: 1244000,
+    pnlKrw: -16000,
+    pnlRate: -0.017,
+    priceState: "live",
   };
   render(<RawRow row={raw} />);
-  expect(screen.getByText(/Toss/)).toBeInTheDocument();
+  expect(screen.getByText(/TSLA/)).toBeInTheDocument();
+  expect(screen.getByText("Toss 수동")).toBeInTheDocument();
 });

@@ -12,6 +12,8 @@ export type AccountSource =
 export type Market = "KR" | "US" | "CRYPTO";
 export type AssetType = "equity" | "etf" | "crypto" | "fund" | "other";
 export type Currency = "KRW" | "USD";
+export type AssetCategory = "kr_stock" | "us_stock" | "crypto";
+export type PriceState = "live" | "missing" | "stale";
 
 export interface CashAmounts {
   krw?: number | null;
@@ -40,6 +42,7 @@ export interface Holding {
   symbol: string;
   market: Market;
   assetType: AssetType;
+  assetCategory: AssetCategory;
   displayName: string;
   quantity: number;
   averageCost?: number | null;
@@ -49,6 +52,7 @@ export interface Holding {
   valueKrw?: number | null;
   pnlKrw?: number | null;
   pnlRate?: number | null;
+  priceState: PriceState;
 }
 
 export interface GroupedSourceBreakdown {
@@ -69,6 +73,7 @@ export interface GroupedHolding {
   symbol: string;
   market: Market;
   assetType: AssetType;
+  assetCategory: AssetCategory;
   displayName: string;
   currency: Currency;
   totalQuantity: number;
@@ -78,6 +83,7 @@ export interface GroupedHolding {
   valueKrw?: number | null;
   pnlKrw?: number | null;
   pnlRate?: number | null;
+  priceState: PriceState;
   includedSources: AccountSource[];
   sourceBreakdown: GroupedSourceBreakdown[];
 }
@@ -96,8 +102,15 @@ export interface InvestHomeWarning {
   message: string;
 }
 
+export interface InvestHomeHiddenCounts {
+  upbitInactive: number;
+  upbitDust: number;
+}
+
 export interface InvestHomeResponseMeta {
   warnings: InvestHomeWarning[];
+  hiddenCounts: InvestHomeHiddenCounts;
+  hiddenHoldings: Holding[];
 }
 
 export interface InvestHomeResponse {

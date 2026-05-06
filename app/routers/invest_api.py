@@ -25,13 +25,18 @@ def get_invest_home_service(
     from app.services.invest_home_readers import (
         KISHomeReader,
         ManualHomeReader,
+        SafeKISClient,
         UpbitHomeReader,
     )
+    from app.services.invest_quote_service import InvestQuoteService
+
+    kis_client = SafeKISClient()
+    quote_service = InvestQuoteService(kis_client, db)
 
     return InvestHomeService(
         kis_reader=KISHomeReader(db),
         upbit_reader=UpbitHomeReader(db),
-        manual_reader=ManualHomeReader(db),
+        manual_reader=ManualHomeReader(db, quote_service=quote_service),
     )
 
 

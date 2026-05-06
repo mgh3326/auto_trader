@@ -2,6 +2,7 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { HomePage } from "../pages/HomePage";
 import type { InvestHomeResponse } from "../types/invest";
+import { expect, test } from "vitest";
 
 const data: InvestHomeResponse = {
   homeSummary: {
@@ -36,6 +37,7 @@ const data: InvestHomeResponse = {
       symbol: "TSLA",
       market: "US",
       assetType: "equity",
+      assetCategory: "us_stock",
       displayName: "Tesla",
       quantity: 4,
       averageCost: 234,
@@ -45,6 +47,7 @@ const data: InvestHomeResponse = {
       valueKrw: 1_244_000,
       pnlKrw: -16_000,
       pnlRate: -0.012,
+      priceState: "live",
     },
   ],
   groupedHoldings: [
@@ -53,6 +56,7 @@ const data: InvestHomeResponse = {
       symbol: "TSLA",
       market: "US",
       assetType: "equity",
+      assetCategory: "us_stock",
       displayName: "Tesla",
       currency: "USD",
       totalQuantity: 4,
@@ -62,11 +66,16 @@ const data: InvestHomeResponse = {
       valueKrw: 1_244_000,
       pnlKrw: -16_000,
       pnlRate: -0.012,
+      priceState: "live",
       includedSources: ["toss_manual"],
       sourceBreakdown: [],
     },
   ],
-  meta: { warnings: [{ source: "upbit", message: "cache only" }] },
+  meta: {
+    warnings: [{ source: "upbit", message: "cache only" }],
+    hiddenCounts: { upbitInactive: 0, upbitDust: 0 },
+    hiddenHoldings: [],
+  },
 };
 
 test("renders meta.warnings as a single line", () => {
@@ -78,13 +87,14 @@ test("renders meta.warnings as a single line", () => {
   expect(screen.getByText(/cache only/)).toBeInTheDocument();
 });
 
-test("activeSource toggles between groupedHoldings and raw holdings", () => {
+test("account selector toggles between groupedHoldings and raw holdings", () => {
   render(
     <MemoryRouter basename="/invest/app" initialEntries={["/invest/app/"]}>
       <HomePage state={{ status: "ready", data }} reload={() => {}} />
     </MemoryRouter>
   );
   expect(screen.getByTestId("grouped-row")).toBeInTheDocument();
+  // "Toss 수동" is now in AccountSelector which uses buttons
   fireEvent.click(screen.getByRole("button", { name: "Toss 수동" }));
   expect(screen.queryByTestId("grouped-row")).toBeNull();
   expect(screen.getByTestId("raw-row")).toBeInTheDocument();
@@ -101,7 +111,11 @@ test("renders empty account state with portfolio deeplink", () => {
             accounts: [],
             holdings: [],
             groupedHoldings: [],
-            meta: { warnings: [] },
+            meta: {
+              warnings: [],
+              hiddenCounts: { upbitInactive: 0, upbitDust: 0 },
+              hiddenHoldings: [],
+            },
           },
         }}
         reload={() => {}}

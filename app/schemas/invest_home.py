@@ -19,6 +19,8 @@ AccountSourceLiteral = Literal[
 MarketLiteral = Literal["KR", "US", "CRYPTO"]
 AssetTypeLiteral = Literal["equity", "etf", "crypto", "fund", "other"]
 CurrencyLiteral = Literal["KRW", "USD"]
+AssetCategoryLiteral = Literal["kr_stock", "us_stock", "crypto"]
+PriceStateLiteral = Literal["live", "missing", "stale"]
 
 
 class CashAmounts(BaseModel):
@@ -51,6 +53,7 @@ class Holding(BaseModel):
     symbol: str
     market: MarketLiteral
     assetType: AssetTypeLiteral
+    assetCategory: AssetCategoryLiteral
     displayName: str
     quantity: float
     averageCost: float | None = None
@@ -60,6 +63,7 @@ class Holding(BaseModel):
     valueKrw: float | None = None
     pnlKrw: float | None = None
     pnlRate: float | None = None
+    priceState: PriceStateLiteral = "live"
 
 
 class GroupedSourceBreakdown(BaseModel):
@@ -82,6 +86,7 @@ class GroupedHolding(BaseModel):
     symbol: str
     market: MarketLiteral
     assetType: AssetTypeLiteral
+    assetCategory: AssetCategoryLiteral
     displayName: str
     currency: CurrencyLiteral
     totalQuantity: float
@@ -91,6 +96,7 @@ class GroupedHolding(BaseModel):
     valueKrw: float | None = None
     pnlKrw: float | None = None
     pnlRate: float | None = None
+    priceState: PriceStateLiteral = "live"
     includedSources: list[AccountSourceLiteral]
     sourceBreakdown: list[GroupedSourceBreakdown]
 
@@ -111,9 +117,17 @@ class InvestHomeWarning(BaseModel):
     message: str
 
 
+class InvestHomeHiddenCounts(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    upbitInactive: int = 0
+    upbitDust: int = 0
+
+
 class InvestHomeResponseMeta(BaseModel):
     model_config = ConfigDict(extra="forbid")
     warnings: list[InvestHomeWarning] = Field(default_factory=list)
+    hiddenCounts: InvestHomeHiddenCounts = Field(default_factory=InvestHomeHiddenCounts)
+    hiddenHoldings: list[Holding] = Field(default_factory=list)
 
 
 class InvestHomeResponse(BaseModel):
