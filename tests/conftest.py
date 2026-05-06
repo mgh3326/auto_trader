@@ -424,11 +424,14 @@ async def db_session():
 @pytest_asyncio.fixture
 async def user(db_session):
     """Create a test user."""
+    from uuid import uuid4
+
     from app.models.trading import User
 
+    suffix = uuid4().hex[:12]
     u = User(
-        email="test@example.com",
-        username="testuser",
+        email=f"test-{suffix}@example.com",
+        username=f"testuser_{suffix}",
         **{"hashed_" + "pass" + "word": "fakehash"},
     )
     db_session.add(u)
@@ -437,14 +440,30 @@ async def user(db_session):
     return u
 
 
+@pytest.fixture
+def auth_headers(user):
+    """Create authentication headers for a test user."""
+    from datetime import timedelta
+
+    from app.auth.security import create_access_token
+
+    access_token = create_access_token(
+        data={"sub": user.username}, expires_delta=timedelta(minutes=15)
+    )
+    return {"Authorization": f"Bearer {access_token}"}
+
+
 @pytest_asyncio.fixture
 async def other_user(db_session):
     """Create another test user for isolation tests."""
+    from uuid import uuid4
+
     from app.models.trading import User
 
+    suffix = uuid4().hex[:12]
     u = User(
-        email="other@example.com",
-        username="otheruser",
+        email=f"other-{suffix}@example.com",
+        username=f"otheruser_{suffix}",
         **{"hashed_" + "pass" + "word": "fakehash"},
     )
     db_session.add(u)
@@ -546,3 +565,107 @@ def research_run_candidate_factory():
         return cand
 
     return _factory
+
+
+@pytest_asyncio.fixture
+async def seed_holding_005930(db_session, user):
+    """Seed a manual holding for Samsung Electronics."""
+    from app.models.manual_holdings import BrokerAccount, ManualHolding, MarketType
+
+    account = BrokerAccount(
+        user_id=user.id,
+        broker_type="toss",
+        account_name="토스 테스트",
+    )
+    db_session.add(account)
+    await db_session.flush()
+
+    h = ManualHolding(
+        broker_account_id=account.id,
+        ticker="005930",
+        display_name="삼성전자",
+        market_type=MarketType.KR,
+        quantity=10.0,
+        avg_price=70000.0,
+    )
+    db_session.add(h)
+    await db_session.flush()
+    return h
+
+
+@pytest_asyncio.fixture
+async def seed_holding_aapl(db_session, user):
+    """Seed a manual holding for Apple."""
+    from app.models.manual_holdings import BrokerAccount, ManualHolding, MarketType
+
+    account = BrokerAccount(
+        user_id=user.id,
+        broker_type="toss",
+        account_name="토스 해외",
+    )
+    db_session.add(account)
+    await db_session.flush()
+
+    h = ManualHolding(
+        broker_account_id=account.id,
+        ticker="TESTAAPLNOJOURNAL",
+        display_name="Apple Inc. test holding without journal",
+        market_type=MarketType.US,
+        quantity=5.0,
+        avg_price=150.0,
+    )
+    db_session.add(h)
+    await db_session.flush()
+    return h
+
+
+@pytest_asyncio.fixture
+async def seed_active_journal_005930(db_session):
+    """Seed an active trade journal for 005930."""
+    from app.models.trade_journal import TradeJournal
+    from app.models.trading import InstrumentType
+
+    j = TradeJournal(
+        symbol="005930",
+        instrument_type=InstrumentType.equity_kr,
+        side="buy",
+        thesis="Bullish on memory semis",
+        status="active",
+        account_type="live",
+        target_price=90000.0,
+        stop_loss=60000.0,
+    )
+    db_session.add(j)
+    await db_session.flush()
+    return j
+
+
+@pytest_asyncio.fixture
+async def seed_summary_sell_005930(db_session):
+    """Seed a research summary with SELL decision for 005930."""
+    from datetime import UTC, datetime
+
+    from sqlalchemy import select
+
+    from app.models.analysis import StockInfo
+    from app.models.research_pipeline import ResearchSession, ResearchSummary
+
+    # Need stock_info for the join in service
+    si = (
+        await db_session.execute(select(StockInfo).where(StockInfo.symbol == "005930"))
+    ).scalar_one_or_none()
+    if not si:
+        si = StockInfo(symbol="005930", name="삼성전자", instrument_type="equity_kr")
+        db_session.add(si)
+        await db_session.flush()
+
+    rs = ResearchSession(stock_info_id=si.id, status="finalized")
+    db_session.add(rs)
+    await db_session.flush()
+
+    sum_ = ResearchSummary(
+        session_id=rs.id, decision="sell", confidence=80, executed_at=datetime.now(UTC)
+    )
+    db_session.add(sum_)
+    await db_session.flush()
+    return sum_

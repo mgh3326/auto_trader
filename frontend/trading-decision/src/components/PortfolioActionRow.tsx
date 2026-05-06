@@ -63,7 +63,11 @@ export default function PortfolioActionRow({ candidate }: PortfolioActionRowProp
       <td>{candidate.market_verdict ?? "—"}</td>
       <td>{fmtPct(candidate.nearest_support_pct)}</td>
       <td>{fmtPct(candidate.nearest_resistance_pct)}</td>
-      <td>{candidate.journal_status}</td>
+      <td>
+        <Link to={`/journal?market=${candidate.market || "ALL"}`}>
+          {candidate.journal_status}
+        </Link>
+      </td>
       <td>
         <ul className={styles.reasonList}>
           {candidate.reason_codes.map((code) => (
