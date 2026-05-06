@@ -40,7 +40,7 @@ class TestMergedPortfolioService:
 
         # 가중 평균: (10 * 74000 + 5 * 73000) / 15 = 1105000 / 15 = 73666.67
         expected = (10 * 74000 + 5 * 73000) / 15
-        assert abs(result - expected) < 0.01
+        assert result == pytest.approx(expected, abs=0.01)
 
     def test_calculate_combined_avg_single_broker(self):
         """단일 브로커만 있을 때"""
@@ -70,7 +70,7 @@ class TestMergedPortfolioService:
 
         # (10*100 + 20*90 + 30*80) / 60 = (1000 + 1800 + 2400) / 60 = 86.67
         expected = (10 * 100 + 20 * 90 + 30 * 80) / 60
-        assert abs(result - expected) < 0.01
+        assert result == pytest.approx(expected, abs=0.01)
 
 
 @pytest.mark.unit
@@ -94,7 +94,7 @@ class TestReferencePrices:
         assert data["kis_quantity"] == 10
         assert data["toss_avg"] == 73000
         assert data["toss_quantity"] == 5
-        assert abs(data["combined_avg"] - 73666.67) < 0.01
+        assert data["combined_avg"] == pytest.approx(73666.67, abs=0.01)
         assert data["total_quantity"] == 15
 
     def test_reference_prices_toss_only(self):
@@ -170,7 +170,7 @@ class TestTradingPriceService:
             strategy=PriceStrategy.combined_avg,
         )
 
-        assert abs(result.price - 73666.67) < 0.01
+        assert result.price == pytest.approx(73666.67, abs=0.01)
         assert result.price_source == "통합 평단가"
 
     def test_buy_price_with_kis_avg(self):
@@ -216,7 +216,7 @@ class TestTradingPriceService:
         )
 
         expected = 73000 * 0.99  # 72270
-        assert abs(result.price - expected) < 0.01
+        assert result.price == pytest.approx(expected, abs=0.01)
         assert "-1.0%" in result.price_source
 
     def test_buy_price_with_current(self):
@@ -263,7 +263,7 @@ class TestTradingPriceService:
         )
 
         expected = 74000 * 1.05  # 77700
-        assert abs(result.price - expected) < 0.01
+        assert result.price == pytest.approx(expected, abs=0.01)
         assert "+5.0%" in result.price_source
 
     def test_sell_price_with_toss_avg_plus(self):
@@ -276,7 +276,7 @@ class TestTradingPriceService:
         )
 
         expected = 73000 * 1.10  # 80300
-        assert abs(result.price - expected) < 0.01
+        assert result.price == pytest.approx(expected, abs=0.01)
 
     def test_sell_price_with_combined_avg_plus(self):
         """통합 평단가 +5% 매도가 계산"""
@@ -288,7 +288,7 @@ class TestTradingPriceService:
         )
 
         expected = 73666.67 * 1.05
-        assert abs(result.price - expected) < 1  # 소수점 반올림 오차 허용
+        assert result.price == pytest.approx(expected, abs=1)  # 소수점 반올림 오차 허용
 
 
 @pytest.mark.unit
@@ -397,7 +397,7 @@ class TestExpectedProfit:
 
         # 한투 기준 수익률: (77700 - 74000) / 74000 * 100 = 5%
         expected_percent = (77700 - 74000) / 74000 * 100
-        assert abs(result["based_on_kis_avg"].percent - expected_percent) < 0.01
+        assert result["based_on_kis_avg"].percent == pytest.approx(expected_percent, abs=0.01)
 
 
 @pytest.mark.unit
@@ -498,7 +498,7 @@ class TestGetReferencePricesIntegration:
         assert ref.total_quantity == 15
         # 통합 평단가: (10*74000 + 5*73000) / 15
         expected_combined = (10 * 74000 + 5 * 73000) / 15
-        assert abs(ref.combined_avg - expected_combined) < 0.01
+        assert ref.combined_avg == pytest.approx(expected_combined, abs=0.01)
 
     async def test_get_reference_prices_toss_only(self):
         """토스만 있을 때 kis_avg는 None"""
@@ -562,7 +562,7 @@ class TestRequirementsVerification:
 
         # 통합 평단가로 매수
         r3 = self.service.calculate_buy_price(ref, 75000, PriceStrategy.combined_avg)
-        assert abs(r3.price - 73666.67) < 0.01
+        assert r3.price == pytest.approx(73666.67, abs=0.01)
 
     def test_requirement_sell_limited_to_kis_quantity(self):
         """요구사항: 매도는 KIS 보유분까지만 가능"""

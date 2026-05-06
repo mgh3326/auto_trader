@@ -214,7 +214,7 @@ class TestCalculateMACD:
         assert result["signal"] is not None
         assert result["histogram"] is not None
         expected_hist = result["macd"] - result["signal"]
-        assert abs(result["histogram"] - expected_hist) < 0.01
+        assert result["histogram"] == pytest.approx(expected_hist, abs=0.01)
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +255,7 @@ class TestCalculateBollinger:
 
         assert bollinger["middle"] is not None
         assert sma["20"] is not None
-        assert abs(bollinger["middle"] - sma["20"]) < 0.01
+        assert bollinger["middle"] == pytest.approx(sma["20"], abs=0.01)
 
 
 # ---------------------------------------------------------------------------
@@ -605,7 +605,7 @@ class TestOBVRegression:
         expected_signal = obv.ewm(span=10, adjust=False).mean().iloc[-1]
 
         assert result["signal"] is not None
-        assert abs(result["signal"] - expected_signal) < 0.01
+        assert result["signal"] == pytest.approx(expected_signal, abs=0.01)
 
     def test_divergence_uses_lookback_plus_one_index(self):
         close = pd.Series(

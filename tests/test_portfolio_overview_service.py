@@ -1303,7 +1303,7 @@ class TestNormalizeUsCurrency:
             {"avg_price": 200000.0, "current_price": 150.0, "quantity": 3.0},
         ]
         result = service._normalize_us_currency(components, usd_krw=1350.0)
-        assert abs(result[0]["avg_price"] - (200000.0 / 1350.0)) < 0.01
+        assert result[0]["avg_price"] == pytest.approx(200000.0 / 1350.0, abs=0.01)
 
     def test_leaves_usd_avg_price_unchanged(self):
         service = PortfolioOverviewService(AsyncMock())
@@ -1329,7 +1329,7 @@ class TestNormalizeUsCurrency:
         result = service._normalize_us_currency(
             components, usd_krw=1300.0, canonical_price=200.0
         )
-        assert abs(result[0]["avg_price"] - (195000.0 / 1300.0)) < 0.01
+        assert result[0]["avg_price"] == pytest.approx(195000.0 / 1300.0, abs=0.01)
 
 
 class TestCalculatePositionTotals:
@@ -1348,7 +1348,7 @@ class TestCalculatePositionTotals:
         assert result["quantity"] == 15
         assert result["evaluation"] == 15 * 120.0
         cost_basis = 10 * 100.0 + 5 * 110.0
-        assert abs(result["profit_loss"] - (15 * 120.0 - cost_basis)) < 0.01
+        assert result["profit_loss"] == pytest.approx(15 * 120.0 - cost_basis, abs=0.01)
         assert result["evaluation_krw"] == result["evaluation"]
 
     def test_us_market_converts_to_krw(self):

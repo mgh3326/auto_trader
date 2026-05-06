@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from app.core.number_utils import parse_korean_number
 
 
@@ -20,11 +22,11 @@ class TestParseKoreanNumber:
     def test_percentage(self) -> None:
         result = parse_korean_number("5.67%")
         assert result is not None
-        assert abs(result - 0.0567) < 0.0001
+        assert result == pytest.approx(0.0567, abs=0.0001)
 
         result = parse_korean_number("100%")
         assert result is not None
-        assert abs(result - 1.0) < 0.0001
+        assert result == pytest.approx(1.0, abs=0.0001)
 
     def test_korean_unit_jo(self) -> None:
         assert parse_korean_number("1조") == 1_0000_0000_0000

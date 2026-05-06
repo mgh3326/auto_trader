@@ -87,7 +87,7 @@ class TestParseFinancialMetrics:
         assert result["pbr"] == 1.2
         assert result["roe"] == 18.5
         assert result["roe_controlling"] == 17.2
-        assert abs(result["dividend_yield"] - 0.02) < 0.001
+        assert result["dividend_yield"] == pytest.approx(0.02, abs=0.001)
 
     def test_skips_zero_per(self) -> None:
         html = '<html><body><em id="_per">0</em></body></html>'
@@ -697,7 +697,7 @@ class TestFetchInvestmentOpinions:
         assert consensus["median_target_price"] == 87500
         assert consensus["min_target_price"] == 85000
         assert consensus["max_target_price"] == 90000
-        assert abs(consensus["upside_pct"] - 16.67) < 0.01
+        assert consensus["upside_pct"] == pytest.approx(16.67, abs=0.01)
         assert consensus["current_price"] == 75000
 
     async def test_limit_applied(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -888,7 +888,7 @@ class TestFetchKrSnapshot:
         assert snapshot["opinions"]["count"] == 2
         assert snapshot["opinions"]["consensus"]["avg_target_price"] == 87500
         assert snapshot["opinions"]["consensus"]["current_price"] == 75000
-        assert abs(snapshot["opinions"]["consensus"]["upside_pct"] - 16.67) < 0.01
+        assert snapshot["opinions"]["consensus"]["upside_pct"] == pytest.approx(16.67, abs=0.01)
 
     async def test_snapshot_keeps_other_sections_when_one_page_fails(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1014,7 +1014,7 @@ class TestFetchValuation:
         assert result["pbr"] == 1.2
         assert result["roe"] == 18.5  # ROE(%)
         assert result["roe_controlling"] == 17.2  # ROE(지배주주)
-        assert abs(result["dividend_yield"] - 0.02) < 0.001  # 2.00% -> 0.02
+        assert result["dividend_yield"] == pytest.approx(0.02, abs=0.001)  # 2.00% -> 0.02
         assert result["high_52w"] == 90000
         assert result["low_52w"] == 60000
         # Position: (75000 - 60000) / (90000 - 60000) = 0.5
@@ -1046,7 +1046,7 @@ class TestFetchValuation:
         assert result["high_52w"] == 500000
         assert result["low_52w"] == 200000
         # Position: (450000 - 200000) / (500000 - 200000) = 0.833...
-        assert abs(result["current_position_52w"] - 0.83) < 0.01
+        assert result["current_position_52w"] == pytest.approx(0.83, abs=0.01)
 
     async def test_position_calculation_at_low(
         self, monkeypatch: pytest.MonkeyPatch
