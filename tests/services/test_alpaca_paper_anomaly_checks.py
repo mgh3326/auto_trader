@@ -83,13 +83,21 @@ def test_open_order_blocks_new_cycle():
 
 
 @pytest.mark.unit
-def test_residual_position_blocks_new_cycle():
+def test_residual_position_is_reported_without_blocking_new_cycle():
     report = build_paper_execution_preflight_report(
-        positions=[{"symbol": "BTCUSD", "qty": "0.001", "asset_class": "crypto"}]
+        positions=[{"symbol": "UBER", "qty": "1", "asset_class": "us_equity"}]
     )
 
-    assert report.should_block is True
+    assert report.status == "pass"
+    assert report.should_block is False
     assert "residual_position_exists" in _check_ids(report)
+    residual = next(
+        a for a in report.anomalies if a.check_id == "residual_position_exists"
+    )
+    assert residual.severity == PaperExecutionAnomalySeverity.warning
+    assert residual.details["positions"] == [
+        {"symbol": "UBER", "qty": "1", "asset_class": "us_equity"}
+    ]
 
 
 @pytest.mark.unit

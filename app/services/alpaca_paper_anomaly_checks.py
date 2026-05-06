@@ -303,7 +303,8 @@ def build_paper_execution_preflight_report(
         open_orders: Read-only broker open-order snapshot already fetched by
             the caller. Non-terminal rows block a new cycle.
         positions: Read-only position snapshot already fetched by the caller.
-            Any non-zero quantity blocks a new cycle.
+            Non-zero quantities are reported for operator context but do not
+            block exploratory paper-trading cycles.
         approval_packet: Optional preview/approval packet being considered for
             execution. Used for duplicate, stale, and symbol checks.
         expected_signal_symbol: Optional symbol from the signal artifact.
@@ -354,13 +355,13 @@ def build_paper_execution_preflight_report(
             },
         )
 
-    # 2. Residual positions before a new cycle.
+    # 2. Existing positions before a new exploratory paper cycle.
     residual_positions = [p for p in position_rows if _position_qty(p) != Decimal("0")]
     if residual_positions:
         add(
             "residual_position_exists",
-            PaperExecutionAnomalySeverity.block,
-            "Residual Alpaca Paper position exists before starting a new cycle",
+            PaperExecutionAnomalySeverity.warning,
+            "Existing Alpaca Paper positions are present before starting a new cycle",
             {
                 "count": len(residual_positions),
                 "positions": [
