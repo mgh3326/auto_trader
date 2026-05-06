@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from collections.abc import Coroutine
 from datetime import UTC, datetime
 from typing import Any
 
@@ -16,6 +17,20 @@ from app.schemas.research_pipeline import ResearchSessionCreateResponse
 from app.services.stock_info_service import create_stock_if_not_exists
 
 logger = logging.getLogger(__name__)
+
+# Module-level to hold strong references to background tasks to prevent GC.
+# SonarCloud python:S7502: ensures tasks complete.
+_BACKGROUND_TASKS: set[asyncio.Task[Any]] = set()
+
+
+def _spawn_background(
+    coro: Coroutine[Any, Any, Any], *, name: str
+) -> asyncio.Task[Any]:
+    """Spawn a background task and hold a strong reference until it completes."""
+    task = asyncio.create_task(coro, name=name)
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+    return task
 
 
 class ResearchPipelineService:
@@ -70,7 +85,7 @@ class ResearchPipelineService:
         await self.db.commit()
         session_id = session.id
 
-        asyncio.create_task(
+        _spawn_background(
             _run_session_in_background(
                 session_id=session_id,
                 symbol=symbol,
@@ -78,7 +93,8 @@ class ResearchPipelineService:
                 instrument_type=instrument_type,
                 research_run_id=research_run_id,
                 user_id=user_id,
-            )
+            ),
+            name=f"research-session-{session_id}",
         )
 
         return ResearchSessionCreateResponse(
