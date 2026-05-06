@@ -1,5 +1,7 @@
 """ROB-118 — Order previews router tests."""
 
+from datetime import UTC, datetime
+from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -19,12 +21,7 @@ from app.routers.order_previews import (
 async def test_create_preview_returns_passed_status() -> None:
     fake_user = type("U", (), {"id": 1})()
     fake_service = AsyncMock()
-    from app.schemas.order_preview_session import (
-        PreviewLegOut,
-        PreviewSessionOut,
-    )
-    from datetime import datetime, timezone
-    from decimal import Decimal
+    from app.schemas.order_preview_session import PreviewLegOut, PreviewSessionOut
 
     fake_service.create_preview.return_value = PreviewSessionOut(
         preview_uuid="uuid-1",
@@ -52,8 +49,8 @@ async def test_create_preview_returns_passed_status() -> None:
         executions=[],
         approved_at=None,
         submitted_at=None,
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
     )
 
     app.dependency_overrides[get_authenticated_user] = lambda: fake_user
@@ -107,5 +104,29 @@ async def test_submit_blocked_returns_409() -> None:
                     json={"approval_token": "x" * 24},
                 )
             assert res.status_code == 409
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_submit_default_broker_path_is_fail_closed() -> None:
+    fake_user = type("U", (), {"id": 1})()
+    fake_service = AsyncMock()
+
+    app.dependency_overrides[get_authenticated_user] = lambda: fake_user
+    app.dependency_overrides[get_order_preview_session_service] = lambda: fake_service
+    try:
+        with patch.object(AuthMiddleware, "_maybe_authenticate", return_value=None):
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as ac:
+                res = await ac.post(
+                    "/trading/api/order-previews/uuid-1/submit",
+                    json={"approval_token": "x" * 24},
+                )
+        assert res.status_code == 409
+        assert "broker submission disabled" in res.json()["detail"]
+        fake_service.submit_preview.assert_not_called()
     finally:
         app.dependency_overrides.clear()

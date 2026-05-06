@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import secrets
 import uuid
+from datetime import UTC
 from decimal import Decimal
 from typing import Any, Protocol
 
@@ -99,20 +100,21 @@ class OrderPreviewSessionService:
         request: SubmitPreviewRequest,
         broker_submit,  # async (leg) -> {"order_id": str, ...}
     ) -> PreviewSessionOut:
+        if broker_submit is None:
+            raise PreviewNotApprovedError("broker submission disabled")
+
         session = await self._load_owned(user_id=user_id, preview_uuid=preview_uuid)
 
         if session.status != "preview_passed":
-            raise PreviewNotApprovedError(
-                f"submit blocked: status={session.status}"
-            )
+            raise PreviewNotApprovedError(f"submit blocked: status={session.status}")
         if not session.approval_token or not secrets.compare_digest(
             session.approval_token, request.approval_token
         ):
             raise PreviewNotApprovedError("approval_token mismatch")
 
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        session.approved_at = datetime.now(timezone.utc)
+        session.approved_at = datetime.now(UTC)
 
         any_failure = False
         for leg in session.legs:
@@ -141,7 +143,7 @@ class OrderPreviewSessionService:
             )
 
         session.status = "submit_failed" if any_failure else "submitted"
-        session.submitted_at = datetime.now(timezone.utc)
+        session.submitted_at = datetime.now(UTC)
         await self._db.commit()
         await self._db.refresh(session, attribute_names=["legs", "executions"])
         return PreviewSessionOut.model_validate(session)
@@ -192,7 +194,7 @@ class OrderPreviewSessionService:
             return
 
         session.dry_run_payload = result
-        result_legs = {l["leg_index"]: l for l in result.get("legs", [])}
+        result_legs = {item["leg_index"]: item for item in result.get("legs", [])}
         for leg in session.legs:
             r = result_legs.get(leg.leg_index)
             if r is None:
@@ -223,7 +225,9 @@ class OrderPreviewSessionService:
             )
             .options(
                 selectinload(OrderPreviewSession.legs),
-                selectinload(OrderPreviewSession.executions).selectinload(OrderExecutionRequest.leg),
+                selectinload(OrderPreviewSession.executions).selectinload(
+                    OrderExecutionRequest.leg
+                ),
             )
         )
         result = await self._db.execute(stmt)

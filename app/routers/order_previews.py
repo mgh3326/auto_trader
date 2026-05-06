@@ -22,13 +22,10 @@ from app.services.order_preview_session_service import (
     PreviewSchemaMismatchError,
     PreviewSessionNotFoundError,
 )
-from app.services.orders.service import place_order
 
 logger = logging.getLogger(__name__)
 
-api_router = APIRouter(
-    prefix="/trading/api/order-previews", tags=["order-previews"]
-)
+api_router = APIRouter(prefix="/trading/api/order-previews", tags=["order-previews"])
 router = APIRouter()
 
 
@@ -41,23 +38,15 @@ def get_order_preview_session_service(
 
 
 def get_broker_submit_callable():
-    """Return an async callable (leg, session) -> {"order_id": str}.
+    """Return the broker submit callable for this route.
 
-    Wraps app.services.orders.service.place_order. Tests override this.
+    ROB-118 only persists preview/approval records. The default production path is
+    deliberately disabled so an approval token alone cannot reach live broker
+    submission. Tests, paper-only experiments, or a later explicitly scoped PR may
+    override this dependency with a mock/paper submitter.
     """
 
-    async def _submit(*, leg, session):
-        result = await place_order(
-            symbol=session.symbol,
-            market=session.market,
-            side=session.side,
-            order_type=leg.order_type,
-            quantity=float(leg.quantity),
-            price=float(leg.price) if leg.price is not None else None,
-        )
-        return {"order_id": result.order_id, "raw": result.raw}
-
-    return _submit
+    return None
 
 
 @api_router.post("", response_model=PreviewSessionOut)
@@ -96,9 +85,7 @@ async def get_preview(
     ],
 ) -> PreviewSessionOut:
     try:
-        return await service.get(
-            user_id=current_user.id, preview_uuid=preview_uuid
-        )
+        return await service.get(user_id=current_user.id, preview_uuid=preview_uuid)
     except PreviewSessionNotFoundError:
         raise HTTPException(status_code=404, detail="preview not found")
 
@@ -113,6 +100,12 @@ async def submit_preview(
     ],
     broker_submit=Depends(get_broker_submit_callable),
 ) -> PreviewSessionOut:
+    if broker_submit is None:
+        raise HTTPException(
+            status_code=409,
+            detail="submit blocked: broker submission disabled for ROB-118 preview MVP",
+        )
+
     try:
         return await service.submit_preview(
             user_id=current_user.id,

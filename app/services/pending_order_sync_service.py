@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC
 from decimal import Decimal
 from typing import Any, Protocol
 
 from sqlalchemy import delete, select
-from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.pending_order import PendingOrder
@@ -26,8 +26,11 @@ class PendingOrderSyncService:
     async def sync_all_venues(
         self, *, user_id: int, venues: dict[str, BrokerPendingOrder]
     ) -> dict[str, int]:
-        """Fetch open orders from all venues and upsert to DB.
-        Deletes orders that are no longer present in broker response.
+        """Fetch complete open-order snapshots and upsert them to DB.
+
+        Vanish-deletes are only safe after ``fetch_open_orders`` returns a
+        successful full snapshot for the venue. Unsupported or failing adapters
+        must raise so existing local pending-order rows are preserved.
         """
         results = {}
         for venue_name, broker in venues.items():
@@ -36,34 +39,32 @@ class PendingOrderSyncService:
                 count = await self._sync_venue_orders(
                     user_id=user_id, venue=venue_name, orders=orders
                 )
+                await self._db.commit()
                 results[venue_name] = count
             except Exception as exc:
-                logger.error(f"Failed to sync venue {venue_name}: {exc}", exc_info=True)
+                await self._db.rollback()
+                logger.error(
+                    "Failed to sync venue %s: %s", venue_name, exc, exc_info=True
+                )
                 results[venue_name] = -1
 
-        await self._db.commit()
         return results
 
     async def _sync_venue_orders(
         self, *, user_id: int, venue: str, orders: list[dict[str, Any]]
     ) -> int:
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         seen_ids = []
 
         for o in orders:
             broker_id = str(o["broker_order_id"])
             seen_ids.append(broker_id)
 
-            # Upsert using PostgreSQL-specific insert for efficiency if on Postgres,
-            # but for cross-DB compatibility we'll use a simpler approach or 
-            # check the dialect.
-            # Since we're using SQLite for tests, we'll use a more portable way.
-            
             stmt = select(PendingOrder).where(
                 PendingOrder.venue == venue,
-                PendingOrder.broker_order_id == broker_id
+                PendingOrder.broker_order_id == broker_id,
             )
             existing = (await self._db.execute(stmt)).scalar_one_or_none()
 
@@ -91,7 +92,7 @@ class PendingOrderSyncService:
                 )
                 self._db.add(new_order)
 
-        # Delete orders that vanished from the broker's open list
+        # Delete orders that vanished from a successful full broker snapshot.
         delete_stmt = delete(PendingOrder).where(
             PendingOrder.venue == venue,
             PendingOrder.user_id == user_id,

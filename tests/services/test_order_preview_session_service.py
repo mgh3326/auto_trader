@@ -1,12 +1,18 @@
+from datetime import UTC
+
 import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
-from app.models.base import Base
+
 
 @pytest_asyncio.fixture
 async def db_session():
-    from app.models.order_preview_session import OrderPreviewSession, OrderPreviewLeg, OrderExecutionRequest
+    from app.models.order_preview_session import (
+        OrderExecutionRequest,
+        OrderPreviewLeg,
+        OrderPreviewSession,
+    )
     from app.models.trading import User
 
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -16,15 +22,22 @@ async def db_session():
         await conn.run_sync(OrderPreviewSession.__table__.create)
         await conn.run_sync(OrderPreviewLeg.__table__.create)
         await conn.run_sync(OrderExecutionRequest.__table__.create)
-    
+
     Session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with Session() as session:
         # Create a dummy user
-        from datetime import datetime, timezone
-        u = User(id=1, email="test@example.com", username="testuser", created_at=datetime.now(timezone.utc))
+        from datetime import datetime
+
+        u = User(
+            id=1,
+            email="test@example.com",
+            username="testuser",
+            created_at=datetime.now(UTC),
+        )
         session.add(u)
         await session.commit()
         yield session
+
 
 @pytest.mark.unit
 def test_order_preview_session_model_columns_exist():
@@ -76,8 +89,9 @@ def test_create_preview_request_validates_required_fields():
 @pytest.mark.asyncio
 async def test_create_preview_persists_three_legs_for_ada_sell(db_session) -> None:
     from unittest.mock import AsyncMock
-    from app.services.order_preview_session_service import OrderPreviewSessionService
+
     from app.schemas.order_preview_session import CreatePreviewRequest, PreviewLegInput
+    from app.services.order_preview_session_service import OrderPreviewSessionService
 
     fake_dry_run = AsyncMock()
     fake_dry_run.run.return_value = {
@@ -117,11 +131,12 @@ async def test_create_preview_persists_three_legs_for_ada_sell(db_session) -> No
 @pytest.mark.asyncio
 async def test_dry_run_schema_mismatch_marks_preview_failed(db_session) -> None:
     from unittest.mock import AsyncMock
+
+    from app.schemas.order_preview_session import CreatePreviewRequest, PreviewLegInput
     from app.services.order_preview_session_service import (
         OrderPreviewSessionService,
         PreviewSchemaMismatchError,
     )
-    from app.schemas.order_preview_session import CreatePreviewRequest, PreviewLegInput
 
     fake_dry_run = AsyncMock()
     fake_dry_run.run.side_effect = PreviewSchemaMismatchError("legs missing field")
@@ -145,8 +160,9 @@ async def test_dry_run_schema_mismatch_marks_preview_failed(db_session) -> None:
 async def test_refresh_recomputes_dry_run(db_session) -> None:
     from decimal import Decimal
     from unittest.mock import AsyncMock
-    from app.services.order_preview_session_service import OrderPreviewSessionService
+
     from app.schemas.order_preview_session import CreatePreviewRequest, PreviewLegInput
+    from app.services.order_preview_session_service import OrderPreviewSessionService
 
     fake_dry_run = AsyncMock()
     fake_dry_run.run.return_value = {
@@ -170,9 +186,7 @@ async def test_refresh_recomputes_dry_run(db_session) -> None:
         "ok": True,
         "legs": [{"leg_index": 0, "estimated_value": "200", "estimated_fee": "0.2"}],
     }
-    refreshed = await service.refresh_preview(
-        user_id=1, preview_uuid=out.preview_uuid
-    )
+    refreshed = await service.refresh_preview(user_id=1, preview_uuid=out.preview_uuid)
     assert refreshed.legs[0].estimated_value == Decimal("200")
 
 
@@ -180,6 +194,7 @@ async def test_refresh_recomputes_dry_run(db_session) -> None:
 @pytest.mark.asyncio
 async def test_submit_blocked_when_status_not_preview_passed(db_session) -> None:
     from unittest.mock import AsyncMock
+
     from app.schemas.order_preview_session import (
         CreatePreviewRequest,
         PreviewLegInput,
@@ -220,8 +235,8 @@ async def test_submit_blocked_when_status_not_preview_passed(db_session) -> None
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_submit_records_broker_order_ids(db_session) -> None:
-    from decimal import Decimal
     from unittest.mock import AsyncMock
+
     from app.schemas.order_preview_session import (
         CreatePreviewRequest,
         PreviewLegInput,
@@ -263,8 +278,9 @@ async def test_submit_records_broker_order_ids(db_session) -> None:
         return {"order_id": f"BK-{leg.leg_index}"}
 
     # approval_token loaded from DB (test fetches via service.get internals)
-    from app.models.order_preview_session import OrderPreviewSession
     from sqlalchemy import select
+
+    from app.models.order_preview_session import OrderPreviewSession
 
     row = (
         await db_session.execute(
