@@ -83,22 +83,24 @@ apply_mcp_plist_fd_limit() {
   plutil -lint "$plist" >/dev/null
 }
 
-build_frontend() {
-  local workspace="$NEW_RELEASE/frontend/trading-decision"
+build_frontend_workspace() {
+  local name="$1"
+  local relative_path="$2"
+  local workspace="$NEW_RELEASE/$relative_path"
   local index="$workspace/dist/index.html"
 
   if [[ ! -d "$workspace" ]]; then
-    log "Frontend workspace not present at $workspace; skipping SPA build"
+    log "Frontend workspace $name not present at $workspace; skipping SPA build"
     return 0
   fi
 
   if ! command -v npm >/dev/null 2>&1; then
-    echo "npm not found on PATH for native deploy; cannot build trading-decision SPA" >&2
+    echo "npm not found on PATH for native deploy; cannot build $name SPA" >&2
     echo "PATH=$PATH" >&2
     return 78
   fi
 
-  log "Building trading-decision SPA in $workspace"
+  log "Building $name SPA in $workspace"
   log "node $(node --version 2>/dev/null || echo 'unknown')"
   log "npm  $(npm --version 2>/dev/null || echo 'unknown')"
 
@@ -109,11 +111,16 @@ build_frontend() {
   )
 
   if [[ ! -f "$index" ]]; then
-    echo "Frontend build did not produce $index" >&2
+    echo "$name frontend build did not produce $index" >&2
     return 1
   fi
 
-  log "Frontend SPA build present: $index"
+  log "$name SPA build present: $index"
+}
+
+build_frontend() {
+  build_frontend_workspace "trading-decision" "frontend/trading-decision"
+  build_frontend_workspace "invest" "frontend/invest"
 }
 
 restart_services() {
