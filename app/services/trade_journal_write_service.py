@@ -115,7 +115,9 @@ class TradeJournalWriteService:
         self.db.add(journal)
         await self.db.flush()
         await self.db.refresh(journal)
-        return _to_read(journal)
+        out = _to_read(journal)
+        await self.db.commit()
+        return out
 
     async def update(
         self, journal_id: int, req: JournalUpdateRequest
@@ -175,4 +177,6 @@ class TradeJournalWriteService:
 
         await self.db.flush()
         await self.db.refresh(row)
-        return _to_read(row)
+        out = _to_read(row)
+        await self.db.commit()
+        return out

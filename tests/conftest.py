@@ -424,11 +424,14 @@ async def db_session():
 @pytest_asyncio.fixture
 async def user(db_session):
     """Create a test user."""
+    from uuid import uuid4
+
     from app.models.trading import User
 
+    suffix = uuid4().hex[:12]
     u = User(
-        email="test@example.com",
-        username="testuser",
+        email=f"test-{suffix}@example.com",
+        username=f"testuser_{suffix}",
         **{"hashed_" + "pass" + "word": "fakehash"},
     )
     db_session.add(u)
@@ -453,11 +456,14 @@ def auth_headers(user):
 @pytest_asyncio.fixture
 async def other_user(db_session):
     """Create another test user for isolation tests."""
+    from uuid import uuid4
+
     from app.models.trading import User
 
+    suffix = uuid4().hex[:12]
     u = User(
-        email="other@example.com",
-        username="otheruser",
+        email=f"other-{suffix}@example.com",
+        username=f"otheruser_{suffix}",
         **{"hashed_" + "pass" + "word": "fakehash"},
     )
     db_session.add(u)
@@ -602,8 +608,8 @@ async def seed_holding_aapl(db_session, user):
 
     h = ManualHolding(
         broker_account_id=account.id,
-        ticker="AAPL",
-        display_name="Apple Inc.",
+        ticker="TESTAAPLNOJOURNAL",
+        display_name="Apple Inc. test holding without journal",
         market_type=MarketType.US,
         quantity=5.0,
         avg_price=150.0,
@@ -642,7 +648,6 @@ async def seed_summary_sell_005930(db_session):
     from sqlalchemy import select
 
     from app.models.analysis import StockInfo
-    from app.models.manual_holdings import MarketType
     from app.models.research_pipeline import ResearchSession, ResearchSummary
 
     # Need stock_info for the join in service
@@ -650,9 +655,7 @@ async def seed_summary_sell_005930(db_session):
         await db_session.execute(select(StockInfo).where(StockInfo.symbol == "005930"))
     ).scalar_one_or_none()
     if not si:
-        si = StockInfo(
-            symbol="005930", name="삼성전자", instrument_type="equity_kr"
-        )
+        si = StockInfo(symbol="005930", name="삼성전자", instrument_type="equity_kr")
         db_session.add(si)
         await db_session.flush()
 

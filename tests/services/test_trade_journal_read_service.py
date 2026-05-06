@@ -47,6 +47,8 @@ async def test_list_retrospective_returns_only_terminal_journals(
 ) -> None:
     svc = TradeJournalReadService(db_session)
     resp = await svc.list_retrospective()
+    seeded_ids = {seed_closed_journals[0].id, seed_closed_journals[1].id}
+    resp = [j for j in resp if j.id in seeded_ids]
     assert len(resp) == 2
     symbols = {j.symbol for j in resp}
     assert symbols == {"005930", "AAPL"}
@@ -59,6 +61,8 @@ async def test_list_retrospective_ordered_by_updated_at_desc(
 ) -> None:
     svc = TradeJournalReadService(db_session)
     resp = await svc.list_retrospective()
+    seeded_ids = {seed_closed_journals[0].id, seed_closed_journals[1].id}
+    resp = [j for j in resp if j.id in seeded_ids]
     # j2 was created after j1, so it should be first if updated_at is similar
     # In tests they might have same timestamp, but order should be stable
     assert resp[0].updated_at >= resp[1].updated_at

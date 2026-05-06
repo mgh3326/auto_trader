@@ -82,7 +82,9 @@ def test_coverage_response_round_trip() -> None:
         latest_summary_decision=None,
         thesis_conflict_with_summary=False,
     )
-    resp = JournalCoverageResponse(generated_at="2026-05-06T00:00:00Z", total=1, rows=[row])
+    resp = JournalCoverageResponse(
+        generated_at="2026-05-06T00:00:00Z", total=1, rows=[row]
+    )
     assert resp.total == 1
 
 

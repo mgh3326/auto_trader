@@ -214,7 +214,9 @@ class ResearchRetrospectiveService:
             .limit(limit)
         )
         if market is not None:
-            stmt = stmt.where(StockInfo.instrument_type == _MARKET_TO_INSTRUMENT[market])
+            stmt = stmt.where(
+                StockInfo.instrument_type == _MARKET_TO_INSTRUMENT[market]
+            )
 
         rows = (await self.db.execute(stmt)).all()
         proposal_ids = [int(r.proposal_id) for r in rows if r.proposal_id is not None]
@@ -264,7 +266,9 @@ class ResearchRetrospectiveService:
             )
         )
         if market is not None:
-            stmt = stmt.where(StockInfo.instrument_type == _MARKET_TO_INSTRUMENT[market])
+            stmt = stmt.where(
+                StockInfo.instrument_type == _MARKET_TO_INSTRUMENT[market]
+            )
         return stmt
 
     async def _proposal_response_counts(
@@ -435,9 +439,7 @@ class ResearchRetrospectiveService:
             out.setdefault(int(session_id), []).append(float(pnl))
         return out
 
-    async def _final_pnl_by_proposal(
-        self, proposal_ids: list[int]
-    ) -> dict[int, float]:
+    async def _final_pnl_by_proposal(self, proposal_ids: list[int]) -> dict[int, float]:
         if not proposal_ids:
             return {}
         stmt = select(

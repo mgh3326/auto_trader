@@ -5,6 +5,7 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy import select
 
+from app.core.db import AsyncSessionLocal
 from app.models.trade_journal import TradeJournal
 from app.schemas.trade_journal import JournalCreateRequest, JournalUpdateRequest
 from app.services.trade_journal_write_service import (
@@ -43,6 +44,28 @@ async def test_create_inserts_draft_journal_with_research_metadata(db_session) -
 
 
 @pytest.mark.asyncio
+async def test_create_commits_journal_for_new_session_visibility(db_session) -> None:
+    svc = TradeJournalWriteService(db_session)
+    created = await svc.create(
+        JournalCreateRequest(
+            symbol="TESTCOMMITJOURNAL",
+            instrument_type="equity_us",
+            thesis="persist across request boundary",
+        )
+    )
+
+    async with AsyncSessionLocal() as verify_session:
+        row = (
+            await verify_session.execute(
+                select(TradeJournal).where(TradeJournal.id == created.id)
+            )
+        ).scalar_one()
+
+    assert row.symbol == "TESTCOMMITJOURNAL"
+    assert row.thesis == "persist across request boundary"
+
+
+@pytest.mark.asyncio
 async def test_create_paper_without_account_raises(db_session) -> None:
     # service is live-only by design, JournalCreateRequest doesn't have account_type
     # but the test checks if it raises when trying to pass account_type (which should fail validation)
@@ -59,9 +82,7 @@ async def test_create_paper_without_account_raises(db_session) -> None:
 async def test_update_rejects_terminal_status(db_session) -> None:
     svc = TradeJournalWriteService(db_session)
     created = await svc.create(
-        JournalCreateRequest(
-            symbol="005930", instrument_type="equity_kr", thesis="t"
-        )
+        JournalCreateRequest(symbol="005930", instrument_type="equity_kr", thesis="t")
     )
     with pytest.raises(ValidationError):
         JournalUpdateRequest(status="closed")  # DTO blocks

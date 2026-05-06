@@ -62,29 +62,43 @@ class TradeJournalCoverageService:
             try:
                 upbit_coins = await upbit_client.fetch_my_coins()
                 # We need prices for evaluation/weight
-                tickers = [f"KRW-{c['currency']}" for c in upbit_coins if c['currency'] != "KRW"]
+                tickers = [
+                    f"KRW-{c['currency']}"
+                    for c in upbit_coins
+                    if c["currency"] != "KRW"
+                ]
                 prices = await upbit_client.fetch_multiple_current_prices(tickers)
-                
+
                 for coin in upbit_coins:
                     currency = str(coin.get("currency", "")).upper()
                     if currency == "KRW":
                         continue
-                    qty = float(coin.get("balance", 0) or 0) + float(coin.get("locked", 0) or 0)
+                    qty = float(coin.get("balance", 0) or 0) + float(
+                        coin.get("locked", 0) or 0
+                    )
                     if qty <= 0:
                         continue
                     symbol = f"KRW-{currency}"
                     price = prices.get(symbol, 0.0)
                     eval_ = qty * price
-                    
+
                     # Mock a structure compatible with the loop below
-                    holdings.append(type('obj', (object,), {
-                        "ticker": symbol,
-                        "name": currency,
-                        "market_type": type('obj', (object,), {'value': 'CRYPTO'}),
-                        "total_quantity": qty,
-                        "evaluation": eval_,
-                        "instrument_type": "crypto"
-                    }))
+                    holdings.append(
+                        type(
+                            "obj",
+                            (object,),
+                            {
+                                "ticker": symbol,
+                                "name": currency,
+                                "market_type": type(
+                                    "obj", (object,), {"value": "CRYPTO"}
+                                ),
+                                "total_quantity": qty,
+                                "evaluation": eval_,
+                                "instrument_type": "crypto",
+                            },
+                        )
+                    )
             except Exception as exc:
                 logger.warning(f"Failed to fetch Upbit holdings: {exc}")
 

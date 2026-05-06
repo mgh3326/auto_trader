@@ -1,9 +1,10 @@
 """ROB-121 — Tests for ResearchRetrospectiveService."""
 
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 import pytest
-import pytest_asyncio
+from sqlalchemy import text
 
 from app.models.analysis import StockInfo
 from app.models.research_pipeline import (
@@ -16,7 +17,6 @@ from app.models.trading import InstrumentType
 from app.models.trading_decision import (
     TradingDecisionOutcome,
     TradingDecisionProposal,
-    TradingDecisionSession,
 )
 from app.services.research_retrospective_service import (
     ResearchRetrospectiveService,
@@ -65,9 +65,7 @@ async def _seed_summary(
     stage_unavailable_set = set(stage_unavailable or [])
     for stage in stages or []:
         verdict = "unavailable" if stage in stage_unavailable_set else "bull"
-        freshness = (
-            {"stale_flags": ["stale"]} if stage_stale.get(stage) else {}
-        )
+        freshness = {"stale_flags": ["stale"]} if stage_stale.get(stage) else {}
         sa = StageAnalysis(
             session_id=rs.id,
             stage_type=stage,
@@ -99,17 +97,30 @@ async def _seed_proposal_with_outcome(
     pnl_pct: float | None,
     generated_at: datetime | None = None,
 ) -> TradingDecisionProposal:
-    session = TradingDecisionSession(
-        user_id=user.id,
-        source_profile="test",
-        status="open",
-        generated_at=generated_at or datetime.now(UTC),
+    # Insert via raw SQL instead of ORM because local test databases created
+    # before ROB-120/121 may not yet have every TradingDecisionSession ORM column.
+    session_uuid = uuid4()
+    result = await db_session.execute(
+        text(
+            """
+            INSERT INTO trading_decision_sessions
+                (session_uuid, user_id, source_profile, status, generated_at)
+            VALUES (:session_uuid, :user_id, :source_profile, :status, :generated_at)
+            RETURNING id
+            """
+        ),
+        {
+            "session_uuid": session_uuid,
+            "user_id": user.id,
+            "source_profile": "test",
+            "status": "open",
+            "generated_at": generated_at or datetime.now(UTC),
+        },
     )
-    db_session.add(session)
-    await db_session.flush()
+    session_id = int(result.scalar_one())
 
     proposal = TradingDecisionProposal(
-        session_id=session.id,
+        session_id=session_id,
         symbol=symbol,
         instrument_type=instrument_type,
         proposal_kind="enter",

@@ -1,9 +1,9 @@
 # tests/routers/test_trade_journals_router.py
+from unittest.mock import AsyncMock, patch
+
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-
-from unittest.mock import AsyncMock, patch
 
 from app.auth.dependencies import get_current_user
 from app.core.db import get_db
@@ -12,13 +12,17 @@ from app.routers.trade_journals import router
 
 @pytest.fixture(autouse=True)
 def mock_external_clients():
-    with patch(
-        "app.services.merged_portfolio_service.KISClient", autospec=True
-    ) as mock_kis, patch(
-        "app.services.trade_journal_coverage_service.upbit_client", autospec=True
-    ) as mock_upbit, patch(
-        "app.services.merged_portfolio_service.get_usd_krw_rate",
-        AsyncMock(return_value=1350.0),
+    with (
+        patch(
+            "app.services.merged_portfolio_service.KISClient", autospec=True
+        ) as mock_kis,
+        patch(
+            "app.services.trade_journal_coverage_service.upbit_client", autospec=True
+        ) as mock_upbit,
+        patch(
+            "app.services.merged_portfolio_service.get_usd_krw_rate",
+            AsyncMock(return_value=1350.0),
+        ),
     ):
         mock_kis.return_value.fetch_my_stocks = AsyncMock(return_value=[])
         mock_kis.return_value.fetch_my_overseas_stocks = AsyncMock(return_value=[])
@@ -96,9 +100,7 @@ async def test_update_journal_success(app, seed_active_journal_005930) -> None:
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as ac:
-        resp = await ac.patch(
-            f"/trading/api/trade-journals/{journal_id}", json=payload
-        )
+        resp = await ac.patch(f"/trading/api/trade-journals/{journal_id}", json=payload)
     assert resp.status_code == 200
     assert resp.json()["thesis"] == "updated thesis"
 
@@ -119,7 +121,5 @@ async def test_update_journal_not_found(app) -> None:
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as ac:
-        resp = await ac.patch(
-            "/trading/api/trade-journals/99999", json=payload
-        )
+        resp = await ac.patch("/trading/api/trade-journals/99999", json=payload)
     assert resp.status_code == 404

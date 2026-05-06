@@ -41,9 +41,7 @@ async def get_overview(
     user: Annotated[User, Depends(get_current_user)],
     svc: Annotated[ResearchRetrospectiveService, Depends(_service)],
     days: Annotated[int, Query(ge=1, le=365)] = 30,
-    market: Annotated[
-        Literal["KR", "US", "CRYPTO"] | None, Query()
-    ] = None,
+    market: Annotated[Literal["KR", "US", "CRYPTO"] | None, Query()] = None,
     strategy: Annotated[str | None, Query(max_length=100)] = None,
 ) -> RetrospectiveOverview:
     start, end = _resolve_window(days)
@@ -52,16 +50,12 @@ async def get_overview(
     )
 
 
-@api_router.get(
-    "/stage-performance", response_model=list[StagePerformanceRow]
-)
+@api_router.get("/stage-performance", response_model=list[StagePerformanceRow])
 async def get_stage_performance(
     user: Annotated[User, Depends(get_current_user)],
     svc: Annotated[ResearchRetrospectiveService, Depends(_service)],
     days: Annotated[int, Query(ge=1, le=365)] = 30,
-    market: Annotated[
-        Literal["KR", "US", "CRYPTO"] | None, Query()
-    ] = None,
+    market: Annotated[Literal["KR", "US", "CRYPTO"] | None, Query()] = None,
     strategy: Annotated[str | None, Query(max_length=100)] = None,
 ) -> list[StagePerformanceRow]:
     start, end = _resolve_window(days)
@@ -70,16 +64,12 @@ async def get_stage_performance(
     )
 
 
-@api_router.get(
-    "/decisions", response_model=RetrospectiveDecisionsResponse
-)
+@api_router.get("/decisions", response_model=RetrospectiveDecisionsResponse)
 async def list_decisions(
     user: Annotated[User, Depends(get_current_user)],
     svc: Annotated[ResearchRetrospectiveService, Depends(_service)],
     days: Annotated[int, Query(ge=1, le=365)] = 30,
-    market: Annotated[
-        Literal["KR", "US", "CRYPTO"] | None, Query()
-    ] = None,
+    market: Annotated[Literal["KR", "US", "CRYPTO"] | None, Query()] = None,
     strategy: Annotated[str | None, Query(max_length=100)] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> RetrospectiveDecisionsResponse:

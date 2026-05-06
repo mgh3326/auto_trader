@@ -289,7 +289,7 @@ export const WARNING_TOKEN_LABEL: Record<string, string> = {
   missing_kr_universe: "국내 유니버스 누락",
   non_nxt_venue: "비-NXT 거래소",
   unknown_venue: "거래소 알 수 없음",
-  unknown_side: "方向 알 수 없음",
+  unknown_side: "방향 알 수 없음",
 };
 
 export const SAFETY_SCOPE_LABEL: Record<string, string> = {

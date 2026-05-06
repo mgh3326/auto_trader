@@ -22,9 +22,7 @@ async def test_overview_empty_window_warning(app) -> None:
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as ac:
-        resp = await ac.get(
-            "/trading/api/research-retrospective/overview?days=30"
-        )
+        resp = await ac.get("/trading/api/research-retrospective/overview?days=30")
     assert resp.status_code == 200
     body = resp.json()
     assert "no_research_summaries_in_window" in body["warnings"]

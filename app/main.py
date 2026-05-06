@@ -46,10 +46,10 @@ from app.routers import (
     strategy_events,
     symbol_settings,
     test,
+    trade_journals,
     trading,
     trading_decisions,
     trading_decisions_spa,
-    trade_journals,
     user_defaults,
     watch_order_intent_ledger,
     websocket,
@@ -216,7 +216,6 @@ def create_app() -> FastAPI:
             re.compile(r"^/trading/"),
             re.compile(r"^/trade-journals/"),
             re.compile(r"^/kospi200/"),
-
             *deprecated_pages.legacy_exempt_url_patterns(),
         ],
     )
