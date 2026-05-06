@@ -501,7 +501,7 @@
 
     function nextErrorBackoffDelay() {
         const jitterRange = Math.max(200, Math.floor(state.errorBackoffMs * 0.25));
-        const jitter = Math.floor(Math.random() * jitterRange);
+        const jitter = Math.floor(Math.random() * jitterRange);  // NOSONAR javascript:S2245 — non-cryptographic retry jitter
         const delay = Math.min(state.errorBackoffMs + jitter, maxErrorBackoffMs);
         state.errorBackoffMs = Math.min(state.errorBackoffMs * 2, maxErrorBackoffMs);
         return delay;

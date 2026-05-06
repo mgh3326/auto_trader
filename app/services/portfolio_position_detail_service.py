@@ -263,7 +263,7 @@ class PortfolioPositionDetailService:
             else:
                 tags.append("RSI 중립")
 
-        return tags[:3]
+        return tags[:3]  # NOSONAR python:S6466 — list slicing never raises IndexError
 
     def _build_reason(
         self,
