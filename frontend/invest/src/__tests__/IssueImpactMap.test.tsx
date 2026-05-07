@@ -3,22 +3,20 @@ import { render, screen } from "@testing-library/react";
 import { expect, test } from "vitest";
 import { IssueImpactMap } from "../components/discover/IssueImpactMap";
 
-test("renders impact pills for known risk_category", () => {
-  render(<IssueImpactMap category="geopolitical_oil" />);
-  expect(screen.getByText("원유/에너지")).toBeInTheDocument();
-  expect(screen.getByText("항공/운송")).toBeInTheDocument();
-  expect(screen.getByText("금/방산")).toBeInTheDocument();
+test("renders sector impact pills", () => {
+  render(<IssueImpactMap direction="up" sectors={["반도체", "AI"]} />);
+  expect(screen.getByText("반도체")).toBeInTheDocument();
+  expect(screen.getByText("AI")).toBeInTheDocument();
+  expect(screen.getAllByText(/긍정 모멘텀/).length).toBeGreaterThanOrEqual(1);
 });
 
-test("renders fallback notice when category is null", () => {
-  render(<IssueImpactMap category={null} />);
-  expect(
-    screen.getByText("이 이슈에 대한 영향 분석은 준비 중입니다."),
-  ).toBeInTheDocument();
+test("renders fallback label when sectors are empty", () => {
+  render(<IssueImpactMap direction="neutral" sectors={[]} />);
+  expect(screen.getByText("관련 시장")).toBeInTheDocument();
 });
 
 test("includes disclaimer", () => {
-  render(<IssueImpactMap category="macro_policy" />);
+  render(<IssueImpactMap direction="mixed" sectors={["금리"]} />);
   expect(
     screen.getByText("뉴스 기반 참고 정보이며 매매 추천이 아닙니다."),
   ).toBeInTheDocument();

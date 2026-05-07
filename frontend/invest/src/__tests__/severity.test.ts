@@ -1,59 +1,41 @@
 // frontend/invest/src/__tests__/severity.test.ts
 import { expect, test } from "vitest";
-import {
-  countByRiskCategory,
-  describeSeverity,
-  sortIssueItems,
-} from "../components/discover/severity";
-import type { NewsRadarItem } from "../types/newsRadar";
+import { describeDirection, sortMarketIssues } from "../components/discover/severity";
+import type { MarketIssue } from "../types/newsIssues";
 
-function makeItem(overrides: Partial<NewsRadarItem>): NewsRadarItem {
+function makeIssue(overrides: Partial<MarketIssue>): MarketIssue {
   return {
     id: "x",
-    title: "t",
-    source: null,
-    feed_source: null,
-    url: "",
-    published_at: null,
-    market: "all",
-    risk_category: null,
-    severity: "low",
-    themes: [],
-    symbols: [],
-    included_in_briefing: false,
-    briefing_reason: null,
-    briefing_score: 0,
-    snippet: null,
-    matched_terms: [],
+    market: "kr",
+    rank: 1,
+    issue_title: "t",
+    subtitle: null,
+    direction: "neutral",
+    source_count: 1,
+    article_count: 1,
+    updated_at: "2026-05-07T10:00:00Z",
+    summary: null,
+    related_symbols: [],
+    related_sectors: [],
+    articles: [],
+    signals: { recency_score: 0, source_diversity_score: 0, mention_score: 0 },
     ...overrides,
   };
 }
 
-test("describeSeverity maps to indicator label", () => {
-  expect(describeSeverity("high").label).toBe("강한 이슈");
-  expect(describeSeverity("medium").label).toBe("관심 이슈");
-  expect(describeSeverity("low").label).toBe("참고");
+test("describeDirection maps to indicator label", () => {
+  expect(describeDirection("up").label).toBe("상승 이슈");
+  expect(describeDirection("down").label).toBe("하락 이슈");
+  expect(describeDirection("mixed").label).toBe("혼조 이슈");
+  expect(describeDirection("neutral").label).toBe("중립 이슈");
 });
 
-test("countByRiskCategory groups items by risk_category", () => {
+test("sortMarketIssues orders by rank then scores then updated_at", () => {
   const items = [
-    makeItem({ id: "1", risk_category: "macro_policy" }),
-    makeItem({ id: "2", risk_category: "macro_policy" }),
-    makeItem({ id: "3", risk_category: "geopolitical_oil" }),
-    makeItem({ id: "4", risk_category: null }),
+    makeIssue({ id: "a", rank: 3 }),
+    makeIssue({ id: "b", rank: 1, signals: { recency_score: 0, source_diversity_score: 0, mention_score: 0 } }),
+    makeIssue({ id: "c", rank: 1, signals: { recency_score: 1, source_diversity_score: 1, mention_score: 1 } }),
+    makeIssue({ id: "d", rank: 2, updated_at: "2026-05-07T12:00:00Z" }),
   ];
-  const counts = countByRiskCategory(items);
-  expect(counts.macro_policy).toBe(2);
-  expect(counts.geopolitical_oil).toBe(1);
-  expect(counts.uncategorized).toBe(1);
-});
-
-test("sortIssueItems orders by severity then briefing_score then published_at", () => {
-  const items = [
-    makeItem({ id: "a", severity: "low", briefing_score: 10, published_at: "2026-05-07T10:00:00Z" }),
-    makeItem({ id: "b", severity: "high", briefing_score: 5, published_at: "2026-05-07T08:00:00Z" }),
-    makeItem({ id: "c", severity: "high", briefing_score: 9, published_at: "2026-05-07T08:00:00Z" }),
-    makeItem({ id: "d", severity: "medium", briefing_score: 0, published_at: "2026-05-07T11:00:00Z" }),
-  ];
-  expect(sortIssueItems(items).map((i) => i.id)).toEqual(["c", "b", "d", "a"]);
+  expect(sortMarketIssues(items).map((i) => i.id)).toEqual(["c", "b", "d", "a"]);
 });

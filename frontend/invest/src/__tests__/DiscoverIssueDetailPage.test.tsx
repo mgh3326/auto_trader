@@ -3,55 +3,35 @@ import { render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { expect, test } from "vitest";
 import { DiscoverIssueDetailPage, type DiscoverIssueDetailPageProps } from "../pages/DiscoverIssueDetailPage";
-import type { NewsRadarItem, NewsRadarResponse } from "../types/newsRadar";
+import type { MarketIssue, MarketIssuesResponse } from "../types/newsIssues";
 
-function makeItem(over: Partial<NewsRadarItem>): NewsRadarItem {
+function makeIssue(over: Partial<MarketIssue>): MarketIssue {
   return {
     id: "i",
-    title: "t",
-    source: null,
-    feed_source: null,
-    url: "",
-    published_at: null,
-    market: "all",
-    risk_category: null,
-    severity: "low",
-    themes: [],
-    symbols: [],
-    included_in_briefing: false,
-    briefing_reason: null,
-    briefing_score: 0,
-    snippet: null,
-    matched_terms: [],
+    market: "kr",
+    rank: 1,
+    issue_title: "이슈",
+    subtitle: null,
+    direction: "neutral",
+    source_count: 1,
+    article_count: 1,
+    updated_at: "2026-05-07T12:00:00Z",
+    summary: null,
+    related_symbols: [],
+    related_sectors: [],
+    articles: [],
+    signals: { recency_score: 0, source_diversity_score: 0, mention_score: 0 },
     ...over,
   };
 }
 
-function response(items: NewsRadarItem[]): NewsRadarResponse {
+function makeResponse(items: MarketIssue[], over: Partial<MarketIssuesResponse> = {}): MarketIssuesResponse {
   return {
     market: "all",
     as_of: "2026-05-07T12:00:00Z",
-    readiness: {
-      status: "ready",
-      latest_scraped_at: null,
-      latest_published_at: null,
-      recent_6h_count: 0,
-      recent_24h_count: 0,
-      source_count: 0,
-      stale: false,
-      max_age_minutes: 0,
-      warnings: [],
-    },
-    summary: {
-      high_risk_count: 0,
-      total_count: items.length,
-      included_in_briefing_count: 0,
-      excluded_but_collected_count: 0,
-    },
-    sections: [],
+    window_hours: 24,
     items,
-    excluded_items: [],
-    source_coverage: [],
+    ...over,
   };
 }
 
@@ -68,30 +48,30 @@ function renderAt(path: string, state: DiscoverIssueDetailPageProps["state"]) {
   );
 }
 
-test("renders matched issue with impact map and related symbols", () => {
-  const matched = makeItem({
+test("renders matched issue with impact map, related symbols and article links", () => {
+  const matched = makeIssue({
     id: "abc",
-    title: "Fed 금리",
-    snippet: "정책 유지",
-    risk_category: "macro_policy",
-    symbols: ["SPY"],
-    severity: "high",
-    published_at: "2026-05-07T11:30:00Z",
-    source: "Reuters",
+    issue_title: "카카오 1분기 최대 실적",
+    summary: "플랫폼 성장과 수익성 개선",
+    direction: "up",
+    related_sectors: ["결제거래 서비스"],
+    related_symbols: [{ symbol: "035720", market: "kr", canonical_name: "카카오", mention_count: 5 }],
+    articles: [{ id: 1, title: "카카오 실적 기사", url: "https://example.com/a", source: "연합", feed_source: "naver", published_at: null, summary: null, matched_terms: [] }],
   });
-  renderAt("/discover/issues/abc", { status: "ready", data: response([matched]) });
+  renderAt("/discover/issues/abc", { status: "ready", data: makeResponse([matched]) });
 
-  expect(screen.getByText("Fed 금리")).toBeInTheDocument();
-  expect(screen.getByText("정책 유지")).toBeInTheDocument();
-  expect(screen.getByText("금리 민감 성장주")).toBeInTheDocument();
-  expect(screen.getByText("SPY")).toBeInTheDocument();
+  expect(screen.getByText("카카오 1분기 최대 실적")).toBeInTheDocument();
+  expect(screen.getByText("플랫폼 성장과 수익성 개선")).toBeInTheDocument();
+  expect(screen.getByText("결제거래 서비스")).toBeInTheDocument();
+  expect(screen.getByText("카카오")).toBeInTheDocument();
+  expect(screen.getByText("카카오 실적 기사")).toHaveAttribute("href", "https://example.com/a");
   expect(
     screen.getByText(/뉴스 기반 참고 정보이며 매매 추천이 아닙니다./),
   ).toBeInTheDocument();
 });
 
 test("renders not-found state when id is missing", () => {
-  renderAt("/discover/issues/missing", { status: "ready", data: response([]) });
+  renderAt("/discover/issues/missing", { status: "ready", data: makeResponse([]) });
   expect(
     screen.getByText(/이슈를 찾을 수 없습니다. 시간이 지나 목록에서 빠졌을 수 있어요./),
   ).toBeInTheDocument();
@@ -102,8 +82,8 @@ test("renders not-found state when id is missing", () => {
 });
 
 test("renders symbols-empty notice when item has no symbols", () => {
-  const matched = makeItem({ id: "abc", title: "T", symbols: [] });
-  renderAt("/discover/issues/abc", { status: "ready", data: response([matched]) });
+  const matched = makeIssue({ id: "abc", issue_title: "T", related_symbols: [] });
+  renderAt("/discover/issues/abc", { status: "ready", data: makeResponse([matched]) });
   expect(screen.getByText("관련 종목 분석은 준비 중입니다.")).toBeInTheDocument();
 });
 
@@ -111,7 +91,6 @@ test("renders loading and error states", () => {
   renderAt("/discover/issues/abc", { status: "loading" });
   expect(screen.getByText("불러오는 중…")).toBeInTheDocument();
 
-  // re-render with error
   renderAt("/discover/issues/abc", { status: "error", message: "boom" });
   expect(screen.getByText("잠시 후 다시 시도해 주세요.")).toBeInTheDocument();
   expect(screen.getByText(/boom/)).toBeInTheDocument();

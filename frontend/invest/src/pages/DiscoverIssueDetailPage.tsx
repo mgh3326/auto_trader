@@ -4,23 +4,25 @@ import { AppShell } from "../components/AppShell";
 import { BottomNav } from "../components/BottomNav";
 import { IssueImpactMap } from "../components/discover/IssueImpactMap";
 import { RelatedSymbolsList } from "../components/discover/RelatedSymbolsList";
-import { describeSeverity } from "../components/discover/severity";
+import { describeDirection } from "../components/discover/severity";
 import { formatRelativeTime } from "../format/relativeTime";
-import { useNewsRadar, type NewsRadarState } from "../hooks/useNewsRadar";
+import { useNewsIssues, type NewsIssuesState } from "../hooks/useNewsIssues";
 
 export interface DiscoverIssueDetailPageProps {
-  state?: NewsRadarState;
+  state?: NewsIssuesState;
   reload?: () => void;
 }
 
 export function DiscoverIssueDetailPage(props: DiscoverIssueDetailPageProps = {}) {
   const params = useParams<{ issueId: string }>();
-  const live = useNewsRadar({
-    market: "all",
-    hours: 24,
-    includeExcluded: true,
-    limit: 20,
-  });
+  const live = useNewsIssues(
+    {
+      market: "all",
+      windowHours: 24,
+      limit: 20,
+    },
+    { enabled: props.state === undefined },
+  );
   const state = props.state ?? live.state;
   const reload = props.reload ?? live.reload;
   const issueId = params.issueId ?? "";
@@ -64,8 +66,8 @@ export function DiscoverIssueDetailPage(props: DiscoverIssueDetailPageProps = {}
     );
   }
 
-  const indicator = describeSeverity(item.severity);
-  const time = formatRelativeTime(item.published_at);
+  const indicator = describeDirection(item.direction);
+  const time = formatRelativeTime(item.updated_at);
 
   return (
     <AppShell>
@@ -82,18 +84,40 @@ export function DiscoverIssueDetailPage(props: DiscoverIssueDetailPageProps = {}
             >
               {indicator.glyph}
             </span>
-            <h1 style={{ margin: 0, fontSize: 18, fontWeight: 800 }}>{item.title}</h1>
+            <h1 style={{ margin: 0, fontSize: 18, fontWeight: 800 }}>{item.issue_title}</h1>
           </div>
-          {item.snippet && (
-            <p className="subtle" style={{ margin: 0 }}>{item.snippet}</p>
+          {item.summary && (
+            <p className="subtle" style={{ margin: 0 }}>{item.summary}</p>
           )}
           <div className="subtle" style={{ display: "flex", gap: 8, fontSize: 11 }}>
-            {item.source && <span>{item.source}</span>}
+            <span>{item.source_count}개 출처</span>
+            <span>· 기사 {item.article_count}개</span>
             {time && <span>· {time}</span>}
           </div>
         </header>
-        <IssueImpactMap category={item.risk_category} />
-        <RelatedSymbolsList symbols={item.symbols} />
+        <IssueImpactMap direction={item.direction} sectors={item.related_sectors} />
+        <RelatedSymbolsList symbols={item.related_symbols} />
+        <section aria-labelledby="articles-heading" style={{ marginTop: 16 }}>
+          <h2 id="articles-heading" style={{ margin: 0, fontSize: 14, fontWeight: 700 }}>
+            관련 뉴스
+          </h2>
+          {item.articles.length > 0 ? (
+            <ul style={{ listStyle: "none", margin: "8px 0 0", padding: 0, display: "flex", flexDirection: "column", gap: 8 }}>
+              {item.articles.map((article) => (
+                <li key={article.id} style={{ padding: 12, background: "var(--surface)", border: "1px solid var(--surface-2)", borderRadius: 12 }}>
+                  <a href={article.url} target="_blank" rel="noreferrer" style={{ color: "var(--text)", textDecoration: "none", fontWeight: 700 }}>
+                    {article.title}
+                  </a>
+                  <div className="subtle" style={{ marginTop: 4, fontSize: 11 }}>
+                    {article.source ?? article.feed_source ?? "출처 미상"}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <div className="subtle" style={{ marginTop: 8 }}>관련 뉴스 원문 링크가 없습니다.</div>
+          )}
+        </section>
         <section
           style={{
             marginTop: 16,

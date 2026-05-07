@@ -6,25 +6,23 @@ import { AiIssueTicker } from "../components/discover/AiIssueTicker";
 import { CategoryShortcutRail } from "../components/discover/CategoryShortcutRail";
 import { DiscoverHeader } from "../components/discover/DiscoverHeader";
 import { TodayEventCard } from "../components/discover/TodayEventCard";
-import {
-  countByRiskCategory,
-  relatedNewsCount,
-  sortIssueItems,
-} from "../components/discover/severity";
-import { useNewsRadar, type NewsRadarState } from "../hooks/useNewsRadar";
+import { sortMarketIssues } from "../components/discover/severity";
+import { useNewsIssues, type NewsIssuesState } from "../hooks/useNewsIssues";
 
 export interface DiscoverPageProps {
-  state?: NewsRadarState;
+  state?: NewsIssuesState;
   reload?: () => void;
 }
 
 export function DiscoverPage(props: DiscoverPageProps = {}) {
-  const live = useNewsRadar({
-    market: "all",
-    hours: 24,
-    includeExcluded: true,
-    limit: 20,
-  });
+  const live = useNewsIssues(
+    {
+      market: "all",
+      windowHours: 24,
+      limit: 20,
+    },
+    { enabled: props.state === undefined },
+  );
   const state = props.state ?? live.state;
   const reload = props.reload ?? live.reload;
 
@@ -50,31 +48,14 @@ export function DiscoverPage(props: DiscoverPageProps = {}) {
   }
 
   const { data } = state;
-  const sorted = sortIssueItems(data.items);
-  const buckets = countByRiskCategory(data.items);
-  const isStale = data.readiness.status === "stale";
+  const sorted = sortMarketIssues(data.items);
 
   return (
     <AppShell>
       <DiscoverHeader />
       <CategoryShortcutRail />
       <TodayEventCard />
-      <AiIssueTicker asOf={data.as_of} />
-      {isStale && (
-        <output
-          aria-live="polite"
-          style={{
-            padding: 8,
-            background: "rgba(246,193,119,0.08)",
-            border: "1px solid rgba(246,193,119,0.27)",
-            color: "var(--warn)",
-            borderRadius: 10,
-            fontSize: 11,
-          }}
-        >
-          데이터가 최신이 아닐 수 있습니다.
-        </output>
-      )}
+      <AiIssueTicker asOf={data.as_of} windowHours={data.window_hours} />
       {sorted.length === 0 ? (
         <div className="subtle">표시할 이슈가 없습니다.</div>
       ) : (
@@ -87,13 +68,8 @@ export function DiscoverPage(props: DiscoverPageProps = {}) {
             overflowY: "auto",
           }}
         >
-          {sorted.map((item, idx) => (
-            <AiIssueCard
-              key={item.id}
-              rank={idx + 1}
-              item={item}
-              relatedCount={relatedNewsCount(item, buckets)}
-            />
+          {sorted.map((issue) => (
+            <AiIssueCard key={issue.id} issue={issue} />
           ))}
         </div>
       )}

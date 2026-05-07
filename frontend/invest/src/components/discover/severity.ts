@@ -1,65 +1,32 @@
 // frontend/invest/src/components/discover/severity.ts
-import type { NewsRadarItem, NewsRadarSeverity } from "../../types/newsRadar";
+import type { IssueDirection, MarketIssue } from "../../types/newsIssues";
 
-export interface SeverityDescriptor {
+export interface DirectionDescriptor {
   label: string;
   color: string;
-  glyph: "▲" | "■" | "·";
+  glyph: "▲" | "▼" | "◆" | "·";
 }
 
-export function describeSeverity(severity: NewsRadarSeverity): SeverityDescriptor {
-  switch (severity) {
-    case "high":
-      return { label: "강한 이슈", color: "var(--gain)", glyph: "▲" };
-    case "medium":
-      return { label: "관심 이슈", color: "var(--muted)", glyph: "■" };
-    case "low":
+export function describeDirection(direction: IssueDirection): DirectionDescriptor {
+  switch (direction) {
+    case "up":
+      return { label: "상승 이슈", color: "var(--gain)", glyph: "▲" };
+    case "down":
+      return { label: "하락 이슈", color: "var(--loss)", glyph: "▼" };
+    case "mixed":
+      return { label: "혼조 이슈", color: "var(--warn)", glyph: "◆" };
+    case "neutral":
     default:
-      return { label: "참고", color: "var(--muted)", glyph: "·" };
+      return { label: "중립 이슈", color: "var(--muted)", glyph: "·" };
   }
 }
 
-export type RiskBucketKey =
-  | "geopolitical_oil"
-  | "macro_policy"
-  | "crypto_security"
-  | "earnings_bigtech"
-  | "korea_market"
-  | "uncategorized";
-
-export function countByRiskCategory(items: NewsRadarItem[]): Record<RiskBucketKey, number> {
-  const out: Record<RiskBucketKey, number> = {
-    geopolitical_oil: 0,
-    macro_policy: 0,
-    crypto_security: 0,
-    earnings_bigtech: 0,
-    korea_market: 0,
-    uncategorized: 0,
-  };
-  for (const item of items) {
-    const key = (item.risk_category ?? "uncategorized") as RiskBucketKey;
-    out[key] = (out[key] ?? 0) + 1;
-  }
-  return out;
-}
-
-const SEVERITY_RANK: Record<NewsRadarSeverity, number> = { high: 3, medium: 2, low: 1 };
-
-export function sortIssueItems(items: NewsRadarItem[]): NewsRadarItem[] {
+export function sortMarketIssues(items: MarketIssue[]): MarketIssue[] {
   return [...items].sort((a, b) => {
-    const sev = SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity];
-    if (sev !== 0) return sev;
-    if (b.briefing_score !== a.briefing_score) return b.briefing_score - a.briefing_score;
-    const at = a.published_at ? Date.parse(a.published_at) : 0;
-    const bt = b.published_at ? Date.parse(b.published_at) : 0;
-    return bt - at;
+    if (a.rank !== b.rank) return a.rank - b.rank;
+    const bScore = b.signals.mention_score + b.signals.recency_score + b.signals.source_diversity_score;
+    const aScore = a.signals.mention_score + a.signals.recency_score + a.signals.source_diversity_score;
+    if (bScore !== aScore) return bScore - aScore;
+    return Date.parse(b.updated_at) - Date.parse(a.updated_at);
   });
-}
-
-export function relatedNewsCount(
-  item: NewsRadarItem,
-  buckets: Record<RiskBucketKey, number>,
-): number {
-  const key = (item.risk_category ?? "uncategorized") as RiskBucketKey;
-  return buckets[key] ?? 0;
 }
