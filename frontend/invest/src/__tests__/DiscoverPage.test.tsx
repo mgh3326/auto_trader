@@ -2,9 +2,29 @@
 import type { ReactNode } from "react";
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { DiscoverPage } from "../pages/DiscoverPage";
 import type { MarketIssue, MarketIssuesResponse } from "../types/newsIssues";
+
+const calendarStub = {
+  headline: null,
+  week_label: "5월 1주차",
+  from_date: "2026-05-04",
+  to_date: "2026-05-10",
+  today: "2026-05-07",
+  tab: "all",
+  days: [],
+};
+
+const fetchMock = vi.fn();
+beforeEach(() => {
+  fetchMock.mockReset();
+  fetchMock.mockResolvedValue({ ok: true, json: async () => calendarStub });
+  vi.stubGlobal("fetch", fetchMock);
+});
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 function makeIssue(over: Partial<MarketIssue>): MarketIssue {
   return {
@@ -46,7 +66,7 @@ test("renders ranked issue cards from news-issues response", () => {
     makeIssue({ id: "b", rank: 1, issue_title: "카카오 1분기 최대 실적", direction: "up", source_count: 15, article_count: 18 }),
   ];
   renderWith(
-    <DiscoverPage state={{ status: "ready", data: makeResponse(items) }} reload={() => {}} />,
+    <DiscoverPage state={{ status: "ready", data: makeResponse(items) }} reload={() => {}} today="2026-05-07" />,
   );
 
   const titles = screen.getAllByRole("link").map((a) => a.textContent ?? "");
@@ -75,6 +95,7 @@ test("renders empty state when items list is empty", () => {
     <DiscoverPage
       state={{ status: "ready", data: makeResponse([]) }}
       reload={() => {}}
+      today="2026-05-07"
     />,
   );
   expect(screen.getByText("표시할 이슈가 없습니다.")).toBeInTheDocument();

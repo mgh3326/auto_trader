@@ -4,14 +4,28 @@ import { BottomNav } from "../components/BottomNav";
 import { AiIssueCard } from "../components/discover/AiIssueCard";
 import { AiIssueTicker } from "../components/discover/AiIssueTicker";
 import { CategoryShortcutRail } from "../components/discover/CategoryShortcutRail";
+import { DiscoverCalendarCard } from "../components/discover/DiscoverCalendarCard";
 import { DiscoverHeader } from "../components/discover/DiscoverHeader";
-import { TodayEventCard } from "../components/discover/TodayEventCard";
 import { sortMarketIssues } from "../components/discover/severity";
 import { useNewsIssues, type NewsIssuesState } from "../hooks/useNewsIssues";
 
 export interface DiscoverPageProps {
   state?: NewsIssuesState;
   reload?: () => void;
+  /** Override "today" for SSR/tests; defaults to client clock. */
+  today?: string;
+}
+
+function isoWeekRange(today: string): { fromDate: string; toDate: string } {
+  const d = new Date(today + "T00:00:00");
+  const day = d.getUTCDay(); // 0 = Sun
+  const mondayOffset = day === 0 ? -6 : 1 - day;
+  const monday = new Date(d);
+  monday.setUTCDate(d.getUTCDate() + mondayOffset);
+  const sunday = new Date(monday);
+  sunday.setUTCDate(monday.getUTCDate() + 6);
+  const iso = (x: Date) => x.toISOString().slice(0, 10);
+  return { fromDate: iso(monday), toDate: iso(sunday) };
 }
 
 export function DiscoverPage(props: DiscoverPageProps = {}) {
@@ -25,6 +39,9 @@ export function DiscoverPage(props: DiscoverPageProps = {}) {
   );
   const state = props.state ?? live.state;
   const reload = props.reload ?? live.reload;
+
+  const today = props.today ?? new Date().toISOString().slice(0, 10);
+  const { fromDate, toDate } = isoWeekRange(today);
 
   if (state.status === "loading") {
     return (
@@ -54,7 +71,7 @@ export function DiscoverPage(props: DiscoverPageProps = {}) {
     <AppShell>
       <DiscoverHeader />
       <CategoryShortcutRail />
-      <TodayEventCard />
+      <DiscoverCalendarCard fromDate={fromDate} toDate={toDate} today={today} />
       <AiIssueTicker asOf={data.as_of} windowHours={data.window_hours} />
       {sorted.length === 0 ? (
         <div className="subtle">표시할 이슈가 없습니다.</div>
