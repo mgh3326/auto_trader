@@ -361,6 +361,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=240)
     parser.add_argument("--top", type=int, default=12)
     parser.add_argument(
+        "--quality-top",
+        type=int,
+        default=5,
+        help="top-N window used for deterministic ROB-145 quality gate diagnostics",
+    )
+    parser.add_argument(
         "--threshold",
         type=float,
         default=0.78,
@@ -467,7 +473,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="prompt version label stored in diagnostics",
     )
     args = parser.parse_args(argv)
-    for name in ("window_hours", "limit", "top", "batch_size"):
+    for name in ("window_hours", "limit", "top", "quality_top", "batch_size"):
         if getattr(args, name) <= 0:
             parser.error(f"--{name.replace('_', '-')} must be positive")
     if not (0.0 < args.merge_rep_threshold <= 1.0):
@@ -1290,6 +1296,369 @@ class MergeDiagnostics:
             self.decisions = []
 
 
+@dataclass(frozen=True)
+class QualityGateConfig:
+    top_n: int = 5
+    max_duplicate_title_in_top: int = 0
+    max_duplicate_topic_in_top: int = 0
+    max_single_article_top_count: int = 0
+    max_market_mismatch_top_count: int = 0
+    max_source_noise_top_count: int = 0
+    crypto_equity_topic_fail: bool = True
+
+
+GENERIC_EQUITY_TOPICS_FOR_CRYPTO: set[str] = {
+    "미국 증시 최고치",
+    "기업 실적 발표",
+    "반도체 슈퍼사이클",
+    "AI 데이터센터",
+    "부동산·리츠",
+}
+CRYPTO_NATIVE_TERMS: tuple[str, ...] = (
+    "bitcoin",
+    "btc",
+    "비트코인",
+    "ethereum",
+    "ether",
+    "eth",
+    "이더리움",
+    "crypto",
+    "cryptocurrency",
+    "blockchain",
+    "블록체인",
+    "token",
+    "토큰",
+    "stablecoin",
+    "스테이블코인",
+    "coinbase",
+    "coindesk",
+    "cointelegraph",
+    "etf",
+    "defi",
+    "solana",
+    "솔라나",
+)
+SOURCE_NOISE_TERMS: tuple[str, ...] = (
+    "yahoo finance",
+    "naver mainnews",
+    "browser_naver_mainnews",
+    "rss_yahoo_finance_topstories",
+    "topstories",
+    "mainnews",
+)
+
+
+def _asdict_dataclass(obj: Any) -> dict[str, Any]:
+    return {
+        name: getattr(obj, name) for name in getattr(obj, "__dataclass_fields__", {})
+    }
+
+
+def _issue_text_blob(issue: dict[str, Any]) -> str:
+    parts: list[str] = [
+        str(issue.get("title_ko") or ""),
+        str(issue.get("subtitle_ko") or ""),
+        " ".join(str(t) for t in issue.get("topics") or []),
+        " ".join(str(s) for s in issue.get("representative_sources") or []),
+    ]
+    for article in issue.get("representative_articles") or []:
+        parts.extend(
+            [
+                str(article.get("title") or ""),
+                str(article.get("source") or ""),
+                str(article.get("feed_source") or ""),
+                str(article.get("stock_symbol") or ""),
+            ]
+        )
+    return "\n".join(parts).lower()
+
+
+def issue_has_source_noise(issue: dict[str, Any]) -> bool:
+    title_blob = (
+        f"{issue.get('title_ko') or ''} {issue.get('subtitle_ko') or ''}".lower()
+    )
+    return any(term in title_blob for term in SOURCE_NOISE_TERMS)
+
+
+def issue_has_crypto_native_evidence(issue: dict[str, Any]) -> bool:
+    blob = _issue_text_blob(issue)
+    return any(keyword_matches(blob, term) for term in CRYPTO_NATIVE_TERMS)
+
+
+def issue_market_mismatch(issue: dict[str, Any], requested_market: str) -> bool:
+    if requested_market == "all":
+        return False
+    issue_markets = set(issue.get("markets") or [])
+    if issue_markets and not (
+        requested_market in issue_markets or "all" in issue_markets
+    ):
+        return True
+    if requested_market == "crypto":
+        title = str(issue.get("title_ko") or "")
+        topics = {str(t) for t in (issue.get("topics") or [])}
+        if (
+            title in GENERIC_EQUITY_TOPICS_FOR_CRYPTO
+            or topics & GENERIC_EQUITY_TOPICS_FOR_CRYPTO
+        ) and not issue_has_crypto_native_evidence(issue):
+            return True
+    return False
+
+
+def _quality_finding(
+    code: str,
+    severity: str,
+    issue: dict[str, Any] | None,
+    reason: str,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"code": code, "severity": severity, "reason": reason}
+    if issue:
+        payload.update(
+            {
+                "rank": issue.get("rank"),
+                "title_ko": issue.get("title_ko"),
+                "cluster_key": issue.get("cluster_key"),
+                "article_count": issue.get("article_count"),
+                "normalized_source_count": issue.get("normalized_source_count"),
+                "markets": issue.get("markets"),
+                "topics": issue.get("topics"),
+            }
+        )
+    return payload
+
+
+def suppress_duplicate_top_issues(
+    issues: list[dict[str, Any]],
+    *,
+    top_n: int,
+    requested_market: str,
+    config: QualityGateConfig | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Keep visible top-N cleaner while preserving suppressed candidates for audit."""
+    config = config or QualityGateConfig(top_n=top_n)
+    selected: list[dict[str, Any]] = []
+    suppressed: list[dict[str, Any]] = []
+    seen_titles: set[str] = set()
+    seen_topics: set[str] = set()
+    target_len = len(issues)
+    for issue in issues:
+        clone = dict(issue)
+        title_key = normalize_text(str(clone.get("title_ko") or "")).lower()
+        topic_key = title_key
+        if clone.get("topics"):
+            topic_key = normalize_text(str(clone["topics"][0])).lower()
+        reason = None
+        in_quality_window = len(selected) < top_n
+        if in_quality_window and title_key and title_key in seen_titles:
+            reason = "duplicate_title_topn"
+        elif in_quality_window and topic_key and topic_key in seen_topics:
+            reason = "duplicate_topic_topn"
+        elif in_quality_window and int(clone.get("article_count") or 0) <= 1:
+            reason = "single_article_topn"
+        elif (
+            in_quality_window
+            and requested_market == "crypto"
+            and issue_market_mismatch(clone, requested_market)
+        ):
+            reason = "crypto_equity_topic"
+        if reason:
+            clone["display_suppressed"] = True
+            clone["suppression_reason"] = reason
+            flags = list(clone.get("quality_flags") or [])
+            if reason not in flags:
+                flags.append(reason)
+            clone["quality_flags"] = flags
+            suppressed.append(clone)
+            continue
+        clone.setdefault("display_suppressed", False)
+        clone.setdefault("quality_flags", [])
+        selected.append(clone)
+        if len(selected) <= top_n:
+            if title_key:
+                seen_titles.add(title_key)
+            if topic_key:
+                seen_topics.add(topic_key)
+    if suppressed and len(selected) < target_len:
+        selected.extend(suppressed[: target_len - len(selected)])
+    for rank, issue in enumerate(selected, start=1):
+        issue["rank"] = rank
+    return selected, suppressed
+
+
+def evaluate_quality_gate(
+    payload: dict[str, Any],
+    *,
+    market: str | None = None,
+    config: QualityGateConfig | None = None,
+) -> dict[str, Any]:
+    market = market or payload.get("run", {}).get("market", "all")
+    config = config or QualityGateConfig(
+        top_n=int(payload.get("run", {}).get("quality_top", 5))
+    )
+    top_issues = list(payload.get("issues") or [])[: config.top_n]
+    findings: list[dict[str, Any]] = []
+    metrics = {
+        "duplicate_title_count_topn": 0,
+        "duplicate_topic_count_topn": 0,
+        "single_article_count_topn": 0,
+        "single_source_count_topn": 0,
+        "market_mismatch_count_topn": 0,
+        "regular_report_leakage_count_topn": 0,
+        "source_noise_count_topn": 0,
+        "crypto_equity_topic_count_topn": 0,
+        "merge_decision_count": 0,
+        "merge_rejected_near_misses": 0,
+        "llm_render_enabled": False,
+        "suppressed_candidate_count": len(payload.get("suppressed_candidates") or []),
+    }
+    seen_titles: set[str] = set()
+    seen_topics: set[str] = set()
+    for issue in top_issues:
+        flags = list(issue.get("quality_flags") or [])
+        title_key = normalize_text(str(issue.get("title_ko") or "")).lower()
+        topic_key = title_key
+        if issue.get("topics"):
+            topic_key = normalize_text(str(issue["topics"][0])).lower()
+        if title_key and title_key in seen_titles:
+            metrics["duplicate_title_count_topn"] += 1
+            findings.append(
+                _quality_finding(
+                    "duplicate_title_topn",
+                    "fail",
+                    issue,
+                    "duplicate title_ko inside quality top-N",
+                )
+            )
+            flags.append("duplicate_title_topn")
+        if topic_key and topic_key in seen_topics:
+            metrics["duplicate_topic_count_topn"] += 1
+            findings.append(
+                _quality_finding(
+                    "duplicate_topic_topn",
+                    "fail",
+                    issue,
+                    "duplicate topic inside quality top-N",
+                )
+            )
+            flags.append("duplicate_topic_topn")
+        if title_key:
+            seen_titles.add(title_key)
+        if topic_key:
+            seen_topics.add(topic_key)
+        if int(issue.get("article_count") or 0) <= 1:
+            metrics["single_article_count_topn"] += 1
+            findings.append(
+                _quality_finding(
+                    "single_article_topn",
+                    "fail",
+                    issue,
+                    "single-article issue reached quality top-N",
+                )
+            )
+            flags.append("single_article_topn")
+        if (
+            int(issue.get("normalized_source_count") or issue.get("source_count") or 0)
+            <= 1
+        ):
+            metrics["single_source_count_topn"] += 1
+            findings.append(
+                _quality_finding(
+                    "single_source_topn",
+                    "warn",
+                    issue,
+                    "single normalized source in quality top-N",
+                )
+            )
+            flags.append("single_source_topn")
+        if issue_market_mismatch(issue, market):
+            metrics["market_mismatch_count_topn"] += 1
+            code = "crypto_equity_topic" if market == "crypto" else "market_mismatch"
+            if code == "crypto_equity_topic":
+                metrics["crypto_equity_topic_count_topn"] += 1
+            findings.append(
+                _quality_finding(
+                    code, "fail", issue, f"issue does not fit requested market={market}"
+                )
+            )
+            flags.append(code)
+        if int((issue.get("flags") or {}).get("regular_report", 0)) > 0:
+            metrics["regular_report_leakage_count_topn"] += 1
+            findings.append(
+                _quality_finding(
+                    "regular_report_leakage",
+                    "warn",
+                    issue,
+                    "regular-report/transcript flag present in quality top-N",
+                )
+            )
+            flags.append("regular_report_leakage")
+        if issue_has_source_noise(issue):
+            metrics["source_noise_count_topn"] += 1
+            findings.append(
+                _quality_finding(
+                    "source_name_noise",
+                    "fail",
+                    issue,
+                    "source/feed name appears in rendered title/subtitle",
+                )
+            )
+            flags.append("source_name_noise")
+        issue["quality_flags"] = sorted(set(flags))
+        if issue["quality_flags"]:
+            issue["quality_notes"] = issue.get("quality_notes") or [
+                "; ".join(issue["quality_flags"])
+            ]
+    merge_diag = payload.get("merge_diagnostics") or {}
+    decisions = merge_diag.get("decisions") or []
+    metrics["merge_decision_count"] = sum(
+        1 for d in decisions if d.get("decision") == "merged"
+    )
+    metrics["merge_rejected_near_misses"] = int(
+        merge_diag.get("rejected_near_misses")
+        or sum(1 for d in decisions if d.get("decision") == "rejected")
+    )
+    llm_diag = payload.get("run", {}).get("llm_render") or {}
+    metrics["llm_render_enabled"] = bool(llm_diag.get("enabled"))
+    if metrics["llm_render_enabled"]:
+        findings.append(
+            _quality_finding(
+                "llm_enabled_for_eval",
+                "fail",
+                None,
+                "deterministic quality gate must keep LLM rendering disabled",
+            )
+        )
+    for suppressed in payload.get("suppressed_candidates") or []:
+        findings.append(
+            _quality_finding(
+                str(suppressed.get("suppression_reason") or "suppressed_candidate"),
+                "warn",
+                suppressed,
+                "candidate suppressed from visible top-N but preserved for audit",
+            )
+        )
+    fail_codes = {
+        "duplicate_title_topn",
+        "duplicate_topic_topn",
+        "single_article_topn",
+        "market_mismatch",
+        "crypto_equity_topic",
+        "source_name_noise",
+        "llm_enabled_for_eval",
+    }
+    status = "pass"
+    if any(f["severity"] == "fail" and f["code"] in fail_codes for f in findings):
+        status = "fail"
+    elif findings:
+        status = "warn"
+    return {
+        "status": status,
+        "top_n": config.top_n,
+        "metrics": metrics,
+        "thresholds": _asdict_dataclass(config),
+        "findings": findings,
+    }
+
+
 def _round_score(value: float) -> float:
     return round(float(value), 4)
 
@@ -1425,10 +1794,14 @@ def score_cluster(
         )
         * 0.30
     )
+    single_source_penalty = 0.14 if normalized_source_count == 1 else 0.0
+    weak_single_article_penalty = 0.28 if len(rows) == 1 else 0.0
     penalties = {
         "noise": min(0.40, noise_penalty),
         "regular_report": min(0.45, regular_report_penalty),
         "duplicate_source": min(0.30, duplicate_source_penalty),
+        "single_source": single_source_penalty,
+        "weak_single_article": weak_single_article_penalty,
     }
     components = {
         "source_diversity_norm": source_diversity_norm,
@@ -1638,6 +2011,29 @@ def render_markdown(payload: dict[str, Any]) -> str:
     ]
     if llm_render_line:
         lines.append(llm_render_line)
+    quality_gate = payload.get("quality_gate") or {}
+    if quality_gate:
+        metrics = quality_gate.get("metrics") or {}
+        lines.extend(
+            [
+                "",
+                "## 품질 게이트 (ROB-145)",
+                "",
+                f"- status: `{quality_gate.get('status', '-')}` / top_n: {quality_gate.get('top_n', '-')}",
+                f"- duplicate_title={metrics.get('duplicate_title_count_topn', 0)}, duplicate_topic={metrics.get('duplicate_topic_count_topn', 0)}, single_article={metrics.get('single_article_count_topn', 0)}, single_source={metrics.get('single_source_count_topn', 0)}",
+                f"- market_mismatch={metrics.get('market_mismatch_count_topn', 0)}, source_noise={metrics.get('source_noise_count_topn', 0)}, crypto_equity_topic={metrics.get('crypto_equity_topic_count_topn', 0)}, regular_report={metrics.get('regular_report_leakage_count_topn', 0)}",
+                f"- merge_decisions={metrics.get('merge_decision_count', 0)}, near_misses={metrics.get('merge_rejected_near_misses', 0)}, suppressed={metrics.get('suppressed_candidate_count', 0)}, llm_render_enabled={metrics.get('llm_render_enabled', False)}",
+            ]
+        )
+        findings = quality_gate.get("findings") or []
+        if findings:
+            lines.append("- findings:")
+            for finding in findings[:10]:
+                rank = finding.get("rank")
+                title = finding.get("title_ko") or "run"
+                lines.append(
+                    f"  - {finding.get('severity')}:{finding.get('code')} rank={rank} title={title} — {finding.get('reason')}"
+                )
     lines.extend(["", "## 실시간 이슈 후보", ""])
     arrow = {"up": "▲", "down": "▼", "neutral": "◆"}
     for issue in payload["issues"]:
@@ -1673,6 +2069,7 @@ def render_markdown(payload: dict[str, Any]) -> str:
             [
                 f"- 출처/기사: raw {issue.get('raw_source_count', issue['source_count'])}개 → normalized {issue.get('normalized_source_count', issue['source_count'])}개 · {issue['article_count']}개 기사",
                 f"- 점수: {issue.get('score', 0):.4f} / components={issue.get('score_components', {})} / penalties={issue.get('score_penalties', {})}",
+                f"- 품질 플래그: {', '.join(issue.get('quality_flags') or []) or '-'}",
                 f"- 대표 출처: {', '.join(issue['representative_sources']) or '-'}",
                 f"- 시장: {', '.join(issue['markets'])}",
                 f"- 토픽: {', '.join(issue['topics']) or '-'}",
@@ -2116,10 +2513,18 @@ async def build_payload(args: argparse.Namespace) -> dict[str, Any]:
             / max(1, len(cluster["indices"]))
             < 0.5
         ]
-    issues = [
+    quality_top = int(getattr(args, "quality_top", 5))
+    pre_quality_issues = [
         summarize_cluster(cluster, articles, rank=i + 1, score_breakdown=breakdown)
-        for i, (cluster, breakdown) in enumerate(ranked_v2[: args.top])
+        for i, (cluster, breakdown) in enumerate(ranked_v2)
     ]
+    issues, suppressed_candidates = suppress_duplicate_top_issues(
+        pre_quality_issues,
+        top_n=quality_top,
+        requested_market=args.market,
+        config=QualityGateConfig(top_n=quality_top),
+    )
+    issues = issues[: args.top]
     # ROB-136: Korean LLM rendering pass
     llm_provider = make_llm_provider(args)
     issues, render_diag = render_top_issues(
@@ -2141,6 +2546,7 @@ async def build_payload(args: argparse.Namespace) -> dict[str, Any]:
             "window_hours": args.window_hours,
             "article_limit": args.limit,
             "top": args.top,
+            "quality_top": quality_top,
             "article_count": len(articles),
             "cluster_count": len(clusters),
             "cluster_count_before_merge": len(clusters_before_merge),
@@ -2170,6 +2576,7 @@ async def build_payload(args: argparse.Namespace) -> dict[str, Any]:
             "normalized": dict(normalized_source_counts),
         },
         "issues": issues,
+        "suppressed_candidates": suppressed_candidates,
         "merge_diagnostics": {
             "enabled": merge_diag.enabled,
             "merge_before_count": merge_diag.merge_before_count,
@@ -2197,6 +2604,9 @@ async def build_payload(args: argparse.Namespace) -> dict[str, Any]:
             ],
         },
     }
+    payload["quality_gate"] = evaluate_quality_gate(
+        payload, market=args.market, config=QualityGateConfig(top_n=quality_top)
+    )
     if getattr(args, "compare_v1", False):
         payload["v1_vs_v2"] = _comparison_payload(
             ranked_v1,
