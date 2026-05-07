@@ -33,6 +33,7 @@ from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.monitoring.sentry import capture_exception, init_sentry
 from app.services.market_events.ingestion import (
+    ingest_economic_events_for_date,
     ingest_kr_disclosures_for_date,
     ingest_us_earnings_for_date,
 )
@@ -43,6 +44,7 @@ logger = logging.getLogger(__name__)
 SUPPORTED = {
     ("finnhub", "earnings", "us"): ingest_us_earnings_for_date,
     ("dart", "disclosure", "kr"): ingest_kr_disclosures_for_date,
+    ("forexfactory", "economic", "global"): ingest_economic_events_for_date,
 }
 
 
@@ -63,11 +65,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Per-day market events ingestion CLI (ROB-128)."
     )
-    parser.add_argument("--source", default="finnhub", choices=["finnhub", "dart"])
     parser.add_argument(
-        "--category", default="earnings", choices=["earnings", "disclosure"]
+        "--source",
+        default="finnhub",
+        choices=["finnhub", "dart", "forexfactory"],
     )
-    parser.add_argument("--market", default="us", choices=["us", "kr"])
+    parser.add_argument(
+        "--category",
+        default="earnings",
+        choices=["earnings", "disclosure", "economic"],
+    )
+    parser.add_argument(
+        "--market",
+        default="us",
+        choices=["us", "kr", "global"],
+    )
     parser.add_argument("--from-date", required=True, type=_parse_iso, dest="from_date")
     parser.add_argument("--to-date", required=True, type=_parse_iso, dest="to_date")
     parser.add_argument("--dry-run", action="store_true", dest="dry_run")
@@ -124,13 +136,20 @@ async def run_ingest(
                 d,
                 result.error,
             )
-    logger.info(
-        "ingest complete: succeeded=%s failed=%s range=%s..%s",
-        succeeded,
-        failed,
-        from_date,
-        to_date,
-    )
+    summary = {
+        "source": source,
+        "category": category,
+        "market": market,
+        "from_date": from_date.isoformat(),
+        "to_date": to_date.isoformat(),
+        "dry_run": dry_run,
+        "succeeded": succeeded,
+        "failed": failed,
+    }
+    import json as _json
+
+    print(_json.dumps(summary))
+    logger.info("ingest complete: %s", summary)
     return 0 if failed == 0 else 2
 
 
