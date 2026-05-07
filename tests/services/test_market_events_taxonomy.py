@@ -62,3 +62,9 @@ def test_validate_category_rejects_unknown():
     validate_category("earnings")
     with pytest.raises(ValueError, match="unknown category"):
         validate_category("not_a_category")
+
+
+@pytest.mark.unit
+def test_sources_include_forexfactory():
+    from app.services.market_events.taxonomy import SOURCES
+    assert "forexfactory" in SOURCES
