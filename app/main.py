@@ -31,6 +31,7 @@ from app.routers import (
     invest_api,
     invest_app_spa,
     kospi200,
+    market_events,
     n8n,
     n8n_scan,
     news_analysis,
@@ -190,6 +191,7 @@ def create_app() -> FastAPI:
     app.include_router(preopen.router)
     app.include_router(news_radar.router)
     app.include_router(alpaca_paper_ledger.router)
+    app.include_router(market_events.router)
     app.include_router(watch_order_intent_ledger.router)
     app.include_router(strategy_events.router)
     app.include_router(kospi200.router)
