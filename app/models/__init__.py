@@ -36,6 +36,7 @@ from .research_run import (
     ResearchRunStage,
     ResearchRunStatus,
 )
+from .research_reports import ResearchReport, ResearchReportIngestionRun
 from .review import PendingSnapshot, Trade, TradeReview, TradeSnapshot
 from .sell_condition import SellCondition
 from .symbol_trade_settings import SymbolTradeSettings
@@ -141,6 +142,8 @@ __all__ = [
     "ResearchRunStage",
     "ResearchRunMarketScope",
     "ResearchRunCandidateKind",
+    "ResearchReport",
+    "ResearchReportIngestionRun",
     "ResearchSession",
     "StageAnalysis",
     "ResearchSummary",
