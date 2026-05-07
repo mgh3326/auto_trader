@@ -13,8 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
 from app.routers.dependencies import get_authenticated_user
+from app.schemas.invest_account_panel import AccountPanelResponse
 from app.schemas.invest_home import InvestHomeResponse
 from app.services.invest_home_service import InvestHomeService
+from app.services.invest_view_model.account_panel_service import build_account_panel
 
 router = APIRouter(prefix="/invest/api", tags=["invest"])
 
@@ -46,3 +48,12 @@ async def get_home(
     service: Annotated[InvestHomeService, Depends(get_invest_home_service)],
 ) -> InvestHomeResponse:
     return await service.get_home(user_id=user.id)
+
+
+@router.get("/account-panel")
+async def get_account_panel(
+    user: Annotated[Any, Depends(get_authenticated_user)],
+    service: Annotated[InvestHomeService, Depends(get_invest_home_service)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> AccountPanelResponse:
+    return await build_account_panel(user_id=user.id, db=db, home_service=service)

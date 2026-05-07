@@ -1,6 +1,8 @@
 """Account source -> visual tone/badge mapping for /invest desktop UI."""
 from __future__ import annotations
+
 from typing import Literal
+
 from pydantic import BaseModel, ConfigDict
 
 Tone = Literal["navy", "gray", "purple", "green", "dashed"]
