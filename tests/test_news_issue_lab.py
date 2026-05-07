@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from argparse import Namespace
 from datetime import UTC, datetime, timedelta
 
@@ -966,3 +967,564 @@ def test_render_markdown_skips_merge_section_when_disabled() -> None:
     }
     md = lab.render_markdown(payload)
     assert "## 클러스터 병합 진단" not in md
+
+
+def _render_issue(**overrides) -> dict[str, object]:
+    issue: dict[str, object] = {
+        "rank": 1,
+        "cluster_key": "cluster-1",
+        "title_ko": "반도체 공급망",
+        "subtitle_ko": "AI 수요와 공급망 점검",
+        "direction": "neutral",
+        "article_count": 3,
+        "source_count": 2,
+        "raw_source_count": 3,
+        "normalized_source_count": 2,
+        "score": 0.72,
+        "score_components": {"source_diversity_norm": 0.4},
+        "score_penalties": {},
+        "flags": {},
+        "representative_sources": ["naver", "hankyung"],
+        "source_counts": {"raw": {"naver": 2}, "normalized": {"naver": 2}},
+        "markets": ["kr"],
+        "topics": ["반도체", "AI"],
+        "related_symbols": [{"symbol": "005930", "name": "삼성전자"}],
+        "representative_articles": [
+            {
+                "title": "삼성전자 반도체 공급망 점검",
+                "source": "naver",
+                "feed_source": "browser_naver_mainnews",
+                "market": "kr",
+                "summary": "AI 서버 수요와 메모리 공급망에 관한 짧은 요약입니다." * 10,
+                "published_at": "2026-05-07T09:00:00+09:00",
+                "scraped_at": "2026-05-07T09:01:00+09:00",
+                "body": "이 필드는 프롬프트에 들어가면 안 됩니다.",
+            }
+        ],
+        "merge_member_count": 2,
+        "merged_cluster_ids": [1, 2],
+    }
+    issue.update(overrides)
+    return issue
+
+
+def _valid_render_card(**overrides) -> dict[str, object]:
+    card: dict[str, object] = {
+        "title_ko": "반도체 공급망 점검",
+        "subtitle_ko": "AI 수요와 메모리 공급 논의",
+        "direction": "neutral",
+        "summary_ko": "여러 국내 매체가 AI 서버 수요와 메모리 공급망 관련 동향을 함께 다뤘습니다. 기사들은 기업별 가격 전망보다 업황 변화와 공급망 점검 필요성을 중심으로 전하고 있어 추가 확인이 필요한 이슈입니다.",
+        "impact_points": ["메모리 업황 관련 뉴스 흐름을 점검할 필요가 있습니다."],
+        "related_symbols": [{"symbol": "005930", "name": "삼성전자"}],
+        "confidence": 0.7,
+    }
+    card.update(overrides)
+    return card
+
+
+class _FakeHTTPResponse:
+    def __init__(self, data: dict[str, object]) -> None:
+        self._data = data
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    def read(self, *_args, **_kwargs) -> bytes:
+        return json.dumps(self._data).encode()
+
+
+def test_null_llm_provider_raises_disabled_reason() -> None:
+    provider = lab.NullLLMRenderProvider()
+    with pytest.raises(lab.LLMRenderError) as exc:
+        provider.render("system", "user")
+    assert exc.value.reason == "llm_disabled"
+
+
+def test_http_llm_provider_extracts_openai_compatible_message(monkeypatch) -> None:
+    captured = {}
+
+    def fake_urlopen(req, timeout):
+        captured["url"] = req.full_url
+        captured["timeout"] = timeout
+        return _FakeHTTPResponse(
+            {"choices": [{"message": {"content": '{"ok": true}'}}]}
+        )
+
+    monkeypatch.setattr(lab.request, "urlopen", fake_urlopen)
+    provider = lab.OpenAICompatibleLLMRenderProvider("http://127.0.0.1:8000")
+    assert provider.render("system", "user", model="local", timeout=7) == '{"ok": true}'
+    assert captured == {
+        "url": "http://127.0.0.1:8000/v1/chat/completions",
+        "timeout": 7,
+    }
+
+
+def test_http_llm_provider_wraps_http_errors_without_printing_headers(
+    monkeypatch,
+) -> None:
+    def fake_urlopen(_req, _timeout):
+        raise RuntimeError("Authorization: [REDACTED]")
+
+    monkeypatch.setattr(lab.request, "urlopen", fake_urlopen)
+    provider = lab.OpenAICompatibleLLMRenderProvider("http://127.0.0.1:8000")
+    with pytest.raises(lab.LLMRenderError) as exc:
+        provider.render("system", "user")
+    assert exc.value.reason == "http_error"
+    assert "[REDACTED]" not in str(exc.value)
+    assert "Authorization" not in str(exc.value)
+
+
+def test_build_render_prompt_includes_only_safe_metadata() -> None:
+    _system, user_prompt, prompt_input = lab.build_render_prompt(_render_issue())
+    assert "삼성전자 반도체 공급망 점검" in user_prompt
+    assert prompt_input["stats"]["article_count"] == 3
+    assert prompt_input["related_symbols"] == [{"symbol": "005930", "name": "삼성전자"}]
+    assert "body" not in user_prompt
+    assert "이 필드는 프롬프트에 들어가면 안 됩니다" not in user_prompt
+
+
+def test_build_render_prompt_truncates_summary_excerpt() -> None:
+    _system, _user_prompt, prompt_input = lab.build_render_prompt(_render_issue())
+    excerpt = prompt_input["representative_articles"][0]["summary_excerpt"]
+    assert len(excerpt) == lab.RENDER_SUMMARY_EXCERPT_MAX
+
+
+def test_compute_render_input_hash_is_stable_for_key_order() -> None:
+    assert lab.compute_render_input_hash(
+        {"b": 2, "a": {"y": 1, "x": 0}}
+    ) == lab.compute_render_input_hash({"a": {"x": 0, "y": 1}, "b": 2})
+
+
+def test_validate_render_response_accepts_valid_card() -> None:
+    card = lab.validate_render_response(
+        json.dumps(_valid_render_card(), ensure_ascii=False), allowed_symbols={"005930"}
+    )
+    assert card["title_ko"] == "반도체 공급망 점검"
+
+
+@pytest.mark.parametrize(
+    ("raw", "reason"),
+    [
+        ("not json", "parse_error"),
+        (
+            json.dumps(_valid_render_card(title_ko=""), ensure_ascii=False),
+            "empty_field",
+        ),
+        (json.dumps({"title_ko": "x"}, ensure_ascii=False), "schema_missing_field"),
+        (
+            json.dumps(
+                _valid_render_card(summary_ko="지금 사야 합니다. " * 20),
+                ensure_ascii=False,
+            ),
+            "banned_phrase",
+        ),
+        (
+            json.dumps(
+                _valid_render_card(
+                    related_symbols=[{"symbol": "000000", "name": "가짜"}]
+                ),
+                ensure_ascii=False,
+            ),
+            "symbol_unknown",
+        ),
+        (
+            json.dumps(_valid_render_card(direction="sideways"), ensure_ascii=False),
+            "invalid_direction",
+        ),
+        (
+            json.dumps(_valid_render_card(confidence=1.5), ensure_ascii=False),
+            "invalid_confidence",
+        ),
+    ],
+)
+def test_validate_render_response_rejects_invalid_cards(raw: str, reason: str) -> None:
+    with pytest.raises(ValueError, match=reason):
+        lab.validate_render_response(raw, allowed_symbols={"005930"})
+
+
+def test_fallback_render_returns_schema_complete_card() -> None:
+    card = lab.fallback_render(_render_issue(), "llm_disabled")
+    assert card["title_ko"] == "반도체 공급망"
+    assert card["subtitle_ko"] == "AI 수요와 공급망 점검"
+    assert card["direction"] == "neutral"
+    assert card["render_status"] == "fallback"
+    assert card["render_rejection_reason"] == "llm_disabled"
+    assert card["confidence"] == 0.0
+    assert card["summary_ko"]
+    assert card["impact_points"]
+    assert "body" not in json.dumps(card, ensure_ascii=False)
+
+
+class _Provider:
+    def __init__(self, raw: str) -> None:
+        self.raw = raw
+        self.calls = 0
+
+    def render(self, *_args, **_kwargs) -> str:
+        self.calls += 1
+        return self.raw
+
+
+def test_render_top_issues_no_llm_marks_all_fallback() -> None:
+    rendered, diag = lab.render_top_issues(
+        [_render_issue()],
+        provider=lab.NullLLMRenderProvider(),
+        llm_enabled=False,
+        model=None,
+        timeout=1,
+        prompt_version="rob136-v1",
+        max_render=1,
+    )
+    assert rendered[0]["render_status"] == "fallback"
+    assert rendered[0]["render_rejection_reason"] == "llm_disabled"
+    assert diag["fallback"] == 1
+    assert diag["rejection_counts"] == {"llm_disabled": 1}
+
+
+def test_render_top_issues_valid_provider_marks_ok_and_overrides_card_fields() -> None:
+    provider = _Provider(
+        json.dumps(_valid_render_card(title_ko="AI 반도체 수요"), ensure_ascii=False)
+    )
+    rendered, diag = lab.render_top_issues(
+        [_render_issue()],
+        provider=provider,
+        llm_enabled=True,
+        model="local-model",
+        timeout=1,
+        prompt_version="rob136-v1",
+        max_render=1,
+    )
+    assert rendered[0]["title_ko"] == "AI 반도체 수요"
+    assert rendered[0]["render_status"] == "ok"
+    assert rendered[0]["render_model"] == "local-model"
+    assert len(rendered[0]["render_input_hash"]) == 32
+    assert diag["ok"] == 1
+    assert diag["fallback"] == 0
+
+
+@pytest.mark.parametrize(
+    ("raw", "reason"),
+    [
+        ("not json", "parse_error"),
+        (
+            json.dumps(_valid_render_card(title_ko=""), ensure_ascii=False),
+            "empty_field",
+        ),
+        (json.dumps({"title_ko": "x"}, ensure_ascii=False), "schema_missing_field"),
+        (
+            json.dumps(
+                _valid_render_card(summary_ko="매수 추천 문구입니다. " * 20),
+                ensure_ascii=False,
+            ),
+            "banned_phrase",
+        ),
+    ],
+)
+def test_render_top_issues_falls_back_on_invalid_provider_output(
+    raw: str, reason: str
+) -> None:
+    rendered, diag = lab.render_top_issues(
+        [_render_issue()],
+        provider=_Provider(raw),
+        llm_enabled=True,
+        model="local-model",
+        timeout=1,
+        prompt_version="rob136-v1",
+        max_render=1,
+    )
+    assert rendered[0]["render_status"] == "fallback"
+    assert rendered[0]["render_rejection_reason"] == reason
+    assert diag["fallback"] == 1
+    assert diag["rejection_counts"][reason] == 1
+
+
+def test_render_top_issues_respects_llm_max_render() -> None:
+    provider = _Provider(json.dumps(_valid_render_card(), ensure_ascii=False))
+    rendered, diag = lab.render_top_issues(
+        [_render_issue(rank=1), _render_issue(rank=2, cluster_key="cluster-2")],
+        provider=provider,
+        llm_enabled=True,
+        model="local-model",
+        timeout=1,
+        prompt_version="rob136-v1",
+        max_render=1,
+    )
+    assert provider.calls == 1
+    assert rendered[0]["render_status"] == "ok"
+    assert rendered[1]["render_status"] == "fallback"
+    assert rendered[1]["render_rejection_reason"] == "llm_skipped"
+    assert diag["ok"] == 1
+    assert diag["skipped"] == 1
+
+
+def test_parse_args_defaults_disable_llm_render() -> None:
+    args = lab.parse_args([])
+    assert args.llm_render is False
+    assert args.llm_timeout == lab.DEFAULT_LLM_TIMEOUT
+
+
+def test_parse_args_requires_endpoint_and_model_when_llm_render_enabled() -> None:
+    with pytest.raises(SystemExit):
+        lab.parse_args(["--llm-render", "--llm-model", "local"])
+    with pytest.raises(SystemExit):
+        lab.parse_args(["--llm-render", "--llm-endpoint", "http://127.0.0.1:8000"])
+
+
+def test_parse_args_accepts_llm_render_config() -> None:
+    args = lab.parse_args(
+        [
+            "--llm-render",
+            "--llm-endpoint",
+            "http://127.0.0.1:8000",
+            "--llm-model",
+            "local",
+            "--llm-timeout",
+            "10",
+            "--llm-max-render",
+            "2",
+            "--top",
+            "3",
+        ]
+    )
+    assert args.llm_render is True
+    assert args.llm_endpoint == "http://127.0.0.1:8000"
+    assert args.llm_model == "local"
+    assert args.llm_timeout == 10
+    assert args.llm_max_render == 2
+
+
+def test_parse_args_rejects_invalid_llm_values() -> None:
+    with pytest.raises(SystemExit):
+        lab.parse_args(["--llm-timeout", "0"])
+    with pytest.raises(SystemExit):
+        lab.parse_args(["--llm-max-render", "0"])
+    with pytest.raises(SystemExit):
+        lab.parse_args(["--top", "2", "--llm-max-render", "3"])
+
+
+@pytest.mark.asyncio
+async def test_build_payload_no_llm_render_adds_fallback_render_metadata(
+    monkeypatch,
+) -> None:
+    articles = [_article(1, title="삼성전자 반도체 공급망", source="naver")]
+
+    async def fake_fetch_articles(_market, _window_hours, _limit):
+        return articles
+
+    monkeypatch.setattr(lab, "fetch_articles", fake_fetch_articles)
+    monkeypatch.setattr(
+        lab, "embed_batch", lambda endpoint, model, texts: [[1.0, 0.0] for _ in texts]
+    )
+    args = Namespace(
+        market="all",
+        window_hours=24,
+        limit=10,
+        top=3,
+        threshold=0.78,
+        dedupe_threshold=0.90,
+        embedding_endpoint="http://127.0.0.1:10631/v1/embeddings",
+        embedding_model="BAAI/bge-m3",
+        batch_size=16,
+        compare_v1=False,
+        weights=None,
+        drop_regular_reports=False,
+        merge_clusters=False,
+        merge_rep_threshold=0.86,
+        merge_token_jaccard=0.30,
+        merge_rep_articles=3,
+        llm_render=False,
+        llm_endpoint=None,
+        llm_model=None,
+        llm_timeout=30,
+        llm_max_render=None,
+        llm_prompt_version="rob136-v1",
+    )
+    payload = await lab.build_payload(args)
+    assert payload["run"]["llm_render"]["enabled"] is False
+    assert payload["run"]["llm_render"]["fallback"] == 1
+    assert payload["issues"][0]["render_status"] == "fallback"
+    assert payload["issues"][0]["summary_ko"]
+
+
+@pytest.mark.asyncio
+async def test_build_payload_llm_render_uses_mock_provider_and_reports_counts(
+    monkeypatch,
+) -> None:
+    articles = [_article(1, title="삼성전자 반도체 공급망", source="naver")]
+    provider = _Provider(
+        json.dumps(
+            _valid_render_card(title_ko="AI 반도체 수요", related_symbols=[]),
+            ensure_ascii=False,
+        )
+    )
+
+    async def fake_fetch_articles(_market, _window_hours, _limit):
+        return articles
+
+    monkeypatch.setattr(lab, "fetch_articles", fake_fetch_articles)
+    monkeypatch.setattr(
+        lab, "embed_batch", lambda endpoint, model, texts: [[1.0, 0.0] for _ in texts]
+    )
+    monkeypatch.setattr(lab, "make_llm_provider", lambda _args: provider)
+    args = Namespace(
+        market="all",
+        window_hours=24,
+        limit=10,
+        top=3,
+        threshold=0.78,
+        dedupe_threshold=0.90,
+        embedding_endpoint="http://127.0.0.1:10631/v1/embeddings",
+        embedding_model="BAAI/bge-m3",
+        batch_size=16,
+        compare_v1=False,
+        weights=None,
+        drop_regular_reports=False,
+        merge_clusters=False,
+        merge_rep_threshold=0.86,
+        merge_token_jaccard=0.30,
+        merge_rep_articles=3,
+        llm_render=True,
+        llm_endpoint="http://127.0.0.1:8000",
+        llm_model="local-model",
+        llm_timeout=30,
+        llm_max_render=1,
+        llm_prompt_version="rob136-v1",
+    )
+    payload = await lab.build_payload(args)
+    assert payload["run"]["llm_render"]["enabled"] is True
+    assert payload["run"]["llm_render"]["ok"] == 1
+    assert payload["issues"][0]["title_ko"] == "AI 반도체 수요"
+    assert payload["issues"][0]["render_status"] == "ok"
+
+
+def test_render_markdown_includes_llm_success_fallback_counts() -> None:
+    payload = {
+        "run": {
+            "run_uuid": "r-1",
+            "market": "all",
+            "window_hours": 24,
+            "article_count": 1,
+            "cluster_count": 1,
+            "embedding_model": "BAAI/bge-m3",
+            "embedding_dim": 1024,
+            "threshold": 0.78,
+            "llm_render": {
+                "ok": 1,
+                "fallback": 1,
+                "skipped": 0,
+                "provider": "openai_compatible",
+                "model": "local-model",
+                "prompt_version": "rob136-v1",
+            },
+        },
+        "issues": [
+            {
+                **_render_issue(),
+                "source_count": 2,
+                "render_status": "ok",
+                "render_model": "local-model",
+                "render_rejection_reason": None,
+                "summary_ko": "여러 국내 매체가 AI 서버 수요와 메모리 공급망 관련 동향을 함께 다뤘습니다.",
+                "impact_points": ["메모리 업황 관련 뉴스 흐름을 점검합니다."],
+                "confidence": 0.7,
+            },
+            {
+                **_render_issue(rank=2, cluster_key="cluster-2"),
+                "source_count": 2,
+                "render_status": "fallback",
+                "render_rejection_reason": "llm_disabled",
+                "summary_ko": "규칙 기반 요약입니다.",
+                "impact_points": ["추가 확인이 필요합니다."],
+                "confidence": 0.0,
+            },
+        ],
+    }
+    md = lab.render_markdown(payload)
+    assert "LLM render: ok=1, fallback=1, skipped=0" in md
+    assert "렌더: ok · model=local-model · confidence=0.70" in md
+    assert "요약:" in md
+    assert "영향:" in md
+    assert "fallback(rule-based, reason=llm_disabled)" in md
+
+
+@pytest.mark.asyncio
+async def test_store_payload_persists_render_metadata_in_issue_payload(
+    monkeypatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def execute(self, _stmt, params=None):
+            if params:
+                calls.append(params)
+
+        async def commit(self) -> None:
+            return None
+
+    payload = {
+        "run": {
+            "run_uuid": "run-1",
+            "market": "all",
+            "window_hours": 24,
+            "article_limit": 10,
+            "threshold": 0.78,
+            "embedding_model": "BAAI/bge-m3",
+            "embedding_dim": 1024,
+            "article_count": 1,
+            "cluster_count": 1,
+            "llm_render": {"ok": 1, "fallback": 0},
+        },
+        "source_counts": {"raw": {"naver": 1}, "normalized": {"naver": 1}},
+        "issues": [
+            {
+                **_render_issue(),
+                "source_count": 2,
+                "title_ko": "렌더된 제목",
+                "subtitle_ko": "렌더된 부제",
+                "direction": "up",
+                "render_status": "ok",
+                "summary_ko": "렌더 메타데이터가 포함된 요약입니다.",
+                "impact_points": ["영향 포인트"],
+                "confidence": 0.8,
+            }
+        ],
+    }
+
+    async def fake_ensure_lab_tables() -> None:
+        return None
+
+    monkeypatch.setattr(lab, "ensure_lab_tables", fake_ensure_lab_tables)
+    monkeypatch.setattr(lab, "AsyncSessionLocal", lambda: FakeSession())
+    await lab.store_payload(payload)
+    issue_params = calls[1]
+    issue_payload = json.loads(issue_params["payload"])
+    assert issue_payload["render_status"] == "ok"
+    assert issue_params["title_ko"] == "렌더된 제목"
+    assert issue_params["subtitle_ko"] == "렌더된 부제"
+    assert issue_params["direction"] == "up"
+
+
+def test_news_issue_lab_renderer_not_imported_by_app_modules() -> None:
+    from pathlib import Path
+
+    forbidden = (
+        "from scripts.news_issue_lab import render_top_issues",
+        "from scripts.news_issue_lab import OpenAICompatibleLLMRenderProvider",
+        "from scripts.news_issue_lab import validate_render_response",
+    )
+    app_root = Path(__file__).resolve().parents[1] / "app"
+    offenders = []
+    for path in app_root.rglob("*.py"):
+        text = path.read_text()
+        if any(token in text for token in forbidden):
+            offenders.append(str(path.relative_to(app_root.parent)))
+    assert offenders == []

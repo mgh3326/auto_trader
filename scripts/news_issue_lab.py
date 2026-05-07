@@ -19,6 +19,7 @@ import json
 import math
 import re
 import sys
+import time
 import uuid
 from collections import Counter
 from collections.abc import Callable
@@ -33,6 +34,31 @@ from app.core.db import AsyncSessionLocal
 
 DEFAULT_BGE_ENDPOINT = "http://127.0.0.1:10631/v1/embeddings"
 DEFAULT_BGE_MODEL = "BAAI/bge-m3"
+
+DEFAULT_LLM_TIMEOUT = 30
+RENDER_PROMPT_VERSION = "rob136-v1"
+RENDER_MAX_ARTICLES = 6
+RENDER_SUMMARY_EXCERPT_MAX = 200
+RENDER_MAX_IMPACT_POINTS = 4
+
+BANNED_RENDER_PHRASES: tuple[str, ...] = (
+    "매수",
+    "매도",
+    "추천",
+    "지금 사",
+    "지금 팔",
+    "목표가",
+    "투자의견",
+    "사야",
+    "팔아야",
+    "buy now",
+    "sell now",
+    "recommend",
+    "target price",
+    "price target",
+    "should buy",
+    "should sell",
+)
 
 POSITIVE_TERMS = {
     "최대",
@@ -399,6 +425,47 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=3,
         help="articles per cluster used to build the representative text",
     )
+    # ROB-136: Korean LLM rendering flags
+    parser.add_argument(
+        "--llm-render",
+        dest="llm_render",
+        action="store_true",
+        default=False,
+        help="enable Korean LLM rendering (ROB-136)",
+    )
+    parser.add_argument(
+        "--no-llm",
+        dest="llm_render",
+        action="store_false",
+        help="disable LLM rendering (default behavior)",
+    )
+    parser.add_argument(
+        "--llm-endpoint",
+        default=None,
+        help="OpenAI-compatible LLM base URL (required when --llm-render)",
+    )
+    parser.add_argument(
+        "--llm-model",
+        default=None,
+        help="LLM model name (required when --llm-render)",
+    )
+    parser.add_argument(
+        "--llm-timeout",
+        type=int,
+        default=DEFAULT_LLM_TIMEOUT,
+        help="LLM request timeout in seconds [1..120]",
+    )
+    parser.add_argument(
+        "--llm-max-render",
+        type=int,
+        default=None,
+        help="maximum number of issues to LLM-render (default: all top-N)",
+    )
+    parser.add_argument(
+        "--llm-prompt-version",
+        default=RENDER_PROMPT_VERSION,
+        help="prompt version label stored in diagnostics",
+    )
     args = parser.parse_args(argv)
     for name in ("window_hours", "limit", "top", "batch_size"):
         if getattr(args, name) <= 0:
@@ -409,6 +476,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--merge-token-jaccard must be in [0.0, 1.0]")
     if args.merge_rep_articles <= 0:
         parser.error("--merge-rep-articles must be positive")
+    if args.llm_render and not args.llm_endpoint:
+        parser.error("--llm-render requires --llm-endpoint")
+    if args.llm_render and not args.llm_model:
+        parser.error("--llm-render requires --llm-model")
+    if not (1 <= args.llm_timeout <= 120):
+        parser.error("--llm-timeout must be in [1, 120]")
+    if args.llm_max_render is not None and args.llm_max_render <= 0:
+        parser.error("--llm-max-render must be positive")
+    if args.llm_max_render is not None and args.llm_max_render > args.top:
+        parser.error("--llm-max-render must be <= --top")
     return args
 
 
@@ -450,7 +527,7 @@ def embed_batch(
     req = request.Request(
         endpoint,
         data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json", "Authorization": "Bearer local"},
+        headers={"Content-Type": "application/json"},
         method="POST",
     )
     with request.urlopen(req, timeout=timeout) as resp:
@@ -462,6 +539,383 @@ def embed_batch(
             f"embedding count mismatch: expected={len(texts)} actual={len(vectors)}"
         )
     return vectors
+
+
+# ---------------------------------------------------------------------------
+# ROB-136: Korean LLM rendering infrastructure
+# ---------------------------------------------------------------------------
+
+
+class LLMRenderError(Exception):
+    """Raised by LLM providers when a render call cannot be completed.
+
+    The ``reason`` attribute names the rejection category for diagnostics.
+    """
+
+    def __init__(self, reason: str, message: str = "") -> None:
+        super().__init__(message or reason)
+        self.reason = reason
+
+
+class NullLLMRenderProvider:
+    """Default provider — never calls the network; always signals llm_disabled."""
+
+    def render(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        model: str | None = None,
+        timeout: int = DEFAULT_LLM_TIMEOUT,
+    ) -> str:
+        raise LLMRenderError("llm_disabled", "LLM rendering is disabled")
+
+
+class OpenAICompatibleLLMRenderProvider:
+    """POSTs to /v1/chat/completions; returns choices[0].message.content."""
+
+    def __init__(self, endpoint: str) -> None:
+        if not endpoint.endswith("/v1/chat/completions"):
+            endpoint = endpoint.rstrip("/") + "/v1/chat/completions"
+        self._endpoint = endpoint
+
+    def render(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        model: str | None = None,
+        timeout: int = DEFAULT_LLM_TIMEOUT,
+    ) -> str:
+        payload = {
+            "model": model or "default",
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": 0.2,
+        }
+        req = request.Request(
+            self._endpoint,
+            data=json.dumps(payload, ensure_ascii=False).encode(),
+            headers={
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with request.urlopen(req, timeout=timeout) as resp:
+                data = json.load(resp)
+        except Exception as exc:
+            # Keep provider diagnostics secret-safe: never surface request headers,
+            # tokens, cookies, or endpoint-provided detail strings from exceptions.
+            raise LLMRenderError("http_error") from exc
+        try:
+            return data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise LLMRenderError("response_parse_error", str(exc)) from exc
+
+
+def make_llm_provider(
+    args: Any,
+) -> NullLLMRenderProvider | OpenAICompatibleLLMRenderProvider:
+    if getattr(args, "llm_render", False) and getattr(args, "llm_endpoint", None):
+        return OpenAICompatibleLLMRenderProvider(args.llm_endpoint)
+    return NullLLMRenderProvider()
+
+
+_LLM_SYSTEM_PROMPT = """You are a Korean financial-news issue-card renderer.
+Return only a JSON object — no markdown fences, no extra text.
+Write short Toss-like Korean issue-card copy based only on the provided cluster metadata.
+Do not add facts, prices, forecasts, or recommendations not present in the input.
+Never use investment advice or recommendation language."""
+
+
+def build_render_prompt(issue: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
+    """Return (system_prompt, user_json_string, input_dict)."""
+    articles_raw = issue.get("representative_articles") or []
+    rep_articles = []
+    for a in articles_raw[:RENDER_MAX_ARTICLES]:
+        excerpt: str | None = None
+        if a.get("summary"):
+            excerpt = str(a["summary"])[:RENDER_SUMMARY_EXCERPT_MAX]
+        rep_articles.append(
+            {
+                "title": a.get("title", ""),
+                "source": a.get("source"),
+                "feed_source": a.get("feed_source"),
+                "market": a.get("market"),
+                "published_at": a.get("published_at"),
+                "scraped_at": a.get("scraped_at"),
+                **({"summary_excerpt": excerpt} if excerpt else {}),
+            }
+        )
+
+    input_dict: dict[str, Any] = {
+        "rule_based_card": {
+            "title_ko": issue.get("title_ko", ""),
+            "subtitle_ko": issue.get("subtitle_ko", ""),
+            "direction": issue.get("direction", "neutral"),
+            "topics": issue.get("topics") or [],
+            "markets": issue.get("markets") or [],
+        },
+        "stats": {
+            "rank": issue.get("rank", 0),
+            "article_count": issue.get("article_count", 0),
+            "raw_source_count": issue.get("raw_source_count", 0),
+            "normalized_source_count": issue.get("normalized_source_count", 0),
+            "score": issue.get("score", 0.0),
+            "score_components": issue.get("score_components") or {},
+            "score_penalties": issue.get("score_penalties") or {},
+            "flags": issue.get("flags") or {},
+            "merge_member_count": issue.get("merge_member_count", 1),
+        },
+        "related_symbols": issue.get("related_symbols") or [],
+        "representative_articles": rep_articles,
+    }
+    user_prompt = json.dumps(input_dict, ensure_ascii=False, indent=2)
+    return _LLM_SYSTEM_PROMPT, user_prompt, input_dict
+
+
+def compute_render_input_hash(input_dict: dict[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(input_dict, sort_keys=True, ensure_ascii=False).encode()
+    ).hexdigest()[:32]
+
+
+def _hangul_ratio(text: str) -> float:
+    if not text:
+        return 0.0
+    hangul_count = sum(1 for ch in text if "가" <= ch <= "힣")
+    return hangul_count / len(text)
+
+
+def validate_render_response(
+    raw: str,
+    *,
+    allowed_symbols: set[str],
+) -> dict[str, Any]:
+    """Parse and validate an LLM render response; raise ValueError on any rejection."""
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("parse_error") from exc
+
+    if not isinstance(data, dict):
+        raise ValueError("parse_error")
+
+    required_fields = {
+        "title_ko": str,
+        "subtitle_ko": str,
+        "direction": str,
+        "summary_ko": str,
+        "impact_points": list,
+        "related_symbols": list,
+        "confidence": (int, float),
+    }
+    for field, expected_type in required_fields.items():
+        if field not in data:
+            raise ValueError("schema_missing_field")
+        if not isinstance(data[field], expected_type):
+            raise ValueError("schema_type_error")
+
+    for field in ("title_ko", "subtitle_ko", "summary_ko"):
+        if not data[field].strip():
+            raise ValueError("empty_field")
+
+    if data["direction"] not in ("up", "down", "neutral"):
+        raise ValueError("invalid_direction")
+
+    confidence = float(data["confidence"])
+    if not (0.0 <= confidence <= 1.0):
+        raise ValueError("invalid_confidence")
+
+    if len(data["title_ko"]) > 32:
+        raise ValueError("length_violation")
+    if len(data["subtitle_ko"]) > 60:
+        raise ValueError("length_violation")
+    if not (80 <= len(data["summary_ko"]) <= 280):
+        raise ValueError("length_violation")
+
+    impact_points = data["impact_points"]
+    if not impact_points or len(impact_points) > RENDER_MAX_IMPACT_POINTS:
+        raise ValueError("schema_cardinality_error")
+    for pt in impact_points:
+        if not isinstance(pt, str):
+            raise ValueError("schema_type_error")
+        if len(pt) > 120:
+            raise ValueError("length_violation")
+
+    for sym_entry in data["related_symbols"]:
+        if not isinstance(sym_entry, dict):
+            raise ValueError("schema_type_error")
+        sym = sym_entry.get("symbol", "")
+        if sym and sym not in allowed_symbols:
+            raise ValueError("symbol_unknown")
+
+    if _hangul_ratio(data["summary_ko"]) < 0.3:
+        raise ValueError("script_ratio_low")
+
+    check_text = " ".join(
+        [
+            data["title_ko"],
+            data["subtitle_ko"],
+            data["summary_ko"],
+            *impact_points,
+        ]
+    ).lower()
+    for phrase in BANNED_RENDER_PHRASES:
+        if phrase.lower() in check_text:
+            raise ValueError("banned_phrase")
+
+    return data
+
+
+def fallback_render(issue: dict[str, Any], rejection_reason: str) -> dict[str, Any]:
+    """Return a deterministic, schema-complete card using rule-based issue fields."""
+    topics = issue.get("topics") or []
+    article_count = issue.get("article_count", 0)
+    markets = issue.get("markets") or []
+    rep_sources = issue.get("representative_sources") or []
+    related_symbols = (issue.get("related_symbols") or [])[:6]
+    merge_member_count = issue.get("merge_member_count", 1)
+
+    topic_str = topics[0] if topics else "관련 이슈"
+    sources_str = (
+        ", ".join(str(s) for s in rep_sources[:3]) if rep_sources else "다수 출처"
+    )
+    market_str = "·".join(sorted({str(m) for m in markets})) if markets else "시장"
+
+    summary_ko = (
+        f"여러 출처에서 {topic_str} 관련 기사 {article_count}건이 확인됐습니다. "
+        f"대표 출처는 {sources_str}이며, 시장 영향은 추가 확인이 필요합니다."
+    )
+
+    impact_points: list[str] = [
+        f"{market_str} 시장에서 관련 동향이 포착됐습니다.",
+    ]
+    if issue.get("normalized_source_count", 0) >= 2:
+        impact_points.append(
+            f"정규화 출처 {issue['normalized_source_count']}개에서 보도됐습니다."
+        )
+    if merge_member_count > 1:
+        impact_points.append(f"{merge_member_count}개 클러스터가 통합된 이슈입니다.")
+    if related_symbols:
+        sym_names = ", ".join(
+            s.get("name") or s.get("symbol", "") for s in related_symbols[:3] if s
+        )
+        if sym_names:
+            impact_points.append(f"관련 종목: {sym_names}")
+
+    return {
+        "title_ko": issue.get("title_ko", ""),
+        "subtitle_ko": issue.get("subtitle_ko", ""),
+        "direction": issue.get("direction", "neutral"),
+        "summary_ko": summary_ko,
+        "impact_points": impact_points[:RENDER_MAX_IMPACT_POINTS],
+        "related_symbols": related_symbols,
+        "confidence": 0.0,
+        "render_status": "fallback",
+        "render_rejection_reason": rejection_reason,
+    }
+
+
+def render_top_issues(
+    issues: list[dict[str, Any]],
+    *,
+    provider: NullLLMRenderProvider | OpenAICompatibleLLMRenderProvider,
+    llm_enabled: bool,
+    model: str | None,
+    timeout: int,
+    prompt_version: str,
+    max_render: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Render (or fallback) each issue card; return updated issues and diagnostics."""
+    ok_count = 0
+    fallback_count = 0
+    skipped_count = 0
+    rejection_counts: dict[str, int] = {}
+    total_latency_ms = 0
+    provider_name = (
+        "openai_compatible"
+        if isinstance(provider, OpenAICompatibleLLMRenderProvider)
+        else "null"
+    )
+
+    rendered_issues: list[dict[str, Any]] = []
+    for issue in issues:
+        issue = dict(issue)
+        rank = issue.get("rank", 0)
+        allowed_symbols = {
+            s.get("symbol", "")
+            for s in (issue.get("related_symbols") or [])
+            if s.get("symbol")
+        }
+
+        system_prompt, user_prompt, input_dict = build_render_prompt(issue)
+        input_hash = compute_render_input_hash(input_dict)
+        base_render_meta = {
+            "render_prompt_version": prompt_version,
+            "render_input_hash": input_hash,
+            "render_model": model,
+        }
+
+        if not llm_enabled or rank > max_render:
+            reason = "llm_disabled" if not llm_enabled else "llm_skipped"
+            card = fallback_render(issue, reason)
+            issue.update(card)
+            issue.update(base_render_meta)
+            issue["render_latency_ms"] = 0
+            if rank > max_render:
+                skipped_count += 1
+            else:
+                fallback_count += 1
+            rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
+            rendered_issues.append(issue)
+            continue
+
+        t0 = time.monotonic()
+        try:
+            raw = provider.render(
+                system_prompt, user_prompt, model=model, timeout=timeout
+            )
+            validated = validate_render_response(raw, allowed_symbols=allowed_symbols)
+            latency_ms = int((time.monotonic() - t0) * 1000)
+            total_latency_ms += latency_ms
+            issue.update(validated)
+            issue["render_status"] = "ok"
+            issue["render_rejection_reason"] = None
+            issue["render_model"] = model
+            issue.update(base_render_meta)
+            issue["render_latency_ms"] = latency_ms
+            ok_count += 1
+        except (LLMRenderError, ValueError) as exc:
+            latency_ms = int((time.monotonic() - t0) * 1000)
+            total_latency_ms += latency_ms
+            reason = exc.reason if isinstance(exc, LLMRenderError) else str(exc)
+            card = fallback_render(issue, reason)
+            issue.update(card)
+            issue.update(base_render_meta)
+            issue["render_latency_ms"] = latency_ms
+            fallback_count += 1
+            rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
+
+        rendered_issues.append(issue)
+
+    render_diag: dict[str, Any] = {
+        "enabled": llm_enabled,
+        "provider": provider_name,
+        "model": model,
+        "prompt_version": prompt_version,
+        "max_render": max_render,
+        "requested": len(issues),
+        "ok": ok_count,
+        "fallback": fallback_count,
+        "skipped": skipped_count,
+        "rejection_counts": rejection_counts,
+        "total_latency_ms": total_latency_ms,
+    }
+    return rendered_issues, render_diag
 
 
 def cluster_articles(
@@ -1096,6 +1550,7 @@ def summarize_cluster(
             "feed_source": a.feed_source,
             "market": a.market,
             "stock_symbol": a.stock_symbol,
+            "summary": a.summary,
             "published_at": a.published_at,
             "scraped_at": a.scraped_at,
         }
@@ -1156,6 +1611,17 @@ def rank_clusters(
 
 def render_markdown(payload: dict[str, Any]) -> str:
     meta = payload["run"]
+    llm_render_diag = meta.get("llm_render")
+    llm_render_line = ""
+    if llm_render_diag:
+        llm_render_line = (
+            f"- LLM render: ok={llm_render_diag['ok']}, "
+            f"fallback={llm_render_diag['fallback']}, "
+            f"skipped={llm_render_diag['skipped']} "
+            f"(provider={llm_render_diag['provider']}, "
+            f"model={llm_render_diag['model']}, "
+            f"prompt={llm_render_diag['prompt_version']})"
+        )
     lines = [
         "# News Issue Lab PoC",
         "",
@@ -1163,16 +1629,42 @@ def render_markdown(payload: dict[str, Any]) -> str:
         f"- market: `{meta['market']}` / window: {meta['window_hours']}h / articles: {meta['article_count']} / clusters: {meta['cluster_count']}",
         f"- embedding: `{meta['embedding_model']}` ({meta['embedding_dim']}d) / threshold: {meta['threshold']}",
         "- note: 기사 본문은 출력/저장하지 않고 제목·요약·메타데이터 기반으로만 실험했습니다.",
-        "",
-        "## 실시간 이슈 후보",
-        "",
     ]
+    if llm_render_line:
+        lines.append(llm_render_line)
+    lines.extend(["", "## 실시간 이슈 후보", ""])
     arrow = {"up": "▲", "down": "▼", "neutral": "◆"}
     for issue in payload["issues"]:
         lines.extend(
             [
                 f"### {issue['rank']}. {arrow.get(issue['direction'], '◆')} {issue['title_ko']}",
+            ]
+        )
+        render_status = issue.get("render_status")
+        if render_status == "ok":
+            confidence = issue.get("confidence", 0.0)
+            render_model = issue.get("render_model") or "-"
+            lines.append(
+                f"- 렌더: ok · model={render_model} · confidence={confidence:.2f}"
+            )
+        elif render_status == "fallback":
+            rejection_reason = issue.get("render_rejection_reason") or "unknown"
+            lines.append(f"- 렌더: fallback(rule-based, reason={rejection_reason})")
+        lines.extend(
+            [
                 f"- 부제: {issue['subtitle_ko']}",
+            ]
+        )
+        summary_ko = issue.get("summary_ko")
+        if summary_ko:
+            lines.append(f"- 요약: {summary_ko}")
+        impact_points = issue.get("impact_points") or []
+        if impact_points:
+            lines.append("- 영향:")
+            for pt in impact_points:
+                lines.append(f"  - {pt}")
+        lines.extend(
+            [
                 f"- 출처/기사: raw {issue.get('raw_source_count', issue['source_count'])}개 → normalized {issue.get('normalized_source_count', issue['source_count'])}개 · {issue['article_count']}개 기사",
                 f"- 점수: {issue.get('score', 0):.4f} / components={issue.get('score_components', {})} / penalties={issue.get('score_penalties', {})}",
                 f"- 대표 출처: {', '.join(issue['representative_sources']) or '-'}",
@@ -1622,6 +2114,17 @@ async def build_payload(args: argparse.Namespace) -> dict[str, Any]:
         summarize_cluster(cluster, articles, rank=i + 1, score_breakdown=breakdown)
         for i, (cluster, breakdown) in enumerate(ranked_v2[: args.top])
     ]
+    # ROB-136: Korean LLM rendering pass
+    llm_provider = make_llm_provider(args)
+    issues, render_diag = render_top_issues(
+        issues,
+        provider=llm_provider,
+        llm_enabled=bool(getattr(args, "llm_render", False)),
+        model=getattr(args, "llm_model", None),
+        timeout=int(getattr(args, "llm_timeout", DEFAULT_LLM_TIMEOUT)),
+        prompt_version=str(getattr(args, "llm_prompt_version", RENDER_PROMPT_VERSION)),
+        max_render=int(getattr(args, "llm_max_render", None) or args.top),
+    )
     raw_source_counts = Counter(a.source_key for a in articles)
     normalized_source_counts = Counter(a.normalized_source_key for a in articles)
     payload = {
@@ -1654,6 +2157,7 @@ async def build_payload(args: argparse.Namespace) -> dict[str, Any]:
                 getattr(args, "merge_token_jaccard", MERGE_TOKEN_JACCARD)
             ),
             "merge_rep_articles": int(getattr(args, "merge_rep_articles", 3)),
+            "llm_render": render_diag,
         },
         "source_counts": {
             "raw": dict(raw_source_counts),

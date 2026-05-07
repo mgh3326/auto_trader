@@ -149,3 +149,51 @@ Markdown output gains a `## 클러스터 병합 진단 (ROB-135)` section with m
 
 - Topic-label rules can still cosmetically mislabel Yahoo credit-card titles ("Gold" → 금·원자재). The merge pass does not depend on those labels being correct, but operators may see odd-looking topic agreement signals on noise rows. Existing `noise_penalty` continues to downrank them.
 - Yahoo plural/singular term mismatches (e.g., `credit cards` vs `credit card`) are unchanged in this scope.
+
+
+## Korean LLM rendering (ROB-136)
+
+ROB-136 keeps Korean issue-card rendering inside this lab CLI only. It does not add production API, UI, MCP, scheduler, broker, order, watch, or request-time LLM behavior.
+
+### Default no-LLM mode
+
+LLM rendering is disabled by default. The default path is deterministic and uses the rule-based card plus fallback metadata:
+
+```bash
+uv run python scripts/news_issue_lab.py   --market all --window-hours 24 --limit 240 --top 12   --embedding-endpoint http://127.0.0.1:10631/v1/embeddings   --embedding-model BAAI/bge-m3   --compare-v1 --merge-clusters   --format json   --output /tmp/rob136_news_issue_lab_no_llm.json
+```
+
+`--no-llm` is an explicit alias for the same deterministic mode.
+
+### Optional LLM smoke
+
+Use `--llm-render` only for an operator-confirmed local/OpenAI-compatible endpoint and start with a small `--llm-max-render`. Run without `--store` first and inspect the markdown or JSON output before persisting any lab result.
+
+```bash
+uv run python scripts/news_issue_lab.py   --market all --window-hours 24 --limit 240 --top 12   --embedding-endpoint http://127.0.0.1:10631/v1/embeddings   --embedding-model BAAI/bge-m3   --compare-v1 --merge-clusters   --llm-render   --llm-endpoint http://127.0.0.1:8000   --llm-model <local-openai-compatible-model>   --llm-max-render 5   --format json   --output /tmp/rob136_news_issue_lab_llm_top5.json
+```
+
+### Schema and fallback
+
+The renderer validates that each LLM response is a JSON object with:
+
+- `title_ko`
+- `subtitle_ko`
+- `direction` (`up`, `down`, or `neutral`)
+- `summary_ko`
+- `impact_points`
+- `related_symbols`
+- `confidence`
+
+Malformed JSON, missing fields, wrong types, empty title/subtitle/summary, invalid direction/confidence, length/cardinality violations, unknown related symbols, low Korean-script ratio, or investment-advice phrases such as 매수/매도/추천/목표가 cause deterministic fallback. Fallback cards keep the rule-based title/subtitle/direction, add a schema-complete Korean summary and impact points, set `confidence=0.0`, and record `render_status=fallback` plus `render_rejection_reason`.
+
+### Diagnostics and storage
+
+Run-level diagnostics live at `payload.run.llm_render` and include enabled/provider/model/prompt version, requested count, ok/fallback/skipped counts, rejection counts, and total latency. Each issue payload records `render_status`, `render_model`, `render_prompt_version`, `render_input_hash`, `render_rejection_reason`, `render_latency_ms`, `summary_ko`, `impact_points`, and `confidence`. Existing lab result columns continue to receive the final top-level rendered-or-fallback `title_ko`, `subtitle_ko`, and `direction`; no DDL is required.
+
+### Safety reminders
+
+- Do not send or store full article bodies; prompts are built from cluster metadata, titles, source/feed_source, timestamps, short summaries/excerpts, topics, related symbols, and ranking/merge diagnostics only.
+- Do not print credentials, tokens, cookies, DSNs, or Authorization values.
+- Do not run `--store` until no-store markdown/JSON output has been reviewed.
+- Do not wire this renderer into production API/UI/MCP request paths without a separate issue and review.
