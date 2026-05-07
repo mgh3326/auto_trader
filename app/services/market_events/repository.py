@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,15 +40,6 @@ class MarketEventsRepository:
                 payload["raw_payload_json"]
             )
 
-        natural_keys = (
-            "source",
-            "category",
-            "market",
-            "symbol",
-            "event_date",
-            "fiscal_year",
-            "fiscal_quarter",
-        )
         update_columns = {
             k: payload.get(k)
             for k in (
@@ -67,6 +58,7 @@ class MarketEventsRepository:
             )
             if k in payload
         }
+        update_columns["updated_at"] = func.now()
 
         if payload.get("source_event_id"):
             stmt = (
@@ -79,20 +71,21 @@ class MarketEventsRepository:
                 )
                 .returning(MarketEvent.__table__.c.id)
             )
+            result = await self.db.execute(stmt)
+            event_id = result.scalar_one()
         else:
-            stmt = (
-                pg_insert(MarketEvent.__table__)
-                .values(**payload)
-                .on_conflict_do_update(
-                    index_elements=list(natural_keys),
-                    index_where=MarketEvent.__table__.c.source_event_id.is_(None),
-                    set_=update_columns,
-                )
-                .returning(MarketEvent.__table__.c.id)
-            )
-
-        result = await self.db.execute(stmt)
-        event_id = result.scalar_one()
+            event = await self._find_event_by_natural_key(payload)
+            if event is None:
+                event = MarketEvent(**payload)
+                self.db.add(event)
+                await self.db.flush()
+            else:
+                for key, value in update_columns.items():
+                    if key != "updated_at":
+                        setattr(event, key, value)
+                event.updated_at = datetime.now(UTC)
+                await self.db.flush()
+            event_id = event.id
 
         for value in values:
             await self._upsert_value(event_id, value)
@@ -102,6 +95,22 @@ class MarketEventsRepository:
             await self.db.execute(select(MarketEvent).where(MarketEvent.id == event_id))
         ).scalar_one()
         return event
+
+    async def _find_event_by_natural_key(
+        self, payload: dict[str, Any]
+    ) -> MarketEvent | None:
+        stmt = select(MarketEvent).where(
+            MarketEvent.source == payload.get("source"),
+            MarketEvent.category == payload.get("category"),
+            MarketEvent.market == payload.get("market"),
+            MarketEvent.event_date == payload.get("event_date"),
+            MarketEvent.source_event_id.is_(None),
+        )
+        for attr in ("symbol", "fiscal_year", "fiscal_quarter"):
+            column = getattr(MarketEvent, attr)
+            value = payload.get(attr)
+            stmt = stmt.where(column.is_(None) if value is None else column == value)
+        return (await self.db.execute(stmt)).scalar_one_or_none()
 
     async def _upsert_value(self, event_id: int, value: dict[str, Any]) -> None:
         payload = {**value, "event_id": event_id}
@@ -119,15 +128,26 @@ class MarketEventsRepository:
             )
             if k in payload
         }
-        stmt = (
-            pg_insert(MarketEventValue.__table__)
-            .values(**payload)
-            .on_conflict_do_update(
-                constraint="uq_market_event_values_event_metric_period",
-                set_=update_columns,
-            )
+        update_columns["updated_at"] = func.now()
+        stmt = select(MarketEventValue).where(
+            MarketEventValue.event_id == event_id,
+            MarketEventValue.metric_name == payload.get("metric_name"),
         )
-        await self.db.execute(stmt)
+        period = payload.get("period")
+        stmt = stmt.where(
+            MarketEventValue.period.is_(None)
+            if period is None
+            else MarketEventValue.period == period
+        )
+        existing = (await self.db.execute(stmt)).scalar_one_or_none()
+        if existing is None:
+            self.db.add(MarketEventValue(**payload))
+        else:
+            for key, value_ in update_columns.items():
+                if key != "updated_at":
+                    setattr(existing, key, value_)
+            existing.updated_at = datetime.now(UTC)
+        await self.db.flush()
 
     # -- partition state ----------------------------------------------------
 

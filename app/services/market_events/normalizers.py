@@ -134,13 +134,15 @@ def normalize_dart_disclosure_row(
     """Normalize one DART `list_date` row to a MarketEvent.
 
     DART rows expose at minimum: rcept_no, rcept_dt, corp_name, corp_code, report_nm.
+    Prefer stock_code for symbol matching; corp_code stays in raw_payload_json.
     URL builds from rcept_no.
     """
     rcept_no = (row.get("rcept_no") or row.get("rcp_no") or "").strip()
     rcept_dt = (row.get("rcept_dt") or row.get("date") or "").strip()
     corp_name = (row.get("corp_name") or "").strip()
     report_nm = (row.get("report_nm") or "").strip()
-    corp_code = (row.get("corp_code") or "").strip() or None
+    stock_code = (row.get("stock_code") or row.get("corp_cls_stock_code") or "").strip()
+    symbol = stock_code if stock_code and stock_code.isdigit() else None
 
     if not rcept_no or not rcept_dt:
         raise ValueError("dart row missing rcept_no or rcept_dt")
@@ -156,7 +158,7 @@ def normalize_dart_disclosure_row(
         "category": category,
         "market": "kr",
         "country": "KR",
-        "symbol": corp_code,
+        "symbol": symbol,
         "company_name": corp_name,
         "title": report_nm or None,
         "event_date": event_date,

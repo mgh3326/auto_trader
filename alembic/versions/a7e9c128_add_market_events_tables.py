@@ -81,10 +81,10 @@ def upgrade() -> None:
             "source",
             "category",
             "market",
-            "symbol",
+            sa.text("coalesce(symbol, '')"),
             "event_date",
-            "fiscal_year",
-            "fiscal_quarter",
+            sa.text("coalesce(fiscal_year, 0)"),
+            sa.text("coalesce(fiscal_quarter, 0)"),
         ],
         unique=True,
         postgresql_where=sa.text("source_event_id IS NULL"),
@@ -128,12 +128,12 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.UniqueConstraint(
-            "event_id",
-            "metric_name",
-            "period",
-            name="uq_market_event_values_event_metric_period",
-        ),
+    )
+    op.create_index(
+        "uq_market_event_values_event_metric_period",
+        "market_event_values",
+        ["event_id", "metric_name", sa.text("coalesce(period, '')")],
+        unique=True,
     )
     op.create_index(
         "ix_market_event_values_event_id", "market_event_values", ["event_id"]
@@ -188,6 +188,10 @@ def downgrade() -> None:
     op.drop_table("market_event_ingestion_partitions")
 
     op.drop_index("ix_market_event_values_event_id", table_name="market_event_values")
+    op.drop_index(
+        "uq_market_event_values_event_metric_period",
+        table_name="market_event_values",
+    )
     op.drop_table("market_event_values")
 
     op.drop_index("ix_market_events_category_market_date", table_name="market_events")

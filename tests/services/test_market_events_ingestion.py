@@ -55,7 +55,7 @@ async def test_ingest_us_earnings_for_date_succeeds(db_session, monkeypatch):
     from app.services.market_events import ingestion
 
     fake = AsyncMock(return_value=FINNHUB_RESPONSE_ONE_ROW)
-    monkeypatch.setattr(ingestion, "_fetch_earnings_calendar_finnhub", fake)
+    monkeypatch.setattr(ingestion, "fetch_earnings_calendar_finnhub", fake)
 
     result = await ingestion.ingest_us_earnings_for_date(db_session, date(2026, 5, 7))
     await db_session.commit()
@@ -85,7 +85,7 @@ async def test_ingest_us_earnings_for_date_records_failure(db_session, monkeypat
     from app.services.market_events import ingestion
 
     fake = AsyncMock(side_effect=TimeoutError("read timeout=10"))
-    monkeypatch.setattr(ingestion, "_fetch_earnings_calendar_finnhub", fake)
+    monkeypatch.setattr(ingestion, "fetch_earnings_calendar_finnhub", fake)
 
     result = await ingestion.ingest_us_earnings_for_date(db_session, date(2026, 5, 8))
     await db_session.commit()
@@ -111,7 +111,7 @@ async def test_ingest_us_earnings_for_date_is_idempotent(db_session, monkeypatch
     from app.services.market_events import ingestion
 
     fake = AsyncMock(return_value=FINNHUB_RESPONSE_ONE_ROW)
-    monkeypatch.setattr(ingestion, "_fetch_earnings_calendar_finnhub", fake)
+    monkeypatch.setattr(ingestion, "fetch_earnings_calendar_finnhub", fake)
 
     await ingestion.ingest_us_earnings_for_date(db_session, date(2026, 5, 7))
     await db_session.commit()
@@ -134,6 +134,7 @@ DART_ROW = {
     "rcept_dt": "20260507",
     "corp_name": "삼성전자",
     "corp_code": "00126380",
+    "stock_code": "005930",
     "report_nm": "분기보고서 (2026.03)",
 }
 
@@ -159,3 +160,37 @@ async def test_ingest_kr_disclosures_for_date_with_injected_fetcher(db_session):
     assert len(rows) == 1
     assert rows[0].source == "dart"
     assert rows[0].source_event_id == "20260507000123"
+    assert rows[0].symbol == "005930"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_ingest_us_earnings_records_failure_when_upsert_fails(
+    db_session, monkeypatch
+):
+    from app.models.market_events import MarketEventIngestionPartition
+    from app.services.market_events import ingestion
+
+    fake = AsyncMock(return_value=FINNHUB_RESPONSE_ONE_ROW)
+    monkeypatch.setattr(ingestion, "fetch_earnings_calendar_finnhub", fake)
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("database write failed")
+
+    monkeypatch.setattr(
+        ingestion.MarketEventsRepository, "upsert_event_with_values", boom
+    )
+
+    result = await ingestion.ingest_us_earnings_for_date(db_session, date(2026, 5, 9))
+    await db_session.commit()
+
+    assert result.status == "failed"
+    assert "database write failed" in (result.error or "")
+    parts = (
+        (await db_session.execute(select(MarketEventIngestionPartition)))
+        .scalars()
+        .all()
+    )
+    assert len(parts) == 1
+    assert parts[0].status == "failed"
+    assert parts[0].retry_count == 1

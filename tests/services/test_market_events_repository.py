@@ -122,6 +122,50 @@ async def test_upsert_event_is_idempotent_on_natural_key(db_session):
 
 @pytest.mark.asyncio
 @pytest.mark.integration
+async def test_upsert_event_is_idempotent_when_natural_key_has_nulls(db_session):
+    from app.models.market_events import MarketEvent, MarketEventValue
+    from app.services.market_events.repository import MarketEventsRepository
+
+    repo = MarketEventsRepository(db_session)
+    event_dict = {
+        "category": "earnings",
+        "market": "us",
+        "symbol": "U",
+        "title": "U earnings release",
+        "event_date": date(2026, 5, 7),
+        "status": "scheduled",
+        "source": "finnhub",
+        "source_event_id": None,
+        "fiscal_year": None,
+        "fiscal_quarter": None,
+    }
+    values = [
+        {
+            "metric_name": "eps",
+            "period": None,
+            "forecast": Decimal("-0.52"),
+            "unit": "USD",
+        },
+    ]
+
+    await repo.upsert_event_with_values(event_dict, values)
+    await db_session.commit()
+    await repo.upsert_event_with_values(
+        {**event_dict, "status": "released"},
+        [{**values[0], "actual": Decimal("-0.34")}],
+    )
+    await db_session.commit()
+
+    rows = (await db_session.execute(select(MarketEvent))).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].status == "released"
+    vrows = (await db_session.execute(select(MarketEventValue))).scalars().all()
+    assert len(vrows) == 1
+    assert vrows[0].actual == Decimal("-0.34")
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
 async def test_upsert_event_with_source_event_id_uses_id_key(db_session):
     from app.models.market_events import MarketEvent
     from app.services.market_events.repository import MarketEventsRepository
@@ -130,7 +174,7 @@ async def test_upsert_event_with_source_event_id_uses_id_key(db_session):
     event_dict = {
         "category": "disclosure",
         "market": "kr",
-        "symbol": "00126380",
+        "symbol": "005930",
         "title": "분기보고서",
         "event_date": date(2026, 5, 7),
         "status": "released",

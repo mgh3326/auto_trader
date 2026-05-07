@@ -47,10 +47,10 @@ class MarketEvent(Base):
             "source",
             "category",
             "market",
-            "symbol",
+            text("coalesce(symbol, '')"),
             "event_date",
-            "fiscal_year",
-            "fiscal_quarter",
+            text("coalesce(fiscal_year, 0)"),
+            text("coalesce(fiscal_quarter, 0)"),
             unique=True,
             postgresql_where=text("source_event_id IS NULL"),
         ),
@@ -113,11 +113,12 @@ class MarketEvent(Base):
 class MarketEventValue(Base):
     __tablename__ = "market_event_values"
     __table_args__ = (
-        UniqueConstraint(
+        Index(
+            "uq_market_event_values_event_metric_period",
             "event_id",
             "metric_name",
-            "period",
-            name="uq_market_event_values_event_metric_period",
+            text("coalesce(period, '')"),
+            unique=True,
         ),
         Index("ix_market_event_values_event_id", "event_id"),
     )

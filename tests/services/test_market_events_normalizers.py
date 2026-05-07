@@ -97,6 +97,7 @@ DART_ROW_QUARTERLY = {
     "rcept_dt": "20260507",
     "corp_name": "삼성전자",
     "corp_code": "00126380",
+    "stock_code": "005930",
     "report_nm": "분기보고서 (2026.03)",
 }
 
@@ -105,6 +106,7 @@ DART_ROW_OTHER = {
     "rcept_dt": "20260507",
     "corp_name": "현대차",
     "corp_code": "00164742",
+    "stock_code": "005380",
     "report_nm": "감사인지정",
 }
 
@@ -118,7 +120,7 @@ def test_normalize_dart_quarterly_classifies_as_earnings():
     assert event["market"] == "kr"
     assert event["source"] == "dart"
     assert event["source_event_id"] == "20260507000123"
-    assert event["symbol"] == "00126380"
+    assert event["symbol"] == "005930"
     assert event["company_name"] == "삼성전자"
     assert "rcpNo=20260507000123" in event["source_url"]
     assert event["event_date"] == date(2026, 5, 7)
@@ -131,3 +133,14 @@ def test_normalize_dart_unrelated_filing_classifies_as_disclosure():
 
     event, _ = normalize_dart_disclosure_row(DART_ROW_OTHER)
     assert event["category"] == "disclosure"
+
+
+@pytest.mark.unit
+def test_normalize_dart_without_stock_code_keeps_symbol_empty_not_corp_code():
+    from app.services.market_events.normalizers import normalize_dart_disclosure_row
+
+    row = {**DART_ROW_QUARTERLY}
+    row.pop("stock_code")
+    event, _ = normalize_dart_disclosure_row(row)
+    assert event["symbol"] is None
+    assert event["raw_payload_json"]["corp_code"] == "00126380"
