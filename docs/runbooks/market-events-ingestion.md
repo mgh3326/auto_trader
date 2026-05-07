@@ -112,6 +112,49 @@ The DB-backed integration tests require Postgres at the test `DATABASE_URL`.
 4. **Economic calendar** (`category="economic"`) — same shape, different source.
 5. **`/invest/app` UI card** consuming the `today` endpoint.
 
+## Economic events (ForexFactory, ROB-132)
+
+ForexFactory weekly XML feeds are parsed per day and ingested as
+`(source=forexfactory, category=economic, market=global)` rows.
+
+### CLI
+
+```bash
+uv run python -m scripts.ingest_market_events \
+  --source forexfactory --category economic --market global \
+  --from-date 2026-05-13 --to-date 2026-05-13 --dry-run
+```
+
+Adds `currency` column to `market_events` (Alembic revision `c1a2b3d4`) so each
+row records the affected currency (USD/EUR/JPY/...).
+
+### Idempotency
+
+`source_event_id` is derived as `f"ff::{currency}::{title}::{utc_iso_or_date}"` so
+repeated ingestion of the same release upserts on `(source, category, market,
+source_event_id)`. Times are converted from ET to UTC for storage; the original
+ET wall-clock is kept on `release_time_local` and `source_timezone =
+"America/New_York"`.
+
+### Values
+
+Forecast/previous/actual numeric values are stored on `market_event_values` with
+`metric_name="actual"` and the inferred unit (e.g. `%`, `K`, `M`). When all
+three are blank, no value row is written.
+
+### UI
+
+`/invest/app` Discover `TodayEventCard` consumes
+`GET /trading/api/market-events/today` and filters client-side by `category`
+into 전체 / 경제지표 / 실적 tabs.
+
+### Open follow-ups specific to economic events
+
+- Hermes-side production `--dry-run` smoke from a deployed runner before any
+  non-dry-run ingestion.
+- Prefect deployment for the rolling window (today-7 .. today+60).
+- Joining `held` / `watched` flags is still a global ROB-128 follow-up.
+
 ## Handoff (when this PR is opened)
 
 Include in the PR description / Linear comment:

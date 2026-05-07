@@ -29,6 +29,7 @@ class MarketEventResponse(BaseModel):
     category: str
     market: str
     country: str | None = None
+    currency: str | None = None
     symbol: str | None = None
     company_name: str | None = None
     title: str | None = None

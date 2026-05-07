@@ -72,6 +72,7 @@ class MarketEvent(Base):
     category: Mapped[str] = mapped_column(Text, nullable=False)
     market: Mapped[str] = mapped_column(Text, nullable=False)
     country: Mapped[str | None] = mapped_column(Text)
+    currency: Mapped[str | None] = mapped_column(Text)
     symbol: Mapped[str | None] = mapped_column(Text)
     company_name: Mapped[str | None] = mapped_column(Text)
     title: Mapped[str | None] = mapped_column(Text)

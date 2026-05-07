@@ -119,6 +119,7 @@ class MarketEventsQueryService:
                     category=row.category,
                     market=row.market,
                     country=row.country,
+                    currency=row.currency,
                     symbol=row.symbol,
                     company_name=row.company_name,
                     title=row.title,

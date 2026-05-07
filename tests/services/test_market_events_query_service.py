@@ -113,3 +113,76 @@ async def test_list_events_filters_by_category_and_market(db_session):
     )
     assert only_earnings.count == 1
     assert only_earnings.events[0].category == "earnings"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_query_service_surfaces_currency_field(db_session):
+    from app.services.market_events.query_service import MarketEventsQueryService
+    from app.services.market_events.repository import MarketEventsRepository
+
+    repo = MarketEventsRepository(db_session)
+    await repo.upsert_event_with_values(
+        {
+            "category": "economic",
+            "market": "global",
+            "country": "US",
+            "currency": "USD",
+            "title": "US CPI",
+            "event_date": date(2026, 5, 13),
+            "status": "scheduled",
+            "source": "forexfactory",
+            "source_event_id": "ff::USD::CPI::2026-05-13T12:30:00Z",
+        },
+        [],
+    )
+    await db_session.commit()
+
+    svc = MarketEventsQueryService(db_session)
+    response = await svc.list_for_date(date(2026, 5, 13))
+    assert len(response.events) == 1
+    assert response.events[0].currency == "USD"
+    assert response.events[0].country == "US"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_query_service_filters_economic_events(db_session):
+    from app.services.market_events.query_service import MarketEventsQueryService
+    from app.services.market_events.repository import MarketEventsRepository
+
+    repo = MarketEventsRepository(db_session)
+    await repo.upsert_event_with_values(
+        {
+            "category": "economic",
+            "market": "global",
+            "currency": "USD",
+            "country": "USD",
+            "title": "US CPI",
+            "event_date": date(2026, 5, 13),
+            "status": "released",
+            "source": "forexfactory",
+            "source_event_id": "ff::USD::US CPI::2026-05-13T12:30:00Z",
+        },
+        [],
+    )
+    await repo.upsert_event_with_values(
+        {
+            "category": "earnings",
+            "market": "us",
+            "symbol": "IONQ",
+            "event_date": date(2026, 5, 13),
+            "status": "released",
+            "source": "finnhub",
+            "fiscal_year": 2026,
+            "fiscal_quarter": 1,
+        },
+        [],
+    )
+    await db_session.commit()
+
+    svc = MarketEventsQueryService(db_session)
+    only_econ = await svc.list_for_date(date(2026, 5, 13), category="economic")
+    assert len(only_econ.events) == 1
+    assert only_econ.events[0].source == "forexfactory"
+    assert only_econ.events[0].currency == "USD"

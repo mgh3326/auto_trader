@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import pytest
@@ -144,3 +144,100 @@ def test_normalize_dart_without_stock_code_keeps_symbol_empty_not_corp_code():
     event, _ = normalize_dart_disclosure_row(row)
     assert event["symbol"] is None
     assert event["raw_payload_json"]["corp_code"] == "00126380"
+
+
+FF_ROW_HIGH_IMPACT = {
+    "title": "Core CPI m/m",
+    "currency": "USD",
+    "country": "US",
+    "event_date": date(2026, 5, 13),
+    "release_time_utc": datetime(2026, 5, 13, 12, 30, tzinfo=UTC),
+    "release_time_local": datetime(2026, 5, 13, 8, 30),
+    "time_hint_raw": "8:30am",
+    "impact": "high",
+    "actual": "0.3%",
+    "forecast": "0.3%",
+    "previous": "0.4%",
+    "source_event_id": "ff::USD::Core CPI m/m::2026-05-13T12:30:00Z",
+}
+
+
+@pytest.mark.unit
+def test_normalize_forexfactory_high_impact_event():
+    from app.services.market_events.normalizers import normalize_forexfactory_event_row
+
+    event, values = normalize_forexfactory_event_row(FF_ROW_HIGH_IMPACT)
+    assert event["category"] == "economic"
+    assert event["market"] == "global"
+    assert event["country"] == "US"
+    assert event["currency"] == "USD"
+    assert event["title"] == "Core CPI m/m"
+    assert event["event_date"] == date(2026, 5, 13)
+    assert event["release_time_utc"] == datetime(2026, 5, 13, 12, 30, tzinfo=UTC)
+    assert event["source_timezone"] == "America/New_York"
+    assert event["importance"] == 3
+    assert event["status"] == "released"
+    assert event["source"] == "forexfactory"
+    assert event["source_event_id"] == "ff::USD::Core CPI m/m::2026-05-13T12:30:00Z"
+
+    by_metric = {v["metric_name"]: v for v in values}
+    assert by_metric["actual"]["actual"] is not None
+    assert by_metric["actual"]["forecast"] is not None
+    assert by_metric["actual"]["previous"] is not None
+    assert by_metric["actual"]["unit"] == "%"
+
+
+@pytest.mark.unit
+def test_normalize_forexfactory_scheduled_when_no_actual():
+    from app.services.market_events.normalizers import normalize_forexfactory_event_row
+
+    row = {**FF_ROW_HIGH_IMPACT, "actual": None}
+    event, _ = normalize_forexfactory_event_row(row)
+    assert event["status"] == "scheduled"
+
+
+@pytest.mark.unit
+def test_normalize_forexfactory_low_medium_high_to_int_importance():
+    from app.services.market_events.normalizers import normalize_forexfactory_event_row
+
+    for raw, expected in [("low", 1), ("medium", 2), ("high", 3), ("holiday", None)]:
+        row = {**FF_ROW_HIGH_IMPACT, "impact": raw}
+        event, _ = normalize_forexfactory_event_row(row)
+        assert event["importance"] == expected, raw
+
+
+@pytest.mark.unit
+def test_normalize_forexfactory_strips_value_suffixes_to_decimal():
+    from app.services.market_events.normalizers import normalize_forexfactory_event_row
+
+    row = {
+        **FF_ROW_HIGH_IMPACT,
+        "actual": "1.25%",
+        "forecast": "1.30%",
+        "previous": "1.10%",
+    }
+    _, values = normalize_forexfactory_event_row(row)
+    by_metric = {v["metric_name"]: v for v in values}
+    val = by_metric["actual"]
+    assert val["actual"] == Decimal("1.25")
+    assert val["forecast"] == Decimal("1.30")
+    assert val["previous"] == Decimal("1.10")
+    assert val["unit"] == "%"
+
+
+@pytest.mark.unit
+def test_normalize_forexfactory_emits_no_values_when_all_blank():
+    from app.services.market_events.normalizers import normalize_forexfactory_event_row
+
+    row = {**FF_ROW_HIGH_IMPACT, "actual": None, "forecast": None, "previous": None}
+    _, values = normalize_forexfactory_event_row(row)
+    assert values == []
+
+
+@pytest.mark.unit
+def test_normalize_forexfactory_requires_title_and_date():
+    from app.services.market_events.normalizers import normalize_forexfactory_event_row
+
+    bad = {**FF_ROW_HIGH_IMPACT, "title": ""}
+    with pytest.raises(ValueError):
+        normalize_forexfactory_event_row(bad)

@@ -80,3 +80,25 @@ def test_get_range_events_validates_date_order(db_session):
             "/trading/api/market-events/range?from_date=2026-05-08&to_date=2026-05-07",
         )
         assert response.status_code == 400
+
+
+@pytest.mark.integration
+def test_get_today_events_filters_by_category_economic(db_session):
+    """Smoke test: passing category=economic does not 400 and filters correctly."""
+    with TestClient(_app()) as client:
+        response = client.get(
+            "/trading/api/market-events/today?on_date=2026-05-13&category=economic&market=global",
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["date"] == "2026-05-13"
+        assert isinstance(body["events"], list)
+
+
+@pytest.mark.integration
+def test_get_today_events_rejects_unknown_category(db_session):
+    with TestClient(_app()) as client:
+        response = client.get(
+            "/trading/api/market-events/today?on_date=2026-05-13&category=bogus",
+        )
+        assert response.status_code == 400

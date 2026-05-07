@@ -176,3 +176,113 @@ def normalize_dart_disclosure_row(
         "raw_payload_json": dict(row),
     }
     return event, []
+
+
+_FF_IMPORTANCE_MAP = {"low": 1, "medium": 2, "high": 3}
+
+
+def _strip_unit_and_decimal(value: Any) -> tuple[Decimal | None, str | None]:
+    """Return (Decimal, unit) parsed from strings like '1.25%', '50K', '2.4'.
+
+    Returns (None, None) for empty/None inputs.
+    """
+    if value is None:
+        return None, None
+    s = str(value).strip()
+    if not s:
+        return None, None
+    unit: str | None = None
+    if s.endswith("%"):
+        unit = "%"
+        s = s[:-1].strip()
+    elif s.endswith(("K", "M", "B", "T")):
+        unit = s[-1]
+        s = s[:-1].strip()
+    try:
+        return Decimal(s), unit
+    except Exception:
+        return None, unit
+
+
+def _row_to_jsonable(row: dict[str, Any]) -> dict[str, Any]:
+    """Strip / stringify values inside `row` so the dict is JSONB-serializable.
+
+    Datetimes -> ISO strings; date -> ISO string; Decimals -> str.
+    """
+    import datetime as _dt
+
+    out: dict[str, Any] = {}
+    for k, v in row.items():
+        if isinstance(v, _dt.datetime):
+            out[k] = v.isoformat()
+        elif isinstance(v, _dt.date):
+            out[k] = v.isoformat()
+        elif isinstance(v, Decimal):
+            out[k] = str(v)
+        else:
+            out[k] = v
+    return out
+
+
+def normalize_forexfactory_event_row(
+    row: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Normalize one ForexFactory event row into MarketEvent + values dicts.
+
+    The row shape is produced by `app/services/market_events/forexfactory_helpers.py`.
+    """
+    title = (row.get("title") or "").strip()
+    event_date = row.get("event_date")
+    if not title or event_date is None:
+        raise ValueError("forexfactory row missing title or event_date")
+
+    impact = (row.get("impact") or "").strip().lower()
+    importance = _FF_IMPORTANCE_MAP.get(impact)
+
+    actual_raw = row.get("actual")
+    forecast_raw = row.get("forecast")
+    previous_raw = row.get("previous")
+    status = "released" if actual_raw not in (None, "") else "scheduled"
+
+    event = {
+        "category": "economic",
+        "market": "global",
+        "country": row.get("country"),
+        "currency": row.get("currency"),
+        "symbol": None,
+        "company_name": None,
+        "title": title,
+        "event_date": event_date,
+        "release_time_utc": row.get("release_time_utc"),
+        "release_time_local": row.get("release_time_local"),
+        "source_timezone": "America/New_York",
+        "time_hint": row.get("time_hint_raw") or "unknown",
+        "importance": importance,
+        "status": status,
+        "source": "forexfactory",
+        "source_event_id": row.get("source_event_id"),
+        "source_url": None,
+        "fiscal_year": None,
+        "fiscal_quarter": None,
+        "raw_payload_json": _row_to_jsonable(row),
+    }
+
+    actual_dec, actual_unit = _strip_unit_and_decimal(actual_raw)
+    forecast_dec, forecast_unit = _strip_unit_and_decimal(forecast_raw)
+    previous_dec, previous_unit = _strip_unit_and_decimal(previous_raw)
+    unit = actual_unit or forecast_unit or previous_unit
+
+    values: list[dict[str, Any]] = []
+    if any(v is not None for v in (actual_dec, forecast_dec, previous_dec)):
+        values.append(
+            {
+                "metric_name": "actual",
+                "period": event_date.isoformat(),
+                "actual": actual_dec,
+                "forecast": forecast_dec,
+                "previous": previous_dec,
+                "unit": unit,
+            }
+        )
+
+    return event, values

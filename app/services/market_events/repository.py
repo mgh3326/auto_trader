@@ -44,6 +44,7 @@ class MarketEventsRepository:
             k: payload.get(k)
             for k in (
                 "country",
+                "currency",
                 "company_name",
                 "title",
                 "release_time_utc",
