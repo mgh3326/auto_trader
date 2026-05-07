@@ -24,7 +24,7 @@ const issue: MarketIssue = {
 
 test("renders rank, title, subtitle, counts, indicator and link", () => {
   render(
-    <MemoryRouter basename="/invest/app" initialEntries={["/invest/app/"]}>
+    <MemoryRouter basename="/invest" initialEntries={["/invest/app/"]}>
       <AiIssueCard issue={issue} now={new Date("2026-05-07T12:00:00Z")} />
     </MemoryRouter>,
   );
@@ -44,7 +44,7 @@ test("renders rank, title, subtitle, counts, indicator and link", () => {
 
 test("falls back to summary when subtitle is missing", () => {
   render(
-    <MemoryRouter basename="/invest/app" initialEntries={["/invest/app/"]}>
+    <MemoryRouter basename="/invest" initialEntries={["/invest/app/"]}>
       <AiIssueCard
         issue={{ ...issue, subtitle: null, summary: "요약 문장" }}
         now={new Date("2026-05-07T12:00:00Z")}

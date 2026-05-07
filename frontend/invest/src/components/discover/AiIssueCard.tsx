@@ -22,7 +22,7 @@ export function AiIssueCard({ issue, now }: AiIssueCardProps) {
   const subtitle = buildSubtitle(issue);
   return (
     <Link
-      to={`/discover/issues/${issue.id}`}
+      to={`/app/discover/issues/${issue.id}`}
       style={{
         display: "flex",
         gap: 12,

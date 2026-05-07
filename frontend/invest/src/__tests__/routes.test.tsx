@@ -11,15 +11,15 @@ function pathsOf(routes: any[]): string[] {
   return out;
 }
 
-test("router exposes /discover and /discover/issues/:issueId", () => {
+test("router exposes /app/discover and /app/discover/issues/:issueId", () => {
   const paths = pathsOf((router as any).routes);
-  expect(paths).toContain("/discover");
-  expect(paths).toContain("/discover/issues/:issueId");
+  expect(paths).toContain("/app/discover");
+  expect(paths).toContain("/app/discover/issues/:issueId");
 });
 
-test("router still exposes / and /paper", () => {
+test("router still exposes /app and /app/paper", () => {
   const paths = pathsOf((router as any).routes);
-  expect(paths).toContain("/");
-  expect(paths).toContain("/paper");
-  expect(paths).toContain("/paper/:variant");
+  expect(paths).toContain("/app");
+  expect(paths).toContain("/app/paper");
+  expect(paths).toContain("/app/paper/:variant");
 });

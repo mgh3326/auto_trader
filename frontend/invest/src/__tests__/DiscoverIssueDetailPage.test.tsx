@@ -37,10 +37,10 @@ function makeResponse(items: MarketIssue[], over: Partial<MarketIssuesResponse> 
 
 function renderAt(path: string, state: DiscoverIssueDetailPageProps["state"]) {
   return render(
-    <MemoryRouter initialEntries={[`/invest/app${path}`]} basename="/invest/app">
+    <MemoryRouter initialEntries={[`/invest/app${path}`]} basename="/invest">
       <Routes>
         <Route
-          path="/discover/issues/:issueId"
+          path="/app/discover/issues/:issueId"
           element={<DiscoverIssueDetailPage state={state} reload={() => {}} />}
         />
       </Routes>

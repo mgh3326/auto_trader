@@ -40,7 +40,7 @@ function activeStyle(isActive: boolean): CSSProperties {
 export function BottomNav() {
   return (
     <div style={ROW_STYLE}>
-      <NavLink to="/" end style={({ isActive }) => activeStyle(isActive)}>
+      <NavLink to="/app" end style={({ isActive }) => activeStyle(isActive)}>
         증권
       </NavLink>
       <button
@@ -52,7 +52,7 @@ export function BottomNav() {
       >
         관심
       </button>
-      <NavLink to="/discover" style={({ isActive }) => activeStyle(isActive)}>
+      <NavLink to="/app/discover" style={({ isActive }) => activeStyle(isActive)}>
         발견
       </NavLink>
       <button

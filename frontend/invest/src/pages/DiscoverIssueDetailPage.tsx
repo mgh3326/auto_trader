@@ -55,7 +55,7 @@ export function DiscoverIssueDetailPage(props: DiscoverIssueDetailPageProps = {}
         <div style={{ padding: 16 }}>
           <p>이슈를 찾을 수 없습니다. 시간이 지나 목록에서 빠졌을 수 있어요.</p>
           <Link
-            to="/discover"
+            to="/app/discover"
             style={{ color: "var(--accent, #7eb6ff)", fontWeight: 700 }}
           >
             발견으로 돌아가기
@@ -72,7 +72,7 @@ export function DiscoverIssueDetailPage(props: DiscoverIssueDetailPageProps = {}
   return (
     <AppShell>
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-        <Link to="/discover" className="subtle" style={{ textDecoration: "none" }}>
+        <Link to="/app/discover" className="subtle" style={{ textDecoration: "none" }}>
           ← 발견
         </Link>
         <header style={{ display: "flex", flexDirection: "column", gap: 6 }}>
