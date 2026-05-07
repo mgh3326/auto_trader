@@ -969,6 +969,44 @@ def test_render_markdown_skips_merge_section_when_disabled() -> None:
     assert "## 클러스터 병합 진단" not in md
 
 
+def test_render_markdown_backwards_compatible_without_llm_render_block() -> None:
+    payload = {
+        "run": {
+            "run_uuid": "pre-rob136",
+            "market": "all",
+            "window_hours": 24,
+            "article_count": 1,
+            "cluster_count": 1,
+            "embedding_model": "BAAI/bge-m3",
+            "embedding_dim": 1024,
+            "threshold": 0.78,
+        },
+        "issues": [
+            {
+                "rank": 1,
+                "direction": "neutral",
+                "title_ko": "기존 카드",
+                "subtitle_ko": "LLM 진단 블록 없음",
+                "article_count": 1,
+                "source_count": 1,
+                "raw_source_count": 1,
+                "normalized_source_count": 1,
+                "representative_sources": ["rss_test"],
+                "markets": ["kr"],
+                "topics": ["테스트"],
+                "related_symbols": [],
+                "representative_articles": [],
+            }
+        ],
+    }
+
+    md = lab.render_markdown(payload)
+
+    assert "기존 카드" in md
+    assert "LLM 렌더링 진단" not in md
+    assert "render_status" not in md
+
+
 def _render_issue(**overrides) -> dict[str, object]:
     issue: dict[str, object] = {
         "rank": 1,
