@@ -17,13 +17,15 @@ class UserEventContext:
     watched_tickers: frozenset[str]
 
 
-async def get_user_event_context(
-    db: AsyncSession, *, user_id: int
-) -> UserEventContext:
+async def get_user_event_context(db: AsyncSession, *, user_id: int) -> UserEventContext:
     held_stmt = (
         select(ManualHolding.ticker)
         .join(BrokerAccount, BrokerAccount.id == ManualHolding.broker_account_id)
-        .where(BrokerAccount.user_id == user_id)
+        .where(
+            BrokerAccount.user_id == user_id,
+            BrokerAccount.is_active.is_(True),
+            ManualHolding.quantity > 0,
+        )
     )
     held = {t.upper() for (t,) in (await db.execute(held_stmt)).all() if t}
 

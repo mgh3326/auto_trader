@@ -29,16 +29,55 @@ class Priority(IntEnum):
 MAJOR_TICKERS: dict[str, frozenset[str]] = {
     "us": frozenset(
         {
-            "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "NVDA", "META", "TSLA",
-            "AVGO", "BRK.B", "LLY", "JPM", "V", "UNH", "XOM", "MA", "WMT",
-            "JNJ", "PG", "ORCL", "HD", "BAC", "ABBV", "KO", "PEP", "CVX",
-            "MRK", "COST", "AMD", "NFLX", "ADBE", "CRM", "DIS", "PFE",
+            "AAPL",
+            "MSFT",
+            "GOOGL",
+            "GOOG",
+            "AMZN",
+            "NVDA",
+            "META",
+            "TSLA",
+            "AVGO",
+            "BRK.B",
+            "LLY",
+            "JPM",
+            "V",
+            "UNH",
+            "XOM",
+            "MA",
+            "WMT",
+            "JNJ",
+            "PG",
+            "ORCL",
+            "HD",
+            "BAC",
+            "ABBV",
+            "KO",
+            "PEP",
+            "CVX",
+            "MRK",
+            "COST",
+            "AMD",
+            "NFLX",
+            "ADBE",
+            "CRM",
+            "DIS",
+            "PFE",
         }
     ),
     "kr": frozenset(
         {
-            "005930", "000660", "035420", "207940", "005380", "035720",
-            "051910", "006400", "000270", "068270", "105560",
+            "005930",
+            "000660",
+            "035420",
+            "207940",
+            "005380",
+            "035720",
+            "051910",
+            "006400",
+            "000270",
+            "068270",
+            "105560",
         }
     ),
     "crypto": frozenset({"BTC", "ETH", "SOL", "XRP", "BNB"}),
@@ -52,9 +91,7 @@ def _norm(symbol: str | None) -> str | None:
     return symbol.strip().upper() or None
 
 
-def compute_priority(
-    event: MarketEventResponse, ctx: UserEventContext
-) -> Priority:
+def compute_priority(event: MarketEventResponse, ctx: UserEventContext) -> Priority:
     sym = _norm(event.symbol)
     if sym is not None:
         if sym in ctx.held_tickers:

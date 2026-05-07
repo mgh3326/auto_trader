@@ -418,9 +418,7 @@ async def db_session():
         await conn.run_sync(Base.metadata.create_all)
         # Idempotent column additions for schema drift between create_all and migrations
         await conn.execute(
-            text(
-                "ALTER TABLE market_events ADD COLUMN IF NOT EXISTS currency TEXT"
-            )
+            text("ALTER TABLE market_events ADD COLUMN IF NOT EXISTS currency TEXT")
         )
 
     async with AsyncSessionLocal() as session:

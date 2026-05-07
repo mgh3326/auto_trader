@@ -32,7 +32,10 @@ describe("fetchDiscoverCalendar", () => {
       tab: "all",
     });
     expect(data.week_label).toBe("5월 1주차");
-    const url = fetchMock.mock.calls[0][0] as string;
+    expect(fetchMock).toHaveBeenCalled();
+    const firstCall = fetchMock.mock.calls[0];
+    expect(firstCall).toBeDefined();
+    const url = firstCall?.[0] as string;
     expect(url).toContain("from_date=2026-05-04");
     expect(url).toContain("to_date=2026-05-10");
     expect(url).toContain("today=2026-05-07");

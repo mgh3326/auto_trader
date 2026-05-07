@@ -2,33 +2,44 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock
 
 import pytest
 
 from app.schemas.market_events import (
     MarketEventResponse,
-    MarketEventValueResponse,
     MarketEventsRangeResponse,
+    MarketEventValueResponse,
 )
 from app.services.market_events.discover_calendar import (
-    DiscoverCalendarService,
     PER_DAY_VISIBLE_LIMIT,
+    DiscoverCalendarService,
 )
 from app.services.market_events.user_context import UserEventContext
 
 
-def _evt(symbol, *, importance=None, category="earnings",
-         d=date(2026, 5, 7), eps=None, title=None, time_hint=None,
-         market="us") -> MarketEventResponse:
+def _evt(
+    symbol,
+    *,
+    importance=None,
+    category="earnings",
+    d=date(2026, 5, 7),
+    eps=None,
+    title=None,
+    time_hint=None,
+    release_time_utc=None,
+    market="us",
+) -> MarketEventResponse:
     values = []
     if eps is not None:
-        values.append(MarketEventValueResponse(
-            metric_name="eps",
-            actual=eps[0],
-            forecast=eps[1],
-        ))
+        values.append(
+            MarketEventValueResponse(
+                metric_name="eps",
+                actual=eps[0],
+                forecast=eps[1],
+            )
+        )
     return MarketEventResponse(
         category=category,
         market=market,
@@ -38,6 +49,7 @@ def _evt(symbol, *, importance=None, category="earnings",
         importance=importance,
         title=title,
         time_hint=time_hint,
+        release_time_utc=release_time_utc,
         values=values,
     )
 
@@ -46,15 +58,17 @@ def _evt(symbol, *, importance=None, category="earnings",
 @pytest.mark.asyncio
 async def test_groups_events_by_date_and_marks_today():
     query = AsyncMock()
-    query.list_for_range = AsyncMock(return_value=MarketEventsRangeResponse(
-        from_date=date(2026, 5, 4),
-        to_date=date(2026, 5, 10),
-        count=2,
-        events=[
-            _evt("AAPL", d=date(2026, 5, 7), title="AAPL earnings"),
-            _evt("MSFT", d=date(2026, 5, 8), title="MSFT earnings"),
-        ],
-    ))
+    query.list_for_range = AsyncMock(
+        return_value=MarketEventsRangeResponse(
+            from_date=date(2026, 5, 4),
+            to_date=date(2026, 5, 10),
+            count=2,
+            events=[
+                _evt("AAPL", d=date(2026, 5, 7), title="AAPL earnings"),
+                _evt("MSFT", d=date(2026, 5, 8), title="MSFT earnings"),
+            ],
+        )
+    )
     svc = DiscoverCalendarService(query_service=query)
     resp = await svc.build(
         from_date=date(2026, 5, 4),
@@ -64,8 +78,13 @@ async def test_groups_events_by_date_and_marks_today():
         tab="all",
     )
     assert [d.date for d in resp.days] == [
-        date(2026, 5, 4), date(2026, 5, 5), date(2026, 5, 6),
-        date(2026, 5, 7), date(2026, 5, 8), date(2026, 5, 9), date(2026, 5, 10),
+        date(2026, 5, 4),
+        date(2026, 5, 5),
+        date(2026, 5, 6),
+        date(2026, 5, 7),
+        date(2026, 5, 8),
+        date(2026, 5, 9),
+        date(2026, 5, 10),
     ]
     today_day = next(d for d in resp.days if d.date == date(2026, 5, 7))
     assert today_day.is_today is True
@@ -78,15 +97,17 @@ async def test_groups_events_by_date_and_marks_today():
 @pytest.mark.asyncio
 async def test_held_events_render_with_held_badge_and_first():
     query = AsyncMock()
-    query.list_for_range = AsyncMock(return_value=MarketEventsRangeResponse(
-        from_date=date(2026, 5, 7),
-        to_date=date(2026, 5, 7),
-        count=2,
-        events=[
-            _evt("OBSCURE", title="Obscure earnings"),
-            _evt("AAPL", title="AAPL earnings"),
-        ],
-    ))
+    query.list_for_range = AsyncMock(
+        return_value=MarketEventsRangeResponse(
+            from_date=date(2026, 5, 7),
+            to_date=date(2026, 5, 7),
+            count=2,
+            events=[
+                _evt("OBSCURE", title="Obscure earnings"),
+                _evt("AAPL", title="AAPL earnings"),
+            ],
+        )
+    )
     svc = DiscoverCalendarService(query_service=query)
     ctx = UserEventContext(frozenset({"AAPL"}), frozenset())
     resp = await svc.build(
@@ -107,12 +128,14 @@ async def test_held_events_render_with_held_badge_and_first():
 async def test_per_day_visible_limit_applies_and_counts_hidden():
     events = [_evt(f"T{i}", title=f"T{i} earnings") for i in range(20)]
     query = AsyncMock()
-    query.list_for_range = AsyncMock(return_value=MarketEventsRangeResponse(
-        from_date=date(2026, 5, 7),
-        to_date=date(2026, 5, 7),
-        count=20,
-        events=events,
-    ))
+    query.list_for_range = AsyncMock(
+        return_value=MarketEventsRangeResponse(
+            from_date=date(2026, 5, 7),
+            to_date=date(2026, 5, 7),
+            count=20,
+            events=events,
+        )
+    )
     svc = DiscoverCalendarService(query_service=query)
     resp = await svc.build(
         from_date=date(2026, 5, 7),
@@ -130,16 +153,23 @@ async def test_per_day_visible_limit_applies_and_counts_hidden():
 @pytest.mark.asyncio
 async def test_tab_economic_filters_to_economic_only():
     query = AsyncMock()
-    query.list_for_range = AsyncMock(return_value=MarketEventsRangeResponse(
-        from_date=date(2026, 5, 7),
-        to_date=date(2026, 5, 7),
-        count=2,
-        events=[
-            _evt("AAPL", category="earnings"),
-            _evt(None, category="economic", market="global", importance=3,
-                 title="US CPI"),
-        ],
-    ))
+    query.list_for_range = AsyncMock(
+        return_value=MarketEventsRangeResponse(
+            from_date=date(2026, 5, 7),
+            to_date=date(2026, 5, 7),
+            count=2,
+            events=[
+                _evt("AAPL", category="earnings"),
+                _evt(
+                    None,
+                    category="economic",
+                    market="global",
+                    importance=3,
+                    title="US CPI",
+                ),
+            ],
+        )
+    )
     svc = DiscoverCalendarService(query_service=query)
     resp = await svc.build(
         from_date=date(2026, 5, 7),
@@ -157,12 +187,14 @@ async def test_tab_economic_filters_to_economic_only():
 @pytest.mark.asyncio
 async def test_subtitle_for_earnings_uses_eps_actual_and_forecast():
     query = AsyncMock()
-    query.list_for_range = AsyncMock(return_value=MarketEventsRangeResponse(
-        from_date=date(2026, 5, 7),
-        to_date=date(2026, 5, 7),
-        count=1,
-        events=[_evt("IONQ", title="IonQ earnings", eps=("-0.34", "-0.52"))],
-    ))
+    query.list_for_range = AsyncMock(
+        return_value=MarketEventsRangeResponse(
+            from_date=date(2026, 5, 7),
+            to_date=date(2026, 5, 7),
+            count=1,
+            events=[_evt("IONQ", title="IonQ earnings", eps=("-0.34", "-0.52"))],
+        )
+    )
     svc = DiscoverCalendarService(query_service=query)
     resp = await svc.build(
         from_date=date(2026, 5, 7),
@@ -179,15 +211,56 @@ async def test_subtitle_for_earnings_uses_eps_actual_and_forecast():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_headline_includes_count_when_high_importance_present():
+async def test_release_time_utc_renders_kst_time_label():
     query = AsyncMock()
-    query.list_for_range = AsyncMock(return_value=MarketEventsRangeResponse(
+    query.list_for_range = AsyncMock(
+        return_value=MarketEventsRangeResponse(
+            from_date=date(2026, 5, 7),
+            to_date=date(2026, 5, 7),
+            count=1,
+            events=[
+                _evt(
+                    None,
+                    category="economic",
+                    market="global",
+                    importance=3,
+                    title="주간 신규실업수당 청구건수 발표",
+                    release_time_utc=datetime(2026, 5, 7, 12, 30, tzinfo=UTC),
+                ),
+            ],
+        )
+    )
+    svc = DiscoverCalendarService(query_service=query)
+    resp = await svc.build(
         from_date=date(2026, 5, 7),
         to_date=date(2026, 5, 7),
-        count=1,
-        events=[_evt(None, category="economic", market="global", importance=3,
-                     title="US CPI")],
-    ))
+        today=date(2026, 5, 7),
+        ctx=UserEventContext(frozenset(), frozenset()),
+        tab="economic",
+    )
+    assert resp.days[0].events[0].time_label == "오후 9시 30분"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_headline_includes_count_when_high_importance_present():
+    query = AsyncMock()
+    query.list_for_range = AsyncMock(
+        return_value=MarketEventsRangeResponse(
+            from_date=date(2026, 5, 7),
+            to_date=date(2026, 5, 7),
+            count=1,
+            events=[
+                _evt(
+                    None,
+                    category="economic",
+                    market="global",
+                    importance=3,
+                    title="US CPI",
+                )
+            ],
+        )
+    )
     svc = DiscoverCalendarService(query_service=query)
     resp = await svc.build(
         from_date=date(2026, 5, 7),
@@ -203,12 +276,14 @@ async def test_headline_includes_count_when_high_importance_present():
 @pytest.mark.asyncio
 async def test_week_label_uses_korean_format():
     query = AsyncMock()
-    query.list_for_range = AsyncMock(return_value=MarketEventsRangeResponse(
-        from_date=date(2026, 5, 4),
-        to_date=date(2026, 5, 10),
-        count=0,
-        events=[],
-    ))
+    query.list_for_range = AsyncMock(
+        return_value=MarketEventsRangeResponse(
+            from_date=date(2026, 5, 4),
+            to_date=date(2026, 5, 10),
+            count=0,
+            events=[],
+        )
+    )
     svc = DiscoverCalendarService(query_service=query)
     resp = await svc.build(
         from_date=date(2026, 5, 4),

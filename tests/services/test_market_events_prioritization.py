@@ -16,19 +16,21 @@ from app.services.market_events.user_context import UserEventContext
 
 
 def _evt(**kw) -> MarketEventResponse:
-    base = dict(
-        category="earnings",
-        market="us",
-        symbol=None,
-        event_date=date(2026, 5, 7),
-        source="finnhub",
-        importance=None,
-    )
+    base = {
+        "category": "earnings",
+        "market": "us",
+        "symbol": None,
+        "event_date": date(2026, 5, 7),
+        "source": "finnhub",
+        "importance": None,
+    }
     base.update(kw)
     return MarketEventResponse(**base)
 
 
-def _ctx(held: set[str] | None = None, watched: set[str] | None = None) -> UserEventContext:
+def _ctx(
+    held: set[str] | None = None, watched: set[str] | None = None
+) -> UserEventContext:
     return UserEventContext(
         held_tickers=frozenset(held or set()),
         watched_tickers=frozenset(watched or set()),
@@ -58,13 +60,17 @@ def test_major_when_in_allowlist():
 
 @pytest.mark.unit
 def test_high_importance_when_economic_high():
-    p = compute_priority(_evt(category="economic", market="global", importance=3), _ctx())
+    p = compute_priority(
+        _evt(category="economic", market="global", importance=3), _ctx()
+    )
     assert p == Priority.HIGH_IMPORTANCE
 
 
 @pytest.mark.unit
 def test_medium_importance_when_economic_medium():
-    p = compute_priority(_evt(category="economic", market="global", importance=2), _ctx())
+    p = compute_priority(
+        _evt(category="economic", market="global", importance=2), _ctx()
+    )
     assert p == Priority.MEDIUM_IMPORTANCE
 
 

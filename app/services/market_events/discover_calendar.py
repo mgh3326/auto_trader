@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 from app.schemas.market_events import MarketEventResponse
 from app.schemas.market_events_calendar import (
@@ -46,12 +47,34 @@ TIME_HINT_LABEL = {
     "after_market": "장 마감 후",
     "unknown": None,
 }
+KST = ZoneInfo("Asia/Seoul")
+
+
+def _format_korean_time(dt: datetime) -> str:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    kst = dt.astimezone(KST)
+    meridiem = "오전" if kst.hour < 12 else "오후"
+    hour = kst.hour % 12 or 12
+    if kst.minute:
+        return f"{meridiem} {hour}시 {kst.minute}분"
+    return f"{meridiem} {hour}시"
 
 
 def _format_time_label(event: MarketEventResponse) -> str | None:
+    if event.release_time_utc is not None:
+        return _format_korean_time(event.release_time_utc)
     if event.time_hint and event.time_hint in TIME_HINT_LABEL:
         return TIME_HINT_LABEL[event.time_hint]
     return None
+
+
+def _event_sort_time(event: MarketEventResponse) -> datetime:
+    if event.release_time_utc is not None:
+        if event.release_time_utc.tzinfo is None:
+            return event.release_time_utc.replace(tzinfo=UTC)
+        return event.release_time_utc
+    return datetime.combine(event.event_date, time.min, tzinfo=UTC)
 
 
 def _format_subtitle(event: MarketEventResponse) -> str | None:
@@ -96,7 +119,9 @@ def _week_label(d: date) -> str:
     return f"{d.month}월 {week_index}주차"
 
 
-def _filter_by_tab(events: list[MarketEventResponse], tab: Tab) -> list[MarketEventResponse]:
+def _filter_by_tab(
+    events: list[MarketEventResponse], tab: Tab
+) -> list[MarketEventResponse]:
     if tab == "all":
         return events
     if tab == "economic":
@@ -146,7 +171,7 @@ class DiscoverCalendarService:
             bucket.sort(
                 key=lambda s: (
                     s.priority.value,
-                    s.event.release_time_utc or s.event.event_date,
+                    _event_sort_time(s.event),
                     s.event.symbol or "",
                 )
             )
@@ -154,7 +179,12 @@ class DiscoverCalendarService:
                 1
                 for s in bucket
                 if s.priority
-                in (Priority.HELD, Priority.WATCHED, Priority.MAJOR, Priority.HIGH_IMPORTANCE)
+                in (
+                    Priority.HELD,
+                    Priority.WATCHED,
+                    Priority.MAJOR,
+                    Priority.HIGH_IMPORTANCE,
+                )
             )
             visible = bucket[:PER_DAY_VISIBLE_LIMIT]
             hidden = max(0, len(bucket) - PER_DAY_VISIBLE_LIMIT)
@@ -184,7 +214,9 @@ class DiscoverCalendarService:
 
         headline: str | None = None
         if high_importance_count > 0:
-            headline = f"이번 주 주요 이벤트 {high_importance_count}건이 예정되어 있어요"
+            headline = (
+                f"이번 주 주요 이벤트 {high_importance_count}건이 예정되어 있어요"
+            )
 
         return DiscoverCalendarResponse(
             headline=headline,
