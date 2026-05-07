@@ -1,6 +1,8 @@
 // frontend/invest/src/components/discover/RelatedSymbolsList.tsx
+import type { MarketIssueRelatedSymbol } from "../../types/newsIssues";
+
 type RelatedSymbolsListProps = Readonly<{
-  symbols: readonly string[];
+  symbols: readonly MarketIssueRelatedSymbol[];
 }>;
 
 export function RelatedSymbolsList({ symbols }: RelatedSymbolsListProps) {
@@ -16,23 +18,28 @@ export function RelatedSymbolsList({ symbols }: RelatedSymbolsListProps) {
             padding: 0,
             margin: "8px 0 0",
             display: "flex",
-            flexWrap: "wrap",
-            gap: 6,
+            flexDirection: "column",
+            gap: 8,
           }}
         >
           {symbols.map((sym) => (
             <li
-              key={sym}
+              key={`${sym.market}:${sym.symbol}`}
               style={{
-                padding: "4px 10px",
+                padding: "8px 10px",
                 background: "var(--surface-2)",
                 color: "var(--text)",
-                borderRadius: 999,
+                borderRadius: 12,
                 fontSize: 12,
-                fontWeight: 600,
+                display: "flex",
+                justifyContent: "space-between",
+                gap: 10,
               }}
             >
-              {sym}
+              <strong>{sym.canonical_name || sym.symbol}</strong>
+              <span className="subtle">
+                {sym.symbol} · {sym.mention_count}회 언급
+              </span>
             </li>
           ))}
         </ul>

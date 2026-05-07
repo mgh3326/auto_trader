@@ -3,61 +3,53 @@ import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { expect, test } from "vitest";
 import { AiIssueCard } from "../components/discover/AiIssueCard";
-import type { NewsRadarItem } from "../types/newsRadar";
+import type { MarketIssue } from "../types/newsIssues";
 
-const item: NewsRadarItem = {
+const issue: MarketIssue = {
   id: "abc",
-  title: "Fed 금리 동결 시사",
-  source: "Reuters",
-  feed_source: "reuters",
-  url: "https://example.com/news/1",
-  published_at: "2026-05-07T11:30:00Z",
   market: "us",
-  risk_category: "macro_policy",
-  severity: "high",
-  themes: ["rates"],
-  symbols: ["SPY"],
-  included_in_briefing: true,
-  briefing_reason: null,
-  briefing_score: 80,
-  snippet: "위원회는 현재 정책 유지를 시사",
-  matched_terms: ["fomc"],
+  rank: 1,
+  issue_title: "Fed 금리 동결 시사",
+  subtitle: "정책 유지",
+  direction: "up",
+  source_count: 3,
+  article_count: 7,
+  updated_at: "2026-05-07T11:30:00Z",
+  summary: null,
+  related_symbols: [],
+  related_sectors: ["금리"],
+  articles: [],
+  signals: { recency_score: 1, source_diversity_score: 0.5, mention_score: 0.8 },
 };
 
-test("renders rank, title, snippet, related news count, indicator and link", () => {
+test("renders rank, title, subtitle, counts, indicator and link", () => {
   render(
     <MemoryRouter basename="/invest/app" initialEntries={["/invest/app/"]}>
-      <AiIssueCard
-        rank={1}
-        item={item}
-        relatedCount={3}
-        now={new Date("2026-05-07T12:00:00Z")}
-      />
+      <AiIssueCard issue={issue} now={new Date("2026-05-07T12:00:00Z")} />
     </MemoryRouter>,
   );
 
   expect(screen.getByText("1")).toBeInTheDocument();
   expect(screen.getByText("Fed 금리 동결 시사")).toBeInTheDocument();
-  expect(screen.getByText(/위원회는 현재 정책 유지를 시사/)).toBeInTheDocument();
-  expect(screen.getByText(/관련 뉴스 3개/)).toBeInTheDocument();
+  expect(screen.getByText(/정책 유지/)).toBeInTheDocument();
+  expect(screen.getByText(/3개 출처/)).toBeInTheDocument();
+  expect(screen.getByText(/기사 7개/)).toBeInTheDocument();
   expect(screen.getByText(/30분 전/)).toBeInTheDocument();
-  expect(screen.getByLabelText("강한 이슈")).toBeInTheDocument();
+  expect(screen.getByLabelText("상승 이슈")).toBeInTheDocument();
   expect(screen.getByRole("link")).toHaveAttribute(
     "href",
     "/invest/app/discover/issues/abc",
   );
 });
 
-test("falls back to themes when snippet is missing", () => {
+test("falls back to summary when subtitle is missing", () => {
   render(
     <MemoryRouter basename="/invest/app" initialEntries={["/invest/app/"]}>
       <AiIssueCard
-        rank={2}
-        item={{ ...item, snippet: null, themes: ["fomc", "rates"] }}
-        relatedCount={1}
+        issue={{ ...issue, subtitle: null, summary: "요약 문장" }}
         now={new Date("2026-05-07T12:00:00Z")}
       />
     </MemoryRouter>,
   );
-  expect(screen.getByText(/fomc, rates/)).toBeInTheDocument();
+  expect(screen.getByText(/요약 문장/)).toBeInTheDocument();
 });

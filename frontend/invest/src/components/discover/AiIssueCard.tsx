@@ -1,30 +1,28 @@
 // frontend/invest/src/components/discover/AiIssueCard.tsx
 import { Link } from "react-router-dom";
 import { formatRelativeTime } from "../../format/relativeTime";
-import type { NewsRadarItem } from "../../types/newsRadar";
-import { describeSeverity } from "./severity";
+import type { MarketIssue } from "../../types/newsIssues";
+import { describeDirection } from "./severity";
 
 export type AiIssueCardProps = Readonly<{
-  rank: number;
-  item: NewsRadarItem;
-  relatedCount: number;
+  issue: MarketIssue;
   now?: Date;
 }>;
 
-function buildSubtitle(item: NewsRadarItem): string {
-  if (item.snippet && item.snippet.trim().length > 0) return item.snippet;
-  if (item.themes.length > 0) return item.themes.join(", ");
-  if (item.matched_terms.length > 0) return item.matched_terms.join(", ");
+function buildSubtitle(issue: MarketIssue): string {
+  if (issue.subtitle && issue.subtitle.trim().length > 0) return issue.subtitle;
+  if (issue.summary && issue.summary.trim().length > 0) return issue.summary;
+  if (issue.related_sectors.length > 0) return issue.related_sectors.join(", ");
   return "";
 }
 
-export function AiIssueCard({ rank, item, relatedCount, now }: AiIssueCardProps) {
-  const indicator = describeSeverity(item.severity);
-  const time = formatRelativeTime(item.published_at, now);
-  const subtitle = buildSubtitle(item);
+export function AiIssueCard({ issue, now }: AiIssueCardProps) {
+  const indicator = describeDirection(issue.direction);
+  const time = formatRelativeTime(issue.updated_at, now);
+  const subtitle = buildSubtitle(issue);
   return (
     <Link
-      to={`/discover/issues/${item.id}`}
+      to={`/discover/issues/${issue.id}`}
       style={{
         display: "flex",
         gap: 12,
@@ -44,7 +42,7 @@ export function AiIssueCard({ rank, item, relatedCount, now }: AiIssueCardProps)
           fontSize: 16,
         }}
       >
-        {rank}
+        {issue.rank}
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -55,7 +53,7 @@ export function AiIssueCard({ rank, item, relatedCount, now }: AiIssueCardProps)
           >
             {indicator.glyph}
           </span>
-          <span style={{ fontWeight: 700, fontSize: 14 }}>{item.title}</span>
+          <span style={{ fontWeight: 700, fontSize: 14 }}>{issue.issue_title}</span>
         </div>
         {subtitle && (
           <div
@@ -74,7 +72,8 @@ export function AiIssueCard({ rank, item, relatedCount, now }: AiIssueCardProps)
           className="subtle"
           style={{ marginTop: 6, display: "flex", gap: 8, fontSize: 11 }}
         >
-          <span>관련 뉴스 {relatedCount}개</span>
+          <span>{issue.source_count}개 출처</span>
+          <span>· 기사 {issue.article_count}개</span>
           {time && <span>· {time}</span>}
         </div>
       </div>

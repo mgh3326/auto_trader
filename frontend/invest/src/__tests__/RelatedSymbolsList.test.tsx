@@ -4,9 +4,13 @@ import { expect, test } from "vitest";
 import { RelatedSymbolsList } from "../components/discover/RelatedSymbolsList";
 
 test("renders symbol chips when symbols are present", () => {
-  render(<RelatedSymbolsList symbols={["AAPL", "MSFT"]} />);
-  expect(screen.getByText("AAPL")).toBeInTheDocument();
-  expect(screen.getByText("MSFT")).toBeInTheDocument();
+  render(<RelatedSymbolsList symbols={[
+    { symbol: "AAPL", market: "us", canonical_name: "Apple", mention_count: 3 },
+    { symbol: "MSFT", market: "us", canonical_name: "Microsoft", mention_count: 2 },
+  ]} />);
+  expect(screen.getByText("Apple")).toBeInTheDocument();
+  expect(screen.getByText(/AAPL · 3회 언급/)).toBeInTheDocument();
+  expect(screen.getByText("Microsoft")).toBeInTheDocument();
 });
 
 test("renders prep notice when symbols are empty", () => {
