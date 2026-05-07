@@ -229,6 +229,65 @@ STOPWORDS = {
     "분석",
 }
 
+RESEARCH_HOUSE_PREFIXES: tuple[str, ...] = ("browser_naver_research",)
+MARKET_SIGNAL_TERMS: tuple[str, ...] = (
+    "fed",
+    "federal reserve",
+    "fomc",
+    "cpi",
+    "treasury",
+    "yield",
+    "s&p",
+    "s&p 500",
+    "nasdaq",
+    "earnings",
+    "shares",
+    "stock",
+    "stocks",
+    "analyst",
+    "revenue",
+    "profit",
+    "연준",
+    "금리",
+    "실적",
+    "증시",
+    "주식",
+)
+YAHOO_PERSONAL_FINANCE_TERMS: tuple[str, ...] = (
+    "card",
+    "credit card",
+    "travel",
+    "mortgage",
+    "savings",
+    "savings account",
+    "loan",
+    "insurance",
+    "personal finance",
+    "apy",
+    "home buyer",
+    "home buyers",
+)
+REGULAR_REPORT_TERMS: tuple[str, ...] = (
+    "morning letter",
+    "daily",
+    "weekly",
+    "데일리",
+    "장마감코멘트",
+    "모닝코멘트",
+    "전략공감",
+    "이슈코멘트",
+    "주간",
+)
+
+
+def normalize_source_key(source_key: str | None) -> str:
+    if not source_key:
+        return "unknown"
+    for prefix in RESEARCH_HOUSE_PREFIXES:
+        if source_key == prefix or source_key.startswith(prefix + "_"):
+            return prefix
+    return source_key
+
 
 @dataclass(frozen=True)
 class Article:
@@ -246,6 +305,10 @@ class Article:
     @property
     def source_key(self) -> str:
         return self.feed_source or self.source or "unknown"
+
+    @property
+    def normalized_source_key(self) -> str:
+        return normalize_source_key(self.source_key)
 
     @property
     def text_for_embedding(self) -> str:
@@ -290,7 +353,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     parser.add_argument("--output", help="optional output file path")
-    return parser.parse_args(argv)
+    parser.add_argument(
+        "--compare-v1",
+        action="store_true",
+        help="include legacy v1 vs v2 ranking diagnostics",
+    )
+    parser.add_argument(
+        "--weights",
+        help="score weights as diversity=0.40,volume=0.25,recency=0.20,relevance=0.15",
+    )
+    parser.add_argument(
+        "--drop-regular-reports",
+        action="store_true",
+        help="hard-drop clusters where regular reports are at least half of titles",
+    )
+    args = parser.parse_args(argv)
+    for name in ("window_hours", "limit", "top", "batch_size"):
+        if getattr(args, name) <= 0:
+            parser.error(f"--{name.replace('_', '-')} must be positive")
+    return args
 
 
 def normalize_text(s: str) -> str:
@@ -389,11 +470,242 @@ def cluster_articles(
 def keyword_matches(text_blob: str, keyword: str) -> bool:
     keyword_l = keyword.lower()
     if re.search(r"[가-힣]", keyword_l):
+        if len(keyword_l) <= 1:
+            return bool(
+                re.search(rf"(?<![가-힣]){re.escape(keyword_l)}(?![가-힣])", text_blob)
+            )
         return keyword_l in text_blob
     # Avoid substring false positives such as "ai" in "daily" or "ether" in "together".
     return bool(
         re.search(rf"(?<![a-z0-9]){re.escape(keyword_l)}(?![a-z0-9])", text_blob)
     )
+
+
+@dataclass(frozen=True)
+class TitleFlags:
+    is_regular_report: bool
+    is_yahoo_personal_finance: bool
+    has_market_signal: bool
+
+
+@dataclass(frozen=True)
+class ScoreWeights:
+    diversity: float = 0.40
+    volume: float = 0.25
+    recency: float = 0.20
+    relevance: float = 0.15
+
+
+DEFAULT_WEIGHTS = ScoreWeights()
+
+
+@dataclass(frozen=True)
+class ScoreBreakdown:
+    score: float
+    components: dict[str, float]
+    weighted: dict[str, float]
+    penalties: dict[str, float]
+    raw_source_count: int
+    normalized_source_count: int
+    flags: dict[str, int]
+
+
+def _round_score(value: float) -> float:
+    return round(float(value), 4)
+
+
+def _article_blob(article: Article) -> str:
+    return f"{article.title} {article.summary or ''}".lower()
+
+
+def _has_any_keyword(text_blob: str, terms: tuple[str, ...]) -> bool:
+    return any(keyword_matches(text_blob, term) for term in terms)
+
+
+def classify_title(article: Article) -> TitleFlags:
+    blob = _article_blob(article)
+    has_market_signal = _has_any_keyword(blob, MARKET_SIGNAL_TERMS)
+    is_regular_report = _has_any_keyword(blob, REGULAR_REPORT_TERMS)
+    source_blob = article.source_key.lower()
+    has_pf_term = _has_any_keyword(blob, YAHOO_PERSONAL_FINANCE_TERMS)
+    is_yahoo_personal_finance = has_pf_term and "yahoo" in source_blob
+    return TitleFlags(
+        is_regular_report=is_regular_report,
+        is_yahoo_personal_finance=is_yahoo_personal_finance,
+        has_market_signal=has_market_signal,
+    )
+
+
+def _parse_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def parse_weights(value: str | None) -> ScoreWeights:
+    if not value:
+        return DEFAULT_WEIGHTS
+    allowed = {"diversity", "volume", "recency", "relevance"}
+    parsed: dict[str, float] = {}
+    for part in value.split(","):
+        if not part.strip():
+            continue
+        if "=" not in part:
+            raise ValueError(f"invalid weight item: {part!r}")
+        key, raw_value = [x.strip() for x in part.split("=", 1)]
+        if key not in allowed:
+            raise ValueError(f"unknown weight key: {key}")
+        try:
+            weight = float(raw_value)
+        except ValueError as exc:
+            raise ValueError(f"invalid weight value for {key}: {raw_value}") from exc
+        if weight < 0:
+            raise ValueError(f"weight must be non-negative: {key}")
+        parsed[key] = weight
+    missing = allowed - parsed.keys()
+    if missing:
+        raise ValueError(f"missing weight keys: {', '.join(sorted(missing))}")
+    total = sum(parsed.values())
+    if not math.isclose(total, 1.0, abs_tol=0.001):
+        raise ValueError(f"weights must sum to 1.0, got {total:.4f}")
+    return ScoreWeights(
+        diversity=parsed["diversity"],
+        volume=parsed["volume"],
+        recency=parsed["recency"],
+        relevance=parsed["relevance"],
+    )
+
+
+def _topic_relevance(rows: list[Article]) -> float:
+    text_blob = "\n".join([a.title + " " + (a.summary or "") for a in rows]).lower()
+    for _, _, keys in TOPIC_RULES:
+        if any(keyword_matches(text_blob, key) for key in keys):
+            return 1.0
+    return 0.5 if _has_any_keyword(text_blob, MARKET_SIGNAL_TERMS) else 0.0
+
+
+def score_cluster(
+    cluster: dict[str, Any],
+    articles: list[Article],
+    *,
+    window_hours: int,
+    weights: ScoreWeights = DEFAULT_WEIGHTS,
+) -> ScoreBreakdown:
+    rows = [articles[i] for i in cluster["indices"]]
+    raw_sources = {a.source_key for a in rows}
+    normalized_sources = {a.normalized_source_key for a in rows}
+    raw_source_count = len(raw_sources)
+    normalized_source_count = len(normalized_sources)
+    newest = max(
+        (
+            _parse_datetime(a.published_at) or _parse_datetime(a.scraped_at)
+            for a in rows
+        ),
+        default=None,
+    )
+    now = datetime.now(UTC)
+    newest_age_minutes = (
+        ((now - newest).total_seconds() / 60) if newest else window_hours * 60
+    )
+    source_diversity_norm = min(1.0, normalized_source_count / 5)
+    article_count_norm = min(1.0, math.log1p(len(rows)) / math.log(10))
+    recency_norm = min(
+        1.0,
+        max(0.0, 1.0 - newest_age_minutes / max(window_hours * 60, 1)),
+    )
+    topic_relevance = _topic_relevance(rows)
+    flags_by_article = [classify_title(a) for a in rows]
+    yahoo_noise_count = sum(f.is_yahoo_personal_finance for f in flags_by_article)
+    regular_report_count = sum(f.is_regular_report for f in flags_by_article)
+    market_signal_count = sum(f.has_market_signal for f in flags_by_article)
+    noise_penalty = 0.10 * min(4, yahoo_noise_count)
+    if yahoo_noise_count and market_signal_count:
+        noise_penalty *= 0.25
+    regular_report_penalty = 0.15 * min(3, regular_report_count)
+    duplicate_source_penalty = (
+        max(
+            0.0,
+            1.0 - normalized_source_count / max(1, raw_source_count),
+        )
+        * 0.30
+    )
+    penalties = {
+        "noise": min(0.40, noise_penalty),
+        "regular_report": min(0.45, regular_report_penalty),
+        "duplicate_source": min(0.30, duplicate_source_penalty),
+    }
+    components = {
+        "source_diversity_norm": source_diversity_norm,
+        "article_count_norm": article_count_norm,
+        "recency_norm": recency_norm,
+        "topic_relevance": topic_relevance,
+    }
+    weighted = {
+        "source_diversity": source_diversity_norm * weights.diversity,
+        "article_count": article_count_norm * weights.volume,
+        "recency": recency_norm * weights.recency,
+        "topic_relevance": topic_relevance * weights.relevance,
+    }
+    score = max(0.0, sum(weighted.values()) - sum(penalties.values()))
+    return ScoreBreakdown(
+        score=_round_score(score),
+        components={k: _round_score(v) for k, v in components.items()},
+        weighted={k: _round_score(v) for k, v in weighted.items()},
+        penalties={k: _round_score(v) for k, v in penalties.items()},
+        raw_source_count=raw_source_count,
+        normalized_source_count=normalized_source_count,
+        flags={
+            "yahoo_personal_finance": int(yahoo_noise_count),
+            "regular_report": int(regular_report_count),
+            "market_signal": int(market_signal_count),
+        },
+    )
+
+
+def rank_clusters_v2(
+    clusters: list[dict[str, Any]],
+    articles: list[Article],
+    *,
+    window_hours: int,
+    weights: ScoreWeights = DEFAULT_WEIGHTS,
+) -> list[tuple[dict[str, Any], ScoreBreakdown]]:
+    ranked = [
+        (
+            cluster,
+            score_cluster(
+                cluster, articles, window_hours=window_hours, weights=weights
+            ),
+        )
+        for cluster in clusters
+    ]
+    return sorted(
+        ranked,
+        key=lambda item: (
+            item[1].score,
+            item[1].normalized_source_count,
+            len(item[0]["indices"]),
+            float(item[0].get("best_similarity", 0.0)),
+        ),
+        reverse=True,
+    )
+
+
+def _breakdown_payload(score_breakdown: ScoreBreakdown) -> dict[str, Any]:
+    return {
+        "score": score_breakdown.score,
+        "score_components": score_breakdown.components,
+        "score_weighted": score_breakdown.weighted,
+        "score_penalties": score_breakdown.penalties,
+        "raw_source_count": score_breakdown.raw_source_count,
+        "normalized_source_count": score_breakdown.normalized_source_count,
+        "flags": score_breakdown.flags,
+    }
 
 
 def infer_topic(articles: list[Article]) -> tuple[str, str, list[str]]:
@@ -428,10 +740,14 @@ def infer_direction(articles: list[Article]) -> str:
 
 
 def summarize_cluster(
-    cluster: dict[str, Any], articles: list[Article], rank: int
+    cluster: dict[str, Any],
+    articles: list[Article],
+    rank: int,
+    score_breakdown: ScoreBreakdown | None = None,
 ) -> dict[str, Any]:
     rows = [articles[i] for i in cluster["indices"]]
     source_counts = Counter(a.source_key for a in rows)
+    normalized_source_counts = Counter(a.normalized_source_key for a in rows)
     markets = sorted({a.market for a in rows})
     related_symbols = []
     seen = set()
@@ -456,6 +772,13 @@ def summarize_cluster(
         for a in rows[:8]
     ]
     issue_key_raw = "|".join([title, subtitle, ",".join(str(a.id) for a in rows[:8])])
+    if score_breakdown is None:
+        score_breakdown = score_cluster(
+            cluster,
+            articles,
+            window_hours=24,
+            weights=DEFAULT_WEIGHTS,
+        )
     return {
         "rank": rank,
         "cluster_key": hashlib.sha1(issue_key_raw.encode()).hexdigest()[:16],
@@ -463,9 +786,19 @@ def summarize_cluster(
         "subtitle_ko": subtitle,
         "direction": direction,
         "article_count": len(rows),
-        "source_count": len(source_counts),
+        "source_count": score_breakdown.normalized_source_count,
         "representative_sources": representative,
-        "source_counts": dict(source_counts),
+        "source_counts": {
+            "raw": dict(source_counts),
+            "normalized": dict(normalized_source_counts),
+        },
+        "raw_source_count": score_breakdown.raw_source_count,
+        "normalized_source_count": score_breakdown.normalized_source_count,
+        "score": score_breakdown.score,
+        "score_components": score_breakdown.components,
+        "score_weighted": score_breakdown.weighted,
+        "score_penalties": score_breakdown.penalties,
+        "flags": score_breakdown.flags,
         "markets": markets,
         "related_symbols": related_symbols[:10],
         "topics": topics[:8],
@@ -504,7 +837,8 @@ def render_markdown(payload: dict[str, Any]) -> str:
             [
                 f"### {issue['rank']}. {arrow.get(issue['direction'], '◆')} {issue['title_ko']}",
                 f"- 부제: {issue['subtitle_ko']}",
-                f"- 출처/기사: {issue['source_count']}개 출처 · {issue['article_count']}개 기사",
+                f"- 출처/기사: raw {issue.get('raw_source_count', issue['source_count'])}개 → normalized {issue.get('normalized_source_count', issue['source_count'])}개 · {issue['article_count']}개 기사",
+                f"- 점수: {issue.get('score', 0):.4f} / components={issue.get('score_components', {})} / penalties={issue.get('score_penalties', {})}",
                 f"- 대표 출처: {', '.join(issue['representative_sources']) or '-'}",
                 f"- 시장: {', '.join(issue['markets'])}",
                 f"- 토픽: {', '.join(issue['topics']) or '-'}",
@@ -528,6 +862,167 @@ def render_markdown(payload: dict[str, Any]) -> str:
             src = article.get("feed_source") or article.get("source") or "unknown"
             lines.append(f"  - [{src}] {article['title']}")
         lines.append("")
+    if payload.get("v1_vs_v2"):
+        lines.append(
+            render_comparison_markdown(
+                payload, [], [], top=meta.get("top", len(payload["issues"]))
+            ).rstrip()
+        )
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _dominant_penalty(issue: dict[str, Any]) -> str:
+    penalties = issue.get("score_penalties") or {}
+    if not penalties:
+        return "-"
+    key, value = max(penalties.items(), key=lambda item: item[1])
+    return f"{key}={value:.4f}"
+
+
+def _comparison_payload(
+    ranked_v1: list[dict[str, Any]],
+    ranked_v2: list[tuple[dict[str, Any], ScoreBreakdown]],
+    articles: list[Article],
+    *,
+    top: int,
+) -> dict[str, Any]:
+    v1_issues = [
+        summarize_cluster(cluster, articles, rank=i + 1)
+        for i, cluster in enumerate(ranked_v1)
+    ]
+    v2_issues = [
+        summarize_cluster(cluster, articles, rank=i + 1, score_breakdown=breakdown)
+        for i, (cluster, breakdown) in enumerate(ranked_v2)
+    ]
+    v1_by_key = {issue["cluster_key"]: issue for issue in v1_issues}
+    v2_by_key = {issue["cluster_key"]: issue for issue in v2_issues}
+    keys = list(
+        dict.fromkeys(
+            [i["cluster_key"] for i in v1_issues[:top]]
+            + [i["cluster_key"] for i in v2_issues[:top]]
+        )
+    )
+    side_by_side = []
+    for key in keys:
+        v1 = v1_by_key.get(key)
+        v2 = v2_by_key.get(key)
+        side_by_side.append(
+            {
+                "cluster_key": key,
+                "title_ko": (v2 or v1 or {}).get("title_ko", "-"),
+                "rank_v1": v1.get("rank") if v1 else None,
+                "rank_v2": v2.get("rank") if v2 else None,
+                "delta": (v1.get("rank") - v2.get("rank")) if v1 and v2 else None,
+            }
+        )
+    downranked = []
+    for issue in v1_issues[:top]:
+        v2 = v2_by_key.get(issue["cluster_key"])
+        if not v2 or v2["rank"] > top:
+            downranked.append(
+                {
+                    "cluster_key": issue["cluster_key"],
+                    "title_ko": issue["title_ko"],
+                    "rank_v1": issue["rank"],
+                    "rank_v2": v2.get("rank") if v2 else None,
+                    "dominant_penalty": _dominant_penalty(v2 or issue),
+                    "representative_titles": [
+                        a["title"] for a in issue["representative_articles"][:3]
+                    ],
+                }
+            )
+    promoted = []
+    for issue in v2_issues[:top]:
+        v1 = v1_by_key.get(issue["cluster_key"])
+        if not v1 or v1["rank"] > top:
+            promoted.append(
+                {
+                    "cluster_key": issue["cluster_key"],
+                    "title_ko": issue["title_ko"],
+                    "rank_v1": v1.get("rank") if v1 else None,
+                    "rank_v2": issue["rank"],
+                    "score": issue["score"],
+                    "score_components": issue["score_components"],
+                    "representative_sources": issue["representative_sources"],
+                }
+            )
+    return {
+        "side_by_side": side_by_side,
+        "downranked_or_excluded": downranked,
+        "promoted": promoted,
+        "v2_top_diagnostics": [
+            {
+                "rank": issue["rank"],
+                "cluster_key": issue["cluster_key"],
+                "title_ko": issue["title_ko"],
+                "score": issue["score"],
+                "score_components": issue["score_components"],
+                "score_penalties": issue["score_penalties"],
+                "raw_source_count": issue["raw_source_count"],
+                "normalized_source_count": issue["normalized_source_count"],
+                "article_count": issue["article_count"],
+            }
+            for issue in v2_issues[:top]
+        ],
+    }
+
+
+def render_comparison_markdown(
+    payload_v2: dict[str, Any],
+    ranked_v1: list[dict[str, Any]],
+    ranked_v2: list[tuple[dict[str, Any], ScoreBreakdown]],
+    *,
+    top: int,
+) -> str:
+    comparison = payload_v2.get("v1_vs_v2") or {
+        "side_by_side": [],
+        "downranked_or_excluded": [],
+        "promoted": [],
+        "v2_top_diagnostics": [],
+    }
+    lines = [
+        "",
+        "## v1 vs v2 comparison",
+        "",
+        "### Top-N rank table",
+        "",
+        "| cluster | title | rank_v1 | rank_v2 | delta |",
+        "|---|---|---:|---:|---:|",
+    ]
+    for row in comparison["side_by_side"][: top * 2]:
+        lines.append(
+            f"| `{row['cluster_key']}` | {row['title_ko']} | {row.get('rank_v1') or '-'} | {row.get('rank_v2') or '-'} | {row.get('delta') if row.get('delta') is not None else '-'} |"
+        )
+    lines.extend(["", "### Downranked/excluded clusters", ""])
+    for row in comparison["downranked_or_excluded"][:top]:
+        titles = "; ".join(row.get("representative_titles") or [])
+        lines.append(
+            f"- `{row['cluster_key']}` {row['title_ko']} (v1={row.get('rank_v1')}, v2={row.get('rank_v2') or '-'}) dominant_penalty={row.get('dominant_penalty', '-')} titles={titles}"
+        )
+    if not comparison["downranked_or_excluded"]:
+        lines.append("- none")
+    lines.extend(["", "### Promoted clusters", ""])
+    for row in comparison["promoted"][:top]:
+        lines.append(
+            f"- `{row['cluster_key']}` {row['title_ko']} (v1={row.get('rank_v1') or '-'}, v2={row.get('rank_v2')}) score={row.get('score')} components={row.get('score_components')} sources={', '.join(row.get('representative_sources') or [])}"
+        )
+    if not comparison["promoted"]:
+        lines.append("- none")
+    lines.extend(
+        [
+            "",
+            "### V2 top-N diagnostics",
+            "",
+            "| rank | score | div | vol | rec | rel | noise | regular | duplicate | raw | normalized | articles |",
+            "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for row in comparison["v2_top_diagnostics"][:top]:
+        comp = row.get("score_components") or {}
+        penalties = row.get("score_penalties") or {}
+        lines.append(
+            f"| {row['rank']} | {row['score']:.4f} | {comp.get('source_diversity_norm', 0):.4f} | {comp.get('article_count_norm', 0):.4f} | {comp.get('recency_norm', 0):.4f} | {comp.get('topic_relevance', 0):.4f} | {penalties.get('noise', 0):.4f} | {penalties.get('regular_report', 0):.4f} | {penalties.get('duplicate_source', 0):.4f} | {row.get('raw_source_count')} | {row.get('normalized_source_count')} | {row.get('article_count')} |"
+        )
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -690,6 +1185,7 @@ async def store_payload(payload: dict[str, Any]) -> None:
 
 
 async def build_payload(args: argparse.Namespace) -> dict[str, Any]:
+    weights = parse_weights(getattr(args, "weights", None))
     articles = await fetch_articles(args.market, args.window_hours, args.limit)
     if not articles:
         raise RuntimeError("no news_articles rows matched the requested window/market")
@@ -705,29 +1201,63 @@ async def build_payload(args: argparse.Namespace) -> dict[str, Any]:
         )
     embedding_dim = len(vectors[0]) if vectors else 0
     clusters = cluster_articles(articles, vectors, args.threshold)
-    ranked = rank_clusters(clusters, articles)
+    ranked_v1 = rank_clusters(clusters, articles)
+    ranked_v2 = rank_clusters_v2(
+        clusters,
+        articles,
+        window_hours=args.window_hours,
+        weights=weights,
+    )
+    if getattr(args, "drop_regular_reports", False):
+        ranked_v2 = [
+            (cluster, breakdown)
+            for cluster, breakdown in ranked_v2
+            if breakdown.flags.get("regular_report", 0)
+            / max(1, len(cluster["indices"]))
+            < 0.5
+        ]
     issues = [
-        summarize_cluster(cluster, articles, rank=i + 1)
-        for i, cluster in enumerate(ranked[: args.top])
+        summarize_cluster(cluster, articles, rank=i + 1, score_breakdown=breakdown)
+        for i, (cluster, breakdown) in enumerate(ranked_v2[: args.top])
     ]
-    source_counts = Counter(a.source_key for a in articles)
-    return {
+    raw_source_counts = Counter(a.source_key for a in articles)
+    normalized_source_counts = Counter(a.normalized_source_key for a in articles)
+    payload = {
         "run": {
             "run_uuid": str(uuid.uuid4()),
             "created_at": datetime.now(UTC).isoformat(),
             "market": args.market,
             "window_hours": args.window_hours,
             "article_limit": args.limit,
+            "top": args.top,
             "article_count": len(articles),
             "cluster_count": len(clusters),
             "threshold": args.threshold,
             "dedupe_threshold": args.dedupe_threshold,
             "embedding_model": args.embedding_model,
             "embedding_dim": embedding_dim,
+            "score_weights": {
+                "diversity": weights.diversity,
+                "volume": weights.volume,
+                "recency": weights.recency,
+                "relevance": weights.relevance,
+            },
+            "drop_regular_reports": bool(getattr(args, "drop_regular_reports", False)),
         },
-        "source_counts": dict(source_counts),
+        "source_counts": {
+            "raw": dict(raw_source_counts),
+            "normalized": dict(normalized_source_counts),
+        },
         "issues": issues,
     }
+    if getattr(args, "compare_v1", False):
+        payload["v1_vs_v2"] = _comparison_payload(
+            ranked_v1,
+            ranked_v2,
+            articles,
+            top=args.top,
+        )
+    return payload
 
 
 async def async_main(argv: list[str] | None = None) -> int:
