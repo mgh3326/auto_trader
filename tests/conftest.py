@@ -416,6 +416,12 @@ async def db_session():
         for schema in ["paper", "research", "review"]:
             await conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
         await conn.run_sync(Base.metadata.create_all)
+        # Idempotent column additions for schema drift between create_all and migrations
+        await conn.execute(
+            text(
+                "ALTER TABLE market_events ADD COLUMN IF NOT EXISTS currency TEXT"
+            )
+        )
 
     async with AsyncSessionLocal() as session:
         yield session
