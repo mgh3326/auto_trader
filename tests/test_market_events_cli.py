@@ -44,10 +44,20 @@ def test_parse_args_rejects_unsupported_source_category_combo():
     from scripts.ingest_market_events import parse_args
 
     with pytest.raises((SystemExit, argparse.ArgumentTypeError, ValueError)):
-        parse_args([
-            "--source", "dart", "--category", "earnings", "--market", "us",
-            "--from-date", "2026-05-07", "--to-date", "2026-05-07",
-        ])
+        parse_args(
+            [
+                "--source",
+                "dart",
+                "--category",
+                "earnings",
+                "--market",
+                "us",
+                "--from-date",
+                "2026-05-07",
+                "--to-date",
+                "2026-05-07",
+            ]
+        )
 
 
 @pytest.mark.asyncio
@@ -55,10 +65,10 @@ def test_parse_args_rejects_unsupported_source_category_combo():
 async def test_run_ingest_dispatches_per_day(db_session, monkeypatch):
     from scripts import ingest_market_events as cli
 
-    fake = AsyncMock(return_value=type("R", (), {"status": "succeeded", "event_count": 0})())
-    monkeypatch.setitem(
-        cli.SUPPORTED, ("finnhub", "earnings", "us"), fake
+    fake = AsyncMock(
+        return_value=type("R", (), {"status": "succeeded", "event_count": 0})()
     )
+    monkeypatch.setitem(cli.SUPPORTED, ("finnhub", "earnings", "us"), fake)
 
     await cli.run_ingest(
         db=db_session,

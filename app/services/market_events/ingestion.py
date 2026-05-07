@@ -96,6 +96,7 @@ async def ingest_kr_disclosures_for_date(
         from app.services.market_events.dart_helpers import (
             fetch_dart_filings_for_date as _default_fetch,
         )
+
         fetch_rows = _default_fetch
 
     repo = MarketEventsRepository(db)

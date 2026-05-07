@@ -96,5 +96,7 @@ def test_market_event_ingestion_partition_model_columns():
     }
     assert expected <= cols
 
-    constraint_names = {c.name for c in MarketEventIngestionPartition.__table__.constraints}
+    constraint_names = {
+        c.name for c in MarketEventIngestionPartition.__table__.constraints
+    }
     assert "uq_market_event_ingestion_partitions_source" in constraint_names

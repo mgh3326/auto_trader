@@ -30,7 +30,9 @@ router = APIRouter(prefix="/trading", tags=["market-events"])
 async def get_today_market_events(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_authenticated_user)],
-    on_date: Annotated[date | None, Query(description="ISO date; default = today")] = None,
+    on_date: Annotated[
+        date | None, Query(description="ISO date; default = today")
+    ] = None,
     category: str | None = None,
     market: str | None = None,
     source: str | None = None,

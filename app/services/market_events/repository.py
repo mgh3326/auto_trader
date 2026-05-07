@@ -36,7 +36,9 @@ class MarketEventsRepository:
     ) -> MarketEvent:
         payload = dict(event_data)
         if payload.get("raw_payload_json") is not None:
-            payload["raw_payload_json"] = _redact_sensitive_keys(payload["raw_payload_json"])
+            payload["raw_payload_json"] = _redact_sensitive_keys(
+                payload["raw_payload_json"]
+            )
 
         natural_keys = (
             "source",
@@ -97,9 +99,7 @@ class MarketEventsRepository:
 
         await self.db.flush()
         event = (
-            await self.db.execute(
-                select(MarketEvent).where(MarketEvent.id == event_id)
-            )
+            await self.db.execute(select(MarketEvent).where(MarketEvent.id == event_id))
         ).scalar_one()
         return event
 

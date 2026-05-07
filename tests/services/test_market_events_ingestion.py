@@ -57,9 +57,7 @@ async def test_ingest_us_earnings_for_date_succeeds(db_session, monkeypatch):
     fake = AsyncMock(return_value=FINNHUB_RESPONSE_ONE_ROW)
     monkeypatch.setattr(ingestion, "_fetch_earnings_calendar_finnhub", fake)
 
-    result = await ingestion.ingest_us_earnings_for_date(
-        db_session, date(2026, 5, 7)
-    )
+    result = await ingestion.ingest_us_earnings_for_date(db_session, date(2026, 5, 7))
     await db_session.commit()
 
     assert result.status == "succeeded"
@@ -71,8 +69,10 @@ async def test_ingest_us_earnings_for_date_succeeds(db_session, monkeypatch):
     assert events[0].symbol == "IONQ"
 
     parts = (
-        await db_session.execute(select(MarketEventIngestionPartition))
-    ).scalars().all()
+        (await db_session.execute(select(MarketEventIngestionPartition)))
+        .scalars()
+        .all()
+    )
     assert len(parts) == 1
     assert parts[0].status == "succeeded"
     assert parts[0].event_count == 1
@@ -87,9 +87,7 @@ async def test_ingest_us_earnings_for_date_records_failure(db_session, monkeypat
     fake = AsyncMock(side_effect=TimeoutError("read timeout=10"))
     monkeypatch.setattr(ingestion, "_fetch_earnings_calendar_finnhub", fake)
 
-    result = await ingestion.ingest_us_earnings_for_date(
-        db_session, date(2026, 5, 8)
-    )
+    result = await ingestion.ingest_us_earnings_for_date(db_session, date(2026, 5, 8))
     await db_session.commit()
 
     assert result.status == "failed"
@@ -97,8 +95,10 @@ async def test_ingest_us_earnings_for_date_records_failure(db_session, monkeypat
     assert "read timeout" in (result.error or "")
 
     parts = (
-        await db_session.execute(select(MarketEventIngestionPartition))
-    ).scalars().all()
+        (await db_session.execute(select(MarketEventIngestionPartition)))
+        .scalars()
+        .all()
+    )
     assert len(parts) == 1
     assert parts[0].status == "failed"
     assert parts[0].retry_count == 1
@@ -121,8 +121,10 @@ async def test_ingest_us_earnings_for_date_is_idempotent(db_session, monkeypatch
     events = (await db_session.execute(select(MarketEvent))).scalars().all()
     assert len(events) == 1
     parts = (
-        await db_session.execute(select(MarketEventIngestionPartition))
-    ).scalars().all()
+        (await db_session.execute(select(MarketEventIngestionPartition)))
+        .scalars()
+        .all()
+    )
     assert len(parts) == 1
     assert parts[0].status == "succeeded"
 

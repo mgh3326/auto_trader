@@ -29,7 +29,7 @@ def test_market_event_value_response_round_trip():
 
 @pytest.mark.unit
 def test_market_event_response_includes_held_watched():
-    from app.schemas.market_events import MarketEventResponse, MarketEventValueResponse
+    from app.schemas.market_events import MarketEventResponse
 
     obj = MarketEventResponse(
         category="earnings",

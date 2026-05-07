@@ -57,8 +57,11 @@ class MarketEventsQueryService:
         if from_date > to_date:
             raise ValueError("from_date must be <= to_date")
         events = await self._query(
-            from_date=from_date, to_date=to_date,
-            category=category, market=market, source=source,
+            from_date=from_date,
+            to_date=to_date,
+            category=category,
+            market=market,
+            source=source,
         )
         return MarketEventsRangeResponse(
             from_date=from_date,
@@ -101,10 +104,16 @@ class MarketEventsQueryService:
         out: list[MarketEventResponse] = []
         for row in rows:
             value_rows = (
-                await self.db.execute(
-                    select(MarketEventValue).where(MarketEventValue.event_id == row.id)
+                (
+                    await self.db.execute(
+                        select(MarketEventValue).where(
+                            MarketEventValue.event_id == row.id
+                        )
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             out.append(
                 MarketEventResponse(
                     category=row.category,

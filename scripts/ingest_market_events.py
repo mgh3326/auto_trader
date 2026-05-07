@@ -64,7 +64,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="Per-day market events ingestion CLI (ROB-128)."
     )
     parser.add_argument("--source", default="finnhub", choices=["finnhub", "dart"])
-    parser.add_argument("--category", default="earnings", choices=["earnings", "disclosure"])
+    parser.add_argument(
+        "--category", default="earnings", choices=["earnings", "disclosure"]
+    )
     parser.add_argument("--market", default="us", choices=["us", "kr"])
     parser.add_argument("--from-date", required=True, type=_parse_iso, dest="from_date")
     parser.add_argument("--to-date", required=True, type=_parse_iso, dest="to_date")
@@ -106,17 +108,28 @@ async def run_ingest(
             succeeded += 1
             logger.info(
                 "ingested %s events for %s/%s/%s on %s",
-                result.event_count, source, category, market, d,
+                result.event_count,
+                source,
+                category,
+                market,
+                d,
             )
         else:
             failed += 1
             logger.error(
                 "ingest failed for %s/%s/%s on %s: %s",
-                source, category, market, d, result.error,
+                source,
+                category,
+                market,
+                d,
+                result.error,
             )
     logger.info(
         "ingest complete: succeeded=%s failed=%s range=%s..%s",
-        succeeded, failed, from_date, to_date,
+        succeeded,
+        failed,
+        from_date,
+        to_date,
     )
     return 0 if failed == 0 else 2
 

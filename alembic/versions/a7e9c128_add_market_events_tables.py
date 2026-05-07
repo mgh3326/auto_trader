@@ -77,7 +77,15 @@ def upgrade() -> None:
     op.create_index(
         "uq_market_events_natural_key",
         "market_events",
-        ["source", "category", "market", "symbol", "event_date", "fiscal_year", "fiscal_quarter"],
+        [
+            "source",
+            "category",
+            "market",
+            "symbol",
+            "event_date",
+            "fiscal_year",
+            "fiscal_quarter",
+        ],
         unique=True,
         postgresql_where=sa.text("source_event_id IS NULL"),
     )

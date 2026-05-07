@@ -7,7 +7,6 @@ from decimal import Decimal
 
 import pytest
 
-
 FINNHUB_ROW_AMC = {
     "symbol": "IONQ",
     "date": "2026-05-07",

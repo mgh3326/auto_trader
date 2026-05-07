@@ -56,7 +56,9 @@ class MarketEvent(Base):
         ),
         Index("ix_market_events_event_date", "event_date"),
         Index("ix_market_events_symbol", "symbol"),
-        Index("ix_market_events_category_market_date", "category", "market", "event_date"),
+        Index(
+            "ix_market_events_category_market_date", "category", "market", "event_date"
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -76,12 +78,16 @@ class MarketEvent(Base):
 
     event_date: Mapped[date] = mapped_column(Date, nullable=False)
     release_time_utc: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
-    release_time_local: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=False))
+    release_time_local: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=False)
+    )
     source_timezone: Mapped[str | None] = mapped_column(Text)
     time_hint: Mapped[str | None] = mapped_column(Text)
 
     importance: Mapped[int | None] = mapped_column(Integer)
-    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="scheduled")
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="scheduled"
+    )
 
     source: Mapped[str] = mapped_column(Text, nullable=False)
     source_event_id: Mapped[str | None] = mapped_column(Text)
@@ -167,11 +173,15 @@ class MarketEventIngestionPartition(Base):
     partition_date: Mapped[date] = mapped_column(Date, nullable=False)
 
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="pending")
-    event_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    event_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
     started_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     last_error: Mapped[str | None] = mapped_column(Text)
-    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    retry_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
     source_request_hash: Mapped[str | None] = mapped_column(Text)
 
     created_at: Mapped[datetime] = mapped_column(

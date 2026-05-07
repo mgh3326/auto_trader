@@ -34,13 +34,26 @@ async def test_list_events_for_date_returns_events_with_values(db_session):
     repo = MarketEventsRepository(db_session)
     await repo.upsert_event_with_values(
         {
-            "category": "earnings", "market": "us", "symbol": "IONQ",
-            "title": "IONQ earnings release", "event_date": date(2026, 5, 7),
-            "time_hint": "after_close", "status": "released", "source": "finnhub",
-            "fiscal_year": 2026, "fiscal_quarter": 1,
+            "category": "earnings",
+            "market": "us",
+            "symbol": "IONQ",
+            "title": "IONQ earnings release",
+            "event_date": date(2026, 5, 7),
+            "time_hint": "after_close",
+            "status": "released",
+            "source": "finnhub",
+            "fiscal_year": 2026,
+            "fiscal_quarter": 1,
         },
-        [{"metric_name": "eps", "period": "Q1-2026",
-          "actual": Decimal("-0.38"), "forecast": Decimal("-0.36"), "unit": "USD"}],
+        [
+            {
+                "metric_name": "eps",
+                "period": "Q1-2026",
+                "actual": Decimal("-0.38"),
+                "forecast": Decimal("-0.36"),
+                "unit": "USD",
+            }
+        ],
     )
     await db_session.commit()
 
@@ -64,23 +77,34 @@ async def test_list_events_filters_by_category_and_market(db_session):
 
     repo = MarketEventsRepository(db_session)
     await repo.upsert_event_with_values(
-        {"category": "earnings", "market": "us", "symbol": "IONQ",
-         "event_date": date(2026, 5, 7), "status": "released", "source": "finnhub",
-         "fiscal_year": 2026, "fiscal_quarter": 1},
+        {
+            "category": "earnings",
+            "market": "us",
+            "symbol": "IONQ",
+            "event_date": date(2026, 5, 7),
+            "status": "released",
+            "source": "finnhub",
+            "fiscal_year": 2026,
+            "fiscal_quarter": 1,
+        },
         [],
     )
     await repo.upsert_event_with_values(
-        {"category": "disclosure", "market": "kr", "symbol": "00126380",
-         "event_date": date(2026, 5, 7), "status": "released", "source": "dart",
-         "source_event_id": "20260507000001"},
+        {
+            "category": "disclosure",
+            "market": "kr",
+            "symbol": "00126380",
+            "event_date": date(2026, 5, 7),
+            "status": "released",
+            "source": "dart",
+            "source_event_id": "20260507000001",
+        },
         [],
     )
     await db_session.commit()
 
     svc = MarketEventsQueryService(db_session)
-    only_kr = await svc.list_for_range(
-        date(2026, 5, 7), date(2026, 5, 7), market="kr"
-    )
+    only_kr = await svc.list_for_range(date(2026, 5, 7), date(2026, 5, 7), market="kr")
     assert only_kr.count == 1
     assert only_kr.events[0].market == "kr"
 

@@ -48,8 +48,13 @@ async def test_upsert_event_with_values_inserts_event_and_values(db_session):
         "raw_payload_json": {"symbol": "IONQ"},
     }
     values = [
-        {"metric_name": "eps", "period": "Q1-2026",
-         "actual": Decimal("-0.38"), "forecast": Decimal("-0.36"), "unit": "USD"},
+        {
+            "metric_name": "eps",
+            "period": "Q1-2026",
+            "actual": Decimal("-0.38"),
+            "forecast": Decimal("-0.36"),
+            "unit": "USD",
+        },
     ]
 
     event = await repo.upsert_event_with_values(event_dict, values)
@@ -83,7 +88,12 @@ async def test_upsert_event_is_idempotent_on_natural_key(db_session):
         "fiscal_quarter": 1,
     }
     values = [
-        {"metric_name": "eps", "period": "Q1-2026", "forecast": Decimal("-0.36"), "unit": "USD"},
+        {
+            "metric_name": "eps",
+            "period": "Q1-2026",
+            "forecast": Decimal("-0.36"),
+            "unit": "USD",
+        },
     ]
     await repo.upsert_event_with_values(event_dict, values)
     await db_session.commit()
@@ -91,8 +101,13 @@ async def test_upsert_event_is_idempotent_on_natural_key(db_session):
     # Second call with the same natural key + updated status/value
     event_dict_v2 = {**event_dict, "status": "released"}
     values_v2 = [
-        {"metric_name": "eps", "period": "Q1-2026",
-         "actual": Decimal("-0.38"), "forecast": Decimal("-0.36"), "unit": "USD"},
+        {
+            "metric_name": "eps",
+            "period": "Q1-2026",
+            "actual": Decimal("-0.38"),
+            "forecast": Decimal("-0.36"),
+            "unit": "USD",
+        },
     ]
     await repo.upsert_event_with_values(event_dict_v2, values_v2)
     await db_session.commit()
@@ -108,8 +123,8 @@ async def test_upsert_event_is_idempotent_on_natural_key(db_session):
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_upsert_event_with_source_event_id_uses_id_key(db_session):
-    from app.services.market_events.repository import MarketEventsRepository
     from app.models.market_events import MarketEvent
+    from app.services.market_events.repository import MarketEventsRepository
 
     repo = MarketEventsRepository(db_session)
     event_dict = {
@@ -126,7 +141,9 @@ async def test_upsert_event_with_source_event_id_uses_id_key(db_session):
     await db_session.commit()
 
     # Same source_event_id with updated title
-    await repo.upsert_event_with_values({**event_dict, "title": "분기보고서 (2026.03)"}, [])
+    await repo.upsert_event_with_values(
+        {**event_dict, "title": "분기보고서 (2026.03)"}, []
+    )
     await db_session.commit()
 
     rows = (await db_session.execute(select(MarketEvent))).scalars().all()
@@ -141,7 +158,9 @@ async def test_partition_lifecycle_records_running_succeeded(db_session):
 
     repo = MarketEventsRepository(db_session)
     p = await repo.get_or_create_partition(
-        source="finnhub", category="earnings", market="us",
+        source="finnhub",
+        category="earnings",
+        market="us",
         partition_date=date(2026, 5, 7),
     )
     assert p.status == "pending"
@@ -164,7 +183,9 @@ async def test_partition_failure_increments_retry_count(db_session):
 
     repo = MarketEventsRepository(db_session)
     p = await repo.get_or_create_partition(
-        source="finnhub", category="earnings", market="us",
+        source="finnhub",
+        category="earnings",
+        market="us",
         partition_date=date(2026, 5, 8),
     )
     await repo.mark_partition_failed(p, error="read timeout")

@@ -46,7 +46,13 @@ def test_time_hints_cover_required_set():
 def test_partition_statuses_cover_required_set():
     from app.services.market_events.taxonomy import PARTITION_STATUSES
 
-    assert {"pending", "running", "succeeded", "failed", "partial"} <= PARTITION_STATUSES
+    assert {
+        "pending",
+        "running",
+        "succeeded",
+        "failed",
+        "partial",
+    } <= PARTITION_STATUSES
 
 
 @pytest.mark.unit

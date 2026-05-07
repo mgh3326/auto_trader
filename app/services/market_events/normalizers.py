@@ -10,7 +10,6 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
-
 _FINNHUB_HOUR_TO_TIME_HINT = {
     "bmo": "before_open",
     "amc": "after_close",
