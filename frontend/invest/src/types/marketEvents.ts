@@ -57,3 +57,42 @@ export interface FetchMarketEventsTodayParams {
   /** ISO date — when omitted the backend defaults to today (server clock). */
   onDate?: string;
 }
+
+export type DiscoverCalendarTab = "all" | "economic" | "earnings";
+
+export interface DiscoverCalendarEvent {
+  title: string;
+  badge: string | null;
+  category: string;
+  market: string;
+  symbol: string | null;
+  subtitle: string | null;
+  time_label: string | null;
+  priority: string;
+  source_event_id: string | null;
+}
+
+export interface DiscoverCalendarDay {
+  date: string;
+  weekday: string;
+  is_today: boolean;
+  events: DiscoverCalendarEvent[];
+  hidden_count: number;
+}
+
+export interface DiscoverCalendarResponse {
+  headline: string | null;
+  week_label: string;
+  from_date: string;
+  to_date: string;
+  today: string;
+  tab: DiscoverCalendarTab;
+  days: DiscoverCalendarDay[];
+}
+
+export interface FetchDiscoverCalendarParams {
+  fromDate: string;
+  toDate: string;
+  today?: string;
+  tab?: DiscoverCalendarTab;
+}
