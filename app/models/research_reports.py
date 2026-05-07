@@ -28,9 +28,7 @@ from app.models.base import Base
 class ResearchReportIngestionRun(Base):
     __tablename__ = "research_report_ingestion_runs"
     __table_args__ = (
-        UniqueConstraint(
-            "run_uuid", name="uq_research_report_ingestion_runs_run_uuid"
-        ),
+        UniqueConstraint("run_uuid", name="uq_research_report_ingestion_runs_run_uuid"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)

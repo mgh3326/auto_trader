@@ -91,9 +91,7 @@ def upgrade() -> None:
         sa.Column(
             "ingestion_run_id",
             sa.BigInteger(),
-            sa.ForeignKey(
-                "research_report_ingestion_runs.id", ondelete="SET NULL"
-            ),
+            sa.ForeignKey("research_report_ingestion_runs.id", ondelete="SET NULL"),
             nullable=True,
         ),
         sa.Column(

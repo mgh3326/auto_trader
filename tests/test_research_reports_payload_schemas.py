@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 
 def _sample_report() -> dict:
@@ -124,7 +125,7 @@ class TestResearchReportPayloadSchemas:
 
         report = _sample_report()
         report.pop("dedup_key")
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             ResearchReportPayloadV1.model_validate(report)
 
     def test_citation_schema_has_required_fields(self):

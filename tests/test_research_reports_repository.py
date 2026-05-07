@@ -128,6 +128,6 @@ async def test_upsert_run_inserts_then_returns_existing(db_session):
     assert again.id == first_id
 
     rows = (
-        await db_session.execute(select(ResearchReportIngestionRun))
-    ).scalars().all()
+        (await db_session.execute(select(ResearchReportIngestionRun))).scalars().all()
+    )
     assert len(rows) == 1

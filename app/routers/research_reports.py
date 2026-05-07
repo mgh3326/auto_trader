@@ -32,8 +32,14 @@ async def get_recent_research_reports(
     symbol: str | None = None,
     query: str | None = None,
     source: str | None = None,
-    since: Annotated[datetime | None, Query(description="ISO8601 inclusive lower bound on published_at")] = None,
-    until: Annotated[datetime | None, Query(description="ISO8601 inclusive upper bound on published_at")] = None,
+    since: Annotated[
+        datetime | None,
+        Query(description="ISO8601 inclusive lower bound on published_at"),
+    ] = None,
+    until: Annotated[
+        datetime | None,
+        Query(description="ISO8601 inclusive upper bound on published_at"),
+    ] = None,
     limit: Annotated[int | None, Query(ge=1, le=100)] = None,
 ) -> ResearchReportCitationListResponse:
     svc = ResearchReportsQueryService(db)

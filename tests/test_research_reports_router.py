@@ -83,9 +83,7 @@ async def test_recent_endpoint_filters_by_symbol(db_session):
     await _seed(db_session, "x-1", symbol="AAPL")
     await _seed(db_session, "x-2", symbol="MSFT")
     with TestClient(_app()) as client:
-        resp = client.get(
-            "/trading/api/research-reports/recent?symbol=AAPL"
-        )
+        resp = client.get("/trading/api/research-reports/recent?symbol=AAPL")
         assert resp.status_code == 200
         body = resp.json()
         assert body["count"] == 1
@@ -108,9 +106,7 @@ def test_recent_endpoint_unauthorized_without_override():
 async def test_recent_response_does_not_include_body_fields(db_session):
     await _seed(db_session, "y-1", symbol="AAPL")
     with TestClient(_app()) as client:
-        resp = client.get(
-            "/trading/api/research-reports/recent?symbol=AAPL"
-        )
+        resp = client.get("/trading/api/research-reports/recent?symbol=AAPL")
         body = resp.json()
         assert body["count"] == 1
         citation = body["citations"][0]

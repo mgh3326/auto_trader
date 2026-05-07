@@ -46,9 +46,7 @@ def _payload_to_row(
         "pdf_size_bytes": pdf.size_bytes if pdf else None,
         "pdf_page_count": pdf.page_count if pdf else None,
         "pdf_text_length": pdf.text_length if pdf else None,
-        "symbol_candidates": [
-            sc.model_dump() for sc in report.symbol_candidates
-        ]
+        "symbol_candidates": [sc.model_dump() for sc in report.symbol_candidates]
         if report.symbol_candidates
         else None,
         "raw_text_policy": report.raw_text_policy,
@@ -89,9 +87,7 @@ async def ingest_research_reports_v1(
         else:
             skipped += 1
 
-    await repo.update_run_counts(
-        run, inserted_count=inserted, skipped_count=skipped
-    )
+    await repo.update_run_counts(run, inserted_count=inserted, skipped_count=skipped)
 
     return ResearchReportIngestionResponse(
         run_uuid=run.run_uuid,

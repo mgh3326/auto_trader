@@ -87,9 +87,7 @@ class ResearchReportPayloadV1(BaseModel):
 
     detail: ResearchReportDetail | None = None
     pdf: ResearchReportPdf | None = None
-    symbol_candidates: list[ResearchReportSymbolCandidate] = Field(
-        default_factory=list
-    )
+    symbol_candidates: list[ResearchReportSymbolCandidate] = Field(default_factory=list)
     raw_text_policy: str | None = None
     attribution: ResearchReportAttribution = Field(
         default_factory=ResearchReportAttribution
@@ -101,7 +99,7 @@ class ResearchReportPayloadV1(BaseModel):
         return _truncate(v, SUMMARY_TEXT_MAX)
 
     @model_validator(mode="after")
-    def _enforce_no_full_body(self) -> "ResearchReportPayloadV1":
+    def _enforce_no_full_body(self) -> ResearchReportPayloadV1:
         if self.attribution.full_text_exported:
             raise ValueError(
                 "ROB-140 copyright guardrail: full_text_exported=true is rejected"
@@ -155,9 +153,7 @@ class ResearchReportCitation(BaseModel):
     detail_url: str | None = None
     pdf_url: str | None = None
     excerpt: str | None = None
-    symbol_candidates: list[ResearchReportSymbolCandidate] = Field(
-        default_factory=list
-    )
+    symbol_candidates: list[ResearchReportSymbolCandidate] = Field(default_factory=list)
     attribution_publisher: str | None = None
     attribution_copyright_notice: str | None = None
 

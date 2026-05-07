@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 import pytest_asyncio
+from pydantic import ValidationError
 from sqlalchemy import delete, select
 
 
@@ -87,8 +88,8 @@ async def test_ingest_inserts_reports_and_run(db_session):
     assert {r.dedup_key for r in reports} == {"k-A", "k-B"}
 
     runs = (
-        await db_session.execute(select(ResearchReportIngestionRun))
-    ).scalars().all()
+        (await db_session.execute(select(ResearchReportIngestionRun))).scalars().all()
+    )
     assert len(runs) == 1
     assert runs[0].inserted_count == 2
     assert runs[0].skipped_count == 0
@@ -123,5 +124,5 @@ def test_ingest_request_rejects_full_text_exported():
     payload = _sample_payload(dedup_keys=["k-bad"])
     payload["reports"][0]["attribution"]["full_text_exported"] = True
 
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         ResearchReportIngestionRequest.model_validate(payload)

@@ -22,8 +22,14 @@ async def _clean(db_session):
     yield
 
 
-async def _seed(db_session, dedup_key, *, source="naver_research", symbol="AAPL",
-                published_at: datetime | None = None):
+async def _seed(
+    db_session,
+    dedup_key,
+    *,
+    source="naver_research",
+    symbol="AAPL",
+    published_at: datetime | None = None,
+):
     from app.models.research_reports import ResearchReport
 
     row = ResearchReport(
@@ -87,12 +93,8 @@ async def test_find_relevant_filters_by_since(db_session):
     )
 
     now = datetime.now(UTC)
-    await _seed(
-        db_session, "c-old", published_at=now - timedelta(days=30)
-    )
-    await _seed(
-        db_session, "c-new", published_at=now - timedelta(days=1)
-    )
+    await _seed(db_session, "c-old", published_at=now - timedelta(days=30))
+    await _seed(db_session, "c-new", published_at=now - timedelta(days=1))
 
     svc = ResearchReportsQueryService(db_session)
     result = await svc.find_relevant(since=now - timedelta(days=7))

@@ -10,6 +10,7 @@ from __future__ import annotations
 import inspect
 
 import pytest
+from pydantic import ValidationError
 
 
 def test_research_report_model_has_no_full_body_columns():
@@ -64,7 +65,7 @@ def test_payload_schema_rejects_full_text_exported_true():
             "pdf_body_exported": False,
         },
     }
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         ResearchReportPayloadV1.model_validate(base)
 
 
@@ -81,7 +82,7 @@ def test_payload_schema_rejects_pdf_body_exported_true():
             "pdf_body_exported": True,
         },
     }
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         ResearchReportPayloadV1.model_validate(base)
 
 

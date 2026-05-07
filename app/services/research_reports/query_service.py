@@ -24,9 +24,7 @@ def _row_to_citation(row: ResearchReport) -> ResearchReportCitation:
     if row.symbol_candidates:
         for sc in row.symbol_candidates:
             try:
-                candidates.append(
-                    ResearchReportSymbolCandidate.model_validate(sc)
-                )
+                candidates.append(ResearchReportSymbolCandidate.model_validate(sc))
             except Exception:
                 continue
     excerpt = row.detail_excerpt or row.summary_text
