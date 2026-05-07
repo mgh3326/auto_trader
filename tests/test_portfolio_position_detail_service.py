@@ -10,6 +10,7 @@ from app.services.portfolio_position_detail_service import (
     PortfolioPositionDetailNotFoundError,
     PortfolioPositionDetailService,
 )
+from app.services.portfolio_weights import build_weights as _build_portfolio_weights
 
 
 @pytest.mark.unit
@@ -1265,9 +1266,8 @@ async def test_get_page_payload_builds_compact_action_reason() -> None:
             "_fetch_action_inputs",
             AsyncMock(return_value={"rsi": 36.0}),
         ),
-        patch.object(
-            service,
-            "_build_weights",
+        patch(
+            "app.services.portfolio_position_detail_service._build_portfolio_weights",
             return_value={"portfolio_weight_pct": 6.8, "market_weight_pct": 10.6},
         ),
     ):
@@ -1337,10 +1337,7 @@ def test_build_weights_prefers_evaluation_krw_for_portfolio_weight():
 
     # total = 10M + 2.6M = 12.6M
     # weight = 2.6M / 12.6M * 100 = 20.63... -> 20.6
-    service = PortfolioPositionDetailService(
-        overview_service=MagicMock(), dashboard_service=MagicMock()
-    )
-    weights = service._build_weights(positions, base)
+    weights = _build_portfolio_weights(positions, base)
 
     assert weights["portfolio_weight_pct"] == pytest.approx(20.6)
 
@@ -1352,10 +1349,7 @@ def test_build_weights_returns_none_when_us_position_lacks_krw_normalization():
     ]
     base = positions[1]
 
-    service = PortfolioPositionDetailService(
-        overview_service=MagicMock(), dashboard_service=MagicMock()
-    )
-    weights = service._build_weights(positions, base)
+    weights = _build_portfolio_weights(positions, base)
 
     assert weights["portfolio_weight_pct"] is None
     assert weights["market_weight_pct"] is None
