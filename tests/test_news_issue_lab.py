@@ -279,7 +279,7 @@ async def test_build_payload_compare_v1_json_block_and_drop_regular_reports(
     monkeypatch.setattr(
         lab,
         "embed_batch",
-        lambda endpoint, model, texts: [[1.0, 0.0] for _ in texts],
+        lambda endpoint, model, texts, **_kwargs: [[1.0, 0.0] for _ in texts],
     )
     args = Namespace(
         market="all",
@@ -772,7 +772,7 @@ async def test_build_payload_runs_merge_pass_and_emits_run_diag(monkeypatch) -> 
 
     call_count = {"i": 0}
 
-    def fake_embed(endpoint, model, texts):
+    def fake_embed(endpoint, model, texts, **_kwargs):
         call_count["i"] += 1
         if call_count["i"] == 1:
             return [[1.0, 0.0] if "반도체" in t else [0.0, 1.0] for t in texts]
@@ -821,7 +821,7 @@ async def test_build_payload_no_merge_flag_disables_merge(monkeypatch) -> None:
     monkeypatch.setattr(
         lab,
         "embed_batch",
-        lambda endpoint, model, texts: [[1.0, 0.0] for _ in texts],
+        lambda endpoint, model, texts, **_kwargs: [[1.0, 0.0] for _ in texts],
     )
 
     args = Namespace(
@@ -1072,6 +1072,51 @@ class _FakeHTTPResponse:
 
     def read(self, *_args, **_kwargs) -> bytes:
         return json.dumps(self._data).encode()
+
+
+def test_embed_batch_adds_optional_authorization_header(monkeypatch) -> None:
+    captured = {}
+
+    def fake_urlopen(req, timeout):
+        captured["url"] = req.full_url
+        captured["timeout"] = timeout
+        captured["headers"] = dict(req.header_items())
+        captured["body"] = json.loads(req.data.decode())
+        return _FakeHTTPResponse({"data": [{"index": 0, "embedding": [1.0, 2.0]}]})
+
+    monkeypatch.setattr(lab.request, "urlopen", fake_urlopen)
+
+    assert lab.embed_batch(
+        "http://127.0.0.1:8000/v1/embeddings",
+        "local-bge",
+        ["시장 뉴스"],
+        timeout=9,
+        api_key="placeholder-credential",
+    ) == [[1.0, 2.0]]
+    assert captured == {
+        "url": "http://127.0.0.1:8000/v1/embeddings",
+        "timeout": 9,
+        "headers": {
+            "Content-type": "application/json",
+            "Authorization": "Bearer placeholder-credential",
+        },
+        "body": {"model": "local-bge", "input": ["시장 뉴스"]},
+    }
+
+
+def test_embed_batch_omits_authorization_header_without_api_key(monkeypatch) -> None:
+    captured = {}
+
+    def fake_urlopen(req, timeout):
+        captured["headers"] = dict(req.header_items())
+        return _FakeHTTPResponse({"data": [{"index": 0, "embedding": [1.0]}]})
+
+    monkeypatch.setattr(lab.request, "urlopen", fake_urlopen)
+
+    assert lab.embed_batch(
+        "http://127.0.0.1:8000/v1/embeddings", "local-bge", ["뉴스"]
+    ) == [[1.0]]
+    assert "Authorization" not in captured["headers"]
 
 
 def test_null_llm_provider_raises_disabled_reason() -> None:
@@ -1354,7 +1399,9 @@ async def test_build_payload_no_llm_render_adds_fallback_render_metadata(
 
     monkeypatch.setattr(lab, "fetch_articles", fake_fetch_articles)
     monkeypatch.setattr(
-        lab, "embed_batch", lambda endpoint, model, texts: [[1.0, 0.0] for _ in texts]
+        lab,
+        "embed_batch",
+        lambda endpoint, model, texts, **_kwargs: [[1.0, 0.0] for _ in texts],
     )
     args = Namespace(
         market="all",
@@ -1404,7 +1451,9 @@ async def test_build_payload_llm_render_uses_mock_provider_and_reports_counts(
 
     monkeypatch.setattr(lab, "fetch_articles", fake_fetch_articles)
     monkeypatch.setattr(
-        lab, "embed_batch", lambda endpoint, model, texts: [[1.0, 0.0] for _ in texts]
+        lab,
+        "embed_batch",
+        lambda endpoint, model, texts, **_kwargs: [[1.0, 0.0] for _ in texts],
     )
     monkeypatch.setattr(lab, "make_llm_provider", lambda _args: provider)
     args = Namespace(
@@ -1725,6 +1774,11 @@ def test_quality_eval_parse_defaults_disable_llm_and_store() -> None:
     assert lab_args.store is False
     assert lab_args.compare_v1 is True
     assert lab_args.quality_top == 5
+    assert lab_args.embedding_api_key is None
+
+    api_args = quality_eval.parse_args(["--embedding-api-key", "local-test-key"])
+    api_lab_args = quality_eval._lab_args(api_args, "crypto")
+    assert api_lab_args.embedding_api_key == "local-test-key"
 
 
 @pytest.mark.asyncio

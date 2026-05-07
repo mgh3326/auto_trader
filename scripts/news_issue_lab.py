@@ -17,6 +17,7 @@ import asyncio
 import hashlib
 import json
 import math
+import os
 import re
 import sys
 import time
@@ -380,6 +381,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--embedding-endpoint", default=DEFAULT_BGE_ENDPOINT)
     parser.add_argument("--embedding-model", default=DEFAULT_BGE_MODEL)
+    parser.add_argument(
+        "--embedding-api-key",
+        default=os.getenv("EMBEDDING_API_KEY"),
+        help="optional bearer token for secured OpenAI-compatible embedding endpoints; defaults to EMBEDDING_API_KEY",
+    )
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument(
         "--store", action="store_true", help="store run/result payloads in lab tables"
@@ -527,13 +533,20 @@ def centroid(vectors: list[list[float]]) -> list[float]:
 
 
 def embed_batch(
-    endpoint: str, model: str, texts: list[str], timeout: int = 180
+    endpoint: str,
+    model: str,
+    texts: list[str],
+    timeout: int = 180,
+    api_key: str | None = None,
 ) -> list[list[float]]:
     payload = {"model": model, "input": texts}
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
     req = request.Request(
         endpoint,
         data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
     with request.urlopen(req, timeout=timeout) as resp:
@@ -2469,6 +2482,7 @@ async def build_payload(args: argparse.Namespace) -> dict[str, Any]:
                 args.embedding_endpoint,
                 args.embedding_model,
                 [a.text_for_embedding for a in batch],
+                api_key=getattr(args, "embedding_api_key", None),
             )
         )
     embedding_dim = len(vectors[0]) if vectors else 0
@@ -2483,6 +2497,7 @@ async def build_payload(args: argparse.Namespace) -> dict[str, Any]:
                     args.embedding_endpoint,
                     args.embedding_model,
                     texts[i : i + args.batch_size],
+                    api_key=getattr(args, "embedding_api_key", None),
                 )
             )
         return rep_vectors

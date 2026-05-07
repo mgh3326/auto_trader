@@ -33,6 +33,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--dedupe-threshold", type=float, default=0.90)
     parser.add_argument("--embedding-endpoint", default=lab.DEFAULT_BGE_ENDPOINT)
     parser.add_argument("--embedding-model", default=lab.DEFAULT_BGE_MODEL)
+    parser.add_argument(
+        "--embedding-api-key",
+        default=None,
+        help="optional bearer token forwarded to news_issue_lab; defaults there to EMBEDDING_API_KEY",
+    )
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument(
         "--compare-v1", dest="compare_v1", action="store_true", default=True
@@ -85,6 +90,11 @@ def _lab_args(args: argparse.Namespace, market: str) -> argparse.Namespace:
             args.embedding_endpoint,
             "--embedding-model",
             args.embedding_model,
+            *(
+                ["--embedding-api-key", args.embedding_api_key]
+                if args.embedding_api_key
+                else []
+            ),
             "--batch-size",
             str(args.batch_size),
             "--no-llm",
