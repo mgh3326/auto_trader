@@ -1,10 +1,16 @@
 """Tests for GET /invest/api/account-panel."""
 from __future__ import annotations
-import pytest
+
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from app.schemas.invest_home import (
-    Account, CashAmounts, HomeSummary, InvestHomeResponse, InvestHomeResponseMeta,
+    Account,
+    CashAmounts,
+    HomeSummary,
+    InvestHomeResponse,
+    InvestHomeResponseMeta,
 )
 
 

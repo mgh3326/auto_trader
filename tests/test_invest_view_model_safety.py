@@ -1,7 +1,12 @@
 """Safety: invest_view_model package must not import broker/order/mutation paths."""
 from __future__ import annotations
-import json, os, subprocess, sys
+
+import json
+import os
+import subprocess
+import sys
 from pathlib import Path
+
 import pytest
 
 FORBIDDEN_PREFIXES = [

@@ -1,7 +1,9 @@
 """Tests for feed_news_service."""
 from __future__ import annotations
-from datetime import datetime, timezone
+
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
 from app.services.invest_view_model.relation_resolver import RelationResolver
@@ -15,7 +17,7 @@ def _fake_article(*, id: int, market: str = "kr", symbol: str | None = None,
     a.title = f"news {id}"
     a.source = "Reuters"
     a.feed_source = "rss_test"
-    a.article_published_at = published_at or datetime(2026, 5, 1, tzinfo=timezone.utc)
+    a.article_published_at = published_at or datetime(2026, 5, 1, tzinfo=UTC)
     a.stock_symbol = symbol
     a.stock_name = name
     a.summary = "snippet"

@@ -1,7 +1,7 @@
 """Unit tests for signals_service."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -29,7 +29,7 @@ def _fake_pair(
     ana.confidence = 80
     ana.detailed_text = "summary"
     ana.reasons = ["r1"]
-    ana.created_at = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    ana.created_at = datetime(2026, 5, 1, tzinfo=UTC)
     return ana, info
 
 

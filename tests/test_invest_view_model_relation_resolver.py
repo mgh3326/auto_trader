@@ -1,5 +1,6 @@
 """Unit tests for relation_resolver."""
 from __future__ import annotations
+
 import pytest
 
 from app.services.invest_view_model.relation_resolver import RelationResolver
