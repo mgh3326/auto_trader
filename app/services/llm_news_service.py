@@ -550,7 +550,9 @@ async def get_news_readiness(
         return await _query(session)
 
 
-_ALIAS_SCAN_MULTIPLIER = 5  # scan 5× the requested limit to give alias matching enough recall
+_ALIAS_SCAN_MULTIPLIER = (
+    5  # scan 5× the requested limit to give alias matching enough recall
+)
 
 
 @dataclass

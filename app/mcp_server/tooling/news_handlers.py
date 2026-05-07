@@ -278,6 +278,7 @@ def _register_news_tools_impl(mcp: FastMCP) -> None:
         limit: int = 20,
     ) -> dict[str, Any]:
         from app.services.news_issue_clustering_service import build_market_issues
+
         response = await build_market_issues(
             market=market, window_hours=window_hours, limit=limit
         )

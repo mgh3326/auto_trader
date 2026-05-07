@@ -48,8 +48,30 @@ _DIR_POS_KO = ("상승", "급등", "호재", "최고")
 _DIR_NEG_KO = ("하락", "급락", "악재", "위기")
 _WORD_RE = re.compile(r"[A-Za-z0-9가-힣]+")
 _STOPWORDS = {
-    "the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "is", "are",
-    "as", "at", "by", "with", "from", "이", "그", "저", "및", "는", "이는", "관련",
+    "the",
+    "a",
+    "an",
+    "and",
+    "or",
+    "of",
+    "to",
+    "in",
+    "on",
+    "for",
+    "is",
+    "are",
+    "as",
+    "at",
+    "by",
+    "with",
+    "from",
+    "이",
+    "그",
+    "저",
+    "및",
+    "는",
+    "이는",
+    "관련",
 }
 
 
@@ -71,7 +93,11 @@ async def _load_recent_articles(
 
 
 def _normalize_words(text: str) -> list[str]:
-    return [w for w in (m.lower() for m in _WORD_RE.findall(text or "")) if w not in _STOPWORDS]
+    return [
+        w
+        for w in (m.lower() for m in _WORD_RE.findall(text or ""))
+        if w not in _STOPWORDS
+    ]
 
 
 def _shingles(words: list[str], n: int = 3) -> set[tuple[str, ...]]:
@@ -88,12 +114,10 @@ class _Cluster:
     cluster_key: str  # symbol-or-shingle-derived stable key
 
 
-def _cluster_articles(
-    articles: list[NewsArticle], market: str
-) -> list[_Cluster]:
+def _cluster_articles(articles: list[NewsArticle], market: str) -> list[_Cluster]:
     """Two-pass clustering:
-       1. Group by primary entity match (first symbol per article).
-       2. Articles without entity → group by shared shingles (Jaccard >= 0.34).
+    1. Group by primary entity match (first symbol per article).
+    2. Articles without entity → group by shared shingles (Jaccard >= 0.34).
     """
     by_symbol: dict[str, _Cluster] = {}
     leftover_indexes: list[int] = []
@@ -173,9 +197,7 @@ def _stable_id(market: str, cluster_key: str, article_ids: Iterable[int]) -> str
         payload = f"{market}|{cluster_key}|" + ",".join(
             str(i) for i in sorted(article_ids)
         )
-    return hashlib.sha1(
-        payload.encode("utf-8"), usedforsecurity=False
-    ).hexdigest()[:16]
+    return hashlib.sha1(payload.encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
 
 
 def _pick_issue_title(cluster: _Cluster, articles: list[NewsArticle]) -> str:
@@ -195,14 +217,10 @@ def _pick_subtitle(cluster: _Cluster, articles: list[NewsArticle]) -> str | None
 
 def _direction_from_titles(titles: list[str]) -> str:
     pos = sum(
-        1
-        for t in titles
-        if _DIR_POS_RE.search(t) or any(w in t for w in _DIR_POS_KO)
+        1 for t in titles if _DIR_POS_RE.search(t) or any(w in t for w in _DIR_POS_KO)
     )
     neg = sum(
-        1
-        for t in titles
-        if _DIR_NEG_RE.search(t) or any(w in t for w in _DIR_NEG_KO)
+        1 for t in titles if _DIR_NEG_RE.search(t) or any(w in t for w in _DIR_NEG_KO)
     )
     if pos and not neg:
         return "up"
@@ -217,7 +235,9 @@ def _signals(
     cluster: _Cluster, articles: list[NewsArticle], window_hours: int
 ) -> IssueSignals:
     if not cluster.article_indexes:
-        return IssueSignals(recency_score=0.0, source_diversity_score=0.0, mention_score=0.0)
+        return IssueSignals(
+            recency_score=0.0, source_diversity_score=0.0, mention_score=0.0
+        )
 
     now = now_kst_naive()
     ages = []
@@ -232,7 +252,9 @@ def _signals(
         newest = min(ages)
         recency = max(0.0, 1.0 - newest / max(1, window_hours * 60))
 
-    sources = {articles[i].source for i in cluster.article_indexes if articles[i].source}
+    sources = {
+        articles[i].source for i in cluster.article_indexes if articles[i].source
+    }
     source_diversity = min(1.0, len(sources) / 5.0)
 
     mention = min(1.0, math.log1p(len(cluster.article_indexes)) / math.log(10))
@@ -324,7 +346,9 @@ def _to_market_issue(
 
 def _score(issue: MarketIssue) -> float:
     s = issue.signals
-    return s.recency_score * 0.5 + s.source_diversity_score * 0.3 + s.mention_score * 0.2
+    return (
+        s.recency_score * 0.5 + s.source_diversity_score * 0.3 + s.mention_score * 0.2
+    )
 
 
 async def build_market_issues(
@@ -349,7 +373,11 @@ async def build_market_issues(
     clusters = _cluster_articles(articles, market=market)
     issues = [
         _to_market_issue(
-            cluster=c, articles=articles, market=market, window_hours=window_hours, rank=0
+            cluster=c,
+            articles=articles,
+            market=market,
+            window_hours=window_hours,
+            rank=0,
         )
         for c in clusters
         if c.article_indexes

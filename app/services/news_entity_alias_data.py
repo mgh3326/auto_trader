@@ -17,8 +17,8 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class AliasEntry:
-    symbol: str          # canonical DB form (e.g. "005930", "AMZN", "BTC")
-    market: str          # "kr" | "us" | "crypto"
+    symbol: str  # canonical DB form (e.g. "005930", "AMZN", "BTC")
+    market: str  # "kr" | "us" | "crypto"
     canonical_name: str  # display name
     aliases: tuple[str, ...]  # case-insensitive substring/word-boundary terms
 
@@ -27,7 +27,9 @@ KR_ALIASES: tuple[AliasEntry, ...] = (
     AliasEntry("005930", "kr", "삼성전자", ("삼성전자", "삼전", "Samsung Electronics")),
     # ROB-130: "닉스" is a 2-char alias requested by the spec; accepts some
     # false-positive risk for higher recall on KR market chatter.
-    AliasEntry("000660", "kr", "SK하이닉스", ("SK하이닉스", "하이닉스", "닉스", "SK Hynix")),
+    AliasEntry(
+        "000660", "kr", "SK하이닉스", ("SK하이닉스", "하이닉스", "닉스", "SK Hynix")
+    ),
     AliasEntry("035420", "kr", "NAVER", ("네이버", "NAVER")),
     AliasEntry("035720", "kr", "카카오", ("카카오",)),
     AliasEntry("323410", "kr", "카카오뱅크", ("카카오뱅크",)),
@@ -44,7 +46,9 @@ US_ALIASES: tuple[AliasEntry, ...] = (
     AliasEntry("NVDA", "us", "Nvidia", ("Nvidia", "NVDA", "엔비디아")),
     AliasEntry("TSLA", "us", "Tesla", ("Tesla", "TSLA", "테슬라")),
     AliasEntry("META", "us", "Meta", ("Meta Platforms", "META", "메타")),
-    AliasEntry("GOOGL", "us", "Alphabet", ("Alphabet", "Google", "GOOGL", "GOOG", "구글")),
+    AliasEntry(
+        "GOOGL", "us", "Alphabet", ("Alphabet", "Google", "GOOGL", "GOOG", "구글")
+    ),
     AliasEntry("MSFT", "us", "Microsoft", ("Microsoft", "MSFT", "마이크로소프트")),
     AliasEntry("AMD", "us", "AMD", ("AMD", "Advanced Micro Devices")),
     AliasEntry("AVGO", "us", "Broadcom", ("Broadcom", "AVGO")),
@@ -56,7 +60,9 @@ CRYPTO_ALIASES: tuple[AliasEntry, ...] = (
     AliasEntry("ETH", "crypto", "Ethereum", ("Ethereum", "ETH", "이더리움", "KRW-ETH")),
     AliasEntry("SOL", "crypto", "Solana", ("Solana", "SOL", "솔라나", "KRW-SOL")),
     AliasEntry("XRP", "crypto", "Ripple", ("Ripple", "XRP", "리플", "KRW-XRP")),
-    AliasEntry("DOGE", "crypto", "Dogecoin", ("Dogecoin", "DOGE", "도지코인", "KRW-DOGE")),
+    AliasEntry(
+        "DOGE", "crypto", "Dogecoin", ("Dogecoin", "DOGE", "도지코인", "KRW-DOGE")
+    ),
 )
 
 ALL_ALIASES: tuple[AliasEntry, ...] = KR_ALIASES + US_ALIASES + CRYPTO_ALIASES

@@ -53,7 +53,9 @@ async def test_fallback_exact_symbol_match_returned_first(monkeypatch):
         return [], 0
 
     monkeypatch.setattr(
-        llm_news_service, "get_news_articles", AsyncMock(side_effect=fake_get_news_articles)
+        llm_news_service,
+        "get_news_articles",
+        AsyncMock(side_effect=fake_get_news_articles),
     )
 
     result = await llm_news_service.get_news_articles_with_fallback(
@@ -79,7 +81,9 @@ async def test_fallback_alias_used_when_exact_returns_empty(monkeypatch):
         return untagged, len(untagged)
 
     monkeypatch.setattr(
-        llm_news_service, "get_news_articles", AsyncMock(side_effect=fake_get_news_articles)
+        llm_news_service,
+        "get_news_articles",
+        AsyncMock(side_effect=fake_get_news_articles),
     )
 
     result = await llm_news_service.get_news_articles_with_fallback(
@@ -94,7 +98,11 @@ async def test_fallback_alias_used_when_exact_returns_empty(monkeypatch):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_fallback_kr_005930_alias_match(monkeypatch):
-    untagged = [_mk_article(id=20, title="삼성전자 1분기 실적 호조", stock_symbol=None, market="kr")]
+    untagged = [
+        _mk_article(
+            id=20, title="삼성전자 1분기 실적 호조", stock_symbol=None, market="kr"
+        )
+    ]
 
     async def fake_get_news_articles(**kwargs):
         if kwargs.get("stock_symbol") == "005930":
@@ -102,7 +110,9 @@ async def test_fallback_kr_005930_alias_match(monkeypatch):
         return untagged, len(untagged)
 
     monkeypatch.setattr(
-        llm_news_service, "get_news_articles", AsyncMock(side_effect=fake_get_news_articles)
+        llm_news_service,
+        "get_news_articles",
+        AsyncMock(side_effect=fake_get_news_articles),
     )
 
     result = await llm_news_service.get_news_articles_with_fallback(
@@ -119,7 +129,9 @@ async def test_fallback_returns_empty_when_no_match(monkeypatch):
         return [], 0
 
     monkeypatch.setattr(
-        llm_news_service, "get_news_articles", AsyncMock(side_effect=fake_get_news_articles)
+        llm_news_service,
+        "get_news_articles",
+        AsyncMock(side_effect=fake_get_news_articles),
     )
 
     result = await llm_news_service.get_news_articles_with_fallback(
@@ -132,7 +144,9 @@ async def test_fallback_returns_empty_when_no_match(monkeypatch):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_fallback_caps_limit(monkeypatch):
-    untagged = [_mk_article(id=i, title="Amazon news", stock_symbol=None) for i in range(50)]
+    untagged = [
+        _mk_article(id=i, title="Amazon news", stock_symbol=None) for i in range(50)
+    ]
 
     async def fake_get_news_articles(**kwargs):
         if kwargs.get("stock_symbol"):
@@ -140,7 +154,9 @@ async def test_fallback_caps_limit(monkeypatch):
         return untagged, len(untagged)
 
     monkeypatch.setattr(
-        llm_news_service, "get_news_articles", AsyncMock(side_effect=fake_get_news_articles)
+        llm_news_service,
+        "get_news_articles",
+        AsyncMock(side_effect=fake_get_news_articles),
     )
 
     result = await llm_news_service.get_news_articles_with_fallback(

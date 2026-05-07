@@ -42,7 +42,9 @@ def test_kr_samjeon_short_alias_matches():
 
 @pytest.mark.unit
 def test_crypto_bitcoin_alias_matches_btc():
-    matches = match_symbols("비트코인 7만달러 회복, Bitcoin ETF 유입 지속", market="crypto")
+    matches = match_symbols(
+        "비트코인 7만달러 회복, Bitcoin ETF 유입 지속", market="crypto"
+    )
     symbols = [m.symbol for m in matches]
     assert "BTC" in symbols
 

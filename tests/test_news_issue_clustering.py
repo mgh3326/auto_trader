@@ -13,9 +13,16 @@ from app.core.timezone import now_kst_naive
 from app.services import news_issue_clustering_service as clustering
 
 
-def _mk(*, id: int, title: str, source: str, summary: str = "",
-        published_minutes_ago: int = 30, keywords: list[str] | None = None,
-        market: str = "us"):
+def _mk(
+    *,
+    id: int,
+    title: str,
+    source: str,
+    summary: str = "",
+    published_minutes_ago: int = 30,
+    keywords: list[str] | None = None,
+    market: str = "us",
+):
     return SimpleNamespace(
         id=id,
         title=title,
@@ -42,13 +49,18 @@ async def test_clusters_articles_sharing_amazon_entity(monkeypatch):
         clustering, "_load_recent_articles", AsyncMock(return_value=rows)
     )
 
-    result = await clustering.build_market_issues(market="us", window_hours=24, limit=10)
+    result = await clustering.build_market_issues(
+        market="us", window_hours=24, limit=10
+    )
     assert result.market == "us"
     titles = [iss.issue_title for iss in result.items]
     assert any("Amazon" in t or "AMZN" in t for t in titles)
 
-    amzn_issue = next(iss for iss in result.items if any(
-        rs.symbol == "AMZN" for rs in iss.related_symbols))
+    amzn_issue = next(
+        iss
+        for iss in result.items
+        if any(rs.symbol == "AMZN" for rs in iss.related_symbols)
+    )
     assert amzn_issue.article_count == 2
     assert amzn_issue.source_count == 2
     article_ids = {a.id for a in amzn_issue.articles}
@@ -62,13 +74,17 @@ async def test_rank_orders_by_score_desc(monkeypatch):
         _mk(id=1, title="Amazon up", source="cnbc", published_minutes_ago=10),
         _mk(id=2, title="Amazon AWS", source="bloomberg", published_minutes_ago=15),
         _mk(id=3, title="Amazon retail", source="reuters", published_minutes_ago=20),
-        _mk(id=4, title="Tesla recall report", source="cnbc", published_minutes_ago=180),
+        _mk(
+            id=4, title="Tesla recall report", source="cnbc", published_minutes_ago=180
+        ),
     ]
     monkeypatch.setattr(
         clustering, "_load_recent_articles", AsyncMock(return_value=rows)
     )
 
-    result = await clustering.build_market_issues(market="us", window_hours=24, limit=10)
+    result = await clustering.build_market_issues(
+        market="us", window_hours=24, limit=10
+    )
     assert result.items[0].rank == 1
     # Amazon issue (3 articles, 3 sources, fresh) must outrank Tesla (1 article)
     assert any(rs.symbol == "AMZN" for rs in result.items[0].related_symbols)
@@ -77,10 +93,10 @@ async def test_rank_orders_by_score_desc(monkeypatch):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_returns_empty_when_no_articles(monkeypatch):
-    monkeypatch.setattr(
-        clustering, "_load_recent_articles", AsyncMock(return_value=[])
+    monkeypatch.setattr(clustering, "_load_recent_articles", AsyncMock(return_value=[]))
+    result = await clustering.build_market_issues(
+        market="us", window_hours=24, limit=10
     )
-    result = await clustering.build_market_issues(market="us", window_hours=24, limit=10)
     assert result.items == []
 
 
@@ -96,7 +112,9 @@ async def test_id_is_stable_for_same_input(monkeypatch):
     )
 
     first = await clustering.build_market_issues(market="us", window_hours=24, limit=10)
-    second = await clustering.build_market_issues(market="us", window_hours=24, limit=10)
+    second = await clustering.build_market_issues(
+        market="us", window_hours=24, limit=10
+    )
     assert [iss.id for iss in first.items] == [iss.id for iss in second.items]
 
 
@@ -111,10 +129,11 @@ async def test_kr_clustering_groups_005930(monkeypatch):
         clustering, "_load_recent_articles", AsyncMock(return_value=rows)
     )
 
-    result = await clustering.build_market_issues(market="kr", window_hours=24, limit=10)
+    result = await clustering.build_market_issues(
+        market="kr", window_hours=24, limit=10
+    )
     assert any(
-        any(rs.symbol == "005930" for rs in iss.related_symbols)
-        for iss in result.items
+        any(rs.symbol == "005930" for rs in iss.related_symbols) for iss in result.items
     )
 
 
@@ -128,7 +147,9 @@ async def test_signal_scores_are_in_unit_interval(monkeypatch):
     monkeypatch.setattr(
         clustering, "_load_recent_articles", AsyncMock(return_value=rows)
     )
-    result = await clustering.build_market_issues(market="us", window_hours=24, limit=10)
+    result = await clustering.build_market_issues(
+        market="us", window_hours=24, limit=10
+    )
     for iss in result.items:
         assert 0.0 <= iss.signals.recency_score <= 1.0
         assert 0.0 <= iss.signals.source_diversity_score <= 1.0
