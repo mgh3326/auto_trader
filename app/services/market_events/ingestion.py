@@ -175,3 +175,71 @@ async def ingest_kr_disclosures_for_date(
             partition_date=target_date,
             error=exc,
         )
+
+
+async def ingest_economic_events_for_date(
+    db: AsyncSession,
+    target_date: date,
+    fetch_rows: Callable[[date], Awaitable[list[dict[str, Any]]]] | None = None,
+) -> IngestionRunResult:
+    """Ingest ForexFactory economic-calendar events for one day.
+
+    `fetch_rows` is an optional injection point. Default uses
+    `app.services.market_events.forexfactory_helpers.fetch_forexfactory_events_for_date`.
+    """
+    if fetch_rows is None:
+        from app.services.market_events.forexfactory_helpers import (
+            fetch_forexfactory_events_for_date as _default_fetch,
+        )
+
+        fetch_rows = _default_fetch
+
+    source = "forexfactory"
+    category = "economic"
+    market = "global"
+    repo = MarketEventsRepository(db)
+    partition = await repo.get_or_create_partition(
+        source=source,
+        category=category,
+        market=market,
+        partition_date=target_date,
+    )
+    await repo.mark_partition_running(partition)
+
+    try:
+        from app.services.market_events.normalizers import (
+            normalize_forexfactory_event_row,
+        )
+
+        rows = await fetch_rows(target_date)
+        upserted = 0
+        for row in rows:
+            try:
+                event_dict, value_dicts = normalize_forexfactory_event_row(row)
+            except ValueError as exc:
+                logger.warning(
+                    "skipping unparseable forexfactory row: %s (%s)", row, exc
+                )
+                continue
+            await repo.upsert_event_with_values(event_dict, value_dicts)
+            upserted += 1
+
+        await repo.mark_partition_succeeded(partition, event_count=upserted)
+        return IngestionRunResult(
+            source=source,
+            category=category,
+            market=market,
+            partition_date=target_date,
+            status="succeeded",
+            event_count=upserted,
+        )
+    except Exception as exc:
+        logger.exception("forexfactory ingestion failed for %s", target_date)
+        return await _mark_failed_after_exception(
+            db,
+            source=source,
+            category=category,
+            market=market,
+            partition_date=target_date,
+            error=exc,
+        )

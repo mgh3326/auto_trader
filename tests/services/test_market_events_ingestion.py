@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date
+from datetime import datetime as _dt
 from unittest.mock import AsyncMock
 
 import pytest
@@ -186,6 +187,114 @@ async def test_ingest_us_earnings_records_failure_when_upsert_fails(
 
     assert result.status == "failed"
     assert "database write failed" in (result.error or "")
+    parts = (
+        (await db_session.execute(select(MarketEventIngestionPartition)))
+        .scalars()
+        .all()
+    )
+    assert len(parts) == 1
+    assert parts[0].status == "failed"
+    assert parts[0].retry_count == 1
+
+
+FF_ROW = {
+    "title": "Core CPI m/m",
+    "currency": "USD",
+    "country": "USD",
+    "event_date": date(2026, 5, 13),
+    "release_time_utc": _dt(2026, 5, 13, 12, 30, tzinfo=UTC),
+    "release_time_local": _dt(2026, 5, 13, 8, 30),
+    "time_hint_raw": "8:30am",
+    "impact": "high",
+    "actual": "0.3%",
+    "forecast": "0.3%",
+    "previous": "0.4%",
+    "source_event_id": "ff::USD::Core CPI m/m::2026-05-13T12:30:00Z",
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_ingest_economic_events_for_date_succeeds(db_session):
+    from app.models.market_events import (
+        MarketEvent,
+        MarketEventIngestionPartition,
+        MarketEventValue,
+    )
+    from app.services.market_events import ingestion
+
+    async def fake_fetch(d):
+        assert d == date(2026, 5, 13)
+        return [FF_ROW]
+
+    result = await ingestion.ingest_economic_events_for_date(
+        db_session, date(2026, 5, 13), fetch_rows=fake_fetch
+    )
+    await db_session.commit()
+
+    assert result.status == "succeeded"
+    assert result.event_count == 1
+
+    events = (await db_session.execute(select(MarketEvent))).scalars().all()
+    assert len(events) == 1
+    e = events[0]
+    assert e.category == "economic"
+    assert e.market == "global"
+    assert e.source == "forexfactory"
+    assert e.currency == "USD"
+    assert e.importance == 3
+
+    values = (await db_session.execute(select(MarketEventValue))).scalars().all()
+    assert len(values) == 1
+    assert values[0].metric_name == "actual"
+    assert values[0].unit == "%"
+
+    parts = (
+        (await db_session.execute(select(MarketEventIngestionPartition)))
+        .scalars()
+        .all()
+    )
+    assert len(parts) == 1
+    assert parts[0].source == "forexfactory"
+    assert parts[0].category == "economic"
+    assert parts[0].market == "global"
+    assert parts[0].status == "succeeded"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_ingest_economic_events_is_idempotent(db_session):
+    from app.models.market_events import MarketEvent
+    from app.services.market_events import ingestion
+
+    async def fake_fetch(d):
+        return [FF_ROW]
+
+    for _ in range(2):
+        await ingestion.ingest_economic_events_for_date(
+            db_session, date(2026, 5, 13), fetch_rows=fake_fetch
+        )
+        await db_session.commit()
+
+    events = (await db_session.execute(select(MarketEvent))).scalars().all()
+    assert len(events) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_ingest_economic_events_records_failure(db_session):
+    from app.models.market_events import MarketEventIngestionPartition
+    from app.services.market_events import ingestion
+
+    async def boom(d):
+        raise TimeoutError("fetch timed out")
+
+    result = await ingestion.ingest_economic_events_for_date(
+        db_session, date(2026, 5, 13), fetch_rows=boom
+    )
+    await db_session.commit()
+
+    assert result.status == "failed"
     parts = (
         (await db_session.execute(select(MarketEventIngestionPartition)))
         .scalars()
