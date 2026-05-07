@@ -91,6 +91,36 @@ class TestResearchReportPayloadSchemas:
             ResearchReportIngestionRequest.model_validate(payload)
         assert "pdf_body_exported" in str(exc_info.value).lower()
 
+    def test_rejects_raw_full_body_fields_even_if_flags_are_false(self):
+        from app.schemas.research_reports import ResearchReportIngestionRequest
+
+        payload = _sample_payload()
+        payload["reports"][0]["pdf"]["pdf_body"] = "full copyrighted report body"
+
+        with pytest.raises(Exception) as exc_info:
+            ResearchReportIngestionRequest.model_validate(payload)
+        assert "pdf_body" in str(exc_info.value).lower()
+
+    def test_rejects_raw_full_text_fields_even_if_flags_are_false(self):
+        from app.schemas.research_reports import ResearchReportIngestionRequest
+
+        payload = _sample_payload()
+        payload["reports"][0]["full_text"] = "full extracted report text"
+
+        with pytest.raises(Exception) as exc_info:
+            ResearchReportIngestionRequest.model_validate(payload)
+        assert "full_text" in str(exc_info.value).lower()
+
+    def test_rejects_raw_payload_fields_even_if_flags_are_false(self):
+        from app.schemas.research_reports import ResearchReportIngestionRequest
+
+        payload = _sample_payload()
+        payload["reports"][0]["raw_payload"] = {"html": "<article>full body</article>"}
+
+        with pytest.raises(Exception) as exc_info:
+            ResearchReportIngestionRequest.model_validate(payload)
+        assert "raw_payload" in str(exc_info.value).lower()
+
     def test_rejects_payload_with_unknown_payload_version(self):
         from app.schemas.research_reports import ResearchReportIngestionRequest
 

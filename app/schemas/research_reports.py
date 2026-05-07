@@ -9,7 +9,7 @@ Hard guardrails:
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -17,6 +17,18 @@ PAYLOAD_VERSION_V1 = "research-reports.v1"
 
 SUMMARY_TEXT_MAX = 1000
 DETAIL_EXCERPT_MAX = 500
+FORBIDDEN_BODY_FIELD_NAMES = frozenset(
+    {
+        "pdf_body",
+        "pdf_text",
+        "extracted_text",
+        "full_text",
+        "article_content",
+        "article_body",
+        "raw_payload_json",
+        "raw_payload",
+    }
+)
 
 
 def _truncate(value: str | None, limit: int) -> str | None:
@@ -25,6 +37,22 @@ def _truncate(value: str | None, limit: int) -> str | None:
     if len(value) <= limit:
         return value
     return value[:limit]
+
+
+def _find_forbidden_body_field(value: Any) -> str | None:
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            if str(key) in FORBIDDEN_BODY_FIELD_NAMES:
+                return str(key)
+            found = _find_forbidden_body_field(nested)
+            if found:
+                return found
+    if isinstance(value, list):
+        for nested in value:
+            found = _find_forbidden_body_field(nested)
+            if found:
+                return found
+    return None
 
 
 class ResearchReportDetail(BaseModel):
@@ -131,6 +159,17 @@ class ResearchReportIngestionRequest(BaseModel):
 
     research_report_ingestion_run: ResearchReportIngestionRunMeta
     reports: list[ResearchReportPayloadV1] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_full_body_fields(cls, data: Any) -> Any:
+        forbidden_field = _find_forbidden_body_field(data)
+        if forbidden_field:
+            raise ValueError(
+                "ROB-140 copyright guardrail: "
+                f"body field '{forbidden_field}' is rejected"
+            )
+        return data
 
 
 class ResearchReportIngestionResponse(BaseModel):

@@ -2,23 +2,11 @@
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
-import pytest_asyncio
 from pydantic import ValidationError
-from sqlalchemy import delete, select
-
-
-@pytest_asyncio.fixture(autouse=True)
-async def _clean(db_session):
-    from app.models.research_reports import (
-        ResearchReport,
-        ResearchReportIngestionRun,
-    )
-
-    await db_session.execute(delete(ResearchReport))
-    await db_session.execute(delete(ResearchReportIngestionRun))
-    await db_session.commit()
-    yield
+from sqlalchemy import select
 
 
 def _sample_payload(*, dedup_keys: list[str] | None = None) -> dict:
@@ -56,7 +44,7 @@ def _sample_payload(*, dedup_keys: list[str] | None = None) -> dict:
         )
     return {
         "research_report_ingestion_run": {
-            "run_uuid": "run-1",
+            "run_uuid": f"run-{uuid4()}",
             "payload_version": "research-reports.v1",
             "source": "naver_research",
             "report_count": len(reports),
@@ -75,8 +63,9 @@ async def test_ingest_inserts_reports_and_run(db_session):
     from app.schemas.research_reports import ResearchReportIngestionRequest
     from app.services.research_reports.ingestion import ingest_research_reports_v1
 
+    keys = [f"k-A-{uuid4()}", f"k-B-{uuid4()}"]
     req = ResearchReportIngestionRequest.model_validate(
-        _sample_payload(dedup_keys=["k-A", "k-B"])
+        _sample_payload(dedup_keys=keys)
     )
     response = await ingest_research_reports_v1(db_session, req)
     await db_session.commit()
@@ -84,11 +73,28 @@ async def test_ingest_inserts_reports_and_run(db_session):
     assert response.inserted_count == 2
     assert response.skipped_count == 0
 
-    reports = (await db_session.execute(select(ResearchReport))).scalars().all()
-    assert {r.dedup_key for r in reports} == {"k-A", "k-B"}
+    reports = (
+        (
+            await db_session.execute(
+                select(ResearchReport).where(ResearchReport.dedup_key.in_(keys))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert {r.dedup_key for r in reports} == set(keys)
 
     runs = (
-        (await db_session.execute(select(ResearchReportIngestionRun))).scalars().all()
+        (
+            await db_session.execute(
+                select(ResearchReportIngestionRun).where(
+                    ResearchReportIngestionRun.run_uuid
+                    == req.research_report_ingestion_run.run_uuid
+                )
+            )
+        )
+        .scalars()
+        .all()
     )
     assert len(runs) == 1
     assert runs[0].inserted_count == 2
@@ -102,7 +108,7 @@ async def test_ingest_is_idempotent_on_duplicate(db_session):
     from app.services.research_reports.ingestion import ingest_research_reports_v1
 
     req = ResearchReportIngestionRequest.model_validate(
-        _sample_payload(dedup_keys=["k-X"])
+        _sample_payload(dedup_keys=[f"k-X-{uuid4()}"])
     )
 
     first = await ingest_research_reports_v1(db_session, req)

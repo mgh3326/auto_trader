@@ -27,6 +27,7 @@ from .research_pipeline import (
     SummaryStageLink,
     UserResearchNote,
 )
+from .research_reports import ResearchReport, ResearchReportIngestionRun
 from .research_run import (
     ResearchRun,
     ResearchRunCandidate,
@@ -36,7 +37,6 @@ from .research_run import (
     ResearchRunStage,
     ResearchRunStatus,
 )
-from .research_reports import ResearchReport, ResearchReportIngestionRun
 from .review import PendingSnapshot, Trade, TradeReview, TradeSnapshot
 from .sell_condition import SellCondition
 from .symbol_trade_settings import SymbolTradeSettings

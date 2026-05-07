@@ -4,25 +4,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
-import pytest_asyncio
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import delete
-
-
-@pytest_asyncio.fixture(autouse=True)
-async def _clean(db_session):
-    from app.models.research_reports import (
-        ResearchReport,
-        ResearchReportIngestionRun,
-    )
-
-    await db_session.execute(delete(ResearchReport))
-    await db_session.execute(delete(ResearchReportIngestionRun))
-    await db_session.commit()
-    yield
 
 
 def _app() -> FastAPI:
@@ -44,13 +30,13 @@ def _app() -> FastAPI:
     return app
 
 
-async def _seed(db_session, dedup_key="r-1", *, symbol="AAPL"):
+async def _seed(db_session, dedup_key="r-1", *, source="naver_research", symbol="AAPL"):
     from app.models.research_reports import ResearchReport
 
     row = ResearchReport(
         dedup_key=dedup_key,
         report_type="equity_research",
-        source="naver_research",
+        source=source,
         title=f"Title {dedup_key}",
         summary_text="summary",
         detail_url=f"https://example.com/{dedup_key}",
@@ -69,8 +55,9 @@ async def _seed(db_session, dedup_key="r-1", *, symbol="AAPL"):
 
 @pytest.mark.integration
 def test_recent_endpoint_returns_empty(db_session):
+    source = f"test_empty_source_{uuid4()}"
     with TestClient(_app()) as client:
-        resp = client.get("/trading/api/research-reports/recent")
+        resp = client.get(f"/trading/api/research-reports/recent?source={source}")
         assert resp.status_code == 200
         body = resp.json()
         assert body["count"] == 0
@@ -80,14 +67,18 @@ def test_recent_endpoint_returns_empty(db_session):
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_recent_endpoint_filters_by_symbol(db_session):
-    await _seed(db_session, "x-1", symbol="AAPL")
-    await _seed(db_session, "x-2", symbol="MSFT")
+    source = f"test_router_symbol_filter_{uuid4()}"
+    aapl_key = f"x-1-{uuid4()}"
+    await _seed(db_session, aapl_key, source=source, symbol="AAPL")
+    await _seed(db_session, f"x-2-{uuid4()}", source=source, symbol="MSFT")
     with TestClient(_app()) as client:
-        resp = client.get("/trading/api/research-reports/recent?symbol=AAPL")
+        resp = client.get(
+            f"/trading/api/research-reports/recent?symbol=AAPL&source={source}"
+        )
         assert resp.status_code == 200
         body = resp.json()
         assert body["count"] == 1
-        assert body["citations"][0]["title"] == "Title x-1"
+        assert body["citations"][0]["title"] == f"Title {aapl_key}"
 
 
 @pytest.mark.integration
@@ -104,9 +95,12 @@ def test_recent_endpoint_unauthorized_without_override():
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_recent_response_does_not_include_body_fields(db_session):
-    await _seed(db_session, "y-1", symbol="AAPL")
+    source = f"test_router_no_body_fields_{uuid4()}"
+    await _seed(db_session, f"y-1-{uuid4()}", source=source, symbol="AAPL")
     with TestClient(_app()) as client:
-        resp = client.get("/trading/api/research-reports/recent?symbol=AAPL")
+        resp = client.get(
+            f"/trading/api/research-reports/recent?symbol=AAPL&source={source}"
+        )
         body = resp.json()
         assert body["count"] == 1
         citation = body["citations"][0]

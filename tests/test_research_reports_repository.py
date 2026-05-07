@@ -3,23 +3,10 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from uuid import uuid4
 
 import pytest
-import pytest_asyncio
-from sqlalchemy import delete, select
-
-
-@pytest_asyncio.fixture(autouse=True)
-async def _clean_research_reports(db_session):
-    from app.models.research_reports import (
-        ResearchReport,
-        ResearchReportIngestionRun,
-    )
-
-    await db_session.execute(delete(ResearchReport))
-    await db_session.execute(delete(ResearchReportIngestionRun))
-    await db_session.commit()
-    yield
+from sqlalchemy import select
 
 
 def _sample_report_dict(*, dedup_key: str = "abc-1") -> dict:
@@ -62,13 +49,22 @@ async def test_upsert_inserts_new_report(db_session):
     from app.services.research_reports.repository import ResearchReportsRepository
 
     repo = ResearchReportsRepository(db_session)
-    inserted = await repo.upsert_report(_sample_report_dict(dedup_key="k-1"))
+    dedup_key = f"k-1-{uuid4()}"
+    inserted = await repo.upsert_report(_sample_report_dict(dedup_key=dedup_key))
     await db_session.commit()
     assert inserted is True
 
-    rows = (await db_session.execute(select(ResearchReport))).scalars().all()
+    rows = (
+        (
+            await db_session.execute(
+                select(ResearchReport).where(ResearchReport.dedup_key == dedup_key)
+            )
+        )
+        .scalars()
+        .all()
+    )
     assert len(rows) == 1
-    assert rows[0].dedup_key == "k-1"
+    assert rows[0].dedup_key == dedup_key
 
 
 @pytest.mark.integration
@@ -78,14 +74,23 @@ async def test_upsert_skips_duplicate_dedup_key(db_session):
     from app.services.research_reports.repository import ResearchReportsRepository
 
     repo = ResearchReportsRepository(db_session)
-    inserted_first = await repo.upsert_report(_sample_report_dict(dedup_key="k-2"))
-    inserted_second = await repo.upsert_report(_sample_report_dict(dedup_key="k-2"))
+    dedup_key = f"k-2-{uuid4()}"
+    inserted_first = await repo.upsert_report(_sample_report_dict(dedup_key=dedup_key))
+    inserted_second = await repo.upsert_report(_sample_report_dict(dedup_key=dedup_key))
     await db_session.commit()
 
     assert inserted_first is True
     assert inserted_second is False
 
-    rows = (await db_session.execute(select(ResearchReport))).scalars().all()
+    rows = (
+        (
+            await db_session.execute(
+                select(ResearchReport).where(ResearchReport.dedup_key == dedup_key)
+            )
+        )
+        .scalars()
+        .all()
+    )
     assert len(rows) == 1
 
 
@@ -96,8 +101,9 @@ async def test_upsert_run_inserts_then_returns_existing(db_session):
     from app.services.research_reports.repository import ResearchReportsRepository
 
     repo = ResearchReportsRepository(db_session)
+    run_uuid = f"run-{uuid4()}"
     run = await repo.get_or_create_ingestion_run(
-        run_uuid="run-1",
+        run_uuid=run_uuid,
         payload_version="research-reports.v1",
         source="naver_research",
         started_at=None,
@@ -113,7 +119,7 @@ async def test_upsert_run_inserts_then_returns_existing(db_session):
     first_id = run.id
 
     again = await repo.get_or_create_ingestion_run(
-        run_uuid="run-1",
+        run_uuid=run_uuid,
         payload_version="research-reports.v1",
         source="naver_research",
         started_at=None,
@@ -128,6 +134,14 @@ async def test_upsert_run_inserts_then_returns_existing(db_session):
     assert again.id == first_id
 
     rows = (
-        (await db_session.execute(select(ResearchReportIngestionRun))).scalars().all()
+        (
+            await db_session.execute(
+                select(ResearchReportIngestionRun).where(
+                    ResearchReportIngestionRun.run_uuid == run_uuid
+                )
+            )
+        )
+        .scalars()
+        .all()
     )
     assert len(rows) == 1
