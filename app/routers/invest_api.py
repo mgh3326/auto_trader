@@ -16,10 +16,12 @@ from app.routers.dependencies import get_authenticated_user
 from app.schemas.invest_account_panel import AccountPanelResponse
 from app.schemas.invest_feed_news import FeedNewsResponse, FeedTab
 from app.schemas.invest_home import InvestHomeResponse
+from app.schemas.invest_signals import SignalsResponse, SignalTab
 from app.services.invest_home_service import InvestHomeService
 from app.services.invest_view_model.account_panel_service import build_account_panel
 from app.services.invest_view_model.feed_news_service import build_feed_news
 from app.services.invest_view_model.relation_resolver import build_relation_resolver
+from app.services.invest_view_model.signals_service import build_signals
 
 router = APIRouter(prefix="/invest/api", tags=["invest"])
 
@@ -69,6 +71,21 @@ def _held_pairs_from_home(home) -> list[tuple[str, str]]:
         if m in ("kr", "us", "crypto"):
             pairs.append((m, h.symbol))
     return pairs
+
+
+@router.get("/signals")
+async def get_signals(
+    user: Annotated[Any, Depends(get_authenticated_user)],
+    service: Annotated[InvestHomeService, Depends(get_invest_home_service)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    tab: SignalTab = Query("mine"),
+    limit: int = Query(20, ge=1, le=100),
+) -> SignalsResponse:
+    home = await service.get_home(user_id=user.id)
+    resolver = await build_relation_resolver(
+        db, user_id=user.id, held_pairs=_held_pairs_from_home(home)
+    )
+    return await build_signals(db=db, resolver=resolver, tab=tab, limit=limit)
 
 
 @router.get("/feed/news")
