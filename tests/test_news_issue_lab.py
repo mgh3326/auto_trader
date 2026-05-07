@@ -113,7 +113,7 @@ def test_score_cluster_reports_normalized_source_counts_and_duplicate_penalty() 
 def test_score_cluster_caps_diversity_at_five_source_families() -> None:
     articles = [_article(i, source=f"source_{i}") for i in range(1, 7)]
     score = lab.score_cluster(_cluster(*range(6)), articles, window_hours=24)
-    assert score.components["source_diversity_norm"] == 1.0
+    assert score.components["source_diversity_norm"] == pytest.approx(1.0)
 
 
 def test_score_cluster_caps_regular_report_penalty() -> None:
@@ -122,7 +122,7 @@ def test_score_cluster_caps_regular_report_penalty() -> None:
         for i in range(1, 6)
     ]
     score = lab.score_cluster(_cluster(*range(5)), articles, window_hours=24)
-    assert score.penalties["regular_report"] == 0.45
+    assert score.penalties["regular_report"] == pytest.approx(0.45)
     assert score.flags["regular_report"] == 5
 
 
@@ -140,7 +140,7 @@ def test_score_cluster_caps_future_recency_at_one() -> None:
         )
     ]
     score = lab.score_cluster(_cluster(0), articles, window_hours=24)
-    assert score.components["recency_norm"] == 1.0
+    assert score.components["recency_norm"] == pytest.approx(1.0)
 
 
 def test_keyword_matches_does_not_match_single_syllable_korean_inside_words() -> None:
@@ -342,7 +342,7 @@ def test_merge_decision_dataclass_holds_all_signals() -> None:
         absorbed_title="Y",
     )
     assert decision.decision == "merged"
-    assert decision.rep_sim == 0.91
+    assert decision.rep_sim == pytest.approx(0.91)
 
 
 def test_merge_diagnostics_dataclass_defaults_to_disabled() -> None:
@@ -354,11 +354,11 @@ def test_merge_diagnostics_dataclass_defaults_to_disabled() -> None:
 
 
 def test_merge_constants_have_expected_defaults() -> None:
-    assert lab.MERGE_REP_THRESHOLD == 0.86
-    assert lab.MERGE_TOKEN_JACCARD == 0.30
-    assert lab.MERGE_STRONG_REP_THRESHOLD == 0.93
-    assert lab.MERGE_TOPIC_REP_THRESHOLD == 0.43
-    assert lab.MERGE_MIN_TOKEN_FLOOR == 0.20
+    assert lab.MERGE_REP_THRESHOLD == pytest.approx(0.86)
+    assert lab.MERGE_TOKEN_JACCARD == pytest.approx(0.30)
+    assert lab.MERGE_STRONG_REP_THRESHOLD == pytest.approx(0.93)
+    assert lab.MERGE_TOPIC_REP_THRESHOLD == pytest.approx(0.43)
+    assert lab.MERGE_MIN_TOKEN_FLOOR == pytest.approx(0.20)
     assert lab.MERGE_MAX_CLUSTER_SIZE == 25
 
 
@@ -852,12 +852,12 @@ async def test_build_payload_no_merge_flag_disables_merge(monkeypatch) -> None:
 def test_parse_args_accepts_merge_flags_and_defaults() -> None:
     args = lab.parse_args([])
     assert args.merge_clusters is True
-    assert args.merge_rep_threshold == 0.86
-    assert args.merge_token_jaccard == 0.30
+    assert args.merge_rep_threshold == pytest.approx(0.86)
+    assert args.merge_token_jaccard == pytest.approx(0.30)
     assert args.merge_rep_articles == 3
     args2 = lab.parse_args(["--no-merge-clusters", "--merge-rep-threshold", "0.9"])
     assert args2.merge_clusters is False
-    assert args2.merge_rep_threshold == 0.9
+    assert args2.merge_rep_threshold == pytest.approx(0.9)
 
 
 def test_parse_args_rejects_invalid_merge_thresholds() -> None:
@@ -1152,7 +1152,7 @@ def test_fallback_render_returns_schema_complete_card() -> None:
     assert card["direction"] == "neutral"
     assert card["render_status"] == "fallback"
     assert card["render_rejection_reason"] == "llm_disabled"
-    assert card["confidence"] == 0.0
+    assert card["confidence"] == pytest.approx(0.0)
     assert card["summary_ko"]
     assert card["impact_points"]
     assert "body" not in json.dumps(card, ensure_ascii=False)

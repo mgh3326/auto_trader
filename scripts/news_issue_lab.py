@@ -2207,6 +2207,11 @@ async def build_payload(args: argparse.Namespace) -> dict[str, Any]:
     return payload
 
 
+def write_output_file(path: str, rendered: str) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(rendered)
+
+
 async def async_main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     payload = await build_payload(args)
@@ -2218,8 +2223,7 @@ async def async_main(argv: list[str] | None = None) -> int:
         else render_markdown(payload)
     )
     if args.output:
-        with open(args.output, "w", encoding="utf-8") as f:
-            f.write(rendered)
+        write_output_file(args.output, rendered)
     else:
         print(rendered)
     return 0
