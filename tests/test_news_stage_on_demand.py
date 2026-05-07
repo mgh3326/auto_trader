@@ -11,6 +11,7 @@ import pytest
 from app.analysis.stages import news_stage
 from app.analysis.stages.base import StageContext
 from app.analysis.stages.news_stage import NewsStageAnalyzer
+from app.services.llm_news_service import NewsLookupResult
 from app.services.research_news_service import NormalizedArticle
 
 
@@ -37,10 +38,10 @@ class TestNewsStageOnDemandFetch:
             _fake_db_article(title="기존2"),
             _fake_db_article(title="기존3"),
         ]
-        get_articles = AsyncMock(return_value=(existing, 3))
+        get_articles = AsyncMock(return_value=NewsLookupResult(articles=existing))
         fetch = AsyncMock(return_value=[])
         bulk_create = AsyncMock(return_value=(0, 0, []))
-        monkeypatch.setattr(news_stage, "get_news_articles", get_articles)
+        monkeypatch.setattr(news_stage, "get_news_articles_with_fallback", get_articles)
         monkeypatch.setattr(news_stage, "fetch_symbol_news", fetch)
         monkeypatch.setattr(news_stage, "bulk_create_news_articles", bulk_create)
 
@@ -72,8 +73,8 @@ class TestNewsStageOnDemandFetch:
         ]
         get_articles = AsyncMock(
             side_effect=[
-                (first_call_articles, 0),
-                (second_call_articles, 1),
+                NewsLookupResult(articles=first_call_articles),
+                NewsLookupResult(articles=second_call_articles),
             ]
         )
         fetch = AsyncMock(
@@ -89,7 +90,7 @@ class TestNewsStageOnDemandFetch:
             ]
         )
         bulk_create = AsyncMock(return_value=(1, 0, []))
-        monkeypatch.setattr(news_stage, "get_news_articles", get_articles)
+        monkeypatch.setattr(news_stage, "get_news_articles_with_fallback", get_articles)
         monkeypatch.setattr(news_stage, "fetch_symbol_news", fetch)
         monkeypatch.setattr(news_stage, "bulk_create_news_articles", bulk_create)
 
@@ -118,10 +119,10 @@ class TestNewsStageOnDemandFetch:
     async def test_fetch_failure_degrades_to_neutral(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        get_articles = AsyncMock(return_value=([], 0))
+        get_articles = AsyncMock(return_value=NewsLookupResult(articles=[]))
         fetch = AsyncMock(return_value=[])  # service returns [] on failure
         bulk_create = AsyncMock(return_value=(0, 0, []))
-        monkeypatch.setattr(news_stage, "get_news_articles", get_articles)
+        monkeypatch.setattr(news_stage, "get_news_articles_with_fallback", get_articles)
         monkeypatch.setattr(news_stage, "fetch_symbol_news", fetch)
         monkeypatch.setattr(news_stage, "bulk_create_news_articles", bulk_create)
 
@@ -147,7 +148,12 @@ class TestNewsStageOnDemandFetch:
     async def test_uses_fetched_headlines_when_persisted_requery_is_empty(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        get_articles = AsyncMock(side_effect=[([], 0), ([], 0)])
+        get_articles = AsyncMock(
+            side_effect=[
+                NewsLookupResult(articles=[]),
+                NewsLookupResult(articles=[]),
+            ]
+        )
         fetch = AsyncMock(
             return_value=[
                 NormalizedArticle(
@@ -161,7 +167,7 @@ class TestNewsStageOnDemandFetch:
             ]
         )
         bulk_create = AsyncMock(return_value=(0, 1, ["https://reuters.com/amzn-q1"]))
-        monkeypatch.setattr(news_stage, "get_news_articles", get_articles)
+        monkeypatch.setattr(news_stage, "get_news_articles_with_fallback", get_articles)
         monkeypatch.setattr(news_stage, "fetch_symbol_news", fetch)
         monkeypatch.setattr(news_stage, "bulk_create_news_articles", bulk_create)
 
