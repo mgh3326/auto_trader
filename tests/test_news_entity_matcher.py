@@ -90,3 +90,29 @@ def test_match_returns_sorted_unique_by_symbol():
     amzn_matches = [m for m in matches if m.symbol == "AMZN"]
     assert len(amzn_matches) == 1  # deduped
     assert isinstance(matches[0], SymbolMatch)
+
+
+@pytest.mark.unit
+def test_match_for_article_uses_summary():
+    matches = match_symbols_for_article(
+        title="Market update",
+        summary="Amazon AWS revenue beats expectations",
+        keywords=None,
+        market="us",
+    )
+    assert any(m.symbol == "AMZN" for m in matches)
+
+
+@pytest.mark.unit
+def test_market_none_returns_all_markets():
+    matches = match_symbols("Amazon, 삼성전자 모두 강세", market=None)
+    symbols = {m.symbol for m in matches}
+    assert "AMZN" in symbols
+    assert "005930" in symbols
+
+
+@pytest.mark.unit
+def test_match_results_sorted_by_market_then_symbol():
+    matches = match_symbols("Amazon, Google rise; 삼성전자 강세", market=None)
+    keys = [(m.market, m.symbol) for m in matches]
+    assert keys == sorted(keys)
