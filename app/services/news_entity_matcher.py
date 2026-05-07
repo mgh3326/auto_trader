@@ -8,18 +8,16 @@ prefer those. Until then, this module is the only entity-tagging layer.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable
 
 from app.services.news_entity_alias_data import (
     ALL_ALIASES,
-    AliasEntry,
     CRYPTO_ALIASES,
     KR_ALIASES,
     US_ALIASES,
+    AliasEntry,
 )
-
-_ASCII_WORDISH = re.compile(r"[A-Za-z0-9]")
 
 
 @dataclass(frozen=True)
