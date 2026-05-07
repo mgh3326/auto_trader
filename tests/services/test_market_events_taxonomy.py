@@ -67,4 +67,5 @@ def test_validate_category_rejects_unknown():
 @pytest.mark.unit
 def test_sources_include_forexfactory():
     from app.services.market_events.taxonomy import SOURCES
+
     assert "forexfactory" in SOURCES
