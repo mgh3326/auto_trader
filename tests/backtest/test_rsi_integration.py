@@ -77,7 +77,8 @@ class TestFullPipeline:
         assert len(result.trades) > 0
 
         metrics = compute_metrics(result, btc_data=all_data["KRW-COIN0"])
-        assert metrics.cumulative_return != 0.0 or metrics.trade_count == 0
+        # NOSONAR python:S1244 — sanity check that returns are nonzero when trades occurred
+        assert metrics.cumulative_return != 0.0 or metrics.trade_count == 0  # NOSONAR
         assert metrics.max_drawdown >= 0.0
         assert metrics.benchmark_return is not None
 

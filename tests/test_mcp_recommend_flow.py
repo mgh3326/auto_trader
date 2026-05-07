@@ -560,7 +560,9 @@ class TestRecommendStocksIntegration:
         )
 
         assert result["recommendations"]
-        assert all(rec.get("rsi") == 37.5 for rec in result["recommendations"])
+        assert all(
+            rec.get("rsi") == pytest.approx(37.5) for rec in result["recommendations"]
+        )
         assert all("rsi_14" not in rec for rec in result["recommendations"])
 
     @pytest.mark.asyncio

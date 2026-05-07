@@ -1100,7 +1100,7 @@
   </script>
 
   <!-- AI Advisor Panel -->
-  <div class="ai-advisor-fab" id="advisorFab" onclick="toggleAdvisorPanel()" title="AI 상담"
+  <div class="ai-advisor-fab" id="advisorFab" onclick="toggleAdvisorPanel()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAdvisorPanel();}" role="button" tabindex="0" aria-label="AI 상담" title="AI 상담"
        style="position:fixed;bottom:2rem;right:2rem;width:56px;height:56px;border-radius:50%;background:var(--accent,#c05a3c);color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 4px 12px rgba(0,0,0,0.2);z-index:1050;font-size:1.5rem;">
     <i class="bi bi-robot"></i>
   </div>

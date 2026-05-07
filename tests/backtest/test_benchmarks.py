@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 # Add backtest directory to path for imports
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "backtest"))
@@ -61,7 +62,7 @@ class TestBuyAndHold:
         assert len(signals) == 2
         assert all(s.action == "buy" for s in signals)
         # Equal weight: 1.0 / 2 = 0.5
-        assert all(s.weight == 0.5 for s in signals)
+        assert all(s.weight == pytest.approx(0.5) for s in signals)
 
     def test_no_buys_after_first_day(self):
         """Test that strategy doesn't buy after first day."""
