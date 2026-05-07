@@ -26,7 +26,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
-from urllib import request
+from urllib import error, request
 
 from sqlalchemy import text
 
@@ -604,9 +604,15 @@ class OpenAICompatibleLLMRenderProvider:
             method="POST",
         )
         try:
-            with request.urlopen(req, timeout=timeout) as resp:
+            with request.urlopen(req, timeout) as resp:
                 data = json.load(resp)
-        except Exception as exc:
+        except (
+            error.URLError,
+            TimeoutError,
+            OSError,
+            json.JSONDecodeError,
+            RuntimeError,
+        ) as exc:
             # Keep provider diagnostics secret-safe: never surface request headers,
             # tokens, cookies, or endpoint-provided detail strings from exceptions.
             raise LLMRenderError("http_error") from exc
@@ -1570,7 +1576,7 @@ def summarize_cluster(
     )
     return {
         "rank": rank,
-        "cluster_key": hashlib.sha1(issue_key_raw.encode()).hexdigest()[:16],
+        "cluster_key": hashlib.sha256(issue_key_raw.encode("utf-8")).hexdigest()[:16],
         "title_ko": title,
         "subtitle_ko": subtitle,
         "direction": direction,
