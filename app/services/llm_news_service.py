@@ -1,4 +1,5 @@
 import json
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -15,6 +16,10 @@ from app.schemas.news import (
     NewsBulkIngestResponse,
     NewsReadinessResponse,
     NewsSourceCoverage,
+)
+from app.services.news_entity_matcher import (
+    SymbolMatch,
+    match_symbols_for_article,
 )
 
 _CORE_FEED_SOURCES_BY_MARKET: dict[str, tuple[str, ...]] = {
@@ -543,3 +548,74 @@ async def get_news_readiness(
 
     async with AsyncSessionLocal() as session:
         return await _query(session)
+
+
+_ALIAS_SCAN_MULTIPLIER = (
+    5  # scan 5× the requested limit to give alias matching enough recall
+)
+
+
+@dataclass
+class NewsLookupResult:
+    """Result of a ticker news lookup with fallback reasoning."""
+
+    articles: list[NewsArticle]
+    match_reasons: dict[int, str] = field(default_factory=dict)  # article.id -> reason
+
+
+async def get_news_articles_with_fallback(
+    *,
+    symbol: str,
+    market: str,
+    hours: int = 24,
+    limit: int = 20,
+) -> NewsLookupResult:
+    """Ticker research news lookup with deterministic fallback.
+
+    Strategy:
+      1. exact stock_symbol rows
+      2. (future ROB-129) candidate metadata rows — currently a no-op
+      3. alias title/summary/keywords match over recent market rows
+
+    Returns a `NewsLookupResult` with `match_reasons[article.id]` set to one of:
+    "exact_symbol" | "alias_match".
+    """
+    exact_articles, _ = await get_news_articles(
+        stock_symbol=symbol, market=market, hours=hours, limit=limit
+    )
+    out: list[NewsArticle] = []
+    reasons: dict[int, str] = {}
+
+    for art in exact_articles:
+        reasons[art.id] = "exact_symbol"
+        out.append(art)
+        if len(out) >= limit:
+            return NewsLookupResult(articles=out, match_reasons=reasons)
+
+    if len(out) >= limit:
+        return NewsLookupResult(articles=out, match_reasons=reasons)
+
+    seen_ids: set[int] = {art.id for art in out}
+
+    # Step 3: alias fallback over a wider market window.
+    market_articles, _ = await get_news_articles(
+        market=market, hours=hours, limit=max(limit * _ALIAS_SCAN_MULTIPLIER, 50)
+    )
+    target_symbol = symbol.upper().strip()
+    for art in market_articles:
+        if art.id in seen_ids:
+            continue
+        matches: list[SymbolMatch] = match_symbols_for_article(
+            title=art.title,
+            summary=getattr(art, "summary", None),
+            keywords=getattr(art, "keywords", None) or [],
+            market=market,
+        )
+        if any(m.symbol.upper() == target_symbol for m in matches):
+            seen_ids.add(art.id)
+            reasons[art.id] = "alias_match"
+            out.append(art)
+            if len(out) >= limit:
+                break
+
+    return NewsLookupResult(articles=out, match_reasons=reasons)

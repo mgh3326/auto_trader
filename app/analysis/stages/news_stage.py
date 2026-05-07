@@ -11,7 +11,10 @@ from app.schemas.research_pipeline import (
     StageOutput,
     StageVerdict,
 )
-from app.services.llm_news_service import bulk_create_news_articles, get_news_articles
+from app.services.llm_news_service import (
+    bulk_create_news_articles,
+    get_news_articles_with_fallback,
+)
 from app.services.research_news_service import NormalizedArticle, fetch_symbol_news
 
 logger = logging.getLogger(__name__)
@@ -103,9 +106,10 @@ async def _fetch_recent_headlines(
     when symbol-tagged news is below threshold."""
     market = _market_from_instrument(instrument_type)
 
-    articles, _total = await get_news_articles(
-        stock_symbol=symbol, market=market, hours=24, limit=20
+    lookup = await get_news_articles_with_fallback(
+        symbol=symbol, market=market, hours=24, limit=20
     )
+    articles = lookup.articles
 
     if len(articles) < MIN_DB_ARTICLES_BEFORE_ON_DEMAND_FETCH:
         fetched = await fetch_symbol_news(symbol, instrument_type, limit=20)
@@ -121,9 +125,10 @@ async def _fetch_recent_headlines(
                     symbol,
                     exc,
                 )
-            articles, _total = await get_news_articles(
-                stock_symbol=symbol, market=market, hours=24, limit=20
+            lookup = await get_news_articles_with_fallback(
+                symbol=symbol, market=market, hours=24, limit=20
             )
+            articles = lookup.articles
             if not articles:
                 logger.info(
                     "news_stage: using fetched headlines as signal fallback: symbol=%s",
