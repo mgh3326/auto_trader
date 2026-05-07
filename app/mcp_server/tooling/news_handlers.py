@@ -23,7 +23,7 @@ from app.services.market_news_briefing_formatter import (
 if TYPE_CHECKING:
     from fastmcp import FastMCP
 
-NEWS_TOOL_NAMES = ["get_market_news", "search_news"]
+NEWS_TOOL_NAMES = ["get_market_news", "search_news", "get_market_issues"]
 
 
 def _article_to_dict(
@@ -263,3 +263,22 @@ def _register_news_tools_impl(mcp: FastMCP) -> None:
         limit: int = 20,
     ) -> dict[str, Any]:
         return await _search_news_impl(query=query, days=days, limit=limit)
+
+    @mcp.tool(
+        name="get_market_issues",
+        description=(
+            "Read-only deterministic market issue clusters from collected news "
+            "(ROB-130). Groups recent articles by entity/topic and ranks by "
+            "recency + source diversity + mention count."
+        ),
+    )
+    async def get_market_issues(
+        market: str = "all",
+        window_hours: int = 24,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        from app.services.news_issue_clustering_service import build_market_issues
+        response = await build_market_issues(
+            market=market, window_hours=window_hours, limit=limit
+        )
+        return response.model_dump(mode="json")
