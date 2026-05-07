@@ -550,6 +550,9 @@ async def get_news_readiness(
         return await _query(session)
 
 
+_ALIAS_SCAN_MULTIPLIER = 5  # scan 5× the requested limit to give alias matching enough recall
+
+
 @dataclass
 class NewsLookupResult:
     """Result of a ticker news lookup with fallback reasoning."""
@@ -578,22 +581,23 @@ async def get_news_articles_with_fallback(
     exact_articles, _ = await get_news_articles(
         stock_symbol=symbol, market=market, hours=hours, limit=limit
     )
-    seen_ids: set[int] = set()
     out: list[NewsArticle] = []
     reasons: dict[int, str] = {}
 
     for art in exact_articles:
-        if art.id in seen_ids:
-            continue
-        seen_ids.add(art.id)
         reasons[art.id] = "exact_symbol"
         out.append(art)
         if len(out) >= limit:
             return NewsLookupResult(articles=out, match_reasons=reasons)
 
+    if len(out) >= limit:
+        return NewsLookupResult(articles=out, match_reasons=reasons)
+
+    seen_ids: set[int] = {art.id for art in out}
+
     # Step 3: alias fallback over a wider market window.
     market_articles, _ = await get_news_articles(
-        market=market, hours=hours, limit=max(limit * 5, 50)
+        market=market, hours=hours, limit=max(limit * _ALIAS_SCAN_MULTIPLIER, 50)
     )
     target_symbol = symbol.upper().strip()
     for art in market_articles:
