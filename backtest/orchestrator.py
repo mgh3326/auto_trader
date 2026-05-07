@@ -365,7 +365,7 @@ def wait_for_new_commit(
             return head
 
         now = time.monotonic()
-        if last_notice == 0.0 or (now - last_notice) >= 30.0:
+        if not last_notice or (now - last_notice) >= 30.0:
             print("Waiting for new commit... (Ctrl+C to stop)", flush=True)
             last_notice = now
         time.sleep(poll_interval)
@@ -441,15 +441,19 @@ def run_ai_cli(
     except FileNotFoundError as exc:
         raise RuntimeError(f"AI CLI not found: {base_command[0]}") from exc
     except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(
-            f"AI CLI timed out after {timeout_seconds} seconds"
-        ) from exc
+        raise RuntimeError(f"AI CLI timed out after {timeout_seconds} seconds") from exc
 
 
 def run_experiment_round(description: str) -> int:
     """Run one existing experiment round."""
     result = subprocess.run(
-        ["uv", "run", str(RUN_EXPERIMENT.relative_to(REPO_ROOT)), "--description", description],
+        [
+            "uv",
+            "run",
+            str(RUN_EXPERIMENT.relative_to(REPO_ROOT)),
+            "--description",
+            description,
+        ],
         cwd=REPO_ROOT,
         check=False,
     )
@@ -506,7 +510,9 @@ def print_final_summary(stats: Stats, start_time: float) -> None:
     if stats.skipped:
         print(f"Skipped: {stats.skipped}", flush=True)
 
-    if math.isfinite(stats.initial_best_score) and math.isfinite(stats.current_best_score):
+    if math.isfinite(stats.initial_best_score) and math.isfinite(
+        stats.current_best_score
+    ):
         delta = stats.current_best_score - stats.initial_best_score
         pct = (
             (delta / stats.initial_best_score) * 100
@@ -574,7 +580,10 @@ def main() -> int:
                 )
                 if commit_head is None:
                     if timed_out(start_time, args.timeout):
-                        print("Total timeout reached while waiting for a new commit.", flush=True)
+                        print(
+                            "Total timeout reached while waiting for a new commit.",
+                            flush=True,
+                        )
                     break
             else:
                 print(
@@ -618,7 +627,9 @@ def main() -> int:
             result = read_last_result_row(RESULTS_TSV)
 
             if result is None:
-                raise RuntimeError("run_experiment.py completed without writing results.tsv")
+                raise RuntimeError(
+                    "run_experiment.py completed without writing results.tsv"
+                )
             if (
                 previous_result is not None
                 and result.experiment == previous_result.experiment

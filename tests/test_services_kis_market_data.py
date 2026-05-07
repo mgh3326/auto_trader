@@ -728,7 +728,7 @@ class TestKISRequestWithRateLimit:
 
         request_call = getattr(mock_client, expected_call)
         request_call.assert_awaited_once()
-        assert request_call.await_args.kwargs["timeout"] == timeout_value
+        assert request_call.await_args.kwargs["timeout"] == pytest.approx(timeout_value)
 
     @pytest.mark.asyncio
     @patch("app.services.brokers.kis.client.get_limiter")

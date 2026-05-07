@@ -67,9 +67,8 @@ async def test_get_available_capital_aggregates_accounts_and_manual_cash(monkeyp
     assert result["manual_cash"]["amount"] == 15000000
     assert result["manual_cash"]["stale_warning"] is False
 
-    assert (
-        result["summary"]["total_orderable_krw"]
-        == 1000000.0 + 2000000.0 + 130000.0 + 15000000.0
+    assert result["summary"]["total_orderable_krw"] == pytest.approx(
+        1000000.0 + 2000000.0 + 130000.0 + 15000000.0
     )
     assert result["summary"]["exchange_rate_usd_krw"] == pytest.approx(1300.0)
     assert result["summary"]["as_of"] == "2026-04-01T09:00:00+00:00"

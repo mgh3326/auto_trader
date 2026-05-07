@@ -109,7 +109,12 @@ export const OrderPreviewModal: React.FC<Props> = ({
       role="button"
       tabIndex={0}
     >
-      <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
+      <div
+        className={styles.modal}
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.stopPropagation()}
+        role="presentation"
+      >
         <div className={styles.header}>
           <h2>Order Preview</h2>
           <button className={styles.closeButton} onClick={onClose}>&times;</button>
