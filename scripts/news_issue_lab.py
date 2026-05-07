@@ -21,6 +21,7 @@ import re
 import sys
 import uuid
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -347,7 +348,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--embedding-endpoint", default=DEFAULT_BGE_ENDPOINT)
     parser.add_argument("--embedding-model", default=DEFAULT_BGE_MODEL)
-    parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument(
         "--store", action="store_true", help="store run/result payloads in lab tables"
     )
@@ -367,10 +368,47 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="hard-drop clusters where regular reports are at least half of titles",
     )
+    parser.add_argument(
+        "--merge-clusters",
+        dest="merge_clusters",
+        action="store_true",
+        default=True,
+        help="merge near-duplicate clusters before ranking (default: on)",
+    )
+    parser.add_argument(
+        "--no-merge-clusters",
+        dest="merge_clusters",
+        action="store_false",
+        help="disable the cluster merge pass (preserve ROB-134 behavior)",
+    )
+    parser.add_argument(
+        "--merge-rep-threshold",
+        type=float,
+        default=MERGE_REP_THRESHOLD,
+        help="cosine similarity threshold for cluster representative merge",
+    )
+    parser.add_argument(
+        "--merge-token-jaccard",
+        type=float,
+        default=MERGE_TOKEN_JACCARD,
+        help="token-Jaccard threshold required alongside rep-sim merge",
+    )
+    parser.add_argument(
+        "--merge-rep-articles",
+        type=int,
+        default=3,
+        help="articles per cluster used to build the representative text",
+    )
     args = parser.parse_args(argv)
     for name in ("window_hours", "limit", "top", "batch_size"):
         if getattr(args, name) <= 0:
             parser.error(f"--{name.replace('_', '-')} must be positive")
+    if not (0.0 < args.merge_rep_threshold <= 1.0):
+        parser.error("--merge-rep-threshold must be in (0.0, 1.0]")
+    if not (0.0 <= args.merge_token_jaccard <= 1.0):
+        parser.error("--merge-token-jaccard must be in [0.0, 1.0]")
+    if args.merge_rep_articles <= 0:
+        parser.error("--merge-rep-articles must be positive")
     return args
 
 
@@ -467,6 +505,257 @@ def cluster_articles(
     return clusters
 
 
+MERGE_REP_THRESHOLD = 0.86
+MERGE_TOKEN_JACCARD = 0.30
+MERGE_STRONG_REP_THRESHOLD = 0.93
+MERGE_TOPIC_REP_THRESHOLD = 0.43
+MERGE_MIN_TOKEN_FLOOR = 0.20
+MERGE_MAX_CLUSTER_SIZE = 25
+
+
+def build_cluster_representative(
+    cluster: dict[str, Any],
+    articles: list[Article],
+    *,
+    max_articles: int = 3,
+) -> str:
+    rows = [articles[i] for i in cluster["indices"]]
+    chosen = sorted(
+        rows,
+        key=lambda a: (
+            0 if a.stock_symbol else 1,
+            -len(a.summary or ""),
+            a.id,
+        ),
+    )[:max_articles]
+    parts: list[str] = []
+    for a in chosen:
+        parts.append(a.title)
+        if a.stock_symbol:
+            parts.append(a.stock_symbol)
+        if a.stock_name:
+            parts.append(a.stock_name)
+    label = cluster_topic_label(rows)
+    if label:
+        parts.append(label)
+    markets = sorted({articles[i].market for i in cluster["indices"]})
+    parts.extend(markets)
+    return " | ".join(p for p in parts if p)
+
+
+def _evaluate_merge_pair(
+    absorber: dict[str, Any],
+    absorbed: dict[str, Any],
+    articles: list[Article],
+    *,
+    rep_sim: float,
+    absorber_cid: int,
+    absorbed_cid: int,
+    rep_threshold: float = MERGE_REP_THRESHOLD,
+    token_jaccard_threshold: float = MERGE_TOKEN_JACCARD,
+) -> MergeDecision:
+    abs_rows = [articles[i] for i in absorber["indices"]]
+    add_rows = [articles[i] for i in absorbed["indices"]]
+    abs_tokens = absorber.get("tokens") or set()
+    add_tokens = absorbed.get("tokens") or set()
+    if abs_tokens or add_tokens:
+        token_jaccard = len(abs_tokens & add_tokens) / max(
+            1, len(abs_tokens | add_tokens)
+        )
+    else:
+        token_jaccard = 0.0
+    abs_srcs = {a.normalized_source_key for a in abs_rows}
+    add_srcs = {a.normalized_source_key for a in add_rows}
+    if abs_srcs and add_srcs:
+        source_overlap = len(abs_srcs & add_srcs) / max(
+            1, min(len(abs_srcs), len(add_srcs))
+        )
+    else:
+        source_overlap = 0.0
+    abs_label = cluster_topic_label(abs_rows)
+    add_label = cluster_topic_label(add_rows)
+    topic_agree = bool(abs_label and abs_label == add_label)
+    abs_syms = {a.stock_symbol for a in abs_rows if a.stock_symbol}
+    add_syms = {a.stock_symbol for a in add_rows if a.stock_symbol}
+    symbol_agree = bool(abs_syms & add_syms)
+    abs_title = abs_label or (abs_rows[0].title if abs_rows else "-")
+    add_title = add_label or (add_rows[0].title if add_rows else "-")
+
+    def _build(decision: str, reason: str) -> MergeDecision:
+        return MergeDecision(
+            absorber_cid=absorber_cid,
+            absorbed_cid=absorbed_cid,
+            rep_sim=round(float(rep_sim), 4),
+            token_jaccard=round(float(token_jaccard), 4),
+            source_overlap=round(float(source_overlap), 4),
+            topic_agree=topic_agree,
+            symbol_agree=symbol_agree,
+            decision=decision,
+            reason=reason,
+            absorber_title=abs_title,
+            absorbed_title=add_title,
+        )
+
+    if len(absorber["indices"]) + len(absorbed["indices"]) > MERGE_MAX_CLUSTER_SIZE:
+        return _build("rejected", "max_cluster_size")
+    if not topic_agree and len(abs_srcs | add_srcs) > 5:
+        return _build("rejected", "wide_source_no_topic")
+    if not topic_agree and not symbol_agree and token_jaccard < MERGE_MIN_TOKEN_FLOOR:
+        return _build("rejected", "below_token_floor_no_topic")
+    if rep_sim >= MERGE_STRONG_REP_THRESHOLD and token_jaccard >= 0.10:
+        return _build("merged", "strong_rep")
+    if rep_sim >= rep_threshold and topic_agree:
+        return _build("merged", "topic+rep")
+    if rep_sim >= rep_threshold and symbol_agree:
+        return _build("merged", "symbol+rep")
+    if rep_sim >= rep_threshold and token_jaccard >= token_jaccard_threshold:
+        return _build("merged", "jaccard+rep")
+    if topic_agree and rep_sim >= MERGE_TOPIC_REP_THRESHOLD:
+        return _build("merged", "topic+low_rep")
+    if rep_sim < rep_threshold:
+        return _build("rejected", "rep_sim_below_threshold")
+    return _build("rejected", "no_supporting_signal")
+
+
+def merge_clusters(
+    clusters: list[dict[str, Any]],
+    articles: list[Article],
+    embedder: Callable[[list[str]], list[list[float]]] | None,
+    *,
+    rep_threshold: float,
+    token_jaccard_threshold: float,
+    rep_articles: int,
+    enabled: bool = True,
+) -> tuple[list[dict[str, Any]], MergeDiagnostics]:
+    diag = MergeDiagnostics(
+        enabled=enabled,
+        merge_before_count=len(clusters),
+        thresholds={
+            "rep_threshold": float(rep_threshold),
+            "token_jaccard_threshold": float(token_jaccard_threshold),
+            "strong_rep_threshold": MERGE_STRONG_REP_THRESHOLD,
+            "topic_rep_threshold": MERGE_TOPIC_REP_THRESHOLD,
+            "min_token_floor": MERGE_MIN_TOKEN_FLOOR,
+            "max_cluster_size": float(MERGE_MAX_CLUSTER_SIZE),
+            "rep_articles": float(rep_articles),
+        },
+    )
+    if not enabled or len(clusters) <= 1 or embedder is None:
+        diag.merge_after_count = len(clusters)
+        return clusters, diag
+
+    cids = [min(articles[idx].id for idx in c["indices"]) for c in clusters]
+    reps = [
+        build_cluster_representative(c, articles, max_articles=rep_articles)
+        for c in clusters
+    ]
+    rep_vectors = embedder(reps)
+
+    order = sorted(
+        range(len(clusters)),
+        key=lambda i: (
+            -len(clusters[i]["indices"]),
+            -len({articles[k].normalized_source_key for k in clusters[i]["indices"]}),
+            cids[i],
+        ),
+    )
+
+    parent = list(range(len(clusters)))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def component_members(root: int) -> list[int]:
+        return [idx for idx in range(len(clusters)) if find(idx) == root]
+
+    def component_cluster(root: int) -> dict[str, Any]:
+        all_indices: list[int] = []
+        all_vectors: list[list[float]] = []
+        all_tokens: set[str] = set()
+        best_sim = 0.0
+        for member in component_members(root):
+            all_indices.extend(clusters[member]["indices"])
+            all_vectors.extend(clusters[member]["vectors"])
+            all_tokens.update(clusters[member].get("tokens") or set())
+            best_sim = max(
+                best_sim, float(clusters[member].get("best_similarity", 0.0))
+            )
+        return {
+            "indices": sorted(set(all_indices)),
+            "vectors": all_vectors,
+            "tokens": all_tokens,
+            "best_similarity": best_sim,
+        }
+
+    def component_cid(root: int) -> int:
+        return min(cids[member] for member in component_members(root))
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra == rb:
+            return
+        parent[rb] = ra
+
+    rejected_near_misses = 0
+    for pos, i in enumerate(order):
+        for j in order[pos + 1 :]:
+            ri, rj = find(i), find(j)
+            if ri == rj:
+                continue
+            absorber_c, absorbed_c = component_cluster(ri), component_cluster(rj)
+            sim = cosine(rep_vectors[ri], rep_vectors[rj])
+            decision = _evaluate_merge_pair(
+                absorber_c,
+                absorbed_c,
+                articles,
+                rep_sim=sim,
+                absorber_cid=component_cid(ri),
+                absorbed_cid=component_cid(rj),
+                rep_threshold=rep_threshold,
+                token_jaccard_threshold=token_jaccard_threshold,
+            )
+            if decision.decision == "merged":
+                union(ri, rj)
+                diag.decisions.append(decision)
+            elif sim >= rep_threshold - 0.05:
+                rejected_near_misses += 1
+                diag.decisions.append(decision)
+
+    groups: dict[int, list[int]] = {}
+    for i in range(len(clusters)):
+        groups.setdefault(find(i), []).append(i)
+
+    merged_clusters: list[dict[str, Any]] = []
+    for _root, members in sorted(groups.items(), key=lambda kv: cids[kv[0]]):
+        members_sorted = sorted(members, key=lambda i: cids[i])
+        all_indices: list[int] = []
+        all_vectors: list[list[float]] = []
+        all_tokens: set[str] = set()
+        best_sim = 0.0
+        for m in members_sorted:
+            all_indices.extend(clusters[m]["indices"])
+            all_vectors.extend(clusters[m]["vectors"])
+            all_tokens.update(clusters[m].get("tokens") or set())
+            best_sim = max(best_sim, float(clusters[m].get("best_similarity", 0.0)))
+        merged_clusters.append(
+            {
+                "indices": sorted(set(all_indices)),
+                "vectors": all_vectors,
+                "centroid": centroid(all_vectors),
+                "tokens": all_tokens,
+                "best_similarity": best_sim,
+                "merged_cluster_ids": sorted(cids[m] for m in members_sorted),
+            }
+        )
+
+    diag.merge_after_count = len(merged_clusters)
+    diag.rejected_near_misses = rejected_near_misses
+    return merged_clusters, diag
+
+
 def keyword_matches(text_blob: str, keyword: str) -> bool:
     keyword_l = keyword.lower()
     if re.search(r"[가-힣]", keyword_l):
@@ -508,6 +797,37 @@ class ScoreBreakdown:
     raw_source_count: int
     normalized_source_count: int
     flags: dict[str, int]
+
+
+@dataclass(frozen=True)
+class MergeDecision:
+    absorber_cid: int
+    absorbed_cid: int
+    rep_sim: float
+    token_jaccard: float
+    source_overlap: float
+    topic_agree: bool
+    symbol_agree: bool
+    decision: str  # "merged" | "rejected"
+    reason: str
+    absorber_title: str
+    absorbed_title: str
+
+
+@dataclass
+class MergeDiagnostics:
+    enabled: bool = False
+    merge_before_count: int = 0
+    merge_after_count: int = 0
+    rejected_near_misses: int = 0
+    thresholds: dict[str, float] = None  # type: ignore[assignment]
+    decisions: list[MergeDecision] = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.thresholds is None:
+            self.thresholds = {}
+        if self.decisions is None:
+            self.decisions = []
 
 
 def _round_score(value: float) -> float:
@@ -582,11 +902,21 @@ def parse_weights(value: str | None) -> ScoreWeights:
     )
 
 
-def _topic_relevance(rows: list[Article]) -> float:
+def cluster_topic_label(rows: list[Article]) -> str | None:
+    """Return the matching TOPIC_RULES title for the cluster, or None if no rule matches."""
+    if not rows:
+        return None
     text_blob = "\n".join([a.title + " " + (a.summary or "") for a in rows]).lower()
-    for _, _, keys in TOPIC_RULES:
+    for title, _, keys in TOPIC_RULES:
         if any(keyword_matches(text_blob, key) for key in keys):
-            return 1.0
+            return title
+    return None
+
+
+def _topic_relevance(rows: list[Article]) -> float:
+    if cluster_topic_label(rows) is not None:
+        return 1.0
+    text_blob = "\n".join([a.title + " " + (a.summary or "") for a in rows]).lower()
     return 0.5 if _has_any_keyword(text_blob, MARKET_SIGNAL_TERMS) else 0.0
 
 
@@ -779,6 +1109,10 @@ def summarize_cluster(
             window_hours=24,
             weights=DEFAULT_WEIGHTS,
         )
+    merged_cluster_ids = list(
+        cluster.get("merged_cluster_ids")
+        or [min(articles[i].id for i in cluster["indices"])]
+    )
     return {
         "rank": rank,
         "cluster_key": hashlib.sha1(issue_key_raw.encode()).hexdigest()[:16],
@@ -804,6 +1138,8 @@ def summarize_cluster(
         "topics": topics[:8],
         "cluster_similarity": round(float(cluster.get("best_similarity", 0.0)), 4),
         "representative_articles": representative_articles,
+        "merge_member_count": len(merged_cluster_ids),
+        "merged_cluster_ids": merged_cluster_ids,
     }
 
 
@@ -857,10 +1193,51 @@ def render_markdown(payload: dict[str, Any]) -> str:
                     )
                 )
             )
+        member_count = issue.get("merge_member_count", 1)
+        if member_count > 1:
+            cids_str = ", ".join(str(c) for c in issue.get("merged_cluster_ids") or [])
+            lines.append(f"- 병합: {member_count}개 클러스터 통합 (cids: {cids_str})")
         lines.append("- 대표 기사:")
         for article in issue["representative_articles"][:4]:
             src = article.get("feed_source") or article.get("source") or "unknown"
             lines.append(f"  - [{src}] {article['title']}")
+        lines.append("")
+    merge_diag = payload.get("merge_diagnostics") or {}
+    if merge_diag.get("enabled") and merge_diag.get("decisions"):
+        lines.extend(
+            [
+                "## 클러스터 병합 진단 (ROB-135)",
+                "",
+                f"- 병합 전 클러스터: {merge_diag['merge_before_count']}개 → 병합 후: {merge_diag['merge_after_count']}개 (-{merge_diag['merge_before_count'] - merge_diag['merge_after_count']})",
+                f"- 병합 임계값: rep≥{merge_diag['thresholds'].get('rep_threshold')}, token-jaccard≥{merge_diag['thresholds'].get('token_jaccard_threshold')}, strong-rep≥{merge_diag['thresholds'].get('strong_rep_threshold')}",
+                f"- 거부된 근접 병합: {merge_diag.get('rejected_near_misses', 0)}건",
+                "",
+                "### 병합된 클러스터 (상위 10건)",
+                "",
+                "| absorber | absorbed | rep_sim | token_jaccard | topic | symbol | reason |",
+                "|---|---|---:|---:|:--:|:--:|---|",
+            ]
+        )
+        merged_decisions = [
+            d for d in merge_diag["decisions"] if d.get("decision") == "merged"
+        ]
+        for d in merged_decisions[:10]:
+            lines.append(
+                f"| `{d['absorber_title']}` | `{d['absorbed_title']}` | "
+                f"{d['rep_sim']:.4f} | {d['token_jaccard']:.4f} | "
+                f"{'✓' if d['topic_agree'] else '-'} | "
+                f"{'✓' if d['symbol_agree'] else '-'} | {d['reason']} |"
+            )
+        rejected = [
+            d for d in merge_diag["decisions"] if d.get("decision") == "rejected"
+        ]
+        if rejected:
+            lines.extend(["", "### 거부된 근접 병합 (참고)", ""])
+            for d in rejected[:10]:
+                lines.append(
+                    f"- `{d['absorber_title']}` ↔ `{d['absorbed_title']}` "
+                    f"rep_sim={d['rep_sim']:.4f} reason={d['reason']}"
+                )
         lines.append("")
     if payload.get("v1_vs_v2"):
         lines.append(
@@ -1201,6 +1578,31 @@ async def build_payload(args: argparse.Namespace) -> dict[str, Any]:
         )
     embedding_dim = len(vectors[0]) if vectors else 0
     clusters = cluster_articles(articles, vectors, args.threshold)
+    clusters_before_merge = clusters
+
+    def _embedder(texts: list[str]) -> list[list[float]]:
+        rep_vectors: list[list[float]] = []
+        for i in range(0, len(texts), args.batch_size):
+            rep_vectors.extend(
+                embed_batch(
+                    args.embedding_endpoint,
+                    args.embedding_model,
+                    texts[i : i + args.batch_size],
+                )
+            )
+        return rep_vectors
+
+    clusters, merge_diag = merge_clusters(
+        clusters,
+        articles,
+        _embedder,
+        rep_threshold=getattr(args, "merge_rep_threshold", MERGE_REP_THRESHOLD),
+        token_jaccard_threshold=getattr(
+            args, "merge_token_jaccard", MERGE_TOKEN_JACCARD
+        ),
+        rep_articles=getattr(args, "merge_rep_articles", 3),
+        enabled=bool(getattr(args, "merge_clusters", True)),
+    )
     ranked_v1 = rank_clusters(clusters, articles)
     ranked_v2 = rank_clusters_v2(
         clusters,
@@ -1232,6 +1634,7 @@ async def build_payload(args: argparse.Namespace) -> dict[str, Any]:
             "top": args.top,
             "article_count": len(articles),
             "cluster_count": len(clusters),
+            "cluster_count_before_merge": len(clusters_before_merge),
             "threshold": args.threshold,
             "dedupe_threshold": args.dedupe_threshold,
             "embedding_model": args.embedding_model,
@@ -1243,12 +1646,46 @@ async def build_payload(args: argparse.Namespace) -> dict[str, Any]:
                 "relevance": weights.relevance,
             },
             "drop_regular_reports": bool(getattr(args, "drop_regular_reports", False)),
+            "merge_clusters": bool(getattr(args, "merge_clusters", True)),
+            "merge_rep_threshold": float(
+                getattr(args, "merge_rep_threshold", MERGE_REP_THRESHOLD)
+            ),
+            "merge_token_jaccard": float(
+                getattr(args, "merge_token_jaccard", MERGE_TOKEN_JACCARD)
+            ),
+            "merge_rep_articles": int(getattr(args, "merge_rep_articles", 3)),
         },
         "source_counts": {
             "raw": dict(raw_source_counts),
             "normalized": dict(normalized_source_counts),
         },
         "issues": issues,
+        "merge_diagnostics": {
+            "enabled": merge_diag.enabled,
+            "merge_before_count": merge_diag.merge_before_count,
+            "merge_after_count": merge_diag.merge_after_count,
+            "rejected_near_misses": merge_diag.rejected_near_misses,
+            "thresholds": merge_diag.thresholds,
+            "decisions": [
+                {
+                    "absorber_cid": d.absorber_cid,
+                    "absorbed_cid": d.absorbed_cid,
+                    "rep_sim": d.rep_sim,
+                    "token_jaccard": d.token_jaccard,
+                    "source_overlap": d.source_overlap,
+                    "topic_agree": d.topic_agree,
+                    "symbol_agree": d.symbol_agree,
+                    "decision": d.decision,
+                    "reason": d.reason,
+                    "absorber_title": d.absorber_title,
+                    "absorbed_title": d.absorbed_title,
+                }
+                for d in sorted(
+                    merge_diag.decisions,
+                    key=lambda x: (x.absorber_cid, x.absorbed_cid),
+                )
+            ],
+        },
     }
     if getattr(args, "compare_v1", False):
         payload["v1_vs_v2"] = _comparison_payload(
