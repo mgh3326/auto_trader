@@ -45,6 +45,7 @@ from app.routers import (
     portfolio_actions,
     preopen,
     research_pipeline,
+    research_reports,
     research_retrospective,
     research_run_decision_sessions,
     screener,
@@ -194,6 +195,7 @@ def create_app() -> FastAPI:
     app.include_router(news_issues.router)
     app.include_router(alpaca_paper_ledger.router)
     app.include_router(market_events.router)
+    app.include_router(research_reports.router)
     app.include_router(watch_order_intent_ledger.router)
     app.include_router(strategy_events.router)
     app.include_router(kospi200.router)

@@ -27,6 +27,7 @@ from .research_pipeline import (
     SummaryStageLink,
     UserResearchNote,
 )
+from .research_reports import ResearchReport, ResearchReportIngestionRun
 from .research_run import (
     ResearchRun,
     ResearchRunCandidate,
@@ -141,6 +142,8 @@ __all__ = [
     "ResearchRunStage",
     "ResearchRunMarketScope",
     "ResearchRunCandidateKind",
+    "ResearchReport",
+    "ResearchReportIngestionRun",
     "ResearchSession",
     "StageAnalysis",
     "ResearchSummary",
