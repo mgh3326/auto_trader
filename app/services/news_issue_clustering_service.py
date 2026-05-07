@@ -36,6 +36,16 @@ from app.services.news_entity_matcher import (
     match_symbols_for_article,
 )
 
+_DIR_POS_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:rise|raise|beat|surge|rally|up)(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+_DIR_NEG_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:fall|drop|miss|plunge|down)(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+_DIR_POS_KO = ("상승", "급등", "호재", "최고")
+_DIR_NEG_KO = ("하락", "급락", "악재", "위기")
 _WORD_RE = re.compile(r"[A-Za-z0-9가-힣]+")
 _STOPWORDS = {
     "the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "is", "are",
@@ -150,8 +160,22 @@ def _cluster_articles(
 
 
 def _stable_id(market: str, cluster_key: str, article_ids: Iterable[int]) -> str:
-    payload = f"{market}|{cluster_key}|" + ",".join(str(i) for i in sorted(article_ids))
-    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
+    """Deterministic 16-char ID for an issue cluster.
+
+    Entity-keyed clusters (cluster_key starting with ``sym:``) are stable across
+    new articles joining the cluster — their ID depends only on (market, key).
+    Shingle clusters (``shg:``) include the sorted article-ID list because they
+    have no natural identity beyond the articles themselves.
+    """
+    if cluster_key.startswith("sym:"):
+        payload = f"{market}|{cluster_key}"
+    else:
+        payload = f"{market}|{cluster_key}|" + ",".join(
+            str(i) for i in sorted(article_ids)
+        )
+    return hashlib.sha1(
+        payload.encode("utf-8"), usedforsecurity=False
+    ).hexdigest()[:16]
 
 
 def _pick_issue_title(cluster: _Cluster, articles: list[NewsArticle]) -> str:
@@ -166,14 +190,20 @@ def _pick_subtitle(cluster: _Cluster, articles: list[NewsArticle]) -> str | None
     titles = [articles[i].title for i in cluster.article_indexes]
     if len(titles) <= 1:
         return None
-    return titles[1] if len(titles) > 1 else None
+    return titles[1]
 
 
 def _direction_from_titles(titles: list[str]) -> str:
-    pos_words = ("rise", "raise", "beat", "surge", "rally", "up", "상승", "급등", "호재", "최고")
-    neg_words = ("fall", "drop", "miss", "plunge", "down", "하락", "급락", "악재", "위기")
-    pos = sum(1 for t in titles if any(w in t.lower() for w in pos_words))
-    neg = sum(1 for t in titles if any(w in t.lower() for w in neg_words))
+    pos = sum(
+        1
+        for t in titles
+        if _DIR_POS_RE.search(t) or any(w in t for w in _DIR_POS_KO)
+    )
+    neg = sum(
+        1
+        for t in titles
+        if _DIR_NEG_RE.search(t) or any(w in t for w in _DIR_NEG_KO)
+    )
     if pos and not neg:
         return "up"
     if neg and not pos:
@@ -232,7 +262,12 @@ def _to_market_issue(
             symbol=m.symbol,
             market=m.market,
             canonical_name=m.canonical_name,
-            mention_count=sum(1 for a in cluster_articles if m.matched_term.lower() in (a.title or "").lower()),
+            mention_count=sum(
+                1
+                for a in cluster_articles
+                if m.matched_term.lower()
+                in f"{a.title or ''} {getattr(a, 'summary', '') or ''}".lower()
+            ),
         )
         for m in cluster.matches
     ]
@@ -252,7 +287,15 @@ def _to_market_issue(
             feed_source=a.feed_source,
             published_at=a.article_published_at,
             summary=getattr(a, "summary", None),
-            matched_terms=[m.matched_term for m in cluster.matches],
+            matched_terms=[
+                m.matched_term
+                for m in match_symbols_for_article(
+                    title=a.title,
+                    summary=getattr(a, "summary", None),
+                    keywords=getattr(a, "keywords", None) or [],
+                    market=market if market != "all" else None,
+                )
+            ],
         )
         for a in cluster_articles
     ]
