@@ -39,6 +39,8 @@ def test_invest_view_model_does_not_import_execution_paths() -> None:
 import importlib, json, sys
 import app.services.invest_view_model.relation_resolver
 import app.services.invest_view_model.account_visual
+import app.services.invest_view_model.screener_presets
+import app.services.invest_view_model.screener_service
 print(json.dumps(sorted(sys.modules)))
 """
     env = os.environ.copy()
