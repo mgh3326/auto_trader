@@ -5,13 +5,22 @@ import type { AccountFilterKey } from "../../desktop/LeftContextRail";
 import { RightAccountPanel } from "../../desktop/RightAccountPanel";
 import { useAccountPanel } from "../../desktop/useAccountPanel";
 import { useInvestHome } from "../../hooks/useInvestHome";
+import { useViewport } from "../../hooks/useViewport";
 import { scopeGroupedToSource } from "../../desktop/scopeHoldings";
 import { DesktopHero } from "../../components/home/DesktopHero";
 import { MarketStrip } from "../../components/home/MarketStrip";
 import { HoldingsTable } from "../../components/home/HoldingsTable";
 import { FilterChips } from "../../components/home/FilterChips";
+import { MobileHomePage } from "../mobile/MobileHomePage";
 import type { AssetCategoryKey } from "../../components/AssetCategoryFilter";
 import type { AccountSource, HomeSummary } from "../../types/invest";
+
+// Single canonical /invest home — picks the desktop or mobile renderer
+// from the same data hooks based on viewport width.
+export function InvestHomeRoute() {
+  const viewport = useViewport();
+  return viewport === "mobile" ? <MobileHomePage /> : <DesktopHomePage />;
+}
 
 export function DesktopHomePage() {
   const home = useInvestHome();

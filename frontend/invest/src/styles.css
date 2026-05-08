@@ -38,3 +38,45 @@ body,
   color: var(--fg-3);
   font-size: var(--text-tiny);
 }
+
+/* ---------- Mobile shell (responsive /invest home) ----------
+   Pins the shell to the viewport so the bottom nav stays anchored
+   even when the scrollable content is taller than the viewport.
+   - height pair: 100vh fallback for legacy browsers, 100dvh for
+     modern (excludes browser chrome that comes/goes on iOS Safari
+     scroll), so the latter wins where supported.
+   - overflow: hidden on the shell prevents the page itself from
+     scrolling — only the inner scroll region scrolls.
+   - .mobile-shell__scroll uses flex: 1 + min-height: 0 so the
+     flex child is allowed to shrink below its content height,
+     which is what gives the bottom nav its fixed slot.
+   ---------------------------------------------------------- */
+.mobile-shell {
+  height: 100vh;
+  height: 100dvh;
+  max-height: 100vh;
+  max-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.mobile-shell__scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Bottom nav lives outside the scroll region (see .mobile-shell). The
+   bottom padding respects env(safe-area-inset-bottom) so the nav lifts
+   off the iOS home-indicator gesture bar where the inset is exposed,
+   while still keeping a sane minimum on devices that don't expose it. */
+.mobile-bottom-nav {
+  padding-top: 6px;
+  padding-bottom: 8px;
+  padding-bottom: max(8px, env(safe-area-inset-bottom, 0px));
+}
