@@ -1,32 +1,55 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { RouterProvider, createMemoryRouter, Navigate, useParams } from "react-router-dom";
+import { RouterProvider, createMemoryRouter, useLocation, useParams } from "react-router-dom";
 
-// Stub the canonical pages with sentinel components so we can assert
-// which route element rendered after a redirect, without pulling in
-// the data-fetching machinery of the real pages.
+// Stub the canonical pages with sentinel components that surface the
+// router's path / search / hash via data-attributes. Tests can then
+// assert the sentinel rendered (correct redirect target) AND that
+// search/hash from the legacy URL survived the redirect.
+function makeSentinel(testId: string) {
+  return function Sentinel() {
+    const { pathname, search, hash } = useLocation();
+    return (
+      <div
+        data-testid={testId}
+        data-pathname={pathname}
+        data-search={search}
+        data-hash={hash}
+      />
+    );
+  };
+}
+
 vi.mock("../pages/desktop/DesktopHomePage", () => ({
-  InvestHomeRoute: () => <div data-testid="canonical-home" />,
+  InvestHomeRoute: makeSentinel("canonical-home"),
 }));
 vi.mock("../pages/desktop/DesktopFeedNewsPage", () => ({
-  FeedNewsRoute: () => <div data-testid="canonical-news" />,
+  FeedNewsRoute: makeSentinel("canonical-news"),
 }));
 vi.mock("../pages/desktop/DesktopDiscoverPage", () => ({
-  InvestDiscoverRoute: () => <div data-testid="canonical-discover" />,
+  InvestDiscoverRoute: makeSentinel("canonical-discover"),
 }));
 vi.mock("../pages/desktop/DesktopSignalsPage", () => ({
-  SignalsRoute: () => <div data-testid="canonical-signals" />,
+  SignalsRoute: makeSentinel("canonical-signals"),
 }));
 vi.mock("../pages/desktop/DesktopCalendarPage", () => ({
-  CalendarRoute: () => <div data-testid="canonical-calendar" />,
+  CalendarRoute: makeSentinel("canonical-calendar"),
 }));
 vi.mock("../pages/desktop/DesktopScreenerPage", () => ({
-  DesktopScreenerPage: () => <div data-testid="canonical-screener" />,
+  DesktopScreenerPage: makeSentinel("canonical-screener"),
 }));
 vi.mock("../pages/DiscoverIssueDetailPage", () => ({
   DiscoverIssueDetailPage: () => {
     const { issueId } = useParams();
-    return <div data-testid="canonical-issue-detail" data-issue-id={issueId} />;
+    const { search, hash } = useLocation();
+    return (
+      <div
+        data-testid="canonical-issue-detail"
+        data-issue-id={issueId}
+        data-search={search}
+        data-hash={hash}
+      />
+    );
   },
 }));
 
@@ -35,11 +58,7 @@ afterEach(() => {
 });
 
 async function renderRoute(initialPath: string) {
-  // Re-import the router fresh per case so each test starts from the
-  // initialEntries we provide rather than carrying state across tests.
   const { router: realRouter } = await import("../routes");
-  // The real router is a browser router; for jsdom we recreate the
-  // same route table on a memory router with the user's entry.
   const routes = realRouter.routes;
   const memory = createMemoryRouter(routes, {
     basename: "/invest",
@@ -78,6 +97,34 @@ describe("legacy /invest/app/* redirects", () => {
   it("unknown /app path falls through to the catch-all -> /", async () => {
     await renderRoute("/app/something-unknown");
     await waitFor(() => expect(screen.getByTestId("canonical-home")).toBeInTheDocument());
+  });
+});
+
+describe("legacy /invest/app/* redirects preserve query and hash", () => {
+  it("/app?market=kr -> / preserves ?market=kr", async () => {
+    await renderRoute("/app?market=kr");
+    const home = await waitFor(() => screen.getByTestId("canonical-home"));
+    expect(home.getAttribute("data-search")).toBe("?market=kr");
+  });
+
+  it("/app/discover?market=kr&window=24 -> /discover preserves the full search string", async () => {
+    await renderRoute("/app/discover?market=kr&window=24");
+    const discover = await waitFor(() => screen.getByTestId("canonical-discover"));
+    expect(discover.getAttribute("data-search")).toBe("?market=kr&window=24");
+  });
+
+  it("/app/discover/issues/:id?market=kr#article-3 -> canonical detail preserves both search and hash", async () => {
+    await renderRoute("/app/discover/issues/abc?market=kr#article-3");
+    const detail = await waitFor(() => screen.getByTestId("canonical-issue-detail"));
+    expect(detail.getAttribute("data-issue-id")).toBe("abc");
+    expect(detail.getAttribute("data-search")).toBe("?market=kr");
+    expect(detail.getAttribute("data-hash")).toBe("#article-3");
+  });
+
+  it("/app/paper?variant=cycle -> / preserves the search", async () => {
+    await renderRoute("/app/paper?variant=cycle");
+    const home = await waitFor(() => screen.getByTestId("canonical-home"));
+    expect(home.getAttribute("data-search")).toBe("?variant=cycle");
   });
 });
 
