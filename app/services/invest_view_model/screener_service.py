@@ -136,10 +136,15 @@ def _coerce_float(value: Any) -> float | None:
 def _market_cap_from_market_cap_field(value: float | None, market: str) -> float | None:
     if value is None or value <= 0:
         return None
+    if market == "kr":
+        # KR upstream rows can contain either KRW (TradingView-style) or 억원
+        # (KRX-style). A KRW market cap under 1조 is still plausible, so don't
+        # require a 1조 threshold before treating the value as already-KRW.
+        if value >= 100_000_000:
+            return value
+        return value * 100_000_000
     if value >= 1_000_000_000_000:
         return value
-    if market == "kr":
-        return value * 100_000_000
     return None
 
 

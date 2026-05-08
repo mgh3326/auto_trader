@@ -277,6 +277,38 @@ async def test_build_screener_results_uses_market_cap_fallback_when_krw_is_absur
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_build_screener_results_uses_sub_1t_krw_market_cap_fallback() -> None:
+    """Over-scaled KRW rows should not hide plausible sub-1조 KRW fallback values."""
+    fake_screening = MagicMock()
+    fake_screening.list_screening = AsyncMock(
+        return_value={
+            "results": [
+                {
+                    "symbol": "123456",
+                    "market": "kr",
+                    "market_cap_krw": 80_000_000_000_000_000_000,
+                    "market_cap": 800_000_000_000,
+                    "change_rate": 1.23,
+                    "volume": 12_345_678,
+                }
+            ],
+            "warnings": [],
+        }
+    )
+    resolver = _FakeResolver(watched=set())
+
+    resp = await build_screener_results(
+        preset_id="consecutive_gainers",
+        screening_service=fake_screening,
+        resolver=resolver,
+    )
+
+    assert resp.results[0].marketCapLabel == "8,000억원"
+    assert "시가총액 단위 보정됨" in resp.results[0].warnings
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_build_screener_results_dashes_absurd_market_cap_without_fallback() -> (
     None
 ):
