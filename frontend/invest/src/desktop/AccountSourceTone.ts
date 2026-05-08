@@ -1,4 +1,5 @@
-import type { AccountSourceVisual, AccountTone } from "../types/invest";
+import type { AccountSource, AccountSourceVisual, AccountTone } from "../types/invest";
+import type { PillTone } from "../ds";
 
 const TONE_STYLE: Record<AccountTone, { color: string; bg: string; border: string }> = {
   navy:   { color: "#dde3ff", bg: "#1e2a55", border: "#3a4a8a" },
@@ -24,4 +25,20 @@ export function visualBySource(
   source: string,
 ): AccountSourceVisual | undefined {
   return visuals.find((v) => v.source === source);
+}
+
+const SOURCE_TO_PILL: Record<AccountSource, PillTone> = {
+  kis: "kis",
+  kis_mock: "kis",
+  upbit: "upbit",
+  toss_manual: "toss",
+  isa_manual: "isa",
+  pension_manual: "pension",
+  alpaca_paper: "paper",
+  kiwoom_mock: "paper",
+  db_simulated: "paper",
+};
+
+export function pillToneForSource(source: AccountSource): PillTone {
+  return SOURCE_TO_PILL[source] ?? "paper";
 }
