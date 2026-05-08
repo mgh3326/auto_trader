@@ -6,8 +6,8 @@ const ROW_STYLE: CSSProperties = {
   display: "flex",
   justifyContent: "space-around",
   paddingTop: 8,
-  borderTop: "1px solid var(--surface-2)",
-  color: "var(--muted)",
+  borderTop: "1px solid var(--divider)",
+  color: "var(--fg-3)",
   fontSize: 10,
   position: "sticky",
   bottom: 0,
@@ -25,7 +25,7 @@ const TAB_BASE: CSSProperties = {
 
 const DISABLED_STYLE: CSSProperties = {
   ...TAB_BASE,
-  color: "var(--muted)",
+  color: "var(--fg-3)",
   opacity: 0.5,
   cursor: "not-allowed",
 };
@@ -33,7 +33,7 @@ const DISABLED_STYLE: CSSProperties = {
 function activeStyle(isActive: boolean): CSSProperties {
   return {
     ...TAB_BASE,
-    color: isActive ? "var(--text)" : "var(--muted)",
+    color: isActive ? "var(--fg)" : "var(--fg-3)",
   };
 }
 
