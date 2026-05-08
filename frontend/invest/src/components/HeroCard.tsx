@@ -9,6 +9,8 @@ export function HeroCard({ summary }: { summary: HomeSummary }) {
       data-testid="hero-card"
       style={{
         background: "var(--surface)",
+        border: "1px solid var(--border)",
+        boxShadow: "var(--shadow-1)",
         borderRadius: 14,
         padding: 16,
         textAlign: "center",

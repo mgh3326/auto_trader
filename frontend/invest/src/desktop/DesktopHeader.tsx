@@ -10,15 +10,16 @@ const LINKS = [
 
 export function DesktopHeader() {
   return (
-    <header style={{ display: "flex", gap: 24, padding: "12px 32px", borderBottom: "1px solid var(--surface-2, #1c1e24)" }}>
+    <header style={{ display: "flex", gap: 24, padding: "12px 32px", borderBottom: "1px solid var(--divider)", background: "var(--surface)" }}>
       <div style={{ fontWeight: 700, fontSize: 16 }}>auto_trader</div>
       <nav style={{ display: "flex", gap: 16 }}>
         {LINKS.map((l) => (
           <NavLink
             key={l.to} to={l.to} end={l.end}
             style={({ isActive }) => ({
-              color: isActive ? "#fff" : "#9ba0ab",
+              color: isActive ? "var(--fg)" : "var(--fg-2)",
               textDecoration: "none", fontSize: 14, padding: "4px 8px",
+              fontWeight: isActive ? 700 : 600,
             })}
           >
             {l.label}

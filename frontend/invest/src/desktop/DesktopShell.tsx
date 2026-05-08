@@ -5,7 +5,7 @@ export function DesktopShell({
   left, center, right,
 }: { left?: ReactNode; center: ReactNode; right: ReactNode }) {
   return (
-    <div data-testid="desktop-shell" style={{ minHeight: "100vh", background: "var(--bg, #0e1014)", color: "var(--text, #e8eaf0)" }}>
+    <div data-testid="desktop-shell" style={{ minHeight: "100vh", background: "var(--bg-alt)", color: "var(--fg)" }}>
       <DesktopHeader />
       <div
         style={{

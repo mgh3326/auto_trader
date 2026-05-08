@@ -1,0 +1,222 @@
+/* =========================================================
+   Auto Trader Invest — Foundations
+   Toss-style Korean fintech: light surfaces, calm grayscale,
+   confident blue accent, Korean-fintech P/L color rule
+   (▲ red = gain, ▼ blue = loss).
+   ========================================================= */
+
+/* ---------- Webfont: Pretendard (Korean + Latin) ----------
+   Pretendard is the de-facto Korean fintech body face used by
+   Toss, Naver, Kakao products. Loaded from cdn.jsdelivr.net.
+   Numbers: tabular-nums + ss06 for clean fintech digits.
+   ---------------------------------------------------------- */
+@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable.css");
+@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.css");
+
+:root {
+  /* ---------------- Color: Surfaces & Ink ---------------- */
+  --bg:           #ffffff;   /* page background */
+  --bg-alt:       #f9fafb;   /* secondary page bg (broad fields) */
+  --surface:      #ffffff;   /* card surface */
+  --surface-2:    #f2f4f6;   /* soft surface — chips, hover, skeleton */
+  --surface-3:    #e5e8eb;   /* deeper surface — pressed, dividers-strong */
+  --divider:      #f1f3f5;   /* hairline between rows */
+  --border:       #e5e8eb;   /* card border (subtle) */
+
+  --fg:           #191f28;   /* primary text — near-black */
+  --fg-1:         #333d4b;   /* secondary text — heading subdued */
+  --fg-2:         #4e5968;   /* tertiary text — body label */
+  --fg-3:         #6b7684;   /* muted — metadata, captions (darkened for readability) */
+  --fg-4:         #8b95a1;   /* placeholder / decorative dots */
+  --fg-on-accent: #ffffff;   /* on filled accent */
+
+  /* ---------------- Color: Brand Accent ----------------- */
+  /* Toss-style confident blue. Used sparingly for primary
+     actions, links, focus rings. NEVER for "loss" — Korean
+     fintech reverses Western P/L colors. */
+  --accent:       #3182f6;
+  --accent-press: #1b64da;
+  --accent-soft:  #e8f3ff;
+  --accent-fg:    #ffffff;
+
+  /* ---------------- Color: P/L (Korean rule) ------------ */
+  /* ▲ Red = gain / up.  ▼ Blue = loss / down.
+     Same blue family as the loss color, slightly desaturated
+     to read distinctly from the brand accent. */
+  --gain:         #f04452;   /* up — red */
+  --gain-soft:    #ffeaea;
+  --loss:         #2a6df4;   /* down — blue */
+  --loss-soft:    #e6efff;
+  --flat:         #8b95a1;   /* unchanged */
+
+  /* ---------------- Color: Semantic --------------------- */
+  /* Softer than typical — banners should read calm, not alarming. */
+  --warn:         #d98a07;   /* caution / warning */
+  --warn-soft:    #fff7e3;
+  --danger:       #d94848;   /* destructive / errors */
+  --danger-soft:  #fdeded;
+  --success:      #12a374;   /* operational ok (NOT P/L) */
+  --success-soft: #ebf7f1;
+  --info:         #3182f6;   /* same family as accent */
+  --info-soft:    #eef5ff;
+
+  /* ---------------- Color: Source pills ----------------- */
+  /* Each broker / source gets a calm tint pair. Subdued so
+     long lists of accounts don't visually compete. */
+  /* Subtle — these are secondary identifiers, not theme colors.
+     Backgrounds are very low-saturation tints; foregrounds sit
+     just dark enough to read at 11–12px. */
+  --pill-kis-bg:    #eaf2ff; --pill-kis-fg:    #2a6df4;  /* KIS — small blue */
+  --pill-upbit-bg:  #e8f3ec; --pill-upbit-fg:  #0e8a5f;  /* Upbit — small green */
+  --pill-toss-bg:   #efebf8; --pill-toss-fg:   #5b3aa8;  /* Toss / manual — soft purple */
+  --pill-isa-bg:    #f1ede1; --pill-isa-fg:    #7a6a3a;  /* ISA — muted olive */
+  --pill-pension-bg:#ecedef; --pill-pension-fg:#5f6470;  /* Pension — stone */
+  --pill-paper-bg:  #eef0f3; --pill-paper-fg:  #4e5968;  /* Paper / mock */
+
+  /* ---------------- Type: Family ------------------------ */
+  --font-sans: "Pretendard Variable", Pretendard,
+               -apple-system, BlinkMacSystemFont, system-ui,
+               "Apple SD Gothic Neo", "Noto Sans KR",
+               "Helvetica Neue", "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", ui-monospace,
+               Menlo, Consolas, monospace;
+  /* Numerals — same family but with tabular figures applied. */
+  --font-num: var(--font-sans);
+
+  /* ---------------- Type: Scale ------------------------- */
+  /* Body baseline 15px (Toss web). Display sizes are
+     deliberately large for portfolio totals. */
+  --text-display:   30px;   /* hero portfolio total (desktop) */
+  --text-display-2: 24px;   /* account totals / section hero */
+  --text-h1:        22px;   /* page header */
+  --text-h2:        18px;   /* card title */
+  --text-h3:        16px;   /* sub-section */
+  --text-body:      15px;   /* default body */
+  --text-body-sm:   14px;   /* row body */
+  --text-caption:   13px;   /* meta */
+  --text-micro:     12px;   /* tag / chip / table cell */
+  --text-tiny:      11px;   /* timestamp / footnote */
+
+  --leading-tight:  1.2;
+  --leading-snug:   1.35;
+  --leading-normal: 1.5;
+  --leading-loose:  1.7;
+
+  --weight-regular: 400;
+  --weight-medium:  500;
+  --weight-semi:    600;
+  --weight-bold:    700;
+  --weight-heavy:   800;
+
+  /* Negative tracking on big numbers; positive on small caps */
+  --tracking-tight:  -0.02em;
+  --tracking-normal: 0;
+  --tracking-wide:   0.04em;
+
+  /* ---------------- Spacing / Radius / Elevation -------- */
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-5:  20px;
+  --space-6:  24px;
+  --space-7:  32px;
+  --space-8:  40px;
+  --space-9:  56px;
+
+  --radius-xs: 4px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;   /* default card */
+  --radius-xl: 20px;
+  --radius-2xl:24px;   /* hero card */
+  --radius-pill: 999px;
+
+  /* Elevation — soft, low-contrast. No long throws. */
+  --shadow-0: none;
+  --shadow-1: 0 1px 2px rgba(15, 23, 42, 0.04),
+              0 1px 1px rgba(15, 23, 42, 0.02);
+  --shadow-2: 0 4px 12px rgba(15, 23, 42, 0.06),
+              0 1px 2px rgba(15, 23, 42, 0.03);
+  --shadow-3: 0 12px 32px rgba(15, 23, 42, 0.10),
+              0 2px 6px rgba(15, 23, 42, 0.04);
+  --shadow-focus: 0 0 0 3px rgba(49, 130, 246, 0.25);
+
+  /* ---------------- Motion ------------------------------ */
+  --ease-standard: cubic-bezier(0.2, 0.0, 0.0, 1.0);
+  --ease-emph:     cubic-bezier(0.2, 0.8, 0.2, 1.0);
+  --dur-fast:   120ms;
+  --dur-base:   180ms;
+  --dur-slow:   240ms;
+}
+
+/* =========================================================
+   Semantic element styles
+   Using `where` keeps specificity low so consumers can override.
+   ========================================================= */
+:where(html, body) {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: var(--text-body);
+  line-height: var(--leading-normal);
+  font-feature-settings: "ss06", "tnum" 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+:where(h1) {
+  font-size: var(--text-h1);
+  font-weight: var(--weight-bold);
+  letter-spacing: var(--tracking-tight);
+  line-height: var(--leading-tight);
+  margin: 0;
+}
+:where(h2) {
+  font-size: var(--text-h2);
+  font-weight: var(--weight-bold);
+  letter-spacing: var(--tracking-tight);
+  line-height: var(--leading-snug);
+  margin: 0;
+}
+:where(h3) {
+  font-size: var(--text-h3);
+  font-weight: var(--weight-semi);
+  line-height: var(--leading-snug);
+  margin: 0;
+}
+:where(p) { margin: 0; line-height: var(--leading-normal); }
+:where(small) { font-size: var(--text-caption); color: var(--fg-3); }
+:where(code, kbd) {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  background: var(--surface-2);
+  padding: 1px 6px;
+  border-radius: var(--radius-xs);
+}
+
+/* =========================================================
+   Utility classes (handles for HTML cards / kits)
+   ========================================================= */
+.num     { font-feature-settings: "tnum"; font-variant-numeric: tabular-nums; }
+.num-big { font-size: var(--text-display); font-weight: var(--weight-bold);
+           letter-spacing: var(--tracking-tight); font-feature-settings: "tnum"; }
+.gain    { color: var(--gain); }
+.loss    { color: var(--loss); }
+.flat    { color: var(--flat); }
+.muted   { color: var(--fg-3); }
+.subtle  { color: var(--fg-3); font-size: var(--text-caption); }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-1);
+}
+.card-soft {
+  background: var(--surface-2);
+  border-radius: var(--radius-lg);
+}
+
+.hairline { height: 1px; background: var(--divider); }

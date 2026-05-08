@@ -44,6 +44,6 @@ test("관심 and 피드 are aria-disabled and do not call alert when clicked", a
 test("BottomNav highlights active tab", () => {
   renderAt("/discover");
   const link = screen.getByRole("link", { name: "발견" });
-  // active uses var(--text), inactive uses var(--muted)
-  expect(link.getAttribute("style") ?? "").toContain("color: var(--text)");
+  // active uses var(--fg), inactive uses var(--fg-3)
+  expect(link.getAttribute("style") ?? "").toContain("color: var(--fg)");
 });

@@ -71,7 +71,7 @@ const rowStyle: React.CSSProperties = {
   justifyContent: "space-between",
   alignItems: "center",
   padding: "8px 4px",
-  borderBottom: "1px solid var(--surface-2)",
+  borderBottom: "1px solid var(--divider)",
 };
 
 function SourceChip({ text }: { text: string }) {
@@ -81,8 +81,8 @@ function SourceChip({ text }: { text: string }) {
         display: "inline-block",
         padding: "1px 6px",
         marginLeft: 4,
-        background: "var(--pill-mix)",
-        color: "var(--pill-mix-fg)",
+        background: "var(--pill-paper-bg)",
+        color: "var(--pill-paper-fg)",
         borderRadius: 6,
         fontSize: 9,
         verticalAlign: "middle",
