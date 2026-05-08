@@ -69,6 +69,9 @@ def test_article_normalized_source_key_uses_source_key_fallback() -> None:
     [
         (_article(title="[데일리 마감] 코스피 약보합"), True, False, False),
         (_article(title="Morning Letter: futures higher"), True, False, False),
+        (_article(title="Macro Snapshot: rates and FX Check-up"), True, False, False),
+        (_article(title="EPS LIVE Review: 실적 정리"), True, False, True),
+        (_article(title="Economy Monitor Focus on Week"), True, False, False),
         (
             _article(
                 title="Best travel credit cards for 2026",
@@ -124,6 +127,47 @@ def test_score_cluster_caps_regular_report_penalty() -> None:
     score = lab.score_cluster(_cluster(*range(5)), articles, window_hours=24)
     assert score.penalties["regular_report"] == pytest.approx(0.45)
     assert score.flags["regular_report"] == 5
+
+
+def test_score_cluster_penalizes_mixed_duplicate_regular_report_cluster() -> None:
+    articles = [
+        _article(
+            1, title="Weekly AI data center update", source="browser_naver_research"
+        ),
+        _article(
+            2, title="AI data center stocks rally", source="browser_naver_mainnews"
+        ),
+        _article(
+            3,
+            title="AI data center industry investment",
+            source="browser_naver_research_industry",
+        ),
+    ]
+    score = lab.score_cluster(_cluster(0, 1, 2), articles, window_hours=24)
+    assert score.penalties["duplicate_source"] > 0
+    assert score.penalties["regular_report"] == pytest.approx(0.15)
+    assert score.penalties["mixed_regular_report"] == pytest.approx(0.30)
+
+
+def test_score_cluster_adds_weak_single_source_penalty_only_for_weak_evidence() -> None:
+    weak_articles = [
+        _article(
+            1, title="코스피 전에 대만 주식 알았어야", source="browser_naver_mainnews"
+        ),
+        _article(
+            2, title="대만 수익률 415 한국 코스피", source="browser_naver_mainnews"
+        ),
+    ]
+    strong_articles = [
+        _article(i, title=f"Nasdaq stocks rally on AI earnings {i}", source="reuters")
+        for i in range(1, 5)
+    ]
+    weak = lab.score_cluster(_cluster(0, 1), weak_articles, window_hours=24)
+    strong = lab.score_cluster(_cluster(*range(4)), strong_articles, window_hours=24)
+    assert weak.penalties["single_source"] == pytest.approx(0.28)
+    assert weak.penalties["weak_single_source"] == pytest.approx(0.18)
+    assert strong.penalties["single_source"] == pytest.approx(0.14)
+    assert strong.penalties["weak_single_source"] == pytest.approx(0.0)
 
 
 def test_score_cluster_gives_market_signal_topic_relevance() -> None:
@@ -1726,6 +1770,56 @@ def test_suppress_duplicate_top_issues_preserves_suppressed_candidates() -> None
     assert "duplicate_title_topn" in reasons
     assert "single_article_topn" in reasons
     assert selected[0]["title_ko"] == "AI 데이터센터"
+    assert {item["pre_suppression_rank"] for item in suppressed} == {2, 3}
+
+
+def test_evaluate_quality_gate_deescalates_deep_suppressed_candidate_to_info() -> None:
+    suppressed = _quality_issue("반도체 슈퍼사이클", rank=168, markets=["kr"])
+    suppressed.update(
+        {
+            "display_suppressed": True,
+            "suppression_reason": "duplicate_title_topn",
+            "pre_suppression_rank": 168,
+        }
+    )
+    payload = {
+        "run": {"market": "kr", "quality_top": 5, "llm_render": {"enabled": False}},
+        "issues": [
+            _quality_issue("반도체 슈퍼사이클", rank=1, markets=["kr"]),
+            _quality_issue("미국 증시 최고치", rank=2, markets=["kr"]),
+        ],
+        "suppressed_candidates": [suppressed],
+        "merge_diagnostics": {"decisions": [], "rejected_near_misses": 0},
+    }
+    gate = lab.evaluate_quality_gate(payload, market="kr")
+    finding = gate["findings"][0]
+    assert gate["status"] == "pass"
+    assert finding["severity"] == "info"
+    assert finding["pre_suppression_rank"] == 168
+    assert gate["metrics"]["suppressed_candidate_count"] == 1
+    assert gate["metrics"]["suppressed_audit_count"] == 1
+
+
+def test_evaluate_quality_gate_warns_for_original_topn_suppressed_candidate() -> None:
+    suppressed = _quality_issue("AI 데이터센터", rank=2)
+    suppressed.update(
+        {
+            "display_suppressed": True,
+            "suppression_reason": "duplicate_title_topn",
+            "pre_suppression_rank": 2,
+        }
+    )
+    payload = {
+        "run": {"market": "us", "quality_top": 5, "llm_render": {"enabled": False}},
+        "issues": [_quality_issue("AI 데이터센터", rank=1)],
+        "suppressed_candidates": [suppressed],
+        "merge_diagnostics": {"decisions": [], "rejected_near_misses": 0},
+    }
+    gate = lab.evaluate_quality_gate(payload, market="us")
+    finding = gate["findings"][0]
+    assert gate["status"] == "warn"
+    assert finding["severity"] == "warn"
+    assert gate["metrics"]["suppressed_warning_count"] == 1
 
 
 def test_render_markdown_includes_quality_gate_summary() -> None:
@@ -1745,7 +1839,8 @@ def test_render_markdown_includes_quality_gate_summary() -> None:
             "top_n": 5,
             "metrics": {
                 "single_article_count_topn": 1,
-                "suppressed_candidate_count": 0,
+                "suppressed_warning_count": 0,
+                "suppressed_audit_count": 1,
             },
             "findings": [
                 {
@@ -1762,6 +1857,8 @@ def test_render_markdown_includes_quality_gate_summary() -> None:
     rendered = lab.render_markdown(payload)
     assert "품질 게이트 (ROB-145)" in rendered
     assert "single_article_topn" in rendered
+    assert "suppressed_warn=0" in rendered
+    assert "suppressed_audit=1" in rendered
 
 
 def test_quality_eval_parse_defaults_disable_llm_and_store() -> None:

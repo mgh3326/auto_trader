@@ -116,14 +116,14 @@ def _summary_markdown(summary: dict[str, Any]) -> str:
         f"- window: {summary['window_hours']}h / limit: {summary['limit']} / top: {summary['top']} / quality_top: {summary['quality_top']}",
         "- safety: read-only lab run; LLM disabled; no --store used; no broker/order/watch/order-intent/scheduler/API/UI changes.",
         "",
-        "| market | status | duplicate title | duplicate topic | single article | single source | mismatch | source noise | suppressed | json | markdown |",
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|---|---|",
+        "| market | status | duplicate title | duplicate topic | single article | single source | mismatch | source noise | suppressed warn | suppressed audit | json | markdown |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---|",
     ]
     for market in summary["markets"]:
         row = summary["results"][market]
         metrics = row["metrics"]
         lines.append(
-            "| {market} | `{status}` | {duplicate_title} | {duplicate_topic} | {single_article} | {single_source} | {mismatch} | {source_noise} | {suppressed} | `{json_path}` | `{markdown_path}` |".format(
+            "| {market} | `{status}` | {duplicate_title} | {duplicate_topic} | {single_article} | {single_source} | {mismatch} | {source_noise} | {suppressed_warn} | {suppressed_audit} | `{json_path}` | `{markdown_path}` |".format(
                 market=market,
                 status=row["status"],
                 duplicate_title=metrics.get("duplicate_title_count_topn", 0),
@@ -132,7 +132,8 @@ def _summary_markdown(summary: dict[str, Any]) -> str:
                 single_source=metrics.get("single_source_count_topn", 0),
                 mismatch=metrics.get("market_mismatch_count_topn", 0),
                 source_noise=metrics.get("source_noise_count_topn", 0),
-                suppressed=metrics.get("suppressed_candidate_count", 0),
+                suppressed_warn=metrics.get("suppressed_warning_count", 0),
+                suppressed_audit=metrics.get("suppressed_audit_count", 0),
                 json_path=row.get("json_path") or "-",
                 markdown_path=row.get("markdown_path") or "-",
             )

@@ -299,6 +299,13 @@ REGULAR_REPORT_TERMS: tuple[str, ...] = (
     "morning letter",
     "daily",
     "weekly",
+    "macro snapshot",
+    "econ check-up",
+    "fx check-up",
+    "economy monitor",
+    "eps live",
+    "review",
+    "실적 정리",
     "데일리",
     "장마감코멘트",
     "모닝코멘트",
@@ -1434,6 +1441,9 @@ def _quality_finding(
                 "normalized_source_count": issue.get("normalized_source_count"),
                 "markets": issue.get("markets"),
                 "topics": issue.get("topics"),
+                "pre_suppression_rank": issue.get("pre_suppression_rank"),
+                "display_suppressed_reason": issue.get("display_suppressed_reason")
+                or issue.get("suppression_reason"),
             }
         )
     return payload
@@ -1453,8 +1463,12 @@ def suppress_duplicate_top_issues(
     seen_titles: set[str] = set()
     seen_topics: set[str] = set()
     target_len = len(issues)
-    for issue in issues:
+    for fallback_rank, issue in enumerate(issues, start=1):
         clone = dict(issue)
+        clone.setdefault(
+            "pre_suppression_rank",
+            int(clone.get("rank") or fallback_rank),
+        )
         title_key = normalize_text(str(clone.get("title_ko") or "")).lower()
         topic_key = title_key
         if clone.get("topics"):
@@ -1476,6 +1490,7 @@ def suppress_duplicate_top_issues(
         if reason:
             clone["display_suppressed"] = True
             clone["suppression_reason"] = reason
+            clone["display_suppressed_reason"] = reason
             flags = list(clone.get("quality_flags") or [])
             if reason not in flags:
                 flags.append(reason)
@@ -1640,15 +1655,50 @@ def evaluate_quality_gate(
                 "deterministic quality gate must keep LLM rendering disabled",
             )
         )
+    suppressed_warning_count = 0
+    suppressed_audit_count = 0
+    blocking_suppression_reasons = {
+        "duplicate_title_topn",
+        "duplicate_topic_topn",
+        "single_article_topn",
+        "market_mismatch",
+        "crypto_equity_topic",
+    }
     for suppressed in payload.get("suppressed_candidates") or []:
+        pre_rank = int(
+            suppressed.get("pre_suppression_rank")
+            or suppressed.get("rank")
+            or config.top_n + 1
+        )
+        suppression_reason = str(
+            suppressed.get("suppression_reason") or "suppressed_candidate"
+        )
+        severity = (
+            "warn"
+            if pre_rank <= config.top_n
+            and suppression_reason in blocking_suppression_reasons
+            else "info"
+        )
+        if severity == "warn":
+            suppressed_warning_count += 1
+            reason = "candidate originally inside quality top-N was suppressed"
+        else:
+            suppressed_audit_count += 1
+            reason = (
+                "quality candidate suppressed from visible top-N but preserved for audit"
+                if pre_rank <= config.top_n
+                else "deep candidate suppressed from visible top-N but preserved for audit"
+            )
         findings.append(
             _quality_finding(
-                str(suppressed.get("suppression_reason") or "suppressed_candidate"),
-                "warn",
+                suppression_reason,
+                severity,
                 suppressed,
-                "candidate suppressed from visible top-N but preserved for audit",
+                reason,
             )
         )
+    metrics["suppressed_warning_count"] = suppressed_warning_count
+    metrics["suppressed_audit_count"] = suppressed_audit_count
     fail_codes = {
         "duplicate_title_topn",
         "duplicate_topic_topn",
@@ -1661,7 +1711,7 @@ def evaluate_quality_gate(
     status = "pass"
     if any(f["severity"] == "fail" and f["code"] in fail_codes for f in findings):
         status = "fail"
-    elif findings:
+    elif any(f["severity"] == "warn" for f in findings):
         status = "warn"
     return {
         "status": status,
@@ -1799,7 +1849,6 @@ def score_cluster(
     noise_penalty = 0.10 * min(4, yahoo_noise_count)
     if yahoo_noise_count and market_signal_count:
         noise_penalty *= 0.25
-    regular_report_penalty = 0.15 * min(3, regular_report_count)
     duplicate_source_penalty = (
         max(
             0.0,
@@ -1807,13 +1856,38 @@ def score_cluster(
         )
         * 0.30
     )
-    single_source_penalty = 0.14 if normalized_source_count == 1 else 0.0
+    regular_report_penalty = 0.15 * min(3, regular_report_count)
+    mixed_regular_report_penalty = 0.0
+    if regular_report_count and regular_report_count < len(rows):
+        # Mixed report/news clusters are diagnostically useful, but should not
+        # outrank cleaner market issues just because research-category source
+        # families add recency and volume. Keep the base regular_report key
+        # capped for compatibility and expose the extra demotion separately.
+        mixed_regular_report_penalty = 0.10
+        if normalized_source_count >= 2:
+            mixed_regular_report_penalty += 0.10
+        if duplicate_source_penalty:
+            mixed_regular_report_penalty += 0.12
+        if regular_report_count >= 2:
+            mixed_regular_report_penalty += 0.08
+    single_source_penalty = 0.0
+    weak_single_source_penalty = 0.0
+    if normalized_source_count == 1:
+        single_source_penalty = 0.14
+        if len(rows) <= 2:
+            single_source_penalty += 0.08
+            weak_single_source_penalty += 0.10
+        if topic_relevance < 1.0:
+            single_source_penalty += 0.06
+            weak_single_source_penalty += 0.08
     weak_single_article_penalty = 0.28 if len(rows) == 1 else 0.0
     penalties = {
         "noise": min(0.40, noise_penalty),
         "regular_report": min(0.45, regular_report_penalty),
+        "mixed_regular_report": min(0.30, mixed_regular_report_penalty),
         "duplicate_source": min(0.30, duplicate_source_penalty),
-        "single_source": single_source_penalty,
+        "single_source": min(0.28, single_source_penalty),
+        "weak_single_source": min(0.18, weak_single_source_penalty),
         "weak_single_article": weak_single_article_penalty,
     }
     components = {
@@ -2035,7 +2109,7 @@ def render_markdown(payload: dict[str, Any]) -> str:
                 f"- status: `{quality_gate.get('status', '-')}` / top_n: {quality_gate.get('top_n', '-')}",
                 f"- duplicate_title={metrics.get('duplicate_title_count_topn', 0)}, duplicate_topic={metrics.get('duplicate_topic_count_topn', 0)}, single_article={metrics.get('single_article_count_topn', 0)}, single_source={metrics.get('single_source_count_topn', 0)}",
                 f"- market_mismatch={metrics.get('market_mismatch_count_topn', 0)}, source_noise={metrics.get('source_noise_count_topn', 0)}, crypto_equity_topic={metrics.get('crypto_equity_topic_count_topn', 0)}, regular_report={metrics.get('regular_report_leakage_count_topn', 0)}",
-                f"- merge_decisions={metrics.get('merge_decision_count', 0)}, near_misses={metrics.get('merge_rejected_near_misses', 0)}, suppressed={metrics.get('suppressed_candidate_count', 0)}, llm_render_enabled={metrics.get('llm_render_enabled', False)}",
+                f"- merge_decisions={metrics.get('merge_decision_count', 0)}, near_misses={metrics.get('merge_rejected_near_misses', 0)}, suppressed_warn={metrics.get('suppressed_warning_count', 0)}, suppressed_audit={metrics.get('suppressed_audit_count', 0)}, llm_render_enabled={metrics.get('llm_render_enabled', False)}",
             ]
         )
         findings = quality_gate.get("findings") or []
