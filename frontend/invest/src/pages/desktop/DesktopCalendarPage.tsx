@@ -2,18 +2,42 @@ import { useEffect, useMemo, useState } from "react";
 import { DesktopShell } from "../../desktop/DesktopShell";
 import { RightAccountPanel } from "../../desktop/RightAccountPanel";
 import { useAccountPanel } from "../../desktop/useAccountPanel";
+import { useViewport } from "../../hooks/useViewport";
 import { fetchCalendar, fetchWeeklySummary } from "../../api/calendar";
 import type { CalendarResponse, WeeklySummaryResponse } from "../../types/calendar";
+import { Card, Icon } from "../../ds";
+import { WeekDateStrip } from "../../components/calendar/WeekDateStrip";
+import { AIWeeklyCard } from "../../components/calendar/AIWeeklyCard";
+import { EventRow } from "../../components/calendar/EventRow";
+import { EmptyEventState } from "../../components/calendar/EmptyEventState";
+import { EventDetailModal } from "../../components/calendar/EventDetailModal";
+import {
+  computeWeekLabel,
+  toEventVM,
+  type CalendarEventVM,
+  type DisplayEventType,
+  type DisplayRegion,
+} from "../../components/calendar/vm";
+import { MobileCalendarPage } from "../mobile/MobileCalendarPage";
 
 function startOfWeek(d: Date): Date {
   const out = new Date(d);
-  const day = (out.getDay() + 6) % 7; // Mon=0
+  const day = (out.getDay() + 6) % 7; // Mon = 0
   out.setDate(out.getDate() - day);
   out.setHours(0, 0, 0, 0);
   return out;
 }
 
-function fmt(d: Date) { return d.toISOString().slice(0, 10); }
+function fmt(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+type TypeFilter = "all" | DisplayEventType;
+type RegionFilter = "all" | DisplayRegion;
+
+export function CalendarRoute() {
+  return useViewport() === "mobile" ? <MobileCalendarPage /> : <DesktopCalendarPage />;
+}
 
 export function DesktopCalendarPage() {
   const panel = useAccountPanel();
@@ -23,107 +47,268 @@ export function DesktopCalendarPage() {
     e.setDate(e.getDate() + 6);
     return e;
   }, [weekStart]);
-  const [selectedDate, setSelectedDate] = useState<string>(fmt(new Date()));
+  const today = fmt(new Date());
+  const [selectedDate, setSelectedDate] = useState<string>(today);
   const [calendar, setCalendar] = useState<CalendarResponse | undefined>();
+  const [calendarErr, setCalendarErr] = useState<string | undefined>();
   const [summary, setSummary] = useState<WeeklySummaryResponse | undefined>();
+  const [summaryErr, setSummaryErr] = useState<string | undefined>();
+  const [summaryLoading, setSummaryLoading] = useState(false);
   const [showSummary, setShowSummary] = useState(false);
-  const [err, setErr] = useState<string | undefined>();
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
+  const [regionFilter, setRegionFilter] = useState<RegionFilter>("all");
 
   useEffect(() => {
     let cancel = false;
-    setErr(undefined);
+    setCalendar(undefined);
+    setCalendarErr(undefined);
     fetchCalendar({ fromDate: fmt(weekStart), toDate: fmt(weekEnd), tab: "all" })
       .then((r) => !cancel && setCalendar(r))
-      .catch((e) => !cancel && setErr(String(e?.message ?? e)));
-    return () => { cancel = true; };
+      .catch((e) => !cancel && setCalendarErr(String(e?.message ?? e)));
+    return () => {
+      cancel = true;
+    };
   }, [weekStart, weekEnd]);
 
   useEffect(() => {
     if (!showSummary) return;
-    fetchWeeklySummary(fmt(weekStart)).then(setSummary).catch((e) => setErr(String(e?.message ?? e)));
+    if (summary && summary.weekStart === fmt(weekStart)) return;
+    let cancel = false;
+    setSummary(undefined);
+    setSummaryErr(undefined);
+    setSummaryLoading(true);
+    fetchWeeklySummary(fmt(weekStart))
+      .then((r) => {
+        if (cancel) return;
+        setSummary(r);
+        setSummaryLoading(false);
+      })
+      .catch((e) => {
+        if (cancel) return;
+        setSummaryErr(String(e?.message ?? e));
+        setSummaryLoading(false);
+      });
+    return () => {
+      cancel = true;
+    };
+    // summary identity check above is intentional; we want a fresh fetch when weekStart changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showSummary, weekStart]);
 
   const days = calendar?.days ?? [];
-  const selectedDay = days.find((d) => d.date === selectedDate);
+  const allEventsVM: CalendarEventVM[] = useMemo(() => {
+    const out: CalendarEventVM[] = [];
+    for (const d of days) {
+      for (const e of d.events) out.push(toEventVM(e, d.date));
+    }
+    return out;
+  }, [days]);
+
+  const filteredEvents = useMemo(() => {
+    return allEventsVM.filter((e) => {
+      if (typeFilter !== "all" && e.type !== typeFilter) return false;
+      if (regionFilter !== "all" && e.region !== regionFilter) return false;
+      return true;
+    });
+  }, [allEventsVM, typeFilter, regionFilter]);
+
+  const eventsBySelectedDate = useMemo(
+    () => filteredEvents.filter((e) => e.date === selectedDate),
+    [filteredEvents, selectedDate],
+  );
+
+  const weekLabel = computeWeekLabel(fmt(weekStart));
 
   return (
-    <DesktopShell
-      center={
-        <div>
-          <header style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 16 }}>
-            <button onClick={() => setWeekStart((w) => { const n = new Date(w); n.setDate(n.getDate() - 7); return n; })}>이전 주</button>
-            <strong>{fmt(weekStart)} ~ {fmt(weekEnd)}</strong>
-            <button onClick={() => setWeekStart((w) => { const n = new Date(w); n.setDate(n.getDate() + 7); return n; })}>다음 주</button>
-            <button data-testid="open-weekly-summary" onClick={() => setShowSummary((s) => !s)} style={{ marginLeft: "auto" }}>
-              이번주 AI 요약 {showSummary ? "닫기" : "열기"}
-            </button>
-          </header>
+    <>
+      <DesktopShell
+      left={
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <Card style={{ padding: 16 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, letterSpacing: "-0.01em" }}>{weekLabel}</div>
+              <div style={{ display: "flex", gap: 4 }}>
+                <button
+                  type="button"
+                  aria-label="이전 주"
+                  data-testid="calendar-prev-week"
+                  onClick={() =>
+                    setWeekStart((w) => {
+                      const n = new Date(w);
+                      n.setDate(n.getDate() - 7);
+                      return n;
+                    })
+                  }
+                  style={navBtnStyle}
+                >
+                  <Icon name="chev" size={14} />
+                </button>
+                <button
+                  type="button"
+                  aria-label="다음 주"
+                  data-testid="calendar-next-week"
+                  onClick={() =>
+                    setWeekStart((w) => {
+                      const n = new Date(w);
+                      n.setDate(n.getDate() + 7);
+                      return n;
+                    })
+                  }
+                  style={{ ...navBtnStyle, transform: "scaleX(-1)" }}
+                >
+                  <Icon name="chev" size={14} />
+                </button>
+              </div>
+            </div>
+            <WeekDateStrip
+              days={days}
+              selectedDate={selectedDate}
+              onSelect={setSelectedDate}
+              today={today}
+            />
+          </Card>
 
-          {err && <div style={{ color: "#f59e9e", marginBottom: 12 }}>오류: {err}</div>}
-
-          <div style={{ display: "flex", gap: 4, marginBottom: 16 }}>
-            {days.map((d) => (
-              <button
-                key={d.date}
-                data-testid={`day-${d.date}`}
-                onClick={() => setSelectedDate(d.date)}
-                style={{
-                  flex: 1, padding: "8px 4px", borderRadius: 6,
-                  background: selectedDate === d.date ? "var(--surface-2, #1c1e24)" : "var(--surface, #15181f)",
-                  border: "none", color: "#e8eaf0", cursor: "pointer", fontSize: 12,
-                }}
-              >
-                {d.date.slice(5)}
-                <div style={{ fontSize: 10, color: "#9ba0ab" }}>{d.events.length + d.clusters.length}</div>
-              </button>
-            ))}
-          </div>
-
-          <section data-testid="day-events" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {selectedDay?.clusters.map((c) => (
-              <details key={c.clusterId} style={{ padding: 12, borderRadius: 10, background: "var(--surface, #15181f)" }}>
-                <summary style={{ cursor: "pointer" }}>{c.label} · {c.eventCount}건</summary>
-                <ul style={{ listStyle: "none", padding: 0, margin: 0, marginTop: 8 }}>
-                  {c.topEvents.map((ev) => (
-                    <li key={ev.eventId} style={{ fontSize: 13 }}>{ev.title}</li>
-                  ))}
-                </ul>
-              </details>
-            ))}
-            {selectedDay?.events.map((ev) => (
-              <article key={ev.eventId} data-testid="calendar-event" data-relation={ev.relation} style={{ padding: 12, borderRadius: 10, background: "var(--surface, #15181f)" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 600 }}>
-                  <span>{ev.title}</span>
-                  <span style={{ color: "#9ba0ab", fontSize: 11 }}>{ev.market.toUpperCase()} · {ev.eventType}</span>
-                </div>
-                {ev.badges.length > 0 && (
-                  <div style={{ marginTop: 4, fontSize: 11, color: "#9ba0ab" }}>{ev.badges.join(" · ")}</div>
-                )}
-              </article>
-            ))}
-            {selectedDay && selectedDay.events.length === 0 && selectedDay.clusters.length === 0 && (
-              <div style={{ padding: 16, color: "#9ba0ab" }}>해당 날짜 이벤트 없음</div>
-            )}
-          </section>
-
-          {showSummary && (
-            <section data-testid="weekly-summary" style={{ marginTop: 16, padding: 16, borderRadius: 12, background: "var(--surface, #15181f)" }}>
-              <h3 style={{ marginTop: 0 }}>이번주 AI 요약</h3>
-              {!summary && <div>로딩 중…</div>}
-              {summary && summary.partial && (
-                <div style={{ fontSize: 12, color: "#9ba0ab" }}>일부 일자가 비어있습니다: {summary.missingDates.join(", ")}</div>
-              )}
-              {summary?.sections.map((sec, i) => (
-                <article key={i} style={{ marginTop: 12 }}>
-                  <h4 style={{ margin: 0, fontSize: 14 }}>{sec.title}</h4>
-                  <pre style={{ whiteSpace: "pre-wrap", fontSize: 12, color: "#cfd2da" }}>{sec.body}</pre>
-                </article>
-              ))}
-            </section>
-          )}
+          <AIWeeklyCard
+            summary={summary}
+            loading={summaryLoading}
+            onOpen={() => setShowSummary(true)}
+            compact
+          />
         </div>
       }
-      right={<RightAccountPanel data={panel.data} loading={panel.loading} error={panel.error} />}
-    />
+      center={
+        <>
+          <header>
+            <h1 style={{ margin: 0, fontSize: 22, fontWeight: 800, letterSpacing: "-0.02em" }}>캘린더</h1>
+            <p style={{ margin: "4px 0 0", fontSize: 13, color: "var(--fg-3)" }}>
+              실적·경제지표·주요 이벤트를 한 주 단위로 확인하세요.
+            </p>
+          </header>
+
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <FilterGroup>
+              {([
+                ["all", "전체"],
+                ["macro", "경제지표"],
+                ["earnings", "실적"],
+              ] as const).map(([k, l]) => (
+                <SegPill key={k} on={typeFilter === k} onClick={() => setTypeFilter(k)}>
+                  {l}
+                </SegPill>
+              ))}
+            </FilterGroup>
+            <FilterGroup>
+              {([
+                ["all", "전체"],
+                ["kr", "국내"],
+                ["us", "해외"],
+              ] as const).map(([k, l]) => (
+                <SegPill key={k} on={regionFilter === k} onClick={() => setRegionFilter(k)}>
+                  {l}
+                </SegPill>
+              ))}
+            </FilterGroup>
+          </div>
+
+          {calendarErr && <div style={{ color: "var(--danger)" }}>오류: {calendarErr}</div>}
+
+          <Card style={{ padding: "16px 6px" }}>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "44px minmax(0, 1fr) 76px 76px 76px",
+                alignItems: "center",
+                gap: 10,
+                padding: "0 14px 10px",
+                borderBottom: "1px solid var(--divider)",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 14,
+                  fontWeight: 800,
+                  color: "var(--fg)",
+                  letterSpacing: "-0.01em",
+                  gridColumn: "1 / 3",
+                }}
+              >
+                {selectedDate}
+              </div>
+              <div style={{ textAlign: "right", fontSize: 11, fontWeight: 600, color: "var(--fg-3)", letterSpacing: "0.04em" }}>
+                발표
+              </div>
+              <div style={{ textAlign: "right", fontSize: 11, fontWeight: 600, color: "var(--fg-3)", letterSpacing: "0.04em" }}>
+                예측
+              </div>
+              <div style={{ textAlign: "right", fontSize: 11, fontWeight: 600, color: "var(--fg-3)", letterSpacing: "0.04em" }}>
+                이전
+              </div>
+            </div>
+
+            <div data-testid="day-events" style={{ paddingTop: 4 }}>
+              {eventsBySelectedDate.length === 0 ? (
+                <EmptyEventState message="해당 날짜에는 일정이 없습니다." />
+              ) : (
+                eventsBySelectedDate.map((ev) => <EventRow key={ev.id} ev={ev} />)
+              )}
+            </div>
+          </Card>
+        </>
+      }
+      right={<RightAccountPanel data={panel.data} loading={panel.loading} error={panel.error} onRefresh={panel.reload} />}
+      />
+      {showSummary && (
+        <EventDetailModal
+          summary={summary}
+          loading={summaryLoading}
+          error={summaryErr}
+          onClose={() => setShowSummary(false)}
+        />
+      )}
+    </>
+  );
+}
+
+const navBtnStyle: React.CSSProperties = {
+  width: 24,
+  height: 24,
+  border: "none",
+  background: "transparent",
+  borderRadius: 6,
+  cursor: "pointer",
+  color: "var(--fg-2)",
+  display: "grid",
+  placeItems: "center",
+};
+
+function FilterGroup({ children }: { children: React.ReactNode }) {
+  return (
+    <div style={{ display: "inline-flex", padding: 3, background: "var(--surface-2)", borderRadius: 999 }}>
+      {children}
+    </div>
+  );
+}
+
+function SegPill({ on, children, onClick }: { on: boolean; children: React.ReactNode; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        padding: "6px 14px",
+        border: "none",
+        borderRadius: 999,
+        cursor: "pointer",
+        background: on ? "var(--fg)" : "transparent",
+        color: on ? "#fff" : "var(--fg-2)",
+        fontWeight: 600,
+        fontSize: 13,
+        fontFamily: "inherit",
+        whiteSpace: "nowrap",
+        flexShrink: 0,
+      }}
+    >
+      {children}
+    </button>
   );
 }
