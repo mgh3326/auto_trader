@@ -279,7 +279,7 @@ async def test_build_payload_compare_v1_json_block_and_drop_regular_reports(
     monkeypatch.setattr(
         lab,
         "embed_batch",
-        lambda endpoint, model, texts: [[1.0, 0.0] for _ in texts],
+        lambda endpoint, model, texts, **_kwargs: [[1.0, 0.0] for _ in texts],
     )
     args = Namespace(
         market="all",
@@ -772,7 +772,7 @@ async def test_build_payload_runs_merge_pass_and_emits_run_diag(monkeypatch) -> 
 
     call_count = {"i": 0}
 
-    def fake_embed(endpoint, model, texts):
+    def fake_embed(endpoint, model, texts, **_kwargs):
         call_count["i"] += 1
         if call_count["i"] == 1:
             return [[1.0, 0.0] if "반도체" in t else [0.0, 1.0] for t in texts]
@@ -821,7 +821,7 @@ async def test_build_payload_no_merge_flag_disables_merge(monkeypatch) -> None:
     monkeypatch.setattr(
         lab,
         "embed_batch",
-        lambda endpoint, model, texts: [[1.0, 0.0] for _ in texts],
+        lambda endpoint, model, texts, **_kwargs: [[1.0, 0.0] for _ in texts],
     )
 
     args = Namespace(
@@ -1072,6 +1072,51 @@ class _FakeHTTPResponse:
 
     def read(self, *_args, **_kwargs) -> bytes:
         return json.dumps(self._data).encode()
+
+
+def test_embed_batch_adds_optional_authorization_header(monkeypatch) -> None:
+    captured = {}
+
+    def fake_urlopen(req, timeout):
+        captured["url"] = req.full_url
+        captured["timeout"] = timeout
+        captured["headers"] = dict(req.header_items())
+        captured["body"] = json.loads(req.data.decode())
+        return _FakeHTTPResponse({"data": [{"index": 0, "embedding": [1.0, 2.0]}]})
+
+    monkeypatch.setattr(lab.request, "urlopen", fake_urlopen)
+
+    assert lab.embed_batch(
+        "http://127.0.0.1:8000/v1/embeddings",
+        "local-bge",
+        ["시장 뉴스"],
+        timeout=9,
+        api_key="placeholder-credential",
+    ) == [[1.0, 2.0]]
+    assert captured == {
+        "url": "http://127.0.0.1:8000/v1/embeddings",
+        "timeout": 9,
+        "headers": {
+            "Content-type": "application/json",
+            "Authorization": "Bearer placeholder-credential",
+        },
+        "body": {"model": "local-bge", "input": ["시장 뉴스"]},
+    }
+
+
+def test_embed_batch_omits_authorization_header_without_api_key(monkeypatch) -> None:
+    captured = {}
+
+    def fake_urlopen(req, timeout):
+        captured["headers"] = dict(req.header_items())
+        return _FakeHTTPResponse({"data": [{"index": 0, "embedding": [1.0]}]})
+
+    monkeypatch.setattr(lab.request, "urlopen", fake_urlopen)
+
+    assert lab.embed_batch(
+        "http://127.0.0.1:8000/v1/embeddings", "local-bge", ["뉴스"]
+    ) == [[1.0]]
+    assert "Authorization" not in captured["headers"]
 
 
 def test_null_llm_provider_raises_disabled_reason() -> None:
@@ -1354,7 +1399,9 @@ async def test_build_payload_no_llm_render_adds_fallback_render_metadata(
 
     monkeypatch.setattr(lab, "fetch_articles", fake_fetch_articles)
     monkeypatch.setattr(
-        lab, "embed_batch", lambda endpoint, model, texts: [[1.0, 0.0] for _ in texts]
+        lab,
+        "embed_batch",
+        lambda endpoint, model, texts, **_kwargs: [[1.0, 0.0] for _ in texts],
     )
     args = Namespace(
         market="all",
@@ -1404,7 +1451,9 @@ async def test_build_payload_llm_render_uses_mock_provider_and_reports_counts(
 
     monkeypatch.setattr(lab, "fetch_articles", fake_fetch_articles)
     monkeypatch.setattr(
-        lab, "embed_batch", lambda endpoint, model, texts: [[1.0, 0.0] for _ in texts]
+        lab,
+        "embed_batch",
+        lambda endpoint, model, texts, **_kwargs: [[1.0, 0.0] for _ in texts],
     )
     monkeypatch.setattr(lab, "make_llm_provider", lambda _args: provider)
     args = Namespace(
@@ -1565,4 +1614,217 @@ def test_news_issue_lab_renderer_not_imported_by_app_modules() -> None:
         text = path.read_text()
         if any(token in text for token in forbidden):
             offenders.append(str(path.relative_to(app_root.parent)))
+    assert offenders == []
+
+
+def _quality_issue(
+    title: str,
+    *,
+    rank: int = 1,
+    article_count: int = 2,
+    normalized_source_count: int = 2,
+    markets: list[str] | None = None,
+    topics: list[str] | None = None,
+    flags: dict[str, int] | None = None,
+    representative_articles: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    return {
+        "rank": rank,
+        "cluster_key": f"key-{rank}-{title}",
+        "title_ko": title,
+        "subtitle_ko": "테스트 부제",
+        "direction": "neutral",
+        "article_count": article_count,
+        "source_count": normalized_source_count,
+        "raw_source_count": normalized_source_count,
+        "normalized_source_count": normalized_source_count,
+        "score": 0.5,
+        "score_components": {},
+        "score_penalties": {},
+        "flags": flags or {},
+        "representative_sources": [f"source-{rank}"],
+        "source_counts": {"raw": {}, "normalized": {}},
+        "markets": markets or ["us"],
+        "related_symbols": [],
+        "topics": topics or [title],
+        "representative_articles": representative_articles or [],
+    }
+
+
+def test_evaluate_quality_gate_passes_clean_top5() -> None:
+    payload = {
+        "run": {"market": "us", "quality_top": 5, "llm_render": {"enabled": False}},
+        "issues": [
+            _quality_issue("반도체 슈퍼사이클", rank=1),
+            _quality_issue("미국 금리·연준", rank=2),
+            _quality_issue("전기차·배터리", rank=3),
+            _quality_issue("금·원자재", rank=4),
+            _quality_issue("M&A·사업재편", rank=5),
+        ],
+        "merge_diagnostics": {"decisions": [], "rejected_near_misses": 0},
+    }
+    gate = lab.evaluate_quality_gate(payload, market="us")
+    assert gate["status"] == "pass"
+    assert gate["metrics"]["duplicate_title_count_topn"] == 0
+
+
+def test_evaluate_quality_gate_flags_duplicate_single_source_and_single_article() -> (
+    None
+):
+    payload = {
+        "run": {"market": "us", "quality_top": 5, "llm_render": {"enabled": False}},
+        "issues": [
+            _quality_issue("AI 데이터센터", rank=1, normalized_source_count=1),
+            _quality_issue(
+                "AI 데이터센터", rank=2, article_count=1, normalized_source_count=1
+            ),
+        ],
+        "merge_diagnostics": {"decisions": [], "rejected_near_misses": 0},
+    }
+    gate = lab.evaluate_quality_gate(payload, market="us")
+    codes = {finding["code"] for finding in gate["findings"]}
+    assert gate["status"] == "fail"
+    assert "duplicate_title_topn" in codes
+    assert "single_article_topn" in codes
+    assert "single_source_topn" in codes
+
+
+def test_evaluate_quality_gate_flags_crypto_equity_pollution_and_llm_enabled() -> None:
+    payload = {
+        "run": {"market": "crypto", "quality_top": 5, "llm_render": {"enabled": True}},
+        "issues": [
+            _quality_issue(
+                "미국 증시 최고치",
+                rank=1,
+                markets=["crypto"],
+                topics=["미국 증시 최고치"],
+                representative_articles=[
+                    {"title": "Nasdaq and Wall Street stocks reach records"}
+                ],
+            )
+        ],
+        "merge_diagnostics": {"decisions": [], "rejected_near_misses": 0},
+    }
+    gate = lab.evaluate_quality_gate(payload, market="crypto")
+    codes = {finding["code"] for finding in gate["findings"]}
+    assert gate["status"] == "fail"
+    assert "crypto_equity_topic" in codes
+    assert "llm_enabled_for_eval" in codes
+
+
+def test_suppress_duplicate_top_issues_preserves_suppressed_candidates() -> None:
+    issues = [
+        _quality_issue("AI 데이터센터", rank=1),
+        _quality_issue("AI 데이터센터", rank=2),
+        _quality_issue("비트코인 강세", rank=3, article_count=1),
+        _quality_issue("미국 금리·연준", rank=4),
+    ]
+    selected, suppressed = lab.suppress_duplicate_top_issues(
+        issues, top_n=3, requested_market="us"
+    )
+    reasons = {item["suppression_reason"] for item in suppressed}
+    assert "duplicate_title_topn" in reasons
+    assert "single_article_topn" in reasons
+    assert selected[0]["title_ko"] == "AI 데이터센터"
+
+
+def test_render_markdown_includes_quality_gate_summary() -> None:
+    payload = {
+        "run": {
+            "run_uuid": "run-1",
+            "market": "all",
+            "window_hours": 24,
+            "article_count": 1,
+            "cluster_count": 1,
+            "embedding_model": "BAAI/bge-m3",
+            "embedding_dim": 1024,
+            "threshold": 0.78,
+        },
+        "quality_gate": {
+            "status": "fail",
+            "top_n": 5,
+            "metrics": {
+                "single_article_count_topn": 1,
+                "suppressed_candidate_count": 0,
+            },
+            "findings": [
+                {
+                    "severity": "fail",
+                    "code": "single_article_topn",
+                    "rank": 1,
+                    "title_ko": "테스트",
+                    "reason": "single",
+                }
+            ],
+        },
+        "issues": [_quality_issue("테스트", rank=1, article_count=1)],
+    }
+    rendered = lab.render_markdown(payload)
+    assert "품질 게이트 (ROB-145)" in rendered
+    assert "single_article_topn" in rendered
+
+
+def test_quality_eval_parse_defaults_disable_llm_and_store() -> None:
+    from scripts import news_issue_lab_quality_eval as quality_eval
+
+    args = quality_eval.parse_args([])
+    assert args.markets == ["all", "kr", "us", "crypto"]
+    lab_args = quality_eval._lab_args(args, "crypto")
+    assert lab_args.llm_render is False
+    assert lab_args.store is False
+    assert lab_args.compare_v1 is True
+    assert lab_args.quality_top == 5
+    assert lab_args.embedding_api_key is None
+
+    api_args = quality_eval.parse_args(["--embedding-api-key", "local-test-key"])
+    api_lab_args = quality_eval._lab_args(api_args, "crypto")
+    assert api_lab_args.embedding_api_key == "local-test-key"
+
+
+@pytest.mark.asyncio
+async def test_quality_eval_writes_summary_and_market_artifacts(
+    monkeypatch, tmp_path
+) -> None:
+    from scripts import news_issue_lab_quality_eval as quality_eval
+
+    async def fake_build_payload(args):
+        return {
+            "run": {
+                "run_uuid": f"run-{args.market}",
+                "market": args.market,
+                "window_hours": 24,
+                "article_count": 1,
+                "cluster_count": 1,
+                "embedding_model": "BAAI/bge-m3",
+                "embedding_dim": 1024,
+                "threshold": 0.78,
+            },
+            "quality_gate": {
+                "status": "pass",
+                "top_n": 5,
+                "metrics": {},
+                "findings": [],
+            },
+            "issues": [_quality_issue("테스트", rank=1)],
+        }
+
+    monkeypatch.setattr(quality_eval.lab, "build_payload", fake_build_payload)
+    code = await quality_eval.async_main(
+        ["--markets", "all,crypto", "--output-dir", str(tmp_path), "--format", "both"]
+    )
+    assert code == 0
+    assert (tmp_path / "all.json").exists()
+    assert (tmp_path / "crypto.md").exists()
+    summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
+    assert summary["overall_status"] == "pass"
+
+
+def test_news_issue_lab_quality_eval_not_imported_by_app_modules() -> None:
+    from pathlib import Path
+
+    forbidden = "news_issue_lab_quality_eval"
+    offenders = []
+    for path in Path("app").rglob("*.py"):
+        if forbidden in path.read_text(encoding="utf-8", errors="ignore"):
+            offenders.append(str(path))
     assert offenders == []
