@@ -1,5 +1,5 @@
 // frontend/invest/src/routes.tsx
-import { createBrowserRouter, Navigate, useParams } from "react-router-dom";
+import { createBrowserRouter, Navigate, useLocation, useParams } from "react-router-dom";
 import { DiscoverIssueDetailPage } from "./pages/DiscoverIssueDetailPage";
 import { InvestHomeRoute } from "./pages/desktop/DesktopHomePage";
 import { FeedNewsRoute } from "./pages/desktop/DesktopFeedNewsPage";
@@ -8,12 +8,21 @@ import { SignalsRoute } from "./pages/desktop/DesktopSignalsPage";
 import { CalendarRoute } from "./pages/desktop/DesktopCalendarPage";
 import { DesktopScreenerPage } from "./pages/desktop/DesktopScreenerPage";
 
-// Stage 6: redirect dynamic legacy /app/discover/issues/:issueId path
-// to the canonical /discover/issues/:issueId, preserving the issueId
-// param so external bookmarks survive the rename.
+// Static legacy /app/* redirect that preserves any ?search and #hash
+// from the source URL so market-scoped or anchor-scoped bookmarks
+// (e.g. /invest/app/discover?market=kr) keep their context after the
+// hop to canonical.
+function RedirectWithSearch({ to }: { to: string }) {
+  const { search, hash } = useLocation();
+  return <Navigate to={`${to}${search}${hash}`} replace />;
+}
+
+// Same idea for the dynamic /app/discover/issues/:issueId case —
+// preserve the param plus search/hash on the canonical path.
 function DiscoverIssueRedirect() {
   const { issueId } = useParams();
-  return <Navigate to={`/discover/issues/${issueId ?? ""}`} replace />;
+  const { search, hash } = useLocation();
+  return <Navigate to={`/discover/issues/${issueId ?? ""}${search}${hash}`} replace />;
 }
 
 export const router = createBrowserRouter(
@@ -32,10 +41,11 @@ export const router = createBrowserRouter(
     // /invest/* siblings. The legacy components remain in-tree (not
     // mounted) for one release cycle; deletion lands in a follow-up
     // PR per docs/plans/2026-05-09-invest-app-retirement-inventory.md.
-    { path: "/app", element: <Navigate to="/" replace /> },
-    { path: "/app/paper", element: <Navigate to="/" replace /> },
-    { path: "/app/paper/:variant", element: <Navigate to="/" replace /> },
-    { path: "/app/discover", element: <Navigate to="/discover" replace /> },
+    // Each redirect preserves the original ?search and #hash.
+    { path: "/app", element: <RedirectWithSearch to="/" /> },
+    { path: "/app/paper", element: <RedirectWithSearch to="/" /> },
+    { path: "/app/paper/:variant", element: <RedirectWithSearch to="/" /> },
+    { path: "/app/discover", element: <RedirectWithSearch to="/discover" /> },
     { path: "/app/discover/issues/:issueId", element: <DiscoverIssueRedirect /> },
 
     { path: "*", element: <Navigate to="/" replace /> },

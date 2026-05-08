@@ -74,7 +74,7 @@ export function DesktopDiscoverPage() {
                 return <div style={{ padding: 16, color: "var(--fg-3)" }}>표시할 이슈가 없습니다.</div>;
               }
               return (
-                <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 10 }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                   {sorted.map((issue) => (
                     <IssueCard
                       key={issue.id}
@@ -83,7 +83,7 @@ export function DesktopDiscoverPage() {
                       onToggle={() => setOpenId(openId === issue.id ? null : issue.id)}
                     />
                   ))}
-                </ul>
+                </div>
               );
             })()}
           </div>
