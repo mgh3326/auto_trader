@@ -31,30 +31,35 @@ export function DesktopFeedNewsPage() {
     <DesktopShell
       left={
         <nav style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          {TABS.map((t) => (
-            <button
-              key={t.key}
-              data-testid={`tab-${t.key}`}
-              onClick={() => setTab(t.key)}
-              style={{
-                textAlign: "left", padding: "6px 10px", borderRadius: 6,
-                background: tab === t.key ? "var(--surface-2, #1c1e24)" : "transparent",
-                color: "#e8eaf0", border: "none", cursor: "pointer", fontSize: 13,
-              }}
-            >
-              {t.label}
-            </button>
-          ))}
+          {TABS.map((t) => {
+            const active = tab === t.key;
+            return (
+              <button
+                key={t.key}
+                data-testid={`tab-${t.key}`}
+                onClick={() => setTab(t.key)}
+                style={{
+                  textAlign: "left", padding: "6px 10px", borderRadius: 6,
+                  background: active ? "var(--surface-2)" : "transparent",
+                  color: active ? "var(--fg)" : "var(--fg-2)",
+                  fontWeight: active ? 700 : 500,
+                  border: "none", cursor: "pointer", fontSize: 13,
+                }}
+              >
+                {t.label}
+              </button>
+            );
+          })}
         </nav>
       }
       center={
         <div data-testid="feed-center">
-          {err && <div style={{ color: "#f59e9e", marginBottom: 12 }}>오류: {err}</div>}
+          {err && <div style={{ color: "var(--danger)", marginBottom: 12 }}>오류: {err}</div>}
           {data?.meta?.emptyReason === "no_holdings" && (
-            <div style={{ padding: 16, color: "#9ba0ab" }}>보유 종목이 없습니다.</div>
+            <div style={{ padding: 16, color: "var(--fg-3)" }}>보유 종목이 없습니다.</div>
           )}
           {data?.meta?.emptyReason === "no_watchlist" && (
-            <div style={{ padding: 16, color: "#9ba0ab" }}>관심 종목이 없습니다.</div>
+            <div style={{ padding: 16, color: "var(--fg-3)" }}>관심 종목이 없습니다.</div>
           )}
           <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 8 }}>
             {(data?.items ?? []).map((it) => {
@@ -64,20 +69,25 @@ export function DesktopFeedNewsPage() {
                   key={it.id}
                   data-testid="feed-item"
                   data-relation={it.relation}
-                  style={{ padding: 12, borderRadius: 10, background: "var(--surface, #15181f)" }}
+                  style={{
+                    padding: 12, borderRadius: 10,
+                    background: "var(--surface)",
+                    border: "1px solid var(--border)",
+                    boxShadow: "var(--shadow-1)",
+                  }}
                 >
                   <button
                     onClick={() => setSelectedId(open ? null : it.id)}
-                    style={{ background: "none", border: "none", color: "#e8eaf0", textAlign: "left", padding: 0, cursor: "pointer", width: "100%" }}
+                    style={{ background: "none", border: "none", color: "var(--fg)", textAlign: "left", padding: 0, cursor: "pointer", width: "100%" }}
                   >
                     <div style={{ fontSize: 14, fontWeight: 600 }}>{it.title}</div>
-                    <div style={{ fontSize: 11, color: "#9ba0ab", marginTop: 4 }}>
+                    <div style={{ fontSize: 11, color: "var(--fg-3)", marginTop: 4 }}>
                       {it.publisher ?? "—"} · {it.market.toUpperCase()}
                       {it.relation !== "none" && <span style={{ marginLeft: 8 }}>[{it.relation}]</span>}
                     </div>
                   </button>
                   {open && it.summarySnippet && (
-                    <div style={{ marginTop: 8, fontSize: 13, color: "#cfd2da" }}>{it.summarySnippet}</div>
+                    <div style={{ marginTop: 8, fontSize: 13, color: "var(--fg-2)" }}>{it.summarySnippet}</div>
                   )}
                 </li>
               );
