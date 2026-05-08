@@ -19,6 +19,9 @@ class NewsRelatedSymbol(BaseModel):
     symbol: str
     market: NewsMarket
     displayName: str
+    relation: RelationKind = "none"
+    matchReason: str | None = None
+    matchedTerm: str | None = None
 
 
 class FeedNewsItem(BaseModel):
