@@ -5,11 +5,13 @@ import type { AccountFilterKey } from "../../desktop/LeftContextRail";
 import { RightAccountPanel } from "../../desktop/RightAccountPanel";
 import { useAccountPanel } from "../../desktop/useAccountPanel";
 import { useInvestHome } from "../../hooks/useInvestHome";
+import { scopeGroupedToSource } from "../../desktop/scopeHoldings";
 import { DesktopHero } from "../../components/home/DesktopHero";
 import { MarketStrip } from "../../components/home/MarketStrip";
 import { HoldingsTable } from "../../components/home/HoldingsTable";
 import { FilterChips } from "../../components/home/FilterChips";
 import type { AssetCategoryKey } from "../../components/AssetCategoryFilter";
+import type { AccountSource, HomeSummary } from "../../types/invest";
 
 export function DesktopHomePage() {
   const home = useInvestHome();
@@ -19,16 +21,23 @@ export function DesktopHomePage() {
 
   const data = home.state.status === "ready" ? home.state.data : null;
 
-  const filteredGrouped = useMemo(() => {
+  // Account scope must propagate to every surface that shows holdings totals
+  // (hero breakdown + table) so the user sees one consistent view of the
+  // selected slice. The summary number itself comes from the API account
+  // record, which represents the account's authoritative total.
+  const scopedGrouped = useMemo(() => {
     if (!data) return [];
-    return data.groupedHoldings.filter((g) => {
-      const accountMatch = account === "all" || g.includedSources.includes(account as never);
-      const categoryMatch = category === "all" || g.assetCategory === category;
-      return accountMatch && categoryMatch;
-    });
-  }, [data, account, category]);
+    if (account === "all") return data.groupedHoldings;
+    return scopeGroupedToSource(data.groupedHoldings, account as AccountSource);
+  }, [data, account]);
 
-  const summary = useMemo(() => {
+  const filteredScoped = useMemo(() => {
+    return category === "all"
+      ? scopedGrouped
+      : scopedGrouped.filter((g) => g.assetCategory === category);
+  }, [scopedGrouped, category]);
+
+  const summary: HomeSummary | null = useMemo(() => {
     if (!data) return null;
     if (account === "all") return data.homeSummary;
     const acct = data.accounts.find((a) => a.source === account);
@@ -87,15 +96,15 @@ export function DesktopHomePage() {
             <>
               <DesktopHero
                 summary={summary}
-                accountCount={data.accounts.length}
-                holdings={data.groupedHoldings}
+                accountCount={account === "all" ? data.accounts.length : 1}
+                holdings={scopedGrouped}
               />
               <MarketStrip items={[]} />
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
                 <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, letterSpacing: "-0.01em" }}>보유 종목</h2>
                 <FilterChips value={category} onChange={setCategory} />
               </div>
-              <HoldingsTable holdings={filteredGrouped} filter="all" />
+              <HoldingsTable holdings={filteredScoped} filter="all" />
               {data.meta?.warnings && data.meta.warnings.length > 0 && (
                 <div
                   role="alert"
@@ -114,7 +123,14 @@ export function DesktopHomePage() {
           )}
         </>
       }
-      right={<RightAccountPanel data={panel.data} loading={panel.loading} error={panel.error} />}
+      right={
+        <RightAccountPanel
+          data={panel.data}
+          loading={panel.loading}
+          error={panel.error}
+          onRefresh={panel.reload}
+        />
+      }
     />
   );
 }

@@ -15,12 +15,9 @@ function fmtUsd(v: number | null | undefined): string {
   return `$${v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-function fmtQty(qty: number, market: GroupedHolding["market"], assetType: GroupedHolding["assetType"]): string {
-  if (assetType === "crypto") {
-    return `${qty}`;
-  }
-  if (market === "KR") return `${qty.toLocaleString("ko-KR")}주`;
-  return `${qty.toLocaleString("ko-KR")} shares`;
+function fmtQty(qty: number, _market: GroupedHolding["market"], assetType: GroupedHolding["assetType"]): string {
+  if (assetType === "crypto") return `${qty}`;
+  return `${qty.toLocaleString("ko-KR")}주`;
 }
 
 export function HoldingsTable({

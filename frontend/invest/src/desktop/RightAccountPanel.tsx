@@ -32,10 +32,12 @@ export function RightAccountPanel({
   data,
   error,
   loading,
+  onRefresh,
 }: {
   data?: AccountPanelResponse;
   error?: string;
   loading?: boolean;
+  onRefresh?: () => void;
 }) {
   if (loading || (!data && !error)) {
     return (
@@ -76,16 +78,19 @@ export function RightAccountPanel({
         ) : (
           <div style={{ marginTop: 4, fontSize: 13, color: "var(--fg-3)" }}>—</div>
         )}
-        <div style={{ display: "flex", gap: 6, marginTop: 14 }}>
-          <Button size="sm" variant="primary" style={{ flex: 1, justifyContent: "center" }}>
-            <Icon name="plus" size={14} />
-            계좌 추가
-          </Button>
-          <Button size="sm" variant="secondary" style={{ flex: 1, justifyContent: "center" }}>
-            <Icon name="refresh" size={14} />
-            새로고침
-          </Button>
-        </div>
+        {onRefresh && (
+          <div style={{ display: "flex", gap: 6, marginTop: 14 }}>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={onRefresh}
+              style={{ flex: 1, justifyContent: "center" }}
+            >
+              <Icon name="refresh" size={14} />
+              새로고침
+            </Button>
+          </div>
+        )}
       </Card>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>

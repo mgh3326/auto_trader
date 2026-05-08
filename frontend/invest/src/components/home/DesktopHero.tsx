@@ -1,5 +1,5 @@
 import type { GroupedHolding, HomeSummary } from "../../types/invest";
-import { Button, Card, Icon, PL } from "../../ds";
+import { Card, PL } from "../../ds";
 
 const CATEGORY_LABEL: Record<string, string> = {
   kr_stock: "한국주식",
@@ -47,41 +47,29 @@ export function DesktopHero({
 
   return (
     <Card data-testid="hero-card" style={{ padding: 24 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
-        <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: 13, color: "var(--fg-3)", fontWeight: 500 }}>{subtitle}</div>
-          <div
-            style={{
-              fontSize: "clamp(28px, 2.2vw, 32px)",
-              fontWeight: 700,
-              letterSpacing: "-0.025em",
-              marginTop: 2,
-              fontFeatureSettings: '"tnum"',
-            }}
-          >
-            {fmtKrw(summary.totalValueKrw)}
-          </div>
-          {summary.pnlKrw != null && summary.pnlRate != null ? (
-            <div style={{ marginTop: 2 }}>
-              <PL value={summary.pnlKrw} pct={summary.pnlRate * 100} size={14} />
-            </div>
-          ) : (
-            <div style={{ marginTop: 2, fontSize: 14, color: "var(--fg-3)" }}>—</div>
-          )}
-          <div style={{ fontSize: 12, color: "var(--fg-3)", marginTop: 4 }}>
-            {summary.costBasisKrw != null ? `원금 ${fmtKrw(summary.costBasisKrw)}` : "원금 산정 불가"}
-            {asOfLabel ? ` · ${asOfLabel} 업데이트` : ""}
-          </div>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 13, color: "var(--fg-3)", fontWeight: 500 }}>{subtitle}</div>
+        <div
+          style={{
+            fontSize: "clamp(28px, 2.2vw, 32px)",
+            fontWeight: 700,
+            letterSpacing: "-0.025em",
+            marginTop: 2,
+            fontFeatureSettings: '"tnum"',
+          }}
+        >
+          {fmtKrw(summary.totalValueKrw)}
         </div>
-        <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-          <Button size="sm" variant="secondary">
-            <Icon name="chart" size={14} />
-            차트
-          </Button>
-          <Button size="sm" variant="primary">
-            <Icon name="plus" size={14} />
-            주문
-          </Button>
+        {summary.pnlKrw != null && summary.pnlRate != null ? (
+          <div style={{ marginTop: 2 }}>
+            <PL value={summary.pnlKrw} pct={summary.pnlRate * 100} size={14} />
+          </div>
+        ) : (
+          <div style={{ marginTop: 2, fontSize: 14, color: "var(--fg-3)" }}>—</div>
+        )}
+        <div style={{ fontSize: 12, color: "var(--fg-3)", marginTop: 4 }}>
+          {summary.costBasisKrw != null ? `원금 ${fmtKrw(summary.costBasisKrw)}` : "원금 산정 불가"}
+          {asOfLabel ? ` · ${asOfLabel} 업데이트` : ""}
         </div>
       </div>
 
