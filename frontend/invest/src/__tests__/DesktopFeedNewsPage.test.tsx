@@ -88,7 +88,9 @@ test("renders an issue chip linked to the issue detail page when issueId is pres
   );
   const chip = await screen.findByTestId("feed-item-issue-chip");
   expect(chip).toHaveTextContent("삼성전자 실적 발표");
-  expect(chip).toHaveAttribute("href", "/invest/app/discover/issues/iss-xyz");
+  // Chip points at the canonical /discover route (Stage 4.2). Legacy
+  // /app/discover/issues/:id remains routable for backwards compat.
+  expect(chip).toHaveAttribute("href", "/invest/discover/issues/iss-xyz");
   expect(chip).toHaveAttribute("data-issue-id", "iss-xyz");
 });
 

@@ -9,12 +9,10 @@ interface NavItem {
   end?: boolean;
 }
 
-// 발견 currently routes to the legacy /app/discover path. Stage 4.2 introduces
-// a canonical /discover route and this entry switches over.
 const ITEMS: NavItem[] = [
   { to: "/", label: "홈", icon: "home", end: true },
   { to: "/feed/news", label: "뉴스", icon: "bell" },
-  { to: "/app/discover", label: "발견", icon: "flash" },
+  { to: "/discover", label: "발견", icon: "flash" },
   { to: "/signals", label: "시그널", icon: "chart" },
   { to: "/calendar", label: "캘린더", icon: "calendar" },
 ];

@@ -4,9 +4,7 @@ import { Icon } from "../ds";
 const LINKS: { to: string; label: string; end?: boolean }[] = [
   { to: "/", label: "홈", end: true },
   { to: "/feed/news", label: "뉴스" },
-  // 발견 currently points at the legacy mobile route. Stage 4.2 introduces a
-  // canonical /discover and this link switches to it.
-  { to: "/app/discover", label: "발견" },
+  { to: "/discover", label: "발견" },
   { to: "/signals", label: "시그널" },
   { to: "/calendar", label: "캘린더" },
   { to: "/screener", label: "골라보기" },
