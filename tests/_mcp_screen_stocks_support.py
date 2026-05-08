@@ -3,8 +3,7 @@
 
 import logging
 from collections.abc import Awaitable, Callable
-from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pandas as pd
@@ -17,76 +16,19 @@ from app.mcp_server.tooling import (
     analysis_screening,
     fundamentals_sources_naver,
 )
-from app.mcp_server.tooling.registry import register_all_tools
 from app.mcp_server.tooling.screening import crypto as screening_crypto
 from app.mcp_server.tooling.screening import enrichment as screening_enrichment
 from app.mcp_server.tooling.screening import kr as screening_kr
 from app.mcp_server.tooling.screening import us as screening_us
 from app.services import naver_finance
-from tests._mcp_tooling_support import _patch_runtime_attr
+from tests._mcp_tooling_support import (
+    _patch_runtime_attr,
+    build_tools,
+)
+
+pytest_plugins = ("tests._mcp_tooling_support",)
 
 ToolFunc = Callable[..., Awaitable[Any]]
-
-
-class _TvCondition:
-    def __init__(self, label: str) -> None:
-        self.label = label
-
-    def __eq__(self, other: object) -> bool:
-        return isinstance(other, _TvCondition) and self.label == other.label
-
-    def __and__(self, other: object) -> object:
-        raise AssertionError("crypto filters must not be combined with '&'")
-
-
-class _TvField:
-    def __init__(self, label: str) -> None:
-        self.label = label
-
-    def __eq__(self, other: object) -> bool:
-        return cast(bool, cast(object, _TvCondition(f"{self.label}=={other}")))
-
-    def isin(self, other: object) -> _TvCondition:
-        values = list(cast(Any, other))
-        return _TvCondition(f"{self.label} in {values}")
-
-
-class DummyMCP:
-    def __init__(self) -> None:
-        self.tools: dict[str, ToolFunc] = {}
-
-    def tool(self, name: str, description: str):
-        _ = description
-
-        def decorator(func: ToolFunc) -> ToolFunc:
-            self.tools[name] = func
-            return func
-
-        return decorator
-
-
-def build_tools() -> dict[str, ToolFunc]:
-    mcp = DummyMCP()
-    register_all_tools(cast(Any, mcp))
-    return mcp.tools
-
-
-@pytest.fixture
-def fake_crypto_tvscreener_module() -> SimpleNamespace:
-    return SimpleNamespace(
-        CryptoField=SimpleNamespace(
-            NAME=_TvField("name"),
-            DESCRIPTION=_TvField("description"),
-            PRICE=_TvField("price"),
-            CHANGE_PERCENT=_TvField("change_percent"),
-            RELATIVE_STRENGTH_INDEX_14=_TvField("rsi14"),
-            AVERAGE_DIRECTIONAL_INDEX_14=_TvField("adx14"),
-            VOLUME_24H_IN_USD=_TvField("volume24h"),
-            VALUE_TRADED=_TvField("value_traded"),
-            MARKET_CAP=_TvField("market_cap"),
-            EXCHANGE=_TvField("exchange"),
-        )
-    )
 
 
 @pytest.fixture
