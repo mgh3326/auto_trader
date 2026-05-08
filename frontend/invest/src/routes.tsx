@@ -8,7 +8,7 @@ import { InvestHomeRoute } from "./pages/desktop/DesktopHomePage";
 import { FeedNewsRoute } from "./pages/desktop/DesktopFeedNewsPage";
 import { InvestDiscoverRoute } from "./pages/desktop/DesktopDiscoverPage";
 import { SignalsRoute } from "./pages/desktop/DesktopSignalsPage";
-import { DesktopCalendarPage } from "./pages/desktop/DesktopCalendarPage";
+import { CalendarRoute } from "./pages/desktop/DesktopCalendarPage";
 import { DesktopScreenerPage } from "./pages/desktop/DesktopScreenerPage";
 
 export const router = createBrowserRouter(
@@ -20,7 +20,7 @@ export const router = createBrowserRouter(
     { path: "/discover", element: <InvestDiscoverRoute /> },
     { path: "/discover/issues/:issueId", element: <DiscoverIssueDetailPage /> },
     { path: "/signals", element: <SignalsRoute /> },
-    { path: "/calendar", element: <DesktopCalendarPage /> },
+    { path: "/calendar", element: <CalendarRoute /> },
     { path: "/screener", element: <DesktopScreenerPage /> },
 
     // Legacy /invest/app/* surface — preserved until Stage 6 retires it.
