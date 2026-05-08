@@ -1,4 +1,5 @@
 """Unit tests for calendar_service."""
+
 from __future__ import annotations
 
 from datetime import date

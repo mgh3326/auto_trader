@@ -5,6 +5,7 @@ MUST NOT import broker/watch/redis/kis/upbit/task-queue. See safety test.
 This router is registered AFTER invest_api and invest_app_spa, so
 /invest/api/* and /invest/app/* take precedence.
 """
+
 from __future__ import annotations
 
 import logging

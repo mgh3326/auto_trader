@@ -1,4 +1,5 @@
 """Unit tests for relation_resolver."""
+
 from __future__ import annotations
 
 import pytest

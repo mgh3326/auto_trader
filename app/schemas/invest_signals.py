@@ -1,4 +1,5 @@
 """ROB-143 — /invest/api/signals schema."""
+
 from __future__ import annotations
 
 from datetime import datetime

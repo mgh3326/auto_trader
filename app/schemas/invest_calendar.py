@@ -1,4 +1,5 @@
 """ROB-144 — /invest/api/calendar + weekly-summary schemas."""
+
 from __future__ import annotations
 
 from datetime import date, datetime

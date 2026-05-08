@@ -1,4 +1,5 @@
 """Unit tests for signals_service."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime

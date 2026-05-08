@@ -1,4 +1,5 @@
 """Tests for feed_news_service."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -9,8 +10,14 @@ import pytest
 from app.services.invest_view_model.relation_resolver import RelationResolver
 
 
-def _fake_article(*, id: int, market: str = "kr", symbol: str | None = None,
-                  name: str | None = None, published_at: datetime | None = None) -> MagicMock:
+def _fake_article(
+    *,
+    id: int,
+    market: str = "kr",
+    symbol: str | None = None,
+    name: str | None = None,
+    published_at: datetime | None = None,
+) -> MagicMock:
     a = MagicMock()
     a.id = id
     a.market = market
@@ -44,7 +51,9 @@ async def test_feed_news_top_tab(monkeypatch) -> None:
     )
 
     resolver = RelationResolver()
-    resp = await svc.build_feed_news(db=db, resolver=resolver, tab="top", limit=30, cursor=None)
+    resp = await svc.build_feed_news(
+        db=db, resolver=resolver, tab="top", limit=30, cursor=None
+    )
     assert resp.tab == "top"
     assert len(resp.items) == 1
     assert resp.items[0].id == 1

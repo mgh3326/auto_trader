@@ -1,4 +1,5 @@
 """ROB-141 — assemble AccountPanelResponse for /invest/api/account-panel."""
+
 from __future__ import annotations
 
 from sqlalchemy import select
@@ -15,7 +16,10 @@ from app.services.invest_view_model.relation_resolver import _TYPE_TO_MARKET
 
 
 async def build_account_panel(
-    *, user_id: int, db: AsyncSession, home_service: InvestHomeService,
+    *,
+    user_id: int,
+    db: AsyncSession,
+    home_service: InvestHomeService,
 ) -> AccountPanelResponse:
     home = await home_service.get_home(user_id=user_id)
     watch_symbols, watch_available = await _load_watch_symbols(db, user_id=user_id)
@@ -42,7 +46,10 @@ async def _load_watch_symbols(
 
     stmt = (
         select(
-            Instrument.symbol, Instrument.type, Instrument.name, UserWatchItem.note,
+            Instrument.symbol,
+            Instrument.type,
+            Instrument.name,
+            UserWatchItem.note,
         )
         .join(UserWatchItem, UserWatchItem.instrument_id == Instrument.id)
         .where(UserWatchItem.user_id == user_id, UserWatchItem.is_active.is_(True))

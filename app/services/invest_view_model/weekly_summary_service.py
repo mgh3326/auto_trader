@@ -1,4 +1,5 @@
 """ROB-144 — weekly summary composer from existing market_reports."""
+
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta

@@ -1,4 +1,5 @@
 """ROB-142 — feed/news view-model assembler."""
+
 from __future__ import annotations
 
 import base64
@@ -57,7 +58,9 @@ async def build_feed_news(
     issues = []
     if tab in ("top", "hot"):
         try:
-            issues_resp = await build_market_issues(market="all", window_hours=24, limit=10)
+            issues_resp = await build_market_issues(
+                market="all", window_hours=24, limit=10
+            )
             issues = issues_resp.items
         except Exception:
             issues = []
@@ -92,9 +95,9 @@ async def build_feed_news(
     article_ids = [r.id for r in rows]
     analysis_map: dict[int, str] = {}
     if article_ids:
-        a_stmt = select(NewsAnalysisResult.article_id, NewsAnalysisResult.summary).where(
-            NewsAnalysisResult.article_id.in_(article_ids)
-        )
+        a_stmt = select(
+            NewsAnalysisResult.article_id, NewsAnalysisResult.summary
+        ).where(NewsAnalysisResult.article_id.in_(article_ids))
         for art_id, summary in (await db.execute(a_stmt)).all():
             analysis_map[art_id] = summary
 
@@ -114,7 +117,8 @@ async def build_feed_news(
             )
         relation = (
             resolver.relation(market_value, row.stock_symbol)
-            if row.stock_symbol else "none"
+            if row.stock_symbol
+            else "none"
         )
         items.append(
             FeedNewsItem(

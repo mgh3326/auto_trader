@@ -1,4 +1,5 @@
 """Safety: invest_view_model package must not import broker/order/mutation paths."""
+
 from __future__ import annotations
 
 import json
@@ -44,7 +45,11 @@ print(json.dumps(sorted(sys.modules)))
     env["PYTHONPATH"] = str(project_root)
     result = subprocess.run(
         [sys.executable, "-c", script],
-        cwd=project_root, env=env, check=True, capture_output=True, text=True,
+        cwd=project_root,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
     )
     loaded = set(json.loads(result.stdout))
     violations = sorted(

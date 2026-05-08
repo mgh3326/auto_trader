@@ -1,4 +1,5 @@
 """Unit tests for weekly_summary_service."""
+
 from __future__ import annotations
 
 from datetime import date

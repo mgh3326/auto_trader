@@ -110,7 +110,11 @@ async def get_calendar(
         db, user_id=user.id, held_pairs=_held_pairs_from_home(home)
     )
     return await build_calendar(
-        db=db, resolver=resolver, from_date=from_date, to_date=to_date, tab=tab,
+        db=db,
+        resolver=resolver,
+        from_date=from_date,
+        to_date=to_date,
+        tab=tab,
     )
 
 

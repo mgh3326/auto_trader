@@ -1,4 +1,5 @@
 """ROB-143 — signals view-model assembler."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime

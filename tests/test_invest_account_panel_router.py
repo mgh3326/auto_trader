@@ -1,4 +1,5 @@
 """Tests for GET /invest/api/account-panel."""
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
@@ -20,12 +21,21 @@ async def test_account_panel_combines_home_and_watch(monkeypatch) -> None:
     from app.services.invest_view_model.account_panel_service import build_account_panel
 
     fake_home = InvestHomeResponse(
-        homeSummary=HomeSummary(includedSources=["kis"], excludedSources=[], totalValueKrw=0.0),
-        accounts=[Account(
-            accountId="a1", displayName="K", source="kis", accountKind="live",
-            includedInHome=True, valueKrw=0.0, cashBalances=CashAmounts(),
-            buyingPower=CashAmounts(),
-        )],
+        homeSummary=HomeSummary(
+            includedSources=["kis"], excludedSources=[], totalValueKrw=0.0
+        ),
+        accounts=[
+            Account(
+                accountId="a1",
+                displayName="K",
+                source="kis",
+                accountKind="live",
+                includedInHome=True,
+                valueKrw=0.0,
+                cashBalances=CashAmounts(),
+                buyingPower=CashAmounts(),
+            )
+        ],
         holdings=[],
         groupedHoldings=[],
         meta=InvestHomeResponseMeta(),

@@ -1,4 +1,5 @@
 """ROB-142 — /invest/api/feed/news schema."""
+
 from __future__ import annotations
 
 from datetime import datetime

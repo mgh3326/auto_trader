@@ -1,4 +1,5 @@
 """Compute (held / watchlist / both / none) per (market, symbol) for a user."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

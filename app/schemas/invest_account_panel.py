@@ -1,4 +1,5 @@
 """ROB-141 — /invest/api/account-panel response schema."""
+
 from __future__ import annotations
 
 from typing import Literal

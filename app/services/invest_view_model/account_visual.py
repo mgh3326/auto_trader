@@ -1,4 +1,5 @@
 """Account source -> visual tone/badge mapping for /invest desktop UI."""
+
 from __future__ import annotations
 
 from typing import Literal
@@ -32,7 +33,9 @@ _VISUAL_MAP: dict[str, tuple[Tone, BadgeText, str]] = {
 
 def visual_for(source: str) -> AccountSourceVisual:
     tone, badge, display = _VISUAL_MAP.get(source, ("gray", "Manual", source))
-    return AccountSourceVisual(source=source, tone=tone, badge=badge, displayName=display)
+    return AccountSourceVisual(
+        source=source, tone=tone, badge=badge, displayName=display
+    )
 
 
 def all_visuals() -> list[AccountSourceVisual]:
