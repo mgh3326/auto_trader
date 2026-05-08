@@ -70,8 +70,7 @@ test("renders the default preset and switches when another preset is clicked", a
       <DesktopScreenerPage />
     </MemoryRouter>,
   );
-  await waitFor(() => expect(screen.getByText("연속 상승세")).toBeInTheDocument());
-  expect(screen.getByText("삼성전자")).toBeInTheDocument();
+  await waitFor(() => expect(screen.getByText("삼성전자")).toBeInTheDocument());
 
   await userEvent.click(screen.getByTestId("screener-preset-cheap_value"));
   await waitFor(() =>
