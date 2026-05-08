@@ -26,6 +26,7 @@ export function DesktopScreenerPage() {
     fetchScreenerPresets()
       .then((r) => {
         if (cancel) return;
+        setErr(undefined);
         setPresets(r);
         setSelectedId(r.selectedPresetId ?? r.presets[0]?.id ?? null);
       })
@@ -37,8 +38,13 @@ export function DesktopScreenerPage() {
     if (!selectedId) return;
     let cancel = false;
     setResults(undefined);
+    setErr(undefined);
     fetchScreenerResults(selectedId)
-      .then((r) => !cancel && setResults(r))
+      .then((r) => {
+        if (cancel) return;
+        setErr(undefined);
+        setResults(r);
+      })
       .catch((e) => !cancel && setErr(String(e?.message ?? e)));
     return () => { cancel = true; };
   }, [selectedId]);

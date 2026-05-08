@@ -21,7 +21,7 @@ def _stub_screening_rows() -> list[dict[str, Any]]:
             "name": "삼성전자",
             "market": "kr",
             "sector": "반도체",
-            "market_cap": 478_000_000_000_000,
+            "market_cap_krw": 478_000_000_000_000,
             "close": 80_000,
             "change_rate": 1.23,
             "change_amount": 970,
@@ -36,7 +36,7 @@ def _stub_screening_rows() -> list[dict[str, Any]]:
             "name": "카카오",
             "market": "kr",
             "sector": "인터넷",
-            "market_cap": 20_000_000_000_000,
+            "market_cap_krw": 20_000_000_000_000,
             "close": 45_000,
             "change_rate": -0.5,
             "change_amount": -200,
@@ -70,7 +70,7 @@ async def test_build_screener_presets_returns_default_selected() -> None:
 async def test_build_screener_results_consecutive_gainers_happy_path() -> None:
     fake_screening = MagicMock()
     fake_screening.list_screening = AsyncMock(
-        return_value={"stocks": _stub_screening_rows(), "warnings": []}
+        return_value={"results": _stub_screening_rows(), "warnings": []}
     )
     resolver = _FakeResolver(watched={("kr", "005930")})
 
@@ -86,6 +86,7 @@ async def test_build_screener_results_consecutive_gainers_happy_path() -> None:
     assert len(resp.results) == 2
     assert resp.results[0].rank == 1
     assert resp.results[0].symbol == "005930"
+    assert resp.results[0].marketCapLabel == "478.0조원"
     assert resp.results[0].isWatched is True
     assert resp.results[0].changeDirection == "up"
     assert resp.results[1].symbol == "035720"
@@ -121,13 +122,13 @@ async def test_build_screener_results_unavailable_metric_uses_dash_and_warns() -
     fake_screening = MagicMock()
     fake_screening.list_screening = AsyncMock(
         return_value={
-            "stocks": [
+            "results": [
                 {
                     "symbol": "035720",
                     "name": "카카오",
                     "market": "kr",
                     "sector": "인터넷",
-                    "market_cap": 20_000_000_000_000,
+                    "market_cap_krw": 20_000_000_000_000,
                     "close": 45_000,
                     "change_rate": -0.5,
                     "volume": 3_000_000,
@@ -155,7 +156,7 @@ async def test_build_screener_results_screening_warnings_propagate() -> None:
     fake_screening = MagicMock()
     fake_screening.list_screening = AsyncMock(
         return_value={
-            "stocks": [],
+            "results": [],
             "warnings": ["KIS quote service degraded"],
         }
     )

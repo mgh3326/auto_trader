@@ -128,7 +128,7 @@ async def build_screener_results(
 
     filters = screening_filters_for(preset_id)
     raw = await screening_service.list_screening(**filters)
-    rows: list[dict[str, Any]] = list(raw.get("stocks") or [])
+    rows: list[dict[str, Any]] = list(raw.get("results") or raw.get("stocks") or [])
     upstream_warnings: list[str] = list(raw.get("warnings") or [])
 
     results: list[ScreenerResultRow] = []
@@ -154,7 +154,9 @@ async def build_screener_results(
                 changeAmountLabel=_format_change_amount(row.get("change_amount")),
                 changeDirection=direction,
                 category=str(row.get("sector") or row.get("category") or "-"),
-                marketCapLabel=_format_market_cap_kr(row.get("market_cap")),
+                marketCapLabel=_format_market_cap_kr(
+                    row.get("market_cap_krw") or row.get("market_cap")
+                ),
                 volumeLabel=_format_volume(row.get("volume")),
                 analystLabel=str(row.get("analyst_label") or "-"),
                 metricValueLabel=metric_label,

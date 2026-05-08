@@ -39,13 +39,13 @@ class _StubScreening:
     def __init__(self, payload: dict[str, Any] | None = None) -> None:
         self.calls: list[dict[str, Any]] = []
         self._payload = payload or {
-            "stocks": [
+            "results": [
                 {
                     "symbol": "005930",
                     "name": "삼성전자",
                     "market": "kr",
                     "sector": "반도체",
-                    "market_cap": 478_000_000_000_000,
+                    "market_cap_krw": 478_000_000_000_000,
                     "close": 80_000,
                     "change_rate": 1.23,
                     "change_amount": 970,

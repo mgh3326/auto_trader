@@ -4,19 +4,36 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import uuid4
 
 import redis.asyncio as redis
 from redis.exceptions import WatchError
 
 from app.core.config import settings
-from app.mcp_server.tooling.analysis_screen_core import normalize_screen_request
-from app.mcp_server.tooling.analysis_tool_handlers import screen_stocks_impl
-from app.mcp_server.tooling.order_execution import _place_order_impl
-from app.services.openclaw_client import OpenClawClient
+
+if TYPE_CHECKING:
+    from app.services.openclaw_client import OpenClawClient
 
 ScreenMarket = Literal["kr", "us", "crypto"]
+
+
+async def screen_stocks_impl(**kwargs: Any) -> dict[str, Any]:
+    """Lazy wrapper for the MCP screening implementation.
+
+    Tests monkeypatch this module-level name, while read-only `/invest` paths
+    can import ScreenerService without loading the full MCP registry/order stack.
+    """
+    from app.mcp_server.tooling.analysis_tool_handlers import screen_stocks_impl as impl
+
+    return await impl(**kwargs)
+
+
+async def _place_order_impl(**kwargs: Any) -> dict[str, Any]:
+    """Lazy wrapper for order execution; only order paths should invoke it."""
+    from app.mcp_server.tooling.order_execution import _place_order_impl as impl
+
+    return await impl(**kwargs)
 
 
 @dataclass(slots=True)
@@ -46,7 +63,14 @@ class ScreenerService:
         openclaw_client: OpenClawClient | None = None,
     ) -> None:
         self._redis = redis_client
-        self._openclaw = openclaw_client or OpenClawClient()
+        self._openclaw = openclaw_client
+
+    def _get_openclaw(self) -> OpenClawClient:
+        if self._openclaw is None:
+            from app.services.openclaw_client import OpenClawClient
+
+            self._openclaw = OpenClawClient()
+        return self._openclaw
 
     async def _get_redis(self) -> redis.Redis:
         if self._redis is None:
@@ -320,6 +344,8 @@ class ScreenerService:
         min_volume: float | None = None,
         limit: int = 50,
     ) -> dict[str, Any]:
+        from app.mcp_server.tooling.analysis_screen_core import normalize_screen_request
+
         normalized_request = normalize_screen_request(
             market=market,
             asset_type=asset_type,
@@ -458,6 +484,8 @@ class ScreenerService:
         min_volume: float | None = None,
         limit: int = 50,
     ) -> dict[str, Any]:
+        from app.mcp_server.tooling.analysis_screen_core import normalize_screen_request
+
         normalized_request = normalize_screen_request(
             market=market,
             asset_type=asset_type,
@@ -614,7 +642,7 @@ class ScreenerService:
         )
         instrument_type = self._instrument_type(normalized_market)
         try:
-            job_id = await self._openclaw.request_analysis(
+            job_id = await self._get_openclaw().request_analysis(
                 prompt=prompt,
                 symbol=normalized_symbol,
                 name=display_name,
