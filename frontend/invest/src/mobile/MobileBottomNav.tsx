@@ -23,12 +23,12 @@ export function MobileBottomNav() {
   return (
     <nav
       data-testid="mobile-bottom-nav"
+      className="mobile-bottom-nav"
       style={{
         display: "grid",
         gridTemplateColumns: "repeat(5, 1fr)",
         borderTop: "1px solid var(--divider)",
         background: "var(--surface)",
-        padding: "6px 0 8px",
         flexShrink: 0,
       }}
     >
