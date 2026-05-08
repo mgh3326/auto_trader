@@ -54,16 +54,18 @@ async def build_feed_news(
     if tab in ("kr", "us", "crypto"):
         market_filter = tab
 
-    # Hot issues for top tab.
-    issues = []
-    if tab in ("top", "hot"):
-        try:
-            issues_resp = await build_market_issues(
-                market="all", window_hours=24, limit=10
-            )
-            issues = issues_resp.items
-        except Exception:
-            issues = []
+    # Build market issues for the relevant window so each news item can be
+    # linked to its clustered issue (ROB-148). For market-scoped tabs we
+    # filter by that market; for other tabs we cluster across markets so
+    # items from any market can be linked.
+    issues_market = market_filter or "all"
+    try:
+        issues_resp = await build_market_issues(
+            market=issues_market, window_hours=24, limit=20
+        )
+        issues = issues_resp.items
+    except Exception:
+        issues = []
 
     # Base news query.
     stmt = select(NewsArticle).order_by(
@@ -101,6 +103,13 @@ async def build_feed_news(
         for art_id, summary in (await db.execute(a_stmt)).all():
             analysis_map[art_id] = summary
 
+    # ROB-148 — article_id → issue_id map for chip rendering.
+    issue_id_for_article: dict[int, str] = {}
+    for issue in issues:
+        for article in issue.articles:
+            # Keep the highest-ranked issue per article.
+            issue_id_for_article.setdefault(article.id, issue.id)
+
     items: list[FeedNewsItem] = []
     for row in rows:
         market_value = (row.market or "kr").lower()
@@ -129,6 +138,7 @@ async def build_feed_news(
                 publishedAt=row.article_published_at,
                 market=cast(NewsMarket, market_value),
                 relatedSymbols=related,
+                issueId=issue_id_for_article.get(row.id),
                 summarySnippet=analysis_map.get(row.id) or row.summary,
                 relation=relation,
                 url=row.url,

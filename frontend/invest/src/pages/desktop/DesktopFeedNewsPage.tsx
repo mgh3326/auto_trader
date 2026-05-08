@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { DesktopShell } from "../../desktop/DesktopShell";
 import { RightAccountPanel } from "../../desktop/RightAccountPanel";
 import { useAccountPanel } from "../../desktop/useAccountPanel";
@@ -26,6 +27,8 @@ export function DesktopFeedNewsPage() {
       .catch((e) => !cancel && setErr(String(e?.message ?? e)));
     return () => { cancel = true; };
   }, [tab]);
+
+  const issueById = new Map((data?.issues ?? []).map((i) => [i.id, i] as const));
 
   return (
     <DesktopShell
@@ -59,6 +62,7 @@ export function DesktopFeedNewsPage() {
           <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 8 }}>
             {(data?.items ?? []).map((it) => {
               const open = selectedId === it.id;
+              const linkedIssue = it.issueId ? issueById.get(it.issueId) : undefined;
               return (
                 <li
                   key={it.id}
@@ -76,6 +80,39 @@ export function DesktopFeedNewsPage() {
                       {it.relation !== "none" && <span style={{ marginLeft: 8 }}>[{it.relation}]</span>}
                     </div>
                   </button>
+                  {linkedIssue && (
+                    <Link
+                      to={`/app/discover/issues/${linkedIssue.id}`}
+                      data-testid="feed-item-issue-chip"
+                      data-issue-id={linkedIssue.id}
+                      aria-label={`이슈 링크: ${linkedIssue.issue_title}`}
+                      onClick={(e) => e.stopPropagation()}
+                      style={{
+                        marginTop: 6,
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 6,
+                        padding: "2px 8px",
+                        borderRadius: 999,
+                        background: "var(--surface-2, #1c1e24)",
+                        color: "#cfd2da",
+                        fontSize: 11,
+                        textDecoration: "none",
+                        maxWidth: "100%",
+                      }}
+                    >
+                      <span aria-hidden style={{ fontSize: 9 }}>●</span>
+                      <span
+                        style={{
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        이슈 · {linkedIssue.issue_title}
+                      </span>
+                    </Link>
+                  )}
                   {open && it.summarySnippet && (
                     <div style={{ marginTop: 8, fontSize: 13, color: "#cfd2da" }}>{it.summarySnippet}</div>
                   )}
