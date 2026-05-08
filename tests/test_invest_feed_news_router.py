@@ -25,17 +25,21 @@ def _fake_article(
     symbol: str | None = None,
     name: str | None = None,
     published_at: datetime | None = None,
+    title: str | None = None,
+    summary: str | None = None,
+    keywords: list[str] | None = None,
 ) -> MagicMock:
     a = MagicMock()
     a.id = id
     a.market = market
-    a.title = f"news {id}"
+    a.title = title or f"news {id}"
     a.source = "Reuters"
     a.feed_source = "rss_test"
     a.article_published_at = published_at or _NOW
     a.stock_symbol = symbol
     a.stock_name = name
-    a.summary = "snippet"
+    a.summary = summary or "snippet"
+    a.keywords = keywords
     a.url = f"https://example.com/{id}"
     return a
 
@@ -148,6 +152,83 @@ async def test_feed_news_assigns_held_relation(monkeypatch) -> None:
         db=db, resolver=resolver, tab="holdings", limit=30, cursor=None
     )
     assert resp.items[0].relation == "held"
+    assert resp.items[0].relatedSymbols[0].relation == "held"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_feed_news_matches_related_symbols_from_article_alias(
+    monkeypatch,
+) -> None:
+    from app.services.invest_view_model import feed_news_service as svc
+
+    db = MagicMock()
+    scalar_result = MagicMock()
+    scalar_result.scalars.return_value.all.return_value = [
+        _fake_article(
+            id=20,
+            market="kr",
+            symbol=None,
+            name=None,
+            title="삼성전자 반도체 실적 기대감 확대",
+            keywords=["반도체", "삼전"],
+        ),
+    ]
+    summary_result = MagicMock()
+    summary_result.all.return_value = []
+    db.execute = AsyncMock(side_effect=[scalar_result, summary_result])
+    monkeypatch.setattr(
+        svc, "build_market_issues", AsyncMock(return_value=MagicMock(items=[]))
+    )
+
+    resolver = RelationResolver(watch={("kr", "005930")})
+    resp = await svc.build_feed_news(
+        db=db, resolver=resolver, tab="latest", limit=30, cursor=None
+    )
+
+    assert resp.items[0].relation == "watchlist"
+    assert [(s.market, s.symbol) for s in resp.items[0].relatedSymbols] == [
+        ("kr", "005930")
+    ]
+    assert resp.items[0].relatedSymbols[0].displayName == "삼성전자"
+    assert resp.items[0].relatedSymbols[0].relation == "watchlist"
+    assert resp.items[0].relatedSymbols[0].matchReason == "alias_dict"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_feed_news_dedupes_stock_symbol_and_alias_match(monkeypatch) -> None:
+    from app.services.invest_view_model import feed_news_service as svc
+
+    db = MagicMock()
+    scalar_result = MagicMock()
+    scalar_result.scalars.return_value.all.return_value = [
+        _fake_article(
+            id=21,
+            market="us",
+            symbol="AAPL",
+            name="Apple Inc.",
+            title="Apple shares rise after iPhone update",
+        ),
+    ]
+    summary_result = MagicMock()
+    summary_result.all.return_value = []
+    db.execute = AsyncMock(side_effect=[scalar_result, summary_result])
+    monkeypatch.setattr(
+        svc, "build_market_issues", AsyncMock(return_value=MagicMock(items=[]))
+    )
+
+    resolver = RelationResolver(held={("us", "AAPL")})
+    resp = await svc.build_feed_news(
+        db=db, resolver=resolver, tab="latest", limit=30, cursor=None
+    )
+
+    assert resp.items[0].relation == "held"
+    assert [(s.market, s.symbol) for s in resp.items[0].relatedSymbols] == [
+        ("us", "AAPL")
+    ]
+    assert resp.items[0].relatedSymbols[0].displayName == "Apple Inc."
+    assert resp.items[0].relatedSymbols[0].matchReason == "stock_symbol"
 
 
 @pytest.mark.unit

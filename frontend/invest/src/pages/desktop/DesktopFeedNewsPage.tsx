@@ -113,6 +113,41 @@ export function DesktopFeedNewsPage() {
                       </span>
                     </Link>
                   )}
+                  {it.relatedSymbols.length > 0 && (
+                    <div
+                      data-testid="feed-item-related-symbols"
+                      style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 6 }}
+                    >
+                      {it.relatedSymbols.map((symbol) => (
+                        <span
+                          key={`${symbol.market}:${symbol.symbol}`}
+                          data-testid="feed-item-related-symbol-chip"
+                          data-symbol={symbol.symbol}
+                          data-market={symbol.market}
+                          data-relation={symbol.relation ?? "none"}
+                          title={
+                            symbol.matchedTerm
+                              ? `${symbol.matchReason ?? "matched"}: ${symbol.matchedTerm}`
+                              : undefined
+                          }
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 4,
+                            padding: "2px 7px",
+                            borderRadius: 999,
+                            border: "1px solid var(--surface-2, #2a2d35)",
+                            color: "#b8beca",
+                            fontSize: 11,
+                          }}
+                        >
+                          <strong style={{ color: "#e8eaf0", fontWeight: 700 }}>{symbol.symbol}</strong>
+                          <span>{symbol.displayName}</span>
+                          {symbol.relation && symbol.relation !== "none" && <span>[{symbol.relation}]</span>}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                   {open && it.summarySnippet && (
                     <div style={{ marginTop: 8, fontSize: 13, color: "#cfd2da" }}>{it.summarySnippet}</div>
                   )}

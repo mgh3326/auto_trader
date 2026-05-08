@@ -7,6 +7,9 @@ export interface FeedRelatedSymbol {
   symbol: string;
   market: "kr" | "us" | "crypto";
   displayName: string;
+  relation?: RelationKind;
+  matchReason?: string | null;
+  matchedTerm?: string | null;
 }
 
 export interface FeedNewsItem {

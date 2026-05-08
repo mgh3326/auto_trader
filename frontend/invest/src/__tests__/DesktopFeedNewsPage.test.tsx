@@ -49,8 +49,17 @@ beforeEach(() => {
         id: 1,
         title: "n1",
         market: "kr",
-        relatedSymbols: [],
-        relation: "none",
+        relatedSymbols: [
+          {
+            symbol: "005930",
+            market: "kr",
+            displayName: "삼성전자",
+            relation: "watchlist",
+            matchReason: "alias_dict",
+            matchedTerm: "삼성전자",
+          },
+        ],
+        relation: "watchlist",
         url: "x",
         publisher: "Reuters",
         issueId: "iss-xyz",
@@ -81,4 +90,20 @@ test("renders an issue chip linked to the issue detail page when issueId is pres
   expect(chip).toHaveTextContent("삼성전자 실적 발표");
   expect(chip).toHaveAttribute("href", "/invest/app/discover/issues/iss-xyz");
   expect(chip).toHaveAttribute("data-issue-id", "iss-xyz");
+});
+
+
+test("renders related symbol chips as read-only badges", async () => {
+  render(
+    <MemoryRouter basename="/invest" initialEntries={["/invest/feed/news"]}>
+      <DesktopFeedNewsPage />
+    </MemoryRouter>,
+  );
+  const chip = await screen.findByTestId("feed-item-related-symbol-chip");
+  expect(chip).toHaveTextContent("005930");
+  expect(chip).toHaveTextContent("삼성전자");
+  expect(chip).toHaveAttribute("data-symbol", "005930");
+  expect(chip).toHaveAttribute("data-market", "kr");
+  expect(chip).toHaveAttribute("data-relation", "watchlist");
+  expect(chip.tagName.toLowerCase()).toBe("span");
 });
