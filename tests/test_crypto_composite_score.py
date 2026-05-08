@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import pandas as pd
@@ -30,63 +28,10 @@ from app.mcp_server.tooling.analysis_crypto_score import (
 from app.mcp_server.tooling.market_data_indicators import (
     _calculate_adx,
 )
-from app.mcp_server.tooling.registry import register_all_tools
 from app.mcp_server.tooling.screening import crypto as screening_crypto
+from tests._mcp_tooling_support import build_tools
 
-
-class DummyMCP:
-    def __init__(self) -> None:
-        self.tools: dict[str, Any] = {}
-
-    def tool(self, name: str, description: str):
-        def decorator(func):
-            self.tools[name] = func
-            return func
-
-        return decorator
-
-
-def build_tools() -> dict[str, Any]:
-    mcp = DummyMCP()
-    register_all_tools(cast(Any, mcp))
-    return mcp.tools
-
-
-class _TvCondition:
-    def __init__(self, label: str) -> None:
-        self.label = label
-
-    def __eq__(self, other: object) -> bool:  # type: ignore[override]
-        return isinstance(other, _TvCondition) and self.label == other.label
-
-    def __and__(self, other: object) -> object:
-        raise AssertionError("crypto filters must not be combined with '&'")
-
-
-class _TvField:
-    def __init__(self, label: str) -> None:
-        self.label = label
-
-    def __eq__(self, other: object) -> bool:  # type: ignore[override]
-        return cast(bool, cast(object, _TvCondition(f"{self.label}=={other}")))
-
-
-@pytest.fixture
-def fake_crypto_tvscreener_module() -> SimpleNamespace:
-    return SimpleNamespace(
-        CryptoField=SimpleNamespace(
-            NAME=_TvField("name"),
-            DESCRIPTION=_TvField("description"),
-            PRICE=_TvField("price"),
-            CHANGE_PERCENT=_TvField("change_percent"),
-            RELATIVE_STRENGTH_INDEX_14=_TvField("rsi14"),
-            AVERAGE_DIRECTIONAL_INDEX_14=_TvField("adx14"),
-            VOLUME_24H_IN_USD=_TvField("volume24h"),
-            VALUE_TRADED=_TvField("value_traded"),
-            MARKET_CAP=_TvField("market_cap"),
-            EXCHANGE=_TvField("exchange"),
-        )
-    )
+pytest_plugins = ("tests._mcp_tooling_support",)
 
 
 @pytest.fixture(autouse=True)
