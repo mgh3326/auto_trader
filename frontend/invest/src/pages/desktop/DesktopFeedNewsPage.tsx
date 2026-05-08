@@ -1,16 +1,18 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
 import { DesktopShell } from "../../desktop/DesktopShell";
 import { RightAccountPanel } from "../../desktop/RightAccountPanel";
 import { useAccountPanel } from "../../desktop/useAccountPanel";
+import { useViewport } from "../../hooks/useViewport";
 import { fetchFeedNews } from "../../api/feedNews";
 import type { FeedNewsResponse, FeedTab } from "../../types/feedNews";
+import { NewsTabs } from "../../components/news/NewsTabs";
+import { NewsCard } from "../../components/news/NewsCard";
+import { MobileFeedNewsPage } from "../mobile/MobileFeedNewsPage";
 
-const TABS: { key: FeedTab; label: string }[] = [
-  { key: "top", label: "주요" }, { key: "latest", label: "최신" }, { key: "hot", label: "핫이슈" },
-  { key: "holdings", label: "보유" }, { key: "watchlist", label: "관심" },
-  { key: "kr", label: "국내" }, { key: "us", label: "해외" }, { key: "crypto", label: "크립토" },
-];
+export function FeedNewsRoute() {
+  const viewport = useViewport();
+  return viewport === "mobile" ? <MobileFeedNewsPage /> : <DesktopFeedNewsPage />;
+}
 
 export function DesktopFeedNewsPage() {
   const panel = useAccountPanel();
@@ -21,153 +23,58 @@ export function DesktopFeedNewsPage() {
 
   useEffect(() => {
     let cancel = false;
-    setData(undefined); setErr(undefined);
+    setData(undefined);
+    setErr(undefined);
     fetchFeedNews({ tab, limit: 30 })
       .then((r) => !cancel && setData(r))
       .catch((e) => !cancel && setErr(String(e?.message ?? e)));
-    return () => { cancel = true; };
+    return () => {
+      cancel = true;
+    };
   }, [tab]);
 
   const issueById = new Map((data?.issues ?? []).map((i) => [i.id, i] as const));
 
   return (
     <DesktopShell
-      left={
-        <nav style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          {TABS.map((t) => {
-            const active = tab === t.key;
-            return (
-              <button
-                key={t.key}
-                data-testid={`tab-${t.key}`}
-                onClick={() => setTab(t.key)}
-                style={{
-                  textAlign: "left", padding: "6px 10px", borderRadius: 6,
-                  background: active ? "var(--surface-2)" : "transparent",
-                  color: active ? "var(--fg)" : "var(--fg-2)",
-                  fontWeight: active ? 700 : 500,
-                  border: "none", cursor: "pointer", fontSize: 13,
-                }}
-              >
-                {t.label}
-              </button>
-            );
-          })}
-        </nav>
-      }
       center={
-        <div data-testid="feed-center">
-          {err && <div style={{ color: "var(--danger)", marginBottom: 12 }}>오류: {err}</div>}
-          {data?.meta?.emptyReason === "no_holdings" && (
-            <div style={{ padding: 16, color: "var(--fg-3)" }}>보유 종목이 없습니다.</div>
-          )}
-          {data?.meta?.emptyReason === "no_watchlist" && (
-            <div style={{ padding: 16, color: "var(--fg-3)" }}>관심 종목이 없습니다.</div>
-          )}
-          <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 8 }}>
-            {(data?.items ?? []).map((it) => {
-              const open = selectedId === it.id;
-              const linkedIssue = it.issueId ? issueById.get(it.issueId) : undefined;
-              return (
-                <li
-                  key={it.id}
-                  data-testid="feed-item"
-                  data-relation={it.relation}
-                  style={{
-                    padding: 12, borderRadius: 10,
-                    background: "var(--surface)",
-                    border: "1px solid var(--border)",
-                    boxShadow: "var(--shadow-1)",
-                  }}
-                >
-                  <button
-                    onClick={() => setSelectedId(open ? null : it.id)}
-                    style={{ background: "none", border: "none", color: "var(--fg)", textAlign: "left", padding: 0, cursor: "pointer", width: "100%" }}
-                  >
-                    <div style={{ fontSize: 14, fontWeight: 600 }}>{it.title}</div>
-                    <div style={{ fontSize: 11, color: "var(--fg-3)", marginTop: 4 }}>
-                      {it.publisher ?? "—"} · {it.market.toUpperCase()}
-                      {it.relation !== "none" && <span style={{ marginLeft: 8 }}>[{it.relation}]</span>}
-                    </div>
-                  </button>
-                  {linkedIssue && (
-                    <Link
-                      to={`/app/discover/issues/${linkedIssue.id}`}
-                      data-testid="feed-item-issue-chip"
-                      data-issue-id={linkedIssue.id}
-                      aria-label={`이슈 링크: ${linkedIssue.issue_title}`}
-                      onClick={(e) => e.stopPropagation()}
-                      style={{
-                        marginTop: 6,
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: 6,
-                        padding: "2px 8px",
-                        borderRadius: 999,
-                        background: "var(--surface-2, #1c1e24)",
-                        color: "#cfd2da",
-                        fontSize: 11,
-                        textDecoration: "none",
-                        maxWidth: "100%",
-                      }}
-                    >
-                      <span aria-hidden style={{ fontSize: 9 }}>●</span>
-                      <span
-                        style={{
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        이슈 · {linkedIssue.issue_title}
-                      </span>
-                    </Link>
-                  )}
-                  {it.relatedSymbols.length > 0 && (
-                    <div
-                      data-testid="feed-item-related-symbols"
-                      style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 6 }}
-                    >
-                      {it.relatedSymbols.map((symbol) => (
-                        <span
-                          key={`${symbol.market}:${symbol.symbol}`}
-                          data-testid="feed-item-related-symbol-chip"
-                          data-symbol={symbol.symbol}
-                          data-market={symbol.market}
-                          data-relation={symbol.relation ?? "none"}
-                          title={
-                            symbol.matchedTerm
-                              ? `${symbol.matchReason ?? "matched"}: ${symbol.matchedTerm}`
-                              : undefined
-                          }
-                          style={{
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: 4,
-                            padding: "2px 7px",
-                            borderRadius: 999,
-                            border: "1px solid var(--surface-2, #2a2d35)",
-                            color: "#b8beca",
-                            fontSize: 11,
-                          }}
-                        >
-                          <strong style={{ color: "#e8eaf0", fontWeight: 700 }}>{symbol.symbol}</strong>
-                          <span>{symbol.displayName}</span>
-                          {symbol.relation && symbol.relation !== "none" && <span>[{symbol.relation}]</span>}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                  {open && it.summarySnippet && (
-                    <div style={{ marginTop: 8, fontSize: 13, color: "var(--fg-2)" }}>{it.summarySnippet}</div>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        </div>
+        <>
+          <header>
+            <h1 style={{ margin: 0, fontSize: 22, fontWeight: 800, letterSpacing: "-0.02em" }}>뉴스</h1>
+            <p style={{ margin: "4px 0 0", fontSize: 13, color: "var(--fg-3)" }}>
+              보유 · 관심 종목 관련 기사를 우선 보여드립니다.
+            </p>
+          </header>
+
+          <NewsTabs value={tab} onChange={setTab} />
+
+          <div data-testid="feed-center">
+            {err && <div style={{ color: "var(--danger)", marginBottom: 12 }}>오류: {err}</div>}
+            {data?.meta?.emptyReason === "no_holdings" && (
+              <div style={{ padding: 16, color: "var(--fg-3)" }}>보유 종목이 없습니다.</div>
+            )}
+            {data?.meta?.emptyReason === "no_watchlist" && (
+              <div style={{ padding: 16, color: "var(--fg-3)" }}>관심 종목이 없습니다.</div>
+            )}
+            <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 8 }}>
+              {(data?.items ?? []).map((it) => {
+                const open = selectedId === it.id;
+                const linkedIssue = it.issueId ? issueById.get(it.issueId) : undefined;
+                return (
+                  <NewsCard
+                    key={it.id}
+                    item={it}
+                    issue={linkedIssue}
+                    open={open}
+                    onToggle={() => setSelectedId(open ? null : it.id)}
+                  />
+                );
+              })}
+            </ul>
+          </div>
+        </>
       }
-      right={<RightAccountPanel data={panel.data} loading={panel.loading} error={panel.error} />}
+      right={<RightAccountPanel data={panel.data} loading={panel.loading} error={panel.error} onRefresh={panel.reload} />}
     />
   );
 }

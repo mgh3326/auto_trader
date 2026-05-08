@@ -5,7 +5,7 @@ import { DiscoverPage } from "./pages/DiscoverPage";
 import { HomePage } from "./pages/HomePage";
 import { PaperPlaceholderPage } from "./pages/PaperPlaceholderPage";
 import { InvestHomeRoute } from "./pages/desktop/DesktopHomePage";
-import { DesktopFeedNewsPage } from "./pages/desktop/DesktopFeedNewsPage";
+import { FeedNewsRoute } from "./pages/desktop/DesktopFeedNewsPage";
 import { DesktopSignalsPage } from "./pages/desktop/DesktopSignalsPage";
 import { DesktopCalendarPage } from "./pages/desktop/DesktopCalendarPage";
 import { DesktopScreenerPage } from "./pages/desktop/DesktopScreenerPage";
@@ -15,7 +15,7 @@ export const router = createBrowserRouter(
     // Canonical /invest routes — the home view is responsive
     // (DesktopHomePage at >=900px, MobileHomePage below).
     { path: "/", element: <InvestHomeRoute /> },
-    { path: "/feed/news", element: <DesktopFeedNewsPage /> },
+    { path: "/feed/news", element: <FeedNewsRoute /> },
     { path: "/signals", element: <DesktopSignalsPage /> },
     { path: "/calendar", element: <DesktopCalendarPage /> },
     { path: "/screener", element: <DesktopScreenerPage /> },
