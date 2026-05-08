@@ -1,15 +1,20 @@
 // frontend/invest/src/routes.tsx
-import { createBrowserRouter, Navigate } from "react-router-dom";
+import { createBrowserRouter, Navigate, useParams } from "react-router-dom";
 import { DiscoverIssueDetailPage } from "./pages/DiscoverIssueDetailPage";
-import { DiscoverPage } from "./pages/DiscoverPage";
-import { HomePage } from "./pages/HomePage";
-import { PaperPlaceholderPage } from "./pages/PaperPlaceholderPage";
 import { InvestHomeRoute } from "./pages/desktop/DesktopHomePage";
 import { FeedNewsRoute } from "./pages/desktop/DesktopFeedNewsPage";
 import { InvestDiscoverRoute } from "./pages/desktop/DesktopDiscoverPage";
 import { SignalsRoute } from "./pages/desktop/DesktopSignalsPage";
 import { CalendarRoute } from "./pages/desktop/DesktopCalendarPage";
 import { DesktopScreenerPage } from "./pages/desktop/DesktopScreenerPage";
+
+// Stage 6: redirect dynamic legacy /app/discover/issues/:issueId path
+// to the canonical /discover/issues/:issueId, preserving the issueId
+// param so external bookmarks survive the rename.
+function DiscoverIssueRedirect() {
+  const { issueId } = useParams();
+  return <Navigate to={`/discover/issues/${issueId ?? ""}`} replace />;
+}
 
 export const router = createBrowserRouter(
   [
@@ -23,12 +28,15 @@ export const router = createBrowserRouter(
     { path: "/calendar", element: <CalendarRoute /> },
     { path: "/screener", element: <DesktopScreenerPage /> },
 
-    // Legacy /invest/app/* surface — preserved until Stage 6 retires it.
-    { path: "/app", element: <HomePage /> },
-    { path: "/app/paper", element: <PaperPlaceholderPage /> },
-    { path: "/app/paper/:variant", element: <PaperPlaceholderPage /> },
-    { path: "/app/discover", element: <DiscoverPage /> },
-    { path: "/app/discover/issues/:issueId", element: <DiscoverIssueDetailPage /> },
+    // Stage 6: legacy /invest/app/* URLs redirect to their canonical
+    // /invest/* siblings. The legacy components remain in-tree (not
+    // mounted) for one release cycle; deletion lands in a follow-up
+    // PR per docs/plans/2026-05-09-invest-app-retirement-inventory.md.
+    { path: "/app", element: <Navigate to="/" replace /> },
+    { path: "/app/paper", element: <Navigate to="/" replace /> },
+    { path: "/app/paper/:variant", element: <Navigate to="/" replace /> },
+    { path: "/app/discover", element: <Navigate to="/discover" replace /> },
+    { path: "/app/discover/issues/:issueId", element: <DiscoverIssueRedirect /> },
 
     { path: "*", element: <Navigate to="/" replace /> },
   ],
