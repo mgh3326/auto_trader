@@ -8,7 +8,7 @@ import { BottomNav } from "../components/BottomNav";
 function renderAt(path: string) {
   const router = createMemoryRouter(
     [{ path: "*", element: <BottomNav /> }],
-    { initialEntries: [`/invest/app${path}`], basename: "/invest/app" },
+    { initialEntries: [`/invest/app${path}`], basename: "/invest" },
   );
   return render(<RouterProvider router={router} />);
 }

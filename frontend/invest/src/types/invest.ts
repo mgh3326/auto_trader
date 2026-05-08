@@ -120,3 +120,33 @@ export interface InvestHomeResponse {
   groupedHoldings: GroupedHolding[];
   meta: InvestHomeResponseMeta;
 }
+
+export type AccountTone = "navy" | "gray" | "purple" | "green" | "dashed";
+
+export interface WatchSymbol {
+  symbol: string;
+  market: "kr" | "us" | "crypto";
+  displayName: string;
+  note?: string | null;
+}
+
+export interface AccountSourceVisual {
+  source: AccountSource;
+  tone: AccountTone;
+  badge: "Live" | "Mock" | "Crypto" | "Paper" | "Manual";
+  displayName: string;
+}
+
+export interface AccountPanelMeta {
+  warnings: InvestHomeWarning[];
+  watchlistAvailable: boolean;
+}
+
+export interface AccountPanelResponse {
+  homeSummary: HomeSummary;
+  accounts: Account[];
+  groupedHoldings: GroupedHolding[];
+  watchSymbols: WatchSymbol[];
+  sourceVisuals: AccountSourceVisual[];
+  meta: AccountPanelMeta;
+}

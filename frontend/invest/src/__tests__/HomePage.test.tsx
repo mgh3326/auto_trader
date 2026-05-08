@@ -80,7 +80,7 @@ const data: InvestHomeResponse = {
 
 test("renders meta.warnings as a single line", () => {
   render(
-    <MemoryRouter basename="/invest/app" initialEntries={["/invest/app/"]}>
+    <MemoryRouter basename="/invest" initialEntries={["/invest/app/"]}>
       <HomePage state={{ status: "ready", data }} reload={() => {}} />
     </MemoryRouter>
   );
@@ -89,7 +89,7 @@ test("renders meta.warnings as a single line", () => {
 
 test("account selector toggles between groupedHoldings and raw holdings", () => {
   render(
-    <MemoryRouter basename="/invest/app" initialEntries={["/invest/app/"]}>
+    <MemoryRouter basename="/invest" initialEntries={["/invest/app/"]}>
       <HomePage state={{ status: "ready", data }} reload={() => {}} />
     </MemoryRouter>
   );
@@ -102,7 +102,7 @@ test("account selector toggles between groupedHoldings and raw holdings", () => 
 
 test("renders empty account state with portfolio deeplink", () => {
   render(
-    <MemoryRouter basename="/invest/app" initialEntries={["/invest/app/"]}>
+    <MemoryRouter basename="/invest" initialEntries={["/invest/app/"]}>
       <HomePage
         state={{
           status: "ready",

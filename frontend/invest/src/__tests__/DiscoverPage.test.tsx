@@ -57,7 +57,7 @@ function makeResponse(items: MarketIssue[], over: Partial<MarketIssuesResponse> 
 }
 
 function renderWith(node: ReactNode) {
-  return render(<MemoryRouter basename="/invest/app" initialEntries={["/invest/app/discover"]}>{node}</MemoryRouter>);
+  return render(<MemoryRouter basename="/invest" initialEntries={["/invest/app/discover"]}>{node}</MemoryRouter>);
 }
 
 test("renders ranked issue cards from news-issues response", async () => {
