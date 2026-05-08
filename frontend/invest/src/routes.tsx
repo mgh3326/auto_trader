@@ -8,6 +8,7 @@ import { DesktopHomePage } from "./pages/desktop/DesktopHomePage";
 import { DesktopFeedNewsPage } from "./pages/desktop/DesktopFeedNewsPage";
 import { DesktopSignalsPage } from "./pages/desktop/DesktopSignalsPage";
 import { DesktopCalendarPage } from "./pages/desktop/DesktopCalendarPage";
+import { DesktopScreenerPage } from "./pages/desktop/DesktopScreenerPage";
 
 export const router = createBrowserRouter(
   [
@@ -15,6 +16,7 @@ export const router = createBrowserRouter(
     { path: "/feed/news", element: <DesktopFeedNewsPage /> },
     { path: "/signals", element: <DesktopSignalsPage /> },
     { path: "/calendar", element: <DesktopCalendarPage /> },
+    { path: "/screener", element: <DesktopScreenerPage /> },
 
     { path: "/app", element: <HomePage /> },
     { path: "/app/paper", element: <PaperPlaceholderPage /> },

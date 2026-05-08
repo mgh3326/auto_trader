@@ -1,4 +1,14 @@
-from app.mcp_server.tooling.registry import register_all_tools
+"""MCP server package exports.
+
+Keep this package import side-effect-light: importing a specific MCP helper
+submodule must not pull the full tool registry/order stack into read-only API
+paths. Load registry exports lazily on demand.
+"""
+
+from __future__ import annotations
+
+from importlib import import_module
+from typing import Any
 
 __all__ = ["register_all_tools"]
 
@@ -45,3 +55,11 @@ AVAILABLE_TOOL_NAMES = [
     "get_asset_profile",
     "set_asset_profile",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    if name == "register_all_tools":
+        value = getattr(import_module("app.mcp_server.tooling.registry"), name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

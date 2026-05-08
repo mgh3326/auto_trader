@@ -22,12 +22,20 @@ from app.schemas.invest_calendar import (
 )
 from app.schemas.invest_feed_news import FeedNewsResponse, FeedTab
 from app.schemas.invest_home import InvestHomeResponse
+from app.schemas.invest_screener import (
+    ScreenerPresetsResponse,
+    ScreenerResultsResponse,
+)
 from app.schemas.invest_signals import SignalsResponse, SignalTab
 from app.services.invest_home_service import InvestHomeService
 from app.services.invest_view_model.account_panel_service import build_account_panel
 from app.services.invest_view_model.calendar_service import build_calendar
 from app.services.invest_view_model.feed_news_service import build_feed_news
 from app.services.invest_view_model.relation_resolver import build_relation_resolver
+from app.services.invest_view_model.screener_service import (
+    build_screener_presets,
+    build_screener_results,
+)
 from app.services.invest_view_model.signals_service import build_signals
 from app.services.invest_view_model.weekly_summary_service import build_weekly_summary
 
@@ -53,6 +61,18 @@ def get_invest_home_service(
         upbit_reader=UpbitHomeReader(db),
         manual_reader=ManualHomeReader(db, quote_service=quote_service),
     )
+
+
+def get_screener_service_dep():
+    """Lazy DI for the existing read-only screening service.
+
+    The import is intentionally inside the function so that importing the
+    router module does not transitively load `app.services.screener_service`
+    and its `app.services.kis*` chain — see tests/test_invest_api_router_safety.py.
+    """
+    from app.services.screener_service import ScreenerService
+
+    return ScreenerService()
 
 
 @router.get("/home")
@@ -142,4 +162,30 @@ async def get_feed_news(
     )
     return await build_feed_news(
         db=db, resolver=resolver, tab=tab, limit=limit, cursor=cursor
+    )
+
+
+@router.get("/screener/presets")
+async def get_screener_presets_endpoint(
+    user: Annotated[Any, Depends(get_authenticated_user)],
+) -> ScreenerPresetsResponse:
+    return build_screener_presets()
+
+
+@router.get("/screener/results")
+async def get_screener_results_endpoint(
+    user: Annotated[Any, Depends(get_authenticated_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    service: Annotated[InvestHomeService, Depends(get_invest_home_service)],
+    screening_service: Annotated[Any, Depends(get_screener_service_dep)],
+    preset: str = Query(..., min_length=1),
+) -> ScreenerResultsResponse:
+    home = await service.get_home(user_id=user.id)
+    resolver = await build_relation_resolver(
+        db, user_id=user.id, held_pairs=_held_pairs_from_home(home)
+    )
+    return await build_screener_results(
+        preset_id=preset,
+        screening_service=screening_service,
+        resolver=resolver,
     )

@@ -5,6 +5,7 @@ const LINKS = [
   { to: "/feed/news", label: "뉴스" },
   { to: "/signals", label: "시그널" },
   { to: "/calendar", label: "캘린더" },
+  { to: "/screener", label: "골라보기" },
 ];
 
 export function DesktopHeader() {
