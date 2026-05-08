@@ -40,7 +40,7 @@ async def _load_watch_symbols(
     db: AsyncSession, *, user_id: int
 ) -> tuple[list[WatchSymbol], bool]:
     try:
-        from app.models.trading import Instrument, UserWatchItem  # type: ignore
+        from app.models.trading import Instrument, UserWatchItem
     except ImportError:
         return [], False
 

@@ -74,7 +74,7 @@ async def build_relation_resolver(
     # user_watch_items joins to instruments for symbol/type.
     # If the join fails or the table is unavailable, leave watch empty.
     try:
-        from app.models.trading import Instrument, UserWatchItem  # type: ignore
+        from app.models.trading import Instrument, UserWatchItem
     except ImportError:
         return resolver
 
