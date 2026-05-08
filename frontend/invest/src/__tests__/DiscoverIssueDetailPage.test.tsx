@@ -37,10 +37,10 @@ function makeResponse(items: MarketIssue[], over: Partial<MarketIssuesResponse> 
 
 function renderAt(path: string, state: DiscoverIssueDetailPageProps["state"]) {
   return render(
-    <MemoryRouter initialEntries={[`/invest/app${path}`]} basename="/invest">
+    <MemoryRouter initialEntries={[`/invest${path}`]} basename="/invest">
       <Routes>
         <Route
-          path="/app/discover/issues/:issueId"
+          path="/discover/issues/:issueId"
           element={<DiscoverIssueDetailPage state={state} reload={() => {}} />}
         />
       </Routes>
@@ -70,15 +70,23 @@ test("renders matched issue with impact map, related symbols and article links",
   ).toBeInTheDocument();
 });
 
-test("renders not-found state when id is missing", () => {
+test("renders not-found state when id is missing, with canonical back link", () => {
   renderAt("/discover/issues/missing", { status: "ready", data: makeResponse([]) });
   expect(
     screen.getByText(/이슈를 찾을 수 없습니다. 시간이 지나 목록에서 빠졌을 수 있어요./),
   ).toBeInTheDocument();
+  // The canonical /invest/discover path replaces the legacy /invest/app/discover.
   expect(screen.getByRole("link", { name: "발견으로 돌아가기" })).toHaveAttribute(
     "href",
-    "/invest/app/discover",
+    "/invest/discover",
   );
+});
+
+test("matched-issue back link points at canonical /invest/discover", () => {
+  const matched = makeIssue({ id: "abc" });
+  renderAt("/discover/issues/abc", { status: "ready", data: makeResponse([matched]) });
+  const back = screen.getByTestId("issue-detail-back");
+  expect(back).toHaveAttribute("href", "/invest/discover");
 });
 
 test("renders symbols-empty notice when item has no symbols", () => {
