@@ -39,6 +39,10 @@ test("does not render buy/sell CTA buttons", async () => {
     </MemoryRouter>,
   );
   await waitFor(() => expect(screen.getAllByTestId("signal-list-item")).toHaveLength(1));
-  expect(screen.queryByText(/매수/)).not.toBeInTheDocument();
-  expect(screen.queryByText(/매도/)).not.toBeInTheDocument();
+  // The decision label ('매수' / '매도') renders as a decorative status pill
+  // (a <span>, not actionable). The safety guarantee here is that no
+  // role=button is exposed whose accessible name implies an order CTA.
+  expect(screen.queryByRole("button", { name: "매수" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "매도" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /매수 주문|매도 주문/ })).not.toBeInTheDocument();
 });

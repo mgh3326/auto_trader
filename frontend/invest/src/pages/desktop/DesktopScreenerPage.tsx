@@ -60,7 +60,7 @@ export function DesktopScreenerPage() {
       }
       center={
         <div data-testid="screener-center">
-          {err && <div style={{ color: "#f59e9e", marginBottom: 12 }}>오류: {err}</div>}
+          {err && <div style={{ color: "var(--danger)", marginBottom: 12 }}>오류: {err}</div>}
           {results ? (
             <>
               <ScreenerFilterBar
@@ -80,7 +80,7 @@ export function DesktopScreenerPage() {
               <ScreenerResultsTable rows={results.results} metricLabel={results.metricLabel} />
             </>
           ) : (
-            !err && <div style={{ padding: 16, color: "#9ba0ab" }}>불러오는 중...</div>
+            !err && <div style={{ padding: 16, color: "var(--fg-3)" }}>불러오는 중...</div>
           )}
           <ScreenerFilterModal
             open={modalOpen}
