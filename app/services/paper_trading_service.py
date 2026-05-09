@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, date, datetime, timedelta
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.money import quantize_crypto_qty as _q_crypto_qty
+from app.core.money import quantize_money as _q_money
+from app.core.money import quantize_pct as _q_pct
 from app.core.timezone import now_kst
 from app.models.paper_trading import (
     PaperAccount,
@@ -56,21 +59,6 @@ def calculate_fee(instrument_type: str, side: str, amount: Decimal) -> Decimal:
         return _q_money(amount * Decimal(str(fee_rate)))
 
     raise ValueError(f"Unsupported instrument_type: {instrument_type}")
-
-
-# ---------------------------------------------------------------------------
-# Formatting helpers
-# ---------------------------------------------------------------------------
-def _q_money(val: Decimal | float) -> Decimal:
-    return Decimal(str(val)).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
-
-
-def _q_crypto_qty(val: Decimal | float) -> Decimal:
-    return Decimal(str(val)).quantize(Decimal("0.00000001"), rounding=ROUND_HALF_UP)
-
-
-def _q_pct(val: Decimal | float) -> Decimal:
-    return Decimal(str(val)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 # ---------------------------------------------------------------------------
@@ -615,9 +603,9 @@ class PaperTradingService:
 
         daily_return_pct: Decimal | None = None
         if prior is not None and prior.total_equity > 0:
-            daily_return_pct = (
+            daily_return_pct = _q_money(
                 (total_equity / prior.total_equity - Decimal("1")) * Decimal("100")
-            ).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+            )
 
         if existing_today is None:
             snapshot = PaperDailySnapshot(
