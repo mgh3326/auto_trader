@@ -394,6 +394,48 @@ async def test_feed_news_url_metadata_false_positive_stays_suppressed(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_feed_news_malformed_bracket_token_does_not_crash_matching(
+    monkeypatch,
+) -> None:
+    from app.services.invest_view_model import feed_news_service as svc
+
+    db = MagicMock()
+    scalar_result = MagicMock()
+    scalar_result.scalars.return_value.all.return_value = [
+        _fake_article(
+            id=204,
+            market="kr",
+            symbol=None,
+            title="삼성전자 [malformed",
+            summary="증권사 시장 요약 foo[bar.com",
+            keywords=["[broken", "canonical_url:https://finance.naver.com/[bad"],
+        ),
+    ]
+    summary_result = MagicMock()
+    summary_result.all.return_value = []
+    db.execute = AsyncMock(
+        side_effect=[scalar_result, summary_result, _empty_related_result()]
+    )
+    monkeypatch.setattr(
+        svc, "build_market_issues", AsyncMock(return_value=MagicMock(items=[]))
+    )
+
+    resp = await svc.build_feed_news(
+        db=db,
+        resolver=RelationResolver(watch={("kr", "005930")}),
+        tab="kr",
+        limit=30,
+        cursor=None,
+    )
+
+    assert [(s.market, s.symbol) for s in resp.items[0].relatedSymbols] == [
+        ("kr", "005930")
+    ]
+    assert resp.items[0].relatedSymbols[0].relation == "watchlist"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_feed_news_default_does_not_call_quote_provider(monkeypatch) -> None:
     from app.services.invest_view_model import feed_news_service as svc
 

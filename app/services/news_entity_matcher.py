@@ -91,6 +91,9 @@ _URL_METADATA_PREFIXES = (
     "source_url:",
     "url:",
     "fingerprint:",
+    "source:",
+    "feed_source:",
+    "publisher:",
 )
 _URL_SCHEME_PREFIXES = (f"{'http'}://", f"{'https'}://")
 
@@ -105,7 +108,13 @@ def _is_url_or_domain_token(token: str) -> bool:
     if any(lowered.startswith(prefix) for prefix in _URL_METADATA_PREFIXES):
         return True
     candidate = lowered if "://" in lowered else f"//{lowered}"
-    hostname = urlsplit(candidate).hostname or ""
+    try:
+        hostname = urlsplit(candidate).hostname or ""
+    except ValueError:
+        # Malformed URL/domain-like metadata should be dropped, not allowed to
+        # crash feed rendering. This includes bracket/IPv6-like fragments from
+        # scraped keywords or source/canonical URL metadata.
+        return True
     if "." not in hostname:
         return False
     labels = hostname.split(".")
