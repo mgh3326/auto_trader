@@ -12,10 +12,13 @@ from fastapi import APIRouter, Depends, Query
 
 from app.models.trading import User
 from app.routers.dependencies import get_authenticated_user
+from app.routers.pagination import PaginationParams, pagination_params
 from app.schemas.news_issues import MarketIssuesResponse
 from app.services.news_issue_clustering_service import build_market_issues
 
 router = APIRouter(prefix="/trading", tags=["news-issues"])
+
+_pagination = pagination_params(default_limit=20, max_limit=100)
 
 
 @router.get("/api/news-issues", response_model=MarketIssuesResponse)
@@ -23,8 +26,8 @@ async def get_news_issues(
     current_user: Annotated[User, Depends(get_authenticated_user)],
     market: Literal["all", "kr", "us", "crypto"] = Query("all"),
     window_hours: int = Query(24, ge=1, le=168),
-    limit: int = Query(20, ge=1, le=100),
+    p: PaginationParams = Depends(_pagination),
 ) -> MarketIssuesResponse:
     return await build_market_issues(
-        market=market, window_hours=window_hours, limit=limit
+        market=market, window_hours=window_hours, limit=p.limit
     )

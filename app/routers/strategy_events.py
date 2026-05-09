@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import get_db
 from app.models.trading import User
 from app.routers.dependencies import get_authenticated_user
+from app.routers.pagination import PaginationParams, pagination_params
 from app.schemas.strategy_events import (
     StrategyEventCreateRequest,
     StrategyEventDetail,
@@ -23,6 +24,8 @@ from app.schemas.strategy_events import (
 from app.services import strategy_event_service
 
 router = APIRouter(prefix="/trading", tags=["strategy-events"])
+
+_pagination = pagination_params(default_limit=50, max_limit=200)
 
 
 @router.post(
@@ -53,16 +56,15 @@ async def list_strategy_events(
     current_user: Annotated[User, Depends(get_authenticated_user)],
     session_uuid: UUID | None = Query(default=None),
     mine: bool = Query(default=False),
-    limit: int = Query(default=50, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
+    p: PaginationParams = Depends(_pagination),
 ) -> StrategyEventListResponse:
     try:
         return await strategy_event_service.list_strategy_events(
             db,
             session_uuid=session_uuid,
             user_id=current_user.id if mine else None,
-            limit=limit,
-            offset=offset,
+            limit=p.limit,
+            offset=p.offset,
         )
     except strategy_event_service.UnknownSessionUUIDError:
         raise HTTPException(status_code=404, detail="session_uuid_not_found")

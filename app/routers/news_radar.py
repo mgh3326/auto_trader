@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, Query
 
 from app.models.trading import User
 from app.routers.dependencies import get_authenticated_user
+from app.routers.pagination import PaginationParams, pagination_params
 from app.schemas.news_radar import (
     NewsRadarMarket,
     NewsRadarResponse,
@@ -20,6 +21,8 @@ from app.schemas.news_radar import (
 from app.services.news_radar_service import build_news_radar
 
 router = APIRouter(prefix="/trading", tags=["news-radar"])
+
+_pagination = pagination_params(default_limit=50, max_limit=200)
 
 
 @router.get("/api/news-radar", response_model=NewsRadarResponse)
@@ -30,7 +33,7 @@ async def get_news_radar(
     q: str | None = Query(None, max_length=200),
     risk_category: NewsRadarRiskCategory | None = Query(None),
     include_excluded: bool = Query(True),
-    limit: int = Query(50, ge=1, le=200),
+    p: PaginationParams = Depends(_pagination),
 ) -> NewsRadarResponse:
     return await build_news_radar(
         market=market,
@@ -38,5 +41,5 @@ async def get_news_radar(
         q=q,
         risk_category=risk_category,
         include_excluded=include_excluded,
-        limit=limit,
+        limit=p.limit,
     )
