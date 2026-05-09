@@ -38,6 +38,11 @@ from app.services.cio_coin_briefing.prompts.gate_phrases import (
     PATH_SECTION_AB_REPEAT,
 )
 from app.services.n8n_formatting import (
+    _fmt_days,
+    _fmt_krw,
+    _fmt_pct,
+    _format_g2_lines,
+    _format_unverified_amounts,
     fmt_amount,
     fmt_date_with_weekday,
     fmt_pnl,
@@ -504,24 +509,6 @@ def _build_brief_text(
     return "\n".join(lines)
 
 
-def _fmt_krw(value: float | int | None) -> str:
-    if value is None:
-        return "-"
-    return f"{float(value):,.0f} KRW"
-
-
-def _fmt_pct(value: float | int | None) -> str:
-    if value is None:
-        return "-"
-    return f"{float(value):.1f}%"
-
-
-def _fmt_days(value: float | int | None) -> str:
-    if value is None:
-        return "-"
-    return f"{float(value):.2f}일"
-
-
 def _extract_followup_context(
     payload: BoardBriefContext | dict[str, Any],
 ) -> BoardBriefContext:
@@ -597,17 +584,6 @@ def _route_fail_closed(
         gate_results=None,
         generated_at=generated_at,
     )
-
-
-def _format_unverified_amounts(ctx: BoardBriefContext) -> set[str]:
-    if not ctx.unverified_cap:
-        return set()
-    amount = ctx.unverified_cap.amount
-    return {
-        f"{amount:,.0f}",
-        f"{amount:.0f}",
-        _fmt_krw(amount),
-    }
 
 
 def _gate_passed(gate: GateResult | N8nG2GatePayload | None) -> bool:
@@ -875,10 +851,6 @@ def _funding_verified(
         (board_response and board_response.manual_cash_verified)
         or (ctx.unverified_cap and ctx.unverified_cap.verified_by_boss_today)
     )
-
-
-def _format_g2_lines(lines: list[str], *, amount: float, days: int) -> list[str]:
-    return [line.format(amount=f"{amount:,.0f}", days=days) for line in lines]
 
 
 def resolve_funding_intent(

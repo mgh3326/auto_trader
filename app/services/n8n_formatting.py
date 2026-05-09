@@ -170,6 +170,48 @@ def fmt_pnl(pct: float | None) -> str:
     return f"{pct:.1f}%"
 
 
+# ---------------------------------------------------------------------------
+# Internal helpers (not in __all__) — moved from n8n_daily_brief_service
+# ---------------------------------------------------------------------------
+
+
+def _fmt_krw(value: float | int | None) -> str:
+    if value is None:
+        return "-"
+    return f"{float(value):,.0f} KRW"
+
+
+def _fmt_pct(value: float | int | None) -> str:
+    if value is None:
+        return "-"
+    return f"{float(value):.1f}%"
+
+
+def _fmt_days(value: float | int | None) -> str:
+    if value is None:
+        return "-"
+    return f"{float(value):.2f}일"
+
+
+def _format_unverified_amounts(ctx: Any) -> set[str]:
+    """Return the set of formatted strings for ctx.unverified_cap.amount.
+
+    Accepts BoardBriefContext (typed as Any to avoid a heavy schema import).
+    """
+    if not ctx.unverified_cap:
+        return set()
+    amount = ctx.unverified_cap.amount
+    return {
+        f"{amount:,.0f}",
+        f"{amount:.0f}",
+        _fmt_krw(amount),
+    }
+
+
+def _format_g2_lines(lines: list[str], *, amount: float, days: int) -> list[str]:
+    return [line.format(amount=f"{amount:,.0f}", days=days) for line in lines]
+
+
 __all__ = [
     "fmt_price",
     "fmt_gap",
