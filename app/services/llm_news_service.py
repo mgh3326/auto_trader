@@ -6,11 +6,17 @@ from typing import Any
 from sqlalchemy import cast, func, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst_naive, to_kst_naive
-from app.models.news import NewsAnalysisResult, NewsArticle, NewsIngestionRun
+from app.models.news import (
+    NewsAnalysisResult,
+    NewsArticle,
+    NewsArticleRelatedSymbol,
+    NewsIngestionRun,
+)
 from app.schemas.news import (
     NewsBulkIngestRequest,
     NewsBulkIngestResponse,
@@ -280,6 +286,171 @@ def _article_values_from_ingestor_payload(article_data: Any) -> dict[str, Any]:
     }
 
 
+_RELATED_SYMBOL_MARKETS = {"kr", "us", "crypto"}
+_URL_METADATA_PREFIXES = (
+    "canonical_url:",
+    "source_url:",
+    "url:",
+    "fingerprint:",
+)
+
+
+def _normalize_related_symbol_market(
+    value: Any, fallback: str | None = None
+) -> str | None:
+    market = str(value or fallback or "").strip().lower()
+    if market in ("kospi", "kosdaq", "krx"):
+        market = "kr"
+    elif market in ("nasdaq", "nyse", "amex"):
+        market = "us"
+    elif market == "upbit":
+        market = "crypto"
+    return market if market in _RELATED_SYMBOL_MARKETS else None
+
+
+def _looks_like_url_metadata(value: str) -> bool:
+    lowered = value.strip().lower()
+    return (
+        lowered.startswith(_URL_METADATA_PREFIXES)
+        or "://" in lowered
+        or lowered.startswith("www.")
+    )
+
+
+def _normalize_related_symbol_symbol(value: Any, market: str) -> str | None:
+    symbol = str(value or "").strip()
+    if not symbol or _looks_like_url_metadata(symbol):
+        return None
+    if market == "kr" and symbol.isdigit():
+        symbol = symbol.zfill(6)
+    elif market in ("us", "crypto"):
+        symbol = symbol.upper()
+    return symbol[:40]
+
+
+def _candidate_field(candidate: dict[str, Any], *names: str) -> Any:
+    for name in names:
+        if name in candidate and candidate[name] not in (None, ""):
+            return candidate[name]
+    return None
+
+
+def _coerce_stock_candidate(candidate: Any) -> dict[str, Any] | None:
+    if isinstance(candidate, dict):
+        return candidate
+    if isinstance(candidate, str):
+        if _looks_like_url_metadata(candidate):
+            return None
+        return {"symbol": candidate}
+    return None
+
+
+def _iter_raw_stock_candidates(raw: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw, dict):
+        return []
+    candidates = raw.get("stock_candidates")
+    if candidates is None:
+        candidates = raw.get("related_symbols")
+    if candidates is None:
+        return []
+    if isinstance(candidates, dict):
+        candidates = [candidates]
+    if not isinstance(candidates, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for candidate in candidates:
+        coerced = _coerce_stock_candidate(candidate)
+        if coerced is not None:
+            out.append(coerced)
+    return out
+
+
+def _coerce_int_or_default(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _related_symbol_values_from_ingestor_payload(
+    *, article_id: int, article_data: Any
+) -> list[dict[str, Any]]:
+    """Normalize news-ingestor raw.stock_candidates into related-symbol rows."""
+    best_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
+    default_market = getattr(article_data, "market", None)
+    for ordinal, candidate in enumerate(
+        _iter_raw_stock_candidates(getattr(article_data, "raw", None)), start=1
+    ):
+        market = _normalize_related_symbol_market(
+            _candidate_field(candidate, "market", "market_type", "exchange"),
+            default_market,
+        )
+        if market is None:
+            continue
+        symbol = _normalize_related_symbol_symbol(
+            _candidate_field(candidate, "symbol", "ticker", "code", "stock_symbol"),
+            market,
+        )
+        if symbol is None:
+            continue
+        source = "candidate_metadata"
+        display_name = _candidate_field(
+            candidate,
+            "display_name",
+            "displayName",
+            "name",
+            "stock_name",
+            "canonical_name",
+        )
+        matched_term = _candidate_field(
+            candidate, "matched_term", "matchedTerm", "term"
+        )
+        score_value = _candidate_field(candidate, "score", "confidence")
+        try:
+            score = float(score_value) if score_value is not None else None
+        except (TypeError, ValueError):
+            score = None
+        rank = _coerce_int_or_default(
+            _candidate_field(candidate, "rank", "order"), ordinal
+        )
+        row = {
+            "article_id": article_id,
+            "market": market,
+            "symbol": symbol,
+            "display_name": str(display_name).strip()[:120]
+            if display_name is not None and str(display_name).strip()
+            else None,
+            "source": source,
+            "matched_term": str(matched_term).strip()[:120]
+            if matched_term is not None and str(matched_term).strip()
+            else None,
+            "score": score,
+            "rank": rank,
+            "raw": dict(candidate),
+            "created_at": now_kst_naive(),
+        }
+        key = (market, symbol, source)
+        existing = best_by_key.get(key)
+        if existing is None:
+            best_by_key[key] = row
+            continue
+        existing_rank = existing.get("rank")
+        existing_score = existing.get("score")
+        if rank < int(existing_rank if existing_rank is not None else rank + 1) or (
+            rank == existing_rank
+            and score is not None
+            and (existing_score is None or score > float(existing_score))
+        ):
+            best_by_key[key] = row
+    return sorted(
+        best_by_key.values(),
+        key=lambda row: (
+            row["rank"] if row["rank"] is not None else 10_000,
+            row["symbol"],
+        ),
+    )
+
+
 async def ingest_news_ingestor_bulk(
     request: NewsBulkIngestRequest,
 ) -> NewsBulkIngestResponse:
@@ -315,10 +486,12 @@ async def ingest_news_ingestor_bulk(
             pg_insert(NewsArticle)
             .values(article_values)
             .on_conflict_do_nothing(index_elements=[NewsArticle.url])
-            .returning(NewsArticle.url)
+            .returning(NewsArticle.id, NewsArticle.url)
         )
         article_result = await db.execute(article_stmt)
-        inserted_urls = set(article_result.scalars().all())
+        inserted_rows = article_result.all()
+        inserted_url_to_id = {url: article_id for article_id, url in inserted_rows}
+        inserted_urls = set(inserted_url_to_id)
 
         consumed_inserted_urls: set[str] = set()
         skipped_urls: list[str] = []
@@ -328,6 +501,31 @@ async def ingest_news_ingestor_bulk(
             else:
                 skipped_urls.append(url)
         inserted_count = len(inserted_urls)
+
+        related_symbol_values: list[dict[str, Any]] = []
+        for article_data in request.articles:
+            article_id = inserted_url_to_id.get(article_data.url.strip())
+            if article_id is None:
+                continue
+            related_symbol_values.extend(
+                _related_symbol_values_from_ingestor_payload(
+                    article_id=article_id, article_data=article_data
+                )
+            )
+        if related_symbol_values:
+            related_stmt = (
+                pg_insert(NewsArticleRelatedSymbol)
+                .values(related_symbol_values)
+                .on_conflict_do_nothing(
+                    index_elements=[
+                        NewsArticleRelatedSymbol.article_id,
+                        NewsArticleRelatedSymbol.market,
+                        NewsArticleRelatedSymbol.symbol,
+                        NewsArticleRelatedSymbol.source,
+                    ]
+                )
+            )
+            await db.execute(related_stmt)
 
         run = request.ingestion_run
         run_values = {
@@ -574,14 +772,23 @@ async def get_news_articles_with_fallback(
 
     Strategy:
       1. exact stock_symbol rows
-      2. (future ROB-129) candidate metadata rows — currently a no-op
+      2. persisted news_article_related_symbols rows from news-ingestor candidates
       3. alias title/summary/keywords match over recent market rows
 
     Returns a `NewsLookupResult` with `match_reasons[article.id]` set to one of:
-    "exact_symbol" | "alias_match".
+    "exact_symbol" | "related_symbol" | "alias_match".
     """
+    normalized_market = _normalize_related_symbol_market(market, market) or market
+    normalized_symbol = (
+        _normalize_related_symbol_symbol(symbol, normalized_market)
+        if normalized_market in _RELATED_SYMBOL_MARKETS
+        else symbol.upper().strip()
+    )
     exact_articles, _ = await get_news_articles(
-        stock_symbol=symbol, market=market, hours=hours, limit=limit
+        stock_symbol=normalized_symbol or symbol,
+        market=normalized_market,
+        hours=hours,
+        limit=limit,
     )
     out: list[NewsArticle] = []
     reasons: dict[int, str] = {}
@@ -592,16 +799,59 @@ async def get_news_articles_with_fallback(
         if len(out) >= limit:
             return NewsLookupResult(articles=out, match_reasons=reasons)
 
+    if out:
+        return NewsLookupResult(articles=out, match_reasons=reasons)
+
     if len(out) >= limit:
         return NewsLookupResult(articles=out, match_reasons=reasons)
 
     seen_ids: set[int] = {art.id for art in out}
 
+    if normalized_market in _RELATED_SYMBOL_MARKETS and normalized_symbol:
+        try:
+            async with AsyncSessionLocal() as db:
+                cutoff = now_kst_naive() - timedelta(hours=hours)
+                related_stmt = (
+                    select(NewsArticle)
+                    .join(
+                        NewsArticleRelatedSymbol,
+                        NewsArticleRelatedSymbol.article_id == NewsArticle.id,
+                    )
+                    .where(
+                        NewsArticleRelatedSymbol.market == normalized_market,
+                        NewsArticleRelatedSymbol.symbol == normalized_symbol,
+                        NewsArticle.article_published_at >= cutoff,
+                    )
+                    .order_by(
+                        NewsArticle.article_published_at.desc().nulls_last(),
+                        NewsArticle.id.desc(),
+                    )
+                    .limit(max(limit - len(out), 0))
+                )
+                related_result = await db.execute(related_stmt)
+                for art in related_result.scalars().all():
+                    if art.id in seen_ids:
+                        continue
+                    seen_ids.add(art.id)
+                    reasons[art.id] = "related_symbol"
+                    out.append(art)
+                    if len(out) >= limit:
+                        return NewsLookupResult(articles=out, match_reasons=reasons)
+        except SQLAlchemyError:
+            # Dev/test databases may not have the optional relation table yet; keep
+            # the historical alias-scan fallback rather than failing the lookup.
+            pass
+
+    if out:
+        return NewsLookupResult(articles=out, match_reasons=reasons)
+
     # Step 3: alias fallback over a wider market window.
     market_articles, _ = await get_news_articles(
-        market=market, hours=hours, limit=max(limit * _ALIAS_SCAN_MULTIPLIER, 50)
+        market=normalized_market,
+        hours=hours,
+        limit=max(limit * _ALIAS_SCAN_MULTIPLIER, 50),
     )
-    target_symbol = symbol.upper().strip()
+    target_symbol = (normalized_symbol or symbol).upper().strip()
     for art in market_articles:
         if art.id in seen_ids:
             continue
@@ -609,7 +859,7 @@ async def get_news_articles_with_fallback(
             title=art.title,
             summary=getattr(art, "summary", None),
             keywords=getattr(art, "keywords", None) or [],
-            market=market,
+            market=normalized_market,
         )
         if any(m.symbol.upper() == target_symbol for m in matches):
             seen_ids.add(art.id)

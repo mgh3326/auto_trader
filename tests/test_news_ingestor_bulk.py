@@ -323,3 +323,128 @@ class TestNewsReadinessPreopenIntegration:
         assert result.source_freshness is not None
         assert result.source_freshness["news"]["is_stale"] is True
         assert result.source_freshness["news"]["latest_run_uuid"] == "run-old"
+
+
+def test_news_article_related_symbol_model_contract():
+    from app.models.news import NewsArticleRelatedSymbol
+
+    constraints = {
+        constraint.name for constraint in NewsArticleRelatedSymbol.__table__.constraints
+    }
+    indexes = {index.name for index in NewsArticleRelatedSymbol.__table__.indexes}
+
+    assert "ck_news_article_related_symbols_market" in constraints
+    assert "uq_news_article_related_symbols_article_market_symbol_source" in constraints
+    assert "ix_news_article_related_symbols_article_rank" in indexes
+    assert "ix_news_article_related_symbols_market_symbol_article" in indexes
+
+
+def test_related_symbol_values_from_ingestor_payload_normalizes_multiple_candidates():
+    from app.schemas.news import NewsBulkIngestRequest
+    from app.services.llm_news_service import (
+        _related_symbol_values_from_ingestor_payload,
+    )
+
+    payload = _sample_payload()
+    payload["articles"][0]["raw"] = {
+        "stock_candidates": [
+            {
+                "code": "5930",
+                "market": "kr",
+                "name": "삼성전자",
+                "matched_term": "삼전",
+                "score": "0.91",
+                "rank": 2,
+            },
+            {
+                "symbol": "aapl",
+                "market": "us",
+                "display_name": "Apple",
+                "term": "Apple",
+                "score": 0.8,
+                "rank": 1,
+            },
+        ]
+    }
+    request = NewsBulkIngestRequest.model_validate(payload)
+
+    rows = _related_symbol_values_from_ingestor_payload(
+        article_id=123, article_data=request.articles[0]
+    )
+
+    assert [(row["market"], row["symbol"]) for row in rows] == [
+        ("us", "AAPL"),
+        ("kr", "005930"),
+    ]
+    assert rows[1]["display_name"] == "삼성전자"
+    assert rows[1]["matched_term"] == "삼전"
+    assert rows[1]["score"] == 0.91
+    assert rows[1]["source"] == "candidate_metadata"
+
+
+def test_related_symbol_values_from_ingestor_payload_drops_invalid_and_url_metadata():
+    from app.schemas.news import NewsBulkIngestRequest
+    from app.services.llm_news_service import (
+        _related_symbol_values_from_ingestor_payload,
+    )
+
+    payload = _sample_payload()
+    payload["articles"][0]["raw"] = {
+        "stock_candidates": [
+            {"symbol": "", "market": "kr"},
+            {"symbol": "035420", "market": "unsupported"},
+            "canonical_url:https://finance.naver.com/market_info_read.naver",
+            {"symbol": "www.naver.com", "market": "us"},
+        ]
+    }
+    request = NewsBulkIngestRequest.model_validate(payload)
+
+    rows = _related_symbol_values_from_ingestor_payload(
+        article_id=123, article_data=request.articles[0]
+    )
+
+    assert rows == []
+
+
+def test_related_symbol_values_from_ingestor_payload_dedupes_deterministically():
+    from app.schemas.news import NewsBulkIngestRequest
+    from app.services.llm_news_service import (
+        _related_symbol_values_from_ingestor_payload,
+    )
+
+    payload = _sample_payload()
+    payload["articles"][0]["raw"] = {
+        "stock_candidates": [
+            {"symbol": "005930", "market": "kr", "score": 0.5, "rank": 3},
+            {"symbol": "5930", "market": "kr", "score": 0.9, "rank": 2},
+            {"symbol": "005930", "market": "kr", "score": 0.95, "rank": 2},
+        ]
+    }
+    request = NewsBulkIngestRequest.model_validate(payload)
+
+    rows = _related_symbol_values_from_ingestor_payload(
+        article_id=123, article_data=request.articles[0]
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "005930"
+    assert rows[0]["rank"] == 2
+    assert rows[0]["score"] == 0.95
+
+
+def test_related_symbol_values_from_ingestor_payload_missing_raw_returns_empty():
+    from app.schemas.news import NewsBulkIngestRequest
+    from app.services.llm_news_service import (
+        _related_symbol_values_from_ingestor_payload,
+    )
+
+    payload = _sample_payload()
+    payload["articles"][0]["raw"] = {}
+    request = NewsBulkIngestRequest.model_validate(payload)
+
+    assert (
+        _related_symbol_values_from_ingestor_payload(
+            article_id=123, article_data=request.articles[0]
+        )
+        == []
+    )

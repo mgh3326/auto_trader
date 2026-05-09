@@ -155,13 +155,19 @@ async def get_feed_news(
     tab: FeedTab = Query("top"),
     limit: int = Query(30, ge=1, le=100),
     cursor: str | None = Query(None),
+    include_quotes: bool = Query(False, alias="includeQuotes"),
 ) -> FeedNewsResponse:
     home = await service.get_home(user_id=user.id)
     resolver = await build_relation_resolver(
         db, user_id=user.id, held_pairs=_held_pairs_from_home(home)
     )
     return await build_feed_news(
-        db=db, resolver=resolver, tab=tab, limit=limit, cursor=cursor
+        db=db,
+        resolver=resolver,
+        tab=tab,
+        limit=limit,
+        cursor=cursor,
+        include_quotes=include_quotes,
     )
 
 

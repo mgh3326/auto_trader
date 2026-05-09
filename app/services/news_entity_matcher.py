@@ -85,6 +85,17 @@ def match_symbols(
     return sorted(seen.values(), key=lambda m: (m.market, m.symbol))
 
 
+_URL_LIKE_METADATA_RE = re.compile(r"(?i)(?:[a-z_]+:)?https?://\S+|\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?:/\S*)?")
+
+
+def _clean_keyword_text(keyword: object) -> str:
+    """Drop URL-like keyword metadata so domains do not create entity false positives."""
+    text = str(keyword or "").strip()
+    if not text:
+        return ""
+    return _URL_LIKE_METADATA_RE.sub(" ", text)
+
+
 def match_symbols_for_article(
     *,
     title: str | None,
@@ -99,5 +110,5 @@ def match_symbols_for_article(
     if summary:
         parts.append(summary)
     if keywords:
-        parts.append(" ".join(str(k) for k in keywords if k))
+        parts.append(" ".join(cleaned for k in keywords if (cleaned := _clean_keyword_text(k))))
     return match_symbols(" \n ".join(parts), market=market)

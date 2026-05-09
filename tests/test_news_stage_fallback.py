@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -40,6 +40,24 @@ def _mk_article(
         source="example",
         feed_source="rss_test",
     )
+
+
+def _related_symbol_session_factory(rows: list[SimpleNamespace]):
+    """Return an async session factory yielding related-symbol lookup rows."""
+
+    class _RelatedRowsSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def execute(self, stmt):
+            result = Mock()
+            result.scalars.return_value.all.return_value = rows
+            return result
+
+    return lambda: _RelatedRowsSession()
 
 
 @pytest.mark.unit
@@ -85,6 +103,11 @@ async def test_fallback_alias_used_when_exact_returns_empty(monkeypatch):
         "get_news_articles",
         AsyncMock(side_effect=fake_get_news_articles),
     )
+    monkeypatch.setattr(
+        llm_news_service,
+        "AsyncSessionLocal",
+        _related_symbol_session_factory([]),
+    )
 
     result = await llm_news_service.get_news_articles_with_fallback(
         symbol="AMZN", market="us", hours=24, limit=20
@@ -114,6 +137,11 @@ async def test_fallback_kr_005930_alias_match(monkeypatch):
         "get_news_articles",
         AsyncMock(side_effect=fake_get_news_articles),
     )
+    monkeypatch.setattr(
+        llm_news_service,
+        "AsyncSessionLocal",
+        _related_symbol_session_factory([]),
+    )
 
     result = await llm_news_service.get_news_articles_with_fallback(
         symbol="005930", market="kr", hours=24, limit=20
@@ -133,12 +161,58 @@ async def test_fallback_returns_empty_when_no_match(monkeypatch):
         "get_news_articles",
         AsyncMock(side_effect=fake_get_news_articles),
     )
+    monkeypatch.setattr(
+        llm_news_service,
+        "AsyncSessionLocal",
+        _related_symbol_session_factory([]),
+    )
 
     result = await llm_news_service.get_news_articles_with_fallback(
         symbol="AMZN", market="us", hours=24, limit=20
     )
     assert result.articles == []
     assert result.match_reasons == {}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fallback_uses_persisted_related_symbol_rows_before_alias_scan(
+    monkeypatch,
+):
+    related = _mk_article(
+        id=30,
+        title="Cloud capex lifts chip supply chain",
+        stock_symbol=None,
+        market="us",
+    )
+    get_news_articles = AsyncMock(side_effect=[([], 0), ([], 0)])
+
+    class _RelatedRowsSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def execute(self, stmt):
+            result = Mock()
+            result.scalars.return_value.all.return_value = [related]
+            return result
+
+    monkeypatch.setattr(llm_news_service, "get_news_articles", get_news_articles)
+    monkeypatch.setattr(
+        llm_news_service,
+        "AsyncSessionLocal",
+        lambda: _RelatedRowsSession(),
+    )
+
+    result = await llm_news_service.get_news_articles_with_fallback(
+        symbol="NVDA", market="us", hours=24, limit=20
+    )
+
+    assert [article.id for article in result.articles] == [30]
+    assert result.match_reasons[30] == "related_symbol"
+    assert get_news_articles.await_count == 1
 
 
 @pytest.mark.unit

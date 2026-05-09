@@ -115,9 +115,63 @@ class NewsArticle(Base):
     analysis_results: Mapped[list["NewsAnalysisResult"]] = relationship(
         back_populates="article", cascade="all, delete-orphan"
     )
+    related_symbols: Mapped[list["NewsArticleRelatedSymbol"]] = relationship(
+        back_populates="article", cascade="all, delete-orphan"
+    )
 
     def __repr__(self) -> str:
         return f"<NewsArticle(id={self.id}, title='{self.title[:50]}...', url='{self.url[:50]}...')>"
+
+
+class NewsArticleRelatedSymbol(Base):
+    __tablename__ = "news_article_related_symbols"
+
+    __table_args__ = (
+        CheckConstraint(
+            "market IN ('kr', 'us', 'crypto')",
+            name="market",
+        ),
+        UniqueConstraint(
+            "article_id",
+            "market",
+            "symbol",
+            "source",
+            name="uq_news_article_related_symbols_article_market_symbol_source",
+        ),
+        Index("ix_news_article_related_symbols_article_rank", "article_id", "rank"),
+        Index(
+            "ix_news_article_related_symbols_market_symbol_article",
+            "market",
+            "symbol",
+            "article_id",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    article_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("news_articles.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    market: Mapped[str] = mapped_column(String(20), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(40), nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    source: Mapped[str] = mapped_column(String(40), nullable=False)
+    matched_term: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    score: Mapped[float | None] = mapped_column(nullable=True)
+    rank: Mapped[int | None] = mapped_column(nullable=True)
+    raw: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(nullable=False)
+
+    article: Mapped["NewsArticle"] = relationship(back_populates="related_symbols")
+
+    def __repr__(self) -> str:
+        return (
+            "<NewsArticleRelatedSymbol("
+            f"article_id={self.article_id}, market='{self.market}', symbol='{self.symbol}', "
+            f"source='{self.source}')>"
+        )
 
 
 class NewsIngestionRun(Base):
