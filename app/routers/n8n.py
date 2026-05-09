@@ -258,7 +258,7 @@ async def get_pending_orders(
             ),
             errors=[{"market": market, "error": str(exc)}],
         )
-        return JSONResponse(status_code=500, content=payload.model_dump())
+        return n8n_error_response(payload)
 
     return N8nPendingOrdersResponse(
         success=bool(result.get("success", True)),
@@ -328,7 +328,7 @@ async def get_market_context(
             ),
             errors=[{"error": str(exc)}],
         )
-        return JSONResponse(status_code=500, content=payload.model_dump())
+        return n8n_error_response(payload)
 
     return N8nMarketContextResponse(
         success=True,
@@ -395,7 +395,7 @@ async def get_daily_brief(
             brief_text="",
             errors=[{"error": str(exc)}],
         )
-        return JSONResponse(status_code=500, content=payload.model_dump())
+        return n8n_error_response(payload)
 
     _spawn_background(save_daily_brief_report(result), name="n8n-daily-brief")
     return N8nDailyBriefResponse(**result)
@@ -439,7 +439,7 @@ async def get_filled_orders(
             orders=[],
             errors=[{"error": str(exc)}],
         )
-        return JSONResponse(status_code=500, content=payload.model_dump())
+        return n8n_error_response(payload)
 
     return N8nFilledOrdersResponse(
         success=True,
@@ -548,7 +548,7 @@ async def get_pending_review_endpoint(
             orders=[],
             errors=[{"error": str(exc)}],
         )
-        return JSONResponse(status_code=500, content=payload.model_dump())
+        return n8n_error_response(payload)
 
     return N8nPendingReviewResponse(
         success=True,
@@ -654,7 +654,7 @@ async def get_crypto_scan(
             ),
             errors=[{"error": str(exc)}],
         )
-        return JSONResponse(status_code=500, content=payload.model_dump())
+        return n8n_error_response(payload)
 
     _spawn_background(save_crypto_scan_report(result), name="n8n-crypto-scan")
     return N8nCryptoScanResponse(
@@ -697,7 +697,7 @@ async def get_kr_morning_report(
             brief_text="",
             errors=[{"error": str(exc)}],
         )
-        return JSONResponse(status_code=500, content=payload.model_dump())
+        return n8n_error_response(payload)
 
     _spawn_background(save_kr_morning_report(result), name="n8n-kr-morning")
     return N8nKrMorningReportResponse(**result)
@@ -740,7 +740,7 @@ async def get_n8n_news(
             discord_body="⚠️ 뉴스를 불러오는 중 오류가 발생했습니다.",
             errors=[{"error": str(exc)}],
         )
-        return JSONResponse(status_code=500, content=payload.model_dump())
+        return n8n_error_response(payload)
 
     return result
 
@@ -763,7 +763,7 @@ async def get_sell_signal_batch(
             results=[],
             errors=[{"error": str(exc)}],
         )
-        return JSONResponse(status_code=500, content=payload.model_dump())
+        return n8n_error_response(payload)
 
     results: list[N8nSellSignalResponse] = []
     top_errors: list[dict[str, object]] = []
@@ -876,7 +876,7 @@ async def get_sell_signal(
             message="",
             errors=[{"error": str(exc)}],
         )
-        return JSONResponse(status_code=500, content=payload.model_dump())
+        return n8n_error_response(payload)
 
     return N8nSellSignalResponse(
         success=True,
