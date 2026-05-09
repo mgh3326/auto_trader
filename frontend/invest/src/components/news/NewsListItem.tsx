@@ -2,8 +2,9 @@ import { useId } from "react";
 import { Link } from "react-router-dom";
 import { formatRelativeTime } from "../../format/relativeTime";
 import type { FeedNewsItem, FeedRelatedSymbol } from "../../types/feedNews";
-import type { MarketIssue } from "../../types/newsIssues";
+import type { MarketIssue, MarketIssuesMarketFilter } from "../../types/newsIssues";
 import { Pill } from "../../ds";
+import { issueDetailHref } from "./issueLink";
 
 const RELATION_LABEL: Record<string, string> = {
   held: "보유",
@@ -23,6 +24,7 @@ interface NewsListItemProps {
   open: boolean;
   onToggle: () => void;
   discoverIssueHrefPrefix?: string;
+  issueMarket?: MarketIssuesMarketFilter;
   variant?: "desktop" | "mobile";
 }
 
@@ -102,6 +104,7 @@ export function NewsListItem({
   open,
   onToggle,
   discoverIssueHrefPrefix = "/discover/issues",
+  issueMarket = "all",
   variant = "desktop",
 }: NewsListItemProps) {
   const summaryId = useId();
@@ -110,7 +113,7 @@ export function NewsListItem({
   const source = displaySource(item);
   const summaryButtonLabel = open ? `${item.title} 요약 접기` : `${item.title} 요약 더보기`;
   const hasSummary = Boolean(item.summarySnippet);
-  const issueHref = issue ? `${discoverIssueHrefPrefix}/${encodeURIComponent(issue.id)}` : null;
+  const issueHref = issue ? issueDetailHref(discoverIssueHrefPrefix, issue.id, issueMarket) : null;
 
   return (
     <li

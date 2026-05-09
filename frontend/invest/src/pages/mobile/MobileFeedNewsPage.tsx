@@ -4,6 +4,7 @@ import { fetchFeedNews } from "../../api/feedNews";
 import type { FeedNewsResponse, FeedTab } from "../../types/feedNews";
 import { NewsTabs } from "../../components/news/NewsTabs";
 import { NewsListItem } from "../../components/news/NewsListItem";
+import { issueNamespaceForTab } from "../../components/news/issueLink";
 
 function emptyMessage(reason: string | null | undefined): string {
   if (reason === "no_holdings") return "보유 종목이 없습니다.";
@@ -31,6 +32,7 @@ export function MobileFeedNewsPage() {
   }, [tab]);
 
   const issueById = new Map((data?.issues ?? []).map((i) => [i.id, i] as const));
+  const issueMarket = issueNamespaceForTab(tab);
   const loading = !data && !err;
   const empty = Boolean(data && data.items.length === 0);
 
@@ -60,6 +62,7 @@ export function MobileFeedNewsPage() {
                 key={it.id}
                 item={it}
                 issue={linkedIssue}
+                issueMarket={issueMarket}
                 open={open}
                 onToggle={() => setSelectedId(open ? null : it.id)}
                 variant="mobile"

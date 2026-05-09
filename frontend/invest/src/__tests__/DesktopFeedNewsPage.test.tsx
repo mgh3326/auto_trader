@@ -7,6 +7,7 @@ import { AccountPanelProvider } from "../desktop/AccountPanelProvider";
 import * as feedApi from "../api/feedNews";
 import * as panelApi from "../api/accountPanel";
 import type { FeedNewsResponse } from "../types/feedNews";
+import { issueNamespaceForTab } from "../components/news/issueLink";
 
 function feedResponse(overrides: Partial<FeedNewsResponse> = {}): FeedNewsResponse {
   return {
@@ -101,6 +102,17 @@ beforeEach(() => {
   vi.spyOn(feedApi, "fetchFeedNews").mockResolvedValue(feedResponse());
 });
 
+test("maps feed tabs to issue ID namespaces", () => {
+  expect(issueNamespaceForTab("top")).toBe("all");
+  expect(issueNamespaceForTab("latest")).toBe("all");
+  expect(issueNamespaceForTab("hot")).toBe("all");
+  expect(issueNamespaceForTab("holdings")).toBe("all");
+  expect(issueNamespaceForTab("watchlist")).toBe("all");
+  expect(issueNamespaceForTab("kr")).toBe("kr");
+  expect(issueNamespaceForTab("us")).toBe("us");
+  expect(issueNamespaceForTab("crypto")).toBe("crypto");
+});
+
 test("renders dense news rows and reacts to tab change", async () => {
   renderPage();
 
@@ -121,9 +133,20 @@ test("renders an issue chip linked to the issue detail page when issueId is pres
   expect(chip).toHaveTextContent("삼성전자 실적 발표");
   // Chip points at the canonical /discover route (Stage 4.2). Legacy
   // /app/discover/issues/:id remains routable for backwards compat.
-  expect(chip).toHaveAttribute("href", "/invest/discover/issues/iss-xyz");
+  expect(chip).toHaveAttribute("href", "/invest/discover/issues/iss-xyz?market=all");
   expect(chip).toHaveAttribute("data-issue-id", "iss-xyz");
   expect(chip.tagName.toLowerCase()).toBe("a");
+});
+
+test("uses the selected market tab as issue chip namespace", async () => {
+  renderPage();
+
+  await screen.findByTestId("feed-item-issue-chip");
+  await userEvent.click(screen.getByTestId("tab-us"));
+
+  await waitFor(() => expect(feedApi.fetchFeedNews).toHaveBeenLastCalledWith({ tab: "us", limit: 30 }));
+  const chip = await screen.findByTestId("feed-item-issue-chip");
+  expect(chip).toHaveAttribute("href", "/invest/discover/issues/iss-xyz?market=us");
 });
 
 test("renders related symbol chips as read-only badges with optional quote seam", async () => {

@@ -7,6 +7,7 @@ import { fetchFeedNews } from "../../api/feedNews";
 import type { FeedNewsResponse, FeedTab } from "../../types/feedNews";
 import { NewsTabs } from "../../components/news/NewsTabs";
 import { NewsListItem } from "../../components/news/NewsListItem";
+import { issueNamespaceForTab } from "../../components/news/issueLink";
 import { MobileFeedNewsPage } from "../mobile/MobileFeedNewsPage";
 
 function emptyMessage(reason: string | null | undefined): string {
@@ -41,6 +42,7 @@ export function DesktopFeedNewsPage() {
   }, [tab]);
 
   const issueById = new Map((data?.issues ?? []).map((i) => [i.id, i] as const));
+  const issueMarket = issueNamespaceForTab(tab);
   const loading = !data && !err;
   const empty = Boolean(data && data.items.length === 0);
 
@@ -78,6 +80,7 @@ export function DesktopFeedNewsPage() {
                     key={it.id}
                     item={it}
                     issue={linkedIssue}
+                    issueMarket={issueMarket}
                     open={open}
                     onToggle={() => setSelectedId(open ? null : it.id)}
                   />

@@ -1,5 +1,5 @@
 // frontend/invest/src/pages/DiscoverIssueDetailPage.tsx
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { DesktopHeader } from "../desktop/DesktopHeader";
 import { MobileShell } from "../mobile/MobileShell";
 import { useViewport } from "../hooks/useViewport";
@@ -11,6 +11,7 @@ import type {
   IssueDirection,
   MarketIssue,
   MarketIssueRelatedSymbol,
+  MarketIssuesMarketFilter,
 } from "../types/newsIssues";
 
 export interface DiscoverIssueDetailPageProps {
@@ -32,11 +33,21 @@ const DIRECTION_COPY: Record<IssueDirection, string> = {
   neutral: "방향성은 아직 뚜렷하지 않아 추가 뉴스 확인이 필요해요.",
 };
 
+const VALID_ISSUE_MARKETS = new Set<MarketIssuesMarketFilter>(["all", "kr", "us", "crypto"]);
+
+function normalizeIssueMarket(raw: string | null): MarketIssuesMarketFilter {
+  return raw && VALID_ISSUE_MARKETS.has(raw as MarketIssuesMarketFilter)
+    ? (raw as MarketIssuesMarketFilter)
+    : "all";
+}
+
 export function DiscoverIssueDetailPage(props: DiscoverIssueDetailPageProps = {}) {
   const params = useParams<{ issueId: string }>();
+  const [searchParams] = useSearchParams();
+  const issueMarket = normalizeIssueMarket(searchParams.get("market"));
   const live = useNewsIssues(
     {
-      market: "all",
+      market: issueMarket,
       windowHours: 24,
       limit: 20,
     },

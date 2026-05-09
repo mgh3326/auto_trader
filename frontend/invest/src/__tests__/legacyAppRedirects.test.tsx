@@ -121,6 +121,14 @@ describe("legacy /invest/app/* redirects preserve query and hash", () => {
     expect(detail.getAttribute("data-hash")).toBe("#article-3");
   });
 
+  it("/app/discover/issues/:id?market=us#article-3 -> canonical detail preserves both search and hash", async () => {
+    await renderRoute("/app/discover/issues/us-issue?market=us#article-3");
+    const detail = await waitFor(() => screen.getByTestId("canonical-issue-detail"));
+    expect(detail.getAttribute("data-issue-id")).toBe("us-issue");
+    expect(detail.getAttribute("data-search")).toBe("?market=us");
+    expect(detail.getAttribute("data-hash")).toBe("#article-3");
+  });
+
   it("/app/paper?variant=cycle -> / preserves the search", async () => {
     await renderRoute("/app/paper?variant=cycle");
     const home = await waitFor(() => screen.getByTestId("canonical-home"));

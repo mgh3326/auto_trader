@@ -1,8 +1,9 @@
 // frontend/invest/src/__tests__/DiscoverIssueDetailPage.test.tsx
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { DiscoverIssueDetailPage, type DiscoverIssueDetailPageProps } from "../pages/DiscoverIssueDetailPage";
+import * as newsIssuesApi from "../api/newsIssues";
 import type { MarketIssue, MarketIssuesResponse } from "../types/newsIssues";
 
 function makeIssue(over: Partial<MarketIssue>): MarketIssue {
@@ -35,7 +36,7 @@ function makeResponse(items: MarketIssue[], over: Partial<MarketIssuesResponse> 
   };
 }
 
-function renderAt(path: string, state: DiscoverIssueDetailPageProps["state"]) {
+function renderAt(path: string, state?: DiscoverIssueDetailPageProps["state"]) {
   return render(
     <MemoryRouter initialEntries={[`/invest${path}`]} basename="/invest">
       <Routes>
@@ -47,6 +48,10 @@ function renderAt(path: string, state: DiscoverIssueDetailPageProps["state"]) {
     </MemoryRouter>,
   );
 }
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 test("renders matched issue with impact map, related symbols and article links", () => {
   const matched = makeIssue({
@@ -68,6 +73,45 @@ test("renders matched issue with impact map, related symbols and article links",
   expect(
     screen.getByText(/뉴스 기반 참고 정보이며 매매 추천이 아닙니다./),
   ).toBeInTheDocument();
+});
+
+test("fetches live issue detail using validated market search param", async () => {
+  const matched = makeIssue({ id: "us-issue", market: "us", issue_title: "US 반도체 이슈" });
+  const fetchSpy = vi
+    .spyOn(newsIssuesApi, "fetchNewsIssues")
+    .mockResolvedValue(makeResponse([matched], { market: "us" }));
+
+  renderAt("/discover/issues/us-issue?market=us");
+
+  await waitFor(() =>
+    expect(fetchSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ market: "us", windowHours: 24, limit: 20 }),
+      expect.any(AbortSignal),
+    ),
+  );
+  expect(await screen.findByText("US 반도체 이슈")).toBeInTheDocument();
+});
+
+test("defaults missing or invalid issue market search param to all", async () => {
+  const fetchSpy = vi.spyOn(newsIssuesApi, "fetchNewsIssues").mockResolvedValue(makeResponse([]));
+
+  const first = renderAt("/discover/issues/missing?market=bad");
+  await waitFor(() =>
+    expect(fetchSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ market: "all", windowHours: 24, limit: 20 }),
+      expect.any(AbortSignal),
+    ),
+  );
+  first.unmount();
+
+  fetchSpy.mockClear();
+  renderAt("/discover/issues/missing");
+  await waitFor(() =>
+    expect(fetchSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ market: "all", windowHours: 24, limit: 20 }),
+      expect.any(AbortSignal),
+    ),
+  );
 });
 
 test("renders not-found state when id is missing, with canonical back link", () => {
