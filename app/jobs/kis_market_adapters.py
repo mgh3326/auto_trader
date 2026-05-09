@@ -731,19 +731,12 @@ class OverseasAutomationAdapter(BaseAutomationAdapter):
                 logger.warning("미체결 주문 조회 실패 (exchange=%s): %s", exchange, exc)
                 continue
             for order in open_orders:
-                oid = self._extract_order_id(order)
-                if oid:
-                    orders_by_id[oid] = order
+                order_number = self._extract_order_number(order)
+                if order_number:
+                    orders_by_id[order_number] = order
                 else:
                     anonymous.append(order)
         return list(orders_by_id.values()) + anonymous
-
-    @staticmethod
-    def _extract_order_id(order: dict) -> str:
-        for key in ("odno", "ODNO", "ord_no", "ORD_NO"):
-            if v := order.get(key):
-                return str(v).strip()
-        return ""
 
     def extract_stock_info(self, stock):
         return extract_overseas_stock_info(stock)
