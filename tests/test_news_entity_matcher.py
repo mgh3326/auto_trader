@@ -109,6 +109,51 @@ def test_match_for_article_strips_url_metadata_before_matching(field: str):
 
 
 @pytest.mark.unit
+def test_match_for_article_drops_malformed_url_like_metadata_without_crashing():
+    matches = match_symbols_for_article(
+        title="마켓레이더 오전 자료",
+        summary="증권사 시장 요약",
+        keywords=[
+            "canonical_url:https://finance.naver.com/[bad",
+            "source_url:http://[malformed",
+            "https://finance.naver.com/[broken",
+        ],
+        market="kr",
+    )
+
+    assert not any(m.symbol == "035420" for m in matches)
+
+
+@pytest.mark.unit
+def test_match_for_article_keeps_naver_origin_metadata_separate_from_naver_corp():
+    matches = match_symbols_for_article(
+        title="반도체 업황 회복에 삼성전자 강세",
+        summary="증권사 시장 요약",
+        keywords=[
+            "source:browser_naver_research",
+            "canonical_url:https://finance.naver.com/research/company_read.naver?foo=[bad",
+        ],
+        market="kr",
+    )
+    symbols = {m.symbol for m in matches}
+
+    assert "005930" in symbols
+    assert "035420" not in symbols
+
+
+@pytest.mark.unit
+def test_match_for_article_still_matches_naver_when_article_mentions_company():
+    matches = match_symbols_for_article(
+        title="네이버 AI 투자 확대",
+        summary="플랫폼 기업 실적 개선 기대",
+        keywords=["canonical_url:https://finance.naver.com/news/mainnews.naver"],
+        market="kr",
+    )
+
+    assert any(m.symbol == "035420" for m in matches)
+
+
+@pytest.mark.unit
 def test_match_returns_sorted_unique_by_symbol():
     matches = match_symbols("Amazon Amazon AMZN keeps rising", market="us")
     amzn_matches = [m for m in matches if m.symbol == "AMZN"]
