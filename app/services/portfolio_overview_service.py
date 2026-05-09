@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime
-from decimal import Decimal
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +16,7 @@ from app.models.manual_holdings import MarketType
 from app.services.brokers.kis.client import KISClient
 from app.services.exchange_rate_service import get_usd_krw_rate
 from app.services.manual_holdings_service import ManualHoldingsService
+from app.services.portfolio_data_collector import PortfolioDataCollector
 from app.services.upbit_symbol_universe_service import get_active_upbit_markets
 from app.services.us_symbol_universe_service import (
     USSymbolUniverseLookupError,
@@ -70,6 +70,7 @@ class PortfolioOverviewService:
     def __init__(self, db: AsyncSession):
         self.db = db
         self.manual_holdings_service = ManualHoldingsService(db)
+        self._collector = PortfolioDataCollector(db)
 
     async def get_overview(
         self,
@@ -122,14 +123,16 @@ class PortfolioOverviewService:
 
         # Run collectors concurrently with isolated warning lists
         collection_results = await asyncio.gather(
-            self._run_collection_task(self._collect_kis_components, kis_client),
-            self._run_collection_task(
-                self._collect_upbit_components,
+            self._collector._run_collection_task(
+                self._collector._collect_kis_components, kis_client
+            ),
+            self._collector._run_collection_task(
+                self._collector._collect_upbit_components,
                 active_upbit_markets=active_upbit_markets,
                 enforce_upbit_universe=enforce_upbit_universe,
             ),
-            self._run_collection_task(
-                self._collect_manual_components,
+            self._collector._run_collection_task(
+                self._collector._collect_manual_components,
                 user_id,
                 active_upbit_markets=active_upbit_markets,
                 enforce_upbit_universe=enforce_upbit_universe,
@@ -242,8 +245,8 @@ class PortfolioOverviewService:
             enforce_upbit_universe = False
 
         # Filter manual components for this user
-        manual_components, manual_warnings = await self._run_collection_task(
-            self._collect_manual_components,
+        manual_components, manual_warnings = await self._collector._run_collection_task(
+            self._collector._collect_manual_components,
             user_id,
             active_upbit_markets=active_upbit_markets,
             enforce_upbit_universe=enforce_upbit_universe,
@@ -299,282 +302,6 @@ class PortfolioOverviewService:
             "positions": positions,
             "warnings": list(dict.fromkeys(warnings)),
         }
-
-    async def _collect_kis_components(
-        self,
-        kis_client: KISClient,
-        warnings: list[str],
-    ) -> list[dict[str, Any]]:
-        collection_results = await asyncio.gather(
-            self._collect_kis_kr_components(kis_client),
-            self._collect_kis_us_components(kis_client),
-        )
-
-        components: list[dict[str, Any]] = []
-        for result_components, result_warnings in collection_results:
-            components.extend(result_components)
-            warnings.extend(result_warnings)
-
-        return [item for item in components if item["symbol"]]
-
-    async def _collect_kis_kr_components(
-        self,
-        kis_client: KISClient,
-    ) -> tuple[list[dict[str, Any]], list[str]]:
-        components: list[dict[str, Any]] = []
-        warnings: list[str] = []
-        try:
-            kr_stocks = await kis_client.fetch_my_stocks()
-            for stock in kr_stocks:
-                quantity = _to_float(stock.get("hldg_qty"))
-                if quantity <= 0:
-                    continue
-
-                avg_price = _to_float(stock.get("pchs_avg_pric"))
-                current_price = _to_float(stock.get("prpr"), default=0.0) or None
-                evaluation = _to_float(stock.get("evlu_amt"), default=0.0) or None
-                profit_loss = _to_float(stock.get("evlu_pfls_amt"), default=0.0)
-                profit_rate = _kis_percent_to_decimal(stock.get("evlu_pfls_rt"))
-
-                components.append(
-                    {
-                        "market_type": _MARKET_KR,
-                        "symbol": _normalize_symbol(
-                            str(stock.get("pdno", "")), _MARKET_KR
-                        ),
-                        "name": str(
-                            stock.get("prdt_name") or stock.get("pdno") or ""
-                        ).strip(),
-                        "account_key": "live:kis",
-                        "broker": "kis",
-                        "account_name": "KIS 실계좌",
-                        "source": "live",
-                        "quantity": quantity,
-                        "avg_price": avg_price,
-                        "current_price": current_price,
-                        "evaluation": evaluation,
-                        "profit_loss": profit_loss,
-                        "profit_rate": profit_rate,
-                    }
-                )
-        except Exception as exc:
-            logger.warning("Failed to fetch KIS KR holdings: %s", exc)
-            warnings.append(f"KIS KR holdings fetch failed: {exc}")
-        return components, warnings
-
-    async def _collect_kis_us_components(
-        self,
-        kis_client: KISClient,
-    ) -> tuple[list[dict[str, Any]], list[str]]:
-        components: list[dict[str, Any]] = []
-        warnings: list[str] = []
-        try:
-            us_stocks = await kis_client.fetch_my_us_stocks()
-            for stock in us_stocks:
-                quantity = _to_float(stock.get("ovrs_cblc_qty"))
-                if quantity <= 0:
-                    continue
-
-                avg_price = _to_float(stock.get("pchs_avg_pric"))
-                current_price = _to_float(stock.get("now_pric2"), default=0.0) or None
-                evaluation = (
-                    _to_float(stock.get("ovrs_stck_evlu_amt"), default=0.0) or None
-                )
-                profit_loss = _to_float(stock.get("frcr_evlu_pfls_amt"), default=0.0)
-                profit_rate = _kis_percent_to_decimal(stock.get("evlu_pfls_rt"))
-
-                components.append(
-                    {
-                        "market_type": _MARKET_US,
-                        "symbol": _normalize_symbol(
-                            str(stock.get("ovrs_pdno", "")), _MARKET_US
-                        ),
-                        "name": str(
-                            stock.get("ovrs_item_name") or stock.get("ovrs_pdno") or ""
-                        ).strip(),
-                        "account_key": "live:kis",
-                        "broker": "kis",
-                        "account_name": "KIS 실계좌",
-                        "source": "live",
-                        "quantity": quantity,
-                        "avg_price": avg_price,
-                        "current_price": current_price,
-                        "evaluation": evaluation,
-                        "profit_loss": profit_loss,
-                        "profit_rate": profit_rate,
-                    }
-                )
-        except Exception as exc:
-            logger.warning("Failed to fetch KIS US holdings: %s", exc)
-            warnings.append(f"KIS US holdings fetch failed: {exc}")
-        return components, warnings
-
-    async def _collect_upbit_components(
-        self,
-        warnings: list[str],
-        active_upbit_markets: set[str] | None = None,
-        enforce_upbit_universe: bool = True,
-    ) -> list[dict[str, Any]]:
-        components: list[dict[str, Any]] = []
-
-        try:
-            coins = await upbit_service.fetch_my_coins()
-        except Exception as exc:
-            logger.warning("Failed to fetch Upbit holdings: %s", exc)
-            warnings.append(f"Upbit holdings fetch failed: {exc}")
-            return components
-
-        tradable_set: set[str] | None = None
-        if enforce_upbit_universe:
-            tradable_set = active_upbit_markets
-            if tradable_set is None:
-                tradable_set = await get_active_upbit_markets(quote_currency=None)
-            tradable_set = {
-                str(market).strip().upper()
-                for market in tradable_set
-                if str(market).strip()
-            }
-
-        symbols: list[str] = []
-        for coin in coins:
-            currency = str(coin.get("currency", "")).strip().upper()
-            if not currency or currency == "KRW":
-                continue
-
-            unit_currency = str(coin.get("unit_currency") or "KRW").strip().upper()
-            symbol = _normalize_symbol(f"{unit_currency}-{currency}", _MARKET_CRYPTO)
-            if tradable_set is not None and symbol not in tradable_set:
-                logger.info("Skipping non-tradable Upbit holding symbol=%s", symbol)
-                continue
-            quantity = _to_float(coin.get("balance")) + _to_float(coin.get("locked"))
-            if quantity <= 0:
-                continue
-
-            symbols.append(symbol)
-            components.append(
-                {
-                    "market_type": _MARKET_CRYPTO,
-                    "symbol": symbol,
-                    "name": symbol,
-                    "account_key": "live:upbit",
-                    "broker": "upbit",
-                    "account_name": "Upbit 실계좌",
-                    "source": "live",
-                    "quantity": quantity,
-                    "avg_price": _to_float(coin.get("avg_buy_price")),
-                    "current_price": None,
-                    "evaluation": None,
-                    "profit_loss": None,
-                    "profit_rate": None,
-                }
-            )
-
-        if not symbols:
-            return components
-
-        price_map = await self._fetch_upbit_prices_resilient(
-            symbols,
-            warnings,
-            stage="collect_upbit_components",
-            active_upbit_markets=tradable_set,
-            enforce_upbit_universe=enforce_upbit_universe,
-        )
-
-        for item in components:
-            symbol = item["symbol"]
-            current_price = price_map.get(symbol)
-            if current_price is None:
-                continue
-            item["current_price"] = float(current_price)
-            self._recalculate_component(item)
-
-        return components
-
-    async def _collect_manual_components(
-        self,
-        user_id: int,
-        warnings: list[str],
-        active_upbit_markets: set[str] | None = None,
-        enforce_upbit_universe: bool = True,
-    ) -> list[dict[str, Any]]:
-        try:
-            holdings = await self.manual_holdings_service.get_holdings_by_user(user_id)
-        except Exception as exc:
-            logger.warning("Failed to fetch manual holdings: %s", exc)
-            warnings.append(f"Manual holdings fetch failed: {exc}")
-            return []
-
-        components: list[dict[str, Any]] = []
-        tradable_crypto_symbols = active_upbit_markets
-        if tradable_crypto_symbols is not None:
-            tradable_crypto_symbols = {
-                str(market).strip().upper()
-                for market in tradable_crypto_symbols
-                if str(market).strip()
-            }
-        for holding in holdings:
-            market_type = _normalize_market_type(getattr(holding, "market_type", None))
-            if market_type is None:
-                continue
-
-            symbol = _normalize_symbol(getattr(holding, "ticker", ""), market_type)
-            if not symbol:
-                continue
-
-            if market_type == _MARKET_CRYPTO and enforce_upbit_universe:
-                if tradable_crypto_symbols is None:
-                    tradable_crypto_symbols = await get_active_upbit_markets(
-                        quote_currency=None
-                    )
-                    tradable_crypto_symbols = {
-                        str(market).strip().upper()
-                        for market in tradable_crypto_symbols
-                        if str(market).strip()
-                    }
-                if symbol not in tradable_crypto_symbols:
-                    logger.info(
-                        "Skipping non-tradable manual CRYPTO holding symbol=%s",
-                        symbol,
-                    )
-                    continue
-
-            broker_account = getattr(holding, "broker_account", None)
-            broker_value = getattr(broker_account, "broker_type", "manual")
-            if hasattr(broker_value, "value"):
-                broker_value = broker_value.value
-            broker = str(broker_value or "manual").strip().lower()
-
-            account_id = getattr(broker_account, "id", None)
-            account_name = str(
-                getattr(broker_account, "account_name", "기본 계좌") or "기본 계좌"
-            )
-            account_key = (
-                f"manual:{account_id}" if account_id is not None else "manual:unknown"
-            )
-
-            quantity = _to_float(getattr(holding, "quantity", Decimal("0")))
-            if quantity <= 0:
-                continue
-
-            components.append(
-                {
-                    "market_type": market_type,
-                    "symbol": symbol,
-                    "name": str(getattr(holding, "display_name", None) or symbol),
-                    "account_key": account_key,
-                    "broker": broker,
-                    "account_name": account_name,
-                    "source": "manual",
-                    "quantity": quantity,
-                    "avg_price": _to_float(getattr(holding, "avg_price", Decimal("0"))),
-                    "current_price": None,
-                    "evaluation": None,
-                    "profit_loss": None,
-                    "profit_rate": None,
-                }
-            )
-
-        return components
 
     async def _fill_missing_prices(
         self,
@@ -724,7 +451,6 @@ class PortfolioOverviewService:
                 item["symbol"]
                 for item in components
                 if item["market_type"] == _MARKET_CRYPTO
-                and item.get("source") == "manual"
                 and item["current_price"] is None
                 and (
                     not enforce_upbit_universe
@@ -739,7 +465,7 @@ class PortfolioOverviewService:
         price_map = await self._fetch_upbit_prices_resilient(
             crypto_symbols,
             warnings,
-            stage="manual_crypto",
+            stage="crypto",
             active_upbit_markets=active_upbit_set,
             enforce_upbit_universe=enforce_upbit_universe,
         )
@@ -1191,23 +917,6 @@ class PortfolioOverviewService:
             if item.get("current_price") is not None:
                 return float(item["current_price"])
         return None
-
-    async def _run_collection_task(
-        self,
-        func: Any,
-        *args: Any,
-        **kwargs: Any,
-    ) -> tuple[list[dict[str, Any]], list[str]]:
-        """Run a collection task and return its results and warnings."""
-        local_warnings: list[str] = []
-        try:
-            # Inject local_warnings as the warnings parameter
-            result = await func(*args, warnings=local_warnings, **kwargs)
-        except Exception as exc:
-            logger.warning("Collection task failed: %s", exc)
-            local_warnings.append(str(exc))
-            result = []
-        return result, local_warnings
 
     async def get_position_detail_base(
         self,
