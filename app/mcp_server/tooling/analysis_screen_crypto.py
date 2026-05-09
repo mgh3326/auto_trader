@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import datetime
-import math
 from typing import Any, TypedDict
+
+from app.mcp_server.tooling.shared import _to_optional_float
 
 type CryptoCandidate = dict[str, Any]
 type CryptoFiltersApplied = dict[str, Any]
@@ -30,18 +31,6 @@ class CoinGeckoPayload(TypedDict, total=False):
     age_seconds: float | None
     stale: bool
     error: str | None
-
-
-def _to_optional_float(value: Any) -> float | None:
-    if value is None:
-        return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    if math.isnan(number):
-        return None
-    return number
 
 
 def _extract_market_symbol(symbol: Any) -> str | None:

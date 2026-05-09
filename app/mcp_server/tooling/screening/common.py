@@ -11,6 +11,8 @@ from typing import Any
 
 import httpx
 
+from app.mcp_server.tooling.shared import _to_optional_float, _to_optional_int
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -106,33 +108,6 @@ async def _with_timeout(
 # ---------------------------------------------------------------------------
 # Converters
 # ---------------------------------------------------------------------------
-
-
-def _to_optional_float(value: Any) -> float | None:
-    if value is None:
-        return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    if math.isnan(number):
-        return None
-    return number
-
-
-def _to_optional_int(value: Any) -> int | None:
-    if value is None:
-        return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    if math.isnan(number):
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
 
 
 def _rank_priority(rank: int | None) -> int:
