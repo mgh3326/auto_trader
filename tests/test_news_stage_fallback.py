@@ -207,12 +207,65 @@ async def test_fallback_uses_persisted_related_symbol_rows_before_alias_scan(
     )
 
     result = await llm_news_service.get_news_articles_with_fallback(
-        symbol="NVDA", market="us", hours=24, limit=20
+        symbol="NVDA", market="us", hours=24, limit=1
     )
 
     assert [article.id for article in result.articles] == [30]
     assert result.match_reasons[30] == "related_symbol"
     assert get_news_articles.await_count == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fallback_supplements_exact_and_related_rows_with_alias_matches(
+    monkeypatch,
+):
+    exact = [_mk_article(id=1, title="NVDA tagged", stock_symbol="NVDA")]
+    related = _mk_article(
+        id=30,
+        title="Cloud capex lifts chip supply chain",
+        stock_symbol=None,
+        market="us",
+    )
+    alias = _mk_article(
+        id=40,
+        title="Nvidia suppliers gain on AI demand",
+        stock_symbol=None,
+        market="us",
+    )
+    unrelated = _mk_article(
+        id=41,
+        title="Apple reports services growth",
+        stock_symbol=None,
+        market="us",
+    )
+
+    async def fake_get_news_articles(**kwargs):
+        if kwargs.get("stock_symbol") == "NVDA":
+            return exact, len(exact)
+        return [alias, unrelated], 2
+
+    monkeypatch.setattr(
+        llm_news_service,
+        "get_news_articles",
+        AsyncMock(side_effect=fake_get_news_articles),
+    )
+    monkeypatch.setattr(
+        llm_news_service,
+        "AsyncSessionLocal",
+        _related_symbol_session_factory([related]),
+    )
+
+    result = await llm_news_service.get_news_articles_with_fallback(
+        symbol="NVDA", market="us", hours=24, limit=20
+    )
+
+    assert [article.id for article in result.articles] == [1, 30, 40]
+    assert result.match_reasons == {
+        1: "exact_symbol",
+        30: "related_symbol",
+        40: "alias_match",
+    }
 
 
 @pytest.mark.unit

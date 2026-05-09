@@ -799,9 +799,6 @@ async def get_news_articles_with_fallback(
         if len(out) >= limit:
             return NewsLookupResult(articles=out, match_reasons=reasons)
 
-    if out:
-        return NewsLookupResult(articles=out, match_reasons=reasons)
-
     if len(out) >= limit:
         return NewsLookupResult(articles=out, match_reasons=reasons)
 
@@ -841,9 +838,6 @@ async def get_news_articles_with_fallback(
             # Dev/test databases may not have the optional relation table yet; keep
             # the historical alias-scan fallback rather than failing the lookup.
             pass
-
-    if out:
-        return NewsLookupResult(articles=out, match_reasons=reasons)
 
     # Step 3: alias fallback over a wider market window.
     market_articles, _ = await get_news_articles(
