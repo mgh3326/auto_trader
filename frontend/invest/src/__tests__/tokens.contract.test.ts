@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const TOKENS_CSS = readFileSync(resolve(here, "../styles/tokens.css"), "utf8");
+const INDEX_HTML = readFileSync(resolve(here, "../../index.html"), "utf8");
 
 // Pull the body of the *first* CSS rule whose selector starts with `selector`.
 // We scan brace-by-brace so nested at-rules (`@media (...) { :root:not(...) {} }`)
@@ -99,5 +100,14 @@ describe("tokens.css contract", () => {
     // We expect at most a handful (light --bg, --surface, --fg-on-accent,
     // --accent-fg, dark --fg-on-accent, --accent-fg = 6).
     expect(componentHits.length).toBeLessThanOrEqual(8);
+  });
+
+  it("keeps index.html body color themeable", () => {
+    // Body can set layout-only styles, but themed color/background must come
+    // from tokens.css so data-theme="light" and future toggles are not
+    // overridden by inline dark first-paint styles.
+    const bodyTag = INDEX_HTML.match(/<body\b[^>]*>/i)?.[0] ?? "";
+    expect(bodyTag).not.toMatch(/background\s*:/i);
+    expect(bodyTag).not.toMatch(/color\s*:/i);
   });
 });
