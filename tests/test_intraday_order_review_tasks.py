@@ -54,7 +54,7 @@ class TestIntradayCryptoReview:
         }
 
         with patch(
-            "app.tasks.intraday_order_review_tasks.fetch_pending_orders",
+            "app.jobs.intraday_order_review.fetch_pending_orders",
             AsyncMock(return_value=mock_result),
         ):
             result = await intraday_crypto_order_review()
