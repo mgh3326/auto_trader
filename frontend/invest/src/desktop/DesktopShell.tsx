@@ -5,18 +5,23 @@ export function DesktopShell({
   left,
   center,
   right,
+  leftColumnWidth = 220,
 }: {
   left?: ReactNode;
   center: ReactNode;
   right: ReactNode;
+  leftColumnWidth?: number | string;
 }) {
+  const resolvedLeftColumnWidth =
+    typeof leftColumnWidth === "number" ? `${leftColumnWidth}px` : leftColumnWidth;
+
   return (
     <div data-testid="desktop-shell" style={{ minHeight: "100vh", background: "var(--bg-alt)", color: "var(--fg)" }}>
       <DesktopHeader />
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: left ? "220px minmax(0,1fr) 320px" : "minmax(0,1fr) 320px",
+          gridTemplateColumns: left ? `${resolvedLeftColumnWidth} minmax(0,1fr) 320px` : "minmax(0,1fr) 320px",
           gap: 24,
           padding: "24px 28px 64px",
           maxWidth: 1440,
