@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { vi, beforeEach, test, expect } from "vitest";
 import { MemoryRouter } from "react-router-dom";
@@ -10,11 +10,12 @@ import type { AccountPanelResponse } from "../types/invest";
 
 const PANEL_RESP: AccountPanelResponse = {
   homeSummary: {
-    includedSources: ["kis"],
+    includedSources: ["kis", "upbit", "toss_manual"],
     excludedSources: [],
-    totalValueKrw: 5_000_000,
-    pnlKrw: 250_000,
-    pnlRate: 0.05,
+    totalValueKrw: 10_100_000,
+    costBasisKrw: 9_200_000,
+    pnlKrw: 900_000,
+    pnlRate: 900_000 / 9_200_000,
   },
   accounts: [
     {
@@ -23,33 +24,94 @@ const PANEL_RESP: AccountPanelResponse = {
       source: "kis",
       accountKind: "live",
       includedInHome: true,
-      valueKrw: 5_000_000,
-      cashBalances: { krw: 100_000 },
-      buyingPower: { krw: 100_000 },
+      valueKrw: 1_244_000,
+      cashBalances: { krw: 100_000, usd: 25.5 },
+      buyingPower: { krw: 100_000, usd: 25.5 },
+    },
+    {
+      accountId: "u1",
+      displayName: "Upbit",
+      source: "upbit",
+      accountKind: "live",
+      includedInHome: true,
+      valueKrw: 8_500_000,
+      cashBalances: { krw: 50_000 },
+      buyingPower: { krw: 50_000 },
     },
   ],
   groupedHoldings: [
     {
-      groupId: "g1",
-      symbol: "005930",
-      market: "KR",
+      groupId: "US:equity:USD:TSLA",
+      symbol: "TSLA",
+      market: "US",
       assetType: "equity",
-      assetCategory: "kr_stock",
-      displayName: "삼성전자",
-      currency: "KRW",
-      totalQuantity: 10,
-      valueKrw: 800_000,
-      pnlKrw: 40_000,
-      pnlRate: 0.05,
+      assetCategory: "us_stock",
+      displayName: "Tesla",
+      currency: "USD",
+      totalQuantity: 6,
+      averageCost: 200,
+      costBasis: 1200,
+      valueNative: 1200,
+      valueKrw: 1_600_000,
+      pnlKrw: 0,
+      pnlRate: 0,
       priceState: "live",
-      includedSources: ["kis"],
+      includedSources: ["kis", "toss_manual"],
+      sourceBreakdown: [
+        {
+          holdingId: "h1",
+          accountId: "k1",
+          source: "kis",
+          quantity: 4,
+          averageCost: 234,
+          costBasis: 936,
+          valueNative: 924,
+          valueKrw: 1_244_000,
+          pnlKrw: -16_000,
+          pnlRate: -16_000 / 936,
+        },
+        {
+          holdingId: "h2",
+          accountId: "manual-1",
+          source: "toss_manual",
+          quantity: 2,
+          averageCost: 132,
+          costBasis: 264,
+          valueNative: 276,
+          valueKrw: 356_000,
+          pnlKrw: 16_000,
+          pnlRate: 16_000 / 264,
+        },
+      ],
+    },
+    {
+      groupId: "CRYPTO:crypto:KRW:BTC",
+      symbol: "KRW-BTC",
+      market: "CRYPTO",
+      assetType: "crypto",
+      assetCategory: "crypto",
+      displayName: "비트코인",
+      currency: "KRW",
+      totalQuantity: 0.1,
+      averageCost: 80_000_000,
+      costBasis: 8_000_000,
+      valueNative: 8_500_000,
+      valueKrw: 8_500_000,
+      pnlKrw: 500_000,
+      pnlRate: 0.0625,
+      priceState: "live",
+      includedSources: ["upbit"],
       sourceBreakdown: [],
     },
   ],
   watchSymbols: [
     { symbol: "AAPL", market: "us", displayName: "Apple Inc." },
   ],
-  sourceVisuals: [{ source: "kis", tone: "navy", badge: "Live", displayName: "KIS" }],
+  sourceVisuals: [
+    { source: "kis", tone: "navy", badge: "Live", displayName: "KIS" },
+    { source: "upbit", tone: "green", badge: "Crypto", displayName: "Upbit" },
+    { source: "toss_manual", tone: "gray", badge: "Manual", displayName: "Toss/manual" },
+  ],
   meta: { warnings: [], watchlistAvailable: true },
 };
 
@@ -64,6 +126,7 @@ function renderPanel() {
 }
 
 beforeEach(() => {
+  vi.restoreAllMocks();
   vi.spyOn(panelApi, "fetchAccountPanel").mockResolvedValue(PANEL_RESP);
   vi.spyOn(signalsApi, "fetchSignals").mockResolvedValue({
     tab: "kr",
@@ -84,11 +147,66 @@ test("renders the tabbed right remote panel", async () => {
   await waitFor(() => expect(screen.getByTestId("portfolio-panel")).toBeInTheDocument());
 });
 
-test("portfolio tab shows holdings after data loads", async () => {
+test("portfolio tab shows account cash card, filters, and all-account holdings after data loads", async () => {
   renderPanel();
   await waitFor(() => expect(screen.getByTestId("portfolio-panel")).toBeInTheDocument());
-  expect(screen.getByText("삼성전자")).toBeInTheDocument();
-  expect(screen.getByText("₩800,000")).toBeInTheDocument();
+  const cashCard = screen.getByTestId("account-cash-card");
+  expect(within(cashCard).getByText("전체")).toBeInTheDocument();
+  expect(within(cashCard).getByText("₩150,000")).toBeInTheDocument();
+  expect(within(cashCard).getByText("$25.5")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "전체" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("button", { name: "KIS" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Upbit" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Toss/manual" })).toBeInTheDocument();
+  expect(screen.getByText("전체 보유종목")).toBeInTheDocument();
+  expect(screen.getByText("비트코인")).toBeInTheDocument();
+  expect(screen.getByText("Tesla")).toBeInTheDocument();
+  expect(screen.getByText("₩10,100,000")).toBeInTheDocument();
+});
+
+test("KIS filter recomputes totals and rows without refetching account panel", async () => {
+  const user = userEvent.setup();
+  const fetchSpy = vi.spyOn(panelApi, "fetchAccountPanel").mockResolvedValue(PANEL_RESP);
+  renderPanel();
+  await waitFor(() => expect(screen.getByTestId("portfolio-panel")).toBeInTheDocument());
+  expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+  await user.click(screen.getByRole("button", { name: "KIS" }));
+
+  expect(screen.getByRole("button", { name: "KIS" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByText("KIS 보유종목")).toBeInTheDocument();
+  expect(screen.getByText("Tesla")).toBeInTheDocument();
+  expect(screen.queryByText("비트코인")).not.toBeInTheDocument();
+  expect(screen.getAllByText("₩1,244,000")).toHaveLength(2);
+  expect(screen.getByText((_, node) => node?.textContent === "투자원금 ₩1,260,000")).toBeInTheDocument();
+  expect(screen.getByTestId("pl")).toHaveAttribute("data-dir", "down");
+  const cashCard = screen.getByTestId("account-cash-card");
+  expect(within(cashCard).getByText("₩100,000")).toBeInTheDocument();
+  expect(within(cashCard).getByText("$25.5")).toBeInTheDocument();
+  expect(fetchSpy).toHaveBeenCalledTimes(1);
+});
+
+test("Upbit and Toss/manual filters scope holdings and cash independently", async () => {
+  const user = userEvent.setup();
+  renderPanel();
+  await waitFor(() => expect(screen.getByTestId("portfolio-panel")).toBeInTheDocument());
+
+  await user.click(screen.getByRole("button", { name: "Upbit" }));
+  expect(screen.getByText("Upbit 보유종목")).toBeInTheDocument();
+  expect(screen.getByText("비트코인")).toBeInTheDocument();
+  expect(screen.queryByText("Tesla")).not.toBeInTheDocument();
+  expect(screen.getAllByText("₩8,500,000")).toHaveLength(2);
+  expect(screen.getByText((_, node) => node?.textContent === "투자원금 ₩8,000,000")).toBeInTheDocument();
+  let cashCard = screen.getByTestId("account-cash-card");
+  expect(within(cashCard).getByText("₩50,000")).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "Toss/manual" }));
+  expect(screen.getByText("Toss/manual 보유종목")).toBeInTheDocument();
+  expect(screen.getByText("Tesla")).toBeInTheDocument();
+  expect(screen.queryByText("비트코인")).not.toBeInTheDocument();
+  expect(screen.getAllByText("₩356,000")).toHaveLength(2);
+  cashCard = screen.getByTestId("account-cash-card");
+  expect(within(cashCard).getByText("현금 정보 없음")).toBeInTheDocument();
 });
 
 test("watchlist tab shows watch symbols", async () => {
@@ -108,6 +226,7 @@ test("recent tab shows empty state initially", async () => {
 test("portfolio tab shows empty holdings gracefully", async () => {
   vi.spyOn(panelApi, "fetchAccountPanel").mockResolvedValue({
     ...PANEL_RESP,
+    homeSummary: { ...PANEL_RESP.homeSummary, totalValueKrw: 0, costBasisKrw: null, pnlKrw: null, pnlRate: null },
     groupedHoldings: [],
   });
   renderPanel();

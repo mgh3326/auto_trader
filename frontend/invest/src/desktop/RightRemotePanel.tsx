@@ -7,6 +7,7 @@ import { Button, Card, Icon, PL as ProfitLoss, Pill } from "../ds";
 import type { PillTone } from "../ds";
 import { fetchSignals } from "../api/signals";
 import type { SignalCard } from "../types/signals";
+import { buildScopedPortfolioPanel, type AccountFilterKey } from "./scopeHoldings";
 import type { GroupedHolding, WatchSymbol } from "../types/invest";
 import { formatRelativeTime } from "../format/relativeTime";
 
@@ -38,6 +39,11 @@ function fmtPct(v?: number | null): string {
   const pct = v * 100;
   const sign = pct >= 0 ? "+" : "";
   return `${sign}${pct.toFixed(2)}%`;
+}
+
+function fmtUsd(v?: number | null): string {
+  if (v == null) return "—";
+  return `$${v.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
 }
 
 const ROW_BUTTON_STYLE: CSSProperties = {
@@ -157,6 +163,7 @@ function TabBar({
 
 function PortfolioPanel({ onNavigate }: Readonly<{ onNavigate: NavigateToSymbol }>) {
   const { data, error, loading, refreshing, reload } = useAccountPanel();
+  const [selectedAccountKey, setSelectedAccountKey] = useState<AccountFilterKey>("all");
 
   if (loading) {
     return (
@@ -192,8 +199,12 @@ function PortfolioPanel({ onNavigate }: Readonly<{ onNavigate: NavigateToSymbol 
     );
   }
 
-  const { homeSummary, groupedHoldings } = data;
-  const sorted = [...groupedHoldings].sort(
+  const scopedForKey = buildScopedPortfolioPanel(data, selectedAccountKey);
+  const selectedKey = scopedForKey.selected.key;
+  const scoped = selectedKey === selectedAccountKey
+    ? scopedForKey
+    : buildScopedPortfolioPanel(data, selectedKey);
+  const sorted = [...scoped.groupedHoldings].sort(
     (a, b) => (b.valueKrw ?? 0) - (a.valueKrw ?? 0),
   );
 
@@ -203,10 +214,61 @@ function PortfolioPanel({ onNavigate }: Readonly<{ onNavigate: NavigateToSymbol 
     return "crypto";
   };
 
+  const sectionLabel = `${scoped.selected.label} 보유종목`;
+  const hasCash = scoped.cashBalances.krw != null || scoped.cashBalances.usd != null;
+
   return (
     <div data-testid="portfolio-panel" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <Card data-testid="account-cash-card" style={{ padding: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline" }}>
+          <div style={{ fontSize: 11, color: "var(--fg-3)", fontWeight: 600 }}>선택 계좌</div>
+          <div style={{ fontSize: 12, color: "var(--fg)", fontWeight: 700 }}>{scoped.selected.label}</div>
+        </div>
+        {hasCash ? (
+          <div style={{ display: "grid", gap: 4, marginTop: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+              <span style={{ color: "var(--fg-3)" }}>원화 현금</span>
+              <span style={{ fontWeight: 700, fontFeatureSettings: '"tnum"' }}>{fmtKrw(scoped.cashBalances.krw)}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+              <span style={{ color: "var(--fg-3)" }}>달러 현금</span>
+              <span style={{ fontWeight: 700, fontFeatureSettings: '"tnum"' }}>{fmtUsd(scoped.cashBalances.usd)}</span>
+            </div>
+          </div>
+        ) : (
+          <div style={{ marginTop: 10, fontSize: 12, color: "var(--fg-3)" }}>현금 정보 없음</div>
+        )}
+      </Card>
+
+      <div aria-label="계좌 필터" style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        {scoped.options.map((option) => {
+          const isActive = option.key === selectedKey;
+          return (
+            <button
+              key={option.key}
+              type="button"
+              aria-pressed={isActive}
+              onClick={() => setSelectedAccountKey(option.key)}
+              style={{
+                padding: "5px 10px",
+                borderRadius: 999,
+                border: "1px solid var(--border)",
+                background: isActive ? "var(--fg)" : "var(--surface)",
+                color: isActive ? "var(--bg)" : "var(--fg-2)",
+                fontWeight: isActive ? 700 : 500,
+                fontSize: 11,
+                fontFamily: "inherit",
+                cursor: "pointer",
+              }}
+            >
+              {option.label}
+            </button>
+          );
+        })}
+      </div>
+
       <Card style={{ padding: 14 }}>
-        <div style={{ fontSize: 11, color: "var(--fg-3)", fontWeight: 500 }}>총 자산</div>
+        <div style={{ fontSize: 11, color: "var(--fg-3)", fontWeight: 500 }}>투자 평가액</div>
         <div
           style={{
             fontSize: 22,
@@ -216,11 +278,14 @@ function PortfolioPanel({ onNavigate }: Readonly<{ onNavigate: NavigateToSymbol 
             fontFeatureSettings: '"tnum"',
           }}
         >
-          {fmtKrw(homeSummary.totalValueKrw)}
+          {fmtKrw(scoped.totalValueKrw)}
         </div>
-        {homeSummary.pnlKrw != null && homeSummary.pnlRate != null ? (
+        <div style={{ marginTop: 4, fontSize: 12, color: "var(--fg-3)" }}>
+          투자원금 {fmtKrw(scoped.costBasisKrw)}
+        </div>
+        {scoped.pnlKrw != null && scoped.pnlRate != null ? (
           <div style={{ marginTop: 4 }}>
-            <ProfitLoss value={homeSummary.pnlKrw} pct={homeSummary.pnlRate * 100} size={12} />
+            <ProfitLoss value={scoped.pnlKrw} pct={scoped.pnlRate * 100} size={12} />
           </div>
         ) : (
           <div style={{ marginTop: 4, fontSize: 12, color: "var(--fg-3)" }}>—</div>
@@ -240,11 +305,11 @@ function PortfolioPanel({ onNavigate }: Readonly<{ onNavigate: NavigateToSymbol 
 
       <div>
         <div style={{ fontSize: 11, fontWeight: 600, color: "var(--fg-3)", marginBottom: 6 }}>
-          내 종목 현황
+          {sectionLabel}
         </div>
         {sorted.length === 0 ? (
           <div data-testid="holdings-empty" style={{ fontSize: 12, color: "var(--fg-3)", padding: "8px 0" }}>
-            보유 종목이 없습니다.
+            {selectedKey === "all" ? "보유 종목이 없습니다." : "선택한 계좌에 표시할 보유종목이 없습니다."}
           </div>
         ) : (
           <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column" }}>
