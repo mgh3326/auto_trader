@@ -496,7 +496,9 @@ async def test_task_returns_failure_payload_on_exception(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_script_main_returns_zero_on_success(monkeypatch):
-    monkeypatch.setattr(sync_kr_symbol_universe, "init_sentry", lambda **_: None)
+    import app.core.cli as _cli
+
+    monkeypatch.setattr(_cli, "init_sentry", lambda **_: None)
     monkeypatch.setattr(
         sync_kr_symbol_universe,
         "run_kr_symbol_universe_sync",
@@ -510,7 +512,9 @@ async def test_script_main_returns_zero_on_success(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_script_main_returns_nonzero_on_failed_status(monkeypatch):
-    monkeypatch.setattr(sync_kr_symbol_universe, "init_sentry", lambda **_: None)
+    import app.core.cli as _cli
+
+    monkeypatch.setattr(_cli, "init_sentry", lambda **_: None)
     monkeypatch.setattr(
         sync_kr_symbol_universe,
         "run_kr_symbol_universe_sync",
@@ -524,9 +528,11 @@ async def test_script_main_returns_nonzero_on_failed_status(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_script_main_returns_nonzero_on_exception(monkeypatch):
+    import app.core.cli as _cli
+
     capture_mock = MagicMock()
-    monkeypatch.setattr(sync_kr_symbol_universe, "init_sentry", lambda **_: None)
-    monkeypatch.setattr(sync_kr_symbol_universe, "capture_exception", capture_mock)
+    monkeypatch.setattr(_cli, "init_sentry", lambda **_: None)
+    monkeypatch.setattr(_cli, "capture_exception", capture_mock)
     monkeypatch.setattr(
         sync_kr_symbol_universe,
         "run_kr_symbol_universe_sync",

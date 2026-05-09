@@ -5,33 +5,24 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from app.core.config import settings
+from app.core.cli import run_async_job, setup_logging_and_sentry
 from app.jobs.upbit_symbol_universe import run_upbit_symbol_universe_sync
-from app.monitoring.sentry import capture_exception, init_sentry
 
 logger = logging.getLogger(__name__)
 
 
 async def main() -> int:
-    logging.basicConfig(
-        level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
-    init_sentry(service_name="upbit-symbol-universe-sync")
+    setup_logging_and_sentry(service_name="upbit-symbol-universe-sync")
 
-    try:
+    async def _job() -> int:
         result = await run_upbit_symbol_universe_sync()
-    except Exception as exc:
-        capture_exception(exc, process="sync_upbit_symbol_universe")
-        logger.error("Upbit symbol universe sync crashed: %s", exc, exc_info=True)
-        return 1
+        if result.get("status") != "completed":
+            logger.error("Upbit symbol universe sync failed: %s", result)
+            return 1
+        logger.info("Upbit symbol universe sync completed: %s", result)
+        return 0
 
-    if result.get("status") != "completed":
-        logger.error("Upbit symbol universe sync failed: %s", result)
-        return 1
-
-    logger.info("Upbit symbol universe sync completed: %s", result)
-    return 0
+    return await run_async_job(_job, process="sync_upbit_symbol_universe")
 
 
 if __name__ == "__main__":

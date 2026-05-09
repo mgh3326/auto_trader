@@ -6,9 +6,8 @@ import argparse
 import asyncio
 import logging
 
-from app.core.config import settings
+from app.core.cli import run_async_job, setup_logging_and_sentry
 from app.jobs.kr_candles import run_kr_candles_sync
-from app.monitoring.sentry import capture_exception, init_sentry
 
 logger = logging.getLogger(__name__)
 
@@ -41,30 +40,21 @@ def _build_parser() -> argparse.ArgumentParser:
 async def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    setup_logging_and_sentry(service_name="kr-candles-sync")
 
-    logging.basicConfig(
-        level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
-    init_sentry(service_name="kr-candles-sync")
-
-    try:
+    async def _job() -> int:
         result = await run_kr_candles_sync(
             mode=args.mode,
             sessions=max(args.sessions, 1),
             user_id=args.user_id,
         )
-    except Exception as exc:
-        capture_exception(exc, process="sync_kr_candles")
-        logger.error("KR candles sync crashed: %s", exc, exc_info=True)
-        return 1
+        if result.get("status") != "completed":
+            logger.error("KR candles sync failed: %s", result)
+            return 1
+        logger.info("KR candles sync completed: %s", result)
+        return 0
 
-    if result.get("status") != "completed":
-        logger.error("KR candles sync failed: %s", result)
-        return 1
-
-    logger.info("KR candles sync completed: %s", result)
-    return 0
+    return await run_async_job(_job, process="sync_kr_candles")
 
 
 if __name__ == "__main__":

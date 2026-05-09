@@ -227,9 +227,10 @@ async def test_task_payload_failure(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.asyncio
 async def test_script_main_exit_codes(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.core.cli as _cli
     from scripts import sync_kr_candles
 
-    monkeypatch.setattr(sync_kr_candles, "init_sentry", lambda **_: None)
+    monkeypatch.setattr(_cli, "init_sentry", lambda **_: None)
     monkeypatch.setattr(
         sync_kr_candles,
         "run_kr_candles_sync",
@@ -247,7 +248,7 @@ async def test_script_main_exit_codes(monkeypatch: pytest.MonkeyPatch) -> None:
     assert failed_status_code == 1
 
     capture_mock = MagicMock()
-    monkeypatch.setattr(sync_kr_candles, "capture_exception", capture_mock)
+    monkeypatch.setattr(_cli, "capture_exception", capture_mock)
     monkeypatch.setattr(
         sync_kr_candles,
         "run_kr_candles_sync",

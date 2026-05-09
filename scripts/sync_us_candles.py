@@ -7,9 +7,8 @@ import asyncio
 import logging
 from typing import cast
 
-from app.core.config import settings
+from app.core.cli import run_async_job, setup_logging_and_sentry
 from app.jobs.us_candles import run_us_candles_sync
-from app.monitoring.sentry import capture_exception, init_sentry
 
 logger = logging.getLogger(__name__)
 
@@ -45,30 +44,21 @@ async def main(argv: list[str] | None = None) -> int:
     mode = cast(str, args.mode)
     sessions = cast(int, args.sessions)
     user_id = cast(int, args.user_id)
+    setup_logging_and_sentry(service_name="us-candles-sync")
 
-    logging.basicConfig(
-        level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
-    _ = init_sentry(service_name="us-candles-sync")
-
-    try:
+    async def _job() -> int:
         result = await run_us_candles_sync(
             mode=mode,
             sessions=max(sessions, 1),
             user_id=user_id,
         )
-    except Exception as exc:
-        capture_exception(exc, process="sync_us_candles")
-        logger.error("US candles sync crashed: %s", exc, exc_info=True)
-        return 1
+        if result.get("status") != "completed":
+            logger.error("US candles sync failed: %s", result)
+            return 1
+        logger.info("US candles sync completed: %s", result)
+        return 0
 
-    if result.get("status") != "completed":
-        logger.error("US candles sync failed: %s", result)
-        return 1
-
-    logger.info("US candles sync completed: %s", result)
-    return 0
+    return await run_async_job(_job, process="sync_us_candles")
 
 
 if __name__ == "__main__":

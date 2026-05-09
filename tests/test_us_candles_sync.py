@@ -1407,10 +1407,11 @@ def test_us_task_schedule_metadata() -> None:
 
 @pytest.mark.asyncio
 async def test_us_script_main_exit_codes(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.core.cli as _cli
     from scripts import sync_us_candles
 
     success_mock = AsyncMock(return_value={"status": "completed", "rows_upserted": 1})
-    monkeypatch.setattr(sync_us_candles, "init_sentry", lambda **_: None)
+    monkeypatch.setattr(_cli, "init_sentry", lambda **_: None)
     monkeypatch.setattr(
         sync_us_candles,
         "run_us_candles_sync",
@@ -1431,7 +1432,7 @@ async def test_us_script_main_exit_codes(monkeypatch: pytest.MonkeyPatch) -> Non
     assert failed_status_code == 1
 
     capture_mock = MagicMock()
-    monkeypatch.setattr(sync_us_candles, "capture_exception", capture_mock)
+    monkeypatch.setattr(_cli, "capture_exception", capture_mock)
     monkeypatch.setattr(
         sync_us_candles,
         "run_us_candles_sync",
