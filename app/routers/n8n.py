@@ -79,6 +79,7 @@ from app.services.n8n_pending_snapshot_service import (
     resolve_pending_snapshots,
     save_pending_snapshots,
 )
+from app.services.n8n_response_builder import n8n_error_response
 from app.services.n8n_trade_review_service import (
     get_trade_review_stats,
     get_trade_reviews,
@@ -257,7 +258,7 @@ async def get_pending_orders(
             ),
             errors=[{"market": market, "error": str(exc)}],
         )
-        return JSONResponse(status_code=500, content=payload.model_dump())
+        return n8n_error_response(payload)
 
     return N8nPendingOrdersResponse(
         success=bool(result.get("success", True)),
@@ -327,7 +328,7 @@ async def get_market_context(
             ),
             errors=[{"error": str(exc)}],
         )
-        return JSONResponse(status_code=500, content=payload.model_dump())
+        return n8n_error_response(payload)
 
     return N8nMarketContextResponse(
         success=True,
@@ -394,7 +395,7 @@ async def get_daily_brief(
             brief_text="",
             errors=[{"error": str(exc)}],
         )
-        return JSONResponse(status_code=500, content=payload.model_dump())
+        return n8n_error_response(payload)
 
     _spawn_background(save_daily_brief_report(result), name="n8n-daily-brief")
     return N8nDailyBriefResponse(**result)
@@ -438,7 +439,7 @@ async def get_filled_orders(
             orders=[],
             errors=[{"error": str(exc)}],
         )
-        return JSONResponse(status_code=500, content=payload.model_dump())
+        return n8n_error_response(payload)
 
     return N8nFilledOrdersResponse(
         success=True,
@@ -458,11 +459,10 @@ async def post_trade_reviews(
         result = await save_trade_reviews(db, [r.model_dump() for r in body.reviews])
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to save trade reviews")
-        return JSONResponse(
-            status_code=500,
-            content=N8nTradeReviewsResponse(
+        return n8n_error_response(
+            N8nTradeReviewsResponse(
                 success=False, saved_count=0, errors=[{"error": str(exc)}]
-            ).model_dump(),
+            )
         )
 
     return N8nTradeReviewsResponse(
@@ -487,15 +487,14 @@ async def get_trade_reviews_endpoint(
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to get trade reviews")
-        return JSONResponse(
-            status_code=500,
-            content=N8nTradeReviewListResponse(
+        return n8n_error_response(
+            N8nTradeReviewListResponse(
                 success=False,
                 period="error",
                 total_count=0,
                 reviews=[],
                 errors=[{"error": str(exc)}],
-            ).model_dump(),
+            )
         )
 
     return N8nTradeReviewListResponse(
@@ -517,13 +516,12 @@ async def get_trade_review_stats_endpoint(
         stats = await get_trade_review_stats(db, period=period, market=market)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to get trade review stats")
-        return JSONResponse(
-            status_code=500,
-            content=N8nTradeReviewStatsResponse(
+        return n8n_error_response(
+            N8nTradeReviewStatsResponse(
                 success=False,
                 stats=N8nTradeReviewStats(period="error"),
                 errors=[{"error": str(exc)}],
-            ).model_dump(),
+            )
         )
 
     return N8nTradeReviewStatsResponse(
@@ -550,7 +548,7 @@ async def get_pending_review_endpoint(
             orders=[],
             errors=[{"error": str(exc)}],
         )
-        return JSONResponse(status_code=500, content=payload.model_dump())
+        return n8n_error_response(payload)
 
     return N8nPendingReviewResponse(
         success=True,
@@ -572,11 +570,10 @@ async def post_pending_snapshots(
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to save pending snapshots")
-        return JSONResponse(
-            status_code=500,
-            content=N8nPendingSnapshotsResponse(
+        return n8n_error_response(
+            N8nPendingSnapshotsResponse(
                 success=False, saved_count=0, errors=[{"error": str(exc)}]
-            ).model_dump(),
+            )
         )
 
     return N8nPendingSnapshotsResponse(
@@ -597,11 +594,10 @@ async def patch_pending_resolve(
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to resolve pending snapshots")
-        return JSONResponse(
-            status_code=500,
-            content=N8nPendingResolveResponse(
+        return n8n_error_response(
+            N8nPendingResolveResponse(
                 success=False, resolved_count=0, errors=[{"error": str(exc)}]
-            ).model_dump(),
+            )
         )
 
     return N8nPendingResolveResponse(
@@ -658,7 +654,7 @@ async def get_crypto_scan(
             ),
             errors=[{"error": str(exc)}],
         )
-        return JSONResponse(status_code=500, content=payload.model_dump())
+        return n8n_error_response(payload)
 
     _spawn_background(save_crypto_scan_report(result), name="n8n-crypto-scan")
     return N8nCryptoScanResponse(
@@ -701,7 +697,7 @@ async def get_kr_morning_report(
             brief_text="",
             errors=[{"error": str(exc)}],
         )
-        return JSONResponse(status_code=500, content=payload.model_dump())
+        return n8n_error_response(payload)
 
     _spawn_background(save_kr_morning_report(result), name="n8n-kr-morning")
     return N8nKrMorningReportResponse(**result)
@@ -744,7 +740,7 @@ async def get_n8n_news(
             discord_body="⚠️ 뉴스를 불러오는 중 오류가 발생했습니다.",
             errors=[{"error": str(exc)}],
         )
-        return JSONResponse(status_code=500, content=payload.model_dump())
+        return n8n_error_response(payload)
 
     return result
 
@@ -767,7 +763,7 @@ async def get_sell_signal_batch(
             results=[],
             errors=[{"error": str(exc)}],
         )
-        return JSONResponse(status_code=500, content=payload.model_dump())
+        return n8n_error_response(payload)
 
     results: list[N8nSellSignalResponse] = []
     top_errors: list[dict[str, object]] = []
@@ -880,7 +876,7 @@ async def get_sell_signal(
             message="",
             errors=[{"error": str(exc)}],
         )
-        return JSONResponse(status_code=500, content=payload.model_dump())
+        return n8n_error_response(payload)
 
     return N8nSellSignalResponse(
         success=True,
