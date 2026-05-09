@@ -96,14 +96,20 @@ async def test_list_holdings_marks_crypto_dust_and_keeps_non_crypto_false(monkey
 
 
 def test_min_order_krw_returns_fixed_crypto_minimum():
-    from app.mcp_server.tooling import shared
+    from app.mcp_server.tooling import portfolio_helpers, shared
 
-    assert shared.min_order_krw("KRW-BTC") == shared.DEFAULT_MINIMUM_VALUES["crypto"]
-    assert shared.min_order_krw("KRW-ETH") == shared.DEFAULT_MINIMUM_VALUES["crypto"]
+    assert (
+        portfolio_helpers.min_order_krw("KRW-BTC")
+        == shared.DEFAULT_MINIMUM_VALUES["crypto"]
+    )
+    assert (
+        portfolio_helpers.min_order_krw("KRW-ETH")
+        == shared.DEFAULT_MINIMUM_VALUES["crypto"]
+    )
 
 
 def test_position_to_output_includes_dust_with_false_default():
-    from app.mcp_server.tooling.shared import position_to_output
+    from app.mcp_server.tooling.portfolio_helpers import position_to_output
 
     base = {
         "symbol": "KRW-BTC",
