@@ -19,8 +19,8 @@ export function AIWeeklyCard({
   return (
     <div
       style={{
-        background: compact ? "var(--surface-2)" : "linear-gradient(135deg, #f4f7ff 0%, #f9fafb 100%)",
-        border: compact ? "none" : "1px solid #e2e9f6",
+        background: compact ? "var(--surface-2)" : "var(--ai-card-bg)",
+        border: compact ? "none" : "1px solid var(--border)",
         borderRadius: 14,
         padding: 16,
       }}

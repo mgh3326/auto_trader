@@ -3,10 +3,10 @@ import type { CSSProperties } from "react";
 import type { IssueDirection } from "../../types/newsIssues";
 
 const TONE_STYLES: Record<IssueDirection, CSSProperties> = {
-  up: { background: "var(--pill-mix)", color: "var(--pill-mix-fg)" },
-  down: { background: "var(--pill-toss)", color: "var(--pill-toss-fg)" },
-  mixed: { background: "var(--pill-up)", color: "var(--pill-up-fg)" },
-  neutral: { background: "var(--surface-2)", color: "var(--muted)" },
+  up: { background: "var(--gain-soft)", color: "var(--gain)" },
+  down: { background: "var(--loss-soft)", color: "var(--loss)" },
+  mixed: { background: "var(--warn-soft)", color: "var(--warn)" },
+  neutral: { background: "var(--surface-2)", color: "var(--fg-3)" },
 };
 
 const DIRECTION_COPY: Record<IssueDirection, string> = {

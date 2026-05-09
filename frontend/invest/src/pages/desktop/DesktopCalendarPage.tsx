@@ -300,7 +300,7 @@ function SegPill({ on, children, onClick }: { on: boolean; children: React.React
         borderRadius: 999,
         cursor: "pointer",
         background: on ? "var(--fg)" : "transparent",
-        color: on ? "#fff" : "var(--fg-2)",
+        color: on ? "var(--bg)" : "var(--fg-2)",
         fontWeight: 600,
         fontSize: 13,
         fontFamily: "inherit",

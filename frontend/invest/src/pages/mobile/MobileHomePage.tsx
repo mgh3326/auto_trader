@@ -320,7 +320,7 @@ function PillButton({ on, onClick, children }: { on: boolean; onClick: () => voi
         borderRadius: 999,
         border: "none",
         background: on ? "var(--fg)" : "var(--surface-2)",
-        color: on ? "#fff" : "var(--fg-2)",
+        color: on ? "var(--bg)" : "var(--fg-2)",
         fontSize: 12,
         fontWeight: 600,
         whiteSpace: "nowrap",

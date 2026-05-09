@@ -19,9 +19,9 @@ const TAB_LABELS: Record<DiscoverCalendarTab, string> = {
 };
 
 const BADGE_COLORS: Record<string, string> = {
-  held: "var(--accent, #2962ff)",
-  watched: "var(--info, #0288d1)",
-  major: "var(--neutral-strong, #555)",
+  held: "var(--accent)",
+  watched: "var(--info)",
+  major: "var(--fg-3)",
 };
 
 function dayOfMonth(iso: string): number {
@@ -54,11 +54,11 @@ function DayChip({
         borderRadius: 12,
         border: "1px solid var(--surface-2)",
         background: day.is_today
-          ? "var(--accent, #2962ff)"
+          ? "var(--accent)"
           : active
             ? "var(--surface-2)"
             : "transparent",
-        color: day.is_today ? "#fff" : "inherit",
+        color: day.is_today ? "var(--fg-on-accent)" : "inherit",
         fontSize: 12,
         minWidth: 44,
       }}
@@ -70,7 +70,7 @@ function DayChip({
 }
 
 function Badge({ label, priority }: { label: string; priority: string }) {
-  const color = BADGE_COLORS[priority] ?? "var(--neutral-strong, #555)";
+  const color = BADGE_COLORS[priority] ?? "var(--fg-3)";
   return (
     <span
       style={{
@@ -78,7 +78,7 @@ function Badge({ label, priority }: { label: string; priority: string }) {
         padding: "2px 6px",
         borderRadius: 999,
         background: color,
-        color: "#fff",
+        color: "var(--fg-on-accent)",
       }}
     >
       {label}

@@ -56,7 +56,7 @@ export function WeekDateStrip({
                 display: "grid",
                 placeItems: "center",
                 background: isSelected ? "var(--accent)" : "transparent",
-                color: isSelected ? "#fff" : isToday ? "var(--accent)" : "var(--fg-1)",
+                color: isSelected ? "var(--fg-on-accent)" : isToday ? "var(--accent)" : "var(--fg-1)",
                 fontWeight: isSelected || isToday ? 700 : 500,
                 fontSize: 14,
                 fontFeatureSettings: '"tnum"',
