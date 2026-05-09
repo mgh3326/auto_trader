@@ -1,4 +1,41 @@
-import type { AccountSource, GroupedHolding } from "../types/invest";
+import type { AccountPanelResponse, AccountSource, CashAmounts, GroupedHolding } from "../types/invest";
+
+export type AccountFilterKey = "all" | AccountSource;
+
+export interface AccountFilterOption {
+  key: AccountFilterKey;
+  label: string;
+  source?: AccountSource;
+  cashBalances: CashAmounts;
+  totalValueKrw: number;
+  costBasisKrw: number | null;
+  pnlKrw: number | null;
+  pnlRate: number | null;
+  holdingCount: number;
+}
+
+export interface ScopedPortfolioPanel {
+  selected: AccountFilterOption;
+  options: AccountFilterOption[];
+  groupedHoldings: GroupedHolding[];
+  totalValueKrw: number;
+  costBasisKrw: number | null;
+  pnlKrw: number | null;
+  pnlRate: number | null;
+  cashBalances: CashAmounts;
+}
+
+const SOURCE_LABELS: Partial<Record<AccountSource, string>> = {
+  kis: "KIS",
+  upbit: "Upbit",
+  toss_manual: "Toss/manual",
+  pension_manual: "연금/manual",
+  isa_manual: "ISA/manual",
+  kis_mock: "KIS Mock",
+  kiwoom_mock: "Kiwoom Mock",
+  alpaca_paper: "Alpaca Paper",
+  db_simulated: "DB simulated",
+};
 
 // When the user filters the home view to a single source/account, the grouped
 // rows must be reduced to that source's slice so the table totals match the
@@ -47,8 +84,8 @@ export function scopeGroupedToSource(
 
     const averageCost = qtyForAvg > 0 ? costSum / qtyForAvg : null;
     const pnlRate =
-      pnlKrw != null && costBasis != null && costBasis !== 0
-        ? pnlKrw / costBasis
+      valueNative != null && costBasis != null && costBasis !== 0
+        ? (valueNative - costBasis) / costBasis
         : null;
 
     out.push({
@@ -65,4 +102,127 @@ export function scopeGroupedToSource(
     });
   }
   return out;
+}
+
+function sourceLabel(response: AccountPanelResponse, source: AccountSource): string {
+  if (SOURCE_LABELS[source]) return SOURCE_LABELS[source]!;
+  const visual = response.sourceVisuals.find((v) => v.source === source);
+  if (visual?.displayName) return visual.displayName;
+  const account = response.accounts.find((a) => a.source === source);
+  if (account?.displayName) return account.displayName;
+  return source;
+}
+
+function sumCash(accounts: AccountPanelResponse["accounts"]): CashAmounts {
+  let krw: number | null = null;
+  let usd: number | null = null;
+  for (const account of accounts) {
+    const accountKrw = account.cashBalances?.krw;
+    const accountUsd = account.cashBalances?.usd;
+    if (accountKrw != null) krw = (krw ?? 0) + accountKrw;
+    if (accountUsd != null) usd = (usd ?? 0) + accountUsd;
+  }
+  return { krw, usd };
+}
+
+function groupCostBasisKrw(group: GroupedHolding): number | null {
+  if (group.costBasis == null) return null;
+  if (group.currency === "KRW") return group.costBasis;
+  if (group.currency === "USD") {
+    if (group.valueKrw != null && group.pnlKrw != null) return group.valueKrw - group.pnlKrw;
+    if (group.valueKrw != null && group.valueNative != null && group.valueNative > 0) {
+      return group.costBasis * (group.valueKrw / group.valueNative);
+    }
+  }
+  return null;
+}
+
+function summarizeHoldings(groups: GroupedHolding[]): Pick<AccountFilterOption, "totalValueKrw" | "costBasisKrw" | "pnlKrw" | "pnlRate" | "holdingCount"> {
+  let totalValueKrw = 0;
+  let costBasisKrw: number | null = null;
+  let pnlKrw: number | null = null;
+
+  for (const group of groups) {
+    if (group.valueKrw != null) totalValueKrw += group.valueKrw;
+    const groupCostKrw = groupCostBasisKrw(group);
+    if (groupCostKrw != null) costBasisKrw = (costBasisKrw ?? 0) + groupCostKrw;
+    if (group.pnlKrw != null) pnlKrw = (pnlKrw ?? 0) + group.pnlKrw;
+  }
+
+  const pnlRate =
+    pnlKrw != null && costBasisKrw != null && costBasisKrw > 0
+      ? pnlKrw / costBasisKrw
+      : null;
+
+  return {
+    totalValueKrw,
+    costBasisKrw,
+    pnlKrw,
+    pnlRate,
+    holdingCount: groups.length,
+  };
+}
+
+function optionFor(response: AccountPanelResponse, key: AccountFilterKey): AccountFilterOption {
+  if (key === "all") {
+    return {
+      key: "all",
+      label: "전체",
+      cashBalances: sumCash(response.accounts),
+      totalValueKrw: response.homeSummary.totalValueKrw,
+      costBasisKrw: response.homeSummary.costBasisKrw ?? null,
+      pnlKrw: response.homeSummary.pnlKrw ?? null,
+      pnlRate: response.homeSummary.pnlRate ?? null,
+      holdingCount: response.groupedHoldings.length,
+    };
+  }
+
+  const scoped = scopeGroupedToSource(response.groupedHoldings, key);
+  const summary = summarizeHoldings(scoped);
+  return {
+    key,
+    source: key,
+    label: sourceLabel(response, key),
+    cashBalances: sumCash(response.accounts.filter((a) => a.source === key)),
+    ...summary,
+  };
+}
+
+export function buildAccountFilterOptions(response: AccountPanelResponse): AccountFilterOption[] {
+  const sources = new Set<AccountSource>();
+  for (const account of response.accounts) {
+    sources.add(account.source);
+  }
+  for (const holding of response.groupedHoldings) {
+    for (const source of holding.includedSources) {
+      sources.add(source);
+    }
+  }
+
+  return [
+    optionFor(response, "all"),
+    ...Array.from(sources).map((source) => optionFor(response, source)),
+  ];
+}
+
+export function buildScopedPortfolioPanel(
+  response: AccountPanelResponse,
+  selectedKey: AccountFilterKey,
+): ScopedPortfolioPanel {
+  const options = buildAccountFilterOptions(response);
+  const selected = options.find((option) => option.key === selectedKey) ?? options[0]!;
+  const groupedHoldings = selected.key === "all"
+    ? response.groupedHoldings
+    : scopeGroupedToSource(response.groupedHoldings, selected.key);
+
+  return {
+    selected,
+    options,
+    groupedHoldings,
+    totalValueKrw: selected.totalValueKrw,
+    costBasisKrw: selected.costBasisKrw,
+    pnlKrw: selected.pnlKrw,
+    pnlRate: selected.pnlRate,
+    cashBalances: selected.cashBalances,
+  };
 }
