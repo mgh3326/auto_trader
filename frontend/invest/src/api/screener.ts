@@ -1,5 +1,6 @@
 import type {
   ScreenerPresetsResponse,
+  ScreenerMarket,
   ScreenerResultsResponse,
 } from "../types/screener";
 
@@ -11,8 +12,9 @@ export async function fetchScreenerPresets(): Promise<ScreenerPresetsResponse> {
 
 export async function fetchScreenerResults(
   presetId: string,
+  market: Extract<ScreenerMarket, "kr" | "us"> = "kr",
 ): Promise<ScreenerResultsResponse> {
-  const q = new URLSearchParams({ preset: presetId });
+  const q = new URLSearchParams({ preset: presetId, market });
   const res = await fetch(`/invest/api/screener/results?${q}`, { credentials: "include" });
   if (!res.ok) throw new Error(`screener/results ${res.status}`);
   return res.json();

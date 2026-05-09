@@ -26,6 +26,7 @@ def _stub_screening_rows() -> list[dict[str, Any]]:
             "close": 80_000,
             "change_rate": 1.23,
             "change_amount": 970,
+            "consecutive_up_days": 5,
             "volume": 12_345_678,
             "per": 14.0,
             "pbr": 1.2,
@@ -41,6 +42,7 @@ def _stub_screening_rows() -> list[dict[str, Any]]:
             "close": 45_000,
             "change_rate": -0.5,
             "change_amount": -200,
+            "consecutive_up_days": 4,
             "volume": 3_000_000,
             "per": None,
             "pbr": None,
@@ -85,7 +87,7 @@ async def test_build_screener_results_consecutive_gainers_happy_path() -> None:
 
     assert resp.presetId == "consecutive_gainers"
     assert resp.title == "연속 상승세"
-    assert resp.metricLabel == "주가등락률"
+    assert resp.metricLabel == "연속상승"
     assert len(resp.results) == 2
     assert resp.results[0].rank == 1
     assert resp.results[0].symbol == "005930"
@@ -95,6 +97,101 @@ async def test_build_screener_results_consecutive_gainers_happy_path() -> None:
     assert resp.results[1].symbol == "035720"
     assert resp.results[1].isWatched is False
     assert resp.results[1].changeDirection == "down"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_screener_results_forwards_us_market_and_formats_us_labels() -> (
+    None
+):
+    fake_screening = MagicMock()
+    fake_screening.list_screening = AsyncMock(
+        return_value={
+            "results": [
+                {
+                    "symbol": "AAPL",
+                    "name": "Apple Inc.",
+                    "market": "us",
+                    "sector": "Technology",
+                    "market_cap_usd": 3_200_000_000_000,
+                    "current_price": 210.4,
+                    "change_rate": 1.5,
+                    "change_amount": 3.1,
+                    "volume": 50_000_000,
+                    "per": 32.1,
+                    "pbr": 48.0,
+                    "dividend_yield": 0.5,
+                },
+                {
+                    "symbol": "msft",
+                    "name": "Microsoft Corp.",
+                    "market": "us",
+                    "sector": "Technology",
+                    "market_cap": 2_900_000_000_000,
+                    "current_price": 400.0,
+                    "change_rate": -0.25,
+                    "change_amount": -1.23,
+                    "volume": 20_000_000,
+                    "per": 30.0,
+                },
+            ],
+            "warnings": [],
+        }
+    )
+    resolver = _FakeResolver(watched={("us", "AAPL")})
+
+    resp = await build_screener_results(
+        preset_id="cheap_value",
+        screening_service=fake_screening,
+        resolver=resolver,
+        market="us",
+    )
+
+    fake_screening.list_screening.assert_awaited_once()
+    assert fake_screening.list_screening.await_args.kwargs["market"] == "us"
+    assert resp.results[0].market == "us"
+    assert resp.results[0].marketCapLabel == "$3.20T"
+    assert resp.results[0].priceLabel == "$210.40"
+    assert resp.results[0].changeAmountLabel == "+$3.10"
+    assert resp.results[0].isWatched is True
+    assert resp.results[1].symbol == "MSFT"
+    assert resp.results[1].marketCapLabel == "$2.90T"
+    assert resp.results[1].changeAmountLabel == "-$1.23"
+    assert resolver.calls == [("us", "AAPL"), ("us", "MSFT")]
+
+
+@pytest.mark.unit
+def test_calculate_consecutive_up_days_counts_latest_streak() -> None:
+    assert screener_service.calculate_consecutive_up_days([100, 101, 102, 103]) == 3
+    assert (
+        screener_service.calculate_consecutive_up_days([100, 101, 100, 102, 103]) == 2
+    )
+    assert screener_service.calculate_consecutive_up_days([100, 101, 101, 102]) == 1
+    assert screener_service.calculate_consecutive_up_days([100]) is None
+
+
+@pytest.mark.unit
+def test_consecutive_up_metric_prefers_consecutive_days() -> None:
+    row_warnings: list[str] = []
+    assert (
+        screener_service._metric_value_label(
+            "consecutive_gainers",
+            {"symbol": "005930", "consecutive_up_days": 6, "change_rate": 2.4},
+        )[0]
+        == "6일"
+    )
+    assert row_warnings == []
+
+
+@pytest.mark.unit
+def test_consecutive_up_metric_warns_when_history_unavailable() -> None:
+    label, warnings = screener_service._metric_value_label(
+        "consecutive_gainers",
+        {"symbol": "005930", "change_rate": 2.4},
+    )
+
+    assert label == "-"
+    assert warnings == ["연속상승 데이터 준비중"]
 
 
 @pytest.mark.unit
@@ -455,10 +552,10 @@ async def test_build_screener_results_normalizes_us_symbol_and_market_cap() -> N
 
     row = resp.results[1]
     assert resp.results[0].symbol == "MSFT"
-    assert resp.results[0].marketCapLabel == "-"
+    assert resp.results[0].marketCapLabel == "$900.0B"
     assert row.symbol == "AAPL"
     assert row.market == "us"
-    assert row.marketCapLabel == "2.9조원"
+    assert row.marketCapLabel == "$2.90T"
     assert row.changePctLabel == "0.00%"
     assert row.changeDirection == "flat"
     assert row.isWatched is True
@@ -501,9 +598,9 @@ async def test_build_screener_results_coerces_string_market_cap_values() -> None
     )
 
     assert resp.results[0].marketCapLabel == "478.0조원"
-    assert resp.results[0].warnings == []
+    assert resp.results[0].warnings == ["연속상승 데이터 준비중"]
     assert resp.results[1].marketCapLabel == "414.7조원"
-    assert resp.results[1].warnings == []
+    assert resp.results[1].warnings == ["연속상승 데이터 준비중"]
 
 
 @pytest.mark.unit

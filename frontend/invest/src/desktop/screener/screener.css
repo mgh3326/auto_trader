@@ -49,3 +49,28 @@
 .screener-modal-category-item { background: var(--surface-2); color: var(--fg-1); padding: 6px 10px; border-radius: 999px; font-size: 12px; }
 .screener-modal-footer { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--divider); }
 .screener-modal-footer button { background: var(--surface-2); color: var(--fg-3); border: 0; padding: 6px 12px; border-radius: 8px; cursor: not-allowed; font-size: 12px; font-family: inherit; }
+
+.screener-market-toggle {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  margin: 0 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg-2);
+}
+
+.screener-market-toggle button {
+  border: 0;
+  border-radius: 999px;
+  padding: 7px 14px;
+  background: transparent;
+  color: var(--fg-2);
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.screener-market-toggle button.is-active {
+  background: var(--fg);
+  color: var(--bg);
+}

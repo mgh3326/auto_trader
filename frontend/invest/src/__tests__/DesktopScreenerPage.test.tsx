@@ -16,7 +16,7 @@ const PRESETS = {
       description: "일주일 연속 상승세를 보이는 주식",
       badges: ["인기"],
       filterChips: [{ label: "주가등락률", detail: "1주일 전 보다 · 0% 이상" }],
-      metricLabel: "주가등락률", market: "kr" as const,
+      metricLabel: "연속상승", market: "kr" as const,
     },
     {
       id: "cheap_value", name: "아직 저렴한 가치주",
@@ -35,14 +35,14 @@ const ROW = {
   priceLabel: "80,000원", changePctLabel: "+1.23%", changeAmountLabel: "+970원",
   changeDirection: "up" as const, category: "반도체",
   marketCapLabel: "478조원", volumeLabel: "12,345,678",
-  analystLabel: "구매", metricValueLabel: "+1.23%", warnings: [],
+  analystLabel: "구매", metricValueLabel: "5일", warnings: [],
 };
 
 const RESULTS_GAINERS = {
   presetId: "consecutive_gainers", title: "연속 상승세",
   description: "일주일 연속 상승세를 보이는 주식",
   filterChips: [{ label: "주가등락률", detail: "1주일 전 보다 · 0% 이상" }],
-  metricLabel: "주가등락률", results: [ROW], warnings: [],
+  metricLabel: "연속상승", results: [ROW], warnings: [],
 };
 
 const RESULTS_VALUE = {
@@ -74,9 +74,24 @@ beforeEach(() => {
     tab: "kr", asOf: new Date().toISOString(), items: [], meta: { warnings: [] },
   });
   vi.spyOn(screenerApi, "fetchScreenerPresets").mockResolvedValue(PRESETS);
-  vi.spyOn(screenerApi, "fetchScreenerResults").mockImplementation(async (id: string) =>
-    id === "cheap_value" ? RESULTS_VALUE : RESULTS_GAINERS,
-  );
+  vi.spyOn(screenerApi, "fetchScreenerResults").mockImplementation(async (id: string, market = "kr") => {
+    if (market === "us") {
+      return {
+        ...RESULTS_VALUE,
+        title: "미국 가치주",
+        results: [{
+          ...ROW,
+          symbol: "AAPL",
+          market: "us" as const,
+          name: "Apple Inc.",
+          priceLabel: "$210.40",
+          marketCapLabel: "$3.20T",
+          category: "Technology",
+        }],
+      };
+    }
+    return id === "cheap_value" ? RESULTS_VALUE : RESULTS_GAINERS;
+  });
 });
 
 test("renders the default preset and switches when another preset is clicked", async () => {
@@ -87,8 +102,8 @@ test("renders the default preset and switches when another preset is clicked", a
   await waitFor(() =>
     expect(screen.getByText("PER, PBR 모두 낮은 저평가 종목")).toBeInTheDocument(),
   );
-  expect(screenerApi.fetchScreenerResults).toHaveBeenCalledWith("consecutive_gainers");
-  expect(screenerApi.fetchScreenerResults).toHaveBeenCalledWith("cheap_value");
+  expect(screenerApi.fetchScreenerResults).toHaveBeenCalledWith("consecutive_gainers", "kr");
+  expect(screenerApi.fetchScreenerResults).toHaveBeenCalledWith("cheap_value", "kr");
 });
 
 test("shows an empty-state message when results are empty", async () => {
@@ -99,4 +114,15 @@ test("shows an empty-state message when results are empty", async () => {
   await waitFor(() =>
     expect(screen.getByText(/표시할 종목이 없습니다/)).toBeInTheDocument(),
   );
+});
+
+
+test("switches to the US market", async () => {
+  render(wrap(<DesktopScreenerPage />));
+  await waitFor(() => expect(screen.getByText("삼성전자")).toBeInTheDocument());
+
+  await userEvent.click(screen.getByRole("button", { name: "미국" }));
+
+  await waitFor(() => expect(screen.getByText("Apple Inc.")).toBeInTheDocument());
+  expect(screenerApi.fetchScreenerResults).toHaveBeenCalledWith("consecutive_gainers", "us");
 });

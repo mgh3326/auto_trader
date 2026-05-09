@@ -388,11 +388,13 @@ async def _normalize_kr_results(
             row, current_price=_to_optional_float(row.get("price"))
         )
 
+        krx_name = _clean_text(base.get("name"))
+        display_name = krx_name or _pick_display_name(row) or code
         stock: dict[str, Any] = {
             "symbol": code,
             "short_code": code,
             "code": base.get("code") or code,
-            "name": _pick_display_name(row),
+            "name": display_name,
             "price": _to_optional_float(row.get("price")),
             "rsi": _to_optional_float(row.get("relative_strength_index_14")),
             "adx": _to_optional_float(row.get("average_directional_index_14")),
@@ -444,7 +446,7 @@ async def _normalize_kr_results(
             stock["market_cap_krw"] = market_cap * 100_000_000
         stock["instrument_type"] = classify_kr_instrument(
             code,
-            stock.get("name") or base.get("name"),
+            display_name,
             _get_first_present(row, "subtype", "type"),
         )
 
