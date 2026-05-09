@@ -227,9 +227,7 @@ def classify_article_scope(
     if summary:
         combined_parts.append(str(summary).lower())
     if keywords:
-        combined_parts.append(
-            " ".join(str(k).lower() for k in keywords if k)
-        )
+        combined_parts.append(" ".join(str(k).lower() for k in keywords if k))
     text_lower = " ".join(combined_parts)
     title_lower = (title or "").lower()
 
@@ -240,11 +238,13 @@ def classify_article_scope(
     # Count matched big-tech symbols.
     resolved_matches = matches or []
     big_tech_matched = [
-        m.symbol for m in resolved_matches
+        m.symbol
+        for m in resolved_matches
         if m.symbol in US_BIG_TECH_GROUP_SYMBOLS and m.market == "us"
     ]
     non_big_tech_matched = [
-        m.symbol for m in resolved_matches
+        m.symbol
+        for m in resolved_matches
         if m.symbol not in US_BIG_TECH_GROUP_SYMBOLS and m.market == "us"
     ]
 

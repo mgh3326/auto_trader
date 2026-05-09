@@ -386,8 +386,7 @@ async def build_feed_news(
         # ROB-155: remove demoted big-tech symbols from response for market_wide US articles.
         if demoted_keys:
             related = [
-                s for s in related
-                if f"{s.market}:{s.symbol}" not in demoted_keys
+                s for s in related if f"{s.market}:{s.symbol}" not in demoted_keys
             ]
 
         # ROB-155: apply crypto relevance scoring for crypto articles.
@@ -430,10 +429,7 @@ async def build_feed_news(
     # polluting the feed. Keep all rows for other tabs (pagination remains intact for
     # non-crypto tabs). Conservative: only drop rows with noise AND no relatedSymbols.
     if tab == "crypto":
-        items = [
-            i for i in items
-            if not (i.noiseReason and not i.relatedSymbols)
-        ]
+        items = [i for i in items if not (i.noiseReason and not i.relatedSymbols)]
 
     # Apply holdings/watchlist filters in-memory.
     empty_reason: str | None = None

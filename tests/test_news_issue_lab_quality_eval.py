@@ -36,7 +36,9 @@ async def test_tag_precision_mode_writes_summary_artifacts(tmp_path):
     )
 
     assert rc == 0
-    summary = json.loads((tmp_path / "out" / "summary.json").read_text(encoding="utf-8"))
+    summary = json.loads(
+        (tmp_path / "out" / "summary.json").read_text(encoding="utf-8")
+    )
     assert summary["mode"] == "tag-precision"
     assert summary["safety"]["read_only"] is True
     assert summary["us"]["sample_count"] == 2
