@@ -190,18 +190,24 @@ async def _related_symbols_by_article(
     return by_article
 
 
-async def _enrich_related_symbols_with_quotes(
+def _collect_related_symbol_pairs(
     items: list[FeedNewsItem],
-) -> list[str]:
+) -> list[tuple[str, str]]:
     pairs: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
     for item in items:
         for symbol in item.relatedSymbols:
             key = (symbol.market, symbol.symbol)
-            if key not in seen:
-                seen.add(key)
-                pairs.append(key)
+            if key in seen:
+                continue
+            seen.add(key)
+            pairs.append(key)
+    return pairs
 
+
+async def _fetch_quotes_for_pairs(
+    pairs: list[tuple[str, str]],
+) -> tuple[dict[tuple[str, str], object], list[str], int]:
     quote_by_pair: dict[tuple[str, str], object] = {}
     warnings: list[str] = []
     failures = 0
@@ -216,25 +222,44 @@ async def _enrich_related_symbols_with_quotes(
         except Exception:
             failures += 1
             warnings.append(f"quote_unavailable:{market}:{symbol}")
+    return quote_by_pair, warnings, failures
 
+
+def _apply_quote_to_related_symbol(
+    symbol: NewsRelatedSymbol,
+    quote: object,
+    as_of: datetime,
+) -> None:
+    price = getattr(quote, "price", None)
+    previous_close = getattr(quote, "previous_close", None)
+    symbol.currentPrice = float(price) if price is not None else None
+    symbol.previousClose = float(previous_close) if previous_close is not None else None
+    if symbol.currentPrice is not None and symbol.previousClose:
+        symbol.change = symbol.currentPrice - symbol.previousClose
+        symbol.changePct = (symbol.change / symbol.previousClose) * 100
+    symbol.quoteSource = getattr(quote, "source", None)
+    symbol.quoteAsOf = as_of
+
+
+def _apply_quotes_to_items(
+    items: list[FeedNewsItem],
+    quote_by_pair: dict[tuple[str, str], object],
+) -> None:
     as_of = datetime.now(UTC)
     for item in items:
         for symbol in item.relatedSymbols:
             quote = quote_by_pair.get((symbol.market, symbol.symbol))
             if quote is None:
                 continue
-            price = getattr(quote, "price", None)
-            previous_close = getattr(quote, "previous_close", None)
-            symbol.currentPrice = float(price) if price is not None else None
-            symbol.previousClose = (
-                float(previous_close) if previous_close is not None else None
-            )
-            if symbol.currentPrice is not None and symbol.previousClose:
-                symbol.change = symbol.currentPrice - symbol.previousClose
-                symbol.changePct = (symbol.change / symbol.previousClose) * 100
-            symbol.quoteSource = getattr(quote, "source", None)
-            symbol.quoteAsOf = as_of
+            _apply_quote_to_related_symbol(symbol, quote, as_of)
 
+
+async def _enrich_related_symbols_with_quotes(
+    items: list[FeedNewsItem],
+) -> list[str]:
+    pairs = _collect_related_symbol_pairs(items)
+    quote_by_pair, warnings, failures = await _fetch_quotes_for_pairs(pairs)
+    _apply_quotes_to_items(items, quote_by_pair)
     if failures:
         warnings.append(f"quote_partial_failure:{failures}")
     return warnings

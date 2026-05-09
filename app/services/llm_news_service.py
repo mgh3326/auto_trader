@@ -790,6 +790,121 @@ class NewsLookupResult:
     match_reasons: dict[int, str] = field(default_factory=dict)  # article.id -> reason
 
 
+def _normalize_news_lookup_target(symbol: str, market: str) -> tuple[str, str]:
+    normalized_market = _normalize_related_symbol_market(market, market) or market
+    if normalized_market in _RELATED_SYMBOL_MARKETS:
+        normalized_symbol = _normalize_related_symbol_symbol(symbol, normalized_market)
+    else:
+        normalized_symbol = symbol.upper().strip()
+    return normalized_market, normalized_symbol
+
+
+def _append_lookup_articles(
+    *,
+    out: list[NewsArticle],
+    reasons: dict[int, str],
+    seen_ids: set[int],
+    articles: list[NewsArticle],
+    reason: str,
+    limit: int,
+) -> bool:
+    for art in articles:
+        if art.id in seen_ids:
+            continue
+        seen_ids.add(art.id)
+        reasons[art.id] = reason
+        out.append(art)
+        if len(out) >= limit:
+            return True
+    return False
+
+
+async def _get_related_symbol_articles(
+    *,
+    normalized_market: str,
+    normalized_symbol: str,
+    hours: int,
+    limit: int,
+) -> list[NewsArticle]:
+    if (
+        normalized_market not in _RELATED_SYMBOL_MARKETS
+        or not normalized_symbol
+        or limit <= 0
+    ):
+        return []
+    try:
+        async with AsyncSessionLocal() as db:
+            cutoff = now_kst_naive() - timedelta(hours=hours)
+            related_stmt = (
+                select(NewsArticle)
+                .join(
+                    NewsArticleRelatedSymbol,
+                    NewsArticleRelatedSymbol.article_id == NewsArticle.id,
+                )
+                .where(
+                    NewsArticleRelatedSymbol.market == normalized_market,
+                    NewsArticleRelatedSymbol.symbol == normalized_symbol,
+                    NewsArticle.article_published_at >= cutoff,
+                )
+                .order_by(
+                    NewsArticle.article_published_at.desc().nulls_last(),
+                    NewsArticle.id.desc(),
+                )
+                .limit(limit)
+            )
+            related_result = await db.execute(related_stmt)
+            return list(related_result.scalars().all())
+    except SQLAlchemyError:
+        # Dev/test databases may not have the optional relation table yet; keep
+        # the historical alias-scan fallback rather than failing the lookup.
+        return []
+
+
+def _article_matches_lookup_symbol(
+    *,
+    article: NewsArticle,
+    target_symbol: str,
+    normalized_market: str,
+) -> bool:
+    matches: list[SymbolMatch] = match_symbols_for_article(
+        title=article.title,
+        summary=getattr(article, "summary", None),
+        keywords=getattr(article, "keywords", None) or [],
+        market=normalized_market,
+    )
+    return any(match.symbol.upper() == target_symbol for match in matches)
+
+
+async def _get_alias_lookup_articles(
+    *,
+    normalized_market: str,
+    target_symbol: str,
+    hours: int,
+    limit: int,
+    seen_ids: set[int],
+) -> list[NewsArticle]:
+    if limit <= 0:
+        return []
+    market_articles, _ = await get_news_articles(
+        market=normalized_market,
+        hours=hours,
+        limit=max(limit * _ALIAS_SCAN_MULTIPLIER, 50),
+    )
+    matches: list[NewsArticle] = []
+    for art in market_articles:
+        if art.id in seen_ids:
+            continue
+        if _article_matches_lookup_symbol(
+            article=art,
+            target_symbol=target_symbol,
+            normalized_market=normalized_market,
+        ):
+            matches.append(art)
+            if len(matches) >= limit:
+                break
+    return matches
+
+
 async def get_news_articles_with_fallback(
     *,
     symbol: str,
@@ -807,12 +922,7 @@ async def get_news_articles_with_fallback(
     Returns a `NewsLookupResult` with `match_reasons[article.id]` set to one of:
     "exact_symbol" | "related_symbol" | "alias_match".
     """
-    normalized_market = _normalize_related_symbol_market(market, market) or market
-    normalized_symbol = (
-        _normalize_related_symbol_symbol(symbol, normalized_market)
-        if normalized_market in _RELATED_SYMBOL_MARKETS
-        else symbol.upper().strip()
-    )
+    normalized_market, normalized_symbol = _normalize_news_lookup_target(symbol, market)
     exact_articles, _ = await get_news_articles(
         stock_symbol=normalized_symbol or symbol,
         market=normalized_market,
@@ -821,74 +931,48 @@ async def get_news_articles_with_fallback(
     )
     out: list[NewsArticle] = []
     reasons: dict[int, str] = {}
+    seen_ids: set[int] = set()
 
-    for art in exact_articles:
-        reasons[art.id] = "exact_symbol"
-        out.append(art)
-        if len(out) >= limit:
-            return NewsLookupResult(articles=out, match_reasons=reasons)
-
-    if len(out) >= limit:
+    if _append_lookup_articles(
+        out=out,
+        reasons=reasons,
+        seen_ids=seen_ids,
+        articles=exact_articles,
+        reason="exact_symbol",
+        limit=limit,
+    ):
         return NewsLookupResult(articles=out, match_reasons=reasons)
 
-    seen_ids: set[int] = {art.id for art in out}
-
-    if normalized_market in _RELATED_SYMBOL_MARKETS and normalized_symbol:
-        try:
-            async with AsyncSessionLocal() as db:
-                cutoff = now_kst_naive() - timedelta(hours=hours)
-                related_stmt = (
-                    select(NewsArticle)
-                    .join(
-                        NewsArticleRelatedSymbol,
-                        NewsArticleRelatedSymbol.article_id == NewsArticle.id,
-                    )
-                    .where(
-                        NewsArticleRelatedSymbol.market == normalized_market,
-                        NewsArticleRelatedSymbol.symbol == normalized_symbol,
-                        NewsArticle.article_published_at >= cutoff,
-                    )
-                    .order_by(
-                        NewsArticle.article_published_at.desc().nulls_last(),
-                        NewsArticle.id.desc(),
-                    )
-                    .limit(max(limit - len(out), 0))
-                )
-                related_result = await db.execute(related_stmt)
-                for art in related_result.scalars().all():
-                    if art.id in seen_ids:
-                        continue
-                    seen_ids.add(art.id)
-                    reasons[art.id] = "related_symbol"
-                    out.append(art)
-                    if len(out) >= limit:
-                        return NewsLookupResult(articles=out, match_reasons=reasons)
-        except SQLAlchemyError:
-            # Dev/test databases may not have the optional relation table yet; keep
-            # the historical alias-scan fallback rather than failing the lookup.
-            pass
-
-    # Step 3: alias fallback over a wider market window.
-    market_articles, _ = await get_news_articles(
-        market=normalized_market,
+    related_articles = await _get_related_symbol_articles(
+        normalized_market=normalized_market,
+        normalized_symbol=normalized_symbol,
         hours=hours,
-        limit=max(limit * _ALIAS_SCAN_MULTIPLIER, 50),
+        limit=limit - len(out),
     )
-    target_symbol = (normalized_symbol or symbol).upper().strip()
-    for art in market_articles:
-        if art.id in seen_ids:
-            continue
-        matches: list[SymbolMatch] = match_symbols_for_article(
-            title=art.title,
-            summary=getattr(art, "summary", None),
-            keywords=getattr(art, "keywords", None) or [],
-            market=normalized_market,
-        )
-        if any(m.symbol.upper() == target_symbol for m in matches):
-            seen_ids.add(art.id)
-            reasons[art.id] = "alias_match"
-            out.append(art)
-            if len(out) >= limit:
-                break
+    if _append_lookup_articles(
+        out=out,
+        reasons=reasons,
+        seen_ids=seen_ids,
+        articles=related_articles,
+        reason="related_symbol",
+        limit=limit,
+    ):
+        return NewsLookupResult(articles=out, match_reasons=reasons)
+
+    alias_articles = await _get_alias_lookup_articles(
+        normalized_market=normalized_market,
+        target_symbol=(normalized_symbol or symbol).upper().strip(),
+        hours=hours,
+        limit=limit - len(out),
+        seen_ids=seen_ids,
+    )
+    _append_lookup_articles(
+        out=out,
+        reasons=reasons,
+        seen_ids=seen_ids,
+        articles=alias_articles,
+        reason="alias_match",
+        limit=limit,
+    )
 
     return NewsLookupResult(articles=out, match_reasons=reasons)

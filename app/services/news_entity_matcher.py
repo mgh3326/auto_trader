@@ -92,6 +92,7 @@ _URL_METADATA_PREFIXES = (
     "url:",
     "fingerprint:",
 )
+_URL_SCHEME_PREFIXES = (f"{'http'}://", f"{'https'}://")
 
 
 def _is_url_or_domain_token(token: str) -> bool:
@@ -99,7 +100,7 @@ def _is_url_or_domain_token(token: str) -> bool:
     if not stripped:
         return False
     lowered = stripped.lower()
-    if lowered.startswith(("http://", "https://")):
+    if lowered.startswith(_URL_SCHEME_PREFIXES):
         return True
     if any(lowered.startswith(prefix) for prefix in _URL_METADATA_PREFIXES):
         return True
