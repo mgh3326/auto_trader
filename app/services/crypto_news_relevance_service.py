@@ -107,6 +107,57 @@ _CATEGORY_TERMS: dict[str, tuple[str, ...]] = {
         "onchain",
         "on-chain",
     ),
+    # ROB-155: new categories.
+    "listing_delisting": (
+        "listing",
+        "delisting",
+        "listed on",
+        "added to",
+        "removed from",
+        "coinbase listing",
+        "binance listing",
+        "upbit listing",
+        "new coin",
+    ),
+    "funding_onchain": (
+        "funding rate",
+        "open interest",
+        "long squeeze",
+        "short squeeze",
+        "perpetual",
+        "futures",
+        "derivatives",
+        "on-chain",
+        "onchain data",
+        "whale",
+        "large wallet",
+        "transfer",
+        "bridge",
+    ),
+    "market_structure": (
+        "market structure",
+        "liquidity",
+        "order book",
+        "spread",
+        "dominance",
+        "btc dominance",
+        "altcoin season",
+        "correlation",
+        "macro crypto",
+    ),
+}
+
+# ROB-155: Map internal category names to user-facing names.
+# etf_institutional + regulation_policy → etf_regulatory user-facing group.
+_INTERNAL_TO_USER_CATEGORY: dict[str, str] = {
+    "etf_institutional": "etf_regulatory",
+    "regulation_policy": "etf_regulatory",
+    "market_price": "market_price",
+    "security_risk": "security_risk",
+    "stablecoin_defi": "stablecoin_defi",
+    "listing_delisting": "listing_delisting",
+    "funding_onchain": "funding_onchain",
+    "market_structure": "market_structure",
 }
 
 _BROAD_TECH_TERMS = (
@@ -118,6 +169,15 @@ _BROAD_TECH_TERMS = (
     "coding model",
     "chatgpt",
     "software",
+    # ROB-155: additional semiconductor/AI-specific noise terms.
+    "semiconductor",
+    "chip maker",
+    "gpu",
+    "large language model",
+    "llm",
+    "foundation model",
+    "nvidia earnings",
+    "amd earnings",
 )
 
 _NEGATED_CRYPTO_PHRASES = (
@@ -126,6 +186,43 @@ _NEGATED_CRYPTO_PHRASES = (
     "without token",
     "without blockchain",
     "no blockchain",
+    "no token support",
+    "without token support",
+    "without crypto support",
+    "without blockchain or token support",
+)
+
+_CRYPTO_ANCHOR_TERMS = (
+    "bitcoin",
+    "btc",
+    "ether",
+    "ethereum",
+    "eth",
+    "solana",
+    "sol",
+    "xrp",
+    "stablecoin",
+    "defi",
+    "blockchain",
+    "onchain",
+    "on-chain",
+    "coinbase",
+    "binance",
+    "upbit",
+    "wallet",
+    "protocol",
+    "spot bitcoin etf",
+)
+
+_CATEGORY_PRIORITY = (
+    "listing_delisting",
+    "funding_onchain",
+    "market_structure",
+    "etf_institutional",
+    "regulation_policy",
+    "security_risk",
+    "stablecoin_defi",
+    "market_price",
 )
 
 _STRONG_FEEDS = {"rss_cointelegraph", "rss_coindesk", "rss_bitcoin_magazine"}
@@ -188,13 +285,19 @@ def score_crypto_news_article(article: Any) -> CryptoNewsRelevance:
         score += min(25, sum(15 for term in hits if term in title))
 
     broad_hits = [term for term in _BROAD_TECH_TERMS if term in full_text]
+    crypto_anchor_hits = [term for term in _CRYPTO_ANCHOR_TERMS if term in full_text]
     title_crypto_hits = [
         term for terms in _CATEGORY_TERMS.values() for term in terms if term in title
     ]
-    if broad_hits and not title_crypto_hits:
-        # Decrypt and similar feeds can publish broader AI/software stories that
-        # mention crypto only in boilerplate or negated context. Do not let summary
-        # noise promote them into a market briefing.
+    if broad_hits and not crypto_anchor_hits:
+        # Decrypt and similar feeds can publish broader AI/software/semiconductor
+        # stories that mention generic market/support/token wording only in
+        # boilerplate or negated context. Do not let those promote into a crypto
+        # market feed.
+        category_hits = {}
+        matched_terms = []
+        score = min(score, 15)
+    elif broad_hits and not title_crypto_hits:
         category_hits = {}
         matched_terms = []
         score = min(score, 15)
@@ -204,7 +307,15 @@ def score_crypto_news_article(article: Any) -> CryptoNewsRelevance:
     score = max(0, min(100, score))
     primary_category = None
     if category_hits:
-        primary_category = max(category_hits, key=lambda cat: len(category_hits[cat]))
+        primary_category = max(
+            category_hits,
+            key=lambda cat: (
+                len(category_hits[cat]),
+                -_CATEGORY_PRIORITY.index(cat)
+                if cat in _CATEGORY_PRIORITY
+                else -len(_CATEGORY_PRIORITY),
+            ),
+        )
 
     noise_reason = None
     include = score >= 40
@@ -221,6 +332,13 @@ def score_crypto_news_article(article: Any) -> CryptoNewsRelevance:
         matched_terms=sorted(set(matched_terms)),
         noise_reason=noise_reason,
     )
+
+
+def user_facing_category(internal_category: str | None) -> str | None:
+    """Map an internal scoring category to a user-facing category enum value (ROB-155)."""
+    if internal_category is None:
+        return None
+    return _INTERNAL_TO_USER_CATEGORY.get(internal_category, internal_category)
 
 
 def rank_crypto_news_for_briefing(

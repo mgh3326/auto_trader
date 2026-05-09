@@ -1,0 +1,14 @@
+# ROB-155 US scope tag-precision labeled fixtures.
+# Fields: title, summary (optional), keywords (optional), expected_scope, expected_demoted (optional).
+# expected_scope: "market_wide" | "symbol_specific" | "mixed"
+# expected_demoted: list of US ticker symbols expected to be demoted
+{"title": "S&P 500 climbs as big tech leads market rally; Apple, Microsoft, Google all gain", "summary": "The S&P 500 index rose on broad big tech strength, with Apple, Microsoft, and Google posting gains.", "expected_scope": "market_wide", "expected_demoted": ["AAPL", "MSFT", "GOOGL"]}
+{"title": "Nasdaq 100 hits record high as magnificent seven surge on rate cut hopes", "summary": "The Nasdaq composite climbed as the Magnificent Seven tech giants advanced.", "expected_scope": "market_wide", "expected_demoted": []}
+{"title": "Apple reports record Q4 earnings, raises guidance on iPhone 16 demand", "summary": "Apple Inc. reported quarterly revenue beating consensus estimates and raised its fiscal year guidance.", "expected_scope": "symbol_specific", "expected_demoted": []}
+{"title": "Nvidia announces H200 GPU for AI data centers amid record quarterly results", "summary": "Nvidia posted record earnings driven by data center demand.", "expected_scope": "symbol_specific", "expected_demoted": []}
+{"title": "Amazon AWS expands in Asia amid growing cloud market competition", "summary": "Amazon Web Services announced new data center regions in Southeast Asia.", "expected_scope": "symbol_specific", "expected_demoted": []}
+{"title": "Federal Reserve holds rates steady; stock market rallies as big tech outperforms", "summary": "The Fed kept interest rates unchanged. The S&P 500 and Nasdaq rose as Apple, Meta, and Tesla gained.", "expected_scope": "market_wide", "expected_demoted": ["AAPL", "META", "TSLA"]}
+{"title": "Tesla SEC filing reveals Elon Musk stock sale plans amid board succession concerns", "summary": "Tesla disclosed a new SEC filing detailing planned stock sales by CEO Elon Musk.", "expected_scope": "symbol_specific", "expected_demoted": []}
+{"title": "Big tech earnings season kicks off with Microsoft, Google, Meta all beating estimates", "summary": "The biggest names in US tech reported strong earnings this week.", "expected_scope": "market_wide", "expected_demoted": ["MSFT", "GOOGL", "META"]}
+{"title": "Meta acquires AI startup for $1.4B in largest acquisition this year", "summary": "Meta Platforms announced its acquisition of an AI research company.", "expected_scope": "symbol_specific", "expected_demoted": []}
+{"title": "Sector rotation into tech as recession fears ease; mega cap stocks lead", "summary": "Investors rotated into technology stocks as economic data improved.", "expected_scope": "market_wide", "expected_demoted": []}
