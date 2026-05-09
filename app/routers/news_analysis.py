@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
 from app.models.news import NewsArticle
+from app.routers.pagination import PaginationParams, pagination_params
 from app.schemas.news import (
     BulkCreateResponse,
     NewsAnalysisRequest,
@@ -26,6 +27,8 @@ from app.services.llm_news_service import (
 )
 
 router = APIRouter(prefix="/api/v1/news", tags=["News Analysis"])
+
+_pagination = pagination_params(default_limit=10, max_limit=100)
 
 
 @router.post(
@@ -132,8 +135,7 @@ async def list_news_articles(
     ),
     keyword: str | None = Query(None, description="키워드로 필터링"),
     has_analysis: bool | None = Query(None, description="분석 완료 여부로 필터링"),
-    limit: int = Query(10, ge=1, le=100, description="반환할 뉴스 수"),
-    offset: int = Query(0, ge=0, description="걸러뛸 뉴스 수"),
+    p: PaginationParams = Depends(_pagination),
 ):
     try:
         articles, total = await get_news_articles(
@@ -141,8 +143,8 @@ async def list_news_articles(
             stock_symbol=stock_symbol,
             sentiment=sentiment,
             source=source,
-            limit=limit,
-            offset=offset,
+            limit=p.limit,
+            offset=p.offset,
             hours=hours,
             feed_source=feed_source,
             keyword=keyword,
@@ -150,8 +152,8 @@ async def list_news_articles(
         )
 
         page_info = {
-            "limit": limit,
-            "offset": offset,
+            "limit": p.limit,
+            "offset": p.offset,
             "total": total,
         }
 
