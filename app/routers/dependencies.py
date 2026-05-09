@@ -36,9 +36,7 @@ async def get_authenticated_user(
     request: Request, db: AsyncSession = Depends(get_db)
 ) -> User:
     """Return authenticated user from request state or session."""
-    return await _resolve_user_from_request(
-        request, db, detail=AUTH_REQUIRED_MESSAGE
-    )
+    return await _resolve_user_from_request(request, db, detail=AUTH_REQUIRED_MESSAGE)
 
 
 async def get_user_from_request(
