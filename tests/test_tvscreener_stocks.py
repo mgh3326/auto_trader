@@ -155,7 +155,7 @@ async def test_screen_kr_uses_market_korea_and_public_symbol_name_mapping(
     assert kwargs["country"] is None
     assert result["error"] is None
     assert [stock["symbol"] for stock in result["stocks"]] == ["005930", "000660"]
-    assert result["stocks"][0]["name"] == "Samsung Electronics Co., Ltd."
+    assert result["stocks"][0]["name"] == "삼성전자"
 
 
 @pytest.mark.asyncio
@@ -590,7 +590,7 @@ async def test_screen_kr_falls_back_to_name_when_description_missing(
     ):
         result = await _screen_kr_via_tvscreener(limit=1)
 
-    assert result["stocks"][0]["name"] == "005930"
+    assert result["stocks"][0]["name"] == "삼성전자"
 
 
 class TestStockScreeningIntegration:
