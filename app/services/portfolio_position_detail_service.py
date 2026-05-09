@@ -10,6 +10,14 @@ from app.mcp_server.tooling.fundamentals._valuation import (
 )
 from app.mcp_server.tooling.market_data_quotes import _get_indicators_impl
 from app.mcp_server.tooling.orders_history import get_order_history_impl
+from app.services.portfolio_indicator_cards import (
+    build_bollinger_card,
+    build_ema_card,
+    build_macd_card,
+    build_rsi_card,
+    build_sma_card,
+    build_stoch_rsi_card,
+)
 from app.services.portfolio_weights import build_weights as _build_portfolio_weights
 
 
@@ -385,138 +393,6 @@ class PortfolioPositionDetailService:
             "opinions": payload.get("opinions") or [],
         }
 
-    def _build_rsi_card(self, rsi_14: Any) -> dict[str, str] | None:
-        if not isinstance(rsi_14, (int, float)):
-            return None
-        if rsi_14 < 30:
-            tone, meaning = "oversold", "과매도"
-        elif rsi_14 > 70:
-            tone, meaning = "overbought", "과매수"
-        else:
-            tone, meaning = "neutral", "중립"
-        return {
-            "label": "RSI(14)",
-            "value": f"{rsi_14:.1f}",
-            "tone": tone,
-            "description": meaning,
-        }
-
-    def _build_stoch_rsi_card(self, k: Any, d: Any) -> dict[str, str] | None:
-        if not isinstance(k, (int, float)) or not isinstance(d, (int, float)):
-            return None
-        if k < 20 and d < 20:
-            description, tone = "과매도 구간", "oversold"
-        elif k > 80 and d > 80:
-            description, tone = "과매수 구간", "overbought"
-        else:
-            description, tone = "중립 구간", "neutral"
-        return {
-            "label": "Stoch RSI",
-            "value": f"K {k:.1f} / D {d:.1f}",
-            "tone": tone,
-            "description": description,
-        }
-
-    def _build_macd_card(
-        self, macd: Any, signal: Any, histogram: Any
-    ) -> dict[str, str] | None:
-        if not isinstance(macd, (int, float)) or not isinstance(signal, (int, float)):
-            return None
-        bullish = macd >= signal
-        return {
-            "label": "MACD",
-            "value": "Bullish" if bullish else "Bearish",
-            "tone": "bullish" if bullish else "bearish",
-            "description": (
-                f"MACD {macd:.2f} / Signal {signal:.2f}"
-                + (
-                    f" / Hist {histogram:.2f}"
-                    if isinstance(histogram, (int, float))
-                    else ""
-                )
-            ),
-        }
-
-    def _build_bollinger_card(
-        self, price: Any, upper: Any, middle: Any, lower: Any
-    ) -> dict[str, str] | None:
-        if not all(isinstance(v, (int, float)) for v in (price, upper, middle, lower)):
-            return None
-        if abs(price - lower) <= abs(price - upper) and abs(price - lower) <= abs(
-            price - middle
-        ):
-            description, tone = "하단 근처", "oversold"
-        elif abs(price - upper) < abs(price - middle):
-            description, tone = "상단 근처", "overbought"
-        else:
-            description, tone = "중단 근처", "neutral"
-        return {
-            "label": "Bollinger",
-            "value": description,
-            "tone": tone,
-            "description": f"상단 {upper:.2f} / 중단 {middle:.2f} / 하단 {lower:.2f}",
-        }
-
-    def _build_ema_card(
-        self, price: Any, ema20: Any, ema60: Any, ema200: Any
-    ) -> dict[str, str] | None:
-        if not isinstance(price, (int, float)) or not isinstance(ema20, (int, float)):
-            return None
-        if (
-            isinstance(ema60, (int, float))
-            and isinstance(ema200, (int, float))
-            and price > ema20 > ema60 > ema200
-        ):
-            tone, description = "bullish", "상방 정렬"
-        elif (
-            isinstance(ema60, (int, float))
-            and isinstance(ema200, (int, float))
-            and price < ema20 < ema60 < ema200
-        ):
-            tone, description = "bearish", "하방 정렬"
-        else:
-            tone, description = "neutral", "혼조"
-        return {
-            "label": "EMA",
-            "value": description,
-            "tone": tone,
-            "description": (
-                f"20 {ema20:.2f}"
-                + (f" / 60 {ema60:.2f}" if isinstance(ema60, (int, float)) else "")
-                + (f" / 200 {ema200:.2f}" if isinstance(ema200, (int, float)) else "")
-            ),
-        }
-
-    def _build_sma_card(
-        self, price: Any, sma20: Any, sma60: Any, sma200: Any
-    ) -> dict[str, str] | None:
-        if not isinstance(price, (int, float)) or not isinstance(sma20, (int, float)):
-            return None
-        if (
-            isinstance(sma60, (int, float))
-            and isinstance(sma200, (int, float))
-            and price > sma20 > sma60 > sma200
-        ):
-            tone, description = "bullish", "상방 정렬"
-        elif (
-            isinstance(sma60, (int, float))
-            and isinstance(sma200, (int, float))
-            and price < sma20 < sma60 < sma200
-        ):
-            tone, description = "bearish", "하방 정렬"
-        else:
-            tone, description = "neutral", "혼조"
-        return {
-            "label": "SMA",
-            "value": description,
-            "tone": tone,
-            "description": (
-                f"20 {sma20:.2f}"
-                + (f" / 60 {sma60:.2f}" if isinstance(sma60, (int, float)) else "")
-                + (f" / 200 {sma200:.2f}" if isinstance(sma200, (int, float)) else "")
-            ),
-        }
-
     def _build_indicator_summary_cards(
         self, payload: dict[str, Any]
     ) -> list[dict[str, str]]:
@@ -524,19 +400,19 @@ class PortfolioPositionDetailService:
         price = payload.get("price")
         cards: list[dict[str, str]] = []
 
-        rsi_card = self._build_rsi_card(
+        rsi_card = build_rsi_card(
             rsi_14=(indicators.get("rsi") or {}).get("14"),
         )
         if rsi_card:
             cards.append(rsi_card)
 
         stoch = indicators.get("stoch_rsi") or {}
-        stoch_card = self._build_stoch_rsi_card(k=stoch.get("k"), d=stoch.get("d"))
+        stoch_card = build_stoch_rsi_card(k=stoch.get("k"), d=stoch.get("d"))
         if stoch_card:
             cards.append(stoch_card)
 
         macd = indicators.get("macd") or {}
-        macd_card = self._build_macd_card(
+        macd_card = build_macd_card(
             macd=macd.get("macd"),
             signal=macd.get("signal"),
             histogram=macd.get("histogram"),
@@ -545,7 +421,7 @@ class PortfolioPositionDetailService:
             cards.append(macd_card)
 
         bollinger = indicators.get("bollinger") or {}
-        bollinger_card = self._build_bollinger_card(
+        bollinger_card = build_bollinger_card(
             price=price,
             upper=bollinger.get("upper"),
             middle=bollinger.get("middle"),
@@ -555,7 +431,7 @@ class PortfolioPositionDetailService:
             cards.append(bollinger_card)
 
         ema = indicators.get("ema") or {}
-        ema_card = self._build_ema_card(
+        ema_card = build_ema_card(
             price=price,
             ema20=ema.get("20"),
             ema60=ema.get("60"),
@@ -565,7 +441,7 @@ class PortfolioPositionDetailService:
             cards.append(ema_card)
 
         sma = indicators.get("sma") or {}
-        sma_card = self._build_sma_card(
+        sma_card = build_sma_card(
             price=price,
             sma20=sma.get("20"),
             sma60=sma.get("60"),
