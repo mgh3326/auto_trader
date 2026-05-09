@@ -372,6 +372,84 @@ def _coerce_int_or_default(value: Any, default: int) -> int:
         return default
 
 
+def _score_from_candidate(candidate: dict[str, Any]) -> float | None:
+    score_value = _candidate_field(candidate, "score", "confidence")
+    try:
+        return float(score_value) if score_value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _prefer_related_symbol_row(
+    *,
+    existing: dict[str, Any] | None,
+    candidate: dict[str, Any],
+) -> bool:
+    if existing is None:
+        return True
+    candidate_rank = candidate.get("rank")
+    rank = int(candidate_rank if candidate_rank is not None else 10_000)
+    existing_rank = existing.get("rank")
+    previous_rank = int(existing_rank if existing_rank is not None else rank + 1)
+    if rank < previous_rank:
+        return True
+    existing_score = existing.get("score")
+    candidate_score = candidate.get("score")
+    return (
+        rank == existing_rank
+        and candidate_score is not None
+        and (existing_score is None or candidate_score > float(existing_score))
+    )
+
+
+def _related_symbol_row_from_candidate(
+    *,
+    article_id: int,
+    candidate: dict[str, Any],
+    default_market: Any,
+    ordinal: int,
+) -> dict[str, Any] | None:
+    market = _normalize_related_symbol_market(
+        _candidate_field(candidate, "market", "market_type", "exchange"),
+        default_market,
+    )
+    if market is None:
+        return None
+    symbol = _normalize_related_symbol_symbol(
+        _candidate_field(candidate, "symbol", "ticker", "code", "stock_symbol"),
+        market,
+    )
+    if symbol is None:
+        return None
+    display_name = _candidate_field(
+        candidate,
+        "display_name",
+        "displayName",
+        "name",
+        "stock_name",
+        "canonical_name",
+    )
+    matched_term = _candidate_field(candidate, "matched_term", "matchedTerm", "term")
+    return {
+        "article_id": article_id,
+        "market": market,
+        "symbol": symbol,
+        "display_name": str(display_name).strip()[:120]
+        if display_name is not None and str(display_name).strip()
+        else None,
+        "source": "candidate_metadata",
+        "matched_term": str(matched_term).strip()[:120]
+        if matched_term is not None and str(matched_term).strip()
+        else None,
+        "score": _score_from_candidate(candidate),
+        "rank": _coerce_int_or_default(
+            _candidate_field(candidate, "rank", "order"), ordinal
+        ),
+        "raw": dict(candidate),
+        "created_at": now_kst_naive(),
+    }
+
+
 def _related_symbol_values_from_ingestor_payload(
     *, article_id: int, article_data: Any
 ) -> list[dict[str, Any]]:
@@ -381,66 +459,17 @@ def _related_symbol_values_from_ingestor_payload(
     for ordinal, candidate in enumerate(
         _iter_raw_stock_candidates(getattr(article_data, "raw", None)), start=1
     ):
-        market = _normalize_related_symbol_market(
-            _candidate_field(candidate, "market", "market_type", "exchange"),
-            default_market,
+        row = _related_symbol_row_from_candidate(
+            article_id=article_id,
+            candidate=candidate,
+            default_market=default_market,
+            ordinal=ordinal,
         )
-        if market is None:
+        if row is None:
             continue
-        symbol = _normalize_related_symbol_symbol(
-            _candidate_field(candidate, "symbol", "ticker", "code", "stock_symbol"),
-            market,
-        )
-        if symbol is None:
-            continue
-        source = "candidate_metadata"
-        display_name = _candidate_field(
-            candidate,
-            "display_name",
-            "displayName",
-            "name",
-            "stock_name",
-            "canonical_name",
-        )
-        matched_term = _candidate_field(
-            candidate, "matched_term", "matchedTerm", "term"
-        )
-        score_value = _candidate_field(candidate, "score", "confidence")
-        try:
-            score = float(score_value) if score_value is not None else None
-        except (TypeError, ValueError):
-            score = None
-        rank = _coerce_int_or_default(
-            _candidate_field(candidate, "rank", "order"), ordinal
-        )
-        row = {
-            "article_id": article_id,
-            "market": market,
-            "symbol": symbol,
-            "display_name": str(display_name).strip()[:120]
-            if display_name is not None and str(display_name).strip()
-            else None,
-            "source": source,
-            "matched_term": str(matched_term).strip()[:120]
-            if matched_term is not None and str(matched_term).strip()
-            else None,
-            "score": score,
-            "rank": rank,
-            "raw": dict(candidate),
-            "created_at": now_kst_naive(),
-        }
-        key = (market, symbol, source)
+        key = (row["market"], row["symbol"], row["source"])
         existing = best_by_key.get(key)
-        if existing is None:
-            best_by_key[key] = row
-            continue
-        existing_rank = existing.get("rank")
-        existing_score = existing.get("score")
-        if rank < int(existing_rank if existing_rank is not None else rank + 1) or (
-            rank == existing_rank
-            and score is not None
-            and (existing_score is None or score > float(existing_score))
-        ):
+        if _prefer_related_symbol_row(existing=existing, candidate=row):
             best_by_key[key] = row
     return sorted(
         best_by_key.values(),

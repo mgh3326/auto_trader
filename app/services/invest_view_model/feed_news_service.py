@@ -105,6 +105,70 @@ def _market_for_quote(market: str) -> str:
     return "crypto"
 
 
+def _relation_from_related_symbols(related: list[NewsRelatedSymbol]) -> str:
+    relations = {symbol.relation for symbol in related}
+    if "both" in relations or {"held", "watchlist"}.issubset(relations):
+        return "both"
+    if "held" in relations:
+        return "held"
+    if "watchlist" in relations:
+        return "watchlist"
+    return "none"
+
+
+def _related_symbols_for_article(
+    *,
+    row: NewsArticle,
+    resolver: RelationResolver,
+    analysis_summary: str | None,
+    persisted_relations: dict[int, list[NewsArticleRelatedSymbol]],
+    market_value: str,
+) -> list[NewsRelatedSymbol]:
+    related: list[NewsRelatedSymbol] = []
+    seen_related: set[tuple[str, str]] = set()
+
+    for persisted in persisted_relations.get(row.id, []):
+        _add_related_symbol(
+            related=related,
+            seen_related=seen_related,
+            resolver=resolver,
+            symbol=persisted.symbol,
+            market=persisted.market,
+            display_name=persisted.display_name or persisted.symbol,
+            match_reason=persisted.source,
+            matched_term=persisted.matched_term,
+        )
+
+    if row.stock_symbol:
+        _add_related_symbol(
+            related=related,
+            seen_related=seen_related,
+            resolver=resolver,
+            symbol=row.stock_symbol,
+            market=market_value,
+            display_name=row.stock_name or row.stock_symbol,
+            match_reason="stock_symbol",
+        )
+
+    for match in match_symbols_for_article(
+        title=row.title,
+        summary=analysis_summary or row.summary,
+        keywords=_coerce_keywords(getattr(row, "keywords", None)),
+        market=market_value,
+    ):
+        _add_related_symbol(
+            related=related,
+            seen_related=seen_related,
+            resolver=resolver,
+            symbol=match.symbol,
+            market=match.market,
+            display_name=match.canonical_name,
+            match_reason=match.reason,
+            matched_term=match.matched_term,
+        )
+    return related
+
+
 async def _related_symbols_by_article(
     db: AsyncSession, article_ids: list[int]
 ) -> dict[int, list[NewsArticleRelatedSymbol]]:
@@ -252,58 +316,15 @@ async def build_feed_news(
         if market_value not in ("kr", "us", "crypto"):
             continue
         market_typed = cast(NewsMarket, market_value)
-        related: list[NewsRelatedSymbol] = []
-        seen_related: set[tuple[str, str]] = set()
-
-        for persisted in persisted_relations.get(row.id, []):
-            _add_related_symbol(
-                related=related,
-                seen_related=seen_related,
-                resolver=resolver,
-                symbol=persisted.symbol,
-                market=persisted.market,
-                display_name=persisted.display_name or persisted.symbol,
-                match_reason=persisted.source,
-                matched_term=persisted.matched_term,
-            )
-
-        if row.stock_symbol:
-            _add_related_symbol(
-                related=related,
-                seen_related=seen_related,
-                resolver=resolver,
-                symbol=row.stock_symbol,
-                market=market_value,
-                display_name=row.stock_name or row.stock_symbol,
-                match_reason="stock_symbol",
-            )
-        for match in match_symbols_for_article(
-            title=row.title,
-            summary=analysis_map.get(row.id) or row.summary,
-            keywords=_coerce_keywords(getattr(row, "keywords", None)),
-            market=market_value,
-        ):
-            _add_related_symbol(
-                related=related,
-                seen_related=seen_related,
-                resolver=resolver,
-                symbol=match.symbol,
-                market=match.market,
-                display_name=match.canonical_name,
-                match_reason=match.reason,
-                matched_term=match.matched_term,
-            )
-        related_relations = {symbol.relation for symbol in related}
-        if "both" in related_relations or (
-            "held" in related_relations and "watchlist" in related_relations
-        ):
-            relation = "both"
-        elif "held" in related_relations:
-            relation = "held"
-        elif "watchlist" in related_relations:
-            relation = "watchlist"
-        else:
-            relation = "none"
+        analysis_summary = analysis_map.get(row.id)
+        related = _related_symbols_for_article(
+            row=row,
+            resolver=resolver,
+            analysis_summary=analysis_summary,
+            persisted_relations=persisted_relations,
+            market_value=market_value,
+        )
+        relation = _relation_from_related_symbols(related)
         items.append(
             FeedNewsItem(
                 id=row.id,
@@ -314,7 +335,7 @@ async def build_feed_news(
                 market=market_typed,
                 relatedSymbols=related,
                 issueId=issue_id_for_article.get(row.id),
-                summarySnippet=analysis_map.get(row.id) or row.summary,
+                summarySnippet=analysis_summary or row.summary,
                 relation=relation,
                 url=row.url,
             )

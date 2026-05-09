@@ -155,7 +155,7 @@ async def get_feed_news(
     tab: FeedTab = Query("top"),
     limit: int = Query(30, ge=1, le=100),
     cursor: str | None = Query(None),
-    include_quotes: bool = Query(False, alias="includeQuotes"),
+    include_quotes: Annotated[bool, Query(alias="includeQuotes")] = False,
 ) -> FeedNewsResponse:
     home = await service.get_home(user_id=user.id)
     resolver = await build_relation_resolver(

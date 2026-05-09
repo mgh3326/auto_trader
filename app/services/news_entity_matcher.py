@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from app.services.news_entity_alias_data import (
     ALL_ALIASES,
@@ -85,9 +86,29 @@ def match_symbols(
     return sorted(seen.values(), key=lambda m: (m.market, m.symbol))
 
 
-_URL_LIKE_METADATA_RE = re.compile(
-    r"(?i)(?:[a-z_]+:)?https?://\S+|\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?:/\S*)?"
+_URL_METADATA_PREFIXES = (
+    "canonical_url:",
+    "source_url:",
+    "url:",
+    "fingerprint:",
 )
+
+
+def _is_url_or_domain_token(token: str) -> bool:
+    stripped = token.strip().strip("'\"()[]{}<>,")
+    if not stripped:
+        return False
+    lowered = stripped.lower()
+    if lowered.startswith(("http://", "https://")):
+        return True
+    if any(lowered.startswith(prefix) for prefix in _URL_METADATA_PREFIXES):
+        return True
+    candidate = lowered if "://" in lowered else f"//{lowered}"
+    hostname = urlsplit(candidate).hostname or ""
+    if "." not in hostname:
+        return False
+    labels = hostname.split(".")
+    return all(label.replace("-", "").isalnum() for label in labels)
 
 
 def _clean_article_text(value: object) -> str:
@@ -95,7 +116,9 @@ def _clean_article_text(value: object) -> str:
     text = str(value or "").strip()
     if not text:
         return ""
-    return _URL_LIKE_METADATA_RE.sub(" ", text)
+    return " ".join(
+        token for token in text.split() if not _is_url_or_domain_token(token)
+    )
 
 
 def _clean_keyword_text(keyword: object) -> str:

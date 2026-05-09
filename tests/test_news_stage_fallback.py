@@ -7,6 +7,7 @@ reason — instead of an empty list.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -53,6 +54,7 @@ def _related_symbol_session_factory(rows: list[SimpleNamespace]):
             return None
 
         async def execute(self, stmt):
+            await asyncio.sleep(0)
             result = Mock()
             result.scalars.return_value.all.return_value = rows
             return result
@@ -65,7 +67,7 @@ def _related_symbol_session_factory(rows: list[SimpleNamespace]):
 async def test_fallback_exact_symbol_match_returned_first(monkeypatch):
     exact = [_mk_article(id=1, title="AMZN beats", stock_symbol="AMZN")]
 
-    async def fake_get_news_articles(**kwargs):
+    def fake_get_news_articles(**kwargs):
         if kwargs.get("stock_symbol") == "AMZN":
             return exact, len(exact)
         return [], 0
@@ -92,7 +94,7 @@ async def test_fallback_alias_used_when_exact_returns_empty(monkeypatch):
         _mk_article(id=11, title="Apple reports Q1", stock_symbol=None),
     ]
 
-    async def fake_get_news_articles(**kwargs):
+    def fake_get_news_articles(**kwargs):
         if kwargs.get("stock_symbol") == "AMZN":
             return [], 0
         # market-wide query (no stock_symbol)
@@ -127,7 +129,7 @@ async def test_fallback_kr_005930_alias_match(monkeypatch):
         )
     ]
 
-    async def fake_get_news_articles(**kwargs):
+    def fake_get_news_articles(**kwargs):
         if kwargs.get("stock_symbol") == "005930":
             return [], 0
         return untagged, len(untagged)
@@ -153,7 +155,7 @@ async def test_fallback_kr_005930_alias_match(monkeypatch):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_fallback_returns_empty_when_no_match(monkeypatch):
-    async def fake_get_news_articles(**kwargs):
+    def fake_get_news_articles(**kwargs):
         return [], 0
 
     monkeypatch.setattr(
@@ -195,6 +197,7 @@ async def test_fallback_uses_persisted_related_symbol_rows_before_alias_scan(
             return None
 
         async def execute(self, stmt):
+            await asyncio.sleep(0)
             result = Mock()
             result.scalars.return_value.all.return_value = [related]
             return result
@@ -240,7 +243,7 @@ async def test_fallback_supplements_exact_and_related_rows_with_alias_matches(
         market="us",
     )
 
-    async def fake_get_news_articles(**kwargs):
+    def fake_get_news_articles(**kwargs):
         if kwargs.get("stock_symbol") == "NVDA":
             return exact, len(exact)
         return [alias, unrelated], 2
@@ -275,7 +278,7 @@ async def test_fallback_caps_limit(monkeypatch):
         _mk_article(id=i, title="Amazon news", stock_symbol=None) for i in range(50)
     ]
 
-    async def fake_get_news_articles(**kwargs):
+    def fake_get_news_articles(**kwargs):
         if kwargs.get("stock_symbol"):
             return [], 0
         return untagged, len(untagged)

@@ -461,10 +461,10 @@ async def test_feed_news_include_quotes_dedupes_and_computes_change(
 
     quote_mock.assert_awaited_once_with(symbol="AAPL", market="us")
     quoted = resp.items[0].relatedSymbols[0]
-    assert quoted.currentPrice == 110.0
-    assert quoted.previousClose == 100.0
-    assert quoted.change == 10.0
-    assert quoted.changePct == 10.0
+    assert quoted.currentPrice == pytest.approx(110.0)
+    assert quoted.previousClose == pytest.approx(100.0)
+    assert quoted.change == pytest.approx(10.0)
+    assert quoted.changePct == pytest.approx(10.0)
     assert quoted.quoteSource == "test-provider"
     assert quoted.quoteAsOf is not None
     assert resp.meta.warnings == []
@@ -510,7 +510,7 @@ async def test_feed_news_include_quotes_handles_missing_previous_close(
     )
 
     quoted = resp.items[0].relatedSymbols[0]
-    assert quoted.currentPrice == 70000.0
+    assert quoted.currentPrice == pytest.approx(70000.0)
     assert quoted.previousClose is None
     assert quoted.change is None
     assert quoted.changePct is None

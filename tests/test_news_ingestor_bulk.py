@@ -378,7 +378,7 @@ def test_related_symbol_values_from_ingestor_payload_normalizes_multiple_candida
     ]
     assert rows[1]["display_name"] == "삼성전자"
     assert rows[1]["matched_term"] == "삼전"
-    assert rows[1]["score"] == 0.91
+    assert rows[1]["score"] == pytest.approx(0.91)
     assert rows[1]["source"] == "candidate_metadata"
 
 
@@ -429,7 +429,7 @@ def test_related_symbol_values_from_ingestor_payload_dedupes_deterministically()
     assert len(rows) == 1
     assert rows[0]["symbol"] == "005930"
     assert rows[0]["rank"] == 2
-    assert rows[0]["score"] == 0.95
+    assert rows[0]["score"] == pytest.approx(0.95)
 
 
 def test_related_symbol_values_from_ingestor_payload_missing_raw_returns_empty():
