@@ -12,7 +12,7 @@ import app.services.brokers.upbit.client as upbit_service
 import app.services.brokers.yahoo.client as yahoo_service
 from app.core.normalizers import to_float as _to_float
 from app.core.symbol import to_db_symbol
-from app.mcp_server.tooling.shared import min_order_krw
+from app.mcp_server.tooling.portfolio_helpers import min_order_krw
 from app.models.manual_holdings import MarketType
 from app.services.brokers.kis.client import KISClient
 from app.services.exchange_rate_service import get_usd_krw_rate
