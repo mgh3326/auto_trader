@@ -20,6 +20,10 @@ test("returns days for over 24 hours", () => {
   expect(formatRelativeTime("2026-05-05T12:00:00Z", NOW)).toBe("2일 전");
 });
 
+test("returns '어제' for exactly one day", () => {
+  expect(formatRelativeTime("2026-05-06T12:00:00Z", NOW)).toBe("어제");
+});
+
 test("returns null when input is null", () => {
   expect(formatRelativeTime(null, NOW)).toBeNull();
 });

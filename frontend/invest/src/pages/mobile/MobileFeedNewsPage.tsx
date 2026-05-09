@@ -3,7 +3,14 @@ import { MobileShell } from "../../mobile/MobileShell";
 import { fetchFeedNews } from "../../api/feedNews";
 import type { FeedNewsResponse, FeedTab } from "../../types/feedNews";
 import { NewsTabs } from "../../components/news/NewsTabs";
-import { NewsCard } from "../../components/news/NewsCard";
+import { NewsListItem } from "../../components/news/NewsListItem";
+
+function emptyMessage(reason: string | null | undefined): string {
+  if (reason === "no_holdings") return "보유 종목이 없습니다.";
+  if (reason === "no_watchlist") return "관심 종목이 없습니다.";
+  if (reason === "no_matching_news") return "조건에 맞는 뉴스가 없습니다.";
+  return "표시할 뉴스가 없습니다.";
+}
 
 export function MobileFeedNewsPage() {
   const [tab, setTab] = useState<FeedTab>("top");
@@ -24,6 +31,8 @@ export function MobileFeedNewsPage() {
   }, [tab]);
 
   const issueById = new Map((data?.issues ?? []).map((i) => [i.id, i] as const));
+  const loading = !data && !err;
+  const empty = Boolean(data && data.items.length === 0);
 
   return (
     <MobileShell title="뉴스">
@@ -31,11 +40,15 @@ export function MobileFeedNewsPage() {
         <NewsTabs value={tab} onChange={setTab} variant="pill-row" />
 
         {err && <div style={{ color: "var(--danger)" }}>오류: {err}</div>}
-        {data?.meta?.emptyReason === "no_holdings" && (
-          <div style={{ color: "var(--fg-3)" }}>보유 종목이 없습니다.</div>
+        {loading && (
+          <div data-testid="feed-news-loading" style={{ color: "var(--fg-3)" }}>
+            최신 뉴스를 불러오는 중입니다…
+          </div>
         )}
-        {data?.meta?.emptyReason === "no_watchlist" && (
-          <div style={{ color: "var(--fg-3)" }}>관심 종목이 없습니다.</div>
+        {empty && (
+          <div data-testid="feed-news-empty" style={{ color: "var(--fg-3)" }}>
+            {emptyMessage(data?.meta?.emptyReason)}
+          </div>
         )}
 
         <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 10 }}>
@@ -43,12 +56,13 @@ export function MobileFeedNewsPage() {
             const open = selectedId === it.id;
             const linkedIssue = it.issueId ? issueById.get(it.issueId) : undefined;
             return (
-              <NewsCard
+              <NewsListItem
                 key={it.id}
                 item={it}
                 issue={linkedIssue}
                 open={open}
                 onToggle={() => setSelectedId(open ? null : it.id)}
+                variant="mobile"
               />
             );
           })}

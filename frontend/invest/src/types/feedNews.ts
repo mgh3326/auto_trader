@@ -3,6 +3,14 @@ import type { MarketIssue } from "./newsIssues";
 export type FeedTab = "top" | "latest" | "hot" | "holdings" | "watchlist" | "kr" | "us" | "crypto";
 export type RelationKind = "held" | "watchlist" | "both" | "none";
 
+export interface FeedRelatedSymbolQuote {
+  price?: number | null;
+  change?: number | null;
+  changeRate?: number | null;
+  currency?: string | null;
+  asOf?: string | null;
+}
+
 export interface FeedRelatedSymbol {
   symbol: string;
   market: "kr" | "us" | "crypto";
@@ -10,6 +18,7 @@ export interface FeedRelatedSymbol {
   relation?: RelationKind;
   matchReason?: string | null;
   matchedTerm?: string | null;
+  quote?: FeedRelatedSymbolQuote | null;
 }
 
 export interface FeedNewsItem {

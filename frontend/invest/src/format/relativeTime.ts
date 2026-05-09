@@ -14,5 +14,6 @@ export function formatRelativeTime(
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${hours}시간 전`;
   const days = Math.floor(hours / 24);
+  if (days === 1) return "어제";
   return `${days}일 전`;
 }
