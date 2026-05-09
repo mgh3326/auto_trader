@@ -27,6 +27,9 @@ from app.services.invest_view_model.screener_presets import (
     screening_filters_for,
 )
 
+_VALID_MARKETS = {"kr", "us", "crypto"}
+_KR_ABSURD_MARKET_CAP_KRW = 10_000_000_000_000_000
+
 
 class _ScreeningServiceProto(Protocol):
     async def list_screening(self, /, **kwargs: Any) -> dict[str, Any]: ...
@@ -84,6 +87,95 @@ def _format_market_cap_kr(market_cap: float | None) -> str:
     return f"{eok:,.0f}억원"
 
 
+def _clean_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _normalize_market(raw: Any) -> str:
+    market = _clean_text(raw).lower()
+    return market if market in _VALID_MARKETS else "kr"
+
+
+def _normalize_symbol(row: dict[str, Any], market: str) -> tuple[str, list[str]]:
+    symbol = ""
+    for key in ("symbol", "code", "short_code", "ticker"):
+        symbol = _clean_text(row.get(key))
+        if symbol:
+            break
+
+    if not symbol:
+        return "", ["종목코드 데이터 준비중"]
+
+    if market == "kr":
+        _, sep, suffix = symbol.rpartition(":")
+        if sep and suffix.isdigit() and len(suffix) == 6:
+            symbol = suffix
+        return symbol, []
+
+    return symbol.upper(), []
+
+
+def _coerce_float(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        cleaned = value.strip().replace(",", "")
+        if not cleaned:
+            return None
+        try:
+            return float(cleaned)
+        except ValueError:
+            return None
+    return None
+
+
+def _market_cap_from_market_cap_field(value: float | None, market: str) -> float | None:
+    if value is None or value <= 0:
+        return None
+    if market == "kr":
+        # KR upstream rows can contain either KRW (TradingView-style) or 억원
+        # (KRX-style). A KRW market cap under 1조 is still plausible, so don't
+        # require a 1조 threshold before treating the value as already-KRW.
+        if value >= 100_000_000:
+            return value
+        return value * 100_000_000
+    if value >= 1_000_000_000_000:
+        return value
+    return None
+
+
+def _normalize_market_cap_krw(
+    row: dict[str, Any], market: str
+) -> tuple[float | None, list[str]]:
+    """Return display-safe KRW market cap plus row warnings.
+
+    Upstream screener rows can mix `market_cap_krw` (already KRW) with
+    source-dependent `market_cap` units. Values above 10,000조 KRW are
+    implausible for a single screener row, so prefer a plausible fallback or
+    hide the label instead of rendering absurd values such as 414,671.4조원.
+    """
+    market_cap_krw = _coerce_float(row.get("market_cap_krw"))
+    market_cap = _coerce_float(row.get("market_cap"))
+    fallback = _market_cap_from_market_cap_field(market_cap, market)
+
+    if market_cap_krw is not None and market_cap_krw > 0:
+        if market_cap_krw <= _KR_ABSURD_MARKET_CAP_KRW:
+            return market_cap_krw, []
+        if fallback is not None and fallback <= _KR_ABSURD_MARKET_CAP_KRW:
+            return fallback, ["시가총액 단위 보정됨"]
+        return None, ["시가총액 데이터 확인 필요"]
+
+    if fallback is not None and fallback <= _KR_ABSURD_MARKET_CAP_KRW:
+        return fallback, []
+    if fallback is not None:
+        return None, ["시가총액 데이터 확인 필요"]
+    return None, []
+
+
 def _format_volume(volume: float | None) -> str:
     if volume is None:
         return "-"
@@ -133,20 +225,20 @@ async def build_screener_results(
 
     results: list[ScreenerResultRow] = []
     for idx, row in enumerate(rows, start=1):
-        symbol = str(row.get("symbol") or "")
-        market = str(row.get("market") or "kr").lower()
-        if market not in ("kr", "us", "crypto"):
-            market = "kr"
+        market = _normalize_market(row.get("market"))
+        symbol, symbol_warnings = _normalize_symbol(row, market)
+        market_cap, market_cap_warnings = _normalize_market_cap_krw(row, market)
         change_pct_label, direction = _format_change_pct(row.get("change_rate"))
         metric_label, metric_warnings = _metric_value_label(preset_id, row)
         relation = resolver.relation(market, symbol)
         is_watched = relation in ("watchlist", "both")
+        row_warnings = symbol_warnings + market_cap_warnings + metric_warnings
         results.append(
             ScreenerResultRow(
                 rank=idx,
                 symbol=symbol,
                 market=market,  # type: ignore[arg-type]
-                name=str(row.get("name") or symbol),
+                name=_clean_text(row.get("name")) or symbol,
                 logoUrl=row.get("logo_url"),
                 isWatched=is_watched,
                 priceLabel=_format_price(row.get("close") or row.get("price")),
@@ -154,13 +246,11 @@ async def build_screener_results(
                 changeAmountLabel=_format_change_amount(row.get("change_amount")),
                 changeDirection=direction,
                 category=str(row.get("sector") or row.get("category") or "-"),
-                marketCapLabel=_format_market_cap_kr(
-                    row.get("market_cap_krw") or row.get("market_cap")
-                ),
+                marketCapLabel=_format_market_cap_kr(market_cap),
                 volumeLabel=_format_volume(row.get("volume")),
                 analystLabel=str(row.get("analyst_label") or "-"),
                 metricValueLabel=metric_label,
-                warnings=metric_warnings,
+                warnings=row_warnings,
             )
         )
 

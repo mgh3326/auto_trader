@@ -99,6 +99,34 @@ def test_screener_results_endpoint_happy_path() -> None:
 
 
 @pytest.mark.unit
+def test_screener_results_endpoint_normalizes_code_only_row() -> None:
+    stub = _StubScreening(
+        payload={
+            "results": [
+                {
+                    "code": "005930",
+                    "name": "삼성전자",
+                    "market": "kr",
+                    "sector": "반도체",
+                    "market_cap_krw": 478_000_000_000_000,
+                    "close": 80_000,
+                    "change_rate": 1.23,
+                    "change_amount": 970,
+                    "volume": 12_345_678,
+                }
+            ],
+            "warnings": [],
+        }
+    )
+    client = TestClient(_build_app(stub_screening=stub))
+    r = client.get("/invest/api/screener/results?preset=consecutive_gainers")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["results"][0]["symbol"] == "005930"
+    assert body["results"][0]["marketCapLabel"] == "478.0조원"
+
+
+@pytest.mark.unit
 def test_screener_results_endpoint_unknown_preset_returns_empty_with_warning() -> None:
     stub = _StubScreening()
     client = TestClient(_build_app(stub_screening=stub))
