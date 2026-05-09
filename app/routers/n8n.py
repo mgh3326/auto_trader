@@ -79,6 +79,7 @@ from app.services.n8n_pending_snapshot_service import (
     resolve_pending_snapshots,
     save_pending_snapshots,
 )
+from app.services.n8n_response_builder import n8n_error_response
 from app.services.n8n_trade_review_service import (
     get_trade_review_stats,
     get_trade_reviews,
@@ -458,11 +459,10 @@ async def post_trade_reviews(
         result = await save_trade_reviews(db, [r.model_dump() for r in body.reviews])
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to save trade reviews")
-        return JSONResponse(
-            status_code=500,
-            content=N8nTradeReviewsResponse(
+        return n8n_error_response(
+            N8nTradeReviewsResponse(
                 success=False, saved_count=0, errors=[{"error": str(exc)}]
-            ).model_dump(),
+            )
         )
 
     return N8nTradeReviewsResponse(
@@ -487,15 +487,14 @@ async def get_trade_reviews_endpoint(
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to get trade reviews")
-        return JSONResponse(
-            status_code=500,
-            content=N8nTradeReviewListResponse(
+        return n8n_error_response(
+            N8nTradeReviewListResponse(
                 success=False,
                 period="error",
                 total_count=0,
                 reviews=[],
                 errors=[{"error": str(exc)}],
-            ).model_dump(),
+            )
         )
 
     return N8nTradeReviewListResponse(
@@ -517,13 +516,12 @@ async def get_trade_review_stats_endpoint(
         stats = await get_trade_review_stats(db, period=period, market=market)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to get trade review stats")
-        return JSONResponse(
-            status_code=500,
-            content=N8nTradeReviewStatsResponse(
+        return n8n_error_response(
+            N8nTradeReviewStatsResponse(
                 success=False,
                 stats=N8nTradeReviewStats(period="error"),
                 errors=[{"error": str(exc)}],
-            ).model_dump(),
+            )
         )
 
     return N8nTradeReviewStatsResponse(
@@ -572,11 +570,10 @@ async def post_pending_snapshots(
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to save pending snapshots")
-        return JSONResponse(
-            status_code=500,
-            content=N8nPendingSnapshotsResponse(
+        return n8n_error_response(
+            N8nPendingSnapshotsResponse(
                 success=False, saved_count=0, errors=[{"error": str(exc)}]
-            ).model_dump(),
+            )
         )
 
     return N8nPendingSnapshotsResponse(
@@ -597,11 +594,10 @@ async def patch_pending_resolve(
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to resolve pending snapshots")
-        return JSONResponse(
-            status_code=500,
-            content=N8nPendingResolveResponse(
+        return n8n_error_response(
+            N8nPendingResolveResponse(
                 success=False, resolved_count=0, errors=[{"error": str(exc)}]
-            ).model_dump(),
+            )
         )
 
     return N8nPendingResolveResponse(
