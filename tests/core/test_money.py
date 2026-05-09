@@ -4,9 +4,6 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-import pytest
-
-# These imports will FAIL until Task 2 creates the module.
 from app.core.money import quantize_crypto_qty, quantize_money, quantize_pct
 
 
