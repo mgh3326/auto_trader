@@ -85,15 +85,22 @@ def match_symbols(
     return sorted(seen.values(), key=lambda m: (m.market, m.symbol))
 
 
-_URL_LIKE_METADATA_RE = re.compile(r"(?i)(?:[a-z_]+:)?https?://\S+|\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?:/\S*)?")
+_URL_LIKE_METADATA_RE = re.compile(
+    r"(?i)(?:[a-z_]+:)?https?://\S+|\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?:/\S*)?"
+)
+
+
+def _clean_article_text(value: object) -> str:
+    """Strip URL/domain text before matching so metadata links don't create aliases."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return _URL_LIKE_METADATA_RE.sub(" ", text)
 
 
 def _clean_keyword_text(keyword: object) -> str:
     """Drop URL-like keyword metadata so domains do not create entity false positives."""
-    text = str(keyword or "").strip()
-    if not text:
-        return ""
-    return _URL_LIKE_METADATA_RE.sub(" ", text)
+    return _clean_article_text(keyword)
 
 
 def match_symbols_for_article(
@@ -106,9 +113,13 @@ def match_symbols_for_article(
     """Convenience wrapper: combine article fields then call `match_symbols`."""
     parts: list[str] = []
     if title:
-        parts.append(title)
+        if cleaned_title := _clean_article_text(title):
+            parts.append(cleaned_title)
     if summary:
-        parts.append(summary)
+        if cleaned_summary := _clean_article_text(summary):
+            parts.append(cleaned_summary)
     if keywords:
-        parts.append(" ".join(cleaned for k in keywords if (cleaned := _clean_keyword_text(k))))
+        parts.append(
+            " ".join(cleaned for k in keywords if (cleaned := _clean_keyword_text(k)))
+        )
     return match_symbols(" \n ".join(parts), market=market)
