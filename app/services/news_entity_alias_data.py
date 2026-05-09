@@ -66,3 +66,35 @@ CRYPTO_ALIASES: tuple[AliasEntry, ...] = (
 )
 
 ALL_ALIASES: tuple[AliasEntry, ...] = KR_ALIASES + US_ALIASES + CRYPTO_ALIASES
+
+# ROB-155: US scope classification constants.
+# Broad-market terms indicate macro/index/sector framing rather than a specific
+# company thesis. Keep this list tight — overly broad terms would suppress
+# legitimate company-specific articles.
+US_BROAD_MARKET_TERMS: tuple[str, ...] = (
+    "s&p 500",
+    "s&p500",
+    "dow jones",
+    "nasdaq",
+    "market index",
+    "stock market",
+    "federal reserve",
+    "fed rate",
+    "interest rate",
+    "inflation",
+    "recession",
+    "gdp",
+    "earnings season",
+    "sector rotation",
+    "big tech",
+    "tech sector",
+    "mega cap",
+    "magnificent seven",
+    "mag 7",
+)
+
+# Big-tech symbols whose incidental co-mention in market-wide articles should be
+# demoted (response layer only; persisted rows are untouched).
+US_BIG_TECH_GROUP_SYMBOLS: frozenset[str] = frozenset(
+    {"AAPL", "MSFT", "AMZN", "GOOGL", "GOOG", "META", "NVDA", "TSLA"}
+)

@@ -17,6 +17,8 @@ from app.services.news_entity_alias_data import (
     CRYPTO_ALIASES,
     KR_ALIASES,
     US_ALIASES,
+    US_BIG_TECH_GROUP_SYMBOLS,
+    US_BROAD_MARKET_TERMS,
     AliasEntry,
 )
 
@@ -156,3 +158,138 @@ def match_symbols_for_article(
             " ".join(cleaned for k in keywords if (cleaned := _clean_keyword_text(k)))
         )
     return match_symbols(" \n ".join(parts), market=market)
+
+
+# ROB-155: US article scope classification.
+
+# Specific-anchor patterns that override a broad-market frame and indicate the
+# article is really about a named company action (not just a market-wide piece).
+_SPECIFIC_ANCHOR_TERMS: tuple[str, ...] = (
+    "earnings",
+    "guidance",
+    "revenue",
+    "quarterly results",
+    "sec filing",
+    "sec charges",
+    "lawsuit",
+    "acquisition",
+    "merger",
+    "buyback",
+    "ceo",
+    "product launch",
+    "job cuts",
+    "layoffs",
+    "ipo",
+    "dividend",
+)
+
+
+@dataclass(frozen=True)
+class ArticleScopeResult:
+    """Result of US article scope classification (ROB-155)."""
+
+    scope: str  # "market_wide" | "symbol_specific" | "mixed"
+    tags: list[str]
+    demoted_symbols: list[str]
+    reasons: list[str]
+
+
+def classify_article_scope(
+    title: str | None,
+    *,
+    summary: str | None = None,
+    keywords: Iterable[str] | None = None,
+    market: str | None = None,
+    matches: list[SymbolMatch] | None = None,
+) -> ArticleScopeResult:
+    """Classify a US article's scope and identify incidentally-mentioned big-tech symbols.
+
+    Returns an ArticleScopeResult with scope, tags, demoted_symbols, and reasons.
+    For non-US markets (or when market is None) this is effectively a no-op that
+    returns scope=symbol_specific with empty demotion — callers should only demote
+    for market == "us".
+    """
+    tags: list[str] = []
+    demoted_symbols: list[str] = []
+    reasons: list[str] = []
+
+    if market != "us":
+        return ArticleScopeResult(
+            scope="symbol_specific",
+            tags=tags,
+            demoted_symbols=demoted_symbols,
+            reasons=reasons,
+        )
+
+    combined_parts: list[str] = []
+    if title:
+        combined_parts.append(str(title).lower())
+    if summary:
+        combined_parts.append(str(summary).lower())
+    if keywords:
+        combined_parts.append(" ".join(str(k).lower() for k in keywords if k))
+    text_lower = " ".join(combined_parts)
+    title_lower = (title or "").lower()
+
+    # Count broad-market term hits in title + body.
+    broad_hits = [t for t in US_BROAD_MARKET_TERMS if t in text_lower]
+    broad_title_hits = [t for t in US_BROAD_MARKET_TERMS if t in title_lower]
+
+    # Count matched big-tech symbols.
+    resolved_matches = matches or []
+    big_tech_matched = [
+        m.symbol
+        for m in resolved_matches
+        if m.symbol in US_BIG_TECH_GROUP_SYMBOLS and m.market == "us"
+    ]
+    non_big_tech_matched = [
+        m.symbol
+        for m in resolved_matches
+        if m.symbol not in US_BIG_TECH_GROUP_SYMBOLS and m.market == "us"
+    ]
+
+    has_specific_anchor = any(term in text_lower for term in _SPECIFIC_ANCHOR_TERMS)
+    has_broad_frame = bool(broad_hits) or bool(broad_title_hits)
+
+    if not has_broad_frame:
+        # No broad-market frame — standard symbol-specific article.
+        return ArticleScopeResult(
+            scope="symbol_specific",
+            tags=tags,
+            demoted_symbols=demoted_symbols,
+            reasons=reasons,
+        )
+
+    # Broad market frame detected. Classify based on anchoring.
+    tags.extend(["broad_market"])
+    if broad_title_hits:
+        tags.append("macro")
+    if len(big_tech_matched) >= 2:
+        tags.append("big_tech_group")
+
+    if has_specific_anchor and len(big_tech_matched) == 1 and not non_big_tech_matched:
+        # Single explicitly anchored big-tech company → symbol_specific even if
+        # the article has a broad market frame in the headline/body.
+        scope = "symbol_specific"
+    elif has_specific_anchor and non_big_tech_matched:
+        # Broad frame + specific non-big-tech anchor → mixed.
+        scope = "mixed"
+        if len(big_tech_matched) > 1:
+            demoted_symbols.extend(big_tech_matched)
+            reasons.extend(
+                [f"broad_frame_incidental_big_tech:{s}" for s in big_tech_matched]
+            )
+    else:
+        # Broad frame without a clear single-company anchor → market_wide.
+        scope = "market_wide"
+        demoted_symbols.extend(big_tech_matched)
+        reasons.extend(
+            [f"broad_frame_incidental_big_tech:{s}" for s in big_tech_matched]
+        )
+
+    return ArticleScopeResult(
+        scope=scope,
+        tags=list(dict.fromkeys(tags)),  # dedupe preserving order
+        demoted_symbols=demoted_symbols,
+        reasons=reasons,
+    )

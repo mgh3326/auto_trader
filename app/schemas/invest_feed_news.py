@@ -12,6 +12,10 @@ from app.schemas.news_issues import MarketIssue
 FeedTab = Literal["top", "latest", "hot", "holdings", "watchlist", "kr", "us", "crypto"]
 NewsMarket = Literal["kr", "us", "crypto"]
 RelationKind = Literal["held", "watchlist", "both", "none"]
+# ROB-155: article scope — market_wide means broad macro/index/sector article;
+# symbol_specific means article thesis anchors on one or more specific symbols;
+# mixed means both a broad frame and a clearly anchored specific symbol.
+NewsScope = Literal["market_wide", "symbol_specific", "mixed"]
 
 
 class NewsRelatedSymbol(BaseModel):
@@ -43,6 +47,11 @@ class FeedNewsItem(BaseModel):
     summarySnippet: str | None = None
     relation: RelationKind = "none"
     url: str
+    # ROB-155: additive read-layer classification fields; defaults preserve backward compat.
+    scope: NewsScope = "symbol_specific"
+    tags: list[str] = Field(default_factory=list)
+    category: str | None = None
+    noiseReason: str | None = None
 
 
 class FeedNewsMeta(BaseModel):
