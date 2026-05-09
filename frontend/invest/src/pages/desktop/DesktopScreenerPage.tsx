@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { DesktopShell } from "../../desktop/DesktopShell";
-import { RightAccountPanel } from "../../desktop/RightAccountPanel";
-import { useAccountPanel } from "../../desktop/useAccountPanel";
+import { RightRemotePanel } from "../../desktop/RightRemotePanel";
 import { ScreenerPresetSidebar } from "../../desktop/screener/ScreenerPresetSidebar";
 import { ScreenerFilterBar } from "../../desktop/screener/ScreenerFilterBar";
 import { ScreenerResultsTable } from "../../desktop/screener/ScreenerResultsTable";
@@ -14,7 +13,6 @@ import type {
 import "../../desktop/screener/screener.css";
 
 export function DesktopScreenerPage() {
-  const panel = useAccountPanel();
   const [presets, setPresets] = useState<ScreenerPresetsResponse | undefined>();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [results, setResults] = useState<ScreenerResultsResponse | undefined>();
@@ -89,7 +87,7 @@ export function DesktopScreenerPage() {
           />
         </div>
       }
-      right={<RightAccountPanel data={panel.data} loading={panel.loading} error={panel.error} />}
+      right={<RightRemotePanel />}
     />
   );
 }

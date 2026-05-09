@@ -3,14 +3,29 @@ import userEvent from "@testing-library/user-event";
 import { vi, beforeEach, test, expect } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { DesktopCalendarPage } from "../pages/desktop/DesktopCalendarPage";
+import { AccountPanelProvider } from "../desktop/AccountPanelProvider";
 import * as calApi from "../api/calendar";
 import * as panelApi from "../api/accountPanel";
+import * as signalsApi from "../api/signals";
+
+function wrap(ui: React.ReactElement) {
+  return (
+    <AccountPanelProvider>
+      <MemoryRouter basename="/invest" initialEntries={["/invest/calendar"]}>
+        {ui}
+      </MemoryRouter>
+    </AccountPanelProvider>
+  );
+}
 
 beforeEach(() => {
   vi.spyOn(panelApi, "fetchAccountPanel").mockResolvedValue({
     homeSummary: { includedSources: [], excludedSources: [], totalValueKrw: 0 },
     accounts: [], groupedHoldings: [], watchSymbols: [], sourceVisuals: [],
     meta: { warnings: [], watchlistAvailable: true },
+  });
+  vi.spyOn(signalsApi, "fetchSignals").mockResolvedValue({
+    tab: "kr", asOf: new Date().toISOString(), items: [], meta: { warnings: [] },
   });
   vi.spyOn(calApi, "fetchCalendar").mockResolvedValue({
     tab: "all", fromDate: "2026-05-04", toDate: "2026-05-10",
@@ -29,11 +44,7 @@ beforeEach(() => {
 });
 
 test("renders week rail and weekly summary toggle", async () => {
-  render(
-    <MemoryRouter basename="/invest" initialEntries={["/invest/calendar"]}>
-      <DesktopCalendarPage />
-    </MemoryRouter>,
-  );
+  render(wrap(<DesktopCalendarPage />));
   await waitFor(() => expect(screen.getAllByTestId(/^day-\d{4}-/)).toHaveLength(7));
   await userEvent.click(screen.getByTestId("open-weekly-summary"));
   await waitFor(() => expect(screen.getByTestId("weekly-summary")).toBeInTheDocument());

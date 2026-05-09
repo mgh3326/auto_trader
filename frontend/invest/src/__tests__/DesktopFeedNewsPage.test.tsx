@@ -3,14 +3,29 @@ import userEvent from "@testing-library/user-event";
 import { vi, beforeEach, test, expect } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { DesktopFeedNewsPage } from "../pages/desktop/DesktopFeedNewsPage";
+import { AccountPanelProvider } from "../desktop/AccountPanelProvider";
 import * as feedApi from "../api/feedNews";
 import * as panelApi from "../api/accountPanel";
+import * as signalsApi from "../api/signals";
+
+function wrap(ui: React.ReactElement) {
+  return (
+    <AccountPanelProvider>
+      <MemoryRouter basename="/invest" initialEntries={["/invest/feed/news"]}>
+        {ui}
+      </MemoryRouter>
+    </AccountPanelProvider>
+  );
+}
 
 beforeEach(() => {
   vi.spyOn(panelApi, "fetchAccountPanel").mockResolvedValue({
     homeSummary: { includedSources: [], excludedSources: [], totalValueKrw: 0 },
     accounts: [], groupedHoldings: [], watchSymbols: [], sourceVisuals: [],
     meta: { warnings: [], watchlistAvailable: true },
+  });
+  vi.spyOn(signalsApi, "fetchSignals").mockResolvedValue({
+    tab: "kr", asOf: new Date().toISOString(), items: [], meta: { warnings: [] },
   });
   vi.spyOn(feedApi, "fetchFeedNews").mockResolvedValue({
     tab: "top",
@@ -70,22 +85,14 @@ beforeEach(() => {
 });
 
 test("renders news items and reacts to tab change", async () => {
-  render(
-    <MemoryRouter basename="/invest" initialEntries={["/invest/feed/news"]}>
-      <DesktopFeedNewsPage />
-    </MemoryRouter>,
-  );
+  render(wrap(<DesktopFeedNewsPage />));
   await waitFor(() => expect(screen.getAllByTestId("feed-item")).toHaveLength(1));
   await userEvent.click(screen.getByTestId("tab-latest"));
   await waitFor(() => expect(feedApi.fetchFeedNews).toHaveBeenCalledTimes(2));
 });
 
 test("renders an issue chip linked to the issue detail page when issueId is present", async () => {
-  render(
-    <MemoryRouter basename="/invest" initialEntries={["/invest/feed/news"]}>
-      <DesktopFeedNewsPage />
-    </MemoryRouter>,
-  );
+  render(wrap(<DesktopFeedNewsPage />));
   const chip = await screen.findByTestId("feed-item-issue-chip");
   expect(chip).toHaveTextContent("삼성전자 실적 발표");
   // Chip points at the canonical /discover route (Stage 4.2). Legacy
@@ -96,11 +103,7 @@ test("renders an issue chip linked to the issue detail page when issueId is pres
 
 
 test("renders related symbol chips as read-only badges", async () => {
-  render(
-    <MemoryRouter basename="/invest" initialEntries={["/invest/feed/news"]}>
-      <DesktopFeedNewsPage />
-    </MemoryRouter>,
-  );
+  render(wrap(<DesktopFeedNewsPage />));
   const chip = await screen.findByTestId("feed-item-related-symbol-chip");
   expect(chip).toHaveTextContent("005930");
   expect(chip).toHaveTextContent("삼성전자");

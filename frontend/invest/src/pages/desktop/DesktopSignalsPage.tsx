@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { DesktopShell } from "../../desktop/DesktopShell";
-import { RightAccountPanel } from "../../desktop/RightAccountPanel";
-import { useAccountPanel } from "../../desktop/useAccountPanel";
+import { RightRemotePanel } from "../../desktop/RightRemotePanel";
 import { useViewport } from "../../hooks/useViewport";
 import { fetchSignals } from "../../api/signals";
 import type { SignalsResponse, SignalTab, SignalCard as SignalCardData } from "../../types/signals";
@@ -22,7 +21,6 @@ export function SignalsRoute() {
 }
 
 export function DesktopSignalsPage() {
-  const panel = useAccountPanel();
   const [tab, setTab] = useState<SignalTab>("mine");
   const [data, setData] = useState<SignalsResponse | undefined>();
   const [err, setErr] = useState<string | undefined>();
@@ -97,7 +95,7 @@ export function DesktopSignalsPage() {
           )}
         </Card>
       }
-      right={<RightAccountPanel data={panel.data} loading={panel.loading} error={panel.error} onRefresh={panel.reload} />}
+      right={<RightRemotePanel />}
     />
   );
 }

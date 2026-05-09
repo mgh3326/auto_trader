@@ -4,8 +4,10 @@ import { vi, beforeEach, test, expect } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 
 import { DesktopScreenerPage } from "../pages/desktop/DesktopScreenerPage";
+import { AccountPanelProvider } from "../desktop/AccountPanelProvider";
 import * as screenerApi from "../api/screener";
 import * as panelApi from "../api/accountPanel";
+import * as signalsApi from "../api/signals";
 
 const PRESETS = {
   presets: [
@@ -52,11 +54,24 @@ const RESULTS_VALUE = {
   results: [{ ...ROW, metricValueLabel: "14.0" }],
 };
 
+function wrap(ui: React.ReactElement) {
+  return (
+    <AccountPanelProvider>
+      <MemoryRouter basename="/invest" initialEntries={["/invest/screener"]}>
+        {ui}
+      </MemoryRouter>
+    </AccountPanelProvider>
+  );
+}
+
 beforeEach(() => {
   vi.spyOn(panelApi, "fetchAccountPanel").mockResolvedValue({
     homeSummary: { includedSources: [], excludedSources: [], totalValueKrw: 0 },
     accounts: [], groupedHoldings: [], watchSymbols: [], sourceVisuals: [],
     meta: { warnings: [], watchlistAvailable: true },
+  });
+  vi.spyOn(signalsApi, "fetchSignals").mockResolvedValue({
+    tab: "kr", asOf: new Date().toISOString(), items: [], meta: { warnings: [] },
   });
   vi.spyOn(screenerApi, "fetchScreenerPresets").mockResolvedValue(PRESETS);
   vi.spyOn(screenerApi, "fetchScreenerResults").mockImplementation(async (id: string) =>
@@ -65,11 +80,7 @@ beforeEach(() => {
 });
 
 test("renders the default preset and switches when another preset is clicked", async () => {
-  render(
-    <MemoryRouter basename="/invest" initialEntries={["/invest/screener"]}>
-      <DesktopScreenerPage />
-    </MemoryRouter>,
-  );
+  render(wrap(<DesktopScreenerPage />));
   await waitFor(() => expect(screen.getByText("삼성전자")).toBeInTheDocument());
 
   await userEvent.click(screen.getByTestId("screener-preset-cheap_value"));
@@ -84,11 +95,7 @@ test("shows an empty-state message when results are empty", async () => {
   vi.spyOn(screenerApi, "fetchScreenerResults").mockResolvedValue({
     ...RESULTS_GAINERS, results: [],
   });
-  render(
-    <MemoryRouter basename="/invest" initialEntries={["/invest/screener"]}>
-      <DesktopScreenerPage />
-    </MemoryRouter>,
-  );
+  render(wrap(<DesktopScreenerPage />));
   await waitFor(() =>
     expect(screen.getByText(/표시할 종목이 없습니다/)).toBeInTheDocument(),
   );
