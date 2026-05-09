@@ -19,9 +19,9 @@ import json
 import logging
 from pathlib import Path
 
-from app.core.config import settings
+from app.core.cli import setup_logging_and_sentry
 from app.core.db import AsyncSessionLocal
-from app.monitoring.sentry import capture_exception, init_sentry
+from app.monitoring.sentry import capture_exception
 from app.schemas.research_reports import ResearchReportIngestionRequest
 from app.services.research_reports.ingestion import ingest_research_reports_v1
 
@@ -43,11 +43,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 async def main_async(argv: list[str] | None = None) -> int:
-    logging.basicConfig(
-        level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
-    init_sentry(service_name="ingest-research-reports")
+    setup_logging_and_sentry(service_name="ingest-research-reports")
     ns = parse_args(argv)
 
     if not ns.file.is_file():
