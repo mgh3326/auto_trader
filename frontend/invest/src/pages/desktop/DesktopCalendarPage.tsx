@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { DesktopShell } from "../../desktop/DesktopShell";
-import { RightAccountPanel } from "../../desktop/RightAccountPanel";
-import { useAccountPanel } from "../../desktop/useAccountPanel";
+import { RightRemotePanel } from "../../desktop/RightRemotePanel";
 import { useViewport } from "../../hooks/useViewport";
 import { fetchCalendar, fetchWeeklySummary } from "../../api/calendar";
 import type { CalendarResponse, WeeklySummaryResponse } from "../../types/calendar";
@@ -40,7 +39,6 @@ export function CalendarRoute() {
 }
 
 export function DesktopCalendarPage() {
-  const panel = useAccountPanel();
   const [weekStart, setWeekStart] = useState<Date>(() => startOfWeek(new Date()));
   const weekEnd = useMemo(() => {
     const e = new Date(weekStart);
@@ -255,7 +253,7 @@ export function DesktopCalendarPage() {
           </Card>
         </>
       }
-      right={<RightAccountPanel data={panel.data} loading={panel.loading} error={panel.error} onRefresh={panel.reload} />}
+      right={<RightRemotePanel />}
       />
       {showSummary && (
         <EventDetailModal

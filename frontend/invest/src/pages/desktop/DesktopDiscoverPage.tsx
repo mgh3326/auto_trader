@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { DesktopShell } from "../../desktop/DesktopShell";
-import { RightAccountPanel } from "../../desktop/RightAccountPanel";
-import { useAccountPanel } from "../../desktop/useAccountPanel";
+import { RightRemotePanel } from "../../desktop/RightRemotePanel";
 import { useViewport } from "../../hooks/useViewport";
 import { useNewsIssues } from "../../hooks/useNewsIssues";
 import { sortMarketIssues } from "../../components/discover/severity";
@@ -14,7 +13,6 @@ export function InvestDiscoverRoute() {
 }
 
 export function DesktopDiscoverPage() {
-  const panel = useAccountPanel();
   const issues = useNewsIssues({ market: "all", windowHours: 24, limit: 20 });
   const [openId, setOpenId] = useState<string | null>(null);
 
@@ -89,7 +87,7 @@ export function DesktopDiscoverPage() {
           </div>
         </>
       }
-      right={<RightAccountPanel data={panel.data} loading={panel.loading} error={panel.error} onRefresh={panel.reload} />}
+      right={<RightRemotePanel />}
     />
   );
 }

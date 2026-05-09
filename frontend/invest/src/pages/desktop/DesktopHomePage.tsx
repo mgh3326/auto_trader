@@ -2,8 +2,7 @@ import { useMemo, useState } from "react";
 import { DesktopShell } from "../../desktop/DesktopShell";
 import { LeftContextRail } from "../../desktop/LeftContextRail";
 import type { AccountFilterKey } from "../../desktop/LeftContextRail";
-import { RightAccountPanel } from "../../desktop/RightAccountPanel";
-import { useAccountPanel } from "../../desktop/useAccountPanel";
+import { RightRemotePanel } from "../../desktop/RightRemotePanel";
 import { useInvestHome } from "../../hooks/useInvestHome";
 import { useViewport } from "../../hooks/useViewport";
 import { scopeGroupedToSource } from "../../desktop/scopeHoldings";
@@ -24,7 +23,6 @@ export function InvestHomeRoute() {
 
 export function DesktopHomePage() {
   const home = useInvestHome();
-  const panel = useAccountPanel();
   const [account, setAccount] = useState<AccountFilterKey>("all");
   const [category, setCategory] = useState<AssetCategoryKey>("all");
 
@@ -132,14 +130,7 @@ export function DesktopHomePage() {
           )}
         </>
       }
-      right={
-        <RightAccountPanel
-          data={panel.data}
-          loading={panel.loading}
-          error={panel.error}
-          onRefresh={panel.reload}
-        />
-      }
+      right={<RightRemotePanel />}
     />
   );
 }
