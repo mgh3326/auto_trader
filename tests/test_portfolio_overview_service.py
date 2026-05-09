@@ -35,9 +35,13 @@ async def test_get_overview_collects_sources_concurrently(monkeypatch) -> None:
         active_count -= 1
         return []
 
-    service._collect_kis_components = lambda *args, **kwargs: gated("kis")
-    service._collect_upbit_components = lambda *args, **kwargs: gated("upbit")
-    service._collect_manual_components = lambda *args, **kwargs: gated("manual")
+    service._collector._collect_kis_components = lambda *args, **kwargs: gated("kis")
+    service._collector._collect_upbit_components = lambda *args, **kwargs: gated(
+        "upbit"
+    )
+    service._collector._collect_manual_components = lambda *args, **kwargs: gated(
+        "manual"
+    )
     service._fill_missing_prices = AsyncMock(return_value=None)
 
     monkeypatch.setattr(
@@ -81,7 +85,7 @@ async def test_collect_kis_components_fetches_kr_and_us_concurrently() -> None:
     kis_client.fetch_my_stocks = lambda: gated("kr")
     kis_client.fetch_my_us_stocks = lambda: gated("us")
 
-    await service._collect_kis_components(kis_client, [])
+    await service._collector._collect_kis_components(kis_client, [])
     assert max_active == 2, f"Only {max_active} KIS tasks ran concurrently, expected 2"
 
 
@@ -222,9 +226,13 @@ async def test_get_overview_filters_by_selected_account_keys() -> None:
     service = PortfolioOverviewService(AsyncMock())
     components = _sample_components()
 
-    service._collect_kis_components = AsyncMock(return_value=components[:1])
-    service._collect_upbit_components = AsyncMock(return_value=components[3:])
-    service._collect_manual_components = AsyncMock(return_value=components[1:3])
+    service._collector._collect_kis_components = AsyncMock(return_value=components[:1])
+    service._collector._collect_upbit_components = AsyncMock(
+        return_value=components[3:]
+    )
+    service._collector._collect_manual_components = AsyncMock(
+        return_value=components[1:3]
+    )
     service._fill_missing_prices = AsyncMock(return_value=None)
 
     overview = await service.get_overview(
@@ -247,9 +255,13 @@ async def test_get_overview_applies_market_and_q_filters() -> None:
     service = PortfolioOverviewService(AsyncMock())
     components = _sample_components()
 
-    service._collect_kis_components = AsyncMock(return_value=components[:1])
-    service._collect_upbit_components = AsyncMock(return_value=components[3:])
-    service._collect_manual_components = AsyncMock(return_value=components[1:3])
+    service._collector._collect_kis_components = AsyncMock(return_value=components[:1])
+    service._collector._collect_upbit_components = AsyncMock(
+        return_value=components[3:]
+    )
+    service._collector._collect_manual_components = AsyncMock(
+        return_value=components[1:3]
+    )
     service._fill_missing_prices = AsyncMock(return_value=None)
 
     overview = await service.get_overview(
@@ -293,11 +305,10 @@ async def test_get_overview_includes_deduplicated_warnings(monkeypatch) -> None:
         warnings.append("KIS warning")
         return []
 
-    # Update: service methods are now called via _run_collection_task
-    # which injects 'warnings=local_warnings'
-    service._collect_kis_components = collect_kis
-    service._collect_upbit_components = collect_upbit
-    service._collect_manual_components = collect_manual
+    # Collection methods are now on the collector; patch via _collector attribute
+    service._collector._collect_kis_components = collect_kis
+    service._collector._collect_upbit_components = collect_upbit
+    service._collector._collect_manual_components = collect_manual
     service._fill_missing_prices = AsyncMock(return_value=None)
 
     monkeypatch.setattr(
@@ -693,14 +704,18 @@ async def test_fetch_upbit_prices_resilient_recovers_missing_symbol_from_retry_b
 
 
 @pytest.mark.asyncio
-async def test_collect_upbit_components_uses_resilient_fetch_helper(
+async def test_collect_upbit_components_returns_raw_components_without_price_fill(
     monkeypatch,
 ) -> None:
+    """After W2-3 refactor, price fill is delegated to _fill_missing_crypto_prices;
+    _collect_upbit_components returns raw components with current_price=None."""
     service = PortfolioOverviewService(AsyncMock())
     warnings: list[str] = []
 
+    import app.services.portfolio_data_collector as portfolio_collector_module
+
     monkeypatch.setattr(
-        upbit_service,
+        portfolio_collector_module.upbit_service,
         "fetch_my_coins",
         AsyncMock(
             return_value=[
@@ -715,28 +730,18 @@ async def test_collect_upbit_components_uses_resilient_fetch_helper(
         ),
     )
     monkeypatch.setattr(
-        portfolio_overview_module,
+        portfolio_collector_module,
         "get_active_upbit_markets",
         AsyncMock(return_value=["KRW-BTC"]),
     )
 
-    service._fetch_upbit_prices_resilient = AsyncMock(
-        return_value={"KRW-BTC": 100000000.0}
-    )
-
-    components = await service._collect_upbit_components(warnings)
+    components = await service._collector._collect_upbit_components(warnings)
 
     assert len(components) == 1
     assert components[0]["symbol"] == "KRW-BTC"
-    assert components[0]["current_price"] == pytest.approx(100000000.0)
-    assert components[0]["evaluation"] == pytest.approx(10000000.0)
-    service._fetch_upbit_prices_resilient.assert_awaited_once_with(
-        ["KRW-BTC"],
-        warnings,
-        stage="collect_upbit_components",
-        active_upbit_markets={"KRW-BTC"},
-        enforce_upbit_universe=True,
-    )
+    # Price fill is now handled by _fill_missing_crypto_prices, not collector
+    assert components[0]["current_price"] is None
+    assert components[0]["evaluation"] is None
 
 
 @pytest.mark.asyncio
@@ -772,7 +777,7 @@ async def test_fill_missing_prices_uses_resilient_fetch_helper_for_manual_crypto
     service._fetch_upbit_prices_resilient.assert_awaited_once_with(
         ["KRW-BTC"],
         warnings,
-        stage="manual_crypto",
+        stage="crypto",
         active_upbit_markets=None,
         enforce_upbit_universe=True,
     )
@@ -812,17 +817,21 @@ async def test_collect_manual_components_filters_non_tradable_crypto_symbols(
         ),
     ]
 
-    service.manual_holdings_service.get_holdings_by_user = AsyncMock(
+    service._collector.manual_holdings_service.get_holdings_by_user = AsyncMock(
         return_value=holdings
     )
+    import app.services.portfolio_data_collector as portfolio_collector_module
+
     get_active_markets = AsyncMock(return_value=["KRW-BTC"])
     monkeypatch.setattr(
-        portfolio_overview_module,
+        portfolio_collector_module,
         "get_active_upbit_markets",
         get_active_markets,
     )
 
-    components = await service._collect_manual_components(user_id=1, warnings=warnings)
+    components = await service._collector._collect_manual_components(
+        user_id=1, warnings=warnings
+    )
 
     get_active_markets.assert_awaited_once_with(quote_currency=None)
     assert [item["symbol"] for item in components] == ["KRW-BTC"]
@@ -830,7 +839,10 @@ async def test_collect_manual_components_filters_non_tradable_crypto_symbols(
 
 
 @pytest.mark.asyncio
-async def test_fill_missing_prices_manual_crypto_targets_manual_source_only() -> None:
+async def test_fill_missing_prices_crypto_targets_all_sources() -> None:
+    """After W2-3 refactor, _fill_missing_crypto_prices targets all crypto regardless
+    of source (live Upbit and manual). Live Upbit price fill is no longer in the
+    collector; it's handled here."""
     service = PortfolioOverviewService(AsyncMock())
     service._fetch_upbit_prices_resilient = AsyncMock(
         return_value={"KRW-BTC": 120000000.0}
@@ -872,10 +884,11 @@ async def test_fill_missing_prices_manual_crypto_targets_manual_source_only() ->
 
     await service._fill_missing_prices(AsyncMock(), components, warnings)
 
+    # Both KRW-BTC (manual) and KRW-ETH (live) should be included in the batch
     service._fetch_upbit_prices_resilient.assert_awaited_once_with(
-        ["KRW-BTC"],
+        ["KRW-BTC", "KRW-ETH"],
         warnings,
-        stage="manual_crypto",
+        stage="crypto",
         active_upbit_markets=None,
         enforce_upbit_universe=True,
     )
@@ -912,9 +925,9 @@ async def test_get_overview_keeps_crypto_when_universe_lookup_fails(
             }
         ]
 
-    service._collect_kis_components = AsyncMock(return_value=[])
-    service._collect_upbit_components = collect_upbit
-    service._collect_manual_components = AsyncMock(return_value=[])
+    service._collector._collect_kis_components = AsyncMock(return_value=[])
+    service._collector._collect_upbit_components = collect_upbit
+    service._collector._collect_manual_components = AsyncMock(return_value=[])
     service._fill_missing_prices = AsyncMock(return_value=None)
 
     monkeypatch.setattr(
@@ -963,11 +976,11 @@ async def test_get_overview_excludes_non_tradable_manual_crypto_everywhere(
         ),
     ]
 
-    service.manual_holdings_service.get_holdings_by_user = AsyncMock(
+    service._collector.manual_holdings_service.get_holdings_by_user = AsyncMock(
         return_value=holdings
     )
-    service._collect_kis_components = AsyncMock(return_value=[])
-    service._collect_upbit_components = AsyncMock(return_value=[])
+    service._collector._collect_kis_components = AsyncMock(return_value=[])
+    service._collector._collect_upbit_components = AsyncMock(return_value=[])
     service._fill_missing_prices = AsyncMock(return_value=None)
 
     monkeypatch.setattr(
@@ -1029,7 +1042,9 @@ async def test_collect_kis_kr_components_converts_percent_rate_to_decimal() -> N
         ]
     )
 
-    components, warnings = await service._collect_kis_kr_components(kis_client)
+    components, warnings = await service._collector._collect_kis_kr_components(
+        kis_client, []
+    )
     assert len(components) == 1
     assert components[0]["profit_rate"] == pytest.approx(0.0116)
     assert not warnings
@@ -1055,7 +1070,9 @@ async def test_collect_kis_us_components_converts_percent_rate_to_decimal() -> N
         ]
     )
 
-    components, warnings = await service._collect_kis_us_components(kis_client)
+    components, warnings = await service._collector._collect_kis_us_components(
+        kis_client, []
+    )
     assert len(components) == 1
     assert components[0]["profit_rate"] == pytest.approx(-0.0167)
     assert not warnings
