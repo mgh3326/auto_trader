@@ -104,6 +104,10 @@ beforeEach(() => {
 test("renders dense news rows and reacts to tab change", async () => {
   renderPage();
 
+  expect(await screen.findByTestId("right-remote-panel")).toBeInTheDocument();
+  expect(screen.getByRole("tab", { name: "내 투자" })).toHaveAttribute("aria-selected", "true");
+  expect(screen.getByRole("tab", { name: "관심" })).toBeInTheDocument();
+
   const row = await screen.findByTestId("feed-item");
   expect(row).toHaveTextContent("n1");
   expect(row).toHaveTextContent("Reuters");
