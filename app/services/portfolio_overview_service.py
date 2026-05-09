@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 import app.services.brokers.upbit.client as upbit_service
 import app.services.brokers.yahoo.client as yahoo_service
+from app.core.normalizers import to_float as _to_float
 from app.core.symbol import to_db_symbol
 from app.mcp_server.tooling.shared import min_order_krw
 from app.models.manual_holdings import MarketType
@@ -30,15 +31,6 @@ _MARKET_US = "US"
 _MARKET_CRYPTO = "CRYPTO"
 _MARKET_ORDER = {_MARKET_KR: 0, _MARKET_US: 1, _MARKET_CRYPTO: 2}
 _UPBIT_PRICE_BATCH_SIZE = 50
-
-
-def _to_float(value: Any, *, default: float = 0.0) -> float:
-    if value in (None, ""):
-        return default
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
 
 
 def _kis_percent_to_decimal(value: Any) -> float | None:

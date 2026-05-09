@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.core.async_rate_limiter import RateLimitExceededError
+from app.core.normalizers import to_float as _to_float
 from app.services.account.contracts import CashBalance, MarginSnapshot, Position
 from app.services.brokers.kis.client import (
     KISClient,
@@ -31,15 +32,6 @@ def _normalize_market(market: str | None) -> str | None:
     if resolved is None:
         raise ValidationError(f"Unsupported market: {market}")
     return resolved
-
-
-def _to_float(value: Any, *, default: float = 0.0) -> float:
-    if value in (None, ""):
-        return default
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
 
 
 def _map_error(exc: Exception) -> Exception:
