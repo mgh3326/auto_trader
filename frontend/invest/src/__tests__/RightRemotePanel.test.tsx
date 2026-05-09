@@ -81,6 +81,7 @@ test("renders the tabbed right remote panel", async () => {
   expect(screen.getByRole("tab", { name: "관심" })).toBeInTheDocument();
   expect(screen.getByRole("tab", { name: "최근 본" })).toBeInTheDocument();
   expect(screen.getByRole("tab", { name: "실시간" })).toBeInTheDocument();
+  await waitFor(() => expect(screen.getByTestId("portfolio-panel")).toBeInTheDocument());
 });
 
 test("portfolio tab shows holdings after data loads", async () => {

@@ -3,6 +3,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -21,7 +22,7 @@ export interface AccountPanelContextValue {
 
 const AccountPanelContext = createContext<AccountPanelContextValue | null>(null);
 
-export function AccountPanelProvider({ children }: { children: ReactNode }) {
+export function AccountPanelProvider({ children }: Readonly<{ children: ReactNode }>) {
   const [data, setData] = useState<AccountPanelResponse | undefined>();
   const [error, setError] = useState<string | undefined>();
   const [loading, setLoading] = useState(true);
@@ -33,10 +34,10 @@ export function AccountPanelProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let cancel = false;
     setError(undefined);
-    if (!hasFetched.current) {
-      setLoading(true);
-    } else {
+    if (hasFetched.current) {
       setRefreshing(true);
+    } else {
+      setLoading(true);
     }
     fetchAccountPanel()
       .then((r) => {
@@ -61,11 +62,13 @@ export function AccountPanelProvider({ children }: { children: ReactNode }) {
   }, [tick]);
 
   const reload = useCallback(() => setTick((t) => t + 1), []);
+  const value = useMemo(
+    () => ({ data, error, loading, refreshing, lastLoadedAt, reload }),
+    [data, error, loading, refreshing, lastLoadedAt, reload],
+  );
 
   return (
-    <AccountPanelContext.Provider
-      value={{ data, error, loading, refreshing, lastLoadedAt, reload }}
-    >
+    <AccountPanelContext.Provider value={value}>
       {children}
     </AccountPanelContext.Provider>
   );

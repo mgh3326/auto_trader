@@ -3,13 +3,17 @@ import { useNavigate } from "react-router-dom";
 import { useAccountPanel } from "./useAccountPanel";
 import { loadRecentSymbols, recordRecentSymbol } from "./recentSymbols";
 import type { RecentInvestSymbol } from "./recentSymbols";
-import { Button, Card, Icon, PL, Pill } from "../ds";
+import { Button, Card, Icon, PL as ProfitLoss, Pill } from "../ds";
+import type { PillTone } from "../ds";
 import { fetchSignals } from "../api/signals";
 import type { SignalCard } from "../types/signals";
 import type { GroupedHolding, WatchSymbol } from "../types/invest";
 import { formatRelativeTime } from "../format/relativeTime";
 
 type RightPanelTab = "portfolio" | "watchlist" | "recent" | "realtime";
+type RealtimeSubTab = "kr" | "us" | "crypto";
+type MarketKey = "kr" | "us" | "crypto";
+type NavigateToSymbol = (path: string, sym: RecentInvestSymbol) => void;
 
 const TABS: { key: RightPanelTab; label: string }[] = [
   { key: "portfolio", label: "내 투자" },
@@ -18,7 +22,7 @@ const TABS: { key: RightPanelTab; label: string }[] = [
   { key: "realtime", label: "실시간" },
 ];
 
-const MARKET_LABEL: Record<"kr" | "us" | "crypto", string> = {
+const MARKET_LABEL: Record<MarketKey, string> = {
   kr: "KR",
   us: "US",
   crypto: "CRYPTO",
@@ -39,10 +43,10 @@ function fmtPct(v?: number | null): string {
 function TabBar({
   active,
   onChange,
-}: {
+}: Readonly<{
   active: RightPanelTab;
   onChange: (tab: RightPanelTab) => void;
-}) {
+}>) {
   return (
     <div
       role="tablist"
@@ -82,7 +86,7 @@ function TabBar({
   );
 }
 
-function PortfolioPanel({ onNavigate }: { onNavigate: (path: string, sym: RecentInvestSymbol) => void }) {
+function PortfolioPanel({ onNavigate }: Readonly<{ onNavigate: NavigateToSymbol }>) {
   const { data, error, loading, refreshing, reload } = useAccountPanel();
 
   if (loading) {
@@ -96,7 +100,7 @@ function PortfolioPanel({ onNavigate }: { onNavigate: (path: string, sym: Recent
   if (error || !data) {
     return (
       <div data-testid="portfolio-panel-error" style={{ padding: 8, color: "var(--danger)", fontSize: 13 }}>
-        계좌 정보를 불러오지 못했습니다.
+        <div>계좌 정보를 불러오지 못했습니다.</div>
         <button
           type="button"
           onClick={reload}
@@ -124,7 +128,7 @@ function PortfolioPanel({ onNavigate }: { onNavigate: (path: string, sym: Recent
     (a, b) => (b.valueKrw ?? 0) - (a.valueKrw ?? 0),
   );
 
-  const marketKey = (m: GroupedHolding["market"]): "kr" | "us" | "crypto" => {
+  const marketKey = (m: GroupedHolding["market"]): MarketKey => {
     if (m === "KR") return "kr";
     if (m === "US") return "us";
     return "crypto";
@@ -147,7 +151,7 @@ function PortfolioPanel({ onNavigate }: { onNavigate: (path: string, sym: Recent
         </div>
         {homeSummary.pnlKrw != null && homeSummary.pnlRate != null ? (
           <div style={{ marginTop: 4 }}>
-            <PL value={homeSummary.pnlKrw} pct={homeSummary.pnlRate * 100} size={12} />
+            <ProfitLoss value={homeSummary.pnlKrw} pct={homeSummary.pnlRate * 100} size={12} />
           </div>
         ) : (
           <div style={{ marginTop: 4, fontSize: 12, color: "var(--fg-3)" }}>—</div>
@@ -230,7 +234,9 @@ function PortfolioPanel({ onNavigate }: { onNavigate: (path: string, sym: Recent
                       <div style={{ fontSize: 12, fontWeight: 600, fontFeatureSettings: '"tnum"' }}>
                         {fmtKrw(h.valueKrw)}
                       </div>
-                      {h.pnlRate != null ? (
+                      {h.pnlRate == null ? (
+                        <div style={{ fontSize: 11, color: "var(--fg-3)" }}>—</div>
+                      ) : (
                         <div
                           style={{
                             fontSize: 11,
@@ -240,8 +246,6 @@ function PortfolioPanel({ onNavigate }: { onNavigate: (path: string, sym: Recent
                         >
                           {fmtPct(h.pnlRate)}
                         </div>
-                      ) : (
-                        <div style={{ fontSize: 11, color: "var(--fg-3)" }}>—</div>
                       )}
                     </div>
                   </button>
@@ -255,7 +259,7 @@ function PortfolioPanel({ onNavigate }: { onNavigate: (path: string, sym: Recent
   );
 }
 
-function WatchlistPanel({ onNavigate }: { onNavigate: (path: string, sym: RecentInvestSymbol) => void }) {
+function WatchlistPanel({ onNavigate }: Readonly<{ onNavigate: NavigateToSymbol }>) {
   const { data, error, loading } = useAccountPanel();
 
   if (loading) {
@@ -306,10 +310,10 @@ function WatchlistPanel({ onNavigate }: { onNavigate: (path: string, sym: Recent
 function WatchRow({
   w,
   onNavigate,
-}: {
+}: Readonly<{
   w: WatchSymbol;
-  onNavigate: (path: string, sym: RecentInvestSymbol) => void;
-}) {
+  onNavigate: NavigateToSymbol;
+}>) {
   return (
     <button
       type="button"
@@ -370,10 +374,10 @@ function WatchRow({
 function RecentPanel({
   onNavigate,
   refreshKey,
-}: {
-  onNavigate: (path: string, sym: RecentInvestSymbol) => void;
+}: Readonly<{
+  onNavigate: NavigateToSymbol;
   refreshKey: number;
-}) {
+}>) {
   const [recents, setRecents] = useState<RecentInvestSymbol[]>([]);
 
   useEffect(() => {
@@ -447,8 +451,6 @@ function RecentPanel({
   );
 }
 
-type RealtimeSubTab = "kr" | "us" | "crypto";
-
 const REALTIME_TABS: { key: RealtimeSubTab; label: string }[] = [
   { key: "kr", label: "국내" },
   { key: "us", label: "해외" },
@@ -463,11 +465,17 @@ const DECISION_LABEL: Record<string, string> = {
   neutral: "중립",
 };
 
+function decisionTone(decision?: string | null): PillTone {
+  if (decision === "buy") return "accent";
+  if (decision === "sell") return "loss";
+  return "paper";
+}
+
 function RealtimePanel({
   onNavigate,
-}: {
-  onNavigate: (path: string, sym: RecentInvestSymbol) => void;
-}) {
+}: Readonly<{
+  onNavigate: NavigateToSymbol;
+}>) {
   const [subTab, setSubTab] = useState<RealtimeSubTab>("kr");
   const [items, setItems] = useState<SignalCard[]>([]);
   const [err, setErr] = useState<string | undefined>();
@@ -540,11 +548,12 @@ function RealtimePanel({
         <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column" }}>
           {items.map((s) => {
             const primarySym = s.relatedSymbols[0];
-            const market = (primarySym?.market ?? subTab) as "kr" | "us" | "crypto";
+            const market = (primarySym?.market ?? subTab) as MarketKey;
             const symbol = primarySym?.symbol ?? "";
             const displayName = primarySym?.displayName ?? s.title;
             const ago = formatRelativeTime(s.generatedAt) ?? "";
             const decLabel = s.decisionLabel ? (DECISION_LABEL[s.decisionLabel] ?? s.decisionLabel) : null;
+            const pillTone = decisionTone(s.decisionLabel);
             return (
               <li key={s.id}>
                 <button
@@ -597,16 +606,7 @@ function RealtimePanel({
                     </div>
                   </div>
                   {decLabel && (
-                    <Pill
-                      tone={
-                        s.decisionLabel === "buy"
-                          ? "accent"
-                          : s.decisionLabel === "sell"
-                            ? "loss"
-                            : "paper"
-                      }
-                      size="sm"
-                    >
+                    <Pill tone={pillTone} size="sm">
                       {decLabel}
                     </Pill>
                   )}
