@@ -1466,61 +1466,43 @@ class TestBuildMacdCard:
 
 class TestBuildBollingerCard:
     def test_near_lower(self):
-        card = build_bollinger_card(
-            price=101.0, upper=120.0, middle=110.0, lower=100.0
-        )
+        card = build_bollinger_card(price=101.0, upper=120.0, middle=110.0, lower=100.0)
         assert card is not None
         assert card["tone"] == "oversold"
 
     def test_near_upper(self):
-        card = build_bollinger_card(
-            price=119.0, upper=120.0, middle=110.0, lower=100.0
-        )
+        card = build_bollinger_card(price=119.0, upper=120.0, middle=110.0, lower=100.0)
         assert card is not None
         assert card["tone"] == "overbought"
 
     def test_none_when_missing(self):
         assert (
-            build_bollinger_card(
-                price=110.0, upper=None, middle=110.0, lower=100.0
-            )
+            build_bollinger_card(price=110.0, upper=None, middle=110.0, lower=100.0)
             is None
         )
 
 
 class TestBuildEmaCard:
     def test_bullish_alignment(self):
-        card = build_ema_card(
-            price=210.0, ema20=200.0, ema60=180.0, ema200=150.0
-        )
+        card = build_ema_card(price=210.0, ema20=200.0, ema60=180.0, ema200=150.0)
         assert card is not None
         assert card["tone"] == "bullish"
         assert card["value"] == "상방 정렬"
 
     def test_bearish_alignment(self):
-        card = build_ema_card(
-            price=100.0, ema20=120.0, ema60=150.0, ema200=180.0
-        )
+        card = build_ema_card(price=100.0, ema20=120.0, ema60=150.0, ema200=180.0)
         assert card is not None
         assert card["tone"] == "bearish"
 
     def test_none_when_price_missing(self):
-        assert (
-            build_ema_card(price=None, ema20=100.0, ema60=90.0, ema200=80.0)
-            is None
-        )
+        assert build_ema_card(price=None, ema20=100.0, ema60=90.0, ema200=80.0) is None
 
 
 class TestBuildSmaCard:
     def test_bullish_alignment(self):
-        card = build_sma_card(
-            price=210.0, sma20=200.0, sma60=180.0, sma200=150.0
-        )
+        card = build_sma_card(price=210.0, sma20=200.0, sma60=180.0, sma200=150.0)
         assert card is not None
         assert card["tone"] == "bullish"
 
     def test_none_when_sma20_missing(self):
-        assert (
-            build_sma_card(price=100.0, sma20=None, sma60=90.0, sma200=80.0)
-            is None
-        )
+        assert build_sma_card(price=100.0, sma20=None, sma60=90.0, sma200=80.0) is None

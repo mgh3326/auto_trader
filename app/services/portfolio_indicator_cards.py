@@ -46,9 +46,7 @@ def build_stoch_rsi_card(k: Any, d: Any) -> dict[str, str] | None:
     }
 
 
-def build_macd_card(
-    macd: Any, signal: Any, histogram: Any
-) -> dict[str, str] | None:
+def build_macd_card(macd: Any, signal: Any, histogram: Any) -> dict[str, str] | None:
     if not isinstance(macd, (int, float)) or not isinstance(signal, (int, float)):
         return None
     bullish = macd >= signal
