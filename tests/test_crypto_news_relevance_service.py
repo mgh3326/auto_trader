@@ -74,6 +74,37 @@ def test_score_crypto_news_demotes_broader_ai_tech_from_decrypt():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("title", "expected_category"),
+    [
+        (
+            "OKX joins crypto’s pre-IPO frenzy with OpenAI, SpaceX perpetual futures",
+            "funding_onchain",
+        ),
+        (
+            "Linea contributes ZK rollup stack to Linux Foundation open-source group",
+            "stablecoin_defi",
+        ),
+        (
+            "Germany weighs 2027 crypto tax overhaul as privacy coin debate intensifies",
+            "regulation_policy",
+        ),
+    ],
+)
+def test_score_crypto_news_keeps_crypto_specific_stories_with_broad_tech_terms(
+    title: str, expected_category: str
+):
+    from app.services.crypto_news_relevance_service import score_crypto_news_article
+
+    scored = score_crypto_news_article(_article(title, feed_source="rss_decrypt"))
+
+    assert scored.include_in_briefing is True
+    assert scored.score >= 40
+    assert scored.category == expected_category
+    assert scored.noise_reason is None
+
+
+@pytest.mark.unit
 def test_rank_crypto_news_for_briefing_orders_relevant_items_and_keeps_exclusions():
     from app.services.crypto_news_relevance_service import rank_crypto_news_for_briefing
 
