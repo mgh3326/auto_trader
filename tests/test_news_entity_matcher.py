@@ -117,6 +117,8 @@ def test_match_for_article_drops_malformed_url_like_metadata_without_crashing():
             "canonical_url:https://finance.naver.com/[bad",
             "source_url:http://[malformed",
             "https://finance.naver.com/[broken",
+            "[malformed",
+            "foo[bar.com",
         ],
         market="kr",
     )
