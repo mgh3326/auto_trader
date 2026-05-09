@@ -93,8 +93,8 @@ export function HomePage(props?: { state?: InvestHomeState; reload?: () => void 
             padding: 8,
             color: "var(--warn)",
             fontSize: 10,
-            background: "rgba(246,193,119,0.08)",
-            border: "1px solid rgba(246,193,119,0.27)",
+            background: "var(--warn-soft)",
+            border: "1px solid var(--warn-soft)",
             borderRadius: 10,
           }}
         >

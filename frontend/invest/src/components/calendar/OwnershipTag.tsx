@@ -6,7 +6,7 @@ const MAP: Record<
 > = {
   holdings: { label: "보유", bg: "var(--gain-soft)", fg: "var(--gain)" },
   watchlist: { label: "관심", bg: "var(--accent-soft)", fg: "var(--accent-press)" },
-  major: { label: "주요", bg: "var(--warn-soft)", fg: "#a06200" },
+  major: { label: "주요", bg: "var(--warn-soft)", fg: "var(--warn)" },
 };
 
 export function OwnershipTag({ own }: { own: DisplayOwnership }) {

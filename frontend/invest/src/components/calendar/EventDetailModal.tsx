@@ -30,7 +30,7 @@ export function EventDetailModal({
       style={{
         position: "fixed",
         inset: 0,
-        background: "rgba(15, 20, 28, 0.32)",
+        background: "var(--overlay)",
         zIndex: 200,
         display: "grid",
         placeItems: "center",

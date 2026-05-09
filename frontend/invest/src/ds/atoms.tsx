@@ -24,7 +24,7 @@ const PILL_TONES: Record<PillTone, { bg: string; fg: string }> = {
   accent: { bg: "var(--accent-soft)", fg: "var(--accent-press)" },
   gain: { bg: "var(--gain-soft)", fg: "var(--gain)" },
   loss: { bg: "var(--loss-soft)", fg: "var(--loss)" },
-  warn: { bg: "var(--warn-soft)", fg: "#a06200" },
+  warn: { bg: "var(--warn-soft)", fg: "var(--warn)" },
 };
 
 export function Pill({
@@ -62,10 +62,10 @@ const BUTTON_SIZES: Record<ButtonSize, CSSProperties> = {
 };
 
 const BUTTON_VARIANTS: Record<ButtonVariant, CSSProperties> = {
-  primary: { background: "var(--accent)", color: "#fff" },
+  primary: { background: "var(--accent)", color: "var(--fg-on-accent)" },
   secondary: { background: "var(--surface-2)", color: "var(--fg-1)" },
   ghost: { background: "transparent", color: "var(--fg-2)" },
-  danger: { background: "var(--danger)", color: "#fff" },
+  danger: { background: "var(--danger)", color: "var(--fg-on-accent)" },
 };
 
 export function Button({
@@ -111,7 +111,7 @@ export function Card({
     <div
       data-soft={soft || undefined}
       style={{
-        background: soft ? "var(--surface-2)" : "#fff",
+        background: soft ? "var(--surface-2)" : "var(--surface)",
         border: soft ? "none" : "1px solid var(--border)",
         borderRadius: 16,
         boxShadow: soft ? "none" : "var(--shadow-1)",

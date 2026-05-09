@@ -186,7 +186,7 @@ export function MobileCalendarPage() {
                     borderRadius: 999,
                     cursor: "pointer",
                     background: on ? "var(--fg)" : "var(--surface-2)",
-                    color: on ? "#fff" : "var(--fg-2)",
+                    color: on ? "var(--bg)" : "var(--fg-2)",
                     fontWeight: 600,
                     fontSize: 12,
                     fontFamily: "inherit",

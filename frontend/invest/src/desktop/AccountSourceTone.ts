@@ -1,12 +1,14 @@
 import type { AccountSource, AccountSourceVisual, AccountTone } from "../types/invest";
 import type { PillTone } from "../ds";
 
+// Each tone maps onto the design system's source-pill tokens so the
+// account chrome themes correctly under both light and dark.
 const TONE_STYLE: Record<AccountTone, { color: string; bg: string; border: string }> = {
-  navy:   { color: "#dde3ff", bg: "#1e2a55", border: "#3a4a8a" },
-  gray:   { color: "#cfd2da", bg: "#2a2d35", border: "#3a3d45" },
-  purple: { color: "#e7daff", bg: "#3a2660", border: "#624aa0" },
-  green:  { color: "#dcf2e0", bg: "#1f3a2a", border: "#3c6a4d" },
-  dashed: { color: "#dbdee5", bg: "#1e2026", border: "#5a5e6a" },
+  navy:   { color: "var(--pill-kis-fg)",     bg: "var(--pill-kis-bg)",     border: "var(--border)" },
+  gray:   { color: "var(--pill-pension-fg)", bg: "var(--pill-pension-bg)", border: "var(--border)" },
+  purple: { color: "var(--pill-toss-fg)",    bg: "var(--pill-toss-bg)",    border: "var(--border)" },
+  green:  { color: "var(--pill-upbit-fg)",   bg: "var(--pill-upbit-bg)",   border: "var(--border)" },
+  dashed: { color: "var(--pill-paper-fg)",   bg: "var(--pill-paper-bg)",   border: "var(--border)" },
 };
 
 export function styleForVisual(v: AccountSourceVisual) {

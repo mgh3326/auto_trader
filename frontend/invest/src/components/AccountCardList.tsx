@@ -30,8 +30,8 @@ function AccountCard({ a, warnings = [] }: { a: Account; warnings?: InvestHomeWa
             style={{
               padding: "1px 6px",
               borderRadius: 5,
-              background: "#1c1e24",
-              color: "var(--muted)",
+              background: "var(--surface-2)",
+              color: "var(--fg-2)",
               fontSize: 9,
             }}
           >

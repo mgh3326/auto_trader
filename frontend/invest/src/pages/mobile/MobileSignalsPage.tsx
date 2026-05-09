@@ -45,7 +45,7 @@ export function MobileSignalsPage() {
                   borderRadius: 999,
                   border: "none",
                   background: active ? "var(--fg)" : "var(--surface-2)",
-                  color: active ? "#fff" : "var(--fg-2)",
+                  color: active ? "var(--bg)" : "var(--fg-2)",
                   fontWeight: 600,
                   fontSize: 12,
                   fontFamily: "inherit",

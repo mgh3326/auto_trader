@@ -3,6 +3,11 @@
    Toss-style Korean fintech: light surfaces, calm grayscale,
    confident blue accent, Korean-fintech P/L color rule
    (▲ red = gain, ▼ blue = loss).
+
+   Token names stay the same across themes; values swap under
+   [data-theme="dark"]. Components read var(--*) only — never
+   hardcode. Explicit data-theme always wins over the
+   prefers-color-scheme fallback.
    ========================================================= */
 
 /* ---------- Webfont: Pretendard (Korean + Latin) ----------
@@ -14,6 +19,8 @@
 @import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.css");
 
 :root {
+  color-scheme: light;
+
   /* ---------------- Color: Surfaces & Ink ---------------- */
   --bg:           #ffffff;   /* page background */
   --bg-alt:       #f9fafb;   /* secondary page bg (broad fields) */
@@ -26,9 +33,13 @@
   --fg:           #191f28;   /* primary text — near-black */
   --fg-1:         #333d4b;   /* secondary text — heading subdued */
   --fg-2:         #4e5968;   /* tertiary text — body label */
-  --fg-3:         #6b7684;   /* muted — metadata, captions (darkened for readability) */
+  --fg-3:         #6b7684;   /* muted — metadata, captions */
   --fg-4:         #8b95a1;   /* placeholder / decorative dots */
   --fg-on-accent: #ffffff;   /* on filled accent */
+
+  /* Compat aliases for legacy var names found in components. */
+  --text:  var(--fg);
+  --muted: var(--fg-3);
 
   /* ---------------- Color: Brand Accent ----------------- */
   /* Toss-style confident blue. Used sparingly for primary
@@ -41,8 +52,8 @@
 
   /* ---------------- Color: P/L (Korean rule) ------------ */
   /* ▲ Red = gain / up.  ▼ Blue = loss / down.
-     Same blue family as the loss color, slightly desaturated
-     to read distinctly from the brand accent. */
+     Loss blue sits in the same family as accent but kept
+     distinguishable so it never collides with brand actions. */
   --gain:         #f04452;   /* up — red */
   --gain-soft:    #ffeaea;
   --loss:         #2a6df4;   /* down — blue */
@@ -63,14 +74,11 @@
   /* ---------------- Color: Source pills ----------------- */
   /* Each broker / source gets a calm tint pair. Subdued so
      long lists of accounts don't visually compete. */
-  /* Subtle — these are secondary identifiers, not theme colors.
-     Backgrounds are very low-saturation tints; foregrounds sit
-     just dark enough to read at 11–12px. */
-  --pill-kis-bg:    #eaf2ff; --pill-kis-fg:    #2a6df4;  /* KIS — small blue */
-  --pill-upbit-bg:  #e8f3ec; --pill-upbit-fg:  #0e8a5f;  /* Upbit — small green */
-  --pill-toss-bg:   #efebf8; --pill-toss-fg:   #5b3aa8;  /* Toss / manual — soft purple */
-  --pill-isa-bg:    #f1ede1; --pill-isa-fg:    #7a6a3a;  /* ISA — muted olive */
-  --pill-pension-bg:#ecedef; --pill-pension-fg:#5f6470;  /* Pension — stone */
+  --pill-kis-bg:    #eaf2ff; --pill-kis-fg:    #2a6df4;  /* KIS */
+  --pill-upbit-bg:  #e8f3ec; --pill-upbit-fg:  #0e8a5f;  /* Upbit */
+  --pill-toss-bg:   #efebf8; --pill-toss-fg:   #5b3aa8;  /* Toss / manual */
+  --pill-isa-bg:    #f1ede1; --pill-isa-fg:    #7a6a3a;  /* ISA */
+  --pill-pension-bg:#ecedef; --pill-pension-fg:#5f6470;  /* Pension */
   --pill-paper-bg:  #eef0f3; --pill-paper-fg:  #4e5968;  /* Paper / mock */
 
   /* ---------------- Type: Family ------------------------ */
@@ -80,12 +88,9 @@
                "Helvetica Neue", "Segoe UI", Roboto, sans-serif;
   --font-mono: "JetBrains Mono", "SF Mono", ui-monospace,
                Menlo, Consolas, monospace;
-  /* Numerals — same family but with tabular figures applied. */
   --font-num: var(--font-sans);
 
   /* ---------------- Type: Scale ------------------------- */
-  /* Body baseline 15px (Toss web). Display sizes are
-     deliberately large for portfolio totals. */
   --text-display:   30px;   /* hero portfolio total (desktop) */
   --text-display-2: 24px;   /* account totals / section hero */
   --text-h1:        22px;   /* page header */
@@ -108,7 +113,6 @@
   --weight-bold:    700;
   --weight-heavy:   800;
 
-  /* Negative tracking on big numbers; positive on small caps */
   --tracking-tight:  -0.02em;
   --tracking-normal: 0;
   --tracking-wide:   0.04em;
@@ -142,12 +146,161 @@
               0 2px 6px rgba(15, 23, 42, 0.04);
   --shadow-focus: 0 0 0 3px rgba(49, 130, 246, 0.25);
 
+  /* ---------------- Overlay / Special surfaces ---------- */
+  --overlay:       rgba(15, 23, 42, 0.45);   /* modal / drawer scrim */
+  --overlay-soft:  rgba(15, 23, 42, 0.20);   /* sheet hint */
+  --backdrop-blur: 8px;
+  --ai-card-bg:    linear-gradient(180deg, #f3f7ff 0%, #ffffff 100%);
+  --ai-card-fg:    var(--accent);
+
   /* ---------------- Motion ------------------------------ */
   --ease-standard: cubic-bezier(0.2, 0.0, 0.0, 1.0);
   --ease-emph:     cubic-bezier(0.2, 0.8, 0.2, 1.0);
   --dur-fast:   120ms;
   --dur-base:   180ms;
   --dur-slow:   240ms;
+}
+
+/* =========================================================
+   DARK THEME — explicit opt-in via [data-theme="dark"].
+   Token names match light; only values change so every
+   component picks up the theme via CSS variables.
+   Korean P/L preserved (▲ red = gain / ▼ blue = loss).
+   Accent blue (cyan-leaning) and loss blue (indigo-leaning)
+   stay separated so they never collide in numeric UI.
+   ========================================================= */
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* Surfaces & ink — layered grays, not pure black */
+  --bg:           #0e1116;
+  --bg-alt:       #11151c;
+  --surface:      #161b23;
+  --surface-2:    #1d232d;
+  --surface-3:    #262d38;
+  --divider:      rgba(255, 255, 255, 0.06);
+  --border:       rgba(255, 255, 255, 0.08);
+
+  --fg:           #f1f3f5;
+  --fg-1:         #d6dae0;
+  --fg-2:         #a4abb6;
+  --fg-3:         #7a8290;
+  --fg-4:         #5a6271;
+  --fg-on-accent: #ffffff;
+
+  /* Accent — lift saturation/lightness so it pops on dark
+     and reads distinctly from loss blue */
+  --accent:       #4691ff;
+  --accent-press: #3a82ee;
+  --accent-soft:  rgba(70, 145, 255, 0.16);
+  --accent-fg:    #ffffff;
+
+  /* P/L — loss blue shifts toward indigo so it's clearly
+     different from accent (cyan-blue). */
+  --gain:         #ff5b6b;
+  --gain-soft:    rgba(255, 91, 107, 0.14);
+  --loss:         #5b8cff;
+  --loss-soft:    rgba(91, 140, 255, 0.14);
+  --flat:         #7a8290;
+
+  /* Semantic */
+  --warn:         #f0b03a;
+  --warn-soft:    rgba(240, 176, 58, 0.14);
+  --danger:       #ff6363;
+  --danger-soft:  rgba(255, 99, 99, 0.14);
+  --success:      #2bd28a;
+  --success-soft: rgba(43, 210, 138, 0.14);
+  --info:         #4691ff;
+  --info-soft:    rgba(70, 145, 255, 0.14);
+
+  /* Source pills — soft alpha tints over dark surface,
+     foreground lifted to AA on --surface */
+  --pill-kis-bg:    rgba(70, 145, 255, 0.16);  --pill-kis-fg:    #7eb0ff;
+  --pill-upbit-bg:  rgba(43, 210, 138, 0.14);  --pill-upbit-fg:  #5fdcab;
+  --pill-toss-bg:   rgba(154, 116, 255, 0.16); --pill-toss-fg:   #c0a8ff;
+  --pill-isa-bg:    rgba(196, 166, 82, 0.14);  --pill-isa-fg:    #d4b977;
+  --pill-pension-bg:rgba(255, 255, 255, 0.06); --pill-pension-fg:#a4abb6;
+  --pill-paper-bg:  rgba(255, 255, 255, 0.05); --pill-paper-fg:  #a4abb6;
+
+  /* Elevation — darker drops + 1px inset highlight so cards
+     still feel raised on a dark surface */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.5),
+              inset 0 1px 0 rgba(255, 255, 255, 0.02);
+  --shadow-2: 0 6px 18px rgba(0, 0, 0, 0.5),
+              inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  --shadow-3: 0 18px 48px rgba(0, 0, 0, 0.6),
+              inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  --shadow-focus: 0 0 0 3px rgba(70, 145, 255, 0.35);
+
+  /* Overlay / special surfaces */
+  --overlay:      rgba(0, 0, 0, 0.65);
+  --overlay-soft: rgba(0, 0, 0, 0.35);
+  --ai-card-bg:   linear-gradient(180deg, rgba(70, 145, 255, 0.10) 0%, rgba(70, 145, 255, 0.02) 100%);
+  --ai-card-fg:   #7eb0ff;
+}
+
+/* =========================================================
+   OS preference fallback — applies ONLY when no explicit
+   data-theme is set on <html>. Explicit data-theme="light"
+   always wins over OS dark mode.
+   ========================================================= */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]):not([data-theme="dark"]) {
+    color-scheme: dark;
+
+    --bg:           #0e1116;
+    --bg-alt:       #11151c;
+    --surface:      #161b23;
+    --surface-2:    #1d232d;
+    --surface-3:    #262d38;
+    --divider:      rgba(255, 255, 255, 0.06);
+    --border:       rgba(255, 255, 255, 0.08);
+
+    --fg:           #f1f3f5;
+    --fg-1:         #d6dae0;
+    --fg-2:         #a4abb6;
+    --fg-3:         #7a8290;
+    --fg-4:         #5a6271;
+
+    --accent:       #4691ff;
+    --accent-press: #3a82ee;
+    --accent-soft:  rgba(70, 145, 255, 0.16);
+
+    --gain:         #ff5b6b;
+    --gain-soft:    rgba(255, 91, 107, 0.14);
+    --loss:         #5b8cff;
+    --loss-soft:    rgba(91, 140, 255, 0.14);
+    --flat:         #7a8290;
+
+    --warn:         #f0b03a;
+    --warn-soft:    rgba(240, 176, 58, 0.14);
+    --danger:       #ff6363;
+    --danger-soft:  rgba(255, 99, 99, 0.14);
+    --success:      #2bd28a;
+    --success-soft: rgba(43, 210, 138, 0.14);
+    --info:         #4691ff;
+    --info-soft:    rgba(70, 145, 255, 0.14);
+
+    --pill-kis-bg:    rgba(70, 145, 255, 0.16);  --pill-kis-fg:    #7eb0ff;
+    --pill-upbit-bg:  rgba(43, 210, 138, 0.14);  --pill-upbit-fg:  #5fdcab;
+    --pill-toss-bg:   rgba(154, 116, 255, 0.16); --pill-toss-fg:   #c0a8ff;
+    --pill-isa-bg:    rgba(196, 166, 82, 0.14);  --pill-isa-fg:    #d4b977;
+    --pill-pension-bg:rgba(255, 255, 255, 0.06); --pill-pension-fg:#a4abb6;
+    --pill-paper-bg:  rgba(255, 255, 255, 0.05); --pill-paper-fg:  #a4abb6;
+
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.5),
+                inset 0 1px 0 rgba(255, 255, 255, 0.02);
+    --shadow-2: 0 6px 18px rgba(0, 0, 0, 0.5),
+                inset 0 1px 0 rgba(255, 255, 255, 0.03);
+    --shadow-3: 0 18px 48px rgba(0, 0, 0, 0.6),
+                inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    --shadow-focus: 0 0 0 3px rgba(70, 145, 255, 0.35);
+
+    --overlay:      rgba(0, 0, 0, 0.65);
+    --overlay-soft: rgba(0, 0, 0, 0.35);
+    --ai-card-bg:   linear-gradient(180deg, rgba(70, 145, 255, 0.10) 0%, rgba(70, 145, 255, 0.02) 100%);
+    --ai-card-fg:   #7eb0ff;
+  }
 }
 
 /* =========================================================
@@ -197,7 +350,7 @@
 }
 
 /* =========================================================
-   Utility classes (handles for HTML cards / kits)
+   Utility classes
    ========================================================= */
 .num     { font-feature-settings: "tnum"; font-variant-numeric: tabular-nums; }
 .num-big { font-size: var(--text-display); font-weight: var(--weight-bold);

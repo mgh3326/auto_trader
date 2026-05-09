@@ -34,7 +34,7 @@ export function DesktopHeader() {
             height: 22,
             borderRadius: 6,
             background: "var(--accent)",
-            color: "#fff",
+            color: "var(--fg-on-accent)",
             display: "grid",
             placeItems: "center",
             fontSize: 12,
