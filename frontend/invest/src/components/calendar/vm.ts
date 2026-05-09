@@ -1,4 +1,4 @@
-import type { CalendarEvent } from "../../types/calendar";
+import type { CalendarCluster, CalendarDay, CalendarEvent } from "../../types/calendar";
 
 export type DisplayEventType = "earnings" | "macro" | "other";
 export type DisplayRegion = "kr" | "us";
@@ -19,6 +19,18 @@ export interface CalendarEventVM {
   previous: string | null;
   own: DisplayOwnership;
   badges: string[];
+}
+
+export interface CalendarClusterVM {
+  id: string;
+  date: string;
+  dayOfMonth: number;
+  monthDay: string;
+  type: DisplayEventType;
+  region: DisplayRegion;
+  title: string;
+  count: number;
+  topEvents: CalendarEventVM[];
 }
 
 export function mapEventType(eventType: CalendarEvent["eventType"]): DisplayEventType {
@@ -57,6 +69,48 @@ export function toEventVM(event: CalendarEvent, date: string): CalendarEventVM {
     own: mapOwnership(event),
     badges: event.badges,
   };
+}
+
+export function calendarDayEventCount(day: CalendarDay): number {
+  return day.events.length + day.clusters.reduce((sum, cluster) => sum + cluster.eventCount, 0);
+}
+
+export function toClusterVM(cluster: CalendarCluster, date: string): CalendarClusterVM {
+  const day = Number.parseInt(date.slice(8, 10), 10);
+  const month = Number.parseInt(date.slice(5, 7), 10);
+  const type = mapEventType(cluster.eventType);
+  const region = mapMarketToRegion(cluster.market);
+  const count = cluster.eventCount;
+  return {
+    id: cluster.clusterId,
+    date,
+    dayOfMonth: day,
+    monthDay: `${month}/${day}`,
+    type,
+    region,
+    title: formatClusterTitle({ label: cluster.label, eventType: cluster.eventType, market: cluster.market, count }),
+    count,
+    topEvents: cluster.topEvents.map((event) => toEventVM(event, date)),
+  };
+}
+
+function formatClusterTitle({
+  label,
+  eventType,
+  market,
+  count,
+}: {
+  label: string;
+  eventType: CalendarCluster["eventType"];
+  market: CalendarCluster["market"];
+  count: number;
+}): string {
+  if (eventType === "earnings" && market === "us") return `미국 실적 발표 ${count}건`;
+  if (eventType === "earnings" && market === "kr") return `국내 실적 발표 ${count}건`;
+  if (eventType === "economic" && market === "global") return `글로벌 경제지표 ${count}건`;
+  if (eventType === "economic") return `해외 경제지표 ${count}건`;
+  if (eventType === "disclosure" && market === "kr") return `국내 공시 ${count}건`;
+  return `${label} ${count}건`;
 }
 
 export function computeWeekLabel(fromDate: string): string {
