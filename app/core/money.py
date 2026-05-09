@@ -3,6 +3,7 @@
 All functions use ROUND_HALF_UP and accept Decimal | float | int inputs.
 The str() coercion avoids float binary representation issues.
 """
+
 from __future__ import annotations
 
 from decimal import ROUND_HALF_UP, Decimal

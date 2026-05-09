@@ -1,4 +1,5 @@
 """Unit tests for app.core.money quantization helpers."""
+
 from __future__ import annotations
 
 from decimal import Decimal
