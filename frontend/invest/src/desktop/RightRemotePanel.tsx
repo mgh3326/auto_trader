@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAccountPanel } from "./useAccountPanel";
 import { loadRecentSymbols, recordRecentSymbol } from "./recentSymbols";
@@ -38,6 +38,75 @@ function fmtPct(v?: number | null): string {
   const pct = v * 100;
   const sign = pct >= 0 ? "+" : "";
   return `${sign}${pct.toFixed(2)}%`;
+}
+
+const ROW_BUTTON_STYLE: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  padding: "8px 0",
+  width: "100%",
+  background: "transparent",
+  border: "none",
+  borderBottom: "1px solid var(--divider)",
+  cursor: "pointer",
+  textAlign: "left",
+  fontFamily: "inherit",
+};
+
+const ROW_TITLE_STYLE: CSSProperties = {
+  fontSize: 13,
+  fontWeight: 600,
+  lineHeight: 1.3,
+  color: "var(--fg)",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
+
+const ROW_META_STYLE: CSSProperties = {
+  fontSize: 11,
+  color: "var(--fg-3)",
+  fontFamily: "var(--font-mono)",
+};
+
+function SymbolRow({
+  displayName,
+  market,
+  symbol,
+  onClick,
+  disabled = false,
+  right,
+  meta,
+}: Readonly<{
+  displayName: string;
+  market?: MarketKey;
+  symbol?: string;
+  onClick: () => void;
+  disabled?: boolean;
+  right?: ReactNode;
+  meta?: ReactNode;
+}>) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        ...ROW_BUTTON_STYLE,
+        alignItems: right ? "center" : ROW_BUTTON_STYLE.alignItems,
+        cursor: disabled ? "default" : "pointer",
+      }}
+    >
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <div style={ROW_TITLE_STYLE}>{displayName}</div>
+        <div style={ROW_META_STYLE}>
+          {meta ?? (market && symbol ? `${MARKET_LABEL[market]} · ${symbol}` : symbol)}
+        </div>
+      </div>
+      {right}
+    </button>
+  );
 }
 
 function TabBar({
@@ -183,8 +252,10 @@ function PortfolioPanel({ onNavigate }: Readonly<{ onNavigate: NavigateToSymbol 
               const mk = marketKey(h.market);
               return (
                 <li key={h.groupId}>
-                  <button
-                    type="button"
+                  <SymbolRow
+                    displayName={h.displayName}
+                    market={mk}
+                    symbol={h.symbol}
                     onClick={() => {
                       const sym: RecentInvestSymbol = {
                         symbol: h.symbol,
@@ -198,57 +269,27 @@ function PortfolioPanel({ onNavigate }: Readonly<{ onNavigate: NavigateToSymbol 
                         sym,
                       );
                     }}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 8,
-                      padding: "8px 0",
-                      width: "100%",
-                      background: "transparent",
-                      border: "none",
-                      borderBottom: "1px solid var(--divider)",
-                      cursor: "pointer",
-                      textAlign: "left",
-                      fontFamily: "inherit",
-                    }}
-                  >
-                    <div style={{ minWidth: 0, flex: 1 }}>
-                      <div
-                        style={{
-                          fontSize: 13,
-                          fontWeight: 600,
-                          lineHeight: 1.3,
-                          color: "var(--fg)",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        {h.displayName}
-                      </div>
-                      <div style={{ fontSize: 11, color: "var(--fg-3)", fontFamily: "var(--font-mono)" }}>
-                        {MARKET_LABEL[mk]} · {h.symbol}
-                      </div>
-                    </div>
-                    <div style={{ textAlign: "right", flexShrink: 0 }}>
-                      <div style={{ fontSize: 12, fontWeight: 600, fontFeatureSettings: '"tnum"' }}>
-                        {fmtKrw(h.valueKrw)}
-                      </div>
-                      {h.pnlRate == null ? (
-                        <div style={{ fontSize: 11, color: "var(--fg-3)" }}>—</div>
-                      ) : (
-                        <div
-                          style={{
-                            fontSize: 11,
-                            color: h.pnlRate >= 0 ? "var(--gain)" : "var(--loss)",
-                            fontFeatureSettings: '"tnum"',
-                          }}
-                        >
-                          {fmtPct(h.pnlRate)}
+                    right={(
+                      <div style={{ textAlign: "right", flexShrink: 0 }}>
+                        <div style={{ fontSize: 12, fontWeight: 600, fontFeatureSettings: '"tnum"' }}>
+                          {fmtKrw(h.valueKrw)}
                         </div>
-                      )}
-                    </div>
-                  </button>
+                        {h.pnlRate == null ? (
+                          <div style={{ fontSize: 11, color: "var(--fg-3)" }}>—</div>
+                        ) : (
+                          <div
+                            style={{
+                              fontSize: 11,
+                              color: h.pnlRate >= 0 ? "var(--gain)" : "var(--loss)",
+                              fontFeatureSettings: '"tnum"',
+                            }}
+                          >
+                            {fmtPct(h.pnlRate)}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  />
                 </li>
               );
             })}
@@ -315,8 +356,10 @@ function WatchRow({
   onNavigate: NavigateToSymbol;
 }>) {
   return (
-    <button
-      type="button"
+    <SymbolRow
+      displayName={w.displayName}
+      market={w.market}
+      symbol={w.symbol}
       onClick={() => {
         const sym: RecentInvestSymbol = {
           symbol: w.symbol,
@@ -330,44 +373,12 @@ function WatchRow({
           sym,
         );
       }}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 8,
-        padding: "8px 0",
-        width: "100%",
-        background: "transparent",
-        border: "none",
-        borderBottom: "1px solid var(--divider)",
-        cursor: "pointer",
-        textAlign: "left",
-        fontFamily: "inherit",
-      }}
-    >
-      <div style={{ minWidth: 0, flex: 1 }}>
-        <div
-          style={{
-            fontSize: 13,
-            fontWeight: 600,
-            lineHeight: 1.3,
-            color: "var(--fg)",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {w.displayName}
-        </div>
-        <div style={{ fontSize: 11, color: "var(--fg-3)", fontFamily: "var(--font-mono)" }}>
-          {MARKET_LABEL[w.market]} · {w.symbol}
-        </div>
-      </div>
-      {w.note && (
+      right={w.note ? (
         <div style={{ fontSize: 11, color: "var(--fg-3)", flexShrink: 0, maxWidth: 60, textAlign: "right" }}>
           {w.note}
         </div>
-      )}
-    </button>
+      ) : undefined}
+    />
   );
 }
 
@@ -401,49 +412,18 @@ function RecentPanel({
         const ago = formatRelativeTime(r.lastViewedAt) ?? "";
         return (
           <li key={`${r.market}:${r.symbol}`}>
-            <button
-              type="button"
+            <SymbolRow
+              displayName={r.displayName}
+              market={r.market}
+              symbol={r.symbol}
               onClick={() => {
                 onNavigate(
                   `/signals?symbol=${encodeURIComponent(r.symbol)}&market=${r.market}`,
                   { ...r, lastViewedAt: new Date().toISOString() },
                 );
               }}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                padding: "8px 0",
-                width: "100%",
-                background: "transparent",
-                border: "none",
-                borderBottom: "1px solid var(--divider)",
-                cursor: "pointer",
-                textAlign: "left",
-                fontFamily: "inherit",
-              }}
-            >
-              <div style={{ minWidth: 0, flex: 1 }}>
-                <div
-                  style={{
-                    fontSize: 13,
-                    fontWeight: 600,
-                    color: "var(--fg)",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {r.displayName}
-                </div>
-                <div style={{ fontSize: 11, color: "var(--fg-3)", fontFamily: "var(--font-mono)" }}>
-                  {MARKET_LABEL[r.market]} · {r.symbol}
-                </div>
-              </div>
-              {ago && (
-                <div style={{ fontSize: 11, color: "var(--fg-3)", flexShrink: 0 }}>{ago}</div>
-              )}
-            </button>
+              right={ago ? <div style={{ fontSize: 11, color: "var(--fg-3)", flexShrink: 0 }}>{ago}</div> : undefined}
+            />
           </li>
         );
       })}
@@ -556,8 +536,10 @@ function RealtimePanel({
             const pillTone = decisionTone(s.decisionLabel);
             return (
               <li key={s.id}>
-                <button
-                  type="button"
+                <SymbolRow
+                  displayName={displayName}
+                  symbol={symbol}
+                  disabled={!symbol}
                   onClick={() => {
                     if (!symbol) return;
                     const sym: RecentInvestSymbol = {
@@ -572,45 +554,14 @@ function RealtimePanel({
                       sym,
                     );
                   }}
-                  disabled={!symbol}
-                  style={{
-                    display: "flex",
-                    alignItems: "flex-start",
-                    gap: 8,
-                    padding: "8px 0",
-                    width: "100%",
-                    background: "transparent",
-                    border: "none",
-                    borderBottom: "1px solid var(--divider)",
-                    cursor: symbol ? "pointer" : "default",
-                    textAlign: "left",
-                    fontFamily: "inherit",
-                  }}
-                >
-                  <div style={{ minWidth: 0, flex: 1 }}>
-                    <div
-                      style={{
-                        fontSize: 12,
-                        fontWeight: 600,
-                        color: "var(--fg)",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      {displayName}
-                    </div>
-                    <div style={{ fontSize: 11, color: "var(--fg-3)", marginTop: 2 }}>
+                  meta={(
+                    <>
                       {symbol && <span style={{ fontFamily: "var(--font-mono)", marginRight: 4 }}>{symbol}</span>}
                       {ago}
-                    </div>
-                  </div>
-                  {decLabel && (
-                    <Pill tone={pillTone} size="sm">
-                      {decLabel}
-                    </Pill>
+                    </>
                   )}
-                </button>
+                  right={decLabel ? <Pill tone={pillTone} size="sm">{decLabel}</Pill> : undefined}
+                />
               </li>
             );
           })}
