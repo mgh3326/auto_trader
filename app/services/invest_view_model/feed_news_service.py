@@ -10,7 +10,7 @@ from typing import cast
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.news import NewsAnalysisResult, NewsArticle
+from app.models.news import NewsAnalysisResult, NewsArticle, NewsArticleRelatedSymbol
 from app.schemas.invest_feed_news import (
     FeedNewsItem,
     FeedNewsMeta,
@@ -19,7 +19,14 @@ from app.schemas.invest_feed_news import (
     NewsMarket,
     NewsRelatedSymbol,
 )
+from app.services.domain_errors import (
+    RateLimitError,
+    SymbolNotFoundError,
+    UpstreamUnavailableError,
+    ValidationError,
+)
 from app.services.invest_view_model.relation_resolver import RelationResolver
+from app.services.market_data.service import get_quote
 from app.services.news_entity_matcher import match_symbols_for_article
 from app.services.news_issue_clustering_service import build_market_issues
 
@@ -82,6 +89,182 @@ def _add_related_symbol(
     )
 
 
+_QUOTE_FAILURE_EXCEPTIONS = (
+    ValidationError,
+    SymbolNotFoundError,
+    RateLimitError,
+    UpstreamUnavailableError,
+)
+
+
+def _market_for_quote(market: str) -> str:
+    if market == "kr":
+        return "kr"
+    if market == "us":
+        return "us"
+    return "crypto"
+
+
+def _relation_from_related_symbols(related: list[NewsRelatedSymbol]) -> str:
+    relations = {symbol.relation for symbol in related}
+    if "both" in relations or {"held", "watchlist"}.issubset(relations):
+        return "both"
+    if "held" in relations:
+        return "held"
+    if "watchlist" in relations:
+        return "watchlist"
+    return "none"
+
+
+def _related_symbols_for_article(
+    *,
+    row: NewsArticle,
+    resolver: RelationResolver,
+    analysis_summary: str | None,
+    persisted_relations: dict[int, list[NewsArticleRelatedSymbol]],
+    market_value: str,
+) -> list[NewsRelatedSymbol]:
+    related: list[NewsRelatedSymbol] = []
+    seen_related: set[tuple[str, str]] = set()
+
+    for persisted in persisted_relations.get(row.id, []):
+        _add_related_symbol(
+            related=related,
+            seen_related=seen_related,
+            resolver=resolver,
+            symbol=persisted.symbol,
+            market=persisted.market,
+            display_name=persisted.display_name or persisted.symbol,
+            match_reason=persisted.source,
+            matched_term=persisted.matched_term,
+        )
+
+    if row.stock_symbol:
+        _add_related_symbol(
+            related=related,
+            seen_related=seen_related,
+            resolver=resolver,
+            symbol=row.stock_symbol,
+            market=market_value,
+            display_name=row.stock_name or row.stock_symbol,
+            match_reason="stock_symbol",
+        )
+
+    for match in match_symbols_for_article(
+        title=row.title,
+        summary=analysis_summary or row.summary,
+        keywords=_coerce_keywords(getattr(row, "keywords", None)),
+        market=market_value,
+    ):
+        _add_related_symbol(
+            related=related,
+            seen_related=seen_related,
+            resolver=resolver,
+            symbol=match.symbol,
+            market=match.market,
+            display_name=match.canonical_name,
+            match_reason=match.reason,
+            matched_term=match.matched_term,
+        )
+    return related
+
+
+async def _related_symbols_by_article(
+    db: AsyncSession, article_ids: list[int]
+) -> dict[int, list[NewsArticleRelatedSymbol]]:
+    if not article_ids:
+        return {}
+    stmt = (
+        select(NewsArticleRelatedSymbol)
+        .where(NewsArticleRelatedSymbol.article_id.in_(article_ids))
+        .order_by(
+            NewsArticleRelatedSymbol.article_id,
+            NewsArticleRelatedSymbol.rank.asc().nulls_last(),
+            NewsArticleRelatedSymbol.id,
+        )
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+    by_article: dict[int, list[NewsArticleRelatedSymbol]] = {}
+    for row in rows:
+        by_article.setdefault(row.article_id, []).append(row)
+    return by_article
+
+
+def _collect_related_symbol_pairs(
+    items: list[FeedNewsItem],
+) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in items:
+        for symbol in item.relatedSymbols:
+            key = (symbol.market, symbol.symbol)
+            if key in seen:
+                continue
+            seen.add(key)
+            pairs.append(key)
+    return pairs
+
+
+async def _fetch_quotes_for_pairs(
+    pairs: list[tuple[str, str]],
+) -> tuple[dict[tuple[str, str], object], list[str], int]:
+    quote_by_pair: dict[tuple[str, str], object] = {}
+    warnings: list[str] = []
+    failures = 0
+    for market, symbol in pairs:
+        try:
+            quote_by_pair[(market, symbol)] = await get_quote(
+                symbol=symbol, market=_market_for_quote(market)
+            )
+        except _QUOTE_FAILURE_EXCEPTIONS:
+            failures += 1
+            warnings.append(f"quote_unavailable:{market}:{symbol}")
+        except Exception:
+            failures += 1
+            warnings.append(f"quote_unavailable:{market}:{symbol}")
+    return quote_by_pair, warnings, failures
+
+
+def _apply_quote_to_related_symbol(
+    symbol: NewsRelatedSymbol,
+    quote: object,
+    as_of: datetime,
+) -> None:
+    price = getattr(quote, "price", None)
+    previous_close = getattr(quote, "previous_close", None)
+    symbol.currentPrice = float(price) if price is not None else None
+    symbol.previousClose = float(previous_close) if previous_close is not None else None
+    if symbol.currentPrice is not None and symbol.previousClose:
+        symbol.change = symbol.currentPrice - symbol.previousClose
+        symbol.changePct = (symbol.change / symbol.previousClose) * 100
+    symbol.quoteSource = getattr(quote, "source", None)
+    symbol.quoteAsOf = as_of
+
+
+def _apply_quotes_to_items(
+    items: list[FeedNewsItem],
+    quote_by_pair: dict[tuple[str, str], object],
+) -> None:
+    as_of = datetime.now(UTC)
+    for item in items:
+        for symbol in item.relatedSymbols:
+            quote = quote_by_pair.get((symbol.market, symbol.symbol))
+            if quote is None:
+                continue
+            _apply_quote_to_related_symbol(symbol, quote, as_of)
+
+
+async def _enrich_related_symbols_with_quotes(
+    items: list[FeedNewsItem],
+) -> list[str]:
+    pairs = _collect_related_symbol_pairs(items)
+    quote_by_pair, warnings, failures = await _fetch_quotes_for_pairs(pairs)
+    _apply_quotes_to_items(items, quote_by_pair)
+    if failures:
+        warnings.append(f"quote_partial_failure:{failures}")
+    return warnings
+
+
 async def build_feed_news(
     *,
     db: AsyncSession,
@@ -89,6 +272,7 @@ async def build_feed_news(
     tab: FeedTab,
     limit: int,
     cursor: str | None,
+    include_quotes: bool = False,
 ) -> FeedNewsResponse:
     market_filter: str | None = None
     if tab in ("kr", "us", "crypto"):
@@ -109,7 +293,7 @@ async def build_feed_news(
 
     # Base news query.
     stmt = select(NewsArticle).order_by(
-        desc(NewsArticle.article_published_at), desc(NewsArticle.id)
+        NewsArticle.article_published_at.desc().nulls_last(), desc(NewsArticle.id)
     )
     if market_filter:
         stmt = stmt.where(NewsArticle.market == market_filter)
@@ -133,7 +317,7 @@ async def build_feed_news(
         next_cursor = _encode_cursor(last.article_published_at, last.id)
         rows = list(rows[:limit])
 
-    # Bulk-load summaries for the page.
+    # Bulk-load summaries and persisted related-symbol rows for the page.
     article_ids = [r.id for r in rows]
     analysis_map: dict[int, str] = {}
     if article_ids:
@@ -142,6 +326,7 @@ async def build_feed_news(
         ).where(NewsAnalysisResult.article_id.in_(article_ids))
         for art_id, summary in (await db.execute(a_stmt)).all():
             analysis_map[art_id] = summary
+    persisted_relations = await _related_symbols_by_article(db, article_ids)
 
     # ROB-148 — article_id → issue_id map for chip rendering.
     issue_id_for_article: dict[int, str] = {}
@@ -156,46 +341,15 @@ async def build_feed_news(
         if market_value not in ("kr", "us", "crypto"):
             continue
         market_typed = cast(NewsMarket, market_value)
-        related: list[NewsRelatedSymbol] = []
-        seen_related: set[tuple[str, str]] = set()
-
-        if row.stock_symbol:
-            _add_related_symbol(
-                related=related,
-                seen_related=seen_related,
-                resolver=resolver,
-                symbol=row.stock_symbol,
-                market=market_value,
-                display_name=row.stock_name or row.stock_symbol,
-                match_reason="stock_symbol",
-            )
-        for match in match_symbols_for_article(
-            title=row.title,
-            summary=analysis_map.get(row.id) or row.summary,
-            keywords=_coerce_keywords(getattr(row, "keywords", None)),
-            market=market_value,
-        ):
-            _add_related_symbol(
-                related=related,
-                seen_related=seen_related,
-                resolver=resolver,
-                symbol=match.symbol,
-                market=match.market,
-                display_name=match.canonical_name,
-                match_reason=match.reason,
-                matched_term=match.matched_term,
-            )
-        related_relations = {symbol.relation for symbol in related}
-        if "both" in related_relations or (
-            "held" in related_relations and "watchlist" in related_relations
-        ):
-            relation = "both"
-        elif "held" in related_relations:
-            relation = "held"
-        elif "watchlist" in related_relations:
-            relation = "watchlist"
-        else:
-            relation = "none"
+        analysis_summary = analysis_map.get(row.id)
+        related = _related_symbols_for_article(
+            row=row,
+            resolver=resolver,
+            analysis_summary=analysis_summary,
+            persisted_relations=persisted_relations,
+            market_value=market_value,
+        )
+        relation = _relation_from_related_symbols(related)
         items.append(
             FeedNewsItem(
                 id=row.id,
@@ -206,7 +360,7 @@ async def build_feed_news(
                 market=market_typed,
                 relatedSymbols=related,
                 issueId=issue_id_for_article.get(row.id),
-                summarySnippet=analysis_map.get(row.id) or row.summary,
+                summarySnippet=analysis_summary or row.summary,
                 relation=relation,
                 url=row.url,
             )
@@ -229,11 +383,15 @@ async def build_feed_news(
         elif before > 0 and not items:
             empty_reason = "no_matching_news"
 
+    warnings: list[str] = []
+    if include_quotes:
+        warnings.extend(await _enrich_related_symbols_with_quotes(items))
+
     return FeedNewsResponse(
         tab=tab,
         asOf=datetime.now(UTC),
         issues=issues,
         items=items,
         nextCursor=next_cursor,
-        meta=FeedNewsMeta(emptyReason=empty_reason),
+        meta=FeedNewsMeta(emptyReason=empty_reason, warnings=warnings),
     )

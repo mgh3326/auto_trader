@@ -22,6 +22,12 @@ class NewsRelatedSymbol(BaseModel):
     relation: RelationKind = "none"
     matchReason: str | None = None
     matchedTerm: str | None = None
+    currentPrice: float | None = None
+    previousClose: float | None = None
+    change: float | None = None
+    changePct: float | None = None
+    quoteSource: str | None = None
+    quoteAsOf: datetime | None = None
 
 
 class FeedNewsItem(BaseModel):

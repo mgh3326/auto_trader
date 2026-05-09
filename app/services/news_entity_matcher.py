@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from app.services.news_entity_alias_data import (
     ALL_ALIASES,
@@ -85,6 +86,47 @@ def match_symbols(
     return sorted(seen.values(), key=lambda m: (m.market, m.symbol))
 
 
+_URL_METADATA_PREFIXES = (
+    "canonical_url:",
+    "source_url:",
+    "url:",
+    "fingerprint:",
+)
+_URL_SCHEME_PREFIXES = (f"{'http'}://", f"{'https'}://")
+
+
+def _is_url_or_domain_token(token: str) -> bool:
+    stripped = token.strip().strip("'\"()[]{}<>,")
+    if not stripped:
+        return False
+    lowered = stripped.lower()
+    if lowered.startswith(_URL_SCHEME_PREFIXES):
+        return True
+    if any(lowered.startswith(prefix) for prefix in _URL_METADATA_PREFIXES):
+        return True
+    candidate = lowered if "://" in lowered else f"//{lowered}"
+    hostname = urlsplit(candidate).hostname or ""
+    if "." not in hostname:
+        return False
+    labels = hostname.split(".")
+    return all(label.replace("-", "").isalnum() for label in labels)
+
+
+def _clean_article_text(value: object) -> str:
+    """Strip URL/domain text before matching so metadata links don't create aliases."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return " ".join(
+        token for token in text.split() if not _is_url_or_domain_token(token)
+    )
+
+
+def _clean_keyword_text(keyword: object) -> str:
+    """Drop URL-like keyword metadata so domains do not create entity false positives."""
+    return _clean_article_text(keyword)
+
+
 def match_symbols_for_article(
     *,
     title: str | None,
@@ -95,9 +137,13 @@ def match_symbols_for_article(
     """Convenience wrapper: combine article fields then call `match_symbols`."""
     parts: list[str] = []
     if title:
-        parts.append(title)
+        if cleaned_title := _clean_article_text(title):
+            parts.append(cleaned_title)
     if summary:
-        parts.append(summary)
+        if cleaned_summary := _clean_article_text(summary):
+            parts.append(cleaned_summary)
     if keywords:
-        parts.append(" ".join(str(k) for k in keywords if k))
+        parts.append(
+            " ".join(cleaned for k in keywords if (cleaned := _clean_keyword_text(k)))
+        )
     return match_symbols(" \n ".join(parts), market=market)

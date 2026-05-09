@@ -87,6 +87,28 @@ def test_match_for_article_uses_title_summary_keywords():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("field", ["title", "summary", "keywords"])
+def test_match_for_article_strips_url_metadata_before_matching(field: str):
+    kwargs = {
+        "title": "마켓레이더 오전 자료",
+        "summary": "증권사 시장 요약",
+        "keywords": None,
+        "market": "kr",
+    }
+    metadata = "canonical_url:https://finance.naver.com/market_info_read.naver"
+    if field == "title":
+        kwargs["title"] = metadata
+    elif field == "summary":
+        kwargs["summary"] = metadata
+    else:
+        kwargs["keywords"] = [metadata]
+
+    matches = match_symbols_for_article(**kwargs)
+
+    assert not any(m.symbol == "035420" for m in matches)
+
+
+@pytest.mark.unit
 def test_match_returns_sorted_unique_by_symbol():
     matches = match_symbols("Amazon Amazon AMZN keeps rising", market="us")
     amzn_matches = [m for m in matches if m.symbol == "AMZN"]
