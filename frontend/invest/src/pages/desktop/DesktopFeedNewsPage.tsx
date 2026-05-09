@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { DesktopShell } from "../../desktop/DesktopShell";
-import { RightAccountPanel } from "../../desktop/RightAccountPanel";
-import { useAccountPanel } from "../../desktop/useAccountPanel";
+import { RightRemotePanel } from "../../desktop/RightRemotePanel";
 import { useViewport } from "../../hooks/useViewport";
 import { fetchFeedNews } from "../../api/feedNews";
 import type { FeedNewsResponse, FeedTab } from "../../types/feedNews";
@@ -22,7 +21,6 @@ export function FeedNewsRoute() {
 }
 
 export function DesktopFeedNewsPage() {
-  const panel = useAccountPanel();
   const [tab, setTab] = useState<FeedTab>("top");
   const [data, setData] = useState<FeedNewsResponse | undefined>();
   const [err, setErr] = useState<string | undefined>();
@@ -87,7 +85,7 @@ export function DesktopFeedNewsPage() {
           </div>
         </>
       }
-      right={<RightAccountPanel data={panel.data} loading={panel.loading} error={panel.error} onRefresh={panel.reload} />}
+      right={<RightRemotePanel />}
     />
   );
 }
