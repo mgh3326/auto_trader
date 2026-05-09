@@ -1,10 +1,9 @@
 """Trading decisions API router."""
 
 from datetime import UTC, datetime
-from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,6 +11,7 @@ from app.core.config import settings
 from app.core.db import get_db
 from app.models.trading import User
 from app.routers.dependencies import get_authenticated_user
+from app.routers.pagination import PaginationParams, pagination_params
 from app.schemas.operator_decision_session import (
     OperatorDecisionRequest,
     OperatorDecisionResponse,
@@ -51,6 +51,8 @@ from app.services.tradingagents_research_service import (
 )
 
 router = APIRouter(prefix="/trading", tags=["trading-decisions"])
+
+_list_pagination = pagination_params(default_limit=50, max_limit=200)
 
 
 def _to_action_detail(action) -> ActionDetail:
@@ -173,8 +175,7 @@ def _to_session_detail(session) -> SessionDetail:
 
 @router.get("/api/decisions", response_model=SessionListResponse)
 async def list_decisions(
-    limit: Annotated[int, Query(ge=1, le=200)] = 50,
-    offset: Annotated[int, Query(ge=0)] = 0,
+    p: PaginationParams = Depends(_list_pagination),
     status: SessionStatusLiteral | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_authenticated_user),
@@ -182,8 +183,8 @@ async def list_decisions(
     rows, total = await trading_decision_service.list_user_sessions(
         db,
         user_id=current_user.id,
-        limit=limit,
-        offset=offset,
+        limit=p.limit,
+        offset=p.offset,
         status=status,
     )
 
@@ -194,8 +195,8 @@ async def list_decisions(
     return SessionListResponse(
         sessions=sessions,
         total=total,
-        limit=limit,
-        offset=offset,
+        limit=p.limit,
+        offset=p.offset,
     )
 
 
