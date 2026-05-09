@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import math
 import re
 from typing import Any
 
@@ -229,6 +230,35 @@ def to_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except Exception:
         return default
+
+
+def _to_optional_float(value: Any) -> float | None:
+    """Convert value to float; return None for None, empty string, or NaN."""
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(number):
+        return None
+    return number
+
+
+def _to_optional_int(value: Any) -> int | None:
+    """Convert value to int; return None for None, empty string, or NaN intermediate."""
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(number):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def to_optional_float(value: Any) -> float | None:
@@ -901,6 +931,8 @@ __all__ = [
     "to_optional_float",
     "to_optional_int",
     "to_int",
+    "_to_optional_float",
+    "_to_optional_int",
     # Error payload
     "error_payload",
     # Account normalization
