@@ -12,6 +12,7 @@ modules — see tests/test_invest_view_model_safety.py.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any, Protocol
 
 from app.schemas.invest_screener import (
@@ -41,13 +42,13 @@ class _ResolverProto(Protocol):
 
 def build_screener_presets() -> ScreenerPresetsResponse:
     return ScreenerPresetsResponse(
-        presets=preset_definitions(),
+        presets=preset_definitions("kr"),
         selectedPresetId=DEFAULT_PRESET_ID,
     )
 
 
 _METRIC_FIELD: dict[str, str] = {
-    "consecutive_gainers": "change_rate",
+    "consecutive_gainers": "consecutive_up_days",
     "cheap_value": "per",
     "steady_dividend": "dividend_yield",
     "oversold_recovery": "rsi",
@@ -64,16 +65,20 @@ def _format_change_pct(rate: float | None) -> tuple[str, ChangeDirection]:
     return f"{sign}{rate:.2f}%", direction
 
 
-def _format_change_amount(amount: float | None, currency: str = "원") -> str:
+def _format_change_amount(amount: float | None, market: str = "kr") -> str:
     if amount is None:
         return "-"
-    sign = "+" if amount > 0 else ""
-    return f"{sign}{int(amount):,}{currency}"
+    sign = "+" if amount > 0 else "-" if amount < 0 else ""
+    if market == "us":
+        return f"{sign}${abs(float(amount)):,.2f}"
+    return f"{sign}{abs(int(amount)):,}원"
 
 
-def _format_price(close: float | None) -> str:
+def _format_price(close: float | None, market: str = "kr") -> str:
     if close is None:
         return "-"
+    if market == "us":
+        return f"${float(close):,.2f}"
     return f"{int(close):,}원"
 
 
@@ -176,10 +181,54 @@ def _normalize_market_cap_krw(
     return None, []
 
 
+
+def _format_market_cap_us(market_cap: float | None) -> str:
+    if market_cap is None or market_cap <= 0:
+        return "-"
+    if market_cap >= 1_000_000_000_000:
+        return f"${market_cap / 1_000_000_000_000:.2f}T"
+    if market_cap >= 1_000_000_000:
+        return f"${market_cap / 1_000_000_000:.1f}B"
+    if market_cap >= 1_000_000:
+        return f"${market_cap / 1_000_000:.1f}M"
+    return f"${market_cap:,.0f}"
+
+
+def _format_market_cap(row: dict[str, Any], market: str) -> tuple[str, list[str]]:
+    if market == "us":
+        market_cap = _coerce_float(row.get("market_cap_usd"))
+        if market_cap is None:
+            market_cap = _coerce_float(row.get("market_cap"))
+        return _format_market_cap_us(market_cap), []
+    market_cap, warnings = _normalize_market_cap_krw(row, market)
+    return _format_market_cap_kr(market_cap), warnings
+
 def _format_volume(volume: float | None) -> str:
     if volume is None:
         return "-"
     return f"{int(volume):,}"
+
+
+def calculate_consecutive_up_days(closes: Sequence[float | int | None]) -> int | None:
+    values = [_coerce_float(v) for v in closes]
+    values = [v for v in values if v is not None]
+    if len(values) < 2:
+        return None
+    streak = 0
+    for current, previous in zip(reversed(values[1:]), reversed(values[:-1]), strict=False):
+        if current > previous:
+            streak += 1
+            continue
+        break
+    return streak
+
+
+def _enrich_consecutive_up_days(preset_id: str, row: dict[str, Any]) -> None:
+    if preset_id != "consecutive_gainers" or row.get("consecutive_up_days") is not None:
+        return
+    history = row.get("daily_closes") or row.get("close_history") or row.get("closes")
+    if isinstance(history, Sequence) and not isinstance(history, (str, bytes)):
+        row["consecutive_up_days"] = calculate_consecutive_up_days(history)
 
 
 def _metric_value_label(preset_id: str, row: dict[str, Any]) -> tuple[str, list[str]]:
@@ -188,7 +237,11 @@ def _metric_value_label(preset_id: str, row: dict[str, Any]) -> tuple[str, list[
         return "-", []
     value = row.get(field)
     if value is None:
+        if field == "consecutive_up_days":
+            return "-", ["연속상승 데이터 준비중"]
         return "-", [f"{field.upper()} 데이터 준비중"]
+    if field == "consecutive_up_days":
+        return f"{int(value)}일", []
     if field == "change_rate":
         sign = "+" if value > 0 else ""
         return f"{sign}{value:.2f}%", []
@@ -205,8 +258,10 @@ async def build_screener_results(
     preset_id: str,
     screening_service: _ScreeningServiceProto,
     resolver: _ResolverProto,
+    market: str = "kr",
 ) -> ScreenerResultsResponse:
-    preset = get_preset(preset_id)
+    requested_market = "us" if market == "us" else "kr"
+    preset = get_preset(preset_id, requested_market)
     if preset is None:
         return ScreenerResultsResponse(
             presetId=preset_id,
@@ -218,17 +273,18 @@ async def build_screener_results(
             warnings=[f"알 수 없는 프리셋: {preset_id}"],
         )
 
-    filters = screening_filters_for(preset_id)
+    filters = screening_filters_for(preset_id, requested_market)
     raw = await screening_service.list_screening(**filters)
     rows: list[dict[str, Any]] = list(raw.get("results") or raw.get("stocks") or [])
     upstream_warnings: list[str] = list(raw.get("warnings") or [])
 
     results: list[ScreenerResultRow] = []
     for idx, row in enumerate(rows, start=1):
-        market = _normalize_market(row.get("market"))
+        market = _normalize_market(row.get("market") or requested_market)
         symbol, symbol_warnings = _normalize_symbol(row, market)
-        market_cap, market_cap_warnings = _normalize_market_cap_krw(row, market)
+        market_cap_label, market_cap_warnings = _format_market_cap(row, market)
         change_pct_label, direction = _format_change_pct(row.get("change_rate"))
+        _enrich_consecutive_up_days(preset_id, row)
         metric_label, metric_warnings = _metric_value_label(preset_id, row)
         relation = resolver.relation(market, symbol)
         is_watched = relation in ("watchlist", "both")
@@ -241,12 +297,12 @@ async def build_screener_results(
                 name=_clean_text(row.get("name")) or symbol,
                 logoUrl=row.get("logo_url"),
                 isWatched=is_watched,
-                priceLabel=_format_price(row.get("close") or row.get("price")),
+                priceLabel=_format_price(row.get("close") or row.get("price") or row.get("current_price"), market),
                 changePctLabel=change_pct_label,
-                changeAmountLabel=_format_change_amount(row.get("change_amount")),
+                changeAmountLabel=_format_change_amount(row.get("change_amount"), market),
                 changeDirection=direction,
                 category=str(row.get("sector") or row.get("category") or "-"),
-                marketCapLabel=_format_market_cap_kr(market_cap),
+                marketCapLabel=market_cap_label,
                 volumeLabel=_format_volume(row.get("volume")),
                 analystLabel=str(row.get("analyst_label") or "-"),
                 metricValueLabel=metric_label,

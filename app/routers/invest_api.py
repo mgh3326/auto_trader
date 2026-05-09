@@ -7,7 +7,7 @@ import 하지 않는다. order / watch / scheduler / mutation 경로 import 금�
 from __future__ import annotations
 
 from datetime import date
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -185,6 +185,7 @@ async def get_screener_results_endpoint(
     service: Annotated[InvestHomeService, Depends(get_invest_home_service)],
     screening_service: Annotated[Any, Depends(get_screener_service_dep)],
     preset: str = Query(..., min_length=1),
+    market: Literal["kr", "us"] = Query("kr"),
 ) -> ScreenerResultsResponse:
     home = await service.get_home(user_id=user.id)
     resolver = await build_relation_resolver(
@@ -194,4 +195,5 @@ async def get_screener_results_endpoint(
         preset_id=preset,
         screening_service=screening_service,
         resolver=resolver,
+        market=market,
     )

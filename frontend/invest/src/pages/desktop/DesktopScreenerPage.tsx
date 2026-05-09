@@ -7,6 +7,7 @@ import { ScreenerResultsTable } from "../../desktop/screener/ScreenerResultsTabl
 import { ScreenerFilterModal } from "../../desktop/screener/ScreenerFilterModal";
 import { fetchScreenerPresets, fetchScreenerResults } from "../../api/screener";
 import type {
+  ScreenerMarket,
   ScreenerPresetsResponse,
   ScreenerResultsResponse,
 } from "../../types/screener";
@@ -15,6 +16,7 @@ import "../../desktop/screener/screener.css";
 export function DesktopScreenerPage() {
   const [presets, setPresets] = useState<ScreenerPresetsResponse | undefined>();
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedMarket, setSelectedMarket] = useState<Extract<ScreenerMarket, "kr" | "us">>("kr");
   const [results, setResults] = useState<ScreenerResultsResponse | undefined>();
   const [err, setErr] = useState<string | undefined>();
   const [modalOpen, setModalOpen] = useState(false);
@@ -37,7 +39,7 @@ export function DesktopScreenerPage() {
     let cancel = false;
     setResults(undefined);
     setErr(undefined);
-    fetchScreenerResults(selectedId)
+    fetchScreenerResults(selectedId, selectedMarket)
       .then((r) => {
         if (cancel) return;
         setErr(undefined);
@@ -45,7 +47,7 @@ export function DesktopScreenerPage() {
       })
       .catch((e) => !cancel && setErr(String(e?.message ?? e)));
     return () => { cancel = true; };
-  }, [selectedId]);
+  }, [selectedId, selectedMarket]);
 
   return (
     <DesktopShell
@@ -58,6 +60,24 @@ export function DesktopScreenerPage() {
       }
       center={
         <div data-testid="screener-center">
+          <div className="screener-market-toggle" role="group" aria-label="시장 선택">
+            <button
+              type="button"
+              className={selectedMarket === "kr" ? "is-active" : ""}
+              aria-pressed={selectedMarket === "kr"}
+              onClick={() => setSelectedMarket("kr")}
+            >
+              국내
+            </button>
+            <button
+              type="button"
+              className={selectedMarket === "us" ? "is-active" : ""}
+              aria-pressed={selectedMarket === "us"}
+              onClick={() => setSelectedMarket("us")}
+            >
+              미국
+            </button>
+          </div>
           {err && <div style={{ color: "var(--danger)", marginBottom: 12 }}>오류: {err}</div>}
           {results ? (
             <>

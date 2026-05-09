@@ -144,3 +144,34 @@ def test_screener_results_endpoint_requires_preset_param() -> None:
     client = TestClient(_build_app(stub_screening=stub))
     r = client.get("/invest/api/screener/results")
     assert r.status_code == 422  # missing required query param
+
+
+@pytest.mark.unit
+def test_screener_results_endpoint_forwards_market_query() -> None:
+    stub = _StubScreening(
+        payload={
+            "results": [
+                {
+                    "symbol": "AAPL",
+                    "name": "Apple Inc.",
+                    "market": "us",
+                    "sector": "Technology",
+                    "market_cap_usd": 3_200_000_000_000,
+                    "current_price": 210.4,
+                    "change_rate": 1.5,
+                    "change_amount": 3.1,
+                    "volume": 50_000_000,
+                    "per": 32.1,
+                }
+            ],
+            "warnings": [],
+        }
+    )
+    client = TestClient(_build_app(stub_screening=stub))
+    r = client.get("/invest/api/screener/results?preset=cheap_value&market=us")
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["results"][0]["market"] == "us"
+    assert body["results"][0]["marketCapLabel"] == "$3.20T"
+    assert stub.calls and stub.calls[0]["market"] == "us"

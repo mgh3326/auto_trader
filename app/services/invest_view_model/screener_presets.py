@@ -24,9 +24,9 @@ SCREENER_PRESETS: list[ScreenerPreset] = [
         filterChips=[
             ScreenerFilterChip(label="국내", detail=None),
             ScreenerFilterChip(label="주가등락률", detail="1주일 전 보다 · 0% 이상"),
-            ScreenerFilterChip(label="주가 연속상승", detail="5일 이상 연속"),
+            ScreenerFilterChip(label="주가 연속상승", detail="최신 일봉 기준"),
         ],
-        metricLabel="주가등락률",
+        metricLabel="연속상승",
         market="kr",
     ),
     ScreenerPreset(
@@ -145,18 +145,45 @@ _SCREENING_FILTERS: dict[str, dict[str, object]] = {
 }
 
 
-def preset_definitions() -> list[ScreenerPreset]:
-    """Return a copy of the static preset list."""
-    return list(SCREENER_PRESETS)
+def _market_chip(market: str) -> ScreenerFilterChip:
+    return ScreenerFilterChip(label="미국" if market == "us" else "국내", detail=None)
 
 
-def get_preset(preset_id: str) -> ScreenerPreset | None:
+def _with_market(preset: ScreenerPreset, market: str) -> ScreenerPreset:
+    chips = list(preset.filterChips)
+    if chips:
+        chips[0] = _market_chip(market)
+    else:
+        chips = [_market_chip(market)]
+    return preset.model_copy(update={"market": market, "filterChips": chips})
+
+
+def preset_definitions(market: str = "kr") -> list[ScreenerPreset]:
+    """Return preset definitions localized for the requested market."""
+    normalized_market = "us" if market == "us" else "kr"
+    return [_with_market(p, normalized_market) for p in SCREENER_PRESETS]
+
+
+def get_preset(preset_id: str, market: str = "kr") -> ScreenerPreset | None:
+    normalized_market = "us" if market == "us" else "kr"
     for p in SCREENER_PRESETS:
         if p.id == preset_id:
-            return p
+            return _with_market(p, normalized_market)
     return None
 
 
-def screening_filters_for(preset_id: str) -> dict[str, object]:
-    """Return the screening service kwargs for a preset, or {} if unknown."""
-    return dict(_SCREENING_FILTERS.get(preset_id, {}))
+def screening_filters_for(preset_id: str, market: str = "kr") -> dict[str, object]:
+    """Return screening service kwargs for a preset/market, or {} if unknown."""
+    filters = dict(_SCREENING_FILTERS.get(preset_id, {}))
+    if not filters:
+        return {}
+    normalized_market = "us" if market == "us" else "kr"
+    filters["market"] = normalized_market
+    if normalized_market == "us":
+        # The US screening path supports PER/dividend/RSI/volume/change filters,
+        # but not the KR-specific PBR constraint used by this logical preset.
+        filters.pop("max_pbr", None)
+        if preset_id == "growth_expectation":
+            # US engine expects market cap in USD, not KRW.
+            filters["min_market_cap"] = 1_000_000_000.0
+    return filters

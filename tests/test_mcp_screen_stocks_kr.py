@@ -3,9 +3,11 @@ from __future__ import annotations
 
 from typing import Any
 
+import pandas as pd
 import pytest
 
 from app.mcp_server.tooling import analysis_screening
+from app.mcp_server.tooling.screening import kr as kr_screening
 from tests._mcp_screen_stocks_support import (
     TestScreenStocksFundamentalsExpansion,
     TestScreenStocksKR,
@@ -217,3 +219,42 @@ async def test_screen_stocks_crypto_strategy_preserves_explicit_sort(
     assert called["max_rsi"] == pytest.approx(30.0)
     assert called["sort_by"] == "rsi"
     assert called["sort_order"] == "desc"
+
+
+@pytest.mark.asyncio
+async def test_normalize_kr_results_prefers_krx_canonical_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_fetch_stock_all_cached(*, market: str) -> list[dict[str, Any]]:
+        return [
+            {
+                "code": "005930",
+                "short_code": "005930",
+                "name": "삼성전자",
+                "market": market,
+            }
+        ]
+
+    async def fake_fetch_valuation_all_cached(*, market: str) -> dict[str, dict[str, Any]]:
+        return {}
+
+    monkeypatch.setattr(kr_screening, "fetch_stock_all_cached", fake_fetch_stock_all_cached)
+    monkeypatch.setattr(
+        kr_screening, "fetch_valuation_all_cached", fake_fetch_valuation_all_cached
+    )
+
+    df = pd.DataFrame(
+        [
+            {
+                "symbol": "KRX:005930",
+                "name": "Samsung Electronics",
+                "description": "Samsung Electronics",
+                "price": 80_000,
+            }
+        ]
+    )
+
+    rows = await kr_screening._normalize_kr_results(df, market="kr")
+
+    assert rows[0]["name"] == "삼성전자"
+    assert rows[0]["instrument_type"] == "common"
