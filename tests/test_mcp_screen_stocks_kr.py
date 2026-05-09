@@ -235,10 +235,14 @@ async def test_normalize_kr_results_prefers_krx_canonical_name(
             }
         ]
 
-    async def fake_fetch_valuation_all_cached(*, market: str) -> dict[str, dict[str, Any]]:
+    async def fake_fetch_valuation_all_cached(
+        *, market: str
+    ) -> dict[str, dict[str, Any]]:
         return {}
 
-    monkeypatch.setattr(kr_screening, "fetch_stock_all_cached", fake_fetch_stock_all_cached)
+    monkeypatch.setattr(
+        kr_screening, "fetch_stock_all_cached", fake_fetch_stock_all_cached
+    )
     monkeypatch.setattr(
         kr_screening, "fetch_valuation_all_cached", fake_fetch_valuation_all_cached
     )

@@ -181,7 +181,6 @@ def _normalize_market_cap_krw(
     return None, []
 
 
-
 def _format_market_cap_us(market_cap: float | None) -> str:
     if market_cap is None or market_cap <= 0:
         return "-"
@@ -203,6 +202,7 @@ def _format_market_cap(row: dict[str, Any], market: str) -> tuple[str, list[str]
     market_cap, warnings = _normalize_market_cap_krw(row, market)
     return _format_market_cap_kr(market_cap), warnings
 
+
 def _format_volume(volume: float | None) -> str:
     if volume is None:
         return "-"
@@ -215,7 +215,9 @@ def calculate_consecutive_up_days(closes: Sequence[float | int | None]) -> int |
     if len(values) < 2:
         return None
     streak = 0
-    for current, previous in zip(reversed(values[1:]), reversed(values[:-1]), strict=False):
+    for current, previous in zip(
+        reversed(values[1:]), reversed(values[:-1]), strict=False
+    ):
         if current > previous:
             streak += 1
             continue
@@ -297,9 +299,14 @@ async def build_screener_results(
                 name=_clean_text(row.get("name")) or symbol,
                 logoUrl=row.get("logo_url"),
                 isWatched=is_watched,
-                priceLabel=_format_price(row.get("close") or row.get("price") or row.get("current_price"), market),
+                priceLabel=_format_price(
+                    row.get("close") or row.get("price") or row.get("current_price"),
+                    market,
+                ),
                 changePctLabel=change_pct_label,
-                changeAmountLabel=_format_change_amount(row.get("change_amount"), market),
+                changeAmountLabel=_format_change_amount(
+                    row.get("change_amount"), market
+                ),
                 changeDirection=direction,
                 category=str(row.get("sector") or row.get("category") or "-"),
                 marketCapLabel=market_cap_label,

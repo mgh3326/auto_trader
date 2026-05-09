@@ -101,7 +101,9 @@ async def test_build_screener_results_consecutive_gainers_happy_path() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_build_screener_results_forwards_us_market_and_formats_us_labels() -> None:
+async def test_build_screener_results_forwards_us_market_and_formats_us_labels() -> (
+    None
+):
     fake_screening = MagicMock()
     fake_screening.list_screening = AsyncMock(
         return_value={
@@ -161,7 +163,9 @@ async def test_build_screener_results_forwards_us_market_and_formats_us_labels()
 @pytest.mark.unit
 def test_calculate_consecutive_up_days_counts_latest_streak() -> None:
     assert screener_service.calculate_consecutive_up_days([100, 101, 102, 103]) == 3
-    assert screener_service.calculate_consecutive_up_days([100, 101, 100, 102, 103]) == 2
+    assert (
+        screener_service.calculate_consecutive_up_days([100, 101, 100, 102, 103]) == 2
+    )
     assert screener_service.calculate_consecutive_up_days([100, 101, 101, 102]) == 1
     assert screener_service.calculate_consecutive_up_days([100]) is None
 
