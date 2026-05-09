@@ -6,28 +6,10 @@ import { DesktopFeedNewsPage } from "../pages/desktop/DesktopFeedNewsPage";
 import { AccountPanelProvider } from "../desktop/AccountPanelProvider";
 import * as feedApi from "../api/feedNews";
 import * as panelApi from "../api/accountPanel";
-import * as signalsApi from "../api/signals";
+import type { FeedNewsResponse } from "../types/feedNews";
 
-function wrap(ui: React.ReactElement) {
-  return (
-    <AccountPanelProvider>
-      <MemoryRouter basename="/invest" initialEntries={["/invest/feed/news"]}>
-        {ui}
-      </MemoryRouter>
-    </AccountPanelProvider>
-  );
-}
-
-beforeEach(() => {
-  vi.spyOn(panelApi, "fetchAccountPanel").mockResolvedValue({
-    homeSummary: { includedSources: [], excludedSources: [], totalValueKrw: 0 },
-    accounts: [], groupedHoldings: [], watchSymbols: [], sourceVisuals: [],
-    meta: { warnings: [], watchlistAvailable: true },
-  });
-  vi.spyOn(signalsApi, "fetchSignals").mockResolvedValue({
-    tab: "kr", asOf: new Date().toISOString(), items: [], meta: { warnings: [] },
-  });
-  vi.spyOn(feedApi, "fetchFeedNews").mockResolvedValue({
+function feedResponse(overrides: Partial<FeedNewsResponse> = {}): FeedNewsResponse {
+  return {
     tab: "top",
     asOf: new Date().toISOString(),
     issues: [
@@ -72,43 +54,125 @@ beforeEach(() => {
             relation: "watchlist",
             matchReason: "alias_dict",
             matchedTerm: "삼성전자",
+            quote: { changeRate: 1.23 },
+          },
+          {
+            symbol: "000660",
+            market: "kr",
+            displayName: "SK하이닉스",
+            relation: "none",
+            matchReason: "alias_dict",
+            matchedTerm: "하닉",
           },
         ],
         relation: "watchlist",
-        url: "x",
+        url: "https://example.com/n1",
         publisher: "Reuters",
+        feedSource: "browser_naver_research",
+        publishedAt: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
         issueId: "iss-xyz",
+        summarySnippet: "삼성전자 실적 발표 요약입니다.",
       },
     ],
     meta: { warnings: [] },
+    ...overrides,
+  };
+}
+
+function renderPage() {
+  return render(
+    <AccountPanelProvider>
+      <MemoryRouter basename="/invest" initialEntries={["/invest/feed/news"]}>
+        <DesktopFeedNewsPage />
+      </MemoryRouter>
+    </AccountPanelProvider>,
+  );
+}
+
+beforeEach(() => {
+  vi.spyOn(panelApi, "fetchAccountPanel").mockResolvedValue({
+    homeSummary: { includedSources: [], excludedSources: [], totalValueKrw: 0 },
+    accounts: [],
+    groupedHoldings: [],
+    watchSymbols: [],
+    sourceVisuals: [],
+    meta: { warnings: [], watchlistAvailable: true },
   });
+  vi.spyOn(feedApi, "fetchFeedNews").mockResolvedValue(feedResponse());
 });
 
-test("renders news items and reacts to tab change", async () => {
-  render(wrap(<DesktopFeedNewsPage />));
-  await waitFor(() => expect(screen.getAllByTestId("feed-item")).toHaveLength(1));
+test("renders dense news rows and reacts to tab change", async () => {
+  renderPage();
+
+  const row = await screen.findByTestId("feed-item");
+  expect(row).toHaveTextContent("n1");
+  expect(row).toHaveTextContent("Reuters");
+  expect(row).toHaveTextContent("KR");
+  expect(row).toHaveTextContent("시간 전");
+
   await userEvent.click(screen.getByTestId("tab-latest"));
   await waitFor(() => expect(feedApi.fetchFeedNews).toHaveBeenCalledTimes(2));
 });
 
 test("renders an issue chip linked to the issue detail page when issueId is present", async () => {
-  render(wrap(<DesktopFeedNewsPage />));
+  renderPage();
+
   const chip = await screen.findByTestId("feed-item-issue-chip");
   expect(chip).toHaveTextContent("삼성전자 실적 발표");
   // Chip points at the canonical /discover route (Stage 4.2). Legacy
   // /app/discover/issues/:id remains routable for backwards compat.
   expect(chip).toHaveAttribute("href", "/invest/discover/issues/iss-xyz");
   expect(chip).toHaveAttribute("data-issue-id", "iss-xyz");
+  expect(chip.tagName.toLowerCase()).toBe("a");
 });
 
+test("renders related symbol chips as read-only badges with optional quote seam", async () => {
+  renderPage();
 
-test("renders related symbol chips as read-only badges", async () => {
-  render(wrap(<DesktopFeedNewsPage />));
-  const chip = await screen.findByTestId("feed-item-related-symbol-chip");
-  expect(chip).toHaveTextContent("005930");
-  expect(chip).toHaveTextContent("삼성전자");
-  expect(chip).toHaveAttribute("data-symbol", "005930");
-  expect(chip).toHaveAttribute("data-market", "kr");
-  expect(chip).toHaveAttribute("data-relation", "watchlist");
-  expect(chip.tagName.toLowerCase()).toBe("span");
+  const chips = await screen.findAllByTestId("feed-item-related-symbol-chip");
+  expect(chips).toHaveLength(2);
+  const quotedChip = chips[0]!;
+  const unquotedChip = chips[1]!;
+
+  expect(quotedChip).toHaveTextContent("005930");
+  expect(quotedChip).toHaveTextContent("삼성전자");
+  expect(quotedChip).toHaveTextContent("관심");
+  expect(quotedChip).toHaveTextContent("+1.23%");
+  expect(quotedChip).toHaveAttribute("data-symbol", "005930");
+  expect(quotedChip).toHaveAttribute("data-market", "kr");
+  expect(quotedChip).toHaveAttribute("data-relation", "watchlist");
+  expect(quotedChip.tagName.toLowerCase()).toBe("span");
+
+  expect(unquotedChip).toHaveTextContent("000660");
+  expect(unquotedChip).not.toHaveTextContent("%");
+  expect(unquotedChip.tagName.toLowerCase()).toBe("span");
+});
+
+test("expands summaries from a sibling toggle without nested interactive elements", async () => {
+  renderPage();
+
+  const row = await screen.findByTestId("feed-item");
+  expect(row.querySelectorAll("button a, a button, button button, a a")).toHaveLength(0);
+  expect(row.querySelector("button [data-testid='feed-item-issue-chip']")).toBeNull();
+
+  await userEvent.click(screen.getByRole("button", { name: "n1 요약 더보기" }));
+  expect(await screen.findByTestId("feed-item-summary")).toHaveTextContent("삼성전자 실적 발표 요약입니다.");
+});
+
+test("renders loading state before feed news resolves", async () => {
+  vi.spyOn(feedApi, "fetchFeedNews").mockReturnValue(new Promise(() => undefined));
+
+  renderPage();
+
+  expect(await screen.findByTestId("feed-news-loading")).toHaveTextContent("최신 뉴스를 불러오는 중입니다");
+});
+
+test("renders reason-specific empty state", async () => {
+  vi.spyOn(feedApi, "fetchFeedNews").mockResolvedValue(
+    feedResponse({ items: [], issues: [], meta: { warnings: [], emptyReason: "no_matching_news" } }),
+  );
+
+  renderPage();
+
+  expect(await screen.findByTestId("feed-news-empty")).toHaveTextContent("조건에 맞는 뉴스가 없습니다.");
 });
