@@ -11,10 +11,13 @@ from app.core.db import get_db
 from app.models.trading import User
 
 
-async def get_authenticated_user(
-    request: Request, db: AsyncSession = Depends(get_db)
+async def _resolve_user_from_request(
+    request: Request,
+    db: AsyncSession,
+    *,
+    detail: str,
 ) -> User:
-    """Return authenticated user from request state or session."""
+    """Shared auth resolution: state.user → session → 401."""
     user = getattr(request.state, "user", None)
     if user:
         return user
@@ -25,7 +28,16 @@ async def get_authenticated_user(
 
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail=AUTH_REQUIRED_MESSAGE,
+        detail=detail,
+    )
+
+
+async def get_authenticated_user(
+    request: Request, db: AsyncSession = Depends(get_db)
+) -> User:
+    """Return authenticated user from request state or session."""
+    return await _resolve_user_from_request(
+        request, db, detail=AUTH_REQUIRED_MESSAGE
     )
 
 
@@ -34,14 +46,6 @@ async def get_user_from_request(
     db: AsyncSession = Depends(get_db),
 ) -> User:
     """웹 세션 또는 API 토큰에서 사용자 조회 (symbol-settings 전용)"""
-    if hasattr(request.state, "user") and request.state.user:
-        return request.state.user
-
-    user = await get_current_user_from_session(request, db)
-    if user:
-        return user
-
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Authentication required",
+    return await _resolve_user_from_request(
+        request, db, detail="Authentication required"
     )
