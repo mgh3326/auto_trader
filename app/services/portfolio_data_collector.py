@@ -15,22 +15,50 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 import app.services.brokers.upbit.client as upbit_service
 from app.core.normalizers import to_float as _to_float
+from app.models.manual_holdings import MarketType
 from app.services.brokers.kis.client import KISClient
 from app.services.manual_holdings_service import ManualHoldingsService
-
-# Re-use constants and tiny converters from overview service to avoid duplication.
-# (These are module-level private helpers with no external callers.)
-from app.services.portfolio_overview_service import (
-    _MARKET_CRYPTO,
-    _MARKET_KR,
-    _MARKET_US,
-    _kis_percent_to_decimal,
-    _normalize_market_type,
-    _normalize_symbol,
-)
 from app.services.upbit_symbol_universe_service import get_active_upbit_markets
 
+# Market-type constants (kept in sync with portfolio_overview_service.py)
+_MARKET_KR = "KR"
+_MARKET_US = "US"
+_MARKET_CRYPTO = "CRYPTO"
+
 logger = logging.getLogger(__name__)
+
+
+def _kis_percent_to_decimal(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value) / 100.0
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_market_type(value: Any) -> str | None:
+    if isinstance(value, MarketType):
+        normalized = value.value.upper()
+    elif value is None:
+        return None
+    else:
+        normalized = str(value).strip().upper()
+
+    if normalized == "COIN":
+        return _MARKET_CRYPTO
+    if normalized in {_MARKET_KR, _MARKET_US, _MARKET_CRYPTO}:
+        return normalized
+    return None
+
+
+def _normalize_symbol(symbol: str, market_type: str) -> str:
+    normalized = str(symbol or "").strip().upper()
+    if market_type == _MARKET_CRYPTO:
+        if "-" in normalized:
+            return normalized
+        return f"KRW-{normalized}"
+    return normalized
 
 
 def _log_broker_failure(
