@@ -9,9 +9,9 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from app.core.config import settings
+from app.core.cli import setup_logging_and_sentry
 from app.core.db import AsyncSessionLocal
-from app.monitoring.sentry import capture_exception, init_sentry
+from app.monitoring.sentry import capture_exception
 from app.services.research_ingestion_service import ingest_summary_payload
 
 logger = logging.getLogger(__name__)
@@ -59,11 +59,7 @@ async def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    logging.basicConfig(
-        level=getattr(logging, settings.LOG_LEVEL, logging.INFO),
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
-    init_sentry(service_name="research-ingestion")
+    setup_logging_and_sentry(service_name="research-ingestion")
 
     gate_config = {
         "minimum_trade_count": args.minimum_trade_count,

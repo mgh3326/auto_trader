@@ -29,9 +29,9 @@ from datetime import date, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
+from app.core.cli import setup_logging_and_sentry
 from app.core.db import AsyncSessionLocal
-from app.monitoring.sentry import capture_exception, init_sentry
+from app.monitoring.sentry import capture_exception
 from app.services.market_events.ingestion import (
     ingest_economic_events_for_date,
     ingest_kr_disclosures_for_date,
@@ -154,11 +154,7 @@ async def run_ingest(
 
 
 async def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(
-        level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
-    init_sentry(service_name="market-events-ingest")
+    setup_logging_and_sentry(service_name="market-events-ingest")
     ns = parse_args(argv)
 
     try:
