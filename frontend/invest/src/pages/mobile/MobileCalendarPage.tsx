@@ -5,6 +5,7 @@ import type { CalendarResponse, WeeklySummaryResponse } from "../../types/calend
 import { Icon } from "../../ds";
 import { CalendarMonthHeader } from "../../components/calendar/CalendarMonthHeader";
 import { WeekDateStrip } from "../../components/calendar/WeekDateStrip";
+import { CalendarFreshnessBanner } from "../../components/calendar/CalendarFreshnessBanner";
 import { SelectedDateEvents } from "../../components/calendar/SelectedDateEvents";
 import { EventDetailModal } from "../../components/calendar/EventDetailModal";
 import { SparkleIcon } from "../../components/calendar/SparkleIcon";
@@ -45,7 +46,7 @@ function buildWeekDays(weekStart: Date, calendarDays: CalendarDay[]): CalendarDa
     const d = new Date(weekStart);
     d.setDate(d.getDate() + i);
     const iso = fmtLocal(d);
-    out.push(byDate.get(iso) ?? { date: iso, events: [], clusters: [] });
+    out.push(byDate.get(iso) ?? { date: iso, events: [], clusters: [], dataState: "missing" as const });
   }
   return out;
 }
@@ -214,6 +215,11 @@ export function MobileCalendarPage() {
             })}
           </div>
 
+          {calendar?.meta?.sourceFreshness && (
+            <div style={{ padding: "0 12px 8px" }}>
+              <CalendarFreshnessBanner sources={calendar.meta.sourceFreshness} />
+            </div>
+          )}
           <SelectedDateEvents
             dateLabel={selectedDateLabelWithRelative(selectedDate, today)}
             dateIso={selectedDate}

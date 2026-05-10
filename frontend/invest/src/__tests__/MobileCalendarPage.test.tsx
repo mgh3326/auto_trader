@@ -22,6 +22,7 @@ const calendarFixture: CalendarResponse = {
       date: "2026-05-11",
       events: [event({ eventId: "e1", title: "AAPL earnings", market: "us", eventType: "earnings" })],
       clusters: [],
+      dataState: "loaded",
     },
     {
       date: "2026-05-13",
@@ -33,9 +34,10 @@ const calendarFixture: CalendarResponse = {
           topEvents: [event({ eventId: "t1", title: "AAPL", market: "us", eventType: "earnings" })],
         },
       ],
+      dataState: "loaded",
     },
   ],
-  meta: { warnings: [] },
+  meta: { warnings: [], sourceFreshness: [], coverage: null },
 };
 
 function wrap(ui: React.ReactElement) {
