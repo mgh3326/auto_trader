@@ -28,6 +28,7 @@ from app.schemas.invest_screener import (
 )
 from app.schemas.invest_signals import SignalsResponse, SignalTab
 from app.services.invest_home_service import InvestHomeService
+from app.services.invest_screener_snapshots.coverage_service import build_coverage
 from app.services.invest_view_model.account_panel_service import build_account_panel
 from app.services.invest_view_model.calendar_service import build_calendar
 from app.services.invest_view_model.feed_news_service import build_feed_news
@@ -196,4 +197,26 @@ async def get_screener_results_endpoint(
         screening_service=screening_service,
         resolver=resolver,
         market=market,
+        session=db,
     )
+
+
+@router.get("/screener/snapshots/coverage")
+async def screener_snapshots_coverage(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    market: Literal["kr", "us"] = Query("kr"),
+) -> dict:
+    """Read-only coverage summary for invest_screener_snapshots (ROB-170)."""
+    report = await build_coverage(db, market=market)
+    return {
+        "market": report.market,
+        "asOf": report.asOf.isoformat(),
+        "totalSymbolsInUniverse": report.totalSymbolsInUniverse,
+        "snapshotsCoveringToday": report.snapshotsCoveringToday,
+        "snapshotsStale": report.snapshotsStale,
+        "snapshotsMissing": report.snapshotsMissing,
+        "lastComputedAt": report.lastComputedAt.isoformat()
+        if report.lastComputedAt
+        else None,
+        "dataState": report.dataState,
+    }

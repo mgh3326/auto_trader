@@ -18,6 +18,8 @@ from datetime import time as _time
 from typing import Any, Literal, Protocol
 from zoneinfo import ZoneInfo
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.schemas.invest_screener import (
     ChangeDirection,
     ScreenerFreshness,
@@ -290,6 +292,7 @@ def _build_freshness(
     cache_hit: bool,
     market: str,
     now: Callable[[], datetime],
+    dataState: str = "missing",
 ) -> ScreenerFreshness:
     now_utc = now()
     if not raw_timestamp:
@@ -322,6 +325,7 @@ def _build_freshness(
         relativeLabel=relative,
         cacheHit=bool(cache_hit),
         source=source,
+        dataState=dataState,  # type: ignore[arg-type]
     )
 
 
@@ -331,6 +335,7 @@ async def build_screener_results(
     resolver: _ResolverProto,
     market: str = "kr",
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    session: AsyncSession | None = None,
 ) -> ScreenerResultsResponse:
     requested_market = "us" if market == "us" else "kr"
     preset = get_preset(preset_id, requested_market)
@@ -354,14 +359,44 @@ async def build_screener_results(
 
     filters = screening_filters_for(preset_id, requested_market)
     raw = await screening_service.list_screening(**filters)
+    rows: list[dict[str, Any]] = list(raw.get("results") or raw.get("stocks") or [])
+    upstream_warnings: list[str] = list(raw.get("warnings") or [])
+
+    # Aggregate snapshot dataState from enriched rows (set by _enrich_consecutive_up_days when session provided)
+    from app.services.invest_screener_snapshots.freshness import aggregate_states
+
+    _row_states: list[str] = [
+        str(r.get("_screener_snapshot_state") or "missing") for r in rows
+    ]
+    _aggregated_data_state = aggregate_states(_row_states)  # type: ignore[arg-type]
+
     freshness = _build_freshness(
         raw_timestamp=raw.get("timestamp"),
         cache_hit=bool(raw.get("cache_hit")),
         market=requested_market,
         now=now,
+        dataState=_aggregated_data_state,
     )
-    rows: list[dict[str, Any]] = list(raw.get("results") or raw.get("stocks") or [])
-    upstream_warnings: list[str] = list(raw.get("warnings") or [])
+
+    # Bulk-lookup Korean names for KR rows from kr_symbol_universe
+    _kr_names: dict[str, str] = {}
+    if session is not None and requested_market == "kr" and rows:
+        import sqlalchemy as sa
+
+        from app.models.kr_symbol_universe import KRSymbolUniverse
+
+        kr_symbols = [
+            _normalize_symbol(r, "kr")[0]
+            for r in rows
+            if _normalize_market(r.get("market") or requested_market) == "kr"
+        ]
+        if kr_symbols:
+            _kr_result = await session.execute(
+                sa.select(KRSymbolUniverse.symbol, KRSymbolUniverse.name).where(
+                    KRSymbolUniverse.symbol.in_(kr_symbols)
+                )
+            )
+            _kr_names = {row_t.symbol: row_t.name for row_t in _kr_result.all()}
 
     results: list[ScreenerResultRow] = []
     for idx, row in enumerate(rows, start=1):
@@ -379,7 +414,7 @@ async def build_screener_results(
                 rank=idx,
                 symbol=symbol,
                 market=market,  # type: ignore[arg-type]
-                name=_clean_text(row.get("name")) or symbol,
+                name=_kr_names.get(symbol) or _clean_text(row.get("name")) or symbol,
                 logoUrl=row.get("logo_url"),
                 isWatched=is_watched,
                 priceLabel=_format_price(
