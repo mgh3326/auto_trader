@@ -175,3 +175,61 @@ def test_screener_results_endpoint_forwards_market_query() -> None:
     assert body["results"][0]["market"] == "us"
     assert body["results"][0]["marketCapLabel"] == "$3.20T"
     assert stub.calls and stub.calls[0]["market"] == "us"
+
+
+@pytest.mark.unit
+def test_screener_consecutive_gainers_returns_streak_and_freshness() -> None:
+    stub_payload = {
+        "results": [
+            {
+                "symbol": "005930",
+                "name": "삼성전자",
+                "market": "kr",
+                "sector": "반도체",
+                "market_cap_krw": 478_000_000_000_000,
+                "close": 80_000,
+                "change_rate": 1.23,
+                "change_amount": 970,
+                "consecutive_up_days": 6,
+                "volume": 12_345_678,
+            },
+            {
+                "symbol": "035720",
+                "name": "카카오",
+                "market": "kr",
+                "sector": "인터넷",
+                "market_cap_krw": 20_000_000_000_000,
+                "close": 45_000,
+                "change_rate": 0.8,
+                "change_amount": 360,
+                "consecutive_up_days": 5,
+                "volume": 3_000_000,
+            },
+        ],
+        "warnings": [],
+        "timestamp": "2026-05-10T05:30:00+00:00",
+        "cache_hit": False,
+    }
+    stub = _StubScreening(payload=stub_payload)
+    client = TestClient(_build_app(stub_screening=stub))
+
+    r = client.get("/invest/api/screener/results?preset=consecutive_gainers&market=kr")
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["presetId"] == "consecutive_gainers"
+    # Freshness block must be present and correctly shaped
+    freshness = body.get("freshness")
+    assert freshness is not None
+    assert freshness["asOfLabel"].endswith("기준")
+    assert freshness["source"] in ("live", "cached", "previous_session")
+    # All results must show streak >= 5 days
+    results = body["results"]
+    assert len(results) == 2
+    for row in results:
+        label = row["metricValueLabel"]
+        assert label.endswith("일"), f"Expected N일 label, got: {label}"
+        assert int(label[:-1]) >= 5, f"Expected streak >= 5, got: {label}"
+    # Verify the preset passed min_consecutive_up_days=5 to the service
+    assert stub.calls
+    assert stub.calls[0].get("min_consecutive_up_days") == 5
