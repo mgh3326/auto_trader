@@ -82,7 +82,9 @@ async def _enrich_consecutive_up_days(
     sem = asyncio.Semaphore(_STREAK_CONCURRENCY)
 
     async def _enrich_one(row: dict[str, Any]) -> None:
-        if row.get("consecutive_up_days") is not None:
+        already_have_streak = row.get("consecutive_up_days") is not None
+        already_have_week = row.get("week_change_rate") is not None
+        if already_have_streak and already_have_week:
             return
         symbol = _streak_symbol(row)
         if not symbol:
@@ -96,10 +98,17 @@ async def _enrich_consecutive_up_days(
                 return
         if df is None or df.empty or "close" not in df.columns:
             return
-        closes = df["close"].tolist()
-        streak = calculate_consecutive_up_days(closes)
-        if streak is not None:
-            row["consecutive_up_days"] = streak
+        closes = [float(c) for c in df["close"].tolist() if c is not None]
+        if len(closes) < 2:
+            return
+        if not already_have_streak:
+            streak = calculate_consecutive_up_days(closes)
+            if streak is not None:
+                row["consecutive_up_days"] = streak
+        if not already_have_week and len(closes) >= 5:
+            base = closes[-5]
+            if base != 0:
+                row["week_change_rate"] = (closes[-1] - base) / base * 100.0
 
     await asyncio.gather(*(_enrich_one(r) for r in rows))
 

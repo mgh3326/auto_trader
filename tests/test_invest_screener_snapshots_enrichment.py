@@ -126,3 +126,23 @@ async def test_enrichment_no_session_keeps_rob168_behavior(monkeypatch):
     await enrichment._enrich_consecutive_up_days(rows, market="kr")
     assert rows[0]["consecutive_up_days"] == 4
     fetcher.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_enrichment_fallback_populates_week_change_rate(monkeypatch):
+    """When snapshot is missing, the OHLCV fallback must also fill week_change_rate."""
+    fake_df = pd.DataFrame(
+        {
+            "date": pd.date_range("2026-05-01", periods=6, freq="B"),
+            "close": [100.0, 101.0, 102.0, 103.0, 104.0, 105.0],
+        }
+    )
+    fetcher = AsyncMock(return_value=fake_df)
+    monkeypatch.setattr(enrichment, "_fetch_ohlcv_for_indicators", fetcher)
+
+    rows = [{"market": "kr", "code": "900099"}]
+    await enrichment._enrich_consecutive_up_days(rows, market="kr", session=None)
+    assert rows[0]["consecutive_up_days"] == 5
+    assert rows[0]["week_change_rate"] == pytest.approx(
+        (105.0 - 101.0) / 101.0 * 100.0, rel=1e-6
+    )
