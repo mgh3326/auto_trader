@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.market_events import IngestionRunResult
 from app.services.market_events.finnhub_helpers import fetch_earnings_calendar_finnhub
+from app.services.market_events.forexfactory_helpers import ForexFactoryFetchError
 from app.services.market_events.normalizers import (
     normalize_dart_disclosure_row,
     normalize_finnhub_earnings_row,
@@ -275,9 +276,6 @@ async def ingest_economic_events_for_date(
     await repo.mark_partition_running(partition)
 
     try:
-        from app.services.market_events.forexfactory_helpers import (
-            ForexFactoryFetchError,
-        )
         from app.services.market_events.normalizers import (
             normalize_forexfactory_event_row,
         )
