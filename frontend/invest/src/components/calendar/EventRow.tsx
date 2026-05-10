@@ -1,78 +1,42 @@
 import type { CalendarEventVM } from "./vm";
+import { formatKstTime } from "./vm";
 import { RegionBadge } from "./RegionBadge";
 import { OwnershipTag } from "./OwnershipTag";
 
 export function EventRow({ ev }: { ev: CalendarEventVM }) {
+  const showFallbackTime =
+    ev.time == null && ev.actual == null && ev.forecast == null && ev.previous == null;
+  const timeText = ev.time ?? (ev.released ? "발표 완료" : showFallbackTime ? formatKstTime(null) : "발표 예정");
+
   return (
     <article
+      className="calendar-event-row"
       data-testid="calendar-event"
       data-event-id={ev.id}
       data-event-type={ev.type}
       data-relation={ev.own ?? "none"}
-      style={{
-        display: "grid",
-        gridTemplateColumns: "44px minmax(0, 1fr) 76px 76px 76px",
-        alignItems: "center",
-        gap: 10,
-        padding: "10px 12px",
-        borderRadius: 10,
-        background: "transparent",
-      }}
     >
-      <div
-        style={{
-          fontSize: 12,
-          fontWeight: 700,
-          color: "var(--fg-1)",
-          fontFeatureSettings: '"tnum"',
-        }}
-      >
-        {ev.monthDay}
-      </div>
-      <div style={{ minWidth: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+      <div className="calendar-event-row__day">{ev.monthDay}</div>
+      <div className="calendar-event-row__main">
+        <div className="calendar-event-row__title-line">
           <RegionBadge region={ev.region} />
-          <span
-            style={{
-              fontSize: 14,
-              fontWeight: 600,
-              color: "var(--fg)",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-              minWidth: 0,
-              flex: 1,
-            }}
-          >
-            {ev.title}
-          </span>
+          <span className="calendar-event-row__title" title={ev.title}>{ev.title}</span>
           <OwnershipTag own={ev.own} />
         </div>
         <div
-          style={{
-            fontSize: 11,
-            color: ev.released ? "var(--fg-2)" : "var(--fg-3)",
-            marginTop: 2,
-          }}
+          className="calendar-event-row__time"
+          data-released={ev.released ? "true" : "false"}
         >
-          {ev.time ?? (ev.released ? "발표 완료" : "발표 예정")}
+          {timeText}
         </div>
       </div>
-      <div
-        style={{
-          textAlign: "right",
-          fontWeight: 700,
-          color: ev.released ? "var(--fg)" : "var(--fg-3)",
-          fontSize: 13,
-          fontFeatureSettings: '"tnum"',
-        }}
-      >
+      <div className="calendar-event-row__num calendar-event-row__num--actual" data-released={ev.released ? "true" : "false"}>
         {ev.actual ?? "—"}
       </div>
-      <div style={{ textAlign: "right", color: "var(--fg-2)", fontSize: 13, fontFeatureSettings: '"tnum"' }}>
+      <div className="calendar-event-row__num calendar-event-row__num--forecast">
         {ev.forecast ?? "—"}
       </div>
-      <div style={{ textAlign: "right", color: "var(--fg-3)", fontSize: 13, fontFeatureSettings: '"tnum"' }}>
+      <div className="calendar-event-row__num calendar-event-row__num--previous">
         {ev.previous ?? "—"}
       </div>
     </article>
