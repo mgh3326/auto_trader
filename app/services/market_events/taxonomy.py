@@ -32,7 +32,16 @@ PARTITION_STATUSES: frozenset[str] = frozenset(
 )
 
 SOURCES: frozenset[str] = frozenset(
-    {"finnhub", "dart", "upbit", "bithumb", "binance", "token_unlocks", "forexfactory"}
+    {
+        "finnhub",
+        "dart",
+        "upbit",
+        "bithumb",
+        "binance",
+        "token_unlocks",
+        "forexfactory",
+        "wisefn",
+    }
 )
 
 
