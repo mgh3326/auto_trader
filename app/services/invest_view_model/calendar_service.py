@@ -20,6 +20,7 @@ from app.schemas.invest_calendar import (
     EventType,
 )
 from app.services.invest_view_model.relation_resolver import RelationResolver
+from app.services.market_events.freshness_service import MarketEventsFreshnessService
 from app.services.market_events.query_service import MarketEventsQueryService
 
 CLUSTER_THRESHOLD = 10
@@ -50,7 +51,11 @@ async def build_calendar(
     tab: CalendarTab,
 ) -> CalendarResponse:
     svc = MarketEventsQueryService(db)
+    freshness_svc = MarketEventsFreshnessService(db)
+
     range_resp = await svc.list_for_range(from_date, to_date)
+    per_day_states = await freshness_svc.get_per_day_states(from_date, to_date)
+    coverage_matrix = await freshness_svc.get_coverage_matrix(from_date, to_date)
 
     by_day: dict[date, list[CalendarEvent]] = {}
     # range_resp.events is a list[MarketEventResponse]
@@ -151,7 +156,20 @@ async def build_calendar(
                 else:
                     kept.extend(group)
             events = kept
-        days.append(CalendarDay(date=d, events=events, clusters=clusters))
+        day_state = per_day_states.get(d, "missing")
+        days.append(
+            CalendarDay(
+                date=d,
+                events=events,
+                clusters=clusters,
+                dataState=day_state,
+            )
+        )
+
+    meta = CalendarMeta(
+        sourceFreshness=list(coverage_matrix.sources),
+        coverage=coverage_matrix.coverage,
+    )
 
     return CalendarResponse(
         tab=tab,
@@ -159,7 +177,7 @@ async def build_calendar(
         toDate=to_date,
         asOf=datetime.now(UTC),
         days=days,
-        meta=CalendarMeta(),
+        meta=meta,
     )
 
 
