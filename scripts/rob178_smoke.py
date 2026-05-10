@@ -77,28 +77,20 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Explicitly select the default no-write mode for operator checklists.",
     )
-    p.add_argument(
-        "--allow-evidence-outside",
-        action="store_true",
-        help="Allow --evidence outside the repo-local .smoke-out/ directory.",
-    )
     return p.parse_args()
 
 
-def _resolve_smoke_output_path(path: Path, *, allow_outside: bool) -> Path:
-    """Resolve evidence output and keep it in .smoke-out/ unless overridden."""
+def _resolve_smoke_output_path(path: Path) -> Path:
+    """Resolve evidence output and keep it in the repo-local .smoke-out/ tree."""
     candidate = path if path.is_absolute() else REPO_ROOT / path
     resolved = candidate.resolve(strict=False)
-    if allow_outside:
-        return resolved
     try:
-        resolved.relative_to(SMOKE_OUTPUT_DIR)
+        relative_output = resolved.relative_to(SMOKE_OUTPUT_DIR)
     except ValueError as exc:
-        raise SystemExit(
-            "--evidence must be under .smoke-out/; pass "
-            "--allow-evidence-outside to override"
-        ) from exc
-    return resolved
+        raise SystemExit("--evidence must be under .smoke-out/") from exc
+    if ".." in relative_output.parts:
+        raise SystemExit("--evidence must not contain parent-directory traversal")
+    return SMOKE_OUTPUT_DIR.joinpath(*relative_output.parts)
 
 
 def _load_payload(path: Path) -> tuple[Path, dict]:
@@ -226,9 +218,7 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
-    args.evidence = _resolve_smoke_output_path(
-        args.evidence, allow_outside=args.allow_evidence_outside
-    )
+    args.evidence = _resolve_smoke_output_path(args.evidence)
     payload_path, payload = _load_payload(args.payload)
     request = ResearchReportIngestionRequest.model_validate(payload)
 
