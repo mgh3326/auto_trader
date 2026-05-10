@@ -14,7 +14,7 @@
 
 **Linear:** https://linear.app/mgh3326/issue/MGH-7
 
-**Branch:** `feature/MGH-7-invest-screener-snapshots`
+**Branch:** `feature/ROB-170-invest-screener-snapshots` (the worktree directory is named `MGH-7-invest-screener-snapshots` for human-readable mapping to the Linear ticket; the actual git branch under it is `feature/ROB-170-invest-screener-snapshots`. Verify with `git -C /Users/mgh3326/worktrees/auto_trader/MGH-7-invest-screener-snapshots branch --show-current` before pushing.)
 
 **Worktree:** `/Users/mgh3326/worktrees/auto_trader/MGH-7-invest-screener-snapshots` — implementer MUST work here. **Hard rule:** never edit `/Users/mgh3326/services/auto_trader/current` or `~/auto_trader` (root) directly.
 
