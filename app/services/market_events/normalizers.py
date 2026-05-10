@@ -286,3 +286,91 @@ def normalize_forexfactory_event_row(
         )
 
     return event, values
+
+
+_WISEFN_TIME_HINT_ALLOWED = {"before_open", "after_close", "during_market", "unknown"}
+_WISEFN_RELEASE_TYPE_TO_STATUS = {
+    "scheduled": "scheduled",
+    "released": "released",
+    "revised": "revised",
+    "cancelled": "cancelled",
+    "tentative": "tentative",
+}
+
+
+def _wisefn_source_event_id(
+    symbol: str,
+    event_date: date,
+    fiscal_year: Any,
+    fiscal_quarter: Any,
+) -> str:
+    """Deterministic ID for idempotent upserts on (source, source_event_id)."""
+    fy = "" if fiscal_year is None else str(fiscal_year)
+    fq = "" if fiscal_quarter is None else str(fiscal_quarter)
+    return f"wisefn::{symbol}::{event_date.isoformat()}::{fy}::{fq}"
+
+
+def normalize_wisefn_earnings_row(
+    row: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Normalize one WiseFn KR earnings calendar row to a MarketEvent dict.
+
+    Required fields: stock_code (6-digit numeric), release_date (ISO date),
+    corp_name. Optional: fiscal_year, fiscal_quarter, release_type, title,
+    time_hint.
+
+    No metric values are produced — WiseFn rows describe the schedule, not
+    realized eps/revenue. (Realized values are a follow-up that would join
+    DART quarterly filings.)
+    """
+    stock_code = (row.get("stock_code") or "").strip()
+    if not stock_code or not stock_code.isdigit():
+        raise ValueError(
+            f"wisefn row missing/invalid stock_code (must be numeric): {row.get('stock_code')!r}"
+        )
+
+    raw_date = row.get("release_date") or row.get("date")
+    if not raw_date:
+        raise ValueError("wisefn row missing release_date")
+    try:
+        event_date = date.fromisoformat(str(raw_date))
+    except ValueError as exc:
+        raise ValueError(f"wisefn row release_date not ISO: {raw_date!r}") from exc
+
+    corp_name = (row.get("corp_name") or "").strip() or None
+    title = (row.get("title") or "").strip() or None
+    fiscal_year = row.get("fiscal_year")
+    fiscal_quarter = row.get("fiscal_quarter")
+
+    raw_hint = (row.get("time_hint") or "").strip().lower()
+    time_hint = raw_hint if raw_hint in _WISEFN_TIME_HINT_ALLOWED else "unknown"
+
+    raw_status = (row.get("release_type") or "").strip().lower()
+    status = _WISEFN_RELEASE_TYPE_TO_STATUS.get(raw_status, "scheduled")
+
+    source_event_id = _wisefn_source_event_id(
+        stock_code, event_date, fiscal_year, fiscal_quarter
+    )
+
+    event = {
+        "category": "earnings",
+        "market": "kr",
+        "country": "KR",
+        "symbol": stock_code,
+        "company_name": corp_name,
+        "title": title,
+        "event_date": event_date,
+        "release_time_utc": None,
+        "release_time_local": None,
+        "source_timezone": "Asia/Seoul",
+        "time_hint": time_hint,
+        "importance": None,
+        "status": status,
+        "source": "wisefn",
+        "source_event_id": source_event_id,
+        "source_url": None,
+        "fiscal_year": fiscal_year,
+        "fiscal_quarter": fiscal_quarter,
+        "raw_payload_json": _row_to_jsonable(row),
+    }
+    return event, []
