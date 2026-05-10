@@ -548,9 +548,7 @@ async def build_feed_news(
         items = [i for i in items if not (i.noiseReason and not i.relatedSymbols)]
     elif tab in ("top", "hot"):
         items = [
-            i
-            for i in items
-            if i.relatedSymbols or i.scope in _DEFAULT_TAB_KEEP_SCOPES
+            i for i in items if i.relatedSymbols or i.scope in _DEFAULT_TAB_KEEP_SCOPES
         ]
     elif tab in ("latest", "kr"):
         items = [
