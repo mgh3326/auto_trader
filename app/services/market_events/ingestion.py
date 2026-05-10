@@ -275,11 +275,37 @@ async def ingest_economic_events_for_date(
     await repo.mark_partition_running(partition)
 
     try:
+        from app.services.market_events.forexfactory_helpers import (
+            ForexFactoryFetchError,
+        )
         from app.services.market_events.normalizers import (
             normalize_forexfactory_event_row,
         )
 
         rows = await fetch_rows(target_date)
+
+        if rows is None:
+            await db.rollback()
+            repo2 = MarketEventsRepository(db)
+            partition2 = await repo2.get_or_create_partition(
+                source=source,
+                category=category,
+                market=market,
+                partition_date=target_date,
+            )
+            await repo2.mark_partition_failed(
+                partition2, error="forexfactory_out_of_rolling_window"
+            )
+            return IngestionRunResult(
+                source=source,
+                category=category,
+                market=market,
+                partition_date=target_date,
+                status="failed",
+                event_count=0,
+                error="forexfactory_out_of_rolling_window",
+            )
+
         upserted = 0
         for row in rows:
             try:
@@ -300,6 +326,18 @@ async def ingest_economic_events_for_date(
             partition_date=target_date,
             status="succeeded",
             event_count=upserted,
+        )
+    except ForexFactoryFetchError as exc:
+        logger.warning(
+            "forexfactory fetch failed for %s: %s", target_date, exc.reason
+        )
+        return await _mark_failed_after_exception(
+            db,
+            source=source,
+            category=category,
+            market=market,
+            partition_date=target_date,
+            error=Exception(f"forexfactory_{exc.reason}"),
         )
     except Exception as exc:
         logger.exception("forexfactory ingestion failed for %s", target_date)

@@ -303,3 +303,49 @@ async def test_ingest_economic_events_records_failure(db_session):
     assert len(parts) == 1
     assert parts[0].status == "failed"
     assert parts[0].retry_count == 1
+
+
+# ---------------------------------------------------------------------------
+# ROB-184: out-of-window + typed error reasons in ingestion
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_economic_ingestion_marks_failed_out_of_rolling_window(db_session):
+    from app.services.market_events.ingestion import (
+        ingest_economic_events_for_date,
+    )
+
+    async def returns_none(_target_date):
+        return None
+
+    result = await ingest_economic_events_for_date(
+        db_session,
+        date(2026, 4, 1),  # arbitrary past date
+        fetch_rows=returns_none,
+    )
+    assert result.status == "failed"
+    assert result.error == "forexfactory_out_of_rolling_window"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_economic_ingestion_marks_failed_rate_limited(db_session):
+    from app.services.market_events.forexfactory_helpers import (
+        ForexFactoryFetchError,
+    )
+    from app.services.market_events.ingestion import (
+        ingest_economic_events_for_date,
+    )
+
+    async def raises_rate_limited(_target_date):
+        raise ForexFactoryFetchError("rate_limited")
+
+    result = await ingest_economic_events_for_date(
+        db_session,
+        date(2026, 5, 13),
+        fetch_rows=raises_rate_limited,
+    )
+    assert result.status == "failed"
+    assert result.error == "forexfactory_rate_limited"
