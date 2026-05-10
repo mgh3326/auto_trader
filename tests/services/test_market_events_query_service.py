@@ -129,17 +129,17 @@ async def test_query_service_surfaces_currency_field(db_session):
             "country": "US",
             "currency": "USD",
             "title": "US CPI",
-            "event_date": date(2026, 5, 13),
+            "event_date": date(2099, 5, 13),
             "status": "scheduled",
             "source": "forexfactory",
-            "source_event_id": "ff::USD::CPI::2026-05-13T12:30:00Z",
+            "source_event_id": "ff::USD::currency-field::2099-05-13T12:30:00Z",
         },
         [],
     )
     await db_session.commit()
 
     svc = MarketEventsQueryService(db_session)
-    response = await svc.list_for_date(date(2026, 5, 13), category="economic")
+    response = await svc.list_for_date(date(2099, 5, 13), category="economic")
     assert len(response.events) == 1
     assert response.events[0].currency == "USD"
     assert response.events[0].country == "US"
