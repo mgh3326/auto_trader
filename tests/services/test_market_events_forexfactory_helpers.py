@@ -224,3 +224,74 @@ async def test_fetch_xml_does_not_retry_on_403(monkeypatch):
     with pytest.raises(ff.ForexFactoryFetchError) as exc:
         await ff._fetch_one_xml(ff.THISWEEK_URL, max_attempts=3, base_delay=0)
     assert exc.value.reason == "upstream_4xx"
+
+
+# ---------------------------------------------------------------------------
+# ROB-184: ForexFactoryWeeklyCache tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_weekly_cache_fetches_each_url_at_most_once(monkeypatch):
+    from app.services.market_events import forexfactory_helpers as ff
+
+    call_log: list[str] = []
+
+    async def fake_fetch(url, **kw):
+        call_log.append(url)
+        if url == ff.THISWEEK_URL:
+            return SAMPLE_XML
+        return "<weeklyevents/>"
+
+    monkeypatch.setattr(ff, "_fetch_one_xml", fake_fetch)
+
+    cache = ff.ForexFactoryWeeklyCache(
+        now_utc=datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
+    )
+    rows_a = await cache.get_events_for_date(date(2026, 5, 13))
+    rows_b = await cache.get_events_for_date(date(2026, 5, 14))
+    assert rows_a is not None
+    assert rows_b is not None
+    # Both dates are in the same "thisweek" payload, so we expect 1 fetch only.
+    assert call_log.count(ff.THISWEEK_URL) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_weekly_cache_fetches_nextweek_only_when_needed(monkeypatch):
+    from app.services.market_events import forexfactory_helpers as ff
+
+    call_log: list[str] = []
+
+    async def fake_fetch(url, **kw):
+        call_log.append(url)
+        return SAMPLE_XML if url == ff.THISWEEK_URL else "<weeklyevents/>"
+
+    monkeypatch.setattr(ff, "_fetch_one_xml", fake_fetch)
+
+    cache = ff.ForexFactoryWeeklyCache(
+        now_utc=datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
+    )
+    # 2026-05-13 belongs to thisweek (Mon 2026-05-11..Sun 2026-05-17)
+    await cache.get_events_for_date(date(2026, 5, 13))
+    assert ff.NEXTWEEK_URL not in call_log
+    # 2026-05-19 is in the nextweek window (Mon 2026-05-18..Sun 2026-05-24)
+    await cache.get_events_for_date(date(2026, 5, 19))
+    assert ff.NEXTWEEK_URL in call_log
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_weekly_cache_returns_none_for_dates_outside_window(monkeypatch):
+    from app.services.market_events import forexfactory_helpers as ff
+
+    async def fake_fetch(url, **kw):
+        return SAMPLE_XML
+
+    monkeypatch.setattr(ff, "_fetch_one_xml", fake_fetch)
+    cache = ff.ForexFactoryWeeklyCache(
+        now_utc=datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
+    )
+    assert await cache.get_events_for_date(date(2026, 4, 30)) is None
+    assert await cache.get_events_for_date(date(2026, 5, 30)) is None

@@ -103,6 +103,42 @@ def rolling_window_for_today(now_utc: datetime) -> tuple[date, date]:
     return monday_this, sunday_next
 
 
+class ForexFactoryWeeklyCache:
+    """Lazily fetches thisweek/nextweek XML at most once per run."""
+
+    def __init__(self, *, now_utc: datetime | None = None) -> None:
+        self._now_utc = now_utc or datetime.now(UTC)
+        self._window_start, self._window_end = rolling_window_for_today(self._now_utc)
+        # thisweek covers [window_start, window_start + 6 days].
+        self._thisweek_end = self._window_start + timedelta(days=6)
+        self._payloads: dict[str, list[dict[str, Any]]] = {}
+
+    def _url_for(self, target_date: date) -> str | None:
+        if target_date < self._window_start or target_date > self._window_end:
+            return None
+        if target_date <= self._thisweek_end:
+            return THISWEEK_URL
+        return NEXTWEEK_URL
+
+    async def _ensure_payload(self, url: str) -> list[dict[str, Any]]:
+        cached = self._payloads.get(url)
+        if cached is not None:
+            return cached
+        xml_text = await _fetch_one_xml(url)
+        parsed = _parse_one_xml(xml_text)
+        self._payloads[url] = parsed
+        return parsed
+
+    async def get_events_for_date(
+        self, target_date: date
+    ) -> list[dict[str, Any]] | None:
+        url = self._url_for(target_date)
+        if url is None:
+            return None
+        rows = await self._ensure_payload(url)
+        return [r for r in rows if r["event_date"] == target_date]
+
+
 async def _fetch_xml_documents(target_date: date) -> list[str]:
     """Fetch this-week, plus next-week if target_date is within 7 days of next Monday.
 
@@ -206,12 +242,20 @@ def _parse_one_xml(xml_text: str) -> list[dict[str, Any]]:
 
 async def fetch_forexfactory_events_for_date(
     target_date: date,
-) -> list[dict[str, Any]]:
+    *,
+    cache: ForexFactoryWeeklyCache | None = None,
+) -> list[dict[str, Any]] | None:
     """Return ForexFactory rows whose ET-day == target_date.
 
-    Returns [] on XML parse error so the caller can decide whether to mark the
-    partition failed (typically only network errors should cause failure).
+    Returns None when target_date is outside the upstream rolling window.
+    Raises ForexFactoryFetchError on retry exhaustion or transport error.
+    Falls back to the legacy _fetch_xml_documents path when called without a
+    cache (backwards-compat with existing tests that patch _fetch_xml_documents).
     """
+    if cache is not None:
+        return await cache.get_events_for_date(target_date)
+
+    # Legacy path: used by existing tests that patch _fetch_xml_documents.
     try:
         documents = await _fetch_xml_documents(target_date)
     except Exception as exc:
