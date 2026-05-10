@@ -187,3 +187,21 @@ def test_match_results_sorted_by_market_then_symbol():
     matches = match_symbols("Amazon, Google rise; 삼성전자 강세", market=None)
     keys = [(m.market, m.symbol) for m in matches]
     assert keys == sorted(keys)
+
+
+@pytest.mark.unit
+def test_match_for_article_with_market_none_finds_us_alias_in_korean_text():
+    """ROB-172 contract: callers that omit `market` must search ALL_ALIASES
+    so a KR-feed article carrying `엔비디아` resolves to NVDA/us.
+    """
+    matches = match_symbols_for_article(
+        title="엔비디아 신제품 공개에 국내 반도체주 동반 강세",
+        summary="엔비디아의 차세대 GPU 발표가 국내 반도체 공급망에 호재로 작용",
+        keywords=["엔비디아", "반도체"],
+        market=None,
+    )
+    by_symbol = {m.symbol: m for m in matches}
+    assert "NVDA" in by_symbol, f"expected NVDA in matches, got {sorted(by_symbol)}"
+    assert by_symbol["NVDA"].market == "us"
+    assert by_symbol["NVDA"].reason == "alias_dict"
+    assert by_symbol["NVDA"].matched_term == "엔비디아"
