@@ -991,3 +991,15 @@ def _compute_avg_target_and_upside(
             current_price=current_price,
         )
     return avg_target, upside_pct
+
+
+def _apply_min_consecutive_up_days(
+    rows: list[dict[str, Any]], *, threshold: int | None
+) -> list[dict[str, Any]]:
+    if threshold is None:
+        return rows
+    return [
+        r for r in rows
+        if isinstance(r.get("consecutive_up_days"), int)
+        and r["consecutive_up_days"] >= threshold
+    ]
