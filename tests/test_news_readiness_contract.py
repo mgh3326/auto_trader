@@ -340,3 +340,47 @@ class TestGetNewsReadinessStatusWhitelist:
 
         assert result.is_ready is True
         assert result.latest_status == "partial"
+
+    async def test_news_readiness_default_excludes_tvscreener_coverage(self):
+        """Default behavior matches ROB-61 contract: no tvscreener entries in source_coverage."""
+        from app.services.llm_news_service import _news_readiness_payload
+
+        result = _news_readiness_payload(
+            market="us",
+            latest_run=_make_run(
+                market="us", source_counts={"rss_yahoo_finance_topstories": 5}
+            ),
+            latest_article_published_at=None,
+            max_age_minutes=180,
+            source_coverage=[],
+        )
+        assert all(
+            c.feed_source != "http_tvscreener_news_us" for c in result.source_coverage
+        )
+
+    async def test_build_source_coverage_includes_tvscreener_when_opted_in(self):
+        """include_tvscreener=True appends tvscreener entries to source_coverage."""
+        from app.services import llm_news_service as svc
+
+        class FakeSession:
+            async def execute(self, query):
+                class Rows:
+                    def mappings(self):
+                        class M:
+                            def all(self):
+                                return []
+
+                        return M()
+
+                return Rows()
+
+        coverage = await svc._build_source_coverage(
+            FakeSession(),
+            market="us",
+            source_counts={"rss_yahoo_finance_topstories": 1},
+            include_tvscreener=True,
+        )
+        feed_sources = [c.feed_source for c in coverage]
+        assert "http_tvscreener_news_us" in feed_sources, (
+            "include_tvscreener=True must include tvscreener feed_source in coverage"
+        )

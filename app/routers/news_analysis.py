@@ -104,11 +104,16 @@ async def get_news_readiness_status(
         le=1440,
         description="Freshness threshold before news is considered stale",
     ),
+    include_tvscreener: bool = Query(
+        False,
+        description="Include tvscreener sources in source_coverage (opt-in; does not affect preopen contract)",
+    ),
 ):
     try:
         return await get_news_readiness(
             market=market,
             max_age_minutes=max_age_minutes,
+            include_tvscreener=include_tvscreener,
         )
     except Exception as e:
         raise HTTPException(
