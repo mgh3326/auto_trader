@@ -557,6 +557,7 @@ async def screen_stocks_impl(
     market_cap_min_krw: int | None = None,
     market_cap_max_krw: int | None = None,
     min_consecutive_up_days: int | None = None,
+    min_week_change_rate: float | None = None,
     limit: int = 50,
 ) -> dict[str, Any]:
     sort_by_specified = sort_by is not None
@@ -602,6 +603,7 @@ async def screen_stocks_impl(
         market_cap_min_krw=market_cap_min_krw,
         market_cap_max_krw=market_cap_max_krw,
         min_consecutive_up_days=min_consecutive_up_days,
+        min_week_change_rate=min_week_change_rate,
     )
 
     normalized_market = analysis_screening._normalize_screen_market(market)
@@ -642,7 +644,7 @@ async def screen_stocks_impl(
     # qualifying streak rows.
     query_limit = limit
     if (
-        min_consecutive_up_days is not None
+        (min_consecutive_up_days is not None or min_week_change_rate is not None)
         and normalized_market in {"kr", "kospi", "kosdaq", "konex", "all", "us"}
         and normalized_asset_type in {None, "stock"}
     ):
@@ -669,9 +671,10 @@ async def screen_stocks_impl(
         market_cap_min_krw=market_cap_min_krw,
         market_cap_max_krw=market_cap_max_krw,
     )
-    if min_consecutive_up_days is not None:
+    if min_consecutive_up_days is not None or min_week_change_rate is not None:
         from app.mcp_server.tooling.screening.common import (
             _apply_min_consecutive_up_days,
+            _apply_min_week_change_rate,
         )
         from app.mcp_server.tooling.screening.enrichment import (
             _enrich_consecutive_up_days,
@@ -679,7 +682,10 @@ async def screen_stocks_impl(
 
         rows: list[dict[str, Any]] = list(result.get("results") or [])
         await _enrich_consecutive_up_days(rows, market=normalized_market)
-        rows = _apply_min_consecutive_up_days(rows, threshold=min_consecutive_up_days)
+        if min_consecutive_up_days is not None:
+            rows = _apply_min_consecutive_up_days(rows, threshold=min_consecutive_up_days)
+        if min_week_change_rate is not None:
+            rows = _apply_min_week_change_rate(rows, threshold=float(min_week_change_rate))
         filters_applied = dict(result.get("filters_applied") or {})
         if filters_applied:
             filters_applied["limit"] = limit
