@@ -120,7 +120,11 @@ def score_kr_news_article(article: Any) -> KrNewsRelevance:
     matched_terms.extend(invest_hits)
 
     if broad_hits and not category:
-        category = "kr_index" if any("코스" in t or "kospi" in t or "kosdaq" in t for t in broad_hits) else "kr_macro"
+        category = (
+            "kr_index"
+            if any("코스" in t or "kospi" in t or "kosdaq" in t for t in broad_hits)
+            else "kr_macro"
+        )
     if invest_hits and not category:
         category = "kr_industry"
 
@@ -136,7 +140,13 @@ def score_kr_news_article(article: Any) -> KrNewsRelevance:
         if noise_strength >= invest_strength:
             score = min(score, 10)
             matched_terms.extend(crime_hits + society_hits + noise_hits)
-            primary_noise = "kr_crime" if crime_hits else "kr_society" if society_hits else "kr_noise"
+            primary_noise = (
+                "kr_crime"
+                if crime_hits
+                else "kr_society"
+                if society_hits
+                else "kr_noise"
+            )
             return KrNewsRelevance(
                 score=score,
                 bucket=_bucket(score),

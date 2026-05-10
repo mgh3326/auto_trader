@@ -24,10 +24,6 @@ from app.services.crypto_news_relevance_service import (
     score_crypto_news_article,
     user_facing_category,
 )
-from app.services.kr_news_relevance_service import (
-    score_kr_news_article,
-    user_facing_kr_category,
-)
 from app.services.domain_errors import (
     RateLimitError,
     SymbolNotFoundError,
@@ -35,6 +31,10 @@ from app.services.domain_errors import (
     ValidationError,
 )
 from app.services.invest_view_model.relation_resolver import RelationResolver
+from app.services.kr_news_relevance_service import (
+    score_kr_news_article,
+    user_facing_kr_category,
+)
 from app.services.market_data.service import get_quote
 from app.services.news_entity_matcher import (
     classify_article_scope,
@@ -453,10 +453,14 @@ async def build_feed_news(
         relation = _relation_from_related_symbols(related)
         # Suppress the issue chip only for confirmed society/crime/noise —
         # not for generic low_kr_relevance which may be a legitimate article.
-        _KR_CONFIRMED_NOISE = {"kr_crime", "kr_society", "kr_noise", "kr_no_invest_signal"}
+        _KR_CONFIRMED_NOISE = {
+            "kr_crime",
+            "kr_society",
+            "kr_noise",
+            "kr_no_invest_signal",
+        }
         suppress_issue = (
-            market_value == "kr"
-            and item_noise_reason in _KR_CONFIRMED_NOISE
+            market_value == "kr" and item_noise_reason in _KR_CONFIRMED_NOISE
         )
         items.append(
             FeedNewsItem(

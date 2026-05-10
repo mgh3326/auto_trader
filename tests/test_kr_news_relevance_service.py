@@ -174,7 +174,9 @@ def _load_cases(name: str) -> list[dict]:
     return json.loads((_FIXTURE_DIR / name).read_text(encoding="utf-8"))
 
 
-@pytest.mark.parametrize("case", _load_cases("positive_market_wide.json"), ids=lambda c: c["id"])
+@pytest.mark.parametrize(
+    "case", _load_cases("positive_market_wide.json"), ids=lambda c: c["id"]
+)
 def test_positive_market_wide_kr_articles_are_included(case):
     relevance = score_kr_news_article(case)
 
@@ -186,7 +188,9 @@ def test_positive_market_wide_kr_articles_are_included(case):
         assert relevance.category == case["expected_category"]
 
 
-@pytest.mark.parametrize("case", _load_cases("negative_society_crime.json"), ids=lambda c: c["id"])
+@pytest.mark.parametrize(
+    "case", _load_cases("negative_society_crime.json"), ids=lambda c: c["id"]
+)
 def test_negative_society_crime_kr_articles_are_excluded(case):
     relevance = score_kr_news_article(case)
 

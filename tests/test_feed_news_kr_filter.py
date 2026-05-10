@@ -64,8 +64,12 @@ async def test_kr_society_crime_article_dropped_on_kr_tab(monkeypatch) -> None:
     ]
     summary_result = MagicMock()
     summary_result.all.return_value = []
-    db.execute = AsyncMock(side_effect=[scalar_result, summary_result, _empty_related_result()])
-    monkeypatch.setattr(svc, "build_market_issues", AsyncMock(return_value=MagicMock(items=[])))
+    db.execute = AsyncMock(
+        side_effect=[scalar_result, summary_result, _empty_related_result()]
+    )
+    monkeypatch.setattr(
+        svc, "build_market_issues", AsyncMock(return_value=MagicMock(items=[]))
+    )
 
     resp = await svc.build_feed_news(
         db=db, resolver=RelationResolver(), tab="kr", limit=30, cursor=None
@@ -91,8 +95,12 @@ async def test_kr_market_wide_kospi_article_kept_with_no_symbol(monkeypatch) -> 
     ]
     summary_result = MagicMock()
     summary_result.all.return_value = []
-    db.execute = AsyncMock(side_effect=[scalar_result, summary_result, _empty_related_result()])
-    monkeypatch.setattr(svc, "build_market_issues", AsyncMock(return_value=MagicMock(items=[])))
+    db.execute = AsyncMock(
+        side_effect=[scalar_result, summary_result, _empty_related_result()]
+    )
+    monkeypatch.setattr(
+        svc, "build_market_issues", AsyncMock(return_value=MagicMock(items=[]))
+    )
 
     resp = await svc.build_feed_news(
         db=db, resolver=RelationResolver(), tab="kr", limit=30, cursor=None
@@ -121,7 +129,9 @@ async def test_kr_society_article_suppresses_issue_chip(monkeypatch) -> None:
     scalar_result.scalars.return_value.all.return_value = [article]
     summary_result = MagicMock()
     summary_result.all.return_value = []
-    db.execute = AsyncMock(side_effect=[scalar_result, summary_result, _empty_related_result()])
+    db.execute = AsyncMock(
+        side_effect=[scalar_result, summary_result, _empty_related_result()]
+    )
 
     issue = MarketIssue(
         id="iss-noise",
@@ -182,8 +192,12 @@ async def test_kr_top_tab_does_not_drop_kr_society_rows(monkeypatch) -> None:
     ]
     summary_result = MagicMock()
     summary_result.all.return_value = []
-    db.execute = AsyncMock(side_effect=[scalar_result, summary_result, _empty_related_result()])
-    monkeypatch.setattr(svc, "build_market_issues", AsyncMock(return_value=MagicMock(items=[])))
+    db.execute = AsyncMock(
+        side_effect=[scalar_result, summary_result, _empty_related_result()]
+    )
+    monkeypatch.setattr(
+        svc, "build_market_issues", AsyncMock(return_value=MagicMock(items=[]))
+    )
 
     resp = await svc.build_feed_news(
         db=db, resolver=RelationResolver(), tab="top", limit=30, cursor=None
@@ -195,7 +209,9 @@ async def test_kr_top_tab_does_not_drop_kr_society_rows(monkeypatch) -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_kr_no_symbol_market_wide_row_advertises_kr_market_wide_scope(monkeypatch) -> None:
+async def test_kr_no_symbol_market_wide_row_advertises_kr_market_wide_scope(
+    monkeypatch,
+) -> None:
     from app.services.invest_view_model import feed_news_service as svc
 
     db = MagicMock()
@@ -210,8 +226,12 @@ async def test_kr_no_symbol_market_wide_row_advertises_kr_market_wide_scope(monk
     ]
     summary_result = MagicMock()
     summary_result.all.return_value = []
-    db.execute = AsyncMock(side_effect=[scalar_result, summary_result, _empty_related_result()])
-    monkeypatch.setattr(svc, "build_market_issues", AsyncMock(return_value=MagicMock(items=[])))
+    db.execute = AsyncMock(
+        side_effect=[scalar_result, summary_result, _empty_related_result()]
+    )
+    monkeypatch.setattr(
+        svc, "build_market_issues", AsyncMock(return_value=MagicMock(items=[]))
+    )
 
     resp = await svc.build_feed_news(
         db=db, resolver=RelationResolver(), tab="kr", limit=30, cursor=None
