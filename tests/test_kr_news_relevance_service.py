@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import pathlib
+
+import pytest
+
 from app.services.kr_news_relevance_service import (
     KrNewsRelevance,
     score_kr_news_article,
@@ -160,3 +165,43 @@ def test_empty_article_noise_reason_is_low_kr_relevance():
         {"title": "", "summary": "", "feed_source": "", "keywords": []}
     )
     assert relevance.noise_reason == "low_kr_relevance"
+
+
+_FIXTURE_DIR = pathlib.Path(__file__).parent / "fixtures" / "kr_news_relevance"
+
+
+def _load_cases(name: str) -> list[dict]:
+    return json.loads((_FIXTURE_DIR / name).read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("case", _load_cases("positive_market_wide.json"), ids=lambda c: c["id"])
+def test_positive_market_wide_kr_articles_are_included(case):
+    relevance = score_kr_news_article(case)
+
+    assert relevance.include_in_briefing is True, (
+        f"{case['id']!r} expected included; got noise_reason={relevance.noise_reason!r}, "
+        f"score={relevance.score}, matched={relevance.matched_terms}"
+    )
+    if "expected_category" in case:
+        assert relevance.category == case["expected_category"]
+
+
+@pytest.mark.parametrize("case", _load_cases("negative_society_crime.json"), ids=lambda c: c["id"])
+def test_negative_society_crime_kr_articles_are_excluded(case):
+    relevance = score_kr_news_article(case)
+
+    assert relevance.include_in_briefing is False, (
+        f"{case['id']!r} expected excluded; got score={relevance.score}, matched={relevance.matched_terms}"
+    )
+    if "expected_noise_reason" in case:
+        assert relevance.noise_reason == case["expected_noise_reason"]
+
+
+@pytest.mark.parametrize("case", _load_cases("borderline.json"), ids=lambda c: c["id"])
+def test_borderline_kr_articles_lean_to_expected_include(case):
+    relevance = score_kr_news_article(case)
+    assert relevance.include_in_briefing is case["expected_include"], (
+        f"{case['id']!r} expected include={case['expected_include']}; "
+        f"got include={relevance.include_in_briefing}, noise_reason={relevance.noise_reason!r}, "
+        f"score={relevance.score}"
+    )

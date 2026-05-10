@@ -1,0 +1,22 @@
+[
+  {
+    "id": "samsung_no_symbol",
+    "title": "삼성전자 4분기 실적 개선 기대… 반도체 업황 회복",
+    "summary": "메모리 가격 반등으로 4분기 영업이익이 시장 예상치를 웃돌 것이라는 전망이 나왔다.",
+    "feed_source": "browser_naver_mainnews",
+    "keywords": ["반도체"],
+    "stock_symbol": null,
+    "expected_include": true,
+    "_note": "stock_symbol is null but KR_INVEST_KEYWORDS hits (반도체/메모리) make this market-wide-ish."
+  },
+  {
+    "id": "policy_overlap_crime",
+    "title": "금융위, 보이스피싱 피해 보호 강화… 핀테크 업계 대응",
+    "summary": "금융위원회가 핀테크 사업자에 보이스피싱 대응 의무를 강화한다.",
+    "feed_source": "browser_naver_mainnews",
+    "keywords": ["금융위", "핀테크"],
+    "stock_symbol": null,
+    "expected_include": true,
+    "_note": "Crime term ('보이스피싱') overlaps with policy/industry frame; should keep because invest_strength > noise_strength via 금융위."
+  }
+]

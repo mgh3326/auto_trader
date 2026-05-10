@@ -1,0 +1,49 @@
+[
+  {
+    "id": "gwangju_murder",
+    "title": "'광주 여고생 살해' 피의자 사이코패스 검사 결과 공개된다",
+    "summary": "검찰은 살해 피의자에 대한 사이코패스 평가 결과를 곧 공개할 예정이다.",
+    "feed_source": "browser_naver_mainnews",
+    "keywords": ["사회", "범죄"],
+    "stock_symbol": null,
+    "expected_include": false,
+    "expected_noise_reason": "kr_crime"
+  },
+  {
+    "id": "celebrity_scandal",
+    "title": "유명 아이돌 열애설 인정… 소속사 공식 입장",
+    "summary": "스캔들로 번진 사생활 이슈에 팬들이 충격.",
+    "feed_source": "browser_naver_mainnews",
+    "keywords": ["연예"],
+    "stock_symbol": null,
+    "expected_include": false,
+    "expected_noise_reason": "kr_society"
+  },
+  {
+    "id": "traffic_accident",
+    "title": "고속도로 추돌 사고로 3중 추돌… 1명 사망",
+    "summary": "경찰은 음주운전 가능성도 조사 중이다.",
+    "feed_source": "browser_naver_mainnews",
+    "keywords": ["사고"],
+    "stock_symbol": null,
+    "expected_include": false
+  },
+  {
+    "id": "weather",
+    "title": "전국에 한파 경보… 미세먼지 농도 '나쁨'",
+    "summary": "기상청은 전국에 한파 경보를 내렸다.",
+    "feed_source": "browser_naver_mainnews",
+    "keywords": ["날씨"],
+    "stock_symbol": null,
+    "expected_include": false
+  },
+  {
+    "id": "kbo_sports",
+    "title": "프로야구 KBO 한국시리즈 7차전 명승부",
+    "summary": "야구팬이 환호한 명승부였다.",
+    "feed_source": "browser_naver_mainnews",
+    "keywords": ["스포츠", "야구"],
+    "stock_symbol": null,
+    "expected_include": false
+  }
+]

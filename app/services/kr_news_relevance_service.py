@@ -131,7 +131,7 @@ def score_kr_news_article(article: Any) -> KrNewsRelevance:
         invest_strength = (
             (30 if _has_symbol_anchor(article) else 0)
             + len(broad_hits) * 3
-            + len(invest_hits) * 2
+            + len(invest_hits) * 4
         )
         if noise_strength >= invest_strength:
             score = min(score, 10)

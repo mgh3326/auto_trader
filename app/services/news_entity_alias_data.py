@@ -154,6 +154,10 @@ KR_BROAD_MARKET_TERMS: tuple[str, ...] = (
     "수입",
     "무역수지",
     "경상수지",
+    "증시",
+    "주식시장",
+    "양도세",
+    "금융시장",
 )
 
 # Industry / policy / sector keywords that signal investment relevance even
@@ -202,6 +206,9 @@ KR_INVEST_KEYWORDS: tuple[str, ...] = (
     "물류",
     "해운",
     "항공",
+    "핀테크",
+    "인터넷은행",
+    "빅테크",
     "관세",
     "수출규제",
     "지원금",
