@@ -18,6 +18,8 @@ from datetime import time as _time
 from typing import Any, Literal, Protocol
 from zoneinfo import ZoneInfo
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.schemas.invest_screener import (
     ChangeDirection,
     ScreenerFreshness,
@@ -333,6 +335,7 @@ async def build_screener_results(
     resolver: _ResolverProto,
     market: str = "kr",
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    session: AsyncSession | None = None,
 ) -> ScreenerResultsResponse:
     requested_market = "us" if market == "us" else "kr"
     preset = get_preset(preset_id, requested_market)
@@ -372,6 +375,24 @@ async def build_screener_results(
         dataState=_aggregated_data_state,
     )
 
+    # Bulk-lookup Korean names for KR rows from kr_symbol_universe
+    _kr_names: dict[str, str] = {}
+    if session is not None and requested_market == "kr" and rows:
+        from app.models.kr_symbol_universe import KRSymbolUniverse
+        import sqlalchemy as sa
+        kr_symbols = [
+            _normalize_symbol(r, "kr")[0]
+            for r in rows
+            if _normalize_market(r.get("market") or requested_market) == "kr"
+        ]
+        if kr_symbols:
+            _kr_result = await session.execute(
+                sa.select(KRSymbolUniverse.symbol, KRSymbolUniverse.name).where(
+                    KRSymbolUniverse.symbol.in_(kr_symbols)
+                )
+            )
+            _kr_names = {row_t.symbol: row_t.name for row_t in _kr_result.all()}
+
     results: list[ScreenerResultRow] = []
     for idx, row in enumerate(rows, start=1):
         market = _normalize_market(row.get("market") or requested_market)
@@ -388,7 +409,7 @@ async def build_screener_results(
                 rank=idx,
                 symbol=symbol,
                 market=market,  # type: ignore[arg-type]
-                name=_clean_text(row.get("name")) or symbol,
+                name=_kr_names.get(symbol) or _clean_text(row.get("name")) or symbol,
                 logoUrl=row.get("logo_url"),
                 isWatched=is_watched,
                 priceLabel=_format_price(

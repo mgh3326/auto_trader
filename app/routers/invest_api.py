@@ -196,4 +196,5 @@ async def get_screener_results_endpoint(
         screening_service=screening_service,
         resolver=resolver,
         market=market,
+        session=db,
     )
