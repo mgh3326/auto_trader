@@ -53,7 +53,21 @@ async def test_ingest_wisefn_succeeds_with_injected_rows(db_session):
     assert result.event_count == 1
     fake.assert_awaited_once_with(date(2026, 5, 13))
 
-    events = (await db_session.execute(select(MarketEvent))).scalars().all()
+    events = (
+        (
+            await db_session.execute(
+                select(MarketEvent).where(
+                    MarketEvent.source == "wisefn",
+                    MarketEvent.category == "earnings",
+                    MarketEvent.market == "kr",
+                    MarketEvent.source_event_id
+                    == "wisefn::005930::2026-05-13::2026::1",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
     assert len(events) == 1
     assert events[0].symbol == "005930"
     assert events[0].source == "wisefn"
@@ -62,7 +76,16 @@ async def test_ingest_wisefn_succeeds_with_injected_rows(db_session):
     assert events[0].source_event_id == "wisefn::005930::2026-05-13::2026::1"
 
     parts = (
-        (await db_session.execute(select(MarketEventIngestionPartition)))
+        (
+            await db_session.execute(
+                select(MarketEventIngestionPartition).where(
+                    MarketEventIngestionPartition.source == "wisefn",
+                    MarketEventIngestionPartition.category == "earnings",
+                    MarketEventIngestionPartition.market == "kr",
+                    MarketEventIngestionPartition.partition_date == date(2026, 5, 13),
+                )
+            )
+        )
         .scalars()
         .all()
     )
@@ -88,7 +111,21 @@ async def test_ingest_wisefn_is_idempotent_on_repeat(db_session):
     )
     await db_session.commit()
 
-    events = (await db_session.execute(select(MarketEvent))).scalars().all()
+    events = (
+        (
+            await db_session.execute(
+                select(MarketEvent).where(
+                    MarketEvent.source == "wisefn",
+                    MarketEvent.category == "earnings",
+                    MarketEvent.market == "kr",
+                    MarketEvent.source_event_id
+                    == "wisefn::005930::2026-05-13::2026::1",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
     assert len(events) == 1, "repeat ingestion must upsert, not duplicate"
 
 
@@ -111,10 +148,32 @@ async def test_ingest_wisefn_marks_failed_on_fetch_error(db_session):
         result.error or ""
     )
 
-    events = (await db_session.execute(select(MarketEvent))).scalars().all()
+    events = (
+        (
+            await db_session.execute(
+                select(MarketEvent).where(
+                    MarketEvent.source == "wisefn",
+                    MarketEvent.category == "earnings",
+                    MarketEvent.market == "kr",
+                    MarketEvent.event_date == date(2026, 5, 13),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
     assert events == []
     parts = (
-        (await db_session.execute(select(MarketEventIngestionPartition)))
+        (
+            await db_session.execute(
+                select(MarketEventIngestionPartition).where(
+                    MarketEventIngestionPartition.source == "wisefn",
+                    MarketEventIngestionPartition.category == "earnings",
+                    MarketEventIngestionPartition.market == "kr",
+                    MarketEventIngestionPartition.partition_date == date(2026, 5, 13),
+                )
+            )
+        )
         .scalars()
         .all()
     )
