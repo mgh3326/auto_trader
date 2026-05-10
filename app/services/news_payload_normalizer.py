@@ -107,6 +107,55 @@ def _coerce_stock_candidate(candidate: Any) -> dict[str, Any] | None:
     return None
 
 
+# ROB-161: TradingView prefix → (market, symbol) fallback for raw.tv_related_symbols.
+_TRADINGVIEW_PREFIX_TO_MARKET: dict[str, str] = {
+    "KRX": "kr",
+    "KOSPI": "kr",
+    "KOSDAQ": "kr",
+    "KONEX": "kr",
+    "NASDAQ": "us",
+    "NYSE": "us",
+    "AMEX": "us",
+    "BATS": "us",
+    "ARCA": "us",
+    "BINANCE": "crypto",
+    "BITSTAMP": "crypto",
+    "COINBASE": "crypto",
+    "KRAKEN": "crypto",
+    "BYBIT": "crypto",
+    "OKX": "crypto",
+    "UPBIT": "crypto",
+    "BITHUMB": "crypto",
+}
+
+
+def _parse_tradingview_symbol(token: Any) -> tuple[str, str] | None:
+    """Parse a 'PREFIX:SYMBOL' TradingView token into (market, symbol).
+
+    Returns None for unsupported prefixes (LSE/TSE/FX/INDEX/...) and for any
+    URL/empty/malformed input. Symbols are normalized via the same rules as
+    _normalize_related_symbol_symbol (zero-padding for KR codes,
+    upper-casing for US/crypto).
+    """
+    if not isinstance(token, str):
+        return None
+    raw = token.strip()
+    if not raw or _looks_like_url_metadata(raw):
+        return None
+    if ":" not in raw:
+        return None
+    prefix, _, rest = raw.partition(":")
+    market = _TRADINGVIEW_PREFIX_TO_MARKET.get(prefix.strip().upper())
+    if market is None:
+        return None
+    if not rest.strip():
+        return None
+    symbol = _normalize_related_symbol_symbol(rest, market)
+    if symbol is None:
+        return None
+    return market, symbol
+
+
 def _iter_raw_stock_candidates(raw: Any) -> list[dict[str, Any]]:
     if not isinstance(raw, dict):
         return []

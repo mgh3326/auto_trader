@@ -130,3 +130,53 @@ class TestTvscreenerServiceContract:
         assert first["run_uuid"] == second["run_uuid"]
         assert second["inserted_count"] == first["inserted_count"]
         assert second["skipped_count"] == 0
+
+
+class TestParseTradingviewSymbol:
+    @pytest.mark.parametrize(
+        "token,expected",
+        [
+            ("KRX:005930", ("kr", "005930")),
+            ("KOSPI:005930", ("kr", "005930")),
+            ("KOSDAQ:035420", ("kr", "035420")),
+            ("KRX:5930", ("kr", "005930")),  # zero-pad short codes
+            ("NASDAQ:AAPL", ("us", "AAPL")),
+            ("NYSE:GME", ("us", "GME")),
+            ("AMEX:SPY", ("us", "SPY")),
+            ("BINANCE:BTCUSDT", ("crypto", "BTCUSDT")),
+            ("BITSTAMP:BTCUSD", ("crypto", "BTCUSD")),
+            ("COINBASE:ETHUSD", ("crypto", "ETHUSD")),
+            ("UPBIT:BTCKRW", ("crypto", "BTCKRW")),
+            ("nasdaq:aapl", ("us", "AAPL")),  # case-insensitive
+            ("  NASDAQ:AAPL ", ("us", "AAPL")),  # whitespace-tolerant
+        ],
+    )
+    def test_supported_prefixes_round_trip(self, token, expected):
+        from app.services.news_payload_normalizer import _parse_tradingview_symbol
+
+        assert _parse_tradingview_symbol(token) == expected
+
+    @pytest.mark.parametrize(
+        "token",
+        [
+            "LSE:VOD",
+            "TSE:7203",
+            "FX:EURUSD",
+            "FX_IDC:EURUSD",
+            "OANDA:USDJPY",
+            "TVC:GOLD",
+            "INDEX:SPX",
+            "SP:SPX",
+            "NASDAQ:",  # missing symbol
+            ":AAPL",  # missing prefix
+            "AAPL",  # no colon
+            "",
+            None,
+            "https://example.com/",  # url-like
+            "canonical_url:https://...",
+        ],
+    )
+    def test_unsupported_returns_none(self, token):
+        from app.services.news_payload_normalizer import _parse_tradingview_symbol
+
+        assert _parse_tradingview_symbol(token) is None
