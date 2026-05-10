@@ -146,30 +146,50 @@ test("month grid shows count derived from clusters and events", async () => {
   expect(within(clusterCell).getByText("327")).toBeInTheDocument();
 });
 
-test("clicking a date updates the selected-date list", async () => {
-  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+test("renders the monthly timeline with one section per in-month day", async () => {
   render(wrap(<DesktopCalendarPage />));
-  await screen.findByTestId("selected-date-events");
-
-  await user.click(screen.getByTestId("month-grid-cell-2026-05-13"));
-
-  await waitFor(() =>
-    expect(screen.getByTestId("selected-date-events")).toHaveAttribute("data-selected-date", "2026-05-13"),
-  );
-  expect(screen.getByText("미국 실적 발표 327건")).toBeInTheDocument();
-  expect(screen.getByText(/5월 13일 수요일 일정/)).toBeInTheDocument();
+  await screen.findByTestId("calendar-timeline");
+  // May 2026 has 31 days.
+  expect(screen.getAllByTestId("calendar-day-section")).toHaveLength(31);
+  // Today's section reflects the AAPL event.
+  const today = screen.getByText(/오늘 · 5월 11일 \(월\)/).closest('[data-testid="calendar-day-section"]')!;
+  expect(within(today).getByText("AAPL earnings direct")).toBeInTheDocument();
 });
 
-test("empty selected date renders graceful empty state", async () => {
+test("clicking a grid cell sets selectedDate as scroll target (does not filter the feed away)", async () => {
   const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  // Patch scrollIntoView so we can detect the scroll without jsdom failing.
+  const scrollSpy = vi.fn();
+  const originalScroll = Element.prototype.scrollIntoView;
+  Element.prototype.scrollIntoView = scrollSpy;
+  try {
+    render(wrap(<DesktopCalendarPage />));
+    await screen.findByTestId("calendar-timeline");
+
+    await user.click(screen.getByTestId("month-grid-cell-2026-05-13"));
+
+    // All sections still in the DOM (no filter-to-one-day collapse).
+    expect(screen.getAllByTestId("calendar-day-section")).toHaveLength(31);
+    // The May 13 section is now data-selected="true"; others are "false".
+    const may13 = document.querySelector('[data-day-anchor="2026-05-13"]')!;
+    const may11 = document.querySelector('[data-day-anchor="2026-05-11"]')!;
+    expect(may13).toHaveAttribute("data-selected", "true");
+    expect(may11).toHaveAttribute("data-selected", "false");
+    // And we scrolled.
+    expect(scrollSpy).toHaveBeenCalled();
+    // May 13's cluster is still visible in its section.
+    expect(within(may13 as HTMLElement).getByText("미국 실적 발표 327건")).toBeInTheDocument();
+  } finally {
+    Element.prototype.scrollIntoView = originalScroll;
+  }
+});
+
+test("days with no matching events render the Toss-friendly empty placeholder, not the freshness banner", async () => {
   render(wrap(<DesktopCalendarPage />));
-  await screen.findByTestId("selected-date-events");
-
-  await user.click(screen.getByTestId("month-grid-cell-2026-05-12"));
-
-  expect(await screen.findByTestId("calendar-empty")).toHaveTextContent(
-    "선택한 날짜에 일정이 없습니다.",
-  );
+  await screen.findByTestId("calendar-timeline");
+  const may12 = document.querySelector('[data-day-anchor="2026-05-12"]')!;
+  expect(within(may12 as HTMLElement).getByText("이 날은 예정된 일정이 없어요")).toBeInTheDocument();
+  expect(screen.queryByTestId("calendar-freshness-banner")).not.toBeInTheDocument();
 });
 
 test("prev/next month navigation refetches with the new month range", async () => {
@@ -221,19 +241,18 @@ test("AI weekly card refetches when selecting a date in a different week", async
   );
 });
 
-test("renders the calendar-loading skeleton while the first fetch is in flight", async () => {
-  // Stall the fetch so the skeleton is visible.
+test("renders the calendar-loading skeleton while the first fetch is in flight, replaces with the timeline", async () => {
   let resolve: (v: typeof calendarFixture) => void;
   vi.spyOn(calApi, "fetchCalendar").mockImplementationOnce(
     () => new Promise((r) => { resolve = r; }),
   );
   render(wrap(<DesktopCalendarPage />));
   expect(await screen.findByTestId("calendar-loading")).toBeInTheDocument();
-  // Resolve and verify it goes away.
   resolve!(calendarFixture);
   await waitFor(() =>
     expect(screen.queryByTestId("calendar-loading")).not.toBeInTheDocument(),
   );
+  expect(screen.getByTestId("calendar-timeline")).toBeInTheDocument();
 });
 
 test("renders calendar-error banner when fetchCalendar rejects", async () => {
@@ -241,38 +260,46 @@ test("renders calendar-error banner when fetchCalendar rejects", async () => {
   render(wrap(<DesktopCalendarPage />));
   const banner = await screen.findByTestId("calendar-error");
   expect(banner).toHaveTextContent("network blew up");
-  // Empty state must not render — error wins.
-  expect(screen.queryByTestId("calendar-empty")).not.toBeInTheDocument();
+  // No timeline sections render when the request fails.
+  expect(screen.queryByTestId("calendar-day-section")).not.toBeInTheDocument();
 });
 
-test("today's selected-date label includes the 오늘 prefix", async () => {
+test("today's day section is labelled with 오늘 prefix", async () => {
   render(wrap(<DesktopCalendarPage />));
-  // selectedDate defaults to today (2026-05-11 — Monday).
-  expect(await screen.findByText(/오늘 · 5월 11일 월요일 일정/)).toBeInTheDocument();
+  await screen.findByTestId("calendar-timeline");
+  expect(screen.getByText(/오늘 · 5월 11일 \(월\)/)).toBeInTheDocument();
 });
 
-test("type and region filters apply to the selected-date list and grid count", async () => {
+test("default surface renders the source button and never the legacy freshness banner", async () => {
+  render(wrap(<DesktopCalendarPage />));
+  await screen.findByTestId("calendar-timeline");
+  expect(screen.getByTestId("calendar-source-button")).toBeInTheDocument();
+  expect(screen.queryByTestId("calendar-freshness-banner")).not.toBeInTheDocument();
+});
+
+test("type and region filters hide non-matching items from each day section, grid count stays accurate", async () => {
   const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
   render(wrap(<DesktopCalendarPage />));
-  await screen.findByTestId("selected-date-events");
+  await screen.findByTestId("calendar-timeline");
 
-  // Select May 13 — has 327 US-earnings cluster. Filter to 경제지표 — list/cluster disappears.
-  await user.click(screen.getByTestId("month-grid-cell-2026-05-13"));
+  // Baseline: May 13 cluster present somewhere.
   expect(screen.getByText("미국 실적 발표 327건")).toBeInTheDocument();
 
+  // Filter to 경제지표 — earnings cluster gone, day section still rendered with the empty placeholder.
   await user.click(screen.getByRole("button", { name: "경제지표" }));
   expect(screen.queryByText("미국 실적 발표 327건")).not.toBeInTheDocument();
-  expect(screen.getByTestId("calendar-empty")).toBeInTheDocument();
-  // Grid count badge for May 13 should be gone now (no macro events that day).
-  const may13 = screen.getByTestId("month-grid-cell-2026-05-13");
-  expect(within(may13).queryByText("327")).not.toBeInTheDocument();
+  const may13 = document.querySelector('[data-day-anchor="2026-05-13"]')!;
+  expect(within(may13 as HTMLElement).getByText("이 날은 예정된 일정이 없어요")).toBeInTheDocument();
+  // Grid count badge for May 13 is gone.
+  const cell = screen.getByTestId("month-grid-cell-2026-05-13");
+  expect(within(cell).queryByText("327")).not.toBeInTheDocument();
 
-  // Switch to 실적 — cluster reappears for May 13.
+  // Switch to 실적 — cluster reappears.
   await user.click(screen.getByRole("button", { name: "실적" }));
   expect(screen.getByText("미국 실적 발표 327건")).toBeInTheDocument();
 
   // 국내 region filter — empty (cluster is US).
   await user.click(screen.getByRole("button", { name: "국내" }));
   expect(screen.queryByText("미국 실적 발표 327건")).not.toBeInTheDocument();
-  expect(screen.getByTestId("calendar-empty")).toBeInTheDocument();
+  expect(within(may13 as HTMLElement).getByText("이 날은 예정된 일정이 없어요")).toBeInTheDocument();
 });
