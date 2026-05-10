@@ -1,4 +1,10 @@
-import type { CalendarCluster, CalendarDay, CalendarEvent } from "../../types/calendar";
+import type {
+  CalendarCluster,
+  CalendarDay,
+  CalendarDayState,
+  CalendarEvent,
+  CalendarSourceStatus,
+} from "../../types/calendar";
 
 export type DisplayEventType = "earnings" | "macro" | "other";
 export type DisplayRegion = "kr" | "us";
@@ -247,4 +253,42 @@ export function clampSelectedDateToMonth(selectedDateIso: string, monthCursor: D
     return selectedDateIso;
   }
   return fmtLocal(startOfMonth(monthCursor));
+}
+
+// --- ROB-167 freshness helpers ---
+
+export function dataStateLabel(state: CalendarDayState): string {
+  switch (state) {
+    case "loaded":
+      return "최신";
+    case "empty":
+      return "일정 없음";
+    case "partial":
+      return "일부 수집 중";
+    case "missing":
+      return "미수집";
+    case "error":
+      return "수집 실패";
+    case "stale":
+      return "오래된 데이터";
+  }
+}
+
+export function freshnessBadgeLabel(status: CalendarSourceStatus): string {
+  const sourceLabel: Record<string, string> = {
+    finnhub: "Finnhub 실적",
+    dart: "DART 공시",
+    forexfactory: "ForexFactory 경제지표",
+  };
+  const label = sourceLabel[status.source] ?? status.source;
+  switch (status.state) {
+    case "fresh":
+      return `${label} · 최신`;
+    case "stale":
+      return `${label} · 오래됨`;
+    case "failed":
+      return `${label} · 수집 실패`;
+    case "missing":
+      return `${label} · 미수집`;
+  }
 }
