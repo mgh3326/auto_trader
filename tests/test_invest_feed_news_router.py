@@ -92,7 +92,7 @@ async def test_feed_news_top_tab(monkeypatch) -> None:
     db = MagicMock()
     scalar_result = MagicMock()
     scalar_result.scalars.return_value.all.return_value = [
-        _fake_article(id=1, market="kr"),
+        _fake_article(id=1, market="kr", symbol="005930", name="삼성전자"),
     ]
     summary_result = MagicMock()
     summary_result.all.return_value = []
@@ -285,7 +285,7 @@ async def test_feed_news_no_issue_means_none(monkeypatch) -> None:
     db = MagicMock()
     scalar_result = MagicMock()
     scalar_result.scalars.return_value.all.return_value = [
-        _fake_article(id=99, market="kr"),
+        _fake_article(id=99, market="kr", symbol="005930", name="삼성전자"),
     ]
     summary_result = MagicMock()
     summary_result.all.return_value = []
@@ -301,6 +301,240 @@ async def test_feed_news_no_issue_means_none(monkeypatch) -> None:
     resp = await svc.build_feed_news(
         db=db, resolver=resolver, tab="top", limit=30, cursor=None
     )
+    assert resp.items[0].issueId is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_feed_news_top_tab_drops_low_relevance_no_symbol(monkeypatch) -> None:
+    """ROB-188: a KR article with no related symbols and no market-wide scope
+    must NOT appear on the Toss-style default tab=top."""
+    from app.services.invest_view_model import feed_news_service as svc
+
+    db = MagicMock()
+    scalar_result = MagicMock()
+    scalar_result.scalars.return_value.all.return_value = [
+        _fake_article(
+            id=801,
+            market="kr",
+            symbol=None,
+            title="서울 아파트 청약 경쟁률 다시 상승",
+            summary="분양 시장 실수요자 관심이 높아졌다는 분석입니다.",
+            keywords=["청약", "분양"],
+        ),
+    ]
+    summary_result = MagicMock()
+    summary_result.all.return_value = []
+    db.execute = AsyncMock(
+        side_effect=[scalar_result, summary_result, _empty_related_result()]
+    )
+    monkeypatch.setattr(
+        svc, "build_market_issues", AsyncMock(return_value=MagicMock(items=[]))
+    )
+
+    resp = await svc.build_feed_news(
+        db=db, resolver=RelationResolver(), tab="top", limit=30, cursor=None
+    )
+
+    assert [i.id for i in resp.items] == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_feed_news_top_tab_keeps_kr_market_wide(monkeypatch) -> None:
+    """ROB-188: a KR macro/index article scored kr_market_wide (no symbol but
+    investment-relevant) must remain visible on tab=top."""
+    from app.services.invest_view_model import feed_news_service as svc
+
+    db = MagicMock()
+    scalar_result = MagicMock()
+    scalar_result.scalars.return_value.all.return_value = [
+        _fake_article(
+            id=802,
+            market="kr",
+            symbol=None,
+            title="코스피, 환율 안정에 2,800선 회복",
+            summary="증시가 외국인 순매수에 힘입어 상승 마감.",
+            keywords=["코스피", "환율", "증시"],
+        ),
+    ]
+    summary_result = MagicMock()
+    summary_result.all.return_value = []
+    db.execute = AsyncMock(
+        side_effect=[scalar_result, summary_result, _empty_related_result()]
+    )
+    monkeypatch.setattr(
+        svc, "build_market_issues", AsyncMock(return_value=MagicMock(items=[]))
+    )
+
+    resp = await svc.build_feed_news(
+        db=db, resolver=RelationResolver(), tab="top", limit=30, cursor=None
+    )
+
+    assert [i.id for i in resp.items] == [802]
+    assert resp.items[0].scope == "kr_market_wide"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_feed_news_top_tab_keeps_symbol_anchored(monkeypatch) -> None:
+    """ROB-188: a US article with an anchored symbol must stay on tab=top."""
+    from app.services.invest_view_model import feed_news_service as svc
+
+    db = MagicMock()
+    scalar_result = MagicMock()
+    scalar_result.scalars.return_value.all.return_value = [
+        _fake_article(id=803, market="us", symbol="NVDA", name="NVIDIA"),
+    ]
+    summary_result = MagicMock()
+    summary_result.all.return_value = []
+    db.execute = AsyncMock(
+        side_effect=[scalar_result, summary_result, _empty_related_result()]
+    )
+    monkeypatch.setattr(
+        svc, "build_market_issues", AsyncMock(return_value=MagicMock(items=[]))
+    )
+
+    resp = await svc.build_feed_news(
+        db=db, resolver=RelationResolver(), tab="top", limit=30, cursor=None
+    )
+
+    assert [i.id for i in resp.items] == [803]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_feed_news_hot_tab_drops_low_relevance_no_symbol(monkeypatch) -> None:
+    """ROB-188: tab=hot uses the same Toss-style no-symbol filter as top."""
+    from app.services.invest_view_model import feed_news_service as svc
+
+    db = MagicMock()
+    scalar_result = MagicMock()
+    scalar_result.scalars.return_value.all.return_value = [
+        _fake_article(
+            id=804,
+            market="kr",
+            symbol=None,
+            title="보험료 환급 꿀팁 모음",
+            summary="숨은 보험료를 확인하는 방법을 안내합니다.",
+            keywords=["보험료", "환급"],
+        ),
+    ]
+    summary_result = MagicMock()
+    summary_result.all.return_value = []
+    db.execute = AsyncMock(
+        side_effect=[scalar_result, summary_result, _empty_related_result()]
+    )
+    monkeypatch.setattr(
+        svc, "build_market_issues", AsyncMock(return_value=MagicMock(items=[]))
+    )
+
+    resp = await svc.build_feed_news(
+        db=db, resolver=RelationResolver(), tab="hot", limit=30, cursor=None
+    )
+
+    assert [i.id for i in resp.items] == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_feed_news_issue_chip_suppressed_when_no_related_symbols(
+    monkeypatch,
+) -> None:
+    """ROB-188: an item with no relatedSymbols should NOT carry an issueId
+    (the chip would be unanchored and just repeat headline noise)."""
+    from app.services.invest_view_model import feed_news_service as svc
+
+    db = MagicMock()
+    scalar_result = MagicMock()
+    scalar_result.scalars.return_value.all.return_value = [
+        _fake_article(
+            id=901,
+            market="kr",
+            symbol=None,
+            title="코스피, 환율 안정에 2,800선 회복",
+            summary="증시가 외국인 순매수에 힘입어 상승 마감.",
+            keywords=["코스피", "환율", "증시"],
+        ),
+    ]
+    summary_result = MagicMock()
+    summary_result.all.return_value = []
+    db.execute = AsyncMock(
+        side_effect=[scalar_result, summary_result, _empty_related_result()]
+    )
+
+    issue = _fake_issue(issue_id="iss-901", article_ids=[901], market="kr")
+    monkeypatch.setattr(
+        svc, "build_market_issues", AsyncMock(return_value=MagicMock(items=[issue]))
+    )
+
+    resp = await svc.build_feed_news(
+        db=db, resolver=RelationResolver(), tab="top", limit=30, cursor=None
+    )
+
+    assert resp.items[0].issueId is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_feed_news_issue_chip_suppressed_when_title_duplicates(
+    monkeypatch,
+) -> None:
+    """ROB-188: if the issue's issue_title exactly matches the article title
+    (after trim), suppress the chip — it would just repeat the headline."""
+    from app.services.invest_view_model import feed_news_service as svc
+
+    db = MagicMock()
+    scalar_result = MagicMock()
+    scalar_result.scalars.return_value.all.return_value = [
+        _fake_article(
+            id=902,
+            market="us",
+            symbol="AAPL",
+            name="Apple",
+            title="Apple shares rise after iPhone update",
+        ),
+    ]
+    summary_result = MagicMock()
+    summary_result.all.return_value = []
+    db.execute = AsyncMock(
+        side_effect=[scalar_result, summary_result, _empty_related_result()]
+    )
+
+    issue = MarketIssue(
+        id="iss-902",
+        market="us",
+        rank=1,
+        issue_title="Apple shares rise after iPhone update",
+        subtitle=None,
+        direction="neutral",
+        source_count=1,
+        article_count=1,
+        updated_at=_NOW,
+        articles=[
+            MarketIssueArticle(
+                id=902,
+                title="Apple shares rise after iPhone update",
+                url="https://example.com/902",
+                source="Reuters",
+                feed_source="rss_test",
+                published_at=_NOW,
+            )
+        ],
+        signals=IssueSignals(
+            recency_score=0.5,
+            source_diversity_score=0.5,
+            mention_score=0.5,
+        ),
+    )
+    monkeypatch.setattr(
+        svc, "build_market_issues", AsyncMock(return_value=MagicMock(items=[issue]))
+    )
+
+    resp = await svc.build_feed_news(
+        db=db, resolver=RelationResolver(), tab="latest", limit=30, cursor=None
+    )
+
     assert resp.items[0].issueId is None
 
 

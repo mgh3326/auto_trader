@@ -18,6 +18,7 @@ from urllib.parse import urljoin
 from urllib.request import Request, urlopen
 
 _DEFAULT_PATHS = (
+    "/invest/api/feed/news?tab=top&limit=20",
     "/invest/api/feed/news?tab=latest&limit=20",
     "/invest/api/feed/news?tab=us&limit=20",
     "/invest/api/feed/news?tab=crypto&limit=20",
@@ -27,7 +28,7 @@ _ADDITIVE_FIELDS = ("scope", "tags", "category", "noiseReason")
 # settles, a follow-up ticket should move "sourceMarket" into _ADDITIVE_FIELDS
 # (required) and remove this constant. Do not flip in this PR.
 _OPTIONAL_ADDITIVE_FIELDS_WARN = ("sourceMarket",)
-_ALLOWED_SCOPES = {"market_wide", "symbol_specific", "mixed"}
+_ALLOWED_SCOPES = {"market_wide", "symbol_specific", "mixed", "kr_market_wide"}
 
 
 @dataclass(frozen=True)

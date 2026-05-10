@@ -44,6 +44,11 @@ from app.services.news_issue_clustering_service import build_market_issues
 
 _TVSCREENER_FEED_SOURCE_PREFIX = "http_tvscreener_news_"
 _SNIPPET_MAX_CHARS = 240
+# ROB-188 — scopes that justify keeping an item on Toss-style default tabs
+# (top/hot) even when no related symbol is attached.
+_DEFAULT_TAB_KEEP_SCOPES: frozenset[str] = frozenset(
+    {"market_wide", "kr_market_wide", "mixed"}
+)
 
 
 def _summary_snippet_for_row(row: object, analysis_summary: str | None) -> str | None:
@@ -69,6 +74,18 @@ def _summary_snippet_for_row(row: object, analysis_summary: str | None) -> str |
     if len(cleaned) <= _SNIPPET_MAX_CHARS:
         return cleaned
     return cleaned[: _SNIPPET_MAX_CHARS - 1].rstrip() + "…"
+
+
+def _normalize_for_title_match(value: str | None) -> str:
+    """ROB-188 — normalize headline strings for duplicate-issue-chip check.
+
+    We strip whitespace and casefold so trivial spacing/case differences do
+    not prevent the suppression. We intentionally do NOT do heavier NLP
+    here — a stricter equality check yields fewer false positives.
+    """
+    if not value:
+        return ""
+    return " ".join(value.split()).casefold()
 
 
 def _encode_cursor(published_at: datetime | None, article_id: int) -> str:
@@ -468,16 +485,31 @@ async def build_feed_news(
                     scope_tags.append("kr_low_relevance")
 
         relation = _relation_from_related_symbols(related)
-        # Suppress the issue chip only for confirmed society/crime/noise —
-        # not for generic low_kr_relevance which may be a legitimate article.
+        # Suppress the issue chip when any of:
+        #   1. ROB-169 — confirmed KR noise (society/crime/sport/celebrity).
+        #   2. ROB-188 — no related symbol to anchor on; chip provides no
+        #      navigation value beyond the headline itself.
+        #   3. ROB-188 — issue title is the same as the article headline; the
+        #      chip would just repeat the headline.
         _KR_CONFIRMED_NOISE = {
             "kr_crime",
             "kr_society",
             "kr_noise",
             "kr_no_invest_signal",
         }
+        candidate_issue_id = issue_id_for_article.get(row.id)
         suppress_issue = (
-            market_value == "kr" and item_noise_reason in _KR_CONFIRMED_NOISE
+            (market_value == "kr" and item_noise_reason in _KR_CONFIRMED_NOISE)
+            or not related
+            or (
+                candidate_issue_id is not None
+                and any(
+                    _normalize_for_title_match(iss.issue_title)
+                    == _normalize_for_title_match(row.title)
+                    for iss in issues
+                    if iss.id == candidate_issue_id
+                )
+            )
         )
         items.append(
             FeedNewsItem(
@@ -494,7 +526,7 @@ async def build_feed_news(
                 market=market_typed,
                 sourceMarket=market_typed,
                 relatedSymbols=related,
-                issueId=None if suppress_issue else issue_id_for_article.get(row.id),
+                issueId=None if suppress_issue else candidate_issue_id,
                 summarySnippet=_summary_snippet_for_row(row, analysis_summary),
                 relation=relation,
                 url=row.url,
@@ -505,13 +537,20 @@ async def build_feed_news(
             )
         )
 
-    # ROB-155 / ROB-169: drop very-low-relevance rows on public discovery feeds
-    # when there is no symbol chip to anchor them. This keeps top/latest/default
-    # free of pure KR society/crime/noise while preserving market-wide KR rows
-    # that score as investment-relevant.
+    # ROB-188: Toss-style primary tabs (top / hot) must not include
+    # low-relevance items that have no anchoring related symbol. We allow:
+    #   - any item with at least one relatedSymbol, OR
+    #   - any item whose scope marks it as broad market context
+    #     (kr_market_wide from KR scorer, market_wide / mixed from US scope).
+    # crypto / latest / kr keep the prior, more permissive behavior so the
+    # "everything newest" feel of latest/kr is preserved.
     if tab == "crypto":
         items = [i for i in items if not (i.noiseReason and not i.relatedSymbols)]
-    elif tab in ("top", "latest", "hot", "kr"):
+    elif tab in ("top", "hot"):
+        items = [
+            i for i in items if i.relatedSymbols or i.scope in _DEFAULT_TAB_KEEP_SCOPES
+        ]
+    elif tab in ("latest", "kr"):
         items = [
             i
             for i in items

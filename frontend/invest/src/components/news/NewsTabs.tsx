@@ -1,14 +1,22 @@
 import type { FeedTab } from "../../types/feedNews";
 
-export const NEWS_TABS: { key: FeedTab; label: string }[] = [
-  { key: "top", label: "주요" },
-  { key: "latest", label: "최신" },
-  { key: "hot", label: "핫이슈" },
-  { key: "holdings", label: "보유" },
-  { key: "watchlist", label: "관심" },
+export const PRIMARY_NEWS_TABS: { key: FeedTab; label: string }[] = [
+  { key: "holdings", label: "보유주식" },
+  { key: "watchlist", label: "관심주식" },
+  { key: "top", label: "주요뉴스" },
+  { key: "latest", label: "최신뉴스" },
+  { key: "hot", label: "급상승뉴스" },
+];
+
+export const SECONDARY_NEWS_TABS: { key: FeedTab; label: string }[] = [
   { key: "kr", label: "국내" },
   { key: "us", label: "해외" },
   { key: "crypto", label: "크립토" },
+];
+
+export const NEWS_TABS: { key: FeedTab; label: string }[] = [
+  ...PRIMARY_NEWS_TABS,
+  ...SECONDARY_NEWS_TABS,
 ];
 
 export function NewsTabs({
@@ -20,13 +28,15 @@ export function NewsTabs({
   onChange: (tab: FeedTab) => void;
   variant?: "underline" | "pill-row";
 }) {
+  const visibleTabs = PRIMARY_NEWS_TABS;
+
   if (variant === "pill-row") {
     return (
       <div
         data-testid="news-tabs"
         style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4 }}
       >
-        {NEWS_TABS.map((t) => {
+        {visibleTabs.map((t) => {
           const active = t.key === value;
           return (
             <button
@@ -66,7 +76,7 @@ export function NewsTabs({
         overflowX: "auto",
       }}
     >
-      {NEWS_TABS.map((t) => {
+      {visibleTabs.map((t) => {
         const active = t.key === value;
         return (
           <button

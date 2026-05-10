@@ -114,6 +114,8 @@ test("renders dense news rows and reacts to tab change", async () => {
   expect(row).toHaveTextContent("Reuters");
   expect(row).toHaveTextContent("KR");
   expect(row).toHaveTextContent("시간 전");
+  expect(screen.getByTestId("feed-item-thumbnail-placeholder")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "n1 요약 더보기" })).toHaveTextContent("요약 보기");
 
   await userEvent.click(screen.getByTestId("tab-latest"));
   await waitFor(() => expect(feedApi.fetchFeedNews).toHaveBeenCalledTimes(2));
