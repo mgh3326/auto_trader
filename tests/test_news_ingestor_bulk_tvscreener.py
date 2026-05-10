@@ -180,3 +180,107 @@ class TestParseTradingviewSymbol:
         from app.services.news_payload_normalizer import _parse_tradingview_symbol
 
         assert _parse_tradingview_symbol(token) is None
+
+
+class TestTvscreenerCandidateFallback:
+    def test_falls_back_to_tv_related_symbols_when_stock_candidates_missing(self):
+        from app.schemas.news import NewsBulkIngestRequest
+        from app.services.news_payload_normalizer import (
+            _related_symbol_values_from_ingestor_payload,
+        )
+
+        # Minimal valid payload, raw with ONLY tv_related_symbols (no stock_candidates).
+        payload = {
+            "ingestion_run": {
+                "run_uuid": "rob-161-fallback",
+                "market": "us",
+                "feed_set": "us-tvscreener",
+                "started_at": "2026-05-10T00:00:00+00:00",
+                "finished_at": "2026-05-10T00:01:00+00:00",
+                "source_counts": {"http_tvscreener_news_us": 1},
+            },
+            "articles": [
+                {
+                    "fingerprint": "fp-fallback-1",
+                    "market": "us",
+                    "source": "http_tvscreener_news_us",
+                    "title": "Mixed-market story",
+                    "url": "https://example.com/news/mixed",
+                    "canonical_url": "https://example.com/news/mixed",
+                    "publisher": "Reuters",
+                    "published_at": "2026-05-10T00:00:00+00:00",
+                    "raw": {
+                        "tv_related_symbols": [
+                            "KRX:005930",
+                            "NASDAQ:AAPL",
+                            "BINANCE:BTCUSDT",
+                            "LSE:VOD",  # unsupported — must be skipped
+                            "FX:EURUSD",  # unsupported — must be skipped
+                        ],
+                    },
+                }
+            ],
+        }
+        request = NewsBulkIngestRequest.model_validate(payload)
+
+        rows = _related_symbol_values_from_ingestor_payload(
+            article_id=42, article_data=request.articles[0]
+        )
+
+        keys = sorted((r["market"], r["symbol"]) for r in rows)
+        assert keys == [
+            ("crypto", "BTCUSDT"),
+            ("kr", "005930"),
+            ("us", "AAPL"),
+        ]
+        # source attribution stays "candidate_metadata" (matches existing rows).
+        assert {r["source"] for r in rows} == {"candidate_metadata"}
+
+    def test_stock_candidates_take_precedence_over_tv_related_symbols(self):
+        from app.schemas.news import NewsBulkIngestRequest
+        from app.services.news_payload_normalizer import (
+            _related_symbol_values_from_ingestor_payload,
+        )
+
+        payload = {
+            "ingestion_run": {
+                "run_uuid": "rob-161-precedence",
+                "market": "us",
+                "feed_set": "us-tvscreener",
+                "started_at": "2026-05-10T00:00:00+00:00",
+                "finished_at": "2026-05-10T00:01:00+00:00",
+                "source_counts": {"http_tvscreener_news_us": 1},
+            },
+            "articles": [
+                {
+                    "fingerprint": "fp-precedence",
+                    "market": "us",
+                    "source": "http_tvscreener_news_us",
+                    "title": "Authoritative candidates",
+                    "url": "https://example.com/news/precedence",
+                    "canonical_url": "https://example.com/news/precedence",
+                    "publisher": "Reuters",
+                    "published_at": "2026-05-10T00:00:00+00:00",
+                    "raw": {
+                        "stock_candidates": [
+                            {
+                                "market": "us",
+                                "symbol": "AAPL",
+                                "source": "tv_related_symbol",
+                                "match_type": "tv_related",
+                                "confidence": 0.9,
+                            }
+                        ],
+                        # These should be ignored once stock_candidates exists.
+                        "tv_related_symbols": ["KRX:005930", "BINANCE:BTCUSDT"],
+                    },
+                }
+            ],
+        }
+        request = NewsBulkIngestRequest.model_validate(payload)
+
+        rows = _related_symbol_values_from_ingestor_payload(
+            article_id=99, article_data=request.articles[0]
+        )
+
+        assert [(r["market"], r["symbol"]) for r in rows] == [("us", "AAPL")]

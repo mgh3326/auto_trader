@@ -163,6 +163,23 @@ def _iter_raw_stock_candidates(raw: Any) -> list[dict[str, Any]]:
     if candidates is None:
         candidates = raw.get("related_symbols")
     if candidates is None:
+        # ROB-161: fall back to news-ingestor's TradingView raw tokens.
+        tv_tokens = raw.get("tv_related_symbols")
+        if isinstance(tv_tokens, list) and tv_tokens:
+            synthesized: list[dict[str, Any]] = []
+            for token in tv_tokens:
+                parsed = _parse_tradingview_symbol(token)
+                if parsed is None:
+                    continue
+                market, symbol = parsed
+                synthesized.append(
+                    {
+                        "market": market,
+                        "symbol": symbol,
+                        "source": "tv_related_symbol",
+                    }
+                )
+            return synthesized
         return []
     if isinstance(candidates, dict):
         candidates = [candidates]
