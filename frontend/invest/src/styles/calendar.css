@@ -381,3 +381,63 @@
   background: var(--fg);
   color: var(--bg);
 }
+
+/* ---------- ROB-185 grouped-monthly timeline ---------- */
+.calendar-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.calendar-timeline__empty {
+  padding: 48px 16px;
+  text-align: center;
+  color: var(--fg-3);
+  font-size: 13px;
+}
+.calendar-day-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  scroll-margin-top: 76px; /* leaves room for sticky filters on desktop */
+}
+.calendar-day-section--selected {
+  background: var(--accent-soft);
+  border-radius: 12px;
+  padding: 4px 4px 8px;
+}
+.calendar-day-section__header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface);
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 8px 6px;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: var(--fg);
+}
+.calendar-day-section--selected .calendar-day-section__header {
+  background: var(--accent-soft);
+}
+.calendar-day-section__total {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-3);
+  font-feature-settings: "tnum";
+}
+.calendar-day-section__empty {
+  padding: 12px 14px;
+  color: var(--fg-3);
+  font-size: 12px;
+}
+.calendar-day-section__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
