@@ -20,10 +20,11 @@ from app.services.invest_screener_snapshots.repository import (
 async def test_enrichment_reads_from_snapshot_when_fresh(db_session, monkeypatch):
     repo = InvestScreenerSnapshotsRepository(db_session)
     today = dt.date(2026, 5, 9)
+    symbol = "900001"
     await repo.upsert(
         SnapshotUpsert(
             market="kr",
-            symbol="005930",
+            symbol=symbol,
             snapshot_date=today,
             latest_close=Decimal("78500"),
             prev_close=Decimal("77900"),
@@ -44,9 +45,48 @@ async def test_enrichment_reads_from_snapshot_when_fresh(db_session, monkeypatch
         enrichment, "today_trading_date", lambda market, now=None: today
     )
 
-    rows = [{"market": "kr", "code": "005930"}]
+    rows = [{"market": "kr", "code": symbol}]
     await enrichment._enrich_consecutive_up_days(rows, market="kr", session=db_session)
     assert rows[0]["consecutive_up_days"] == 4
+    assert rows[0]["_screener_snapshot_state"] == "fresh"
+    fetcher.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_enrichment_uses_latest_snapshot_when_history_exists(
+    db_session, monkeypatch
+):
+    repo = InvestScreenerSnapshotsRepository(db_session)
+    older = dt.date(2026, 5, 8)
+    latest = dt.date(2026, 5, 9)
+    symbol = "900002"
+    for snapshot_date, up_days in [(older, 2), (latest, 5)]:
+        await repo.upsert(
+            SnapshotUpsert(
+                market="kr",
+                symbol=symbol,
+                snapshot_date=snapshot_date,
+                latest_close=Decimal("78500"),
+                prev_close=Decimal("77900"),
+                change_amount=Decimal("600"),
+                change_rate=Decimal("0.7702"),
+                consecutive_up_days=up_days,
+                week_change_rate=Decimal("2.1"),
+                closes_window=[77000, 77100, 77400, 77900, 78500],
+                source="kis",
+            )
+        )
+    await db_session.commit()
+
+    fetcher = AsyncMock()
+    monkeypatch.setattr(enrichment, "_fetch_ohlcv_for_indicators", fetcher)
+    monkeypatch.setattr(
+        enrichment, "today_trading_date", lambda market, now=None: latest
+    )
+
+    rows = [{"market": "kr", "code": symbol}]
+    await enrichment._enrich_consecutive_up_days(rows, market="kr", session=db_session)
+    assert rows[0]["consecutive_up_days"] == 5
     assert rows[0]["_screener_snapshot_state"] == "fresh"
     fetcher.assert_not_called()
 
