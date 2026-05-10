@@ -5,7 +5,10 @@
 ## Local TestClient smoke (pre-merge)
 
 ```bash
-cd /Users/mgh3326/work/auto_trader-worktrees/feature-ROB-161-tvscreener-ingest-invest-feed
+# Set once per shell:
+#   export AUTO_TRADER_REPO=/path/to/auto_trader-worktree
+#   export NEWS_INGESTOR_REPO=/path/to/news-ingestor
+cd "$AUTO_TRADER_REPO"
 uv run pytest \
   tests/test_news_ingestor_bulk_tvscreener.py \
   tests/test_invest_feed_news_tvscreener.py \
@@ -21,14 +24,14 @@ Pre-req: a non-production Postgres pointed at by `DATABASE_URL` (use `.env.local
 1. Start the auto_trader API:
 
 ```bash
-cd /Users/mgh3326/work/auto_trader-worktrees/feature-ROB-161-tvscreener-ingest-invest-feed
+cd "$AUTO_TRADER_REPO"
 uv run uvicorn app.main:app --port 8000
 ```
 
-2. From `/Users/mgh3326/work/news-ingestor`, run the dry-run push to inspect the payload:
+2. From `$NEWS_INGESTOR_REPO`, run the dry-run push to inspect the payload:
 
 ```bash
-cd /Users/mgh3326/work/news-ingestor
+cd "$NEWS_INGESTOR_REPO"
 uv run python -m news_ingestor push-pending --market us --feed-set us-tvscreener --dry-run --limit 5
 ```
 
@@ -78,7 +81,7 @@ Expected: integer >= 1 on at least one of `top`/`us`/`crypto` after news-ingesto
 
 ## Notes / out of scope
 
-- `tvscreener_symbol_news` source is **not** produced by news-ingestor today (see `/Users/mgh3326/work/news-ingestor/src/news_ingestor/sources/tvscreener_news.py:11-13`). The Linear text mentions it for forward-compatibility; ROB-163 will own the per-symbol news source.
+- `tvscreener_symbol_news` source is **not** produced by news-ingestor today (see `news-ingestor/src/news_ingestor/sources/tvscreener_news.py:11-13`). The Linear text mentions it for forward-compatibility; ROB-163 will own the per-symbol news source.
 - `get_article()` body enrichment is **out of scope** here (ROB-162).
 - No scheduler/Prefect cadence change in this issue.
 - TradingView prefix parser lives in `app/services/news_payload_normalizer.py` (post-ROB-155 refactor).

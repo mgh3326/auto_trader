@@ -34,7 +34,7 @@ def _unique_payload() -> dict:
     return payload
 
 
-@pytest.fixture(scope="module", autouse=True)
+@pytest.fixture(scope="module")
 def news_schema_for_tvscreener_contract_tests():
     """Ensure ROB-46/ROB-161 news tables exist for full CI integration runs."""
 
@@ -82,6 +82,7 @@ def news_schema_for_tvscreener_contract_tests():
     asyncio.run(_ensure_schema())
 
 
+@pytest.mark.unit
 class TestTvscreenerSchemaContract:
     def test_news_bulk_ingest_request_accepts_tvscreener_payload(self):
         from app.schemas.news import NewsBulkIngestRequest
@@ -117,6 +118,7 @@ def _make_test_app() -> FastAPI:
     return app
 
 
+@pytest.mark.usefixtures("news_schema_for_tvscreener_contract_tests")
 class TestTvscreenerServiceContract:
     @pytest.mark.integration
     def test_bulk_ingest_round_trip_persists_articles_and_related_symbols(self):
@@ -140,15 +142,25 @@ class TestTvscreenerServiceContract:
 
         async def _load_persisted():
             async with AsyncSessionLocal() as db:
+                urls = [article["url"] for article in payload["articles"]]
                 articles = (
-                    (await db.execute(select(NewsArticle).order_by(NewsArticle.id)))
+                    (
+                        await db.execute(
+                            select(NewsArticle)
+                            .where(NewsArticle.url.in_(urls))
+                            .order_by(NewsArticle.id)
+                        )
+                    )
                     .scalars()
                     .all()
                 )
+                article_ids = [article.id for article in articles]
                 relations = (
                     (
                         await db.execute(
-                            select(NewsArticleRelatedSymbol).order_by(
+                            select(NewsArticleRelatedSymbol)
+                            .where(NewsArticleRelatedSymbol.article_id.in_(article_ids))
+                            .order_by(
                                 NewsArticleRelatedSymbol.article_id,
                                 NewsArticleRelatedSymbol.symbol,
                             )
@@ -175,6 +187,7 @@ class TestTvscreenerServiceContract:
         assert ("us", "AAPL") in rel_keys
         assert ("crypto", "BTCUSDT") in rel_keys
         assert not any(market == "uk" for market, _ in rel_keys)
+        assert {r.source for r in relations} == {"tv_related_symbol"}
         assert run is not None and run.inserted_count == 5
 
     @pytest.mark.integration
@@ -190,6 +203,7 @@ class TestTvscreenerServiceContract:
         assert second["skipped_count"] == 0
 
 
+@pytest.mark.unit
 class TestParseTradingviewSymbol:
     @pytest.mark.parametrize(
         "token,expected",
@@ -240,6 +254,7 @@ class TestParseTradingviewSymbol:
         assert _parse_tradingview_symbol(token) is None
 
 
+@pytest.mark.unit
 class TestTvscreenerCandidateFallback:
     def test_falls_back_to_tv_related_symbols_when_stock_candidates_missing(self):
         from app.schemas.news import NewsBulkIngestRequest
@@ -291,8 +306,8 @@ class TestTvscreenerCandidateFallback:
             ("kr", "005930"),
             ("us", "AAPL"),
         ]
-        # source attribution stays "candidate_metadata" (matches existing rows).
-        assert {r["source"] for r in rows} == {"candidate_metadata"}
+        # source attribution preserves tv_related_symbols fallback provenance.
+        assert {r["source"] for r in rows} == {"tv_related_symbol"}
 
     def test_stock_candidates_take_precedence_over_tv_related_symbols(self):
         from app.schemas.news import NewsBulkIngestRequest

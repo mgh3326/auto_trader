@@ -265,7 +265,8 @@ def _related_symbol_row_from_candidate(
         "display_name": str(display_name).strip()[:120]
         if display_name is not None and str(display_name).strip()
         else None,
-        "source": "candidate_metadata",
+        "source": str(candidate.get("source") or "candidate_metadata").strip()[:80]
+        or "candidate_metadata",
         "matched_term": str(matched_term).strip()[:120]
         if matched_term is not None and str(matched_term).strip()
         else None,
