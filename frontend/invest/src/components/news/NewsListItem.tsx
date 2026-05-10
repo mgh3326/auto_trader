@@ -163,7 +163,27 @@ export function NewsListItem({
             )}
           </div>
 
-          <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+            <div
+              aria-hidden
+              data-testid="feed-item-thumbnail-placeholder"
+              style={{
+                flex: "0 0 auto",
+                width: variant === "mobile" ? 52 : 60,
+                height: variant === "mobile" ? 52 : 60,
+                borderRadius: 14,
+                background: "linear-gradient(135deg, var(--surface-2), var(--surface-3, var(--surface-2)))",
+                border: "1px solid var(--border)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                color: "var(--fg-3)",
+                fontSize: 18,
+                fontWeight: 800,
+              }}
+            >
+              N
+            </div>
             <a
               href={item.url}
               target="_blank"
@@ -181,33 +201,31 @@ export function NewsListItem({
             >
               {item.title}
             </a>
-            <button
-              type="button"
-              onClick={onToggle}
-              disabled={!hasSummary}
-              aria-expanded={open}
-              aria-controls={summaryId}
-              aria-label={summaryButtonLabel}
-              style={{
-                flex: "0 0 auto",
-                minWidth: 40,
-                minHeight: 36,
-                border: "1px solid var(--border)",
-                borderRadius: 999,
-                background: hasSummary ? "var(--surface-2)" : "transparent",
-                color: hasSummary ? "var(--fg-2)" : "var(--fg-3)",
-                cursor: hasSummary ? "pointer" : "default",
-                fontFamily: "inherit",
-                fontSize: 12,
-                fontWeight: 800,
-              }}
-            >
-              {open ? "접기" : "요약"}
-            </button>
           </div>
 
-          {(item.relatedSymbols.length > 0 || issue) && (
-            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          {(item.relatedSymbols.length > 0 || issue || hasSummary) && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              {hasSummary && (
+                <button
+                  type="button"
+                  onClick={onToggle}
+                  aria-expanded={open}
+                  aria-controls={summaryId}
+                  aria-label={summaryButtonLabel}
+                  style={{
+                    border: "none",
+                    background: "transparent",
+                    color: "var(--fg-3)",
+                    cursor: "pointer",
+                    fontFamily: "inherit",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    padding: "2px 0",
+                  }}
+                >
+                  {open ? "요약 접기" : "요약 보기"}
+                </button>
+              )}
               {item.relatedSymbols.length > 0 && (
                 <div
                   data-testid="feed-item-related-symbols"

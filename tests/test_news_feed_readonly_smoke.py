@@ -91,6 +91,7 @@ def test_run_smoke_uses_get_only_fetcher(monkeypatch):
 
     assert all(r.ok for r in results)
     assert [path for path, _ in calls] == [
+        "/invest/api/feed/news?tab=top&limit=20",
         "/invest/api/feed/news?tab=latest&limit=20",
         "/invest/api/feed/news?tab=us&limit=20",
         "/invest/api/feed/news?tab=crypto&limit=20",
@@ -153,3 +154,28 @@ def test_validate_feed_payload_warns_when_source_market_diverges():
 
     assert result.ok is True  # divergent sourceMarket must NOT be an error
     assert any("source_market_diverges" in w for w in result.warnings)
+
+
+def test_validate_feed_payload_allows_kr_market_wide_scope():
+    result = validate_feed_payload(
+        "/invest/api/feed/news?tab=kr&limit=20",
+        {
+            "items": [
+                {
+                    "id": 3,
+                    "title": "코스피, 환율 안정에 상승",
+                    "market": "kr",
+                    "sourceMarket": "kr",
+                    "url": "https://example.com/news/3",
+                    "relatedSymbols": [],
+                    "scope": "kr_market_wide",
+                    "tags": [],
+                    "category": "kr_index",
+                    "noiseReason": None,
+                }
+            ]
+        },
+    )
+
+    assert result.ok is True
+    assert result.errors == []
