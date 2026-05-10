@@ -347,12 +347,16 @@ class TestGetNewsReadinessStatusWhitelist:
 
         result = _news_readiness_payload(
             market="us",
-            latest_run=_make_run(market="us", source_counts={"rss_yahoo_finance_topstories": 5}),
+            latest_run=_make_run(
+                market="us", source_counts={"rss_yahoo_finance_topstories": 5}
+            ),
             latest_article_published_at=None,
             max_age_minutes=180,
             source_coverage=[],
         )
-        assert all(c.feed_source != "http_tvscreener_news_us" for c in result.source_coverage)
+        assert all(
+            c.feed_source != "http_tvscreener_news_us" for c in result.source_coverage
+        )
 
     async def test_build_source_coverage_includes_tvscreener_when_opted_in(self):
         """include_tvscreener=True appends tvscreener entries to source_coverage."""
@@ -365,7 +369,9 @@ class TestGetNewsReadinessStatusWhitelist:
                         class M:
                             def all(self):
                                 return []
+
                         return M()
+
                 return Rows()
 
         coverage = await svc._build_source_coverage(

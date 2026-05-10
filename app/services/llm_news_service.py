@@ -416,7 +416,11 @@ async def _build_source_coverage(
         extra_sources = _TVSCREENER_FEED_SOURCES_BY_MARKET.get(market, ())
     feed_sources = list(
         dict.fromkeys(
-            [*source_counts.keys(), *_CORE_FEED_SOURCES_BY_MARKET.get(market, ()), *extra_sources]
+            [
+                *source_counts.keys(),
+                *_CORE_FEED_SOURCES_BY_MARKET.get(market, ()),
+                *extra_sources,
+            ]
         )
     )
     if not feed_sources:
