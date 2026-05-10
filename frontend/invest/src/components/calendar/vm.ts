@@ -205,3 +205,46 @@ export function selectedDateLabel(dateIso: string): string {
   const dow = dayOfWeekLabel(dateIso);
   return `${Number.parseInt(m ?? "0", 10)}월 ${Number.parseInt(d ?? "0", 10)}일 ${dow}요일 일정`;
 }
+
+// --- ROB-166 KST + relative-date helpers ---
+
+/**
+ * Render an event time string for KST consumers.
+ * - Backend `eventTimeLocal` (e.g. "오후 9시 발표 예정") is already KST and
+ *   passes through unchanged.
+ * - When the backend gave us nothing AND the row is unreleased, return a
+ *   stable "발표 예정 · KST" placeholder so dense days don't flicker between
+ *   `null` and `발표 예정`.
+ */
+export function formatKstTime(eventTimeLocal: string | null | undefined): string {
+  const trimmed = (eventTimeLocal ?? "").trim();
+  if (trimmed.length > 0) return trimmed;
+  return "발표 예정 · KST";
+}
+
+/** "오늘" if dateIso === todayIso, "내일" if dateIso === todayIso + 1d, else null. */
+export function relativeDayPrefix(dateIso: string, todayIso: string): string | null {
+  if (dateIso === todayIso) return "오늘";
+  const t = new Date(`${todayIso}T00:00:00`);
+  t.setDate(t.getDate() + 1);
+  if (fmtLocal(t) === dateIso) return "내일";
+  return null;
+}
+
+export function selectedDateLabelWithRelative(dateIso: string, todayIso: string): string {
+  const base = selectedDateLabel(dateIso);
+  const prefix = relativeDayPrefix(dateIso, todayIso);
+  return prefix == null ? base : `${prefix} · ${base}`;
+}
+
+/** Force `selectedDate` back into the month containing `monthCursor` if it drifted. */
+export function clampSelectedDateToMonth(selectedDateIso: string, monthCursor: Date): string {
+  const sel = new Date(`${selectedDateIso}T00:00:00`);
+  if (
+    sel.getFullYear() === monthCursor.getFullYear() &&
+    sel.getMonth() === monthCursor.getMonth()
+  ) {
+    return selectedDateIso;
+  }
+  return fmtLocal(startOfMonth(monthCursor));
+}

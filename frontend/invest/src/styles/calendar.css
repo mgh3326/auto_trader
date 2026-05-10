@@ -1,0 +1,28 @@
+/* =========================================================
+   ROB-166 — /invest/calendar responsive rules.
+   Components opt in via stable class names; structural
+   styles stay inline to match the existing convention.
+   Order: shared > grid > rows > mobile shell.
+   ========================================================= */
+
+/* Visible focus ring for keyboard nav on every calendar
+   interactive surface. Uses --shadow-focus from tokens. */
+.calendar-grid-cell:focus-visible,
+.calendar-pill:focus-visible,
+.calendar-nav-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+  border-radius: 10px;
+}
+
+/* Mobile filter row scrolls horizontally instead of wrapping
+   so the longest pill never causes a layout jump. */
+.calendar-mobile-filters {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding-bottom: 2px;
+}
+.calendar-mobile-filters::-webkit-scrollbar { display: none; }
+.calendar-mobile-filters > * { flex: 0 0 auto; }
