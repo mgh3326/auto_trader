@@ -46,8 +46,9 @@ export interface FeedNewsItem {
    * Equal to `market` during the backward-compat window. New code should
    * read this field instead of `market` so the naming is unambiguous when
    * compared with `FeedRelatedSymbol.market` (the asset's market).
+   * Nullable to tolerate older backend payloads that pre-date the dual emit.
    */
-  sourceMarket?: "kr" | "us" | "crypto";
+  sourceMarket?: "kr" | "us" | "crypto" | null;
   relatedSymbols: FeedRelatedSymbol[];
   issueId?: string | null;
   summarySnippet?: string | null;
