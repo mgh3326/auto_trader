@@ -74,9 +74,7 @@ def _wire_db(rows, relations):
     related_result = MagicMock()
     related_result.scalars.return_value.all.return_value = list(relations)
 
-    db.execute = AsyncMock(
-        side_effect=[article_result, summary_result, related_result]
-    )
+    db.execute = AsyncMock(side_effect=[article_result, summary_result, related_result])
     return db
 
 
@@ -222,7 +220,5 @@ async def test_feed_news_include_quotes_enriches_tvscreener_related_symbols(
 
     enrich_mock.assert_awaited_once()
     enriched_items = enrich_mock.await_args.args[0]
-    assert any(
-        item.feedSource == "http_tvscreener_news_us" for item in enriched_items
-    )
+    assert any(item.feedSource == "http_tvscreener_news_us" for item in enriched_items)
     assert response.meta.warnings == []
