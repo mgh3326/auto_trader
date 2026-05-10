@@ -156,8 +156,16 @@ def test_parse_args_month_expands_to_first_and_last_day():
     from scripts.ingest_market_events import parse_args
 
     ns = parse_args(
-        ["--source", "wisefn", "--category", "earnings", "--market", "kr",
-         "--month", "2026-05"]
+        [
+            "--source",
+            "wisefn",
+            "--category",
+            "earnings",
+            "--market",
+            "kr",
+            "--month",
+            "2026-05",
+        ]
     )
     assert ns.from_date == date(2026, 5, 1)
     assert ns.to_date == date(2026, 5, 31)
@@ -168,8 +176,16 @@ def test_parse_args_month_february_leap_year_2024():
     from scripts.ingest_market_events import parse_args
 
     ns = parse_args(
-        ["--source", "wisefn", "--category", "earnings", "--market", "kr",
-         "--month", "2024-02"]
+        [
+            "--source",
+            "wisefn",
+            "--category",
+            "earnings",
+            "--market",
+            "kr",
+            "--month",
+            "2024-02",
+        ]
     )
     assert ns.from_date == date(2024, 2, 1)
     assert ns.to_date == date(2024, 2, 29)
@@ -180,8 +196,16 @@ def test_parse_args_month_february_non_leap():
     from scripts.ingest_market_events import parse_args
 
     ns = parse_args(
-        ["--source", "wisefn", "--category", "earnings", "--market", "kr",
-         "--month", "2026-02"]
+        [
+            "--source",
+            "wisefn",
+            "--category",
+            "earnings",
+            "--market",
+            "kr",
+            "--month",
+            "2026-02",
+        ]
     )
     assert ns.to_date == date(2026, 2, 28)
 
@@ -192,9 +216,18 @@ def test_parse_args_month_and_from_date_are_mutually_exclusive():
 
     with pytest.raises(SystemExit):
         parse_args(
-            ["--source", "wisefn", "--category", "earnings", "--market", "kr",
-             "--month", "2026-05",
-             "--from-date", "2026-05-01"]
+            [
+                "--source",
+                "wisefn",
+                "--category",
+                "earnings",
+                "--market",
+                "kr",
+                "--month",
+                "2026-05",
+                "--from-date",
+                "2026-05-01",
+            ]
         )
 
 
@@ -211,15 +244,27 @@ def test_parse_args_accepts_wisefn_source():
     from scripts.ingest_market_events import parse_args
 
     ns = parse_args(
-        ["--source", "wisefn", "--category", "earnings", "--market", "kr",
-         "--from-date", "2026-05-01", "--to-date", "2026-05-01"]
+        [
+            "--source",
+            "wisefn",
+            "--category",
+            "earnings",
+            "--market",
+            "kr",
+            "--from-date",
+            "2026-05-01",
+            "--to-date",
+            "2026-05-01",
+        ]
     )
     assert ns.source == "wisefn"
 
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_run_ingest_skips_wisefn_when_flag_disabled(db_session, monkeypatch, caplog):
+async def test_run_ingest_skips_wisefn_when_flag_disabled(
+    db_session, monkeypatch, caplog
+):
     from app.core import config as config_mod
     from scripts import ingest_market_events as cli
 
