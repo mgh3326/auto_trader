@@ -97,3 +97,41 @@ async def test_fetch_forexfactory_returns_empty_on_xml_error():
         rows = await ff.fetch_forexfactory_events_for_date(date(2026, 5, 13))
 
     assert rows == []
+
+
+# ---------------------------------------------------------------------------
+# ROB-184: rolling_window_for_today tests
+# ---------------------------------------------------------------------------
+
+from zoneinfo import ZoneInfo  # noqa: E402
+
+ET = ZoneInfo("America/New_York")
+
+
+@pytest.mark.unit
+def test_rolling_window_for_today_is_two_iso_weeks_in_et():
+    from app.services.market_events.forexfactory_helpers import (
+        rolling_window_for_today,
+    )
+
+    # Tue 2026-05-12 06:00 UTC == 02:00 ET (still Monday in ET? no — Tue)
+    now_utc = datetime(2026, 5, 12, 6, 0, tzinfo=UTC)
+    start, end = rolling_window_for_today(now_utc)
+    # ISO-week containing 2026-05-12 ET starts Mon 2026-05-11; next week
+    # ends Sun 2026-05-24. We anchor on Mon..Sun(+7) to match upstream feed.
+    assert start == date(2026, 5, 11)
+    assert end == date(2026, 5, 24)
+
+
+@pytest.mark.unit
+def test_rolling_window_for_today_handles_sunday_et_boundary():
+    from app.services.market_events.forexfactory_helpers import (
+        rolling_window_for_today,
+    )
+
+    # 2026-05-11 03:30 UTC == 2026-05-10 23:30 ET (Sunday)
+    now_utc = datetime(2026, 5, 11, 3, 30, tzinfo=UTC)
+    start, end = rolling_window_for_today(now_utc)
+    # Sunday still belongs to "this week" feed (Mon 2026-05-04 .. Sun 2026-05-10)
+    assert start == date(2026, 5, 4)
+    assert end == date(2026, 5, 17)

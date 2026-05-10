@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import xml.etree.ElementTree as ET
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -23,6 +23,20 @@ logger = logging.getLogger(__name__)
 THISWEEK_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.xml"
 NEXTWEEK_URL = "https://nfs.faireconomy.media/ff_calendar_nextweek.xml"
 ET_TZ = ZoneInfo("America/New_York")
+
+
+def rolling_window_for_today(now_utc: datetime) -> tuple[date, date]:
+    """Return (start, end) inclusive of the rolling FF window in ET dates.
+
+    Upstream publishes ISO-week thisweek + nextweek feeds anchored Monday
+    in ET. The returned dates are ET-local calendar dates.
+    """
+    now_et = now_utc.astimezone(ET_TZ)
+    today_et = now_et.date()
+    # Python: Mon=0..Sun=6. Snap back to Monday.
+    monday_this = today_et - timedelta(days=today_et.weekday())
+    sunday_next = monday_this + timedelta(days=13)
+    return monday_this, sunday_next
 
 
 async def _fetch_xml_documents(target_date: date) -> list[str]:
