@@ -82,3 +82,34 @@ async def test_calendar_clusters_when_over_threshold(monkeypatch) -> None:
     )
     assert len(resp.days[0].clusters) == 1
     assert resp.days[0].clusters[0].eventCount == 15
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_calendar_returns_one_day_per_date_for_month_range(
+    monkeypatch,
+) -> None:
+    """ROB-165: month-range request returns N days, one CalendarDay per date."""
+    from app.services.invest_view_model import calendar_service as svc
+
+    fake_resp = MagicMock()
+    fake_resp.events = [
+        _fake_event(event_id=f"e{i}", ev_date=date(2026, 5, i + 1)) for i in range(31)
+    ]
+    fake_query_service = MagicMock()
+    fake_query_service.list_for_range = AsyncMock(return_value=fake_resp)
+    monkeypatch.setattr(svc, "MarketEventsQueryService", lambda db: fake_query_service)
+
+    resp = await svc.build_calendar(
+        db=MagicMock(),
+        resolver=RelationResolver(),
+        from_date=date(2026, 5, 1),
+        to_date=date(2026, 5, 31),
+        tab="all",
+    )
+    assert resp.fromDate == date(2026, 5, 1)
+    assert resp.toDate == date(2026, 5, 31)
+    assert len(resp.days) == 31
+    dates = [d.date for d in resp.days]
+    assert dates == sorted(dates)
+    assert len(set(dates)) == 31

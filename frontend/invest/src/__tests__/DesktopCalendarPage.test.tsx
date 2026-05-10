@@ -19,7 +19,9 @@ function wrap(ui: React.ReactElement) {
   );
 }
 
-function event(overrides: Partial<CalendarEvent> & Pick<CalendarEvent, "eventId" | "title" | "market" | "eventType">): CalendarEvent {
+function event(
+  overrides: Partial<CalendarEvent> & Pick<CalendarEvent, "eventId" | "title" | "market" | "eventType">,
+): CalendarEvent {
   return {
     source: "fixture",
     relatedSymbols: [],
@@ -29,10 +31,11 @@ function event(overrides: Partial<CalendarEvent> & Pick<CalendarEvent, "eventId"
   };
 }
 
+// Returned for any month-range fetch in this test file. We reuse the same days fixture to keep tests focused.
 const calendarFixture: CalendarResponse = {
   tab: "all",
-  fromDate: "2026-05-11",
-  toDate: "2026-05-17",
+  fromDate: "2026-04-26",
+  toDate: "2026-06-06",
   asOf: "2026-05-11T03:00:00.000Z",
   days: [
     {
@@ -48,7 +51,6 @@ const calendarFixture: CalendarResponse = {
       ],
       clusters: [],
     },
-    { date: "2026-05-12", events: [], clusters: [] },
     {
       date: "2026-05-13",
       events: [],
@@ -66,7 +68,6 @@ const calendarFixture: CalendarResponse = {
         },
       ],
     },
-    { date: "2026-05-14", events: [], clusters: [] },
     {
       date: "2026-05-15",
       events: [],
@@ -77,14 +78,10 @@ const calendarFixture: CalendarResponse = {
           eventType: "economic",
           market: "global",
           eventCount: 4,
-          topEvents: [
-            event({ eventId: "evt-cpi", title: "US CPI", market: "us", eventType: "economic" }),
-          ],
+          topEvents: [event({ eventId: "evt-cpi", title: "US CPI", market: "us", eventType: "economic" })],
         },
       ],
     },
-    { date: "2026-05-16", events: [], clusters: [] },
-    { date: "2026-05-17", events: [], clusters: [] },
   ],
   meta: { warnings: [] },
 };
@@ -94,16 +91,25 @@ beforeEach(() => {
   vi.setSystemTime(new Date("2026-05-11T12:00:00+09:00"));
   vi.spyOn(panelApi, "fetchAccountPanel").mockResolvedValue({
     homeSummary: { includedSources: [], excludedSources: [], totalValueKrw: 0 },
-    accounts: [], groupedHoldings: [], watchSymbols: [], sourceVisuals: [],
+    accounts: [],
+    groupedHoldings: [],
+    watchSymbols: [],
+    sourceVisuals: [],
     meta: { warnings: [], watchlistAvailable: true },
   });
   vi.spyOn(signalsApi, "fetchSignals").mockResolvedValue({
-    tab: "kr", asOf: new Date().toISOString(), items: [], meta: { warnings: [] },
+    tab: "kr",
+    asOf: new Date().toISOString(),
+    items: [],
+    meta: { warnings: [] },
   });
   vi.spyOn(calApi, "fetchCalendar").mockResolvedValue(calendarFixture);
   vi.spyOn(calApi, "fetchWeeklySummary").mockResolvedValue({
-    weekStart: "2026-05-11", asOf: new Date().toISOString(),
-    sections: [], partial: false, missingDates: [],
+    weekStart: "2026-05-11",
+    asOf: new Date().toISOString(),
+    sections: [],
+    partial: false,
+    missingDates: [],
   });
 });
 
@@ -112,61 +118,128 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-test("fetches target week and renders week rail and weekly summary toggle", async () => {
-  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+test("fetches the full month grid range (Sun-aligned 6 weeks) on mount", async () => {
   render(wrap(<DesktopCalendarPage />));
-
   await waitFor(() => {
-    expect(calApi.fetchCalendar).toHaveBeenCalledWith({ fromDate: "2026-05-11", toDate: "2026-05-17", tab: "all" });
+    expect(calApi.fetchCalendar).toHaveBeenCalledWith({
+      fromDate: "2026-04-26",
+      toDate: "2026-06-06",
+      tab: "all",
+    });
   });
-  await waitFor(() => expect(screen.getAllByTestId(/^day-\d{4}-/)).toHaveLength(7));
-
-  await user.click(screen.getByTestId("open-weekly-summary"));
-  await waitFor(() => expect(screen.getByTestId("weekly-summary")).toBeInTheDocument());
+  expect(screen.getAllByTestId(/^month-grid-cell-/)).toHaveLength(42);
 });
 
-test("week strip sums cluster eventCount", async () => {
+test("today highlight and default selected date is today (in-range)", async () => {
   render(wrap(<DesktopCalendarPage />));
-
-  await waitFor(() => expect(screen.getByTestId("day-2026-05-13")).toBeInTheDocument());
-  expect(within(screen.getByTestId("day-2026-05-13")).getByText("327")).toBeInTheDocument();
+  const today = await screen.findByTestId("month-grid-cell-2026-05-11");
+  expect(today).toHaveAttribute("data-today", "true");
+  expect(today).toHaveAttribute("data-selected", "true");
 });
 
-test("renders cluster-only days in the week grouped list", async () => {
+test("month grid shows count derived from clusters and events", async () => {
   render(wrap(<DesktopCalendarPage />));
-
-  const clusterDay = await screen.findByTestId("calendar-day-section-2026-05-13");
-  expect(clusterDay).toHaveAttribute("data-selected", "false");
-  expect(within(clusterDay).getByTestId("calendar-cluster")).toBeInTheDocument();
-  expect(within(clusterDay).getByText("미국 실적 발표 327건")).toBeInTheDocument();
-  expect(within(clusterDay).getByText(/AAPL earnings/)).toBeInTheDocument();
-  expect(within(clusterDay).getByText(/MSFT earnings/)).toBeInTheDocument();
-  expect(screen.queryByTestId("calendar-empty")).not.toBeInTheDocument();
+  const clusterCell = await screen.findByTestId("month-grid-cell-2026-05-13");
+  expect(within(clusterCell).getByText("327")).toBeInTheDocument();
 });
 
-test("renders direct events and clusters from different dates together", async () => {
-  render(wrap(<DesktopCalendarPage />));
-
-  expect(await screen.findByTestId("calendar-day-section-2026-05-11")).toBeInTheDocument();
-  expect(await screen.findByTestId("calendar-day-section-2026-05-13")).toBeInTheDocument();
-  expect(screen.getByText("AAPL earnings direct")).toBeInTheDocument();
-  expect(screen.getByText("미국 실적 발표 327건")).toBeInTheDocument();
-});
-
-test("type and region filters apply to clusters", async () => {
+test("clicking a date updates the selected-date list", async () => {
   const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
   render(wrap(<DesktopCalendarPage />));
+  await screen.findByTestId("selected-date-events");
 
-  expect(await screen.findByText("미국 실적 발표 327건")).toBeInTheDocument();
+  await user.click(screen.getByTestId("month-grid-cell-2026-05-13"));
+
+  await waitFor(() =>
+    expect(screen.getByTestId("selected-date-events")).toHaveAttribute("data-selected-date", "2026-05-13"),
+  );
+  expect(screen.getByText("미국 실적 발표 327건")).toBeInTheDocument();
+  expect(screen.getByText(/5월 13일 수요일 일정/)).toBeInTheDocument();
+});
+
+test("empty selected date renders graceful empty state", async () => {
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  render(wrap(<DesktopCalendarPage />));
+  await screen.findByTestId("selected-date-events");
+
+  await user.click(screen.getByTestId("month-grid-cell-2026-05-12"));
+
+  expect(await screen.findByTestId("calendar-empty")).toHaveTextContent(
+    "선택한 날짜에 일정이 없습니다.",
+  );
+});
+
+test("prev/next month navigation refetches with the new month range", async () => {
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  render(wrap(<DesktopCalendarPage />));
+  await waitFor(() => expect(calApi.fetchCalendar).toHaveBeenCalledTimes(1));
+
+  await user.click(screen.getByTestId("calendar-next-month"));
+  await waitFor(() =>
+    expect(calApi.fetchCalendar).toHaveBeenLastCalledWith({
+      // June 2026 grid: starts Sun 2026-05-31, ends Sat 2026-07-11
+      fromDate: "2026-05-31",
+      toDate: "2026-07-11",
+      tab: "all",
+    }),
+  );
+
+  await user.click(screen.getByTestId("calendar-prev-month"));
+  await user.click(screen.getByTestId("calendar-prev-month"));
+  await waitFor(() =>
+    expect(calApi.fetchCalendar).toHaveBeenLastCalledWith({
+      // April 2026 grid: starts Sun 2026-03-29, ends Sat 2026-05-09
+      fromDate: "2026-03-29",
+      toDate: "2026-05-09",
+      tab: "all",
+    }),
+  );
+});
+
+test("month title label shows '2026년 5월' and section header '5월 금융 캘린더'", async () => {
+  render(wrap(<DesktopCalendarPage />));
+  expect(await screen.findByText("2026년 5월")).toBeInTheDocument();
+  expect(screen.getByText("5월 금융 캘린더")).toBeInTheDocument();
+});
+
+test("AI weekly card refetches when selecting a date in a different week", async () => {
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  render(wrap(<DesktopCalendarPage />));
+  // Initial selected date = today 2026-05-11 (Mon) -> week_start = 2026-05-11
+  await user.click(screen.getByTestId("open-weekly-summary"));
+  await waitFor(() =>
+    expect(calApi.fetchWeeklySummary).toHaveBeenLastCalledWith("2026-05-11"),
+  );
+
+  // Select 2026-05-20 (Wed of next week) -> week_start should be 2026-05-18
+  await user.click(screen.getByTestId("month-grid-cell-2026-05-20"));
+  await waitFor(() =>
+    expect(calApi.fetchWeeklySummary).toHaveBeenLastCalledWith("2026-05-18"),
+  );
+});
+
+test("type and region filters apply to the selected-date list and grid count", async () => {
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  render(wrap(<DesktopCalendarPage />));
+  await screen.findByTestId("selected-date-events");
+
+  // Select May 13 — has 327 US-earnings cluster. Filter to 경제지표 — list/cluster disappears.
+  await user.click(screen.getByTestId("month-grid-cell-2026-05-13"));
+  expect(screen.getByText("미국 실적 발표 327건")).toBeInTheDocument();
 
   await user.click(screen.getByRole("button", { name: "경제지표" }));
   expect(screen.queryByText("미국 실적 발표 327건")).not.toBeInTheDocument();
-  expect(screen.getByText("글로벌 경제지표 4건")).toBeInTheDocument();
+  expect(screen.getByTestId("calendar-empty")).toBeInTheDocument();
+  // Grid count badge for May 13 should be gone now (no macro events that day).
+  const may13 = screen.getByTestId("month-grid-cell-2026-05-13");
+  expect(within(may13).queryByText("327")).not.toBeInTheDocument();
 
+  // Switch to 실적 — cluster reappears for May 13.
   await user.click(screen.getByRole("button", { name: "실적" }));
   expect(screen.getByText("미국 실적 발표 327건")).toBeInTheDocument();
-  expect(screen.queryByText("글로벌 경제지표 4건")).not.toBeInTheDocument();
 
+  // 국내 region filter — empty (cluster is US).
   await user.click(screen.getByRole("button", { name: "국내" }));
-  expect(screen.getByTestId("calendar-empty")).toHaveTextContent("선택한 필터에 해당하는 이번 주 일정이 없습니다.");
+  expect(screen.queryByText("미국 실적 발표 327건")).not.toBeInTheDocument();
+  expect(screen.getByTestId("calendar-empty")).toBeInTheDocument();
 });
