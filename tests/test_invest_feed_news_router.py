@@ -598,3 +598,37 @@ async def test_feed_news_include_quotes_provider_failure_is_non_fatal(
     assert resp.items[0].relatedSymbols[0].currentPrice is None
     assert "quote_unavailable:us:MSFT" in resp.meta.warnings
     assert "quote_partial_failure:1" in resp.meta.warnings
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_feed_news_kr_society_crime_dropped_on_kr_tab(monkeypatch) -> None:
+    """ROB-169 regression: known-bad production row must not appear on tab=kr."""
+    from app.services.invest_view_model import feed_news_service as svc
+
+    db = MagicMock()
+    scalar_result = MagicMock()
+    scalar_result.scalars.return_value.all.return_value = [
+        _fake_article(
+            id=999,
+            market="kr",
+            symbol=None,
+            title="'광주 여고생 살해' 피의자 사이코패스 검사 결과 공개된다",
+            summary="검찰은 사이코패스 평가 결과를 공개할 예정이다.",
+            keywords=["사회"],
+        ),
+    ]
+    summary_result = MagicMock()
+    summary_result.all.return_value = []
+    db.execute = AsyncMock(
+        side_effect=[scalar_result, summary_result, _empty_related_result()]
+    )
+    monkeypatch.setattr(
+        svc, "build_market_issues", AsyncMock(return_value=MagicMock(items=[]))
+    )
+
+    resp = await svc.build_feed_news(
+        db=db, resolver=RelationResolver(), tab="kr", limit=30, cursor=None
+    )
+
+    assert [i.id for i in resp.items] == []

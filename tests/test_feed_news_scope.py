@@ -89,3 +89,14 @@ def test_feed_news_item_additive_fields_have_defaults_and_forbid_unknowns():
             url="https://example.com/news",
             unexpected=True,
         )
+
+
+def test_feed_news_item_accepts_kr_market_wide_scope():
+    item = FeedNewsItem(
+        id=42,
+        title="코스피 회복",
+        market="kr",
+        url="https://example.com/kr/42",
+        scope="kr_market_wide",
+    )
+    assert item.scope == "kr_market_wide"

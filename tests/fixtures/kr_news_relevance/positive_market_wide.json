@@ -1,0 +1,62 @@
+[
+  {
+    "id": "kospi_close",
+    "title": "코스피, 외국인 매수에 2,800선 회복",
+    "summary": "코스피가 외국인 순매수와 반도체 강세에 힘입어 2,800선을 회복했다.",
+    "feed_source": "browser_naver_mainnews",
+    "keywords": ["증시", "코스피"],
+    "stock_symbol": null,
+    "expected_include": true,
+    "expected_category": "kr_index"
+  },
+  {
+    "id": "kosdaq_ipo",
+    "title": "올해 코스닥 IPO 시장 회복… 공모주 청약 경쟁률 1000대 1",
+    "summary": "공모주 시장이 살아나며 신규 상장 종목에 청약이 몰렸다.",
+    "feed_source": "browser_naver_mainnews",
+    "keywords": ["코스닥", "IPO", "공모주"],
+    "stock_symbol": null,
+    "expected_include": true,
+    "expected_category": "kr_index"
+  },
+  {
+    "id": "bok_rate",
+    "title": "한국은행 기준금리 동결… 환율 변동성 우려",
+    "summary": "금융통화위원회는 기준금리를 3.50%로 유지했다.",
+    "feed_source": "browser_naver_mainnews",
+    "keywords": ["한은", "기준금리"],
+    "stock_symbol": null,
+    "expected_include": true,
+    "expected_category": "kr_macro"
+  },
+  {
+    "id": "fx_macro",
+    "title": "원달러 환율 1,400원 돌파… 수출주 영향",
+    "summary": "달러원 환율이 1,400원을 돌파해 수출 기업의 환율 부담이 확대됐다.",
+    "feed_source": "browser_naver_mainnews",
+    "keywords": ["환율", "수출"],
+    "stock_symbol": null,
+    "expected_include": true,
+    "expected_category": "kr_macro"
+  },
+  {
+    "id": "semis_industry",
+    "title": "HBM·AI 반도체 수요 폭증… 메모리 가격 반등",
+    "summary": "AI 반도체와 HBM 수요로 디램, 낸드 가격이 반등했다.",
+    "feed_source": "browser_naver_mainnews",
+    "keywords": ["반도체", "HBM", "AI 반도체"],
+    "stock_symbol": null,
+    "expected_include": true,
+    "expected_category": "kr_industry"
+  },
+  {
+    "id": "policy_tax",
+    "title": "정부, 대주주 양도세 기준 상향… 증시 영향 주목",
+    "summary": "법인세·양도세 개편으로 증시 수급 변화가 예상된다.",
+    "feed_source": "browser_naver_mainnews",
+    "keywords": ["세제개편", "증시"],
+    "stock_symbol": null,
+    "expected_include": true,
+    "expected_category": "kr_macro"
+  }
+]

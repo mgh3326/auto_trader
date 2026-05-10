@@ -15,7 +15,9 @@ RelationKind = Literal["held", "watchlist", "both", "none"]
 # ROB-155: article scope — market_wide means broad macro/index/sector article;
 # symbol_specific means article thesis anchors on one or more specific symbols;
 # mixed means both a broad frame and a clearly anchored specific symbol.
-NewsScope = Literal["market_wide", "symbol_specific", "mixed"]
+# ROB-169: kr_market_wide is the KR analogue of market_wide for KOSPI/KOSDAQ/
+# 금리/환율/반도체/정책 articles that lack a stock_symbol but are investment-relevant.
+NewsScope = Literal["market_wide", "symbol_specific", "mixed", "kr_market_wide"]
 
 
 class NewsRelatedSymbol(BaseModel):
