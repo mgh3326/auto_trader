@@ -290,6 +290,7 @@ def _build_freshness(
     cache_hit: bool,
     market: str,
     now: Callable[[], datetime],
+    dataState: str = "missing",
 ) -> ScreenerFreshness:
     now_utc = now()
     if not raw_timestamp:
@@ -322,6 +323,7 @@ def _build_freshness(
         relativeLabel=relative,
         cacheHit=bool(cache_hit),
         source=source,
+        dataState=dataState,  # type: ignore[arg-type]
     )
 
 
@@ -354,14 +356,21 @@ async def build_screener_results(
 
     filters = screening_filters_for(preset_id, requested_market)
     raw = await screening_service.list_screening(**filters)
+    rows: list[dict[str, Any]] = list(raw.get("results") or raw.get("stocks") or [])
+    upstream_warnings: list[str] = list(raw.get("warnings") or [])
+
+    # Aggregate snapshot dataState from enriched rows (set by _enrich_consecutive_up_days when session provided)
+    from app.services.invest_screener_snapshots.freshness import aggregate_states
+    _row_states: list[str] = [str(r.get("_screener_snapshot_state") or "missing") for r in rows]
+    _aggregated_data_state = aggregate_states(_row_states)  # type: ignore[arg-type]
+
     freshness = _build_freshness(
         raw_timestamp=raw.get("timestamp"),
         cache_hit=bool(raw.get("cache_hit")),
         market=requested_market,
         now=now,
+        dataState=_aggregated_data_state,
     )
-    rows: list[dict[str, Any]] = list(raw.get("results") or raw.get("stocks") or [])
-    upstream_warnings: list[str] = list(raw.get("warnings") or [])
 
     results: list[ScreenerResultRow] = []
     for idx, row in enumerate(rows, start=1):

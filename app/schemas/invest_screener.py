@@ -65,6 +65,7 @@ class ScreenerFreshness(BaseModel):
     relativeLabel: str
     cacheHit: bool
     source: Literal["live", "cached", "previous_session"]
+    dataState: Literal["fresh", "partial", "stale", "missing", "fallback"] = "missing"
 
 
 class ScreenerResultsResponse(BaseModel):

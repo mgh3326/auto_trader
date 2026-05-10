@@ -7,6 +7,8 @@ import inspect
 import logging
 from typing import Any
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.mcp_server.tooling.fundamentals_sources_naver import (
     _fetch_screen_enrichment_kr,
 )
@@ -23,6 +25,13 @@ from app.mcp_server.tooling.screening.common import (
     _to_optional_int,
 )
 from app.monitoring import build_yfinance_tracing_session, close_yfinance_session
+from app.services.invest_screener_snapshots.freshness import (
+    classify_state,
+    today_trading_date,
+)
+from app.services.invest_screener_snapshots.repository import (
+    InvestScreenerSnapshotsRepository,
+)
 from app.services.invest_view_model.screener_service import (
     calculate_consecutive_up_days,
 )
@@ -60,15 +69,23 @@ async def _enrich_consecutive_up_days(
     *,
     market: str,
     lookback: int = _STREAK_LOOKBACK_DEFAULT,
+    session: AsyncSession | None = None,
 ) -> None:
     if not rows:
         return
+
     market_type = "equity_kr" if market == "kr" else "equity_us"
+
+    if session is not None and market in {"kr", "us"}:
+        await _hydrate_from_snapshots(rows, market=market, session=session)
+
     sem = asyncio.Semaphore(_STREAK_CONCURRENCY)
 
     async def _enrich_one(row: dict[str, Any]) -> None:
+        if row.get("consecutive_up_days") is not None:
+            return
         symbol = _streak_symbol(row)
-        if not symbol or row.get("consecutive_up_days") is not None:
+        if not symbol:
             return
         async with sem:
             try:
@@ -85,6 +102,46 @@ async def _enrich_consecutive_up_days(
             row["consecutive_up_days"] = streak
 
     await asyncio.gather(*(_enrich_one(r) for r in rows))
+
+
+async def _hydrate_from_snapshots(
+    rows: list[dict[str, Any]], *, market: str, session: AsyncSession
+) -> None:
+    import datetime as dt
+
+    repo = InvestScreenerSnapshotsRepository(session)
+    today = today_trading_date(market)
+    symbols = [_streak_symbol(r) for r in rows]
+    fetched = await repo.get_fresh(
+        market=market, symbols=[s for s in symbols if s], on_or_after=dt.date.min
+    )
+    by_symbol = {row.symbol: row for row in fetched}
+
+    now = dt.datetime.now(dt.UTC)
+    for row in rows:
+        sym = _streak_symbol(row)
+        snap = by_symbol.get(sym) if sym else None
+        if snap is None:
+            row["_screener_snapshot_state"] = "missing"
+            continue
+        state = classify_state(
+            snapshot_date=snap.snapshot_date,
+            computed_at=snap.computed_at,
+            closes_window_len=len(snap.closes_window or []),
+            today_trading_date_value=today,
+            now=now,
+        )
+        row["_screener_snapshot_state"] = state
+        if state in {"fresh", "partial"}:
+            row.setdefault("consecutive_up_days", snap.consecutive_up_days)
+            if snap.week_change_rate is not None:
+                row.setdefault("week_change_rate", float(snap.week_change_rate))
+            if snap.change_rate is not None:
+                row.setdefault("change_rate", float(snap.change_rate))
+            if snap.change_amount is not None:
+                row.setdefault("change_amount", float(snap.change_amount))
+            if snap.latest_close is not None:
+                row.setdefault("close", float(snap.latest_close))
 
 
 _SCREEN_ENRICHMENT_FIELDS = (
