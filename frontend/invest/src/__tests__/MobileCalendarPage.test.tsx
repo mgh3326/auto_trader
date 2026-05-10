@@ -77,15 +77,14 @@ test("requests the full month grid range (Sun-aligned 6 weeks) on mount, NOT a s
   });
 });
 
-test("renders CalendarMonthHeader with the current month title and selected-date list", async () => {
+test("renders CalendarMonthHeader with the current month title and the monthly timeline", async () => {
   render(wrap(<MobileCalendarPage />));
   expect(await screen.findByText("2026년 5월")).toBeInTheDocument();
   expect(screen.getByTestId("calendar-prev-month")).toBeInTheDocument();
   expect(screen.getByTestId("calendar-next-month")).toBeInTheDocument();
-  expect(await screen.findByTestId("selected-date-events")).toHaveAttribute(
-    "data-selected-date",
-    "2026-05-11",
-  );
+  await screen.findByTestId("calendar-timeline");
+  // 31 day sections for May 2026.
+  expect(screen.getAllByTestId("calendar-day-section")).toHaveLength(31);
 });
 
 test("WeekDateStrip is still rendered for the week containing today", async () => {
@@ -108,11 +107,13 @@ test("prev/next month re-fetches the new Sun-aligned grid range", async () => {
   );
 });
 
-test("does NOT use UTC fmt — selected date uses fmtLocal even in non-UTC timezone", async () => {
-  // 2026-05-11 in KST equals 2026-05-10 in UTC; fmtLocal must give 2026-05-11.
+test("does NOT use UTC fmt — today's section uses fmtLocal even in non-UTC timezone", async () => {
   render(wrap(<MobileCalendarPage />));
-  const list = await screen.findByTestId("selected-date-events");
-  expect(list).toHaveAttribute("data-selected-date", "2026-05-11");
+  await screen.findByTestId("calendar-timeline");
+  // The 2026-05-11 section is the data-selected one, not 2026-05-10.
+  const may11 = document.querySelector('[data-day-anchor="2026-05-11"]');
+  expect(may11).not.toBeNull();
+  expect(may11).toHaveAttribute("data-selected", "true");
 });
 
 test("filter pills live in a horizontally-scrollable container (not flex-wrap)", async () => {
@@ -123,29 +124,45 @@ test("filter pills live in a horizontally-scrollable container (not flex-wrap)",
   expect(within(filters).getAllByRole("button")).toHaveLength(3);
 });
 
-test("error response surfaces the calendar-error banner, not the empty state", async () => {
+test("error response surfaces the calendar-error banner, not day sections", async () => {
   vi.spyOn(calApi, "fetchCalendar").mockRejectedValueOnce(new Error("boom"));
   render(wrap(<MobileCalendarPage />));
   expect(await screen.findByTestId("calendar-error")).toHaveTextContent("boom");
-  expect(screen.queryByTestId("calendar-empty")).not.toBeInTheDocument();
+  expect(screen.queryByTestId("calendar-day-section")).not.toBeInTheDocument();
 });
 
-test("touches an in-month date in the strip and updates the selected-date list", async () => {
+test("touches an in-month date in the strip and scrolls/highlights that day section (does not filter)", async () => {
   const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-  render(wrap(<MobileCalendarPage />));
-  await screen.findByTestId("selected-date-events");
-  // 2026-05-13 is in the same week (Mon=11) so it should be in the strip.
-  await user.click(screen.getByTestId("day-2026-05-13"));
-  await waitFor(() =>
-    expect(screen.getByTestId("selected-date-events")).toHaveAttribute(
-      "data-selected-date",
-      "2026-05-13",
-    ),
-  );
-  expect(screen.getByText("미국 실적 발표 327건")).toBeInTheDocument();
+  const scrollSpy = vi.fn();
+  const originalScroll = Element.prototype.scrollIntoView;
+  Element.prototype.scrollIntoView = scrollSpy;
+  try {
+    render(wrap(<MobileCalendarPage />));
+    await screen.findByTestId("calendar-timeline");
+
+    await user.click(screen.getByTestId("day-2026-05-13"));
+
+    // All 31 day sections still in the DOM (no filter-collapse).
+    expect(screen.getAllByTestId("calendar-day-section")).toHaveLength(31);
+    const may13 = document.querySelector('[data-day-anchor="2026-05-13"]')!;
+    expect(may13).toHaveAttribute("data-selected", "true");
+    expect(scrollSpy).toHaveBeenCalled();
+    // The cluster still shows in the May 13 section.
+    expect(within(may13 as HTMLElement).getByText("미국 실적 발표 327건")).toBeInTheDocument();
+  } finally {
+    Element.prototype.scrollIntoView = originalScroll;
+  }
 });
 
-test("includes 오늘 prefix on the selected-date label when today is selected", async () => {
+test("today's day section is labelled with the 오늘 prefix", async () => {
   render(wrap(<MobileCalendarPage />));
-  expect(await screen.findByText(/오늘 · 5월 11일 월요일 일정/)).toBeInTheDocument();
+  await screen.findByTestId("calendar-timeline");
+  expect(screen.getByText(/오늘 · 5월 11일 \(월\)/)).toBeInTheDocument();
+});
+
+test("default surface renders the source button and never the legacy freshness banner", async () => {
+  render(wrap(<MobileCalendarPage />));
+  await screen.findByTestId("calendar-timeline");
+  expect(screen.getByTestId("calendar-source-button")).toBeInTheDocument();
+  expect(screen.queryByTestId("calendar-freshness-banner")).not.toBeInTheDocument();
 });

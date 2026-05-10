@@ -152,7 +152,7 @@ test("renders the monthly timeline with one section per in-month day", async () 
   // May 2026 has 31 days.
   expect(screen.getAllByTestId("calendar-day-section")).toHaveLength(31);
   // Today's section reflects the AAPL event.
-  const today = screen.getByText(/오늘 · 5월 11일 \(월\)/).closest('[data-testid="calendar-day-section"]')!;
+  const today = screen.getByText(/오늘 · 5월 11일 \(월\)/).closest('[data-testid="calendar-day-section"]') as HTMLElement;
   expect(within(today).getByText("AAPL earnings direct")).toBeInTheDocument();
 });
 
