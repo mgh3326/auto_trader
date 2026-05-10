@@ -20,16 +20,17 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import copy
+import io
 import json
 import logging
 import os
-import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.core.cli import setup_logging_and_sentry
 from app.core.db import AsyncSessionLocal
@@ -66,17 +67,37 @@ def _parse_args() -> argparse.Namespace:
         default=Path(".smoke-out/evidence.json"),
         help="Where to write the smoke evidence summary.",
     )
+    p.add_argument(
+        "--apply",
+        action="store_true",
+        help="Execute service write-path ingestion. Default only validates and writes dry-run evidence.",
+    )
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Explicitly select the default no-write mode for operator checklists.",
+    )
+    p.add_argument(
+        "--allow-evidence-outside",
+        action="store_true",
+        help="Allow --evidence outside the repo-local .smoke-out/ directory.",
+    )
     return p.parse_args()
 
 
-def _resolve_smoke_output_path(path: Path) -> Path:
-    """Resolve evidence output under the repo-local smoke scratch directory."""
+def _resolve_smoke_output_path(path: Path, *, allow_outside: bool) -> Path:
+    """Resolve evidence output and keep it in .smoke-out/ unless overridden."""
     candidate = path if path.is_absolute() else REPO_ROOT / path
     resolved = candidate.resolve(strict=False)
+    if allow_outside:
+        return resolved
     try:
         resolved.relative_to(SMOKE_OUTPUT_DIR)
     except ValueError as exc:
-        raise SystemExit("--evidence must be under .smoke-out/") from exc
+        raise SystemExit(
+            "--evidence must be under .smoke-out/; pass "
+            "--allow-evidence-outside to override"
+        ) from exc
     return resolved
 
 
@@ -87,28 +108,43 @@ def _load_payload(path: Path) -> tuple[Path, dict]:
     return FALLBACK_FIXTURE, json.loads(FALLBACK_FIXTURE.read_text(encoding="utf-8"))
 
 
+def _parse_last_json_line(stdout: str) -> dict:
+    """Return the last JSON object emitted by a CLI-style function."""
+    for line in reversed(stdout.splitlines()):
+        if not line.strip():
+            continue
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    raise RuntimeError(f"operator CLI emitted no JSON object; stdout={stdout!r}")
+
+
 def _run_operator_cli(payload_path: Path, *, dry_run: bool) -> dict:
-    cmd = [
-        "uv",
-        "run",
-        "python",
-        "-m",
-        "scripts.ingest_research_reports",
-        "--file",
-        str(payload_path),
-    ]
+    """Exercise the checked-in operator CLI entrypoint without shelling out."""
+    from scripts.ingest_research_reports import main_async
+
+    argv = ["--file", str(payload_path)]
     if dry_run:
-        cmd.append("--dry-run")
-    logger.info("operator cli: %s", " ".join(cmd))
-    proc = subprocess.run(
-        cmd, check=True, capture_output=True, text=True, cwd=REPO_ROOT
-    )
-    return json.loads(proc.stdout.strip().splitlines()[-1])
+        argv.append("--dry-run")
+    logger.info("operator cli argv: %s", argv)
+    stdout = io.StringIO()
+    with contextlib.redirect_stdout(stdout):
+        exit_code = asyncio.run(main_async(argv))
+    output = stdout.getvalue()
+    if exit_code != 0:
+        raise RuntimeError(
+            f"operator CLI failed with exit_code={exit_code}; stdout={output!r}"
+        )
+    return _parse_last_json_line(output)
 
 
 async def _ingest_via_service(
     request: ResearchReportIngestionRequest,
 ) -> dict:
+    """Commit one ingestion pass through the production service boundary."""
     async with AsyncSessionLocal() as db:
         try:
             response = await ingest_research_reports_v1(db, request)
@@ -120,6 +156,7 @@ async def _ingest_via_service(
 
 
 async def _read_back_via_service() -> dict:
+    """Read back a compact citation sample through the query service."""
     async with AsyncSessionLocal() as db:
         svc = ResearchReportsQueryService(db)
         result = await svc.find_relevant(limit=20)
@@ -146,18 +183,18 @@ async def _read_back_via_service() -> dict:
 
 
 async def _table_counts() -> dict:
+    """Return DB-side row counts for the research report smoke tables."""
     async with AsyncSessionLocal() as db:
-        reports = (await db.execute(select(ResearchReport))).scalars().all()
-        runs = (
-            await db.execute(select(ResearchReportIngestionRun))
-        ).scalars().all()
+        reports = await db.scalar(select(func.count(ResearchReport.id)))
+        runs = await db.scalar(select(func.count(ResearchReportIngestionRun.id)))
     return {
-        "research_reports_rows": len(reports),
-        "research_report_ingestion_runs_rows": len(runs),
+        "research_reports_rows": int(reports or 0),
+        "research_report_ingestion_runs_rows": int(runs or 0),
     }
 
 
 def _expect_full_text_rejection(payload: dict) -> dict:
+    """Verify schema validation rejects explicit full-text export flags."""
     mutated = copy.deepcopy(payload)
     mutated["reports"][0]["attribution"]["full_text_exported"] = True
     try:
@@ -169,6 +206,7 @@ def _expect_full_text_rejection(payload: dict) -> dict:
 
 
 def _expect_forbidden_body_rejection(payload: dict) -> dict:
+    """Verify schema validation rejects forbidden body-like fields."""
     mutated = copy.deepcopy(payload)
     mutated["reports"][0]["pdf_body"] = "this should be rejected"
     try:
@@ -180,6 +218,7 @@ def _expect_forbidden_body_rejection(payload: dict) -> dict:
 
 
 def main() -> int:
+    args = _parse_args()
     setup_logging_and_sentry(service_name="rob178_smoke")
     if "DATABASE_URL" not in os.environ:
         print(
@@ -187,18 +226,26 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
-    args = _parse_args()
-    args.evidence = _resolve_smoke_output_path(args.evidence)
+    args.evidence = _resolve_smoke_output_path(
+        args.evidence, allow_outside=args.allow_evidence_outside
+    )
     payload_path, payload = _load_payload(args.payload)
     request = ResearchReportIngestionRequest.model_validate(payload)
 
     cli_dry = _run_operator_cli(payload_path, dry_run=True)
     logger.info("operator cli dry-run: %s", cli_dry)
 
-    first = asyncio.run(_ingest_via_service(request))
-    second = asyncio.run(_ingest_via_service(request))
-    counts = asyncio.run(_table_counts())
-    read_back = asyncio.run(_read_back_via_service())
+    dry_run = not args.apply
+    if dry_run:
+        first = {"dry_run": True, "inserted_count": 0, "skipped_count": 0}
+        second = {"dry_run": True, "inserted_count": 0, "skipped_count": 0}
+        counts = asyncio.run(_table_counts())
+        read_back = {"dry_run": True, "count": 0, "citations_sample": []}
+    else:
+        first = asyncio.run(_ingest_via_service(request))
+        second = asyncio.run(_ingest_via_service(request))
+        counts = asyncio.run(_table_counts())
+        read_back = asyncio.run(_read_back_via_service())
 
     full_text_check = _expect_full_text_rejection(payload)
     forbidden_body_check = _expect_forbidden_body_rejection(payload)
@@ -206,6 +253,7 @@ def main() -> int:
     evidence = {
         "smoke": "rob-178-research-reports-ingest",
         "captured_at": datetime.now(UTC).isoformat(),
+        "dry_run": dry_run,
         "payload_path": str(payload_path),
         "payload_run_uuid": payload["research_report_ingestion_run"]["run_uuid"],
         "payload_report_count": len(payload["reports"]),
@@ -219,10 +267,26 @@ def main() -> int:
             "forbidden_body_field_rejected": forbidden_body_check,
         },
     }
+    invariants_ok = (
+        bool(full_text_check.get("rejected"))
+        and bool(forbidden_body_check.get("rejected"))
+        and (
+            dry_run
+            or (
+                first.get("inserted_count") == len(payload["reports"])
+                and first.get("skipped_count") == 0
+                and second.get("inserted_count") == 0
+                and second.get("skipped_count") == len(payload["reports"])
+                and read_back.get("count", 0) >= len(payload["reports"])
+            )
+        )
+    )
+    evidence["invariants_ok"] = invariants_ok
+
     args.evidence.parent.mkdir(parents=True, exist_ok=True)
     args.evidence.write_text(json.dumps(evidence, indent=2, ensure_ascii=False))
     print(json.dumps(evidence, indent=2, ensure_ascii=False))
-    return 0
+    return 0 if invariants_ok else 1
 
 
 if __name__ == "__main__":

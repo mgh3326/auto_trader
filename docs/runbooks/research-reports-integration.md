@@ -115,15 +115,24 @@ Prereqs:
 
 * Two dedicated worktrees (one per repo) on branch `rob-178-research-reports-ingest`.
 * A smoke-only PostgreSQL database (e.g. `auto_trader_rob178_smoke`).
+* `scripts/rob178_smoke.py` defaults to no-write evidence mode; service write-path ingestion requires `--apply`.
 
 Steps (from the auto_trader worktree):
 
+`$NEWS_INGESTOR_WORKTREE` is the dedicated news-ingestor branch worktree, `$AUTO_TRADER_WORKTREE` is the dedicated auto_trader branch worktree, and `$OUT_DIR` is the auto_trader smoke scratch directory.
+
 ```bash
+export NEWS_INGESTOR_WORKTREE=/path/to/news-ingestor/rob-178-research-reports-ingest
+export AUTO_TRADER_WORKTREE=/path/to/auto_trader/rob-178-research-reports-ingest
+export OUT_DIR="$AUTO_TRADER_WORKTREE/.smoke-out"
+mkdir -p "$OUT_DIR"
+cd "$AUTO_TRADER_WORKTREE"
+
 # 1. Generate the live payload from the news-ingestor worktree.
-( cd /Users/mgh3326/worktrees/news-ingestor/rob-178-research-reports-ingest && \
+( cd "$NEWS_INGESTOR_WORKTREE" && \
   uv run news-ingestor research-report kis-truefriend \
     --pages 1 --rows-per-page 10 --include-detail --export-payload \
-    --output /Users/mgh3326/worktrees/auto_trader/rob-178-research-reports-ingest/.smoke-out/payload_live.json )
+    --output "$OUT_DIR/payload_live.json" )
 
 # 2. Apply migrations.
 DATABASE_URL=postgresql+asyncpg://localhost/auto_trader_rob178_smoke \
@@ -134,9 +143,17 @@ DATABASE_URL=postgresql+asyncpg://localhost/auto_trader_rob178_smoke \
   uv run python -m scripts.ingest_research_reports \
     --file .smoke-out/payload_live.json --dry-run
 
-# 4. Live ingest + idempotent re-ingest + read-back + guardrails.
+# 4. Optional all-in-one dry-run evidence, with no service write-path ingestion.
 DATABASE_URL=postgresql+asyncpg://localhost/auto_trader_rob178_smoke \
   uv run python scripts/rob178_smoke.py \
+    --dry-run \
+    --payload .smoke-out/payload_live.json \
+    --evidence .smoke-out/evidence-dry-run.json
+
+# 5. Live ingest + idempotent re-ingest + read-back + guardrails.
+DATABASE_URL=postgresql+asyncpg://localhost/auto_trader_rob178_smoke \
+  uv run python scripts/rob178_smoke.py \
+    --apply \
     --payload .smoke-out/payload_live.json \
     --evidence .smoke-out/evidence.json
 ```
