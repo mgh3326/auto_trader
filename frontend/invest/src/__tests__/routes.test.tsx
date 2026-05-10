@@ -11,6 +11,11 @@ function pathsOf(routes: any[]): string[] {
   return out;
 }
 
+test("router exposes canonical stock detail route", () => {
+  const paths = pathsOf((router as any).routes);
+  expect(paths).toContain("/stocks/:market/:symbol");
+});
+
 test("router exposes /app/discover and /app/discover/issues/:issueId", () => {
   const paths = pathsOf((router as any).routes);
   expect(paths).toContain("/app/discover");

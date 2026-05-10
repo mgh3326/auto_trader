@@ -7,6 +7,7 @@ import { InvestDiscoverRoute } from "./pages/desktop/DesktopDiscoverPage";
 import { SignalsRoute } from "./pages/desktop/DesktopSignalsPage";
 import { CalendarRoute } from "./pages/desktop/DesktopCalendarPage";
 import { DesktopScreenerPage } from "./pages/desktop/DesktopScreenerPage";
+import { StockDetailPage } from "./pages/stock-detail/StockDetailPage";
 
 // Static legacy /app/* redirect that preserves any ?search and #hash
 // from the source URL so market-scoped or anchor-scoped bookmarks
@@ -36,6 +37,7 @@ export const router = createBrowserRouter(
     { path: "/signals", element: <SignalsRoute /> },
     { path: "/calendar", element: <CalendarRoute /> },
     { path: "/screener", element: <DesktopScreenerPage /> },
+    { path: "/stocks/:market/:symbol", element: <StockDetailPage /> },
 
     // Stage 6: legacy /invest/app/* URLs redirect to their canonical
     // /invest/* siblings. The legacy components remain in-tree (not
