@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.schemas.news_issues import MarketIssue
 
@@ -55,11 +55,20 @@ class FeedNewsItem(BaseModel):
         description="Source/feed market of the article (kr/us/crypto). "
         "Backward-compatible alias for sourceMarket."
     )
-    sourceMarket: NewsMarket = Field(
+    sourceMarket: NewsMarket | None = Field(
+        default=None,
         description="Source/feed market of the article (kr/us/crypto). "
-        "Equal to `market` during the backward-compat window."
+        "Equal to `market` during the backward-compat window.",
     )
     relatedSymbols: list[NewsRelatedSymbol] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _backfill_source_market(self) -> "FeedNewsItem":
+        # ROB-172: if caller omits sourceMarket (backward-compat path),
+        # default it to `market` so existing construction sites need no change.
+        if self.sourceMarket is None:
+            object.__setattr__(self, "sourceMarket", self.market)
+        return self
     issueId: str | None = None
     summarySnippet: str | None = None
     relation: RelationKind = "none"
