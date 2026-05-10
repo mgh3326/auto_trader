@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.schemas.invest_screener import ScreenerResultsResponse
+from app.schemas.invest_screener import ScreenerFreshness, ScreenerResultsResponse
 from app.services.invest_view_model import screener_service
 from app.services.invest_view_model.screener_service import (
     build_screener_presets,
@@ -747,3 +748,74 @@ async def test_build_screener_results_formats_unmapped_metric_as_text(
     )
 
     assert resp.results[0].metricValueLabel == "A+"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_screener_results_emits_freshness_live() -> None:
+    fake = MagicMock()
+    fake.list_screening = AsyncMock(
+        return_value={
+            "results": _stub_screening_rows(),
+            "warnings": [],
+            "timestamp": "2026-05-10T05:30:00+00:00",
+            "cache_hit": False,
+        }
+    )
+    resp = await build_screener_results(
+        preset_id="consecutive_gainers",
+        screening_service=fake,
+        resolver=_FakeResolver(set()),
+        now=lambda: datetime(2026, 5, 10, 5, 42, tzinfo=UTC),
+    )
+    assert resp.freshness.source == "live"
+    assert resp.freshness.cacheHit is False
+    assert resp.freshness.asOfLabel == "2026.05.10 14:30 기준"   # KST = UTC+9
+    assert resp.freshness.relativeLabel == "12분 전 갱신"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_screener_results_emits_freshness_cached() -> None:
+    fake = MagicMock()
+    fake.list_screening = AsyncMock(
+        return_value={
+            "results": _stub_screening_rows(),
+            "warnings": [],
+            "timestamp": "2026-05-10T05:30:00+00:00",
+            "cache_hit": True,
+        }
+    )
+    resp = await build_screener_results(
+        preset_id="consecutive_gainers",
+        screening_service=fake,
+        resolver=_FakeResolver(set()),
+        now=lambda: datetime(2026, 5, 10, 5, 31, tzinfo=UTC),
+    )
+    assert resp.freshness.source == "cached"
+    assert resp.freshness.cacheHit is True
+    assert resp.freshness.relativeLabel == "방금 갱신"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_screener_results_emits_freshness_previous_session_when_market_closed() -> None:
+    # Sat 11:00 UTC -> Sat 20:00 KST; KR market closed -> previous_session
+    fake = MagicMock()
+    fake.list_screening = AsyncMock(
+        return_value={
+            "results": _stub_screening_rows(),
+            "warnings": [],
+            "timestamp": "2026-05-08T06:30:00+00:00",  # Fri 15:30 KST close
+            "cache_hit": True,
+        }
+    )
+    resp = await build_screener_results(
+        preset_id="consecutive_gainers",
+        screening_service=fake,
+        resolver=_FakeResolver(set()),
+        market="kr",
+        now=lambda: datetime(2026, 5, 10, 11, 0, tzinfo=UTC),  # Sat
+    )
+    assert resp.freshness.source == "previous_session"
+    assert resp.freshness.relativeLabel == "전 거래일 기준"
