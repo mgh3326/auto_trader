@@ -65,7 +65,7 @@ describe("MonthCalendarGrid", () => {
     expect(today.getAttribute("aria-label")).toMatch(/2026.*5.*11.*3/);
   });
 
-  test("count badge renders +999 for any count >= 1000 to keep cells from overflowing", () => {
+  test("count badge renders 많음 for any count >= 1000 (no +999 raw label)", () => {
     render(
       <MonthCalendarGrid
         {...baseProps}
@@ -73,7 +73,9 @@ describe("MonthCalendarGrid", () => {
         onSelect={() => {}}
       />,
     );
-    expect(screen.getByTestId("month-grid-cell-2026-05-13")).toHaveTextContent("+999");
+    const cell = screen.getByTestId("month-grid-cell-2026-05-13");
+    expect(cell).toHaveTextContent("많음");
+    expect(cell.textContent ?? "").not.toContain("+999");
   });
 
   test("density='compact' stamps a data-density attribute on the root for media-query targeting", () => {

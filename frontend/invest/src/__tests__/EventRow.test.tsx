@@ -52,4 +52,13 @@ describe("EventRow", () => {
     render(<EventRow ev={ev({ time: "오전 8시 30분 발표" })} />);
     expect(screen.getByText("오전 8시 30분 발표")).toBeInTheDocument();
   });
+
+  test("renders empty cells (not em-dash) when actual/forecast/previous are null", () => {
+    render(<EventRow ev={ev({ actual: null, forecast: null, previous: null })} />);
+    const row = screen.getByTestId("calendar-event");
+    expect(row.textContent ?? "").not.toContain("—");
+    expect(row.querySelector(".calendar-event-row__num--actual")?.textContent ?? "").toBe("");
+    expect(row.querySelector(".calendar-event-row__num--forecast")?.textContent ?? "").toBe("");
+    expect(row.querySelector(".calendar-event-row__num--previous")?.textContent ?? "").toBe("");
+  });
 });

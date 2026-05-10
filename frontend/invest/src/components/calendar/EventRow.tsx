@@ -31,13 +31,13 @@ export function EventRow({ ev }: { ev: CalendarEventVM }) {
         </div>
       </div>
       <div className="calendar-event-row__num calendar-event-row__num--actual" data-released={ev.released ? "true" : "false"}>
-        {ev.actual ?? "—"}
+        {ev.actual ?? ""}
       </div>
       <div className="calendar-event-row__num calendar-event-row__num--forecast">
-        {ev.forecast ?? "—"}
+        {ev.forecast ?? ""}
       </div>
       <div className="calendar-event-row__num calendar-event-row__num--previous">
-        {ev.previous ?? "—"}
+        {ev.previous ?? ""}
       </div>
     </article>
   );

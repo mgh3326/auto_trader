@@ -15,7 +15,7 @@ export interface MonthCalendarGridProps {
 }
 
 function clampCount(n: number): string {
-  if (n >= 1000) return "+999";
+  if (n >= 1000) return "많음";
   return String(n);
 }
 
