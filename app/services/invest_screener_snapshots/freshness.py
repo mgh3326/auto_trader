@@ -40,7 +40,7 @@ def classify_state(
     if computed_at.tzinfo is None:
         computed_at = computed_at.replace(tzinfo=dt.UTC)
     age_hours = (now - computed_at).total_seconds() / 3600.0
-    if snapshot_date < today_trading_date_value or age_hours >= STALE_AFTER_HOURS:
+    if snapshot_date != today_trading_date_value or age_hours >= STALE_AFTER_HOURS:
         return "stale"
     if closes_window_len < 2:
         return "missing"  # not really usable; treat as absent
