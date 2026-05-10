@@ -46,6 +46,7 @@ function feedResponse(overrides: Partial<FeedNewsResponse> = {}): FeedNewsRespon
         id: 1,
         title: "n1",
         market: "kr",
+        sourceMarket: "kr",
         relatedSymbols: [
           {
             symbol: "005930",

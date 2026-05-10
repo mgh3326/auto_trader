@@ -11,6 +11,11 @@ const RELATION_LABEL: Record<string, string> = {
   both: "보유·관심",
 };
 
+// ROB-172 migration seam: MARKET_LABEL currently reads from `item.market`
+// (the legacy source-market field). Once the backend rollout has settled,
+// update the renderer to read `item.sourceMarket ?? item.market` and then,
+// after the frontend fully migrates, drop the `market` read entirely.
+// Track the follow-up in the ROB-172 ticket before closing it.
 const MARKET_LABEL: Record<FeedNewsItem["market"], string> = {
   kr: "KR",
   us: "US",
