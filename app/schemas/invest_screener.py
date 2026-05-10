@@ -58,6 +58,15 @@ class ScreenerPresetsResponse(BaseModel):
     selectedPresetId: str | None = None
 
 
+class ScreenerFreshness(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    fetchedAt: str
+    asOfLabel: str
+    relativeLabel: str
+    cacheHit: bool
+    source: Literal["live", "cached", "previous_session"]
+
+
 class ScreenerResultsResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
     presetId: str
@@ -67,3 +76,4 @@ class ScreenerResultsResponse(BaseModel):
     metricLabel: str
     results: list[ScreenerResultRow]
     warnings: list[str] = Field(default_factory=list)
+    freshness: ScreenerFreshness

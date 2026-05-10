@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from app.schemas.invest_screener import (
     ScreenerFilterChip,
+    ScreenerFreshness,
     ScreenerPreset,
     ScreenerPresetsResponse,
     ScreenerResultRow,
@@ -100,6 +101,45 @@ def test_results_rejects_negative_rank() -> None:
             volumeLabel="-",
             analystLabel="-",
             metricValueLabel="-",
+            warnings=[],
+        )
+
+
+@pytest.mark.unit
+def test_screener_freshness_requires_all_fields() -> None:
+    f = ScreenerFreshness(
+        fetchedAt="2026-05-10T05:30:00+00:00",
+        asOfLabel="2026.05.10 14:30 기준",
+        relativeLabel="12분 전 갱신",
+        cacheHit=False,
+        source="live",
+    )
+    assert f.source == "live"
+
+
+@pytest.mark.unit
+def test_screener_freshness_rejects_extra_fields() -> None:
+    with pytest.raises(ValidationError):
+        ScreenerFreshness(
+            fetchedAt="2026-05-10T05:30:00+00:00",
+            asOfLabel="x",
+            relativeLabel="x",
+            cacheHit=True,
+            source="live",
+            unexpected="nope",  # type: ignore[call-arg]
+        )
+
+
+@pytest.mark.unit
+def test_screener_results_response_requires_freshness() -> None:
+    with pytest.raises(ValidationError):
+        ScreenerResultsResponse(  # type: ignore[call-arg]
+            presetId="consecutive_gainers",
+            title="연속 상승세",
+            description="",
+            filterChips=[],
+            metricLabel="연속상승",
+            results=[],
             warnings=[],
         )
 
