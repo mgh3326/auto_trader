@@ -63,7 +63,7 @@ class FeedNewsItem(BaseModel):
     relatedSymbols: list[NewsRelatedSymbol] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def _backfill_source_market(self) -> "FeedNewsItem":
+    def _backfill_source_market(self) -> FeedNewsItem:
         # ROB-172: if caller omits sourceMarket (backward-compat path),
         # default it to `market` so existing construction sites need no change.
         if self.sourceMarket is None:
