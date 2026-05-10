@@ -42,12 +42,23 @@ def test_parse_args_all_with_explicit_limit_rejected():
 @pytest.mark.asyncio
 async def test_us_resolver_filters_active(monkeypatch, db_session):
     """US universe iteration must filter is_active=True (alignment with KR + coverage)."""
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
     from app.models.us_symbol_universe import USSymbolUniverse
     from scripts.build_invest_screener_snapshots import _resolve_symbols
 
-    # Use test-only symbols unlikely to exist in production
-    db_session.add(USSymbolUniverse(symbol="TSTACTV", exchange="NASDAQ", name_en="TestActive", is_active=True))
-    db_session.add(USSymbolUniverse(symbol="TSTOBSO", exchange="NYSE", name_en="TestObsolete", is_active=False))
+    # Upsert test-only symbols idempotently so re-runs don't fail on duplicate PK
+    for sym, exch, name, active in [
+        ("TSTACTV", "NASDAQ", "TestActive", True),
+        ("TSTOBSO", "NYSE", "TestObsolete", False),
+    ]:
+        stmt = pg_insert(USSymbolUniverse).values(
+            symbol=sym, exchange=exch, name_en=name, is_active=active
+        ).on_conflict_do_update(
+            index_elements=["symbol"],
+            set_={"exchange": exch, "name_en": name, "is_active": active},
+        )
+        await db_session.execute(stmt)
     await db_session.commit()
 
     class _AsyncCtx:
