@@ -69,6 +69,7 @@ class FeedNewsItem(BaseModel):
         if self.sourceMarket is None:
             object.__setattr__(self, "sourceMarket", self.market)
         return self
+
     issueId: str | None = None
     summarySnippet: str | None = None
     relation: RelationKind = "none"
