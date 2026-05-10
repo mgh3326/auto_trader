@@ -24,6 +24,10 @@ from app.services.crypto_news_relevance_service import (
     score_crypto_news_article,
     user_facing_category,
 )
+from app.services.kr_news_relevance_service import (
+    score_kr_news_article,
+    user_facing_kr_category,
+)
 from app.services.domain_errors import (
     RateLimitError,
     SymbolNotFoundError,
@@ -432,7 +436,28 @@ async def build_feed_news(
                 if related:
                     related = []
 
+        # ROB-169: apply KR investment-relevance scoring for KR articles.
+        if market_value == "kr":
+            kr_relevance = score_kr_news_article(row)
+            kr_user_category = user_facing_kr_category(kr_relevance.category)
+            if kr_relevance.include_in_briefing:
+                if kr_user_category and not item_category:
+                    item_category = kr_user_category
+                if kr_relevance.include_in_briefing and not related:
+                    item_scope = cast(NewsScope, "kr_market_wide")
+            else:
+                item_noise_reason = kr_relevance.noise_reason
+                if "kr_low_relevance" not in scope_tags:
+                    scope_tags.append("kr_low_relevance")
+
         relation = _relation_from_related_symbols(related)
+        # Suppress the issue chip only for confirmed society/crime/noise —
+        # not for generic low_kr_relevance which may be a legitimate article.
+        _KR_CONFIRMED_NOISE = {"kr_crime", "kr_society", "kr_noise", "kr_no_invest_signal"}
+        suppress_issue = (
+            market_value == "kr"
+            and item_noise_reason in _KR_CONFIRMED_NOISE
+        )
         items.append(
             FeedNewsItem(
                 id=row.id,
@@ -442,7 +467,7 @@ async def build_feed_news(
                 publishedAt=row.article_published_at,
                 market=market_typed,
                 relatedSymbols=related,
-                issueId=issue_id_for_article.get(row.id),
+                issueId=None if suppress_issue else issue_id_for_article.get(row.id),
                 summarySnippet=_summary_snippet_for_row(row, analysis_summary),
                 relation=relation,
                 url=row.url,
@@ -453,11 +478,21 @@ async def build_feed_news(
             )
         )
 
-    # ROB-155: filter out very low relevance crypto rows only on crypto tab to avoid
-    # polluting the feed. Keep all rows for other tabs (pagination remains intact for
-    # non-crypto tabs). Conservative: only drop rows with noise AND no relatedSymbols.
+    # ROB-155 / ROB-169: drop very-low-relevance rows on tab-scoped feeds. We
+    # never drop on broader tabs (top/latest/holdings/watchlist) — frontends
+    # can choose to render with reduced styling using `noiseReason`.
     if tab == "crypto":
         items = [i for i in items if not (i.noiseReason and not i.relatedSymbols)]
+    elif tab == "kr":
+        items = [
+            i
+            for i in items
+            if not (
+                i.noiseReason
+                and i.noiseReason.startswith("kr_")
+                and not i.relatedSymbols
+            )
+        ]
 
     # Apply holdings/watchlist filters in-memory.
     empty_reason: str | None = None
