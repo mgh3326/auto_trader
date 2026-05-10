@@ -161,23 +161,20 @@ async def test_kr_society_article_suppresses_issue_chip(monkeypatch) -> None:
         svc, "build_market_issues", AsyncMock(return_value=MagicMock(items=[issue]))
     )
 
-    # On the "top" tab the row is NOT dropped (only the kr tab applies the
-    # filter), but the issueId must be suppressed because the row is noise.
+    # Public discovery tabs drop confirmed KR society/crime/noise rows when
+    # there is no symbol chip to anchor the item, so no issue chip is exposed.
     resp = await svc.build_feed_news(
         db=db, resolver=RelationResolver(), tab="top", limit=30, cursor=None
     )
 
-    assert [i.id for i in resp.items] == [303]
-    assert resp.items[0].issueId is None
-    assert resp.items[0].noiseReason == "kr_society"
+    assert [i.id for i in resp.items] == []
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_kr_top_tab_does_not_drop_kr_society_rows(monkeypatch) -> None:
-    """The kr-tab filter only fires on tab=='kr'; other tabs keep the row but
-    still flag noiseReason so the frontend can choose to render or hide it.
-    """
+@pytest.mark.parametrize("tab", ["top", "latest"])
+async def test_kr_discovery_tabs_drop_kr_society_rows(monkeypatch, tab) -> None:
+    """The default/top/latest feeds must not surface pure KR society noise."""
     from app.services.invest_view_model import feed_news_service as svc
 
     db = MagicMock()
@@ -200,11 +197,10 @@ async def test_kr_top_tab_does_not_drop_kr_society_rows(monkeypatch) -> None:
     )
 
     resp = await svc.build_feed_news(
-        db=db, resolver=RelationResolver(), tab="top", limit=30, cursor=None
+        db=db, resolver=RelationResolver(), tab=tab, limit=30, cursor=None
     )
 
-    assert [i.id for i in resp.items] == [304]
-    assert resp.items[0].noiseReason == "kr_society"
+    assert [i.id for i in resp.items] == []
 
 
 @pytest.mark.unit

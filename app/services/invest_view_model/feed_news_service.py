@@ -482,12 +482,13 @@ async def build_feed_news(
             )
         )
 
-    # ROB-155 / ROB-169: drop very-low-relevance rows on tab-scoped feeds. We
-    # never drop on broader tabs (top/latest/holdings/watchlist) — frontends
-    # can choose to render with reduced styling using `noiseReason`.
+    # ROB-155 / ROB-169: drop very-low-relevance rows on public discovery feeds
+    # when there is no symbol chip to anchor them. This keeps top/latest/default
+    # free of pure KR society/crime/noise while preserving market-wide KR rows
+    # that score as investment-relevant.
     if tab == "crypto":
         items = [i for i in items if not (i.noiseReason and not i.relatedSymbols)]
-    elif tab == "kr":
+    elif tab in ("top", "latest", "hot", "kr"):
         items = [
             i
             for i in items
