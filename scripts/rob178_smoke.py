@@ -26,7 +26,7 @@ import logging
 import os
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import select
@@ -46,6 +46,7 @@ from app.services.research_reports.query_service import (
 logger = logging.getLogger("rob178_smoke")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+SMOKE_OUTPUT_DIR = (REPO_ROOT / ".smoke-out").resolve(strict=False)
 FALLBACK_FIXTURE = (
     REPO_ROOT / "tests" / "fixtures" / "rob178_payload_kis_truefriend_smoke.json"
 )
@@ -66,6 +67,17 @@ def _parse_args() -> argparse.Namespace:
         help="Where to write the smoke evidence summary.",
     )
     return p.parse_args()
+
+
+def _resolve_smoke_output_path(path: Path) -> Path:
+    """Resolve evidence output under the repo-local smoke scratch directory."""
+    candidate = path if path.is_absolute() else REPO_ROOT / path
+    resolved = candidate.resolve(strict=False)
+    try:
+        resolved.relative_to(SMOKE_OUTPUT_DIR)
+    except ValueError as exc:
+        raise SystemExit("--evidence must be under .smoke-out/") from exc
+    return resolved
 
 
 def _load_payload(path: Path) -> tuple[Path, dict]:
@@ -176,6 +188,7 @@ def main() -> int:
         )
         return 2
     args = _parse_args()
+    args.evidence = _resolve_smoke_output_path(args.evidence)
     payload_path, payload = _load_payload(args.payload)
     request = ResearchReportIngestionRequest.model_validate(payload)
 
@@ -192,7 +205,7 @@ def main() -> int:
 
     evidence = {
         "smoke": "rob-178-research-reports-ingest",
-        "captured_at": datetime.now(timezone.utc).isoformat(),
+        "captured_at": datetime.now(UTC).isoformat(),
         "payload_path": str(payload_path),
         "payload_run_uuid": payload["research_report_ingestion_run"]["run_uuid"],
         "payload_report_count": len(payload["reports"]),

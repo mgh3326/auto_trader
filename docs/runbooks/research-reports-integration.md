@@ -106,3 +106,46 @@ uv run alembic downgrade -1    # to roll back
 * Research Session integration: wire `ResearchReportsQueryService` into the
   Research Session evidence gather step.
 * Symbol normalization with `symbol_universe` services.
+
+## ROB-178 operations smoke
+
+Manual, metadata-only smoke that exercises news-ingestor → auto_trader research_reports end-to-end. Read-only against production state. No scheduler, no broker, no PDF body, no full extracted text.
+
+Prereqs:
+
+* Two dedicated worktrees (one per repo) on branch `rob-178-research-reports-ingest`.
+* A smoke-only PostgreSQL database (e.g. `auto_trader_rob178_smoke`).
+
+Steps (from the auto_trader worktree):
+
+```bash
+# 1. Generate the live payload from the news-ingestor worktree.
+( cd /Users/mgh3326/worktrees/news-ingestor/rob-178-research-reports-ingest && \
+  uv run news-ingestor research-report kis-truefriend \
+    --pages 1 --rows-per-page 10 --include-detail --export-payload \
+    --output /Users/mgh3326/worktrees/auto_trader/rob-178-research-reports-ingest/.smoke-out/payload_live.json )
+
+# 2. Apply migrations.
+DATABASE_URL=postgresql+asyncpg://localhost/auto_trader_rob178_smoke \
+  uv run alembic upgrade head
+
+# 3. Operator CLI dry-run.
+DATABASE_URL=postgresql+asyncpg://localhost/auto_trader_rob178_smoke \
+  uv run python -m scripts.ingest_research_reports \
+    --file .smoke-out/payload_live.json --dry-run
+
+# 4. Live ingest + idempotent re-ingest + read-back + guardrails.
+DATABASE_URL=postgresql+asyncpg://localhost/auto_trader_rob178_smoke \
+  uv run python scripts/rob178_smoke.py \
+    --payload .smoke-out/payload_live.json \
+    --evidence .smoke-out/evidence.json
+```
+
+Pass criteria:
+
+* `evidence.json -> first_ingest.inserted_count` equals payload `report_count` and `skipped_count == 0`.
+* `evidence.json -> second_ingest_idempotent.inserted_count == 0` and `skipped_count == payload report_count` (idempotent).
+* `evidence.json -> read_back_via_service.citations_sample[*]` excerpts are ≤ 500 chars and contain none of `pdf_body|pdf_text|extracted_text|full_text|article_content|article_body|raw_payload|raw_payload_json`.
+* `evidence.json -> guardrails.full_text_exported_rejected.rejected == true` and `guardrails.forbidden_body_field_rejected.rejected == true`.
+
+Out of scope: `--store` against news-ingestor, `--download-pdf`, `--extract-text`, Prefect deployment activation, broker/order/watch mutation, HTTP ingest endpoint.
