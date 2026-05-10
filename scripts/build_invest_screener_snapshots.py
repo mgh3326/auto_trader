@@ -8,8 +8,11 @@ Examples:
     # KR, dry-run, top 20 active universe symbols
     uv run python -m scripts.build_invest_screener_snapshots --market kr --limit 20
 
-    # KR, persist
-    uv run python -m scripts.build_invest_screener_snapshots --market kr --limit 20 --commit
+    # KR, full active universe, dry-run (RECOMMENDED before any --commit)
+    uv run python -m scripts.build_invest_screener_snapshots --market kr --all
+
+    # KR, full active universe, persist (REQUIRES OPERATOR APPROVAL)
+    uv run python -m scripts.build_invest_screener_snapshots --market kr --all --commit
 
     # US explicit symbols, persist
     uv run python -m scripts.build_invest_screener_snapshots \\
@@ -46,8 +49,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Restrict to specific symbols. Can be passed multiple times.",
     )
     parser.add_argument(
-        "--limit", type=int, default=20,
-        help="When --symbol is not given, max active universe symbols to process.",
+        "--limit", type=int, default=None,
+        help="Max active universe symbols to process. Defaults to 20 unless --all.",
+    )
+    parser.add_argument(
+        "--all", action="store_true",
+        help="Iterate the full active universe in --batch-size chunks. Mutually "
+             "exclusive with --symbol/--limit.",
+    )
+    parser.add_argument(
+        "--batch-size", type=int, default=200,
+        help="Symbols per processing batch when --all is set (default 200).",
     )
     parser.add_argument(
         "--commit", action="store_true",
@@ -57,6 +69,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--concurrency", type=int, default=4, help="Per-symbol fetch concurrency."
     )
     args = parser.parse_args(argv)
+    if args.all and (args.symbol or args.limit is not None):
+        parser.error("--all is mutually exclusive with --symbol and --limit")
+    if args.limit is None:
+        args.limit = 20
     args.dry_run = not args.commit
     return args
 
@@ -77,6 +93,7 @@ async def _resolve_symbols(market: str, override: list[str], limit: int) -> list
             from app.models.us_symbol_universe import USSymbolUniverse
             stmt = (
                 sa.select(USSymbolUniverse.symbol)
+                .where(USSymbolUniverse.is_active.is_(True))
                 .order_by(USSymbolUniverse.symbol)
                 .limit(limit)
             )
@@ -84,8 +101,54 @@ async def _resolve_symbols(market: str, override: list[str], limit: int) -> list
         return [r[0] for r in result.all()]
 
 
+async def _resolve_active_universe(market: str) -> list[str]:
+    async with AsyncSessionLocal() as session:
+        if market == "kr":
+            from app.models.kr_symbol_universe import KRSymbolUniverse
+            stmt = (
+                sa.select(KRSymbolUniverse.symbol)
+                .where(KRSymbolUniverse.is_active.is_(True))
+                .order_by(KRSymbolUniverse.symbol)
+            )
+        else:
+            from app.models.us_symbol_universe import USSymbolUniverse
+            stmt = (
+                sa.select(USSymbolUniverse.symbol)
+                .where(USSymbolUniverse.is_active.is_(True))
+                .order_by(USSymbolUniverse.symbol)
+            )
+        result = await session.execute(stmt)
+        return [r[0] for r in result.all()]
+
+
 async def run(args: argparse.Namespace) -> int:
     today = datetime.now(UTC).date()
+
+    if args.all:
+        symbols = await _resolve_active_universe(args.market)
+        logger.info("resolved %d symbols for FULL %s universe", len(symbols), args.market)
+        total_built = 0
+        for batch_idx, start in enumerate(range(0, len(symbols), args.batch_size)):
+            batch = symbols[start:start + args.batch_size]
+            payloads = await build_snapshots_for_market(
+                market=args.market, symbols=batch, today=today,
+                concurrency=args.concurrency,
+            )
+            if not args.dry_run:
+                async with AsyncSessionLocal() as session:
+                    repo = InvestScreenerSnapshotsRepository(session)
+                    for p in payloads:
+                        await repo.upsert(p)
+                    await session.commit()
+            total_built += len(payloads)
+            print(
+                f"  batch {batch_idx + 1}: built {len(payloads)}/{len(batch)} "
+                f"(running total {total_built}/{len(symbols)}) dry_run={args.dry_run}"
+            )
+        print(f"\nbuilt {total_built}/{len(symbols)} snapshots, "
+              f"committed={'no' if args.dry_run else 'yes'}\n")
+        return 0
+
     symbols = await _resolve_symbols(args.market, args.symbol, args.limit)
     logger.info("resolved %d symbols for market=%s", len(symbols), args.market)
 
