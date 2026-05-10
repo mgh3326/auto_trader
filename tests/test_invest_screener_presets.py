@@ -59,3 +59,17 @@ def test_screening_filters_known_for_each_preset() -> None:
         # has bounded inputs.
         assert filters.get("market") == "kr"
         assert isinstance(filters.get("limit"), int)
+
+
+@pytest.mark.unit
+def test_consecutive_gainers_preset_requests_streak_filter() -> None:
+    filters = screening_filters_for("consecutive_gainers", market="kr")
+    assert filters.get("min_consecutive_up_days") == 5
+
+
+@pytest.mark.unit
+def test_consecutive_gainers_chip_says_5_days() -> None:
+    preset = get_preset("consecutive_gainers", market="kr")
+    assert preset is not None
+    chip_details = [c.detail for c in preset.filterChips if c.detail]
+    assert any("5일 연속 상승" in d for d in chip_details)

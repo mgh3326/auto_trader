@@ -40,6 +40,16 @@ export interface ScreenerResultRow {
   warnings: string[];
 }
 
+export type ScreenerFreshnessSource = "live" | "cached" | "previous_session";
+
+export interface ScreenerFreshness {
+  fetchedAt: string;
+  asOfLabel: string;
+  relativeLabel: string;
+  cacheHit: boolean;
+  source: ScreenerFreshnessSource;
+}
+
 export interface ScreenerResultsResponse {
   presetId: string;
   title: string;
@@ -48,4 +58,5 @@ export interface ScreenerResultsResponse {
   metricLabel: string;
   results: ScreenerResultRow[];
   warnings: string[];
+  freshness: ScreenerFreshness;
 }

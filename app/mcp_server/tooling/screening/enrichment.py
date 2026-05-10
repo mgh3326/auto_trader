@@ -13,6 +13,7 @@ from app.mcp_server.tooling.fundamentals_sources_naver import (
 from app.mcp_server.tooling.fundamentals_sources_yfinance import (
     _fetch_screen_enrichment_us,
 )
+from app.mcp_server.tooling.market_data_indicators import _fetch_ohlcv_for_indicators
 from app.mcp_server.tooling.screening.common import (
     _clean_text,
     _get_first_present,
@@ -22,8 +23,47 @@ from app.mcp_server.tooling.screening.common import (
     _to_optional_int,
 )
 from app.monitoring import build_yfinance_tracing_session, close_yfinance_session
+from app.services.invest_view_model.screener_service import (
+    calculate_consecutive_up_days,
+)
 
 logger = logging.getLogger(__name__)
+
+_STREAK_LOOKBACK_DEFAULT = 10
+_STREAK_CONCURRENCY = 4
+
+
+async def _enrich_consecutive_up_days(
+    rows: list[dict[str, Any]],
+    *,
+    market: str,
+    lookback: int = _STREAK_LOOKBACK_DEFAULT,
+) -> None:
+    if not rows:
+        return
+    market_type = "equity_kr" if market == "kr" else "equity_us"
+    sem = asyncio.Semaphore(_STREAK_CONCURRENCY)
+
+    async def _enrich_one(row: dict[str, Any]) -> None:
+        symbol = row.get("symbol")
+        if not symbol or row.get("consecutive_up_days") is not None:
+            return
+        async with sem:
+            try:
+                df = await _fetch_ohlcv_for_indicators(
+                    str(symbol), market_type, count=lookback
+                )
+            except Exception:
+                return
+        if df is None or df.empty or "close" not in df.columns:
+            return
+        closes = df["close"].tolist()
+        streak = calculate_consecutive_up_days(closes)
+        if streak is not None:
+            row["consecutive_up_days"] = streak
+
+    await asyncio.gather(*(_enrich_one(r) for r in rows))
+
 
 _SCREEN_ENRICHMENT_FIELDS = (
     "sector",

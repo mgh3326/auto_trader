@@ -1,12 +1,9 @@
 """ROB-147 — static catalog of /invest screener presets and the deterministic
 mapping from preset id to underlying screening filter parameters.
 
-Each preset's filter mapping is intentionally simple and bounded for the MVP.
-Where Toss has a richer condition (e.g. "주가 연속상승 5일") that we cannot yet
-compute end-to-end, the chips describe the intent but the underlying filter
-falls back to the closest read-only screening parameter we already support
-(e.g. sort by change_rate). Those gaps are surfaced as warnings on the
-results response, never silently elided."""
+Each preset's filter mapping is intentionally simple and bounded.
+The consecutive_gainers preset now applies a real min_consecutive_up_days=5 filter
+via the OHLCV-backed enrichment pipeline."""
 
 from __future__ import annotations
 
@@ -24,7 +21,7 @@ SCREENER_PRESETS: list[ScreenerPreset] = [
         filterChips=[
             ScreenerFilterChip(label="국내", detail=None),
             ScreenerFilterChip(label="주가등락률", detail="1주일 전 보다 · 0% 이상"),
-            ScreenerFilterChip(label="주가 연속상승", detail="최신 일봉 기준"),
+            ScreenerFilterChip(label="주가 연속상승", detail="5일 연속 상승"),
         ],
         metricLabel="연속상승",
         market="kr",
@@ -100,6 +97,7 @@ _SCREENING_FILTERS: dict[str, dict[str, object]] = {
         "asset_type": "stock",
         "sort_by": "change_rate",
         "sort_order": "desc",
+        "min_consecutive_up_days": 5,
         "limit": 20,
     },
     "cheap_value": {

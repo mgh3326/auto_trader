@@ -12,11 +12,15 @@ modules — see tests/test_invest_view_model_safety.py.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import Any, Protocol
+from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
+from datetime import time as _time
+from typing import Any, Literal, Protocol
+from zoneinfo import ZoneInfo
 
 from app.schemas.invest_screener import (
     ChangeDirection,
+    ScreenerFreshness,
     ScreenerPresetsResponse,
     ScreenerResultRow,
     ScreenerResultsResponse,
@@ -30,6 +34,11 @@ from app.services.invest_view_model.screener_presets import (
 
 _VALID_MARKETS = {"kr", "us", "crypto"}
 _KR_ABSURD_MARKET_CAP_KRW = 10_000_000_000_000_000
+
+_KST = ZoneInfo("Asia/Seoul")
+_KR_OPEN = _time(9, 0)
+_KR_CLOSE = _time(15, 30)
+_CACHE_HIT_FRESH_SECONDS = 300
 
 
 class _ScreeningServiceProto(Protocol):
@@ -256,15 +265,82 @@ def _metric_value_label(preset_id: str, row: dict[str, Any]) -> tuple[str, list[
     return str(value), []
 
 
+def _format_relative_korean(delta_seconds: int) -> str:
+    if delta_seconds <= 60:
+        return "방금 갱신"
+    minutes = delta_seconds // 60
+    if minutes < 60:
+        return f"{minutes}분 전 갱신"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours}시간 전 갱신"
+    days = hours // 24
+    return f"{days}일 전 갱신"
+
+
+def _is_kr_market_open(at_kst: datetime) -> bool:
+    if at_kst.weekday() >= 5:
+        return False
+    return _KR_OPEN <= at_kst.time() <= _KR_CLOSE
+
+
+def _build_freshness(
+    *,
+    raw_timestamp: str | None,
+    cache_hit: bool,
+    market: str,
+    now: Callable[[], datetime],
+) -> ScreenerFreshness:
+    now_utc = now()
+    if not raw_timestamp:
+        fetched = now_utc
+    else:
+        try:
+            fetched = datetime.fromisoformat(raw_timestamp.replace("Z", "+00:00"))
+        except ValueError:
+            fetched = now_utc
+    if fetched.tzinfo is None:
+        fetched = fetched.replace(tzinfo=UTC)
+    fetched_kst = fetched.astimezone(_KST)
+    now_kst = now_utc.astimezone(_KST)
+    delta = max(0, int((now_utc - fetched).total_seconds()))
+
+    market_open = market == "kr" and _is_kr_market_open(now_kst)
+    if not market_open and delta > _CACHE_HIT_FRESH_SECONDS * 4:
+        source: Literal["live", "cached", "previous_session"] = "previous_session"
+        relative = "전 거래일 기준"
+    elif cache_hit:
+        source = "cached"
+        relative = _format_relative_korean(delta)
+    else:
+        source = "live"
+        relative = _format_relative_korean(delta)
+
+    return ScreenerFreshness(
+        fetchedAt=fetched.astimezone(UTC).isoformat(),
+        asOfLabel=fetched_kst.strftime("%Y.%m.%d %H:%M 기준"),
+        relativeLabel=relative,
+        cacheHit=bool(cache_hit),
+        source=source,
+    )
+
+
 async def build_screener_results(
     preset_id: str,
     screening_service: _ScreeningServiceProto,
     resolver: _ResolverProto,
     market: str = "kr",
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> ScreenerResultsResponse:
     requested_market = "us" if market == "us" else "kr"
     preset = get_preset(preset_id, requested_market)
     if preset is None:
+        freshness = _build_freshness(
+            raw_timestamp=None,
+            cache_hit=False,
+            market=requested_market,
+            now=now,
+        )
         return ScreenerResultsResponse(
             presetId=preset_id,
             title=preset_id,
@@ -273,10 +349,17 @@ async def build_screener_results(
             metricLabel="-",
             results=[],
             warnings=[f"알 수 없는 프리셋: {preset_id}"],
+            freshness=freshness,
         )
 
     filters = screening_filters_for(preset_id, requested_market)
     raw = await screening_service.list_screening(**filters)
+    freshness = _build_freshness(
+        raw_timestamp=raw.get("timestamp"),
+        cache_hit=bool(raw.get("cache_hit")),
+        market=requested_market,
+        now=now,
+    )
     rows: list[dict[str, Any]] = list(raw.get("results") or raw.get("stocks") or [])
     upstream_warnings: list[str] = list(raw.get("warnings") or [])
 
@@ -325,4 +408,5 @@ async def build_screener_results(
         metricLabel=preset.metricLabel,
         results=results,
         warnings=upstream_warnings,
+        freshness=freshness,
     )

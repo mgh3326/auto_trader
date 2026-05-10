@@ -475,6 +475,7 @@ def normalize_screen_request(
     adv_krw_min: int | None = None,
     market_cap_min_krw: int | None = None,
     market_cap_max_krw: int | None = None,
+    min_consecutive_up_days: int | None = None,
 ) -> dict[str, Any]:
     normalized_market = _normalize_screen_market(market)
     if normalized_market not in {
@@ -570,6 +571,10 @@ def normalize_screen_request(
     if min_dividend is not None and normalized_market == "crypto":
         raise ValueError("crypto market does not support min_dividend filter")
 
+    if min_consecutive_up_days is not None:
+        if not (1 <= min_consecutive_up_days <= 30):
+            raise ValueError("min_consecutive_up_days must be between 1 and 30")
+
     category_for_filters = normalized_category
     effective_category = normalized_category
     if normalized_market == "us" and effective_sector is not None:
@@ -601,6 +606,7 @@ def normalize_screen_request(
         "adv_krw_min": normalized_adv_krw_min,
         "market_cap_min_krw": normalized_market_cap_min_krw,
         "market_cap_max_krw": normalized_market_cap_max_krw,
+        "min_consecutive_up_days": min_consecutive_up_days,
     }
 
 
@@ -985,3 +991,16 @@ def _compute_avg_target_and_upside(
             current_price=current_price,
         )
     return avg_target, upside_pct
+
+
+def _apply_min_consecutive_up_days(
+    rows: list[dict[str, Any]], *, threshold: int | None
+) -> list[dict[str, Any]]:
+    if threshold is None:
+        return rows
+    return [
+        r
+        for r in rows
+        if isinstance(r.get("consecutive_up_days"), int)
+        and r["consecutive_up_days"] >= threshold
+    ]

@@ -556,6 +556,7 @@ async def screen_stocks_impl(
     adv_krw_min: int | None = None,
     market_cap_min_krw: int | None = None,
     market_cap_max_krw: int | None = None,
+    min_consecutive_up_days: int | None = None,
     limit: int = 50,
 ) -> dict[str, Any]:
     sort_by_specified = sort_by is not None
@@ -600,6 +601,7 @@ async def screen_stocks_impl(
         adv_krw_min=adv_krw_min,
         market_cap_min_krw=market_cap_min_krw,
         market_cap_max_krw=market_cap_max_krw,
+        min_consecutive_up_days=min_consecutive_up_days,
     )
 
     normalized_market = analysis_screening._normalize_screen_market(market)
@@ -635,7 +637,7 @@ async def screen_stocks_impl(
         exclude_sectors=normalized_request["exclude_sectors"],
     )
     # Use unified screening with automatic data source selection
-    return await analysis_screening.screen_stocks_unified(
+    result = await analysis_screening.screen_stocks_unified(
         market=normalized_market,
         asset_type=normalized_asset_type,
         category=category,
@@ -656,6 +658,19 @@ async def screen_stocks_impl(
         market_cap_min_krw=market_cap_min_krw,
         market_cap_max_krw=market_cap_max_krw,
     )
+    if min_consecutive_up_days is not None:
+        from app.mcp_server.tooling.screening.common import (
+            _apply_min_consecutive_up_days,
+        )
+        from app.mcp_server.tooling.screening.enrichment import (
+            _enrich_consecutive_up_days,
+        )
+
+        rows: list[dict[str, Any]] = list(result.get("results") or [])
+        await _enrich_consecutive_up_days(rows, market=normalized_market)
+        rows = _apply_min_consecutive_up_days(rows, threshold=min_consecutive_up_days)
+        result = {**result, "results": rows}
+    return result
 
 
 async def recommend_stocks_impl(

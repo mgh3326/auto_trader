@@ -342,6 +342,7 @@ class ScreenerService:
         min_analyst_buy: float | None = None,
         max_rsi: float | None = None,
         min_volume: float | None = None,
+        min_consecutive_up_days: int | None = None,
         limit: int = 50,
     ) -> dict[str, Any]:
         from app.mcp_server.tooling.analysis_screen_core import normalize_screen_request
@@ -361,6 +362,7 @@ class ScreenerService:
             min_dividend=min_dividend,
             min_analyst_buy=min_analyst_buy,
             max_rsi=max_rsi,
+            min_consecutive_up_days=min_consecutive_up_days,
             limit=limit,
         )
         normalized_market = self._normalize_market(normalized_request["market"])
@@ -382,6 +384,7 @@ class ScreenerService:
             "min_analyst_buy": normalized_request["min_analyst_buy"],
             "max_rsi": normalized_request["max_rsi"],
             "min_volume": normalized_min_volume,
+            "min_consecutive_up_days": normalized_request["min_consecutive_up_days"],
             "limit": request_limit,
         }
         cache_key = self._screening_cache_key(filters)
@@ -440,6 +443,9 @@ class ScreenerService:
             "min_analyst_buy", normalized_request["min_analyst_buy"]
         )
         normalized_filters_applied.setdefault("max_rsi", normalized_request["max_rsi"])
+        normalized_filters_applied.setdefault(
+            "min_consecutive_up_days", normalized_request["min_consecutive_up_days"]
+        )
         normalized_filters_applied["min_volume"] = normalized_min_volume
         if normalized_request["min_dividend_input"] is not None:
             normalized_filters_applied["min_dividend_input"] = normalized_request[
@@ -482,6 +488,7 @@ class ScreenerService:
         min_analyst_buy: float | None = None,
         max_rsi: float | None = None,
         min_volume: float | None = None,
+        min_consecutive_up_days: int | None = None,
         limit: int = 50,
     ) -> dict[str, Any]:
         from app.mcp_server.tooling.analysis_screen_core import normalize_screen_request
@@ -501,6 +508,7 @@ class ScreenerService:
             min_dividend=min_dividend,
             min_analyst_buy=min_analyst_buy,
             max_rsi=max_rsi,
+            min_consecutive_up_days=min_consecutive_up_days,
             limit=limit,
         )
         normalized_market = self._normalize_market(normalized_request["market"])
@@ -521,6 +529,7 @@ class ScreenerService:
             "min_analyst_buy": normalized_request["min_analyst_buy"],
             "max_rsi": normalized_request["max_rsi"],
             "min_volume": normalized_min_volume,
+            "min_consecutive_up_days": normalized_request["min_consecutive_up_days"],
             "limit": limit,
         }
         cache_key = self._screening_cache_key(filters)
@@ -542,6 +551,7 @@ class ScreenerService:
             min_analyst_buy=min_analyst_buy,
             max_rsi=max_rsi,
             min_volume=min_volume,
+            min_consecutive_up_days=min_consecutive_up_days,
             limit=limit,
         )
 

@@ -5,6 +5,7 @@ import { ScreenerPresetSidebar } from "../../desktop/screener/ScreenerPresetSide
 import { ScreenerFilterBar } from "../../desktop/screener/ScreenerFilterBar";
 import { ScreenerResultsTable } from "../../desktop/screener/ScreenerResultsTable";
 import { ScreenerFilterModal } from "../../desktop/screener/ScreenerFilterModal";
+import { ScreenerFreshnessLine } from "../../desktop/screener/ScreenerFreshnessLine";
 import { fetchScreenerPresets, fetchScreenerResults } from "../../api/screener";
 import type {
   ScreenerMarket,
@@ -88,6 +89,7 @@ export function DesktopScreenerPage() {
                 resultCount={results.results.length}
                 onOpenFilterModal={() => setModalOpen(true)}
               />
+              <ScreenerFreshnessLine freshness={results.freshness} />
               {results.warnings.length > 0 && (
                 <ul className="screener-warnings" aria-label="warnings">
                   {results.warnings.map((w, i) => (
