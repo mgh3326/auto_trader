@@ -695,3 +695,65 @@ async def test_place_order_confirm_maps_to_dry_run(
     assert second_kwargs["dry_run"] is False
     assert first_kwargs["market"] == "us"
     assert second_kwargs["market"] == "us"
+
+
+@pytest.mark.asyncio
+async def test_list_screening_passes_min_consecutive_up_days(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from typing import Any, cast
+    from app.services.screener_service import ScreenerService
+
+    captured: dict[str, Any] = {}
+
+    async def fake_screen(**kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {
+            "results": [],
+            "stocks": [],
+            "filters_applied": {},
+            "timestamp": "2026-05-10T05:30:00+00:00",
+        }
+
+    monkeypatch.setattr(
+        "app.services.screener_service.screen_stocks_impl",
+        fake_screen,
+    )
+    fake_redis = _FakeRedis()
+    svc = ScreenerService(redis_client=cast(Any, fake_redis))
+    out = await svc.list_screening(market="kr", min_consecutive_up_days=5)
+    assert captured.get("min_consecutive_up_days") == 5
+    assert out.get("filters_applied", {}).get("min_consecutive_up_days") == 5
+
+
+@pytest.mark.asyncio
+async def test_normalize_screen_request_rejects_out_of_range_streak() -> None:
+    from app.mcp_server.tooling.screening.common import normalize_screen_request
+
+    with pytest.raises(ValueError):
+        normalize_screen_request(
+            market="kr",
+            min_consecutive_up_days=0,
+            asset_type=None, category=None, sector=None, strategy=None,
+            sort_by=None, sort_order=None, min_market_cap=None,
+            max_per=None, max_pbr=None, min_dividend_yield=None,
+            min_dividend=None, min_analyst_buy=None, max_rsi=None, limit=50,
+        )
+    with pytest.raises(ValueError):
+        normalize_screen_request(
+            market="kr",
+            min_consecutive_up_days=31,
+            asset_type=None, category=None, sector=None, strategy=None,
+            sort_by=None, sort_order=None, min_market_cap=None,
+            max_per=None, max_pbr=None, min_dividend_yield=None,
+            min_dividend=None, min_analyst_buy=None, max_rsi=None, limit=50,
+        )
+    out = normalize_screen_request(
+        market="kr",
+        min_consecutive_up_days=5,
+        asset_type=None, category=None, sector=None, strategy=None,
+        sort_by=None, sort_order=None, min_market_cap=None,
+        max_per=None, max_pbr=None, min_dividend_yield=None,
+        min_dividend=None, min_analyst_buy=None, max_rsi=None, limit=50,
+    )
+    assert out["min_consecutive_up_days"] == 5
