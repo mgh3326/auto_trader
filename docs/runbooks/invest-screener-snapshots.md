@@ -18,18 +18,33 @@
 # KR — preview top 20 active universe symbols
 uv run python -m scripts.build_invest_screener_snapshots --market kr --limit 20
 
-# KR — persist (write to DB)
-uv run python -m scripts.build_invest_screener_snapshots --market kr --limit 20 --commit
+# KR — full active universe, dry-run (RECOMMENDED before any --commit)
+uv run python -m scripts.build_invest_screener_snapshots --market kr --all
 
-# US — persist
-uv run python -m scripts.build_invest_screener_snapshots --market us --limit 20 --commit
+# KR — full active universe, persist (REQUIRES OPERATOR APPROVAL)
+uv run python -m scripts.build_invest_screener_snapshots --market kr --all --commit
 
-# Specific symbols
+# US — full active universe, persist
+uv run python -m scripts.build_invest_screener_snapshots --market us --all --commit
+
+# Specific symbols (small surgical refresh)
 uv run python -m scripts.build_invest_screener_snapshots \
     --market kr --symbol 005930 --symbol 000660 --commit
 ```
 
-`--dry-run` (default) prints payloads and exits with no DB writes. `--commit` actually persists rows via `INSERT ON CONFLICT DO UPDATE`.
+`--dry-run` (default) prints payloads without writing. `--commit` persists rows
+via `INSERT ON CONFLICT DO UPDATE`. `--all` iterates the full active universe in
+`--batch-size` chunks (default 200), committing per batch when `--commit` is set.
+`--all` is mutually exclusive with `--symbol` and `--limit`.
+
+**Operator approval gating:** never run `--all --commit` against production
+without explicit human approval citing dry-run evidence. The recommended
+sequence is:
+
+1. `--all` (no commit) → review log of total/built counts and a sample of payloads.
+2. Inspect coverage before commit: `curl /invest/api/screener/snapshots/coverage`.
+3. Wait for explicit "approved to commit" from a reviewer.
+4. `--all --commit` → re-check coverage; expect `dataState="fresh"`.
 
 ---
 
@@ -73,11 +88,17 @@ If the table is empty, the screener response is byte-equivalent to the ROB-168 b
 
 ## 5. Scheduler — Deferred
 
-**No recurring scheduler entry is active in this PR.** The table is filled on-demand by the operator CLI.
+**No recurring scheduler entry is active.** The table is filled on operator
+demand. Recurring automation (e.g. nightly TaskIQ/Prefect job) requires:
 
-Recurring automation (e.g. nightly TaskIQ/Prefect job) requires:
-- A separate approval ticket
-- At least one or two days of operator-run smoke evidence
+- A separate Linear ticket
+- At least one or two days of operator-run smoke evidence (coverage diagnostic
+  output captured before/after `--all --commit`)
+- Explicit reviewer approval citing that evidence
+
+Do not introduce a recurring scheduler in the same PR as the snapshot read-path
+wiring or the operator-CLI changes — they are intentionally split so the
+scheduler activation can be reviewed against a known-stable manual baseline.
 
 ---
 
