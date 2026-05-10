@@ -30,21 +30,24 @@ def _fake_screener_service(results: list[dict[str, Any]]) -> Any:
     return svc
 
 
+_TEST_SYMBOL = "T70KR1"  # unique 6-char sentinel, not in any other test fixture
+
+
 @pytest.mark.asyncio
 async def test_kr_row_uses_kr_universe_name_over_upstream(db_session):
     """When kr_symbol_universe has a Korean name, it replaces the upstream row name."""
     db_session.add(KRSymbolUniverse(
-        symbol="005930",
-        name="삼성전자",
+        symbol=_TEST_SYMBOL,
+        name="테스트종목",
         exchange="KOSPI",
         is_active=True,
     ))
     await db_session.commit()
 
     screening_svc = _fake_screener_service([{
-        "symbol": "005930",
+        "symbol": _TEST_SYMBOL,
         "market": "kr",
-        "name": "Samsung Electronics",   # English name from upstream
+        "name": "Test Corp English",   # English name from upstream
         "close": 78500,
         "change_rate": 0.77,
         "consecutive_up_days": 3,
@@ -56,7 +59,7 @@ async def test_kr_row_uses_kr_universe_name_over_upstream(db_session):
         market="kr",
         session=db_session,
     )
-    assert response.results[0].name == "삼성전자"
+    assert response.results[0].name == "테스트종목"
 
 
 @pytest.mark.asyncio
