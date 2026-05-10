@@ -43,6 +43,13 @@ const RESULTS_GAINERS = {
   description: "일주일 연속 상승세를 보이는 주식",
   filterChips: [{ label: "주가등락률", detail: "1주일 전 보다 · 0% 이상" }],
   metricLabel: "연속상승", results: [ROW], warnings: [],
+  freshness: {
+    fetchedAt: "2026-05-10T05:30:00+00:00",
+    asOfLabel: "2026.05.10 14:30 기준",
+    relativeLabel: "방금 갱신",
+    cacheHit: false,
+    source: "live" as const,
+  },
 };
 
 const RESULTS_VALUE = {
@@ -97,6 +104,9 @@ beforeEach(() => {
 test("renders the default preset and switches when another preset is clicked", async () => {
   render(wrap(<DesktopScreenerPage />));
   await waitFor(() => expect(screen.getByText("삼성전자")).toBeInTheDocument());
+  expect(await screen.findByTestId("screener-freshness")).toHaveTextContent(
+    "2026.05.10 14:30 기준 · 방금 갱신",
+  );
 
   await userEvent.click(screen.getByTestId("screener-preset-cheap_value"));
   await waitFor(() =>
