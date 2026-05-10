@@ -1,0 +1,89 @@
+{
+  "research_report_ingestion_run": {
+    "run_uuid": "rob178-smoke-fixture-0001",
+    "payload_version": "research-reports.v1",
+    "source": "kis_truefriend",
+    "started_at": "2026-05-10T00:00:00+00:00",
+    "finished_at": "2026-05-10T00:00:01+00:00",
+    "exported_at": "2026-05-10T00:00:02+00:00",
+    "report_count": 2,
+    "source_counts": {"kis_truefriend": 2},
+    "include_detail": true,
+    "download_pdf": false,
+    "extract_text": false,
+    "errors": [],
+    "copyright_notice": "© Korea Investment & Securities / Truefriend"
+  },
+  "reports": [
+    {
+      "dedup_key": "kis_truefriend:rob178-smoke-1",
+      "report_type": "broker_research",
+      "source": "kis_truefriend",
+      "source_report_id": "rob178-smoke-1",
+      "title": "ROB-178 smoke fixture report 1",
+      "category": "글로벌기업",
+      "analyst": "Smoke Tester",
+      "published_at_text": "2026.05.10",
+      "summary_text": "Synthetic summary used by ROB-178 smoke. No body content.",
+      "detail": {
+        "url": "https://www.truefriend.com/main/research/research/StrategyDetail.jsp?jkGubun=10&id=rob178-smoke-1&category1=05&category2=01",
+        "title": "ROB-178 smoke fixture detail 1",
+        "subtitle": "metadata only",
+        "excerpt": "Bounded excerpt; no full body."
+      },
+      "pdf": {
+        "url": "https://file.truefriend.com/servlet/Download?file_path=research/research05/&file_name=rob178-smoke-1.pdf",
+        "filename": "rob178-smoke-1.pdf",
+        "sha256": null,
+        "size_bytes": null,
+        "page_count": null,
+        "text_length": null
+      },
+      "symbol_candidates": [
+        {"symbol": "AAPL", "market": "us", "source": "ticker_match"}
+      ],
+      "raw_text_policy": "metadata_only",
+      "attribution": {
+        "publisher": "Korea Investment & Securities / Truefriend",
+        "copyright_notice": "© Korea Investment & Securities / Truefriend",
+        "full_text_exported": false,
+        "pdf_body_exported": false
+      }
+    },
+    {
+      "dedup_key": "kis_truefriend:rob178-smoke-2",
+      "report_type": "broker_research",
+      "source": "kis_truefriend",
+      "source_report_id": "rob178-smoke-2",
+      "title": "ROB-178 smoke fixture report 2",
+      "category": "기업분석",
+      "analyst": "Smoke Tester",
+      "published_at_text": "2026.05.10",
+      "summary_text": "Second synthetic report. No body content.",
+      "detail": {
+        "url": "https://www.truefriend.com/main/research/research/StrategyDetail.jsp?jkGubun=10&id=rob178-smoke-2&category1=05&category2=01",
+        "title": "ROB-178 smoke fixture detail 2",
+        "subtitle": "metadata only",
+        "excerpt": "Bounded excerpt; no full body."
+      },
+      "pdf": {
+        "url": "https://file.truefriend.com/servlet/Download?file_path=research/research05/&file_name=rob178-smoke-2.pdf",
+        "filename": "rob178-smoke-2.pdf",
+        "sha256": null,
+        "size_bytes": null,
+        "page_count": null,
+        "text_length": null
+      },
+      "symbol_candidates": [
+        {"symbol": "005930", "market": "kr", "source": "ticker_match"}
+      ],
+      "raw_text_policy": "metadata_only",
+      "attribution": {
+        "publisher": "Korea Investment & Securities / Truefriend",
+        "copyright_notice": "© Korea Investment & Securities / Truefriend",
+        "full_text_exported": false,
+        "pdf_body_exported": false
+      }
+    }
+  ]
+}
