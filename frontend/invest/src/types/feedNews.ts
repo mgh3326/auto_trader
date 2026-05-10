@@ -14,6 +14,11 @@ export interface FeedRelatedSymbolQuote {
 
 export interface FeedRelatedSymbol {
   symbol: string;
+  /**
+   * ROB-172: the *asset's* market (e.g. NVDA → "us"), not the article's
+   * source market. May differ from FeedNewsItem.sourceMarket when an article
+   * in one market discusses a symbol listed in another market.
+   */
   market: "kr" | "us" | "crypto";
   displayName: string;
   relation?: RelationKind;
@@ -28,7 +33,22 @@ export interface FeedNewsItem {
   publisher?: string | null;
   feedSource?: string | null;
   publishedAt?: string | null;
+  /**
+   * Source/feed market of the article (kr/us/crypto).
+   * Backward-compatible alias for `sourceMarket`; kept so existing readers
+   * need no change during the migration window. Prefer `sourceMarket` for
+   * new code. Do NOT use this to infer the market of a related symbol —
+   * use `FeedRelatedSymbol.market` for that.
+   */
   market: "kr" | "us" | "crypto";
+  /**
+   * ROB-172: source/feed market of the article (kr/us/crypto).
+   * Equal to `market` during the backward-compat window. New code should
+   * read this field instead of `market` so the naming is unambiguous when
+   * compared with `FeedRelatedSymbol.market` (the asset's market).
+   * Nullable to tolerate older backend payloads that pre-date the dual emit.
+   */
+  sourceMarket?: "kr" | "us" | "crypto" | null;
   relatedSymbols: FeedRelatedSymbol[];
   issueId?: string | null;
   summarySnippet?: string | null;

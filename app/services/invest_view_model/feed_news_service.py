@@ -197,11 +197,16 @@ def _related_symbols_for_article(
             match_reason="stock_symbol",
         )
 
+    # ROB-172: search ALL_ALIASES (market=None) so an article whose source/feed
+    # market is e.g. "kr" can still surface a US-aliased entity such as
+    # NVDA when its Korean alias 엔비디아 appears in the title/summary/keywords.
+    # `match.market` carries the asset's market, which is what
+    # `_add_related_symbol` already routes onto `NewsRelatedSymbol.market`.
     alias_matches = match_symbols_for_article(
         title=row.title,
         summary=analysis_summary or row.summary,
         keywords=_coerce_keywords(getattr(row, "keywords", None)),
-        market=market_value,
+        market=None,
     )
     for match in alias_matches:
         _add_related_symbol(
@@ -469,7 +474,13 @@ async def build_feed_news(
                 publisher=row.source,
                 feedSource=row.feed_source,
                 publishedAt=row.article_published_at,
+                # ROB-172: `market` is the legacy alias kept for backward
+                # compatibility; `sourceMarket` is the same value on the new
+                # contract. Both equal `market_typed` during the backward-compat
+                # window. Per-related-symbol asset markets live on
+                # `NewsRelatedSymbol.market` and may differ from these.
                 market=market_typed,
+                sourceMarket=market_typed,
                 relatedSymbols=related,
                 issueId=None if suppress_issue else issue_id_for_article.get(row.id),
                 summarySnippet=_summary_snippet_for_row(row, analysis_summary),

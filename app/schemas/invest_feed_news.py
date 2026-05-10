@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.schemas.news_issues import MarketIssue
 
@@ -23,7 +23,11 @@ NewsScope = Literal["market_wide", "symbol_specific", "mixed", "kr_market_wide"]
 class NewsRelatedSymbol(BaseModel):
     model_config = ConfigDict(extra="forbid")
     symbol: str
-    market: NewsMarket
+    market: NewsMarket = Field(
+        description="ROB-172: the *asset's* market (e.g. NVDA→us), not the "
+        "article's source market. May differ from FeedNewsItem.sourceMarket "
+        "when an article in one market discusses a symbol from another."
+    )
     displayName: str
     relation: RelationKind = "none"
     matchReason: str | None = None
@@ -43,8 +47,29 @@ class FeedNewsItem(BaseModel):
     publisher: str | None = None
     feedSource: str | None = None
     publishedAt: datetime | None = None
-    market: NewsMarket
+    # ROB-172: `market` is the article's *source/feed* market (kr/us/crypto).
+    # Kept for backward compatibility; new clients should prefer `sourceMarket`,
+    # which has the same value but a name that does not collide with the
+    # related-asset market on `NewsRelatedSymbol`.
+    market: NewsMarket = Field(
+        description="Source/feed market of the article (kr/us/crypto). "
+        "Backward-compatible alias for sourceMarket."
+    )
+    sourceMarket: NewsMarket | None = Field(
+        default=None,
+        description="Source/feed market of the article (kr/us/crypto). "
+        "Equal to `market` during the backward-compat window.",
+    )
     relatedSymbols: list[NewsRelatedSymbol] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _backfill_source_market(self) -> FeedNewsItem:
+        # ROB-172: if caller omits sourceMarket (backward-compat path),
+        # default it to `market` so existing construction sites need no change.
+        if self.sourceMarket is None:
+            object.__setattr__(self, "sourceMarket", self.market)
+        return self
+
     issueId: str | None = None
     summarySnippet: str | None = None
     relation: RelationKind = "none"

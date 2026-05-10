@@ -12,6 +12,7 @@ def test_validate_feed_payload_requires_additive_fields():
                     "id": 1,
                     "title": "S&P 500 rallies as big tech climbs",
                     "market": "us",
+                    "sourceMarket": "us",
                     "url": "https://example.com/news",
                     "relatedSymbols": [],
                     "scope": "market_wide",
@@ -95,3 +96,60 @@ def test_run_smoke_uses_get_only_fetcher(monkeypatch):
         "/invest/api/feed/news?tab=crypto&limit=20",
     ]
     assert all(auth == "[REDACTED]" for _, auth in calls)
+
+
+def test_validate_feed_payload_warns_when_source_market_missing():
+    """ROB-172: missing sourceMarket should produce a warning (not an error)
+    during the dual-emission window, so older backend deployments don't cause
+    smoke failures.
+    """
+    result = validate_feed_payload(
+        "/invest/api/feed/news?tab=latest&limit=20",
+        {
+            "items": [
+                {
+                    "id": 1,
+                    "title": "Test article",
+                    "market": "us",
+                    "url": "https://example.com/news",
+                    "relatedSymbols": [],
+                    "scope": "symbol_specific",
+                    "tags": [],
+                    "category": None,
+                    "noiseReason": None,
+                    # sourceMarket deliberately omitted
+                }
+            ]
+        },
+    )
+
+    assert result.ok is True  # missing sourceMarket must NOT be an error
+    assert any("source_market_missing" in w for w in result.warnings)
+
+
+def test_validate_feed_payload_warns_when_source_market_diverges():
+    """ROB-172: if sourceMarket is present but differs from market, emit a
+    warning so operators can spot a misconfigured dual-emit during rollout.
+    """
+    result = validate_feed_payload(
+        "/invest/api/feed/news?tab=latest&limit=20",
+        {
+            "items": [
+                {
+                    "id": 2,
+                    "title": "Cross-market article",
+                    "market": "kr",
+                    "sourceMarket": "us",  # diverges intentionally for test
+                    "url": "https://example.com/news/2",
+                    "relatedSymbols": [],
+                    "scope": "symbol_specific",
+                    "tags": [],
+                    "category": None,
+                    "noiseReason": None,
+                }
+            ]
+        },
+    )
+
+    assert result.ok is True  # divergent sourceMarket must NOT be an error
+    assert any("source_market_diverges" in w for w in result.warnings)

@@ -23,6 +23,10 @@ _DEFAULT_PATHS = (
     "/invest/api/feed/news?tab=crypto&limit=20",
 )
 _ADDITIVE_FIELDS = ("scope", "tags", "category", "noiseReason")
+# ROB-172: optional during the dual-emission window. After the backend rollout
+# settles, a follow-up ticket should move "sourceMarket" into _ADDITIVE_FIELDS
+# (required) and remove this constant. Do not flip in this PR.
+_OPTIONAL_ADDITIVE_FIELDS_WARN = ("sourceMarket",)
 _ALLOWED_SCOPES = {"market_wide", "symbol_specific", "mixed"}
 
 
@@ -80,10 +84,18 @@ def validate_feed_payload(path: str, payload: Any) -> SmokeResult:
 
     crypto_category_count = 0
     market_wide_big_tech_chip_warnings = 0
+    source_market_missing_count = 0
+    source_market_divergent_count = 0
     for idx, item in enumerate(items):
         for field in _ADDITIVE_FIELDS:
             if field not in item:
                 errors.append(f"item_{idx}_missing_{field}")
+        # ROB-172: optional warn loop for sourceMarket during dual-emission window.
+        for field in _OPTIONAL_ADDITIVE_FIELDS_WARN:
+            if field not in item:
+                source_market_missing_count += 1
+            elif field == "sourceMarket" and item.get("sourceMarket") != item.get("market"):
+                source_market_divergent_count += 1
         scope = item.get("scope")
         if scope not in _ALLOWED_SCOPES:
             errors.append(f"item_{idx}_invalid_scope")
@@ -100,6 +112,10 @@ def validate_feed_payload(path: str, payload: Any) -> SmokeResult:
         warnings.append("crypto_items_present_but_no_category_distribution")
     if market_wide_big_tech_chip_warnings:
         warnings.append("market_wide_us_rows_still_have_many_related_symbols")
+    if source_market_missing_count:
+        warnings.append(f"source_market_missing_on_{source_market_missing_count}_items")
+    if source_market_divergent_count:
+        warnings.append(f"source_market_diverges_from_market_on_{source_market_divergent_count}_items")
 
     return SmokeResult(
         path=path,
