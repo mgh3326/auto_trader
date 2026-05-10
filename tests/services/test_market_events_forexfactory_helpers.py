@@ -135,3 +135,92 @@ def test_rolling_window_for_today_handles_sunday_et_boundary():
     # Sunday still belongs to "this week" feed (Mon 2026-05-04 .. Sun 2026-05-10)
     assert start == date(2026, 5, 4)
     assert end == date(2026, 5, 17)
+
+
+# ---------------------------------------------------------------------------
+# ROB-184: typed fetch error + retry wrapper tests
+# ---------------------------------------------------------------------------
+
+import httpx  # noqa: E402
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_xml_retries_429_with_retry_after_header(monkeypatch):
+    from app.services.market_events import forexfactory_helpers as ff
+
+    calls = {"n": 0}
+
+    class _Resp:
+        def __init__(self, status, text="<weeklyevents/>", retry_after=None):
+            self.status_code = status
+            self.text = text
+            self.headers = {"Retry-After": retry_after} if retry_after else {}
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise httpx.HTTPStatusError(
+                    "boom", request=httpx.Request("GET", "x"), response=self
+                )
+
+    async def fake_get(self, url, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _Resp(429, retry_after="0")
+        return _Resp(200, text="<weeklyevents/>")
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+    # _fetch_one_xml is the new low-level helper exposed for the cache.
+    text = await ff._fetch_one_xml(ff.THISWEEK_URL, max_attempts=3, base_delay=0)
+    assert calls["n"] == 2
+    assert text.startswith("<weeklyevents")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_xml_raises_forexfactory_fetch_error_on_429_exhaustion(
+    monkeypatch,
+):
+    from app.services.market_events import forexfactory_helpers as ff
+
+    async def always_429(self, url, **kw):
+        class _R:
+            status_code = 429
+            headers = {"Retry-After": "0"}
+            text = ""
+
+            def raise_for_status(self):
+                raise httpx.HTTPStatusError(
+                    "x", request=httpx.Request("GET", url), response=self
+                )
+
+        return _R()
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", always_429)
+    with pytest.raises(ff.ForexFactoryFetchError) as exc_info:
+        await ff._fetch_one_xml(ff.THISWEEK_URL, max_attempts=3, base_delay=0)
+    assert exc_info.value.reason == "rate_limited"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_xml_does_not_retry_on_403(monkeypatch):
+    from app.services.market_events import forexfactory_helpers as ff
+
+    async def fake_get(self, url, **kw):
+        class _R:
+            status_code = 403
+            headers = {}
+            text = ""
+
+            def raise_for_status(self):
+                raise httpx.HTTPStatusError(
+                    "x", request=httpx.Request("GET", url), response=self
+                )
+
+        return _R()
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+    with pytest.raises(ff.ForexFactoryFetchError) as exc:
+        await ff._fetch_one_xml(ff.THISWEEK_URL, max_attempts=3, base_delay=0)
+    assert exc.value.reason == "upstream_4xx"

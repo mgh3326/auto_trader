@@ -25,6 +25,70 @@ NEXTWEEK_URL = "https://nfs.faireconomy.media/ff_calendar_nextweek.xml"
 ET_TZ = ZoneInfo("America/New_York")
 
 
+import asyncio
+import random
+
+RETRIABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+
+
+class ForexFactoryFetchError(Exception):
+    def __init__(self, reason: str, *, cause: Exception | None = None):
+        super().__init__(f"forexfactory_fetch_error:{reason}")
+        self.reason = reason
+        self.__cause__ = cause
+
+
+async def _sleep_with_jitter(seconds: float) -> None:
+    jittered = seconds * (1 + random.uniform(-0.25, 0.25))
+    await asyncio.sleep(max(jittered, 0))
+
+
+async def _fetch_one_xml(
+    url: str,
+    *,
+    max_attempts: int = 3,
+    base_delay: float = 1.0,
+) -> str:
+    last_exc: Exception | None = None
+    for attempt in range(max_attempts):
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(url)
+                if response.status_code in RETRIABLE_STATUS:
+                    retry_after_hdr = response.headers.get("Retry-After")
+                    retry_after = float(retry_after_hdr) if retry_after_hdr else None
+                    delay = retry_after if retry_after is not None else min(
+                        base_delay * (2**attempt), 30.0
+                    )
+                    if attempt < max_attempts - 1:
+                        await _sleep_with_jitter(delay)
+                        continue
+                    reason = (
+                        "rate_limited" if response.status_code == 429 else "upstream_5xx"
+                    )
+                    raise ForexFactoryFetchError(reason)
+                response.raise_for_status()
+                return response.text
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code if exc.response is not None else 0
+            if status in RETRIABLE_STATUS and attempt < max_attempts - 1:
+                last_exc = exc
+                await _sleep_with_jitter(min(base_delay * (2**attempt), 30.0))
+                continue
+            if status == 429:
+                raise ForexFactoryFetchError("rate_limited", cause=exc) from exc
+            if 500 <= status < 600:
+                raise ForexFactoryFetchError("upstream_5xx", cause=exc) from exc
+            raise ForexFactoryFetchError("upstream_4xx", cause=exc) from exc
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            last_exc = exc
+            if attempt < max_attempts - 1:
+                await _sleep_with_jitter(min(base_delay * (2**attempt), 30.0))
+                continue
+            raise ForexFactoryFetchError("network_error", cause=exc) from exc
+    raise ForexFactoryFetchError("unknown", cause=last_exc)
+
+
 def rolling_window_for_today(now_utc: datetime) -> tuple[date, date]:
     """Return (start, end) inclusive of the rolling FF window in ET dates.
 
