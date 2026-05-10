@@ -362,6 +362,22 @@ async def build_screener_results(
     rows: list[dict[str, Any]] = list(raw.get("results") or raw.get("stocks") or [])
     upstream_warnings: list[str] = list(raw.get("warnings") or [])
 
+    # ROB-170 follow-up: snapshot-first hydration runs at the view-model layer so
+    # the session reaches _enrich_consecutive_up_days. Without this call the
+    # screening service path never sees the session and _screener_snapshot_state
+    # is never populated, leaving dataState pinned at "missing".
+    if (
+        session is not None
+        and requested_market in {"kr", "us"}
+        and preset_id == "consecutive_gainers"
+        and rows
+    ):
+        from app.mcp_server.tooling.screening.enrichment import (
+            _enrich_consecutive_up_days as _async_enrich,
+        )
+
+        await _async_enrich(rows, market=requested_market, session=session)
+
     # Aggregate snapshot dataState from enriched rows (set by _enrich_consecutive_up_days when session provided)
     from app.services.invest_screener_snapshots.freshness import aggregate_states
 
