@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.schemas.invest_screener import ScreenerFreshness, ScreenerResultsResponse
+from app.schemas.invest_screener import ScreenerResultsResponse
 from app.services.invest_view_model import screener_service
 from app.services.invest_view_model.screener_service import (
     build_screener_presets,
@@ -770,7 +770,7 @@ async def test_build_screener_results_emits_freshness_live() -> None:
     )
     assert resp.freshness.source == "live"
     assert resp.freshness.cacheHit is False
-    assert resp.freshness.asOfLabel == "2026.05.10 14:30 기준"   # KST = UTC+9
+    assert resp.freshness.asOfLabel == "2026.05.10 14:30 기준"  # KST = UTC+9
     assert resp.freshness.relativeLabel == "12분 전 갱신"
 
 
@@ -799,7 +799,9 @@ async def test_build_screener_results_emits_freshness_cached() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_build_screener_results_emits_freshness_previous_session_when_market_closed() -> None:
+async def test_build_screener_results_emits_freshness_previous_session_when_market_closed() -> (
+    None
+):
     # Sat 11:00 UTC -> Sat 20:00 KST; KR market closed -> previous_session
     fake = MagicMock()
     fake.list_screening = AsyncMock(

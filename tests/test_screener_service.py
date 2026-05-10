@@ -702,6 +702,7 @@ async def test_list_screening_passes_min_consecutive_up_days(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from typing import Any, cast
+
     from app.services.screener_service import ScreenerService
 
     captured: dict[str, Any] = {}
@@ -734,26 +735,56 @@ async def test_normalize_screen_request_rejects_out_of_range_streak() -> None:
         normalize_screen_request(
             market="kr",
             min_consecutive_up_days=0,
-            asset_type=None, category=None, sector=None, strategy=None,
-            sort_by=None, sort_order=None, min_market_cap=None,
-            max_per=None, max_pbr=None, min_dividend_yield=None,
-            min_dividend=None, min_analyst_buy=None, max_rsi=None, limit=50,
+            asset_type=None,
+            category=None,
+            sector=None,
+            strategy=None,
+            sort_by=None,
+            sort_order=None,
+            min_market_cap=None,
+            max_per=None,
+            max_pbr=None,
+            min_dividend_yield=None,
+            min_dividend=None,
+            min_analyst_buy=None,
+            max_rsi=None,
+            limit=50,
         )
     with pytest.raises(ValueError):
         normalize_screen_request(
             market="kr",
             min_consecutive_up_days=31,
-            asset_type=None, category=None, sector=None, strategy=None,
-            sort_by=None, sort_order=None, min_market_cap=None,
-            max_per=None, max_pbr=None, min_dividend_yield=None,
-            min_dividend=None, min_analyst_buy=None, max_rsi=None, limit=50,
+            asset_type=None,
+            category=None,
+            sector=None,
+            strategy=None,
+            sort_by=None,
+            sort_order=None,
+            min_market_cap=None,
+            max_per=None,
+            max_pbr=None,
+            min_dividend_yield=None,
+            min_dividend=None,
+            min_analyst_buy=None,
+            max_rsi=None,
+            limit=50,
         )
     out = normalize_screen_request(
         market="kr",
         min_consecutive_up_days=5,
-        asset_type=None, category=None, sector=None, strategy=None,
-        sort_by=None, sort_order=None, min_market_cap=None,
-        max_per=None, max_pbr=None, min_dividend_yield=None,
-        min_dividend=None, min_analyst_buy=None, max_rsi=None, limit=50,
+        asset_type=None,
+        category=None,
+        sector=None,
+        strategy=None,
+        sort_by=None,
+        sort_order=None,
+        min_market_cap=None,
+        max_per=None,
+        max_pbr=None,
+        min_dividend_yield=None,
+        min_dividend=None,
+        min_analyst_buy=None,
+        max_rsi=None,
+        limit=50,
     )
     assert out["min_consecutive_up_days"] == 5

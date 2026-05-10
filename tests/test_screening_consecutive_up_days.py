@@ -1,4 +1,5 @@
 """ROB-168: post-screen OHLCV-based streak enrichment + filter."""
+
 from __future__ import annotations
 
 from unittest.mock import patch
@@ -19,7 +20,9 @@ async def test_enrich_consecutive_up_days_uses_daily_closes() -> None:
         {"symbol": "035720", "market": "kr"},
     ]
 
-    async def fake_fetch(symbol: str, market_type: str, count: int = 10) -> pd.DataFrame:
+    async def fake_fetch(
+        symbol: str, market_type: str, count: int = 10
+    ) -> pd.DataFrame:
         if symbol == "005930":
             return pd.DataFrame({"close": [100, 101, 102, 103, 104, 105]})
         if symbol == "035720":
@@ -43,9 +46,14 @@ async def test_enrich_consecutive_up_days_tolerates_per_row_failure() -> None:
         _enrich_consecutive_up_days,
     )
 
-    rows: list[dict] = [{"symbol": "BAD", "market": "kr"}, {"symbol": "OK", "market": "kr"}]
+    rows: list[dict] = [
+        {"symbol": "BAD", "market": "kr"},
+        {"symbol": "OK", "market": "kr"},
+    ]
 
-    async def fake_fetch(symbol: str, market_type: str, count: int = 10) -> pd.DataFrame:
+    async def fake_fetch(
+        symbol: str, market_type: str, count: int = 10
+    ) -> pd.DataFrame:
         if symbol == "BAD":
             raise RuntimeError("fetch failed")
         return pd.DataFrame({"close": [100, 101, 102]})

@@ -443,7 +443,9 @@ class ScreenerService:
             "min_analyst_buy", normalized_request["min_analyst_buy"]
         )
         normalized_filters_applied.setdefault("max_rsi", normalized_request["max_rsi"])
-        normalized_filters_applied.setdefault("min_consecutive_up_days", normalized_request["min_consecutive_up_days"])
+        normalized_filters_applied.setdefault(
+            "min_consecutive_up_days", normalized_request["min_consecutive_up_days"]
+        )
         normalized_filters_applied["min_volume"] = normalized_min_volume
         if normalized_request["min_dividend_input"] is not None:
             normalized_filters_applied["min_dividend_input"] = normalized_request[

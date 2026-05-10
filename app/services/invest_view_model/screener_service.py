@@ -13,7 +13,8 @@ modules — see tests/test_invest_view_model_safety.py.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from datetime import UTC, datetime, time as _time
+from datetime import UTC, datetime
+from datetime import time as _time
 from typing import Any, Literal, Protocol
 from zoneinfo import ZoneInfo
 

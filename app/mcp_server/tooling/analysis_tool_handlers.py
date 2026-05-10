@@ -659,8 +659,13 @@ async def screen_stocks_impl(
         market_cap_max_krw=market_cap_max_krw,
     )
     if min_consecutive_up_days is not None:
-        from app.mcp_server.tooling.screening.enrichment import _enrich_consecutive_up_days
-        from app.mcp_server.tooling.screening.common import _apply_min_consecutive_up_days
+        from app.mcp_server.tooling.screening.common import (
+            _apply_min_consecutive_up_days,
+        )
+        from app.mcp_server.tooling.screening.enrichment import (
+            _enrich_consecutive_up_days,
+        )
+
         rows: list[dict[str, Any]] = list(result.get("results") or [])
         await _enrich_consecutive_up_days(rows, market=normalized_market)
         rows = _apply_min_consecutive_up_days(rows, threshold=min_consecutive_up_days)

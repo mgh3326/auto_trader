@@ -999,7 +999,8 @@ def _apply_min_consecutive_up_days(
     if threshold is None:
         return rows
     return [
-        r for r in rows
+        r
+        for r in rows
         if isinstance(r.get("consecutive_up_days"), int)
         and r["consecutive_up_days"] >= threshold
     ]

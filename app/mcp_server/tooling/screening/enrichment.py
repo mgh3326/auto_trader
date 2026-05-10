@@ -23,7 +23,9 @@ from app.mcp_server.tooling.screening.common import (
     _to_optional_int,
 )
 from app.monitoring import build_yfinance_tracing_session, close_yfinance_session
-from app.services.invest_view_model.screener_service import calculate_consecutive_up_days
+from app.services.invest_view_model.screener_service import (
+    calculate_consecutive_up_days,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +63,7 @@ async def _enrich_consecutive_up_days(
             row["consecutive_up_days"] = streak
 
     await asyncio.gather(*(_enrich_one(r) for r in rows))
+
 
 _SCREEN_ENRICHMENT_FIELDS = (
     "sector",
