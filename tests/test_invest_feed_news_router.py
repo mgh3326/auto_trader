@@ -725,3 +725,40 @@ async def test_feed_news_us_article_alias_match_unchanged_after_cross_market(
     assert ("us", "AMZN") in related_pairs
     # No KR/crypto false-positive should appear on a clean US headline.
     assert all(s.market == "us" for s in item.relatedSymbols), related_pairs
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_feed_news_emits_source_market_alongside_legacy_market(
+    monkeypatch,
+) -> None:
+    """ROB-172 dual-emission contract: every FeedNewsItem returns both `market`
+    and `sourceMarket`, equal in value, so the frontend can migrate readers
+    incrementally without coordinated deploy.
+    """
+    from app.services.invest_view_model import feed_news_service as svc
+
+    db = MagicMock()
+    scalar_result = MagicMock()
+    scalar_result.scalars.return_value.all.return_value = [
+        _fake_article(id=1, market="kr"),
+        _fake_article(id=2, market="us", symbol="AAPL", name="Apple"),
+        _fake_article(id=3, market="crypto", symbol="BTC", name="Bitcoin"),
+    ]
+    summary_result = MagicMock()
+    summary_result.all.return_value = []
+    db.execute = AsyncMock(
+        side_effect=[scalar_result, summary_result, _empty_related_result()]
+    )
+    monkeypatch.setattr(
+        svc, "build_market_issues", AsyncMock(return_value=MagicMock(items=[]))
+    )
+
+    resp = await svc.build_feed_news(
+        db=db, resolver=RelationResolver(), tab="latest", limit=30, cursor=None
+    )
+
+    assert len(resp.items) == 3
+    for item in resp.items:
+        assert item.sourceMarket == item.market
+        assert item.sourceMarket in ("kr", "us", "crypto")
