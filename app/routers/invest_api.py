@@ -37,6 +37,7 @@ from app.services.invest_view_model.screener_service import (
     build_screener_results,
 )
 from app.services.invest_view_model.signals_service import build_signals
+from app.services.invest_screener_snapshots.coverage_service import build_coverage
 from app.services.invest_view_model.weekly_summary_service import build_weekly_summary
 
 router = APIRouter(prefix="/invest/api", tags=["invest"])
@@ -198,3 +199,22 @@ async def get_screener_results_endpoint(
         market=market,
         session=db,
     )
+
+
+@router.get("/screener/snapshots/coverage")
+async def screener_snapshots_coverage(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    market: Literal["kr", "us"] = Query("kr"),
+) -> dict:
+    """Read-only coverage summary for invest_screener_snapshots (ROB-170)."""
+    report = await build_coverage(db, market=market)
+    return {
+        "market": report.market,
+        "asOf": report.asOf.isoformat(),
+        "totalSymbolsInUniverse": report.totalSymbolsInUniverse,
+        "snapshotsCoveringToday": report.snapshotsCoveringToday,
+        "snapshotsStale": report.snapshotsStale,
+        "snapshotsMissing": report.snapshotsMissing,
+        "lastComputedAt": report.lastComputedAt.isoformat() if report.lastComputedAt else None,
+        "dataState": report.dataState,
+    }
