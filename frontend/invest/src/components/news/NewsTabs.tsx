@@ -1,11 +1,14 @@
 import type { FeedTab } from "../../types/feedNews";
 
-export const PRIMARY_NEWS_TABS: { key: FeedTab; label: string }[] = [
+export type FeedContentTab = FeedTab | "research";
+
+export const PRIMARY_NEWS_TABS: { key: FeedContentTab; label: string }[] = [
   { key: "holdings", label: "보유주식" },
   { key: "watchlist", label: "관심주식" },
   { key: "top", label: "주요뉴스" },
   { key: "latest", label: "최신뉴스" },
   { key: "hot", label: "급상승뉴스" },
+  { key: "research", label: "리서치" },
 ];
 
 export const SECONDARY_NEWS_TABS: { key: FeedTab; label: string }[] = [
@@ -14,7 +17,7 @@ export const SECONDARY_NEWS_TABS: { key: FeedTab; label: string }[] = [
   { key: "crypto", label: "크립토" },
 ];
 
-export const NEWS_TABS: { key: FeedTab; label: string }[] = [
+export const NEWS_TABS: { key: FeedContentTab; label: string }[] = [
   ...PRIMARY_NEWS_TABS,
   ...SECONDARY_NEWS_TABS,
 ];
@@ -24,8 +27,8 @@ export function NewsTabs({
   onChange,
   variant = "underline",
 }: {
-  value: FeedTab;
-  onChange: (tab: FeedTab) => void;
+  value: FeedContentTab;
+  onChange: (tab: FeedContentTab) => void;
   variant?: "underline" | "pill-row";
 }) {
   const visibleTabs = PRIMARY_NEWS_TABS;
