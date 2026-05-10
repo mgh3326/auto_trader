@@ -100,3 +100,31 @@ def test_feed_news_item_accepts_kr_market_wide_scope():
         scope="kr_market_wide",
     )
     assert item.scope == "kr_market_wide"
+
+
+def test_feed_news_item_source_market_field_present_and_matches_market():
+    """ROB-172: FeedNewsItem must expose `sourceMarket` (the article's feed
+    market) alongside the legacy `market` field. The two values are equal
+    during the backward-compat window; once the frontend migrates, the legacy
+    `market` field can be retired in a separate ticket.
+    """
+    item = FeedNewsItem(
+        id=9659,
+        title="엔비디아 신제품 공개에 국내 반도체주 동반 강세",
+        market="kr",
+        sourceMarket="kr",
+        url="https://example.com/news/9659",
+    )
+
+    assert item.market == "kr"
+    assert item.sourceMarket == "kr"
+    # `extra="forbid"` must continue to reject unknown fields.
+    with pytest.raises(ValidationError):
+        FeedNewsItem(
+            id=9659,
+            title="x",
+            market="kr",
+            sourceMarket="kr",
+            url="https://example.com/news/9659",
+            unknownField=True,
+        )
