@@ -60,12 +60,13 @@ class TestTvscreenerServiceContract:
     @pytest.mark.integration
     def test_bulk_ingest_round_trip_persists_articles_and_related_symbols(self):
         from sqlalchemy import select
+
+        from app.core.db import AsyncSessionLocal
         from app.models.news import (
             NewsArticle,
             NewsArticleRelatedSymbol,
             NewsIngestionRun,
         )
-        from app.core.db import AsyncSessionLocal
 
         client = TestClient(_make_test_app())
         payload = _load_fixture()
@@ -95,11 +96,7 @@ class TestTvscreenerServiceContract:
                     .scalars()
                     .all()
                 )
-                run = (
-                    (await db.execute(select(NewsIngestionRun)))
-                    .scalars()
-                    .first()
-                )
+                run = (await db.execute(select(NewsIngestionRun))).scalars().first()
                 return articles, relations, run
 
         import asyncio
