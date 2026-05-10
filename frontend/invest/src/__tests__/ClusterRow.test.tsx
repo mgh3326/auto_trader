@@ -40,9 +40,13 @@ describe("ClusterRow", () => {
     expect(screen.getByText(/AAPL · MSFT · GOOGL 외/)).toHaveClass("calendar-cluster-row__preview");
   });
 
-  test("count chip is visible separately from the title for narrow screens", () => {
+  test("count chip is removed — cluster title already carries the count", () => {
     render(<ClusterRow cluster={cluster({ count: 327 })} />);
-    expect(screen.getByTestId("calendar-cluster-count")).toHaveTextContent("+327");
+    expect(screen.queryByTestId("calendar-cluster-count")).not.toBeInTheDocument();
+    // The cluster title still surfaces the number to the user.
+    expect(screen.getByText("미국 실적 발표 327건")).toBeInTheDocument();
+    // And no leftover raw +N anywhere.
+    expect(screen.getByTestId("calendar-cluster").textContent ?? "").not.toMatch(/\+\d/);
   });
 
   test("does not nest interactive elements", () => {

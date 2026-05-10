@@ -22,9 +22,6 @@ export function ClusterRow({ cluster }: { cluster: CalendarClusterVM }) {
           <span className="calendar-cluster-row__title" title={cluster.title}>
             {cluster.title}
           </span>
-          <span data-testid="calendar-cluster-count" className="calendar-cluster-row__count">
-            +{cluster.count}
-          </span>
         </div>
         <div className="calendar-cluster-row__preview" title={previewText}>
           {previewText}

@@ -4,11 +4,11 @@ import { fetchCalendar, fetchWeeklySummary } from "../../api/calendar";
 import type { CalendarResponse, WeeklySummaryResponse } from "../../types/calendar";
 import { Icon } from "../../ds";
 import { CalendarMonthHeader } from "../../components/calendar/CalendarMonthHeader";
-import { WeekDateStrip } from "../../components/calendar/WeekDateStrip";
-import { CalendarFreshnessBanner } from "../../components/calendar/CalendarFreshnessBanner";
-import { SelectedDateEvents } from "../../components/calendar/SelectedDateEvents";
+import { CalendarSourceButton } from "../../components/calendar/CalendarSourceButton";
 import { EventDetailModal } from "../../components/calendar/EventDetailModal";
+import { MonthlyEventsTimeline } from "../../components/calendar/MonthlyEventsTimeline";
 import { SparkleIcon } from "../../components/calendar/SparkleIcon";
+import { WeekDateStrip } from "../../components/calendar/WeekDateStrip";
 import {
   addMonths,
   clampSelectedDateToMonth,
@@ -16,7 +16,6 @@ import {
   gridEndFromMonth,
   gridStartFromMonth,
   monthTitleLabel,
-  selectedDateLabelWithRelative,
   startOfMonth,
   toClusterVM,
   toEventVM,
@@ -30,6 +29,12 @@ import type { CalendarDay } from "../../types/calendar";
 
 type TypeFilter = "all" | DisplayEventType;
 type RegionFilter = "all" | DisplayRegion;
+
+interface FilteredDay {
+  events: CalendarEventVM[];
+  clusters: CalendarClusterVM[];
+  total: number;
+}
 
 function weekStartDateOf(dateIso: string): Date {
   const d = new Date(`${dateIso}T00:00:00`);
@@ -136,17 +141,21 @@ export function MobileCalendarPage() {
     [calendar?.days, selectedDate],
   );
 
-  const filteredSelected = useMemo(() => {
-    const day = (calendar?.days ?? []).find((d) => d.date === selectedDate);
-    if (!day) return { events: [] as CalendarEventVM[], clusters: [] as CalendarClusterVM[] };
-    const events = day.events
-      .map((e) => toEventVM(e, day.date))
-      .filter((e) => matches(e, typeFilter, regionFilter));
-    const clusters = day.clusters
-      .map((c) => toClusterVM(c, day.date))
-      .filter((c) => matches(c, typeFilter, regionFilter));
-    return { events, clusters };
-  }, [calendar?.days, selectedDate, typeFilter, regionFilter]);
+  const filteredByDate = useMemo<Map<string, FilteredDay>>(() => {
+    const map = new Map<string, FilteredDay>();
+    for (const d of calendar?.days ?? []) {
+      const events = d.events
+        .map((event) => toEventVM(event, d.date))
+        .filter((event) => matches(event, typeFilter, regionFilter));
+      const clusters = d.clusters
+        .map((cluster) => toClusterVM(cluster, d.date))
+        .filter((cluster) => matches(cluster, typeFilter, regionFilter));
+      const total = events.length + clusters.reduce((s, c) => s + c.count, 0);
+      if (total === 0) continue;
+      map.set(d.date, { events, clusters, total });
+    }
+    return map;
+  }, [calendar?.days, typeFilter, regionFilter]);
 
   const goPrevMonth = () => {
     setMonthCursor((m) => {
@@ -215,17 +224,14 @@ export function MobileCalendarPage() {
             })}
           </div>
 
-          {calendar?.meta?.sourceFreshness && (
-            <div style={{ padding: "0 12px 8px" }}>
-              <CalendarFreshnessBanner sources={calendar.meta.sourceFreshness} />
-            </div>
-          )}
-          <SelectedDateEvents
-            dateLabel={selectedDateLabelWithRelative(selectedDate, today)}
-            dateIso={selectedDate}
-            events={filteredSelected.events}
-            clusters={filteredSelected.clusters}
-            emptyMessage="해당 날짜에는 일정이 없습니다."
+          <div style={{ display: "flex", justifyContent: "flex-end", padding: "0 8px" }}>
+            <CalendarSourceButton sources={calendar?.meta?.sourceFreshness ?? []} />
+          </div>
+          <MonthlyEventsTimeline
+            monthCursor={monthCursor}
+            selectedDate={selectedDate}
+            todayIso={today}
+            filteredByDate={filteredByDate}
             loading={calendarLoading}
             error={calendarErr}
           />

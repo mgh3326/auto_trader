@@ -7,10 +7,10 @@ import type { CalendarResponse, WeeklySummaryResponse } from "../../types/calend
 import { Card } from "../../ds";
 import { AIWeeklyCard } from "../../components/calendar/AIWeeklyCard";
 import { CalendarMonthHeader } from "../../components/calendar/CalendarMonthHeader";
+import { CalendarSourceButton } from "../../components/calendar/CalendarSourceButton";
 import { EventDetailModal } from "../../components/calendar/EventDetailModal";
 import { MonthCalendarGrid } from "../../components/calendar/MonthCalendarGrid";
-import { CalendarFreshnessBanner } from "../../components/calendar/CalendarFreshnessBanner";
-import { SelectedDateEvents } from "../../components/calendar/SelectedDateEvents";
+import { MonthlyEventsTimeline } from "../../components/calendar/MonthlyEventsTimeline";
 import {
   addMonths,
   fmtLocal,
@@ -18,7 +18,6 @@ import {
   gridStartFromMonth,
   monthLabel,
   monthTitleLabel,
-  selectedDateLabelWithRelative,
   startOfMonth,
   toClusterVM,
   toEventVM,
@@ -140,12 +139,6 @@ export function DesktopCalendarPage() {
     return m;
   }, [filteredByDate]);
 
-  const selectedDay: FilteredDay = filteredByDate.get(selectedDate) ?? {
-    events: [],
-    clusters: [],
-    total: 0,
-  };
-
   const goPrevMonth = () => {
     setMonthCursor((m) => {
       const next = addMonths(m, -1);
@@ -245,19 +238,14 @@ export function DesktopCalendarPage() {
                 <div style={{ fontSize: 14, fontWeight: 800, color: "var(--fg)", letterSpacing: "-0.01em" }}>
                   {monthLabel(monthFirstIso)}
                 </div>
+                <CalendarSourceButton sources={calendar?.meta?.sourceFreshness ?? []} />
               </div>
-              {calendar?.meta?.sourceFreshness && (
-                <div style={{ padding: "8px 8px 0" }}>
-                  <CalendarFreshnessBanner sources={calendar.meta.sourceFreshness} />
-                </div>
-              )}
               <div style={{ padding: "12px 8px 4px" }}>
-                <SelectedDateEvents
-                  dateLabel={selectedDateLabelWithRelative(selectedDate, today)}
-                  dateIso={selectedDate}
-                  events={selectedDay.events}
-                  clusters={selectedDay.clusters}
-                  emptyMessage="선택한 날짜에 일정이 없습니다."
+                <MonthlyEventsTimeline
+                  monthCursor={monthCursor}
+                  selectedDate={selectedDate}
+                  todayIso={today}
+                  filteredByDate={filteredByDate}
                   loading={calendarLoading}
                   error={calendarErr}
                 />

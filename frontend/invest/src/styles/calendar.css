@@ -381,3 +381,113 @@
   background: var(--fg);
   color: var(--bg);
 }
+
+/* ---------- ROB-185 grouped-monthly timeline ---------- */
+.calendar-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.calendar-timeline__empty {
+  padding: 48px 16px;
+  text-align: center;
+  color: var(--fg-3);
+  font-size: 13px;
+}
+.calendar-day-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  scroll-margin-top: 76px; /* leaves room for sticky filters on desktop */
+}
+.calendar-day-section--selected {
+  background: var(--accent-soft);
+  border-radius: 12px;
+  padding: 4px 4px 8px;
+}
+.calendar-day-section__header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface);
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 8px 6px;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: var(--fg);
+}
+.calendar-day-section--selected .calendar-day-section__header {
+  background: var(--accent-soft);
+}
+.calendar-day-section__total {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-3);
+  font-feature-settings: "tnum";
+}
+.calendar-day-section__empty {
+  padding: 12px 14px;
+  color: var(--fg-3);
+  font-size: 12px;
+}
+.calendar-day-section__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* ---------- ROB-185 source button + popover ---------- */
+.calendar-source-button-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.calendar-source-button {
+  border: none;
+  background: transparent;
+  color: var(--fg-3);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 8px 10px;
+  border-radius: 8px;
+  min-height: 44px; /* touch target */
+}
+.calendar-source-button:hover { background: var(--surface-2); color: var(--fg-2); }
+.calendar-source-button:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+.calendar-source-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 10;
+  min-width: 240px;
+  padding: 10px;
+  background: var(--surface);
+  border: 1px solid var(--divider);
+  border-radius: 12px;
+  box-shadow: var(--shadow-2, 0 8px 24px rgba(0,0,0,0.08));
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.calendar-source-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--fg-1);
+}
+.calendar-source-row__status {
+  font-size: 11px;
+  color: var(--fg-3);
+}
