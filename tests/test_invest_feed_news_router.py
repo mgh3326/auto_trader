@@ -680,3 +680,48 @@ async def test_feed_news_kr_article_with_us_alias_emits_us_related_symbol(
     nvda = next(s for s in item.relatedSymbols if s.symbol == "NVDA")
     assert nvda.market == "us"  # asset market, not source market
     assert nvda.matchReason == "alias_dict"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_feed_news_us_article_alias_match_unchanged_after_cross_market(
+    monkeypatch,
+) -> None:
+    """ROB-172 regression-guard: widening the matcher to ALL_ALIASES must not
+    change the relatedSymbols answer for an obviously US-anchored article.
+    """
+    from app.services.invest_view_model import feed_news_service as svc
+
+    db = MagicMock()
+    scalar_result = MagicMock()
+    scalar_result.scalars.return_value.all.return_value = [
+        _fake_article(
+            id=9700,
+            market="us",
+            symbol=None,
+            name=None,
+            title="Amazon raises guidance on AWS demand",
+            summary="Amazon Web Services revenue beat expectations.",
+            keywords=["AWS", "Amazon"],
+        ),
+    ]
+    summary_result = MagicMock()
+    summary_result.all.return_value = []
+    db.execute = AsyncMock(
+        side_effect=[scalar_result, summary_result, _empty_related_result()]
+    )
+    monkeypatch.setattr(
+        svc, "build_market_issues", AsyncMock(return_value=MagicMock(items=[]))
+    )
+
+    resp = await svc.build_feed_news(
+        db=db, resolver=RelationResolver(), tab="us", limit=30, cursor=None
+    )
+
+    item = resp.items[0]
+    assert item.market == "us"
+    assert item.sourceMarket == "us"
+    related_pairs = [(s.market, s.symbol) for s in item.relatedSymbols]
+    assert ("us", "AMZN") in related_pairs
+    # No KR/crypto false-positive should appear on a clean US headline.
+    assert all(s.market == "us" for s in item.relatedSymbols), related_pairs
