@@ -210,6 +210,7 @@ async def screen_stocks_unified(
         and (
             normalized_request["sector"] is not None
             or normalized_request["min_analyst_buy"] is not None
+            or normalized_request.get("min_consecutive_up_days") is not None
         )
     )
     can_avoid_overfetch = normalized_asset_type in {None, "stock"} and (
