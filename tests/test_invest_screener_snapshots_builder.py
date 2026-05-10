@@ -77,6 +77,8 @@ async def test_build_snapshot_for_symbol_returns_none_on_empty_df(monkeypatch):
         fetcher,
     )
     assert (
-        await build_snapshot_for_symbol(market="us", symbol="AAPL", today=dt.date.today())
+        await build_snapshot_for_symbol(
+            market="us", symbol="AAPL", today=dt.date.today()
+        )
         is None
     )

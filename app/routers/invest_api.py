@@ -215,6 +215,8 @@ async def screener_snapshots_coverage(
         "snapshotsCoveringToday": report.snapshotsCoveringToday,
         "snapshotsStale": report.snapshotsStale,
         "snapshotsMissing": report.snapshotsMissing,
-        "lastComputedAt": report.lastComputedAt.isoformat() if report.lastComputedAt else None,
+        "lastComputedAt": report.lastComputedAt.isoformat()
+        if report.lastComputedAt
+        else None,
         "dataState": report.dataState,
     }

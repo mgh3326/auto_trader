@@ -1,4 +1,5 @@
 """Coverage endpoint tests for invest_screener_snapshots (ROB-170 Task 7)."""
+
 from __future__ import annotations
 
 import datetime as dt
@@ -36,18 +37,26 @@ async def test_coverage_counts_fresh_and_stale(db_session):
 
     repo = InvestScreenerSnapshotsRepository(db_session)
     today = today_trading_date("kr")
-    await repo.upsert(SnapshotUpsert(
-        market="kr", symbol="COV_FRESH_001", snapshot_date=today,
-        latest_close=Decimal("78500"),
-        closes_window=[77000, 77400, 77900, 78500, 78500],
-        source="kis",
-    ))
-    await repo.upsert(SnapshotUpsert(
-        market="kr", symbol="COV_STALE_001", snapshot_date=dt.date(2026, 1, 1),
-        latest_close=Decimal("130000"),
-        closes_window=[130000],
-        source="kis",
-    ))
+    await repo.upsert(
+        SnapshotUpsert(
+            market="kr",
+            symbol="COV_FRESH_001",
+            snapshot_date=today,
+            latest_close=Decimal("78500"),
+            closes_window=[77000, 77400, 77900, 78500, 78500],
+            source="kis",
+        )
+    )
+    await repo.upsert(
+        SnapshotUpsert(
+            market="kr",
+            symbol="COV_STALE_001",
+            snapshot_date=dt.date(2026, 1, 1),
+            latest_close=Decimal("130000"),
+            closes_window=[130000],
+            source="kis",
+        )
+    )
     await db_session.commit()
 
     report = await build_coverage(db_session, market="kr")

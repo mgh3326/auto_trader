@@ -34,8 +34,8 @@ class SnapshotUpsert(BaseModel):
 class CoverageCounts:
     market: str
     today_trading_date: dt.date
-    fresh_count: int        # snapshot_date == today_trading_date
-    stale_count: int        # snapshot_date < today_trading_date
+    fresh_count: int  # snapshot_date == today_trading_date
+    stale_count: int  # snapshot_date < today_trading_date
     last_computed_at: dt.datetime | None
 
 
@@ -84,12 +84,12 @@ class InvestScreenerSnapshotsRepository:
     ) -> CoverageCounts:
         result = await self._session.execute(
             select(
-                func.count().filter(
-                    InvestScreenerSnapshot.snapshot_date == today_trading_date
-                ).label("fresh"),
-                func.count().filter(
-                    InvestScreenerSnapshot.snapshot_date < today_trading_date
-                ).label("stale"),
+                func.count()
+                .filter(InvestScreenerSnapshot.snapshot_date == today_trading_date)
+                .label("fresh"),
+                func.count()
+                .filter(InvestScreenerSnapshot.snapshot_date < today_trading_date)
+                .label("stale"),
                 func.max(InvestScreenerSnapshot.computed_at).label("last_computed_at"),
             ).where(InvestScreenerSnapshot.market == market)
         )

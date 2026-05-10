@@ -9,12 +9,12 @@ from app.services.market_events.freshness_service import STALE_AFTER_HOURS
 DataState = Literal["fresh", "partial", "stale", "missing", "fallback"]
 
 _TZ_BY_MARKET = {"kr": ZoneInfo("Asia/Seoul"), "us": ZoneInfo("America/New_York")}
-_PARTIAL_MAX_LEN = 5  # closes_window length < 5 → partial (week_change_rate not computable)
+_PARTIAL_MAX_LEN = (
+    5  # closes_window length < 5 → partial (week_change_rate not computable)
+)
 
 
-def today_trading_date(
-    market: str, *, now: dt.datetime | None = None
-) -> dt.date:
+def today_trading_date(market: str, *, now: dt.datetime | None = None) -> dt.date:
     """Most recent business day in the market's timezone.
 
     NOTE: First-slice does NOT use exchange holiday calendar. KIS daily candles

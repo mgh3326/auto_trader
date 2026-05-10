@@ -364,7 +364,10 @@ async def build_screener_results(
 
     # Aggregate snapshot dataState from enriched rows (set by _enrich_consecutive_up_days when session provided)
     from app.services.invest_screener_snapshots.freshness import aggregate_states
-    _row_states: list[str] = [str(r.get("_screener_snapshot_state") or "missing") for r in rows]
+
+    _row_states: list[str] = [
+        str(r.get("_screener_snapshot_state") or "missing") for r in rows
+    ]
     _aggregated_data_state = aggregate_states(_row_states)  # type: ignore[arg-type]
 
     freshness = _build_freshness(
@@ -381,6 +384,7 @@ async def build_screener_results(
         import sqlalchemy as sa
 
         from app.models.kr_symbol_universe import KRSymbolUniverse
+
         kr_symbols = [
             _normalize_symbol(r, "kr")[0]
             for r in rows

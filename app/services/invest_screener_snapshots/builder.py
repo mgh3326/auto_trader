@@ -37,9 +37,7 @@ def derive_metrics(closes: Sequence[Decimal]) -> DerivedMetrics:
         change_rate = None
     else:
         change_amount = latest - prev
-        change_rate = (
-            (change_amount / prev * Decimal("100")) if prev != 0 else None
-        )
+        change_rate = (change_amount / prev * Decimal("100")) if prev != 0 else None
 
     streak: int | None
     if len(closes) < 2:
@@ -88,7 +86,9 @@ async def build_snapshot_for_symbol(
     try:
         df = await _fetch_ohlcv_for_indicators(symbol, market_type, count=_LOOKBACK)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("ohlcv fetch failed market=%s symbol=%s: %s", market, symbol, exc)
+        logger.warning(
+            "ohlcv fetch failed market=%s symbol=%s: %s", market, symbol, exc
+        )
         return None
     if df is None or df.empty or "close" not in df.columns:
         return None
@@ -99,11 +99,7 @@ async def build_snapshot_for_symbol(
         return None
 
     metrics = derive_metrics(closes)
-    snapshot_date = (
-        df["date"].iloc[-1].date()
-        if "date" in df.columns
-        else today
-    )
+    snapshot_date = df["date"].iloc[-1].date() if "date" in df.columns else today
     daily_volume = (
         int(df["volume"].iloc[-1])
         if "volume" in df.columns and df["volume"].iloc[-1] is not None

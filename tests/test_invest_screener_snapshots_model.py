@@ -49,14 +49,14 @@ async def test_insert_round_trip(db_session):
 
 @pytest.mark.asyncio
 async def test_unique_constraint(db_session):
-    base = dict(
-        market="kr",
-        symbol="005930",
-        snapshot_date=dt.date(2026, 5, 9),
-        latest_close=Decimal("78500"),
-        closes_window=[78500],
-        source="kis",
-    )
+    base = {
+        "market": "kr",
+        "symbol": "005930",
+        "snapshot_date": dt.date(2026, 5, 9),
+        "latest_close": Decimal("78500"),
+        "closes_window": [78500],
+        "source": "kis",
+    }
     db_session.add(InvestScreenerSnapshot(**base))
     await db_session.commit()
 

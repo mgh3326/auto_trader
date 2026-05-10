@@ -58,7 +58,9 @@ class InvestScreenerSnapshot(Base):
     change_amount: Mapped[Decimal | None] = mapped_column(Numeric(20, 6), nullable=True)
     change_rate: Mapped[Decimal | None] = mapped_column(Numeric(10, 4), nullable=True)
     consecutive_up_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    week_change_rate: Mapped[Decimal | None] = mapped_column(Numeric(10, 4), nullable=True)
+    week_change_rate: Mapped[Decimal | None] = mapped_column(
+        Numeric(10, 4), nullable=True
+    )
     closes_window: Mapped[list] = mapped_column(JSONB, nullable=False)
     daily_volume: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     source: Mapped[str] = mapped_column(String(16), nullable=False)

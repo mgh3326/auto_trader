@@ -25,34 +25,36 @@ class CoverageReport:
     dataState: DataState
 
 
-async def build_coverage(
-    session: AsyncSession, *, market: str
-) -> CoverageReport:
+async def build_coverage(session: AsyncSession, *, market: str) -> CoverageReport:
     today = today_trading_date(market)
     now = dt.datetime.now(dt.UTC)
 
     if market == "kr":
         from app.models.kr_symbol_universe import KRSymbolUniverse
 
-        universe_count_stmt = sa.select(sa.func.count()).select_from(
-            KRSymbolUniverse
-        ).where(KRSymbolUniverse.is_active.is_(True))
+        universe_count_stmt = (
+            sa.select(sa.func.count())
+            .select_from(KRSymbolUniverse)
+            .where(KRSymbolUniverse.is_active.is_(True))
+        )
     else:
         from app.models.us_symbol_universe import USSymbolUniverse
 
-        universe_count_stmt = sa.select(sa.func.count()).select_from(
-            USSymbolUniverse
-        ).where(USSymbolUniverse.is_active.is_(True))
+        universe_count_stmt = (
+            sa.select(sa.func.count())
+            .select_from(USSymbolUniverse)
+            .where(USSymbolUniverse.is_active.is_(True))
+        )
 
     universe_count = int((await session.execute(universe_count_stmt)).scalar() or 0)
 
     stmt = sa.select(
-        sa.func.count().filter(
-            InvestScreenerSnapshot.snapshot_date == today
-        ).label("fresh"),
-        sa.func.count().filter(
-            InvestScreenerSnapshot.snapshot_date < today
-        ).label("stale"),
+        sa.func.count()
+        .filter(InvestScreenerSnapshot.snapshot_date == today)
+        .label("fresh"),
+        sa.func.count()
+        .filter(InvestScreenerSnapshot.snapshot_date < today)
+        .label("stale"),
         sa.func.max(InvestScreenerSnapshot.computed_at).label("last"),
     ).where(InvestScreenerSnapshot.market == market)
     row = (await session.execute(stmt)).one()
