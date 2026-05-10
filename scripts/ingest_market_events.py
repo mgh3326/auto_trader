@@ -157,7 +157,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return ns
 
 
-def _is_source_enabled(source: str, category: str, market: str) -> tuple[bool, str | None]:
+def _is_source_enabled(
+    source: str, category: str, market: str
+) -> tuple[bool, str | None]:
     """Return (enabled, reason_when_disabled) for a configured source."""
     if (source, category, market) == ("wisefn", "earnings", "kr"):
         if not settings.wisefn_earnings_enabled:

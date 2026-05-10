@@ -62,7 +62,9 @@ async def test_ingest_wisefn_succeeds_with_injected_rows(db_session):
     assert events[0].source_event_id == "wisefn::005930::2026-05-13::2026::1"
 
     parts = (
-        (await db_session.execute(select(MarketEventIngestionPartition))).scalars().all()
+        (await db_session.execute(select(MarketEventIngestionPartition)))
+        .scalars()
+        .all()
     )
     assert len(parts) == 1
     assert parts[0].source == "wisefn"
@@ -112,7 +114,9 @@ async def test_ingest_wisefn_marks_failed_on_fetch_error(db_session):
     events = (await db_session.execute(select(MarketEvent))).scalars().all()
     assert events == []
     parts = (
-        (await db_session.execute(select(MarketEventIngestionPartition))).scalars().all()
+        (await db_session.execute(select(MarketEventIngestionPartition)))
+        .scalars()
+        .all()
     )
     assert parts[0].status == "failed"
 
@@ -129,9 +133,7 @@ async def test_ingest_wisefn_default_fetch_uses_helper(db_session, monkeypatch):
         captured["called"] = target_date
         return []
 
-    monkeypatch.setattr(
-        wisefn_helpers, "fetch_wisefn_earnings_for_date", stub
-    )
+    monkeypatch.setattr(wisefn_helpers, "fetch_wisefn_earnings_for_date", stub)
 
     result = await ingestion.ingest_kr_earnings_wisefn_for_date(
         db_session, date(2026, 5, 13), fetch_rows=None

@@ -70,7 +70,9 @@ async def fetch_wisefn_earnings_for_date(target_date: date) -> list[dict[str, An
         logger.warning(
             "wisefn payload missing 'items' list for %s; got keys=%s",
             target_date,
-            list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__,
+            list(payload.keys())
+            if isinstance(payload, dict)
+            else type(payload).__name__,
         )
         return []
     return [row for row in items if _row_matches_date(row, target_date)]

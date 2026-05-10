@@ -97,9 +97,7 @@ def test_normalize_wisefn_non_numeric_stock_code_raises():
     from app.services.market_events.normalizers import normalize_wisefn_earnings_row
 
     with pytest.raises(ValueError):
-        normalize_wisefn_earnings_row(
-            {**WISEFN_ROW_SAMSUNG, "stock_code": "BAD-CODE"}
-        )
+        normalize_wisefn_earnings_row({**WISEFN_ROW_SAMSUNG, "stock_code": "BAD-CODE"})
 
 
 @pytest.mark.unit
