@@ -476,6 +476,7 @@ def normalize_screen_request(
     market_cap_min_krw: int | None = None,
     market_cap_max_krw: int | None = None,
     min_consecutive_up_days: int | None = None,
+    min_week_change_rate: float | None = None,
 ) -> dict[str, Any]:
     normalized_market = _normalize_screen_market(market)
     if normalized_market not in {
@@ -575,6 +576,17 @@ def normalize_screen_request(
         if not (1 <= min_consecutive_up_days <= 30):
             raise ValueError("min_consecutive_up_days must be between 1 and 30")
 
+    if min_week_change_rate is not None:
+        try:
+            mwcr = float(min_week_change_rate)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("min_week_change_rate must be a finite number") from exc
+        if mwcr != mwcr or mwcr in (float("inf"), float("-inf")):
+            raise ValueError("min_week_change_rate must be a finite number")
+        if not (-100.0 <= mwcr <= 1000.0):
+            raise ValueError("min_week_change_rate must be between -100.0 and 1000.0")
+        min_week_change_rate = mwcr
+
     category_for_filters = normalized_category
     effective_category = normalized_category
     if normalized_market == "us" and effective_sector is not None:
@@ -607,6 +619,7 @@ def normalize_screen_request(
         "market_cap_min_krw": normalized_market_cap_min_krw,
         "market_cap_max_krw": normalized_market_cap_max_krw,
         "min_consecutive_up_days": min_consecutive_up_days,
+        "min_week_change_rate": min_week_change_rate,
     }
 
 
@@ -1004,3 +1017,19 @@ def _apply_min_consecutive_up_days(
         if isinstance(r.get("consecutive_up_days"), int)
         and r["consecutive_up_days"] >= threshold
     ]
+
+
+def _apply_min_week_change_rate(
+    rows: list[dict[str, Any]], *, threshold: float | None
+) -> list[dict[str, Any]]:
+    if threshold is None:
+        return rows
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        value = _to_optional_float(row.get("week_change_rate"))
+        if value is None:
+            continue
+        if value < threshold:
+            continue
+        out.append(row)
+    return out

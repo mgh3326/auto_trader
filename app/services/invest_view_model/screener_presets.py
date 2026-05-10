@@ -98,6 +98,7 @@ _SCREENING_FILTERS: dict[str, dict[str, object]] = {
         "sort_by": "change_rate",
         "sort_order": "desc",
         "min_consecutive_up_days": 5,
+        "min_week_change_rate": 0.0,
         "limit": 20,
     },
     "cheap_value": {
