@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -19,6 +21,50 @@ FIXTURE_PATH = (
 
 def _load_fixture() -> dict:
     return json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+
+
+def _unique_payload() -> dict:
+    payload = _load_fixture()
+    suffix = uuid4().hex
+    payload["ingestion_run"]["run_uuid"] = f"rob161-contract-{suffix}"
+    for index, article in enumerate(payload["articles"]):
+        article["url"] = f"{article['url']}?test_run={suffix}&i={index}"
+        article["canonical_url"] = article["url"]
+        article["fingerprint"] = f"{article['fingerprint']}-{suffix}-{index}"
+    return payload
+
+
+@pytest.fixture(scope="module", autouse=True)
+def news_schema_for_tvscreener_contract_tests():
+    """Ensure ROB-46/ROB-161 news tables exist for full CI integration runs."""
+
+    async def _ensure_schema() -> None:
+        from sqlalchemy import text
+
+        # Import model modules before create_all so their tables are registered.
+        import app.models.news  # noqa: F401
+        import app.models.trading  # noqa: F401
+        from app.core.db import engine
+        from app.models.base import Base
+
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+            # Local dev databases may predate the ROB-46 news market migration;
+            # keep this test fixture idempotent without requiring destructive reset.
+            await conn.execute(
+                text(
+                    "ALTER TABLE news_articles "
+                    "ADD COLUMN IF NOT EXISTS market VARCHAR(20) NOT NULL DEFAULT 'kr'"
+                )
+            )
+            await conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_news_articles_market "
+                    "ON news_articles (market)"
+                )
+            )
+
+    asyncio.run(_ensure_schema())
 
 
 class TestTvscreenerSchemaContract:
@@ -69,7 +115,7 @@ class TestTvscreenerServiceContract:
         )
 
         client = TestClient(_make_test_app())
-        payload = _load_fixture()
+        payload = _unique_payload()
 
         response = client.post("/api/v1/news/ingest/bulk", json=payload)
         assert response.status_code == 201, response.text
@@ -119,7 +165,7 @@ class TestTvscreenerServiceContract:
     @pytest.mark.integration
     def test_bulk_ingest_is_idempotent_by_run_uuid(self):
         client = TestClient(_make_test_app())
-        payload = _load_fixture()
+        payload = _unique_payload()
 
         first = client.post("/api/v1/news/ingest/bulk", json=payload).json()
         second = client.post("/api/v1/news/ingest/bulk", json=payload).json()
