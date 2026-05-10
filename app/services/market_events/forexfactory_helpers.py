@@ -10,9 +10,11 @@ Caller passes the resulting rows into
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import random
 import xml.etree.ElementTree as ET
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -23,6 +25,120 @@ logger = logging.getLogger(__name__)
 THISWEEK_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.xml"
 NEXTWEEK_URL = "https://nfs.faireconomy.media/ff_calendar_nextweek.xml"
 ET_TZ = ZoneInfo("America/New_York")
+
+RETRIABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+
+
+class ForexFactoryFetchError(Exception):
+    def __init__(self, reason: str, *, cause: Exception | None = None):
+        super().__init__(f"forexfactory_fetch_error:{reason}")
+        self.reason = reason
+        self.__cause__ = cause
+
+
+async def _sleep_with_jitter(seconds: float) -> None:
+    jittered = seconds * (1 + random.uniform(-0.25, 0.25))
+    await asyncio.sleep(max(jittered, 0))
+
+
+async def _fetch_one_xml(
+    url: str,
+    *,
+    max_attempts: int = 3,
+    base_delay: float = 1.0,
+) -> str:
+    last_exc: Exception | None = None
+    for attempt in range(max_attempts):
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(url)
+                if response.status_code in RETRIABLE_STATUS:
+                    retry_after_hdr = response.headers.get("Retry-After")
+                    retry_after = float(retry_after_hdr) if retry_after_hdr else None
+                    delay = (
+                        retry_after
+                        if retry_after is not None
+                        else min(base_delay * (2**attempt), 30.0)
+                    )
+                    if attempt < max_attempts - 1:
+                        await _sleep_with_jitter(delay)
+                        continue
+                    reason = (
+                        "rate_limited"
+                        if response.status_code == 429
+                        else "upstream_5xx"
+                    )
+                    raise ForexFactoryFetchError(reason)
+                response.raise_for_status()
+                return response.text
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code if exc.response is not None else 0
+            if status in RETRIABLE_STATUS and attempt < max_attempts - 1:
+                last_exc = exc
+                await _sleep_with_jitter(min(base_delay * (2**attempt), 30.0))
+                continue
+            if status == 429:
+                raise ForexFactoryFetchError("rate_limited", cause=exc) from exc
+            if 500 <= status < 600:
+                raise ForexFactoryFetchError("upstream_5xx", cause=exc) from exc
+            raise ForexFactoryFetchError("upstream_4xx", cause=exc) from exc
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            last_exc = exc
+            if attempt < max_attempts - 1:
+                await _sleep_with_jitter(min(base_delay * (2**attempt), 30.0))
+                continue
+            raise ForexFactoryFetchError("network_error", cause=exc) from exc
+    raise ForexFactoryFetchError("unknown", cause=last_exc)
+
+
+def rolling_window_for_today(now_utc: datetime) -> tuple[date, date]:
+    """Return (start, end) inclusive of the rolling FF window in ET dates.
+
+    Upstream publishes ISO-week thisweek + nextweek feeds anchored Monday
+    in ET. The returned dates are ET-local calendar dates.
+    """
+    now_et = now_utc.astimezone(ET_TZ)
+    today_et = now_et.date()
+    # Python: Mon=0..Sun=6. Snap back to Monday.
+    monday_this = today_et - timedelta(days=today_et.weekday())
+    sunday_next = monday_this + timedelta(days=13)
+    return monday_this, sunday_next
+
+
+class ForexFactoryWeeklyCache:
+    """Lazily fetches thisweek/nextweek XML at most once per run."""
+
+    def __init__(self, *, now_utc: datetime | None = None) -> None:
+        self._now_utc = now_utc or datetime.now(UTC)
+        self._window_start, self._window_end = rolling_window_for_today(self._now_utc)
+        # thisweek covers [window_start, window_start + 6 days].
+        self._thisweek_end = self._window_start + timedelta(days=6)
+        self._payloads: dict[str, list[dict[str, Any]]] = {}
+
+    def _url_for(self, target_date: date) -> str | None:
+        if target_date < self._window_start or target_date > self._window_end:
+            return None
+        if target_date <= self._thisweek_end:
+            return THISWEEK_URL
+        return NEXTWEEK_URL
+
+    async def _ensure_payload(self, url: str) -> list[dict[str, Any]]:
+        cached = self._payloads.get(url)
+        if cached is not None:
+            return cached
+        xml_text = await _fetch_one_xml(url)
+        parsed = _parse_one_xml(xml_text)
+        self._payloads[url] = parsed
+        return parsed
+
+    async def get_events_for_date(
+        self, target_date: date
+    ) -> list[dict[str, Any]] | None:
+        url = self._url_for(target_date)
+        if url is None:
+            return None
+        rows = await self._ensure_payload(url)
+        return [r for r in rows if r["event_date"] == target_date]
 
 
 async def _fetch_xml_documents(target_date: date) -> list[str]:
@@ -128,12 +244,20 @@ def _parse_one_xml(xml_text: str) -> list[dict[str, Any]]:
 
 async def fetch_forexfactory_events_for_date(
     target_date: date,
-) -> list[dict[str, Any]]:
+    *,
+    cache: ForexFactoryWeeklyCache | None = None,
+) -> list[dict[str, Any]] | None:
     """Return ForexFactory rows whose ET-day == target_date.
 
-    Returns [] on XML parse error so the caller can decide whether to mark the
-    partition failed (typically only network errors should cause failure).
+    Returns None when target_date is outside the upstream rolling window.
+    Raises ForexFactoryFetchError on retry exhaustion or transport error.
+    Falls back to the legacy _fetch_xml_documents path when called without a
+    cache (backwards-compat with existing tests that patch _fetch_xml_documents).
     """
+    if cache is not None:
+        return await cache.get_events_for_date(target_date)
+
+    # Legacy path: used by existing tests that patch _fetch_xml_documents.
     try:
         documents = await _fetch_xml_documents(target_date)
     except Exception as exc:

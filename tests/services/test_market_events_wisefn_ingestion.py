@@ -47,7 +47,7 @@ async def test_ingest_wisefn_succeeds_with_injected_rows(db_session):
     result = await ingestion.ingest_kr_earnings_wisefn_for_date(
         db_session, date(2026, 5, 13), fetch_rows=fake
     )
-    await db_session.commit()
+    await db_session.flush()
 
     assert result.status == "succeeded"
     assert result.event_count == 1
@@ -105,11 +105,11 @@ async def test_ingest_wisefn_is_idempotent_on_repeat(db_session):
     await ingestion.ingest_kr_earnings_wisefn_for_date(
         db_session, date(2026, 5, 13), fetch_rows=fake
     )
-    await db_session.commit()
+    await db_session.flush()
     await ingestion.ingest_kr_earnings_wisefn_for_date(
         db_session, date(2026, 5, 13), fetch_rows=fake
     )
-    await db_session.commit()
+    await db_session.flush()
 
     events = (
         (
@@ -141,7 +141,7 @@ async def test_ingest_wisefn_marks_failed_on_fetch_error(db_session):
     result = await ingestion.ingest_kr_earnings_wisefn_for_date(
         db_session, date(2026, 5, 13), fetch_rows=boom
     )
-    await db_session.commit()
+    await db_session.flush()
 
     assert result.status == "failed"
     assert "NotImplementedError" in (result.error or "") or "contract" in (
@@ -197,7 +197,7 @@ async def test_ingest_wisefn_default_fetch_uses_helper(db_session, monkeypatch):
     result = await ingestion.ingest_kr_earnings_wisefn_for_date(
         db_session, date(2026, 5, 13), fetch_rows=None
     )
-    await db_session.commit()
+    await db_session.flush()
 
     assert captured == {"called": date(2026, 5, 13)}
     assert result.status == "succeeded"

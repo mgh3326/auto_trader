@@ -149,11 +149,44 @@ three are blank, no value row is written.
 `GET /trading/api/market-events/today` and filters client-side by `category`
 into 전체 / 경제지표 / 실적 tabs.
 
+### Freshness + rolling window (ROB-184)
+
+ForexFactory publishes only `thisweek.xml` and `nextweek.xml`. The rolling
+window any given run can serve is `[Mon of this ISO week, Sun of next ISO
+week]` in ET. Dates outside that window cannot be ingested from FF.
+
+**Partition `last_error` reasons introduced by ROB-184:**
+
+| `last_error` | Meaning | Operator action |
+| --- | --- | --- |
+| `forexfactory_out_of_rolling_window` | Date is older than the current rolling-week start or further out than next-week end. | None: this is a structural upstream limit. |
+| `forexfactory_rate_limited` | `nfs.faireconomy.media` returned 429 after retries. | Wait for the next scheduled run; consider lowering CLI parallelism. |
+| `forexfactory_upstream_5xx` | Upstream 5xx after retries. | Re-run the partition manually after upstream recovers. |
+| `forexfactory_network_error` | Transport / timeout error after retries. | Re-run; check ingest host network. |
+
+**Cache:** in-memory per CLI run / per Prefect flow run. The CLI builds a
+single `ForexFactoryWeeklyCache` and threads it through the per-day loop,
+so a 14-day range fetches `thisweek.xml` and `nextweek.xml` exactly once
+each.
+
+**Approval gate for production activation:** the Prefect flow stub at
+`app/flows/forexfactory_calendar_flow.py` is **not** scheduled. Activation
+requires explicit 광현님 approval recorded in Linear/Discord:
+
+1. `--dry-run` smoke from a deployed runner.
+2. Approval token + 광현님 confirmation for non-dry-run.
+3. Initial cadence: 4-hour Prefect schedule over `today..today+14`.
+
+No production DB backfill ships with this PR. Any one-time recovery
+(e.g., reingest a missing day inside the rolling window) follows the same
+approval gate.
+
 ### Open follow-ups specific to economic events
 
 - Hermes-side production `--dry-run` smoke from a deployed runner before any
   non-dry-run ingestion.
-- Prefect deployment for the rolling window (today-7 .. today+60).
+- Prefect deployment for the rolling window (today-7 .. today+60). Activation
+  is approval-gated per ROB-184 runbook section above.
 - Joining `held` / `watched` flags is still a global ROB-128 follow-up.
 
 ## Handoff (when this PR is opened)

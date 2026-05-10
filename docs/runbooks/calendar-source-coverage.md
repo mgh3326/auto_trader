@@ -82,6 +82,10 @@ These categories are **not** ingested today. Each row describes the gap, the rec
 | `error` | At least one expected partition is in `failed` state | "수집 실패" |
 | `stale` | All expected partitions succeeded but newest `finished_at` is older than `STALE_AFTER_HOURS` (36h) | "오래된 데이터" |
 
+* `error (forexfactory_out_of_rolling_window)` — partition `last_error`
+  matches this sentinel. UI follow-up task can remap to a softer
+  "데이터 제공 범위 밖" label.
+
 ## Timezone notes
 
 * `MarketEvent.event_date` is stored in source-native day:

@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock, patch
+from zoneinfo import ZoneInfo
 
+import httpx
 import pytest
+
+ET = ZoneInfo("America/New_York")
 
 SAMPLE_XML = """<?xml version="1.0" encoding="UTF-8"?>
 <weeklyevents>
@@ -97,3 +101,189 @@ async def test_fetch_forexfactory_returns_empty_on_xml_error():
         rows = await ff.fetch_forexfactory_events_for_date(date(2026, 5, 13))
 
     assert rows == []
+
+
+# ---------------------------------------------------------------------------
+# ROB-184: rolling_window_for_today tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_rolling_window_for_today_is_two_iso_weeks_in_et():
+    from app.services.market_events.forexfactory_helpers import (
+        rolling_window_for_today,
+    )
+
+    # Tue 2026-05-12 06:00 UTC == 02:00 ET (still Monday in ET? no — Tue)
+    now_utc = datetime(2026, 5, 12, 6, 0, tzinfo=UTC)
+    start, end = rolling_window_for_today(now_utc)
+    # ISO-week containing 2026-05-12 ET starts Mon 2026-05-11; next week
+    # ends Sun 2026-05-24. We anchor on Mon..Sun(+7) to match upstream feed.
+    assert start == date(2026, 5, 11)
+    assert end == date(2026, 5, 24)
+
+
+@pytest.mark.unit
+def test_rolling_window_for_today_handles_sunday_et_boundary():
+    from app.services.market_events.forexfactory_helpers import (
+        rolling_window_for_today,
+    )
+
+    # 2026-05-11 03:30 UTC == 2026-05-10 23:30 ET (Sunday)
+    now_utc = datetime(2026, 5, 11, 3, 30, tzinfo=UTC)
+    start, end = rolling_window_for_today(now_utc)
+    # Sunday still belongs to "this week" feed (Mon 2026-05-04 .. Sun 2026-05-10)
+    assert start == date(2026, 5, 4)
+    assert end == date(2026, 5, 17)
+
+
+# ---------------------------------------------------------------------------
+# ROB-184: typed fetch error + retry wrapper tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_xml_retries_429_with_retry_after_header(monkeypatch):
+    from app.services.market_events import forexfactory_helpers as ff
+
+    calls = {"n": 0}
+
+    class _Resp:
+        def __init__(self, status, text="<weeklyevents/>", retry_after=None):
+            self.status_code = status
+            self.text = text
+            self.headers = {"Retry-After": retry_after} if retry_after else {}
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise httpx.HTTPStatusError(
+                    "boom", request=httpx.Request("GET", "x"), response=self
+                )
+
+    async def fake_get(self, url, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _Resp(429, retry_after="0")
+        return _Resp(200, text="<weeklyevents/>")
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+    # _fetch_one_xml is the new low-level helper exposed for the cache.
+    text = await ff._fetch_one_xml(ff.THISWEEK_URL, max_attempts=3, base_delay=0)
+    assert calls["n"] == 2
+    assert text.startswith("<weeklyevents")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_xml_raises_forexfactory_fetch_error_on_429_exhaustion(
+    monkeypatch,
+):
+    from app.services.market_events import forexfactory_helpers as ff
+
+    async def always_429(self, url, **kw):
+        class _R:
+            status_code = 429
+            headers = {"Retry-After": "0"}
+            text = ""
+
+            def raise_for_status(self):
+                raise httpx.HTTPStatusError(
+                    "x", request=httpx.Request("GET", url), response=self
+                )
+
+        return _R()
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", always_429)
+    with pytest.raises(ff.ForexFactoryFetchError) as exc_info:
+        await ff._fetch_one_xml(ff.THISWEEK_URL, max_attempts=3, base_delay=0)
+    assert exc_info.value.reason == "rate_limited"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_xml_does_not_retry_on_403(monkeypatch):
+    from app.services.market_events import forexfactory_helpers as ff
+
+    async def fake_get(self, url, **kw):
+        class _R:
+            status_code = 403
+            headers = {}
+            text = ""
+
+            def raise_for_status(self):
+                raise httpx.HTTPStatusError(
+                    "x", request=httpx.Request("GET", url), response=self
+                )
+
+        return _R()
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+    with pytest.raises(ff.ForexFactoryFetchError) as exc:
+        await ff._fetch_one_xml(ff.THISWEEK_URL, max_attempts=3, base_delay=0)
+    assert exc.value.reason == "upstream_4xx"
+
+
+# ---------------------------------------------------------------------------
+# ROB-184: ForexFactoryWeeklyCache tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_weekly_cache_fetches_each_url_at_most_once(monkeypatch):
+    from app.services.market_events import forexfactory_helpers as ff
+
+    call_log: list[str] = []
+
+    async def fake_fetch(url, **kw):
+        call_log.append(url)
+        if url == ff.THISWEEK_URL:
+            return SAMPLE_XML
+        return "<weeklyevents/>"
+
+    monkeypatch.setattr(ff, "_fetch_one_xml", fake_fetch)
+
+    cache = ff.ForexFactoryWeeklyCache(now_utc=datetime(2026, 5, 13, 12, 0, tzinfo=UTC))
+    rows_a = await cache.get_events_for_date(date(2026, 5, 13))
+    rows_b = await cache.get_events_for_date(date(2026, 5, 14))
+    assert rows_a is not None
+    assert rows_b is not None
+    # Both dates are in the same "thisweek" payload, so we expect 1 fetch only.
+    assert call_log.count(ff.THISWEEK_URL) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_weekly_cache_fetches_nextweek_only_when_needed(monkeypatch):
+    from app.services.market_events import forexfactory_helpers as ff
+
+    call_log: list[str] = []
+
+    async def fake_fetch(url, **kw):
+        call_log.append(url)
+        return SAMPLE_XML if url == ff.THISWEEK_URL else "<weeklyevents/>"
+
+    monkeypatch.setattr(ff, "_fetch_one_xml", fake_fetch)
+
+    cache = ff.ForexFactoryWeeklyCache(now_utc=datetime(2026, 5, 13, 12, 0, tzinfo=UTC))
+    # 2026-05-13 belongs to thisweek (Mon 2026-05-11..Sun 2026-05-17)
+    await cache.get_events_for_date(date(2026, 5, 13))
+    assert ff.NEXTWEEK_URL not in call_log
+    # 2026-05-19 is in the nextweek window (Mon 2026-05-18..Sun 2026-05-24)
+    await cache.get_events_for_date(date(2026, 5, 19))
+    assert ff.NEXTWEEK_URL in call_log
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_weekly_cache_returns_none_for_dates_outside_window(monkeypatch):
+    from app.services.market_events import forexfactory_helpers as ff
+
+    async def fake_fetch(url, **kw):
+        return SAMPLE_XML
+
+    monkeypatch.setattr(ff, "_fetch_one_xml", fake_fetch)
+    cache = ff.ForexFactoryWeeklyCache(now_utc=datetime(2026, 5, 13, 12, 0, tzinfo=UTC))
+    assert await cache.get_events_for_date(date(2026, 4, 30)) is None
+    assert await cache.get_events_for_date(date(2026, 5, 30)) is None
