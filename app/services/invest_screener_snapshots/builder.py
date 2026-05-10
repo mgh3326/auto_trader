@@ -79,6 +79,34 @@ def _market_type_and_source(market: str) -> tuple[str, str]:
     raise ValueError(f"unsupported market: {market}")
 
 
+def _coerce_snapshot_date(value: Any, fallback: dt.date) -> dt.date:
+    if isinstance(value, dt.datetime):
+        return value.date()
+    if isinstance(value, dt.date):
+        return value
+
+    to_pydatetime = getattr(value, "to_pydatetime", None)
+    if callable(to_pydatetime):
+        converted = to_pydatetime()
+        if isinstance(converted, dt.datetime):
+            return converted.date()
+        if isinstance(converted, dt.date):
+            return converted
+
+    if value is None:
+        return fallback
+
+    try:
+        return dt.datetime.fromisoformat(str(value)).date()
+    except ValueError:
+        logger.warning(
+            "unable to coerce snapshot_date value=%r; using fallback=%s",
+            value,
+            fallback,
+        )
+        return fallback
+
+
 async def build_snapshot_for_symbol(
     *, market: str, symbol: str, today: dt.date
 ) -> SnapshotUpsert | None:
@@ -99,7 +127,11 @@ async def build_snapshot_for_symbol(
         return None
 
     metrics = derive_metrics(closes)
-    snapshot_date = df["date"].iloc[-1].date() if "date" in df.columns else today
+    snapshot_date = (
+        _coerce_snapshot_date(df["date"].iloc[-1], today)
+        if "date" in df.columns
+        else today
+    )
     daily_volume = (
         int(df["volume"].iloc[-1])
         if "volume" in df.columns and df["volume"].iloc[-1] is not None
