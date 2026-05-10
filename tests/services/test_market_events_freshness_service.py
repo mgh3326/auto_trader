@@ -1,0 +1,232 @@
+"""Unit tests for MarketEventsFreshnessService (ROB-167)."""
+
+from __future__ import annotations
+
+from datetime import UTC, date, datetime, timedelta
+
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.market_events import MarketEventIngestionPartition
+from app.services.market_events.freshness_service import (
+    STALE_AFTER_HOURS,
+    MarketEventsFreshnessService,
+)
+
+
+def _add_partition(
+    db: AsyncSession,
+    *,
+    source: str,
+    category: str,
+    market: str,
+    partition_date: date,
+    status: str,
+    event_count: int = 0,
+    finished_at: datetime | None = None,
+    last_error: str | None = None,
+) -> MarketEventIngestionPartition:
+    row = MarketEventIngestionPartition(
+        source=source,
+        category=category,
+        market=market,
+        partition_date=partition_date,
+        status=status,
+        event_count=event_count,
+        finished_at=finished_at,
+        last_error=last_error,
+        retry_count=0,
+    )
+    db.add(row)
+    return row
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_missing_partition_marks_day_missing(db_session: AsyncSession) -> None:
+    monday = date(2026, 5, 11)
+    svc = MarketEventsFreshnessService(db_session)
+    states = await svc.get_per_day_states(monday, monday)
+    assert states[monday] == "missing"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_all_succeeded_marks_day_loaded(db_session: AsyncSession) -> None:
+    monday = date(2026, 5, 11)
+    fresh = datetime.now(UTC) - timedelta(hours=1)
+    _add_partition(
+        db_session,
+        source="finnhub",
+        category="earnings",
+        market="us",
+        partition_date=monday,
+        status="succeeded",
+        event_count=12,
+        finished_at=fresh,
+    )
+    _add_partition(
+        db_session,
+        source="dart",
+        category="disclosure",
+        market="kr",
+        partition_date=monday,
+        status="succeeded",
+        event_count=4,
+        finished_at=fresh,
+    )
+    _add_partition(
+        db_session,
+        source="forexfactory",
+        category="economic",
+        market="global",
+        partition_date=monday,
+        status="succeeded",
+        event_count=3,
+        finished_at=fresh,
+    )
+    await db_session.flush()
+
+    svc = MarketEventsFreshnessService(db_session)
+    states = await svc.get_per_day_states(monday, monday)
+    assert states[monday] == "loaded"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_all_zero_event_count_marks_day_empty(db_session: AsyncSession) -> None:
+    monday = date(2026, 5, 11)
+    fresh = datetime.now(UTC) - timedelta(hours=1)
+    for src, cat, mkt in (
+        ("finnhub", "earnings", "us"),
+        ("dart", "disclosure", "kr"),
+        ("forexfactory", "economic", "global"),
+    ):
+        _add_partition(
+            db_session,
+            source=src,
+            category=cat,
+            market=mkt,
+            partition_date=monday,
+            status="succeeded",
+            event_count=0,
+            finished_at=fresh,
+        )
+    await db_session.flush()
+
+    svc = MarketEventsFreshnessService(db_session)
+    states = await svc.get_per_day_states(monday, monday)
+    assert states[monday] == "empty"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_one_failed_marks_day_error(db_session: AsyncSession) -> None:
+    monday = date(2026, 5, 11)
+    fresh = datetime.now(UTC) - timedelta(hours=1)
+    _add_partition(
+        db_session,
+        source="finnhub",
+        category="earnings",
+        market="us",
+        partition_date=monday,
+        status="succeeded",
+        event_count=2,
+        finished_at=fresh,
+    )
+    _add_partition(
+        db_session,
+        source="dart",
+        category="disclosure",
+        market="kr",
+        partition_date=monday,
+        status="failed",
+        finished_at=fresh,
+        last_error="connection refused",
+    )
+    _add_partition(
+        db_session,
+        source="forexfactory",
+        category="economic",
+        market="global",
+        partition_date=monday,
+        status="succeeded",
+        event_count=1,
+        finished_at=fresh,
+    )
+    await db_session.flush()
+
+    svc = MarketEventsFreshnessService(db_session)
+    states = await svc.get_per_day_states(monday, monday)
+    assert states[monday] == "error"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stale_when_finished_at_older_than_window(
+    db_session: AsyncSession,
+) -> None:
+    monday = date(2026, 5, 11)
+    stale = datetime.now(UTC) - timedelta(hours=STALE_AFTER_HOURS + 2)
+    for src, cat, mkt in (
+        ("finnhub", "earnings", "us"),
+        ("dart", "disclosure", "kr"),
+        ("forexfactory", "economic", "global"),
+    ):
+        _add_partition(
+            db_session,
+            source=src,
+            category=cat,
+            market=mkt,
+            partition_date=monday,
+            status="succeeded",
+            event_count=1,
+            finished_at=stale,
+        )
+    await db_session.flush()
+
+    svc = MarketEventsFreshnessService(db_session)
+    states = await svc.get_per_day_states(monday, monday)
+    assert states[monday] == "stale"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_coverage_matrix_aggregates_by_source(db_session: AsyncSession) -> None:
+    fresh = datetime.now(UTC) - timedelta(hours=1)
+    monday = date(2026, 5, 11)
+    tuesday = date(2026, 5, 12)
+    _add_partition(
+        db_session,
+        source="finnhub",
+        category="earnings",
+        market="us",
+        partition_date=monday,
+        status="succeeded",
+        event_count=10,
+        finished_at=fresh,
+    )
+    _add_partition(
+        db_session,
+        source="finnhub",
+        category="earnings",
+        market="us",
+        partition_date=tuesday,
+        status="failed",
+        last_error="429",
+        finished_at=fresh,
+    )
+    await db_session.flush()
+
+    svc = MarketEventsFreshnessService(db_session)
+    matrix = await svc.get_coverage_matrix(monday, tuesday)
+
+    finnhub_status = next(
+        s for s in matrix.sources if s.source == "finnhub" and s.market == "us"
+    )
+    assert finnhub_status.succeededPartitions == 1
+    assert finnhub_status.failedPartitions == 1
+    assert finnhub_status.missingPartitions == 0  # both days have rows
+    assert finnhub_status.eventCount == 10
+    assert finnhub_status.state == "failed"
+    assert finnhub_status.lastError == "429"
