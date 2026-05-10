@@ -3,70 +3,117 @@ import { MobileShell } from "../../mobile/MobileShell";
 import { fetchCalendar, fetchWeeklySummary } from "../../api/calendar";
 import type { CalendarResponse, WeeklySummaryResponse } from "../../types/calendar";
 import { Icon } from "../../ds";
+import { CalendarMonthHeader } from "../../components/calendar/CalendarMonthHeader";
 import { WeekDateStrip } from "../../components/calendar/WeekDateStrip";
-import { EmptyEventState } from "../../components/calendar/EmptyEventState";
+import { SelectedDateEvents } from "../../components/calendar/SelectedDateEvents";
 import { EventDetailModal } from "../../components/calendar/EventDetailModal";
-import { RegionBadge } from "../../components/calendar/RegionBadge";
-import { OwnershipTag } from "../../components/calendar/OwnershipTag";
 import { SparkleIcon } from "../../components/calendar/SparkleIcon";
 import {
-  computeWeekLabel,
+  addMonths,
+  clampSelectedDateToMonth,
+  fmtLocal,
+  gridEndFromMonth,
+  gridStartFromMonth,
+  monthTitleLabel,
+  selectedDateLabelWithRelative,
+  startOfMonth,
+  toClusterVM,
   toEventVM,
+  weekStartOf,
+  type CalendarClusterVM,
   type CalendarEventVM,
   type DisplayEventType,
+  type DisplayRegion,
 } from "../../components/calendar/vm";
+import type { CalendarDay } from "../../types/calendar";
 
-function startOfWeek(d: Date): Date {
-  const out = new Date(d);
-  const day = (out.getDay() + 6) % 7;
-  out.setDate(out.getDate() - day);
-  out.setHours(0, 0, 0, 0);
+type TypeFilter = "all" | DisplayEventType;
+type RegionFilter = "all" | DisplayRegion;
+
+function weekStartDateOf(dateIso: string): Date {
+  const d = new Date(`${dateIso}T00:00:00`);
+  const offset = (d.getDay() + 6) % 7; // Mon=0
+  d.setDate(d.getDate() - offset);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function buildWeekDays(weekStart: Date, calendarDays: CalendarDay[]): CalendarDay[] {
+  const byDate = new Map(calendarDays.map((d) => [d.date, d]));
+  const out: CalendarDay[] = [];
+  for (let i = 0; i < 7; i += 1) {
+    const d = new Date(weekStart);
+    d.setDate(d.getDate() + i);
+    const iso = fmtLocal(d);
+    out.push(byDate.get(iso) ?? { date: iso, events: [], clusters: [] });
+  }
   return out;
 }
 
-function fmt(d: Date): string {
-  return d.toISOString().slice(0, 10);
+function matches(
+  item: { type: DisplayEventType; region: DisplayRegion },
+  typeFilter: TypeFilter,
+  regionFilter: RegionFilter,
+): boolean {
+  if (typeFilter !== "all" && item.type !== typeFilter) return false;
+  if (regionFilter !== "all" && item.region !== regionFilter) return false;
+  return true;
 }
 
-type TypeFilter = "all" | DisplayEventType;
-
 export function MobileCalendarPage() {
-  const [weekStart, setWeekStart] = useState<Date>(() => startOfWeek(new Date()));
-  const weekEnd = useMemo(() => {
-    const e = new Date(weekStart);
-    e.setDate(e.getDate() + 6);
-    return e;
-  }, [weekStart]);
-  const today = fmt(new Date());
-  const [selectedDate, setSelectedDate] = useState<string>(today);
+  const [monthCursor, setMonthCursor] = useState<Date>(() => startOfMonth(new Date()));
+  const gridStart = useMemo(() => gridStartFromMonth(monthCursor), [monthCursor]);
+  const gridEnd = useMemo(() => gridEndFromMonth(monthCursor), [monthCursor]);
+  const today = fmtLocal(new Date());
+
+  const [selectedDate, setSelectedDate] = useState<string>(() => {
+    const now = new Date();
+    if (now.getFullYear() === monthCursor.getFullYear() && now.getMonth() === monthCursor.getMonth()) {
+      return fmtLocal(now);
+    }
+    return fmtLocal(monthCursor);
+  });
+
   const [calendar, setCalendar] = useState<CalendarResponse | undefined>();
-  const [calendarErr, setCalendarErr] = useState<string | undefined>();
+  const [calendarLoading, setCalendarLoading] = useState(true);
+  const [calendarErr, setCalendarErr] = useState<string | null>(null);
   const [summary, setSummary] = useState<WeeklySummaryResponse | undefined>();
   const [summaryErr, setSummaryErr] = useState<string | undefined>();
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [showSummary, setShowSummary] = useState(false);
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
+  const [regionFilter, setRegionFilter] = useState<RegionFilter>("all");
 
   useEffect(() => {
     let cancel = false;
     setCalendar(undefined);
-    setCalendarErr(undefined);
-    fetchCalendar({ fromDate: fmt(weekStart), toDate: fmt(weekEnd), tab: "all" })
-      .then((r) => !cancel && setCalendar(r))
-      .catch((e) => !cancel && setCalendarErr(String(e?.message ?? e)));
+    setCalendarLoading(true);
+    setCalendarErr(null);
+    fetchCalendar({ fromDate: fmtLocal(gridStart), toDate: fmtLocal(gridEnd), tab: "all" })
+      .then((r) => {
+        if (cancel) return;
+        setCalendar(r);
+        setCalendarLoading(false);
+      })
+      .catch((e) => {
+        if (cancel) return;
+        setCalendarErr(String(e?.message ?? e));
+        setCalendarLoading(false);
+      });
     return () => {
       cancel = true;
     };
-  }, [weekStart, weekEnd]);
+  }, [gridStart, gridEnd]);
 
+  const summaryWeekStart = useMemo(() => weekStartOf(selectedDate), [selectedDate]);
   useEffect(() => {
     if (!showSummary) return;
-    if (summary && summary.weekStart === fmt(weekStart)) return;
+    if (summary && summary.weekStart === summaryWeekStart) return;
     let cancel = false;
     setSummary(undefined);
     setSummaryErr(undefined);
     setSummaryLoading(true);
-    fetchWeeklySummary(fmt(weekStart))
+    fetchWeeklySummary(summaryWeekStart)
       .then((r) => {
         if (cancel) return;
         setSummary(r);
@@ -81,116 +128,85 @@ export function MobileCalendarPage() {
       cancel = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showSummary, weekStart]);
+  }, [showSummary, summaryWeekStart]);
 
-  const days = calendar?.days ?? [];
-  const allVM: CalendarEventVM[] = useMemo(() => {
-    const out: CalendarEventVM[] = [];
-    for (const d of days) {
-      for (const e of d.events) out.push(toEventVM(e, d.date));
-    }
-    return out;
-  }, [days]);
-  const filtered = useMemo(
-    () => (typeFilter === "all" ? allVM : allVM.filter((e) => e.type === typeFilter)),
-    [allVM, typeFilter],
-  );
-  const eventsForSelected = useMemo(
-    () => filtered.filter((e) => e.date === selectedDate),
-    [filtered, selectedDate],
+  const weekDays = useMemo(
+    () => buildWeekDays(weekStartDateOf(selectedDate), calendar?.days ?? []),
+    [calendar?.days, selectedDate],
   );
 
-  const weekLabel = computeWeekLabel(fmt(weekStart));
+  const filteredSelected = useMemo(() => {
+    const day = (calendar?.days ?? []).find((d) => d.date === selectedDate);
+    if (!day) return { events: [] as CalendarEventVM[], clusters: [] as CalendarClusterVM[] };
+    const events = day.events
+      .map((e) => toEventVM(e, day.date))
+      .filter((e) => matches(e, typeFilter, regionFilter));
+    const clusters = day.clusters
+      .map((c) => toClusterVM(c, day.date))
+      .filter((c) => matches(c, typeFilter, regionFilter));
+    return { events, clusters };
+  }, [calendar?.days, selectedDate, typeFilter, regionFilter]);
+
+  const goPrevMonth = () => {
+    setMonthCursor((m) => {
+      const next = addMonths(m, -1);
+      setSelectedDate((sel) => clampSelectedDateToMonth(sel, next));
+      return next;
+    });
+  };
+  const goNextMonth = () => {
+    setMonthCursor((m) => {
+      const next = addMonths(m, 1);
+      setSelectedDate((sel) => clampSelectedDateToMonth(sel, next));
+      return next;
+    });
+  };
 
   return (
     <>
       <MobileShell title="캘린더">
-        <div style={{ padding: "12px 16px 24px", display: "flex", flexDirection: "column", gap: 14 }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <button
-              type="button"
-              data-testid="calendar-prev-week"
-              aria-label="이전 주"
-              onClick={() =>
-                setWeekStart((w) => {
-                  const n = new Date(w);
-                  n.setDate(n.getDate() - 7);
-                  return n;
-                })
-              }
-              style={iconBtn}
-            >
-              <Icon name="chev" size={16} />
-            </button>
-            <div style={{ fontSize: 14, fontWeight: 700 }}>{weekLabel}</div>
-            <button
-              type="button"
-              data-testid="calendar-next-week"
-              aria-label="다음 주"
-              onClick={() =>
-                setWeekStart((w) => {
-                  const n = new Date(w);
-                  n.setDate(n.getDate() + 7);
-                  return n;
-                })
-              }
-              style={{ ...iconBtn, transform: "scaleX(-1)" }}
-            >
-              <Icon name="chev" size={16} />
-            </button>
-          </div>
+        <div className="calendar-mobile">
+          <CalendarMonthHeader
+            title={monthTitleLabel(fmtLocal(monthCursor))}
+            onPrev={goPrevMonth}
+            onNext={goNextMonth}
+          />
 
-          <WeekDateStrip days={days} selectedDate={selectedDate} onSelect={setSelectedDate} today={today} />
+          <WeekDateStrip
+            days={weekDays}
+            selectedDate={selectedDate}
+            onSelect={setSelectedDate}
+            today={today}
+          />
 
           <button
             type="button"
             data-testid="open-weekly-summary"
             onClick={() => setShowSummary(true)}
-            style={{
-              border: "none",
-              background: "var(--surface-2)",
-              padding: "10px 14px",
-              borderRadius: 12,
-              cursor: "pointer",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 8,
-              fontFamily: "inherit",
-              fontSize: 13,
-              fontWeight: 700,
-              color: "var(--accent-press)",
-              alignSelf: "flex-start",
-            }}
+            className="calendar-mobile__ai-btn"
           >
             <SparkleIcon size={14} />
             이번주 AI 요약
             <Icon name="chev" size={12} />
           </button>
 
-          <div style={{ display: "flex", gap: 6 }}>
-            {([
-              ["all", "전체"],
-              ["macro", "경제지표"],
-              ["earnings", "실적"],
-            ] as const).map(([k, l]) => {
+          <div data-testid="calendar-mobile-filters" className="calendar-mobile-filters">
+            {(
+              [
+                ["all", "전체"],
+                ["macro", "경제지표"],
+                ["earnings", "실적"],
+              ] as const
+            ).map(([k, l]) => {
               const on = typeFilter === k;
               return (
                 <button
                   key={k}
                   type="button"
+                  className="calendar-pill"
+                  data-on={on ? "true" : "false"}
+                  aria-pressed={on}
                   onClick={() => setTypeFilter(k)}
-                  style={{
-                    flex: "0 0 auto",
-                    padding: "6px 12px",
-                    border: "none",
-                    borderRadius: 999,
-                    cursor: "pointer",
-                    background: on ? "var(--fg)" : "var(--surface-2)",
-                    color: on ? "var(--bg)" : "var(--fg-2)",
-                    fontWeight: 600,
-                    fontSize: 12,
-                    fontFamily: "inherit",
-                  }}
                 >
                   {l}
                 </button>
@@ -198,50 +214,15 @@ export function MobileCalendarPage() {
             })}
           </div>
 
-          {calendarErr && <div style={{ color: "var(--danger)" }}>오류: {calendarErr}</div>}
-
-          <div data-testid="day-events" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            {eventsForSelected.length === 0 ? (
-              <EmptyEventState message="해당 날짜에는 일정이 없습니다." />
-            ) : (
-              eventsForSelected.map((ev) => (
-                <article
-                  key={ev.id}
-                  data-testid="calendar-event"
-                  data-event-id={ev.id}
-                  data-event-type={ev.type}
-                  data-relation={ev.own ?? "none"}
-                  style={{
-                    display: "flex",
-                    gap: 12,
-                    padding: "10px 0",
-                    borderBottom: "1px solid var(--divider)",
-                  }}
-                >
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                      <RegionBadge region={ev.region} />
-                      <span style={{ fontSize: 14, fontWeight: 600, color: "var(--fg)" }}>{ev.title}</span>
-                      <OwnershipTag own={ev.own} />
-                    </div>
-                    <div
-                      style={{
-                        fontSize: 12,
-                        color: ev.released ? "var(--fg-2)" : "var(--fg-3)",
-                        marginTop: 2,
-                        fontFeatureSettings: '"tnum"',
-                      }}
-                    >
-                      {ev.actual != null && `발표 ${ev.actual} · `}
-                      {ev.forecast != null && `예측 ${ev.forecast} · `}
-                      {ev.previous != null && `이전 ${ev.previous}`}
-                      {ev.actual == null && ev.forecast == null && ev.previous == null && (ev.time ?? "발표 예정")}
-                    </div>
-                  </div>
-                </article>
-              ))
-            )}
-          </div>
+          <SelectedDateEvents
+            dateLabel={selectedDateLabelWithRelative(selectedDate, today)}
+            dateIso={selectedDate}
+            events={filteredSelected.events}
+            clusters={filteredSelected.clusters}
+            emptyMessage="해당 날짜에는 일정이 없습니다."
+            loading={calendarLoading}
+            error={calendarErr}
+          />
         </div>
       </MobileShell>
       {showSummary && (
@@ -255,15 +236,3 @@ export function MobileCalendarPage() {
     </>
   );
 }
-
-const iconBtn: React.CSSProperties = {
-  width: 32,
-  height: 32,
-  border: "none",
-  background: "var(--surface-2)",
-  borderRadius: 8,
-  cursor: "pointer",
-  color: "var(--fg-1)",
-  display: "grid",
-  placeItems: "center",
-};
