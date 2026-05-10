@@ -350,8 +350,8 @@ async def test_cli_forexfactory_run_reuses_single_cache_across_days(
     db_session, monkeypatch
 ):
     """A 14-day range must trigger at most two FF XML fetches (thisweek + nextweek)."""
-    from scripts import ingest_market_events as cli
     from app.services.market_events import forexfactory_helpers as ff
+    from scripts import ingest_market_events as cli
 
     call_log: list[str] = []
 
@@ -383,8 +383,8 @@ async def test_cli_forexfactory_run_reuses_single_cache_across_days(
 @pytest.mark.asyncio
 @pytest.mark.unit
 async def test_cli_dry_run_does_not_call_forexfactory_fetch(monkeypatch):
-    from scripts import ingest_market_events as cli
     from app.services.market_events import forexfactory_helpers as ff
+    from scripts import ingest_market_events as cli
 
     called = {"n": 0}
 
@@ -395,11 +395,16 @@ async def test_cli_dry_run_does_not_call_forexfactory_fetch(monkeypatch):
     monkeypatch.setattr(ff, "_fetch_one_xml", boom)
     rc = await cli.main(
         [
-            "--source", "forexfactory",
-            "--category", "economic",
-            "--market", "global",
-            "--from-date", "2026-05-11",
-            "--to-date", "2026-05-12",
+            "--source",
+            "forexfactory",
+            "--category",
+            "economic",
+            "--market",
+            "global",
+            "--from-date",
+            "2026-05-11",
+            "--to-date",
+            "2026-05-12",
             "--dry-run",
         ]
     )

@@ -1,7 +1,7 @@
 """Guard: the forexfactory calendar flow has no registered deployment (ROB-184)."""
 
-from pathlib import Path
 import re
+from pathlib import Path
 
 import pytest
 
@@ -10,7 +10,9 @@ def test_forexfactory_flow_file_exists_and_has_flow_decorator():
     """The flow stub file must exist and declare the Prefect flow (static check)."""
     flow_path = (
         Path(__file__).resolve().parents[1]
-        / "app" / "flows" / "forexfactory_calendar_flow.py"
+        / "app"
+        / "flows"
+        / "forexfactory_calendar_flow.py"
     )
     assert flow_path.exists(), f"Flow stub not found at {flow_path}"
     text = flow_path.read_text()
@@ -35,7 +37,6 @@ def test_no_prefect_deployment_registered_in_repo():
     flow_name = "forexfactory_calendar_rolling_window"
     for path in repo_root.rglob("*.py"):
         # Skip venv, cache, and test files themselves
-        parts = set(path.parts)
         if any(
             p.startswith(".") or p in ("__pycache__", ".venv", "node_modules")
             for p in path.parts

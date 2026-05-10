@@ -194,6 +194,7 @@ async def run_ingest(
         from app.services.market_events.forexfactory_helpers import (
             ForexFactoryWeeklyCache,
         )
+
         ff_cache = ForexFactoryWeeklyCache()
 
     succeeded = 0

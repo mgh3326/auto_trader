@@ -328,9 +328,7 @@ async def ingest_economic_events_for_date(
             event_count=upserted,
         )
     except ForexFactoryFetchError as exc:
-        logger.warning(
-            "forexfactory fetch failed for %s: %s", target_date, exc.reason
-        )
+        logger.warning("forexfactory fetch failed for %s: %s", target_date, exc.reason)
         return await _mark_failed_after_exception(
             db,
             source=source,

@@ -10,7 +10,9 @@ Caller passes the resulting rows into
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import random
 import xml.etree.ElementTree as ET
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -23,10 +25,6 @@ logger = logging.getLogger(__name__)
 THISWEEK_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.xml"
 NEXTWEEK_URL = "https://nfs.faireconomy.media/ff_calendar_nextweek.xml"
 ET_TZ = ZoneInfo("America/New_York")
-
-
-import asyncio
-import random
 
 RETRIABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 
@@ -57,14 +55,18 @@ async def _fetch_one_xml(
                 if response.status_code in RETRIABLE_STATUS:
                     retry_after_hdr = response.headers.get("Retry-After")
                     retry_after = float(retry_after_hdr) if retry_after_hdr else None
-                    delay = retry_after if retry_after is not None else min(
-                        base_delay * (2**attempt), 30.0
+                    delay = (
+                        retry_after
+                        if retry_after is not None
+                        else min(base_delay * (2**attempt), 30.0)
                     )
                     if attempt < max_attempts - 1:
                         await _sleep_with_jitter(delay)
                         continue
                     reason = (
-                        "rate_limited" if response.status_code == 429 else "upstream_5xx"
+                        "rate_limited"
+                        if response.status_code == 429
+                        else "upstream_5xx"
                     )
                     raise ForexFactoryFetchError(reason)
                 response.raise_for_status()

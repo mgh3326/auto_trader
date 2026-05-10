@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock, patch
+from zoneinfo import ZoneInfo
 
+import httpx
 import pytest
+
+ET = ZoneInfo("America/New_York")
 
 SAMPLE_XML = """<?xml version="1.0" encoding="UTF-8"?>
 <weeklyevents>
@@ -103,10 +107,6 @@ async def test_fetch_forexfactory_returns_empty_on_xml_error():
 # ROB-184: rolling_window_for_today tests
 # ---------------------------------------------------------------------------
 
-from zoneinfo import ZoneInfo  # noqa: E402
-
-ET = ZoneInfo("America/New_York")
-
 
 @pytest.mark.unit
 def test_rolling_window_for_today_is_two_iso_weeks_in_et():
@@ -140,8 +140,6 @@ def test_rolling_window_for_today_handles_sunday_et_boundary():
 # ---------------------------------------------------------------------------
 # ROB-184: typed fetch error + retry wrapper tests
 # ---------------------------------------------------------------------------
-
-import httpx  # noqa: E402
 
 
 @pytest.mark.unit
@@ -246,9 +244,7 @@ async def test_weekly_cache_fetches_each_url_at_most_once(monkeypatch):
 
     monkeypatch.setattr(ff, "_fetch_one_xml", fake_fetch)
 
-    cache = ff.ForexFactoryWeeklyCache(
-        now_utc=datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
-    )
+    cache = ff.ForexFactoryWeeklyCache(now_utc=datetime(2026, 5, 13, 12, 0, tzinfo=UTC))
     rows_a = await cache.get_events_for_date(date(2026, 5, 13))
     rows_b = await cache.get_events_for_date(date(2026, 5, 14))
     assert rows_a is not None
@@ -270,9 +266,7 @@ async def test_weekly_cache_fetches_nextweek_only_when_needed(monkeypatch):
 
     monkeypatch.setattr(ff, "_fetch_one_xml", fake_fetch)
 
-    cache = ff.ForexFactoryWeeklyCache(
-        now_utc=datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
-    )
+    cache = ff.ForexFactoryWeeklyCache(now_utc=datetime(2026, 5, 13, 12, 0, tzinfo=UTC))
     # 2026-05-13 belongs to thisweek (Mon 2026-05-11..Sun 2026-05-17)
     await cache.get_events_for_date(date(2026, 5, 13))
     assert ff.NEXTWEEK_URL not in call_log
@@ -290,8 +284,6 @@ async def test_weekly_cache_returns_none_for_dates_outside_window(monkeypatch):
         return SAMPLE_XML
 
     monkeypatch.setattr(ff, "_fetch_one_xml", fake_fetch)
-    cache = ff.ForexFactoryWeeklyCache(
-        now_utc=datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
-    )
+    cache = ff.ForexFactoryWeeklyCache(now_utc=datetime(2026, 5, 13, 12, 0, tzinfo=UTC))
     assert await cache.get_events_for_date(date(2026, 4, 30)) is None
     assert await cache.get_events_for_date(date(2026, 5, 30)) is None
