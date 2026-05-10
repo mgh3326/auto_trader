@@ -274,10 +274,10 @@ def main() -> int:
     evidence["invariants_ok"] = invariants_ok
 
     args.evidence.parent.mkdir(parents=True, exist_ok=True)
-    # NOSONAR pythonsecurity:S2083 — args.evidence is constrained to the
-    # repo-local .smoke-out/ tree by _resolve_smoke_output_path(), and the
-    # evidence payload contains only Pydantic-validated compact metadata.
-    args.evidence.write_text(json.dumps(evidence, indent=2, ensure_ascii=False))
+    # args.evidence is constrained to the repo-local .smoke-out/ tree by
+    # _resolve_smoke_output_path(), and the evidence payload contains only
+    # Pydantic-validated compact metadata.
+    args.evidence.write_text(json.dumps(evidence, indent=2, ensure_ascii=False))  # NOSONAR pythonsecurity:S2083
     print(json.dumps(evidence, indent=2, ensure_ascii=False))
     return 0 if invariants_ok else 1
 
