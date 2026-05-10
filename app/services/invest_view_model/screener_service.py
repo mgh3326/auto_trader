@@ -378,8 +378,9 @@ async def build_screener_results(
     # Bulk-lookup Korean names for KR rows from kr_symbol_universe
     _kr_names: dict[str, str] = {}
     if session is not None and requested_market == "kr" and rows:
-        from app.models.kr_symbol_universe import KRSymbolUniverse
         import sqlalchemy as sa
+
+        from app.models.kr_symbol_universe import KRSymbolUniverse
         kr_symbols = [
             _normalize_symbol(r, "kr")[0]
             for r in rows

@@ -28,6 +28,7 @@ from app.schemas.invest_screener import (
 )
 from app.schemas.invest_signals import SignalsResponse, SignalTab
 from app.services.invest_home_service import InvestHomeService
+from app.services.invest_screener_snapshots.coverage_service import build_coverage
 from app.services.invest_view_model.account_panel_service import build_account_panel
 from app.services.invest_view_model.calendar_service import build_calendar
 from app.services.invest_view_model.feed_news_service import build_feed_news
@@ -37,7 +38,6 @@ from app.services.invest_view_model.screener_service import (
     build_screener_results,
 )
 from app.services.invest_view_model.signals_service import build_signals
-from app.services.invest_screener_snapshots.coverage_service import build_coverage
 from app.services.invest_view_model.weekly_summary_service import build_weekly_summary
 
 router = APIRouter(prefix="/invest/api", tags=["invest"])
