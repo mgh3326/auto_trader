@@ -15,6 +15,11 @@ Weekend handling:
   `docs/runbooks/calendar-source-coverage.md`.
 * ForexFactory publishes a "this week" XML that always contains the upcoming
   five business days; we treat it as expected every day.
+* WiseFn KR earnings (ROB-171) is a forward-looking schedule source; we expect
+  it on KR weekdays only, matching DART. The default fetcher raises
+  NotImplementedError until the upstream contract is confirmed, so freshness
+  for `(wisefn, earnings, kr)` will surface "expected but failed" until the
+  helper is wired and `WISEFN_EARNINGS_ENABLED=true` is set.
 """
 
 from __future__ import annotations
@@ -28,6 +33,7 @@ EXPECTED_SOURCES: frozenset[tuple[str, str, str]] = frozenset(
         ("finnhub", "earnings", "us"),
         ("dart", "disclosure", "kr"),
         ("forexfactory", "economic", "global"),
+        ("wisefn", "earnings", "kr"),
     }
 )
 
@@ -44,4 +50,5 @@ def expected_sources_for_date(target_date: date) -> frozenset[tuple[str, str, st
     if not is_weekend:
         triples.add(("finnhub", "earnings", "us"))
         triples.add(("dart", "disclosure", "kr"))
+        triples.add(("wisefn", "earnings", "kr"))
     return frozenset(triples)
