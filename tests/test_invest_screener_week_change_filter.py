@@ -12,12 +12,12 @@ def test_apply_min_week_change_rate_drops_rows_below_threshold() -> None:
     )
 
     rows: list[dict] = [
-        {"symbol": "A", "week_change_rate": 1.5},      # keep
-        {"symbol": "B", "week_change_rate": 0.0},      # keep (>= 0)
-        {"symbol": "C", "week_change_rate": -0.01},    # drop
-        {"symbol": "D", "week_change_rate": None},     # drop (unknown)
-        {"symbol": "E"},                                # drop (missing)
-        {"symbol": "F", "week_change_rate": "2.3"},    # keep (string-coerced)
+        {"symbol": "A", "week_change_rate": 1.5},  # keep
+        {"symbol": "B", "week_change_rate": 0.0},  # keep (>= 0)
+        {"symbol": "C", "week_change_rate": -0.01},  # drop
+        {"symbol": "D", "week_change_rate": None},  # drop (unknown)
+        {"symbol": "E"},  # drop (missing)
+        {"symbol": "F", "week_change_rate": "2.3"},  # keep (string-coerced)
     ]
     out = _apply_min_week_change_rate(rows, threshold=0.0)
     assert [r["symbol"] for r in out] == ["A", "B", "F"]
@@ -39,11 +39,22 @@ def test_normalize_screen_request_rejects_non_finite_week_change_rate() -> None:
 
     with pytest.raises(ValueError, match="finite"):
         normalize_screen_request(
-            market="kr", asset_type="stock", category=None, sector=None,
-            strategy=None, sort_by=None, sort_order="desc",
-            min_market_cap=None, max_per=None, max_pbr=None,
-            min_dividend_yield=None, min_dividend=None, min_analyst_buy=None,
-            max_rsi=None, limit=20, min_week_change_rate=float("inf"),
+            market="kr",
+            asset_type="stock",
+            category=None,
+            sector=None,
+            strategy=None,
+            sort_by=None,
+            sort_order="desc",
+            min_market_cap=None,
+            max_per=None,
+            max_pbr=None,
+            min_dividend_yield=None,
+            min_dividend=None,
+            min_analyst_buy=None,
+            max_rsi=None,
+            limit=20,
+            min_week_change_rate=float("inf"),
         )
 
 
@@ -52,11 +63,22 @@ def test_normalize_screen_request_accepts_zero_threshold() -> None:
     from app.mcp_server.tooling.screening.common import normalize_screen_request
 
     out = normalize_screen_request(
-        market="kr", asset_type="stock", category=None, sector=None,
-        strategy=None, sort_by=None, sort_order="desc",
-        min_market_cap=None, max_per=None, max_pbr=None,
-        min_dividend_yield=None, min_dividend=None, min_analyst_buy=None,
-        max_rsi=None, limit=20, min_week_change_rate=0.0,
+        market="kr",
+        asset_type="stock",
+        category=None,
+        sector=None,
+        strategy=None,
+        sort_by=None,
+        sort_order="desc",
+        min_market_cap=None,
+        max_per=None,
+        max_pbr=None,
+        min_dividend_yield=None,
+        min_dividend=None,
+        min_analyst_buy=None,
+        max_rsi=None,
+        limit=20,
+        min_week_change_rate=0.0,
     )
     assert out["min_week_change_rate"] == 0.0
 
@@ -82,10 +104,30 @@ async def test_screen_stocks_impl_drops_negative_week_change(monkeypatch) -> Non
     from app.mcp_server.tooling import analysis_tool_handlers as handlers
 
     fake_rows = [
-        {"market": "kr", "code": "A", "consecutive_up_days": 6, "week_change_rate": 1.2},
-        {"market": "kr", "code": "B", "consecutive_up_days": 5, "week_change_rate": -0.5},
-        {"market": "kr", "code": "C", "consecutive_up_days": 7, "week_change_rate": None},
-        {"market": "kr", "code": "D", "consecutive_up_days": 5, "week_change_rate": 0.0},
+        {
+            "market": "kr",
+            "code": "A",
+            "consecutive_up_days": 6,
+            "week_change_rate": 1.2,
+        },
+        {
+            "market": "kr",
+            "code": "B",
+            "consecutive_up_days": 5,
+            "week_change_rate": -0.5,
+        },
+        {
+            "market": "kr",
+            "code": "C",
+            "consecutive_up_days": 7,
+            "week_change_rate": None,
+        },
+        {
+            "market": "kr",
+            "code": "D",
+            "consecutive_up_days": 5,
+            "week_change_rate": 0.0,
+        },
     ]
 
     async def fake_unified(**kwargs):

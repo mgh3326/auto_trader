@@ -74,10 +74,20 @@ async def test_build_screener_results_data_state_not_missing_when_snapshot_prese
     )
 
     rows = [
-        {"market": "kr", "code": "005930", "consecutive_up_days": 6,
-         "change_rate": 1.45, "close": 70000},
-        {"market": "kr", "code": "000660", "consecutive_up_days": 6,
-         "change_rate": 1.45, "close": 70000},
+        {
+            "market": "kr",
+            "code": "005930",
+            "consecutive_up_days": 6,
+            "change_rate": 1.45,
+            "close": 70000,
+        },
+        {
+            "market": "kr",
+            "code": "000660",
+            "consecutive_up_days": 6,
+            "change_rate": 1.45,
+            "close": 70000,
+        },
     ]
     service = _StubScreeningService(rows)
 

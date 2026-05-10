@@ -683,9 +683,13 @@ async def screen_stocks_impl(
         rows: list[dict[str, Any]] = list(result.get("results") or [])
         await _enrich_consecutive_up_days(rows, market=normalized_market)
         if min_consecutive_up_days is not None:
-            rows = _apply_min_consecutive_up_days(rows, threshold=min_consecutive_up_days)
+            rows = _apply_min_consecutive_up_days(
+                rows, threshold=min_consecutive_up_days
+            )
         if min_week_change_rate is not None:
-            rows = _apply_min_week_change_rate(rows, threshold=float(min_week_change_rate))
+            rows = _apply_min_week_change_rate(
+                rows, threshold=float(min_week_change_rate)
+            )
         filters_applied = dict(result.get("filters_applied") or {})
         if filters_applied:
             filters_applied["limit"] = limit

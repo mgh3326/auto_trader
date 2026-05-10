@@ -52,11 +52,13 @@ async def test_us_resolver_filters_active(monkeypatch, db_session):
         ("TSTACTV", "NASDAQ", "TestActive", True),
         ("TSTOBSO", "NYSE", "TestObsolete", False),
     ]:
-        stmt = pg_insert(USSymbolUniverse).values(
-            symbol=sym, exchange=exch, name_en=name, is_active=active
-        ).on_conflict_do_update(
-            index_elements=["symbol"],
-            set_={"exchange": exch, "name_en": name, "is_active": active},
+        stmt = (
+            pg_insert(USSymbolUniverse)
+            .values(symbol=sym, exchange=exch, name_en=name, is_active=active)
+            .on_conflict_do_update(
+                index_elements=["symbol"],
+                set_={"exchange": exch, "name_en": name, "is_active": active},
+            )
         )
         await db_session.execute(stmt)
     await db_session.commit()
