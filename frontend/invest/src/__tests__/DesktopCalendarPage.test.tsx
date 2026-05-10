@@ -218,6 +218,36 @@ test("AI weekly card refetches when selecting a date in a different week", async
   );
 });
 
+test("renders the calendar-loading skeleton while the first fetch is in flight", async () => {
+  // Stall the fetch so the skeleton is visible.
+  let resolve: (v: typeof calendarFixture) => void;
+  vi.spyOn(calApi, "fetchCalendar").mockImplementationOnce(
+    () => new Promise((r) => { resolve = r; }),
+  );
+  render(wrap(<DesktopCalendarPage />));
+  expect(await screen.findByTestId("calendar-loading")).toBeInTheDocument();
+  // Resolve and verify it goes away.
+  resolve!(calendarFixture);
+  await waitFor(() =>
+    expect(screen.queryByTestId("calendar-loading")).not.toBeInTheDocument(),
+  );
+});
+
+test("renders calendar-error banner when fetchCalendar rejects", async () => {
+  vi.spyOn(calApi, "fetchCalendar").mockRejectedValueOnce(new Error("network blew up"));
+  render(wrap(<DesktopCalendarPage />));
+  const banner = await screen.findByTestId("calendar-error");
+  expect(banner).toHaveTextContent("network blew up");
+  // Empty state must not render — error wins.
+  expect(screen.queryByTestId("calendar-empty")).not.toBeInTheDocument();
+});
+
+test("today's selected-date label includes the 오늘 prefix", async () => {
+  render(wrap(<DesktopCalendarPage />));
+  // selectedDate defaults to today (2026-05-11 — Monday).
+  expect(await screen.findByText(/오늘 · 5월 11일 월요일 일정/)).toBeInTheDocument();
+});
+
 test("type and region filters apply to the selected-date list and grid count", async () => {
   const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
   render(wrap(<DesktopCalendarPage />));
