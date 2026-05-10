@@ -7,6 +7,12 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.calendar_freshness import (
+    CalendarCoverage,
+    CalendarDayState,
+    CalendarSourceStatus,
+)
+
 CalendarMarket = Literal["kr", "us", "crypto", "global"]
 EventType = Literal["earnings", "economic", "disclosure", "crypto", "other"]
 RelationKind = Literal["held", "watchlist", "both", "none"]
@@ -52,11 +58,14 @@ class CalendarDay(BaseModel):
     date: date
     events: list[CalendarEvent] = Field(default_factory=list)
     clusters: list[CalendarCluster] = Field(default_factory=list)
+    dataState: CalendarDayState = "loaded"
 
 
 class CalendarMeta(BaseModel):
     model_config = ConfigDict(extra="forbid")
     warnings: list[str] = Field(default_factory=list)
+    sourceFreshness: list[CalendarSourceStatus] = Field(default_factory=list)
+    coverage: CalendarCoverage | None = None
 
 
 class CalendarResponse(BaseModel):

@@ -50,6 +50,7 @@ const calendarFixture: CalendarResponse = {
         }),
       ],
       clusters: [],
+      dataState: "loaded",
     },
     {
       date: "2026-05-13",
@@ -67,6 +68,7 @@ const calendarFixture: CalendarResponse = {
           ],
         },
       ],
+      dataState: "loaded",
     },
     {
       date: "2026-05-15",
@@ -81,9 +83,10 @@ const calendarFixture: CalendarResponse = {
           topEvents: [event({ eventId: "evt-cpi", title: "US CPI", market: "us", eventType: "economic" })],
         },
       ],
+      dataState: "loaded",
     },
   ],
-  meta: { warnings: [] },
+  meta: { warnings: [], sourceFreshness: [], coverage: null },
 };
 
 beforeEach(() => {

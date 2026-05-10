@@ -9,6 +9,7 @@ import { AIWeeklyCard } from "../../components/calendar/AIWeeklyCard";
 import { CalendarMonthHeader } from "../../components/calendar/CalendarMonthHeader";
 import { EventDetailModal } from "../../components/calendar/EventDetailModal";
 import { MonthCalendarGrid } from "../../components/calendar/MonthCalendarGrid";
+import { CalendarFreshnessBanner } from "../../components/calendar/CalendarFreshnessBanner";
 import { SelectedDateEvents } from "../../components/calendar/SelectedDateEvents";
 import {
   addMonths,
@@ -245,6 +246,11 @@ export function DesktopCalendarPage() {
                   {monthLabel(monthFirstIso)}
                 </div>
               </div>
+              {calendar?.meta?.sourceFreshness && (
+                <div style={{ padding: "8px 8px 0" }}>
+                  <CalendarFreshnessBanner sources={calendar.meta.sourceFreshness} />
+                </div>
+              )}
               <div style={{ padding: "12px 8px 4px" }}>
                 <SelectedDateEvents
                   dateLabel={selectedDateLabelWithRelative(selectedDate, today)}

@@ -14,12 +14,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import get_db
 from app.models.trading import User
 from app.routers.dependencies import get_authenticated_user
+from app.schemas.calendar_freshness import CoverageMatrixResponse
 from app.schemas.market_events import (
     MarketEventsDayResponse,
     MarketEventsRangeResponse,
 )
 from app.schemas.market_events_calendar import DiscoverCalendarResponse
 from app.services.market_events.discover_calendar import DiscoverCalendarService
+from app.services.market_events.freshness_service import MarketEventsFreshnessService
 from app.services.market_events.query_service import MarketEventsQueryService
 from app.services.market_events.user_context import get_user_event_context
 
@@ -105,6 +107,25 @@ async def get_discover_calendar(
             ctx=ctx,
             tab=tab,
         )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+
+
+@router.get(
+    "/api/market-events/coverage",
+    response_model=CoverageMatrixResponse,
+)
+async def get_market_events_coverage(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_authenticated_user)],
+    from_date: Annotated[date, Query(description="ISO start date, inclusive")],
+    to_date: Annotated[date, Query(description="ISO end date, inclusive")],
+) -> CoverageMatrixResponse:
+    svc = MarketEventsFreshnessService(db)
+    try:
+        return await svc.get_coverage_matrix(from_date, to_date)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)

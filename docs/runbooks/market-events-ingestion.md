@@ -111,6 +111,7 @@ The DB-backed integration tests require Postgres at the test `DATABASE_URL`.
    them to `SUPPORTED` in `scripts/ingest_market_events.py`.
 4. **Economic calendar** (`category="economic"`) — same shape, different source.
 5. **`/invest/app` UI card** consuming the `today` endpoint.
+6. **Calendar source coverage gaps** — see [`calendar-source-coverage.md`](./calendar-source-coverage.md) for the full gap matrix (KR holidays, dividends, IPO/subscription, forward KR earnings schedule, crypto majors) and the read-only freshness diagnostics (ROB-167).
 
 ## Economic events (ForexFactory, ROB-132)
 
