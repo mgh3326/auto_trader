@@ -45,6 +45,12 @@ _CORE_FEED_SOURCES_BY_MARKET: dict[str, tuple[str, ...]] = {
     ),
 }
 
+_TVSCREENER_FEED_SOURCES_BY_MARKET: dict[str, tuple[str, ...]] = {
+    "kr": ("http_tvscreener_news_kr",),
+    "us": ("http_tvscreener_news_us",),
+    "crypto": ("http_tvscreener_news_crypto",),
+}
+
 
 async def create_news_article(
     title: str,
@@ -402,11 +408,15 @@ async def _build_source_coverage(
     *,
     market: str,
     source_counts: dict[str, int],
+    include_tvscreener: bool = False,
 ) -> list[NewsSourceCoverage]:
     """Summarize per-feed storage freshness for readiness dashboards."""
+    extra_sources: tuple[str, ...] = ()
+    if include_tvscreener:
+        extra_sources = _TVSCREENER_FEED_SOURCES_BY_MARKET.get(market, ())
     feed_sources = list(
         dict.fromkeys(
-            [*source_counts.keys(), *_CORE_FEED_SOURCES_BY_MARKET.get(market, ())]
+            [*source_counts.keys(), *_CORE_FEED_SOURCES_BY_MARKET.get(market, ()), *extra_sources]
         )
     )
     if not feed_sources:
@@ -520,6 +530,7 @@ async def get_news_readiness(
     *,
     market: str = "kr",
     max_age_minutes: int = 180,
+    include_tvscreener: bool = False,
     db: AsyncSession | None = None,
 ) -> NewsReadinessResponse:
     """Return latest news ingestion freshness for readiness/preopen checks."""
@@ -552,6 +563,7 @@ async def get_news_readiness(
             session,
             market=market,
             source_counts=latest_run.source_counts if latest_run else {},
+            include_tvscreener=include_tvscreener,
         )
 
         return _news_readiness_payload(
