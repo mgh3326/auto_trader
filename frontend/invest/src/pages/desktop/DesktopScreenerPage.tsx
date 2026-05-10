@@ -14,6 +14,16 @@ import type {
 } from "../../types/screener";
 import "../../desktop/screener/screener.css";
 
+function screenerErrorMessage(error: unknown): string {
+  const text = error instanceof Error ? error.message : String(error ?? "");
+  if (
+    /Failed to fetch|NetworkError|Load failed|screener\/results \d{3}|screener\/presets \d{3}/i.test(text)
+  ) {
+    return "스크리너 데이터를 일시적으로 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.";
+  }
+  return text || "스크리너 데이터를 일시적으로 불러오지 못했습니다.";
+}
+
 export function DesktopScreenerPage() {
   const [presets, setPresets] = useState<ScreenerPresetsResponse | undefined>();
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -31,7 +41,7 @@ export function DesktopScreenerPage() {
         setPresets(r);
         setSelectedId(r.selectedPresetId ?? r.presets[0]?.id ?? null);
       })
-      .catch((e) => !cancel && setErr(String(e?.message ?? e)));
+      .catch((e) => !cancel && setErr(screenerErrorMessage(e)));
     return () => { cancel = true; };
   }, []);
 
@@ -46,7 +56,7 @@ export function DesktopScreenerPage() {
         setErr(undefined);
         setResults(r);
       })
-      .catch((e) => !cancel && setErr(String(e?.message ?? e)));
+      .catch((e) => !cancel && setErr(screenerErrorMessage(e)));
     return () => { cancel = true; };
   }, [selectedId, selectedMarket]);
 
