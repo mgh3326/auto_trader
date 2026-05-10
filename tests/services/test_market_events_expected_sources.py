@@ -40,3 +40,20 @@ def test_expected_sources_constant_matches_per_day_union() -> None:
     for d in (date(2026, 5, 11), date(2026, 5, 9), date(2026, 5, 10)):
         for triple in expected_sources_for_date(d):
             assert triple in EXPECTED_SOURCES
+
+
+@pytest.mark.unit
+def test_expected_sources_includes_wisefn_constant():
+    assert ("wisefn", "earnings", "kr") in EXPECTED_SOURCES
+
+
+@pytest.mark.unit
+def test_expected_sources_includes_wisefn_on_kr_weekday():
+    triples = expected_sources_for_date(date(2026, 5, 11))  # Monday
+    assert ("wisefn", "earnings", "kr") in triples
+
+
+@pytest.mark.unit
+def test_expected_sources_drops_wisefn_on_kr_weekend():
+    triples = expected_sources_for_date(date(2026, 5, 10))  # Sunday
+    assert ("wisefn", "earnings", "kr") not in triples

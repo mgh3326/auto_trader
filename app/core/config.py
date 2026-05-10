@@ -303,6 +303,10 @@ class Settings(BaseSettings):
     # Finnhub API (optional - for news and fundamentals)
     finnhub_api_key: str | None = None
 
+    # WiseFn KR earnings calendar (ROB-171)
+    # Default False until the upstream contract is confirmed; CI never calls live.
+    wisefn_earnings_enabled: bool = False
+
     # KRX (한국거래소) 정보데이터시스템
     krx_member_id: str | None = None
     krx_password: str | None = None

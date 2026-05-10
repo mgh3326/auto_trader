@@ -69,3 +69,10 @@ def test_sources_include_forexfactory():
     from app.services.market_events.taxonomy import SOURCES
 
     assert "forexfactory" in SOURCES
+
+
+@pytest.mark.unit
+def test_sources_includes_wisefn():
+    from app.services.market_events.taxonomy import SOURCES
+
+    assert "wisefn" in SOURCES

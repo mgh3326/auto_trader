@@ -168,3 +168,93 @@ Include in the PR description / Linear comment:
 * required env vars (above), with values redacted
 * production migration / backfill cautions
 * exact follow-up tasks for Hermes / Prefect (above)
+
+---
+
+## KR earnings (WiseFn, ROB-171)
+
+WiseFn / WiseReport publishes a forward-looking KR 실적 발표 예정 schedule. We
+ingest it as `(source=wisefn, category=earnings, market=kr)` and store rows in
+the existing `market_events` table (no new tables, no DDL).
+
+> **Posture:** PoC. Ships behind `WISEFN_EARNINGS_ENABLED=false` until the
+> upstream contract is confirmed. CI / tests **never** call live; the fetch
+> seam (`_fetch_calendar_payload`) raises `NotImplementedError` by default and
+> tests inject fixture rows via `unittest.mock.patch.object` /
+> `fetch_rows=AsyncMock(...)`.
+
+### CLI
+
+```bash
+# Whole-month dry run (no DB writes, no live HTTP)
+uv run python -m scripts.ingest_market_events \
+  --source wisefn --category earnings --market kr \
+  --month 2026-05 --dry-run
+
+# Equivalent explicit range (still works)
+uv run python -m scripts.ingest_market_events \
+  --source wisefn --category earnings --market kr \
+  --from-date 2026-05-01 --to-date 2026-05-31 --dry-run
+```
+
+`--month YYYY-MM` is a thin wrapper that expands to first..last day of the
+month and is mutually exclusive with `--from-date/--to-date`. The per-day
+`MarketEventIngestionPartition` shape is unchanged — monthly semantics live
+entirely in the CLI.
+
+When `WISEFN_EARNINGS_ENABLED` is unset / false, non-dry-run runs log a
+warning and exit 0 without touching the DB.
+
+### Idempotency
+
+`source_event_id` is a deterministic string of the form
+
+```
+wisefn::{stock_code}::{event_date_iso}::{fiscal_year}::{fiscal_quarter}
+```
+
+so repeated ingestion of the same scheduled release upserts on
+`(source, category, market, source_event_id)` (partial unique index).
+Re-running a month is safe — you should see partition rows flip
+`pending → running → succeeded` and event rows update in place.
+
+### Values
+
+WiseFn rows describe the **schedule**, not realized eps/revenue. The
+normalizer therefore returns an empty `value_dicts` list. Joining DART
+quarterly filings to populate realized values is a follow-up.
+
+### Env vars
+
+| Var | Purpose | Default |
+| --- | --- | --- |
+| `WISEFN_EARNINGS_ENABLED` | Gate non-dry-run wisefn invocations | `false` |
+
+No API key is consumed yet — the upstream client is not wired.
+
+### Tests
+
+```bash
+uv run python -m pytest tests/services/test_market_events_wisefn_normalizers.py -v
+uv run python -m pytest tests/services/test_market_events_wisefn_helpers.py -v
+uv run python -m pytest tests/services/test_market_events_wisefn_ingestion.py -v
+uv run python -m pytest tests/test_market_events_cli.py -v
+```
+
+### Follow-ups specific to ROB-171
+
+1. **Upstream contract**: confirm WiseFn / WiseReport endpoint, auth posture,
+   per-row schema, and ToS / scraping permissions. Replace the
+   `_fetch_calendar_payload` `NotImplementedError` with a real `httpx.AsyncClient`
+   call in `app/services/market_events/wisefn_helpers.py`. Pin the upstream
+   schema in a docstring so future drift is caught by `normalize_wisefn_earnings_row`.
+2. **Realized eps/revenue join**: once a quarterly DART filing arrives, link
+   it to the `wisefn` schedule row (probably via `(symbol, fiscal_year, fiscal_quarter)`)
+   so the realized numbers populate `market_event_values`. Currently the schedule
+   row is informational only.
+3. **Prefect deployment**: a monthly Prefect flow that calls
+   `scripts.ingest_market_events.run_ingest` for the next two months at a low
+   weekly cadence is the natural cadence (the schedule rarely changes mid-month).
+4. **UI surface**: `/invest/calendar` already consumes
+   `GET /trading/api/market-events/range`. Once `WISEFN_EARNINGS_ENABLED=true`
+   in production, KR earnings will appear automatically — no UI change needed.

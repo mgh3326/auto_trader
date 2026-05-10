@@ -55,36 +55,22 @@ async def test_missing_partition_marks_day_missing(db_session: AsyncSession) -> 
 async def test_all_succeeded_marks_day_loaded(db_session: AsyncSession) -> None:
     monday = date(2026, 5, 11)
     fresh = datetime.now(UTC) - timedelta(hours=1)
-    _add_partition(
-        db_session,
-        source="finnhub",
-        category="earnings",
-        market="us",
-        partition_date=monday,
-        status="succeeded",
-        event_count=12,
-        finished_at=fresh,
-    )
-    _add_partition(
-        db_session,
-        source="dart",
-        category="disclosure",
-        market="kr",
-        partition_date=monday,
-        status="succeeded",
-        event_count=4,
-        finished_at=fresh,
-    )
-    _add_partition(
-        db_session,
-        source="forexfactory",
-        category="economic",
-        market="global",
-        partition_date=monday,
-        status="succeeded",
-        event_count=3,
-        finished_at=fresh,
-    )
+    for src, cat, mkt, count in (
+        ("finnhub", "earnings", "us", 12),
+        ("dart", "disclosure", "kr", 4),
+        ("forexfactory", "economic", "global", 3),
+        ("wisefn", "earnings", "kr", 2),
+    ):
+        _add_partition(
+            db_session,
+            source=src,
+            category=cat,
+            market=mkt,
+            partition_date=monday,
+            status="succeeded",
+            event_count=count,
+            finished_at=fresh,
+        )
     await db_session.flush()
 
     svc = MarketEventsFreshnessService(db_session)
@@ -101,6 +87,7 @@ async def test_all_zero_event_count_marks_day_empty(db_session: AsyncSession) ->
         ("finnhub", "earnings", "us"),
         ("dart", "disclosure", "kr"),
         ("forexfactory", "economic", "global"),
+        ("wisefn", "earnings", "kr"),
     ):
         _add_partition(
             db_session,
@@ -172,6 +159,7 @@ async def test_stale_when_finished_at_older_than_window(
         ("finnhub", "earnings", "us"),
         ("dart", "disclosure", "kr"),
         ("forexfactory", "economic", "global"),
+        ("wisefn", "earnings", "kr"),
     ):
         _add_partition(
             db_session,
