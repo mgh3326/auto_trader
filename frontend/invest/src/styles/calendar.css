@@ -1,0 +1,383 @@
+/* =========================================================
+   ROB-166 — /invest/calendar responsive rules.
+   Components opt in via stable class names; structural
+   styles stay inline to match the existing convention.
+   Order: shared > grid > rows > mobile shell.
+   ========================================================= */
+
+/* Visible focus ring for keyboard nav on every calendar
+   interactive surface. Uses --shadow-focus from tokens. */
+.calendar-grid-cell:focus-visible,
+.calendar-pill:focus-visible,
+.calendar-nav-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+  border-radius: 10px;
+}
+
+/* Mobile filter row scrolls horizontally instead of wrapping
+   so the longest pill never causes a layout jump. */
+.calendar-mobile-filters {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding-bottom: 2px;
+}
+.calendar-mobile-filters::-webkit-scrollbar { display: none; }
+.calendar-mobile-filters > * { flex: 0 0 auto; }
+
+/* ---------- EventRow / ClusterRow shared shape ---------- */
+.calendar-event-row,
+.calendar-cluster-row {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) 76px 76px 76px;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: transparent;
+  min-width: 0;
+}
+.calendar-cluster-row {
+  background: var(--surface-2);
+  padding: 12px;
+  grid-template-columns: 44px minmax(0, 1fr);
+}
+.calendar-event-row__day,
+.calendar-cluster-row__day {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--fg-1);
+  font-feature-settings: "tnum";
+}
+.calendar-event-row__main,
+.calendar-cluster-row__main {
+  min-width: 0;
+}
+.calendar-event-row__title-line,
+.calendar-cluster-row__title-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.calendar-event-row__title,
+.calendar-cluster-row__title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.calendar-cluster-row__title { font-weight: 700; }
+.calendar-cluster-row__count {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent-press);
+  background: var(--accent-soft);
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-feature-settings: "tnum";
+}
+.calendar-event-row__time {
+  font-size: 11px;
+  color: var(--fg-3);
+  margin-top: 2px;
+}
+.calendar-event-row__time[data-released="true"] { color: var(--fg-2); }
+.calendar-cluster-row__preview {
+  font-size: 12px;
+  color: var(--fg-3);
+  margin-top: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.calendar-event-row__num {
+  text-align: right;
+  font-size: 13px;
+  font-feature-settings: "tnum";
+  color: var(--fg-2);
+}
+.calendar-event-row__num--actual {
+  font-weight: 700;
+  color: var(--fg);
+}
+.calendar-event-row__num--actual[data-released="false"] { color: var(--fg-3); }
+.calendar-event-row__num--previous { color: var(--fg-3); }
+
+/* ---------- Mobile (<900px): collapse numeric columns into a stacked detail line ---------- */
+@media (max-width: 899px) {
+  .calendar-event-row {
+    grid-template-columns: 44px minmax(0, 1fr);
+  }
+  .calendar-event-row__num {
+    display: none;
+  }
+  .calendar-event-row__title {
+    white-space: normal;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .calendar-cluster-row__title,
+  .calendar-cluster-row__preview {
+    white-space: normal;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+}
+
+/* ---------- SelectedDateEvents ---------- */
+.calendar-selected-date {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.calendar-selected-date__header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0 6px 8px;
+  flex-wrap: wrap;
+}
+.calendar-selected-date__label {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--fg);
+}
+.calendar-selected-date__meta {
+  font-size: 12px;
+  color: var(--fg-3);
+  font-feature-settings: "tnum";
+}
+.calendar-selected-date__list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+/* Mobile: stack the header so the meta line wraps cleanly. */
+@media (max-width: 899px) {
+  .calendar-selected-date__header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    padding: 0 4px 6px;
+  }
+}
+
+/* ---------- Loading skeleton + error banner ---------- */
+.calendar-loading { display: flex; flex-direction: column; gap: 6px; padding: 4px 0; }
+.calendar-loading__row {
+  height: 44px;
+  border-radius: 10px;
+  background: linear-gradient(90deg, var(--surface-2) 0%, var(--surface-3) 50%, var(--surface-2) 100%);
+  background-size: 200% 100%;
+  animation: calendar-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes calendar-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+.calendar-loading__sr {
+  position: absolute;
+  width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+.calendar-error {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--danger);
+  background: var(--danger-soft);
+  border-radius: 10px;
+  color: var(--danger);
+}
+.calendar-error__title { font-size: 13px; font-weight: 700; }
+.calendar-error__detail { font-size: 12px; color: var(--fg-2); }
+
+/* ---------- Month grid ---------- */
+.calendar-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.calendar-grid__weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-3);
+  text-align: center;
+  padding: 0 2px;
+}
+.calendar-grid__cells {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+}
+.calendar-grid-cell {
+  aspect-ratio: 1 / 1;
+  min-height: 56px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 2px;
+  padding: 8px 4px;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  font-family: inherit;
+  background: transparent;
+  overflow: hidden;
+}
+.calendar-grid-cell[data-selected="true"] { background: var(--surface-2); }
+.calendar-grid-cell[data-out-of-month="true"] { opacity: 0.35; }
+.calendar-grid-cell__day {
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  color: var(--fg-1);
+  font-weight: 500;
+  font-size: 13px;
+  font-feature-settings: "tnum";
+}
+.calendar-grid-cell[data-selected="true"] .calendar-grid-cell__day {
+  background: var(--accent);
+  color: var(--fg-on-accent);
+  font-weight: 700;
+}
+.calendar-grid-cell[data-today="true"]:not([data-selected="true"]) .calendar-grid-cell__day {
+  color: var(--accent);
+  font-weight: 700;
+}
+.calendar-grid-cell__count {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--fg-3);
+  font-feature-settings: "tnum";
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.calendar-grid-cell--skeleton {
+  cursor: default;
+  background: linear-gradient(90deg, var(--surface-2) 0%, var(--surface-3) 50%, var(--surface-2) 100%);
+  background-size: 200% 100%;
+  animation: calendar-shimmer 1.4s ease-in-out infinite;
+}
+
+/* Compact density (mobile or compact viewport) shrinks cell metrics. */
+.calendar-grid[data-density="compact"] .calendar-grid-cell {
+  min-height: 44px;
+  padding: 4px 2px;
+  border-radius: 8px;
+}
+.calendar-grid[data-density="compact"] .calendar-grid-cell__day {
+  width: 22px; height: 22px; font-size: 12px;
+}
+.calendar-grid[data-density="compact"] .calendar-grid-cell__count { font-size: 9px; }
+
+/* Compact viewport (900-1199): also force compact density even if the
+   parent passed comfortable. Keeps the desktop card readable. */
+@media (max-width: 1199px) {
+  .calendar-grid .calendar-grid-cell { min-height: 48px; }
+  .calendar-grid .calendar-grid-cell__day { width: 24px; height: 24px; }
+}
+
+/* ---------- CalendarMonthHeader ---------- */
+.calendar-month-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.calendar-month-header__title {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  text-align: center;
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.calendar-nav-btn {
+  width: 44px;
+  height: 44px;
+  border: none;
+  background: transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--fg-2);
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+}
+.calendar-nav-btn--flip { transform: scaleX(-1); }
+.calendar-nav-btn:hover { background: var(--surface-2); }
+
+/* On desktop card, the nav buttons can be smaller — they live inside
+   a tight 300px aside. */
+@media (min-width: 1200px) {
+  .calendar-month-header .calendar-nav-btn { width: 28px; height: 28px; }
+}
+
+/* ---------- Mobile calendar shell ---------- */
+.calendar-mobile {
+  padding: 12px 16px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+.calendar-mobile__ai-btn {
+  border: none;
+  background: var(--surface-2);
+  padding: 12px 16px;
+  border-radius: 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent-press);
+  align-self: flex-start;
+  min-height: 44px;
+}
+.calendar-pill {
+  padding: 8px 14px;
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  background: var(--surface-2);
+  color: var(--fg-2);
+  font-weight: 600;
+  font-size: 13px;
+  font-family: inherit;
+  min-height: 44px;
+}
+.calendar-pill[data-on="true"] {
+  background: var(--fg);
+  color: var(--bg);
+}

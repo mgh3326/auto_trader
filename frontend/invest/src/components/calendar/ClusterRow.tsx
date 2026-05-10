@@ -2,62 +2,32 @@ import type { CalendarClusterVM } from "./vm";
 import { RegionBadge } from "./RegionBadge";
 
 export function ClusterRow({ cluster }: { cluster: CalendarClusterVM }) {
-  const preview = cluster.topEvents.map((event) => event.title).join(" · ");
+  const previewText =
+    cluster.topEvents.length > 0
+      ? `${cluster.topEvents.map((e) => e.title).join(" · ")}${cluster.count > cluster.topEvents.length ? " 외" : ""}`
+      : "상세 일정 묶음";
 
   return (
     <article
+      className="calendar-cluster-row"
       data-testid="calendar-cluster"
       data-cluster-id={cluster.id}
       data-event-type={cluster.type}
       data-region={cluster.region}
-      style={{
-        display: "grid",
-        gridTemplateColumns: "44px minmax(0, 1fr) 76px 76px 76px",
-        alignItems: "center",
-        gap: 10,
-        padding: "12px",
-        borderRadius: 10,
-        background: "var(--surface-2)",
-      }}
     >
-      <div
-        style={{
-          fontSize: 12,
-          fontWeight: 700,
-          color: "var(--fg-1)",
-          fontFeatureSettings: '"tnum"',
-        }}
-      >
-        {cluster.monthDay}
-      </div>
-      <div style={{ minWidth: 0, gridColumn: "2 / 6" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+      <div className="calendar-cluster-row__day">{cluster.monthDay}</div>
+      <div className="calendar-cluster-row__main">
+        <div className="calendar-cluster-row__title-line">
           <RegionBadge region={cluster.region} />
-          <span
-            style={{
-              fontSize: 14,
-              fontWeight: 700,
-              color: "var(--fg)",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-              minWidth: 0,
-            }}
-          >
+          <span className="calendar-cluster-row__title" title={cluster.title}>
             {cluster.title}
           </span>
+          <span data-testid="calendar-cluster-count" className="calendar-cluster-row__count">
+            +{cluster.count}
+          </span>
         </div>
-        <div
-          style={{
-            fontSize: 12,
-            color: "var(--fg-3)",
-            marginTop: 4,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {preview ? `${preview}${cluster.count > cluster.topEvents.length ? " 외" : ""}` : "상세 일정 묶음"}
+        <div className="calendar-cluster-row__preview" title={previewText}>
+          {previewText}
         </div>
       </div>
     </article>

@@ -4,8 +4,9 @@ import { RightRemotePanel } from "../../desktop/RightRemotePanel";
 import { useViewport } from "../../hooks/useViewport";
 import { fetchCalendar, fetchWeeklySummary } from "../../api/calendar";
 import type { CalendarResponse, WeeklySummaryResponse } from "../../types/calendar";
-import { Card, Icon } from "../../ds";
+import { Card } from "../../ds";
 import { AIWeeklyCard } from "../../components/calendar/AIWeeklyCard";
+import { CalendarMonthHeader } from "../../components/calendar/CalendarMonthHeader";
 import { EventDetailModal } from "../../components/calendar/EventDetailModal";
 import { MonthCalendarGrid } from "../../components/calendar/MonthCalendarGrid";
 import { SelectedDateEvents } from "../../components/calendar/SelectedDateEvents";
@@ -16,7 +17,7 @@ import {
   gridStartFromMonth,
   monthLabel,
   monthTitleLabel,
-  selectedDateLabel,
+  selectedDateLabelWithRelative,
   startOfMonth,
   toClusterVM,
   toEventVM,
@@ -58,7 +59,8 @@ export function DesktopCalendarPage() {
   });
 
   const [calendar, setCalendar] = useState<CalendarResponse | undefined>();
-  const [calendarErr, setCalendarErr] = useState<string | undefined>();
+  const [calendarLoading, setCalendarLoading] = useState(true);
+  const [calendarErr, setCalendarErr] = useState<string | null>(null);
   const [summary, setSummary] = useState<WeeklySummaryResponse | undefined>();
   const [summaryErr, setSummaryErr] = useState<string | undefined>();
   const [summaryLoading, setSummaryLoading] = useState(false);
@@ -70,10 +72,19 @@ export function DesktopCalendarPage() {
   useEffect(() => {
     let cancel = false;
     setCalendar(undefined);
-    setCalendarErr(undefined);
+    setCalendarLoading(true);
+    setCalendarErr(null);
     fetchCalendar({ fromDate: fmtLocal(gridStart), toDate: fmtLocal(gridEnd), tab: "all" })
-      .then((r) => !cancel && setCalendar(r))
-      .catch((e) => !cancel && setCalendarErr(String(e?.message ?? e)));
+      .then((r) => {
+        if (cancel) return;
+        setCalendar(r);
+        setCalendarLoading(false);
+      })
+      .catch((e) => {
+        if (cancel) return;
+        setCalendarErr(String(e?.message ?? e));
+        setCalendarLoading(false);
+      });
     return () => {
       cancel = true;
     };
@@ -156,37 +167,12 @@ export function DesktopCalendarPage() {
         left={
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <Card style={{ padding: 16 }}>
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  marginBottom: 10,
-                }}
-              >
-                <div style={{ fontSize: 14, fontWeight: 700, letterSpacing: "-0.01em" }}>
-                  {monthTitleLabel(monthFirstIso)}
-                </div>
-                <div style={{ display: "flex", gap: 4 }}>
-                  <button
-                    type="button"
-                    aria-label="이전 달"
-                    data-testid="calendar-prev-month"
-                    onClick={goPrevMonth}
-                    style={navBtnStyle}
-                  >
-                    <Icon name="chev" size={14} />
-                  </button>
-                  <button
-                    type="button"
-                    aria-label="다음 달"
-                    data-testid="calendar-next-month"
-                    onClick={goNextMonth}
-                    style={{ ...navBtnStyle, transform: "scaleX(-1)" }}
-                  >
-                    <Icon name="chev" size={14} />
-                  </button>
-                </div>
+              <div style={{ marginBottom: 10 }}>
+                <CalendarMonthHeader
+                  title={monthTitleLabel(monthFirstIso)}
+                  onPrev={goPrevMonth}
+                  onNext={goNextMonth}
+                />
               </div>
               <MonthCalendarGrid
                 monthCursor={monthCursor}
@@ -245,8 +231,6 @@ export function DesktopCalendarPage() {
               </FilterGroup>
             </div>
 
-            {calendarErr && <div style={{ color: "var(--danger)" }}>오류: {calendarErr}</div>}
-
             <Card style={{ padding: "16px 6px" }}>
               <div
                 style={{
@@ -263,11 +247,13 @@ export function DesktopCalendarPage() {
               </div>
               <div style={{ padding: "12px 8px 4px" }}>
                 <SelectedDateEvents
-                  dateLabel={selectedDateLabel(selectedDate)}
+                  dateLabel={selectedDateLabelWithRelative(selectedDate, today)}
                   dateIso={selectedDate}
                   events={selectedDay.events}
                   clusters={selectedDay.clusters}
                   emptyMessage="선택한 날짜에 일정이 없습니다."
+                  loading={calendarLoading}
+                  error={calendarErr}
                 />
               </div>
             </Card>
@@ -308,18 +294,6 @@ function defaultSelectedDateForMonth(monthCursor: Date, todayIso: string): strin
   }
   return fmtLocal(monthFirst);
 }
-
-const navBtnStyle: React.CSSProperties = {
-  width: 24,
-  height: 24,
-  border: "none",
-  background: "transparent",
-  borderRadius: 6,
-  cursor: "pointer",
-  color: "var(--fg-2)",
-  display: "grid",
-  placeItems: "center",
-};
 
 function FilterGroup({ children }: { children: React.ReactNode }) {
   return (

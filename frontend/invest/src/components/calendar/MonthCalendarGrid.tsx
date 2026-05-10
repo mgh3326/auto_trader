@@ -2,12 +2,31 @@ import { fmtLocal, gridStartFromMonth, startOfMonth } from "./vm";
 
 const WEEKDAY_LABELS = ["일", "월", "화", "수", "목", "금", "토"] as const;
 
+export type MonthGridDensity = "comfortable" | "compact";
+
 export interface MonthCalendarGridProps {
   monthCursor: Date;
   selectedDate: string;
   today: string;
   countByDate: Map<string, number>;
   onSelect: (date: string) => void;
+  density?: MonthGridDensity;
+  loading?: boolean;
+}
+
+function clampCount(n: number): string {
+  if (n >= 1000) return "+999";
+  return String(n);
+}
+
+function ariaLabel(iso: string, count: number, isToday: boolean): string {
+  const [y, m, d] = iso.split("-");
+  const y2 = Number.parseInt(y ?? "0", 10);
+  const m2 = Number.parseInt(m ?? "0", 10);
+  const d2 = Number.parseInt(d ?? "0", 10);
+  const todayPart = isToday ? " (오늘)" : "";
+  const countPart = count > 0 ? `, 일정 ${count}건` : "";
+  return `${y2}년 ${m2}월 ${d2}일${todayPart}${countPart}`;
 }
 
 export function MonthCalendarGrid({
@@ -16,6 +35,8 @@ export function MonthCalendarGrid({
   today,
   countByDate,
   onSelect,
+  density = "comfortable",
+  loading = false,
 }: MonthCalendarGridProps) {
   const gridStart = gridStartFromMonth(monthCursor);
   const monthFirst = startOfMonth(monthCursor);
@@ -29,31 +50,30 @@ export function MonthCalendarGrid({
   }
 
   return (
-    <div data-testid="month-grid" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-      <div
-        data-testid="month-grid-weekday-header"
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(7, 1fr)",
-          fontSize: 11,
-          fontWeight: 600,
-          color: "var(--fg-3)",
-          textAlign: "center",
-          padding: "0 2px",
-        }}
-      >
+    <div
+      className="calendar-grid"
+      data-testid="month-grid"
+      data-density={density}
+      role="grid"
+      aria-label="월간 캘린더"
+    >
+      <div className="calendar-grid__weekdays" data-testid="month-grid-weekday-header" role="row">
         {WEEKDAY_LABELS.map((w) => (
-          <span key={w}>{w}</span>
+          <span key={w} role="columnheader" aria-label={w}>{w}</span>
         ))}
       </div>
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(7, 1fr)",
-          gap: 4,
-        }}
-      >
-        {cells.map((c) => {
+      <div className="calendar-grid__cells" role="rowgroup">
+        {cells.map((c, idx) => {
+          if (loading) {
+            return (
+              <div
+                key={c.iso}
+                data-testid={`month-grid-cell-skeleton-${idx}`}
+                className="calendar-grid-cell calendar-grid-cell--skeleton"
+                aria-hidden="true"
+              />
+            );
+          }
           const isToday = c.iso === today;
           const isSelected = c.iso === selectedDate;
           const count = countByDate.get(c.iso) ?? 0;
@@ -61,47 +81,22 @@ export function MonthCalendarGrid({
             <button
               key={c.iso}
               type="button"
+              className="calendar-grid-cell"
               data-testid={`month-grid-cell-${c.iso}`}
               data-date={c.iso}
               data-today={isToday ? "true" : "false"}
               data-selected={isSelected ? "true" : "false"}
               data-out-of-month={c.outOfMonth ? "true" : "false"}
+              aria-current={isToday ? "date" : undefined}
+              aria-pressed={isSelected ? "true" : "false"}
+              aria-label={ariaLabel(c.iso, count, isToday)}
               onClick={() => onSelect(c.iso)}
-              style={{
-                aspectRatio: "1 / 1",
-                minHeight: 56,
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                justifyContent: "flex-start",
-                gap: 2,
-                padding: "8px 4px",
-                border: "none",
-                borderRadius: 10,
-                cursor: "pointer",
-                fontFamily: "inherit",
-                background: isSelected ? "var(--surface-2)" : "transparent",
-                opacity: c.outOfMonth ? 0.35 : 1,
-              }}
             >
-              <span
-                style={{
-                  width: 26,
-                  height: 26,
-                  borderRadius: 999,
-                  display: "grid",
-                  placeItems: "center",
-                  background: isSelected ? "var(--accent)" : "transparent",
-                  color: isSelected ? "var(--fg-on-accent)" : isToday ? "var(--accent)" : "var(--fg-1)",
-                  fontWeight: isSelected || isToday ? 700 : 500,
-                  fontSize: 13,
-                  fontFeatureSettings: '"tnum"',
-                }}
-              >
-                {c.day}
-              </span>
+              <span className="calendar-grid-cell__day">{c.day}</span>
               {count > 0 && (
-                <span style={{ fontSize: 10, fontWeight: 600, color: "var(--fg-3)" }}>{count}</span>
+                <span className="calendar-grid-cell__count" aria-hidden="true">
+                  {clampCount(count)}
+                </span>
               )}
             </button>
           );

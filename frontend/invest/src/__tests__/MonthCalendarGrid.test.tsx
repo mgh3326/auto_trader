@@ -50,4 +50,41 @@ describe("MonthCalendarGrid", () => {
     const header = screen.getByTestId("month-grid-weekday-header");
     expect(header.textContent).toBe("일월화수목금토");
   });
+
+  test("each cell carries the calendar-grid-cell class for media-query rules", () => {
+    render(<MonthCalendarGrid {...baseProps} onSelect={() => {}} />);
+    const cell = screen.getByTestId("month-grid-cell-2026-05-13");
+    expect(cell).toHaveClass("calendar-grid-cell");
+  });
+
+  test("cells expose aria-label and aria-current for screen readers", () => {
+    render(<MonthCalendarGrid {...baseProps} onSelect={() => {}} />);
+    const today = screen.getByTestId("month-grid-cell-2026-05-11");
+    expect(today.getAttribute("aria-current")).toBe("date");
+    // aria-label includes year/month/day in Korean and the count.
+    expect(today.getAttribute("aria-label")).toMatch(/2026.*5.*11.*3/);
+  });
+
+  test("count badge renders +999 for any count >= 1000 to keep cells from overflowing", () => {
+    render(
+      <MonthCalendarGrid
+        {...baseProps}
+        countByDate={new Map([["2026-05-13", 1234]])}
+        onSelect={() => {}}
+      />,
+    );
+    expect(screen.getByTestId("month-grid-cell-2026-05-13")).toHaveTextContent("+999");
+  });
+
+  test("density='compact' stamps a data-density attribute on the root for media-query targeting", () => {
+    render(<MonthCalendarGrid {...baseProps} density="compact" onSelect={() => {}} />);
+    expect(screen.getByTestId("month-grid")).toHaveAttribute("data-density", "compact");
+  });
+
+  test("loading=true renders 42 skeleton cells with no count badges", () => {
+    render(<MonthCalendarGrid {...baseProps} loading onSelect={() => {}} />);
+    const skeletons = screen.getAllByTestId(/^month-grid-cell-skeleton-/);
+    expect(skeletons).toHaveLength(42);
+    expect(screen.queryByText("327")).not.toBeInTheDocument();
+  });
 });
