@@ -115,7 +115,17 @@ async def _hydrate_from_snapshots(
     fetched = await repo.get_fresh(
         market=market, symbols=[s for s in symbols if s], on_or_after=dt.date.min
     )
-    by_symbol = {row.symbol: row for row in fetched}
+    by_symbol: dict[str, Any] = {}
+    for snapshot in fetched:
+        existing = by_symbol.get(snapshot.symbol)
+        if existing is None or (
+            snapshot.snapshot_date,
+            snapshot.computed_at or dt.datetime.min.replace(tzinfo=dt.UTC),
+        ) > (
+            existing.snapshot_date,
+            existing.computed_at or dt.datetime.min.replace(tzinfo=dt.UTC),
+        ):
+            by_symbol[snapshot.symbol] = snapshot
 
     now = dt.datetime.now(dt.UTC)
     for row in rows:

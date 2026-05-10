@@ -13,16 +13,28 @@ from app.models.invest_screener_snapshot import InvestScreenerSnapshot
 
 @pytest_asyncio.fixture(autouse=True)
 async def _clean_snapshots(db_session):
-    await db_session.execute(delete(InvestScreenerSnapshot))
+    test_symbols = {"910001", "910002", "BTC"}
+    await db_session.execute(
+        delete(InvestScreenerSnapshot).where(
+            InvestScreenerSnapshot.symbol.in_(test_symbols)
+        )
+    )
     await db_session.commit()
     yield
+    await db_session.rollback()
+    await db_session.execute(
+        delete(InvestScreenerSnapshot).where(
+            InvestScreenerSnapshot.symbol.in_(test_symbols)
+        )
+    )
+    await db_session.commit()
 
 
 @pytest.mark.asyncio
 async def test_insert_round_trip(db_session):
     snap = InvestScreenerSnapshot(
         market="kr",
-        symbol="005930",
+        symbol="910001",
         snapshot_date=dt.date(2026, 5, 9),
         latest_close=Decimal("78500"),
         prev_close=Decimal("77900"),
@@ -39,7 +51,7 @@ async def test_insert_round_trip(db_session):
 
     result = await db_session.execute(
         sa.select(InvestScreenerSnapshot).where(
-            InvestScreenerSnapshot.symbol == "005930"
+            InvestScreenerSnapshot.symbol == "910001"
         )
     )
     fetched = result.scalar_one()
@@ -51,7 +63,7 @@ async def test_insert_round_trip(db_session):
 async def test_unique_constraint(db_session):
     base = {
         "market": "kr",
-        "symbol": "005930",
+        "symbol": "910002",
         "snapshot_date": dt.date(2026, 5, 9),
         "latest_close": Decimal("78500"),
         "closes_window": [78500],
