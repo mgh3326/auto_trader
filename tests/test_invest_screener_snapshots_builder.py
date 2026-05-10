@@ -70,6 +70,29 @@ async def test_build_snapshot_for_symbol_kr(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_build_snapshot_for_symbol_accepts_python_date_cells(monkeypatch):
+    df = pd.DataFrame(
+        {
+            "date": [dt.date(2026, 5, day) for day in range(1, 11)],
+            "close": [100, 101, 102, 103, 104, 105, 106, 107, 108, 110],
+            "volume": [1_000_000] * 10,
+        }
+    )
+    fetcher = AsyncMock(return_value=df)
+    monkeypatch.setattr(
+        "app.services.invest_screener_snapshots.builder._fetch_ohlcv_for_indicators",
+        fetcher,
+    )
+
+    payload = await build_snapshot_for_symbol(
+        market="kr", symbol="005930", today=dt.date(2026, 5, 10)
+    )
+
+    assert payload is not None
+    assert payload.snapshot_date == dt.date(2026, 5, 10)
+
+
+@pytest.mark.asyncio
 async def test_build_snapshot_for_symbol_returns_none_on_empty_df(monkeypatch):
     fetcher = AsyncMock(return_value=pd.DataFrame())
     monkeypatch.setattr(
