@@ -55,7 +55,7 @@ async def test_list_events_for_date_returns_events_with_values(db_session):
             }
         ],
     )
-    await db_session.commit()
+    await db_session.flush()
 
     svc = MarketEventsQueryService(db_session)
     response = await svc.list_for_date(date(2026, 5, 7))
@@ -101,7 +101,7 @@ async def test_list_events_filters_by_category_and_market(db_session):
         },
         [],
     )
-    await db_session.commit()
+    await db_session.flush()
 
     svc = MarketEventsQueryService(db_session)
     only_kr = await svc.list_for_range(date(2026, 5, 7), date(2026, 5, 7), market="kr")
@@ -136,7 +136,7 @@ async def test_query_service_surfaces_currency_field(db_session):
         },
         [],
     )
-    await db_session.commit()
+    await db_session.flush()
 
     svc = MarketEventsQueryService(db_session)
     response = await svc.list_for_date(date(2099, 5, 13), category="economic")
@@ -179,7 +179,7 @@ async def test_query_service_filters_economic_events(db_session):
         },
         [],
     )
-    await db_session.commit()
+    await db_session.flush()
 
     svc = MarketEventsQueryService(db_session)
     only_econ = await svc.list_for_date(date(2026, 5, 13), category="economic")
