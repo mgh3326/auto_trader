@@ -2,6 +2,7 @@ import type { MarketIssue } from "./newsIssues";
 
 export type FeedTab = "top" | "latest" | "hot" | "holdings" | "watchlist" | "kr" | "us" | "crypto";
 export type RelationKind = "held" | "watchlist" | "both" | "none";
+export type FeedNewsScope = "market_wide" | "symbol_specific" | "mixed" | "kr_market_wide";
 
 export interface FeedRelatedSymbolQuote {
   price?: number | null;
@@ -33,6 +34,11 @@ export interface FeedNewsItem {
   summarySnippet?: string | null;
   relation: RelationKind;
   url: string;
+  // ROB-155 / ROB-169 — additive read-layer classification.
+  scope?: FeedNewsScope;
+  tags?: string[];
+  category?: string | null;
+  noiseReason?: string | null;
 }
 
 export interface FeedNewsMeta {
