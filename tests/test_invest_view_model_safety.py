@@ -41,6 +41,10 @@ import app.services.invest_view_model.relation_resolver
 import app.services.invest_view_model.account_visual
 import app.services.invest_view_model.screener_presets
 import app.services.invest_view_model.screener_service
+import app.services.invest_view_model.stock_detail_candles_service
+import app.services.invest_view_model.stock_detail_orders_service
+import app.services.invest_view_model.stock_detail_service
+import app.services.invest_view_model.stock_detail_symbol_resolver
 print(json.dumps(sorted(sys.modules)))
 """
     env = os.environ.copy()

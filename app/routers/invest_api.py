@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
@@ -27,6 +27,11 @@ from app.schemas.invest_screener import (
     ScreenerResultsResponse,
 )
 from app.schemas.invest_signals import SignalsResponse, SignalTab
+from app.schemas.invest_stock_detail import (
+    StockDetailCandlesResponse,
+    StockDetailOrdersResponse,
+    StockDetailResponse,
+)
 from app.services.invest_home_service import InvestHomeService
 from app.services.invest_screener_snapshots.coverage_service import build_coverage
 from app.services.invest_view_model.account_panel_service import build_account_panel
@@ -38,6 +43,18 @@ from app.services.invest_view_model.screener_service import (
     build_screener_results,
 )
 from app.services.invest_view_model.signals_service import build_signals
+from app.services.invest_view_model.stock_detail_candles_service import (
+    UnsupportedPeriod,
+    build_stock_detail_candles,
+)
+from app.services.invest_view_model.stock_detail_orders_service import (
+    build_stock_detail_orders,
+)
+from app.services.invest_view_model.stock_detail_service import build_stock_detail
+from app.services.invest_view_model.stock_detail_symbol_resolver import (
+    SymbolNotFound,
+    resolve_symbol,
+)
 from app.services.invest_view_model.weekly_summary_service import build_weekly_summary
 
 router = APIRouter(prefix="/invest/api", tags=["invest"])
@@ -91,6 +108,89 @@ async def get_account_panel(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> AccountPanelResponse:
     return await build_account_panel(user_id=user.id, db=db, home_service=service)
+
+
+StockDetailMarketParam = Literal["kr", "us", "crypto"]
+
+
+@router.get("/stock-detail/{market}/{symbol}")
+async def get_stock_detail(
+    market: StockDetailMarketParam,
+    symbol: str,
+    user: Annotated[Any, Depends(get_authenticated_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> StockDetailResponse:
+    try:
+        return await build_stock_detail(
+            user_id=user.id,
+            market=market,
+            symbol=symbol,
+            db=db,
+        )
+    except SymbolNotFound as exc:
+        raise HTTPException(status_code=404, detail="symbol_not_found") from exc
+
+
+@router.get("/stock-detail/{market}/{symbol}/candles")
+async def get_stock_detail_candles(
+    market: StockDetailMarketParam,
+    symbol: str,
+    user: Annotated[Any, Depends(get_authenticated_user)],
+    period: str = Query("1d"),
+) -> StockDetailCandlesResponse:
+    _ = user
+    try:
+        return await build_stock_detail_candles(
+            market=market,
+            symbol=symbol,
+            period=period,
+        )
+    except UnsupportedPeriod as exc:
+        raise HTTPException(status_code=400, detail=exc.code) from exc
+
+
+@router.get("/stock-detail/{market}/{symbol}/news")
+async def get_stock_detail_news(
+    market: StockDetailMarketParam,
+    symbol: str,
+    user: Annotated[Any, Depends(get_authenticated_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    limit: int = Query(30, ge=1, le=100),
+    cursor: str | None = Query(None),
+) -> FeedNewsResponse:
+    try:
+        resolved = await resolve_symbol(market, symbol, db)
+    except SymbolNotFound as exc:
+        raise HTTPException(status_code=404, detail="symbol_not_found") from exc
+    resolver = await build_relation_resolver(db, user_id=user.id, held_pairs=[])
+    return await build_feed_news(
+        db=db,
+        resolver=resolver,
+        tab=market,
+        limit=limit,
+        cursor=cursor,
+        include_quotes=False,
+        symbol_filter=(resolved.symbol_db, market),
+    )
+
+
+@router.get("/stock-detail/{market}/{symbol}/orders")
+async def get_stock_detail_orders(
+    market: StockDetailMarketParam,
+    symbol: str,
+    user: Annotated[Any, Depends(get_authenticated_user)],
+    limit: int = Query(30, ge=1, le=100),
+    cursor: str | None = Query(None),
+    days: int = Query(90, ge=1, le=365),
+) -> StockDetailOrdersResponse:
+    _ = user
+    return await build_stock_detail_orders(
+        market=market,
+        symbol=symbol,
+        days=days,
+        limit=limit,
+        cursor=cursor,
+    )
 
 
 def _held_pairs_from_home(home) -> list[tuple[str, str]]:

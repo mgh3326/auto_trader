@@ -343,9 +343,12 @@ async def build_feed_news(
     limit: int,
     cursor: str | None,
     include_quotes: bool = False,
+    symbol_filter: tuple[str, NewsMarket] | None = None,
 ) -> FeedNewsResponse:
     market_filter: str | None = None
-    if tab in ("kr", "us", "crypto"):
+    if symbol_filter is not None:
+        market_filter = symbol_filter[1]
+    elif tab in ("kr", "us", "crypto"):
         market_filter = tab
 
     # Build market issues for the relevant window so each news item can be
@@ -367,6 +370,15 @@ async def build_feed_news(
     )
     if market_filter:
         stmt = stmt.where(NewsArticle.market == market_filter)
+    if symbol_filter is not None:
+        filter_symbol, filter_market = symbol_filter
+        stmt = stmt.join(
+            NewsArticleRelatedSymbol,
+            NewsArticleRelatedSymbol.article_id == NewsArticle.id,
+        ).where(
+            NewsArticleRelatedSymbol.symbol == filter_symbol,
+            NewsArticleRelatedSymbol.market == filter_market,
+        )
 
     cursor_dt, cursor_id = _decode_cursor(cursor)
     if cursor_dt and cursor_id:
