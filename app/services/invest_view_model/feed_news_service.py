@@ -38,6 +38,34 @@ from app.services.news_entity_matcher import (
 )
 from app.services.news_issue_clustering_service import build_market_issues
 
+_TVSCREENER_FEED_SOURCE_PREFIX = "http_tvscreener_news_"
+_SNIPPET_MAX_CHARS = 240
+
+
+def _summary_snippet_for_row(row: object, analysis_summary: str | None) -> str | None:
+    """Return the best available summary snippet for a feed row.
+
+    Priority:
+    1. analysis_summary (AI-generated) if present.
+    2. row.summary (ingested summary) if present.
+    3. For tvscreener rows only: a 240-char excerpt from article_content.
+    4. None otherwise.
+    """
+    if analysis_summary:
+        return analysis_summary
+    if row.summary:  # type: ignore[union-attr]
+        return row.summary
+    feed_source = getattr(row, "feed_source", None) or ""
+    if not feed_source.startswith(_TVSCREENER_FEED_SOURCE_PREFIX):
+        return None
+    content = getattr(row, "article_content", None)
+    if not content:
+        return None
+    cleaned = " ".join(content.split())
+    if len(cleaned) <= _SNIPPET_MAX_CHARS:
+        return cleaned
+    return cleaned[: _SNIPPET_MAX_CHARS - 1].rstrip() + "…"
+
 
 def _encode_cursor(published_at: datetime | None, article_id: int) -> str:
     payload = {
@@ -415,7 +443,7 @@ async def build_feed_news(
                 market=market_typed,
                 relatedSymbols=related,
                 issueId=issue_id_for_article.get(row.id),
-                summarySnippet=analysis_summary or row.summary,
+                summarySnippet=_summary_snippet_for_row(row, analysis_summary),
                 relation=relation,
                 url=row.url,
                 scope=cast(NewsScope, item_scope),
