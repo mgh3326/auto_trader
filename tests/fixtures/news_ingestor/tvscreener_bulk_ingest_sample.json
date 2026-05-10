@@ -1,0 +1,268 @@
+{
+  "ingestion_run": {
+    "run_uuid": "rob160-contract-sample",
+    "market": "us",
+    "feed_set": "us-tvscreener",
+    "started_at": "2026-05-10T00:00:00+00:00",
+    "finished_at": "2026-05-10T00:01:00+00:00",
+    "source_counts": {
+      "http_tvscreener_news_us": 5
+    }
+  },
+  "articles": [
+    {
+      "fingerprint": "74a2363b3d05634e0c92acf97479fa748d1f79ce17a6e29fe89c6c2c395e92ef",
+      "market": "us",
+      "source": "http_tvscreener_news_us",
+      "title": "Samsung Electronics Posts Record Q1 Revenue",
+      "url": "https://www.tradingview.com/news/DJN_DN20260508011438:0/",
+      "canonical_url": "https://www.tradingview.com/news/DJN_DN20260508011438:0/",
+      "publisher": "Dow Jones Newswires",
+      "published_at": "2026-05-08T21:30:00+00:00",
+      "summary": null,
+      "raw": {
+        "tv_id": "DJN_DN20260508011438:0",
+        "story_path": "/news/DJN_DN20260508011438:0/",
+        "provider_id": "dow-jones",
+        "provider_name": "Dow Jones Newswires",
+        "urgency": 2,
+        "is_exclusive": false,
+        "permission": "provider",
+        "tv_related_symbols": [
+          "KRX:005930"
+        ],
+        "related_symbols_unsupported": [],
+        "stock_candidates": [
+          {
+            "market": "kr",
+            "symbol": "005930",
+            "source": "tv_related_symbol",
+            "match_type": "tv_related",
+            "confidence": 0.9
+          }
+        ],
+        "seed_symbol": "NASDAQ:AAPL",
+        "seed_market": "us",
+        "tv_item": {
+          "id": "DJN_DN20260508011438:0",
+          "title": "Samsung Electronics Posts Record Q1 Revenue",
+          "published": 1778275800,
+          "urgency": 2,
+          "permission": "provider",
+          "relatedSymbols": [
+            {
+              "symbol": "KRX:005930",
+              "logoid": "samsung"
+            }
+          ],
+          "isExclusive": false,
+          "storyPath": "/news/DJN_DN20260508011438:0/",
+          "provider": {
+            "id": "dow-jones",
+            "name": "Dow Jones Newswires",
+            "logo_id": "provider-dow-jones"
+          }
+        }
+      }
+    },
+    {
+      "fingerprint": "a2c7ee463d2d2667039bdc5a126eb32a032c4a2163c6e8c1c3a6045a946ae81e",
+      "market": "us",
+      "source": "http_tvscreener_news_us",
+      "title": "Apple Reports Strong iPhone Sales in Asia",
+      "url": "https://www.tradingview.com/news/DJN_DN20260508011439:0/",
+      "canonical_url": "https://www.tradingview.com/news/DJN_DN20260508011439:0/",
+      "publisher": "Reuters",
+      "published_at": "2026-05-08T21:33:20+00:00",
+      "summary": null,
+      "raw": {
+        "tv_id": "DJN_DN20260508011439:0",
+        "story_path": "/news/DJN_DN20260508011439:0/",
+        "provider_id": "reuters",
+        "provider_name": "Reuters",
+        "urgency": 3,
+        "is_exclusive": false,
+        "permission": "provider",
+        "tv_related_symbols": [
+          "NASDAQ:AAPL"
+        ],
+        "related_symbols_unsupported": [],
+        "stock_candidates": [
+          {
+            "market": "us",
+            "symbol": "AAPL",
+            "source": "tv_related_symbol",
+            "match_type": "tv_related",
+            "confidence": 0.9
+          }
+        ],
+        "seed_symbol": "NASDAQ:AAPL",
+        "seed_market": "us",
+        "tv_item": {
+          "id": "DJN_DN20260508011439:0",
+          "title": "Apple Reports Strong iPhone Sales in Asia",
+          "published": 1778276000,
+          "urgency": 3,
+          "permission": "provider",
+          "relatedSymbols": [
+            {
+              "symbol": "NASDAQ:AAPL",
+              "logoid": "apple"
+            }
+          ],
+          "isExclusive": false,
+          "storyPath": "/news/DJN_DN20260508011439:0/",
+          "provider": {
+            "id": "reuters",
+            "name": "Reuters",
+            "logo_id": "provider-reuters"
+          }
+        }
+      }
+    },
+    {
+      "fingerprint": "ab0662fd26bccc29a050be91c2a41532bcfd34f3d88093fd0bea7a0da75893bc",
+      "market": "us",
+      "source": "http_tvscreener_news_us",
+      "title": "Bitcoin Surges Past 100K as Institutional Demand Rises",
+      "url": "https://www.tradingview.com/news/DJN_DN20260508011440:0/",
+      "canonical_url": "https://www.tradingview.com/news/DJN_DN20260508011440:0/",
+      "publisher": "CoinDesk",
+      "published_at": "2026-05-08T21:36:40+00:00",
+      "summary": null,
+      "raw": {
+        "tv_id": "DJN_DN20260508011440:0",
+        "story_path": "/news/DJN_DN20260508011440:0/",
+        "provider_id": "coindesk",
+        "provider_name": "CoinDesk",
+        "urgency": 2,
+        "is_exclusive": false,
+        "permission": "public",
+        "tv_related_symbols": [
+          "BINANCE:BTCUSDT"
+        ],
+        "related_symbols_unsupported": [],
+        "stock_candidates": [
+          {
+            "market": "crypto",
+            "symbol": "BTCUSDT",
+            "source": "tv_related_symbol",
+            "match_type": "tv_related",
+            "confidence": 0.9
+          }
+        ],
+        "seed_symbol": "NASDAQ:AAPL",
+        "seed_market": "us",
+        "tv_item": {
+          "id": "DJN_DN20260508011440:0",
+          "title": "Bitcoin Surges Past 100K as Institutional Demand Rises",
+          "published": 1778276200,
+          "urgency": 2,
+          "permission": "public",
+          "relatedSymbols": [
+            {
+              "symbol": "BINANCE:BTCUSDT",
+              "logoid": "crypto-bitcoin"
+            }
+          ],
+          "isExclusive": false,
+          "storyPath": "/news/DJN_DN20260508011440:0/",
+          "provider": {
+            "id": "coindesk",
+            "name": "CoinDesk",
+            "logo_id": "provider-coindesk"
+          }
+        }
+      }
+    },
+    {
+      "fingerprint": "828232c148890148dc2c8ad2b07982008ac7c94340ac2a0d82aada582c19e2b6",
+      "market": "us",
+      "source": "http_tvscreener_news_us",
+      "title": "Vodafone Faces Regulatory Pressure in UK Markets",
+      "url": "https://www.tradingview.com/news/DJN_DN20260508011441:0/",
+      "canonical_url": "https://www.tradingview.com/news/DJN_DN20260508011441:0/",
+      "publisher": "Reuters",
+      "published_at": "2026-05-08T21:40:00+00:00",
+      "summary": null,
+      "raw": {
+        "tv_id": "DJN_DN20260508011441:0",
+        "story_path": "/news/DJN_DN20260508011441:0/",
+        "provider_id": "reuters",
+        "provider_name": "Reuters",
+        "urgency": 1,
+        "is_exclusive": false,
+        "permission": "provider",
+        "tv_related_symbols": [
+          "LSE:VOD"
+        ],
+        "related_symbols_unsupported": [
+          "LSE:VOD"
+        ],
+        "stock_candidates": [],
+        "seed_symbol": "NASDAQ:AAPL",
+        "seed_market": "us",
+        "tv_item": {
+          "id": "DJN_DN20260508011441:0",
+          "title": "Vodafone Faces Regulatory Pressure in UK Markets",
+          "published": 1778276400,
+          "urgency": 1,
+          "permission": "provider",
+          "relatedSymbols": [
+            {
+              "symbol": "LSE:VOD",
+              "logoid": "vodafone"
+            }
+          ],
+          "isExclusive": false,
+          "storyPath": "/news/DJN_DN20260508011441:0/",
+          "provider": {
+            "id": "reuters",
+            "name": "Reuters",
+            "logo_id": "provider-reuters"
+          }
+        }
+      }
+    },
+    {
+      "fingerprint": "e1939530069e868b685e6a838aa2eb7e85d7e0e13da8fa0b861582e045a7a057",
+      "market": "us",
+      "source": "http_tvscreener_news_us",
+      "title": "Global Markets Weekly Roundup",
+      "url": "https://www.tradingview.com/news/DJN_DN20260508011442:0/",
+      "canonical_url": "https://www.tradingview.com/news/DJN_DN20260508011442:0/",
+      "publisher": "TradingView",
+      "published_at": "2026-05-08T21:43:20+00:00",
+      "summary": null,
+      "raw": {
+        "tv_id": "DJN_DN20260508011442:0",
+        "story_path": "/news/DJN_DN20260508011442:0/",
+        "provider_id": "tradingview",
+        "provider_name": "TradingView",
+        "urgency": 1,
+        "is_exclusive": false,
+        "permission": "public",
+        "tv_related_symbols": [],
+        "related_symbols_unsupported": [],
+        "stock_candidates": [],
+        "seed_symbol": "NASDAQ:AAPL",
+        "seed_market": "us",
+        "tv_item": {
+          "id": "DJN_DN20260508011442:0",
+          "title": "Global Markets Weekly Roundup",
+          "published": 1778276600,
+          "urgency": 1,
+          "permission": "public",
+          "relatedSymbols": [],
+          "isExclusive": false,
+          "storyPath": "/news/DJN_DN20260508011442:0/",
+          "provider": {
+            "id": "tradingview",
+            "name": "TradingView",
+            "logo_id": "provider-tradingview"
+          }
+        }
+      }
+    }
+  ]
+}
