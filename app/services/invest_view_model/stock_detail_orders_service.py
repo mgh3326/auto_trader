@@ -43,7 +43,8 @@ async def _default_fetch_filled_orders(
 ) -> list[dict[str, Any]]:
     from app.services.n8n_filled_orders_service import fetch_filled_orders
 
-    return await fetch_filled_orders(days=days, markets=markets)
+    payload = await fetch_filled_orders(days=days, markets=",".join(markets))
+    return list(payload.get("orders") or [])
 
 
 async def build_stock_detail_orders(
