@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.symbol import to_db_symbol
@@ -83,7 +84,11 @@ async def build_relation_resolver(
         .join(UserWatchItem, UserWatchItem.instrument_id == Instrument.id)
         .where(UserWatchItem.user_id == user_id, UserWatchItem.is_active.is_(True))
     )
-    result = await db.execute(stmt)
+    try:
+        result = await db.execute(stmt)
+    except SQLAlchemyError:
+        await db.rollback()
+        return resolver
     for sym, instrument_type in result.all():
         if sym is None or instrument_type is None:
             continue

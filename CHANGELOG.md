@@ -16,6 +16,9 @@
 
 ## Unreleased
 
+### Added (ROB-179 — /invest/api/feed/research)
+- New `GET /invest/api/feed/research` endpoint on the existing `/invest/api` router. Exposes the ROB-178 `research_reports` table as a paginated, citation-shaped user feed with cursor pagination, 7 tabs (`top`, `latest`, `mine`, `watchlist`, `holdings`, `kr`, `us`), and filters (`source`, `symbol`, `analyst`, `category`, `query`, `fromDate`, `toDate`). Mirrors `/invest/api/feed/news` shape and conventions. Copyright guardrail tests (recursive scan for body fields) are the structural safety gate.
+
 ### Added (ROB-56 — KIS official mock hard-separation)
 - `MCP_PROFILE` env var (`default` / `hermes-paper-kis`) gates which order tool surface is registered at startup.
 - New `hermes-paper-kis` profile: only `kis_mock_*` typed order tools registered; live order surface (`kis_live_*`, legacy ambiguous tools) physically absent from the MCP tool list.

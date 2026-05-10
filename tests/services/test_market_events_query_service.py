@@ -139,7 +139,7 @@ async def test_query_service_surfaces_currency_field(db_session):
     await db_session.commit()
 
     svc = MarketEventsQueryService(db_session)
-    response = await svc.list_for_date(date(2026, 5, 13))
+    response = await svc.list_for_date(date(2026, 5, 13), category="economic")
     assert len(response.events) == 1
     assert response.events[0].currency == "USD"
     assert response.events[0].country == "US"
