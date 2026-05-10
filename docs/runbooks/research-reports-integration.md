@@ -166,3 +166,60 @@ Pass criteria:
 * `evidence.json -> guardrails.full_text_exported_rejected.rejected == true` and `guardrails.forbidden_body_field_rejected.rejected == true`.
 
 Out of scope: `--store` against news-ingestor, `--download-pdf`, `--extract-text`, Prefect deployment activation, broker/order/watch mutation, HTTP ingest endpoint.
+
+---
+
+## ROB-179: /invest/api/feed/research (user-facing feed)
+
+### Endpoint
+
+```
+GET /invest/api/feed/research
+```
+
+**Auth:** Bearer token via `get_authenticated_user` (same as all `/invest/api/*` endpoints).
+
+### Query parameters
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `tab` | `top\|latest\|mine\|watchlist\|holdings\|kr\|us` | `top` | Scope/sort tab |
+| `limit` | int (1–100) | 30 | Page size |
+| `cursor` | string | null | Opaque base64-JSON cursor for pagination |
+| `source` | string | null | Exact match on `research_reports.source` |
+| `symbol` | string | null | JSONB `@>` filter on `symbol_candidates` |
+| `analyst` | string | null | ILIKE `%analyst%` filter |
+| `category` | string | null | Exact category match |
+| `query` | string | null | ILIKE across title, summary_text, detail_excerpt |
+| `fromDate` | ISO date | null | Inclusive lower bound on `published_at` |
+| `toDate` | ISO date | null | Inclusive upper bound on `published_at` |
+
+### Response shape
+
+See `docs/superpowers/specs/2026-05-11-rob-179-invest-research-api-design.md` §3 for full schema.
+
+### Sample curl
+
+```bash
+curl -H "Authorization: Bearer ***" \
+  "https://your-host/invest/api/feed/research?tab=latest&limit=5"
+```
+
+### Tests
+
+```bash
+uv run pytest tests/test_invest_feed_research_schemas.py -v
+uv run pytest tests/test_invest_feed_cursor.py -v
+uv run pytest tests/test_research_reports_query_service_feed_page.py -v -m integration
+uv run pytest tests/test_invest_feed_research_service.py -v -m integration
+uv run pytest tests/test_invest_api_feed_research_router.py -v -m integration
+uv run pytest tests/test_invest_api_feed_research_copyright_guardrails.py -v -m integration
+uv run pytest tests/test_invest_api_feed_research_router_safety.py -v -m unit
+```
+
+### Safety
+
+* Read-only. No broker / order / watch / scheduler side effects.
+* Response field allowlist asserted in `test_invest_api_feed_research_router.py::test_response_field_allowlist`.
+* Copyright guardrail recursive scan in `test_invest_api_feed_research_copyright_guardrails.py::test_response_excludes_body_fields`.
+* Production smoke acceptance is gated on ROB-178's ingest smoke evidence.
