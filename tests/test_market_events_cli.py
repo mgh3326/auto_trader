@@ -312,3 +312,96 @@ async def test_run_ingest_calls_wisefn_when_flag_enabled(db_session, monkeypatch
 
     assert rc == 0
     assert fake.await_count == 2
+
+
+# ---------------------------------------------------------------------------
+# ROB-184: shared cache + dry-run no-fetch tests
+# ---------------------------------------------------------------------------
+
+SAMPLE_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<weeklyevents>
+  <event>
+    <title>CPI m/m</title>
+    <country>USD</country>
+    <date>05-13-2026</date>
+    <time>8:30am</time>
+    <impact>High</impact>
+    <forecast></forecast>
+    <previous></previous>
+    <actual></actual>
+  </event>
+  <event>
+    <title>Other Event</title>
+    <country>EUR</country>
+    <date>05-19-2026</date>
+    <time>5:00am</time>
+    <impact>Low</impact>
+    <forecast></forecast>
+    <previous></previous>
+    <actual></actual>
+  </event>
+</weeklyevents>
+"""
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_cli_forexfactory_run_reuses_single_cache_across_days(
+    db_session, monkeypatch
+):
+    """A 14-day range must trigger at most two FF XML fetches (thisweek + nextweek)."""
+    from scripts import ingest_market_events as cli
+    from app.services.market_events import forexfactory_helpers as ff
+
+    call_log: list[str] = []
+
+    async def fake_fetch_one(url, **kw):
+        call_log.append(url)
+        return SAMPLE_XML
+
+    monkeypatch.setattr(ff, "_fetch_one_xml", fake_fetch_one)
+    monkeypatch.setattr(
+        ff,
+        "rolling_window_for_today",
+        lambda now: (date(2026, 5, 11), date(2026, 5, 24)),
+    )
+
+    await cli.run_ingest(
+        db=db_session,
+        source="forexfactory",
+        category="economic",
+        market="global",
+        from_date=date(2026, 5, 11),
+        to_date=date(2026, 5, 24),
+        dry_run=False,
+    )
+
+    assert call_log.count(ff.THISWEEK_URL) == 1
+    assert call_log.count(ff.NEXTWEEK_URL) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_cli_dry_run_does_not_call_forexfactory_fetch(monkeypatch):
+    from scripts import ingest_market_events as cli
+    from app.services.market_events import forexfactory_helpers as ff
+
+    called = {"n": 0}
+
+    async def boom(url, **kw):
+        called["n"] += 1
+        raise AssertionError("dry-run must not fetch")
+
+    monkeypatch.setattr(ff, "_fetch_one_xml", boom)
+    rc = await cli.main(
+        [
+            "--source", "forexfactory",
+            "--category", "economic",
+            "--market", "global",
+            "--from-date", "2026-05-11",
+            "--to-date", "2026-05-12",
+            "--dry-run",
+        ]
+    )
+    assert rc == 0
+    assert called["n"] == 0

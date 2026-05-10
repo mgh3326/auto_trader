@@ -186,6 +186,16 @@ async def run_ingest(
         return 0
 
     fn = SUPPORTED[(source, category, market)]
+
+    # Build a single cache for forexfactory runs so thisweek/nextweek XML is
+    # fetched at most once per CLI invocation (not once per partition day).
+    ff_cache = None
+    if (source, category, market) == ("forexfactory", "economic", "global"):
+        from app.services.market_events.forexfactory_helpers import (
+            ForexFactoryWeeklyCache,
+        )
+        ff_cache = ForexFactoryWeeklyCache()
+
     succeeded = 0
     failed = 0
     for d in iter_partition_dates(from_date, to_date):
@@ -195,7 +205,15 @@ async def run_ingest(
             )
             succeeded += 1
             continue
-        result = await fn(db, d)
+        if ff_cache is not None:
+            _cache = ff_cache
+
+            async def _fetch_with_cache(target_date, _c=_cache):
+                return await _c.get_events_for_date(target_date)
+
+            result = await fn(db, d, fetch_rows=_fetch_with_cache)
+        else:
+            result = await fn(db, d)
         await db.commit()
         if result.status == "succeeded":
             succeeded += 1
