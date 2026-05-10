@@ -107,13 +107,13 @@ Do not clone Toss community behavior in MVP. Implement a private, read-only inte
 
 Keep it read-only in stock detail. If editing journals is desired, route to the existing journal workflow rather than adding inline mutations to `/invest/stocks/:market/:symbol`.
 
-## Follow-up Linear issue draft
+## Follow-up Linear issue created
 
-Create only if the team wants ROB-176 to become implementation work:
+Created the one high-value read-only follow-up and linked it to ROB-173/ROB-176:
 
-Title: `ROB-176 follow-up: read-only stock detail 메모/리서치 panel`
+- [ROB-181 — Read-only stock detail 메모/리서치 panel](https://linear.app/mgh3326/issue/ROB-181/read-only-stock-detail-메모리서치-panel)
 
-Body:
+ROB-181 scope:
 
 - Parent: ROB-173. Evidence: `docs/superpowers/plans/2026-05-10-rob-176-options-community-spike.md`.
 - Add a read-only `/invest` stock-detail panel that maps Toss `커뮤니티` value to internal/private `메모/리서치`.
