@@ -33,6 +33,28 @@ _STREAK_LOOKBACK_DEFAULT = 10
 _STREAK_CONCURRENCY = 4
 
 
+def _streak_symbol(row: dict[str, Any]) -> str | None:
+    """Return the symbol field accepted by OHLCV fetchers for streak checks.
+
+    KR tvscreener rows are normalized with ``code`` instead of ``symbol``;
+    US/other rows may use ``symbol`` or ``ticker``.  Without this fallback the
+    post-screen streak enrichment silently skips all KR rows and the
+    ``min_consecutive_up_days`` filter drops every result.
+    """
+    for key in ("symbol", "code", "short_code", "ticker"):
+        raw = row.get(key)
+        if raw is None:
+            continue
+        symbol = str(raw).strip()
+        if not symbol:
+            continue
+        _, sep, suffix = symbol.rpartition(":")
+        if sep and suffix:
+            symbol = suffix
+        return symbol
+    return None
+
+
 async def _enrich_consecutive_up_days(
     rows: list[dict[str, Any]],
     *,
@@ -45,13 +67,13 @@ async def _enrich_consecutive_up_days(
     sem = asyncio.Semaphore(_STREAK_CONCURRENCY)
 
     async def _enrich_one(row: dict[str, Any]) -> None:
-        symbol = row.get("symbol")
+        symbol = _streak_symbol(row)
         if not symbol or row.get("consecutive_up_days") is not None:
             return
         async with sem:
             try:
                 df = await _fetch_ohlcv_for_indicators(
-                    str(symbol), market_type, count=lookback
+                    symbol, market_type, count=lookback
                 )
             except Exception:
                 return

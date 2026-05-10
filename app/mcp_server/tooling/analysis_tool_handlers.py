@@ -636,7 +636,18 @@ async def screen_stocks_impl(
         instrument_types=normalized_request["instrument_types"],
         exclude_sectors=normalized_request["exclude_sectors"],
     )
-    # Use unified screening with automatic data source selection
+    # Use unified screening with automatic data source selection.  Streak filtering
+    # happens after OHLCV enrichment, so fetch a wider candidate pool first;
+    # otherwise the preset can return 0 simply because the first page had no
+    # qualifying streak rows.
+    query_limit = limit
+    if (
+        min_consecutive_up_days is not None
+        and normalized_market in {"kr", "kospi", "kosdaq", "konex", "all", "us"}
+        and normalized_asset_type in {None, "stock"}
+    ):
+        query_limit = min(limit * 5, 100)
+
     result = await analysis_screening.screen_stocks_unified(
         market=normalized_market,
         asset_type=normalized_asset_type,
@@ -651,7 +662,7 @@ async def screen_stocks_impl(
         max_rsi=max_rsi,
         sort_by=normalized_sort_by,
         sort_order=normalized_sort_order,
-        limit=limit,
+        limit=query_limit,
         exclude_sectors=exclude_sectors,
         instrument_types=instrument_types,
         adv_krw_min=adv_krw_min,
@@ -669,7 +680,15 @@ async def screen_stocks_impl(
         rows: list[dict[str, Any]] = list(result.get("results") or [])
         await _enrich_consecutive_up_days(rows, market=normalized_market)
         rows = _apply_min_consecutive_up_days(rows, threshold=min_consecutive_up_days)
-        result = {**result, "results": rows}
+        filters_applied = dict(result.get("filters_applied") or {})
+        if filters_applied:
+            filters_applied["limit"] = limit
+        result = {
+            **result,
+            "filters_applied": filters_applied or result.get("filters_applied"),
+            "results": rows[:limit],
+            "total_count": len(rows),
+        }
     return result
 
 
