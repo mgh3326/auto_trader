@@ -180,3 +180,115 @@ test("renders reason-specific empty state", async () => {
 
   expect(await screen.findByTestId("feed-news-empty")).toHaveTextContent("조건에 맞는 뉴스가 없습니다.");
 });
+
+// ROB-172: symbol chip uses relatedSymbols[].market as asset market authority
+test("ROB-172: symbol chip market badge reflects relatedSymbols market, not source feed market", async () => {
+  // KR-sourced article with a US-listed NVIDIA symbol
+  vi.spyOn(feedApi, "fetchFeedNews").mockResolvedValue(
+    feedResponse({
+      items: [
+        {
+          id: 2,
+          title: "엔비디아 관련 뉴스",
+          market: "kr",
+          sourceMarket: "kr",
+          relatedSymbols: [
+            {
+              symbol: "NVDA",
+              market: "us",
+              displayName: "NVIDIA",
+              relation: "none",
+            },
+          ],
+          relation: "none",
+          url: "https://example.com/nvda-kr",
+        },
+      ],
+      issues: [],
+    }),
+  );
+
+  renderPage();
+
+  const chip = await screen.findByTestId("feed-item-related-symbol-chip");
+  // Chip uses relatedSymbols[].market = "us", not source market "kr"
+  expect(chip).toHaveAttribute("data-market", "us");
+  expect(chip).toHaveTextContent("NVDA");
+  expect(chip).toHaveTextContent("· US");
+  // Source market line should show KR (the feed origin)
+  const sourceMarket = await screen.findByTestId("feed-item-source-market");
+  expect(sourceMarket).toHaveTextContent("KR");
+});
+
+test("ROB-172: source/feed market does not override chip market — NVDA chip stays US even when source is KR", async () => {
+  vi.spyOn(feedApi, "fetchFeedNews").mockResolvedValue(
+    feedResponse({
+      items: [
+        {
+          id: 3,
+          title: "Naver article about NVIDIA",
+          market: "kr",
+          sourceMarket: "kr",
+          relatedSymbols: [
+            {
+              symbol: "NVDA",
+              market: "us",
+              displayName: "NVIDIA",
+              relation: "none",
+            },
+          ],
+          relation: "none",
+          url: "https://example.com/nvda-naver",
+        },
+      ],
+      issues: [],
+    }),
+  );
+
+  renderPage();
+
+  const chip = await screen.findByTestId("feed-item-related-symbol-chip");
+  expect(chip).toHaveAttribute("data-market", "us");
+  // Chip must not show "· KR" (which would mean source market leaked into chip)
+  const marketBadge = chip.querySelector("[data-testid='feed-item-symbol-market']");
+  expect(marketBadge).toHaveTextContent("· US");
+  expect(marketBadge).not.toHaveTextContent("KR");
+});
+
+test("ROB-172: KR-source NVIDIA fixture renders NVDA · US chip", async () => {
+  // Mirrors the production scenario: Naver (KR feed) article mentioning NVIDIA (US asset)
+  vi.spyOn(feedApi, "fetchFeedNews").mockResolvedValue(
+    feedResponse({
+      items: [
+        {
+          id: 9659,
+          title: "엔비디아, 신제품 발표",
+          market: "kr",
+          sourceMarket: "kr",
+          publisher: "네이버 뉴스",
+          relatedSymbols: [
+            {
+              symbol: "NVDA",
+              market: "us",
+              displayName: "NVIDIA",
+              relation: "none",
+            },
+          ],
+          relation: "none",
+          url: "https://example.com/nvda-9659",
+        },
+      ],
+      issues: [],
+    }),
+  );
+
+  renderPage();
+
+  const chip = await screen.findByTestId("feed-item-related-symbol-chip");
+  expect(chip).toHaveAttribute("data-symbol", "NVDA");
+  expect(chip).toHaveAttribute("data-market", "us");
+  expect(chip).toHaveTextContent("NVDA");
+  expect(chip).toHaveTextContent("· US");
+  // Ensure the article-level source market shows KR (feed origin)
+  expect(await screen.findByTestId("feed-item-source-market")).toHaveTextContent("KR");
+});

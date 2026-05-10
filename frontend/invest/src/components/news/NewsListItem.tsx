@@ -48,6 +48,7 @@ function relationTone(relation: FeedNewsItem["relation"]): "accent" | "kis" {
 
 function SymbolChip({ symbol }: { symbol: FeedRelatedSymbol }) {
   const rateText = formatChangeRate(symbol.quote?.changeRate);
+  const marketLabel = MARKET_LABEL[symbol.market];
 
   return (
     <span
@@ -72,6 +73,12 @@ function SymbolChip({ symbol }: { symbol: FeedRelatedSymbol }) {
       }}
     >
       <strong style={{ color: "var(--fg)", fontWeight: 800 }}>{symbol.symbol}</strong>
+      <span
+        data-testid="feed-item-symbol-market"
+        style={{ color: "var(--fg-3)", fontFamily: "var(--font-sans)" }}
+      >
+        · {marketLabel}
+      </span>
       <span style={{ fontFamily: "var(--font-sans)", overflow: "hidden", textOverflow: "ellipsis" }}>
         {symbol.displayName}
       </span>
@@ -109,6 +116,7 @@ export function NewsListItem({
   const ago = formatRelativeTime(item.publishedAt) ?? "시간 미상";
   const source = displaySource(item);
   const summaryButtonLabel = open ? `${item.title} 요약 접기` : `${item.title} 요약 더보기`;
+  const feedMarket = item.sourceMarket ?? item.market;
   const hasSummary = Boolean(item.summarySnippet);
   const issueHref = issue ? `${discoverIssueHrefPrefix}/${encodeURIComponent(issue.id)}` : null;
 
@@ -141,7 +149,7 @@ export function NewsListItem({
           >
             <span>{source}</span>
             <span aria-hidden>·</span>
-            <span>{MARKET_LABEL[item.market]}</span>
+            <span data-testid="feed-item-source-market">{MARKET_LABEL[feedMarket]}</span>
             <span aria-hidden>·</span>
             <span>{ago}</span>
             {relationLabel && (

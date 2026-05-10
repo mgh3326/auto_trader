@@ -29,6 +29,8 @@ export interface FeedNewsItem {
   feedSource?: string | null;
   publishedAt?: string | null;
   market: "kr" | "us" | "crypto";
+  // ROB-172: source/feed origin market, distinct from relatedSymbols[].market (asset market).
+  sourceMarket?: "kr" | "us" | "crypto" | null;
   relatedSymbols: FeedRelatedSymbol[];
   issueId?: string | null;
   summarySnippet?: string | null;
