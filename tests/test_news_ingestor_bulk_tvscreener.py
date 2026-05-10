@@ -42,13 +42,28 @@ def news_schema_for_tvscreener_contract_tests():
         from sqlalchemy import text
 
         # Import model modules before create_all so their tables are registered.
-        import app.models.news  # noqa: F401
-        import app.models.trading  # noqa: F401
         from app.core.db import engine
-        from app.models.base import Base
+        from app.models.news import (
+            NewsAnalysisResult,
+            NewsArticle,
+            NewsArticleRelatedSymbol,
+            NewsIngestionRun,
+        )
+        from app.models.trading import User
 
         async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+            await conn.run_sync(
+                lambda sync_conn: NewsArticle.metadata.create_all(
+                    sync_conn,
+                    tables=[
+                        User.__table__,
+                        NewsArticle.__table__,
+                        NewsArticleRelatedSymbol.__table__,
+                        NewsIngestionRun.__table__,
+                        NewsAnalysisResult.__table__,
+                    ],
+                )
+            )
             # Local dev databases may predate the ROB-46 news market migration;
             # keep this test fixture idempotent without requiring destructive reset.
             await conn.execute(
