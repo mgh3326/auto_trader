@@ -9,6 +9,8 @@ export interface SelectedDateEventsProps {
   events: CalendarEventVM[];
   clusters: CalendarClusterVM[];
   emptyMessage: string;
+  loading?: boolean;
+  error?: string | null;
 }
 
 export function SelectedDateEvents({
@@ -17,31 +19,29 @@ export function SelectedDateEvents({
   events,
   clusters,
   emptyMessage,
+  loading = false,
+  error = null,
 }: SelectedDateEventsProps) {
   const total = events.length + clusters.reduce((s, c) => s + c.count, 0);
+
   return (
     <div
+      className="calendar-selected-date"
       data-testid="selected-date-events"
       data-selected-date={dateIso}
     >
-      <div
-        style={{
-          display: "flex",
-          alignItems: "baseline",
-          gap: 8,
-          padding: "0 6px 8px",
-        }}
-      >
-        <h2 style={{ margin: 0, fontSize: 15, fontWeight: 800, color: "var(--fg)" }}>
-          {dateLabel}
-        </h2>
-        <span style={{ fontSize: 12, color: "var(--fg-3)", fontFeatureSettings: '"tnum"' }}>
+      <div className="calendar-selected-date__header">
+        <h2 className="calendar-selected-date__label">{dateLabel}</h2>
+        <span className="calendar-selected-date__meta">
           {dateIso} · {total}건
         </span>
       </div>
-      {/* Keep `day-events` test id for cross-cutting tests that rely on it. */}
-      <div data-testid="day-events" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-        {events.length === 0 && clusters.length === 0 ? (
+      <div data-testid="day-events" className="calendar-selected-date__list">
+        {loading ? (
+          <SkeletonRows />
+        ) : error ? (
+          <ErrorBanner message={error} />
+        ) : events.length === 0 && clusters.length === 0 ? (
           <EmptyEventState message={emptyMessage} />
         ) : (
           <>
@@ -54,6 +54,26 @@ export function SelectedDateEvents({
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+function SkeletonRows() {
+  return (
+    <div data-testid="calendar-loading" className="calendar-loading">
+      {Array.from({ length: 3 }, (_, i) => (
+        <div key={i} className="calendar-loading__row" aria-hidden="true" />
+      ))}
+      <span className="calendar-loading__sr">일정을 불러오는 중입니다…</span>
+    </div>
+  );
+}
+
+function ErrorBanner({ message }: { message: string }) {
+  return (
+    <div data-testid="calendar-error" role="alert" className="calendar-error">
+      <strong className="calendar-error__title">일정을 불러올 수 없습니다</strong>
+      <span className="calendar-error__detail">{message}</span>
     </div>
   );
 }
