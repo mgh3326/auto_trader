@@ -38,7 +38,6 @@ from app.services.news_entity_matcher import (
 )
 from app.services.news_issue_clustering_service import build_market_issues
 
-
 _TVSCREENER_FEED_SOURCE_PREFIX = "http_tvscreener_news_"
 _SNIPPET_MAX_CHARS = 240
 

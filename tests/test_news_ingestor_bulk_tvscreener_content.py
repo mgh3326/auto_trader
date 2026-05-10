@@ -55,15 +55,14 @@ async def test_tvscreener_bulk_ingest_with_content_persists_article_content(
     assert response.success
     assert response.inserted_count >= 1
 
-    target_url = payload["articles"][0].get("canonical_url") or payload["articles"][0]["url"]
+    target_url = (
+        payload["articles"][0].get("canonical_url") or payload["articles"][0]["url"]
+    )
     result = await db_session.execute(
-        select(NewsArticle.article_content)
-        .where(NewsArticle.url == target_url)
+        select(NewsArticle.article_content).where(NewsArticle.url == target_url)
     )
     article_content = result.scalar_one()
-    assert article_content == (
-        "Quality-gated body text from tvscreener enrichment."
-    )
+    assert article_content == ("Quality-gated body text from tvscreener enrichment.")
 
 
 @pytest.mark.integration
@@ -80,9 +79,10 @@ async def test_tvscreener_bulk_ingest_without_content_leaves_article_content_nul
     response = await ingest_news_ingestor_bulk(request)
     assert response.success
 
-    target_url = payload["articles"][0].get("canonical_url") or payload["articles"][0]["url"]
+    target_url = (
+        payload["articles"][0].get("canonical_url") or payload["articles"][0]["url"]
+    )
     result = await db_session.execute(
-        select(NewsArticle.article_content)
-        .where(NewsArticle.url == target_url)
+        select(NewsArticle.article_content).where(NewsArticle.url == target_url)
     )
     assert result.scalar_one() is None
