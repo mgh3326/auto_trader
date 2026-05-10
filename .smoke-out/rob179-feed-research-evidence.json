@@ -1,0 +1,77 @@
+{
+  "smoke": "rob-179-invest-research-api",
+  "captured_at": "2026-05-10T20:50:04.519940+00:00",
+  "source_used": "rob179-smoke-63105fcd",
+  "invariants_ok": true,
+  "samples": {
+    "top": {
+      "status": 200,
+      "tab": "top",
+      "item_count": 3,
+      "has_next_cursor": true,
+      "forbidden_fields_found": [],
+      "excerpt_lengths": [
+        31,
+        31,
+        31
+      ]
+    },
+    "latest": {
+      "status": 200,
+      "tab": "latest",
+      "item_count": 3,
+      "has_next_cursor": true,
+      "forbidden_fields_found": [],
+      "excerpt_lengths": [
+        31,
+        31,
+        31
+      ]
+    },
+    "kr": {
+      "status": 200,
+      "tab": "kr",
+      "item_count": 3,
+      "has_next_cursor": true,
+      "forbidden_fields_found": [],
+      "excerpt_lengths": [
+        31,
+        31,
+        31
+      ]
+    },
+    "us": {
+      "status": 200,
+      "tab": "us",
+      "item_count": 3,
+      "has_next_cursor": false,
+      "forbidden_fields_found": [],
+      "excerpt_lengths": [
+        31,
+        31,
+        31
+      ]
+    },
+    "mine": {
+      "status": 200,
+      "tab": "mine",
+      "item_count": 0,
+      "has_next_cursor": false,
+      "forbidden_fields_found": [],
+      "excerpt_lengths": []
+    },
+    "watchlist": {
+      "status": 200,
+      "tab": "watchlist",
+      "item_count": 0,
+      "has_next_cursor": false,
+      "forbidden_fields_found": [],
+      "excerpt_lengths": []
+    },
+    "cursor_round_trip": {
+      "page1_count": 3,
+      "next_cursor_present": true,
+      "cursor_disjoint": true
+    }
+  }
+}

@@ -21,6 +21,11 @@ from app.schemas.invest_calendar import (
     WeeklySummaryResponse,
 )
 from app.schemas.invest_feed_news import FeedNewsResponse, FeedTab
+from app.schemas.invest_feed_research import (
+    FeedResearchFilters,
+    FeedResearchResponse,
+    FeedResearchTab,
+)
 from app.schemas.invest_home import InvestHomeResponse
 from app.schemas.invest_screener import (
     ScreenerPresetsResponse,
@@ -37,6 +42,7 @@ from app.services.invest_screener_snapshots.coverage_service import build_covera
 from app.services.invest_view_model.account_panel_service import build_account_panel
 from app.services.invest_view_model.calendar_service import build_calendar
 from app.services.invest_view_model.feed_news_service import build_feed_news
+from app.services.invest_view_model.feed_research_service import build_feed_research
 from app.services.invest_view_model.relation_resolver import build_relation_resolver
 from app.services.invest_view_model.screener_service import (
     build_screener_presets,
@@ -270,6 +276,49 @@ async def get_feed_news(
         cursor=cursor,
         include_quotes=include_quotes,
     )
+
+
+@router.get("/feed/research")
+async def get_feed_research(
+    user: Annotated[Any, Depends(get_authenticated_user)],
+    service: Annotated[InvestHomeService, Depends(get_invest_home_service)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    tab: FeedResearchTab = Query("top"),
+    limit: int = Query(30, ge=1, le=100),
+    cursor: str | None = Query(None),
+    source: str | None = Query(None),
+    symbol: str | None = Query(None),
+    analyst: str | None = Query(None),
+    category: str | None = Query(None),
+    query: str | None = Query(None),
+    from_date: date | None = Query(None, alias="fromDate"),
+    to_date: date | None = Query(None, alias="toDate"),
+) -> FeedResearchResponse:
+    if from_date and to_date and from_date > to_date:
+        raise HTTPException(status_code=400, detail="fromDate must be <= toDate")
+    home = await service.get_home(user_id=user.id)
+    resolver = await build_relation_resolver(
+        db, user_id=user.id, held_pairs=_held_pairs_from_home(home)
+    )
+    try:
+        return await build_feed_research(
+            db=db,
+            resolver=resolver,
+            tab=tab,
+            limit=limit,
+            cursor_str=cursor,
+            filters=FeedResearchFilters(
+                source=source,
+                symbol=symbol,
+                analyst=analyst,
+                category=category,
+                query=query,
+                from_date=from_date,
+                to_date=to_date,
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/screener/presets")
