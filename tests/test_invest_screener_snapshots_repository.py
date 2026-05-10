@@ -12,9 +12,12 @@ from app.services.invest_screener_snapshots.repository import (
 @pytest.mark.asyncio
 async def test_upsert_inserts_then_updates(db_session):
     repo = InvestScreenerSnapshotsRepository(db_session)
+    # Use a synthetic numeric KR-like symbol: some full-suite fixtures clean up
+    # non-market-shaped tickers, and this test commits mid-test to verify upsert.
+    symbol = "900101"
     payload = SnapshotUpsert(
         market="kr",
-        symbol="005930",
+        symbol=symbol,
         snapshot_date=dt.date(2026, 5, 9),
         latest_close=Decimal("78500"),
         prev_close=Decimal("77900"),
@@ -34,7 +37,7 @@ async def test_upsert_inserts_then_updates(db_session):
     await db_session.commit()
 
     rows = await repo.get_fresh(
-        market="kr", symbols=["005930"], on_or_after=dt.date(2026, 5, 9)
+        market="kr", symbols=[symbol], on_or_after=dt.date(2026, 5, 9)
     )
     assert len(rows) == 1
     assert rows[0].consecutive_up_days == 4
