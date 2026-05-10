@@ -127,6 +127,20 @@ test("shows an empty-state message when results are empty", async () => {
 });
 
 
+test("shows a friendly message when screener results fail", async () => {
+  vi.spyOn(screenerApi, "fetchScreenerResults").mockRejectedValue(
+    new Error("screener/results 500"),
+  );
+
+  render(wrap(<DesktopScreenerPage />));
+
+  await waitFor(() =>
+    expect(screen.getByText(/스크리너 데이터를 일시적으로 불러오지 못했습니다/)).toBeInTheDocument(),
+  );
+  expect(screen.queryByText(/screener\/results 500/)).not.toBeInTheDocument();
+});
+
+
 test("switches to the US market", async () => {
   render(wrap(<DesktopScreenerPage />));
   await waitFor(() => expect(screen.getByText("삼성전자")).toBeInTheDocument());

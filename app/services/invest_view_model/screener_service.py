@@ -12,12 +12,14 @@ modules — see tests/test_invest_view_model_safety.py.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from datetime import time as _time
 from typing import Any, Literal, Protocol
 from zoneinfo import ZoneInfo
 
+import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.invest_screener import (
@@ -41,6 +43,9 @@ _KST = ZoneInfo("Asia/Seoul")
 _KR_OPEN = _time(9, 0)
 _KR_CLOSE = _time(15, 30)
 _CACHE_HIT_FRESH_SECONDS = 300
+_SNAPSHOT_FIRST_LIMIT = 20
+_MAX_WARNING_CHARS = 240
+logger = logging.getLogger(__name__)
 
 
 class _ScreeningServiceProto(Protocol):
@@ -49,6 +54,132 @@ class _ScreeningServiceProto(Protocol):
 
 class _ResolverProto(Protocol):
     def relation(self, market: str, symbol: str) -> str: ...
+
+
+def _safe_warning(message: Any) -> str:
+    text = _clean_text(message)
+    if not text:
+        return "스크리너 데이터 소스가 일시적으로 응답하지 않습니다."
+    noisy_markers = (
+        "HTTPSConnectionPool(",
+        "ConnectionError",
+        "ConnectError",
+        "NameResolutionError",
+        "nodename nor servname",
+        "Could not resolve host",
+        "getaddrinfo()",
+        "Max retries exceeded",
+        "api.finnhub.io",
+        "scanner.tradingview.com",
+        "query1.finance.yahoo.com",
+        "query2.finance.yahoo.com",
+        "token=",
+    )
+    if any(marker in text for marker in noisy_markers):
+        return "외부 시세/스크리너 데이터 소스 연결이 일시적으로 불안정해 일부 결과를 갱신하지 못했습니다."
+    if len(text) > _MAX_WARNING_CHARS:
+        return text[: _MAX_WARNING_CHARS - 1].rstrip() + "…"
+    return text
+
+
+def _safe_warnings(messages: Sequence[Any]) -> list[str]:
+    warnings: list[str] = []
+    for message in messages:
+        warning = _safe_warning(message)
+        if warning not in warnings:
+            warnings.append(warning)
+    return warnings
+
+
+def _external_failure_warning(exc: BaseException) -> str:
+    # Keep provider hostnames/tokens out of logs and user-facing warnings; the
+    # error class is enough to diagnose transient DNS/network failures here.
+    logger.warning("invest screener upstream failed: %s", type(exc).__name__)
+    return "외부 시세/스크리너 데이터 소스 연결이 일시적으로 불안정해 캐시된 결과만 표시합니다."
+
+
+def _should_use_snapshot_first(screening_service: Any) -> bool:
+    return (
+        screening_service.__class__.__name__ == "ScreenerService"
+        and screening_service.__class__.__module__ == "app.services.screener_service"
+    )
+
+
+async def _load_consecutive_gainers_from_snapshots(
+    session: AsyncSession | None, *, market: str, limit: int = _SNAPSHOT_FIRST_LIMIT
+) -> list[dict[str, Any]]:
+    if session is None or market not in {"kr", "us"}:
+        return []
+
+    from app.models.invest_screener_snapshot import InvestScreenerSnapshot
+    from app.services.invest_screener_snapshots.freshness import (
+        classify_state,
+        today_trading_date,
+    )
+
+    today = today_trading_date(market)
+    stmt = (
+        sa.select(InvestScreenerSnapshot)
+        .where(
+            InvestScreenerSnapshot.market == market,
+            InvestScreenerSnapshot.consecutive_up_days >= 5,
+            InvestScreenerSnapshot.week_change_rate >= 0,
+        )
+        .order_by(
+            InvestScreenerSnapshot.snapshot_date.desc(),
+            InvestScreenerSnapshot.consecutive_up_days.desc(),
+            InvestScreenerSnapshot.week_change_rate.desc().nullslast(),
+            InvestScreenerSnapshot.change_rate.desc().nullslast(),
+        )
+        .limit(max(limit * 4, limit))
+    )
+    try:
+        result = await session.execute(stmt)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "failed to read invest_screener_snapshots: %s", exc, exc_info=True
+        )
+        return []
+
+    now = datetime.now(UTC)
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for snap in result.scalars().all():
+        if snap.symbol in seen:
+            continue
+        seen.add(snap.symbol)
+        state = classify_state(
+            snapshot_date=snap.snapshot_date,
+            computed_at=snap.computed_at,
+            closes_window_len=len(snap.closes_window or []),
+            today_trading_date_value=today,
+            now=now,
+        )
+        rows.append(
+            {
+                "symbol": snap.symbol,
+                "market": market,
+                "close": float(snap.latest_close)
+                if snap.latest_close is not None
+                else None,
+                "change_rate": float(snap.change_rate)
+                if snap.change_rate is not None
+                else None,
+                "change_amount": float(snap.change_amount)
+                if snap.change_amount is not None
+                else None,
+                "consecutive_up_days": snap.consecutive_up_days,
+                "week_change_rate": float(snap.week_change_rate)
+                if snap.week_change_rate is not None
+                else None,
+                "volume": snap.daily_volume,
+                "daily_closes": list(snap.closes_window or []),
+                "_screener_snapshot_state": state,
+            }
+        )
+        if len(rows) >= limit:
+            break
+    return rows
 
 
 def build_screener_presets() -> ScreenerPresetsResponse:
@@ -358,9 +489,37 @@ async def build_screener_results(
         )
 
     filters = screening_filters_for(preset_id, requested_market)
-    raw = await screening_service.list_screening(**filters)
+    snapshot_rows: list[dict[str, Any]] = []
+    if (
+        preset_id == "consecutive_gainers"
+        and session is not None
+        and _should_use_snapshot_first(screening_service)
+    ):
+        snapshot_rows = await _load_consecutive_gainers_from_snapshots(
+            session,
+            market=requested_market,
+            limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
+        )
+
+    if snapshot_rows:
+        raw = {
+            "results": snapshot_rows,
+            "warnings": [],
+            "timestamp": now().isoformat(),
+            "cache_hit": True,
+        }
+    else:
+        try:
+            raw = await screening_service.list_screening(**filters)
+        except Exception as exc:  # noqa: BLE001
+            raw = {
+                "results": [],
+                "warnings": [_external_failure_warning(exc)],
+                "timestamp": datetime.now(UTC).isoformat(),
+                "cache_hit": False,
+            }
     rows: list[dict[str, Any]] = list(raw.get("results") or raw.get("stocks") or [])
-    upstream_warnings: list[str] = list(raw.get("warnings") or [])
+    upstream_warnings: list[str] = _safe_warnings(list(raw.get("warnings") or []))
 
     # ROB-170 follow-up: snapshot-first hydration runs at the view-model layer so
     # the session reaches _enrich_consecutive_up_days. Without this call the

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -51,6 +52,60 @@ def _stub_screening_rows() -> list[dict[str, Any]]:
             "rsi": None,
         },
     ]
+
+
+class _FakeScalarResult:
+    def __init__(self, rows: list[Any]) -> None:
+        self._rows = rows
+
+    def all(self) -> list[Any]:
+        return self._rows
+
+
+class _FakeExecuteResult:
+    def __init__(
+        self, *, scalar_rows: list[Any] | None = None, rows: list[Any] | None = None
+    ) -> None:
+        self._scalar_rows = scalar_rows or []
+        self._rows = rows or []
+
+    def scalars(self) -> _FakeScalarResult:
+        return _FakeScalarResult(self._scalar_rows)
+
+    def all(self) -> list[Any]:
+        return self._rows
+
+
+class _FakeSession:
+    def __init__(self, results: list[_FakeExecuteResult]) -> None:
+        self.results = list(results)
+        self.calls = 0
+
+    async def execute(self, stmt: Any) -> _FakeExecuteResult:  # noqa: ARG002
+        self.calls += 1
+        if not self.results:
+            return _FakeExecuteResult()
+        return self.results.pop(0)
+
+
+class _FakeSnapshot:
+    def __init__(self, **kwargs: Any) -> None:
+        self.market = kwargs.get("market", "kr")
+        self.symbol = kwargs["symbol"]
+        self.snapshot_date = kwargs.get("snapshot_date", date(2026, 5, 11))
+        self.latest_close = kwargs.get("latest_close", Decimal("80000"))
+        self.prev_close = kwargs.get("prev_close", Decimal("79000"))
+        self.change_amount = kwargs.get("change_amount", Decimal("1000"))
+        self.change_rate = kwargs.get("change_rate", Decimal("1.2658"))
+        self.consecutive_up_days = kwargs.get("consecutive_up_days", 6)
+        self.week_change_rate = kwargs.get("week_change_rate", Decimal("3.5"))
+        self.closes_window = kwargs.get(
+            "closes_window", [76000, 77000, 78000, 79000, 80000]
+        )
+        self.daily_volume = kwargs.get("daily_volume", 1234567)
+        self.computed_at = kwargs.get(
+            "computed_at", datetime(2026, 5, 11, 0, 30, tzinfo=UTC)
+        )
 
 
 class _FakeResolver:
@@ -821,3 +876,73 @@ async def test_build_screener_results_emits_freshness_previous_session_when_mark
     )
     assert resp.freshness.source == "previous_session"
     assert resp.freshness.relativeLabel == "전 거래일 기준"
+
+
+class _FakeProductionScreening:
+    __module__ = "app.services.screener_service"
+    __name__ = "ScreenerService"
+
+    def __init__(self) -> None:
+        self.list_screening = AsyncMock(
+            side_effect=AssertionError("external call should be skipped")
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_screener_results_uses_snapshots_before_external_screening() -> (
+    None
+):
+    fake_screening = type(
+        "ScreenerService",
+        (_FakeProductionScreening,),
+        {"__module__": "app.services.screener_service"},
+    )()
+    resolver = _FakeResolver(watched={("kr", "005930")})
+    session = _FakeSession(
+        [
+            _FakeExecuteResult(scalar_rows=[_FakeSnapshot(symbol="005930")]),
+            _FakeExecuteResult(scalar_rows=[_FakeSnapshot(symbol="005930")]),
+            _FakeExecuteResult(
+                rows=[type("NameRow", (), {"symbol": "005930", "name": "삼성전자"})()]
+            ),
+        ]
+    )
+
+    resp = await build_screener_results(
+        preset_id="consecutive_gainers",
+        screening_service=fake_screening,
+        resolver=resolver,
+        session=session,
+    )
+
+    fake_screening.list_screening.assert_not_called()
+    assert resp.results[0].symbol == "005930"
+    assert resp.results[0].name == "삼성전자"
+    assert resp.results[0].metricValueLabel == "6일"
+    assert resp.freshness.cacheHit is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_screener_results_redacts_external_connection_failures() -> None:
+    fake_screening = MagicMock()
+    fake_screening.list_screening = AsyncMock(
+        side_effect=ConnectionError(
+            "HTTPSConnectionPool(host='api.finnhub.io', port=443): token=secret Max retries exceeded"
+        )
+    )
+    resolver = _FakeResolver(watched=set())
+
+    resp = await build_screener_results(
+        preset_id="consecutive_gainers",
+        screening_service=fake_screening,
+        resolver=resolver,
+    )
+
+    assert resp.results == []
+    assert resp.warnings == [
+        "외부 시세/스크리너 데이터 소스 연결이 일시적으로 불안정해 캐시된 결과만 표시합니다."
+    ]
+    assert "api.finnhub" not in " ".join(resp.warnings)
+    assert "secret" not in " ".join(resp.warnings)
