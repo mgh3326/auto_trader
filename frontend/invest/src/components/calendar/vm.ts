@@ -255,6 +255,67 @@ export function clampSelectedDateToMonth(selectedDateIso: string, monthCursor: D
   return fmtLocal(startOfMonth(monthCursor));
 }
 
+// --- ROB-185 grouped-monthly timeline helpers ---
+
+const KOREAN_DOW: readonly string[] = ["일", "월", "화", "수", "목", "금", "토"];
+
+export function monthDaysIso(monthCursor: Date): string[] {
+  const first = startOfMonth(monthCursor);
+  const last = endOfMonth(monthCursor);
+  const out: string[] = [];
+  const cur = new Date(first);
+  while (cur.getTime() <= last.getTime()) {
+    out.push(fmtLocal(cur));
+    cur.setDate(cur.getDate() + 1);
+  }
+  return out;
+}
+
+export function dayHeaderLabel(dateIso: string, todayIso: string): string {
+  const [, mStr, dStr] = dateIso.split("-");
+  const month = Number.parseInt(mStr ?? "0", 10);
+  const day = Number.parseInt(dStr ?? "0", 10);
+  const dow = KOREAN_DOW[new Date(`${dateIso}T00:00:00`).getDay()] ?? "";
+  const base = `${month}월 ${day}일 (${dow})`;
+  const prefix = relativeDayPrefix(dateIso, todayIso);
+  return prefix == null ? base : `${prefix} · ${base}`;
+}
+
+export function dayTotalLabel(total: number): string {
+  if (total <= 0) return "";
+  return `일정 ${total}개`;
+}
+
+export function dayEmptyLabel(): string {
+  return "이 날은 예정된 일정이 없어요";
+}
+
+export function monthEmptyLabel(): string {
+  return "이번 달은 예정된 주요 일정이 없어요";
+}
+
+const SOURCE_FRIENDLY_MAP: Record<string, string> = {
+  finnhub: "미국 실적 일정",
+  dart: "한국 공시",
+  forexfactory: "경제 지표",
+};
+
+export function sourceFriendlyLabel(source: string): string {
+  return SOURCE_FRIENDLY_MAP[source] ?? "기타 일정";
+}
+
+export function sourceStaleStatusCopy(status: CalendarSourceStatus): string | null {
+  switch (status.state) {
+    case "fresh":
+      return null;
+    case "stale":
+      return "방금 업데이트되지 않았어요";
+    case "failed":
+    case "missing":
+      return "잠시 후 다시 확인할게요";
+  }
+}
+
 // --- ROB-167 freshness helpers ---
 
 export function dataStateLabel(state: CalendarDayState): string {
