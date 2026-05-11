@@ -205,7 +205,11 @@ def _actionability_for_surface(
     if queue in _SCHEDULER_QUEUES:
         gates.append("scheduler_activation_approval")
     if state == "missing":
-        action = "backfill_candidate" if queue != "provider-contract" else "provider_contract_needed"
+        action = (
+            "backfill_candidate"
+            if queue != "provider-contract"
+            else "provider_contract_needed"
+        )
         priority = "high"
     else:
         action = "repair_read_model"
@@ -219,7 +223,9 @@ def _actionability_for_surface(
     )
 
 
-def _actionability_for_symbol(surfaces: dict[str, CoverageState]) -> CoverageActionability:
+def _actionability_for_symbol(
+    surfaces: dict[str, CoverageState],
+) -> CoverageActionability:
     actionable_states = {
         name: state
         for name, state in surfaces.items()
@@ -252,7 +258,10 @@ def _actionability_for_symbol(surfaces: dict[str, CoverageState]) -> CoverageAct
             priority="high",
             action="backfill_candidate",
             queue="invest-data-read-models",
-            approvalGates=["production_db_write_approval", "scheduler_activation_approval"],
+            approvalGates=[
+                "production_db_write_approval",
+                "scheduler_activation_approval",
+            ],
             reason="One or more symbol diagnostics are missing; this is a candidate only, not an execution trigger.",
         )
     return CoverageActionability(
@@ -1207,9 +1216,7 @@ def _unsupported_symbol_row(symbol: str, market: str) -> InvestCoverageSymbol:
         "investor_flow": "unsupported",
         "naver_investor_flow": "unsupported",
     }
-    latest_dates: dict[str, dt.date | None] = {
-        surface: None for surface in surfaces
-    }
+    latest_dates: dict[str, dt.date | None] = dict.fromkeys(surfaces)
     display_market = market if market in {"crypto", "unknown"} else market
     return InvestCoverageSymbol(
         symbol=symbol,

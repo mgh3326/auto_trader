@@ -214,10 +214,17 @@ async def test_build_invest_coverage_reports_fresh_partial_and_provider_unwired(
     assert by_surface[("quotes", "kr")].state == "provider_unwired"
     assert by_surface[("ohlcv", "kr")].state == "provider_unwired"
     assert by_surface[("screener_snapshots", "kr")].actionability.priority == "medium"
-    assert by_surface[("screener_snapshots", "kr")].actionability.action == "repair_read_model"
-    assert by_surface[("orderbook_nxt_capability", "kr")].actionability.priority == "high"
+    assert (
+        by_surface[("screener_snapshots", "kr")].actionability.action
+        == "repair_read_model"
+    )
+    assert (
+        by_surface[("orderbook_nxt_capability", "kr")].actionability.priority == "high"
+    )
     assert by_surface[("quotes", "kr")].actionability.priority == "blocked"
-    assert by_surface[("quotes", "kr")].actionability.action == "provider_contract_needed"
+    assert (
+        by_surface[("quotes", "kr")].actionability.action == "provider_contract_needed"
+    )
     assert response.symbols[0].surfaces["screener_snapshots"] == "fresh"
     assert response.symbols[1].surfaces["screener_snapshots"] == "stale"
     assert response.symbols[1].actionability.priority == "high"
@@ -230,22 +237,34 @@ async def test_all_market_symbol_drilldown_resolves_per_symbol_market(db_session
     now_naive = now.replace(tzinfo=None)
 
     await db_session.execute(
-        sa.delete(NewsArticleRelatedSymbol).where(NewsArticleRelatedSymbol.id.in_([9720, 9721]))
+        sa.delete(NewsArticleRelatedSymbol).where(
+            NewsArticleRelatedSymbol.id.in_([9720, 9721])
+        )
     )
-    await db_session.execute(sa.delete(NewsArticle).where(NewsArticle.id.in_([9620, 9621])))
+    await db_session.execute(
+        sa.delete(NewsArticle).where(NewsArticle.id.in_([9620, 9621]))
+    )
     await db_session.execute(
         sa.delete(InvestScreenerSnapshot).where(
             InvestScreenerSnapshot.id.in_([9220, 9221])
         )
     )
-    await db_session.execute(sa.delete(KRSymbolUniverse).where(KRSymbolUniverse.symbol == "900230"))
-    await db_session.execute(sa.delete(USSymbolUniverse).where(USSymbolUniverse.symbol == "ROB203"))
+    await db_session.execute(
+        sa.delete(KRSymbolUniverse).where(KRSymbolUniverse.symbol == "900230")
+    )
+    await db_session.execute(
+        sa.delete(USSymbolUniverse).where(USSymbolUniverse.symbol == "ROB203")
+    )
     await db_session.commit()
 
     db_session.add_all(
         [
-            KRSymbolUniverse(symbol="900230", name="ROB203 KR", exchange="KOSPI", is_active=True),
-            USSymbolUniverse(symbol="ROB203", exchange="NASDAQ", name_en="ROB203 US", is_active=True),
+            KRSymbolUniverse(
+                symbol="900230", name="ROB203 KR", exchange="KOSPI", is_active=True
+            ),
+            USSymbolUniverse(
+                symbol="ROB203", exchange="NASDAQ", name_en="ROB203 US", is_active=True
+            ),
             InvestScreenerSnapshot(
                 id=9220,
                 market="kr",
