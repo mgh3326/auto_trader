@@ -287,3 +287,82 @@ async def test_weekly_cache_returns_none_for_dates_outside_window(monkeypatch):
     cache = ff.ForexFactoryWeeklyCache(now_utc=datetime(2026, 5, 13, 12, 0, tzinfo=UTC))
     assert await cache.get_events_for_date(date(2026, 4, 30)) is None
     assert await cache.get_events_for_date(date(2026, 5, 30)) is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_weekly_cache_uses_thisweek_after_early_upstream_rollover(monkeypatch):
+    from app.services.market_events import forexfactory_helpers as ff
+
+    rolled_thisweek_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<weeklyevents>
+  <event>
+    <title>FOMC Member Speaks</title>
+    <country>USD</country>
+    <date>05-11-2026</date>
+    <time>9:00am</time>
+    <impact>Medium</impact>
+    <forecast></forecast>
+    <previous></previous>
+    <actual></actual>
+  </event>
+</weeklyevents>
+"""
+    call_log: list[str] = []
+
+    async def fake_fetch(url, **kw):
+        call_log.append(url)
+        if url == ff.NEXTWEEK_URL:
+            raise AssertionError(
+                "nextweek should not be fetched when thisweek covers target"
+            )
+        return rolled_thisweek_xml
+
+    monkeypatch.setattr(ff, "_fetch_one_xml", fake_fetch)
+
+    # 2026-05-11 03:30 UTC == Sunday 2026-05-10 23:30 ET, before local Monday.
+    cache = ff.ForexFactoryWeeklyCache(now_utc=datetime(2026, 5, 11, 3, 30, tzinfo=UTC))
+    rows = await cache.get_events_for_date(date(2026, 5, 11))
+
+    assert [r["title"] for r in rows] == ["FOMC Member Speaks"]
+    assert call_log == [ff.THISWEEK_URL]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_weekly_cache_returns_empty_when_thisweek_payload_covers_blank_day(
+    monkeypatch,
+):
+    from app.services.market_events import forexfactory_helpers as ff
+
+    rolled_thisweek_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<weeklyevents>
+  <event>
+    <title>NFIB Small Business Index</title>
+    <country>USD</country>
+    <date>05-12-2026</date>
+    <time>6:00am</time>
+    <impact>Low</impact>
+    <forecast></forecast>
+    <previous></previous>
+    <actual></actual>
+  </event>
+</weeklyevents>
+"""
+    call_log: list[str] = []
+
+    async def fake_fetch(url, **kw):
+        call_log.append(url)
+        if url == ff.NEXTWEEK_URL:
+            raise AssertionError(
+                "nextweek should not be fetched for a blank day in thisweek"
+            )
+        return rolled_thisweek_xml
+
+    monkeypatch.setattr(ff, "_fetch_one_xml", fake_fetch)
+
+    cache = ff.ForexFactoryWeeklyCache(now_utc=datetime(2026, 5, 11, 3, 30, tzinfo=UTC))
+    rows = await cache.get_events_for_date(date(2026, 5, 11))
+
+    assert rows == []
+    assert call_log == [ff.THISWEEK_URL]
