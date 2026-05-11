@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.invest_feed_news import NewsMarket
 from app.schemas.invest_stock_detail import (
+    StockDetailDiscussionSignal,
     StockDetailHolding,
     StockDetailLatestAnalysis,
     StockDetailNaverEnrichment,
@@ -18,6 +19,9 @@ from app.schemas.invest_stock_detail import (
     StockDetailResponse,
     default_capabilities_for_market,
     orderbook_support_for_market,
+)
+from app.services.invest_view_model.naver_discussion_signal_poc import (
+    build_naver_discussion_signal_poc,
 )
 from app.services.invest_view_model.naver_stock_detail_poc import (
     build_naver_stock_detail_poc,
@@ -64,6 +68,7 @@ async def build_stock_detail(
     latest_analysis_provider: Provider = _none_provider,
     orderbook_provider: Provider = _none_provider,
     naver_enrichment_provider: Provider = build_naver_stock_detail_poc,
+    discussion_signal_provider: Provider = build_naver_discussion_signal_poc,
 ) -> StockDetailResponse:
     """Build the read-only above-the-fold stock-detail view-model.
 
@@ -102,6 +107,11 @@ async def build_stock_detail(
         naver_enrichment_provider(market, resolved.symbol_db, db),
         warnings,
     )
+    discussion_signal_task = _run_optional_block(
+        "discussion_signal",
+        discussion_signal_provider(market, resolved.symbol_db, db),
+        warnings,
+    )
     if market == "kr":
         orderbook_task = _run_optional_block(
             "orderbook", orderbook_provider(market, resolved.symbol_db, db), warnings
@@ -116,6 +126,7 @@ async def build_stock_detail(
         holding,
         latest_analysis,
         naver_enrichment,
+        discussion_signal,
         orderbook,
     ) = await asyncio.gather(
         quote_task,
@@ -124,6 +135,7 @@ async def build_stock_detail(
         holding_task,
         latest_analysis_task,
         naver_enrichment_task,
+        discussion_signal_task,
         orderbook_task,
     )
 
@@ -155,6 +167,10 @@ async def build_stock_detail(
         naver_enrichment = StockDetailNaverEnrichment.model_validate(
             naver_enrichment
         )
+    if discussion_signal is not None and not isinstance(
+        discussion_signal, StockDetailDiscussionSignal
+    ):
+        discussion_signal = StockDetailDiscussionSignal.model_validate(discussion_signal)
     if orderbook is not None and not isinstance(orderbook, StockDetailOrderbook):
         orderbook = StockDetailOrderbook.model_validate(orderbook)
 
@@ -171,6 +187,7 @@ async def build_stock_detail(
         screenerSnapshot=screener_snapshot,
         valuation=valuation,
         naverEnrichment=naver_enrichment,
+        discussionSignal=discussion_signal,
         holding=holding,
         latestAnalysis=latest_analysis,
         orderbookSupport=orderbook_support,

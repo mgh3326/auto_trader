@@ -8,6 +8,8 @@ from pydantic import ValidationError
 from app.schemas.invest_stock_detail import (
     CapabilityFlag,
     StockDetailCapabilities,
+    StockDetailDiscussionSignal,
+    StockDetailDiscussionSignalMetric,
     StockDetailHolding,
     StockDetailOrderbook,
     StockDetailOrderbookLevel,
@@ -112,6 +114,126 @@ def test_naver_enrichment_documents_fixture_backed_read_only_poc():
     assert response.naverEnrichment.liveFetchEnabled is False
     assert response.naverEnrichment.endpoints[0].status == "verified_200"
     assert "raw public discussion post text" in response.naverEnrichment.noGoFields
+
+
+def test_discussion_signal_kr_fixture_backed_aggregate_only():
+    signal = StockDetailDiscussionSignal(
+        market="kr",
+        symbol="005930",
+        naverCode="005930",
+        status="no_go_pending_review",
+        liveFetchEnabled=False,
+        freshness="fixture",
+        observedAt=datetime(2026, 5, 11, 6, 0, tzinfo=UTC),
+        windowLabel="ROB-199 one-off aggregate rankings probe",
+        activityRank=5,
+        postCount=128,
+        commentCount=342,
+        reactionCount=911,
+        momentum="rising",
+        metrics=[
+            StockDetailDiscussionSignalMetric(label="activity_rank", value=5, unit="rank"),
+            StockDetailDiscussionSignalMetric(label="post_count", value=128, unit="count"),
+        ],
+        mappedFields=["discussion.activityRank", "discussion.postCount"],
+        noGoFields=["public discussion post text"],
+        risk="aggregate signal only",
+        docsPath="docs/invest/naver-discussion-signal-poc.md",
+    )
+    assert signal.liveFetchEnabled is False
+    assert signal.momentum == "rising"
+    assert signal.activityRank == 5
+    assert signal.source == "naver_discussion_signal_poc"
+
+
+def test_discussion_signal_rejects_live_fetch():
+    with pytest.raises(ValidationError, match="must not enable live fetching"):
+        StockDetailDiscussionSignal(
+            market="kr",
+            symbol="005930",
+            naverCode="005930",
+            liveFetchEnabled=True,
+            windowLabel="bad",
+            risk="x",
+            docsPath="x",
+        )
+
+
+def test_discussion_signal_rejects_ugc_field_labels():
+    with pytest.raises(ValidationError, match="aggregate metrics only"):
+        StockDetailDiscussionSignal(
+            market="kr",
+            symbol="005930",
+            naverCode="005930",
+            liveFetchEnabled=False,
+            windowLabel="test",
+            metrics=[
+                StockDetailDiscussionSignalMetric(label="post_title", value="삼성전자 전망", unit=None),
+            ],
+            risk="x",
+            docsPath="x",
+        )
+
+
+def test_discussion_signal_null_for_crypto_in_response():
+    response = StockDetailResponse.model_validate(
+        {
+            "symbol": "KRW-BTC",
+            "market": "crypto",
+            "displayName": "비트코인",
+            "exchange": "Upbit",
+            "instrumentType": "crypto",
+            "currency": "KRW",
+            "assetType": "crypto",
+            "assetCategory": "crypto",
+            "quote": None,
+            "screenerSnapshot": None,
+            "valuation": None,
+            "naverEnrichment": None,
+            "discussionSignal": None,
+            "holding": None,
+            "latestAnalysis": None,
+            "orderbookSupport": {"supported": False, "reason": "crypto_deferred"},
+            "orderbook": None,
+            "capabilities": default_capabilities_for_market("crypto"),
+            "meta": {"computedAt": datetime.now(UTC), "warnings": []},
+        }
+    )
+    assert response.discussionSignal is None
+
+
+def test_discussion_signal_wired_into_stock_detail_response():
+    response = StockDetailResponse.model_validate(
+        _base_response(
+            discussionSignal={
+                "source": "naver_discussion_signal_poc",
+                "market": "kr",
+                "symbol": "005930",
+                "naverCode": "005930",
+                "status": "no_go_pending_review",
+                "liveFetchEnabled": False,
+                "freshness": "fixture",
+                "observedAt": "2026-05-11T06:00:00Z",
+                "windowLabel": "ROB-199 one-off aggregate rankings probe",
+                "activityRank": 5,
+                "postCount": 128,
+                "commentCount": 342,
+                "reactionCount": 911,
+                "momentum": "rising",
+                "metrics": [
+                    {"label": "activity_rank", "value": 5, "unit": "rank"},
+                ],
+                "mappedFields": ["discussion.activityRank"],
+                "noGoFields": ["public discussion post text"],
+                "risk": "aggregate signal only",
+                "docsPath": "docs/invest/naver-discussion-signal-poc.md",
+            }
+        )
+    )
+    assert response.discussionSignal is not None
+    assert response.discussionSignal.liveFetchEnabled is False
+    assert response.discussionSignal.activityRank == 5
+    assert response.discussionSignal.momentum == "rising"
 
 
 def test_orderbook_required_iff_supported():
