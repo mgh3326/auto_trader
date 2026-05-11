@@ -3,6 +3,7 @@ import { Icon } from "../ds";
 
 const LINKS: { to: string; label: string; end?: boolean }[] = [
   { to: "/", label: "홈", end: true },
+  { to: "/my", label: "MY" },
   { to: "/feed/news", label: "뉴스" },
   { to: "/discover", label: "발견" },
   { to: "/signals", label: "시그널" },

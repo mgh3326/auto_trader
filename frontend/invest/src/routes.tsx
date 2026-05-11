@@ -1,7 +1,29 @@
 // frontend/invest/src/routes.tsx
+//
+// /invest route contract (ROB-195)
+// ─────────────────────────────────────────────────────────────────────────────
+// /invest (/)               — Home / market-entry role.
+//                             Shows: account summary hero, market index strip,
+//                             key navigation shortcuts.
+//                             Does NOT show a full holdings ledger.
+//
+// /invest/my                — Detailed holdings / portfolio table.
+//                             Shows: hero summary + full holdings table with
+//                             account/category filtering.
+//                             Naver-style unified table implemented by ROB-196.
+//
+// /invest/feed/news         — News and research feed.
+// /invest/discover          — Issue discovery / investment ideas.
+// /invest/signals           — AI analysis signals.
+// /invest/calendar          — Earnings/events calendar.
+// /invest/coverage          — Data coverage dashboard.
+// /invest/screener          — Stock screener (골라보기).
+// /invest/stocks/:m/:sym    — Stock detail page.
+// ─────────────────────────────────────────────────────────────────────────────
 import { createBrowserRouter, Navigate, useLocation, useParams } from "react-router-dom";
 import { DiscoverIssueDetailPage } from "./pages/DiscoverIssueDetailPage";
 import { InvestHomeRoute } from "./pages/desktop/DesktopHomePage";
+import { InvestPortfolioRoute } from "./pages/desktop/DesktopPortfolioPage";
 import { FeedNewsRoute } from "./pages/desktop/DesktopFeedNewsPage";
 import { InvestDiscoverRoute } from "./pages/desktop/DesktopDiscoverPage";
 import { SignalsRoute } from "./pages/desktop/DesktopSignalsPage";
@@ -31,7 +53,13 @@ export const router = createBrowserRouter(
   [
     // Canonical /invest routes — the home view is responsive
     // (DesktopHomePage at >=900px, MobileHomePage below).
+    // Home role: market entry / account summary / navigation shortcuts only.
     { path: "/", element: <InvestHomeRoute /> },
+
+    // Portfolio/holdings — dedicated surface for the full holdings ledger.
+    // Home (/invest) intentionally omits this to avoid being a holdings duplicate.
+    { path: "/my", element: <InvestPortfolioRoute /> },
+
     { path: "/feed/news", element: <FeedNewsRoute /> },
     { path: "/discover", element: <InvestDiscoverRoute /> },
     { path: "/discover/issues/:issueId", element: <DiscoverIssueDetailPage /> },
