@@ -11,6 +11,14 @@ export type CapabilityUnsupportedReason =
   | "unsupported_period";
 export type ValuationFreshness = "ok" | "stale" | "unsupported" | "error";
 export type ScreenerSnapshotFreshness = "fresh" | "stale" | "missing";
+export type NaverPocStatus = "fixture_backed_poc" | "no_go";
+export type NaverEndpointStatus =
+  | "verified_200"
+  | "verified_200_signal_only"
+  | "page_candidate"
+  | "needs_auth_or_contract_check"
+  | "unsupported"
+  | "error";
 export type OrderSide = "buy" | "sell" | string;
 export type AnalysisDecision = "buy" | "hold" | "sell";
 
@@ -66,6 +74,29 @@ export interface StockDetailValuation {
   freshness: ValuationFreshness;
 }
 
+export interface StockDetailNaverEndpointProbe {
+  surface: string;
+  url: string;
+  status: NaverEndpointStatus;
+  payloadFields: string[];
+  mappedFields: string[];
+  risk: string;
+}
+
+export interface StockDetailNaverEnrichment {
+  source: "naver_stock_detail_poc";
+  market: StockDetailMarket;
+  symbol: string;
+  naverCode: string;
+  pageUrl: string;
+  status: NaverPocStatus;
+  liveFetchEnabled: boolean;
+  endpoints: StockDetailNaverEndpointProbe[];
+  usefulFields: string[];
+  noGoFields: string[];
+  docsPath: string;
+}
+
 export interface StockDetailHolding {
   totalQuantity: number;
   averageCost: number | null;
@@ -116,6 +147,7 @@ export interface StockDetailResponse {
   quote: StockDetailQuote | null;
   screenerSnapshot: StockDetailScreenerSnapshot | null;
   valuation: StockDetailValuation | null;
+  naverEnrichment: StockDetailNaverEnrichment | null;
   holding: StockDetailHolding | null;
   latestAnalysis: StockDetailLatestAnalysis | null;
   orderbookSupport: StockDetailOrderbookSupport;

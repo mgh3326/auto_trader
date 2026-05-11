@@ -48,6 +48,36 @@ const aboveFold: StockDetailResponse = {
     asOf: "2026-05-09T00:00:00Z",
     freshness: "ok",
   },
+  naverEnrichment: {
+    source: "naver_stock_detail_poc",
+    market: "us",
+    symbol: "QQQM",
+    naverCode: "QQQM.O",
+    pageUrl: "https://stock.naver.com/worldstock/stock/QQQM.O/price",
+    status: "fixture_backed_poc",
+    liveFetchEnabled: false,
+    endpoints: [
+      {
+        surface: "worldstock_price_polling",
+        url: "https://stock.naver.com/api/polling/worldstock/stock?reutersCodes=QQQM.O",
+        status: "verified_200",
+        payloadFields: ["datas[].closePrice"],
+        mappedFields: ["quote.price"],
+        risk: "Do not poll without approval.",
+      },
+      {
+        surface: "worldstock_finance_overview",
+        url: "https://stock.naver.com/worldstock/stock/QQQM.O/finance/overview",
+        status: "page_candidate",
+        payloadFields: ["financial rows"],
+        mappedFields: ["valuation"],
+        risk: "Needs contract discovery.",
+      },
+    ],
+    usefulFields: ["source freshness / polling interval", "valuation/profile rows", "related news citation metadata"],
+    noGoFields: ["raw public discussion post text", "scheduled polling/backfill without explicit approval"],
+    docsPath: "docs/invest/naver-stock-detail-raw-data-poc.md",
+  },
   holding: {
     totalQuantity: 2,
     averageCost: 200,
@@ -155,6 +185,8 @@ test("renders the QQQM stock detail shell from the read-only backend contract", 
   expect(screen.getByTestId("stock-detail-holding")).toHaveTextContent("2주");
   expect(screen.getByTestId("stock-detail-profile")).toHaveTextContent("ETF");
   expect(screen.getByTestId("stock-detail-analysis")).toHaveTextContent("hold");
+  expect(screen.getByTestId("stock-detail-naver-poc")).toHaveTextContent("Naver 원천 데이터 PoC");
+  expect(screen.getByTestId("stock-detail-naver-poc")).toHaveTextContent("live fetch off");
 
   await waitFor(() => expect(stockApi.fetchStockDetailCandles).toHaveBeenCalledWith({ market: "us", symbol: "QQQM", period: "1d" }));
   expect(await screen.findByTestId("stock-detail-chart")).toHaveTextContent("3개 캔들");
@@ -178,4 +210,13 @@ test("omits external community clone and uses a local memo placeholder", async (
 
   expect(await screen.findByTestId("stock-detail-memo-placeholder")).toHaveTextContent("메모");
   expect(screen.queryByText(/커뮤니티/)).not.toBeInTheDocument();
+});
+
+test("omits the Naver PoC card when the backend has no safe enrichment map", async () => {
+  vi.mocked(stockApi.fetchStockDetail).mockResolvedValue({ ...aboveFold, naverEnrichment: null });
+
+  renderPage();
+
+  expect(await screen.findByTestId("stock-detail-shell")).toBeInTheDocument();
+  expect(screen.queryByTestId("stock-detail-naver-poc")).not.toBeInTheDocument();
 });

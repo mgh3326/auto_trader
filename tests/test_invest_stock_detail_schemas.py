@@ -29,6 +29,7 @@ def _base_response(**overrides):
         "quote": None,
         "screenerSnapshot": None,
         "valuation": None,
+        "naverEnrichment": None,
         "holding": None,
         "latestAnalysis": None,
         "orderbookSupport": {"supported": False, "reason": "kr_unavailable"},
@@ -62,6 +63,7 @@ def test_holding_and_valuation_are_optional_explicit_nulls():
 
     assert response.holding is None
     assert response.valuation is None
+    assert response.naverEnrichment is None
 
     held = StockDetailHolding(
         totalQuantity=3,
@@ -76,6 +78,40 @@ def test_holding_and_valuation_are_optional_explicit_nulls():
     )
     response = StockDetailResponse.model_validate(_base_response(holding=held))
     assert response.holding is not None
+
+
+def test_naver_enrichment_documents_fixture_backed_read_only_poc():
+    response = StockDetailResponse.model_validate(
+        _base_response(
+            naverEnrichment={
+                "source": "naver_stock_detail_poc",
+                "market": "kr",
+                "symbol": "005930",
+                "naverCode": "005930",
+                "pageUrl": "https://stock.naver.com/domestic/stock/005930/price",
+                "status": "fixture_backed_poc",
+                "liveFetchEnabled": False,
+                "endpoints": [
+                    {
+                        "surface": "domestic_news_aggregate_home",
+                        "url": "https://stock.naver.com/api/domestic/news/aggregate/home",
+                        "status": "verified_200",
+                        "payloadFields": ["flashNews[].title"],
+                        "mappedFields": ["news.items"],
+                        "risk": "not symbol scoped",
+                    }
+                ],
+                "usefulFields": ["source freshness / polling interval"],
+                "noGoFields": ["raw public discussion post text"],
+                "docsPath": "docs/invest/naver-stock-detail-raw-data-poc.md",
+            }
+        )
+    )
+
+    assert response.naverEnrichment is not None
+    assert response.naverEnrichment.liveFetchEnabled is False
+    assert response.naverEnrichment.endpoints[0].status == "verified_200"
+    assert "raw public discussion post text" in response.naverEnrichment.noGoFields
 
 
 def test_orderbook_required_iff_supported():

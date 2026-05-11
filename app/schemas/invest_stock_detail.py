@@ -29,6 +29,15 @@ CapabilityUnsupportedReason = Literal[
 ]
 ValuationFreshness = Literal["ok", "stale", "unsupported", "error"]
 ScreenerSnapshotFreshness = Literal["fresh", "stale", "missing"]
+NaverPocStatus = Literal["fixture_backed_poc", "no_go"]
+NaverEndpointStatus = Literal[
+    "verified_200",
+    "verified_200_signal_only",
+    "page_candidate",
+    "needs_auth_or_contract_check",
+    "unsupported",
+    "error",
+]
 OrderSide = Literal["buy", "sell"]
 AnalysisDecision = Literal["buy", "hold", "sell"]
 
@@ -129,6 +138,33 @@ class StockDetailValuation(BaseModel):
     freshness: ValuationFreshness = "ok"
 
 
+class StockDetailNaverEndpointProbe(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    surface: str
+    url: str
+    status: NaverEndpointStatus
+    payloadFields: list[str] = Field(default_factory=list)
+    mappedFields: list[str] = Field(default_factory=list)
+    risk: str
+
+
+class StockDetailNaverEnrichment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: Literal["naver_stock_detail_poc"] = "naver_stock_detail_poc"
+    market: StockDetailMarket
+    symbol: str
+    naverCode: str
+    pageUrl: str
+    status: NaverPocStatus = "fixture_backed_poc"
+    liveFetchEnabled: bool = False
+    endpoints: list[StockDetailNaverEndpointProbe] = Field(default_factory=list)
+    usefulFields: list[str] = Field(default_factory=list)
+    noGoFields: list[str] = Field(default_factory=list)
+    docsPath: str
+
+
 class StockDetailHolding(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -196,6 +232,7 @@ class StockDetailResponse(BaseModel):
     quote: StockDetailQuote | None = None
     screenerSnapshot: StockDetailScreenerSnapshot | None = None
     valuation: StockDetailValuation | None = None
+    naverEnrichment: StockDetailNaverEnrichment | None = None
     holding: StockDetailHolding | None = None
     latestAnalysis: StockDetailLatestAnalysis | None = None
     orderbookSupport: StockDetailOrderbookSupport
