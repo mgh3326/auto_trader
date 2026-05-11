@@ -18,6 +18,10 @@ def _fake_event(
     category: str = "earnings",
     symbol: str | None = None,
     ev_date: date | None = None,
+    title: str | None = None,
+    actual: str | None = None,
+    forecast: str | None = None,
+    previous: str | None = None,
 ):
     e = MagicMock()
     # MarketEventResponse uses source_event_id, not event_id
@@ -27,11 +31,18 @@ def _fake_event(
     e.category = category
     e.symbol = symbol
     e.company_name = symbol
-    e.title = f"event {event_id}"
+    e.title = title or f"event {event_id}"
     e.event_date = ev_date or date(2026, 5, 4)
     e.release_time_utc = None
     e.source = "test"
-    e.values = []
+    if actual is not None or forecast is not None or previous is not None:
+        value = MagicMock()
+        value.actual = actual
+        value.forecast = forecast
+        value.previous = previous
+        e.values = [value]
+    else:
+        e.values = []
     return e
 
 
@@ -114,6 +125,126 @@ async def test_calendar_clusters_when_over_threshold(monkeypatch) -> None:
     )
     assert len(resp.days[0].clusters) == 1
     assert resp.days[0].clusters[0].eventCount == 15
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_calendar_prioritizes_held_watchlist_and_value_events(
+    monkeypatch,
+) -> None:
+    from app.services.invest_view_model import calendar_service as svc
+
+    fake_resp = MagicMock()
+    fake_resp.events = [
+        _fake_event(event_id="ordinary", symbol="ZZZZ"),
+        _fake_event(event_id="watched", symbol="MSFT"),
+        _fake_event(event_id="held", symbol="AAPL"),
+        _fake_event(event_id="valued", symbol="TSLA", forecast="1.23"),
+    ]
+    fake_query_service = MagicMock()
+    fake_query_service.list_for_range = AsyncMock(return_value=fake_resp)
+    monkeypatch.setattr(svc, "MarketEventsQueryService", lambda db: fake_query_service)
+    _patch_freshness(monkeypatch, svc, date(2026, 5, 4), date(2026, 5, 4))
+
+    resolver = RelationResolver(
+        held={("us", "AAPL")},
+        watch={("us", "MSFT")},
+    )
+    resp = await svc.build_calendar(
+        db=MagicMock(),
+        resolver=resolver,
+        from_date=date(2026, 5, 4),
+        to_date=date(2026, 5, 4),
+        tab="all",
+    )
+
+    events = resp.days[0].events
+    assert [event.eventId for event in events] == [
+        "held",
+        "watched",
+        "valued",
+        "ordinary",
+    ]
+    assert (
+        events[0].displayPriority
+        > events[1].displayPriority
+        > events[2].displayPriority
+    )
+    assert events[0].highlightReasons == ["held"]
+    assert events[1].highlightReasons == ["watchlist"]
+    assert events[2].highlightReasons == ["has_values"]
+    assert resp.days[0].summary is not None
+    assert resp.days[0].summary.highlightEventIds == [
+        "held",
+        "watched",
+        "valued",
+        "ordinary",
+    ]
+    assert resp.days[0].summary.overflowCount == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_calendar_cluster_top_events_and_summary_are_priority_aware(
+    monkeypatch,
+) -> None:
+    from app.services.invest_view_model import calendar_service as svc
+
+    fake_resp = MagicMock()
+    fake_resp.events = [
+        *[
+            _fake_event(
+                event_id=f"ordinary-{i}",
+                category="earnings",
+                market="us",
+                symbol=f"ZZZ{i}",
+            )
+            for i in range(12)
+        ],
+        _fake_event(
+            event_id="watched", category="earnings", market="us", symbol="MSFT"
+        ),
+        _fake_event(event_id="held", category="earnings", market="us", symbol="AAPL"),
+        _fake_event(
+            event_id="valued",
+            category="earnings",
+            market="us",
+            symbol="TSLA",
+            actual="2.34",
+        ),
+    ]
+    fake_query_service = MagicMock()
+    fake_query_service.list_for_range = AsyncMock(return_value=fake_resp)
+    monkeypatch.setattr(svc, "MarketEventsQueryService", lambda db: fake_query_service)
+    _patch_freshness(monkeypatch, svc, date(2026, 5, 4), date(2026, 5, 4))
+
+    resolver = RelationResolver(
+        held={("us", "AAPL")},
+        watch={("us", "MSFT")},
+    )
+    resp = await svc.build_calendar(
+        db=MagicMock(),
+        resolver=resolver,
+        from_date=date(2026, 5, 4),
+        to_date=date(2026, 5, 4),
+        tab="all",
+    )
+
+    day = resp.days[0]
+    assert len(day.clusters) == 1
+    assert (
+        len(day.clusters[0].topEvents) == 5
+    )  # top events available for primary row rendering
+    assert [event.eventId for event in day.clusters[0].topEvents[:3]] == [
+        "held",
+        "watched",
+        "valued",
+    ]
+    assert day.summary is not None
+    assert day.summary.highlightEventIds[:3] == ["held", "watched", "valued"]
+    assert day.summary.overflowCount == 10
+    assert day.summary.overflowLabel == "그 외 10개"
+    assert day.summary.headline == "주요 일정 5개 · 그 외 10개"
 
 
 @pytest.mark.unit

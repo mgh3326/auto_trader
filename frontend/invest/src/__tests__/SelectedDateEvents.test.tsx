@@ -16,7 +16,7 @@ function evt(id: string, title: string): CalendarEventVM {
     id, date: "2026-05-11", dayOfMonth: 11, monthDay: "5/11",
     type: "earnings", region: "us", title,
     time: null, released: false, actual: null, forecast: null, previous: null,
-    own: null, badges: [],
+    own: null, badges: [], displayPriority: 0, highlightReasons: [],
   };
 }
 
@@ -75,6 +75,23 @@ describe("SelectedDateEvents", () => {
     expect(root).toHaveTextContent("327건");
   });
 
+  test("renders neutral day summary and overflow label when provided", () => {
+    render(
+      <SelectedDateEvents
+        {...baseProps}
+        events={[evt("e1", "AAPL earnings"), evt("e2", "MSFT earnings")]}
+        summary={{
+          headline: "주요 일정 2개 · 그 외 7개",
+          highlightEventIds: ["e1", "e2"],
+          overflowCount: 7,
+          overflowLabel: "그 외 7개",
+        }}
+      />,
+    );
+    expect(screen.getByTestId("calendar-day-summary")).toHaveTextContent("주요 일정 2개 · 그 외 7개");
+    expect(screen.getByText(/2026-05-11 · 2건 · 그 외 7개/)).toBeInTheDocument();
+  });
+
   test("loading + populated together still shows skeleton (loading wins)", () => {
     render(
       <SelectedDateEvents
@@ -97,5 +114,32 @@ describe("SelectedDateEvents", () => {
     );
     expect(screen.getByTestId("calendar-error")).toBeInTheDocument();
     expect(screen.queryByText("stale")).not.toBeInTheDocument();
+  });
+
+  test("heavy cluster renders topEvents as primary EventRow rows before overflow indicator", () => {
+    render(
+      <SelectedDateEvents
+        {...baseProps}
+        clusters={[
+          {
+            id: "c1", date: "2026-05-11", dayOfMonth: 11, monthDay: "5/11",
+            type: "earnings", region: "us", title: "미국 실적 발표 284건",
+            count: 284, topEvents: [evt("held", "AAPL 실적"), evt("watched", "MSFT 실적")],
+          },
+        ]}
+      />,
+    );
+    const list = screen.getByTestId("day-events");
+    // topEvents must render as first-class EventRow instances
+    const eventRows = within(list).getAllByTestId("calendar-event");
+    expect(eventRows).toHaveLength(2);
+    expect(eventRows[0]).toHaveTextContent("AAPL 실적");
+    expect(eventRows[1]).toHaveTextContent("MSFT 실적");
+    // overflow indicator shows remaining count as secondary context
+    const overflow = within(list).getByTestId("calendar-cluster-overflow");
+    expect(overflow).toHaveTextContent("미국 실적 발표");
+    expect(overflow).toHaveTextContent("282건");
+    // raw aggregate ClusterRow must NOT be the primary content
+    expect(within(list).queryByTestId("calendar-cluster")).not.toBeInTheDocument();
   });
 });

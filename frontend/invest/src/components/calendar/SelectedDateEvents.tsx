@@ -1,7 +1,7 @@
-import { ClusterRow } from "./ClusterRow";
+import { ClusterEventRows } from "./ClusterEventRows";
 import { EventRow } from "./EventRow";
 import { EmptyEventState } from "./EmptyEventState";
-import type { CalendarClusterVM, CalendarEventVM } from "./vm";
+import type { CalendarClusterVM, CalendarDaySummaryVM, CalendarEventVM } from "./vm";
 
 export interface SelectedDateEventsProps {
   dateLabel: string;
@@ -11,6 +11,7 @@ export interface SelectedDateEventsProps {
   emptyMessage: string;
   loading?: boolean;
   error?: string | null;
+  summary?: CalendarDaySummaryVM | null;
 }
 
 export function SelectedDateEvents({
@@ -21,6 +22,7 @@ export function SelectedDateEvents({
   emptyMessage,
   loading = false,
   error = null,
+  summary = null,
 }: SelectedDateEventsProps) {
   const total = events.length + clusters.reduce((s, c) => s + c.count, 0);
 
@@ -33,9 +35,14 @@ export function SelectedDateEvents({
       <div className="calendar-selected-date__header">
         <h2 className="calendar-selected-date__label">{dateLabel}</h2>
         <span className="calendar-selected-date__meta">
-          {dateIso} · {total}건
+          {dateIso} · {total}건{summary?.overflowLabel ? ` · ${summary.overflowLabel}` : ""}
         </span>
       </div>
+      {!loading && !error && summary?.headline ? (
+        <div data-testid="calendar-day-summary" className="calendar-selected-date__summary">
+          {summary.headline}
+        </div>
+      ) : null}
       <div data-testid="day-events" className="calendar-selected-date__list">
         {loading ? (
           <SkeletonRows />
@@ -45,9 +52,7 @@ export function SelectedDateEvents({
           <EmptyEventState message={emptyMessage} />
         ) : (
           <>
-            {clusters.map((c) => (
-              <ClusterRow key={c.id} cluster={c} />
-            ))}
+            <ClusterEventRows clusters={clusters} />
             {events.map((ev) => (
               <EventRow key={ev.id} ev={ev} />
             ))}
