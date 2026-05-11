@@ -20,6 +20,7 @@ from app.schemas.invest_calendar import (
     CalendarTab,
     WeeklySummaryResponse,
 )
+from app.schemas.invest_coverage import CoverageMarket, InvestCoverageResponse
 from app.schemas.invest_feed_news import FeedNewsResponse, FeedTab
 from app.schemas.invest_feed_research import (
     FeedResearchFilters,
@@ -38,6 +39,7 @@ from app.schemas.invest_stock_detail import (
     StockDetailResponse,
 )
 from app.schemas.investor_flow import InvestorFlowResponse
+from app.services.invest_coverage_service import build_invest_coverage
 from app.services.invest_home_service import InvestHomeService
 from app.services.invest_screener_snapshots.coverage_service import build_coverage
 from app.services.invest_view_model.account_panel_service import build_account_panel
@@ -109,6 +111,30 @@ async def get_home(
     service: Annotated[InvestHomeService, Depends(get_invest_home_service)],
 ) -> InvestHomeResponse:
     return await service.get_home(user_id=user.id)
+
+
+@router.get("/coverage")
+async def get_invest_coverage(
+    user: Annotated[Any, Depends(get_authenticated_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    market: CoverageMarket = Query("kr"),
+    symbols: str = Query(
+        "", description="Optional comma-separated symbols for per-symbol coverage"
+    ),
+    as_of: Annotated[date | None, Query(alias="asOf")] = None,
+) -> InvestCoverageResponse:
+    """Read-only Toss-parity data coverage dashboard source (ROB-192)."""
+    _ = user
+    symbol_list = [part.strip() for part in symbols.split(",") if part.strip()]
+    try:
+        return await build_invest_coverage(
+            db,
+            market=market,
+            symbols=symbol_list,
+            as_of=as_of,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/account-panel")
