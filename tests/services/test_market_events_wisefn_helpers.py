@@ -87,6 +87,25 @@ def _to_euc_kr_bytes(data: object) -> bytes:
 
 
 # ---------------------------------------------------------------------------
+# HTTP seam tests (no live WiseFn call)
+# ---------------------------------------------------------------------------
+
+
+def test_wisefn_http_base_url_uses_canonical_www_host():
+    """WiseFn redirects the apex host; use canonical www to avoid 301 retry loops."""
+    from app.services.market_events import wisefn_helpers as wf
+
+    assert wf._WISEFN_BASE_URL == "https://www.wisereport.co.kr"
+
+
+def test_wisefn_http_calendar_path_uses_live_wisecalendar_endpoint():
+    """Live WiseFn calendar JSON is served under /wiseCalendar/ in ROB-183 smoke."""
+    from app.services.market_events import wisefn_helpers as wf
+
+    assert wf._WISEFN_CALENDAR_PATH == "/wiseCalendar/GetCalendarAjax.aspx"
+
+
+# ---------------------------------------------------------------------------
 # Public coroutine tests (patch _fetch_calendar_payload)
 # ---------------------------------------------------------------------------
 
@@ -156,6 +175,42 @@ async def test_fetch_calendar_payload_decodes_euc_kr_and_maps_fields():
     hyundai = next(i for i in items if i["stock_code"] == "005380")
     assert hyundai["release_date"] == "2026-05-14"
     assert hyundai["time_hint"] == "during_market"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_fetch_calendar_payload_maps_current_wisecalendar_fields():
+    """Current live /wiseCalendar fields map to normalized earnings rows."""
+    from app.services.market_events import wisefn_helpers as wf
+
+    current_item = [
+        {
+            "CMP_CD": "A005300",
+            "CMP_NM_KOR": "롯데칠성 (연결)",
+            "DAY_DT": "04",
+            "WK_DT": "2026-05-04 (월)",
+            "TERM_TYP": 32,
+            "VAL05": "2026/03(분기)",
+        }
+    ]
+    raw_bytes = _to_euc_kr_bytes(current_item)
+
+    with patch.object(wf, "_http_get_monthly", AsyncMock(return_value=raw_bytes)):
+        payload = await wf._fetch_calendar_payload(date(2026, 5, 4))
+
+    assert payload["as_of_ym"] == "202605"
+    assert payload["items"] == [
+        {
+            "stock_code": "005300",
+            "corp_name": "롯데칠성",
+            "release_date": "2026-05-04",
+            "fiscal_year": 2026,
+            "fiscal_quarter": 1,
+            "release_type": "scheduled",
+            "title": None,
+            "time_hint": "unknown",
+        }
+    ]
 
 
 @pytest.mark.asyncio
