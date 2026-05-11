@@ -3,7 +3,7 @@ import { DesktopShell } from "../../desktop/DesktopShell";
 import { RightRemotePanel } from "../../desktop/RightRemotePanel";
 import { useViewport } from "../../hooks/useViewport";
 import { fetchCalendar, fetchWeeklySummary } from "../../api/calendar";
-import type { CalendarResponse, WeeklySummaryResponse } from "../../types/calendar";
+import type { CalendarDaySummary, CalendarResponse, WeeklySummaryResponse } from "../../types/calendar";
 import { Card } from "../../ds";
 import { AIWeeklyCard } from "../../components/calendar/AIWeeklyCard";
 import { CalendarMonthHeader } from "../../components/calendar/CalendarMonthHeader";
@@ -36,6 +36,7 @@ interface FilteredDay {
   events: CalendarEventVM[];
   clusters: CalendarClusterVM[];
   total: number;
+  summary?: CalendarDaySummary | null;
 }
 
 export function CalendarRoute() {
@@ -128,7 +129,7 @@ export function DesktopCalendarPage() {
         .filter((cluster) => matchesFilters(cluster, typeFilter, regionFilter));
       const total = events.length + clusters.reduce((sum, c) => sum + c.count, 0);
       if (total === 0) continue;
-      map.set(d.date, { events, clusters, total });
+      map.set(d.date, { events, clusters, total, summary: d.summary });
     }
     return map;
   }, [calendar?.days, typeFilter, regionFilter]);

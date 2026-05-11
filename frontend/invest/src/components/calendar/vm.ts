@@ -2,7 +2,9 @@ import type {
   CalendarCluster,
   CalendarDay,
   CalendarDayState,
+  CalendarDaySummary,
   CalendarEvent,
+  HighlightReason,
   CalendarSourceStatus,
 } from "../../types/calendar";
 
@@ -25,6 +27,8 @@ export interface CalendarEventVM {
   previous: string | null;
   own: DisplayOwnership;
   badges: string[];
+  displayPriority?: number;
+  highlightReasons?: HighlightReason[];
 }
 
 export interface CalendarClusterVM {
@@ -74,8 +78,12 @@ export function toEventVM(event: CalendarEvent, date: string): CalendarEventVM {
     previous: event.previous ?? null,
     own: mapOwnership(event),
     badges: event.badges,
+    displayPriority: event.displayPriority ?? 0,
+    highlightReasons: event.highlightReasons ?? [],
   };
 }
+
+export type CalendarDaySummaryVM = CalendarDaySummary;
 
 export function calendarDayEventCount(day: CalendarDay): number {
   return day.events.length + day.clusters.reduce((sum, cluster) => sum + cluster.eventCount, 0);

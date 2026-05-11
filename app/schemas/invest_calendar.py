@@ -18,6 +18,14 @@ EventType = Literal["earnings", "economic", "disclosure", "crypto", "other"]
 RelationKind = Literal["held", "watchlist", "both", "none"]
 Badge = Literal["holdings", "watchlist", "major"]
 CalendarTab = Literal["all", "economic", "earnings", "disclosure", "crypto"]
+HighlightReason = Literal[
+    "held",
+    "watchlist",
+    "major",
+    "high_impact",
+    "near_term",
+    "has_values",
+]
 
 
 class CalendarRelatedSymbol(BaseModel):
@@ -41,6 +49,8 @@ class CalendarEvent(BaseModel):
     relatedSymbols: list[CalendarRelatedSymbol] = Field(default_factory=list)
     relation: RelationKind = "none"
     badges: list[Badge] = Field(default_factory=list)
+    displayPriority: int = 0
+    highlightReasons: list[HighlightReason] = Field(default_factory=list)
 
 
 class CalendarCluster(BaseModel):
@@ -53,12 +63,21 @@ class CalendarCluster(BaseModel):
     topEvents: list[CalendarEvent] = Field(default_factory=list)
 
 
+class CalendarDaySummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    headline: str | None = None
+    highlightEventIds: list[str] = Field(default_factory=list)
+    overflowCount: int = 0
+    overflowLabel: str | None = None
+
+
 class CalendarDay(BaseModel):
     model_config = ConfigDict(extra="forbid")
     date: date
     events: list[CalendarEvent] = Field(default_factory=list)
     clusters: list[CalendarCluster] = Field(default_factory=list)
     dataState: CalendarDayState = "loaded"
+    summary: CalendarDaySummary | None = None
 
 
 class CalendarMeta(BaseModel):

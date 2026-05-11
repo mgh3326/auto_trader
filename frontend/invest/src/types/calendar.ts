@@ -3,6 +3,7 @@ export type CalendarMarket = "kr" | "us" | "crypto" | "global";
 export type EventType = "earnings" | "economic" | "disclosure" | "crypto" | "other";
 export type CalendarRelation = "held" | "watchlist" | "both" | "none";
 export type CalendarSourceState = "fresh" | "stale" | "failed" | "missing";
+export type HighlightReason = "held" | "watchlist" | "major" | "high_impact" | "near_term" | "has_values";
 export type CalendarDayState =
   | "loaded"
   | "empty"
@@ -54,6 +55,8 @@ export interface CalendarEvent {
   relatedSymbols: CalendarRelatedSymbol[];
   relation: CalendarRelation;
   badges: ("holdings" | "watchlist" | "major")[];
+  displayPriority?: number;
+  highlightReasons?: HighlightReason[];
 }
 
 export interface CalendarCluster {
@@ -65,11 +68,19 @@ export interface CalendarCluster {
   topEvents: CalendarEvent[];
 }
 
+export interface CalendarDaySummary {
+  headline?: string | null;
+  highlightEventIds: string[];
+  overflowCount: number;
+  overflowLabel?: string | null;
+}
+
 export interface CalendarDay {
   date: string;
   events: CalendarEvent[];
   clusters: CalendarCluster[];
   dataState: CalendarDayState;
+  summary?: CalendarDaySummary | null;
 }
 
 export interface CalendarResponse {
