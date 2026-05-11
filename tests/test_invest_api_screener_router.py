@@ -230,6 +230,9 @@ def test_screener_consecutive_gainers_returns_streak_and_freshness() -> None:
         label = row["metricValueLabel"]
         assert label.endswith("일"), f"Expected N일 label, got: {label}"
         assert int(label[:-1]) >= 5, f"Expected streak >= 5, got: {label}"
-    # Verify the preset passed min_consecutive_up_days=5 to the service
+    # Verify the Toss-parity preset filters passed to the service
     assert stub.calls
     assert stub.calls[0].get("min_consecutive_up_days") == 5
+    assert stub.calls[0].get("min_week_change_rate") == 0.0
+    assert stub.calls[0].get("sort_by") == "week_change_rate"
+    assert stub.calls[0].get("limit") == 80

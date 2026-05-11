@@ -10,6 +10,7 @@ from __future__ import annotations
 from app.schemas.invest_screener import ScreenerFilterChip, ScreenerPreset
 
 DEFAULT_PRESET_ID = "consecutive_gainers"
+CONSECUTIVE_GAINERS_LIMIT = 80
 
 
 SCREENER_PRESETS: list[ScreenerPreset] = [
@@ -95,11 +96,11 @@ _SCREENING_FILTERS: dict[str, dict[str, object]] = {
     "consecutive_gainers": {
         "market": "kr",
         "asset_type": "stock",
-        "sort_by": "change_rate",
+        "sort_by": "week_change_rate",
         "sort_order": "desc",
         "min_consecutive_up_days": 5,
         "min_week_change_rate": 0.0,
-        "limit": 20,
+        "limit": CONSECUTIVE_GAINERS_LIMIT,
     },
     "cheap_value": {
         "market": "kr",
