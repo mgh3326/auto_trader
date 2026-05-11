@@ -1,6 +1,4 @@
 import datetime as dt
-from decimal import Decimal
-from unittest.mock import AsyncMock
 
 import pytest
 import sqlalchemy as sa
@@ -23,30 +21,36 @@ def test_commit_flag_negates_dry_run():
 
 @pytest.mark.asyncio
 async def test_run_dry_run_produces_no_writes(monkeypatch, db_session):
-    from app.services.invest_screener_snapshots.repository import SnapshotUpsert
+    from app.jobs.invest_screener_snapshots import SnapshotBuildResult, SnapshotSample
 
     # Use a sentinel symbol that won't appear in any other test fixture
     _DRY_RUN_SYMBOL = "DRYRUN_SENTINEL_999"
 
-    monkeypatch.setattr(
-        cli,
-        "build_snapshots_for_market",
-        AsyncMock(
-            return_value=[
-                SnapshotUpsert(
+    async def fake_run_snapshot_build(request):
+        assert request.commit is False
+        return SnapshotBuildResult(
+            market="kr",
+            symbols_resolved=1,
+            snapshots_built=1,
+            skipped=0,
+            committed=False,
+            batches=1,
+            started_at=dt.datetime(2026, 5, 9, tzinfo=dt.UTC),
+            finished_at=dt.datetime(2026, 5, 9, 0, 1, tzinfo=dt.UTC),
+            snapshot_date_distribution={"2026-05-09": 1},
+            samples=(
+                SnapshotSample(
                     market="kr",
                     symbol=_DRY_RUN_SYMBOL,
                     snapshot_date=dt.date(2026, 5, 9),
-                    latest_close=Decimal("78500"),
-                    closes_window=[78500],
-                    source="kis",
-                )
-            ]
-        ),
-    )
-    monkeypatch.setattr(
-        cli, "_resolve_symbols", AsyncMock(return_value=[_DRY_RUN_SYMBOL])
-    )
+                    latest_close="78500",
+                    consecutive_up_days=None,
+                    week_change_rate=None,
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(cli.snapshot_job, "run_snapshot_build", fake_run_snapshot_build)
 
     code = await cli.run(cli.parse_args(["--market", "kr", "--limit", "1"]))
     assert code == 0

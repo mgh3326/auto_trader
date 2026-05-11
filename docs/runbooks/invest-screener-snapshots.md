@@ -6,7 +6,7 @@
 
 **Read path:** `/invest/api/screener/results?presetId=consecutive_gainers` calls `_enrich_consecutive_up_days` which reads from `invest_screener_snapshots` first (snapshot-first). If a snapshot is fresh, OHLCV fetch is skipped. If missing/stale, the existing on-demand OHLCV path is used transparently (ROB-168 fallback).
 
-**Write path:** Operator-driven CLI only (no recurring scheduler — see §5).
+**Write path:** Operator-driven CLI or manually enqueued TaskIQ task only (no recurring scheduler — see §5). Both default to dry-run/no writes; persistence requires an explicit commit flag.
 
 ---
 
@@ -89,7 +89,18 @@ If the table is empty, the screener response is byte-equivalent to the ROB-168 b
 ## 5. Scheduler — Deferred
 
 **No recurring scheduler entry is active.** The table is filled on operator
-demand. Recurring automation (e.g. nightly TaskIQ/Prefect job) requires:
+demand. A TaskIQ wrapper exists for controlled manual enqueueing:
+
+- task name: `build_invest_screener_snapshots`
+- module: `app.tasks.invest_screener_snapshot_tasks`
+- default behavior: `commit=false`, so the task returns counts, warnings, and a
+  small sample without database writes
+- write behavior: `commit=true`, which must only be used after dry-run evidence
+  and explicit operator/reviewer approval
+
+The TaskIQ task is intentionally schedule-free; it is a queueable activation
+surface, not recurring automation. Recurring automation (e.g. nightly
+TaskIQ/Prefect job) requires:
 
 - A separate Linear ticket
 - At least one or two days of operator-run smoke evidence (coverage diagnostic
