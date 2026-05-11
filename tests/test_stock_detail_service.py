@@ -88,6 +88,99 @@ async def test_build_stock_detail_maps_holding_and_kr_orderbook_when_available()
 
     assert response.holding is not None
     assert response.holding.totalQuantity == 2
+    assert response.holding.sourceBreakdown == []
+    assert response.meta.blockStates.holding == "fresh"
     assert response.orderbookSupport.supported is True
     assert response.orderbook is not None
     assert response.orderbook.asks[0].price == 71200
+
+
+@pytest.mark.asyncio
+async def test_build_stock_detail_maps_invest_home_grouped_holding_breakdown():
+    async def holding_provider(user_id, market, symbol, db):
+        return {
+            "homeSummary": {
+                "includedSources": ["kis", "toss_manual"],
+                "excludedSources": [],
+                "totalValueKrw": 234000,
+            },
+            "accounts": [
+                {
+                    "accountId": "kis-main",
+                    "displayName": "KIS main",
+                    "source": "kis",
+                    "accountKind": "live",
+                    "includedInHome": True,
+                    "valueKrw": 142000,
+                },
+                {
+                    "accountId": "toss-manual",
+                    "displayName": "Toss manual",
+                    "source": "toss_manual",
+                    "accountKind": "manual",
+                    "includedInHome": True,
+                    "valueKrw": 92000,
+                },
+            ],
+            "holdings": [],
+            "groupedHoldings": [
+                {
+                    "groupId": "kr:005930",
+                    "symbol": "005930",
+                    "market": "KR",
+                    "assetType": "equity",
+                    "assetCategory": "kr_stock",
+                    "displayName": "삼성전자",
+                    "currency": "KRW",
+                    "totalQuantity": 3,
+                    "averageCost": 70000,
+                    "costBasis": 210000,
+                    "valueNative": 234000,
+                    "valueKrw": 234000,
+                    "pnlKrw": 24000,
+                    "pnlRate": 0.114,
+                    "priceState": "live",
+                    "includedSources": ["kis", "toss_manual"],
+                    "sourceBreakdown": [
+                        {
+                            "holdingId": "h1",
+                            "accountId": "kis-main",
+                            "source": "kis",
+                            "quantity": 2,
+                            "averageCost": 70000,
+                            "costBasis": 140000,
+                            "valueNative": 142000,
+                            "valueKrw": 142000,
+                        },
+                        {
+                            "holdingId": "h2",
+                            "accountId": "toss-manual",
+                            "source": "toss_manual",
+                            "quantity": 1,
+                            "averageCost": 70000,
+                            "costBasis": 70000,
+                            "valueNative": 92000,
+                            "valueKrw": 92000,
+                        },
+                    ],
+                }
+            ],
+        }
+
+    response = await build_stock_detail(
+        user_id=1,
+        market="kr",
+        symbol="005930",
+        db=SimpleNamespace(),
+        resolver=_resolve_kr,
+        holding_provider=holding_provider,
+    )
+
+    assert response.holding is not None
+    assert response.holding.totalQuantity == 3
+    assert response.holding.includedSources == ["kis", "toss_manual"]
+    assert [item.accountName for item in response.holding.sourceBreakdown] == [
+        "KIS main",
+        "Toss manual",
+    ]
+    assert response.meta.blockStates.holding == "fresh"

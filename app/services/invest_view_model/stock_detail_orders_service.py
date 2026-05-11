@@ -5,7 +5,11 @@ from typing import Any
 
 from app.core.symbol import to_db_symbol
 from app.schemas.invest_feed_news import NewsMarket
-from app.schemas.invest_stock_detail import StockDetailOrder, StockDetailOrdersResponse
+from app.schemas.invest_stock_detail import (
+    StockDetailOrder,
+    StockDetailOrderBucket,
+    StockDetailOrdersResponse,
+)
 from app.services.invest_view_model.stock_detail_symbol_resolver import (
     _normalize_crypto_market,
 )
@@ -83,16 +87,36 @@ async def build_stock_detail_orders(
         for row in page
     ]
 
+    filled_empty_state = "no_filled_orders" if not filtered else None
+    filled_bucket = StockDetailOrderBucket(
+        items=items,
+        nextCursor=next_cursor,
+        state="empty" if not filtered else "present",
+        emptyState=filled_empty_state,
+        source="n8n_filled_orders_service",
+        warnings=[],
+    )
+    pending_bucket = StockDetailOrderBucket(
+        items=[],
+        nextCursor=None,
+        state="provider_unwired",
+        emptyState=None,
+        source=None,
+        warnings=["pending_orders_provider_unwired"],
+    )
+
     return StockDetailOrdersResponse(
         symbol=canonical
         if market != "crypto"
         else _canonical_order_symbol(market, symbol),
         market=market,
+        filled=filled_bucket,
+        pending=pending_bucket,
         items=items,
         nextCursor=next_cursor,
         meta={
-            "emptyState": "no_filled_orders" if not filtered else None,
-            "warnings": [],
+            "emptyState": filled_empty_state,
+            "warnings": ["pending_orders_provider_unwired"],
         },
     )
 

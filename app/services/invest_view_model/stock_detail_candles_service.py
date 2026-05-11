@@ -87,6 +87,7 @@ async def build_stock_detail_candles(
         capabilities=CandleCapability(
             supported=True, intradaySupported=market != "crypto"
         ),
+        meta={"dataState": "fresh" if candles else "missing", "warnings": []},
     )
 
 

@@ -57,6 +57,17 @@ const aboveFold: StockDetailResponse = {
     pnlKrw: 30000,
     pnlRate: 5.5,
     includedSources: ["kis"],
+    sourceBreakdown: [
+      {
+        source: "kis",
+        accountName: "KIS",
+        quantity: 2,
+        averageCost: 200,
+        costBasis: 400,
+        valueNative: 422.68,
+        valueKrw: 575000,
+      },
+    ],
     priceState: "live",
   },
   latestAnalysis: {
@@ -80,7 +91,18 @@ const aboveFold: StockDetailResponse = {
     execution: { supported: false, reason: "read_only_mvp" },
     options: { supported: false, reason: "out_of_mvp_scope" },
   },
-  meta: { computedAt: "2026-05-10T09:31:00Z", warnings: [] },
+  meta: {
+    computedAt: "2026-05-10T09:31:00Z",
+    warnings: [],
+    blockStates: {
+      quote: "fresh",
+      screenerSnapshot: "fresh",
+      valuation: "fresh",
+      holding: "fresh",
+      latestAnalysis: "fresh",
+      orderbook: "unsupported",
+    },
+  },
 };
 
 const candles: StockDetailCandlesResponse = {
@@ -89,6 +111,7 @@ const candles: StockDetailCandlesResponse = {
   period: "1d",
   source: "db",
   capabilities: { supported: true, intradaySupported: true },
+  meta: { dataState: "fresh", warnings: [] },
   candles: [
     { ts: "2026-05-06T00:00:00Z", open: 201, high: 203, low: 200, close: 202, volume: 1000 },
     { ts: "2026-05-07T00:00:00Z", open: 202, high: 206, low: 201, close: 205, volume: 2000 },
@@ -99,9 +122,25 @@ const candles: StockDetailCandlesResponse = {
 const orders: StockDetailOrdersResponse = {
   symbol: "QQQM",
   market: "us",
+  filled: {
+    items: [],
+    nextCursor: null,
+    state: "empty",
+    emptyState: "no_filled_orders",
+    source: "n8n_filled_orders_service",
+    warnings: [],
+  },
+  pending: {
+    items: [],
+    nextCursor: null,
+    state: "provider_unwired",
+    emptyState: null,
+    source: null,
+    warnings: ["pending_orders_provider_unwired"],
+  },
   items: [],
   nextCursor: null,
-  meta: { emptyState: "no_filled_orders", warnings: [] },
+  meta: { emptyState: "no_filled_orders", warnings: ["pending_orders_provider_unwired"] },
 };
 
 const news: StockDetailNewsResponse = {
@@ -153,6 +192,7 @@ test("renders the QQQM stock detail shell from the read-only backend contract", 
   expect(screen.getByText("$211.34")).toBeInTheDocument();
   expect(screen.getByText("+1.06%")).toBeInTheDocument();
   expect(screen.getByTestId("stock-detail-holding")).toHaveTextContent("2주");
+  expect(screen.getByTestId("stock-detail-holding")).toHaveTextContent("계좌별: KIS 2주");
   expect(screen.getByTestId("stock-detail-profile")).toHaveTextContent("ETF");
   expect(screen.getByTestId("stock-detail-analysis")).toHaveTextContent("hold");
 
@@ -161,7 +201,7 @@ test("renders the QQQM stock detail shell from the read-only backend contract", 
   expect(await screen.findByTestId("stock-detail-news")).toHaveTextContent("QQQM tracks Nasdaq rally");
 });
 
-test("keeps buy/sell controls disabled and shows explicit orderbook plus empty order history states", async () => {
+test("keeps buy/sell controls disabled and separates filled history from pending provider-unwired state", async () => {
   renderPage();
 
   const buy = await screen.findByRole("button", { name: "매수 준비중" });
@@ -170,8 +210,48 @@ test("keeps buy/sell controls disabled and shows explicit orderbook plus empty o
   expect(sell).toBeDisabled();
   expect(screen.getByTestId("stock-detail-trade-guardrail")).toHaveTextContent("read_only_mvp");
   expect(screen.getByTestId("stock-detail-orderbook")).toHaveTextContent("US 호가는 아직 지원하지 않습니다");
-  expect(await screen.findByTestId("stock-detail-orders")).toHaveTextContent("체결 내역이 없습니다");
+  expect(await screen.findByTestId("stock-detail-orders-filled")).toHaveTextContent("체결 내역이 없습니다");
+  expect(screen.getByTestId("stock-detail-orders-pending")).toHaveTextContent("대기 주문 조회가 아직 연결되지 않았습니다");
+  expect(screen.queryByText("대기중인 주문이 없어요")).not.toBeInTheDocument();
 });
+
+test("shows no-pending copy only after a pending-order source returns empty", async () => {
+  vi.mocked(stockApi.fetchStockDetailOrders).mockResolvedValue({
+    ...orders,
+    pending: {
+      items: [],
+      nextCursor: null,
+      state: "empty",
+      emptyState: "no_pending_orders",
+      source: "read_only_pending_orders_snapshot",
+      warnings: [],
+    },
+  });
+
+  renderPage();
+
+  expect(await screen.findByTestId("stock-detail-orders-pending")).toHaveTextContent("대기중인 주문이 없어요");
+  expect(screen.queryByText("대기 주문 조회가 아직 연결되지 않았습니다.")).not.toBeInTheDocument();
+});
+
+test("does not show no-pending copy for malformed empty pending bucket without queried source", async () => {
+  vi.mocked(stockApi.fetchStockDetailOrders).mockResolvedValue({
+    ...orders,
+    pending: {
+      items: [],
+      nextCursor: null,
+      state: "empty",
+      emptyState: null,
+      source: null,
+      warnings: [],
+    },
+  } as unknown as StockDetailOrdersResponse);
+
+  renderPage();
+
+  expect(await screen.findByTestId("stock-detail-orders-pending")).not.toHaveTextContent("대기중인 주문이 없어요");
+});
+
 
 test("omits external community clone and uses a local memo placeholder", async () => {
   renderPage();

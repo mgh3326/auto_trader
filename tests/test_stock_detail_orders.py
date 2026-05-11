@@ -52,6 +52,12 @@ async def test_stock_detail_orders_filters_symbol_and_paginates():
     assert [item.orderId for item in response.items] == ["c"]
     assert response.nextCursor is None
     assert response.meta.emptyState is None
+    assert response.filled.state == "present"
+    assert response.filled.emptyState is None
+    assert [item.orderId for item in response.filled.items] == ["c"]
+    assert response.pending.state == "provider_unwired"
+    assert response.pending.emptyState is None
+    assert "pending_orders_provider_unwired" in response.pending.warnings
 
 
 @pytest.mark.asyncio
@@ -68,6 +74,13 @@ async def test_stock_detail_orders_empty_state_is_explicit():
     assert response.symbol == "BRK.B"
     assert response.items == []
     assert response.meta.emptyState == "no_filled_orders"
+    assert response.filled.items == []
+    assert response.filled.state == "empty"
+    assert response.filled.emptyState == "no_filled_orders"
+    assert response.pending.items == []
+    assert response.pending.state == "provider_unwired"
+    assert response.pending.emptyState is None
+    assert response.meta.warnings == ["pending_orders_provider_unwired"]
 
 
 @pytest.mark.asyncio

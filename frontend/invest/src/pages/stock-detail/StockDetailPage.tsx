@@ -12,6 +12,7 @@ import type {
   StockDetailCandlesResponse,
   StockDetailMarket,
   StockDetailNewsResponse,
+  StockDetailOrderBucket,
   StockDetailOrdersResponse,
   StockDetailResponse,
 } from "../../types/stockDetail";
@@ -93,14 +94,21 @@ function HoldingCard({ data }: { data: StockDetailResponse }) {
     <Card data-testid="stock-detail-holding">
       <h2 style={{ margin: "0 0 12px", fontSize: 16 }}>내 보유</h2>
       {holding ? (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 12 }}>
-          <Metric label="수량" value={fmtQty(holding.totalQuantity)} />
-          <Metric label="평단" value={data.currency === "USD" ? `$${holding.averageCost?.toFixed(2) ?? "−"}` : `₩${holding.averageCost?.toLocaleString("ko-KR") ?? "−"}`} />
-          <Metric label="평가금액" value={holding.valueKrw == null ? "−" : `₩${Math.round(holding.valueKrw).toLocaleString("ko-KR")}`} />
-          <div>
-            <div style={{ color: "var(--fg-3)", fontSize: 12 }}>손익</div>
-            <PL value={holding.pnlKrw ?? 0} pct={holding.pnlRate ?? 0} />
+        <div style={{ display: "grid", gap: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 12 }}>
+            <Metric label="수량" value={fmtQty(holding.totalQuantity)} />
+            <Metric label="평단" value={data.currency === "USD" ? `$${holding.averageCost?.toFixed(2) ?? "−"}` : `₩${holding.averageCost?.toLocaleString("ko-KR") ?? "−"}`} />
+            <Metric label="평가금액" value={holding.valueKrw == null ? "−" : `₩${Math.round(holding.valueKrw).toLocaleString("ko-KR")}`} />
+            <div>
+              <div style={{ color: "var(--fg-3)", fontSize: 12 }}>손익</div>
+              <PL value={holding.pnlKrw ?? 0} pct={holding.pnlRate ?? 0} />
+            </div>
           </div>
+          {holding.sourceBreakdown.length > 0 ? (
+            <div style={{ color: "var(--fg-3)", fontSize: 12 }}>
+              계좌별: {holding.sourceBreakdown.map((source) => `${source.accountName ?? source.source} ${fmtQty(source.quantity)}`).join(" · ")}
+            </div>
+          ) : null}
         </div>
       ) : (
         <p style={{ margin: 0, color: "var(--fg-3)" }}>보유 수량이 없습니다.</p>
@@ -143,13 +151,41 @@ function OrderbookCard({ data }: { data: StockDetailResponse }) {
 }
 
 function OrdersCard({ orders }: { orders: StockDetailOrdersResponse | undefined }) {
-  const empty = orders?.meta.emptyState === "no_filled_orders" || orders?.items.length === 0;
+  const filled: StockDetailOrderBucket | undefined = orders?.filled ?? (orders ? {
+    items: orders.items,
+    nextCursor: orders.nextCursor,
+    state: orders.items.length === 0 ? "empty" : "present",
+    emptyState: orders.meta.emptyState,
+    source: null,
+    warnings: orders.meta.warnings,
+  } : undefined);
+  const pending = orders?.pending;
+  const filledEmpty = filled?.emptyState === "no_filled_orders";
+  const pendingEmpty = pending?.state === "empty" && pending.emptyState === "no_pending_orders" && pending.source !== null;
   return (
     <Card data-testid="stock-detail-orders">
-      <h2 style={{ margin: "0 0 8px", fontSize: 16 }}>체결 내역</h2>
-      {!orders ? <p style={{ margin: 0, color: "var(--fg-3)" }}>불러오는 중입니다…</p> : null}
-      {orders && empty ? <p style={{ margin: 0, color: "var(--fg-3)" }}>체결 내역이 없습니다.</p> : null}
-      {orders && !empty ? <ul>{orders.items.map((o) => <li key={o.orderId ?? `${o.side}-${o.filledAt}`}>{o.side} {o.quantity}</li>)}</ul> : null}
+      <div style={{ display: "grid", gap: 14 }}>
+        <section data-testid="stock-detail-orders-filled">
+          <h2 style={{ margin: "0 0 8px", fontSize: 16 }}>체결 내역</h2>
+          {!orders ? <p style={{ margin: 0, color: "var(--fg-3)" }}>불러오는 중입니다…</p> : null}
+          {filled && filledEmpty ? <p style={{ margin: 0, color: "var(--fg-3)" }}>체결 내역이 없습니다.</p> : null}
+          {filled && !filledEmpty ? <ul>{filled.items.map((o) => <li key={o.orderId ?? `${o.side}-${o.filledAt}`}>{o.side} {o.quantity}</li>)}</ul> : null}
+        </section>
+        <Hairline />
+        <section data-testid="stock-detail-orders-pending">
+          <h2 style={{ margin: "0 0 8px", fontSize: 16 }}>대기 주문</h2>
+          {!orders ? <p style={{ margin: 0, color: "var(--fg-3)" }}>불러오는 중입니다…</p> : null}
+          {pending?.state === "provider_unwired" ? (
+            <p style={{ margin: 0, color: "var(--fg-3)" }}>대기 주문 조회가 아직 연결되지 않았습니다.</p>
+          ) : null}
+          {pending && pending.state !== "provider_unwired" && pendingEmpty ? (
+            <p style={{ margin: 0, color: "var(--fg-3)" }}>대기중인 주문이 없어요</p>
+          ) : null}
+          {pending && !pendingEmpty && pending.state !== "provider_unwired" ? (
+            <ul>{pending.items.map((o) => <li key={o.orderId ?? `${o.side}-${o.symbol}`}>{o.side} {o.quantity}</li>)}</ul>
+          ) : null}
+        </section>
+      </div>
     </Card>
   );
 }

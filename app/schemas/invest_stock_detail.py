@@ -31,6 +31,17 @@ ValuationFreshness = Literal["ok", "stale", "unsupported", "error"]
 ScreenerSnapshotFreshness = Literal["fresh", "stale", "missing"]
 OrderSide = Literal["buy", "sell"]
 AnalysisDecision = Literal["buy", "hold", "sell"]
+StockDetailBlockState = Literal[
+    "fresh",
+    "stale",
+    "missing",
+    "partial",
+    "unsupported",
+    "error",
+    "provider_unwired",
+]
+OrderBucketState = Literal["present", "empty", "error", "provider_unwired"]
+OrderEmptyState = Literal["no_filled_orders", "no_pending_orders"]
 
 
 class CapabilityFlag(BaseModel):
@@ -129,6 +140,18 @@ class StockDetailValuation(BaseModel):
     freshness: ValuationFreshness = "ok"
 
 
+class StockDetailHoldingSourceBreakdown(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: AccountSourceLiteral
+    accountName: str | None = None
+    quantity: float
+    averageCost: float | None = None
+    costBasis: float | None = None
+    valueNative: float | None = None
+    valueKrw: float | None = None
+
+
 class StockDetailHolding(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -140,6 +163,9 @@ class StockDetailHolding(BaseModel):
     pnlKrw: float | None = None
     pnlRate: float | None = None
     includedSources: list[AccountSourceLiteral]
+    sourceBreakdown: list[StockDetailHoldingSourceBreakdown] = Field(
+        default_factory=list
+    )
     priceState: PriceStateLiteral = "live"
 
 
@@ -175,11 +201,23 @@ class StockDetailOrderbookSupport(CapabilityFlag):
     reason: OrderbookUnsupportedReason | None = None
 
 
+class StockDetailBlockStates(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    quote: StockDetailBlockState = "provider_unwired"
+    screenerSnapshot: StockDetailBlockState = "provider_unwired"
+    valuation: StockDetailBlockState = "provider_unwired"
+    holding: StockDetailBlockState = "provider_unwired"
+    latestAnalysis: StockDetailBlockState = "provider_unwired"
+    orderbook: StockDetailBlockState = "unsupported"
+
+
 class StockDetailMeta(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     computedAt: datetime
     warnings: list[str] = Field(default_factory=list)
+    blockStates: StockDetailBlockStates = Field(default_factory=StockDetailBlockStates)
 
 
 class StockDetailResponse(BaseModel):
@@ -227,6 +265,13 @@ class StockDetailCandle(BaseModel):
     volume: float | None = None
 
 
+class StockDetailCandlesMeta(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    dataState: StockDetailBlockState = "missing"
+    warnings: list[str] = Field(default_factory=list)
+
+
 class StockDetailCandlesResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -236,6 +281,7 @@ class StockDetailCandlesResponse(BaseModel):
     source: str
     candles: list[StockDetailCandle] = Field(default_factory=list)
     capabilities: CandleCapability = Field(default_factory=CandleCapability)
+    meta: StockDetailCandlesMeta = Field(default_factory=StockDetailCandlesMeta)
 
 
 type StockDetailNewsResponse = FeedNewsResponse
@@ -262,11 +308,37 @@ class StockDetailOrdersMeta(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class StockDetailOrderBucket(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[StockDetailOrder] = Field(default_factory=list)
+    nextCursor: str | None = None
+    state: OrderBucketState
+    emptyState: OrderEmptyState | None = None
+    source: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def enforce_state_contract(self) -> StockDetailOrderBucket:
+        if self.state == "provider_unwired":
+            if self.items or self.emptyState is not None or self.source is not None:
+                raise ValueError(
+                    "provider_unwired order buckets must not include items, emptyState, or source"
+                )
+        if self.state == "empty" and (self.emptyState is None or self.source is None):
+            raise ValueError(
+                "empty order buckets require an explicit emptyState and queried source"
+            )
+        return self
+
+
 class StockDetailOrdersResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     symbol: str
     market: StockDetailMarket
+    filled: StockDetailOrderBucket
+    pending: StockDetailOrderBucket
     items: list[StockDetailOrder] = Field(default_factory=list)
     nextCursor: str | None = None
     meta: StockDetailOrdersMeta = Field(default_factory=StockDetailOrdersMeta)

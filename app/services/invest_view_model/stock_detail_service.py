@@ -9,12 +9,16 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.invest_feed_news import NewsMarket
+from app.schemas.invest_home import InvestHomeResponse
 from app.schemas.invest_stock_detail import (
+    StockDetailBlockStates,
     StockDetailHolding,
     StockDetailLatestAnalysis,
     StockDetailOrderbook,
     StockDetailQuote,
     StockDetailResponse,
+    StockDetailScreenerSnapshot,
+    StockDetailValuation,
     default_capabilities_for_market,
     orderbook_support_for_market,
 )
@@ -44,6 +48,107 @@ async def _run_optional_block(
         logger.warning("stock-detail %s block unavailable: %s", name, exc)
         warnings.append(f"{name}_unavailable")
     return None
+
+
+def _home_market_for_detail(market: NewsMarket) -> str:
+    if market == "kr":
+        return "KR"
+    if market == "us":
+        return "US"
+    return "CRYPTO"
+
+
+def _coerce_holding_from_home(
+    holding: Any, *, market: NewsMarket, symbol: str
+) -> StockDetailHolding | None:
+    if holding is None:
+        return None
+    if isinstance(holding, StockDetailHolding):
+        return holding
+
+    home: InvestHomeResponse | None = None
+    if isinstance(holding, InvestHomeResponse):
+        home = holding
+    elif isinstance(holding, dict) and "groupedHoldings" in holding:
+        home = InvestHomeResponse.model_validate(holding)
+
+    if home is not None:
+        detail_market = _home_market_for_detail(market)
+        grouped = next(
+            (
+                item
+                for item in home.groupedHoldings
+                if item.symbol == symbol and item.market == detail_market
+            ),
+            None,
+        )
+        if grouped is None:
+            return None
+        account_names = {account.accountId: account.displayName for account in home.accounts}
+        return StockDetailHolding(
+            totalQuantity=grouped.totalQuantity,
+            averageCost=grouped.averageCost,
+            costBasis=grouped.costBasis,
+            valueNative=grouped.valueNative,
+            valueKrw=grouped.valueKrw,
+            pnlKrw=grouped.pnlKrw,
+            pnlRate=grouped.pnlRate,
+            includedSources=grouped.includedSources,
+            sourceBreakdown=[
+                {
+                    "source": source.source,
+                    "accountName": account_names.get(source.accountId),
+                    "quantity": source.quantity,
+                    "averageCost": source.averageCost,
+                    "costBasis": source.costBasis,
+                    "valueNative": source.valueNative,
+                    "valueKrw": source.valueKrw,
+                }
+                for source in grouped.sourceBreakdown
+            ],
+            priceState=grouped.priceState,
+        )
+
+    return StockDetailHolding.model_validate(holding)
+
+
+def _stock_detail_block_states(
+    *,
+    quote: StockDetailQuote | None,
+    screener_snapshot: StockDetailScreenerSnapshot | None,
+    valuation: StockDetailValuation | None,
+    holding: StockDetailHolding | None,
+    latest_analysis: StockDetailLatestAnalysis | None,
+    orderbook: StockDetailOrderbook | None,
+    orderbook_supported: bool,
+    warnings: list[str],
+) -> StockDetailBlockStates:
+    def optional_state(block_name: str, value: object | None) -> str:
+        if f"{block_name}_timeout" in warnings or f"{block_name}_unavailable" in warnings:
+            return "error"
+        return "fresh" if value is not None else "provider_unwired"
+
+    screener_state = optional_state("screener_snapshot", screener_snapshot)
+    if screener_snapshot is not None:
+        screener_state = screener_snapshot.freshness
+
+    valuation_state = optional_state("valuation", valuation)
+    if valuation is not None:
+        valuation_state = "fresh" if valuation.freshness == "ok" else valuation.freshness
+
+    if orderbook_supported:
+        orderbook_state = "fresh" if orderbook is not None else "missing"
+    else:
+        orderbook_state = "unsupported"
+
+    return StockDetailBlockStates(
+        quote=optional_state("quote", quote),
+        screenerSnapshot=screener_state,
+        valuation=valuation_state,
+        holding=optional_state("holding", holding),
+        latestAnalysis=optional_state("latest_analysis", latest_analysis),
+        orderbook=orderbook_state,
+    )
 
 
 async def build_stock_detail(
@@ -131,14 +236,32 @@ async def build_stock_detail(
 
     if quote is not None and not isinstance(quote, StockDetailQuote):
         quote = StockDetailQuote.model_validate(quote)
-    if holding is not None and not isinstance(holding, StockDetailHolding):
-        holding = StockDetailHolding.model_validate(holding)
+    if screener_snapshot is not None and not isinstance(
+        screener_snapshot, StockDetailScreenerSnapshot
+    ):
+        screener_snapshot = StockDetailScreenerSnapshot.model_validate(screener_snapshot)
+    if valuation is not None and not isinstance(valuation, StockDetailValuation):
+        valuation = StockDetailValuation.model_validate(valuation)
+    holding = _coerce_holding_from_home(
+        holding, market=market, symbol=resolved.symbol_db
+    )
     if latest_analysis is not None and not isinstance(
         latest_analysis, StockDetailLatestAnalysis
     ):
         latest_analysis = StockDetailLatestAnalysis.model_validate(latest_analysis)
     if orderbook is not None and not isinstance(orderbook, StockDetailOrderbook):
         orderbook = StockDetailOrderbook.model_validate(orderbook)
+
+    block_states = _stock_detail_block_states(
+        quote=quote,
+        screener_snapshot=screener_snapshot,
+        valuation=valuation,
+        holding=holding,
+        latest_analysis=latest_analysis,
+        orderbook=orderbook,
+        orderbook_supported=orderbook_support.supported,
+        warnings=warnings,
+    )
 
     return StockDetailResponse(
         symbol=resolved.symbol_db,
@@ -157,7 +280,11 @@ async def build_stock_detail(
         orderbookSupport=orderbook_support,
         orderbook=orderbook,
         capabilities=capabilities,
-        meta={"computedAt": datetime.now(UTC), "warnings": warnings},
+        meta={
+            "computedAt": datetime.now(UTC),
+            "warnings": warnings,
+            "blockStates": block_states,
+        },
     )
 
 

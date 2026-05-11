@@ -13,6 +13,16 @@ export type ValuationFreshness = "ok" | "stale" | "unsupported" | "error";
 export type ScreenerSnapshotFreshness = "fresh" | "stale" | "missing";
 export type OrderSide = "buy" | "sell" | string;
 export type AnalysisDecision = "buy" | "hold" | "sell";
+export type StockDetailBlockState =
+  | "fresh"
+  | "stale"
+  | "missing"
+  | "partial"
+  | "unsupported"
+  | "error"
+  | "provider_unwired";
+export type OrderBucketState = "present" | "empty" | "error" | "provider_unwired";
+export type OrderEmptyState = "no_filled_orders" | "no_pending_orders";
 
 export interface CapabilityFlag {
   supported: boolean;
@@ -66,6 +76,16 @@ export interface StockDetailValuation {
   freshness: ValuationFreshness;
 }
 
+export interface StockDetailHoldingSourceBreakdown {
+  source: AccountSource;
+  accountName: string | null;
+  quantity: number;
+  averageCost: number | null;
+  costBasis: number | null;
+  valueNative: number | null;
+  valueKrw: number | null;
+}
+
 export interface StockDetailHolding {
   totalQuantity: number;
   averageCost: number | null;
@@ -75,6 +95,7 @@ export interface StockDetailHolding {
   pnlKrw: number | null;
   pnlRate: number | null;
   includedSources: AccountSource[];
+  sourceBreakdown: StockDetailHoldingSourceBreakdown[];
   priceState: PriceState;
 }
 
@@ -104,6 +125,15 @@ export interface StockDetailOrderbookSupport extends CapabilityFlag {
   reason: OrderbookUnsupportedReason | null;
 }
 
+export interface StockDetailBlockStates {
+  quote: StockDetailBlockState;
+  screenerSnapshot: StockDetailBlockState;
+  valuation: StockDetailBlockState;
+  holding: StockDetailBlockState;
+  latestAnalysis: StockDetailBlockState;
+  orderbook: StockDetailBlockState;
+}
+
 export interface StockDetailResponse {
   symbol: string;
   market: StockDetailMarket;
@@ -121,7 +151,7 @@ export interface StockDetailResponse {
   orderbookSupport: StockDetailOrderbookSupport;
   orderbook: StockDetailOrderbook | null;
   capabilities: StockDetailCapabilities;
-  meta: { computedAt: string; warnings: string[] };
+  meta: { computedAt: string; warnings: string[]; blockStates: StockDetailBlockStates };
 }
 
 export interface StockDetailCandle {
@@ -133,6 +163,11 @@ export interface StockDetailCandle {
   volume: number | null;
 }
 
+export interface StockDetailCandlesMeta {
+  dataState: StockDetailBlockState;
+  warnings: string[];
+}
+
 export interface StockDetailCandlesResponse {
   symbol: string;
   market: StockDetailMarket;
@@ -140,6 +175,7 @@ export interface StockDetailCandlesResponse {
   source: string;
   candles: StockDetailCandle[];
   capabilities: CandleCapability;
+  meta: StockDetailCandlesMeta;
 }
 
 export type StockDetailNewsResponse = FeedNewsResponse;
@@ -156,9 +192,20 @@ export interface StockDetailOrder {
   source: string | null;
 }
 
+export interface StockDetailOrderBucket {
+  items: StockDetailOrder[];
+  nextCursor: string | null;
+  state: OrderBucketState;
+  emptyState: OrderEmptyState | null;
+  source: string | null;
+  warnings: string[];
+}
+
 export interface StockDetailOrdersResponse {
   symbol: string;
   market: StockDetailMarket;
+  filled: StockDetailOrderBucket;
+  pending: StockDetailOrderBucket;
   items: StockDetailOrder[];
   nextCursor: string | null;
   meta: { emptyState: "no_filled_orders" | null; warnings: string[] };
