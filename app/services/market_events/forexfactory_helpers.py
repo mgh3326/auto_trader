@@ -122,6 +122,28 @@ class ForexFactoryWeeklyCache:
             return THISWEEK_URL
         return NEXTWEEK_URL
 
+    def _candidate_urls_for(self, target_date: date) -> list[str] | None:
+        """Return URL candidates ordered by safest content-based selection.
+
+        ForexFactory can roll `thisweek` ahead before ET Monday while `nextweek`
+        is still unavailable. Fetch `thisweek` first and trust the parsed payload's
+        event week before falling back to `nextweek`, instead of routing solely by
+        local ET week math.
+        """
+        if target_date < self._window_start or target_date > self._window_end:
+            return None
+        return [THISWEEK_URL, NEXTWEEK_URL]
+
+    @staticmethod
+    def _payload_covers_date(rows: list[dict[str, Any]], target_date: date) -> bool:
+        """Infer whether a parsed weekly payload is the upstream week for a date."""
+        event_dates = [r["event_date"] for r in rows if r.get("event_date")]
+        if not event_dates:
+            return False
+        week_start = min(event_dates) - timedelta(days=min(event_dates).weekday())
+        week_end = week_start + timedelta(days=6)
+        return week_start <= target_date <= week_end
+
     async def _ensure_payload(self, url: str) -> list[dict[str, Any]]:
         cached = self._payloads.get(url)
         if cached is not None:
@@ -134,11 +156,21 @@ class ForexFactoryWeeklyCache:
     async def get_events_for_date(
         self, target_date: date
     ) -> list[dict[str, Any]] | None:
-        url = self._url_for(target_date)
-        if url is None:
+        urls = self._candidate_urls_for(target_date)
+        if urls is None:
             return None
-        rows = await self._ensure_payload(url)
-        return [r for r in rows if r["event_date"] == target_date]
+
+        fallback_rows: list[dict[str, Any]] | None = None
+        for url in urls:
+            rows = await self._ensure_payload(url)
+            matching_rows = [r for r in rows if r["event_date"] == target_date]
+            if self._payload_covers_date(rows, target_date):
+                return matching_rows
+            if matching_rows:
+                return matching_rows
+            fallback_rows = matching_rows
+
+        return fallback_rows or []
 
 
 async def _fetch_xml_documents(target_date: date) -> list[str]:
