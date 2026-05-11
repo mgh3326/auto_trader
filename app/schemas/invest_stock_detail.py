@@ -29,8 +29,20 @@ CapabilityUnsupportedReason = Literal[
 ]
 ValuationFreshness = Literal["ok", "stale", "unsupported", "error"]
 ScreenerSnapshotFreshness = Literal["fresh", "stale", "missing"]
+NaverPocStatus = Literal["fixture_backed_poc", "no_go"]
+NaverEndpointStatus = Literal[
+    "verified_200",
+    "verified_200_signal_only",
+    "page_candidate",
+    "needs_auth_or_contract_check",
+    "unsupported",
+    "error",
+]
 OrderSide = Literal["buy", "sell"]
 AnalysisDecision = Literal["buy", "hold", "sell"]
+DiscussionSignalStatus = Literal["fixture_backed_poc", "no_go_pending_review"]
+DiscussionSignalMomentum = Literal["rising", "flat", "falling", "unknown"]
+DiscussionSignalFreshness = Literal["fixture", "stale", "missing"]
 
 
 class CapabilityFlag(BaseModel):
@@ -129,6 +141,84 @@ class StockDetailValuation(BaseModel):
     freshness: ValuationFreshness = "ok"
 
 
+class StockDetailNaverEndpointProbe(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    surface: str
+    url: str
+    status: NaverEndpointStatus
+    payloadFields: list[str] = Field(default_factory=list)
+    mappedFields: list[str] = Field(default_factory=list)
+    risk: str
+
+
+class StockDetailNaverEnrichment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: Literal["naver_stock_detail_poc"] = "naver_stock_detail_poc"
+    market: StockDetailMarket
+    symbol: str
+    naverCode: str
+    pageUrl: str
+    status: NaverPocStatus = "fixture_backed_poc"
+    liveFetchEnabled: bool = False
+    endpoints: list[StockDetailNaverEndpointProbe] = Field(default_factory=list)
+    usefulFields: list[str] = Field(default_factory=list)
+    noGoFields: list[str] = Field(default_factory=list)
+    docsPath: str
+
+
+class StockDetailDiscussionSignalMetric(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    label: str
+    value: int | float | str | None = None
+    unit: str | None = None
+
+
+class StockDetailDiscussionSignal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: Literal["naver_discussion_signal_poc"] = "naver_discussion_signal_poc"
+    market: StockDetailMarket
+    symbol: str
+    naverCode: str
+    status: DiscussionSignalStatus = "no_go_pending_review"
+    liveFetchEnabled: bool = False
+    freshness: DiscussionSignalFreshness = "fixture"
+    observedAt: datetime | None = None
+    windowLabel: str
+    activityRank: int | None = None
+    postCount: int | None = None
+    commentCount: int | None = None
+    reactionCount: int | None = None
+    momentum: DiscussionSignalMomentum = "unknown"
+    metrics: list[StockDetailDiscussionSignalMetric] = Field(default_factory=list)
+    mappedFields: list[str] = Field(default_factory=list)
+    noGoFields: list[str] = Field(default_factory=list)
+    risk: str
+    docsPath: str
+
+    @model_validator(mode="after")
+    def enforce_aggregate_only_contract(self) -> StockDetailDiscussionSignal:
+        if self.liveFetchEnabled:
+            raise ValueError("ROB-199 discussion PoC must not enable live fetching")
+        blocked = {
+            "post_text",
+            "post_title",
+            "comment_text",
+            "author",
+            "user_id",
+            "nickname",
+            "body",
+            "title",
+        }
+        exposed = {item.lower() for item in [*self.mappedFields, *(m.label for m in self.metrics)]}
+        if any(any(token in item for token in blocked) for item in exposed):
+            raise ValueError("discussion signal may expose aggregate metrics only")
+        return self
+
+
 class StockDetailHolding(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -196,6 +286,8 @@ class StockDetailResponse(BaseModel):
     quote: StockDetailQuote | None = None
     screenerSnapshot: StockDetailScreenerSnapshot | None = None
     valuation: StockDetailValuation | None = None
+    naverEnrichment: StockDetailNaverEnrichment | None = None
+    discussionSignal: StockDetailDiscussionSignal | None = None
     holding: StockDetailHolding | None = None
     latestAnalysis: StockDetailLatestAnalysis | None = None
     orderbookSupport: StockDetailOrderbookSupport

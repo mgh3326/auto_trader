@@ -34,6 +34,18 @@ async def _resolve_kr(market, raw_symbol, db):
     )
 
 
+async def _resolve_crypto(market, raw_symbol, db):
+    return ResolvedSymbol(
+        symbol_db="KRW-BTC",
+        display_name="비트코인",
+        exchange="Upbit",
+        instrument_type="crypto",
+        asset_type="crypto",
+        asset_category="crypto",
+        currency="KRW",
+    )
+
+
 @pytest.mark.asyncio
 async def test_build_stock_detail_declares_us_orderbook_unsupported():
     response = await build_stock_detail(
@@ -46,6 +58,10 @@ async def test_build_stock_detail_declares_us_orderbook_unsupported():
 
     assert response.symbol == "BRK.B"
     assert response.market == "us"
+    assert response.naverEnrichment is not None
+    assert response.naverEnrichment.naverCode == "BRK.B"
+    assert response.naverEnrichment.liveFetchEnabled is False
+    assert response.naverEnrichment.endpoints[0].status == "verified_200"
     assert response.orderbook is None
     assert response.orderbookSupport.supported is False
     assert response.orderbookSupport.reason == "us_unsupported"
@@ -88,6 +104,24 @@ async def test_build_stock_detail_maps_holding_and_kr_orderbook_when_available()
 
     assert response.holding is not None
     assert response.holding.totalQuantity == 2
+    assert response.naverEnrichment is not None
+    assert response.naverEnrichment.naverCode == "005930"
+    assert "discussionSignal.volume" in response.naverEnrichment.endpoints[-1].mappedFields
     assert response.orderbookSupport.supported is True
     assert response.orderbook is not None
     assert response.orderbook.asks[0].price == 71200
+
+
+@pytest.mark.asyncio
+async def test_build_stock_detail_omits_naver_poc_for_crypto():
+    response = await build_stock_detail(
+        user_id=1,
+        market="crypto",
+        symbol="KRW-BTC",
+        db=SimpleNamespace(),
+        resolver=_resolve_crypto,
+    )
+
+    assert response.market == "crypto"
+    assert response.naverEnrichment is None
+    assert response.orderbookSupport.supported is False
