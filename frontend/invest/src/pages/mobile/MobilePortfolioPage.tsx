@@ -1,12 +1,14 @@
 // /invest/my (mobile) — full holdings list.
 // Route contract: detailed holdings ledger. Home (/invest) shows only summary.
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { MobileShell } from "../../mobile/MobileShell";
 import { useInvestHome } from "../../hooks/useInvestHome";
 import { scopeGroupedToSource } from "../../desktop/scopeHoldings";
 import { pillToneForSource } from "../../desktop/AccountSourceTone";
+import { stockDetailPath } from "../../stockDetailPath";
 import { PL, Pill } from "../../ds";
-import type { AccountSource, GroupedHolding, HomeSummary } from "../../types/invest";
+import type { AccountSource, GroupedHolding, HomeSummary, PriceState } from "../../types/invest";
 import type { AssetCategoryKey } from "../../components/AssetCategoryFilter";
 
 function fmtKrw(v: number | null | undefined): string {
@@ -30,6 +32,18 @@ const CATEGORIES: { key: AssetCategoryKey; label: string }[] = [
   { key: "us_stock", label: "해외주식" },
   { key: "crypto", label: "코인" },
 ];
+
+const PRICE_STATE_LABEL: Record<PriceState, string> = {
+  live: "실시간",
+  stale: "시세 지연",
+  missing: "시세 없음",
+};
+
+function priceStateTone(priceState: PriceState): "accent" | "warn" | "paper" {
+  if (priceState === "live") return "accent";
+  if (priceState === "stale") return "warn";
+  return "paper";
+}
 
 export function MobilePortfolioPage() {
   const home = useInvestHome();
@@ -181,19 +195,18 @@ export function MobilePortfolioPage() {
                   const tone = h.includedSources[0] ? pillToneForSource(h.includedSources[0]) : "paper";
                   const usd = h.currency === "USD";
                   const value = h.valueNative ?? h.valueKrw;
-                  return (
-                    <div
-                      key={h.groupId}
-                      data-testid="mobile-portfolio-holdings-row"
-                      data-category={h.assetCategory}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 10,
-                        padding: "10px 0",
-                        borderBottom: "1px solid var(--divider)",
-                      }}
-                    >
+                  const href = stockDetailPath(h.market, h.symbol);
+                  const rowStyle = {
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    padding: "10px 0",
+                    borderBottom: "1px solid var(--divider)",
+                    color: "inherit",
+                    textDecoration: "none",
+                  };
+                  const content = (
+                    <>
                       <div
                         aria-hidden
                         style={{
@@ -231,6 +244,9 @@ export function MobilePortfolioPage() {
                           <Pill tone={tone} size="sm">
                             {tone.toUpperCase()}
                           </Pill>
+                          <Pill tone={priceStateTone(h.priceState)} size="sm">
+                            {PRICE_STATE_LABEL[h.priceState]}
+                          </Pill>
                         </div>
                       </div>
                       <div style={{ textAlign: "right", fontFeatureSettings: '"tnum"' }}>
@@ -253,6 +269,27 @@ export function MobilePortfolioPage() {
                           <div style={{ fontSize: 12, color: "var(--fg-3)" }}>—</div>
                         )}
                       </div>
+                    </>
+                  );
+
+                  return href ? (
+                    <Link
+                      key={h.groupId}
+                      to={href}
+                      data-testid="mobile-portfolio-holdings-row"
+                      data-category={h.assetCategory}
+                      style={rowStyle}
+                    >
+                      {content}
+                    </Link>
+                  ) : (
+                    <div
+                      key={h.groupId}
+                      data-testid="mobile-portfolio-holdings-row"
+                      data-category={h.assetCategory}
+                      style={rowStyle}
+                    >
+                      {content}
                     </div>
                   );
                 })}

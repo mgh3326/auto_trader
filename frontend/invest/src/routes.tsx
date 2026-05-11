@@ -10,7 +10,7 @@
 // /invest/my                — Detailed holdings / portfolio table.
 //                             Shows: hero summary + full holdings table with
 //                             account/category filtering.
-//                             Blocked-by: ROB-196 (Naver-style unified table).
+//                             Naver-style unified table implemented by ROB-196.
 //
 // /invest/feed/news         — News and research feed.
 // /invest/discover          — Issue discovery / investment ideas.

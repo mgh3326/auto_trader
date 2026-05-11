@@ -10,8 +10,8 @@ import { useInvestHome } from "../../hooks/useInvestHome";
 import { useViewport } from "../../hooks/useViewport";
 import { scopeGroupedToSource } from "../../desktop/scopeHoldings";
 import { DesktopHero } from "../../components/home/DesktopHero";
-import { HoldingsTable } from "../../components/home/HoldingsTable";
 import { FilterChips } from "../../components/home/FilterChips";
+import { UnifiedHoldingsTable } from "../../components/my/UnifiedHoldingsTable";
 import { MobilePortfolioPage } from "../mobile/MobilePortfolioPage";
 import type { AssetCategoryKey } from "../../components/AssetCategoryFilter";
 import type { AccountSource, HomeSummary } from "../../types/invest";
@@ -97,16 +97,30 @@ export function DesktopPortfolioPage() {
 
           {data && summary && (
             <>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <div style={{ fontSize: 12, color: "var(--fg-3)", fontWeight: 700 }}>내 투자</div>
+                <h1 style={{ margin: 0, fontSize: 26, lineHeight: 1.2, letterSpacing: "-0.03em" }}>
+                  통합 보유 현황
+                </h1>
+                <p style={{ margin: 0, color: "var(--fg-3)", fontSize: 13 }}>
+                  KIS, Toss/manual, 모의/수동 계좌를 한 화면에서 비교하고 종목별 출처를 확인합니다.
+                </p>
+              </div>
               <DesktopHero
                 summary={summary}
                 accountCount={account === "all" ? data.accounts.length : 1}
                 holdings={scopedGrouped}
               />
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
-                <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, letterSpacing: "-0.01em" }}>보유 종목</h2>
+                <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, letterSpacing: "-0.01em" }}>
+                  통합 보유 종목 {filteredScoped.length > 0 && `(${filteredScoped.length})`}
+                </h2>
                 <FilterChips value={category} onChange={setCategory} />
               </div>
-              <HoldingsTable holdings={filteredScoped} filter="all" />
+              <UnifiedHoldingsTable
+                holdings={filteredScoped}
+                accounts={data.accounts}
+              />
               {data.meta?.warnings && data.meta.warnings.length > 0 && (
                 <div
                   role="alert"
