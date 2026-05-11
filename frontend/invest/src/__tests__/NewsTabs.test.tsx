@@ -12,6 +12,7 @@ describe("NewsTabs", () => {
     expect(screen.getByTestId("tab-top")).toHaveTextContent("주요뉴스");
     expect(screen.getByTestId("tab-latest")).toHaveTextContent("최신뉴스");
     expect(screen.getByTestId("tab-hot")).toHaveTextContent("급상승뉴스");
+    expect(screen.getByTestId("tab-research")).toHaveTextContent("리서치");
 
     expect(screen.queryByTestId("tab-kr")).not.toBeInTheDocument();
     expect(screen.queryByTestId("tab-us")).not.toBeInTheDocument();
@@ -25,6 +26,7 @@ describe("NewsTabs", () => {
       "top",
       "latest",
       "hot",
+      "research",
     ]);
     expect(SECONDARY_NEWS_TABS.map((t) => t.key)).toEqual(["kr", "us", "crypto"]);
     expect(NEWS_TABS.map((t) => t.key)).toEqual([
@@ -33,6 +35,7 @@ describe("NewsTabs", () => {
       "top",
       "latest",
       "hot",
+      "research",
       "kr",
       "us",
       "crypto",

@@ -5,8 +5,10 @@ import { MemoryRouter } from "react-router-dom";
 import { DesktopFeedNewsPage } from "../pages/desktop/DesktopFeedNewsPage";
 import { AccountPanelProvider } from "../desktop/AccountPanelProvider";
 import * as feedApi from "../api/feedNews";
+import * as feedResearchApi from "../api/feedResearch";
 import * as panelApi from "../api/accountPanel";
 import type { FeedNewsResponse } from "../types/feedNews";
+import type { FeedResearchResponse } from "../types/feedResearch";
 
 function feedResponse(overrides: Partial<FeedNewsResponse> = {}): FeedNewsResponse {
   return {
@@ -80,6 +82,35 @@ function feedResponse(overrides: Partial<FeedNewsResponse> = {}): FeedNewsRespon
   };
 }
 
+function researchResponse(overrides: Partial<FeedResearchResponse> = {}): FeedResearchResponse {
+  return {
+    tab: "latest",
+    asOf: new Date().toISOString(),
+    nextCursor: null,
+    items: [
+      {
+        id: 1,
+        source: "kis_research",
+        title: "삼성전자 2Q 프리뷰",
+        analyst: "홍길동",
+        publishedAt: "2026-05-10T00:00:00Z",
+        publishedAtText: "2026.05.10",
+        category: "기업분석",
+        detailUrl: "https://example.com/research/1",
+        pdfUrl: "https://example.com/research/1.pdf",
+        excerpt: "영업이익 추정치와 목표가 변경 요약",
+        symbolCandidates: [{ symbol: "005930", market: "kr", name: "삼성전자", confidence: 0.97 }],
+        attributionPublisher: "Korea Investment & Securities",
+        attributionCopyrightNotice: "© Korea Investment",
+        market: "kr",
+        relation: "watch",
+      },
+    ],
+    meta: { limit: 30, appliedFilters: {} },
+    ...overrides,
+  };
+}
+
 function renderPage() {
   return render(
     <AccountPanelProvider>
@@ -100,6 +131,7 @@ beforeEach(() => {
     meta: { warnings: [], watchlistAvailable: true },
   });
   vi.spyOn(feedApi, "fetchFeedNews").mockResolvedValue(feedResponse());
+  vi.spyOn(feedResearchApi, "fetchFeedResearch").mockResolvedValue(researchResponse());
 });
 
 test("renders dense news rows and reacts to tab change", async () => {
@@ -119,6 +151,113 @@ test("renders dense news rows and reacts to tab change", async () => {
 
   await userEvent.click(screen.getByTestId("tab-latest"));
   await waitFor(() => expect(feedApi.fetchFeedNews).toHaveBeenCalledTimes(2));
+});
+
+test("renders research cards from the metadata-only research tab", async () => {
+  renderPage();
+
+  await screen.findByTestId("feed-item");
+  await userEvent.click(screen.getByTestId("tab-research"));
+
+  await waitFor(() => expect(feedResearchApi.fetchFeedResearch).toHaveBeenCalledWith({
+    tab: "latest",
+    limit: 30,
+    source: undefined,
+    symbol: undefined,
+    analyst: undefined,
+    category: undefined,
+    query: undefined,
+    fromDate: undefined,
+    toDate: undefined,
+  }));
+  expect(feedApi.fetchFeedNews).not.toHaveBeenCalledWith(expect.objectContaining({ tab: "research" }));
+
+  const row = await screen.findByTestId("research-feed-item");
+  expect(row).toHaveTextContent("리서치");
+  expect(row).toHaveTextContent("kis_research");
+  expect(row).toHaveTextContent("기업분석");
+  expect(row).toHaveTextContent("홍길동");
+  expect(row).toHaveTextContent("영업이익 추정치와 목표가 변경 요약");
+  expect(row).toHaveTextContent("Korea Investment & Securities");
+  expect(row).toHaveTextContent("© Korea Investment");
+  expect(screen.getByRole("link", { name: "삼성전자 2Q 프리뷰" })).toHaveAttribute(
+    "href",
+    "https://example.com/research/1",
+  );
+  expect(screen.getByRole("link", { name: "원문 PDF" })).toHaveAttribute(
+    "href",
+    "https://example.com/research/1.pdf",
+  );
+  const chip = screen.getByTestId("research-symbol-chip");
+  expect(chip).toHaveAttribute("data-symbol", "005930");
+  expect(chip).toHaveAttribute("data-market", "kr");
+  expect(chip).toHaveTextContent("005930");
+  expect(chip).toHaveTextContent("· KR");
+  expect(chip).toHaveTextContent("삼성전자");
+  expect(row.querySelectorAll("button a, a button, button button, a a")).toHaveLength(0);
+});
+
+test("renders research-specific empty state", async () => {
+  vi.spyOn(feedResearchApi, "fetchFeedResearch").mockResolvedValue(researchResponse({ items: [] }));
+
+  renderPage();
+  await screen.findByTestId("feed-item");
+  await userEvent.click(screen.getByTestId("tab-research"));
+
+  expect(await screen.findByTestId("feed-research-empty")).toHaveTextContent("표시할 리서치 리포트가 없습니다.");
+});
+
+test("research cards ignore unsafe links and tolerate unknown candidate markets", async () => {
+  vi.spyOn(feedResearchApi, "fetchFeedResearch").mockResolvedValue(researchResponse({
+    items: [
+      {
+        id: 2,
+        source: "kis_research",
+        title: "안전 링크 검증 리서치",
+        publishedAtText: "2026.05.10",
+        detailUrl: "javascript:alert(1)",
+        pdfUrl: "data:text/plain,report",
+        excerpt: "링크 프로토콜과 시장 값을 방어적으로 처리합니다.",
+        symbolCandidates: [{ symbol: "TEST", market: null }],
+        relation: "none",
+      },
+    ],
+  }));
+
+  renderPage();
+  await screen.findByTestId("feed-item");
+  await userEvent.click(screen.getByTestId("tab-research"));
+
+  const row = await screen.findByTestId("research-feed-item");
+  expect(row).toHaveTextContent("안전 링크 검증 리서치");
+  expect(screen.queryByRole("link", { name: "안전 링크 검증 리서치" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "원문 PDF" })).not.toBeInTheDocument();
+  const chip = screen.getByTestId("research-symbol-chip");
+  expect(chip).toHaveAttribute("data-symbol", "TEST");
+  expect(chip).not.toHaveAttribute("data-market");
+  expect(chip).toHaveTextContent("UNKNOWN");
+});
+
+test("passes research URL filters without changing ordinary news calls", async () => {
+  render(
+    <AccountPanelProvider>
+      <MemoryRouter basename="/invest" initialEntries={["/invest/feed/news?symbol=005930&category=기업분석"]}>
+        <DesktopFeedNewsPage />
+      </MemoryRouter>
+    </AccountPanelProvider>,
+  );
+
+  await screen.findByTestId("feed-item");
+  await userEvent.click(screen.getByTestId("tab-research"));
+
+  await waitFor(() =>
+    expect(feedResearchApi.fetchFeedResearch).toHaveBeenCalledWith(expect.objectContaining({
+      tab: "latest",
+      symbol: "005930",
+      category: "기업분석",
+    })),
+  );
+  expect(feedApi.fetchFeedNews).toHaveBeenCalledWith({ tab: "top", limit: 30 });
 });
 
 test("renders an issue chip linked to the issue detail page when issueId is present", async () => {
