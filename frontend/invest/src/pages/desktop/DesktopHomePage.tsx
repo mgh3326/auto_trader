@@ -1,16 +1,29 @@
+// /invest — home/market-entry role.
+// Route contract:
+//   /invest          → market entry, today overview, account summary, key navigation shortcuts.
+//                      Does NOT show a full holdings ledger.
+//   /invest/my       → detailed holdings/portfolio table (see DesktopPortfolioPage).
+//   /invest/feed/news → news feed
+//   /invest/discover  → issue discovery
+//   /invest/signals   → signals
+//   /invest/calendar  → earnings/events calendar
+//   /invest/coverage  → data coverage dashboard
+//   /invest/screener  → stock screener
+//   /invest/stocks/:market/:symbol → stock detail
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { DesktopShell } from "../../desktop/DesktopShell";
 import { LeftContextRail } from "../../desktop/LeftContextRail";
 import type { AccountFilterKey } from "../../desktop/LeftContextRail";
 import { RightRemotePanel } from "../../desktop/RightRemotePanel";
 import { useInvestHome } from "../../hooks/useInvestHome";
+import { useMarketDashboard } from "../../hooks/useMarketDashboard";
 import { useViewport } from "../../hooks/useViewport";
 import { scopeGroupedToSource } from "../../desktop/scopeHoldings";
 import { DesktopHero } from "../../components/home/DesktopHero";
-import { MarketStrip } from "../../components/home/MarketStrip";
-import { HoldingsTable } from "../../components/home/HoldingsTable";
-import { FilterChips } from "../../components/home/FilterChips";
+import { MarketStrip, marketDashboardToStripItems } from "../../components/home/MarketStrip";
 import { MobileHomePage } from "../mobile/MobileHomePage";
+import { Icon } from "../../ds";
 import type { AssetCategoryKey } from "../../components/AssetCategoryFilter";
 import type { AccountSource, HomeSummary } from "../../types/invest";
 
@@ -21,28 +34,67 @@ export function InvestHomeRoute() {
   return viewport === "mobile" ? <MobileHomePage /> : <DesktopHomePage />;
 }
 
+interface NavCard {
+  to: string;
+  label: string;
+  desc: string;
+  icon: React.ReactNode;
+}
+
+const NAV_CARDS: NavCard[] = [
+  {
+    to: "/my",
+    label: "내 포트폴리오",
+    desc: "보유 종목 전체 목록 및 수익률",
+    icon: <Icon name="person" size={20} />,
+  },
+  {
+    to: "/feed/news",
+    label: "뉴스",
+    desc: "시장 뉴스 및 리서치 피드",
+    icon: <Icon name="bell" size={20} />,
+  },
+  {
+    to: "/discover",
+    label: "발견",
+    desc: "투자 아이디어 및 이슈 탐색",
+    icon: <Icon name="flash" size={20} />,
+  },
+  {
+    to: "/signals",
+    label: "시그널",
+    desc: "AI 분석 신호 및 추천",
+    icon: <Icon name="chart" size={20} />,
+  },
+  {
+    to: "/calendar",
+    label: "캘린더",
+    desc: "실적 발표·배당 일정",
+    icon: <Icon name="calendar" size={20} />,
+  },
+  {
+    to: "/screener",
+    label: "골라보기",
+    desc: "조건별 종목 필터링",
+    icon: <Icon name="search" size={20} />,
+  },
+];
+
 export function DesktopHomePage() {
   const home = useInvestHome();
+  const market = useMarketDashboard();
   const [account, setAccount] = useState<AccountFilterKey>("all");
-  const [category, setCategory] = useState<AssetCategoryKey>("all");
+  const [category] = useState<AssetCategoryKey>("all");
 
   const data = home.state.status === "ready" ? home.state.data : null;
+  const marketData = market.state.status === "ready" ? market.state.data : null;
+  const marketStripItems = marketDashboardToStripItems(marketData);
 
-  // Account scope must propagate to every surface that shows holdings totals
-  // (hero breakdown + table) so the user sees one consistent view of the
-  // selected slice. The summary number itself comes from the API account
-  // record, which represents the account's authoritative total.
   const scopedGrouped = useMemo(() => {
     if (!data) return [];
     if (account === "all") return data.groupedHoldings;
     return scopeGroupedToSource(data.groupedHoldings, account as AccountSource);
   }, [data, account]);
-
-  const filteredScoped = useMemo(() => {
-    return category === "all"
-      ? scopedGrouped
-      : scopedGrouped.filter((g) => g.assetCategory === category);
-  }, [scopedGrouped, category]);
 
   const summary: HomeSummary | null = useMemo(() => {
     if (!data) return null;
@@ -68,7 +120,7 @@ export function DesktopHomePage() {
           account={account}
           onAccount={setAccount}
           category={category}
-          onCategory={setCategory}
+          onCategory={() => {}}
         />
       }
       center={
@@ -101,17 +153,91 @@ export function DesktopHomePage() {
 
           {data && summary && (
             <>
+              {/* Account-level summary — always summary-only, not a full ledger */}
               <DesktopHero
                 summary={summary}
                 accountCount={account === "all" ? data.accounts.length : 1}
                 holdings={scopedGrouped}
               />
-              <MarketStrip items={[]} />
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
-                <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, letterSpacing: "-0.01em" }}>보유 종목</h2>
-                <FilterChips value={category} onChange={setCategory} />
+
+              {/* Market index strip — live data from market dashboard */}
+              <MarketStrip items={marketStripItems} />
+
+              {/* Navigation cards — market-entry shortcuts to all /invest surfaces */}
+              <div>
+                <h2 style={{ margin: "0 0 10px", fontSize: 15, fontWeight: 700, color: "var(--fg-2)", letterSpacing: "-0.01em" }}>
+                  바로가기
+                </h2>
+                <div
+                  data-testid="home-nav-cards"
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(3, 1fr)",
+                    gap: 10,
+                  }}
+                >
+                  {NAV_CARDS.map((card) => (
+                    <Link
+                      key={card.to}
+                      to={card.to}
+                      style={{ textDecoration: "none" }}
+                    >
+                      <div
+                        data-testid="home-nav-card"
+                        style={{
+                          display: "flex",
+                          alignItems: "flex-start",
+                          gap: 12,
+                          padding: "16px 18px",
+                          background: "var(--surface)",
+                          border: "1px solid var(--border)",
+                          borderRadius: 14,
+                          boxShadow: "var(--shadow-1)",
+                          cursor: "pointer",
+                          transition: "background 100ms",
+                        }}
+                        onMouseEnter={(e) => {
+                          (e.currentTarget as HTMLDivElement).style.background = "var(--surface-2)";
+                        }}
+                        onMouseLeave={(e) => {
+                          (e.currentTarget as HTMLDivElement).style.background = "var(--surface)";
+                        }}
+                      >
+                        <div
+                          style={{
+                            width: 36,
+                            height: 36,
+                            borderRadius: 10,
+                            background: "var(--accent-soft)",
+                            color: "var(--accent-press)",
+                            display: "grid",
+                            placeItems: "center",
+                            flexShrink: 0,
+                          }}
+                        >
+                          {card.icon}
+                        </div>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: 14, fontWeight: 700, color: "var(--fg)" }}>{card.label}</div>
+                          <div
+                            style={{
+                              fontSize: 12,
+                              color: "var(--fg-3)",
+                              marginTop: 2,
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {card.desc}
+                          </div>
+                        </div>
+                      </div>
+                    </Link>
+                  ))}
+                </div>
               </div>
-              <HoldingsTable holdings={filteredScoped} filter="all" />
+
               {data.meta?.warnings && data.meta.warnings.length > 0 && (
                 <div
                   role="alert"

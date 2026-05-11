@@ -11,9 +11,9 @@ interface NavItem {
 
 const ITEMS: NavItem[] = [
   { to: "/", label: "홈", icon: "home", end: true },
+  { to: "/my", label: "MY", icon: "person" },
   { to: "/feed/news", label: "뉴스", icon: "bell" },
   { to: "/discover", label: "발견", icon: "flash" },
-  { to: "/signals", label: "시그널", icon: "chart" },
   { to: "/calendar", label: "캘린더", icon: "calendar" },
 ];
 
@@ -24,7 +24,7 @@ export function MobileBottomNav() {
       className="mobile-bottom-nav"
       style={{
         display: "grid",
-        gridTemplateColumns: "repeat(5, 1fr)",
+        gridTemplateColumns: `repeat(${ITEMS.length}, 1fr)`,
         borderTop: "1px solid var(--divider)",
         background: "var(--surface)",
         flexShrink: 0,

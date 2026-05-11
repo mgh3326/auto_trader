@@ -189,6 +189,31 @@ function AnalysisCard({ data }: { data: StockDetailResponse }) {
   );
 }
 
+function NaverPocCard({ data }: { data: StockDetailResponse }) {
+  const poc = data.naverEnrichment;
+  if (!poc) return null;
+  const verified = poc.endpoints.filter((e) => e.status.startsWith("verified_200")).length;
+  return (
+    <Card data-testid="stock-detail-naver-poc" soft>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start" }}>
+        <div>
+          <h2 style={{ margin: "0 0 6px", fontSize: 16 }}>Naver 원천 데이터 PoC</h2>
+          <p style={{ margin: 0, color: "var(--fg-3)", fontSize: 12 }}>
+            {poc.naverCode} · {verified}/{poc.endpoints.length} verified · live fetch {poc.liveFetchEnabled ? "on" : "off"}
+          </p>
+        </div>
+        <Pill tone="paper">read-only</Pill>
+      </div>
+      <ul style={{ margin: "12px 0 0", paddingLeft: 18, color: "var(--fg-2)", fontSize: 13 }}>
+        {poc.usefulFields.slice(0, 3).map((field) => <li key={field}>{field}</li>)}
+      </ul>
+      <p style={{ margin: "10px 0 0", color: "var(--fg-3)", fontSize: 12 }}>
+        토론 본문·인증성 투자정보·스케줄 수집은 제외합니다. 상세 맵: {poc.docsPath}
+      </p>
+    </Card>
+  );
+}
+
 function NewsCard({ news }: { news: StockDetailNewsResponse | undefined }) {
   return (
     <Card data-testid="stock-detail-news">
@@ -260,6 +285,7 @@ export function StockDetailPage() {
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       {data ? <ProfileCard data={data} /> : null}
       {data ? <AnalysisCard data={data} /> : null}
+      {data ? <NaverPocCard data={data} /> : null}
       <MemoCard />
     </div>
   ), [data]);

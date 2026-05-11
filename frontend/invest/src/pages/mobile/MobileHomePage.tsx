@@ -1,40 +1,64 @@
+// /invest (mobile) — market-entry home.
+// Route contract: summary-level only. Full holdings live at /invest/my.
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { MobileShell } from "../../mobile/MobileShell";
 import { useInvestHome } from "../../hooks/useInvestHome";
 import { useAccountPanel } from "../../desktop/useAccountPanel";
 import { scopeGroupedToSource } from "../../desktop/scopeHoldings";
-import { pillToneForSource } from "../../desktop/AccountSourceTone";
-import { PL, Pill } from "../../ds";
-import type { AccountSource, GroupedHolding, HomeSummary } from "../../types/invest";
-import type { AssetCategoryKey } from "../../components/AssetCategoryFilter";
+import { PL } from "../../ds";
+import { Icon } from "../../ds";
+import type { AccountSource, HomeSummary } from "../../types/invest";
 
 function fmtKrw(v: number | null | undefined): string {
   if (v == null) return "—";
   return `₩${Math.round(v).toLocaleString("ko-KR")}`;
 }
 
-function fmtUsd(v: number | null | undefined): string {
-  if (v == null) return "—";
-  return `$${v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+interface MobileNavCard {
+  to: string;
+  label: string;
+  desc: string;
+  icon: React.ReactNode;
 }
 
-function fmtQty(qty: number, assetType: GroupedHolding["assetType"]): string {
-  if (assetType === "crypto") return `${qty}`;
-  return `${qty.toLocaleString("ko-KR")}주`;
-}
-
-const CATEGORIES: { key: AssetCategoryKey; label: string }[] = [
-  { key: "all", label: "전체" },
-  { key: "kr_stock", label: "한국주식" },
-  { key: "us_stock", label: "해외주식" },
-  { key: "crypto", label: "코인" },
+const NAV_CARDS: MobileNavCard[] = [
+  {
+    to: "/my",
+    label: "내 포트폴리오",
+    desc: "보유 종목 전체 목록",
+    icon: <Icon name="person" size={18} />,
+  },
+  {
+    to: "/feed/news",
+    label: "뉴스",
+    desc: "시장 뉴스 피드",
+    icon: <Icon name="bell" size={18} />,
+  },
+  {
+    to: "/discover",
+    label: "발견",
+    desc: "투자 아이디어 탐색",
+    icon: <Icon name="flash" size={18} />,
+  },
+  {
+    to: "/signals",
+    label: "시그널",
+    desc: "AI 분석 신호",
+    icon: <Icon name="chart" size={18} />,
+  },
+  {
+    to: "/calendar",
+    label: "캘린더",
+    desc: "실적·배당 일정",
+    icon: <Icon name="calendar" size={18} />,
+  },
 ];
 
 export function MobileHomePage() {
   const home = useInvestHome();
   const panel = useAccountPanel();
   const [account, setAccount] = useState<"all" | AccountSource>("all");
-  const [category, setCategory] = useState<AssetCategoryKey>("all");
 
   const data = home.state.status === "ready" ? home.state.data : null;
 
@@ -43,12 +67,6 @@ export function MobileHomePage() {
     if (account === "all") return data.groupedHoldings;
     return scopeGroupedToSource(data.groupedHoldings, account);
   }, [data, account]);
-
-  const filteredScoped = useMemo(() => {
-    return category === "all"
-      ? scopedGrouped
-      : scopedGrouped.filter((g) => g.assetCategory === category);
-  }, [scopedGrouped, category]);
 
   const summary: HomeSummary | null = useMemo(() => {
     if (!data) return null;
@@ -64,6 +82,17 @@ export function MobileHomePage() {
       pnlRate: acct.pnlRate,
     };
   }, [data, account]);
+
+  // Compute per-category totals for the summary breakdown
+  const categoryTotals = useMemo(() => {
+    const totals: Record<string, number> = {};
+    for (const h of scopedGrouped) {
+      if (h.valueKrw != null) {
+        totals[h.assetCategory] = (totals[h.assetCategory] ?? 0) + h.valueKrw;
+      }
+    }
+    return totals;
+  }, [scopedGrouped]);
 
   return (
     <MobileShell title="홈">
@@ -95,7 +124,7 @@ export function MobileHomePage() {
 
       {data && summary && (
         <div style={{ display: "flex", flexDirection: "column", gap: 14, padding: "14px 0 16px" }}>
-          {/* Hero — single column on mobile */}
+          {/* Summary hero — account totals only, not a full holdings list */}
           <section style={{ padding: "0 16px" }} data-testid="mobile-hero">
             <div style={{ fontSize: 13, fontWeight: 600, color: "var(--fg-3)" }}>
               내 투자 포트폴리오
@@ -124,9 +153,34 @@ export function MobileHomePage() {
                 원금 {fmtKrw(summary.costBasisKrw)}
               </div>
             )}
+
+            {/* Per-category summary chips */}
+            {Object.keys(categoryTotals).length > 0 && (
+              <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+                {Object.entries(categoryTotals).map(([cat, val]) => {
+                  const label = cat === "kr_stock" ? "한국" : cat === "us_stock" ? "해외" : "코인";
+                  return (
+                    <div
+                      key={cat}
+                      style={{
+                        padding: "4px 10px",
+                        background: "var(--surface-2)",
+                        borderRadius: 8,
+                        fontSize: 11,
+                        fontWeight: 600,
+                        color: "var(--fg-2)",
+                        fontFeatureSettings: '"tnum"',
+                      }}
+                    >
+                      {label} {fmtKrw(val)}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </section>
 
-          {/* Account selector — 전체 + per-source pills */}
+          {/* Account selector */}
           {data.accounts.length > 0 && (
             <section style={{ padding: "0 16px" }} data-testid="mobile-account-row">
               <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4 }}>
@@ -146,113 +200,54 @@ export function MobileHomePage() {
             </section>
           )}
 
-          {/* Category filter chips */}
+          {/* Navigation shortcuts — market-entry role, linking to dedicated surfaces */}
           <section style={{ padding: "0 16px" }}>
-            <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4 }}>
-              {CATEGORIES.map((c) => (
-                <PillButton
-                  key={c.key}
-                  on={category === c.key}
-                  onClick={() => setCategory(c.key)}
+            <div style={{ fontSize: 12, fontWeight: 600, color: "var(--fg-3)", marginBottom: 8 }}>바로가기</div>
+            <div
+              data-testid="mobile-home-nav-cards"
+              style={{ display: "flex", flexDirection: "column", gap: 6 }}
+            >
+              {NAV_CARDS.map((card) => (
+                <Link
+                  key={card.to}
+                  to={card.to}
+                  style={{ textDecoration: "none" }}
                 >
-                  {c.label}
-                </PillButton>
-              ))}
-            </div>
-          </section>
-
-          {/* Holdings list */}
-          <section style={{ padding: "0 16px" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-              <h3 style={{ margin: 0, fontSize: 13, fontWeight: 700, color: "var(--fg)" }}>보유 종목</h3>
-            </div>
-            {filteredScoped.length === 0 ? (
-              <div data-testid="mobile-holdings-empty" style={{ padding: 32, textAlign: "center", color: "var(--fg-3)", fontSize: 13 }}>
-                해당 조건에 보유 종목이 없습니다.
-              </div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column" }}>
-                {filteredScoped.map((h) => {
-                  const tone = h.includedSources[0] ? pillToneForSource(h.includedSources[0]) : "paper";
-                  const usd = h.currency === "USD";
-                  const value = h.valueNative ?? h.valueKrw;
-                  return (
+                  <div
+                    data-testid="mobile-home-nav-card"
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 12,
+                      padding: "12px 14px",
+                      background: "var(--surface)",
+                      border: "1px solid var(--border)",
+                      borderRadius: 12,
+                    }}
+                  >
                     <div
-                      key={h.groupId}
-                      data-testid="mobile-holdings-row"
-                      data-category={h.assetCategory}
                       style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 10,
-                        padding: "10px 0",
-                        borderBottom: "1px solid var(--divider)",
+                        width: 32,
+                        height: 32,
+                        borderRadius: 9,
+                        background: "var(--accent-soft)",
+                        color: "var(--accent-press)",
+                        display: "grid",
+                        placeItems: "center",
+                        flexShrink: 0,
                       }}
                     >
-                      <div
-                        aria-hidden
-                        style={{
-                          width: 32,
-                          height: 32,
-                          borderRadius: 8,
-                          flexShrink: 0,
-                          background: `var(--pill-${tone}-bg)`,
-                          color: `var(--pill-${tone}-fg)`,
-                          display: "grid",
-                          placeItems: "center",
-                          fontWeight: 700,
-                          fontSize: 12,
-                        }}
-                      >
-                        {h.displayName.slice(0, 1)}
-                      </div>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div
-                          style={{
-                            fontSize: 14,
-                            fontWeight: 700,
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
-                            color: "var(--fg)",
-                          }}
-                        >
-                          {h.displayName}
-                        </div>
-                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 1 }}>
-                          <span style={{ fontSize: 11, color: "var(--fg-3)", fontFeatureSettings: '"tnum"' }}>
-                            {fmtQty(h.totalQuantity, h.assetType)}
-                          </span>
-                          <Pill tone={tone} size="sm">
-                            {tone.toUpperCase()}
-                          </Pill>
-                        </div>
-                      </div>
-                      <div style={{ textAlign: "right", fontFeatureSettings: '"tnum"' }}>
-                        <div style={{ fontSize: 14, fontWeight: 700, color: "var(--fg)" }}>
-                          {usd ? fmtUsd(value) : fmtKrw(value)}
-                        </div>
-                        {h.pnlRate != null ? (
-                          <div
-                            style={{
-                              fontSize: 12,
-                              fontWeight: 700,
-                              color: h.pnlRate >= 0 ? "var(--gain)" : "var(--loss)",
-                            }}
-                          >
-                            <span style={{ fontSize: 9, marginRight: 2 }}>{h.pnlRate >= 0 ? "▲" : "▼"}</span>
-                            {h.pnlRate >= 0 ? "+" : ""}
-                            {(h.pnlRate * 100).toFixed(2)}%
-                          </div>
-                        ) : (
-                          <div style={{ fontSize: 12, color: "var(--fg-3)" }}>—</div>
-                        )}
-                      </div>
+                      {card.icon}
                     </div>
-                  );
-                })}
-              </div>
-            )}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 14, fontWeight: 700, color: "var(--fg)" }}>{card.label}</div>
+                      <div style={{ fontSize: 11, color: "var(--fg-3)", marginTop: 1 }}>{card.desc}</div>
+                    </div>
+                    <Icon name="chev" size={16} />
+                  </div>
+                </Link>
+              ))}
+            </div>
           </section>
 
           {data.meta?.warnings && data.meta.warnings.length > 0 && (

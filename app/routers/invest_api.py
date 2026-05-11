@@ -28,6 +28,7 @@ from app.schemas.invest_feed_research import (
     FeedResearchTab,
 )
 from app.schemas.invest_home import InvestHomeResponse
+from app.schemas.invest_market_dashboard import MarketDashboardResponse
 from app.schemas.invest_screener import (
     ScreenerPresetsResponse,
     ScreenerResultsResponse,
@@ -48,6 +49,9 @@ from app.services.invest_view_model.feed_news_service import build_feed_news
 from app.services.invest_view_model.feed_research_service import build_feed_research
 from app.services.invest_view_model.investor_flow_service import (
     build_investor_flow_cards,
+)
+from app.services.invest_view_model.market_dashboard_service import (
+    build_market_dashboard,
 )
 from app.services.invest_view_model.relation_resolver import build_relation_resolver
 from app.services.invest_view_model.screener_service import (
@@ -111,6 +115,15 @@ async def get_home(
     service: Annotated[InvestHomeService, Depends(get_invest_home_service)],
 ) -> InvestHomeResponse:
     return await service.get_home(user_id=user.id)
+
+
+@router.get("/market")
+async def get_market_dashboard(
+    user: Annotated[Any, Depends(get_authenticated_user)],
+) -> MarketDashboardResponse:
+    """Read-only Naver-style market/index dashboard source (ROB-198)."""
+    _ = user
+    return await build_market_dashboard()
 
 
 @router.get("/coverage")

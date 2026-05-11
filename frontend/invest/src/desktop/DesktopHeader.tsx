@@ -3,10 +3,12 @@ import { Icon } from "../ds";
 
 const LINKS: { to: string; label: string; end?: boolean }[] = [
   { to: "/", label: "홈", end: true },
+  { to: "/my", label: "MY" },
   { to: "/feed/news", label: "뉴스" },
   { to: "/discover", label: "발견" },
   { to: "/signals", label: "시그널" },
   { to: "/calendar", label: "캘린더" },
+  { to: "/market", label: "시장" },
   { to: "/coverage", label: "커버리지" },
   { to: "/screener", label: "골라보기" },
 ];
