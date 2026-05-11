@@ -2,7 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import { fetchInvestCoverage } from "../../api/coverage";
 import { DesktopShell } from "../../desktop/DesktopShell";
 import { Card } from "../../ds";
-import type { CoverageState, InvestCoverageResponse, InvestCoverageSurface } from "../../types/coverage";
+import type {
+  CoverageCandidateReadiness,
+  CoverageState,
+  InvestCoverageResponse,
+  InvestCoverageSurface,
+} from "../../types/coverage";
 
 type Market = "kr" | "us" | "crypto" | "all";
 
@@ -24,6 +29,22 @@ const STATE_COLOR: Record<CoverageState, string> = {
   unsupported: "#64748b",
   error: "#b91c1c",
   provider_unwired: "#7c3aed",
+};
+
+const READINESS_LABEL: Record<CoverageCandidateReadiness, string> = {
+  live: "live",
+  request_time_only: "request-time",
+  fixture_backed_poc: "PoC",
+  aggregate_only_blocked: "blocked",
+  not_wired: "미연결",
+};
+
+const READINESS_COLOR: Record<CoverageCandidateReadiness, string> = {
+  live: "#0ea5e9",
+  request_time_only: "#6366f1",
+  fixture_backed_poc: "#a16207",
+  aggregate_only_blocked: "#9333ea",
+  not_wired: "#64748b",
 };
 
 function StatePill({ state }: { state: CoverageState }) {
@@ -54,6 +75,29 @@ function SurfaceRow({ surface }: { surface: InvestCoverageSurface }) {
       <td style={{ padding: "12px 10px", borderBottom: "1px solid var(--divider)" }}>
         <div style={{ fontWeight: 800 }}>{surface.label}</div>
         <div style={{ color: "var(--fg-3)", fontSize: 12 }}>{surface.surface}</div>
+        {surface.sourceCandidates.length > 0 && (
+          <div style={{ marginTop: 6, display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {surface.sourceCandidates.map((candidate) => (
+              <span
+                key={`${candidate.name}-${candidate.surface}-${candidate.readiness}`}
+                title={candidate.notes[0] ?? candidate.warnings[0] ?? ""}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                  borderRadius: 8,
+                  padding: "2px 6px",
+                  fontSize: 11,
+                  fontWeight: 700,
+                  color: "white",
+                  background: READINESS_COLOR[candidate.readiness],
+                }}
+              >
+                {candidate.name} · {READINESS_LABEL[candidate.readiness]}
+              </span>
+            ))}
+          </div>
+        )}
       </td>
       <td style={{ padding: "12px 10px", borderBottom: "1px solid var(--divider)" }}>
         <StatePill state={surface.state} />
@@ -119,7 +163,7 @@ export function CoverageRoute() {
         <div>
           <h1 style={{ margin: 0, fontSize: 26, letterSpacing: "-0.04em" }}>데이터 커버리지</h1>
           <p style={{ margin: "6px 0 0", color: "var(--fg-2)", fontSize: 14 }}>
-            /invest Toss parity 표면별 freshness와 미연결 read-model을 확인합니다.
+            /invest 소유 read-model의 freshness와 Toss/Naver 기준·후보 신호를 구분해 확인합니다.
           </p>
         </div>
 
@@ -196,11 +240,11 @@ export function CoverageRoute() {
       }
       right={
         <Card>
-          <div style={{ fontWeight: 800, marginBottom: 8 }}>ROB-192 원칙</div>
+          <div style={{ fontWeight: 800, marginBottom: 8 }}>ROB-201 원칙</div>
           <ul style={{ margin: 0, paddingLeft: 18, color: "var(--fg-2)", fontSize: 13 }}>
-            <li>읽기 전용 DB/read-model 진단</li>
-            <li>Toss는 기준/벤치마크로만 표기</li>
-            <li>매매 추천·주문·백필 없음</li>
+            <li>source-of-truth는 로컬 DB/read-model만</li>
+            <li>Toss/Naver는 기준·후보 신호로만 표기</li>
+            <li>매매 추천·주문·백필·요청 중 스크래핑 없음</li>
           </ul>
         </Card>
       }
