@@ -145,10 +145,7 @@ async def _http_get_monthly(ym: str) -> bytes:
     Raises ``httpx.HTTPStatusError`` on non-2xx, ``httpx.RequestError`` on
     network failures.
     """
-    url = (
-        f"{_WISEFN_BASE_URL}{_WISEFN_CALENDAR_PATH}"
-        f"?call_typ=2&param1={ym}&param2="
-    )
+    url = f"{_WISEFN_BASE_URL}{_WISEFN_CALENDAR_PATH}?call_typ=2&param1={ym}&param2="
     headers = {
         "User-Agent": _WISEFN_USER_AGENT,
         "Accept": "application/json, text/javascript, */*; q=0.01",

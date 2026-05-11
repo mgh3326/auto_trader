@@ -238,7 +238,7 @@ async def test_fetch_calendar_payload_item_without_date_is_skipped():
         {
             "jongcode": "005930",
             "jongname": "삼성전자",
-            "expect_dt": "",       # no date → skip
+            "expect_dt": "",  # no date → skip
             "confirm_dt": "",
             "gyulsan_ym": "202603",
             "expect_time": "2",
