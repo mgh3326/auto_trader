@@ -30,6 +30,42 @@ CoverageCandidateReadiness = Literal[
     "not_wired",
 ]
 CoverageCandidateKind = Literal["secondary_source", "reference", "candidate"]
+CoverageActionPriority = Literal["none", "low", "medium", "high", "blocked"]
+CoverageActionKind = Literal[
+    "none",
+    "monitor",
+    "investigate",
+    "repair_read_model",
+    "backfill_candidate",
+    "scheduler_candidate",
+    "provider_contract_needed",
+    "unsupported_no_action",
+]
+CoverageApprovalGate = Literal[
+    "none",
+    "code_review",
+    "production_db_write_approval",
+    "scheduler_activation_approval",
+    "broker_order_approval",
+]
+
+
+class CoverageActionability(BaseModel):
+    """Advisory mapping from coverage state to a safe work queue.
+
+    This metadata is intentionally descriptive only. It must never trigger a
+    backfill, scheduler activation, broker call, watch mutation, or order side
+    effect from the coverage request path.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    priority: CoverageActionPriority = "none"
+    action: CoverageActionKind = "none"
+    queue: str | None = None
+    approvalGates: list[CoverageApprovalGate] = Field(default_factory=list)
+    reason: str | None = None
+    safeByDefault: bool = True
 
 
 class InvestCoverageCounts(BaseModel):
@@ -75,6 +111,7 @@ class InvestCoverageSurface(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
     sourceCandidates: list[CoverageSourceCandidate] = Field(default_factory=list)
+    actionability: CoverageActionability = Field(default_factory=CoverageActionability)
 
 
 class InvestCoverageSymbol(BaseModel):
@@ -85,6 +122,7 @@ class InvestCoverageSymbol(BaseModel):
     surfaces: dict[str, CoverageState] = Field(default_factory=dict)
     latestDates: dict[str, date | None] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
+    actionability: CoverageActionability = Field(default_factory=CoverageActionability)
 
 
 class InvestCoverageResponse(BaseModel):

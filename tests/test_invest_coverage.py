@@ -15,9 +15,14 @@ from app.models.investor_flow_snapshot import InvestorFlowSnapshot
 from app.models.kr_symbol_universe import KRSymbolUniverse
 from app.models.market_events import MarketEventIngestionPartition
 from app.models.news import NewsArticle, NewsArticleRelatedSymbol, NewsIngestionRun
+from app.models.us_symbol_universe import USSymbolUniverse
 from app.routers.dependencies import get_authenticated_user
 from app.routers.invest_api import router as invest_api_router
-from app.schemas.invest_coverage import CoverageSourceCandidate, InvestCoverageSurface
+from app.schemas.invest_coverage import (
+    CoverageActionability,
+    CoverageSourceCandidate,
+    InvestCoverageSurface,
+)
 from app.services.invest_coverage_service import build_invest_coverage
 
 
@@ -42,6 +47,13 @@ def test_coverage_surface_accepts_source_candidates_and_references_list():
     assert surface.references == ["toss", "naver"]
     assert surface.sourceCandidates[0].readiness == "live"
     assert surface.sourceCandidates[0].kind == "secondary_source"
+    assert surface.actionability.safeByDefault is True
+    assert surface.actionability.approvalGates == []
+
+
+def test_coverage_actionability_rejects_unexpected_fields():
+    with pytest.raises(ValueError):
+        CoverageActionability(unexpected="run-now")  # type: ignore[call-arg]
 
 
 @pytest.fixture
@@ -201,8 +213,203 @@ async def test_build_invest_coverage_reports_fresh_partial_and_provider_unwired(
     assert by_surface[("orderbook_nxt_capability", "kr")].state == "missing"
     assert by_surface[("quotes", "kr")].state == "provider_unwired"
     assert by_surface[("ohlcv", "kr")].state == "provider_unwired"
+    assert by_surface[("screener_snapshots", "kr")].actionability.priority == "medium"
+    assert (
+        by_surface[("screener_snapshots", "kr")].actionability.action
+        == "repair_read_model"
+    )
+    assert (
+        by_surface[("orderbook_nxt_capability", "kr")].actionability.priority == "high"
+    )
+    assert by_surface[("quotes", "kr")].actionability.priority == "blocked"
+    assert (
+        by_surface[("quotes", "kr")].actionability.action == "provider_contract_needed"
+    )
     assert response.symbols[0].surfaces["screener_snapshots"] == "fresh"
     assert response.symbols[1].surfaces["screener_snapshots"] == "stale"
+    assert response.symbols[1].actionability.priority == "high"
+
+
+@pytest.mark.asyncio
+async def test_all_market_symbol_drilldown_resolves_per_symbol_market(db_session):
+    trading_day = dt.date(2026, 5, 11)
+    now = dt.datetime(2026, 5, 11, 8, 0, tzinfo=dt.UTC)
+    now_naive = now.replace(tzinfo=None)
+
+    await db_session.execute(
+        sa.delete(NewsArticleRelatedSymbol).where(
+            NewsArticleRelatedSymbol.id.in_([9720, 9721])
+        )
+    )
+    await db_session.execute(
+        sa.delete(NewsArticle).where(NewsArticle.id.in_([9620, 9621]))
+    )
+    await db_session.execute(
+        sa.delete(InvestScreenerSnapshot).where(
+            InvestScreenerSnapshot.id.in_([9220, 9221])
+        )
+    )
+    await db_session.execute(
+        sa.delete(KRSymbolUniverse).where(KRSymbolUniverse.symbol == "900230")
+    )
+    await db_session.execute(
+        sa.delete(USSymbolUniverse).where(USSymbolUniverse.symbol == "ROB203")
+    )
+    await db_session.commit()
+
+    db_session.add_all(
+        [
+            KRSymbolUniverse(
+                symbol="900230", name="ROB203 KR", exchange="KOSPI", is_active=True
+            ),
+            USSymbolUniverse(
+                symbol="ROB203", exchange="NASDAQ", name_en="ROB203 US", is_active=True
+            ),
+            InvestScreenerSnapshot(
+                id=9220,
+                market="kr",
+                symbol="900230",
+                snapshot_date=trading_day,
+                latest_close=Decimal("1000"),
+                closes_window=[1000],
+                source="kis",
+                computed_at=now,
+            ),
+            InvestScreenerSnapshot(
+                id=9221,
+                market="us",
+                symbol="ROB203",
+                snapshot_date=trading_day,
+                latest_close=Decimal("20"),
+                closes_window=[20],
+                source="yahoo",
+                computed_at=now,
+            ),
+            NewsArticle(
+                id=9620,
+                url="https://example.com/rob203-kr",
+                title="ROB203 KR news",
+                source="test",
+                feed_source="test",
+                market="kr",
+                keywords=[],
+                article_published_at=now_naive,
+                scraped_at=now_naive,
+                created_at=now_naive,
+            ),
+            NewsArticle(
+                id=9621,
+                url="https://example.com/rob203-us",
+                title="ROB203 US news",
+                source="test",
+                feed_source="test",
+                market="us",
+                keywords=[],
+                article_published_at=now_naive,
+                scraped_at=now_naive,
+                created_at=now_naive,
+            ),
+            NewsArticleRelatedSymbol(
+                id=9720,
+                article_id=9620,
+                market="kr",
+                symbol="900230",
+                source="test",
+                created_at=now_naive,
+            ),
+            NewsArticleRelatedSymbol(
+                id=9721,
+                article_id=9621,
+                market="us",
+                symbol="ROB203",
+                source="test",
+                created_at=now_naive,
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    response = await build_invest_coverage(
+        db_session,
+        market="all",
+        symbols=["900230", "ROB203", "KRW-BTC"],
+        as_of=trading_day,
+    )
+
+    by_symbol = {row.symbol: row for row in response.symbols}
+    assert [row.symbol for row in response.symbols] == ["900230", "ROB203", "KRW-BTC"]
+    assert by_symbol["900230"].market == "kr"
+    assert by_symbol["ROB203"].market == "us"
+    assert by_symbol["KRW-BTC"].market == "crypto"
+    assert by_symbol["900230"].surfaces["screener_snapshots"] == "fresh"
+    assert by_symbol["ROB203"].surfaces["screener_snapshots"] == "fresh"
+    assert by_symbol["KRW-BTC"].actionability.action == "unsupported_no_action"
+
+
+@pytest.mark.asyncio
+async def test_coverage_endpoint_market_all_returns_partitioned_symbol_rows(
+    app: FastAPI, db_session
+):
+    trading_day = dt.date(2026, 5, 11)
+    now = dt.datetime(2026, 5, 11, 8, 0, tzinfo=dt.UTC)
+
+    await db_session.execute(
+        sa.delete(InvestorFlowSnapshot).where(InvestorFlowSnapshot.id == 9320)
+    )
+    await db_session.commit()
+    await db_session.merge(
+        KRSymbolUniverse(
+            symbol="005930", name="삼성전자", exchange="KOSPI", is_active=True
+        )
+    )
+    await db_session.merge(
+        USSymbolUniverse(
+            symbol="AAPL", exchange="NASDAQ", name_en="Apple Inc.", is_active=True
+        )
+    )
+    await db_session.merge(
+        USSymbolUniverse(
+            symbol="MSFT", exchange="NASDAQ", name_en="Microsoft", is_active=True
+        )
+    )
+    db_session.add(
+        InvestorFlowSnapshot(
+            id=9320,
+            market="kr",
+            symbol="005930",
+            snapshot_date=trading_day,
+            source="naver_finance",
+            foreign_net=100,
+            institution_net=50,
+            individual_net=-150,
+            collected_at=now,
+        )
+    )
+    await db_session.commit()
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        r = await client.get(
+            "/invest/api/coverage?market=all&symbols=005930,AAPL,MSFT&asOf=2026-05-11"
+        )
+
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["market"] == "all"
+    by_symbol = {row["symbol"]: row for row in payload["symbols"]}
+    assert set(by_symbol) == {"005930", "AAPL", "MSFT"}
+    assert [row["symbol"] for row in payload["symbols"]] == ["005930", "AAPL", "MSFT"]
+    assert by_symbol["005930"]["market"] == "kr"
+    assert by_symbol["AAPL"]["market"] == "us"
+    assert by_symbol["MSFT"]["market"] == "us"
+    assert "naver_investor_flow" in by_symbol["005930"]["surfaces"]
+    assert by_symbol["AAPL"]["surfaces"]["investor_flow"] == "unsupported"
+    assert by_symbol["MSFT"]["surfaces"]["naver_investor_flow"] == "unsupported"
+    assert all("actionability" in row for row in payload["symbols"])
+    assert all(
+        surface["sourceOfTruth"] != "naver_finance" for surface in payload["surfaces"]
+    )
 
 
 @pytest.mark.asyncio
