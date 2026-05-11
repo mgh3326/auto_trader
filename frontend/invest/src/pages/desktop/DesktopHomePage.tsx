@@ -4,10 +4,11 @@ import { LeftContextRail } from "../../desktop/LeftContextRail";
 import type { AccountFilterKey } from "../../desktop/LeftContextRail";
 import { RightRemotePanel } from "../../desktop/RightRemotePanel";
 import { useInvestHome } from "../../hooks/useInvestHome";
+import { useMarketDashboard } from "../../hooks/useMarketDashboard";
 import { useViewport } from "../../hooks/useViewport";
 import { scopeGroupedToSource } from "../../desktop/scopeHoldings";
 import { DesktopHero } from "../../components/home/DesktopHero";
-import { MarketStrip } from "../../components/home/MarketStrip";
+import { MarketStrip, marketDashboardToStripItems } from "../../components/home/MarketStrip";
 import { HoldingsTable } from "../../components/home/HoldingsTable";
 import { FilterChips } from "../../components/home/FilterChips";
 import { MobileHomePage } from "../mobile/MobileHomePage";
@@ -23,10 +24,13 @@ export function InvestHomeRoute() {
 
 export function DesktopHomePage() {
   const home = useInvestHome();
+  const market = useMarketDashboard();
   const [account, setAccount] = useState<AccountFilterKey>("all");
   const [category, setCategory] = useState<AssetCategoryKey>("all");
 
   const data = home.state.status === "ready" ? home.state.data : null;
+  const marketData = market.state.status === "ready" ? market.state.data : null;
+  const marketStripItems = marketDashboardToStripItems(marketData);
 
   // Account scope must propagate to every surface that shows holdings totals
   // (hero breakdown + table) so the user sees one consistent view of the
@@ -106,7 +110,7 @@ export function DesktopHomePage() {
                 accountCount={account === "all" ? data.accounts.length : 1}
                 holdings={scopedGrouped}
               />
-              <MarketStrip items={[]} />
+              <MarketStrip items={marketStripItems} />
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
                 <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, letterSpacing: "-0.01em" }}>보유 종목</h2>
                 <FilterChips value={category} onChange={setCategory} />
