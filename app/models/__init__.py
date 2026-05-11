@@ -1,6 +1,7 @@
 # app/models/__init__.py
 from .analysis import StockAnalysisResult, StockInfo
 from .base import Base
+from .investor_flow_snapshot import InvestorFlowSnapshot
 from .kr_symbol_universe import KRSymbolUniverse
 from .manual_holdings import (
     BrokerAccount,
@@ -98,6 +99,7 @@ __all__ = [
     "TradeJournal",
     "StockInfo",
     "StockAnalysisResult",
+    "InvestorFlowSnapshot",
     "KRSymbolUniverse",
     "UpbitSymbolUniverse",
     "USSymbolUniverse",

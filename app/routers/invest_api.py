@@ -20,6 +20,7 @@ from app.schemas.invest_calendar import (
     CalendarTab,
     WeeklySummaryResponse,
 )
+from app.schemas.invest_coverage import CoverageMarket, InvestCoverageResponse
 from app.schemas.invest_feed_news import FeedNewsResponse, FeedTab
 from app.schemas.invest_feed_research import (
     FeedResearchFilters,
@@ -37,12 +38,17 @@ from app.schemas.invest_stock_detail import (
     StockDetailOrdersResponse,
     StockDetailResponse,
 )
+from app.schemas.investor_flow import InvestorFlowResponse
+from app.services.invest_coverage_service import build_invest_coverage
 from app.services.invest_home_service import InvestHomeService
 from app.services.invest_screener_snapshots.coverage_service import build_coverage
 from app.services.invest_view_model.account_panel_service import build_account_panel
 from app.services.invest_view_model.calendar_service import build_calendar
 from app.services.invest_view_model.feed_news_service import build_feed_news
 from app.services.invest_view_model.feed_research_service import build_feed_research
+from app.services.invest_view_model.investor_flow_service import (
+    build_investor_flow_cards,
+)
 from app.services.invest_view_model.relation_resolver import build_relation_resolver
 from app.services.invest_view_model.screener_service import (
     build_screener_presets,
@@ -107,6 +113,30 @@ async def get_home(
     return await service.get_home(user_id=user.id)
 
 
+@router.get("/coverage")
+async def get_invest_coverage(
+    user: Annotated[Any, Depends(get_authenticated_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    market: CoverageMarket = Query("kr"),
+    symbols: str = Query(
+        "", description="Optional comma-separated symbols for per-symbol coverage"
+    ),
+    as_of: Annotated[date | None, Query(alias="asOf")] = None,
+) -> InvestCoverageResponse:
+    """Read-only Toss-parity data coverage dashboard source (ROB-192)."""
+    _ = user
+    symbol_list = [part.strip() for part in symbols.split(",") if part.strip()]
+    try:
+        return await build_invest_coverage(
+            db,
+            market=market,
+            symbols=symbol_list,
+            as_of=as_of,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.get("/account-panel")
 async def get_account_panel(
     user: Annotated[Any, Depends(get_authenticated_user)],
@@ -114,6 +144,29 @@ async def get_account_panel(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> AccountPanelResponse:
     return await build_account_panel(user_id=user.id, db=db, home_service=service)
+
+
+@router.get("/investor-flow")
+async def get_investor_flow(
+    user: Annotated[Any, Depends(get_authenticated_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    symbols: str = Query("", description="Comma-separated KR symbols"),
+    market: Literal["kr"] = Query("kr"),
+    as_of: Annotated[date | None, Query(alias="asOf")] = None,
+    max_stale_days: Annotated[int, Query(alias="maxStaleDays", ge=0, le=30)] = 1,
+) -> InvestorFlowResponse:
+    _ = user
+    symbol_list = [part.strip() for part in symbols.split(",") if part.strip()]
+    try:
+        return await build_investor_flow_cards(
+            db=db,
+            symbols=symbol_list,
+            market=market,
+            as_of=as_of,
+            max_stale_days=max_stale_days,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 StockDetailMarketParam = Literal["kr", "us", "crypto"]

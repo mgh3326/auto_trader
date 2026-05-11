@@ -6,6 +6,7 @@ import { FeedNewsRoute } from "./pages/desktop/DesktopFeedNewsPage";
 import { InvestDiscoverRoute } from "./pages/desktop/DesktopDiscoverPage";
 import { SignalsRoute } from "./pages/desktop/DesktopSignalsPage";
 import { CalendarRoute } from "./pages/desktop/DesktopCalendarPage";
+import { CoverageRoute } from "./pages/desktop/DesktopCoveragePage";
 import { DesktopScreenerPage } from "./pages/desktop/DesktopScreenerPage";
 import { StockDetailPage } from "./pages/stock-detail/StockDetailPage";
 
@@ -36,6 +37,7 @@ export const router = createBrowserRouter(
     { path: "/discover/issues/:issueId", element: <DiscoverIssueDetailPage /> },
     { path: "/signals", element: <SignalsRoute /> },
     { path: "/calendar", element: <CalendarRoute /> },
+    { path: "/coverage", element: <CoverageRoute /> },
     { path: "/screener", element: <DesktopScreenerPage /> },
     { path: "/stocks/:market/:symbol", element: <StockDetailPage /> },
 
