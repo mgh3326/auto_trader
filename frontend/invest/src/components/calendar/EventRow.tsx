@@ -6,7 +6,7 @@ import { OwnershipTag } from "./OwnershipTag";
 export function EventRow({ ev }: { ev: CalendarEventVM }) {
   const showFallbackTime =
     ev.time == null && ev.actual == null && ev.forecast == null && ev.previous == null;
-  const timeText = ev.time ?? (ev.released ? "발표 완료" : showFallbackTime ? formatKstTime(null) : "발표 예정");
+  const timeText = ev.time != null ? formatKstTime(ev.time) : (ev.released ? "발표 완료" : showFallbackTime ? formatKstTime(null) : "발표 예정");
 
   return (
     <article

@@ -1,6 +1,8 @@
 import { describe, expect, test } from "vitest";
 import {
   clampSelectedDateToMonth,
+  formatCalendarValue,
+  formatEventTitle,
   formatKstTime,
   relativeDayPrefix,
   selectedDateLabelWithRelative,
@@ -12,11 +14,45 @@ describe("ROB-166 KST + relative-date helpers", () => {
     expect(formatKstTime("  오전 8시  ")).toBe("오전 8시");
   });
 
+  test("formatKstTime localizes ISO timestamps to KST text", () => {
+    expect(formatKstTime("2026-05-07T16:30:00Z")).toBe("5월 8일 오전 1시 30분 KST");
+  });
+
   test("formatKstTime falls back to a single stable placeholder when null/empty", () => {
     expect(formatKstTime(null)).toBe("발표 예정 · KST");
     expect(formatKstTime(undefined)).toBe("발표 예정 · KST");
     expect(formatKstTime("")).toBe("발표 예정 · KST");
     expect(formatKstTime("   ")).toBe("발표 예정 · KST");
+  });
+
+  test("formatCalendarValue removes API decimal padding", () => {
+    expect(formatCalendarValue("1.16000000")).toBe("1.16");
+    expect(formatCalendarValue("0.28490000")).toBe("0.2849");
+    expect(formatCalendarValue("2.00000000")).toBe("2");
+    expect(formatCalendarValue("QoQ")).toBe("QoQ");
+  });
+
+  test("formatEventTitle supplies KR earnings fallback labels", () => {
+    expect(formatEventTitle({
+      eventId: "wise:005930:2026Q1",
+      title: "",
+      market: "kr",
+      eventType: "earnings",
+      source: "wisefn",
+      relatedSymbols: [{ symbol: "005930", market: "kr", displayName: "삼성전자" }],
+      relation: "none",
+      badges: [],
+    })).toBe("삼성전자(005930) 실적 발표");
+    expect(formatEventTitle({
+      eventId: "wise:unknown",
+      title: " ",
+      market: "kr",
+      eventType: "earnings",
+      source: "wisefn",
+      relatedSymbols: [],
+      relation: "none",
+      badges: [],
+    })).toBe("국내 기업 실적 발표");
   });
 
   test("relativeDayPrefix names today/tomorrow, otherwise null", () => {

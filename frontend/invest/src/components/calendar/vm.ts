@@ -60,6 +60,31 @@ export function mapOwnership(event: CalendarEvent): DisplayOwnership {
   return null;
 }
 
+export function formatCalendarValue(value: string | null | undefined): string | null {
+  const trimmed = (value ?? "").trim();
+  if (trimmed.length === 0) return null;
+  if (!/^[+-]?\d+(?:\.\d+)?$/.test(trimmed)) return trimmed;
+  const [integerPart = "", fractionPart = ""] = trimmed.split(".");
+  const cleanedFraction = fractionPart.replace(/0+$/, "");
+  return cleanedFraction.length === 0 ? integerPart : `${integerPart}.${cleanedFraction}`;
+}
+
+export function formatEventTitle(event: CalendarEvent): string {
+  const title = event.title.trim();
+  if (title.length > 0) return title;
+  const primarySymbol = event.relatedSymbols[0];
+  if (primarySymbol) {
+    const entity = primarySymbol.displayName && primarySymbol.displayName !== primarySymbol.symbol
+      ? `${primarySymbol.displayName}(${primarySymbol.symbol})`
+      : primarySymbol.symbol;
+    return event.eventType === "earnings" ? `${entity} 실적 발표` : entity;
+  }
+  if (event.eventType === "earnings" && event.market === "kr") return "국내 기업 실적 발표";
+  if (event.eventType === "earnings" && event.market === "us") return "미국 기업 실적 발표";
+  if (event.eventType === "economic") return "경제지표 발표";
+  return "시장 이벤트";
+}
+
 export function toEventVM(event: CalendarEvent, date: string): CalendarEventVM {
   const day = Number.parseInt(date.slice(8, 10), 10);
   const month = Number.parseInt(date.slice(5, 7), 10);
@@ -70,12 +95,12 @@ export function toEventVM(event: CalendarEvent, date: string): CalendarEventVM {
     monthDay: `${month}/${day}`,
     type: mapEventType(event.eventType),
     region: mapMarketToRegion(event.market),
-    title: event.title,
+    title: formatEventTitle(event),
     time: event.eventTimeLocal ?? null,
     released: event.actual != null,
-    actual: event.actual ?? null,
-    forecast: event.forecast ?? null,
-    previous: event.previous ?? null,
+    actual: formatCalendarValue(event.actual),
+    forecast: formatCalendarValue(event.forecast),
+    previous: formatCalendarValue(event.previous),
     own: mapOwnership(event),
     badges: event.badges,
     displayPriority: event.displayPriority ?? 0,
@@ -232,8 +257,18 @@ export function selectedDateLabel(dateIso: string): string {
  */
 export function formatKstTime(eventTimeLocal: string | null | undefined): string {
   const trimmed = (eventTimeLocal ?? "").trim();
-  if (trimmed.length > 0) return trimmed;
-  return "발표 예정 · KST";
+  if (trimmed.length === 0) return "발표 예정 · KST";
+  const parsed = new Date(trimmed);
+  if (!Number.isNaN(parsed.getTime()) && /T|Z|[+-]\d{2}:?\d{2}$/.test(trimmed)) {
+    const kst = new Date(parsed.getTime() + 9 * 60 * 60 * 1000);
+    const hour = kst.getUTCHours();
+    const minute = kst.getUTCMinutes();
+    const period = hour < 12 ? "오전" : "오후";
+    const hour12 = hour % 12 || 12;
+    const minuteText = minute === 0 ? "" : ` ${minute}분`;
+    return `${kst.getUTCMonth() + 1}월 ${kst.getUTCDate()}일 ${period} ${hour12}시${minuteText} KST`;
+  }
+  return trimmed;
 }
 
 /** "오늘" if dateIso === todayIso, "내일" if dateIso === todayIso + 1d, else null. */
