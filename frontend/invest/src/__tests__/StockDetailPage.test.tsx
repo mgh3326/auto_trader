@@ -49,14 +49,14 @@ const aboveFold: StockDetailResponse = {
     freshness: "ok",
   },
   holding: {
-    totalQuantity: 2,
-    averageCost: 200,
-    costBasis: 400,
-    valueNative: 422.68,
-    valueKrw: 575000,
+    totalQuantity: 3,
+    averageCost: 201,
+    costBasis: 603,
+    valueNative: 634.02,
+    valueKrw: 862500,
     pnlKrw: 30000,
     pnlRate: 5.5,
-    includedSources: ["kis"],
+    includedSources: ["kis", "toss_manual"],
     sourceBreakdown: [
       {
         source: "kis",
@@ -66,6 +66,15 @@ const aboveFold: StockDetailResponse = {
         costBasis: 400,
         valueNative: 422.68,
         valueKrw: 575000,
+      },
+      {
+        source: "toss_manual",
+        accountName: "Manual IRA",
+        quantity: 1,
+        averageCost: 203,
+        costBasis: 203,
+        valueNative: 211.34,
+        valueKrw: 287500,
       },
     ],
     priceState: "live",
@@ -189,16 +198,57 @@ test("renders the QQQM stock detail shell from the read-only backend contract", 
   expect(await screen.findByTestId("stock-detail-shell")).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: /Invesco NASDAQ 100 ETF/ })).toBeInTheDocument();
   expect(screen.getByText("QQQM · US · NASDAQ")).toBeInTheDocument();
-  expect(screen.getByText("$211.34")).toBeInTheDocument();
+  expect(screen.getAllByText("$211.34").length).toBeGreaterThan(0);
   expect(screen.getByText("+1.06%")).toBeInTheDocument();
-  expect(screen.getByTestId("stock-detail-holding")).toHaveTextContent("2주");
-  expect(screen.getByTestId("stock-detail-holding")).toHaveTextContent("계좌별: KIS 2주");
+  expect(screen.getByTestId("stock-detail-holding")).toHaveTextContent("3주");
+  expect(screen.getByTestId("stock-detail-holding")).toHaveTextContent("계좌별 보유");
+  expect(screen.getByTestId("stock-detail-holding")).toHaveTextContent("KIS");
+  expect(screen.getByTestId("stock-detail-holding")).toHaveTextContent("Manual IRA");
+  expect(screen.getByTestId("stock-detail-holding")).toHaveTextContent("평균 단가");
+  expect(screen.getByTestId("stock-detail-holding")).toHaveTextContent("평가");
   expect(screen.getByTestId("stock-detail-profile")).toHaveTextContent("ETF");
   expect(screen.getByTestId("stock-detail-analysis")).toHaveTextContent("hold");
 
   await waitFor(() => expect(stockApi.fetchStockDetailCandles).toHaveBeenCalledWith({ market: "us", symbol: "QQQM", period: "1d" }));
   expect(await screen.findByTestId("stock-detail-chart")).toHaveTextContent("3개 캔들");
   expect(await screen.findByTestId("stock-detail-news")).toHaveTextContent("QQQM tracks Nasdaq rally");
+  expect(screen.getByTestId("stock-detail-news")).toHaveTextContent("뉴스");
+  expect(screen.getByTestId("stock-detail-news")).not.toHaveTextContent("공시");
+});
+
+test("renders explicit missing states for stock-detail data blocks", async () => {
+  vi.mocked(stockApi.fetchStockDetail).mockResolvedValue({
+    ...aboveFold,
+    quote: null,
+    screenerSnapshot: null,
+    valuation: null,
+    latestAnalysis: null,
+    meta: {
+      ...aboveFold.meta,
+      blockStates: {
+        ...aboveFold.meta.blockStates,
+        quote: "provider_unwired",
+        screenerSnapshot: "missing",
+        valuation: "missing",
+        latestAnalysis: "missing",
+      },
+    },
+  });
+  vi.mocked(stockApi.fetchStockDetailCandles).mockResolvedValue({
+    ...candles,
+    source: "market_data",
+    candles: [],
+    meta: { dataState: "provider_unwired", warnings: ["provider_unwired"] },
+  });
+
+  renderPage();
+
+  expect(await screen.findByTestId("stock-detail-header")).toHaveTextContent("시세 없음");
+  expect(await screen.findByTestId("stock-detail-chart")).toHaveTextContent("차트 데이터 없음");
+  expect(screen.getByTestId("stock-detail-chart")).toHaveTextContent("market_data");
+  expect(screen.getByTestId("stock-detail-profile")).toHaveTextContent("밸류에이션 데이터 없음");
+  expect(screen.getByTestId("stock-detail-profile")).toHaveTextContent("스크리너 스냅샷 없음");
+  expect(screen.getByTestId("stock-detail-analysis")).toHaveTextContent("최근 분석 데이터 없음");
 });
 
 test("keeps buy/sell controls disabled and separates filled history from pending provider-unwired state", async () => {
@@ -250,6 +300,25 @@ test("does not show no-pending copy for malformed empty pending bucket without q
   renderPage();
 
   expect(await screen.findByTestId("stock-detail-orders-pending")).not.toHaveTextContent("대기중인 주문이 없어요");
+});
+
+test("shows pending-order error separately from empty pending copy", async () => {
+  vi.mocked(stockApi.fetchStockDetailOrders).mockResolvedValue({
+    ...orders,
+    pending: {
+      items: [],
+      nextCursor: null,
+      state: "error",
+      emptyState: null,
+      source: "read_only_pending_orders_snapshot",
+      warnings: ["pending_orders_fetch_failed"],
+    },
+  });
+
+  renderPage();
+
+  expect(await screen.findByTestId("stock-detail-orders-pending")).toHaveTextContent("대기 주문 조회에 실패했습니다");
+  expect(screen.queryByText("대기중인 주문이 없어요")).not.toBeInTheDocument();
 });
 
 

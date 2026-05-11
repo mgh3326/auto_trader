@@ -125,13 +125,27 @@ async def get_stock_detail(
     symbol: str,
     user: Annotated[Any, Depends(get_authenticated_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    service: Annotated[InvestHomeService, Depends(get_invest_home_service)],
 ) -> StockDetailResponse:
+    async def home_holding_provider(
+        user_id: int | str,
+        _market: StockDetailMarketParam,
+        _symbol: str,
+        _db: AsyncSession,
+    ) -> InvestHomeResponse:
+        # Reuse the same read-only home aggregation path that powers
+        # /invest/api/home. build_stock_detail maps groupedHoldings and
+        # sourceBreakdown from this response into the detail DTO; this avoids
+        # introducing a second broker/manual holdings query path here.
+        return await service.get_home(user_id=int(user_id))
+
     try:
         return await build_stock_detail(
             user_id=user.id,
             market=market,
             symbol=symbol,
             db=db,
+            holding_provider=home_holding_provider,
         )
     except SymbolNotFound as exc:
         raise HTTPException(status_code=404, detail="symbol_not_found") from exc

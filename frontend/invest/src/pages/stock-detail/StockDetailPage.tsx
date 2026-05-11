@@ -36,6 +36,25 @@ function currencyValue(currency: string, value: number | null | undefined) {
   return <Krw v={value} size={32} weight={800} />;
 }
 
+function fmtMoney(currency: string, value: number | null | undefined): string {
+  if (value == null) return "−";
+  if (currency === "USD") return `$${value.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+  return `₩${Math.round(value).toLocaleString("ko-KR")}`;
+}
+
+function blockStateLabel(state: string | undefined): string {
+  switch (state) {
+    case "fresh": return "최신";
+    case "stale": return "오래된 데이터";
+    case "partial": return "일부 데이터";
+    case "unsupported": return "미지원";
+    case "error": return "조회 오류";
+    case "provider_unwired": return "업데이트 대기";
+    case "missing": return "데이터 없음";
+    default: return "상태 미확인";
+  }
+}
+
 function orderbookMessage(data: StockDetailResponse): string {
   if (data.orderbookSupport.supported && data.orderbook) return "호가를 표시합니다";
   if (data.orderbookSupport.reason === "us_unsupported") return "US 호가는 아직 지원하지 않습니다";
@@ -45,6 +64,7 @@ function orderbookMessage(data: StockDetailResponse): string {
 
 function HeaderCard({ data }: { data: StockDetailResponse }) {
   const quote = data.quote;
+  const quoteMissing = !quote || data.meta.blockStates.quote !== "fresh";
   return (
     <Card data-testid="stock-detail-header">
       <div style={{ display: "flex", justifyContent: "space-between", gap: 16, alignItems: "flex-start" }}>
@@ -60,6 +80,11 @@ function HeaderCard({ data }: { data: StockDetailResponse }) {
         </div>
         <div style={{ textAlign: "right" }}>
           <div>{currencyValue(data.currency, quote?.price)}</div>
+          {quoteMissing ? (
+            <div style={{ marginTop: 4, color: "var(--fg-3)", fontSize: 12 }}>
+              시세 없음 · {blockStateLabel(data.meta.blockStates.quote)}
+            </div>
+          ) : null}
           <div style={{ marginTop: 6, color: (quote?.changeRate ?? 0) >= 0 ? "var(--gain)" : "var(--loss)", fontWeight: 700 }}>
             {fmtPct(quote?.changeRate)}
           </div>
@@ -105,8 +130,21 @@ function HoldingCard({ data }: { data: StockDetailResponse }) {
             </div>
           </div>
           {holding.sourceBreakdown.length > 0 ? (
-            <div style={{ color: "var(--fg-3)", fontSize: 12 }}>
-              계좌별: {holding.sourceBreakdown.map((source) => `${source.accountName ?? source.source} ${fmtQty(source.quantity)}`).join(" · ")}
+            <div style={{ display: "grid", gap: 8 }}>
+              <div style={{ color: "var(--fg-3)", fontSize: 12, fontWeight: 700 }}>계좌별 보유</div>
+              {holding.sourceBreakdown.map((source, idx) => (
+                <div key={`${source.source}-${source.accountName ?? idx}`} style={{ border: "1px solid var(--border)", borderRadius: 12, padding: 10, display: "grid", gap: 4 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                    <strong>{source.accountName ?? source.source}</strong>
+                    <span style={{ color: "var(--fg-3)", fontSize: 12 }}>{source.source}</span>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8, fontSize: 12 }}>
+                    <span>수량 <strong>{fmtQty(source.quantity)}</strong></span>
+                    <span>평균 단가 <strong>{fmtMoney(data.currency, source.averageCost)}</strong></span>
+                    <span>평가 <strong>{fmtMoney(data.currency, source.valueNative ?? source.valueKrw)}</strong></span>
+                  </div>
+                </div>
+              ))}
             </div>
           ) : null}
         </div>
@@ -128,15 +166,26 @@ function Metric({ label, value }: { label: string; value: string }) {
 
 function ChartCard({ candles }: { candles: StockDetailCandlesResponse | undefined }) {
   const points = candles?.candles.map((c) => c.close) ?? [];
+  const dataState = candles?.meta.dataState;
+  const empty = !candles || candles.candles.length === 0 || dataState === "missing" || dataState === "provider_unwired";
   return (
     <Card data-testid="stock-detail-chart">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <h2 style={{ margin: 0, fontSize: 16 }}>차트</h2>
         <span style={{ color: "var(--fg-3)", fontSize: 12 }}>{candles ? `${candles.candles.length}개 캔들 · ${candles.source}` : "불러오는 중"}</span>
       </div>
-      <div style={{ marginTop: 16 }}>
-        <Sparkline points={points} color="var(--accent)" height={96} width={560} />
-      </div>
+      {empty ? (
+        <div style={{ marginTop: 16, color: "var(--fg-3)" }}>
+          <div>차트 데이터 없음</div>
+          <div style={{ fontSize: 12, marginTop: 4 }}>
+            {candles?.source ? `${candles.source} · ` : ""}{blockStateLabel(dataState)}
+          </div>
+        </div>
+      ) : (
+        <div style={{ marginTop: 16 }}>
+          <Sparkline points={points} color="var(--accent)" height={96} width={560} />
+        </div>
+      )}
     </Card>
   );
 }
@@ -178,10 +227,13 @@ function OrdersCard({ orders }: { orders: StockDetailOrdersResponse | undefined 
           {pending?.state === "provider_unwired" ? (
             <p style={{ margin: 0, color: "var(--fg-3)" }}>대기 주문 조회가 아직 연결되지 않았습니다.</p>
           ) : null}
-          {pending && pending.state !== "provider_unwired" && pendingEmpty ? (
+          {pending?.state === "error" ? (
+            <p style={{ margin: 0, color: "var(--fg-3)" }}>대기 주문 조회에 실패했습니다.</p>
+          ) : null}
+          {pending && pending.state !== "provider_unwired" && pending.state !== "error" && pendingEmpty ? (
             <p style={{ margin: 0, color: "var(--fg-3)" }}>대기중인 주문이 없어요</p>
           ) : null}
-          {pending && !pendingEmpty && pending.state !== "provider_unwired" ? (
+          {pending && !pendingEmpty && pending.state !== "provider_unwired" && pending.state !== "error" ? (
             <ul>{pending.items.map((o) => <li key={o.orderId ?? `${o.side}-${o.symbol}`}>{o.side} {o.quantity}</li>)}</ul>
           ) : null}
         </section>
@@ -201,7 +253,14 @@ function ProfileCard({ data }: { data: StockDetailResponse }) {
           <Metric label="52주 저가" value={data.valuation.low52w?.toLocaleString("en-US") ?? "−"} />
           <Metric label="배당" value={fmtPct(data.valuation.dividendYield)} />
         </div>
-      ) : null}
+      ) : (
+        <p style={{ margin: "12px 0 0", color: "var(--fg-3)" }}>밸류에이션 데이터 없음 · {blockStateLabel(data.meta.blockStates.valuation)}</p>
+      )}
+      {data.screenerSnapshot ? (
+        <div style={{ marginTop: 12 }}><Metric label="스크리너" value={data.screenerSnapshot.source ?? data.screenerSnapshot.freshness} /></div>
+      ) : (
+        <p style={{ margin: "8px 0 0", color: "var(--fg-3)" }}>스크리너 스냅샷 없음 · {blockStateLabel(data.meta.blockStates.screenerSnapshot)}</p>
+      )}
     </Card>
   );
 }
@@ -219,7 +278,7 @@ function AnalysisCard({ data }: { data: StockDetailResponse }) {
           </ul>
         </>
       ) : (
-        <p style={{ margin: 0, color: "var(--fg-3)" }}>최근 분석이 없습니다.</p>
+        <p style={{ margin: 0, color: "var(--fg-3)" }}>최근 분석 데이터 없음 · {blockStateLabel(data.meta.blockStates.latestAnalysis)}</p>
       )}
     </Card>
   );
@@ -228,7 +287,7 @@ function AnalysisCard({ data }: { data: StockDetailResponse }) {
 function NewsCard({ news }: { news: StockDetailNewsResponse | undefined }) {
   return (
     <Card data-testid="stock-detail-news">
-      <h2 style={{ margin: "0 0 8px", fontSize: 16 }}>뉴스 · 공시</h2>
+      <h2 style={{ margin: "0 0 8px", fontSize: 16 }}>뉴스</h2>
       {!news ? <p style={{ margin: 0, color: "var(--fg-3)" }}>불러오는 중입니다…</p> : null}
       {news && news.items.length === 0 ? <p style={{ margin: 0, color: "var(--fg-3)" }}>관련 뉴스가 없습니다.</p> : null}
       {news && news.items.length > 0 ? (

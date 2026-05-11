@@ -180,6 +180,29 @@ def test_orders_contract_separates_filled_history_from_pending_state():
     assert response.pending.emptyState is None
     assert response.meta.emptyState is None
 
+    with pytest.raises(ValidationError):
+        StockDetailOrdersResponse(
+            symbol="005930",
+            market="kr",
+            filled=StockDetailOrderBucket(
+                items=[filled_order],
+                nextCursor=None,
+                state="present",
+                emptyState=None,
+                source="n8n_filled_orders_service",
+            ),
+            pending=StockDetailOrderBucket(
+                items=[],
+                nextCursor=None,
+                state="provider_unwired",
+                emptyState=None,
+                source=None,
+            ),
+            items=[],
+            nextCursor=None,
+            meta={"emptyState": None, "warnings": []},
+        )
+
 
 def test_pending_orders_empty_state_requires_queried_pending_bucket():
     response = StockDetailOrdersResponse(

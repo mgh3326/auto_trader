@@ -343,6 +343,16 @@ class StockDetailOrdersResponse(BaseModel):
     nextCursor: str | None = None
     meta: StockDetailOrdersMeta = Field(default_factory=StockDetailOrdersMeta)
 
+    @model_validator(mode="after")
+    def legacy_fields_mirror_filled_bucket(self) -> StockDetailOrdersResponse:
+        if self.items != self.filled.items:
+            raise ValueError("legacy items must mirror filled.items")
+        if self.nextCursor != self.filled.nextCursor:
+            raise ValueError("legacy nextCursor must mirror filled.nextCursor")
+        if self.meta.emptyState != self.filled.emptyState:
+            raise ValueError("legacy meta.emptyState must mirror filled.emptyState")
+        return self
+
 
 def default_capabilities_for_market(
     market: StockDetailMarket,
