@@ -30,9 +30,16 @@ Row shape returned by `fetch_wisefn_earnings_for_date`:
 
 WiseFn raw JSON response structure (euc-kr encoded bytes, ROB-183 verified):
     Endpoint:
-        https://wisereport.co.kr/GetCalendarAjax.aspx
+        https://www.wisereport.co.kr/wiseCalendar/GetCalendarAjax.aspx
             ?call_typ=2&param1=<YYYYMM>&param2=
     Response: a JSON array of earnings-schedule objects.  Each raw element has:
+        Current fields observed on the live endpoint:
+        - CMP_CD     : KR ticker prefixed with "A" (e.g. "A005930")
+        - CMP_NM_KOR : Korean company name, sometimes suffixed with " (연결)"
+        - WK_DT      : announcement date with weekday (e.g. "2026-05-13 (수)")
+        - VAL05      : fiscal period (e.g. "2026/03(분기)")
+
+        Historical fields still accepted for fixture/backward compatibility:
         - jongcode   : 6-digit KR stock code (string)
         - jongname   : company name (Korean, may be empty)
         - expect_dt  : expected announcement date  YYYYMMDD   (string)
@@ -55,8 +62,8 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-_WISEFN_BASE_URL = "https://wisereport.co.kr"
-_WISEFN_CALENDAR_PATH = "/GetCalendarAjax.aspx"
+_WISEFN_BASE_URL = "https://www.wisereport.co.kr"
+_WISEFN_CALENDAR_PATH = "/wiseCalendar/GetCalendarAjax.aspx"
 _WISEFN_TIMEOUT_SEC = 20.0
 _WISEFN_MAX_RETRIES = 3
 _WISEFN_BACKOFF_BASE_SEC = 1.0
@@ -72,7 +79,11 @@ _TIME_CODE_TO_HINT: dict[str, str] = {
 }
 
 
-def _parse_raw_wisefn_items(raw_list: list[Any]) -> list[dict[str, Any]]:
+def _parse_raw_wisefn_items(
+    raw_list: list[Any],
+    *,
+    as_of_ym: str | None = None,
+) -> list[dict[str, Any]]:
     """Map raw WiseFn response items to the normalized row shape.
 
     Field name lookup is case-insensitive to tolerate minor API drift.
@@ -87,7 +98,15 @@ def _parse_raw_wisefn_items(raw_list: list[Any]) -> list[dict[str, Any]]:
         item: dict[str, str] = {k.lower(): str(v) for k, v in raw.items()}
 
         stock_code = item.get("jongcode", "").strip()
-        corp_name = item.get("jongname", "").strip() or None
+        if not stock_code:
+            stock_code = item.get("cmp_cd", "").strip().removeprefix("A")
+
+        corp_name = item.get("jongname", "").strip()
+        if not corp_name:
+            corp_name = item.get("cmp_nm_kor", "").strip()
+            if corp_name.endswith(" (연결)"):
+                corp_name = corp_name[: -len(" (연결)")].strip()
+        corp_name = corp_name or None
 
         pub_yn = item.get("pub_yn", "N").strip().upper()
         release_type = "released" if pub_yn == "Y" else "scheduled"
@@ -102,6 +121,24 @@ def _parse_raw_wisefn_items(raw_list: list[Any]) -> list[dict[str, Any]]:
                 release_date = datetime.strptime(dt_str, "%Y%m%d").date().isoformat()
             except ValueError:
                 logger.debug("wisefn: bad date %r for %s", dt_str, stock_code)
+        if not release_date:
+            wk_dt = item.get("wk_dt", "").strip()
+            if len(wk_dt) >= 10:
+                try:
+                    release_date = date.fromisoformat(wk_dt[:10]).isoformat()
+                except ValueError:
+                    logger.debug("wisefn: bad WK_DT %r for %s", wk_dt, stock_code)
+        if not release_date and as_of_ym and len(as_of_ym) == 6:
+            day_dt = item.get("day_dt", "").strip()
+            if day_dt.isdigit():
+                try:
+                    release_date = date(
+                        int(as_of_ym[:4]),
+                        int(as_of_ym[4:]),
+                        int(day_dt),
+                    ).isoformat()
+                except ValueError:
+                    logger.debug("wisefn: bad DAY_DT %r for %s", day_dt, stock_code)
 
         if not release_date:
             logger.debug("wisefn: no usable date for item %r; skipping", item)
@@ -110,6 +147,10 @@ def _parse_raw_wisefn_items(raw_list: list[Any]) -> list[dict[str, Any]]:
         fiscal_year: int | None = None
         fiscal_quarter: int | None = None
         gyulsan_ym = item.get("gyulsan_ym", "").strip()
+        if not gyulsan_ym:
+            val05 = item.get("val05", "").strip()
+            if len(val05) >= 7 and val05[4:5] == "/":
+                gyulsan_ym = f"{val05[:4]}{val05[5:7]}"
         if len(gyulsan_ym) == 6:
             try:
                 fy_year = int(gyulsan_ym[:4])
@@ -188,7 +229,7 @@ async def _fetch_calendar_payload(target_date: date) -> dict[str, Any]:
             text = raw_bytes.decode("euc-kr", errors="replace")
             data = json.loads(text)
             raw_list: list[Any] = data if isinstance(data, list) else []
-            items = _parse_raw_wisefn_items(raw_list)
+            items = _parse_raw_wisefn_items(raw_list, as_of_ym=ym)
             logger.info(
                 "wisefn: fetched %d raw items → %d mapped for ym=%s",
                 len(raw_list),
