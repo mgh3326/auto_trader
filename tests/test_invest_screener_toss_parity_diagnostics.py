@@ -97,11 +97,16 @@ def test_load_toss_symbols_accepts_csv_and_normalizes_exchange_prefix(tmp_path) 
 @pytest.mark.unit
 def test_load_toss_symbols_accepts_json_symbol_list(tmp_path) -> None:
     path = tmp_path / "toss.json"
-    path.write_text(json.dumps(["005930", {"symbol": "KRX:000660", "rank": 4}]), encoding="utf-8")
+    path.write_text(
+        json.dumps(["005930", {"symbol": "KRX:000660", "rank": 4}]), encoding="utf-8"
+    )
 
     rows = load_toss_symbols(path)
 
-    assert [(row["rank"], row["symbol"]) for row in rows] == [(1, "005930"), (4, "000660")]
+    assert [(row["rank"], row["symbol"]) for row in rows] == [
+        (1, "005930"),
+        (4, "000660"),
+    ]
 
 
 @pytest.mark.unit
@@ -111,7 +116,10 @@ def test_load_toss_symbols_accepts_plain_symbol_list(tmp_path) -> None:
 
     rows = load_toss_symbols(path)
 
-    assert [(row["rank"], row["symbol"]) for row in rows] == [(1, "005930"), (2, "000660")]
+    assert [(row["rank"], row["symbol"]) for row in rows] == [
+        (1, "005930"),
+        (2, "000660"),
+    ]
 
 
 @pytest.mark.unit
