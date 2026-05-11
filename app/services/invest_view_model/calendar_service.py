@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from typing import cast
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,6 +30,7 @@ from app.services.market_events.query_service import MarketEventsQueryService
 CLUSTER_THRESHOLD = 10
 DAY_HIGHLIGHT_LIMIT = 5
 CLUSTER_TOP_EVENT_LIMIT = 5
+KST = ZoneInfo("Asia/Seoul")
 
 _EVENT_TYPE_ORDER: dict[EventType, int] = {
     "economic": 0,
@@ -42,10 +45,12 @@ _HIGH_IMPACT_TERMS = ("cpi", "fomc", "nonfarm", "payroll", "pce", "gdp", "금리
 _MARKET_LITERAL = cast  # alias — used for type narrowing below
 
 
-def _event_date_key(value: datetime | None) -> tuple[int, str]:
+def _event_date_key(value: object | None) -> tuple[int, str]:
     if value is None:
         return (1, "")
-    return (0, value.isoformat())
+    if isinstance(value, datetime):
+        return (0, value.isoformat())
+    return (0, str(value))
 
 
 def _is_high_impact_macro(event: CalendarEvent) -> bool:
@@ -147,6 +152,59 @@ def _normalize_market(value: str | None) -> CalendarMarket:
     return "global"
 
 
+def _format_calendar_value(value: object) -> str | None:
+    if value is None:
+        return None
+    try:
+        decimal_value = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        text = str(value).strip()
+        return text or None
+    if decimal_value.is_zero():
+        return "0"
+    normalized = decimal_value.normalize()
+    text = format(normalized, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text
+
+
+def _format_kst_time(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    aware = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    kst = aware.astimezone(KST)
+    hour = kst.hour
+    minute = kst.minute
+    period = "오전" if hour < 12 else "오후"
+    hour12 = hour % 12 or 12
+    minute_text = f" {minute}분" if minute else ""
+    return f"{kst.month}월 {kst.day}일 {period} {hour12}시{minute_text} KST"
+
+
+def _event_title(raw: object, *, market: CalendarMarket, etype: EventType) -> str:
+    title = str(getattr(raw, "title", "") or "").strip()
+    if title:
+        return title
+    company_name = str(getattr(raw, "company_name", "") or "").strip()
+    symbol = str(getattr(raw, "symbol", "") or "").strip()
+    if company_name and symbol and company_name != symbol:
+        entity = f"{company_name}({symbol})"
+    else:
+        entity = company_name or symbol
+    if entity and etype == "earnings":
+        return f"{entity} 실적 발표"
+    if entity:
+        return entity
+    if etype == "earnings" and market == "kr":
+        return "국내 기업 실적 발표"
+    if etype == "earnings" and market == "us":
+        return "미국 기업 실적 발표"
+    if etype == "economic":
+        return "경제지표 발표"
+    return "시장 이벤트"
+
+
 async def build_calendar(
     *,
     db: AsyncSession,
@@ -199,31 +257,22 @@ async def build_calendar(
         # actual/forecast/previous live in values[], not at top level
         raw_values = getattr(raw, "values", None) or []
         first_val = raw_values[0] if raw_values else None
-        actual = (
-            str(getattr(first_val, "actual", None))
-            if first_val and getattr(first_val, "actual", None) is not None
-            else None
-        )
-        forecast = (
-            str(getattr(first_val, "forecast", None))
-            if first_val and getattr(first_val, "forecast", None) is not None
-            else None
-        )
-        previous = (
-            str(getattr(first_val, "previous", None))
-            if first_val and getattr(first_val, "previous", None) is not None
-            else None
-        )
+        actual = _format_calendar_value(getattr(first_val, "actual", None))
+        forecast = _format_calendar_value(getattr(first_val, "forecast", None))
+        previous = _format_calendar_value(getattr(first_val, "previous", None))
 
         # MarketEventResponse has 'release_time_utc', not 'event_time_local'
         event_time = getattr(raw, "release_time_utc", None)
+        ev_date = getattr(raw, "event_date", None) or (
+            event_time.date() if event_time else from_date
+        )
 
         ev = CalendarEvent(
             eventId=event_id,
-            title=str(getattr(raw, "title", "") or ""),
+            title=_event_title(raw, market=market, etype=etype),
             market=market,
             eventType=etype,
-            eventTimeLocal=event_time,
+            eventTimeLocal=_format_kst_time(event_time),
             source=str(getattr(raw, "source", "") or ""),
             actual=actual,
             forecast=forecast,
@@ -231,9 +280,6 @@ async def build_calendar(
             relatedSymbols=related,
             relation=relation,  # type: ignore[arg-type]
             badges=badges,
-        )
-        ev_date = getattr(raw, "event_date", None) or (
-            ev.eventTimeLocal.date() if ev.eventTimeLocal else from_date
         )
         by_day.setdefault(ev_date, []).append(ev)
 

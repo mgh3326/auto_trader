@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -17,11 +18,14 @@ def _fake_event(
     market: str = "us",
     category: str = "earnings",
     symbol: str | None = None,
-    ev_date: date | None = None,
+    company_name: str | None = None,
     title: str | None = None,
-    actual: str | None = None,
-    forecast: str | None = None,
-    previous: str | None = None,
+    ev_date: date | None = None,
+    release_time_utc: datetime | None = None,
+    actual: object | None = None,
+    forecast: object | None = None,
+    previous: object | None = None,
+    values: list[object] | None = None,
 ):
     e = MagicMock()
     # MarketEventResponse uses source_event_id, not event_id
@@ -30,12 +34,14 @@ def _fake_event(
     e.market = market
     e.category = category
     e.symbol = symbol
-    e.company_name = symbol
-    e.title = title or f"event {event_id}"
+    e.company_name = company_name if company_name is not None else symbol
+    e.title = f"event {event_id}" if title is None else title
     e.event_date = ev_date or date(2026, 5, 4)
-    e.release_time_utc = None
+    e.release_time_utc = release_time_utc
     e.source = "test"
-    if actual is not None or forecast is not None or previous is not None:
+    if values is not None:
+        e.values = values
+    elif actual is not None or forecast is not None or previous is not None:
         value = MagicMock()
         value.actual = actual
         value.forecast = forecast
@@ -245,6 +251,51 @@ async def test_calendar_cluster_top_events_and_summary_are_priority_aware(
     assert day.summary.overflowCount == 10
     assert day.summary.overflowLabel == "그 외 10개"
     assert day.summary.headline == "주요 일정 5개 · 그 외 10개"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_calendar_polishes_blank_kr_title_kst_time_and_values(
+    monkeypatch,
+) -> None:
+    from app.services.invest_view_model import calendar_service as svc
+
+    value = MagicMock()
+    value.actual = Decimal("1.16000000")
+    value.forecast = Decimal("0.28490000")
+    value.previous = Decimal("2.00000000")
+    fake_resp = MagicMock()
+    fake_resp.events = [
+        _fake_event(
+            event_id="wise:005930:2026Q1",
+            category="earnings",
+            market="kr",
+            symbol="005930",
+            company_name="삼성전자",
+            title="",
+            release_time_utc=datetime(2026, 5, 7, 16, 30, tzinfo=UTC),
+            values=[value],
+        )
+    ]
+    fake_query_service = MagicMock()
+    fake_query_service.list_for_range = AsyncMock(return_value=fake_resp)
+    monkeypatch.setattr(svc, "MarketEventsQueryService", lambda db: fake_query_service)
+    _patch_freshness(monkeypatch, svc, date(2026, 5, 4), date(2026, 5, 4))
+
+    resp = await svc.build_calendar(
+        db=MagicMock(),
+        resolver=RelationResolver(),
+        from_date=date(2026, 5, 4),
+        to_date=date(2026, 5, 4),
+        tab="all",
+    )
+
+    event = resp.days[0].events[0]
+    assert event.title == "삼성전자(005930) 실적 발표"
+    assert event.eventTimeLocal == "5월 8일 오전 1시 30분 KST"
+    assert event.actual == "1.16"
+    assert event.forecast == "0.2849"
+    assert event.previous == "2"
 
 
 @pytest.mark.unit

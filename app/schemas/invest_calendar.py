@@ -41,7 +41,7 @@ class CalendarEvent(BaseModel):
     title: str
     market: CalendarMarket
     eventType: EventType
-    eventTimeLocal: datetime | None = None
+    eventTimeLocal: str | None = None
     source: str
     actual: str | None = None
     forecast: str | None = None
