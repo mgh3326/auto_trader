@@ -61,8 +61,12 @@ def app(db_session) -> FastAPI:
 async def test_build_invest_coverage_reports_fresh_partial_and_provider_unwired(
     db_session,
 ):
-    trading_day = dt.date(2026, 5, 11)
-    now = dt.datetime(2026, 5, 11, 8, 0, tzinfo=dt.UTC)
+    # Use a date that is intentionally distinct from the shared market-events
+    # freshness tests. The global test database is shared across xdist workers, so
+    # inserting a partition for 2026-05-11 here can race with tests that assert a
+    # completely missing market-events partition on that day.
+    trading_day = dt.date(2026, 6, 17)
+    now = dt.datetime(2026, 6, 17, 8, 0, tzinfo=dt.UTC)
     now_naive = now.replace(tzinfo=None)
 
     await db_session.execute(

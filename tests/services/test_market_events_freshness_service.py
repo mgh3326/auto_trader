@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
+import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.market_events import MarketEventIngestionPartition
@@ -41,10 +42,22 @@ def _add_partition(
     return row
 
 
+async def _clear_partitions_for_dates(
+    db: AsyncSession, *partition_dates: date
+) -> None:
+    await db.execute(
+        sa.delete(MarketEventIngestionPartition).where(
+            MarketEventIngestionPartition.partition_date.in_(partition_dates)
+        )
+    )
+    await db.flush()
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_missing_partition_marks_day_missing(db_session: AsyncSession) -> None:
-    monday = date(2026, 5, 11)
+    monday = date(2026, 7, 6)
+    await _clear_partitions_for_dates(db_session, monday)
     svc = MarketEventsFreshnessService(db_session)
     states = await svc.get_per_day_states(monday, monday)
     assert states[monday] == "missing"
@@ -53,7 +66,8 @@ async def test_missing_partition_marks_day_missing(db_session: AsyncSession) -> 
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_all_succeeded_marks_day_loaded(db_session: AsyncSession) -> None:
-    monday = date(2026, 5, 11)
+    monday = date(2026, 7, 13)
+    await _clear_partitions_for_dates(db_session, monday)
     fresh = datetime.now(UTC) - timedelta(hours=1)
     for src, cat, mkt, count in (
         ("finnhub", "earnings", "us", 12),
@@ -81,7 +95,8 @@ async def test_all_succeeded_marks_day_loaded(db_session: AsyncSession) -> None:
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_all_zero_event_count_marks_day_empty(db_session: AsyncSession) -> None:
-    monday = date(2026, 5, 11)
+    monday = date(2026, 7, 20)
+    await _clear_partitions_for_dates(db_session, monday)
     fresh = datetime.now(UTC) - timedelta(hours=1)
     for src, cat, mkt in (
         ("finnhub", "earnings", "us"),
@@ -109,7 +124,8 @@ async def test_all_zero_event_count_marks_day_empty(db_session: AsyncSession) ->
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_one_failed_marks_day_error(db_session: AsyncSession) -> None:
-    monday = date(2026, 5, 11)
+    monday = date(2026, 7, 27)
+    await _clear_partitions_for_dates(db_session, monday)
     fresh = datetime.now(UTC) - timedelta(hours=1)
     _add_partition(
         db_session,
@@ -153,7 +169,8 @@ async def test_one_failed_marks_day_error(db_session: AsyncSession) -> None:
 async def test_stale_when_finished_at_older_than_window(
     db_session: AsyncSession,
 ) -> None:
-    monday = date(2026, 5, 11)
+    monday = date(2026, 8, 3)
+    await _clear_partitions_for_dates(db_session, monday)
     stale = datetime.now(UTC) - timedelta(hours=STALE_AFTER_HOURS + 2)
     for src, cat, mkt in (
         ("finnhub", "earnings", "us"),
@@ -182,8 +199,9 @@ async def test_stale_when_finished_at_older_than_window(
 @pytest.mark.asyncio
 async def test_coverage_matrix_aggregates_by_source(db_session: AsyncSession) -> None:
     fresh = datetime.now(UTC) - timedelta(hours=1)
-    monday = date(2026, 5, 11)
-    tuesday = date(2026, 5, 12)
+    monday = date(2026, 8, 10)
+    tuesday = date(2026, 8, 11)
+    await _clear_partitions_for_dates(db_session, monday, tuesday)
     _add_partition(
         db_session,
         source="finnhub",
