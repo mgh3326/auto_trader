@@ -17,7 +17,31 @@ from app.models.market_events import MarketEventIngestionPartition
 from app.models.news import NewsArticle, NewsArticleRelatedSymbol, NewsIngestionRun
 from app.routers.dependencies import get_authenticated_user
 from app.routers.invest_api import router as invest_api_router
+from app.schemas.invest_coverage import CoverageSourceCandidate, InvestCoverageSurface
 from app.services.invest_coverage_service import build_invest_coverage
+
+
+def test_coverage_surface_accepts_source_candidates_and_references_list():
+    surface = InvestCoverageSurface(
+        surface="investor_flow",
+        label="Investor flow",
+        state="fresh",
+        sourceOfTruth="investor_flow_snapshots",
+        references=["toss", "naver"],
+        sourceCandidates=[
+            CoverageSourceCandidate(
+                name="naver_finance",
+                surface="investor_flow",
+                kind="secondary_source",
+                readiness="live",
+                latestAt=dt.datetime(2026, 5, 11, 8, 0, tzinfo=dt.UTC),
+                notes=["naver_finance is one of several wired investor-flow sources"],
+            ),
+        ],
+    )
+    assert surface.references == ["toss", "naver"]
+    assert surface.sourceCandidates[0].readiness == "live"
+    assert surface.sourceCandidates[0].kind == "secondary_source"
 
 
 @pytest.fixture
@@ -196,3 +220,217 @@ async def test_invest_coverage_endpoint_is_read_only_and_exposes_gaps(
         for surface in payload["surfaces"]
     )
     assert len(db_session.new) == before
+
+
+@pytest.mark.asyncio
+async def test_investor_flow_surface_reports_naver_finance_as_live_candidate(
+    db_session,
+):
+    trading_day = dt.date(2026, 5, 11)
+    now = dt.datetime(2026, 5, 11, 8, 0, tzinfo=dt.UTC)
+
+    await db_session.execute(
+        sa.delete(InvestorFlowSnapshot).where(InvestorFlowSnapshot.id.in_([9310, 9311]))
+    )
+    await db_session.execute(
+        sa.delete(KRSymbolUniverse).where(
+            KRSymbolUniverse.symbol.in_(["900210", "900211"])
+        )
+    )
+    await db_session.commit()
+    db_session.add_all(
+        [
+            KRSymbolUniverse(
+                symbol="900210", name="ROB201 NF", exchange="KOSPI", is_active=True
+            ),
+            KRSymbolUniverse(
+                symbol="900211", name="ROB201 KIS", exchange="KOSPI", is_active=True
+            ),
+            InvestorFlowSnapshot(
+                id=9310,
+                market="kr",
+                symbol="900210",
+                snapshot_date=trading_day,
+                source="naver_finance",
+                foreign_net=10,
+                institution_net=5,
+                individual_net=-15,
+                collected_at=now,
+            ),
+            InvestorFlowSnapshot(
+                id=9311,
+                market="kr",
+                symbol="900211",
+                snapshot_date=trading_day,
+                source="kis",
+                foreign_net=20,
+                institution_net=10,
+                individual_net=-30,
+                collected_at=now,
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    response = await build_invest_coverage(db_session, market="kr", as_of=trading_day)
+    flow = next(s for s in response.surfaces if s.surface == "investor_flow")
+
+    naver = next((c for c in flow.sourceCandidates if c.name == "naver_finance"), None)
+    assert naver is not None, "naver_finance candidate must be present on investor_flow"
+    assert naver.kind == "secondary_source"
+    assert naver.readiness == "live"
+    assert naver.counts is not None
+    assert naver.counts.fresh >= 1
+    assert flow.sourceOfTruth == "investor_flow_snapshots"
+    assert "toss" in flow.references
+
+
+@pytest.mark.asyncio
+async def test_static_naver_candidates_are_attached_to_request_time_surfaces(
+    db_session,
+):
+    response = await build_invest_coverage(
+        db_session, market="kr", as_of=dt.date(2026, 5, 11)
+    )
+    by_surface = {s.surface: s for s in response.surfaces if s.market == "kr"}
+
+    for name in ("valuation_fundamentals", "quotes", "screener_snapshots"):
+        nf = next(
+            (c for c in by_surface[name].sourceCandidates if c.name == "naver_finance"),
+            None,
+        )
+        assert nf is not None, f"naver_finance candidate missing on {name}"
+        assert nf.readiness == "request_time_only"
+        assert nf.kind == "candidate"
+
+    research = next(s for s in response.surfaces if s.surface == "research_reports")
+    nv = next(
+        (c for c in research.sourceCandidates if c.name == "naver_research"), None
+    )
+    assert nv is not None
+    assert nv.readiness == "fixture_backed_poc"
+    assert any("Naver" in note for note in response.notes)
+
+
+@pytest.mark.asyncio
+async def test_news_feed_surface_reports_naver_news_candidate_when_articles_exist(
+    db_session,
+):
+    now = dt.datetime(2026, 5, 11, 8, 0, tzinfo=dt.UTC)
+    now_naive = now.replace(tzinfo=None)
+
+    await db_session.execute(sa.delete(NewsArticle).where(NewsArticle.id == 9610))
+    await db_session.commit()
+    db_session.add(
+        NewsArticle(
+            id=9610,
+            url="https://finance.naver.com/item/news?code=900201",
+            title="ROB201 naver news",
+            source="naver_finance",
+            feed_source="naver_finance",
+            market="kr",
+            keywords=[],
+            article_published_at=now_naive,
+            scraped_at=now_naive,
+            created_at=now_naive,
+        )
+    )
+    await db_session.commit()
+
+    response = await build_invest_coverage(
+        db_session, market="kr", as_of=dt.date(2026, 5, 11)
+    )
+    news = next(s for s in response.surfaces if s.surface == "news_feed")
+    nv = next(
+        (c for c in news.sourceCandidates if c.name == "naver_finance_news"), None
+    )
+    assert nv is not None
+    assert nv.readiness == "live"
+    assert nv.counts is not None
+    assert nv.counts.fresh >= 1
+
+
+@pytest.mark.asyncio
+async def test_symbol_rows_expose_naver_investor_flow_state_for_kr(db_session):
+    trading_day = dt.date(2026, 5, 11)
+    now = dt.datetime(2026, 5, 11, 8, 0, tzinfo=dt.UTC)
+
+    await db_session.execute(
+        sa.delete(InvestorFlowSnapshot).where(InvestorFlowSnapshot.id.in_([9320, 9321]))
+    )
+    await db_session.execute(
+        sa.delete(KRSymbolUniverse).where(
+            KRSymbolUniverse.symbol.in_(["900220", "900221"])
+        )
+    )
+    await db_session.commit()
+    db_session.add_all(
+        [
+            KRSymbolUniverse(
+                symbol="900220", name="ROB201 NF sym", exchange="KOSPI", is_active=True
+            ),
+            KRSymbolUniverse(
+                symbol="900221", name="ROB201 no-NF", exchange="KOSPI", is_active=True
+            ),
+            InvestorFlowSnapshot(
+                id=9320,
+                market="kr",
+                symbol="900220",
+                snapshot_date=trading_day,
+                source="naver_finance",
+                foreign_net=1,
+                institution_net=1,
+                individual_net=-2,
+                collected_at=now,
+            ),
+            InvestorFlowSnapshot(
+                id=9321,
+                market="kr",
+                symbol="900221",
+                snapshot_date=trading_day,
+                source="kis",
+                foreign_net=1,
+                institution_net=1,
+                individual_net=-2,
+                collected_at=now,
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    response = await build_invest_coverage(
+        db_session,
+        market="kr",
+        symbols=["900220", "900221"],
+        as_of=trading_day,
+    )
+    by_symbol = {row.symbol: row for row in response.symbols}
+    assert by_symbol["900220"].surfaces["naver_investor_flow"] == "fresh"
+    assert by_symbol["900221"].surfaces["naver_investor_flow"] == "missing"
+
+
+@pytest.mark.asyncio
+async def test_coverage_endpoint_exposes_naver_candidates_field_on_kr(
+    app: FastAPI, db_session
+):
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        r = await client.get("/invest/api/coverage?market=kr")
+    assert r.status_code == 200
+    payload = r.json()
+
+    flat_candidates = [
+        candidate
+        for surface in payload["surfaces"]
+        for candidate in surface.get("sourceCandidates", [])
+    ]
+    naver_names = {candidate["name"] for candidate in flat_candidates}
+    assert "naver_finance" in naver_names
+
+    for surface in payload["surfaces"]:
+        assert isinstance(surface.get("references"), list)
+        assert "toss" in surface["references"]
+        assert surface["sourceOfTruth"] != "naver_finance"
+
+    assert any("Naver" in note for note in payload["notes"])

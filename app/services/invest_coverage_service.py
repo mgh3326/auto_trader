@@ -21,7 +21,10 @@ from app.models.pending_order import PendingOrder
 from app.models.research_reports import ResearchReport, ResearchReportIngestionRun
 from app.models.us_symbol_universe import USSymbolUniverse
 from app.schemas.invest_coverage import (
+    CoverageCandidateKind,
+    CoverageCandidateReadiness,
     CoverageMarket,
+    CoverageSourceCandidate,
     CoverageState,
     InvestCoverageCounts,
     InvestCoverageResponse,
@@ -89,6 +92,7 @@ async def build_invest_coverage(
         notes=[
             "Read-only coverage report; auto_trader DB/read models are source of truth.",
             "Toss is used only as a parity benchmark/reference, not as a data source.",
+            "Naver appears only as source-candidate or reference; discussion-signal and stock-detail PoCs remain fixture-backed under the aggregate-only contract.",
         ],
     )
 
@@ -119,6 +123,103 @@ def _state_from_counts(
     if stale > 0:
         return "stale"
     return "fresh"
+
+
+async def _naver_finance_investor_flow_candidate(
+    db: AsyncSession, trading_day: dt.date
+) -> CoverageSourceCandidate:
+    """Build Naver candidate coverage from local investor_flow_snapshots only."""
+
+    row = (
+        await db.execute(
+            sa.select(
+                sa.func.count()
+                .filter(InvestorFlowSnapshot.snapshot_date >= trading_day)
+                .label("fresh"),
+                sa.func.count()
+                .filter(InvestorFlowSnapshot.snapshot_date < trading_day)
+                .label("stale"),
+                sa.func.max(InvestorFlowSnapshot.collected_at).label("latest_at"),
+                sa.func.max(InvestorFlowSnapshot.snapshot_date).label("latest_date"),
+            ).where(
+                InvestorFlowSnapshot.market == "kr",
+                InvestorFlowSnapshot.source == "naver_finance",
+            )
+        )
+    ).one()
+    fresh = int(row.fresh or 0)
+    stale = int(row.stale or 0)
+    readiness: CoverageCandidateReadiness = "live" if fresh + stale > 0 else "not_wired"
+    return CoverageSourceCandidate(
+        name="naver_finance",
+        surface="investor_flow",
+        kind="secondary_source",
+        readiness=readiness,
+        latestAt=row.latest_at,
+        latestDate=row.latest_date,
+        counts=InvestCoverageCounts(fresh=fresh, stale=stale, total=fresh + stale),
+        notes=[
+            "naver_finance is one of several wired investor-flow sources; investor_flow_snapshots remains the source of truth."
+        ],
+    )
+
+
+async def _naver_news_candidate(
+    db: AsyncSession, market: str, now: dt.datetime
+) -> CoverageSourceCandidate:
+    """Build Naver news candidate coverage from local news_articles only."""
+
+    stale_cutoff = now.replace(tzinfo=None) - dt.timedelta(hours=24)
+    row = (
+        await db.execute(
+            sa.select(
+                sa.func.count()
+                .filter(NewsArticle.article_published_at >= stale_cutoff)
+                .label("fresh"),
+                sa.func.count()
+                .filter(NewsArticle.article_published_at < stale_cutoff)
+                .label("stale"),
+                sa.func.max(NewsArticle.article_published_at).label("latest_at"),
+            ).where(
+                NewsArticle.market == market,
+                NewsArticle.source.ilike("naver%"),
+            )
+        )
+    ).one()
+    fresh = int(row.fresh or 0)
+    stale = int(row.stale or 0)
+    wired = fresh + stale > 0
+    readiness: CoverageCandidateReadiness = "live" if wired else "not_wired"
+    return CoverageSourceCandidate(
+        name="naver_finance_news",
+        surface="news_feed",
+        kind="secondary_source" if wired else "candidate",
+        readiness=readiness,
+        latestAt=row.latest_at,
+        counts=InvestCoverageCounts(fresh=fresh, stale=stale, total=fresh + stale),
+        notes=[
+            "naver_finance is one of several news sources writing to news_articles."
+            if wired
+            else "No Naver-sourced news articles in the local read-model."
+        ],
+    )
+
+
+def _naver_static_candidate(
+    *,
+    name: str,
+    surface: str,
+    kind: CoverageCandidateKind,
+    readiness: CoverageCandidateReadiness,
+    note: str,
+) -> CoverageSourceCandidate:
+    return CoverageSourceCandidate(
+        name=name,
+        surface=surface,
+        kind=kind,
+        readiness=readiness,
+        notes=[note],
+    )
 
 
 async def _universe_count(db: AsyncSession, market: str) -> int | None:
@@ -218,28 +319,37 @@ async def _screener_surfaces(
         fresh = int(row.fresh or 0)
         stale = int(row.stale or 0)
         missing = max(0, (expected or 0) - fresh - stale) if expected is not None else 0
-        rows.append(
-            InvestCoverageSurface(
-                surface="screener_snapshots",
-                label="Screener snapshots",
-                market=m,
-                state=_state_from_counts(fresh=fresh, stale=stale, expected=expected),
-                sourceOfTruth="invest_screener_snapshots",
-                latestAt=row.latest_at,
-                latestDate=row.latest_date,
-                counts=InvestCoverageCounts(
-                    expected=expected,
-                    fresh=fresh,
-                    stale=stale,
-                    missing=missing,
-                    total=fresh + stale,
-                ),
-                staleAfterHours=36,
-                warnings=[]
-                if fresh
-                else ["No screener snapshots cover the selected trading date."],
-            )
+        surface_row = InvestCoverageSurface(
+            surface="screener_snapshots",
+            label="Screener snapshots",
+            market=m,
+            state=_state_from_counts(fresh=fresh, stale=stale, expected=expected),
+            sourceOfTruth="invest_screener_snapshots",
+            latestAt=row.latest_at,
+            latestDate=row.latest_date,
+            counts=InvestCoverageCounts(
+                expected=expected,
+                fresh=fresh,
+                stale=stale,
+                missing=missing,
+                total=fresh + stale,
+            ),
+            staleAfterHours=36,
+            warnings=[]
+            if fresh
+            else ["No screener snapshots cover the selected trading date."],
         )
+        if m == "kr":
+            surface_row.sourceCandidates.append(
+                _naver_static_candidate(
+                    name="naver_finance",
+                    surface="screener_snapshots",
+                    kind="candidate",
+                    readiness="request_time_only",
+                    note="naver_finance valuation calls are request-time only; not persisted to invest_screener_snapshots.",
+                )
+            )
+        rows.append(surface_row)
     return rows
 
 
@@ -286,21 +396,20 @@ async def _news_surfaces(
             warnings.append(f"Latest news ingestion status is {run.status}.")
         if not fresh:
             warnings.append("No articles published in the last 24 hours.")
-        rows.append(
-            InvestCoverageSurface(
-                surface="news_feed",
-                label="News feed",
-                market=m,
-                state=state,
-                sourceOfTruth="news_articles/news_ingestion_runs",
-                latestAt=article_row.latest_at or (run.finished_at if run else None),
-                counts=InvestCoverageCounts(
-                    fresh=fresh, stale=stale, total=fresh + stale
-                ),
-                staleAfterHours=24,
-                warnings=warnings,
-            )
+        surface_row = InvestCoverageSurface(
+            surface="news_feed",
+            label="News feed",
+            market=m,
+            state=state,
+            sourceOfTruth="news_articles/news_ingestion_runs",
+            latestAt=article_row.latest_at or (run.finished_at if run else None),
+            counts=InvestCoverageCounts(fresh=fresh, stale=stale, total=fresh + stale),
+            staleAfterHours=24,
+            warnings=warnings,
         )
+        if m == "kr":
+            surface_row.sourceCandidates.append(await _naver_news_candidate(db, m, now))
+        rows.append(surface_row)
     return rows
 
 
@@ -419,23 +528,31 @@ async def _research_report_surfaces(
     )
     if latest_run is None:
         warnings.append("No research report ingestion run found.")
-    return [
-        InvestCoverageSurface(
+    surface = InvestCoverageSurface(
+        surface="research_reports",
+        label="Research reports",
+        market="equity" if market == "all" else market,
+        state=_state_from_counts(fresh=fresh, stale=stale),
+        sourceOfTruth="research_reports/research_report_ingestion_runs",
+        latestAt=report_row.latest_at
+        or (latest_run.finished_at if latest_run else None),
+        counts=InvestCoverageCounts(fresh=fresh, stale=stale, total=fresh + stale),
+        staleAfterHours=168,
+        warnings=warnings,
+        notes=[
+            "Only compact metadata is used; full report bodies are intentionally excluded."
+        ],
+    )
+    surface.sourceCandidates.append(
+        _naver_static_candidate(
+            name="naver_research",
             surface="research_reports",
-            label="Research reports",
-            market="equity" if market == "all" else market,
-            state=_state_from_counts(fresh=fresh, stale=stale),
-            sourceOfTruth="research_reports/research_report_ingestion_runs",
-            latestAt=report_row.latest_at
-            or (latest_run.finished_at if latest_run else None),
-            counts=InvestCoverageCounts(fresh=fresh, stale=stale, total=fresh + stale),
-            staleAfterHours=168,
-            warnings=warnings,
-            notes=[
-                "Only compact metadata is used; full report bodies are intentionally excluded."
-            ],
+            kind="candidate",
+            readiness="fixture_backed_poc",
+            note="naver_stock_detail_poc exposes Naver research metadata via fixtures; not ingested.",
         )
-    ]
+    )
+    return [surface]
 
 
 async def _investor_flow_surfaces(
@@ -475,28 +592,31 @@ async def _investor_flow_surfaces(
         fresh = int(row.fresh or 0)
         stale = int(row.stale or 0)
         missing = max(0, (expected or 0) - fresh - stale) if expected is not None else 0
-        rows.append(
-            InvestCoverageSurface(
-                surface="investor_flow",
-                label="Investor flow",
-                market=m,
-                state=_state_from_counts(fresh=fresh, stale=stale, expected=expected),
-                sourceOfTruth="investor_flow_snapshots",
-                latestAt=row.latest_at,
-                latestDate=row.latest_date,
-                counts=InvestCoverageCounts(
-                    expected=expected,
-                    fresh=fresh,
-                    stale=stale,
-                    missing=missing,
-                    total=fresh + stale,
-                ),
-                staleAfterHours=36,
-                warnings=[]
-                if fresh
-                else ["No investor-flow snapshots cover the selected trading date."],
-            )
+        surface = InvestCoverageSurface(
+            surface="investor_flow",
+            label="Investor flow",
+            market=m,
+            state=_state_from_counts(fresh=fresh, stale=stale, expected=expected),
+            sourceOfTruth="investor_flow_snapshots",
+            latestAt=row.latest_at,
+            latestDate=row.latest_date,
+            counts=InvestCoverageCounts(
+                expected=expected,
+                fresh=fresh,
+                stale=stale,
+                missing=missing,
+                total=fresh + stale,
+            ),
+            staleAfterHours=36,
+            warnings=[]
+            if fresh
+            else ["No investor-flow snapshots cover the selected trading date."],
         )
+        if m == "kr":
+            surface.sourceCandidates.append(
+                await _naver_finance_investor_flow_candidate(db, trading_day)
+            )
+        rows.append(surface)
     return rows
 
 
@@ -706,16 +826,35 @@ def _provider_unwired_surfaces(market: str) -> list[InvestCoverageSurface]:
                 "No complete durable fundamentals read model is wired for Toss-parity coverage.",
             ),
         ]:
-            rows.append(
-                InvestCoverageSurface(
-                    surface=surface,
-                    label=label,
-                    market=m,
-                    state="provider_unwired",
-                    sourceOfTruth="read_model_gap",
-                    warnings=[warning],
-                )
+            surface_row = InvestCoverageSurface(
+                surface=surface,
+                label=label,
+                market=m,
+                state="provider_unwired",
+                sourceOfTruth="read_model_gap",
+                warnings=[warning],
             )
+            if surface == "quotes" and m == "kr":
+                surface_row.sourceCandidates.append(
+                    _naver_static_candidate(
+                        name="naver_finance",
+                        surface="quotes",
+                        kind="candidate",
+                        readiness="request_time_only",
+                        note="naver_finance domestic quote endpoints are available request-time only; no durable /invest quote read-model.",
+                    )
+                )
+            elif surface == "valuation_fundamentals" and m == "kr":
+                surface_row.sourceCandidates.append(
+                    _naver_static_candidate(
+                        name="naver_finance",
+                        surface="valuation_fundamentals",
+                        kind="candidate",
+                        readiness="request_time_only",
+                        note="naver_finance financial/profile endpoints are request-time only; no durable fundamentals read-model.",
+                    )
+                )
+            rows.append(surface_row)
     return rows
 
 
@@ -744,6 +883,7 @@ async def _symbol_rows(
     screener_dates = dict(screener_rows)
 
     investor_dates: dict[str, dt.date | None] = {}
+    naver_flow_dates: dict[str, dt.date | None] = {}
     if market == "kr":
         flow_rows = (
             await db.execute(
@@ -759,6 +899,21 @@ async def _symbol_rows(
             )
         ).all()
         investor_dates = dict(flow_rows)
+        naver_rows = (
+            await db.execute(
+                sa.select(
+                    InvestorFlowSnapshot.symbol,
+                    sa.func.max(InvestorFlowSnapshot.snapshot_date),
+                )
+                .where(
+                    InvestorFlowSnapshot.market == "kr",
+                    InvestorFlowSnapshot.source == "naver_finance",
+                    InvestorFlowSnapshot.symbol.in_(symbols),
+                )
+                .group_by(InvestorFlowSnapshot.symbol)
+            )
+        ).all()
+        naver_flow_dates = dict(naver_rows)
 
     news_rows = (
         await db.execute(
@@ -796,9 +951,16 @@ async def _symbol_rows(
         if market == "kr":
             surfaces["investor_flow"] = _date_state(latest_flow, trading_day)
             latest_dates["investor_flow"] = latest_flow
+            latest_naver_flow = naver_flow_dates.get(symbol)
+            surfaces["naver_investor_flow"] = _date_state(
+                latest_naver_flow, trading_day
+            )
+            latest_dates["naver_investor_flow"] = latest_naver_flow
         else:
             surfaces["investor_flow"] = "unsupported"
             latest_dates["investor_flow"] = None
+            surfaces["naver_investor_flow"] = "unsupported"
+            latest_dates["naver_investor_flow"] = None
         out.append(
             InvestCoverageSymbol(
                 symbol=symbol,

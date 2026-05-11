@@ -1,4 +1,8 @@
-"""ROB-192 — read-only /invest Toss-parity data coverage schemas."""
+"""ROB-192 + ROB-201 — read-only /invest data coverage schemas.
+
+ROB-201 adds source-candidate readiness so Naver can be reported as a
+candidate/reference signal without ever being presented as source-of-truth.
+"""
 
 from __future__ import annotations
 
@@ -18,6 +22,15 @@ CoverageState = Literal[
 ]
 CoverageMarket = Literal["kr", "us", "crypto", "all"]
 
+CoverageCandidateReadiness = Literal[
+    "live",
+    "request_time_only",
+    "fixture_backed_poc",
+    "aggregate_only_blocked",
+    "not_wired",
+]
+CoverageCandidateKind = Literal["secondary_source", "reference", "candidate"]
+
 
 class InvestCoverageCounts(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -30,6 +43,22 @@ class InvestCoverageCounts(BaseModel):
     total: int = 0
 
 
+class CoverageSourceCandidate(BaseModel):
+    """A non-source-of-truth signal attached to a coverage surface."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    surface: str
+    kind: CoverageCandidateKind
+    readiness: CoverageCandidateReadiness
+    latestAt: datetime | None = None
+    latestDate: date | None = None
+    counts: InvestCoverageCounts | None = None
+    warnings: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
 class InvestCoverageSurface(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -38,13 +67,14 @@ class InvestCoverageSurface(BaseModel):
     state: CoverageState
     market: str | None = None
     sourceOfTruth: str
-    reference: str = "toss"
+    references: list[str] = Field(default_factory=lambda: ["toss"])
     latestAt: datetime | None = None
     latestDate: date | None = None
     counts: InvestCoverageCounts = Field(default_factory=InvestCoverageCounts)
     staleAfterHours: int | None = None
     warnings: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+    sourceCandidates: list[CoverageSourceCandidate] = Field(default_factory=list)
 
 
 class InvestCoverageSymbol(BaseModel):

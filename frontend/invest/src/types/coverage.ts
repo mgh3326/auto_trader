@@ -7,6 +7,15 @@ export type CoverageState =
   | "error"
   | "provider_unwired";
 
+export type CoverageCandidateReadiness =
+  | "live"
+  | "request_time_only"
+  | "fixture_backed_poc"
+  | "aggregate_only_blocked"
+  | "not_wired";
+
+export type CoverageCandidateKind = "secondary_source" | "reference" | "candidate";
+
 export interface InvestCoverageCounts {
   expected?: number | null;
   fresh: number;
@@ -16,19 +25,32 @@ export interface InvestCoverageCounts {
   total: number;
 }
 
+export interface CoverageSourceCandidate {
+  name: string;
+  surface: string;
+  kind: CoverageCandidateKind;
+  readiness: CoverageCandidateReadiness;
+  latestAt?: string | null;
+  latestDate?: string | null;
+  counts?: InvestCoverageCounts | null;
+  warnings: string[];
+  notes: string[];
+}
+
 export interface InvestCoverageSurface {
   surface: string;
   label: string;
   state: CoverageState;
   market?: string | null;
   sourceOfTruth: string;
-  reference: string;
+  references: string[];
   latestAt?: string | null;
   latestDate?: string | null;
   counts: InvestCoverageCounts;
   staleAfterHours?: number | null;
   warnings: string[];
   notes: string[];
+  sourceCandidates: CoverageSourceCandidate[];
 }
 
 export interface InvestCoverageSymbol {
