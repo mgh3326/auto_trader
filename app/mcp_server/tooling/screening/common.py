@@ -786,6 +786,7 @@ def _sort_and_limit(
         "trade_amount": "trade_amount_24h",
         "market_cap": "market_cap",
         "change_rate": "change_rate",
+        "week_change_rate": "week_change_rate",
         "dividend_yield": "dividend_yield",
         "rsi": "rsi",  # crypto only
         "score": "score",

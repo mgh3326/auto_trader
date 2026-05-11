@@ -98,6 +98,22 @@ def test_consecutive_gainers_preset_includes_week_change_filter() -> None:
     assert us_filters["min_week_change_rate"] == 0.0
 
 
+@pytest.mark.unit
+def test_sort_and_limit_supports_week_change_rate() -> None:
+    from app.mcp_server.tooling.screening.common import _sort_and_limit
+
+    rows = [
+        {"symbol": "A", "week_change_rate": 1.0},
+        {"symbol": "B", "week_change_rate": 8.0},
+        {"symbol": "C", "week_change_rate": 3.0},
+        {"symbol": "D", "week_change_rate": None},
+    ]
+
+    out = _sort_and_limit(rows, "week_change_rate", "desc", 3)
+
+    assert [r["symbol"] for r in out] == ["B", "C", "A"]
+
+
 @pytest.mark.asyncio
 async def test_screen_stocks_impl_drops_negative_week_change(monkeypatch) -> None:
     from app.mcp_server.tooling import analysis_screening

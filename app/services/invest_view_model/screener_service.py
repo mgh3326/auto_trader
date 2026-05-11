@@ -43,7 +43,7 @@ _KST = ZoneInfo("Asia/Seoul")
 _KR_OPEN = _time(9, 0)
 _KR_CLOSE = _time(15, 30)
 _CACHE_HIT_FRESH_SECONDS = 300
-_SNAPSHOT_FIRST_LIMIT = 20
+_SNAPSHOT_FIRST_LIMIT = 80
 _MAX_WARNING_CHARS = 240
 logger = logging.getLogger(__name__)
 
@@ -127,9 +127,10 @@ async def _load_consecutive_gainers_from_snapshots(
         )
         .order_by(
             InvestScreenerSnapshot.snapshot_date.desc(),
-            InvestScreenerSnapshot.consecutive_up_days.desc(),
             InvestScreenerSnapshot.week_change_rate.desc().nullslast(),
+            InvestScreenerSnapshot.consecutive_up_days.desc(),
             InvestScreenerSnapshot.change_rate.desc().nullslast(),
+            InvestScreenerSnapshot.symbol.asc(),
         )
         .limit(max(limit * 4, limit))
     )
@@ -179,6 +180,14 @@ async def _load_consecutive_gainers_from_snapshots(
         )
         if len(rows) >= limit:
             break
+    rows.sort(
+        key=lambda row: (
+            -(row.get("week_change_rate") or 0.0),
+            -(row.get("consecutive_up_days") or 0),
+            -(row.get("change_rate") or 0.0),
+            str(row.get("symbol") or ""),
+        )
+    )
     return rows
 
 

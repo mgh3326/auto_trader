@@ -68,6 +68,17 @@ def test_consecutive_gainers_preset_requests_streak_filter() -> None:
 
 
 @pytest.mark.unit
+def test_consecutive_gainers_preset_matches_toss_rank_and_limit() -> None:
+    filters = screening_filters_for("consecutive_gainers", market="kr")
+
+    assert filters.get("min_consecutive_up_days") == 5
+    assert filters.get("min_week_change_rate") == 0.0
+    assert filters.get("sort_by") == "week_change_rate"
+    assert filters.get("sort_order") == "desc"
+    assert filters.get("limit") == 80
+
+
+@pytest.mark.unit
 def test_consecutive_gainers_chip_says_5_days() -> None:
     preset = get_preset("consecutive_gainers", market="kr")
     assert preset is not None

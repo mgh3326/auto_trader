@@ -925,6 +925,69 @@ async def test_build_screener_results_uses_snapshots_before_external_screening()
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_build_screener_results_orders_snapshot_rows_by_week_change() -> None:
+    fake_screening = type(
+        "ScreenerService",
+        (_FakeProductionScreening,),
+        {"__module__": "app.services.screener_service"},
+    )()
+    session = _FakeSession(
+        [
+            _FakeExecuteResult(
+                scalar_rows=[
+                    _FakeSnapshot(
+                        symbol="111111",
+                        consecutive_up_days=9,
+                        week_change_rate=Decimal("1.0"),
+                    ),
+                    _FakeSnapshot(
+                        symbol="222222",
+                        consecutive_up_days=5,
+                        week_change_rate=Decimal("8.0"),
+                    ),
+                    _FakeSnapshot(
+                        symbol="333333",
+                        consecutive_up_days=6,
+                        week_change_rate=Decimal("3.0"),
+                    ),
+                ]
+            ),
+            _FakeExecuteResult(
+                scalar_rows=[
+                    _FakeSnapshot(
+                        symbol="222222",
+                        consecutive_up_days=5,
+                        week_change_rate=Decimal("8.0"),
+                    ),
+                    _FakeSnapshot(
+                        symbol="333333",
+                        consecutive_up_days=6,
+                        week_change_rate=Decimal("3.0"),
+                    ),
+                    _FakeSnapshot(
+                        symbol="111111",
+                        consecutive_up_days=9,
+                        week_change_rate=Decimal("1.0"),
+                    ),
+                ]
+            ),
+            _FakeExecuteResult(),
+        ]
+    )
+
+    resp = await build_screener_results(
+        preset_id="consecutive_gainers",
+        screening_service=fake_screening,
+        resolver=_FakeResolver(watched=set()),
+        session=session,
+    )
+
+    assert [row.symbol for row in resp.results] == ["222222", "333333", "111111"]
+    assert [row.metricValueLabel for row in resp.results] == ["5일", "6일", "9일"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_build_screener_results_redacts_external_connection_failures() -> None:
     fake_screening = MagicMock()
     fake_screening.list_screening = AsyncMock(
