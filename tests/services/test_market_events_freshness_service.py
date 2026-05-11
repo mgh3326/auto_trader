@@ -42,9 +42,7 @@ def _add_partition(
     return row
 
 
-async def _clear_partitions_for_dates(
-    db: AsyncSession, *partition_dates: date
-) -> None:
+async def _clear_partitions_for_dates(db: AsyncSession, *partition_dates: date) -> None:
     await db.execute(
         sa.delete(MarketEventIngestionPartition).where(
             MarketEventIngestionPartition.partition_date.in_(partition_dates)
