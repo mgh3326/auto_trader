@@ -115,4 +115,31 @@ describe("SelectedDateEvents", () => {
     expect(screen.getByTestId("calendar-error")).toBeInTheDocument();
     expect(screen.queryByText("stale")).not.toBeInTheDocument();
   });
+
+  test("heavy cluster renders topEvents as primary EventRow rows before overflow indicator", () => {
+    render(
+      <SelectedDateEvents
+        {...baseProps}
+        clusters={[
+          {
+            id: "c1", date: "2026-05-11", dayOfMonth: 11, monthDay: "5/11",
+            type: "earnings", region: "us", title: "미국 실적 발표 284건",
+            count: 284, topEvents: [evt("held", "AAPL 실적"), evt("watched", "MSFT 실적")],
+          },
+        ]}
+      />,
+    );
+    const list = screen.getByTestId("day-events");
+    // topEvents must render as first-class EventRow instances
+    const eventRows = within(list).getAllByTestId("calendar-event");
+    expect(eventRows).toHaveLength(2);
+    expect(eventRows[0]).toHaveTextContent("AAPL 실적");
+    expect(eventRows[1]).toHaveTextContent("MSFT 실적");
+    // overflow indicator shows remaining count as secondary context
+    const overflow = within(list).getByTestId("calendar-cluster-overflow");
+    expect(overflow).toHaveTextContent("미국 실적 발표");
+    expect(overflow).toHaveTextContent("282건");
+    // raw aggregate ClusterRow must NOT be the primary content
+    expect(within(list).queryByTestId("calendar-cluster")).not.toBeInTheDocument();
+  });
 });

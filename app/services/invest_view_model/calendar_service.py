@@ -42,7 +42,6 @@ _HIGH_IMPACT_TERMS = ("cpi", "fomc", "nonfarm", "payroll", "pce", "gdp", "금리
 _MARKET_LITERAL = cast  # alias — used for type narrowing below
 
 
-
 def _event_date_key(value: datetime | None) -> tuple[int, str]:
     if value is None:
         return (1, "")
@@ -80,13 +79,19 @@ def _rank_calendar_event(
     if target_date in (ref_today, ref_today + timedelta(days=1)):
         score += 100
         reasons.append("near_term")
-    if event.actual is not None or event.forecast is not None or event.previous is not None:
+    if (
+        event.actual is not None
+        or event.forecast is not None
+        or event.previous is not None
+    ):
         score += 50
         reasons.append("has_values")
     return score, reasons
 
 
-def _sort_key(event: CalendarEvent) -> tuple[int, int, tuple[int, str], int, int, str, str]:
+def _sort_key(
+    event: CalendarEvent,
+) -> tuple[int, int, tuple[int, str], int, int, str, str]:
     return (
         -event.displayPriority,
         _EVENT_TYPE_ORDER.get(event.eventType, 99),
@@ -100,7 +105,9 @@ def _sort_key(event: CalendarEvent) -> tuple[int, int, tuple[int, str], int, int
 
 def _with_priority(event: CalendarEvent, *, target_date: date) -> CalendarEvent:
     score, reasons = _rank_calendar_event(event, target_date=target_date)
-    return event.model_copy(update={"displayPriority": score, "highlightReasons": reasons})
+    return event.model_copy(
+        update={"displayPriority": score, "highlightReasons": reasons}
+    )
 
 
 def _sort_calendar_events(events: list[CalendarEvent]) -> list[CalendarEvent]:
@@ -124,6 +131,7 @@ def _build_day_summary(all_events: list[CalendarEvent]) -> CalendarDaySummary | 
         overflowCount=overflow,
         overflowLabel=overflow_label,
     )
+
 
 def _normalize_event_type(value: str | None) -> EventType:
     v = (value or "").lower()
@@ -231,7 +239,9 @@ async def build_calendar(
 
     days: list[CalendarDay] = []
     for d in _date_range(from_date, to_date):
-        events = _sort_calendar_events([_with_priority(ev, target_date=d) for ev in by_day.get(d, [])])
+        events = _sort_calendar_events(
+            [_with_priority(ev, target_date=d) for ev in by_day.get(d, [])]
+        )
         summary = _build_day_summary(events)
         clusters: list[CalendarCluster] = []
         if len(events) > CLUSTER_THRESHOLD:
@@ -239,7 +249,13 @@ async def build_calendar(
             for ev in events:
                 grouped.setdefault((ev.eventType, ev.market), []).append(ev)
             kept: list[CalendarEvent] = []
-            for (etype, market), group in sorted(grouped.items(), key=lambda item: (_EVENT_TYPE_ORDER.get(item[0][0], 99), _MARKET_ORDER.get(item[0][1], 99))):
+            for (etype, market), group in sorted(
+                grouped.items(),
+                key=lambda item: (
+                    _EVENT_TYPE_ORDER.get(item[0][0], 99),
+                    _MARKET_ORDER.get(item[0][1], 99),
+                ),
+            ):
                 group = _sort_calendar_events(group)
                 if len(group) > CLUSTER_TOP_EVENT_LIMIT:
                     clusters.append(

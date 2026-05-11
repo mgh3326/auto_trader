@@ -1,4 +1,4 @@
-import { ClusterRow } from "./ClusterRow";
+import { ClusterEventRows } from "./ClusterEventRows";
 import { EventRow } from "./EventRow";
 import { EmptyEventState } from "./EmptyEventState";
 import type { CalendarClusterVM, CalendarDaySummaryVM, CalendarEventVM } from "./vm";
@@ -52,9 +52,7 @@ export function SelectedDateEvents({
           <EmptyEventState message={emptyMessage} />
         ) : (
           <>
-            {clusters.map((c) => (
-              <ClusterRow key={c.id} cluster={c} />
-            ))}
+            <ClusterEventRows clusters={clusters} />
             {events.map((ev) => (
               <EventRow key={ev.id} ev={ev} />
             ))}

@@ -129,7 +129,9 @@ async def test_calendar_clusters_when_over_threshold(monkeypatch) -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_calendar_prioritizes_held_watchlist_and_value_events(monkeypatch) -> None:
+async def test_calendar_prioritizes_held_watchlist_and_value_events(
+    monkeypatch,
+) -> None:
     from app.services.invest_view_model import calendar_service as svc
 
     fake_resp = MagicMock()
@@ -157,30 +159,59 @@ async def test_calendar_prioritizes_held_watchlist_and_value_events(monkeypatch)
     )
 
     events = resp.days[0].events
-    assert [event.eventId for event in events] == ["held", "watched", "valued", "ordinary"]
-    assert events[0].displayPriority > events[1].displayPriority > events[2].displayPriority
+    assert [event.eventId for event in events] == [
+        "held",
+        "watched",
+        "valued",
+        "ordinary",
+    ]
+    assert (
+        events[0].displayPriority
+        > events[1].displayPriority
+        > events[2].displayPriority
+    )
     assert events[0].highlightReasons == ["held"]
     assert events[1].highlightReasons == ["watchlist"]
     assert events[2].highlightReasons == ["has_values"]
     assert resp.days[0].summary is not None
-    assert resp.days[0].summary.highlightEventIds == ["held", "watched", "valued", "ordinary"]
+    assert resp.days[0].summary.highlightEventIds == [
+        "held",
+        "watched",
+        "valued",
+        "ordinary",
+    ]
     assert resp.days[0].summary.overflowCount == 0
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_calendar_cluster_top_events_and_summary_are_priority_aware(monkeypatch) -> None:
+async def test_calendar_cluster_top_events_and_summary_are_priority_aware(
+    monkeypatch,
+) -> None:
     from app.services.invest_view_model import calendar_service as svc
 
     fake_resp = MagicMock()
     fake_resp.events = [
         *[
-            _fake_event(event_id=f"ordinary-{i}", category="earnings", market="us", symbol=f"ZZZ{i}")
+            _fake_event(
+                event_id=f"ordinary-{i}",
+                category="earnings",
+                market="us",
+                symbol=f"ZZZ{i}",
+            )
             for i in range(12)
         ],
-        _fake_event(event_id="watched", category="earnings", market="us", symbol="MSFT"),
+        _fake_event(
+            event_id="watched", category="earnings", market="us", symbol="MSFT"
+        ),
         _fake_event(event_id="held", category="earnings", market="us", symbol="AAPL"),
-        _fake_event(event_id="valued", category="earnings", market="us", symbol="TSLA", actual="2.34"),
+        _fake_event(
+            event_id="valued",
+            category="earnings",
+            market="us",
+            symbol="TSLA",
+            actual="2.34",
+        ),
     ]
     fake_query_service = MagicMock()
     fake_query_service.list_for_range = AsyncMock(return_value=fake_resp)
@@ -200,8 +231,10 @@ async def test_calendar_cluster_top_events_and_summary_are_priority_aware(monkey
     )
 
     day = resp.days[0]
-    assert day.events == []
     assert len(day.clusters) == 1
+    assert (
+        len(day.clusters[0].topEvents) == 5
+    )  # top events available for primary row rendering
     assert [event.eventId for event in day.clusters[0].topEvents[:3]] == [
         "held",
         "watched",

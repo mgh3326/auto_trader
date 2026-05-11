@@ -1,5 +1,5 @@
 import { forwardRef } from "react";
-import { ClusterRow } from "./ClusterRow";
+import { ClusterEventRows } from "./ClusterEventRows";
 import { EventRow } from "./EventRow";
 import type { CalendarClusterVM, CalendarEventVM } from "./vm";
 import { dayEmptyLabel, dayHeaderLabel, dayTotalLabel } from "./vm";
@@ -46,9 +46,7 @@ export const DaySection = forwardRef<HTMLElement, DaySectionProps>(function DayS
         <div className="calendar-day-section__empty">{dayEmptyLabel()}</div>
       ) : (
         <div className="calendar-day-section__body">
-          {clusters.map((c) => (
-            <ClusterRow key={c.id} cluster={c} />
-          ))}
+          <ClusterEventRows clusters={clusters} />
           {events.map((ev) => (
             <EventRow key={ev.id} ev={ev} />
           ))}
