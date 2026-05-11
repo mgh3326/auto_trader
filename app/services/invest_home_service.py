@@ -8,7 +8,7 @@ mutation 경로(submit/cancel/modify/place_order/watch/order-intent/scheduler/wo
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 
 from app.schemas.invest_home import (
@@ -50,7 +50,13 @@ def _group_id(h: Holding) -> str:
     return f"{h.market}:{h.assetType}:{h.currency}:{_normalize_symbol(h.symbol)}"
 
 
-def build_grouped_holdings(holdings: Iterable[Holding]) -> list[GroupedHolding]:
+def build_grouped_holdings(
+    holdings: Iterable[Holding],
+    accounts: Iterable[Account] | None = None,
+) -> list[GroupedHolding]:
+    account_names: Mapping[str, str] = (
+        {a.accountId: a.displayName for a in accounts} if accounts is not None else {}
+    )
     buckets: dict[str, list[Holding]] = {}
     for h in holdings:
         buckets.setdefault(_group_id(h), []).append(h)
@@ -158,6 +164,7 @@ def build_grouped_holdings(holdings: Iterable[Holding]) -> list[GroupedHolding]:
                     GroupedSourceBreakdown(
                         holdingId=h.holdingId,
                         accountId=h.accountId,
+                        accountName=account_names.get(h.accountId),
                         source=h.source,
                         quantity=h.quantity,
                         averageCost=h.averageCost,
@@ -321,7 +328,7 @@ class InvestHomeService:
             homeSummary=build_home_summary(accounts),
             accounts=accounts,
             holdings=holdings,
-            groupedHoldings=build_grouped_holdings(holdings),
+            groupedHoldings=build_grouped_holdings(holdings, accounts=accounts),
             meta=InvestHomeResponseMeta(
                 warnings=warnings,
                 hiddenCounts=hidden_counts,

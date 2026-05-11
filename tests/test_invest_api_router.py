@@ -106,7 +106,7 @@ class _StubService:
             homeSummary=build_home_summary(accounts),
             accounts=accounts,
             holdings=holdings,
-            groupedHoldings=build_grouped_holdings(holdings),
+            groupedHoldings=build_grouped_holdings(holdings, accounts=accounts),
             meta=InvestHomeResponseMeta(
                 warnings=[
                     InvestHomeWarning(source="upbit", message="cache only"),
@@ -178,7 +178,18 @@ def test_stock_detail_route_reuses_home_grouped_holdings_source_breakdown(
                 "pnlKrw": grouped.pnlKrw,
                 "pnlRate": grouped.pnlRate,
                 "includedSources": grouped.includedSources,
-                "sourceBreakdown": [row.model_dump(mode="json") for row in grouped.sourceBreakdown],
+                "sourceBreakdown": [
+                    {
+                        "source": row.source,
+                        "accountName": row.accountName,
+                        "quantity": row.quantity,
+                        "averageCost": row.averageCost,
+                        "costBasis": row.costBasis,
+                        "valueNative": row.valueNative,
+                        "valueKrw": row.valueKrw,
+                    }
+                    for row in grouped.sourceBreakdown
+                ],
                 "priceState": grouped.priceState,
             },
             "latestAnalysis": None,

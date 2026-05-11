@@ -70,6 +70,7 @@ class GroupedSourceBreakdown(BaseModel):
     model_config = ConfigDict(extra="forbid")
     holdingId: str
     accountId: str
+    accountName: str | None = None
     source: AccountSourceLiteral
     quantity: float
     averageCost: float | None = None
