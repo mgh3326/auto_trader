@@ -11,6 +11,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import sqlalchemy as sa
 
 from app.models.kr_symbol_universe import KRSymbolUniverse
 from app.services.invest_view_model.screener_service import build_screener_results
@@ -39,6 +40,10 @@ _TEST_SYMBOL = "T70KR1"  # unique 6-char sentinel, not in any other test fixture
 @pytest.mark.asyncio
 async def test_kr_row_uses_kr_universe_name_over_upstream(db_session):
     """When kr_symbol_universe has a Korean name, it replaces the upstream row name."""
+    await db_session.execute(
+        sa.delete(KRSymbolUniverse).where(KRSymbolUniverse.symbol == _TEST_SYMBOL)
+    )
+    await db_session.commit()
     db_session.add(
         KRSymbolUniverse(
             symbol=_TEST_SYMBOL,

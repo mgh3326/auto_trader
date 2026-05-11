@@ -15,9 +15,9 @@ describe("MobileBottomNav", () => {
   it("renders all five canonical tabs", () => {
     renderAt("/");
     expect(screen.getByRole("link", { name: /홈/ })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /MY/ })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /뉴스/ })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /발견/ })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /시그널/ })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /캘린더/ })).toBeInTheDocument();
   });
 
