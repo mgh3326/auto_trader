@@ -11,6 +11,7 @@ from app.schemas.invest_calendar import (
     Badge,
     CalendarCluster,
     CalendarDay,
+    CalendarDaySummary,
     CalendarEvent,
     CalendarMarket,
     CalendarMeta,
@@ -18,15 +19,111 @@ from app.schemas.invest_calendar import (
     CalendarResponse,
     CalendarTab,
     EventType,
+    HighlightReason,
 )
 from app.services.invest_view_model.relation_resolver import RelationResolver
 from app.services.market_events.freshness_service import MarketEventsFreshnessService
 from app.services.market_events.query_service import MarketEventsQueryService
 
 CLUSTER_THRESHOLD = 10
+DAY_HIGHLIGHT_LIMIT = 5
+CLUSTER_TOP_EVENT_LIMIT = 5
+
+_EVENT_TYPE_ORDER: dict[EventType, int] = {
+    "economic": 0,
+    "earnings": 1,
+    "disclosure": 2,
+    "crypto": 3,
+    "other": 4,
+}
+_MARKET_ORDER: dict[CalendarMarket, int] = {"kr": 0, "us": 1, "global": 2, "crypto": 3}
+_HIGH_IMPACT_TERMS = ("cpi", "fomc", "nonfarm", "payroll", "pce", "gdp", "금리", "고용")
 
 _MARKET_LITERAL = cast  # alias — used for type narrowing below
 
+
+
+def _event_date_key(value: datetime | None) -> tuple[int, str]:
+    if value is None:
+        return (1, "")
+    return (0, value.isoformat())
+
+
+def _is_high_impact_macro(event: CalendarEvent) -> bool:
+    if event.eventType != "economic":
+        return False
+    haystack = f"{event.title} {event.source}".lower()
+    return any(term in haystack for term in _HIGH_IMPACT_TERMS)
+
+
+def _rank_calendar_event(
+    event: CalendarEvent,
+    *,
+    target_date: date,
+    today: date | None = None,
+) -> tuple[int, list[HighlightReason]]:
+    score = 0
+    reasons: list[HighlightReason] = []
+    if event.relation in ("held", "both"):
+        score += 1000
+        reasons.append("held")
+    if event.relation in ("watchlist", "both"):
+        score += 700
+        reasons.append("watchlist")
+    if "major" in event.badges:
+        score += 500
+        reasons.append("major")
+    if _is_high_impact_macro(event):
+        score += 400
+        reasons.append("high_impact")
+    ref_today = today or date.today()
+    if target_date in (ref_today, ref_today + timedelta(days=1)):
+        score += 100
+        reasons.append("near_term")
+    if event.actual is not None or event.forecast is not None or event.previous is not None:
+        score += 50
+        reasons.append("has_values")
+    return score, reasons
+
+
+def _sort_key(event: CalendarEvent) -> tuple[int, int, tuple[int, str], int, int, str, str]:
+    return (
+        -event.displayPriority,
+        _EVENT_TYPE_ORDER.get(event.eventType, 99),
+        _event_date_key(event.eventTimeLocal),
+        _MARKET_ORDER.get(event.market, 99),
+        0 if event.title else 1,
+        event.title.lower(),
+        event.eventId,
+    )
+
+
+def _with_priority(event: CalendarEvent, *, target_date: date) -> CalendarEvent:
+    score, reasons = _rank_calendar_event(event, target_date=target_date)
+    return event.model_copy(update={"displayPriority": score, "highlightReasons": reasons})
+
+
+def _sort_calendar_events(events: list[CalendarEvent]) -> list[CalendarEvent]:
+    return sorted(events, key=_sort_key)
+
+
+def _build_day_summary(all_events: list[CalendarEvent]) -> CalendarDaySummary | None:
+    total = len(all_events)
+    if total == 0:
+        return None
+    highlights = _sort_calendar_events(all_events)[:DAY_HIGHLIGHT_LIMIT]
+    highlight_ids = [ev.eventId for ev in highlights]
+    overflow = max(total - len(highlight_ids), 0)
+    overflow_label = f"그 외 {overflow}개" if overflow else None
+    headline = f"주요 일정 {len(highlight_ids)}개"
+    if overflow_label:
+        headline = f"{headline} · {overflow_label}"
+    return CalendarDaySummary(
+        headline=headline,
+        highlightEventIds=highlight_ids,
+        overflowCount=overflow,
+        overflowLabel=overflow_label,
+    )
 
 def _normalize_event_type(value: str | None) -> EventType:
     v = (value or "").lower()
@@ -134,15 +231,17 @@ async def build_calendar(
 
     days: list[CalendarDay] = []
     for d in _date_range(from_date, to_date):
-        events = by_day.get(d, [])
+        events = _sort_calendar_events([_with_priority(ev, target_date=d) for ev in by_day.get(d, [])])
+        summary = _build_day_summary(events)
         clusters: list[CalendarCluster] = []
         if len(events) > CLUSTER_THRESHOLD:
             grouped: dict[tuple[EventType, CalendarMarket], list[CalendarEvent]] = {}
             for ev in events:
                 grouped.setdefault((ev.eventType, ev.market), []).append(ev)
             kept: list[CalendarEvent] = []
-            for (etype, market), group in grouped.items():
-                if len(group) > 5:
+            for (etype, market), group in sorted(grouped.items(), key=lambda item: (_EVENT_TYPE_ORDER.get(item[0][0], 99), _MARKET_ORDER.get(item[0][1], 99))):
+                group = _sort_calendar_events(group)
+                if len(group) > CLUSTER_TOP_EVENT_LIMIT:
                     clusters.append(
                         CalendarCluster(
                             clusterId=f"{d.isoformat()}:{etype}:{market}",
@@ -150,7 +249,7 @@ async def build_calendar(
                             eventType=etype,
                             market=market,
                             eventCount=len(group),
-                            topEvents=group[:5],
+                            topEvents=group[:CLUSTER_TOP_EVENT_LIMIT],
                         )
                     )
                 else:
@@ -163,6 +262,7 @@ async def build_calendar(
                 events=events,
                 clusters=clusters,
                 dataState=day_state,
+                summary=summary,
             )
         )
 

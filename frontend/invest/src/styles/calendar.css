@@ -161,6 +161,16 @@
   color: var(--fg-3);
   font-feature-settings: "tnum";
 }
+.calendar-selected-date__summary {
+  margin: 0 6px 2px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: var(--surface-2);
+  color: var(--fg-2);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
 .calendar-selected-date__list {
   display: flex;
   flex-direction: column;

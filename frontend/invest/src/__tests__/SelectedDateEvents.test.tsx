@@ -16,7 +16,7 @@ function evt(id: string, title: string): CalendarEventVM {
     id, date: "2026-05-11", dayOfMonth: 11, monthDay: "5/11",
     type: "earnings", region: "us", title,
     time: null, released: false, actual: null, forecast: null, previous: null,
-    own: null, badges: [],
+    own: null, badges: [], displayPriority: 0, highlightReasons: [],
   };
 }
 
@@ -73,6 +73,23 @@ describe("SelectedDateEvents", () => {
     expect(root).toHaveAttribute("data-selected-date", "2026-05-11");
     expect(root).toHaveTextContent("5월 11일 월요일 일정");
     expect(root).toHaveTextContent("327건");
+  });
+
+  test("renders neutral day summary and overflow label when provided", () => {
+    render(
+      <SelectedDateEvents
+        {...baseProps}
+        events={[evt("e1", "AAPL earnings"), evt("e2", "MSFT earnings")]}
+        summary={{
+          headline: "주요 일정 2개 · 그 외 7개",
+          highlightEventIds: ["e1", "e2"],
+          overflowCount: 7,
+          overflowLabel: "그 외 7개",
+        }}
+      />,
+    );
+    expect(screen.getByTestId("calendar-day-summary")).toHaveTextContent("주요 일정 2개 · 그 외 7개");
+    expect(screen.getByText(/2026-05-11 · 2건 · 그 외 7개/)).toBeInTheDocument();
   });
 
   test("loading + populated together still shows skeleton (loading wins)", () => {

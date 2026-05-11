@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { MobileShell } from "../../mobile/MobileShell";
 import { fetchCalendar, fetchWeeklySummary } from "../../api/calendar";
-import type { CalendarResponse, WeeklySummaryResponse } from "../../types/calendar";
+import type { CalendarDaySummary, CalendarResponse, WeeklySummaryResponse } from "../../types/calendar";
 import { Icon } from "../../ds";
 import { CalendarMonthHeader } from "../../components/calendar/CalendarMonthHeader";
 import { CalendarSourceButton } from "../../components/calendar/CalendarSourceButton";
