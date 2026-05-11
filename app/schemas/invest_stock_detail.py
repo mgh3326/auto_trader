@@ -213,7 +213,10 @@ class StockDetailDiscussionSignal(BaseModel):
             "body",
             "title",
         }
-        exposed = {item.lower() for item in [*self.mappedFields, *(m.label for m in self.metrics)]}
+        exposed = {
+            item.lower()
+            for item in [*self.mappedFields, *(m.label for m in self.metrics)]
+        }
         if any(any(token in item for token in blocked) for item in exposed):
             raise ValueError("discussion signal may expose aggregate metrics only")
         return self

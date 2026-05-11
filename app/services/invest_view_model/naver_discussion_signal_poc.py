@@ -59,7 +59,9 @@ async def build_naver_discussion_signal_poc(
             momentum="unknown",
             metrics=[
                 StockDetailDiscussionSignalMetric(
-                    label="discussion_page_candidate", value="worldstock discussion page", unit=None
+                    label="discussion_page_candidate",
+                    value="worldstock discussion page",
+                    unit=None,
                 ),
             ],
             mappedFields=[
@@ -97,10 +99,18 @@ async def build_naver_discussion_signal_poc(
         reactionCount=911,
         momentum="rising",
         metrics=[
-            StockDetailDiscussionSignalMetric(label="activity_rank", value=5, unit="rank"),
-            StockDetailDiscussionSignalMetric(label="post_count", value=128, unit="count"),
-            StockDetailDiscussionSignalMetric(label="comment_count", value=342, unit="count"),
-            StockDetailDiscussionSignalMetric(label="reaction_count", value=911, unit="count"),
+            StockDetailDiscussionSignalMetric(
+                label="activity_rank", value=5, unit="rank"
+            ),
+            StockDetailDiscussionSignalMetric(
+                label="post_count", value=128, unit="count"
+            ),
+            StockDetailDiscussionSignalMetric(
+                label="comment_count", value=342, unit="count"
+            ),
+            StockDetailDiscussionSignalMetric(
+                label="reaction_count", value=911, unit="count"
+            ),
         ],
         mappedFields=[
             "discussion.activityRank",

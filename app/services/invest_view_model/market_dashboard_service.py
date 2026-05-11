@@ -65,7 +65,9 @@ def _format_number(value: Any, *, digits: int = 2) -> str | None:
     return f"{num:.{digits}f}"
 
 
-def _metric_from_index(row: dict[str, Any], *, href: str | None = None) -> MarketDashboardMetric:
+def _metric_from_index(
+    row: dict[str, Any], *, href: str | None = None
+) -> MarketDashboardMetric:
     warning = str(row.get("error")) if row.get("error") else None
     change_pct = _as_float(row.get("change_pct"))
     change = _as_float(row.get("change"))
@@ -92,7 +94,9 @@ def _as_float(value: Any) -> float | None:
         return None
 
 
-def _section_state(metrics: list[MarketDashboardMetric], warnings: list[str]) -> MarketDashboardState:
+def _section_state(
+    metrics: list[MarketDashboardMetric], warnings: list[str]
+) -> MarketDashboardState:
     if not metrics:
         return "missing"
     usable = [m for m in metrics if m.value is not None and not m.warning]
@@ -101,18 +105,24 @@ def _section_state(metrics: list[MarketDashboardMetric], warnings: list[str]) ->
     return "fresh"
 
 
-async def _capture(label: str, call: Callable[[], Awaitable[Any]]) -> tuple[Any | None, str | None]:
+async def _capture(
+    label: str, call: Callable[[], Awaitable[Any]]
+) -> tuple[Any | None, str | None]:
     try:
         return await asyncio.wait_for(call(), timeout=6), None
     except Exception as exc:  # provider failures should not break /invest shell
         return None, f"{label}: {exc}"
 
 
-def _build_index_sections(indices_payload: dict[str, Any] | None, warning: str | None, as_of: datetime) -> tuple[list[MarketDashboardSection], list[str]]:
+def _build_index_sections(
+    indices_payload: dict[str, Any] | None, warning: str | None, as_of: datetime
+) -> tuple[list[MarketDashboardSection], list[str]]:
     warnings: list[str] = []
     if warning:
         warnings.append(warning)
-    rows = indices_payload.get("indices", []) if isinstance(indices_payload, dict) else []
+    rows = (
+        indices_payload.get("indices", []) if isinstance(indices_payload, dict) else []
+    )
     if not isinstance(rows, list):
         rows = []
         warnings.append("market_index: unexpected provider payload")
@@ -142,25 +152,33 @@ def _build_index_sections(indices_payload: dict[str, Any] | None, warning: str |
             staleAfterMinutes=20,
             metrics=kr_metrics,
             warnings=[w for w in kr_section_warnings if w],
-            notes=["Naver 증권 시장 홈의 국내 지수 영역을 /invest용 읽기 모델로 축약했습니다."],
+            notes=[
+                "Naver 증권 시장 홈의 국내 지수 영역을 /invest용 읽기 모델로 축약했습니다."
+            ],
         ),
         MarketDashboardSection(
             id="global_indices",
             title="주요 해외 지수",
             subtitle="S&P 500·NASDAQ 등 글로벌 대표 지수",
-            state=_section_state(global_metrics, [w for w in global_section_warnings if w]),
+            state=_section_state(
+                global_metrics, [w for w in global_section_warnings if w]
+            ),
             sourceOfTruth="get_market_index(SPX/NASDAQ)",
             updatedAt=as_of,
             staleAfterMinutes=60,
             metrics=global_metrics,
             warnings=[w for w in global_section_warnings if w],
-            notes=["해외 지수는 현재 yfinance 기반이며 장 시간대에 따라 지연될 수 있습니다."],
+            notes=[
+                "해외 지수는 현재 yfinance 기반이며 장 시간대에 따라 지연될 수 있습니다."
+            ],
         ),
     ]
     return sections, warnings
 
 
-def _extract_fear_greed(payload: dict[str, Any] | None) -> tuple[str | None, float | None, str | None]:
+def _extract_fear_greed(
+    payload: dict[str, Any] | None,
+) -> tuple[str | None, float | None, str | None]:
     if not isinstance(payload, dict):
         return None, None, None
     data = payload.get("data")
@@ -174,11 +192,19 @@ def _extract_fear_greed(payload: dict[str, Any] | None) -> tuple[str | None, flo
     if current is None:
         current = payload
     value = current.get("value") or current.get("fear_greed")
-    classification = current.get("value_classification") or current.get("classification")
-    return (str(value) if value is not None else None, _as_float(value), str(classification) if classification else None)
+    classification = current.get("value_classification") or current.get(
+        "classification"
+    )
+    return (
+        str(value) if value is not None else None,
+        _as_float(value),
+        str(classification) if classification else None,
+    )
 
 
-def _extract_kimchi(payload: dict[str, Any] | list[dict[str, Any]] | None) -> tuple[str | None, float | None, str | None]:
+def _extract_kimchi(
+    payload: dict[str, Any] | list[dict[str, Any]] | None,
+) -> tuple[str | None, float | None, str | None]:
     row: dict[str, Any] | None = None
     if isinstance(payload, list) and payload:
         row = payload[0]
@@ -239,7 +265,9 @@ def _build_macro_crypto_sections(
             staleAfterMinutes=240,
             metrics=macro_metrics,
             warnings=[w for w in [fear_greed_warning] if w],
-            notes=["Naver marketindex의 환율·금리·원자재 영역은 후속 데이터 확장 후보입니다."],
+            notes=[
+                "Naver marketindex의 환율·금리·원자재 영역은 후속 데이터 확장 후보입니다."
+            ],
         ),
         MarketDashboardSection(
             id="crypto_market",
@@ -258,7 +286,9 @@ def _build_macro_crypto_sections(
     return sections, warnings
 
 
-def _overall_state(sections: list[MarketDashboardSection], warnings: list[str]) -> MarketDashboardState:
+def _overall_state(
+    sections: list[MarketDashboardSection], warnings: list[str]
+) -> MarketDashboardState:
     if not sections:
         return "missing"
     if all(section.state in {"missing", "error"} for section in sections):
@@ -274,8 +304,12 @@ async def build_market_dashboard(
     provider = provider or DefaultMarketDashboardProvider()
     as_of = _now()
     indices, index_warning = await _capture("market_index", provider.get_indices)
-    fear_greed, fear_greed_warning = await _capture("fear_greed", provider.get_fear_greed)
-    kimchi, kimchi_warning = await _capture("kimchi_premium", provider.get_kimchi_premium)
+    fear_greed, fear_greed_warning = await _capture(
+        "fear_greed", provider.get_fear_greed
+    )
+    kimchi, kimchi_warning = await _capture(
+        "kimchi_premium", provider.get_kimchi_premium
+    )
 
     sections, warnings = _build_index_sections(indices, index_warning, as_of)
     extra_sections, extra_warnings = _build_macro_crypto_sections(

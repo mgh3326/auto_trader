@@ -118,4 +118,8 @@ def test_get_market_dashboard_returns_read_only_payload(client: TestClient) -> N
     assert body["sections"][0]["metrics"][0]["symbol"] == "KOSPI"
     notes = " ".join(body["notes"]).lower()
     assert "mutations" in notes
-    assert all("order_id" not in metric for section in body["sections"] for metric in section["metrics"])
+    assert all(
+        "order_id" not in metric
+        for section in body["sections"]
+        for metric in section["metrics"]
+    )

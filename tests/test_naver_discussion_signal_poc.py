@@ -22,8 +22,7 @@ async def test_kr_returns_aggregate_signal_fixture():
     assert result.activityRank is not None
     assert result.momentum in {"rising", "flat", "falling", "unknown"}
     assert all(
-        "post_text" not in m.label and "title" not in m.label
-        for m in result.metrics
+        "post_text" not in m.label and "title" not in m.label for m in result.metrics
     )
 
 

@@ -132,8 +132,12 @@ def test_discussion_signal_kr_fixture_backed_aggregate_only():
         reactionCount=911,
         momentum="rising",
         metrics=[
-            StockDetailDiscussionSignalMetric(label="activity_rank", value=5, unit="rank"),
-            StockDetailDiscussionSignalMetric(label="post_count", value=128, unit="count"),
+            StockDetailDiscussionSignalMetric(
+                label="activity_rank", value=5, unit="rank"
+            ),
+            StockDetailDiscussionSignalMetric(
+                label="post_count", value=128, unit="count"
+            ),
         ],
         mappedFields=["discussion.activityRank", "discussion.postCount"],
         noGoFields=["public discussion post text"],
@@ -168,7 +172,9 @@ def test_discussion_signal_rejects_ugc_field_labels():
             liveFetchEnabled=False,
             windowLabel="test",
             metrics=[
-                StockDetailDiscussionSignalMetric(label="post_title", value="삼성전자 전망", unit=None),
+                StockDetailDiscussionSignalMetric(
+                    label="post_title", value="삼성전자 전망", unit=None
+                ),
             ],
             risk="x",
             docsPath="x",

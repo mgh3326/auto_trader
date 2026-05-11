@@ -164,13 +164,13 @@ async def build_stock_detail(
     if naver_enrichment is not None and not isinstance(
         naver_enrichment, StockDetailNaverEnrichment
     ):
-        naver_enrichment = StockDetailNaverEnrichment.model_validate(
-            naver_enrichment
-        )
+        naver_enrichment = StockDetailNaverEnrichment.model_validate(naver_enrichment)
     if discussion_signal is not None and not isinstance(
         discussion_signal, StockDetailDiscussionSignal
     ):
-        discussion_signal = StockDetailDiscussionSignal.model_validate(discussion_signal)
+        discussion_signal = StockDetailDiscussionSignal.model_validate(
+            discussion_signal
+        )
     if orderbook is not None and not isinstance(orderbook, StockDetailOrderbook):
         orderbook = StockDetailOrderbook.model_validate(orderbook)
 

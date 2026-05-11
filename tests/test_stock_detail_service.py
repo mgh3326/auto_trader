@@ -106,7 +106,9 @@ async def test_build_stock_detail_maps_holding_and_kr_orderbook_when_available()
     assert response.holding.totalQuantity == 2
     assert response.naverEnrichment is not None
     assert response.naverEnrichment.naverCode == "005930"
-    assert "discussionSignal.volume" in response.naverEnrichment.endpoints[-1].mappedFields
+    assert (
+        "discussionSignal.volume" in response.naverEnrichment.endpoints[-1].mappedFields
+    )
     assert response.orderbookSupport.supported is True
     assert response.orderbook is not None
     assert response.orderbook.asks[0].price == 71200
