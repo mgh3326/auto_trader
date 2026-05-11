@@ -83,9 +83,13 @@ async def build_investor_flow_cards(
     if normalized_market != "kr":
         raise ValueError("investor_flow only supports market=kr")
     today = as_of or dt.date.today()
-    normalized_symbols = [_normalize_symbol(symbol) for symbol in symbols if symbol.strip()]
+    normalized_symbols = [
+        _normalize_symbol(symbol) for symbol in symbols if symbol.strip()
+    ]
     if not normalized_symbols:
-        return InvestorFlowResponse(market="kr", asOf=today, dataState="empty", items=[])
+        return InvestorFlowResponse(
+            market="kr", asOf=today, dataState="empty", items=[]
+        )
 
     repo = InvestorFlowSnapshotsRepository(db)
     rows = await repo.latest_by_symbols(
@@ -101,7 +105,9 @@ async def build_investor_flow_cards(
                 InvestorFlowItem(symbol=symbol, market="kr", dataState="missing")
             )
             continue
-        items.append(_item_from_snapshot(row, as_of=today, max_stale_days=max_stale_days))
+        items.append(
+            _item_from_snapshot(row, as_of=today, max_stale_days=max_stale_days)
+        )
 
     sources = sorted({item.source for item in items if item.source})
     return InvestorFlowResponse(

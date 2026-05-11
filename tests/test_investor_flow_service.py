@@ -150,7 +150,9 @@ async def test_build_investor_flow_cards_marks_stale_and_fresh(db_session):
 
 
 @pytest.mark.asyncio
-async def test_investor_flow_endpoint_returns_read_only_view_model(app: FastAPI, db_session):
+async def test_investor_flow_endpoint_returns_read_only_view_model(
+    app: FastAPI, db_session
+):
     repo = InvestorFlowSnapshotsRepository(db_session)
     await repo.upsert(
         InvestorFlowSnapshotUpsert(
@@ -165,7 +167,9 @@ async def test_investor_flow_endpoint_returns_read_only_view_model(app: FastAPI,
     )
     await db_session.commit()
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://t"
+    ) as client:
         r = await client.get("/invest/api/investor-flow?symbols=900196&market=kr")
 
     assert r.status_code == 200

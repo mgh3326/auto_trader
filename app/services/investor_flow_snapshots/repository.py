@@ -92,18 +92,17 @@ class InvestorFlowSnapshotsRepository:
         symbols: Iterable[str],
         as_of: dt.date | None = None,
     ) -> list[InvestorFlowSnapshot]:
-        symbols_list = [_normalize_symbol(symbol) for symbol in symbols if symbol.strip()]
+        symbols_list = [
+            _normalize_symbol(symbol) for symbol in symbols if symbol.strip()
+        ]
         if not symbols_list:
             return []
-        max_date_subq = (
-            select(
-                InvestorFlowSnapshot.symbol.label("symbol"),
-                func.max(InvestorFlowSnapshot.snapshot_date).label("snapshot_date"),
-            )
-            .where(
-                InvestorFlowSnapshot.market == market.strip().lower(),
-                InvestorFlowSnapshot.symbol.in_(symbols_list),
-            )
+        max_date_subq = select(
+            InvestorFlowSnapshot.symbol.label("symbol"),
+            func.max(InvestorFlowSnapshot.snapshot_date).label("snapshot_date"),
+        ).where(
+            InvestorFlowSnapshot.market == market.strip().lower(),
+            InvestorFlowSnapshot.symbol.in_(symbols_list),
         )
         if as_of is not None:
             max_date_subq = max_date_subq.where(
@@ -116,12 +115,12 @@ class InvestorFlowSnapshotsRepository:
             .join(
                 max_date_subq,
                 (InvestorFlowSnapshot.symbol == max_date_subq.c.symbol)
-                & (
-                    InvestorFlowSnapshot.snapshot_date == max_date_subq.c.snapshot_date
-                ),
+                & (InvestorFlowSnapshot.snapshot_date == max_date_subq.c.snapshot_date),
             )
             .where(InvestorFlowSnapshot.market == market.strip().lower())
-            .order_by(InvestorFlowSnapshot.symbol.asc(), InvestorFlowSnapshot.source.asc())
+            .order_by(
+                InvestorFlowSnapshot.symbol.asc(), InvestorFlowSnapshot.source.asc()
+            )
         )
         rows = list(result.scalars().all())
         latest: dict[str, InvestorFlowSnapshot] = {}

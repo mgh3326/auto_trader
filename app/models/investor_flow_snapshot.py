@@ -69,13 +69,19 @@ class InvestorFlowSnapshot(Base):
     foreign_net_buy_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
     foreign_net_sell_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
     institution_net_buy_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    institution_net_sell_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    institution_net_sell_rank: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
 
     double_buy: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     double_sell: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
-    foreign_consecutive_buy_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    foreign_consecutive_sell_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    foreign_consecutive_buy_days: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    foreign_consecutive_sell_days: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
     institution_consecutive_buy_days: Mapped[int | None] = mapped_column(
         Integer, nullable=True
     )
