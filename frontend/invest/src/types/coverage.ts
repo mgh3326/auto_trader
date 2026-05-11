@@ -16,6 +16,34 @@ export type CoverageCandidateReadiness =
 
 export type CoverageCandidateKind = "secondary_source" | "reference" | "candidate";
 
+export type CoverageActionPriority = "none" | "low" | "medium" | "high" | "blocked";
+
+export type CoverageActionKind =
+  | "none"
+  | "monitor"
+  | "investigate"
+  | "repair_read_model"
+  | "backfill_candidate"
+  | "scheduler_candidate"
+  | "provider_contract_needed"
+  | "unsupported_no_action";
+
+export type CoverageApprovalGate =
+  | "none"
+  | "code_review"
+  | "production_db_write_approval"
+  | "scheduler_activation_approval"
+  | "broker_order_approval";
+
+export interface CoverageActionability {
+  priority: CoverageActionPriority;
+  action: CoverageActionKind;
+  queue?: string | null;
+  approvalGates: CoverageApprovalGate[];
+  reason?: string | null;
+  safeByDefault: boolean;
+}
+
 export interface InvestCoverageCounts {
   expected?: number | null;
   fresh: number;
@@ -51,6 +79,7 @@ export interface InvestCoverageSurface {
   warnings: string[];
   notes: string[];
   sourceCandidates: CoverageSourceCandidate[];
+  actionability: CoverageActionability;
 }
 
 export interface InvestCoverageSymbol {
@@ -59,6 +88,7 @@ export interface InvestCoverageSymbol {
   surfaces: Record<string, CoverageState>;
   latestDates: Record<string, string | null>;
   warnings: string[];
+  actionability: CoverageActionability;
 }
 
 export interface InvestCoverageResponse {

@@ -3,6 +3,7 @@ import { fetchInvestCoverage } from "../../api/coverage";
 import { DesktopShell } from "../../desktop/DesktopShell";
 import { Card } from "../../ds";
 import type {
+  CoverageActionability,
   CoverageCandidateReadiness,
   CoverageState,
   InvestCoverageResponse,
@@ -46,6 +47,60 @@ const READINESS_COLOR: Record<CoverageCandidateReadiness, string> = {
   aggregate_only_blocked: "#9333ea",
   not_wired: "#64748b",
 };
+
+const ACTION_PRIORITY_LABEL: Record<CoverageActionability["priority"], string> = {
+  none: "관찰",
+  low: "낮음",
+  medium: "중간",
+  high: "높음",
+  blocked: "차단",
+};
+
+const ACTION_PRIORITY_COLOR: Record<CoverageActionability["priority"], string> = {
+  none: "#64748b",
+  low: "#0ea5e9",
+  medium: "#ca8a04",
+  high: "#dc2626",
+  blocked: "#7c3aed",
+};
+
+const ACTION_LABEL: Record<CoverageActionability["action"], string> = {
+  none: "조치 없음",
+  monitor: "모니터링",
+  investigate: "조사 필요",
+  repair_read_model: "read-model 보수 후보",
+  backfill_candidate: "백필 후보",
+  scheduler_candidate: "스케줄 후보",
+  provider_contract_needed: "provider 계약 필요",
+  unsupported_no_action: "미지원 · 조치 없음",
+};
+
+function ActionabilityBadge({ actionability }: { actionability: CoverageActionability }) {
+  const gates = actionability.approvalGates.filter((gate) => gate !== "none");
+  return (
+    <div style={{ display: "grid", gap: 4, minWidth: 180 }}>
+      <span
+        title={actionability.reason ?? undefined}
+        style={{
+          display: "inline-flex",
+          width: "fit-content",
+          borderRadius: 999,
+          padding: "3px 8px",
+          fontSize: 12,
+          fontWeight: 800,
+          color: "white",
+          background: ACTION_PRIORITY_COLOR[actionability.priority],
+        }}
+      >
+        {ACTION_PRIORITY_LABEL[actionability.priority]} · {ACTION_LABEL[actionability.action]}
+      </span>
+      <span style={{ color: "var(--fg-3)", fontSize: 12 }}>
+        queue {actionability.queue ?? "none"}
+        {gates.length > 0 ? ` · gate ${gates.join(", ")}` : " · no gate"}
+      </span>
+    </div>
+  );
+}
 
 function StatePill({ state }: { state: CoverageState }) {
   return (
@@ -116,6 +171,9 @@ function SurfaceRow({ surface }: { surface: InvestCoverageSurface }) {
         <span style={{ marginLeft: 8 }}>stale {counts.stale}</span>
         <span style={{ marginLeft: 8 }}>missing {counts.missing}</span>
         {counts.expected != null && <span style={{ marginLeft: 8 }}>expected {counts.expected}</span>}
+      </td>
+      <td style={{ padding: "12px 10px", borderBottom: "1px solid var(--divider)", fontSize: 12 }}>
+        <ActionabilityBadge actionability={surface.actionability} />
       </td>
       <td style={{ padding: "12px 10px", borderBottom: "1px solid var(--divider)", color: "var(--fg-3)", fontSize: 12 }}>
         {surface.warnings[0] ?? surface.notes[0] ?? "-"}
@@ -204,7 +262,7 @@ export function CoverageRoute() {
 
             <Card>
               <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 980 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1160 }}>
                   <thead>
                     <tr style={{ textAlign: "left", color: "var(--fg-3)", fontSize: 12 }}>
                       <th style={{ padding: "0 10px 8px" }}>Surface</th>
@@ -213,6 +271,7 @@ export function CoverageRoute() {
                       <th style={{ padding: "0 10px 8px" }}>Source of truth</th>
                       <th style={{ padding: "0 10px 8px" }}>Latest</th>
                       <th style={{ padding: "0 10px 8px" }}>Counts</th>
+                      <th style={{ padding: "0 10px 8px" }}>Actionability</th>
                       <th style={{ padding: "0 10px 8px" }}>Gap / note</th>
                     </tr>
                   </thead>
@@ -228,7 +287,9 @@ export function CoverageRoute() {
                   {data.symbols.map((symbol) => (
                     <div key={symbol.symbol} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                       <strong style={{ width: 84 }}>{symbol.symbol}</strong>
+                      <span style={{ color: "var(--fg-3)", fontSize: 12 }}>{symbol.market}</span>
                       {Object.entries(symbol.surfaces).map(([name, state]) => <span key={name} style={{ display: "inline-flex", gap: 6, alignItems: "center" }}><span style={{ color: "var(--fg-3)", fontSize: 12 }}>{name}</span><StatePill state={state} /></span>)}
+                      <ActionabilityBadge actionability={symbol.actionability} />
                     </div>
                   ))}
                 </div>
@@ -245,6 +306,7 @@ export function CoverageRoute() {
             <li>source-of-truth는 로컬 DB/read-model만</li>
             <li>Toss/Naver는 기준·후보 신호로만 표기</li>
             <li>매매 추천·주문·백필·요청 중 스크래핑 없음</li>
+            <li>Actionability는 승인 게이트를 표시하는 advisory metadata이며 실행 버튼이 아님</li>
           </ul>
         </Card>
       }
