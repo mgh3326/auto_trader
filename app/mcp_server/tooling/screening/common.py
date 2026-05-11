@@ -3,14 +3,28 @@
 from __future__ import annotations
 
 import asyncio
-import datetime
 import logging
 import math
-import time
 from typing import Any
 
-import httpx
-
+from app.mcp_server.tooling.screening.market_cap_cache import (
+    COINGECKO_MARKETS_URL as COINGECKO_MARKETS_URL,
+)
+from app.mcp_server.tooling.screening.market_cap_cache import (
+    MarketCapCache as MarketCapCache,
+)
+from app.mcp_server.tooling.screening.market_cap_cache import (
+    _rank_priority as _rank_priority,
+)
+from app.mcp_server.tooling.screening.response import (
+    _build_screen_response as _build_screen_response,
+)
+from app.mcp_server.tooling.screening.response import (
+    _empty_rsi_enrichment_diagnostics as _empty_rsi_enrichment_diagnostics,
+)
+from app.mcp_server.tooling.screening.response import (
+    _finalize_rsi_enrichment_diagnostics as _finalize_rsi_enrichment_diagnostics,
+)
 from app.mcp_server.tooling.shared import _to_optional_float, _to_optional_int
 
 logger = logging.getLogger(__name__)
@@ -22,7 +36,6 @@ logger = logging.getLogger(__name__)
 DROP_THRESHOLD = -0.30
 MARKET_PANIC = -0.10
 CRYPTO_TOP_BY_VOLUME = 100
-COINGECKO_MARKETS_URL = "https://api.coingecko.com/api/v3/coins/markets"
 SUPPORTED_INSTRUMENT_TYPES = {"common", "preferred", "etf", "reit", "spac", "unknown"}
 
 # ---------------------------------------------------------------------------
@@ -74,7 +87,6 @@ async def _with_timeout(
     Raises:
         asyncio.TimeoutError: If behavior is RAISE and timeout occurs
     """
-    import asyncio
 
     try:
         return await asyncio.wait_for(coro, timeout=timeout_seconds)
@@ -108,12 +120,6 @@ async def _with_timeout(
 # ---------------------------------------------------------------------------
 # Converters
 # ---------------------------------------------------------------------------
-
-
-def _rank_priority(rank: int | None) -> int:
-    if rank is None or rank <= 0:
-        return 1_000_000_000
-    return rank
 
 
 def is_safe_drop(coin_change_24h: Any, btc_change_24h: Any) -> bool:
@@ -199,112 +205,6 @@ def _clean_text(value: Any) -> str:
 # ---------------------------------------------------------------------------
 # MarketCapCache
 # ---------------------------------------------------------------------------
-
-
-class MarketCapCache:
-    def __init__(self, ttl: int = 600) -> None:
-        self.ttl = ttl
-        self._lock = asyncio.Lock()
-        self._symbol_map: dict[str, dict[str, Any]] = {}
-        self._updated_at: float | None = None
-
-    def _age_seconds(self, now: float) -> float | None:
-        if self._updated_at is None:
-            return None
-        return round(max(0.0, now - self._updated_at), 3)
-
-    def _is_fresh(self, now: float) -> bool:
-        if not self._symbol_map or self._updated_at is None:
-            return False
-        return (now - self._updated_at) <= self.ttl
-
-    async def _fetch_market_caps(self) -> dict[str, dict[str, Any]]:
-        params = {
-            "vs_currency": "krw",
-            "order": "market_cap_desc",
-            "per_page": 250,
-            "page": 1,
-            "sparkline": "false",
-        }
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(COINGECKO_MARKETS_URL, params=params)
-            response.raise_for_status()
-            rows = response.json()
-
-        if not isinstance(rows, list):
-            raise ValueError("Unexpected CoinGecko response format")
-
-        symbol_map: dict[str, dict[str, Any]] = {}
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            symbol = str(row.get("symbol") or "").strip().upper()
-            if not symbol:
-                continue
-
-            market_cap = _to_optional_float(row.get("market_cap"))
-            market_cap_rank = _to_optional_int(row.get("market_cap_rank"))
-
-            selected = {
-                "market_cap": market_cap,
-                "market_cap_rank": market_cap_rank,
-            }
-            existing = symbol_map.get(symbol)
-            if existing is None or _rank_priority(market_cap_rank) < _rank_priority(
-                _to_optional_int(existing.get("market_cap_rank"))
-            ):
-                symbol_map[symbol] = selected
-
-        return symbol_map
-
-    async def get(self) -> dict[str, Any]:
-        now = time.time()
-        if self._is_fresh(now):
-            return {
-                "data": self._symbol_map,
-                "cached": True,
-                "age_seconds": self._age_seconds(now),
-                "stale": False,
-                "error": None,
-            }
-
-        async with self._lock:
-            now = time.time()
-            if self._is_fresh(now):
-                return {
-                    "data": self._symbol_map,
-                    "cached": True,
-                    "age_seconds": self._age_seconds(now),
-                    "stale": False,
-                    "error": None,
-                }
-            try:
-                fetched = await self._fetch_market_caps()
-                self._symbol_map = fetched
-                self._updated_at = now
-                return {
-                    "data": fetched,
-                    "cached": False,
-                    "age_seconds": 0.0,
-                    "stale": False,
-                    "error": None,
-                }
-            except Exception as exc:
-                if self._symbol_map:
-                    return {
-                        "data": self._symbol_map,
-                        "cached": True,
-                        "age_seconds": self._age_seconds(now),
-                        "stale": True,
-                        "error": f"{type(exc).__name__}: {exc}",
-                    }
-                return {
-                    "data": {},
-                    "cached": False,
-                    "age_seconds": None,
-                    "stale": False,
-                    "error": f"{type(exc).__name__}: {exc}",
-                }
 
 
 # ---------------------------------------------------------------------------
@@ -806,87 +706,6 @@ def _sort_and_limit(
 # ---------------------------------------------------------------------------
 # Response
 # ---------------------------------------------------------------------------
-
-
-def _empty_rsi_enrichment_diagnostics() -> dict[str, Any]:
-    return {
-        "attempted": 0,
-        "succeeded": 0,
-        "failed": 0,
-        "rate_limited": 0,
-        "timeout": 0,
-        "error_samples": [],
-    }
-
-
-def _finalize_rsi_enrichment_diagnostics(
-    diagnostics: dict[str, Any],
-    statuses: list[str],
-    errors: list[str | None],
-) -> dict[str, Any]:
-    diagnostics["succeeded"] = sum(1 for status in statuses if status == "success")
-    diagnostics["failed"] = sum(1 for status in statuses if status == "error")
-    diagnostics["rate_limited"] = sum(
-        1 for status in statuses if status == "rate_limited"
-    )
-    diagnostics["timeout"] = sum(1 for status in statuses if status == "timeout")
-
-    samples: list[str] = []
-    for error in errors:
-        if not error:
-            continue
-        samples.append(str(error)[:100])
-        if len(samples) >= 3:
-            break
-
-    diagnostics["error_samples"] = samples
-    return diagnostics
-
-
-def _build_screen_response(
-    results: list[dict[str, Any]],
-    total_count: int,
-    filters_applied: dict[str, Any],
-    market: str,
-    rsi_enrichment: dict[str, Any] | None = None,
-    warnings: list[str] | None = None,
-    meta_fields: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Build the final screening response."""
-    diagnostics = _empty_rsi_enrichment_diagnostics()
-    if rsi_enrichment:
-        diagnostics.update(
-            {
-                "attempted": int(rsi_enrichment.get("attempted", 0) or 0),
-                "succeeded": int(rsi_enrichment.get("succeeded", 0) or 0),
-                "failed": int(rsi_enrichment.get("failed", 0) or 0),
-                "rate_limited": int(rsi_enrichment.get("rate_limited", 0) or 0),
-                "timeout": int(rsi_enrichment.get("timeout", 0) or 0),
-                "error_samples": [
-                    str(message)[:100]
-                    for message in (rsi_enrichment.get("error_samples") or [])[:3]
-                ],
-            }
-        )
-
-    response_meta: dict[str, Any] = {"rsi_enrichment": diagnostics}
-    if meta_fields:
-        response_meta.update(meta_fields)
-
-    response: dict[str, Any] = {
-        "results": results,
-        "total_count": total_count,
-        "returned_count": len(results),
-        "filters_applied": filters_applied,
-        "market": market,
-        "meta": response_meta,
-        "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
-    }
-
-    if warnings:
-        response["warnings"] = warnings
-
-    return response
 
 
 # ---------------------------------------------------------------------------
