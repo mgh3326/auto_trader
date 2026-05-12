@@ -223,3 +223,103 @@ uv run pytest tests/test_invest_api_feed_research_router_safety.py -v -m unit
 * Response field allowlist asserted in `test_invest_api_feed_research_router.py::test_response_field_allowlist`.
 * Copyright guardrail recursive scan in `test_invest_api_feed_research_copyright_guardrails.py::test_response_excludes_body_fields`.
 * Production smoke acceptance is gated on ROB-178's ingest smoke evidence.
+
+## ROB-207: Operator Scheduler / Bridge Activation
+
+### HTTP Bulk Ingest Endpoint
+
+The bridge endpoint accepts `POST /trading/api/research-reports/ingest/bulk` authenticated with a shared token:
+
+```
+POST /trading/api/research-reports/ingest/bulk
+X-Research-Reports-Ingest-Token: <token>
+Content-Type: application/json
+
+<ResearchReportIngestionRequest JSON body>
+```
+
+- Token must be configured in production via `RESEARCH_REPORTS_INGEST_TOKEN`. If unset → 403, mirroring `NEWS_INGESTOR_INGEST_TOKEN`.
+- Idempotent on `run_uuid` (re-POSTs return existing counts with `skipped_count = N`).
+- Copyright guardrails enforced at schema layer: `full_text_exported=true` / `pdf_body_exported=true` payloads rejected with 422.
+
+### Freshness Contract
+
+`GET /trading/api/research-reports/freshness?source=&max_age_hours=24` (session auth required).
+
+Returns `ResearchReportsReadinessResponse`:
+- `is_ready`: true only if latest run finished within the budget
+- `is_stale`: true if no finished run within `max_age_hours`
+- `latest_run_uuid`, `latest_started_at`, `latest_finished_at`, `latest_inserted_count`, `latest_skipped_count`, `latest_report_count`
+- `warnings`: list of warning codes
+
+Warning vocabulary:
+- `research_reports_unavailable` — no ingestion runs found for the source
+- `research_reports_run_unfinished` — latest run has no `finished_at`
+- `research_reports_stale` — `finished_at` older than `max_age_hours`
+
+Default freshness budget: 24 h (configurable via `RESEARCH_REPORTS_FRESHNESS_MAX_AGE_HOURS`).
+
+### Proposed Safe Schedule (DEFINITION ONLY — DO NOT ACTIVATE IN THIS PR)
+
+Out-of-repo deployment: `robin-prefect-automations` → `research-reports-bridge/hourly`, `paused=true`.
+
+Cadence: hourly POST of latest payload to `/trading/api/research-reports/ingest/bulk`. With 24 h budget this tolerates many missed ticks.
+
+### Unpause Checklist (all must be ✅ before flipping `paused=false`)
+
+1. ✅ `tests/test_research_reports_*` and `tests/test_middleware_auth_research_reports_ingest.py` green on `main`.
+2. ✅ `RESEARCH_REPORTS_INGEST_TOKEN` set in production env (verify via 403 vs 401 probe — never log the token).
+3. ✅ Three consecutive dry-run POSTs from the operator host return `inserted_count >= 0`, no 5xx, and `/freshness` reports `is_ready=false` only on `research_reports_unavailable`/`unfinished`, not on transport errors.
+4. ✅ Diagnose CLI on `current` returns `is_ready` for at least one staged-source after a manual POST.
+5. ✅ Operator on-call acknowledged the rollback steps below.
+
+### Approval Packet Template
+
+Fill this out before any production activation:
+
+- **Source / scope:** (e.g., `naver_research`)
+- **Endpoint / curl command (token redacted):**
+  ```bash
+  curl -X POST "$AUTO_TRADER_BASE/trading/api/research-reports/ingest/bulk" \
+    -H "X-Research-Reports-Ingest-Token: ***" \
+    -H "Content-Type: application/json" \
+    -d @/path/to/payload.json | jq
+  ```
+- **Payload sha256 + report count** (from staged file header)
+- **Dry-run smoke evidence:** 3 successful POSTs returning the same `run_uuid` counts
+- **Expected DB delta:** `inserted_count`, `skipped_count`
+- **Rollback statement:** "no destructive writes; POST is idempotent on `run_uuid`; freshness service is read-only"
+- **Scheduler scope:** `paused=true → false` separate from any backfill
+- **Post-run verification:**
+  ```bash
+  GET /trading/api/research-reports/freshness?source=<src>
+  uv run python -m scripts.diagnose_research_reports --source <src>
+  ```
+
+### Rollback / Disable (order matters)
+
+1. **Pause Prefect bridge:** `prefect deployment pause 'research-reports-bridge/hourly'`
+2. **Rotate token:** set `RESEARCH_REPORTS_INGEST_TOKEN=""` → endpoint returns 403, no further inbound writes. Restart auto_trader app.
+3. **Confirm read path intact:** `GET /trading/api/research-reports/recent` still serves prior citations — table is append-only.
+4. **No DB cleanup needed:** `research_reports` is upsert-on-`dedup_key`; `research_report_ingestion_runs` is upsert-on-`run_uuid`. Do not delete rows.
+5. **Re-enable:** configure token, smoke 3 dry-runs, then unpause Prefect.
+
+### Smoke Commands
+
+```bash
+# Read-only diagnose (does not call the bridge)
+uv run python -m scripts.diagnose_research_reports --max-age-hours 24
+uv run python -m scripts.diagnose_research_reports --source naver_research
+
+# CLI ingest, dry-run (file-based, ROB-140 path — still valid)
+uv run python -m scripts.ingest_research_reports --file /path/to/payload.json --dry-run
+
+# Bridge smoke (operator-only; token redacted; commit only after approval)
+curl -X POST "$AUTO_TRADER_BASE/trading/api/research-reports/ingest/bulk" \
+  -H "X-Research-Reports-Ingest-Token: ***" \
+  -H "Content-Type: application/json" \
+  -d @/path/to/payload.json | jq
+
+# Freshness check (authenticated)
+GET /trading/api/research-reports/freshness?source=naver_research&max_age_hours=24
+```
