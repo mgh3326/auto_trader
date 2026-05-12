@@ -7,7 +7,6 @@ from app.services.us_common_stock_classifier import (
     sync_us_common_stock_flags,
 )
 
-
 NASDAQ_SAMPLE = "\n".join(
     [
         "Symbol|Security Name|Market Category|Test Issue|Financial Status|Round Lot Size|ETF|NextShares",

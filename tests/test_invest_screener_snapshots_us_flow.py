@@ -6,12 +6,7 @@ the Prefect imports.
 """
 from __future__ import annotations
 
-import ast
-import re
-import sys
 from pathlib import Path
-from types import ModuleType
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 

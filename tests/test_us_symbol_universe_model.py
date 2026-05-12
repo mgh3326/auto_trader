@@ -1,6 +1,5 @@
 """Unit tests for the is_common_stock column on USSymbolUniverse (ROB-204)."""
 import pytest
-from sqlalchemy import text
 
 from app.models.us_symbol_universe import USSymbolUniverse
 
