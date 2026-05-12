@@ -89,3 +89,15 @@ class ResearchReportsRepository:
         run.inserted_count = inserted_count
         run.skipped_count = skipped_count
         await self.db.flush()
+
+    async def mark_run_finished(
+        self,
+        run: ResearchReportIngestionRun,
+        *,
+        finished_at: datetime,
+        errors: list | dict | None = None,
+    ) -> None:
+        run.finished_at = finished_at
+        if errors is not None:
+            run.errors = errors
+        await self.db.flush()
