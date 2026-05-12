@@ -54,7 +54,9 @@ def _normalize_symbol(symbol: str) -> str:
     return (symbol or "").strip().upper().replace(".", "-")
 
 
-def _looks_like_common_stock(symbol: str, name: str, *, etf: str, test_issue: str) -> bool:
+def _looks_like_common_stock(
+    symbol: str, name: str, *, etf: str, test_issue: str
+) -> bool:
     normalized = _normalize_symbol(symbol)
     upper_name = f" {(name or '').upper()} "
     if not normalized:
@@ -74,7 +76,11 @@ def parse_nasdaq_listed(text: str) -> dict[str, bool]:
     """Parse nasdaqlisted.txt into SYMBOL -> is_common_stock."""
     out: dict[str, bool] = {}
     for line in text.splitlines():
-        if not line or line.startswith("File Creation Time") or line.startswith("Symbol|"):
+        if (
+            not line
+            or line.startswith("File Creation Time")
+            or line.startswith("Symbol|")
+        ):
             continue
         parts = line.split("|")
         if len(parts) < 7:
@@ -84,7 +90,9 @@ def parse_nasdaq_listed(text: str) -> dict[str, bool]:
         etf = parts[6]
         normalized = _normalize_symbol(symbol)
         if normalized:
-            out[normalized] = _looks_like_common_stock(symbol, name, etf=etf, test_issue=test_issue)
+            out[normalized] = _looks_like_common_stock(
+                symbol, name, etf=etf, test_issue=test_issue
+            )
     return out
 
 
@@ -92,7 +100,11 @@ def parse_other_listed(text: str) -> dict[str, bool]:
     """Parse otherlisted.txt into SYMBOL -> is_common_stock."""
     out: dict[str, bool] = {}
     for line in text.splitlines():
-        if not line or line.startswith("File Creation Time") or line.startswith("ACT Symbol|"):
+        if (
+            not line
+            or line.startswith("File Creation Time")
+            or line.startswith("ACT Symbol|")
+        ):
             continue
         parts = line.split("|")
         if len(parts) < 7:
@@ -102,7 +114,9 @@ def parse_other_listed(text: str) -> dict[str, bool]:
         test_issue = parts[6]
         normalized = _normalize_symbol(symbol)
         if normalized:
-            out[normalized] = _looks_like_common_stock(symbol, name, etf=etf, test_issue=test_issue)
+            out[normalized] = _looks_like_common_stock(
+                symbol, name, etf=etf, test_issue=test_issue
+            )
     return out
 
 
@@ -181,6 +195,9 @@ async def has_populated_common_stock_flags(session: AsyncSession) -> bool:
     result = await session.execute(
         sa.select(sa.func.count())
         .select_from(USSymbolUniverse)
-        .where(USSymbolUniverse.is_active.is_(True), USSymbolUniverse.is_common_stock.is_not(None))
+        .where(
+            USSymbolUniverse.is_active.is_(True),
+            USSymbolUniverse.is_common_stock.is_not(None),
+        )
     )
     return int(result.scalar_one() or 0) > 0

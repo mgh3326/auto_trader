@@ -47,7 +47,9 @@ async def test_sync_us_common_stock_flags_dry_run_does_not_commit(db_session) ->
 
     stmt = (
         pg_insert(USSymbolUniverse)
-        .values(symbol="ROB204DRY", exchange="NASDAQ", name_en="ROB Dry", is_active=True)
+        .values(
+            symbol="ROB204DRY", exchange="NASDAQ", name_en="ROB Dry", is_active=True
+        )
         .on_conflict_do_update(
             index_elements=["symbol"],
             set_={
@@ -75,14 +77,18 @@ async def test_sync_us_common_stock_flags_dry_run_does_not_commit(db_session) ->
 
 
 @pytest.mark.asyncio
-async def test_sync_us_common_stock_flags_commit_updates_known_active_rows(db_session) -> None:
+async def test_sync_us_common_stock_flags_commit_updates_known_active_rows(
+    db_session,
+) -> None:
     from sqlalchemy.dialects.postgresql import insert as pg_insert
 
     from app.models.us_symbol_universe import USSymbolUniverse
 
     stmt = (
         pg_insert(USSymbolUniverse)
-        .values(symbol="ROB204CMT", exchange="NASDAQ", name_en="ROB Commit", is_active=True)
+        .values(
+            symbol="ROB204CMT", exchange="NASDAQ", name_en="ROB Commit", is_active=True
+        )
         .on_conflict_do_update(
             index_elements=["symbol"],
             set_={

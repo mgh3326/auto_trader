@@ -1,4 +1,5 @@
 """Tests for common_stocks_only filter logic in the snapshot job (ROB-204)."""
+
 from __future__ import annotations
 
 import pytest
@@ -8,7 +9,9 @@ from app.jobs import invest_screener_snapshots as snapshot_job
 
 @pytest.mark.asyncio
 async def test_resolve_active_universe_kr_rejects_common_stocks_only() -> None:
-    with pytest.raises(ValueError, match="common_stocks_only is only supported for market='us'"):
+    with pytest.raises(
+        ValueError, match="common_stocks_only is only supported for market='us'"
+    ):
         await snapshot_job.resolve_active_universe("kr", common_stocks_only=True)
 
 
@@ -24,10 +27,12 @@ async def test_resolve_active_universe_us_raises_when_column_unpopulated(
 
     monkeypatch.setattr(
         "app.jobs.invest_screener_snapshots._ensure_common_stock_flags_populated",
-        AsyncMock(side_effect=ValueError(
-            "US common-stock filter requested, but us_symbol_universe.is_common_stock "
-            "has not been populated. Run scripts.sync_us_common_stock_flags first."
-        )),
+        AsyncMock(
+            side_effect=ValueError(
+                "US common-stock filter requested, but us_symbol_universe.is_common_stock "
+                "has not been populated. Run scripts.sync_us_common_stock_flags first."
+            )
+        ),
     )
 
     with pytest.raises(ValueError, match="has not been populated"):
@@ -36,7 +41,9 @@ async def test_resolve_active_universe_us_raises_when_column_unpopulated(
 
 @pytest.mark.asyncio
 async def test_resolve_symbols_kr_rejects_common_stocks_only() -> None:
-    with pytest.raises(ValueError, match="common_stocks_only is only supported for market='us'"):
+    with pytest.raises(
+        ValueError, match="common_stocks_only is only supported for market='us'"
+    ):
         await snapshot_job.resolve_symbols("kr", [], 20, common_stocks_only=True)
 
 

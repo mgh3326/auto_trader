@@ -3,6 +3,7 @@
 ROB-204: Ensures the view-model layer surfaces a Korean user-facing string when the
 US screener snapshot state is missing or stale, so the React UI can show it to users.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -38,9 +39,9 @@ async def test_us_consecutive_gainers_missing_emits_user_facing_warning() -> Non
         session=None,
     )
     assert response.freshness.dataState == "missing"
-    assert any(
-        "미국 스크리너 데이터 준비중" in w for w in response.warnings
-    ), f"Expected US warning in {response.warnings!r}"
+    assert any("미국 스크리너 데이터 준비중" in w for w in response.warnings), (
+        f"Expected US warning in {response.warnings!r}"
+    )
 
 
 @pytest.mark.asyncio
@@ -52,9 +53,9 @@ async def test_kr_consecutive_gainers_missing_does_not_emit_us_warning() -> None
         market="kr",
         session=None,
     )
-    assert not any(
-        "미국 스크리너" in w for w in response.warnings
-    ), f"Unexpected US warning in KR response: {response.warnings!r}"
+    assert not any("미국 스크리너" in w for w in response.warnings), (
+        f"Unexpected US warning in KR response: {response.warnings!r}"
+    )
 
 
 @pytest.mark.asyncio

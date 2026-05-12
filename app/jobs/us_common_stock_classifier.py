@@ -8,5 +8,7 @@ from app.services.us_common_stock_classifier import (
 )
 
 
-async def run_us_common_stock_flag_sync(*, commit: bool = False) -> CommonStockSyncResult:
+async def run_us_common_stock_flag_sync(
+    *, commit: bool = False
+) -> CommonStockSyncResult:
     return await sync_us_common_stock_flags(commit=commit)

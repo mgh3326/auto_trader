@@ -90,7 +90,9 @@ async def resolve_symbols(
             from app.models.us_symbol_universe import USSymbolUniverse
 
             await _ensure_common_stock_flags_populated(session)
-            normalized_override = [symbol.strip().upper() for symbol in override if symbol.strip()]
+            normalized_override = [
+                symbol.strip().upper() for symbol in override if symbol.strip()
+            ]
             stmt = (
                 sa.select(USSymbolUniverse.symbol)
                 .where(

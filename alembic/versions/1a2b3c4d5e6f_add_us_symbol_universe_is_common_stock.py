@@ -1,7 +1,7 @@
 """add us_symbol_universe is_common_stock flag
 
 Revision ID: 1a2b3c4d5e6f
-Revises: 9f1a2b3c4d5e
+Revises: c6d7e8f9a0b1
 Create Date: 2026-05-12 23:30:00.000000
 """
 
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "1a2b3c4d5e6f"
-down_revision: str | Sequence[str] | None = "9f1a2b3c4d5e"
+down_revision: str | Sequence[str] | None = "c6d7e8f9a0b1"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

@@ -169,7 +169,9 @@ async def test_snapshot_job_threads_us_common_stock_filter_for_bounded_symbols(
     assert result.symbols_resolved == 1
     assert result.snapshots_built == 0
     assert result.skipped == 1
-    assert result.warnings == ("batch 1: skipped 1 symbols with unavailable OHLCV data",)
+    assert result.warnings == (
+        "batch 1: skipped 1 symbols with unavailable OHLCV data",
+    )
     commit_mock.assert_not_awaited()
 
 

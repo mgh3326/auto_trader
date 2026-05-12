@@ -45,7 +45,9 @@ _KR_CLOSE = _time(15, 30)
 _CACHE_HIT_FRESH_SECONDS = 300
 _SNAPSHOT_FIRST_LIMIT = 80
 _MAX_WARNING_CHARS = 240
-_US_SCREENER_DATA_NOT_READY_WARNING = "미국 스크리너 데이터 준비중 — 일부 결과만 표시됩니다."
+_US_SCREENER_DATA_NOT_READY_WARNING = (
+    "미국 스크리너 데이터 준비중 — 일부 결과만 표시됩니다."
+)
 logger = logging.getLogger(__name__)
 
 

@@ -1,4 +1,5 @@
 """Tests for scripts/sync_us_common_stock_flags.py CLI argument parsing (ROB-204)."""
+
 from scripts.sync_us_common_stock_flags import parse_args
 
 
