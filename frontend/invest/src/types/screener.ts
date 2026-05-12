@@ -41,6 +41,7 @@ export interface ScreenerResultRow {
 }
 
 export type ScreenerFreshnessSource = "live" | "cached" | "previous_session";
+export type ScreenerDataState = "fresh" | "partial" | "stale" | "missing" | "fallback";
 
 export interface ScreenerFreshness {
   fetchedAt: string;
@@ -48,6 +49,7 @@ export interface ScreenerFreshness {
   relativeLabel: string;
   cacheHit: boolean;
   source: ScreenerFreshnessSource;
+  dataState: ScreenerDataState;
 }
 
 export interface ScreenerResultsResponse {

@@ -17,6 +17,10 @@ Examples:
     # US explicit symbols, persist
     uv run python -m scripts.build_invest_screener_snapshots \
         --market us --symbol AAPL --symbol MSFT --commit
+
+    # US common-stock universe only, dry-run
+    uv run python -m scripts.build_invest_screener_snapshots \
+        --market us --all --common-stocks-only
 """
 
 from __future__ import annotations
@@ -67,23 +71,41 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--concurrency", type=int, default=4, help="Per-symbol fetch concurrency."
     )
+    parser.add_argument(
+        "--common-stocks-only",
+        action="store_true",
+        help=(
+            "US only: restrict universe resolution to active rows with "
+            "us_symbol_universe.is_common_stock IS TRUE."
+        ),
+    )
     args = parser.parse_args(argv)
     if args.all and (args.symbol or args.limit is not None):
         parser.error("--all is mutually exclusive with --symbol and --limit")
+    if args.common_stocks_only and args.market != "us":
+        parser.error("--common-stocks-only is only supported with --market us")
     if args.limit is None:
         args.limit = 20
     args.dry_run = not args.commit
     return args
 
 
-async def _resolve_symbols(market: str, override: list[str], limit: int) -> list[str]:
+async def _resolve_symbols(
+    market: str, override: list[str], limit: int, *, common_stocks_only: bool = False
+) -> list[str]:
     """Compatibility shim around the shared job resolver."""
-    return await snapshot_job.resolve_symbols(market, override, limit)
+    return await snapshot_job.resolve_symbols(
+        market, override, limit, common_stocks_only=common_stocks_only
+    )
 
 
-async def _resolve_active_universe(market: str) -> list[str]:
+async def _resolve_active_universe(
+    market: str, *, common_stocks_only: bool = False
+) -> list[str]:
     """Compatibility shim around the shared job full-universe resolver."""
-    return await snapshot_job.resolve_active_universe(market)
+    return await snapshot_job.resolve_active_universe(
+        market, common_stocks_only=common_stocks_only
+    )
 
 
 def _print_result(result) -> None:
@@ -122,6 +144,7 @@ async def run(args: argparse.Namespace) -> int:
             batch_size=args.batch_size,
             concurrency=args.concurrency,
             commit=args.commit,
+            common_stocks_only=args.common_stocks_only,
         )
     )
     _print_result(result)

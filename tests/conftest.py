@@ -420,6 +420,11 @@ async def db_session():
         await conn.execute(
             text("ALTER TABLE market_events ADD COLUMN IF NOT EXISTS currency TEXT")
         )
+        await conn.execute(
+            text(
+                "ALTER TABLE us_symbol_universe ADD COLUMN IF NOT EXISTS is_common_stock BOOLEAN"
+            )
+        )
 
     async with AsyncSessionLocal() as session:
         yield session

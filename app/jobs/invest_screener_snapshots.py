@@ -33,6 +33,7 @@ class SnapshotBuildRequest:
     batch_size: int = 200
     concurrency: int = 4
     commit: bool = False
+    common_stocks_only: bool = False
     today: dt.date | None = None
 
 
@@ -66,11 +67,43 @@ def _validate_market(market: str) -> None:
         raise ValueError(f"Unsupported market: {market}")
 
 
-async def resolve_symbols(market: str, override: list[str], limit: int) -> list[str]:
+async def _ensure_common_stock_flags_populated(session) -> None:
+    from app.services.us_common_stock_classifier import has_populated_common_stock_flags
+
+    if not await has_populated_common_stock_flags(session):
+        raise ValueError(
+            "US common-stock filter requested, but us_symbol_universe.is_common_stock "
+            "has not been populated. Run scripts.sync_us_common_stock_flags first."
+        )
+
+
+async def resolve_symbols(
+    market: str, override: list[str], limit: int, *, common_stocks_only: bool = False
+) -> list[str]:
     _validate_market(market)
-    if override:
-        return override
+    if common_stocks_only and market != "us":
+        raise ValueError("common_stocks_only is only supported for market='us'")
     async with AsyncSessionLocal() as session:
+        if override:
+            if not common_stocks_only:
+                return override
+            from app.models.us_symbol_universe import USSymbolUniverse
+
+            await _ensure_common_stock_flags_populated(session)
+            normalized_override = [
+                symbol.strip().upper() for symbol in override if symbol.strip()
+            ]
+            stmt = (
+                sa.select(USSymbolUniverse.symbol)
+                .where(
+                    USSymbolUniverse.symbol.in_(normalized_override),
+                    USSymbolUniverse.is_active.is_(True),
+                    USSymbolUniverse.is_common_stock.is_(True),
+                )
+                .order_by(USSymbolUniverse.symbol)
+            )
+            result = await session.execute(stmt)
+            return [r[0] for r in result.all()]
         if market == "kr":
             from app.models.kr_symbol_universe import KRSymbolUniverse
 
@@ -83,9 +116,13 @@ async def resolve_symbols(market: str, override: list[str], limit: int) -> list[
         else:
             from app.models.us_symbol_universe import USSymbolUniverse
 
+            conditions = [USSymbolUniverse.is_active.is_(True)]
+            if common_stocks_only:
+                await _ensure_common_stock_flags_populated(session)
+                conditions.append(USSymbolUniverse.is_common_stock.is_(True))
             stmt = (
                 sa.select(USSymbolUniverse.symbol)
-                .where(USSymbolUniverse.is_active.is_(True))
+                .where(*conditions)
                 .order_by(USSymbolUniverse.symbol)
                 .limit(limit)
             )
@@ -93,8 +130,12 @@ async def resolve_symbols(market: str, override: list[str], limit: int) -> list[
         return [r[0] for r in result.all()]
 
 
-async def resolve_active_universe(market: str) -> list[str]:
+async def resolve_active_universe(
+    market: str, *, common_stocks_only: bool = False
+) -> list[str]:
     _validate_market(market)
+    if common_stocks_only and market != "us":
+        raise ValueError("common_stocks_only is only supported for market='us'")
     async with AsyncSessionLocal() as session:
         if market == "kr":
             from app.models.kr_symbol_universe import KRSymbolUniverse
@@ -107,9 +148,13 @@ async def resolve_active_universe(market: str) -> list[str]:
         else:
             from app.models.us_symbol_universe import USSymbolUniverse
 
+            conditions = [USSymbolUniverse.is_active.is_(True)]
+            if common_stocks_only:
+                await _ensure_common_stock_flags_populated(session)
+                conditions.append(USSymbolUniverse.is_common_stock.is_(True))
             stmt = (
                 sa.select(USSymbolUniverse.symbol)
-                .where(USSymbolUniverse.is_active.is_(True))
+                .where(*conditions)
                 .order_by(USSymbolUniverse.symbol)
             )
         result = await session.execute(stmt)
@@ -154,17 +199,23 @@ async def run_snapshot_build(request: SnapshotBuildRequest) -> SnapshotBuildResu
     warnings: list[str] = []
 
     if request.all_symbols:
-        symbols = await resolve_active_universe(request.market)
+        symbols = await resolve_active_universe(
+            request.market, common_stocks_only=request.common_stocks_only
+        )
     else:
         symbols = await resolve_symbols(
-            request.market, list(request.symbols), request.limit or 20
+            request.market,
+            list(request.symbols),
+            request.limit or 20,
+            common_stocks_only=request.common_stocks_only,
         )
 
     logger.info(
-        "resolved %d symbols for market=%s all_symbols=%s commit=%s",
+        "resolved %d symbols for market=%s all_symbols=%s common_stocks_only=%s commit=%s",
         len(symbols),
         request.market,
         request.all_symbols,
+        request.common_stocks_only,
         request.commit,
     )
 

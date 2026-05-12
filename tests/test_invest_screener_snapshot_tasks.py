@@ -84,6 +84,97 @@ async def test_snapshot_job_commit_uses_repository_boundary(monkeypatch):
     commit_mock.assert_awaited_once_with([payload])
 
 
+@pytest.mark.asyncio
+async def test_snapshot_job_threads_us_common_stock_filter_for_full_universe(
+    monkeypatch,
+):
+    payloads = [
+        SnapshotUpsert(
+            market="us",
+            symbol="AAPL",
+            snapshot_date=dt.date(2026, 5, 12),
+            latest_close=Decimal("210.12"),
+            closes_window=[210.12, 209.01, 208.34, 207.22, 206.11],
+            consecutive_up_days=2,
+            week_change_rate=Decimal("1.94"),
+            source="yahoo",
+        ),
+        SnapshotUpsert(
+            market="us",
+            symbol="MSFT",
+            snapshot_date=dt.date(2026, 5, 12),
+            latest_close=Decimal("400.00"),
+            closes_window=[400.00, 399.00, 398.00, 397.00, 396.00],
+            consecutive_up_days=4,
+            week_change_rate=Decimal("1.01"),
+            source="yahoo",
+        ),
+    ]
+    resolver_mock = AsyncMock(return_value=["AAPL", "MSFT"])
+    build_mock = AsyncMock(side_effect=[[payloads[0]], [payloads[1]]])
+    monkeypatch.setattr(snapshot_job, "resolve_active_universe", resolver_mock)
+    monkeypatch.setattr(snapshot_job, "build_snapshots_for_market", build_mock)
+    commit_mock = AsyncMock()
+    monkeypatch.setattr(snapshot_job, "_commit_payloads", commit_mock)
+
+    result = await snapshot_job.run_snapshot_build(
+        snapshot_job.SnapshotBuildRequest(
+            market="us",
+            all_symbols=True,
+            batch_size=1,
+            commit=False,
+            common_stocks_only=True,
+        )
+    )
+
+    resolver_mock.assert_awaited_once_with("us", common_stocks_only=True)
+    assert [call.kwargs["symbols"] for call in build_mock.await_args_list] == [
+        ["AAPL"],
+        ["MSFT"],
+    ]
+    assert result.batches == 2
+    assert result.symbols_resolved == 2
+    assert result.snapshots_built == 2
+    assert result.committed is False
+    commit_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_job_threads_us_common_stock_filter_for_bounded_symbols(
+    monkeypatch,
+):
+    resolver_mock = AsyncMock(return_value=["AAPL"])
+    monkeypatch.setattr(snapshot_job, "resolve_symbols", resolver_mock)
+    monkeypatch.setattr(
+        snapshot_job,
+        "build_snapshots_for_market",
+        AsyncMock(return_value=[]),
+    )
+    commit_mock = AsyncMock()
+    monkeypatch.setattr(snapshot_job, "_commit_payloads", commit_mock)
+
+    result = await snapshot_job.run_snapshot_build(
+        snapshot_job.SnapshotBuildRequest(
+            market="us",
+            symbols=("AAPL", "QQQM"),
+            limit=20,
+            commit=False,
+            common_stocks_only=True,
+        )
+    )
+
+    resolver_mock.assert_awaited_once_with(
+        "us", ["AAPL", "QQQM"], 20, common_stocks_only=True
+    )
+    assert result.symbols_resolved == 1
+    assert result.snapshots_built == 0
+    assert result.skipped == 1
+    assert result.warnings == (
+        "batch 1: skipped 1 symbols with unavailable OHLCV data",
+    )
+    commit_mock.assert_not_awaited()
+
+
 def test_snapshot_task_is_registered_without_recurring_schedule():
     from app.tasks import TASKIQ_TASK_MODULES, invest_screener_snapshot_tasks
 
@@ -102,6 +193,7 @@ async def test_snapshot_task_returns_serializable_summary(monkeypatch):
         assert request.market == "kr"
         assert request.commit is False
         assert request.all_symbols is True
+        assert request.common_stocks_only is True
         return SnapshotBuildResult(
             market="kr",
             symbols_resolved=1,
@@ -133,7 +225,7 @@ async def test_snapshot_task_returns_serializable_summary(monkeypatch):
 
     task = invest_screener_snapshot_tasks.build_invest_screener_snapshots
     raw_func = getattr(task, "original_func", task)
-    result = await raw_func(market="kr", all_symbols=True)
+    result = await raw_func(market="kr", all_symbols=True, common_stocks_only=True)
 
     assert result == {
         "market": "kr",

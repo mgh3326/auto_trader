@@ -24,6 +24,7 @@ async def build_invest_screener_snapshots(
     all_symbols: bool = False,
     batch_size: int = 200,
     concurrency: int = 4,
+    common_stocks_only: bool = False,
     commit: bool = False,
 ) -> dict[str, Any]:
     """Build invest_screener_snapshots rows, dry-run by default.
@@ -40,6 +41,7 @@ async def build_invest_screener_snapshots(
         batch_size=batch_size,
         concurrency=concurrency,
         commit=commit,
+        common_stocks_only=common_stocks_only,
     )
     result = await run_snapshot_build(request)
     return {

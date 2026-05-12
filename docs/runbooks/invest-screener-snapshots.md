@@ -119,3 +119,73 @@ scheduler activation can be reviewed against a known-stable manual baseline.
 - The CLI defaults to `--dry-run`. Accidental invocation without `--commit` is a no-op.
 - Migration is table-create only — no `ALTER` of existing tables.
 - The repository's `upsert` is the only write path; direct `INSERT/UPDATE/DELETE` is forbidden.
+
+---
+
+## 7. US Activation Procedure (ROB-204)
+
+All steps below require a reviewer-approved Linear thread on ROB-204. No production write
+occurs until Phase 4; Phases 0–3 are fully read-only.
+
+### Phase 0 — Pre-flight (read-only)
+
+```bash
+# Baseline US coverage diagnostic — confirm dataState=missing, universe count
+uv run python -m scripts.diagnose_invest_screener_snapshots --market us
+```
+
+### Phase 1 — Populate `is_common_stock` (one-time)
+
+```bash
+# Dry-run: print row delta proposed
+uv run python -m scripts.sync_us_common_stock_flags
+
+# Commit (requires operator approval — single transaction, additive column only)
+uv run python -m scripts.sync_us_common_stock_flags --commit
+```
+
+Expected: ~3,000–4,000 rows `is_common_stock=true`; ~7,000–9,000 rows `is_common_stock=false`.
+
+### Phase 2 — Bounded US dry-run (no DB writes)
+
+```bash
+# Common-stocks-only, dry-run, full active common-stock universe
+uv run python -m scripts.build_invest_screener_snapshots \
+    --market us --all --common-stocks-only
+
+# Smaller sampled dry-run (first 50 common stocks)
+uv run python -m scripts.build_invest_screener_snapshots \
+    --market us --common-stocks-only --limit 50
+```
+
+### Phase 3 — Reviewer approval round (Linear)
+
+Post the dry-run summary (symbols_resolved, snapshots_built, skipped, snapshot_date_distribution,
+warnings sample, first 10 rows) to Linear ROB-204 and await explicit "approved to commit" reply.
+
+### Phase 4 — Bounded US commit
+
+```bash
+uv run python -m scripts.build_invest_screener_snapshots \
+    --market us --all --common-stocks-only --commit
+
+# Re-check coverage
+uv run python -m scripts.diagnose_invest_screener_snapshots --market us
+```
+
+### Phase 5 — Spot-check `/invest/screener?market=us`
+
+- UI: open `/invest/screener`, toggle 미국, confirm `consecutive_gainers` returns >0 rows.
+- API: confirm `freshness.dataState="fresh"` and non-empty `results[]`.
+
+---
+
+## 8. Prefect Deployment (DEFERRED — ROB-204)
+
+A Prefect flow `invest_screener_snapshots_us` is importable from
+`app/flows/invest_screener_snapshots_us_flow.py`. The deployment manifest is intentionally
+not added in the ROB-204 PR. Activation is a separate operator action after Phase 4–5
+stability across at least 24 hours and an explicit reviewer approval.
+
+Intended schedule: `30 21 * * 1-5` UTC (≈17:30 ET, ~30 min after the regular US session close).
+The flow body honors `INVEST_SCREENER_SNAPSHOTS_COMMIT_ENABLED` (default `False` → dry-run).
