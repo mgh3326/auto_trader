@@ -16,7 +16,6 @@ from app.services.n8n_filled_orders_indicators import _enrich_with_indicators
 logger = logging.getLogger(__name__)
 
 _EQUITY_QUOTE_CONCURRENCY = 5
-_US_EXCHANGES = ("NASD", "NYSE", "AMEX")
 
 
 def _strip_crypto_prefix(symbol: str) -> str:
@@ -206,22 +205,25 @@ async def _fetch_kis_overseas_filled(days: int) -> tuple[list[dict], list[dict]]
         all_orders: list[dict] = []
         seen_order_ids: set[str] = set()
 
-        for exchange in _US_EXCHANGES:
-            try:
-                raw_orders = await kis.inquire_daily_order_overseas(
-                    start_date=start_date,
-                    end_date=end_date,
-                    symbol="%",
-                    exchange_code=exchange,
-                    side="00",
-                )
-                for raw in raw_orders or []:
-                    normalized = _normalize_kis_overseas_filled(raw)
-                    if normalized and normalized["order_id"] not in seen_order_ids:
-                        seen_order_ids.add(normalized["order_id"])
-                        all_orders.append(normalized)
-            except Exception as exc:
-                logger.warning("KIS overseas %s fetch failed: %s", exchange, exc)
+        # KIS overseas daily-order inquiry treats NASD as a US-wide history
+        # selector in practice: rows may include NYSE/AMEX via ovrs_excg_cd.
+        # Calling NASD/NYSE/AMEX separately produces duplicates and increases
+        # the chance of SYDB0050 while following continuation pages.
+        try:
+            raw_orders = await kis.inquire_daily_order_overseas(
+                start_date=start_date,
+                end_date=end_date,
+                symbol="%",
+                exchange_code="NASD",
+                side="00",
+            )
+            for raw in raw_orders or []:
+                normalized = _normalize_kis_overseas_filled(raw)
+                if normalized and normalized["order_id"] not in seen_order_ids:
+                    seen_order_ids.add(normalized["order_id"])
+                    all_orders.append(normalized)
+        except Exception as exc:
+            logger.warning("KIS overseas US-wide fetch failed: %s", exc)
 
         return all_orders, []
     except Exception as exc:

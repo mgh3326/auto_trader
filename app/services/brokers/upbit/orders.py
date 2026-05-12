@@ -191,19 +191,34 @@ async def place_market_buy_order(market: str, price: str) -> dict[str, Any]:
 
 
 async def fetch_closed_orders(
-    market: str | None = None, limit: int = 20
+    market: str | None = None,
+    limit: int = 20,
+    page: int = 1,
+    states: list[str] | None = None,
+    order_by: str = "desc",
 ) -> list[dict[str, Any]]:
-    """체결 완료 주문 목록 조회.
+    """체결/취소 완료 주문 목록 조회.
 
     Args:
         market: 마켓코드 필터 (옵션), None이면 전체 조회
-        limit: 반환할 건수 (기본값 20)
+        limit: 반환할 건수 (Upbit page size, 최대 100)
+        page: 페이지 번호 (1부터 시작)
+        states: 조회 상태 목록. 기본값은 ["done", "cancel"]
+        order_by: 정렬 방향 ("asc" 또는 "desc")
 
     Returns:
-        체결 주문 목록 (list of dict)
+        체결/취소 주문 목록 (list of dict)
     """
     url = f"{_client.UPBIT_REST}/orders/closed"
-    params: dict[str, Any] = {"states[]": ["done", "cancel"], "limit": limit}
+    capped_limit = max(1, min(int(limit), 100))
+    normalized_page = max(1, int(page))
+    normalized_states = states or ["done", "cancel"]
+    params: dict[str, Any] = {
+        "states[]": normalized_states,
+        "limit": capped_limit,
+        "page": normalized_page,
+        "order_by": order_by,
+    }
     if market:
         params["market"] = market
 
