@@ -34,6 +34,17 @@ from app.schemas.invest_coverage import (
     InvestCoverageSymbol,
 )
 from app.services.invest_screener_snapshots.freshness import today_trading_date
+from app.services.market_data_coverage.ohlcv_freshness import (
+    kr_candles_freshness,
+    us_candles_freshness,
+)
+from app.services.market_quote_snapshots.freshness import freshness_window_minutes
+from app.services.market_quote_snapshots.repository import (
+    MarketQuoteSnapshotsRepository,
+)
+from app.services.market_valuation_snapshots.repository import (
+    MarketValuationSnapshotsRepository,
+)
 
 SUPPORTED_STATES: list[CoverageState] = [
     "fresh",
@@ -72,6 +83,9 @@ async def build_invest_coverage(
     surfaces.extend(await _holdings_surfaces(db, market_norm, now))
     surfaces.extend(await _pending_order_surfaces(db, market_norm, now))
     surfaces.extend(await _orderbook_nxt_surfaces(db, market_norm))
+    surfaces.extend(await _ohlcv_surfaces(db, market_norm, trading_day))
+    surfaces.extend(await _quote_surfaces(db, market_norm, now))
+    surfaces.extend(await _valuation_surfaces(db, market_norm, trading_day))
     surfaces.extend(_provider_unwired_surfaces(market_norm))
     for surface in surfaces:
         surface.actionability = _actionability_for_surface(
@@ -144,9 +158,9 @@ _SURFACE_QUEUE: dict[str, str] = {
     "holdings": "account-panel-read-model",
     "pending_orders": "order-reconciliation-read-model",
     "orderbook_nxt_capability": "kr-symbol-universe",
-    "quotes": "provider-contract",
-    "ohlcv": "provider-contract",
-    "valuation_fundamentals": "provider-contract",
+    "quotes": "market-quote-snapshots",
+    "ohlcv": "market-candle-snapshots",
+    "valuation_fundamentals": "market-valuation-snapshots",
 }
 
 
@@ -953,57 +967,185 @@ async def _orderbook_nxt_surfaces(
     return rows
 
 
-def _provider_unwired_surfaces(market: str) -> list[InvestCoverageSurface]:
+async def _ohlcv_surfaces(
+    db: AsyncSession, market: str, trading_day: dt.date
+) -> list[InvestCoverageSurface]:
     markets = ["kr", "us", "crypto"] if market == "all" else [market]
     rows: list[InvestCoverageSurface] = []
     for m in markets:
-        for surface, label, warning in [
-            (
-                "quotes",
-                "Quotes",
-                "No durable /invest quote snapshot read model is wired; quote calls remain provider-backed elsewhere.",
-            ),
-            (
-                "ohlcv",
-                "OHLCV candles",
-                "No durable /invest OHLCV candle read model is wired for Toss-parity coverage.",
-            ),
-            (
-                "valuation_fundamentals",
-                "Valuation/fundamentals",
-                "No complete durable fundamentals read model is wired for Toss-parity coverage.",
-            ),
-        ]:
-            surface_row = InvestCoverageSurface(
-                surface=surface,
-                label=label,
-                market=m,
-                state="provider_unwired",
-                sourceOfTruth="read_model_gap",
-                warnings=[warning],
+        if m == "kr":
+            state, latest_at, latest_date, fresh, stale = await kr_candles_freshness(
+                db, trading_day=trading_day
             )
-            if surface == "quotes" and m == "kr":
-                surface_row.sourceCandidates.append(
-                    _naver_static_candidate(
-                        name="naver_finance",
-                        surface="quotes",
-                        kind="candidate",
-                        readiness="request_time_only",
-                        note="naver_finance domestic quote endpoints are available request-time only; no durable /invest quote read-model.",
-                    )
+            rows.append(
+                InvestCoverageSurface(
+                    surface="ohlcv",
+                    label="OHLCV candles",
+                    market="kr",
+                    state=state,
+                    sourceOfTruth="kr_candles_1m",
+                    latestAt=latest_at,
+                    latestDate=latest_date,
+                    counts=InvestCoverageCounts(
+                        fresh=fresh, stale=stale, total=fresh + stale
+                    ),
+                    warnings=[]
+                    if state == "fresh"
+                    else [
+                        "KR 1m candle read model is not fresh for the requested trading day."
+                    ],
                 )
-            elif surface == "valuation_fundamentals" and m == "kr":
-                surface_row.sourceCandidates.append(
-                    _naver_static_candidate(
-                        name="naver_finance",
-                        surface="valuation_fundamentals",
-                        kind="candidate",
-                        readiness="request_time_only",
-                        note="naver_finance financial/profile endpoints are request-time only; no durable fundamentals read-model.",
-                    )
+            )
+        elif m == "us":
+            state, latest_at, latest_date, fresh, stale = await us_candles_freshness(
+                db, trading_day=trading_day
+            )
+            rows.append(
+                InvestCoverageSurface(
+                    surface="ohlcv",
+                    label="OHLCV candles",
+                    market="us",
+                    state=state,
+                    sourceOfTruth="us_candles_1m",
+                    latestAt=latest_at,
+                    latestDate=latest_date,
+                    counts=InvestCoverageCounts(
+                        fresh=fresh, stale=stale, total=fresh + stale
+                    ),
+                    warnings=[]
+                    if state == "fresh"
+                    else [
+                        "US 1m candle read model is not fresh for the requested trading day."
+                    ],
                 )
-            rows.append(surface_row)
+            )
+        else:
+            rows.append(
+                InvestCoverageSurface(
+                    surface="ohlcv",
+                    label="OHLCV candles",
+                    market=m,
+                    state="unsupported",
+                    sourceOfTruth="market_candles_read_model",
+                    warnings=[
+                        "Crypto OHLCV coverage is not in the current /invest durable read-model contract."
+                    ],
+                )
+            )
     return rows
+
+
+async def _quote_surfaces(
+    db: AsyncSession, market: str, now: dt.datetime
+) -> list[InvestCoverageSurface]:
+    markets = ["kr", "us", "crypto"] if market == "all" else [market]
+    rows: list[InvestCoverageSurface] = []
+    repo = MarketQuoteSnapshotsRepository(db)
+    for m in markets:
+        cutoff = now - dt.timedelta(minutes=freshness_window_minutes(m))
+        counts = await repo.coverage_counts(m, fresh_after=cutoff)
+        state = _state_from_counts(
+            fresh=counts.fresh_symbols,
+            stale=counts.stale_symbols,
+            total=counts.total_symbols,
+        )
+        row = InvestCoverageSurface(
+            surface="quotes",
+            label="Quotes",
+            market=m,
+            state=state,
+            sourceOfTruth="market_quote_snapshots",
+            latestAt=counts.latest_snapshot_at,
+            counts=InvestCoverageCounts(
+                fresh=counts.fresh_symbols,
+                stale=counts.stale_symbols,
+                total=counts.total_symbols,
+            ),
+            warnings=[]
+            if state == "fresh"
+            else [
+                "Quote snapshot read model is stale or missing for one or more symbols."
+            ],
+        )
+        if m == "kr":
+            row.sourceCandidates.append(
+                _naver_static_candidate(
+                    name="naver_finance",
+                    surface="quotes",
+                    kind="candidate",
+                    readiness="request_time_only",
+                    note="naver_finance domestic quote endpoints are available request-time only; durable /invest coverage uses market_quote_snapshots.",
+                )
+            )
+        rows.append(row)
+    return rows
+
+
+async def _valuation_surfaces(
+    db: AsyncSession, market: str, trading_day: dt.date
+) -> list[InvestCoverageSurface]:
+    markets = ["kr", "us", "crypto"] if market == "all" else [market]
+    rows: list[InvestCoverageSurface] = []
+    repo = MarketValuationSnapshotsRepository(db)
+    for m in markets:
+        if m not in {"kr", "us"}:
+            rows.append(
+                InvestCoverageSurface(
+                    surface="valuation_fundamentals",
+                    label="Valuation/fundamentals",
+                    market=m,
+                    state="unsupported",
+                    sourceOfTruth="market_valuation_snapshots",
+                    warnings=[
+                        "Crypto valuation/fundamentals are not in the current /invest durable read-model contract."
+                    ],
+                )
+            )
+            continue
+        counts = await repo.coverage_counts(m, fresh_date=trading_day)
+        state = _state_from_counts(
+            fresh=counts.fresh_symbols,
+            stale=counts.stale_symbols,
+            total=counts.total_symbols,
+        )
+        row = InvestCoverageSurface(
+            surface="valuation_fundamentals",
+            label="Valuation/fundamentals",
+            market=m,
+            state=state,
+            sourceOfTruth="market_valuation_snapshots",
+            latestAt=counts.latest_at,
+            latestDate=counts.latest_date,
+            counts=InvestCoverageCounts(
+                fresh=counts.fresh_symbols,
+                stale=counts.stale_symbols,
+                total=counts.total_symbols,
+            ),
+            warnings=[]
+            if state == "fresh"
+            else [
+                "Valuation snapshot read model is stale or missing for one or more symbols."
+            ],
+        )
+        if m == "kr":
+            row.sourceCandidates.append(
+                _naver_static_candidate(
+                    name="naver_finance",
+                    surface="valuation_fundamentals",
+                    kind="candidate",
+                    readiness="request_time_only",
+                    note="naver_finance financial/profile endpoints are request-time only; durable /invest coverage uses market_valuation_snapshots.",
+                )
+            )
+        rows.append(row)
+    return rows
+
+
+def _provider_unwired_surfaces(market: str) -> list[InvestCoverageSurface]:
+    # ROB-206 wires durable OHLCV, quote, and valuation coverage surfaces for
+    # KR/US via read-model freshness checks. Keep this hook for future gaps but
+    # do not emit stale provider_unwired placeholders for those surfaces.
+    return []
 
 
 async def _symbol_rows(

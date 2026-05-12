@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+"""Build market_valuation_snapshots rows.
+
+DEFAULTS TO --dry-run: prints an approval-packet-friendly summary without
+committing to the database. Pass --commit only after explicit operator approval.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Dry-run-first valuation snapshots builder (ROB-206)."
+    )
+    parser.add_argument("--market", choices=["kr", "us"], default="kr")
+    parser.add_argument(
+        "--symbol",
+        action="append",
+        default=[],
+        help="Restrict to specific symbols. Can be passed multiple times.",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Max active universe symbols to process. Defaults to 20 unless --all.",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Iterate the full active universe. Mutually exclusive with --symbol/--limit.",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=100,
+        help="Symbols per processing batch when --all is set.",
+    )
+    parser.add_argument(
+        "--concurrency", type=int, default=4, help="Per-symbol fetch concurrency."
+    )
+    parser.add_argument(
+        "--commit",
+        action="store_true",
+        help="Actually write to the database. Default is --dry-run/no writes.",
+    )
+    args = parser.parse_args(argv)
+    if args.all and (args.symbol or args.limit is not None):
+        parser.error("--all is mutually exclusive with --symbol and --limit")
+    if args.limit is None:
+        args.limit = 20
+    if args.batch_size < 1:
+        parser.error("--batch-size must be >= 1")
+    if args.concurrency < 1:
+        parser.error("--concurrency must be >= 1")
+    args.dry_run = not args.commit
+    return args
+
+
+def _print_result(result) -> None:
+    print(
+        f"\nbuilt {result.snapshots_built} valuation snapshots "
+        f"for {result.symbols_resolved} {result.market.upper()} symbols "
+        f"(dry_run={not result.committed}, batches={result.batches}):"
+    )
+    print("idempotency:")
+    for key in ("wouldInsert", "wouldUpdate", "duplicatePayloadKeys"):
+        print(f"  {key}: {result.idempotency.get(key, 0)}")
+    distribution = getattr(result, "snapshot_date_distribution", {})
+    if distribution:
+        print("snapshot distribution:")
+        for snapshot_key, count in distribution.items():
+            print(f"  {snapshot_key}: {count}")
+    if result.samples:
+        print("samples:")
+        for sample in result.samples[:10]:
+            print(f"  {sample}")
+    if result.warnings:
+        print("warnings:")
+        for warning in result.warnings:
+            print(f"  - {warning}")
+    if not result.committed:
+        print("\n--dry-run: no rows written.\n")
+    else:
+        print(f"\ncommitted {result.snapshots_built} rows.\n")
+
+
+async def run(args: argparse.Namespace) -> int:
+    from app.jobs import market_valuation_snapshots as snapshot_job
+
+    result = await snapshot_job.run_market_valuation_snapshot_build(
+        snapshot_job.MarketValuationSnapshotBuildRequest(
+            market=args.market,
+            symbols=tuple(args.symbol),
+            limit=args.limit,
+            all_symbols=args.all,
+            batch_size=args.batch_size,
+            concurrency=args.concurrency,
+            commit=args.commit,
+        )
+    )
+    _print_result(result)
+    return 0
+
+
+async def main() -> int:
+    args = parse_args()
+    from app.core.cli import setup_logging_and_sentry
+
+    setup_logging_and_sentry(service_name="build-market-valuation-snapshots")
+    return await run(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(asyncio.run(main()))
