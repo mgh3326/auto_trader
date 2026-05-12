@@ -395,6 +395,11 @@ class Settings(BaseSettings):
     NEWS_INGESTOR_INGEST_TOKEN: str = ""
     NEWS_INGESTOR_INGEST_TOKEN_HEADER: str = "X-News-Ingestor-Token"
 
+    # research-reports machine-to-machine bulk ingest authentication
+    RESEARCH_REPORTS_INGEST_TOKEN: str = ""
+    RESEARCH_REPORTS_INGEST_TOKEN_HEADER: str = "X-Research-Reports-Ingest-Token"
+    RESEARCH_REPORTS_FRESHNESS_MAX_AGE_HOURS: int = 24
+
     trader_agent_id: str = "6b2192cc-14fa-4335-b572-2fe1e0cb54a7"
     paperclip_api_url: str | None = None
     paperclip_api_key: str | None = None
