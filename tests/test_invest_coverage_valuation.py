@@ -157,10 +157,12 @@ async def test_quote_repository_upsert_and_coverage_counts(db_session):
         MarketQuoteSnapshotUpsert,
     )
 
-    now = dt.datetime(2026, 5, 12, 9, 0, tzinfo=dt.UTC).replace(microsecond=0)
+    market = "crypto"
+    now = dt.datetime(2099, 5, 12, 9, 0, tzinfo=dt.UTC).replace(microsecond=0)
     await db_session.execute(
         sa.delete(MarketQuoteSnapshot).where(
-            MarketQuoteSnapshot.symbol.in_(["906401", "906402"])
+            MarketQuoteSnapshot.market == market,
+            MarketQuoteSnapshot.symbol.in_(["906401", "906402"]),
         )
     )
     await db_session.commit()
@@ -169,14 +171,14 @@ async def test_quote_repository_upsert_and_coverage_counts(db_session):
     inserted = await repo.upsert(
         [
             MarketQuoteSnapshotUpsert(
-                market="kr",
+                market=market,
                 symbol="906401",
                 source="kis",
                 snapshot_at=now,
                 price=Decimal("10"),
             ),
             MarketQuoteSnapshotUpsert(
-                market="kr",
+                market=market,
                 symbol="906402",
                 source="kis",
                 snapshot_at=now - dt.timedelta(hours=2),
@@ -187,7 +189,7 @@ async def test_quote_repository_upsert_and_coverage_counts(db_session):
     await db_session.commit()
 
     counts = await repo.coverage_counts(
-        "kr", fresh_after=now - dt.timedelta(minutes=30)
+        market, fresh_after=now - dt.timedelta(minutes=30)
     )
     assert inserted == 2
     assert counts.fresh_symbols >= 1

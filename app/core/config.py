@@ -259,6 +259,12 @@ class Settings(BaseSettings):
     research_run_refresh_user_id: int | None = None
     research_run_refresh_market_hours_only: bool = True
 
+    # ROB-208 — market events rolling scheduler + activation gate
+    market_events_ingest_commit_enabled: bool = False
+    market_events_rolling_window_days_back: int = 7
+    market_events_rolling_window_days_forward: int = 60
+    market_events_rolling_window_max_partitions_per_run: int = 90
+
     @property
     def telegram_chat_ids(self) -> list[str]:
         """단일 chat_id를 리스트로 변환 (하위 호환성 유지)"""

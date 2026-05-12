@@ -1,4 +1,4 @@
-"""Unit tests for MarketEventsFreshnessService (ROB-167)."""
+"""Tests for read-only market-events freshness diagnostics."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.market_events import MarketEventIngestionPartition
 from app.services.market_events.freshness_service import (
+    DEFAULT_STALE_THRESHOLD_HOURS,
     STALE_AFTER_HOURS,
     MarketEventsFreshnessService,
 )
@@ -49,6 +50,46 @@ async def _clear_partitions_for_dates(db: AsyncSession, *partition_dates: date) 
         )
     )
     await db.flush()
+
+
+@pytest.mark.unit
+def test_freshness_response_schema_shape() -> None:
+    from app.schemas.market_events_freshness import (
+        MarketEventsFreshnessResponse,
+        MarketEventsFreshnessRow,
+    )
+
+    row = MarketEventsFreshnessRow(
+        source="finnhub",
+        category="earnings",
+        market="us",
+        window_from=date(2026, 5, 5),
+        window_to=date(2026, 5, 12),
+        partition_count_total=8,
+        partition_count_succeeded=7,
+        partition_count_failed=1,
+        partition_count_running=0,
+        partition_count_pending=0,
+        partition_count_missing=0,
+        event_count_in_window=120,
+        latest_succeeded_partition_date=date(2026, 5, 11),
+        latest_succeeded_finished_at=datetime(2026, 5, 12, 6, 0, tzinfo=UTC),
+        hours_since_latest_succeeded=2.5,
+        latest_failed_partition_date=date(2026, 5, 10),
+        latest_failed_error="finnhub 429",
+        expected_next_refresh_at=None,
+        stale=False,
+    )
+    resp = MarketEventsFreshnessResponse(
+        generated_at=datetime(2026, 5, 12, 8, 30, tzinfo=UTC),
+        window_from=date(2026, 5, 5),
+        window_to=date(2026, 5, 12),
+        stale_threshold_hours=DEFAULT_STALE_THRESHOLD_HOURS,
+        rows=[row],
+        warnings=[],
+    )
+    assert resp.rows[0].source == "finnhub"
+    assert resp.rows[0].latest_failed_error == "finnhub 429"
 
 
 @pytest.mark.unit
@@ -234,3 +275,77 @@ async def test_coverage_matrix_aggregates_by_source(db_session: AsyncSession) ->
     assert finnhub_status.eventCount == 10
     assert finnhub_status.state == "failed"
     assert finnhub_status.lastError == "429"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_freshness_empty_window_returns_empty_rows(
+    db_session: AsyncSession,
+) -> None:
+    svc = MarketEventsFreshnessService(db_session)
+    resp = await svc.compute(
+        window_from=date(2100, 1, 1),
+        window_to=date(2100, 1, 7),
+    )
+    assert resp.rows == []
+    assert resp.window_from == date(2100, 1, 1)
+    assert resp.window_to == date(2100, 1, 7)
+    assert resp.stale_threshold_hours == DEFAULT_STALE_THRESHOLD_HOURS
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_freshness_aggregates_mixed_partition_states(
+    db_session: AsyncSession,
+) -> None:
+    now = datetime(2099, 5, 12, 8, 0, tzinfo=UTC)
+    db_session.add_all(
+        [
+            MarketEventIngestionPartition(
+                source="finnhub",
+                category="earnings",
+                market="us",
+                partition_date=date(2099, 5, 11),
+                status="succeeded",
+                event_count=42,
+                finished_at=now - timedelta(hours=2),
+            ),
+            MarketEventIngestionPartition(
+                source="finnhub",
+                category="earnings",
+                market="us",
+                partition_date=date(2099, 5, 10),
+                status="failed",
+                event_count=0,
+                last_error="finnhub 429",
+            ),
+            MarketEventIngestionPartition(
+                source="dart",
+                category="disclosure",
+                market="kr",
+                partition_date=date(2099, 5, 10),
+                status="succeeded",
+                event_count=15,
+                finished_at=now - timedelta(hours=50),
+            ),
+        ]
+    )
+    await db_session.flush()
+
+    svc = MarketEventsFreshnessService(db_session)
+    resp = await svc.compute(
+        window_from=date(2099, 5, 5),
+        window_to=date(2099, 5, 12),
+        now=now,
+    )
+
+    finnhub = next(r for r in resp.rows if r.source == "finnhub")
+    dart = next(r for r in resp.rows if r.source == "dart")
+    assert finnhub.partition_count_succeeded == 1
+    assert finnhub.partition_count_failed == 1
+    assert finnhub.hours_since_latest_succeeded == pytest.approx(2.0, abs=0.1)
+    assert finnhub.stale is False
+    assert finnhub.latest_failed_error == "finnhub 429"
+    assert dart.stale is True
+    assert any("failed partition" in warning for warning in resp.warnings)
+    assert any("stale" in warning for warning in resp.warnings)

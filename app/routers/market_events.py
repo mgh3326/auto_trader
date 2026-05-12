@@ -5,7 +5,7 @@ GET only. No mutation. Auth required (matches existing trading/api pattern).
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -20,8 +20,12 @@ from app.schemas.market_events import (
     MarketEventsRangeResponse,
 )
 from app.schemas.market_events_calendar import DiscoverCalendarResponse
+from app.schemas.market_events_freshness import MarketEventsFreshnessResponse
 from app.services.market_events.discover_calendar import DiscoverCalendarService
-from app.services.market_events.freshness_service import MarketEventsFreshnessService
+from app.services.market_events.freshness_service import (
+    DEFAULT_STALE_THRESHOLD_HOURS,
+    MarketEventsFreshnessService,
+)
 from app.services.market_events.query_service import MarketEventsQueryService
 from app.services.market_events.user_context import get_user_event_context
 
@@ -71,6 +75,43 @@ async def get_market_events_range(
     try:
         return await svc.list_for_range(
             from_date, to_date, category=category, market=market, source=source
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+
+
+@router.get(
+    "/api/market-events/freshness",
+    response_model=MarketEventsFreshnessResponse,
+)
+async def get_market_events_freshness(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_authenticated_user)],
+    from_date: Annotated[
+        date | None, Query(description="ISO start date, inclusive")
+    ] = None,
+    to_date: Annotated[
+        date | None, Query(description="ISO end date, inclusive")
+    ] = None,
+    stale_threshold_hours: float = DEFAULT_STALE_THRESHOLD_HOURS,
+) -> MarketEventsFreshnessResponse:
+    """Return read-only market-events ingestion freshness diagnostics."""
+    if (from_date is None) ^ (to_date is None):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="from_date and to_date must both be provided or both omitted",
+        )
+    today = date.today()
+    window_from = from_date or (today - timedelta(days=7))
+    window_to = to_date or (today + timedelta(days=7))
+    svc = MarketEventsFreshnessService(db)
+    try:
+        return await svc.compute(
+            window_from=window_from,
+            window_to=window_to,
+            stale_threshold_hours=stale_threshold_hours,
         )
     except ValueError as exc:
         raise HTTPException(
