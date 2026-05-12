@@ -49,6 +49,7 @@ const RESULTS_GAINERS = {
     relativeLabel: "방금 갱신",
     cacheHit: false,
     source: "live" as const,
+    dataState: "fresh" as const,
   },
 };
 
