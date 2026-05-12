@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import TIMESTAMP, Boolean, Index, String, func
+from sqlalchemy import TIMESTAMP, Boolean, Index, String, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -14,6 +14,13 @@ class USSymbolUniverse(Base):
             "exchange",
             "is_active",
         ),
+        Index(
+            "ix_us_symbol_universe_common_active_symbol",
+            "is_common_stock",
+            "is_active",
+            "symbol",
+            postgresql_where=text("is_common_stock IS TRUE AND is_active IS TRUE"),
+        ),
     )
 
     symbol: Mapped[str] = mapped_column(String(20), primary_key=True)
@@ -21,6 +28,7 @@ class USSymbolUniverse(Base):
     name_kr: Mapped[str] = mapped_column(String(200), nullable=False, default="")
     name_en: Mapped[str] = mapped_column(String(200), nullable=False, default="")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_common_stock: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
         server_default=func.now(),

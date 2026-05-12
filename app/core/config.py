@@ -313,6 +313,9 @@ class Settings(BaseSettings):
     # Default False until the upstream contract is confirmed; CI never calls live.
     wisefn_earnings_enabled: bool = False
 
+    # ROB-204 — Prefect/manual US screener snapshot writes stay dry-run unless explicitly enabled.
+    invest_screener_snapshots_commit_enabled: bool = False
+
     # KRX (한국거래소) 정보데이터시스템
     krx_member_id: str | None = None
     krx_password: str | None = None

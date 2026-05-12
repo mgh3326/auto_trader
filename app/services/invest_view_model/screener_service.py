@@ -45,6 +45,7 @@ _KR_CLOSE = _time(15, 30)
 _CACHE_HIT_FRESH_SECONDS = 300
 _SNAPSHOT_FIRST_LIMIT = 80
 _MAX_WARNING_CHARS = 240
+_US_SCREENER_DATA_NOT_READY_WARNING = "미국 스크리너 데이터 준비중 — 일부 결과만 표시됩니다."
 logger = logging.getLogger(__name__)
 
 
@@ -553,6 +554,9 @@ async def build_screener_results(
         str(r.get("_screener_snapshot_state") or "missing") for r in rows
     ]
     _aggregated_data_state = aggregate_states(_row_states)  # type: ignore[arg-type]
+    if requested_market == "us" and _aggregated_data_state in {"missing", "stale"}:
+        if _US_SCREENER_DATA_NOT_READY_WARNING not in upstream_warnings:
+            upstream_warnings.append(_US_SCREENER_DATA_NOT_READY_WARNING)
 
     freshness = _build_freshness(
         raw_timestamp=raw.get("timestamp"),
