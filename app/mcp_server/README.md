@@ -320,7 +320,7 @@ The error names variables only — never values.
 Parameters:
 - `symbol`: KR equity symbol/code or Upbit market code (required)
 - `market`: defaults to `"kr"`; supports KR aliases (`"kr"`, `"kospi"`, `"kosdaq"`, `"korea"`, `"kis"`, `"equity_kr"`) plus crypto aliases (`"crypto"`, `"upbit"`)
-- `venue`: optional, KR equity only; selects the KIS trading venue for the orderbook. Ignored for crypto. Defaults to `"krx"` (KRX regular session) for backward compatibility.
+- `venue`: optional, KR equity only; selects the KIS trading venue for the orderbook. Non-blank values are rejected for crypto. Defaults to `"krx"` (KRX regular session) for backward compatibility.
 
 Venue mapping (KR equity only):
 | `venue` input | Canonical venue | KIS code | Korean label |
