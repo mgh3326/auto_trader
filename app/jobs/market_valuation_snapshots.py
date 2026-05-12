@@ -1,0 +1,257 @@
+"""Dry-run-first job runner for market_valuation_snapshots rows."""
+
+from __future__ import annotations
+
+import datetime as dt
+from collections import Counter
+from dataclasses import dataclass, field
+from decimal import Decimal
+
+import sqlalchemy as sa
+
+from app.core.db import AsyncSessionLocal
+from app.models.market_valuation_snapshot import MarketValuationSnapshot
+from app.services.market_valuation_snapshots.builder import (
+    build_valuation_snapshots_for_market,
+)
+from app.services.market_valuation_snapshots.repository import (
+    MarketValuationSnapshotsRepository,
+    MarketValuationSnapshotUpsert,
+)
+
+
+@dataclass(frozen=True)
+class MarketValuationSnapshotBuildRequest:
+    market: str = "kr"
+    symbols: tuple[str, ...] = ()
+    limit: int | None = 20
+    all_symbols: bool = False
+    batch_size: int = 100
+    concurrency: int = 4
+    commit: bool = False
+    today: dt.date | None = None
+
+
+@dataclass(frozen=True)
+class MarketValuationSnapshotSample:
+    market: str
+    symbol: str
+    source: str
+    snapshot_date: dt.date
+    per: Decimal | None
+    pbr: Decimal | None
+    roe: Decimal | None
+    dividend_yield: Decimal | None
+
+
+@dataclass(frozen=True)
+class MarketValuationSnapshotBuildResult:
+    market: str
+    symbols_resolved: int
+    snapshots_built: int
+    committed: bool
+    batches: int
+    started_at: dt.datetime
+    finished_at: dt.datetime
+    snapshot_date_distribution: dict[str, int] = field(default_factory=dict)
+    idempotency: dict[str, int] = field(default_factory=dict)
+    samples: tuple[MarketValuationSnapshotSample, ...] = ()
+    warnings: tuple[str, ...] = ()
+
+
+def _validate_market(market: str) -> str:
+    market_norm = market.strip().lower()
+    if market_norm not in {"kr", "us"}:
+        raise ValueError(f"Unsupported valuation snapshot market: {market}")
+    return market_norm
+
+
+def _normalize_symbol(symbol: str) -> str:
+    return symbol.strip().upper()
+
+
+async def resolve_symbols(market: str, override: list[str], limit: int) -> list[str]:
+    market_norm = _validate_market(market)
+    if override:
+        return [_normalize_symbol(symbol) for symbol in override if symbol.strip()]
+    async with AsyncSessionLocal() as session:
+        if market_norm == "kr":
+            from app.models.kr_symbol_universe import KRSymbolUniverse
+
+            stmt = (
+                sa.select(KRSymbolUniverse.symbol)
+                .where(KRSymbolUniverse.is_active.is_(True))
+                .order_by(KRSymbolUniverse.symbol)
+                .limit(limit)
+            )
+        else:
+            from app.models.us_symbol_universe import USSymbolUniverse
+
+            stmt = (
+                sa.select(USSymbolUniverse.symbol)
+                .where(USSymbolUniverse.is_active.is_(True))
+                .order_by(USSymbolUniverse.symbol)
+                .limit(limit)
+            )
+        result = await session.execute(stmt)
+        return [r[0] for r in result.all()]
+
+
+async def resolve_active_universe(market: str) -> list[str]:
+    market_norm = _validate_market(market)
+    async with AsyncSessionLocal() as session:
+        if market_norm == "kr":
+            from app.models.kr_symbol_universe import KRSymbolUniverse
+
+            stmt = (
+                sa.select(KRSymbolUniverse.symbol)
+                .where(KRSymbolUniverse.is_active.is_(True))
+                .order_by(KRSymbolUniverse.symbol)
+            )
+        else:
+            from app.models.us_symbol_universe import USSymbolUniverse
+
+            stmt = (
+                sa.select(USSymbolUniverse.symbol)
+                .where(USSymbolUniverse.is_active.is_(True))
+                .order_by(USSymbolUniverse.symbol)
+            )
+        result = await session.execute(stmt)
+        return [r[0] for r in result.all()]
+
+
+def _payload_key(
+    payload: MarketValuationSnapshotUpsert,
+) -> tuple[str, str, dt.date, str]:
+    return (
+        payload.market.strip().lower(),
+        _normalize_symbol(payload.symbol),
+        payload.snapshot_date,
+        payload.source.strip().lower(),
+    )
+
+
+async def _classify_idempotency(
+    payloads: list[MarketValuationSnapshotUpsert],
+) -> dict[str, int]:
+    keys = [_payload_key(payload) for payload in payloads]
+    duplicate_payload_keys = sum(
+        count - 1 for count in Counter(keys).values() if count > 1
+    )
+    unique_keys = set(keys)
+    if not unique_keys:
+        return {
+            "wouldInsert": 0,
+            "wouldUpdate": 0,
+            "duplicatePayloadKeys": duplicate_payload_keys,
+        }
+    conditions = [
+        sa.and_(
+            MarketValuationSnapshot.market == market,
+            MarketValuationSnapshot.symbol == symbol,
+            MarketValuationSnapshot.snapshot_date == snapshot_date,
+            MarketValuationSnapshot.source == source,
+        )
+        for market, symbol, snapshot_date, source in unique_keys
+    ]
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            sa.select(
+                MarketValuationSnapshot.market,
+                MarketValuationSnapshot.symbol,
+                MarketValuationSnapshot.snapshot_date,
+                MarketValuationSnapshot.source,
+            ).where(sa.or_(*conditions))
+        )
+        existing = set(result.all())
+    return {
+        "wouldInsert": len(unique_keys) - len(existing),
+        "wouldUpdate": len(existing),
+        "duplicatePayloadKeys": duplicate_payload_keys,
+    }
+
+
+async def _commit_payloads(payloads: list[MarketValuationSnapshotUpsert]) -> None:
+    async with AsyncSessionLocal() as session:
+        await MarketValuationSnapshotsRepository(session).upsert(payloads)
+        await session.commit()
+
+
+def _sample(payload: MarketValuationSnapshotUpsert) -> MarketValuationSnapshotSample:
+    return MarketValuationSnapshotSample(
+        market=payload.market,
+        symbol=payload.symbol,
+        source=payload.source,
+        snapshot_date=payload.snapshot_date,
+        per=payload.per,
+        pbr=payload.pbr,
+        roe=payload.roe,
+        dividend_yield=payload.dividend_yield,
+    )
+
+
+async def run_market_valuation_snapshot_build(
+    request: MarketValuationSnapshotBuildRequest,
+) -> MarketValuationSnapshotBuildResult:
+    market = _validate_market(request.market)
+    started_at = dt.datetime.now(dt.UTC)
+    today = request.today or started_at.date()
+    symbols = await (
+        resolve_active_universe(market)
+        if request.all_symbols
+        else resolve_symbols(market, list(request.symbols), request.limit or 20)
+    )
+    if not symbols:
+        finished_at = dt.datetime.now(dt.UTC)
+        return MarketValuationSnapshotBuildResult(
+            market=market,
+            symbols_resolved=0,
+            snapshots_built=0,
+            committed=request.commit,
+            batches=0,
+            started_at=started_at,
+            finished_at=finished_at,
+            idempotency={"wouldInsert": 0, "wouldUpdate": 0, "duplicatePayloadKeys": 0},
+            warnings=("no symbols resolved",),
+        )
+    effective_batch_size = max(
+        1, request.batch_size if request.all_symbols else len(symbols)
+    )
+    idempotency = Counter(
+        {"wouldInsert": 0, "wouldUpdate": 0, "duplicatePayloadKeys": 0}
+    )
+    distribution: Counter[str] = Counter()
+    samples: list[MarketValuationSnapshotSample] = []
+    warnings: list[str] = []
+    total_built = 0
+    batches = 0
+    for start in range(0, len(symbols), effective_batch_size):
+        batches += 1
+        result = await build_valuation_snapshots_for_market(
+            market=market,
+            symbols=symbols[start : start + effective_batch_size],
+            snapshot_date=today,
+            concurrency=request.concurrency,
+        )
+        payloads = list(result.payloads)
+        warnings.extend(f"batch {batches}: {warning}" for warning in result.warnings)
+        total_built += len(payloads)
+        distribution.update(p.snapshot_date.isoformat() for p in payloads)
+        idempotency.update(await _classify_idempotency(payloads))
+        samples.extend(_sample(p) for p in payloads[: max(0, 10 - len(samples))])
+        if request.commit and payloads:
+            await _commit_payloads(payloads)
+    finished_at = dt.datetime.now(dt.UTC)
+    return MarketValuationSnapshotBuildResult(
+        market=market,
+        symbols_resolved=len(symbols),
+        snapshots_built=total_built,
+        committed=request.commit,
+        batches=batches,
+        started_at=started_at,
+        finished_at=finished_at,
+        snapshot_date_distribution=dict(sorted(distribution.items())),
+        idempotency=dict(idempotency),
+        samples=tuple(samples),
+        warnings=tuple(warnings),
+    )

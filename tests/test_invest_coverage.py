@@ -211,8 +211,9 @@ async def test_build_invest_coverage_reports_fresh_partial_and_provider_unwired(
     assert by_surface[("holdings", "kr")].state == "fresh"
     assert by_surface[("pending_orders", "kr")].state == "fresh"
     assert by_surface[("orderbook_nxt_capability", "kr")].state == "missing"
-    assert by_surface[("quotes", "kr")].state == "provider_unwired"
-    assert by_surface[("ohlcv", "kr")].state == "provider_unwired"
+    assert by_surface[("quotes", "kr")].state != "provider_unwired"
+    assert by_surface[("ohlcv", "kr")].state == "missing"
+    assert by_surface[("valuation_fundamentals", "kr")].state != "provider_unwired"
     assert by_surface[("screener_snapshots", "kr")].actionability.priority == "medium"
     assert (
         by_surface[("screener_snapshots", "kr")].actionability.action
@@ -221,10 +222,14 @@ async def test_build_invest_coverage_reports_fresh_partial_and_provider_unwired(
     assert (
         by_surface[("orderbook_nxt_capability", "kr")].actionability.priority == "high"
     )
-    assert by_surface[("quotes", "kr")].actionability.priority == "blocked"
-    assert (
-        by_surface[("quotes", "kr")].actionability.action == "provider_contract_needed"
-    )
+    assert by_surface[("quotes", "kr")].actionability.action in {
+        "backfill_candidate",
+        "repair_read_model",
+    }
+    assert by_surface[("quotes", "kr")].actionability.queue == "market-quote-snapshots"
+    assert by_surface[("quotes", "kr")].actionability.approvalGates == [
+        "production_db_write_approval"
+    ]
     assert response.symbols[0].surfaces["screener_snapshots"] == "fresh"
     assert response.symbols[1].surfaces["screener_snapshots"] == "stale"
     assert response.symbols[1].actionability.priority == "high"

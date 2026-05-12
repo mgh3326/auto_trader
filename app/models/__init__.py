@@ -10,7 +10,9 @@ from .manual_holdings import (
     MarketType,
     StockAlias,
 )
+from .market_quote_snapshot import MarketQuoteSnapshot
 from .market_report import MarketReport
+from .market_valuation_snapshot import MarketValuationSnapshot
 from .news import NewsAnalysisResult, NewsArticle, NewsIngestionRun, Sentiment
 from .paper_trading import PaperAccount, PaperPosition, PaperTrade
 from .portfolio_decision_run import PortfolioDecisionRun
@@ -115,6 +117,8 @@ __all__ = [
     "StockAlias",
     "ManualHolding",
     "MarketReport",
+    "MarketQuoteSnapshot",
+    "MarketValuationSnapshot",
     "Trade",
     "TradeSnapshot",
     "TradeReview",
