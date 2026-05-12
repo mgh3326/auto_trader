@@ -7,6 +7,7 @@ Schema-validated payload only — full text / pdf body are rejected upstream.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -77,17 +78,32 @@ async def ingest_research_reports_v1(
         copyright_notice=run_meta.copyright_notice,
     )
 
+    errors: list[dict] = []
     inserted = 0
     skipped = 0
     for report in request.reports:
         row_dict = _payload_to_row(report, ingestion_run_id=run.id)
-        was_new = await repo.upsert_report(row_dict)
+        try:
+            was_new = await repo.upsert_report(row_dict)
+        except Exception as exc:
+            errors.append({"dedup_key": report.dedup_key, "error": str(exc)[:500]})
+            logger.warning(
+                "research_reports: per-report ingest failed dedup_key=%s err=%s",
+                report.dedup_key,
+                exc,
+            )
+            continue
         if was_new:
             inserted += 1
         else:
             skipped += 1
 
     await repo.update_run_counts(run, inserted_count=inserted, skipped_count=skipped)
+    await repo.mark_run_finished(
+        run,
+        finished_at=datetime.now(UTC),
+        errors=errors or None,
+    )
 
     return ResearchReportIngestionResponse(
         run_uuid=run.run_uuid,

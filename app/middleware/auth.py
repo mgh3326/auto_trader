@@ -52,6 +52,9 @@ class AuthMiddleware:
         "/api/screener/callback",
     ]
     NEWS_INGESTOR_BULK_INGEST_PATH: ClassVar[str] = "/api/v1/news/ingest/bulk"
+    RESEARCH_REPORTS_BULK_INGEST_PATH: ClassVar[str] = (
+        "/trading/api/research-reports/ingest/bulk"
+    )
     LEGACY_DEPRECATED_PREFIXES: ClassVar[tuple[str, ...]] = LEGACY_PREFIXES
 
     def __init__(self, app: ASGIApp):
@@ -167,6 +170,30 @@ class AuthMiddleware:
                 return JSONResponse(
                     status_code=401,
                     content={"detail": "Invalid news ingestor ingest token"},
+                )
+            return None
+
+        # research-reports bulk ingest API: machine-to-machine token auth.
+        if path == self.RESEARCH_REPORTS_BULK_INGEST_PATH:
+            expected_token = settings.RESEARCH_REPORTS_INGEST_TOKEN
+            if not expected_token:
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Research reports ingest token not configured"},
+                )
+            header_name = settings.RESEARCH_REPORTS_INGEST_TOKEN_HEADER.strip()
+            if not header_name:
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "detail": "Research reports ingest token header not configured"
+                    },
+                )
+            supplied_token = request.headers.get(header_name, "")
+            if not hmac.compare_digest(supplied_token, expected_token):
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Invalid research reports ingest token"},
                 )
             return None
 
