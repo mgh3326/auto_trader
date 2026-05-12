@@ -532,8 +532,7 @@ async def test_static_naver_candidates_are_attached_to_request_time_surfaces(
 async def test_news_feed_surface_reports_naver_news_candidate_when_articles_exist(
     db_session,
 ):
-    now = dt.datetime(2026, 5, 11, 8, 0, tzinfo=dt.UTC)
-    now_naive = now.replace(tzinfo=None)
+    now_naive = dt.datetime.now(dt.UTC).replace(tzinfo=None)
 
     await db_session.execute(sa.delete(NewsArticle).where(NewsArticle.id == 9610))
     await db_session.commit()
