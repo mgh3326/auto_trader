@@ -8,9 +8,12 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+INGEST_TOKEN_HEADER = "X-Research-Reports-Ingest-Token"
+INGEST_HEADERS = {INGEST_TOKEN_HEADER: "t"}
+INGEST_PATH = "/trading/api/research-reports/ingest/bulk"
 
-@pytest.mark.integration
-def test_bulk_ingest_idempotent_on_run_uuid(monkeypatch):
+
+def _build_token_authed_app(monkeypatch) -> FastAPI:
     from app.core.config import settings
     from app.middleware.auth import AuthMiddleware
     from app.routers import research_reports as router_module
@@ -19,12 +22,18 @@ def test_bulk_ingest_idempotent_on_run_uuid(monkeypatch):
     monkeypatch.setattr(
         settings,
         "RESEARCH_REPORTS_INGEST_TOKEN_HEADER",
-        "X-Research-Reports-Ingest-Token",
+        INGEST_TOKEN_HEADER,
         raising=False,
     )
     app = FastAPI()
     app.add_middleware(AuthMiddleware)
     app.include_router(router_module.router)
+    return app
+
+
+@pytest.mark.integration
+def test_bulk_ingest_idempotent_on_run_uuid(monkeypatch):
+    app = _build_token_authed_app(monkeypatch)
 
     payload = {
         "research_report_ingestion_run": {
@@ -48,14 +57,9 @@ def test_bulk_ingest_idempotent_on_run_uuid(monkeypatch):
             }
         ],
     }
-    headers = {"X-Research-Reports-Ingest-Token": "t"}
     with TestClient(app) as client:
-        r1 = client.post(
-            "/trading/api/research-reports/ingest/bulk", json=payload, headers=headers
-        )
-        r2 = client.post(
-            "/trading/api/research-reports/ingest/bulk", json=payload, headers=headers
-        )
+        r1 = client.post(INGEST_PATH, json=payload, headers=INGEST_HEADERS)
+        r2 = client.post(INGEST_PATH, json=payload, headers=INGEST_HEADERS)
     assert r1.status_code == 200
     assert r2.status_code == 200
     b1 = r1.json()
@@ -67,20 +71,7 @@ def test_bulk_ingest_idempotent_on_run_uuid(monkeypatch):
 
 @pytest.mark.integration
 def test_bulk_ingest_rejects_full_text_exported(monkeypatch):
-    from app.core.config import settings
-    from app.middleware.auth import AuthMiddleware
-    from app.routers import research_reports as router_module
-
-    monkeypatch.setattr(settings, "RESEARCH_REPORTS_INGEST_TOKEN", "t", raising=False)
-    monkeypatch.setattr(
-        settings,
-        "RESEARCH_REPORTS_INGEST_TOKEN_HEADER",
-        "X-Research-Reports-Ingest-Token",
-        raising=False,
-    )
-    app = FastAPI()
-    app.add_middleware(AuthMiddleware)
-    app.include_router(router_module.router)
+    app = _build_token_authed_app(monkeypatch)
 
     payload = {
         "research_report_ingestion_run": {
@@ -99,9 +90,5 @@ def test_bulk_ingest_rejects_full_text_exported(monkeypatch):
         ],
     }
     with TestClient(app) as client:
-        r = client.post(
-            "/trading/api/research-reports/ingest/bulk",
-            json=payload,
-            headers={"X-Research-Reports-Ingest-Token": "t"},
-        )
+        r = client.post(INGEST_PATH, json=payload, headers=INGEST_HEADERS)
     assert r.status_code in (400, 422)
