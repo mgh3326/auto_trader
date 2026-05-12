@@ -3,6 +3,7 @@
 NO recurring schedule. Production activation is approval-gated and lives in the
 out-of-repo Prefect deployment, not here. Defaults to dry-run (commit=False).
 """
+
 from __future__ import annotations
 
 import logging
@@ -25,5 +26,9 @@ async def research_reports_ingest_bulk_smoke(
 ) -> dict:
     target = payload_file or _default_payload_file()
     if not target:
-        return {"status": "failed", "error": "payload_file not provided", "committed": False}
+        return {
+            "status": "failed",
+            "error": "payload_file not provided",
+            "committed": False,
+        }
     return await run_research_reports_ingest(payload_file=target, commit=commit)

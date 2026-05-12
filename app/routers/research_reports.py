@@ -99,5 +99,7 @@ async def get_research_reports_freshness(
 
     budget = max_age_hours or settings.RESEARCH_REPORTS_FRESHNESS_MAX_AGE_HOURS
     return await compute_research_reports_readiness(
-        db, source=source, max_age_hours=budget,
+        db,
+        source=source,
+        max_age_hours=budget,
     )

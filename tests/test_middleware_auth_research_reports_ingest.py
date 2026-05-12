@@ -1,4 +1,5 @@
 """ROB-207 middleware token-auth tests for research reports bulk ingest."""
+
 from __future__ import annotations
 
 import pytest
@@ -28,9 +29,7 @@ def _app_with_middleware(monkeypatch, *, token: str = "secret-test-token"):
 def test_bulk_ingest_requires_token(monkeypatch):
     app = _app_with_middleware(monkeypatch)
     with TestClient(app) as client:
-        resp = client.post(
-            "/trading/api/research-reports/ingest/bulk", json={}
-        )
+        resp = client.post("/trading/api/research-reports/ingest/bulk", json={})
         assert resp.status_code == 401
 
 

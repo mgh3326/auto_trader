@@ -3,6 +3,7 @@
 Wraps ingest_research_reports_v1 with a structured pass/fail result so TaskIQ tasks
 and the diagnose CLI can share the same boundary. Never raises on operational errors.
 """
+
 from __future__ import annotations
 
 import json
@@ -51,7 +52,9 @@ def preview_research_reports_payload(request: ResearchReportIngestionRequest) ->
 
 
 async def run_research_reports_ingest(
-    *, payload_file: str, commit: bool = False,
+    *,
+    payload_file: str,
+    commit: bool = False,
 ) -> dict:
     path = Path(payload_file)
     if not path.is_file():

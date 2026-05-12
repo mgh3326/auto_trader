@@ -1,4 +1,5 @@
 """ROB-207 TaskIQ task registration tests."""
+
 from __future__ import annotations
 
 import pytest
@@ -38,7 +39,7 @@ def test_task_default_invocation_is_dry_run(monkeypatch):
         return {"status": "completed", "committed": commit}
 
     monkeypatch.setattr(mod, "run_research_reports_ingest", fake_runner)
-    result = asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         mod.research_reports_ingest_bulk_smoke(payload_file="/some/path.json")
     )
     assert captured["commit"] is False

@@ -1,4 +1,5 @@
 """ROB-207 freshness/readiness tests."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
@@ -13,6 +14,7 @@ async def test_readiness_no_runs_is_unavailable(db_session):
     from app.services.research_reports.freshness import (
         compute_research_reports_readiness,
     )
+
     source = f"empty_source_{uuid4()}"
     out = await compute_research_reports_readiness(
         db_session, source=source, max_age_hours=24
@@ -29,6 +31,7 @@ async def test_readiness_recent_finished_run_is_ready(db_session):
     from app.services.research_reports.freshness import (
         compute_research_reports_readiness,
     )
+
     source = f"src_{uuid4()}"
     now = datetime.now(UTC)
     db_session.add(
@@ -61,6 +64,7 @@ async def test_readiness_unfinished_run_emits_warning(db_session):
     from app.services.research_reports.freshness import (
         compute_research_reports_readiness,
     )
+
     source = f"src_{uuid4()}"
     db_session.add(
         ResearchReportIngestionRun(
@@ -87,6 +91,7 @@ async def test_readiness_stale_when_finished_older_than_budget(db_session):
     from app.services.research_reports.freshness import (
         compute_research_reports_readiness,
     )
+
     source = f"src_{uuid4()}"
     old = datetime.now(UTC) - timedelta(hours=48)
     db_session.add(
@@ -117,8 +122,13 @@ def test_response_schema_has_no_body_fields():
 
     schema = ResearchReportsReadinessResponse.model_json_schema()
     forbidden = {
-        "pdf_body", "pdf_text", "full_text",
-        "article_content", "article_body", "raw_payload",
-        "summary_text", "detail_excerpt",
+        "pdf_body",
+        "pdf_text",
+        "full_text",
+        "article_content",
+        "article_body",
+        "raw_payload",
+        "summary_text",
+        "detail_excerpt",
     }
     assert forbidden.isdisjoint(schema.get("properties", {}).keys())

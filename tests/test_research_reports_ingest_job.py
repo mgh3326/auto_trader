@@ -1,4 +1,5 @@
 """ROB-207 job-runner boundary tests."""
+
 from __future__ import annotations
 
 import json
@@ -28,7 +29,10 @@ async def test_run_research_reports_ingest_dry_run_returns_counts(tmp_path: Path
                 "title": "Dry-run metadata smoke",
                 "detail": {"url": "https://example.test/report"},
                 "symbol_candidates": [{"symbol": "005930", "market": "kr"}],
-                "attribution": {"full_text_exported": False, "pdf_body_exported": False},
+                "attribution": {
+                    "full_text_exported": False,
+                    "pdf_body_exported": False,
+                },
             }
         ],
     }
@@ -36,7 +40,8 @@ async def test_run_research_reports_ingest_dry_run_returns_counts(tmp_path: Path
     payload_file.write_text(json.dumps(payload), encoding="utf-8")
 
     result = await run_research_reports_ingest(
-        payload_file=str(payload_file), commit=False,
+        payload_file=str(payload_file),
+        commit=False,
     )
     assert result["status"] == "completed"
     assert result["committed"] is False
@@ -64,7 +69,8 @@ async def test_run_research_reports_ingest_missing_file_returns_failed_status():
     from app.jobs.research_reports_ingest import run_research_reports_ingest
 
     result = await run_research_reports_ingest(
-        payload_file="/nonexistent/path.json", commit=False,
+        payload_file="/nonexistent/path.json",
+        commit=False,
     )
     assert result["status"] == "failed"
     assert "file" in result["error"].lower() or "not found" in result["error"].lower()

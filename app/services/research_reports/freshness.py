@@ -3,6 +3,7 @@
 Read-only. Derives the freshness signal from research_report_ingestion_runs.
 Never returns body / excerpt / summary fields.
 """
+
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
