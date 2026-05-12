@@ -213,7 +213,9 @@ _KR_VENUE_MAP: dict[str, KrOrderbookVenue] = {
 
 _KR_DEFAULT_VENUE = KrOrderbookVenue("krx", "J", "KRX")
 
-_KR_ORDERBOOK_ENDPOINT = "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn"
+_KR_ORDERBOOK_ENDPOINT = (
+    "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn"
+)
 _KR_ORDERBOOK_TR_ID = "FHKST01010200"
 
 

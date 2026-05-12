@@ -441,7 +441,10 @@ async def test_get_orderbook_kr_venue_nxt_threads_to_service(
     assert result["venue"] == "nxt"
     assert result["venue_label"] == "NXT"
     assert result["kis_market_code"] == "NX"
-    assert result["source_endpoint"] == "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn"
+    assert (
+        result["source_endpoint"]
+        == "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn"
+    )
     assert result["source_tr_id"] == "FHKST01010200"
     assert result["is_empty_book"] is False
     assert result["requires_final_recheck"] is False
@@ -546,7 +549,9 @@ async def test_get_orderbook_crypto_venue_none_not_forwarded(
 async def test_get_orderbook_crypto_rejects_venue() -> None:
     tools = build_tools()
 
-    with pytest.raises(ValueError, match="venue is only supported for KR equity orderbook"):
+    with pytest.raises(
+        ValueError, match="venue is only supported for KR equity orderbook"
+    ):
         await tools["get_orderbook"]("KRW-BTC", market="crypto", venue="nxt")
 
 

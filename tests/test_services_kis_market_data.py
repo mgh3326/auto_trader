@@ -931,7 +931,9 @@ class TestKISInquireOrderbook:
         )
         client._request_with_rate_limit = request_mock
 
-        output1, output2 = await client.inquire_orderbook_snapshot("005930", market="NX")
+        output1, output2 = await client.inquire_orderbook_snapshot(
+            "005930", market="NX"
+        )
 
         assert output1 == {"askp1": "70100", "askp_rsqn1": "111"}
         call_kwargs = request_mock.call_args

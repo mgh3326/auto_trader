@@ -793,7 +793,9 @@ async def test_get_orderbook_kr_venue_unified_passes_un_to_kis(
 
     monkeypatch.setattr(market_data_service, "KISClient", lambda: DummyKIS())
 
-    snapshot = await market_data_service.get_orderbook("005930", "kr", venue=venue_input)
+    snapshot = await market_data_service.get_orderbook(
+        "005930", "kr", venue=venue_input
+    )
 
     assert snapshot.venue == "unified"
     assert snapshot.kis_market_code == "UN"
@@ -838,7 +840,9 @@ async def test_get_orderbook_rejects_unknown_kr_venue() -> None:
 async def test_get_orderbook_crypto_rejects_nonblank_venue(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    with pytest.raises(ValueError, match="venue is only supported for KR equity orderbook"):
+    with pytest.raises(
+        ValueError, match="venue is only supported for KR equity orderbook"
+    ):
         await market_data_service.get_orderbook("KRW-BTC", "crypto", venue="nxt")
 
 
@@ -864,7 +868,10 @@ async def test_get_orderbook_kr_populates_diagnostic_fields(
 
     snapshot = await market_data_service.get_orderbook("005930", "kr")
 
-    assert snapshot.source_endpoint == "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn"
+    assert (
+        snapshot.source_endpoint
+        == "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn"
+    )
     assert snapshot.source_tr_id == "FHKST01010200"
     assert snapshot.is_empty_book is False
     assert snapshot.requires_final_recheck is False
