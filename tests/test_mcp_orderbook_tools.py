@@ -103,7 +103,7 @@ async def test_get_orderbook_returns_crypto_payload(
 
     result = await tools["get_orderbook"]("KRW-BTC", market="crypto")
 
-    get_orderbook_mock.assert_awaited_once_with("KRW-BTC", "crypto")
+    get_orderbook_mock.assert_awaited_once_with("KRW-BTC", "crypto", venue=None)
     assert result == {
         "symbol": "KRW-BTC",
         "instrument_type": "crypto",
@@ -403,3 +403,173 @@ async def test_get_orderbook_raises_on_invalid_input() -> None:
         ValueError, match=r"crypto orderbook only supports KRW-\* symbols"
     ):
         await tools["get_orderbook"]("USDT-BTC", market="crypto")
+
+
+# ---------------------------------------------------------------------------
+# Venue-aware MCP orderbook tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_kr_venue_nxt_threads_to_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.mcp_server.tooling import market_data_quotes
+
+    get_orderbook_mock = AsyncMock(
+        return_value=_make_snapshot(
+            venue="nxt",
+            venue_label="NXT",
+            kis_market_code="NX",
+            source_endpoint="/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn",
+            source_tr_id="FHKST01010200",
+            is_empty_book=False,
+            requires_final_recheck=False,
+            empty_reason=None,
+        )
+    )
+    monkeypatch.setattr(
+        market_data_quotes.market_data_service,
+        "get_orderbook",
+        get_orderbook_mock,
+    )
+    tools = build_tools()
+
+    result = await tools["get_orderbook"]("005930", market="kr", venue="nxt")
+
+    get_orderbook_mock.assert_awaited_once_with("005930", "kr", venue="nxt")
+    assert result["venue"] == "nxt"
+    assert result["venue_label"] == "NXT"
+    assert result["kis_market_code"] == "NX"
+    assert result["source_endpoint"] == "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn"
+    assert result["source_tr_id"] == "FHKST01010200"
+    assert result["is_empty_book"] is False
+    assert result["requires_final_recheck"] is False
+    assert "empty_reason" not in result
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_kr_venue_nxt_includes_empty_reason_when_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.mcp_server.tooling import market_data_quotes
+
+    monkeypatch.setattr(
+        market_data_quotes.market_data_service,
+        "get_orderbook",
+        AsyncMock(
+            return_value=_make_snapshot(
+                asks=[],
+                bids=[],
+                total_ask_qty=0,
+                total_bid_qty=0,
+                bid_ask_ratio=None,
+                venue="nxt",
+                venue_label="NXT",
+                kis_market_code="NX",
+                source_endpoint="/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn",
+                source_tr_id="FHKST01010200",
+                is_empty_book=True,
+                requires_final_recheck=True,
+                empty_reason="empty_kis_orderbook",
+            )
+        ),
+    )
+    tools = build_tools()
+
+    result = await tools["get_orderbook"]("005930", market="kr", venue="nxt")
+
+    assert result["is_empty_book"] is True
+    assert result["requires_final_recheck"] is True
+    assert result["empty_reason"] == "empty_kis_orderbook"
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_kr_default_venue_fields_included(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.mcp_server.tooling import market_data_quotes
+
+    monkeypatch.setattr(
+        market_data_quotes.market_data_service,
+        "get_orderbook",
+        AsyncMock(
+            return_value=_make_snapshot(
+                venue="krx",
+                venue_label="KRX",
+                kis_market_code="J",
+                source_endpoint="/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn",
+                source_tr_id="FHKST01010200",
+                is_empty_book=False,
+                requires_final_recheck=False,
+                empty_reason=None,
+            )
+        ),
+    )
+    tools = build_tools()
+
+    result = await tools["get_orderbook"]("005930")
+
+    assert result["venue"] == "krx"
+    assert result["venue_label"] == "KRX"
+    assert result["kis_market_code"] == "J"
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_crypto_venue_none_not_forwarded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.mcp_server.tooling import market_data_quotes
+
+    get_orderbook_mock = AsyncMock(
+        return_value=_make_snapshot(
+            symbol="KRW-BTC",
+            instrument_type="crypto",
+            source="upbit",
+            expected_price=None,
+            expected_qty=None,
+        )
+    )
+    monkeypatch.setattr(
+        market_data_quotes.market_data_service,
+        "get_orderbook",
+        get_orderbook_mock,
+    )
+    tools = build_tools()
+
+    await tools["get_orderbook"]("KRW-BTC", market="crypto")
+
+    get_orderbook_mock.assert_awaited_once_with("KRW-BTC", "crypto", venue=None)
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_crypto_rejects_venue() -> None:
+    tools = build_tools()
+
+    with pytest.raises(ValueError, match="venue is only supported for KR equity orderbook"):
+        await tools["get_orderbook"]("KRW-BTC", market="crypto", venue="nxt")
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_kr_no_venue_diagnostics_when_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.mcp_server.tooling import market_data_quotes
+
+    monkeypatch.setattr(
+        market_data_quotes.market_data_service,
+        "get_orderbook",
+        AsyncMock(return_value=_make_snapshot()),
+    )
+    tools = build_tools()
+
+    result = await tools["get_orderbook"]("5930")
+
+    assert "venue" not in result
+    assert "venue_label" not in result
+    assert "kis_market_code" not in result
+    assert "source_endpoint" not in result
+    assert "source_tr_id" not in result
+    assert "is_empty_book" not in result
+    assert "requires_final_recheck" not in result
+    assert "empty_reason" not in result

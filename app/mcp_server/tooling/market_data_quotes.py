@@ -312,7 +312,7 @@ def _build_orderbook_payload(
     pressure = _classify_orderbook_pressure(snapshot.bid_ask_ratio)
     spread, spread_pct = _calculate_orderbook_spread(snapshot)
     bid_walls, ask_walls = _build_orderbook_walls(snapshot)
-    return {
+    payload: dict[str, Any] = {
         "symbol": snapshot.symbol,
         "instrument_type": snapshot.instrument_type,
         "source": snapshot.source,
@@ -340,6 +340,23 @@ def _build_orderbook_payload(
         "bid_walls": bid_walls,
         "ask_walls": ask_walls,
     }
+    if snapshot.venue is not None:
+        payload["venue"] = snapshot.venue
+    if snapshot.venue_label is not None:
+        payload["venue_label"] = snapshot.venue_label
+    if snapshot.kis_market_code is not None:
+        payload["kis_market_code"] = snapshot.kis_market_code
+    if snapshot.source_endpoint is not None:
+        payload["source_endpoint"] = snapshot.source_endpoint
+    if snapshot.source_tr_id is not None:
+        payload["source_tr_id"] = snapshot.source_tr_id
+    if snapshot.is_empty_book is not None:
+        payload["is_empty_book"] = snapshot.is_empty_book
+    if snapshot.requires_final_recheck is not None:
+        payload["requires_final_recheck"] = snapshot.requires_final_recheck
+    if snapshot.empty_reason is not None:
+        payload["empty_reason"] = snapshot.empty_reason
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -904,6 +921,7 @@ async def _get_quote_impl(
 async def _get_orderbook_impl(
     symbol: str | int,
     market: str = "kr",
+    venue: str | None = None,
 ) -> dict[str, Any]:
     """Implementation for get_orderbook tool."""
     requested_market = str(market or "kr").strip() or "kr"
@@ -920,6 +938,8 @@ async def _get_orderbook_impl(
             raise ValueError("symbol is required")
         _, symbol = _resolve_market_type(symbol, "kr")
     elif market_type == "crypto":
+        if venue is not None and str(venue).strip():
+            raise ValueError("venue is only supported for KR equity orderbook")
         symbol = _validate_crypto_orderbook_symbol_input(symbol)
         source = "upbit"
         instrument_type = "crypto"
@@ -930,6 +950,7 @@ async def _get_orderbook_impl(
         snapshot = await market_data_service.get_orderbook(
             symbol,
             "crypto" if market_type == "crypto" else "kr",
+            venue=venue if market_type == "equity_kr" else None,
         )
         return _build_orderbook_payload(snapshot)
     except Exception as exc:
@@ -1051,11 +1072,16 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
         name="get_orderbook",
         description=(
             "Get 10-level orderbook data with total residual quantities and expected match metadata. "
-            "Supports KR equity and KRW crypto markets."
+            "Supports KR equity and KRW crypto markets. "
+            "For KR equity, use venue to select the trading venue: "
+            "'krx' (default, KRX regular session), 'nxt' (NXT after-hours), "
+            "'unified' or '통합' (통합시장). venue applies only to KR equity."
         ),
     )
-    async def get_orderbook(symbol: str | int, market: str = "kr") -> dict[str, Any]:
-        return await _get_orderbook_impl(symbol, market)
+    async def get_orderbook(
+        symbol: str | int, market: str = "kr", venue: str | None = None
+    ) -> dict[str, Any]:
+        return await _get_orderbook_impl(symbol, market, venue)
 
     @mcp.tool(
         name="get_ohlcv",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -183,6 +184,47 @@ def _validate_crypto_orderbook_symbol(symbol: str) -> str:
 
 def _current_kst_datetime() -> dt.datetime:
     return now_kst()
+
+
+@dataclass(frozen=True)
+class KrOrderbookVenue:
+    venue: str
+    kis_market_code: str
+    venue_label: str
+
+
+_KR_VENUE_MAP: dict[str, KrOrderbookVenue] = {
+    "krx": KrOrderbookVenue("krx", "J", "KRX"),
+    "regular": KrOrderbookVenue("krx", "J", "KRX"),
+    "j": KrOrderbookVenue("krx", "J", "KRX"),
+    "nxt": KrOrderbookVenue("nxt", "NX", "NXT"),
+    "ntx": KrOrderbookVenue("nxt", "NX", "NXT"),
+    "nx": KrOrderbookVenue("nxt", "NX", "NXT"),
+    "afterhours": KrOrderbookVenue("nxt", "NX", "NXT"),
+    "extended": KrOrderbookVenue("nxt", "NX", "NXT"),
+    "unified": KrOrderbookVenue("unified", "UN", "통합"),
+    "combined": KrOrderbookVenue("unified", "UN", "통합"),
+    "integrated": KrOrderbookVenue("unified", "UN", "통합"),
+    "all": KrOrderbookVenue("unified", "UN", "통합"),
+    "un": KrOrderbookVenue("unified", "UN", "통합"),
+    "통합": KrOrderbookVenue("unified", "UN", "통합"),
+    "통합시장": KrOrderbookVenue("unified", "UN", "통합"),
+}
+
+_KR_DEFAULT_VENUE = KrOrderbookVenue("krx", "J", "KRX")
+
+_KR_ORDERBOOK_ENDPOINT = "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn"
+_KR_ORDERBOOK_TR_ID = "FHKST01010200"
+
+
+def _normalize_kr_orderbook_venue(venue: str | None) -> KrOrderbookVenue:
+    if not venue or not venue.strip():
+        return _KR_DEFAULT_VENUE
+    normalized = venue.strip().lower()
+    result = _KR_VENUE_MAP.get(normalized)
+    if result is None:
+        raise ValueError(f"unsupported KR orderbook venue: {venue!r}")
+    return result
 
 
 def _get_orderbook_session_hint(now_kst: dt.datetime | None = None) -> str:
@@ -377,9 +419,13 @@ async def get_quote(symbol: str, market: str) -> Quote:
         raise _map_error(exc) from exc
 
 
-async def get_orderbook(symbol: str, market: str = "kr") -> OrderbookSnapshot:
+async def get_orderbook(
+    symbol: str, market: str = "kr", venue: str | None = None
+) -> OrderbookSnapshot:
     resolved_market = _normalize_market(market)
     if resolved_market == "crypto":
+        if venue is not None and venue.strip():
+            raise ValueError("venue is only supported for KR equity orderbook")
         resolved_symbol = _validate_crypto_orderbook_symbol(symbol)
         try:
             raw = await fetch_orderbook(resolved_symbol)
@@ -415,13 +461,15 @@ async def get_orderbook(symbol: str, market: str = "kr") -> OrderbookSnapshot:
 
     if resolved_market != "equity_kr":
         raise ValueError("get_orderbook only supports KR equity and KRW crypto markets")
+
+    venue_info = _normalize_kr_orderbook_venue(venue)
     resolved_symbol = _normalize_symbol(symbol, resolved_market)
 
     try:
         kis = KISClient()
         output1, output2 = await kis.inquire_orderbook_snapshot(
             code=resolved_symbol,
-            market="J",
+            market=venue_info.kis_market_code,
         )
         expected_price, expected_qty = _extract_expected_match_metadata(
             resolved_symbol,
@@ -429,12 +477,17 @@ async def get_orderbook(symbol: str, market: str = "kr") -> OrderbookSnapshot:
         )
         total_ask_qty = _to_int(output1.get("total_askp_rsqn"))
         total_bid_qty = _to_int(output1.get("total_bidp_rsqn"))
+        asks = _parse_orderbook_levels(output1, "ask")
+        bids = _parse_orderbook_levels(output1, "bid")
+        is_empty_book = not asks and not bids
+        requires_final_recheck = is_empty_book
+        empty_reason = "empty_kis_orderbook" if is_empty_book else None
         return OrderbookSnapshot(
             symbol=resolved_symbol,
             instrument_type="equity_kr",
             source="kis",
-            asks=_parse_orderbook_levels(output1, "ask"),
-            bids=_parse_orderbook_levels(output1, "bid"),
+            asks=asks,
+            bids=bids,
             total_ask_qty=total_ask_qty,
             total_bid_qty=total_bid_qty,
             bid_ask_ratio=(
@@ -442,6 +495,14 @@ async def get_orderbook(symbol: str, market: str = "kr") -> OrderbookSnapshot:
             ),
             expected_price=expected_price,
             expected_qty=expected_qty,
+            venue=venue_info.venue,
+            venue_label=venue_info.venue_label,
+            kis_market_code=venue_info.kis_market_code,
+            source_endpoint=_KR_ORDERBOOK_ENDPOINT,
+            source_tr_id=_KR_ORDERBOOK_TR_ID,
+            is_empty_book=is_empty_book,
+            requires_final_recheck=requires_final_recheck,
+            empty_reason=empty_reason,
         )
     except Exception as exc:
         raise _map_error(exc) from exc
