@@ -41,6 +41,7 @@ SOURCES: frozenset[str] = frozenset(
         "token_unlocks",
         "forexfactory",
         "wisefn",
+        "tradingview",
     }
 )
 
