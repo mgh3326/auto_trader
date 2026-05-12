@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import json
-import pytest
 from pathlib import Path
 from uuid import uuid4
+
+import pytest
 
 
 @pytest.mark.integration
@@ -24,6 +25,9 @@ async def test_run_research_reports_ingest_dry_run_returns_counts(tmp_path: Path
                 "dedup_key": f"k-job-{uuid4()}",
                 "report_type": "equity_research",
                 "source": "naver_research",
+                "title": "Dry-run metadata smoke",
+                "detail": {"url": "https://example.test/report"},
+                "symbol_candidates": [{"symbol": "005930", "market": "kr"}],
                 "attribution": {"full_text_exported": False, "pdf_body_exported": False},
             }
         ],
@@ -37,6 +41,21 @@ async def test_run_research_reports_ingest_dry_run_returns_counts(tmp_path: Path
     assert result["status"] == "completed"
     assert result["committed"] is False
     assert result["report_count"] == 1
+    assert result["dedup_keys"] == [payload["reports"][0]["dedup_key"]]
+    assert result["citation_metadata"] == [
+        {
+            "dedup_key": payload["reports"][0]["dedup_key"],
+            "source": "naver_research",
+            "title": "Dry-run metadata smoke",
+            "category": None,
+            "analyst": None,
+            "published_at_text": None,
+            "published_at": None,
+            "detail_url": "https://example.test/report",
+            "pdf_url": None,
+            "symbol_candidates": [{"symbol": "005930", "market": "kr", "source": None}],
+        }
+    ]
 
 
 @pytest.mark.integration

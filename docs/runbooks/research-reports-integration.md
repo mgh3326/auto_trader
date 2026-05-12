@@ -269,8 +269,8 @@ Cadence: hourly POST of latest payload to `/trading/api/research-reports/ingest/
 
 1. ✅ `tests/test_research_reports_*` and `tests/test_middleware_auth_research_reports_ingest.py` green on `main`.
 2. ✅ `RESEARCH_REPORTS_INGEST_TOKEN` set in production env (verify via 403 vs 401 probe — never log the token).
-3. ✅ Three consecutive dry-run POSTs from the operator host return `inserted_count >= 0`, no 5xx, and `/freshness` reports `is_ready=false` only on `research_reports_unavailable`/`unfinished`, not on transport errors.
-4. ✅ Diagnose CLI on `current` returns `is_ready` for at least one staged-source after a manual POST.
+3. ✅ Three consecutive file-based dry-runs (`scripts.ingest_research_reports --dry-run` or TaskIQ smoke with `commit=false`) return the expected `report_count`, `dedup_keys`, and citation metadata without writing.
+4. ✅ The first production POST has an explicit approval packet, then `/freshness` and the diagnose CLI on `current` report the staged source as ready after that manual POST.
 5. ✅ Operator on-call acknowledged the rollback steps below.
 
 ### Approval Packet Template
@@ -286,7 +286,7 @@ Fill this out before any production activation:
     -d @/path/to/payload.json | jq
   ```
 - **Payload sha256 + report count** (from staged file header)
-- **Dry-run smoke evidence:** 3 successful POSTs returning the same `run_uuid` counts
+- **Dry-run smoke evidence:** 3 successful file-based dry-runs returning the expected `report_count`, `dedup_keys`, and citation metadata; no production POST before approval
 - **Expected DB delta:** `inserted_count`, `skipped_count`
 - **Rollback statement:** "no destructive writes; POST is idempotent on `run_uuid`; freshness service is read-only"
 - **Scheduler scope:** `paused=true → false` separate from any backfill
@@ -302,7 +302,7 @@ Fill this out before any production activation:
 2. **Rotate token:** set `RESEARCH_REPORTS_INGEST_TOKEN=""` → endpoint returns 403, no further inbound writes. Restart auto_trader app.
 3. **Confirm read path intact:** `GET /trading/api/research-reports/recent` still serves prior citations — table is append-only.
 4. **No DB cleanup needed:** `research_reports` is upsert-on-`dedup_key`; `research_report_ingestion_runs` is upsert-on-`run_uuid`. Do not delete rows.
-5. **Re-enable:** configure token, smoke 3 dry-runs, then unpause Prefect.
+5. **Re-enable:** configure token, run 3 file-based dry-runs, perform the approval-gated manual POST smoke, then unpause Prefect.
 
 ### Smoke Commands
 
@@ -314,7 +314,7 @@ uv run python -m scripts.diagnose_research_reports --source naver_research
 # CLI ingest, dry-run (file-based, ROB-140 path — still valid)
 uv run python -m scripts.ingest_research_reports --file /path/to/payload.json --dry-run
 
-# Bridge smoke (operator-only; token redacted; commit only after approval)
+# Bridge smoke (operator-only; token redacted; writes on success; run only after approval)
 curl -X POST "$AUTO_TRADER_BASE/trading/api/research-reports/ingest/bulk" \
   -H "X-Research-Reports-Ingest-Token: ***" \
   -H "Content-Type: application/json" \

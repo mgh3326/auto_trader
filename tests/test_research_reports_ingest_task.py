@@ -15,7 +15,9 @@ def test_task_module_is_discovered_by_taskiq_init():
 @pytest.mark.unit
 def test_task_has_no_active_recurring_schedule():
     """Scheduler activation is approval-gated; the registered task ships scheduleless."""
-    from app.tasks.research_reports_ingest_tasks import research_reports_ingest_bulk_smoke
+    from app.tasks.research_reports_ingest_tasks import (
+        research_reports_ingest_bulk_smoke,
+    )
 
     labels = getattr(research_reports_ingest_bulk_smoke, "labels", {}) or {}
     schedule = labels.get("schedule") if isinstance(labels, dict) else None
@@ -25,6 +27,7 @@ def test_task_has_no_active_recurring_schedule():
 @pytest.mark.unit
 def test_task_default_invocation_is_dry_run(monkeypatch):
     import asyncio
+
     from app.tasks import research_reports_ingest_tasks as mod
 
     captured = {}

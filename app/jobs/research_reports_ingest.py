@@ -16,6 +16,40 @@ from app.services.research_reports.ingestion import ingest_research_reports_v1
 logger = logging.getLogger(__name__)
 
 
+def preview_research_reports_payload(request: ResearchReportIngestionRequest) -> dict:
+    """Return dry-run evidence for an ingest payload without DB writes.
+
+    Keep this intentionally citation-metadata-only: no summary/body/excerpt fields.
+    """
+    return {
+        "status": "completed",
+        "committed": False,
+        "run_uuid": request.research_report_ingestion_run.run_uuid,
+        "report_count": len(request.reports),
+        "dedup_keys": [report.dedup_key for report in request.reports],
+        "citation_metadata": [
+            {
+                "dedup_key": report.dedup_key,
+                "source": report.source,
+                "title": report.title,
+                "category": report.category,
+                "analyst": report.analyst,
+                "published_at_text": report.published_at_text,
+                "published_at": report.published_at.isoformat()
+                if report.published_at
+                else None,
+                "detail_url": report.detail.url if report.detail else None,
+                "pdf_url": report.pdf.url if report.pdf else None,
+                "symbol_candidates": [
+                    candidate.model_dump(mode="json")
+                    for candidate in report.symbol_candidates
+                ],
+            }
+            for report in request.reports
+        ],
+    }
+
+
 async def run_research_reports_ingest(
     *, payload_file: str, commit: bool = False,
 ) -> dict:
@@ -37,12 +71,7 @@ async def run_research_reports_ingest(
         }
 
     if not commit:
-        return {
-            "status": "completed",
-            "committed": False,
-            "run_uuid": request.research_report_ingestion_run.run_uuid,
-            "report_count": len(request.reports),
-        }
+        return preview_research_reports_payload(request)
 
     async with AsyncSessionLocal() as db:
         try:

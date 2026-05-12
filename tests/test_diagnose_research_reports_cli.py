@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import json
-import pytest
 import subprocess
 import sys
 from uuid import uuid4
+
+import pytest
 
 
 @pytest.mark.integration

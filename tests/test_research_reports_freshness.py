@@ -1,5 +1,6 @@
 """ROB-207 freshness/readiness tests."""
 from __future__ import annotations
+
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 

@@ -21,6 +21,7 @@ from pathlib import Path
 
 from app.core.cli import setup_logging_and_sentry
 from app.core.db import AsyncSessionLocal
+from app.jobs.research_reports_ingest import preview_research_reports_payload
 from app.monitoring.sentry import capture_exception
 from app.schemas.research_reports import ResearchReportIngestionRequest
 from app.services.research_reports.ingestion import ingest_research_reports_v1
@@ -59,11 +60,8 @@ async def main_async(argv: list[str] | None = None) -> int:
         return 2
 
     if ns.dry_run:
-        summary = {
-            "dry_run": True,
-            "run_uuid": request.research_report_ingestion_run.run_uuid,
-            "report_count": len(request.reports),
-        }
+        summary = preview_research_reports_payload(request)
+        summary["dry_run"] = True
         print(json.dumps(summary))
         return 0
 
