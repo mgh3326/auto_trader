@@ -30,7 +30,9 @@ def bind_job_session(monkeypatch, db_session):
     return db_session
 
 
-def _payload(symbol: str, snapshot_date: dt.date = dt.date(2026, 5, 12)) -> InvestorFlowSnapshotUpsert:
+def _payload(
+    symbol: str, snapshot_date: dt.date = dt.date(2026, 5, 12)
+) -> InvestorFlowSnapshotUpsert:
     return InvestorFlowSnapshotUpsert(
         market="kr",
         symbol=symbol,
@@ -48,15 +50,23 @@ async def test_dry_run_reports_counts_and_idempotency_without_writing(
     bind_job_session, db_session, monkeypatch
 ):
     await db_session.execute(
-        sa.delete(KRSymbolUniverse).where(KRSymbolUniverse.symbol.in_(["900311", "900312"]))
+        sa.delete(KRSymbolUniverse).where(
+            KRSymbolUniverse.symbol.in_(["900311", "900312"])
+        )
     )
     await db_session.execute(
-        sa.delete(InvestorFlowSnapshot).where(InvestorFlowSnapshot.symbol.in_(["900311", "900312"]))
+        sa.delete(InvestorFlowSnapshot).where(
+            InvestorFlowSnapshot.symbol.in_(["900311", "900312"])
+        )
     )
     db_session.add_all(
         [
-            KRSymbolUniverse(symbol="900311", name="ROB205 A", exchange="KOSPI", is_active=True),
-            KRSymbolUniverse(symbol="900312", name="ROB205 B", exchange="KOSPI", is_active=True),
+            KRSymbolUniverse(
+                symbol="900311", name="ROB205 A", exchange="KOSPI", is_active=True
+            ),
+            KRSymbolUniverse(
+                symbol="900312", name="ROB205 B", exchange="KOSPI", is_active=True
+            ),
         ]
     )
     await db_session.commit()
@@ -77,13 +87,17 @@ async def test_dry_run_reports_counts_and_idempotency_without_writing(
     assert result.symbols_resolved == 2
     assert result.snapshots_built == 2
     assert result.snapshot_date_distribution == {"2026-05-12": 2}
-    assert result.idempotency == {"wouldInsert": 2, "wouldUpdate": 0, "duplicatePayloadKeys": 0}
+    assert result.idempotency == {
+        "wouldInsert": 2,
+        "wouldUpdate": 0,
+        "duplicatePayloadKeys": 0,
+    }
     assert len(result.samples) == 2
     assert result.warnings == ("batch 1: fixture warning",)
     rows = await db_session.execute(
-        sa.select(sa.func.count()).select_from(InvestorFlowSnapshot).where(
-            InvestorFlowSnapshot.symbol.in_(["900311", "900312"])
-        )
+        sa.select(sa.func.count())
+        .select_from(InvestorFlowSnapshot)
+        .where(InvestorFlowSnapshot.symbol.in_(["900311", "900312"]))
     )
     assert rows.scalar_one() == 0
 
@@ -92,7 +106,9 @@ async def test_dry_run_reports_counts_and_idempotency_without_writing(
 async def test_commit_persists_and_second_dry_run_reports_would_update(
     bind_job_session, db_session, monkeypatch
 ):
-    await db_session.execute(sa.delete(InvestorFlowSnapshot).where(InvestorFlowSnapshot.symbol == "900313"))
+    await db_session.execute(
+        sa.delete(InvestorFlowSnapshot).where(InvestorFlowSnapshot.symbol == "900313")
+    )
     await db_session.commit()
 
     async def fake_builder(**kwargs):
@@ -108,7 +124,11 @@ async def test_commit_persists_and_second_dry_run_reports_would_update(
     dry_run = await job.run_investor_flow_snapshot_build(
         job.InvestorFlowSnapshotBuildRequest(symbols=("900313",), commit=False)
     )
-    assert dry_run.idempotency == {"wouldInsert": 0, "wouldUpdate": 1, "duplicatePayloadKeys": 0}
+    assert dry_run.idempotency == {
+        "wouldInsert": 0,
+        "wouldUpdate": 1,
+        "duplicatePayloadKeys": 0,
+    }
 
 
 @pytest.mark.asyncio

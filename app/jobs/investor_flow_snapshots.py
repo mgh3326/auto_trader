@@ -110,12 +110,20 @@ def _payload_key(payload: InvestorFlowSnapshotUpsert) -> tuple[str, str, dt.date
     )
 
 
-async def _classify_idempotency(payloads: list[InvestorFlowSnapshotUpsert]) -> dict[str, int]:
+async def _classify_idempotency(
+    payloads: list[InvestorFlowSnapshotUpsert],
+) -> dict[str, int]:
     keys = [_payload_key(payload) for payload in payloads]
-    duplicate_payload_keys = sum(count - 1 for count in Counter(keys).values() if count > 1)
+    duplicate_payload_keys = sum(
+        count - 1 for count in Counter(keys).values() if count > 1
+    )
     unique_keys = set(keys)
     if not unique_keys:
-        return {"wouldInsert": 0, "wouldUpdate": 0, "duplicatePayloadKeys": duplicate_payload_keys}
+        return {
+            "wouldInsert": 0,
+            "wouldUpdate": 0,
+            "duplicatePayloadKeys": duplicate_payload_keys,
+        }
 
     conditions = [
         sa.and_(
@@ -184,7 +192,9 @@ def _sample(payload: InvestorFlowSnapshotUpsert) -> InvestorFlowSnapshotSample:
     )
 
 
-def _merge_date_distribution(aggregate: Counter[str], payloads: list[InvestorFlowSnapshotUpsert]) -> None:
+def _merge_date_distribution(
+    aggregate: Counter[str], payloads: list[InvestorFlowSnapshotUpsert]
+) -> None:
     aggregate.update(p.snapshot_date.isoformat() for p in payloads)
 
 
@@ -206,7 +216,9 @@ async def run_investor_flow_snapshot_build(
     if request.all_symbols:
         symbols = await resolve_active_universe(request.market)
     else:
-        symbols = await resolve_symbols(request.market, list(request.symbols), request.limit or 20)
+        symbols = await resolve_symbols(
+            request.market, list(request.symbols), request.limit or 20
+        )
 
     logger.info(
         "resolved %d KR investor-flow symbols all_symbols=%s commit=%s",
@@ -231,7 +243,9 @@ async def run_investor_flow_snapshot_build(
 
     total_built = 0
     batch_count = 0
-    idempotency = Counter({"wouldInsert": 0, "wouldUpdate": 0, "duplicatePayloadKeys": 0})
+    idempotency = Counter(
+        {"wouldInsert": 0, "wouldUpdate": 0, "duplicatePayloadKeys": 0}
+    )
     date_distribution: Counter[str] = Counter()
     samples: list[InvestorFlowSnapshotSample] = []
 
@@ -249,7 +263,9 @@ async def run_investor_flow_snapshot_build(
             concurrency=request.concurrency,
         )
         payloads = build_result.payloads
-        warnings.extend(f"batch {batch_count}: {warning}" for warning in build_result.warnings)
+        warnings.extend(
+            f"batch {batch_count}: {warning}" for warning in build_result.warnings
+        )
         total_built += len(payloads)
         _merge_date_distribution(date_distribution, payloads)
         idempotency.update(await _classify_idempotency(payloads))

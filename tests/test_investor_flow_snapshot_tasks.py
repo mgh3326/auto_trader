@@ -67,7 +67,11 @@ async def test_task_wrapper_defaults_to_dry_run_and_returns_camel_case(monkeypat
 
     monkeypatch.setattr(tasks, "run_investor_flow_snapshot_build", fake_runner)
 
-    raw_func = getattr(tasks.build_investor_flow_snapshots, "original_func", tasks.build_investor_flow_snapshots)
+    raw_func = getattr(
+        tasks.build_investor_flow_snapshots,
+        "original_func",
+        tasks.build_investor_flow_snapshots,
+    )
     payload = await raw_func(market="kr", symbols=["005930"], days=20)
 
     assert captured == {"commit": False, "days": 20}

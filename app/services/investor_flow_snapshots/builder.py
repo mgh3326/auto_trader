@@ -17,7 +17,9 @@ from typing import Any
 from app.services.investor_flow_snapshots.repository import InvestorFlowSnapshotUpsert
 from app.services.naver_finance import fetch_investor_trends
 
-InvestorTrendFetcher = Callable[[str, int], Awaitable[Mapping[str, Any]] | Mapping[str, Any]]
+InvestorTrendFetcher = Callable[
+    [str, int], Awaitable[Mapping[str, Any]] | Mapping[str, Any]
+]
 
 
 @dataclass(frozen=True)
@@ -57,13 +59,17 @@ def _int_or_none(value: Any) -> int | None:
         return None
 
 
-def _derive_individual(foreign_net: int | None, institution_net: int | None) -> int | None:
+def _derive_individual(
+    foreign_net: int | None, institution_net: int | None
+) -> int | None:
     if foreign_net is None or institution_net is None:
         return None
     return -(foreign_net + institution_net)
 
 
-def _streak_for(rows: Sequence[InvestorFlowSnapshotUpsert], start: int, attr: str) -> tuple[int | None, int | None]:
+def _streak_for(
+    rows: Sequence[InvestorFlowSnapshotUpsert], start: int, attr: str
+) -> tuple[int | None, int | None]:
     value = getattr(rows[start], attr)
     if value is None or value == 0:
         return None, None
@@ -82,7 +88,9 @@ def _streak_for(rows: Sequence[InvestorFlowSnapshotUpsert], start: int, attr: st
     return None, streak
 
 
-def _apply_streaks(payloads: list[InvestorFlowSnapshotUpsert]) -> list[InvestorFlowSnapshotUpsert]:
+def _apply_streaks(
+    payloads: list[InvestorFlowSnapshotUpsert],
+) -> list[InvestorFlowSnapshotUpsert]:
     by_symbol: dict[str, list[InvestorFlowSnapshotUpsert]] = defaultdict(list)
     for payload in payloads:
         by_symbol[payload.symbol].append(payload)
@@ -93,8 +101,12 @@ def _apply_streaks(payloads: list[InvestorFlowSnapshotUpsert]) -> list[InvestorF
         sorted_rows = sorted(rows, key=lambda p: p.snapshot_date, reverse=True)
         for idx, row in enumerate(sorted_rows):
             foreign_buy, foreign_sell = _streak_for(sorted_rows, idx, "foreign_net")
-            institution_buy, institution_sell = _streak_for(sorted_rows, idx, "institution_net")
-            individual_buy, individual_sell = _streak_for(sorted_rows, idx, "individual_net")
+            institution_buy, institution_sell = _streak_for(
+                sorted_rows, idx, "institution_net"
+            )
+            individual_buy, individual_sell = _streak_for(
+                sorted_rows, idx, "individual_net"
+            )
             by_key[(symbol, row.snapshot_date, row.source)] = row.model_copy(
                 update={
                     "foreign_consecutive_buy_days": foreign_buy,
@@ -110,7 +122,9 @@ def _apply_streaks(payloads: list[InvestorFlowSnapshotUpsert]) -> list[InvestorF
     return updated
 
 
-def _rank_values(values: list[tuple[int, InvestorFlowSnapshotUpsert]], *, reverse: bool) -> dict[tuple[str, dt.date, str], int]:
+def _rank_values(
+    values: list[tuple[int, InvestorFlowSnapshotUpsert]], *, reverse: bool
+) -> dict[tuple[str, dt.date, str], int]:
     sorted_values = sorted(values, key=lambda item: item[0], reverse=reverse)
     ranks: dict[tuple[str, dt.date, str], int] = {}
     for idx, (_, payload) in enumerate(sorted_values, start=1):
@@ -118,7 +132,9 @@ def _rank_values(values: list[tuple[int, InvestorFlowSnapshotUpsert]], *, revers
     return ranks
 
 
-def _apply_ranks(payloads: list[InvestorFlowSnapshotUpsert]) -> list[InvestorFlowSnapshotUpsert]:
+def _apply_ranks(
+    payloads: list[InvestorFlowSnapshotUpsert],
+) -> list[InvestorFlowSnapshotUpsert]:
     by_date: dict[dt.date, list[InvestorFlowSnapshotUpsert]] = defaultdict(list)
     for payload in payloads:
         by_date[payload.snapshot_date].append(payload)
@@ -126,10 +142,26 @@ def _apply_ranks(payloads: list[InvestorFlowSnapshotUpsert]) -> list[InvestorFlo
     rank_updates: dict[tuple[str, dt.date, str], dict[str, int]] = defaultdict(dict)
     for snapshot_date, rows in by_date.items():
         del snapshot_date
-        foreign_buys = [(p.foreign_net, p) for p in rows if p.foreign_net is not None and p.foreign_net > 0]
-        foreign_sells = [(p.foreign_net, p) for p in rows if p.foreign_net is not None and p.foreign_net < 0]
-        institution_buys = [(p.institution_net, p) for p in rows if p.institution_net is not None and p.institution_net > 0]
-        institution_sells = [(p.institution_net, p) for p in rows if p.institution_net is not None and p.institution_net < 0]
+        foreign_buys = [
+            (p.foreign_net, p)
+            for p in rows
+            if p.foreign_net is not None and p.foreign_net > 0
+        ]
+        foreign_sells = [
+            (p.foreign_net, p)
+            for p in rows
+            if p.foreign_net is not None and p.foreign_net < 0
+        ]
+        institution_buys = [
+            (p.institution_net, p)
+            for p in rows
+            if p.institution_net is not None and p.institution_net > 0
+        ]
+        institution_sells = [
+            (p.institution_net, p)
+            for p in rows
+            if p.institution_net is not None and p.institution_net < 0
+        ]
         for key, rank in _rank_values(foreign_buys, reverse=True).items():
             rank_updates[key]["foreign_net_buy_rank"] = rank
         for key, rank in _rank_values(foreign_sells, reverse=False).items():
@@ -140,12 +172,18 @@ def _apply_ranks(payloads: list[InvestorFlowSnapshotUpsert]) -> list[InvestorFlo
             rank_updates[key]["institution_net_sell_rank"] = rank
 
     return [
-        payload.model_copy(update=rank_updates.get((payload.symbol, payload.snapshot_date, payload.source), {}))
+        payload.model_copy(
+            update=rank_updates.get(
+                (payload.symbol, payload.snapshot_date, payload.source), {}
+            )
+        )
         for payload in payloads
     ]
 
 
-async def _call_fetcher(fetcher: InvestorTrendFetcher, symbol: str, days: int) -> Mapping[str, Any]:
+async def _call_fetcher(
+    fetcher: InvestorTrendFetcher, symbol: str, days: int
+) -> Mapping[str, Any]:
     result = fetcher(symbol, days)
     if inspect.isawaitable(result):
         return await result
@@ -168,12 +206,16 @@ async def build_investor_flow_snapshots(
     warnings: list[str] = []
     payloads: list[InvestorFlowSnapshotUpsert] = []
 
-    async def build_symbol(symbol: str) -> tuple[list[InvestorFlowSnapshotUpsert], tuple[str, ...]]:
+    async def build_symbol(
+        symbol: str,
+    ) -> tuple[list[InvestorFlowSnapshotUpsert], tuple[str, ...]]:
         normalized = _normalize_symbol(symbol)
         async with semaphore:
             try:
                 result = await _call_fetcher(fetcher, normalized, days)
-            except Exception as exc:  # pragma: no cover - defensive external-source boundary
+            except (
+                Exception
+            ) as exc:  # pragma: no cover - defensive external-source boundary
                 return [], (f"{normalized}: fetch failed: {exc.__class__.__name__}",)
         rows = result.get("data") if isinstance(result, Mapping) else None
         if not rows:
