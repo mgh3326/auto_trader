@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 
+from app.core.config import settings
 from app.core.taskiq_broker import broker
 from app.jobs.research_reports_ingest import run_research_reports_ingest
 
@@ -24,6 +25,12 @@ async def research_reports_ingest_bulk_smoke(
     payload_file: str | None = None,
     commit: bool = False,
 ) -> dict:
+    if commit and not settings.RESEARCH_REPORTS_INGEST_COMMIT_ENABLED:
+        return {
+            "status": "failed",
+            "error": "commit mode is disabled until explicit operator approval",
+            "committed": False,
+        }
     target = payload_file or _default_payload_file()
     if not target:
         return {

@@ -9,7 +9,7 @@ from uuid import uuid4
 import pytest
 
 
-@pytest.mark.integration
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_run_research_reports_ingest_dry_run_returns_counts(tmp_path: Path):
     from app.jobs.research_reports_ingest import run_research_reports_ingest
@@ -63,7 +63,7 @@ async def test_run_research_reports_ingest_dry_run_returns_counts(tmp_path: Path
     ]
 
 
-@pytest.mark.integration
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_run_research_reports_ingest_missing_file_returns_failed_status():
     from app.jobs.research_reports_ingest import run_research_reports_ingest

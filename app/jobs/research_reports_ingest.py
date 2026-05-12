@@ -6,6 +6,7 @@ and the diagnose CLI can share the same boundary. Never raises on operational er
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -64,7 +65,8 @@ async def run_research_reports_ingest(
             "committed": False,
         }
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        payload_text = await asyncio.to_thread(path.read_text, encoding="utf-8")
+        raw = json.loads(payload_text)
         request = ResearchReportIngestionRequest.model_validate(raw)
     except Exception as exc:
         return {

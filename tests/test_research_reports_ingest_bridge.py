@@ -85,10 +85,17 @@ def test_bulk_ingest_rejects_full_text_exported(monkeypatch):
                 "dedup_key": f"k-bad-{uuid4()}",
                 "report_type": "equity_research",
                 "source": "naver_research",
-                "attribution": {"full_text_exported": True},
+                "title": "Guardrail test",
+                "attribution": {
+                    "publisher": "naver_research",
+                    "copyright_notice": "© Naver",
+                    "full_text_exported": True,
+                    "pdf_body_exported": False,
+                },
             }
         ],
     }
     with TestClient(app) as client:
         r = client.post(INGEST_PATH, json=payload, headers=INGEST_HEADERS)
     assert r.status_code in (400, 422)
+    assert "full_text_exported" in r.text

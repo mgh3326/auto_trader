@@ -1,6 +1,7 @@
-"""Read-only research reports router (ROB-140).
+"""Research reports router (ROB-140/ROB-207).
 
-GET only. No mutation. Auth required (matches existing trading/api pattern).
+GET endpoints are user-authenticated. Bulk POST ingest uses token auth and is
+reserved for approval-gated ingestion bridge writes.
 """
 
 from __future__ import annotations
@@ -80,6 +81,7 @@ async def bulk_ingest_research_reports(
         await db.commit()
         return result
     except ValueError as exc:
+        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
         ) from exc

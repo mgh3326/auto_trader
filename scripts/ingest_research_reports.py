@@ -2,10 +2,11 @@
 """Ingest a research-reports.v1 payload JSON file into auto_trader (ROB-140).
 
 Usage:
-    uv run python -m scripts.ingest_research_reports --file path/to/payload.json [--dry-run]
+    uv run python -m scripts.ingest_research_reports --file path/to/payload.json
+    uv run python -m scripts.ingest_research_reports --file path/to/payload.json --commit --confirm
 
-Reads the file, validates against ResearchReportIngestionRequest, and (unless dry-run)
-upserts into research_reports / research_report_ingestion_runs. Prints a JSON summary.
+Reads the file and validates against ResearchReportIngestionRequest. Defaults to
+dry-run; commit mode also requires --confirm and RESEARCH_REPORTS_INGEST_COMMIT_ENABLED=true.
 
 Boundary: this is the only entry point that ingests news-ingestor output. Auto_trader
 runtime never calls news-ingestor internals.
@@ -20,6 +21,7 @@ import logging
 from pathlib import Path
 
 from app.core.cli import setup_logging_and_sentry
+from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.jobs.research_reports_ingest import preview_research_reports_payload
 from app.monitoring.sentry import capture_exception
@@ -39,7 +41,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         help="Path to a research-reports.v1 JSON payload file.",
     )
-    parser.add_argument("--dry-run", action="store_true", dest="dry_run")
+    parser.add_argument(
+        "--commit",
+        action="store_true",
+        help="Execute DB writes; default is dry-run evidence only.",
+    )
+    parser.add_argument(
+        "--confirm",
+        action="store_true",
+        help="Required with --commit as an explicit operator confirmation.",
+    )
     return parser.parse_args(argv)
 
 
@@ -59,11 +70,18 @@ async def main_async(argv: list[str] | None = None) -> int:
         capture_exception(exc, process="ingest_research_reports")
         return 2
 
-    if ns.dry_run:
+    if not ns.commit:
         summary = preview_research_reports_payload(request)
         summary["dry_run"] = True
         print(json.dumps(summary))
         return 0
+
+    if not ns.confirm:
+        logger.error("commit mode requires --confirm")
+        return 4
+    if not settings.RESEARCH_REPORTS_INGEST_COMMIT_ENABLED:
+        logger.error("commit mode disabled until explicit operator approval")
+        return 4
 
     async with AsyncSessionLocal() as db:
         try:

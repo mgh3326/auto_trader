@@ -42,5 +42,35 @@ def test_task_default_invocation_is_dry_run(monkeypatch):
     result = asyncio.run(
         mod.research_reports_ingest_bulk_smoke(payload_file="/some/path.json")
     )
+    assert captured["payload_file"] == "/some/path.json"
     assert captured["commit"] is False
     assert result["committed"] is False
+
+
+@pytest.mark.unit
+def test_task_rejects_commit_when_runtime_gate_disabled(monkeypatch):
+    import asyncio
+
+    from app.tasks import research_reports_ingest_tasks as mod
+
+    async def fail_if_called(*, payload_file: str, commit: bool):  # pragma: no cover
+        raise AssertionError("runner must not be called when commit gate is disabled")
+
+    monkeypatch.setattr(mod, "run_research_reports_ingest", fail_if_called)
+    monkeypatch.setattr(
+        mod.settings,
+        "RESEARCH_REPORTS_INGEST_COMMIT_ENABLED",
+        False,
+        raising=False,
+    )
+
+    result = asyncio.run(
+        mod.research_reports_ingest_bulk_smoke(
+            payload_file="/some/path.json",
+            commit=True,
+        )
+    )
+
+    assert result["status"] == "failed"
+    assert result["committed"] is False
+    assert "disabled" in result["error"]
