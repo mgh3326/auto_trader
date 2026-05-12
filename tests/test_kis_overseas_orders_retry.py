@@ -74,6 +74,39 @@ class TestOverseasOrdersTransientRetry:
             )
 
     @pytest.mark.asyncio
+    async def test_returns_accumulated_rows_when_continuation_sydb0050_persists(
+        self, _mock_overseas_orders
+    ):
+        instance, parent = _mock_overseas_orders
+
+        first_page = {
+            "rt_cd": "0",
+            "output1": [{"odno": "001", "pdno": "AAPL"}],
+            "ctx_area_fk200": "FK_NEXT",
+            "ctx_area_nk200": "NK_NEXT",
+        }
+        transient_response = {
+            "rt_cd": "1",
+            "msg_cd": "SYDB0050",
+            "msg1": "조회이후에 자료가 변경되었습니다.(다시 조회하세요)",
+        }
+        parent._request_with_rate_limit = AsyncMock(
+            side_effect=[
+                first_page,
+                transient_response,
+                transient_response,
+                transient_response,
+            ]
+        )
+
+        result = await instance.inquire_daily_order_overseas(
+            start_date="20260317", end_date="20260317"
+        )
+
+        assert result == [{"odno": "001", "pdno": "AAPL"}]
+        assert parent._request_with_rate_limit.call_count == 4
+
+    @pytest.mark.asyncio
     async def test_non_retryable_error_raises_immediately(self, _mock_overseas_orders):
         instance, parent = _mock_overseas_orders
 

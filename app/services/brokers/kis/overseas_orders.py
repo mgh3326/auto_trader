@@ -629,18 +629,30 @@ class OverseasOrderClient:
 
                 if js.get("msg_cd") in constants.RETRYABLE_MSG_CODES:
                     transient_retry_count += 1
+                    error_msg = f"{js.get('msg_cd')} {js.get('msg1')}"
                     if transient_retry_count < constants.RETRYABLE_MAX_ATTEMPTS:
                         logging.warning(
-                            "해외주식 체결조회 transient 에러 (시도 %d/%d): %s %s",
+                            "해외주식 체결조회 transient 에러 (시도 %d/%d, page=%d, accumulated=%d): %s",
                             transient_retry_count,
                             constants.RETRYABLE_MAX_ATTEMPTS,
-                            js.get("msg_cd"),
-                            js.get("msg1"),
+                            page,
+                            len(all_orders),
+                            error_msg,
                         )
                         await asyncio.sleep(
                             constants.RETRYABLE_BASE_DELAY * transient_retry_count
                         )
                         continue
+
+                    if all_orders:
+                        logging.warning(
+                            "해외주식 체결조회 연속조회 중 transient 에러가 반복되어 "
+                            "누적 %d건을 반환합니다 (page=%d): %s",
+                            len(all_orders),
+                            page,
+                            error_msg,
+                        )
+                        break
 
                 error_msg = f"{js.get('msg_cd')} {js.get('msg1')}"
                 logging.error(f"해외주식 체결조회 실패: {error_msg}")
