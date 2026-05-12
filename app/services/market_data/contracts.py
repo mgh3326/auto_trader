@@ -51,6 +51,14 @@ class OrderbookSnapshot:
     bid_ask_ratio: float | None
     expected_price: int | None = None
     expected_qty: int | None = None
+    venue: str | None = None
+    venue_label: str | None = None
+    kis_market_code: str | None = None
+    source_endpoint: str | None = None
+    source_tr_id: str | None = None
+    is_empty_book: bool | None = None
+    requires_final_recheck: bool | None = None
+    empty_reason: str | None = None
 
 
 __all__ = ["Quote", "Candle", "OrderbookLevel", "OrderbookSnapshot"]
