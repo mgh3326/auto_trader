@@ -85,7 +85,9 @@ SAMPLE_TV_PAYLOAD_LIST = [
 async def test_fetch_tradingview_filters_to_target_day():
     from app.services.market_events import tradingview_helpers as tv
 
-    with patch.object(tv, "_fetch_tradingview_raw", AsyncMock(return_value=SAMPLE_TV_PAYLOAD)):
+    with patch.object(
+        tv, "_fetch_tradingview_raw", AsyncMock(return_value=SAMPLE_TV_PAYLOAD)
+    ):
         rows = await tv.fetch_tradingview_events_for_date(date(2026, 5, 13))
 
     assert len(rows) == 2
@@ -98,7 +100,9 @@ async def test_fetch_tradingview_filters_to_target_day():
 async def test_fetch_tradingview_excludes_other_days():
     from app.services.market_events import tradingview_helpers as tv
 
-    with patch.object(tv, "_fetch_tradingview_raw", AsyncMock(return_value=SAMPLE_TV_PAYLOAD)):
+    with patch.object(
+        tv, "_fetch_tradingview_raw", AsyncMock(return_value=SAMPLE_TV_PAYLOAD)
+    ):
         rows = await tv.fetch_tradingview_events_for_date(date(2026, 5, 14))
 
     assert len(rows) == 1
@@ -110,7 +114,9 @@ async def test_fetch_tradingview_excludes_other_days():
 async def test_fetch_tradingview_parses_utc_datetime():
     from app.services.market_events import tradingview_helpers as tv
 
-    with patch.object(tv, "_fetch_tradingview_raw", AsyncMock(return_value=SAMPLE_TV_PAYLOAD)):
+    with patch.object(
+        tv, "_fetch_tradingview_raw", AsyncMock(return_value=SAMPLE_TV_PAYLOAD)
+    ):
         rows = await tv.fetch_tradingview_events_for_date(date(2026, 5, 13))
 
     cpi = next(r for r in rows if r["title"] == "Core CPI m/m")
@@ -126,7 +132,9 @@ async def test_fetch_tradingview_parses_utc_datetime():
 async def test_fetch_tradingview_accepts_list_payload():
     from app.services.market_events import tradingview_helpers as tv
 
-    with patch.object(tv, "_fetch_tradingview_raw", AsyncMock(return_value=SAMPLE_TV_PAYLOAD_LIST)):
+    with patch.object(
+        tv, "_fetch_tradingview_raw", AsyncMock(return_value=SAMPLE_TV_PAYLOAD_LIST)
+    ):
         rows = await tv.fetch_tradingview_events_for_date(date(2026, 5, 13))
 
     assert len(rows) == 1
@@ -151,7 +159,12 @@ def test_parse_tv_rows_skips_items_without_parseable_date():
 
     payload = {
         "result": [
-            {"id": "ok", "title": "Good Event", "date": "2026-05-13T12:30:00Z", "country": "US"},
+            {
+                "id": "ok",
+                "title": "Good Event",
+                "date": "2026-05-13T12:30:00Z",
+                "country": "US",
+            },
             {"id": "bad", "title": "No Date"},
             {"id": "bad2", "title": "Garbage Date", "date": "not-a-date"},
         ]
