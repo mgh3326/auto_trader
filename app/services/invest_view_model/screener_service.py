@@ -48,6 +48,46 @@ _MAX_WARNING_CHARS = 240
 _US_SCREENER_DATA_NOT_READY_WARNING = (
     "미국 스크리너 데이터 준비중 — 일부 결과만 표시됩니다."
 )
+_KR_TOSS_ETF_PREFIXES = (
+    "ACE ",
+    "ARIRANG ",
+    "FOCUS ",
+    "HANARO ",
+    "KBSTAR ",
+    "KODEX ",
+    "KOSEF ",
+    "PLUS ",
+    "RISE ",
+    "SOL ",
+    "TIGER ",
+    "TIMEFOLIO ",
+    "TREX ",
+    "WON ",
+    "마이티 ",
+    "히어로즈 ",
+)
+_KR_TOSS_EXCLUDED_NAME_TOKENS = (
+    " ETF",
+    " ETN",
+    "스팩",
+    "기업인수목적",
+    "리츠",
+    "인프라펀드",
+    "맥쿼리인프라",
+    "선박투자",
+    "레버리지",
+    "인버스",
+    "액티브",
+    "합성",
+    "채권",
+    "국고채",
+    "회사채",
+    "CD금리",
+    "머니마켓",
+    "MMF",
+    "TDF",
+)
+_KR_PREFERRED_SUFFIXES = ("우", "우B", "우C")
 logger = logging.getLogger(__name__)
 
 
@@ -92,6 +132,36 @@ def _safe_warnings(messages: Sequence[Any]) -> list[str]:
         if warning not in warnings:
             warnings.append(warning)
     return warnings
+
+
+def _is_kr_toss_common_stock(symbol: str, name: str | None) -> bool:
+    """Best-effort Toss-compatible KR common-stock universe guard.
+
+    `kr_symbol_universe` currently has no instrument-type column, so use the
+    exchange universe plus conservative name/symbol heuristics to keep obvious
+    ETFs/ETNs/preferred/SPAC/fund-like products out of Toss-like presets.  When
+    a name is unavailable, allow the row rather than accidentally hiding ordinary
+    stocks; production snapshot rows are name-hydrated from KRX metadata first.
+    """
+    normalized_symbol = _clean_text(symbol)
+    normalized_name = _clean_text(name)
+    if not normalized_symbol:
+        return False
+    if not normalized_name:
+        return True
+
+    compact_name = normalized_name.replace(" ", "").upper()
+    display_name = normalized_name.upper()
+
+    if normalized_name.endswith(_KR_PREFERRED_SUFFIXES):
+        return False
+    if any(display_name.startswith(prefix) for prefix in _KR_TOSS_ETF_PREFIXES):
+        return False
+    if any(token.upper() in display_name for token in _KR_TOSS_EXCLUDED_NAME_TOKENS):
+        return False
+    if compact_name.endswith("ETN") or compact_name.endswith("ETF"):
+        return False
+    return True
 
 
 def _external_failure_warning(exc: BaseException) -> str:
@@ -147,7 +217,13 @@ async def _load_consecutive_gainers_from_snapshots(
     if latest_snapshot_date is None:
         return None  # no snapshots in the table; fall through to external
 
-    # Step 2: qualify rows only within that one partition.
+    # Step 2: qualify rows only within that one partition.  KR rows are
+    # over-fetched because the Toss-compatible common-stock guard runs after
+    # KRX-universe name hydration; limiting before that filter would let ETF/ETN
+    # rows crowd out ordinary stocks below the first page.
+    candidate_limit = limit
+    if market == "kr":
+        candidate_limit = max(limit * 5, limit + 120)
     stmt = (
         sa.select(InvestScreenerSnapshot)
         .where(
@@ -162,7 +238,7 @@ async def _load_consecutive_gainers_from_snapshots(
             InvestScreenerSnapshot.change_rate.desc().nullslast(),
             InvestScreenerSnapshot.symbol.asc(),
         )
-        .limit(limit)
+        .limit(candidate_limit)
     )
     try:
         result = await session.execute(stmt)
@@ -172,11 +248,37 @@ async def _load_consecutive_gainers_from_snapshots(
         )
         return None
 
+    candidate_snaps = result.scalars().all()
+
+    symbol_names: dict[str, str] = {}
+    if market == "kr" and candidate_snaps:
+        from app.models.kr_symbol_universe import KRSymbolUniverse
+
+        candidate_symbols = [snap.symbol for snap in candidate_snaps]
+        try:
+            name_result = await session.execute(
+                sa.select(KRSymbolUniverse.symbol, KRSymbolUniverse.name).where(
+                    KRSymbolUniverse.symbol.in_(candidate_symbols),
+                    KRSymbolUniverse.is_active.is_(True),
+                )
+            )
+            symbol_names = {row.symbol: row.name for row in name_result.all()}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "failed to read kr_symbol_universe for screener filtering: %s",
+                exc,
+                exc_info=True,
+            )
+
     now = datetime.now(UTC)
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for snap in result.scalars().all():
+    for snap in candidate_snaps:
         if snap.symbol in seen:
+            continue
+        if market == "kr" and not _is_kr_toss_common_stock(
+            snap.symbol, symbol_names.get(snap.symbol)
+        ):
             continue
         seen.add(snap.symbol)
         state = classify_state(
@@ -190,6 +292,7 @@ async def _load_consecutive_gainers_from_snapshots(
             {
                 "symbol": snap.symbol,
                 "market": market,
+                "name": symbol_names.get(snap.symbol),
                 "close": float(snap.latest_close)
                 if snap.latest_close is not None
                 else None,
@@ -208,6 +311,8 @@ async def _load_consecutive_gainers_from_snapshots(
                 "_screener_snapshot_state": state,
             }
         )
+        if len(rows) >= limit:
+            break
     # Rows are already ordered by the SQL ORDER BY; no Python re-sort needed.
     return rows
 
