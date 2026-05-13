@@ -257,7 +257,9 @@ class TestUnifiedWebSocketMonitor:
             async def __aenter__(self) -> object:  # pragma: no cover
                 raise AssertionError("disabled websocket ledger path must not open DB")
 
-            async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+            async def __aexit__(
+                self, exc_type: object, exc: object, tb: object
+            ) -> None:
                 return None
 
         monkeypatch.setattr(mod, "AsyncSessionLocal", lambda: FailingSession())
@@ -298,7 +300,9 @@ class TestUnifiedWebSocketMonitor:
             async def __aenter__(self) -> object:
                 return self
 
-            async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+            async def __aexit__(
+                self, exc_type: object, exc: object, tb: object
+            ) -> None:
                 return None
 
             async def commit(self) -> None:

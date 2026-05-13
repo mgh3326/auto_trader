@@ -42,7 +42,9 @@ def test_reconciliation_task_defaults_to_dry_run_when_commit_gate_disabled(
         def __init__(self, repository: object) -> None:
             captured["repository"] = repository
 
-        async def run(self, broker: str, *, window_hours: int, dry_run: bool) -> FakeDiff:
+        async def run(
+            self, broker: str, *, window_hours: int, dry_run: bool
+        ) -> FakeDiff:
             captured["broker"] = broker
             captured["window_hours"] = window_hours
             captured["dry_run"] = dry_run
