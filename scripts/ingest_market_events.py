@@ -51,6 +51,7 @@ from app.services.market_events.ingestion import (
     ingest_economic_events_for_date,
     ingest_kr_disclosures_for_date,
     ingest_kr_earnings_wisefn_for_date,
+    ingest_tradingview_economic_events_for_date,
     ingest_us_earnings_for_date,
 )
 
@@ -62,6 +63,7 @@ SUPPORTED = {
     ("dart", "disclosure", "kr"): ingest_kr_disclosures_for_date,
     ("forexfactory", "economic", "global"): ingest_economic_events_for_date,
     ("wisefn", "earnings", "kr"): ingest_kr_earnings_wisefn_for_date,
+    ("tradingview", "economic", "global"): ingest_tradingview_economic_events_for_date,
 }
 
 
@@ -101,7 +103,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--source",
         default="finnhub",
-        choices=["finnhub", "dart", "forexfactory", "wisefn"],
+        choices=["finnhub", "dart", "forexfactory", "wisefn", "tradingview"],
     )
     parser.add_argument(
         "--category",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import cast
@@ -205,6 +206,64 @@ def _event_title(raw: object, *, market: CalendarMarket, etype: EventType) -> st
     return "시장 이벤트"
 
 
+def _source_priority(source: str | None) -> int:
+    """Provider preference for duplicate /invest calendar rows.
+
+    TradingView economic-calendar rows currently carry cleaner actual/forecast/
+    previous values than ForexFactory for the same macro release.  ForexFactory
+    remains useful as fallback and for rows TradingView does not provide.
+    """
+    if (source or "").lower() == "tradingview":
+        return 20
+    if (source or "").lower() == "forexfactory":
+        return 10
+    return 0
+
+
+def _normalize_economic_title(title: str | None) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (title or "").lower()).strip()
+
+
+def _economic_dedupe_key(
+    ev: CalendarEvent, ev_date: date
+) -> tuple[str, date, str] | None:
+    """Return a narrow duplicate key for global macro events only."""
+    if ev.eventType != "economic" or ev.market != "global":
+        return None
+    normalized_title = _normalize_economic_title(ev.title)
+    if not normalized_title:
+        return None
+    return ("economic", ev_date, normalized_title)
+
+
+def _dedupe_calendar_events(
+    events: list[CalendarEvent], ev_date: date
+) -> list[CalendarEvent]:
+    """Deduplicate same-day economic/global provider duplicates.
+
+    The de-duplication is intentionally applied after conversion to the invest
+    calendar DTO so provider fallback is preserved: if TradingView is missing,
+    the ForexFactory row remains; if both are present for the same release,
+    TradingView wins regardless of query order.
+    """
+    deduped: list[CalendarEvent] = []
+    key_to_index: dict[tuple[str, date, str], int] = {}
+    for ev in events:
+        key = _economic_dedupe_key(ev, ev_date)
+        if key is None:
+            deduped.append(ev)
+            continue
+        existing_idx = key_to_index.get(key)
+        if existing_idx is None:
+            key_to_index[key] = len(deduped)
+            deduped.append(ev)
+            continue
+        existing = deduped[existing_idx]
+        if _source_priority(ev.source) > _source_priority(existing.source):
+            deduped[existing_idx] = ev
+    return deduped
+
+
 async def build_calendar(
     *,
     db: AsyncSession,
@@ -285,8 +344,9 @@ async def build_calendar(
 
     days: list[CalendarDay] = []
     for d in _date_range(from_date, to_date):
+        events = _dedupe_calendar_events(by_day.get(d, []), d)
         events = _sort_calendar_events(
-            [_with_priority(ev, target_date=d) for ev in by_day.get(d, [])]
+            [_with_priority(ev, target_date=d) for ev in events]
         )
         summary = _build_day_summary(events)
         clusters: list[CalendarCluster] = []

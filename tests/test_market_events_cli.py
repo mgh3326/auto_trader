@@ -410,3 +410,53 @@ async def test_cli_dry_run_does_not_call_forexfactory_fetch(monkeypatch):
     )
     assert rc == 0
     assert called["n"] == 0
+
+
+@pytest.mark.unit
+def test_parse_args_accepts_tradingview_economic_global():
+    from scripts.ingest_market_events import parse_args
+
+    ns = parse_args(
+        [
+            "--source",
+            "tradingview",
+            "--category",
+            "economic",
+            "--market",
+            "global",
+            "--from-date",
+            "2026-05-13",
+            "--to-date",
+            "2026-05-13",
+            "--dry-run",
+        ]
+    )
+    assert ns.source == "tradingview"
+    assert ns.category == "economic"
+    assert ns.market == "global"
+    assert ns.dry_run is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_run_ingest_dispatches_tradingview_economic_global(
+    db_session, monkeypatch
+):
+    from scripts import ingest_market_events as cli
+
+    fake = AsyncMock(
+        return_value=type("R", (), {"status": "succeeded", "event_count": 2})()
+    )
+    monkeypatch.setitem(cli.SUPPORTED, ("tradingview", "economic", "global"), fake)
+
+    rc = await cli.run_ingest(
+        db=db_session,
+        source="tradingview",
+        category="economic",
+        market="global",
+        from_date=date(2026, 5, 13),
+        to_date=date(2026, 5, 13),
+        dry_run=False,
+    )
+    assert rc == 0
+    fake.assert_awaited_once_with(db_session, date(2026, 5, 13))
