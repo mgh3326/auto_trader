@@ -25,7 +25,10 @@ from app.monitoring.sentry import capture_exception, init_sentry
 from app.monitoring.trade_notifier import get_trade_notifier
 from app.schemas.execution_ledger import ExecutionLedgerUpsert
 from app.services.execution_ledger.normalizers import _redact_sensitive_keys
-from app.services.execution_ledger.repository import ExecutionLedgerRepository
+from app.services.execution_ledger.repository import (
+    ExecutionLedgerRepository,
+    UpsertStatus,
+)
 from app.services.fill_notification import (
     FillOrder,
     normalize_kis_fill,
@@ -167,13 +170,20 @@ class UnifiedWebSocketMonitor:
 
         try:
             fill_order = normalize_upbit_fill(order_data)
-            await self._record_execution_ledger_fill(
+            upsert_status = await self._record_execution_ledger_fill(
                 order_data,
                 fill_order,
                 broker="upbit",
                 correlation_id=str(order_data.get("uuid") or "n/a"),
             )
-            await self._send_fill_notification(fill_order)
+            if upsert_status not in {"updated", "unchanged"}:
+                await self._send_fill_notification(fill_order)
+            else:
+                logger.info(
+                    "Upbit fill notification skipped for duplicate ledger row: symbol=%s status=%s",
+                    fill_order.symbol,
+                    upsert_status,
+                )
             logger.info(
                 f"Upbit fill processed: {fill_order.symbol} {fill_order.side} "
                 f"{fill_order.filled_qty}@{fill_order.filled_price}"
@@ -200,15 +210,23 @@ class UnifiedWebSocketMonitor:
                 fill_order.filled_qty,
                 fill_order.filled_price,
             )
-            await self._record_execution_ledger_fill(
+            upsert_status = await self._record_execution_ledger_fill(
                 event,
                 fill_order,
                 broker="kis",
                 correlation_id=correlation_id,
             )
-            await self._send_fill_notification(
-                fill_order, correlation_id=correlation_id
-            )
+            if upsert_status not in {"updated", "unchanged"}:
+                await self._send_fill_notification(
+                    fill_order, correlation_id=correlation_id
+                )
+            else:
+                logger.info(
+                    "KIS fill notification skipped for duplicate ledger row: correlation_id=%s symbol=%s status=%s",
+                    correlation_id,
+                    fill_order.symbol,
+                    upsert_status,
+                )
             logger.info(
                 f"KIS fill processed: {fill_order.symbol} {fill_order.side} "
                 f"{fill_order.filled_qty}@{fill_order.filled_price}"
@@ -303,7 +321,7 @@ class UnifiedWebSocketMonitor:
         *,
         broker: str,
         correlation_id: str | None = None,
-    ) -> None:
+    ) -> UpsertStatus | None:
         """Durably upsert one websocket fill before downstream notification.
 
         The existing execution-ledger commit flag is the explicit activation gate;
@@ -315,7 +333,7 @@ class UnifiedWebSocketMonitor:
                 order.symbol,
                 broker,
             )
-            return
+            return None
 
         currency = order.currency or ("USD" if order.market_type == "us" else "KRW")
         venue = str(
@@ -361,6 +379,7 @@ class UnifiedWebSocketMonitor:
             status,
             row_id,
         )
+        return status
 
     async def _send_fill_notification(
         self, order: FillOrder, *, correlation_id: str | None = None
