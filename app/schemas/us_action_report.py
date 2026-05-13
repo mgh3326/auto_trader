@@ -10,6 +10,60 @@ SourceLiteral = Literal["kis_live"]
 OrderSideLiteral = Literal["buy", "sell", "unknown"]
 
 
+class ScreenedUSNewBuyCandidate(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    symbol: str
+    name: str | None = None
+    market: str | None = None
+    instrument_type: str | None = Field(default=None, alias="instrumentType")
+    price: float | None = None
+    change_rate: float | None = Field(default=None, alias="changeRate")
+    volume: float | None = None
+    trade_amount_24h: float | None = Field(default=None, alias="tradeAmount24h")
+    volume_ratio: float | None = Field(default=None, alias="volumeRatio")
+    rsi: float | None = None
+    market_cap: float | None = Field(default=None, alias="marketCap")
+    per: float | None = None
+    pbr: float | None = None
+    sector: str | None = None
+    score: float | None = None
+    data_warnings: list[str] = Field(default_factory=list, alias="dataWarnings")
+
+
+class USNewBuyCandidateCard(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    symbol: str
+    name: str | None = None
+    label: str = "검토 후보"
+    priority_label: str = Field(alias="priorityLabel")
+    price_usd: float | None = Field(default=None, alias="priceUsd")
+    sizing_basis_usd: float | None = Field(default=None, alias="sizingBasisUsd")
+    quantity_estimate: int = Field(default=0, alias="quantityEstimate")
+    notional_estimate_usd: float = Field(default=0.0, alias="notionalEstimateUsd")
+    sizing_note: str = Field(alias="sizingNote")
+    thesis: str
+    target_price_usd: float | None = Field(default=None, alias="targetPriceUsd")
+    stop_loss_usd: float | None = Field(default=None, alias="stopLossUsd")
+    min_hold_days: int = Field(default=14, alias="minHoldDays")
+    risk_notes: list[str] = Field(default_factory=list, alias="riskNotes")
+    data_warnings: list[str] = Field(default_factory=list, alias="dataWarnings")
+
+
+class USNewBuyCandidateCards(list[USNewBuyCandidateCard]):
+    """List-like candidate-card container carrying aggregate warnings."""
+
+    def __init__(
+        self,
+        cards: list[USNewBuyCandidateCard] | None = None,
+        *,
+        warnings: list[str] | None = None,
+    ) -> None:
+        super().__init__(cards or [])
+        self.warnings = warnings or []
+
+
 class USOpenOrder(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
