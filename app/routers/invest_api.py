@@ -21,6 +21,7 @@ from app.schemas.invest_calendar import (
     WeeklySummaryResponse,
 )
 from app.schemas.invest_coverage import CoverageMarket, InvestCoverageResponse
+from app.schemas.invest_crypto import CryptoDashboardResponse
 from app.schemas.invest_feed_news import FeedNewsResponse, FeedTab, FeedTopic
 from app.schemas.invest_feed_research import (
     FeedResearchFilters,
@@ -57,6 +58,9 @@ from app.services.invest_momentum_events.repository import (
 from app.services.invest_screener_snapshots.coverage_service import build_coverage
 from app.services.invest_view_model.account_panel_service import build_account_panel
 from app.services.invest_view_model.calendar_service import build_calendar
+from app.services.invest_view_model.crypto_dashboard_service import (
+    build_crypto_dashboard,
+)
 from app.services.invest_view_model.feed_news_service import build_feed_news
 from app.services.invest_view_model.feed_research_service import build_feed_research
 from app.services.invest_view_model.fx_dashboard_service import build_fx_dashboard
@@ -146,6 +150,26 @@ async def get_fx_dashboard(
     """Read-only FX·macro dashboard contract fixture (ROB-216)."""
     _ = user
     return await build_fx_dashboard()
+
+
+@router.get("/crypto/dashboard")
+async def get_crypto_dashboard(
+    user: Annotated[Any, Depends(get_authenticated_user)],
+    service: Annotated[InvestHomeService, Depends(get_invest_home_service)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    limit: int = Query(20, ge=1, le=50),
+) -> CryptoDashboardResponse:
+    """Read-only crypto dashboard; never syncs or mutates broker/order state."""
+    home = await service.get_home(user_id=user.id)
+    resolver = await build_relation_resolver(
+        db, user_id=user.id, held_pairs=_held_pairs_from_home(home)
+    )
+    return await build_crypto_dashboard(
+        db=db,
+        user_id=user.id,
+        resolver=resolver,
+        limit=limit,
+    )
 
 
 @router.get("/coverage")
@@ -444,7 +468,7 @@ async def get_screener_results_endpoint(
 @router.get("/screener/snapshots/coverage")
 async def screener_snapshots_coverage(
     db: Annotated[AsyncSession, Depends(get_db)],
-    market: Literal["kr", "us"] = Query("kr"),
+    market: Literal["kr", "us", "crypto"] = Query("kr"),
 ) -> dict:
     """Read-only coverage summary for invest_screener_snapshots (ROB-170)."""
     report = await build_coverage(db, market=market)
