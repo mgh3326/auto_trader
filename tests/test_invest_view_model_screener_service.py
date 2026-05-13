@@ -224,6 +224,74 @@ async def test_build_screener_results_forwards_us_market_and_formats_us_labels()
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_screener_presets_returns_crypto_presets() -> None:
+    resp = build_screener_presets("crypto")
+
+    assert resp.selectedPresetId == "crypto_high_volume"
+    assert [p.id for p in resp.presets] == [
+        "crypto_high_volume",
+        "crypto_oversold",
+        "crypto_momentum",
+    ]
+    assert all(p.market == "crypto" for p in resp.presets)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_screener_results_forwards_crypto_market_and_formats_crypto_labels() -> (
+    None
+):
+    fake_screening = MagicMock()
+    fake_screening.list_screening = AsyncMock(
+        return_value={
+            "results": [
+                {
+                    "symbol": "KRW-BTC",
+                    "name": "Bitcoin",
+                    "market": "crypto",
+                    "category": "Crypto",
+                    "market_cap_usd": 2_100_000_000_000,
+                    "current_price": 150_000_000,
+                    "change_rate": 2.5,
+                    "change_amount": 1_250_000,
+                    "trade_amount_24h": 120_000_000_000,
+                }
+            ],
+            "warnings": [],
+        }
+    )
+    resolver = _FakeResolver(watched={("crypto", "KRW-BTC")})
+
+    resp = await build_screener_results(
+        preset_id="crypto_high_volume",
+        screening_service=fake_screening,
+        resolver=resolver,
+        market="crypto",
+    )
+
+    fake_screening.list_screening.assert_awaited_once()
+    assert fake_screening.list_screening.await_args.kwargs == {
+        "market": "crypto",
+        "sort_by": "volume",
+        "sort_order": "desc",
+        "limit": 20,
+    }
+    row = resp.results[0]
+    assert resp.presetId == "crypto_high_volume"
+    assert row.market == "crypto"
+    assert row.symbol == "KRW-BTC"
+    assert row.name == "Bitcoin"
+    assert row.priceLabel == "150,000,000원"
+    assert row.changeAmountLabel == "+1,250,000원"
+    assert row.marketCapLabel == "$2.10T"
+    assert row.volumeLabel == "120,000,000,000"
+    assert row.metricValueLabel == "120,000,000,000"
+    assert row.isWatched is True
+    assert resolver.calls == [("crypto", "KRW-BTC")]
+
+
+@pytest.mark.unit
 def test_calculate_consecutive_up_days_counts_latest_streak() -> None:
     assert screener_service.calculate_consecutive_up_days([100, 101, 102, 103]) == 3
     assert (

@@ -11,6 +11,7 @@ from app.schemas.invest_screener import ScreenerFilterChip, ScreenerPreset
 
 DEFAULT_PRESET_ID = "consecutive_gainers"
 CONSECUTIVE_GAINERS_LIMIT = 80
+CRYPTO_DEFAULT_PRESET_ID = "crypto_high_volume"
 
 
 SCREENER_PRESETS: list[ScreenerPreset] = [
@@ -92,6 +93,46 @@ SCREENER_PRESETS: list[ScreenerPreset] = [
 ]
 
 
+CRYPTO_SCREENER_PRESETS: list[ScreenerPreset] = [
+    ScreenerPreset(
+        id="crypto_high_volume",
+        name="거래대금 상위 코인",
+        description="Upbit 거래대금이 큰 가상자산",
+        badges=["가상자산"],
+        filterChips=[
+            ScreenerFilterChip(label="가상자산", detail=None),
+            ScreenerFilterChip(label="거래대금", detail="24시간 상위"),
+        ],
+        metricLabel="거래대금",
+        market="crypto",
+    ),
+    ScreenerPreset(
+        id="crypto_oversold",
+        name="저RSI 반등 후보",
+        description="RSI가 낮아 과매도 구간에 가까운 가상자산",
+        badges=[],
+        filterChips=[
+            ScreenerFilterChip(label="가상자산", detail=None),
+            ScreenerFilterChip(label="RSI", detail="35 이하"),
+        ],
+        metricLabel="RSI",
+        market="crypto",
+    ),
+    ScreenerPreset(
+        id="crypto_momentum",
+        name="상승률 상위 코인",
+        description="단기 상승률이 높은 Upbit 가상자산",
+        badges=[],
+        filterChips=[
+            ScreenerFilterChip(label="가상자산", detail=None),
+            ScreenerFilterChip(label="등락률", detail="상위"),
+        ],
+        metricLabel="등락률",
+        market="crypto",
+    ),
+]
+
+
 _SCREENING_FILTERS: dict[str, dict[str, object]] = {
     "consecutive_gainers": {
         "market": "kr",
@@ -142,11 +183,36 @@ _SCREENING_FILTERS: dict[str, dict[str, object]] = {
         "min_market_cap": 1_000_000_000_000.0,
         "limit": 20,
     },
+    "crypto_high_volume": {
+        "market": "crypto",
+        "sort_by": "volume",
+        "sort_order": "desc",
+        "limit": 20,
+    },
+    "crypto_oversold": {
+        "market": "crypto",
+        "sort_by": "rsi",
+        "sort_order": "asc",
+        "max_rsi": 35.0,
+        "limit": 20,
+    },
+    "crypto_momentum": {
+        "market": "crypto",
+        "sort_by": "change_rate",
+        "sort_order": "desc",
+        "limit": 20,
+    },
 }
 
 
 def _market_chip(market: str) -> ScreenerFilterChip:
-    return ScreenerFilterChip(label="미국" if market == "us" else "국내", detail=None)
+    if market == "us":
+        label = "미국"
+    elif market == "crypto":
+        label = "가상자산"
+    else:
+        label = "국내"
+    return ScreenerFilterChip(label=label, detail=None)
 
 
 def _with_market(preset: ScreenerPreset, market: str) -> ScreenerPreset:
@@ -158,15 +224,24 @@ def _with_market(preset: ScreenerPreset, market: str) -> ScreenerPreset:
     return preset.model_copy(update={"market": market, "filterChips": chips})
 
 
+def _normalize_requested_market(market: str) -> str:
+    return market if market in {"kr", "us", "crypto"} else "kr"
+
+
 def preset_definitions(market: str = "kr") -> list[ScreenerPreset]:
     """Return preset definitions localized for the requested market."""
-    normalized_market = "us" if market == "us" else "kr"
+    normalized_market = _normalize_requested_market(market)
+    if normalized_market == "crypto":
+        return [_with_market(p, "crypto") for p in CRYPTO_SCREENER_PRESETS]
     return [_with_market(p, normalized_market) for p in SCREENER_PRESETS]
 
 
 def get_preset(preset_id: str, market: str = "kr") -> ScreenerPreset | None:
-    normalized_market = "us" if market == "us" else "kr"
-    for p in SCREENER_PRESETS:
+    normalized_market = _normalize_requested_market(market)
+    catalog = (
+        CRYPTO_SCREENER_PRESETS if normalized_market == "crypto" else SCREENER_PRESETS
+    )
+    for p in catalog:
         if p.id == preset_id:
             return _with_market(p, normalized_market)
     return None
@@ -177,7 +252,15 @@ def screening_filters_for(preset_id: str, market: str = "kr") -> dict[str, objec
     filters = dict(_SCREENING_FILTERS.get(preset_id, {}))
     if not filters:
         return {}
-    normalized_market = "us" if market == "us" else "kr"
+    normalized_market = _normalize_requested_market(market)
+    crypto_ids = {p.id for p in CRYPTO_SCREENER_PRESETS}
+    if normalized_market == "crypto":
+        if preset_id not in crypto_ids:
+            return {}
+        filters["market"] = "crypto"
+        return filters
+    if preset_id in crypto_ids:
+        return {}
     filters["market"] = normalized_market
     if normalized_market == "us":
         # The US screening path supports PER/dividend/RSI/volume/change filters,

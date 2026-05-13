@@ -84,3 +84,37 @@ def test_consecutive_gainers_chip_says_5_days() -> None:
     assert preset is not None
     chip_details = [c.detail for c in preset.filterChips if c.detail]
     assert any("5일 연속 상승" in d for d in chip_details)
+
+
+@pytest.mark.unit
+def test_crypto_preset_definitions_are_crypto_scoped() -> None:
+    presets = preset_definitions("crypto")
+
+    assert [p.id for p in presets] == [
+        "crypto_high_volume",
+        "crypto_oversold",
+        "crypto_momentum",
+    ]
+    assert all(p.market == "crypto" for p in presets)
+    assert all(p.filterChips[0].label == "가상자산" for p in presets)
+
+
+@pytest.mark.unit
+def test_crypto_screening_filters_are_read_only_market_filters() -> None:
+    high_volume = screening_filters_for("crypto_high_volume", "crypto")
+    oversold = screening_filters_for("crypto_oversold", "crypto")
+    momentum = screening_filters_for("crypto_momentum", "crypto")
+
+    assert high_volume == {
+        "market": "crypto",
+        "sort_by": "volume",
+        "sort_order": "desc",
+        "limit": 20,
+    }
+    assert oversold["market"] == "crypto"
+    assert oversold["sort_by"] == "rsi"
+    assert oversold["max_rsi"] == pytest.approx(35.0)
+    assert momentum["market"] == "crypto"
+    assert momentum["sort_by"] == "change_rate"
+    assert screening_filters_for("consecutive_gainers", "crypto") == {}
+    assert screening_filters_for("crypto_high_volume", "kr") == {}
