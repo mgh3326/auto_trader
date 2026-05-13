@@ -88,9 +88,18 @@ class ExecutionLedgerRead(BaseModel):
     updated_at: datetime | None = None
 
 
+class SourceBreakdown(BaseModel):
+    reconciler: int = 0
+    websocket: int = 0
+    manual_import: int = 0
+
+
 class ExecutionLedgerListResponse(BaseModel):
     count: int
     items: list[ExecutionLedgerRead]
+    data_state: DataState | None = None
+    source_breakdown: SourceBreakdown | None = None
+    empty_reason: str | None = None
 
 
 class ExecutionLedgerFreshnessEntry(BaseModel):

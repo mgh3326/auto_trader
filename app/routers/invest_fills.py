@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
@@ -27,10 +27,7 @@ async def recent_fills(
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     market: Market | None = None,
 ) -> ExecutionLedgerListResponse:
-    items = await ExecutionLedgerQueryService(db).list_recent(
-        limit=limit, market=market
-    )
-    return ExecutionLedgerListResponse(count=len(items), items=items)
+    return await ExecutionLedgerQueryService(db).list_recent(limit=limit, market=market)
 
 
 @router.get("/by-symbol/{symbol}", response_model=ExecutionLedgerListResponse)
@@ -40,12 +37,9 @@ async def fills_by_symbol(
     db: Annotated[AsyncSession, Depends(get_db)],
     days: Annotated[int, Query(ge=1, le=365)] = 30,
 ) -> ExecutionLedgerListResponse:
-    items = await ExecutionLedgerQueryService(db).list_by_symbol(
+    return await ExecutionLedgerQueryService(db).list_by_symbol(
         symbol=symbol.strip().upper(), days=days
     )
-    if not items:
-        raise HTTPException(status_code=404, detail="No fills found for symbol")
-    return ExecutionLedgerListResponse(count=len(items), items=items)
 
 
 @router.get("/sell-history", response_model=ExecutionLedgerListResponse)
@@ -56,10 +50,9 @@ async def sell_history(
     market: Market | None = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 100,
 ) -> ExecutionLedgerListResponse:
-    items = await ExecutionLedgerQueryService(db).list_sell_history(
+    return await ExecutionLedgerQueryService(db).list_sell_history(
         days=days, market=market, limit=limit
     )
-    return ExecutionLedgerListResponse(count=len(items), items=items)
 
 
 @router.get("/freshness", response_model=ExecutionLedgerFreshnessReport)
