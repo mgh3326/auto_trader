@@ -26,6 +26,7 @@ HighlightReason = Literal[
     "near_term",
     "has_values",
 ]
+ImpactTag = Literal["fx", "rates", "inflation", "jobs", "central_bank"]
 
 
 class CalendarRelatedSymbol(BaseModel):
@@ -43,6 +44,10 @@ class CalendarEvent(BaseModel):
     eventType: EventType
     eventTimeLocal: str | None = None
     source: str
+    country: str | None = None
+    currency: str | None = None
+    importance: int | None = None
+    impactTags: list[ImpactTag] = Field(default_factory=list)
     actual: str | None = None
     forecast: str | None = None
     previous: str | None = None

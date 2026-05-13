@@ -153,6 +153,17 @@ test("renders dense news rows and reacts to tab change", async () => {
   await waitFor(() => expect(feedApi.fetchFeedNews).toHaveBeenCalledTimes(2));
 });
 
+test("passes FX/rates topic filters to ordinary news calls", async () => {
+  renderPage();
+  await screen.findByTestId("feed-item");
+
+  await userEvent.click(screen.getByTestId("news-topic-fx"));
+
+  await waitFor(() =>
+    expect(feedApi.fetchFeedNews).toHaveBeenLastCalledWith({ tab: "top", limit: 30, topic: "fx" }),
+  );
+});
+
 test("renders research cards from the metadata-only research tab", async () => {
   renderPage();
 

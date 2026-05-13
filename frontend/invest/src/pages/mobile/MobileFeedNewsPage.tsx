@@ -3,10 +3,11 @@ import { useSearchParams } from "react-router-dom";
 import { MobileShell } from "../../mobile/MobileShell";
 import { fetchFeedNews } from "../../api/feedNews";
 import { fetchFeedResearch } from "../../api/feedResearch";
-import type { FeedNewsResponse } from "../../types/feedNews";
+import type { FeedNewsResponse, FeedTopic } from "../../types/feedNews";
 import type { FeedResearchResponse } from "../../types/feedResearch";
 import { NewsTabs, type FeedContentTab } from "../../components/news/NewsTabs";
 import { NewsListItem } from "../../components/news/NewsListItem";
+import { NewsTopicChips } from "../../components/news/NewsTopicChips";
 import { ResearchListItem } from "../../components/news/ResearchListItem";
 
 function emptyMessage(reason: string | null | undefined): string {
@@ -23,6 +24,7 @@ function getParam(searchParams: URLSearchParams, key: string): string | undefine
 export function MobileFeedNewsPage() {
   const [searchParams] = useSearchParams();
   const [tab, setTab] = useState<FeedContentTab>("top");
+  const [topic, setTopic] = useState<FeedTopic | null>(null);
   const [data, setData] = useState<FeedNewsResponse | undefined>();
   const [researchData, setResearchData] = useState<FeedResearchResponse | undefined>();
   const [err, setErr] = useState<string | undefined>();
@@ -50,7 +52,7 @@ export function MobileFeedNewsPage() {
         .catch((e) => !cancel && setErr(String(e?.message ?? e)));
     } else {
       setData(undefined);
-      fetchFeedNews({ tab, limit: 30 })
+      fetchFeedNews({ tab, limit: 30, ...(topic ? { topic } : {}) })
         .then((r) => !cancel && setData(r))
         .catch((e) => !cancel && setErr(String(e?.message ?? e)));
     }
@@ -58,7 +60,7 @@ export function MobileFeedNewsPage() {
     return () => {
       cancel = true;
     };
-  }, [tab, searchParams]);
+  }, [tab, topic, searchParams]);
 
   const researchMode = tab === "research";
   const issueById = new Map((data?.issues ?? []).map((i) => [i.id, i] as const));
@@ -71,6 +73,7 @@ export function MobileFeedNewsPage() {
     <MobileShell title="뉴스">
       <div data-testid="feed-center" style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 10 }}>
         <NewsTabs value={tab} onChange={setTab} variant="pill-row" />
+        {tab !== "research" && <NewsTopicChips value={topic} onChange={setTopic} />}
 
         {err && <div style={{ color: "var(--danger)" }}>오류: {err}</div>}
         {loading && (
