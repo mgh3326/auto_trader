@@ -9,6 +9,22 @@ const MARKET_OPTIONS: { key: FillMarket | "all"; label: string }[] = [
   { key: "crypto", label: "코인" },
 ];
 
+const FALLBACK_SYMBOL_NAMES: Record<string, string> = {
+  "000660": "SK하이닉스",
+  "005930": "삼성전자",
+  "000270": "기아",
+  "000660.KS": "SK하이닉스",
+  "004020": "현대제철",
+  "034220": "LG디스플레이",
+  "064350": "현대로템",
+  "096770": "SK이노베이션",
+  QQQ: "Invesco QQQ Trust",
+  QQQM: "Invesco NASDAQ 100 ETF",
+  TSLA: "Tesla",
+  CONL: "GraniteShares 2x Long COIN ETF",
+  CTSH: "Cognizant Technology Solutions",
+};
+
 function toNumber(value: string | number | null | undefined): number | null {
   if (value == null || value === "") return null;
   const parsed = typeof value === "number" ? value : Number(value);
@@ -66,6 +82,22 @@ function sourceBreakdownLabel(data: FillListResponse): string | null {
   return parts.map(([label, count]) => `${label} ${count}`).join(" · ");
 }
 
+function symbolDisplayName(row: FillRow): string | null {
+  const name = row.symbol_name ?? row.symbolName ?? FALLBACK_SYMBOL_NAMES[row.symbol] ?? FALLBACK_SYMBOL_NAMES[row.raw_symbol];
+  if (!name || name === row.symbol) return null;
+  return name;
+}
+
+function totalByCurrency(rows: FillRow[]): { currency: string; total: number }[] {
+  const totals = new Map<string, number>();
+  for (const row of rows) {
+    const notional = toNumber(row.filled_notional);
+    if (notional == null) continue;
+    totals.set(row.currency, (totals.get(row.currency) ?? 0) + notional);
+  }
+  return Array.from(totals.entries()).map(([currency, total]) => ({ currency, total }));
+}
+
 export function SellHistoryPanel({ compact = false }: { compact?: boolean }) {
   const [market, setMarket] = useState<FillMarket | "all">("all");
   const [state, setState] = useState<
@@ -93,6 +125,7 @@ export function SellHistoryPanel({ compact = false }: { compact?: boolean }) {
   const count = state.status === "ready" ? state.data.count : 0;
   const dataState = state.status === "ready" ? state.data.data_state : null;
   const breakdownLabel = state.status === "ready" ? sourceBreakdownLabel(state.data) : null;
+  const saleTotals = useMemo(() => totalByCurrency(rows), [rows]);
 
   return (
     <section
@@ -168,6 +201,38 @@ export function SellHistoryPanel({ compact = false }: { compact?: boolean }) {
         </div>
       </div>
 
+      {saleTotals.length > 0 && (
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            flexWrap: "wrap",
+            padding: compact ? "0 14px 12px" : "0 18px 14px",
+          }}
+          aria-label="매도 금액 요약"
+        >
+          {saleTotals.map(({ currency, total }) => (
+            <div
+              key={currency}
+              style={{
+                borderRadius: 12,
+                background: "var(--surface-2)",
+                padding: "8px 10px",
+                minWidth: compact ? 0 : 150,
+              }}
+            >
+              <div style={{ fontSize: 10, color: "var(--fg-3)", fontWeight: 700 }}>총 판매금액 · {currency}</div>
+              <div style={{ marginTop: 2, fontSize: compact ? 13 : 15, fontWeight: 900, fontFeatureSettings: '"tnum"' }}>
+                {formatMoney(total, currency)}
+              </div>
+            </div>
+          ))}
+          <div style={{ alignSelf: "center", fontSize: 11, color: "var(--fg-3)" }}>
+            실현손익/수익률은 매수 원가 매칭이 추가되면 토스 수익분석처럼 표시됩니다.
+          </div>
+        </div>
+      )}
+
       {state.status === "loading" && (
         <div style={{ padding: 24, color: "var(--fg-3)", fontSize: 13, textAlign: "center" }}>매도 이력을 불러오는 중…</div>
       )}
@@ -198,14 +263,20 @@ export function SellHistoryPanel({ compact = false }: { compact?: boolean }) {
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => (
+              {rows.map((row) => {
+                const displayName = symbolDisplayName(row);
+                return (
                 <tr key={`${row.broker}-${row.account_mode}-${row.venue}-${row.broker_order_id}-${row.fill_seq}`}>
                   <td style={{ padding: "10px 14px", borderBottom: "1px solid var(--divider)", fontSize: 12, color: "var(--fg-2)", whiteSpace: "nowrap" }}>
                     {formatDateTime(row.filled_at)}
                   </td>
                   <td style={{ padding: "10px 14px", borderBottom: "1px solid var(--divider)" }}>
-                    <div style={{ fontSize: 13, fontWeight: 800 }}>{row.symbol}</div>
-                    <div style={{ marginTop: 2, fontSize: 11, color: "var(--fg-3)" }}>{compact ? formatQty(row) : `${row.broker.toUpperCase()} · ${row.venue}`}</div>
+                    <div style={{ fontSize: 13, fontWeight: 800 }}>{displayName ?? row.symbol}</div>
+                    <div style={{ marginTop: 2, fontSize: 11, color: "var(--fg-3)" }}>
+                      {compact
+                        ? `${row.symbol} · ${formatQty(row)}`
+                        : `${row.symbol} · ${row.broker.toUpperCase()} · ${row.venue}`}
+                    </div>
                   </td>
                   {!compact && <td style={{ padding: "10px 14px", borderBottom: "1px solid var(--divider)", fontSize: 13 }}>{formatQty(row)}</td>}
                   <td style={{ padding: "10px 14px", borderBottom: "1px solid var(--divider)", fontSize: 13, textAlign: "right", fontFeatureSettings: '"tnum"' }}>
@@ -216,7 +287,8 @@ export function SellHistoryPanel({ compact = false }: { compact?: boolean }) {
                   </td>
                   {!compact && <td style={{ padding: "10px 14px", borderBottom: "1px solid var(--divider)", fontSize: 12, color: "var(--fg-3)" }}>{sourceLabel(row)}</td>}
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
           <div style={{ padding: "8px 14px", fontSize: 11, color: "var(--fg-3)" }}>

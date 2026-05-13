@@ -12,6 +12,13 @@ import { SellHistoryPanel } from "../../components/my/SellHistoryPanel";
 import type { AccountSource, GroupedHolding, HomeSummary, PriceState } from "../../types/invest";
 import type { AssetCategoryKey } from "../../components/AssetCategoryFilter";
 
+type PortfolioTab = "holdings" | "sellHistory";
+
+const PORTFOLIO_TABS: { key: PortfolioTab; label: string }[] = [
+  { key: "holdings", label: "보유 현황" },
+  { key: "sellHistory", label: "매도 이력" },
+];
+
 function fmtKrw(v: number | null | undefined): string {
   if (v == null) return "—";
   return `₩${Math.round(v).toLocaleString("ko-KR")}`;
@@ -50,6 +57,7 @@ export function MobilePortfolioPage() {
   const home = useInvestHome();
   const [account, setAccount] = useState<"all" | AccountSource>("all");
   const [category, setCategory] = useState<AssetCategoryKey>("all");
+  const [activeTab, setActiveTab] = useState<PortfolioTab>("holdings");
 
   const data = home.state.status === "ready" ? home.state.data : null;
 
@@ -141,7 +149,13 @@ export function MobilePortfolioPage() {
             )}
           </section>
 
-          {/* Account selector */}
+          <section style={{ padding: "0 16px" }}>
+            <PortfolioTabBar activeTab={activeTab} onChange={setActiveTab} />
+          </section>
+
+          {activeTab === "holdings" ? (
+            <>
+              {/* Account selector */}
           {data.accounts.length > 0 && (
             <section style={{ padding: "0 16px" }} data-testid="mobile-portfolio-account-row">
               <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4 }}>
@@ -296,11 +310,13 @@ export function MobilePortfolioPage() {
                 })}
               </div>
             )}
-          </section>
-
-          <section style={{ padding: "0 16px" }}>
-            <SellHistoryPanel compact />
-          </section>
+              </section>
+            </>
+          ) : (
+            <section style={{ padding: "0 16px" }}>
+              <SellHistoryPanel compact />
+            </section>
+          )}
 
           {data.meta?.warnings && data.meta.warnings.length > 0 && (
             <div
@@ -320,6 +336,50 @@ export function MobilePortfolioPage() {
         </div>
       )}
     </MobileShell>
+  );
+}
+
+function PortfolioTabBar({ activeTab, onChange }: { activeTab: PortfolioTab; onChange: (tab: PortfolioTab) => void }) {
+  return (
+    <div
+      role="tablist"
+      aria-label="내 투자 보기 전환"
+      style={{
+        display: "grid",
+        gridTemplateColumns: "1fr 1fr",
+        gap: 4,
+        padding: 4,
+        borderRadius: 999,
+        background: "var(--surface-2)",
+        border: "1px solid var(--border)",
+      }}
+    >
+      {PORTFOLIO_TABS.map((tab) => {
+        const active = activeTab === tab.key;
+        return (
+          <button
+            key={tab.key}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            onClick={() => onChange(tab.key)}
+            style={{
+              border: "none",
+              borderRadius: 999,
+              padding: "8px 10px",
+              background: active ? "var(--fg)" : "transparent",
+              color: active ? "var(--bg)" : "var(--fg-2)",
+              fontSize: 12,
+              fontWeight: 700,
+              cursor: "pointer",
+              fontFamily: "inherit",
+            }}
+          >
+            {tab.label}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
