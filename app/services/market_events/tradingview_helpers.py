@@ -21,6 +21,17 @@ import httpx
 logger = logging.getLogger(__name__)
 
 TRADINGVIEW_CALENDAR_URL = "https://economic-calendar.tradingview.com/events"
+TRADINGVIEW_CALENDAR_HEADERS = {
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9,ko;q=0.8",
+    "Origin": "https://www.tradingview.com",
+    "Referer": "https://www.tradingview.com/economic-calendar/",
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+}
 
 
 async def _fetch_tradingview_raw(from_date: date, to_date: date) -> Any:
@@ -34,7 +45,11 @@ async def _fetch_tradingview_raw(from_date: date, to_date: date) -> Any:
         "country": "all",
     }
     async with httpx.AsyncClient(timeout=15.0) as client:
-        response = await client.get(TRADINGVIEW_CALENDAR_URL, params=params)
+        response = await client.get(
+            TRADINGVIEW_CALENDAR_URL,
+            params=params,
+            headers=TRADINGVIEW_CALENDAR_HEADERS,
+        )
         response.raise_for_status()
         return response.json()
 
