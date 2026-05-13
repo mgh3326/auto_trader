@@ -597,6 +597,50 @@ async def test_kis_mock_reader_reports_zero_cost_basis_gain(
 
 @pytest.mark.asyncio
 @pytest.mark.unit
+async def test_kis_mock_reader_ignores_unparseable_cash_amounts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bad mock cash strings should not poison holdings or account valuation."""
+
+    class _BadCashAccount:
+        async def fetch_my_stocks(
+            self, *, is_mock: bool, is_overseas: bool
+        ) -> list[dict[str, Any]]:
+            assert is_mock is True
+            assert is_overseas is False
+            return []
+
+        async def inquire_domestic_cash_balance(
+            self, is_mock: bool = False
+        ) -> dict[str, Any]:
+            assert is_mock is True
+            return {
+                "dnca_tot_amt": "not-a-number",
+                "stck_cash_ord_psbl_amt": "also-bad",
+                "raw": {},
+            }
+
+    class _BadCashClient:
+        def __init__(self) -> None:
+            self.account = _BadCashAccount()
+
+    monkeypatch.setattr(readers, "SafeKISMockClient", _BadCashClient)
+    monkeypatch.setattr(readers, "_kis_mock_configured", lambda: True)
+
+    result = await readers.KISMockHomeReader().fetch(user_id=1)
+
+    account = result.accounts[0]
+    assert account.valueKrw == 0
+    assert account.costBasisKrw is None
+    assert account.pnlKrw is None
+    assert account.pnlRate is None
+    assert account.cashBalances.krw is None
+    assert account.buyingPower.krw is None
+    assert result.warning is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
 async def test_kis_mock_reader_returns_warning_when_not_configured() -> None:
     result = await readers.KISMockHomeReader().fetch(user_id=1)
 
@@ -805,6 +849,79 @@ async def test_alpaca_paper_reader_maps_positions_and_converts_usd(
     assert h.pnlRate == pytest.approx(20 / 200)
     assert h.priceState == "live"
     assert result.warning is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_alpaca_paper_reader_keeps_account_pnl_unknown_when_basis_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from decimal import Decimal
+
+    from app.services.brokers.alpaca.schemas import AccountSnapshot, Position
+
+    class _MissingBasisSvc:
+        async def get_account(self) -> AccountSnapshot:
+            return AccountSnapshot(
+                id="alpaca-missing-basis",
+                buying_power=Decimal("100"),
+                cash=Decimal("50"),
+                portfolio_value=Decimal("100"),
+                status="ACTIVE",
+            )
+
+        async def list_positions(self) -> list[Position]:
+            return [
+                Position(
+                    asset_id="free-share",
+                    symbol="FREE",
+                    qty=Decimal("1"),
+                    avg_entry_price=Decimal("0"),
+                    current_price=Decimal("50"),
+                    market_value=Decimal("50"),
+                    unrealized_pl=Decimal("50"),
+                    side="long",
+                ),
+                Position(
+                    asset_id="missing-price",
+                    symbol="MISS",
+                    qty=Decimal("1"),
+                    avg_entry_price=Decimal("10"),
+                    current_price=None,
+                    market_value=None,
+                    unrealized_pl=None,
+                    side="long",
+                ),
+            ]
+
+    monkeypatch.setattr(
+        readers.AlpacaPaperHomeReader,
+        "_make_service",
+        staticmethod(lambda: _MissingBasisSvc()),
+    )
+
+    async def _fx() -> float:
+        return 1_300.0
+
+    monkeypatch.setattr(readers, "get_usd_krw_rate", _fx)
+
+    result = await readers.AlpacaPaperHomeReader().fetch(user_id=1)
+
+    account = result.accounts[0]
+    assert account.valueKrw == pytest.approx(50 * 1_300.0)
+    assert account.costBasisKrw is None
+    assert account.pnlKrw is None
+    assert account.pnlRate is None
+
+    free = next(h for h in result.holdings if h.symbol == "FREE")
+    assert free.valueKrw == pytest.approx(50 * 1_300.0)
+    assert free.costBasis is None
+    assert free.priceState == "live"
+
+    missing = next(h for h in result.holdings if h.symbol == "MISS")
+    assert missing.valueKrw is None
+    assert missing.pnlKrw is None
+    assert missing.priceState == "missing"
 
 
 @pytest.mark.asyncio
