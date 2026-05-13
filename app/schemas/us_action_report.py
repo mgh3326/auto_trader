@@ -8,6 +8,8 @@ from pydantic import BaseModel, ConfigDict, Field
 PriceStateLiteral = Literal["live", "stale", "missing"]
 SourceLiteral = Literal["kis_live"]
 OrderSideLiteral = Literal["buy", "sell", "unknown"]
+USHeldActionLiteral = Literal["sell", "trim", "hold", "add", "watch"]
+JournalStatusLiteral = Literal["active", "draft", "missing", "stale", "inactive", "paper"]
 
 
 class ScreenedUSNewBuyCandidate(BaseModel):
@@ -108,3 +110,42 @@ class KISUSAccountSnapshot(BaseModel):
     holdings: list[USHolding] = Field(default_factory=list)
     open_orders: list[USOpenOrder] = Field(default_factory=list, alias="openOrders")
     warnings: list[str] = Field(default_factory=list)
+
+
+class USHeldPositionActionCard(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    symbol: str
+    display_name: str = Field(alias="displayName")
+    action: USHeldActionLiteral
+    suggested_trim_pct: int | None = Field(default=None, alias="suggestedTrimPct")
+    executable_qty: float = Field(default=0.0, alias="executableQty")
+    quantity: float
+    sellable_qty: float = Field(alias="sellableQty")
+    pending_sell_qty: float = Field(default=0.0, alias="pendingSellQty")
+    pending_buy_qty: float = Field(default=0.0, alias="pendingBuyQty")
+    pnl_rate: float | None = Field(default=None, alias="pnlRate")
+    pnl_usd: float | None = Field(default=None, alias="pnlUsd")
+    last_price_usd: float | None = Field(default=None, alias="lastPriceUsd")
+    average_cost_usd: float | None = Field(default=None, alias="averageCostUsd")
+    target_price_usd: float | None = Field(default=None, alias="targetPriceUsd")
+    stop_loss_usd: float | None = Field(default=None, alias="stopLossUsd")
+    hold_until: datetime | None = Field(default=None, alias="holdUntil")
+    journal_status: JournalStatusLiteral = Field(default="missing", alias="journalStatus")
+    thesis: str | None = None
+    reason_codes: list[str] = Field(default_factory=list, alias="reasonCodes")
+    missing_context_codes: list[str] = Field(default_factory=list, alias="missingContextCodes")
+    warnings: list[str] = Field(default_factory=list)
+
+
+class USHeldPositionActionCards(list[USHeldPositionActionCard]):
+    """List-like held-position action container carrying aggregate warnings."""
+
+    def __init__(
+        self,
+        cards: list[USHeldPositionActionCard] | None = None,
+        *,
+        warnings: list[str] | None = None,
+    ) -> None:
+        super().__init__(cards or [])
+        self.warnings = warnings or []
