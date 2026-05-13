@@ -101,8 +101,26 @@ _RATES_TERMS = (
     "연준",
 )
 _INFLATION_TERMS = ("cpi", "ppi", "pce", "inflation", "price", "물가")
-_JOBS_TERMS = ("nonfarm", "payroll", "unemployment", "jobless", "employment", "고용", "실업")
-_CENTRAL_BANK_TERMS = ("fomc", "fed", "boj", "ecb", "bok", "central bank", "연준", "한국은행", "중앙은행")
+_JOBS_TERMS = (
+    "nonfarm",
+    "payroll",
+    "unemployment",
+    "jobless",
+    "employment",
+    "고용",
+    "실업",
+)
+_CENTRAL_BANK_TERMS = (
+    "fomc",
+    "fed",
+    "boj",
+    "ecb",
+    "bok",
+    "central bank",
+    "연준",
+    "한국은행",
+    "중앙은행",
+)
 
 _MARKET_LITERAL = cast  # alias — used for type narrowing below
 
@@ -133,7 +151,14 @@ def _impact_tags_for_macro(
 ) -> list[ImpactTag]:
     haystack = f"{title} {source} {currency or ''} {country or ''}".lower()
     tags: list[ImpactTag] = []
-    if (currency or "").upper() in {"USD", "KRW", "JPY", "CNY", "EUR", "GBP"} or _contains_any(haystack, _FX_TERMS):
+    if (currency or "").upper() in {
+        "USD",
+        "KRW",
+        "JPY",
+        "CNY",
+        "EUR",
+        "GBP",
+    } or _contains_any(haystack, _FX_TERMS):
         tags.append("fx")
     if _contains_any(haystack, _RATES_TERMS):
         tags.append("rates")

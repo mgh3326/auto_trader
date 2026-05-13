@@ -163,7 +163,9 @@ def _contains_any(haystack: str, terms: tuple[str, ...]) -> bool:
     return any(term.casefold() in lowered for term in terms)
 
 
-def _topic_tags_for_row(row: NewsArticle, analysis_summary: str | None) -> list[FeedTopic]:
+def _topic_tags_for_row(
+    row: NewsArticle, analysis_summary: str | None
+) -> list[FeedTopic]:
     haystack = " ".join(
         part
         for part in (
