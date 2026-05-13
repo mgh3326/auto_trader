@@ -406,7 +406,7 @@ class Settings(BaseSettings):
 
     # N8N API Key Authentication
     N8N_API_KEY: str = ""
-    PUBLIC_API_PATHS: list[str] = []
+    PUBLIC_API_PATHS: Annotated[list[str], NoDecode] = []
 
     # news-ingestor machine-to-machine bulk ingest authentication
     NEWS_INGESTOR_INGEST_TOKEN: str = ""
@@ -503,7 +503,19 @@ class Settings(BaseSettings):
     def validate_public_api_paths(cls, v: list[str] | str) -> list[str]:
         """Ensure PUBLIC_API_PATHS is parsed consistently from env strings."""
         if isinstance(v, str):
-            return [path.strip() for path in v.split(",") if path.strip()]
+            value = v.strip()
+            if not value:
+                return []
+            if value.startswith("["):
+                parsed = json.loads(value)
+                if not isinstance(parsed, list) or not all(
+                    isinstance(path, str) for path in parsed
+                ):
+                    raise ValueError(
+                        "PUBLIC_API_PATHS JSON value must be a string list"
+                    )
+                return [path.strip() for path in parsed if path.strip()]
+            return [path.strip() for path in value.split(",") if path.strip()]
         return v or []
 
     @field_validator("SENTRY_TRACES_SAMPLE_RATE", "SENTRY_PROFILES_SAMPLE_RATE")
