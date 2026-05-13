@@ -498,7 +498,9 @@ class _FakeKISMockAccount:
             }
         ]
 
-    async def inquire_domestic_cash_balance(self, is_mock: bool = False) -> dict[str, Any]:
+    async def inquire_domestic_cash_balance(
+        self, is_mock: bool = False
+    ) -> dict[str, Any]:
         assert is_mock is True
         return {
             "dnca_tot_amt": 200_000.0,
@@ -601,9 +603,15 @@ async def test_kis_mock_reader_cash_balance_called_with_is_mock_true(
         ) -> list[dict[str, Any]]:
             return []
 
-        async def inquire_domestic_cash_balance(self, is_mock: bool = False) -> dict[str, Any]:
+        async def inquire_domestic_cash_balance(
+            self, is_mock: bool = False
+        ) -> dict[str, Any]:
             cash_balance_calls.append(is_mock)
-            return {"dnca_tot_amt": 50_000.0, "stck_cash_ord_psbl_amt": 40_000.0, "raw": {}}
+            return {
+                "dnca_tot_amt": 50_000.0,
+                "stck_cash_ord_psbl_amt": 40_000.0,
+                "raw": {},
+            }
 
     class _TrackingClient:
         def __init__(self) -> None:
@@ -614,7 +622,9 @@ async def test_kis_mock_reader_cash_balance_called_with_is_mock_true(
 
     result = await readers.KISMockHomeReader().fetch(user_id=1)
 
-    assert cash_balance_calls == [True], "inquire_domestic_cash_balance was not called with is_mock=True"
+    assert cash_balance_calls == [True], (
+        "inquire_domestic_cash_balance was not called with is_mock=True"
+    )
     account = result.accounts[0]
     assert account.cashBalances.krw == pytest.approx(50_000.0)
     assert account.buyingPower.krw == pytest.approx(40_000.0)
@@ -644,7 +654,9 @@ async def test_kis_mock_reader_cash_failure_is_non_fatal(
                 }
             ]
 
-        async def inquire_domestic_cash_balance(self, is_mock: bool = False) -> dict[str, Any]:
+        async def inquire_domestic_cash_balance(
+            self, is_mock: bool = False
+        ) -> dict[str, Any]:
             raise RuntimeError("cash API unavailable")
 
     class _CashFailClient:
@@ -708,7 +720,9 @@ async def test_alpaca_paper_reader_maps_positions_and_converts_usd(
             return fake_positions
 
     monkeypatch.setattr(
-        readers.AlpacaPaperHomeReader, "_make_service", staticmethod(lambda: _FakeAlpacaSvc())
+        readers.AlpacaPaperHomeReader,
+        "_make_service",
+        staticmethod(lambda: _FakeAlpacaSvc()),
     )
 
     async def _fx() -> float:
@@ -806,4 +820,6 @@ async def test_alpaca_paper_reader_mutation_methods_not_called(
 
     await readers.AlpacaPaperHomeReader().fetch(user_id=1)
 
-    assert mutation_called == [], "Mutation methods were called during Invest Home fetch"
+    assert mutation_called == [], (
+        "Mutation methods were called during Invest Home fetch"
+    )

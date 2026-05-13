@@ -377,15 +377,23 @@ class InvestHomeService:
             except Exception as exc:
                 src_name = type(reader).__name__
                 logger.warning(
-                    "[invest_home] paper reader %s failed: %s", src_name, exc, exc_info=True
+                    "[invest_home] paper reader %s failed: %s",
+                    src_name,
+                    exc,
+                    exc_info=True,
                 )
                 # Only emit warning when source is a known valid literal
                 _valid_sources = {
-                    "kis_mock", "kiwoom_mock", "alpaca_paper", "db_simulated"
+                    "kis_mock",
+                    "kiwoom_mock",
+                    "alpaca_paper",
+                    "db_simulated",
                 }
                 if reader_source in _valid_sources:
                     warnings.append(
-                        InvestHomeWarning(source=reader_source, message=type(exc).__name__)  # type: ignore[arg-type]
+                        InvestHomeWarning(
+                            source=reader_source, message=type(exc).__name__
+                        )  # type: ignore[arg-type]
                     )
 
         return InvestHomeResponse(

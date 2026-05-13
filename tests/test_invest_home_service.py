@@ -460,7 +460,9 @@ def test_home_summary_does_not_include_cash_balances_or_buying_power() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_paper_readers_appear_in_accounts_but_excluded_from_home_summary() -> None:
+async def test_paper_readers_appear_in_accounts_but_excluded_from_home_summary() -> (
+    None
+):
     from app.schemas.invest_home import Account, CashAmounts
     from app.services.invest_home_service import InvestHomeService, _SourceFetchResult
 

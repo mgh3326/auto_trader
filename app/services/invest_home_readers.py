@@ -645,7 +645,10 @@ class _KISMockSettingsProxy:
 
     @property
     def kis_base_url(self) -> str:
-        return self._real.kis_mock_base_url or "https://openapivts.koreainvestment.com:29443"
+        return (
+            self._real.kis_mock_base_url
+            or "https://openapivts.koreainvestment.com:29443"
+        )
 
     @property
     def kis_access_token(self) -> str | None:
@@ -767,11 +770,17 @@ class KISMockHomeReader:
                     )
                 )
 
-            investment_value_krw = sum(h.valueKrw for h in holdings if h.valueKrw is not None)
-            cost_basis_krw = sum(
-                h.costBasis for h in holdings if h.costBasis is not None and h.currency == "KRW"
+            investment_value_krw = sum(
+                h.valueKrw for h in holdings if h.valueKrw is not None
             )
-            pnl_krw_total = investment_value_krw - cost_basis_krw if cost_basis_krw > 0 else None
+            cost_basis_krw = sum(
+                h.costBasis
+                for h in holdings
+                if h.costBasis is not None and h.currency == "KRW"
+            )
+            pnl_krw_total = (
+                investment_value_krw - cost_basis_krw if cost_basis_krw > 0 else None
+            )
             pnl_rate_total = (
                 pnl_krw_total / cost_basis_krw
                 if pnl_krw_total is not None and cost_basis_krw > 0
@@ -782,7 +791,9 @@ class KISMockHomeReader:
             buying_power_krw: float | None = None
             cash_warning: InvestHomeWarning | None = None
             try:
-                cash_data = await client.account.inquire_domestic_cash_balance(is_mock=True)
+                cash_data = await client.account.inquire_domestic_cash_balance(
+                    is_mock=True
+                )
                 raw_balance = cash_data.get("dnca_tot_amt")
                 raw_orderable = cash_data.get("stck_cash_ord_psbl_amt")
                 if raw_balance is not None:
@@ -815,7 +826,9 @@ class KISMockHomeReader:
                 cashBalances=CashAmounts(krw=cash_krw),
                 buyingPower=CashAmounts(krw=buying_power_krw),
             )
-            return _SourceFetchResult(accounts=[account], holdings=holdings, warning=cash_warning)
+            return _SourceFetchResult(
+                accounts=[account], holdings=holdings, warning=cash_warning
+            )
 
         except Exception as exc:
             logger.warning("KIS mock fetch failed: %s", exc, exc_info=True)
