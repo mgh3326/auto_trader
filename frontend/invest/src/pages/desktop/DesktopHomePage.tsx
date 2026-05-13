@@ -73,6 +73,12 @@ const NAV_CARDS: NavCard[] = [
     icon: <Icon name="calendar" size={20} />,
   },
   {
+    to: "/market/fx",
+    label: "FX·매크로",
+    desc: "환율 경고 및 사후 검증 참고",
+    icon: <Icon name="chart" size={20} />,
+  },
+  {
     to: "/screener",
     label: "골라보기",
     desc: "조건별 종목 필터링",
