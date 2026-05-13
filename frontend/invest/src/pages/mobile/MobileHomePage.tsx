@@ -6,7 +6,9 @@ import { MobileShell } from "../../mobile/MobileShell";
 import { useInvestHome } from "../../hooks/useInvestHome";
 import { useAccountPanel } from "../../desktop/useAccountPanel";
 import { scopeGroupedToSource } from "../../desktop/scopeHoldings";
+import { accountSourceMeta, displayNameWithSource } from "../../desktop/AccountSourceMeta";
 import { PL } from "../../ds";
+import type { PillTone } from "../../ds";
 import { Icon } from "../../ds";
 import type { AccountSource, HomeSummary } from "../../types/invest";
 
@@ -187,15 +189,20 @@ export function MobileHomePage() {
                 <PillButton on={account === "all"} onClick={() => setAccount("all")}>
                   전체
                 </PillButton>
-                {data.accounts.map((a) => (
-                  <PillButton
-                    key={a.accountId}
-                    on={account === a.source}
-                    onClick={() => setAccount(a.source)}
-                  >
-                    {a.displayName}
-                  </PillButton>
-                ))}
+                {data.accounts.map((a) => {
+                  const meta = accountSourceMeta(a.source);
+                  return (
+                    <PillButton
+                      key={a.accountId}
+                      on={account === a.source}
+                      onClick={() => setAccount(a.source)}
+                      tone={meta.tone}
+                    >
+                      <span>{displayNameWithSource(a)}</span>
+                      <span style={{ opacity: 0.72, marginLeft: 4 }}>{meta.badge}</span>
+                    </PillButton>
+                  );
+                })}
               </div>
             </section>
           )}
@@ -304,7 +311,7 @@ export function MobileHomePage() {
   );
 }
 
-function PillButton({ on, onClick, children }: { on: boolean; onClick: () => void; children: React.ReactNode }) {
+function PillButton({ on, onClick, children, tone = "paper" }: { on: boolean; onClick: () => void; children: React.ReactNode; tone?: PillTone }) {
   return (
     <button
       type="button"
@@ -314,8 +321,8 @@ function PillButton({ on, onClick, children }: { on: boolean; onClick: () => voi
         padding: "6px 12px",
         borderRadius: 999,
         border: "none",
-        background: on ? "var(--fg)" : "var(--surface-2)",
-        color: on ? "var(--bg)" : "var(--fg-2)",
+        background: on ? `var(--pill-${tone}-fg)` : `var(--pill-${tone}-bg)`,
+        color: on ? "var(--bg)" : `var(--pill-${tone}-fg)`,
         fontSize: 12,
         fontWeight: 600,
         whiteSpace: "nowrap",

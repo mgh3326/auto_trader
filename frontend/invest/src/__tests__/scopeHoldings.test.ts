@@ -69,6 +69,22 @@ const baseGroup: GroupedHolding = {
   ],
 };
 
+const kisMockGroup: GroupedHolding = {
+  ...baseGroup,
+  groupId: "US:equity:USD:MSFT:kis_mock",
+  symbol: "MSFT",
+  displayName: "Microsoft",
+  totalQuantity: 1,
+  averageCost: 300,
+  costBasis: 300,
+  valueNative: 320,
+  valueKrw: 430_000,
+  pnlKrw: 30_000,
+  pnlRate: 0.075,
+  includedSources: ["kis_mock"],
+  sourceBreakdown: [],
+};
+
 const upbitGroup: GroupedHolding = {
   groupId: "CRYPTO:crypto:KRW:BTC",
   symbol: "KRW-BTC",
@@ -125,13 +141,41 @@ const panelResponse: AccountPanelResponse = {
       cashBalances: { krw: 50_000 },
       buyingPower: { krw: 50_000 },
     },
+    {
+      accountId: "kis-mock-1",
+      displayName: "KIS official mock",
+      source: "kis_mock",
+      accountKind: "paper",
+      includedInHome: false,
+      valueKrw: 430_000,
+      costBasisKrw: 400_000,
+      pnlKrw: 30_000,
+      pnlRate: 0.075,
+      cashBalances: { krw: 1_000_000, usd: 10 },
+      buyingPower: { krw: 1_000_000, usd: 10 },
+    },
+    {
+      accountId: "alpaca-paper-1",
+      displayName: "Alpaca sandbox",
+      source: "alpaca_paper",
+      accountKind: "paper",
+      includedInHome: false,
+      valueKrw: 0,
+      costBasisKrw: null,
+      pnlKrw: null,
+      pnlRate: null,
+      cashBalances: { krw: null, usd: 250.25 },
+      buyingPower: { krw: null, usd: 250.25 },
+    },
   ],
-  groupedHoldings: [baseGroup, upbitGroup],
+  groupedHoldings: [baseGroup, upbitGroup, kisMockGroup],
   watchSymbols: [],
   sourceVisuals: [
     { source: "kis", tone: "navy", badge: "Live", displayName: "KIS" },
     { source: "upbit", tone: "green", badge: "Crypto", displayName: "Upbit" },
     { source: "toss_manual", tone: "gray", badge: "Manual", displayName: "Toss/manual" },
+    { source: "kis_mock", tone: "dashed", badge: "Mock", displayName: "KIS mock" },
+    { source: "alpaca_paper", tone: "dashed", badge: "Paper", displayName: "Alpaca" },
   ],
   meta: { warnings: [], watchlistAvailable: true },
 };
@@ -208,8 +252,8 @@ describe("buildScopedPortfolioPanel", () => {
 
   it("builds filter options from accounts and holding-only manual sources", () => {
     const options = buildAccountFilterOptions(panelResponse);
-    expect(options.map((option) => option.key)).toEqual(["all", "kis", "upbit", "toss_manual"]);
-    expect(options.map((option) => option.label)).toEqual(["전체", "KIS", "Upbit", "Toss/manual"]);
+    expect(options.map((option) => option.key)).toEqual(["all", "kis", "upbit", "kis_mock", "alpaca_paper", "toss_manual"]);
+    expect(options.map((option) => option.label)).toEqual(["전체", "KIS 실계좌", "Upbit", "KIS 모의", "Alpaca Paper", "Toss 수동"]);
     expect(options.find((option) => option.key === "toss_manual")?.cashBalances).toEqual({ krw: null, usd: null });
   });
 
@@ -234,8 +278,31 @@ describe("buildScopedPortfolioPanel", () => {
     expect(scoped.cashBalances).toEqual({ krw: 50_000, usd: null });
   });
 
-  it("falls back to all for missing selected keys", () => {
+  it("handles cash-only paper accounts without holdings", () => {
     const scoped = buildScopedPortfolioPanel(panelResponse, "alpaca_paper");
+    expect(scoped.selected.key).toBe("alpaca_paper");
+    expect(scoped.selected.label).toBe("Alpaca Paper");
+    expect(scoped.groupedHoldings).toEqual([]);
+    expect(scoped.totalValueKrw).toBe(0);
+    expect(scoped.cashBalances).toEqual({ krw: null, usd: 250.25 });
+  });
+
+  it("keeps live KIS distinct from KIS mock", () => {
+    const live = buildScopedPortfolioPanel(panelResponse, "kis");
+    const mock = buildScopedPortfolioPanel(panelResponse, "kis_mock");
+    expect(live.selected.label).toBe("KIS 실계좌");
+    expect(mock.selected.label).toBe("KIS 모의");
+    expect(mock.groupedHoldings.map((group) => group.symbol)).toEqual(["MSFT"]);
+    expect(mock.cashBalances).toEqual({ krw: 1_000_000, usd: 10 });
+  });
+
+  it("falls back to all for missing selected keys", () => {
+    const response = {
+      ...panelResponse,
+      accounts: panelResponse.accounts.filter((account) => account.source !== "db_simulated"),
+      groupedHoldings: panelResponse.groupedHoldings.filter((group) => !group.includedSources.includes("db_simulated")),
+    };
+    const scoped = buildScopedPortfolioPanel(response, "db_simulated");
     expect(scoped.selected.key).toBe("all");
     expect(scoped.totalValueKrw).toBe(panelResponse.homeSummary.totalValueKrw);
   });

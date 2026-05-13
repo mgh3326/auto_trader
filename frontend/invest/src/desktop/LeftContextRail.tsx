@@ -1,16 +1,17 @@
 import type { Account } from "../types/invest";
-import { pillToneForSource } from "./AccountSourceTone";
+import { accountSourceMeta, displayNameWithSource } from "./AccountSourceMeta";
 import type { AssetCategoryKey } from "../components/AssetCategoryFilter";
 
 interface ItemProps {
   label: string;
   toneDot?: string;
+  badge?: string;
   value?: string;
   active?: boolean;
   onClick?: () => void;
 }
 
-function Item({ label, toneDot, value, active, onClick }: ItemProps) {
+function Item({ label, toneDot, badge, value, active, onClick }: ItemProps) {
   return (
     <button
       onClick={onClick}
@@ -41,6 +42,9 @@ function Item({ label, toneDot, value, active, onClick }: ItemProps) {
         <span aria-hidden style={{ width: 6, height: 6, borderRadius: 2, background: "var(--fg-2)", flexShrink: 0 }} />
       )}
       <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{label}</span>
+      {badge != null && (
+        <span style={{ fontSize: 10, color: "var(--fg-3)", fontWeight: 700, flexShrink: 0 }}>{badge}</span>
+      )}
       {value != null && (
         <span style={{ fontSize: 11, color: "var(--fg-3)", fontFeatureSettings: '"tnum"', fontWeight: 500 }}>{value}</span>
       )}
@@ -104,12 +108,13 @@ export function LeftContextRail({
             onClick={() => onAccount("all")}
           />
           {accounts.map((a) => {
-            const tone = pillToneForSource(a.source);
+            const meta = accountSourceMeta(a.source);
             return (
               <Item
                 key={a.accountId}
-                label={a.displayName}
-                toneDot={`var(--pill-${tone}-fg)`}
+                label={displayNameWithSource(a)}
+                badge={meta.badge}
+                toneDot={`var(--pill-${meta.tone}-fg)`}
                 value={fmtMillion(a.valueKrw)}
                 active={account === a.source}
                 onClick={() => onAccount(a.source)}

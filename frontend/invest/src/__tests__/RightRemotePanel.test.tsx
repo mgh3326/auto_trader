@@ -38,6 +38,26 @@ const PANEL_RESP: AccountPanelResponse = {
       cashBalances: { krw: 50_000 },
       buyingPower: { krw: 50_000 },
     },
+    {
+      accountId: "km1",
+      displayName: "KIS official mock",
+      source: "kis_mock",
+      accountKind: "paper",
+      includedInHome: false,
+      valueKrw: 0,
+      cashBalances: { krw: 1_000_000, usd: 10 },
+      buyingPower: { krw: 1_000_000, usd: 10 },
+    },
+    {
+      accountId: "ap1",
+      displayName: "Alpaca sandbox",
+      source: "alpaca_paper",
+      accountKind: "paper",
+      includedInHome: false,
+      valueKrw: 0,
+      cashBalances: { usd: 250.25 },
+      buyingPower: { usd: 250.25 },
+    },
   ],
   groupedHoldings: [
     {
@@ -111,6 +131,8 @@ const PANEL_RESP: AccountPanelResponse = {
     { source: "kis", tone: "navy", badge: "Live", displayName: "KIS" },
     { source: "upbit", tone: "green", badge: "Crypto", displayName: "Upbit" },
     { source: "toss_manual", tone: "gray", badge: "Manual", displayName: "Toss/manual" },
+    { source: "kis_mock", tone: "dashed", badge: "Mock", displayName: "KIS mock" },
+    { source: "alpaca_paper", tone: "dashed", badge: "Paper", displayName: "Alpaca" },
   ],
   meta: { warnings: [], watchlistAvailable: true },
 };
@@ -155,9 +177,11 @@ test("portfolio tab shows account cash card, filters, and all-account holdings a
   expect(within(cashCard).getByText("₩150,000")).toBeInTheDocument();
   expect(within(cashCard).getByText("$25.5")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "전체" })).toHaveAttribute("aria-pressed", "true");
-  expect(screen.getByRole("button", { name: "KIS" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "KIS 실계좌" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Upbit" })).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Toss/manual" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Toss 수동" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "KIS 모의" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Alpaca Paper" })).toBeInTheDocument();
   expect(screen.getByText("전체 보유종목")).toBeInTheDocument();
   expect(screen.getByText("비트코인")).toBeInTheDocument();
   expect(screen.getByText("Tesla")).toBeInTheDocument();
@@ -171,10 +195,10 @@ test("KIS filter recomputes totals and rows without refetching account panel", a
   await waitFor(() => expect(screen.getByTestId("portfolio-panel")).toBeInTheDocument());
   expect(fetchSpy).toHaveBeenCalledTimes(1);
 
-  await user.click(screen.getByRole("button", { name: "KIS" }));
+  await user.click(screen.getByRole("button", { name: "KIS 실계좌" }));
 
-  expect(screen.getByRole("button", { name: "KIS" })).toHaveAttribute("aria-pressed", "true");
-  expect(screen.getByText("KIS 보유종목")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "KIS 실계좌" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByText("KIS 실계좌 보유종목")).toBeInTheDocument();
   expect(screen.getByText("Tesla")).toBeInTheDocument();
   expect(screen.queryByText("비트코인")).not.toBeInTheDocument();
   expect(screen.getAllByText("₩1,244,000")).toHaveLength(2);
@@ -200,13 +224,28 @@ test("Upbit and Toss/manual filters scope holdings and cash independently", asyn
   let cashCard = screen.getByTestId("account-cash-card");
   expect(within(cashCard).getByText("₩50,000")).toBeInTheDocument();
 
-  await user.click(screen.getByRole("button", { name: "Toss/manual" }));
-  expect(screen.getByText("Toss/manual 보유종목")).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Toss 수동" }));
+  expect(screen.getByText("Toss 수동 보유종목")).toBeInTheDocument();
   expect(screen.getByText("Tesla")).toBeInTheDocument();
   expect(screen.queryByText("비트코인")).not.toBeInTheDocument();
   expect(screen.getAllByText("₩356,000")).toHaveLength(2);
   cashCard = screen.getByTestId("account-cash-card");
   expect(within(cashCard).getByText("현금 정보 없음")).toBeInTheDocument();
+});
+
+test("paper account filters show distinct labels and cash-only empty state", async () => {
+  const user = userEvent.setup();
+  renderPanel();
+  await waitFor(() => expect(screen.getByTestId("portfolio-panel")).toBeInTheDocument());
+
+  await user.click(screen.getByRole("button", { name: "Alpaca Paper" }));
+
+  expect(screen.getByRole("button", { name: "Alpaca Paper" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByText("Alpaca Paper 보유종목")).toBeInTheDocument();
+  expect(screen.getByText("Alpaca Paper 계좌는 표시할 모의/Paper 보유종목이 없습니다.")).toBeInTheDocument();
+  const cashCard = screen.getByTestId("account-cash-card");
+  expect(within(cashCard).getByText("$250.25")).toBeInTheDocument();
+  expect(screen.queryByText("KIS 실계좌 보유종목")).not.toBeInTheDocument();
 });
 
 test("watchlist tab shows watch symbols", async () => {

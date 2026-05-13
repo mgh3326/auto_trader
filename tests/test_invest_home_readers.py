@@ -472,3 +472,247 @@ async def test_manual_reader_does_not_fabricate_value_from_cost_basis(
     assert result.holdings[0].assetCategory == "kr_stock"
     assert result.holdings[0].priceState == "missing"
     assert result.warning is not None
+
+
+# ---------------------------------------------------------------------------
+# ROB-238: KISMockHomeReader tests
+# ---------------------------------------------------------------------------
+
+
+class _FakeKISMockAccount:
+    async def fetch_my_stocks(
+        self, *, is_mock: bool, is_overseas: bool
+    ) -> list[dict[str, Any]]:
+        assert is_mock is True
+        assert is_overseas is False
+        return [
+            {
+                "pdno": "005935",
+                "prdt_name": "삼성전자우",
+                "hldg_qty": "5",
+                "pchs_avg_pric": "60000",
+                "pchs_amt": "300000",
+                "evlu_amt": "310000",
+                "evlu_pfls_amt": "10000",
+                "evlu_pfls_rt": "3.3333",
+            }
+        ]
+
+
+class _FakeKISMockClient:
+    def __init__(self) -> None:
+        self.account = _FakeKISMockAccount()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_kis_mock_reader_passes_is_mock_true(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(readers, "SafeKISMockClient", _FakeKISMockClient)
+    monkeypatch.setattr(readers, "_kis_mock_configured", lambda: True)
+
+    result = await readers.KISMockHomeReader().fetch(user_id=1)
+
+    account = result.accounts[0]
+    assert account.source == "kis_mock"
+    assert account.accountKind == "paper"
+    assert account.includedInHome is False
+    assert account.accountId == "kis_mock_account"
+    assert account.valueKrw == 310_000
+
+    h = result.holdings[0]
+    assert h.source == "kis_mock"
+    assert h.accountKind == "paper"
+    assert h.symbol == "005935"
+    assert h.assetCategory == "kr_stock"
+    assert h.currency == "KRW"
+    assert h.valueKrw == 310_000
+    assert h.costBasis == 300_000
+    assert h.pnlKrw == 10_000
+    assert h.pnlRate == pytest.approx(3.3333 / 100.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_kis_mock_reader_returns_warning_when_not_configured() -> None:
+    result = await readers.KISMockHomeReader().fetch(user_id=1)
+
+    assert result.accounts == []
+    assert result.holdings == []
+    assert result.warning is not None
+    assert result.warning.source == "kis_mock"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_kis_mock_reader_partial_failure_returns_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _BrokenKISMockClient:
+        def __init__(self) -> None:
+            self.account = None
+
+        async def fetch_my_stocks(self, **kwargs: Any) -> list[dict[str, Any]]:
+            raise RuntimeError("mock API down")
+
+    class _BrokenAccount:
+        async def fetch_my_stocks(self, **kwargs: Any) -> list[dict[str, Any]]:
+            raise RuntimeError("mock API down")
+
+    class _BrokenClient:
+        def __init__(self) -> None:
+            self.account = _BrokenAccount()
+
+    monkeypatch.setattr(readers, "SafeKISMockClient", _BrokenClient)
+    monkeypatch.setattr(readers, "_kis_mock_configured", lambda: True)
+
+    result = await readers.KISMockHomeReader().fetch(user_id=1)
+
+    assert result.accounts == []
+    assert result.holdings == []
+    assert result.warning is not None
+    assert result.warning.source == "kis_mock"
+
+
+# ---------------------------------------------------------------------------
+# ROB-238: AlpacaPaperHomeReader tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_alpaca_paper_reader_maps_positions_and_converts_usd(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from decimal import Decimal
+
+    from app.services.brokers.alpaca.schemas import AccountSnapshot, Position
+
+    fake_account = AccountSnapshot(
+        id="alpaca-test",
+        buying_power=Decimal("1000"),
+        cash=Decimal("500"),
+        portfolio_value=Decimal("5500"),
+        status="ACTIVE",
+    )
+    fake_positions = [
+        Position(
+            asset_id="aapl-id",
+            symbol="AAPL",
+            qty=Decimal("2"),
+            avg_entry_price=Decimal("100"),
+            current_price=Decimal("110"),
+            market_value=Decimal("220"),
+            unrealized_pl=Decimal("20"),
+            side="long",
+        )
+    ]
+
+    class _FakeAlpacaSvc:
+        async def get_account(self) -> AccountSnapshot:
+            return fake_account
+
+        async def list_positions(self) -> list[Position]:
+            return fake_positions
+
+    monkeypatch.setattr(
+        readers.AlpacaPaperHomeReader, "_make_service", staticmethod(lambda: _FakeAlpacaSvc())
+    )
+
+    async def _fx() -> float:
+        return 1_300.0
+
+    monkeypatch.setattr(readers, "get_usd_krw_rate", _fx)
+
+    result = await readers.AlpacaPaperHomeReader().fetch(user_id=1)
+
+    account = result.accounts[0]
+    assert account.source == "alpaca_paper"
+    assert account.accountKind == "paper"
+    assert account.includedInHome is False
+    assert account.accountId == "alpaca_paper_account"
+    assert account.cashBalances.usd == pytest.approx(500.0)
+    assert account.buyingPower.usd == pytest.approx(1000.0)
+    assert account.valueKrw == pytest.approx(220 * 1_300.0)
+
+    h = result.holdings[0]
+    assert h.source == "alpaca_paper"
+    assert h.accountKind == "paper"
+    assert h.symbol == "AAPL"
+    assert h.market == "US"
+    assert h.currency == "USD"
+    assert h.assetCategory == "us_stock"
+    assert h.valueNative == pytest.approx(220.0)
+    assert h.valueKrw == pytest.approx(220 * 1_300.0)
+    assert h.pnlKrw == pytest.approx(20 * 1_300.0)
+    assert h.pnlRate == pytest.approx(20 / 200)
+    assert h.priceState == "live"
+    assert result.warning is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_alpaca_paper_reader_not_configured_returns_warning() -> None:
+    from app.services.brokers.alpaca.exceptions import AlpacaPaperConfigurationError
+
+    class _Reader(readers.AlpacaPaperHomeReader):
+        @staticmethod
+        def _make_service() -> Any:
+            raise AlpacaPaperConfigurationError("no creds")
+
+    result = await _Reader().fetch(user_id=1)
+
+    assert result.accounts == []
+    assert result.holdings == []
+    assert result.warning is not None
+    assert result.warning.source == "alpaca_paper"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_alpaca_paper_reader_mutation_methods_not_called(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify that submit_order and cancel_order are never called during fetch."""
+    from decimal import Decimal
+
+    from app.services.brokers.alpaca.schemas import AccountSnapshot
+
+    mutation_called: list[str] = []
+
+    class _SafeFakeAlpacaSvc:
+        async def get_account(self) -> AccountSnapshot:
+            return AccountSnapshot(
+                id="safe-test",
+                buying_power=Decimal("0"),
+                cash=Decimal("0"),
+                portfolio_value=Decimal("0"),
+                status="ACTIVE",
+            )
+
+        async def list_positions(self) -> list[Any]:
+            return []
+
+        async def submit_order(self, *args: Any, **kwargs: Any) -> Any:
+            mutation_called.append("submit_order")
+            raise AssertionError("submit_order must not be called from Invest Home")
+
+        async def cancel_order(self, *args: Any, **kwargs: Any) -> Any:
+            mutation_called.append("cancel_order")
+            raise AssertionError("cancel_order must not be called from Invest Home")
+
+    monkeypatch.setattr(
+        readers.AlpacaPaperHomeReader,
+        "_make_service",
+        staticmethod(lambda: _SafeFakeAlpacaSvc()),
+    )
+
+    async def _fx() -> float:
+        return 1_300.0
+
+    monkeypatch.setattr(readers, "get_usd_krw_rate", _fx)
+
+    await readers.AlpacaPaperHomeReader().fetch(user_id=1)
+
+    assert mutation_called == [], "Mutation methods were called during Invest Home fetch"

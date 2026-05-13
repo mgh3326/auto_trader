@@ -8,6 +8,7 @@ import type { PillTone } from "../ds";
 import { fetchSignals } from "../api/signals";
 import type { SignalCard } from "../types/signals";
 import { buildScopedPortfolioPanel, type AccountFilterKey } from "./scopeHoldings";
+import { accountSourceMeta } from "./AccountSourceMeta";
 import type { GroupedHolding, WatchSymbol } from "../types/invest";
 import { formatRelativeTime } from "../format/relativeTime";
 
@@ -215,6 +216,12 @@ function PortfolioPanel({ onNavigate }: Readonly<{ onNavigate: NavigateToSymbol 
   };
 
   const sectionLabel = `${scoped.selected.label} 보유종목`;
+  const selectedSourceMeta = scoped.selected.source ? accountSourceMeta(scoped.selected.source) : null;
+  const emptyText = selectedKey === "all"
+    ? "보유 종목이 없습니다."
+    : selectedSourceMeta?.tone === "paper"
+      ? `${scoped.selected.label} 계좌는 표시할 모의/Paper 보유종목이 없습니다.`
+      : "선택한 계좌에 표시할 보유종목이 없습니다.";
   const hasCash = scoped.cashBalances.krw != null || scoped.cashBalances.usd != null;
 
   return (
@@ -309,7 +316,7 @@ function PortfolioPanel({ onNavigate }: Readonly<{ onNavigate: NavigateToSymbol 
         </div>
         {sorted.length === 0 ? (
           <div data-testid="holdings-empty" style={{ fontSize: 12, color: "var(--fg-3)", padding: "8px 0" }}>
-            {selectedKey === "all" ? "보유 종목이 없습니다." : "선택한 계좌에 표시할 보유종목이 없습니다."}
+            {emptyText}
           </div>
         ) : (
           <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column" }}>

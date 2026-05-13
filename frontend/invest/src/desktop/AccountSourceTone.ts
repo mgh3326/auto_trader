@@ -31,7 +31,7 @@ export function visualBySource(
 
 const SOURCE_TO_PILL: Record<AccountSource, PillTone> = {
   kis: "kis",
-  kis_mock: "kis",
+  kis_mock: "paper",
   upbit: "upbit",
   toss_manual: "toss",
   isa_manual: "isa",
