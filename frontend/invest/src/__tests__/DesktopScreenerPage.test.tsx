@@ -62,6 +62,37 @@ const RESULTS_VALUE = {
   results: [{ ...ROW, metricValueLabel: "14.0" }],
 };
 
+const CRYPTO_PRESETS = {
+  presets: [
+    {
+      id: "crypto_high_volume", name: "거래대금 상위 코인",
+      description: "Upbit 거래대금이 큰 가상자산",
+      badges: ["가상자산"],
+      filterChips: [{ label: "거래대금", detail: "24시간 상위" }],
+      metricLabel: "거래대금", market: "crypto" as const,
+    },
+  ],
+  selectedPresetId: "crypto_high_volume",
+};
+
+const CRYPTO_RESULTS = {
+  ...RESULTS_GAINERS,
+  presetId: "crypto_high_volume", title: "거래대금 상위 코인",
+  description: "Upbit 거래대금이 큰 가상자산",
+  filterChips: [{ label: "거래대금", detail: "24시간 상위" }],
+  metricLabel: "거래대금",
+  results: [{
+    ...ROW,
+    symbol: "KRW-BTC",
+    market: "crypto" as const,
+    name: "Bitcoin",
+    priceLabel: "150,000,000원",
+    marketCapLabel: "$2.10T",
+    category: "Crypto",
+    metricValueLabel: "120,000,000,000",
+  }],
+};
+
 function wrap(ui: React.ReactElement) {
   return (
     <AccountPanelProvider>
@@ -81,8 +112,13 @@ beforeEach(() => {
   vi.spyOn(signalsApi, "fetchSignals").mockResolvedValue({
     tab: "kr", asOf: new Date().toISOString(), items: [], meta: { warnings: [] },
   });
-  vi.spyOn(screenerApi, "fetchScreenerPresets").mockResolvedValue(PRESETS);
+  vi.spyOn(screenerApi, "fetchScreenerPresets").mockImplementation(async (market = "kr") => {
+    return market === "crypto" ? CRYPTO_PRESETS : PRESETS;
+  });
   vi.spyOn(screenerApi, "fetchScreenerResults").mockImplementation(async (id: string, market = "kr") => {
+    if (market === "crypto") {
+      return CRYPTO_RESULTS;
+    }
     if (market === "us") {
       return {
         ...RESULTS_VALUE,
@@ -150,4 +186,16 @@ test("switches to the US market", async () => {
 
   await waitFor(() => expect(screen.getByText("Apple Inc.")).toBeInTheDocument());
   expect(screenerApi.fetchScreenerResults).toHaveBeenCalledWith("consecutive_gainers", "us");
+});
+
+
+test("switches to the crypto market", async () => {
+  render(wrap(<DesktopScreenerPage />));
+  await waitFor(() => expect(screen.getByText("삼성전자")).toBeInTheDocument());
+
+  await userEvent.click(screen.getByRole("button", { name: "가상자산" }));
+
+  await waitFor(() => expect(screen.getByText("Bitcoin")).toBeInTheDocument());
+  expect(screenerApi.fetchScreenerPresets).toHaveBeenCalledWith("crypto");
+  expect(screenerApi.fetchScreenerResults).toHaveBeenCalledWith("crypto_high_volume", "crypto");
 });

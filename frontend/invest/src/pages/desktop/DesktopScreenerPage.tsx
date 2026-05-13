@@ -27,14 +27,18 @@ function screenerErrorMessage(error: unknown): string {
 export function DesktopScreenerPage() {
   const [presets, setPresets] = useState<ScreenerPresetsResponse | undefined>();
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [selectedMarket, setSelectedMarket] = useState<Extract<ScreenerMarket, "kr" | "us">>("kr");
+  const [selectedMarket, setSelectedMarket] = useState<ScreenerMarket>("kr");
   const [results, setResults] = useState<ScreenerResultsResponse | undefined>();
   const [err, setErr] = useState<string | undefined>();
   const [modalOpen, setModalOpen] = useState(false);
 
   useEffect(() => {
     let cancel = false;
-    fetchScreenerPresets()
+    setErr(undefined);
+    setPresets(undefined);
+    setSelectedId(null);
+    setResults(undefined);
+    fetchScreenerPresets(selectedMarket)
       .then((r) => {
         if (cancel) return;
         setErr(undefined);
@@ -43,7 +47,7 @@ export function DesktopScreenerPage() {
       })
       .catch((e) => !cancel && setErr(screenerErrorMessage(e)));
     return () => { cancel = true; };
-  }, []);
+  }, [selectedMarket]);
 
   useEffect(() => {
     if (!selectedId) return;
@@ -59,6 +63,14 @@ export function DesktopScreenerPage() {
       .catch((e) => !cancel && setErr(screenerErrorMessage(e)));
     return () => { cancel = true; };
   }, [selectedId, selectedMarket]);
+
+  const handleMarketChange = (market: ScreenerMarket) => {
+    if (market === selectedMarket) return;
+    setPresets(undefined);
+    setSelectedId(null);
+    setResults(undefined);
+    setSelectedMarket(market);
+  };
 
   return (
     <DesktopShell
@@ -76,7 +88,7 @@ export function DesktopScreenerPage() {
               type="button"
               className={selectedMarket === "kr" ? "is-active" : ""}
               aria-pressed={selectedMarket === "kr"}
-              onClick={() => setSelectedMarket("kr")}
+              onClick={() => handleMarketChange("kr")}
             >
               국내
             </button>
@@ -84,9 +96,17 @@ export function DesktopScreenerPage() {
               type="button"
               className={selectedMarket === "us" ? "is-active" : ""}
               aria-pressed={selectedMarket === "us"}
-              onClick={() => setSelectedMarket("us")}
+              onClick={() => handleMarketChange("us")}
             >
               미국
+            </button>
+            <button
+              type="button"
+              className={selectedMarket === "crypto" ? "is-active" : ""}
+              aria-pressed={selectedMarket === "crypto"}
+              onClick={() => handleMarketChange("crypto")}
+            >
+              가상자산
             </button>
           </div>
           {err && <div style={{ color: "var(--danger)", marginBottom: 12 }}>오류: {err}</div>}

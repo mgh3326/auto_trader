@@ -30,6 +30,7 @@ from app.schemas.invest_screener import (
     ScreenerResultsResponse,
 )
 from app.services.invest_view_model.screener_presets import (
+    CRYPTO_DEFAULT_PRESET_ID,
     DEFAULT_PRESET_ID,
     get_preset,
     preset_definitions,
@@ -317,10 +318,13 @@ async def _load_consecutive_gainers_from_snapshots(
     return rows
 
 
-def build_screener_presets() -> ScreenerPresetsResponse:
+def build_screener_presets(market: str = "kr") -> ScreenerPresetsResponse:
+    requested_market = _normalize_market(market)
     return ScreenerPresetsResponse(
-        presets=preset_definitions("kr"),
-        selectedPresetId=DEFAULT_PRESET_ID,
+        presets=preset_definitions(requested_market),
+        selectedPresetId=CRYPTO_DEFAULT_PRESET_ID
+        if requested_market == "crypto"
+        else DEFAULT_PRESET_ID,
     )
 
 
@@ -331,6 +335,9 @@ _METRIC_FIELD: dict[str, str] = {
     "oversold_recovery": "rsi",
     "high_volume_momentum": "volume",
     "growth_expectation": "change_rate",
+    "crypto_high_volume": "trade_amount_24h",
+    "crypto_oversold": "rsi",
+    "crypto_momentum": "change_rate",
 }
 
 
@@ -349,6 +356,32 @@ def _format_change_amount(amount: float | None, market: str = "kr") -> str:
     if market == "us":
         return f"{sign}${abs(float(amount)):,.2f}"
     return f"{sign}{abs(int(amount)):,}원"
+
+
+def _is_krw_crypto_symbol(symbol: str) -> bool:
+    return symbol.upper().startswith("KRW-")
+
+
+def _format_crypto_price(close: float | None, symbol: str) -> str:
+    if close is None:
+        return "-"
+    if _is_krw_crypto_symbol(symbol):
+        if close >= 1:
+            return f"{float(close):,.0f}원"
+        return f"{float(close):,.4f}원"
+    return f"${float(close):,.4f}"
+
+
+def _format_crypto_change_amount(amount: float | None, symbol: str) -> str:
+    if amount is None:
+        return "-"
+    sign = "+" if amount > 0 else "-" if amount < 0 else ""
+    value = abs(float(amount))
+    if _is_krw_crypto_symbol(symbol):
+        if value >= 1:
+            return f"{sign}{value:,.0f}원"
+        return f"{sign}{value:,.4f}원"
+    return f"{sign}${value:,.4f}"
 
 
 def _format_price(close: float | None, market: str = "kr") -> str:
@@ -471,7 +504,7 @@ def _format_market_cap_us(market_cap: float | None) -> str:
 
 
 def _format_market_cap(row: dict[str, Any], market: str) -> tuple[str, list[str]]:
-    if market == "us":
+    if market in {"us", "crypto"}:
         market_cap = _coerce_float(row.get("market_cap_usd"))
         if market_cap is None:
             market_cap = _coerce_float(row.get("market_cap"))
@@ -484,6 +517,26 @@ def _format_volume(volume: float | None) -> str:
     if volume is None:
         return "-"
     return f"{int(volume):,}"
+
+
+def _format_volume_label(row: dict[str, Any], market: str) -> str:
+    if market == "crypto":
+        for key in ("trade_amount_24h", "value_traded", "volume_24h_usd", "volume"):
+            value = _coerce_float(row.get(key))
+            if value is not None:
+                return _format_volume(value)
+        return "-"
+    return _format_volume(_coerce_float(row.get("volume")))
+
+
+def _metric_raw_value(field: str, row: dict[str, Any]) -> Any:
+    if field == "trade_amount_24h":
+        for key in ("trade_amount_24h", "value_traded", "volume_24h_usd", "volume"):
+            value = row.get(key)
+            if value is not None:
+                return value
+        return None
+    return row.get(field)
 
 
 def calculate_consecutive_up_days(closes: Sequence[float | int | None]) -> int | None:
@@ -514,7 +567,7 @@ def _metric_value_label(preset_id: str, row: dict[str, Any]) -> tuple[str, list[
     field = _METRIC_FIELD.get(preset_id)
     if not field:
         return "-", []
-    value = row.get(field)
+    value = _metric_raw_value(field, row)
     if value is None:
         if field == "consecutive_up_days":
             return "-", ["연속상승 데이터 준비중"]
@@ -530,8 +583,8 @@ def _metric_value_label(preset_id: str, row: dict[str, Any]) -> tuple[str, list[
         return f"{float(value):.1f}", []
     if field == "dividend_yield":
         return f"{float(value):.2f}%", []
-    if field == "volume":
-        return f"{int(value):,}", []
+    if field in ("volume", "trade_amount_24h"):
+        return f"{int(float(value)):,}", []
     return str(value), []
 
 
@@ -605,7 +658,7 @@ async def build_screener_results(
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
     session: AsyncSession | None = None,
 ) -> ScreenerResultsResponse:
-    requested_market = "us" if market == "us" else "kr"
+    requested_market = _normalize_market(market)
     preset = get_preset(preset_id, requested_market)
     if preset is None:
         freshness = _build_freshness(
@@ -747,18 +800,31 @@ async def build_screener_results(
                 name=_kr_names.get(symbol) or _clean_text(row.get("name")) or symbol,
                 logoUrl=row.get("logo_url"),
                 isWatched=is_watched,
-                priceLabel=_format_price(
-                    row.get("close") or row.get("price") or row.get("current_price"),
+                priceLabel=_format_crypto_price(
+                    _coerce_float(
+                        row.get("close") or row.get("price") or row.get("current_price")
+                    ),
+                    symbol,
+                )
+                if market == "crypto"
+                else _format_price(
+                    _coerce_float(
+                        row.get("close") or row.get("price") or row.get("current_price")
+                    ),
                     market,
                 ),
                 changePctLabel=change_pct_label,
-                changeAmountLabel=_format_change_amount(
-                    row.get("change_amount"), market
+                changeAmountLabel=_format_crypto_change_amount(
+                    _coerce_float(row.get("change_amount")), symbol
+                )
+                if market == "crypto"
+                else _format_change_amount(
+                    _coerce_float(row.get("change_amount")), market
                 ),
                 changeDirection=direction,
                 category=str(row.get("sector") or row.get("category") or "-"),
                 marketCapLabel=market_cap_label,
-                volumeLabel=_format_volume(row.get("volume")),
+                volumeLabel=_format_volume_label(row, market),
                 analystLabel=str(row.get("analyst_label") or "-"),
                 metricValueLabel=metric_label,
                 warnings=row_warnings,

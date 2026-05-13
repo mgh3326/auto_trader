@@ -414,8 +414,9 @@ async def get_feed_research(
 @router.get("/screener/presets")
 async def get_screener_presets_endpoint(
     user: Annotated[Any, Depends(get_authenticated_user)],
+    market: Literal["kr", "us", "crypto"] = Query("kr"),
 ) -> ScreenerPresetsResponse:
-    return build_screener_presets()
+    return build_screener_presets(market=market)
 
 
 @router.get("/screener/results")
@@ -425,7 +426,7 @@ async def get_screener_results_endpoint(
     service: Annotated[InvestHomeService, Depends(get_invest_home_service)],
     screening_service: Annotated[Any, Depends(get_screener_service_dep)],
     preset: str = Query(..., min_length=1),
-    market: Literal["kr", "us"] = Query("kr"),
+    market: Literal["kr", "us", "crypto"] = Query("kr"),
 ) -> ScreenerResultsResponse:
     home = await service.get_home(user_id=user.id)
     resolver = await build_relation_resolver(
