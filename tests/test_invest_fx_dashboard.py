@@ -12,7 +12,11 @@ from app.routers import invest_api
 from app.routers.dependencies import get_authenticated_user
 from app.routers.invest_api import router as invest_api_router
 from app.schemas.invest_fx_dashboard import FxDashboardEvidenceItem, FxDashboardResponse
-from app.services.invest_view_model.fx_dashboard_service import build_fx_dashboard
+from app.services.invest_view_model.fx_dashboard_service import (
+    DefaultFxDashboardProvider,
+    FxProviderQuote,
+    build_fx_dashboard,
+)
 from app.services.invest_view_model.fx_defense_signal import (
     DefenseScoringInput,
     _score_defense_signal,
@@ -51,6 +55,81 @@ def _assert_no_confirmed_intervention_claim(payload: Any) -> None:
         "당국이 방어",
     ):
         assert unsafe_fragment not in text
+
+
+class _StubFxProvider:
+    async def get_usdkrw(self, *, as_of: datetime) -> FxProviderQuote:
+        return FxProviderQuote(
+            symbol="USDKRW",
+            label="USD/KRW 현물",
+            value=1498.7,
+            change=3.2,
+            change_pct=0.21,
+            updated_at=as_of,
+            source="stub_usdkrw",
+        )
+
+    async def get_global_dollar(self, *, as_of: datetime) -> list[FxProviderQuote]:
+        return [
+            FxProviderQuote(
+                symbol="DXY",
+                label="달러인덱스",
+                value=105.2,
+                change=0.2,
+                change_pct=0.25,
+                updated_at=as_of,
+                source="stub_global_dollar",
+            ),
+            FxProviderQuote(
+                symbol="USDCNH",
+                label="달러/위안",
+                value=7.24,
+                change=0.01,
+                change_pct=0.16,
+                updated_at=as_of,
+                source="stub_global_dollar",
+            ),
+            FxProviderQuote(
+                symbol="USDJPY",
+                label="달러/엔",
+                value=156.1,
+                change=0.12,
+                change_pct=0.08,
+                updated_at=as_of,
+                source="stub_global_dollar",
+            ),
+        ]
+
+    async def get_krw_crosses(self, *, as_of: datetime) -> list[FxProviderQuote]:
+        return [
+            FxProviderQuote(
+                symbol="CNYKRW",
+                label="위안/원",
+                value=207.0,
+                change=-0.2,
+                change_pct=-0.18,
+                updated_at=as_of,
+                source="stub_krw_crosses",
+            ),
+            FxProviderQuote(
+                symbol="JPYKRW",
+                label="엔/원",
+                value=960.0,
+                change=-0.1,
+                change_pct=-0.11,
+                updated_at=as_of,
+                source="stub_krw_crosses",
+            ),
+            FxProviderQuote(
+                symbol="EURKRW",
+                label="유로/원",
+                value=1620.0,
+                change=0.1,
+                change_pct=0.02,
+                updated_at=as_of,
+                source="stub_krw_crosses",
+            ),
+        ]
 
 
 def _sample_payload() -> dict[str, Any]:
@@ -376,20 +455,29 @@ def test_fx_defense_signal_requires_rejection_for_divergence_score() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_build_fx_dashboard_fixture_has_partial_provider_states() -> None:
+async def test_build_fx_dashboard_uses_live_provider_quotes() -> None:
     response = await build_fx_dashboard(
-        as_of=datetime(2026, 5, 13, 8, 58, 16, tzinfo=UTC)
+        as_of=datetime(2026, 5, 13, 8, 58, 16, tzinfo=UTC),
+        provider=_StubFxProvider(),
     )
 
     assert response.dataState == "partial"
-    freshness_states = {item.dataState for item in response.sourceFreshness}
-    assert "fresh" in freshness_states
-    assert freshness_states & {"missing", "stale"}
-    assert 0 <= response.defenseSignal.score <= 100
+    assert response.usdKrw.value == 1498.7
+    assert response.usdKrw.source == "stub_usdkrw"
+    assert {item.symbol for item in response.globalDollar} == {
+        "DXY",
+        "USDCNH",
+        "USDJPY",
+    }
+    assert {item.symbol for item in response.krwCrosses} == {
+        "CNYKRW",
+        "JPYKRW",
+        "EURKRW",
+    }
     assert response.news.dataState == "missing"
     assert response.events.dataState == "missing"
     assert response.afterVerification.dataState == "missing"
-    assert response.defenseSignal.state == "elevated"
+    assert response.defenseSignal.state == "after_verification_required"
     assert response.defenseSignal.notConfirmedIntervention is True
     assert response.defenseSignal.needsAfterVerification is True
     assert "1500원 1.5원 이내 근접" in response.defenseSignal.reasonsKo
@@ -398,6 +486,61 @@ async def test_build_fx_dashboard_fixture_has_partial_provider_states() -> None:
         for reason in response.defenseSignal.reasonsKo
     )
     assert "글로벌 달러 강세 대비 USD/KRW 상단 제한" in response.defenseSignal.reasonsKo
+    assert "환율/당국 경계 뉴스 확인" in response.defenseSignal.reasonsKo
+    _assert_no_confirmed_intervention_claim(response.model_dump())
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_default_fx_provider_populates_global_dollar_from_raw_yahoo_seam() -> (
+    None
+):
+    async def _fake_fast_info(ticker: str) -> dict[str, Any]:
+        values = {
+            "DX-Y.NYB": {"close": 105.2, "previous_close": 104.95},
+            "CNH=X": {"close": 7.24, "previous_close": 7.22},
+            "JPY=X": {"close": 156.1, "previous_close": 155.9},
+            "EURUSD=X": {"close": 1.08, "previous_close": 1.079},
+        }
+        return values[ticker]
+
+    provider = DefaultFxDashboardProvider(yahoo_fast_info_fetcher=_fake_fast_info)
+    quotes = await provider.get_global_dollar(
+        as_of=datetime(2026, 5, 13, 8, 58, 16, tzinfo=UTC)
+    )
+
+    by_symbol = {quote.symbol: quote for quote in quotes}
+    assert by_symbol["DXY"].value == 105.2
+    assert by_symbol["DXY"].change_pct == pytest.approx(0.2382, rel=1e-3)
+    assert by_symbol["USDCNH"].source == "yahoo_global_dollar"
+    assert by_symbol["USDCNH"].data_state == "fresh"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_fx_dashboard_degrades_when_optional_provider_sections_fail() -> (
+    None
+):
+    class _FailingOptionalProvider(_StubFxProvider):
+        async def get_global_dollar(self, *, as_of: datetime) -> list[FxProviderQuote]:
+            raise RuntimeError("yahoo unavailable")
+
+        async def get_krw_crosses(self, *, as_of: datetime) -> list[FxProviderQuote]:
+            raise RuntimeError("naver crosses unavailable")
+
+    response = await build_fx_dashboard(
+        as_of=datetime(2026, 5, 13, 8, 58, 16, tzinfo=UTC),
+        provider=_FailingOptionalProvider(),
+    )
+
+    assert response.usdKrw.value == 1498.7
+    assert response.globalDollar
+    assert all(item.dataState == "error" for item in response.globalDollar)
+    assert response.krwCrosses
+    assert all(item.dataState == "error" for item in response.krwCrosses)
+    assert "yahoo_global_dollar: provider unavailable" in response.warnings
+    assert "naver_marketindex_krw_crosses: provider unavailable" in response.warnings
+    assert response.defenseSignal.notConfirmedIntervention is True
     _assert_no_confirmed_intervention_claim(response.model_dump())
 
 
@@ -411,7 +554,8 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
 
     async def _stub_dashboard() -> FxDashboardResponse:
         return await build_fx_dashboard(
-            as_of=datetime(2026, 5, 13, 8, 58, 16, tzinfo=UTC)
+            as_of=datetime(2026, 5, 13, 8, 58, 16, tzinfo=UTC),
+            provider=_StubFxProvider(),
         )
 
     monkeypatch.setattr(invest_api, "build_fx_dashboard", _stub_dashboard)
