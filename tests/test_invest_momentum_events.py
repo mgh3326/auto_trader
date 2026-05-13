@@ -1,0 +1,260 @@
+from __future__ import annotations
+
+import datetime as dt
+from decimal import Decimal
+from pathlib import Path
+
+import pytest
+from sqlalchemy import delete, select
+
+from app.jobs.invest_momentum_events import (
+    NaverMomentumBuildRequest,
+    run_naver_momentum_build,
+)
+from app.models.invest_momentum_event_snapshot import (
+    InvestMomentumEventSnapshot,
+    InvestThemeEventSnapshot,
+    InvestThemeEventSnapshotStock,
+)
+from app.services.invest_momentum_events.coverage_service import build_momentum_coverage
+from app.services.invest_momentum_events.models import (
+    MomentumEventUpsert,
+    ThemeEventUpsert,
+)
+from app.services.invest_momentum_events.repository import (
+    InvestMomentumEventSnapshotsRepository,
+)
+
+SNAPSHOT_AT = dt.datetime(2026, 5, 13, 9, 5, tzinfo=dt.UTC)
+TRADING_DATE = dt.date(2026, 5, 13)
+
+
+class FixtureNaverFetcher:
+    async def fetch_domestic_stock_default(self, **kwargs):
+        return {
+            "result": {
+                "stocks": [
+                    {
+                        "itemcode": "005930",
+                        "itemname": f"삼성전자 {kwargs['order_type']}",
+                        "rank": 1,
+                        "nowPrice": "78500",
+                        "prevChangeRate": "1.55",
+                        "tradeVolume": "14500000",
+                        "tradeAmount": "1138250000000",
+                    }
+                ]
+            }
+        }
+
+    async def fetch_market_theme_list(self, **kwargs):
+        return {
+            "list": [
+                {
+                    "themeNo": "591",
+                    "themeName": "반도체",
+                    "rank": 1,
+                    "changeRate": "3.21",
+                }
+            ]
+        }
+
+    async def fetch_market_upjong_list(self, **kwargs):
+        return {
+            "list": [
+                {
+                    "upjongCode": "G101",
+                    "upjongName": "전기전자",
+                    "rank": 1,
+                    "changeRate": "2.10",
+                }
+            ]
+        }
+
+
+@pytest.mark.asyncio
+async def test_dry_run_job_with_fixture_fetcher_returns_counts_without_db_writes(
+    db_session,
+):
+    dry_run_date = dt.date(2026, 5, 15)
+    result = await run_naver_momentum_build(
+        NaverMomentumBuildRequest(
+            trade_types=("KRX", "NXT"),
+            order_types=("up", "quantTop"),
+            theme_sort_types=("changeRate",),
+            page_size=2,
+            commit=False,
+            today=dry_run_date,
+        ),
+        fetcher=FixtureNaverFetcher(),
+    )
+
+    assert result.committed is False
+    assert result.momentum_rows == 4
+    assert result.theme_rows == 2
+    assert result.counts_by_surface["stock:KRX:ALL:up"] == 1
+    assert result.counts_by_surface["stock:NXT:ALL:quantTop"] == 1
+    assert result.samples[0]["symbol"] == "005930"
+
+    rows = (
+        (
+            await db_session.execute(
+                select(InvestMomentumEventSnapshot).where(
+                    InvestMomentumEventSnapshot.trading_date == dry_run_date
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_repository_upserts_momentum_and_theme_idempotently(db_session):
+    repo = InvestMomentumEventSnapshotsRepository(db_session)
+    momentum = MomentumEventUpsert(
+        snapshot_at=SNAPSHOT_AT,
+        trading_date=TRADING_DATE,
+        surface="domestic_market_stock_default",
+        trade_type="KRX",
+        market_type="ALL",
+        order_type="up",
+        rank=1,
+        symbol="005930",
+        name="삼성전자",
+        price=Decimal("78500"),
+        change_rate=Decimal("1.55"),
+    )
+    await repo.upsert_momentum(momentum)
+    await repo.upsert_momentum(
+        momentum.model_copy(update={"rank": 2, "price": Decimal("78600")})
+    )
+
+    theme = ThemeEventUpsert(
+        snapshot_at=SNAPSHOT_AT,
+        trading_date=TRADING_DATE,
+        surface="market_theme_list",
+        event_kind="theme",
+        source_event_key="theme:591:changeRate:ALL",
+        naver_theme_no="591",
+        name="반도체",
+        sort_type="changeRate",
+        rank=1,
+        market_type="ALL",
+        leader_symbols=[{"symbol": "000660", "name": "SK하이닉스"}],
+    )
+    await repo.upsert_theme(theme)
+    await repo.upsert_theme(theme.model_copy(update={"rank": 3, "stock_count": 12}))
+    await db_session.commit()
+
+    momentum_rows = (
+        (
+            await db_session.execute(
+                select(InvestMomentumEventSnapshot).where(
+                    InvestMomentumEventSnapshot.snapshot_at == SNAPSHOT_AT,
+                    InvestMomentumEventSnapshot.symbol == "005930",
+                    InvestMomentumEventSnapshot.order_type == "up",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(momentum_rows) == 1
+    assert momentum_rows[0].rank == 2
+    assert momentum_rows[0].price == Decimal("78600.000000")
+
+    theme_rows = (
+        (
+            await db_session.execute(
+                select(InvestThemeEventSnapshot).where(
+                    InvestThemeEventSnapshot.snapshot_at == SNAPSHOT_AT,
+                    InvestThemeEventSnapshot.source_event_key
+                    == "theme:591:changeRate:ALL",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(theme_rows) == 1
+    assert theme_rows[0].rank == 3
+    assert theme_rows[0].stock_count == 12
+
+
+@pytest.mark.asyncio
+async def test_coverage_reports_unsupported_missing_and_fresh(db_session):
+    coverage_date = dt.date(2026, 5, 14)
+    coverage_snapshot_at = dt.datetime(2026, 5, 14, 9, 5, tzinfo=dt.UTC)
+    stale_theme_ids = select(InvestThemeEventSnapshot.id).where(
+        InvestThemeEventSnapshot.trading_date == coverage_date
+    )
+    await db_session.execute(
+        delete(InvestThemeEventSnapshotStock).where(
+            InvestThemeEventSnapshotStock.theme_snapshot_id.in_(stale_theme_ids)
+        )
+    )
+    await db_session.execute(
+        delete(InvestThemeEventSnapshot).where(
+            InvestThemeEventSnapshot.trading_date == coverage_date
+        )
+    )
+    await db_session.execute(
+        delete(InvestMomentumEventSnapshot).where(
+            InvestMomentumEventSnapshot.trading_date == coverage_date
+        )
+    )
+    await db_session.commit()
+
+    unsupported = await build_momentum_coverage(
+        db_session, market="us", as_of=coverage_date
+    )
+    assert unsupported.dataState == "unsupported"
+    assert unsupported.emptyReason == "naver_stock_supports_kr_only"
+
+    missing = await build_momentum_coverage(
+        db_session, market="kr", as_of=coverage_date
+    )
+    assert missing.dataState == "missing"
+
+    repo = InvestMomentumEventSnapshotsRepository(db_session)
+    await repo.upsert_momentum(
+        MomentumEventUpsert(
+            snapshot_at=coverage_snapshot_at,
+            trading_date=coverage_date,
+            surface="domestic_market_stock_default",
+            trade_type="KRX",
+            market_type="ALL",
+            order_type="up",
+            rank=1,
+            symbol="005930",
+        )
+    )
+    await db_session.commit()
+
+    fresh = await build_momentum_coverage(db_session, market="kr", as_of=coverage_date)
+    assert fresh.dataState == "fresh"
+    assert fresh.momentumEvents >= 1
+
+
+def test_no_scheduler_or_broker_order_watch_mutation_imports_in_new_modules():
+    root = Path(__file__).resolve().parents[1]
+    files = [
+        root / "app/jobs/invest_momentum_events.py",
+        *sorted((root / "app/services/invest_momentum_events").glob("*.py")),
+        *sorted((root / "app/services/naver_stock").glob("*.py")),
+    ]
+    text = "\n".join(path.read_text(encoding="utf-8") for path in files)
+
+    forbidden = (
+        "broker.task",
+        "app.core.scheduler",
+        "place_order",
+        "cancel_order",
+        "watch_order_intent",
+        "alpaca_paper_submit_order",
+        "kis_live_place_order",
+    )
+    for token in forbidden:
+        assert token not in text
