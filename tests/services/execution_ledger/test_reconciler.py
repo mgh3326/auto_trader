@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
@@ -20,17 +21,20 @@ class FakeRepo:
         self.runs = []
 
     async def classify_fill(self, fill: ExecutionLedgerUpsert) -> str:
+        await asyncio.sleep(0)
         return self.status
 
     async def upsert_fill(self, fill: ExecutionLedgerUpsert) -> tuple[str, int]:
+        await asyncio.sleep(0)
         self.upserts.append(fill)
         return self.status, 42
 
-    async def record_run(self, run) -> None:  # noqa: ANN001
+    def record_run(self, run) -> None:  # noqa: ANN001
         self.runs.append(run)
 
 
 async def fake_fetcher(**_kwargs):  # noqa: ANN003
+    await asyncio.sleep(0)
     return {
         "orders": [
             {

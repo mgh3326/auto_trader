@@ -17,6 +17,10 @@ down_revision = "1a2b3c4d5e6f"
 branch_labels = None
 depends_on = None
 
+NOW_SQL = sa.text("now()")
+FILLED_AT_DESC = sa.text("filled_at DESC")
+STARTED_AT_DESC = sa.text("started_at DESC")
+
 instrument_type = postgresql.ENUM(
     "equity_kr",
     "equity_us",
@@ -58,13 +62,13 @@ def upgrade() -> None:
             "created_at",
             sa.TIMESTAMP(timezone=True),
             nullable=False,
-            server_default=sa.text("now()"),
+            server_default=NOW_SQL,
         ),
         sa.Column(
             "updated_at",
             sa.TIMESTAMP(timezone=True),
             nullable=False,
-            server_default=sa.text("now()"),
+            server_default=NOW_SQL,
         ),
         sa.CheckConstraint("broker IN ('kis','upbit')", name="execution_ledger_broker"),
         sa.CheckConstraint(
@@ -98,19 +102,19 @@ def upgrade() -> None:
     op.create_index(
         "ix_execution_ledger_filled_at",
         "execution_ledger",
-        [sa.text("filled_at DESC")],
+        [FILLED_AT_DESC],
         schema="review",
     )
     op.create_index(
         "ix_execution_ledger_symbol_filled_at",
         "execution_ledger",
-        ["symbol", sa.text("filled_at DESC")],
+        ["symbol", FILLED_AT_DESC],
         schema="review",
     )
     op.create_index(
         "ix_execution_ledger_broker_filled_at",
         "execution_ledger",
-        ["broker", sa.text("filled_at DESC")],
+        ["broker", FILLED_AT_DESC],
         schema="review",
     )
     op.create_index(
@@ -130,7 +134,7 @@ def upgrade() -> None:
             "started_at",
             sa.TIMESTAMP(timezone=True),
             nullable=False,
-            server_default=sa.text("now()"),
+            server_default=NOW_SQL,
         ),
         sa.Column("finished_at", sa.TIMESTAMP(timezone=True), nullable=True),
         sa.Column("dry_run", sa.Boolean(), nullable=False),
@@ -155,7 +159,7 @@ def upgrade() -> None:
     op.create_index(
         "ix_execution_ledger_runs_started_at",
         "execution_ledger_reconcile_runs",
-        [sa.text("started_at DESC")],
+        [STARTED_AT_DESC],
         schema="review",
     )
 

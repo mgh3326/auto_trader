@@ -26,6 +26,10 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.models.base import Base
 from app.models.trading import InstrumentType
 
+NOW_SQL = text("now()")
+FILLED_AT_DESC = text("filled_at DESC")
+STARTED_AT_DESC = text("started_at DESC")
+
 
 class ExecutionLedger(Base):
     __tablename__ = "execution_ledger"
@@ -53,9 +57,9 @@ class ExecutionLedger(Base):
         CheckConstraint(
             "filled_price > 0", name="execution_ledger_filled_price_positive"
         ),
-        Index("ix_execution_ledger_filled_at", text("filled_at DESC")),
-        Index("ix_execution_ledger_symbol_filled_at", "symbol", text("filled_at DESC")),
-        Index("ix_execution_ledger_broker_filled_at", "broker", text("filled_at DESC")),
+        Index("ix_execution_ledger_filled_at", FILLED_AT_DESC),
+        Index("ix_execution_ledger_symbol_filled_at", "symbol", FILLED_AT_DESC),
+        Index("ix_execution_ledger_broker_filled_at", "broker", FILLED_AT_DESC),
         Index("ix_execution_ledger_source_run_id", "source_run_id"),
         {"schema": "review"},
     )
@@ -86,12 +90,12 @@ class ExecutionLedger(Base):
     source_run_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
     raw_payload_json: Mapped[dict | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True), server_default=text("now()"), nullable=False
+        TIMESTAMP(timezone=True), server_default=NOW_SQL, nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
-        server_default=text("now()"),
-        onupdate=text("now()"),
+        server_default=NOW_SQL,
+        onupdate=NOW_SQL,
         nullable=False,
     )
 
@@ -103,7 +107,7 @@ class ExecutionLedgerReconcileRun(Base):
             "broker IN ('kis','upbit')", name="execution_ledger_runs_broker"
         ),
         Index("ix_execution_ledger_runs_broker_window", "broker", "window_start"),
-        Index("ix_execution_ledger_runs_started_at", text("started_at DESC")),
+        Index("ix_execution_ledger_runs_started_at", STARTED_AT_DESC),
         {"schema": "review"},
     )
 
@@ -116,7 +120,7 @@ class ExecutionLedgerReconcileRun(Base):
         TIMESTAMP(timezone=True), nullable=False
     )
     started_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True), server_default=text("now()"), nullable=False
+        TIMESTAMP(timezone=True), server_default=NOW_SQL, nullable=False
     )
     finished_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     dry_run: Mapped[bool] = mapped_column(Boolean, nullable=False)

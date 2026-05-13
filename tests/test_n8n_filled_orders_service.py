@@ -136,7 +136,7 @@ class TestUpbitFilledOrdersFetch:
         assert errors == []
         assert len(orders) == 1
         assert orders[0]["symbol"] == "ETH"
-        assert orders[0]["quantity"] == 0.5
+        assert abs(orders[0]["quantity"] - 0.5) < 1e-9
 
     @pytest.mark.asyncio
     async def test_pagination_fetches_multiple_pages(self, monkeypatch):
@@ -173,13 +173,13 @@ class TestUpbitFilledOrdersFetch:
 
         call_count = 0
 
-        async def fake_fetch_closed(market, limit, page, **_kw):
+        def fake_fetch_closed(market, limit, page, **_kw):
             nonlocal call_count
             call_count += 1
             return page1 if page == 1 else page2
 
         fake_upbit = MagicMock()
-        fake_upbit.fetch_closed_orders = fake_fetch_closed
+        fake_upbit.fetch_closed_orders = AsyncMock(side_effect=fake_fetch_closed)
         fake_upbit.fetch_order_detail = AsyncMock(
             side_effect=lambda uuid: _make_order(uuid)
         )
@@ -227,13 +227,13 @@ class TestUpbitFilledOrdersFetch:
 
         call_count = 0
 
-        async def fake_fetch_closed(market, limit, page, **_kw):
+        def fake_fetch_closed(market, limit, page, **_kw):
             nonlocal call_count
             call_count += 1
             return page1 if page == 1 else page2
 
         fake_upbit = MagicMock()
-        fake_upbit.fetch_closed_orders = fake_fetch_closed
+        fake_upbit.fetch_closed_orders = AsyncMock(side_effect=fake_fetch_closed)
         fake_upbit.fetch_order_detail = AsyncMock(
             side_effect=lambda uuid: _make_order(
                 uuid, recent_ts if "recent" in uuid else old_ts
@@ -278,4 +278,4 @@ class TestUpbitFilledOrdersFetch:
         # Falls back to aggregate fill (fill_seq=0, full executed_volume)
         assert len(orders) == 1
         assert orders[0]["fill_seq"] == 0
-        assert orders[0]["quantity"] == 0.02
+        assert abs(orders[0]["quantity"] - 0.02) < 1e-9

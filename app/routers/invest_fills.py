@@ -20,7 +20,7 @@ router = APIRouter(prefix="/trading/api/invest/fills", tags=["invest-fills"])
 Market = Literal["kr", "us", "crypto"]
 
 
-@router.get("/recent", response_model=ExecutionLedgerListResponse)
+@router.get("/recent")
 async def recent_fills(
     _user: Annotated[User, Depends(get_authenticated_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -30,7 +30,7 @@ async def recent_fills(
     return await ExecutionLedgerQueryService(db).list_recent(limit=limit, market=market)
 
 
-@router.get("/by-symbol/{symbol}", response_model=ExecutionLedgerListResponse)
+@router.get("/by-symbol/{symbol}")
 async def fills_by_symbol(
     symbol: str,
     _user: Annotated[User, Depends(get_authenticated_user)],
@@ -42,7 +42,7 @@ async def fills_by_symbol(
     )
 
 
-@router.get("/sell-history", response_model=ExecutionLedgerListResponse)
+@router.get("/sell-history")
 async def sell_history(
     _user: Annotated[User, Depends(get_authenticated_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -55,7 +55,7 @@ async def sell_history(
     )
 
 
-@router.get("/freshness", response_model=ExecutionLedgerFreshnessReport)
+@router.get("/freshness")
 async def fills_freshness(
     _user: Annotated[User, Depends(get_authenticated_user)],
     db: Annotated[AsyncSession, Depends(get_db)],

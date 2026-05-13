@@ -60,7 +60,7 @@ def test_upbit_normalizer_accepts_cancel_with_partial_fill() -> None:
     assert normalized is not None
     assert normalized["symbol"] == "ETH"
     assert normalized["side"] == "buy"
-    assert normalized["quantity"] == 0.5
+    assert abs(normalized["quantity"] - 0.5) < 1e-9
 
 
 def test_upbit_normalizer_drops_cancel_with_no_fill() -> None:
@@ -157,7 +157,7 @@ def test_normalize_upbit_order_single_fill_when_no_trades() -> None:
     assert len(fills) == 1
     assert fills[0]["fill_seq"] == 0
     assert fills[0]["side"] == "sell"
-    assert fills[0]["quantity"] == 0.5
+    assert abs(fills[0]["quantity"] - 0.5) < 1e-9
 
 
 def test_normalize_upbit_order_cancel_partial_with_trades() -> None:
@@ -182,7 +182,7 @@ def test_normalize_upbit_order_cancel_partial_with_trades() -> None:
     }
     fills = normalize_upbit_order(order)
     assert len(fills) == 1
-    assert fills[0]["quantity"] == 1.0
+    assert abs(fills[0]["quantity"] - 1.0) < 1e-9
     assert fills[0]["fill_seq"] == _upbit_trade_fill_seq("trade-cancel-1")
 
 

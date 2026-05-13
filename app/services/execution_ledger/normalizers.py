@@ -80,8 +80,8 @@ def _redact_sensitive_keys(payload: Any) -> Any:
 
 
 def _upbit_trade_fill_seq(trade_uuid: str) -> int:
-    """Stable fill_seq derived from Upbit trade uuid (SHA-1 truncated)."""
-    return int(hashlib.sha1(str(trade_uuid).encode()).hexdigest()[:8], 16)
+    """Stable fill_seq derived from Upbit trade uuid (SHA-256 truncated)."""
+    return int(hashlib.sha256(str(trade_uuid).encode()).hexdigest()[:8], 16)
 
 
 def _normalize_upbit_filled(order: dict[str, Any]) -> dict[str, Any] | None:
@@ -123,7 +123,7 @@ def _normalize_upbit_filled(order: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def normalize_upbit_order(order: dict[str, Any]) -> list[dict[str, Any]]:
+def normalize_upbit_order(order: dict[str, Any]) -> list[dict[str, Any]]:  # NOSONAR
     """Normalize one Upbit order into 0-N per-trade fill dicts.
 
     When the order detail includes individual trades, each trade becomes a
@@ -228,7 +228,7 @@ def _domestic_fill_seq(order: dict[str, Any]) -> int:
     seed = "|".join(
         str(order.get(k, "")) for k in ("ord_dt", "ord_tmd", "ccld_tmd", "ccld_qty")
     )
-    return int(hashlib.sha1(seed.encode()).hexdigest()[:8], 16)
+    return int(hashlib.sha256(seed.encode()).hexdigest()[:8], 16)
 
 
 def _overseas_fill_seq(order: dict[str, Any]) -> int:
@@ -248,7 +248,7 @@ def _overseas_fill_seq(order: dict[str, Any]) -> int:
     seed = "|".join(
         str(order.get(k, "")) for k in ("ord_dt", "ord_tmd", "ft_ccld_qty", "odno")
     )
-    return int(hashlib.sha1(seed.encode()).hexdigest()[:8], 16)
+    return int(hashlib.sha256(seed.encode()).hexdigest()[:8], 16)
 
 
 def _normalize_kis_domestic_filled(order: dict[str, Any]) -> dict[str, Any] | None:

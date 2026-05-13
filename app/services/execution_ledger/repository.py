@@ -133,7 +133,7 @@ class ExecutionLedgerRepository:
         row_id = int(result.scalar_one())
         return status, row_id
 
-    async def record_run(self, run: ReconcileRunRecord) -> None:
+    def record_run(self, run: ReconcileRunRecord) -> None:
         self.db.add(ExecutionLedgerReconcileRun(**run.model_dump()))
 
     async def latest_run_per_broker(self) -> dict[str, ReconcileRunRecord]:

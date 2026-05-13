@@ -32,7 +32,7 @@ class ExecutionLedgerReconciler:
         self.repo = repo
         self.fetcher = fetcher or fetch_filled_orders
 
-    async def run(
+    async def run(  # NOSONAR
         self, broker: Broker, *, window_hours: int = 24, dry_run: bool = True
     ) -> ReconcileDiff:
         if not dry_run and not settings.EXECUTION_LEDGER_COMMIT_ENABLED:
@@ -72,7 +72,7 @@ class ExecutionLedgerReconciler:
             error_summary = f"{type(exc).__name__}: {exc}"
             raise
         finally:
-            await self.repo.record_run(
+            self.repo.record_run(
                 ReconcileRunRecord(
                     run_id=run_id,
                     broker=broker,

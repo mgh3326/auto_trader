@@ -77,21 +77,21 @@ def _make_db(data_rows, reconcile_rows):
 
     def _scalars_for(rows):
         class _Scalars:
-            def all(self_):
+            def all(self):
                 return rows
 
         class _Result:
-            def scalars(self_):
+            def scalars(self):
                 return _Scalars()
 
-            def scalar_one_or_none(self_):
+            def scalar_one_or_none(self):
                 return rows[0] if rows else None
 
         return _Result()
 
     call_count = 0
 
-    async def _execute(stmt):
+    def _execute(stmt):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
@@ -99,7 +99,7 @@ def _make_db(data_rows, reconcile_rows):
         return _scalars_for(reconcile_rows)
 
     db = AsyncMock()
-    db.execute = _execute
+    db.execute = AsyncMock(side_effect=_execute)
     return db
 
 
@@ -293,14 +293,14 @@ def test_freshness_returns_both_brokers():
     upbit_run = _reconcile_run_row("upbit")
 
     class _Scalars:
-        def all(self_):
+        def all(self):
             return [kis_run, upbit_run]
 
     class _Result:
-        def scalars(self_):
+        def scalars(self):
             return _Scalars()
 
-        def scalar_one_or_none(self_):
+        def scalar_one_or_none(self):
             return kis_run
 
     db = AsyncMock()
@@ -331,14 +331,14 @@ def test_freshness_missing_when_no_reconcile_runs():
     """When no reconcile runs exist, all brokers are 'missing'."""
 
     class _Scalars:
-        def all(self_):
+        def all(self):
             return []
 
     class _Result:
-        def scalars(self_):
+        def scalars(self):
             return _Scalars()
 
-        def scalar_one_or_none(self_):
+        def scalar_one_or_none(self):
             return None
 
     db = AsyncMock()

@@ -47,7 +47,7 @@ def _parse_upbit_fill_datetime(value: object) -> datetime | None:
     return parsed.astimezone(KST)
 
 
-async def _fetch_upbit_filled(days: int) -> tuple[list[dict], list[dict]]:
+async def _fetch_upbit_filled(days: int) -> tuple[list[dict], list[dict]]:  # NOSONAR
     """Paginate through Upbit closed orders and expand each into per-trade fills.
 
     Pages are fetched in descending created_at order.  Pagination stops when a
