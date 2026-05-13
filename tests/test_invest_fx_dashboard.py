@@ -11,8 +11,13 @@ from pydantic import ValidationError
 from app.routers import invest_api
 from app.routers.dependencies import get_authenticated_user
 from app.routers.invest_api import router as invest_api_router
-from app.schemas.invest_fx_dashboard import FxDashboardResponse
+from app.schemas.invest_fx_dashboard import FxDashboardEvidenceItem, FxDashboardResponse
 from app.services.invest_view_model.fx_dashboard_service import build_fx_dashboard
+from app.services.invest_view_model.fx_defense_signal import (
+    DefenseScoringInput,
+    _score_defense_signal,
+    _threshold_state,
+)
 
 
 def _contains_key(payload: Any, forbidden: set[str]) -> bool:
@@ -34,6 +39,18 @@ def _safe_text(payload: Any) -> str:
     if isinstance(payload, list):
         return " ".join(_safe_text(item) for item in payload)
     return ""
+
+
+def _assert_no_confirmed_intervention_claim(payload: Any) -> None:
+    text = _safe_text(payload)
+    for unsafe_fragment in (
+        "개입 확정",
+        "정부 개입 확정",
+        "당국 개입 확정",
+        "정부가 방어",
+        "당국이 방어",
+    ):
+        assert unsafe_fragment not in text
 
 
 def _sample_payload() -> dict[str, Any]:
@@ -174,6 +191,126 @@ def test_fx_dashboard_contract_contains_cautious_disclaimer_shape() -> None:
 
 
 @pytest.mark.unit
+def test_fx_defense_signal_scores_near_1500_rejection_as_elevated() -> None:
+    signal = _score_defense_signal(
+        DefenseScoringInput(
+            spot=1497.8,
+            recent_high=1499.8,
+            recent_close_or_last=1496.9,
+            global_dollar_change_pct=0.25,
+            usdcnh_change_pct=None,
+            krw_cross_change_pcts={},
+        )
+    )
+
+    assert signal.state == "elevated"
+    assert 60 <= signal.score < 70
+    assert signal.confidence == "medium"
+    assert signal.reasonsKo[:3] == [
+        "1500원 5원 이내 근접",
+        "1500원 직전 상단 꼬리/되밀림",
+        "글로벌 달러 강세 대비 USD/KRW 상단 제한",
+    ]
+    assert signal.notConfirmedIntervention is True
+    assert signal.needsAfterVerification is True
+    _assert_no_confirmed_intervention_claim(signal.model_dump())
+
+
+@pytest.mark.unit
+def test_fx_defense_signal_does_not_score_missing_cross_market_data_as_evidence() -> None:
+    signal = _score_defense_signal(
+        DefenseScoringInput(
+            spot=1498.7,
+            recent_high=None,
+            recent_close_or_last=None,
+            global_dollar_change_pct=None,
+            usdcnh_change_pct=None,
+            usd_jpy_change_pct=None,
+            krw_cross_change_pcts={},
+        )
+    )
+
+    assert signal.state == "watch"
+    assert signal.score == 30
+    assert signal.confidence == "low"
+    assert "글로벌 달러 강세 대비 USD/KRW 상단 제한" not in signal.reasonsKo
+    assert "글로벌 달러/원화 교차 비교 일부 미수집" in signal.reasonsKo
+    assert any(
+        item.kind == "missing_context" and item.dataState == "missing"
+        for item in signal.evidence
+    )
+
+
+@pytest.mark.unit
+def test_fx_defense_signal_requires_after_verification_for_high_score_without_confirming_intervention() -> None:
+    signal = _score_defense_signal(
+        DefenseScoringInput(
+            spot=1500.2,
+            recent_high=1502.0,
+            recent_close_or_last=1499.6,
+            global_dollar_change_pct=0.32,
+            usdcnh_change_pct=0.22,
+            krw_cross_change_pcts={"CNYKRW": -0.18, "JPYKRW": -0.11},
+            authority_context=[
+                FxDashboardEvidenceItem(
+                    kind="authority_context",
+                    labelKo="당국 경계 발언 context-only fixture",
+                    value="변동성 경계 발언은 참고 맥락으로만 사용",
+                    source="fixture_authority_context",
+                    dataState="fresh",
+                )
+            ],
+            after_verification_has_strong_evidence=False,
+        )
+    )
+
+    assert signal.state == "after_verification_required"
+    assert signal.score >= 70
+    assert signal.confidence == "medium"
+    assert signal.notConfirmedIntervention is True
+    assert signal.needsAfterVerification is True
+    assert "사후 검증" in signal.summaryKo
+    _assert_no_confirmed_intervention_claim(signal.model_dump())
+
+
+@pytest.mark.unit
+def test_fx_defense_signal_strong_context_stays_cautious_without_missing_conflict() -> None:
+    signal = _score_defense_signal(
+        DefenseScoringInput(
+            spot=1500.2,
+            recent_high=1502.0,
+            recent_close_or_last=1499.6,
+            global_dollar_change_pct=0.32,
+            krw_cross_change_pcts={"CNYKRW": -0.18, "JPYKRW": -0.11},
+            authority_context=[
+                FxDashboardEvidenceItem(
+                    kind="authority_context",
+                    labelKo="딜러/NDF 사후 검증 context fixture",
+                    value="사후 근거 일부 확인 테스트",
+                    source="fixture_authority_context",
+                    dataState="fresh",
+                )
+            ],
+            after_verification_has_strong_evidence=True,
+        )
+    )
+
+    assert signal.confidence == "high"
+    assert signal.notConfirmedIntervention is True
+    assert "사후 검증 근거 일부 확인" in signal.reasonsKo
+    assert "사후 검증 자료 없음" not in signal.reasonsKo
+    _assert_no_confirmed_intervention_claim(signal.model_dump())
+
+
+@pytest.mark.unit
+def test_fx_threshold_state_for_1500_near_and_breached() -> None:
+    assert _threshold_state(level=1500, spot=1488.8) == "near"
+    assert _threshold_state(level=1500, spot=1488.7) == "watch"
+    assert _threshold_state(level=1500, spot=1500.0) == "breached"
+    assert _threshold_state(level=1500, spot=1501.2) == "breached"
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_build_fx_dashboard_fixture_has_partial_provider_states() -> None:
     response = await build_fx_dashboard(
@@ -188,7 +325,13 @@ async def test_build_fx_dashboard_fixture_has_partial_provider_states() -> None:
     assert response.news.dataState == "missing"
     assert response.events.dataState == "missing"
     assert response.afterVerification.dataState == "missing"
-    assert "개입 확정" not in _safe_text(response.model_dump())
+    assert response.defenseSignal.state == "elevated"
+    assert response.defenseSignal.notConfirmedIntervention is True
+    assert response.defenseSignal.needsAfterVerification is True
+    assert "1500원 1.5원 이내 근접" in response.defenseSignal.reasonsKo
+    assert "1500원 부근 되밀림" in response.defenseSignal.reasonsKo
+    assert "글로벌 달러 강세 대비 USD/KRW 상단 제한" in response.defenseSignal.reasonsKo
+    _assert_no_confirmed_intervention_claim(response.model_dump())
 
 
 @pytest.fixture
@@ -221,5 +364,13 @@ def test_get_fx_dashboard_returns_read_only_payload(client: TestClient) -> None:
     assert body["disclaimers"][0]["code"] == "not_confirmed_intervention"
     assert not _contains_key(
         body,
-        {"order_id", "client_order_id", "watch_order", "approval_issue_id"},
+        {
+            "order_id",
+            "client_order_id",
+            "watch_order",
+            "approval_issue_id",
+            "order_intent",
+        },
     )
+    assert "dry_run=false" not in _safe_text(body)
+    _assert_no_confirmed_intervention_claim(body)
