@@ -28,19 +28,25 @@ class _FakeAccount:
 
 
 class _FakeKISClient:
-    def __init__(self, *, rows=None, margin_error: Exception | None = None, orders=None):
+    def __init__(
+        self, *, rows=None, margin_error: Exception | None = None, orders=None
+    ):
         self.account = _FakeAccount(raises=margin_error)
-        self.rows = rows if rows is not None else [
-            {
-                "ovrs_pdno": "AAPL",
-                "ovrs_item_name": "APPLE",
-                "ovrs_cblc_qty": "10",
-                "pchs_avg_pric": "150.0",
-                "now_pric2": "200.0",
-                "natn_cd": "840",
-                "natn_kor_name": "미국",
-            }
-        ]
+        self.rows = (
+            rows
+            if rows is not None
+            else [
+                {
+                    "ovrs_pdno": "AAPL",
+                    "ovrs_item_name": "APPLE",
+                    "ovrs_cblc_qty": "10",
+                    "pchs_avg_pric": "150.0",
+                    "now_pric2": "200.0",
+                    "natn_cd": "840",
+                    "natn_kor_name": "미국",
+                }
+            ]
+        )
         self.orders = orders or []
         self.calls: list[str] = []
 
@@ -52,13 +58,19 @@ class _FakeKISClient:
         self.calls.append(f"inquire_overseas_orders:{exchange_code}:{is_mock}")
         return self.orders if exchange_code == "NASD" else []
 
-    async def order_overseas_stock(self, *args, **kwargs):  # pragma: no cover - must never run
+    async def order_overseas_stock(
+        self, *args, **kwargs
+    ):  # pragma: no cover - must never run
         raise AssertionError("live order endpoint must not be called")
 
-    async def buy_overseas_stock(self, *args, **kwargs):  # pragma: no cover - must never run
+    async def buy_overseas_stock(
+        self, *args, **kwargs
+    ):  # pragma: no cover - must never run
         raise AssertionError("live buy endpoint must not be called")
 
-    async def sell_overseas_stock(self, *args, **kwargs):  # pragma: no cover - must never run
+    async def sell_overseas_stock(
+        self, *args, **kwargs
+    ):  # pragma: no cover - must never run
         raise AssertionError("live sell endpoint must not be called")
 
     async def cancel_overseas_order(self, *args, **kwargs):  # pragma: no cover

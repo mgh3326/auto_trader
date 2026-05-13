@@ -77,7 +77,9 @@ def test_discord_report_contains_required_sections_and_no_submit_statement():
     new_buy_cards = build_us_new_buy_candidate_cards(
         account_snapshot=snapshot,
         candidates=[
-            ScreenedUSNewBuyCandidate(symbol="MSFT", name="Microsoft", price=250, score=90),
+            ScreenedUSNewBuyCandidate(
+                symbol="MSFT", name="Microsoft", price=250, score=90
+            ),
             ScreenedUSNewBuyCandidate(symbol="AAPL", name="Apple", price=125, score=99),
         ],
         research_by_symbol={

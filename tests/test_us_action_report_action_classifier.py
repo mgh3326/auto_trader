@@ -159,15 +159,25 @@ def test_journal_only_and_manual_reference_symbols_are_warned_not_executable():
     cards = build_us_held_position_action_cards(
         account_snapshot=_snapshot(holdings=[_holding("QQQM")]),
         journals_by_symbol={
-            "QQQM": {"status": "active", "account_type": "live", "thesis": "Core Nasdaq"},
-            "TSLA": {"status": "active", "account_type": "live", "thesis": "Journal only"},
+            "QQQM": {
+                "status": "active",
+                "account_type": "live",
+                "thesis": "Core Nasdaq",
+            },
+            "TSLA": {
+                "status": "active",
+                "account_type": "live",
+                "thesis": "Journal only",
+            },
         },
         manual_reference_symbols={"TSLA", "PLTR"},
         now=lambda: _NOW,
     )
 
     assert [card.symbol for card in cards] == ["QQQM"]
-    assert any("TSLA: journal_only_not_kis_held" == warning for warning in cards.warnings)
+    assert any(
+        "TSLA: journal_only_not_kis_held" == warning for warning in cards.warnings
+    )
     assert any(
         "PLTR: manual_reference_only_not_kis_tradeable" == warning
         for warning in cards.warnings

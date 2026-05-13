@@ -58,7 +58,9 @@ def _journal_value(journal: Mapping[str, Any] | Any | None, *keys: str) -> Any:
 def _journal_status(journal: Mapping[str, Any] | Any | None) -> str:
     if journal is None:
         return "missing"
-    account_type = str(_journal_value(journal, "account_type", "accountType") or "live").lower()
+    account_type = str(
+        _journal_value(journal, "account_type", "accountType") or "live"
+    ).lower()
     if account_type == "paper":
         return "paper"
     status = str(_journal_value(journal, "status") or "active").lower()
@@ -148,7 +150,9 @@ def build_us_held_position_action_cards(
     warnings: list[str] = []
     cards: list[USHeldPositionActionCard] = []
     journals = _journal_map(journals_by_symbol)
-    manual_symbols = {_normal_symbol(symbol) for symbol in (manual_reference_symbols or set())}
+    manual_symbols = {
+        _normal_symbol(symbol) for symbol in (manual_reference_symbols or set())
+    }
     pending_sell = _pending_by_symbol(account_snapshot.open_orders, side="sell")
     pending_buy = _pending_by_symbol(account_snapshot.open_orders, side="buy")
     held_symbols: set[str] = set()
@@ -161,7 +165,11 @@ def build_us_held_position_action_cards(
         reasons: list[str] = []
         missing: list[str] = []
 
-        if holding.manual_only or not holding.source_of_truth or not holding.is_tradeable:
+        if (
+            holding.manual_only
+            or not holding.source_of_truth
+            or not holding.is_tradeable
+        ):
             warnings.append(f"{symbol}: non_kis_tradeable_holding_skipped")
             continue
         if holding.quantity <= 0:
@@ -178,7 +186,9 @@ def build_us_held_position_action_cards(
         target_price = _float_or_none(
             _journal_value(journal, "target_price", "targetPrice", "target_price_usd")
         )
-        stop_loss = _float_or_none(_journal_value(journal, "stop_loss", "stopLoss", "stop_loss_usd"))
+        stop_loss = _float_or_none(
+            _journal_value(journal, "stop_loss", "stopLoss", "stop_loss_usd")
+        )
         thesis = _journal_value(journal, "thesis")
         thesis_text = str(thesis).strip() if thesis is not None else None
         if journal_status in {"active", "draft"} and not thesis_text:
@@ -202,7 +212,9 @@ def build_us_held_position_action_cards(
         if pending_buy_qty > 0:
             reasons.append("pending_buy_exists")
 
-        target_hit = target_price is not None and price is not None and price >= target_price
+        target_hit = (
+            target_price is not None and price is not None and price >= target_price
+        )
         stop_hit = stop_loss is not None and price is not None and price <= stop_loss
         pnl_stop_hit = pnl_rate is not None and pnl_rate <= _STOP_LOSS_PNL_THRESHOLD
         profit_trim_hit = pnl_rate is not None and pnl_rate >= _TRIM_PROFIT_THRESHOLD
@@ -233,7 +245,9 @@ def build_us_held_position_action_cards(
 
         if holding.sellable_qty <= 0 and action in {"sell", "trim"}:
             reasons.append("no_sellable_quantity")
-            card_warnings.append(f"{symbol}: no KIS sellable quantity; executable action suppressed")
+            card_warnings.append(
+                f"{symbol}: no KIS sellable quantity; executable action suppressed"
+            )
             action = "hold"
             suggested_trim_pct = None
         if pending_sell_qty > 0 and action in {"sell", "trim", "add"}:
@@ -247,7 +261,9 @@ def build_us_held_position_action_cards(
 
         executable_qty = _cap_executable(action, holding.sellable_qty, holding.quantity)
         if action == "trim" and suggested_trim_pct is not None:
-            executable_qty = min(executable_qty, holding.quantity * suggested_trim_pct / 100.0)
+            executable_qty = min(
+                executable_qty, holding.quantity * suggested_trim_pct / 100.0
+            )
 
         cards.append(
             USHeldPositionActionCard(

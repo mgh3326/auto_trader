@@ -63,7 +63,9 @@ def _int_or_default(value: Any, default: int) -> int:
 
 def _sort_key(candidate: ScreenedUSNewBuyCandidate) -> tuple[float, float, str]:
     score = candidate.score if candidate.score is not None else -math.inf
-    change_rate = candidate.change_rate if candidate.change_rate is not None else -math.inf
+    change_rate = (
+        candidate.change_rate if candidate.change_rate is not None else -math.inf
+    )
     return (float(score), float(change_rate), candidate.symbol)
 
 
@@ -86,7 +88,9 @@ def build_us_new_buy_candidate_cards(
     """
 
     warnings: list[str] = []
-    held_symbols = {_normal_symbol(holding.symbol) for holding in account_snapshot.holdings}
+    held_symbols = {
+        _normal_symbol(holding.symbol) for holding in account_snapshot.holdings
+    }
     open_buy_by_symbol: dict[str, int] = {}
     for order in account_snapshot.open_orders:
         if order.side == "buy" and order.pending_qty > 0:
@@ -99,7 +103,9 @@ def build_us_new_buy_candidate_cards(
     elif account_snapshot.usd_buying_power is not None:
         warnings.append("sized_against_kis_live_usd_buying_power")
 
-    concentration_set = {_normal_symbol(symbol) for symbol in (concentration_symbols or set())}
+    concentration_set = {
+        _normal_symbol(symbol) for symbol in (concentration_symbols or set())
+    }
     filtered_candidates: list[ScreenedUSNewBuyCandidate] = []
     skipped_held = False
     for candidate in candidates:
@@ -117,7 +123,11 @@ def build_us_new_buy_candidate_cards(
     for rank, candidate in enumerate(filtered_candidates[:max_candidates], start=1):
         symbol = _normal_symbol(candidate.symbol)
         price = candidate.price
-        budget = (sizing_basis * per_candidate_budget_pct) if sizing_basis is not None else 0.0
+        budget = (
+            (sizing_basis * per_candidate_budget_pct)
+            if sizing_basis is not None
+            else 0.0
+        )
         quantity = int(budget // price) if price is not None and price > 0 else 0
         notional = round(quantity * price, 2) if price is not None else 0.0
 
@@ -127,7 +137,9 @@ def build_us_new_buy_candidate_cards(
         if price is None or price <= 0:
             risk_notes.append("candidate price 확인 불가")
         if symbol in open_buy_by_symbol:
-            risk_notes.append(f"open buy order already pending: {open_buy_by_symbol[symbol]}")
+            risk_notes.append(
+                f"open buy order already pending: {open_buy_by_symbol[symbol]}"
+            )
         for item in (calendar_risks_by_symbol or {}).get(symbol, []):
             risk_notes.append(f"calendar: {item}")
         for item in (news_risks_by_symbol or {}).get(symbol, []):
@@ -136,8 +148,12 @@ def build_us_new_buy_candidate_cards(
             risk_notes.append("concentration risk: overlaps existing focused exposure")
 
         research = (research_by_symbol or {}).get(symbol)
-        target = _float_or_none(_research_value(research, "target_price", "targetPrice", "target_price_usd"))
-        stop = _float_or_none(_research_value(research, "stop_loss", "stopLoss", "stop_loss_usd"))
+        target = _float_or_none(
+            _research_value(research, "target_price", "targetPrice", "target_price_usd")
+        )
+        stop = _float_or_none(
+            _research_value(research, "stop_loss", "stopLoss", "stop_loss_usd")
+        )
         if price is not None and price > 0:
             if target is None:
                 target = round(price * _DEFAULT_TARGET_UPSIDE, 2)

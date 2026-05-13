@@ -67,7 +67,9 @@ def _holding_action_line(card: USHeldPositionActionCard) -> str:
         else ""
     )
     reasoning = _short_join(card.reason_codes, empty="reason code 없음")
-    risk = _short_join([*card.missing_context_codes, *card.warnings], empty="추가 경고 없음")
+    risk = _short_join(
+        [*card.missing_context_codes, *card.warnings], empty="추가 경고 없음"
+    )
     return (
         f"- **{card.symbol}** ({card.display_name}) — {label}{trim}\n"
         f"  수량 {_fmt_qty(card.quantity)}주 / KIS 매도가능 {_fmt_qty(card.sellable_qty)}주 "
@@ -95,7 +97,11 @@ def _candidate_line(card: USNewBuyCandidateCard) -> str:
 def _summary_lines(snapshot: KISUSAccountSnapshot) -> list[str]:
     total_value = sum(holding.value_usd or 0.0 for holding in snapshot.holdings)
     total_pnl = sum(holding.pnl_usd or 0.0 for holding in snapshot.holdings)
-    missing_prices = [holding.symbol for holding in snapshot.holdings if holding.price_state == "missing"]
+    missing_prices = [
+        holding.symbol
+        for holding in snapshot.holdings
+        if holding.price_state == "missing"
+    ]
     return [
         "## KIS live US action report (preview only)",
         "### 1) KIS live account summary",
@@ -133,7 +139,13 @@ def build_us_action_report_discord_message(
     else:
         lines.append("- KIS live tradeable holding action 없음")
 
-    manual_symbols = sorted({_normal_symbol(symbol) for symbol in (manual_reference_symbols or []) if symbol})
+    manual_symbols = sorted(
+        {
+            _normal_symbol(symbol)
+            for symbol in (manual_reference_symbols or [])
+            if symbol
+        }
+    )
     lines.extend(["", "### 3) Manual/reference caveat"])
     if manual_symbols:
         lines.append(
@@ -142,8 +154,12 @@ def build_us_action_report_discord_message(
             + " — 참고용이며 KIS 매도가능/거래가능 수량에 포함하지 않음."
         )
     else:
-        lines.append("- Manual/Toss/reference balances are reference-only and not counted as KIS tradeable quantity.")
-    lines.append("- Sell/trim quantities above are capped to KIS live sellable quantity only.")
+        lines.append(
+            "- Manual/Toss/reference balances are reference-only and not counted as KIS tradeable quantity."
+        )
+    lines.append(
+        "- Sell/trim quantities above are capped to KIS live sellable quantity only."
+    )
 
     lines.extend(["", "### 4) New-buy candidates"])
     candidate_warnings = getattr(new_buy_candidates, "warnings", [])

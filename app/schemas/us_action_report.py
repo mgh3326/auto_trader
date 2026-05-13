@@ -11,7 +11,9 @@ OrderSideLiteral = Literal["buy", "sell", "unknown"]
 KISUSOrderPreviewSideLiteral = Literal["buy", "sell"]
 KISUSOrderPreviewStatusLiteral = Literal["pass", "blocked"]
 USHeldActionLiteral = Literal["sell", "trim", "hold", "add", "watch"]
-JournalStatusLiteral = Literal["active", "draft", "missing", "stale", "inactive", "paper"]
+JournalStatusLiteral = Literal[
+    "active", "draft", "missing", "stale", "inactive", "paper"
+]
 
 
 class ScreenedUSNewBuyCandidate(BaseModel):
@@ -169,10 +171,14 @@ class USHeldPositionActionCard(BaseModel):
     target_price_usd: float | None = Field(default=None, alias="targetPriceUsd")
     stop_loss_usd: float | None = Field(default=None, alias="stopLossUsd")
     hold_until: datetime | None = Field(default=None, alias="holdUntil")
-    journal_status: JournalStatusLiteral = Field(default="missing", alias="journalStatus")
+    journal_status: JournalStatusLiteral = Field(
+        default="missing", alias="journalStatus"
+    )
     thesis: str | None = None
     reason_codes: list[str] = Field(default_factory=list, alias="reasonCodes")
-    missing_context_codes: list[str] = Field(default_factory=list, alias="missingContextCodes")
+    missing_context_codes: list[str] = Field(
+        default_factory=list, alias="missingContextCodes"
+    )
     warnings: list[str] = Field(default_factory=list)
 
 

@@ -9,7 +9,14 @@ from app.core.symbol import to_db_symbol
 from app.schemas.us_action_report import KISUSAccountSnapshot, USHolding, USOpenOrder
 
 _NUMERIC_BLANKS = {"", "-", "--", "N/A", "None", None}
-_US_COUNTRY_MARKERS = {"US", "USA", "UNITED STATES", "UNITED STATES OF AMERICA", "840", "미국"}
+_US_COUNTRY_MARKERS = {
+    "US",
+    "USA",
+    "UNITED STATES",
+    "UNITED STATES OF AMERICA",
+    "840",
+    "미국",
+}
 _READ_ONLY_ORDER_METHODS = (
     "inquire_overseas_orders",
     "fetch_open_overseas_orders",
@@ -55,7 +62,13 @@ def _is_us_holding(row: Mapping[str, Any]) -> bool:
         str(row.get("broker_type") or "").strip().lower(),
         str(row.get("account_kind") or row.get("accountKind") or "").strip().lower(),
     }
-    if source_markers & {"toss", "toss_manual", "manual", "pension_manual", "isa_manual"}:
+    if source_markers & {
+        "toss",
+        "toss_manual",
+        "manual",
+        "pension_manual",
+        "isa_manual",
+    }:
         return False
 
     country_values = [
@@ -66,7 +79,11 @@ def _is_us_holding(row: Mapping[str, Any]) -> bool:
         row.get("country"),
         row.get("tr_mket_name"),
     ]
-    present = [str(value).strip().upper() for value in country_values if value not in _NUMERIC_BLANKS]
+    present = [
+        str(value).strip().upper()
+        for value in country_values
+        if value not in _NUMERIC_BLANKS
+    ]
     if not present:
         return True
     return any(value in _US_COUNTRY_MARKERS for value in present)
@@ -91,7 +108,9 @@ async def _call_noarg_or_kwargs(method: Any, **kwargs: Any) -> Any:
         return await _maybe_await(method())
 
 
-async def _load_margin(kis_client: Any, warnings: list[str]) -> tuple[float | None, float | None]:
+async def _load_margin(
+    kis_client: Any, warnings: list[str]
+) -> tuple[float | None, float | None]:
     try:
         method = getattr(kis_client, "inquire_overseas_margin", None)
         if callable(method):
@@ -100,10 +119,14 @@ async def _load_margin(kis_client: Any, warnings: list[str]) -> tuple[float | No
             account = getattr(kis_client, "account", None)
             method = getattr(account, "inquire_overseas_margin", None)
             if not callable(method):
-                warnings.append("kis_live_us_margin_unavailable: no margin reader on client")
+                warnings.append(
+                    "kis_live_us_margin_unavailable: no margin reader on client"
+                )
                 return None, None
             rows = await _call_noarg_or_kwargs(method)
-    except Exception as exc:  # pragma: no cover - exercised by tests without matching exact type
+    except (
+        Exception
+    ) as exc:  # pragma: no cover - exercised by tests without matching exact type
         warnings.append(f"kis_live_us_margin_unavailable: {exc}")
         return None, None
 
@@ -111,18 +134,26 @@ async def _load_margin(kis_client: Any, warnings: list[str]) -> tuple[float | No
         if isinstance(row, Mapping) and _is_usd_margin_row(row):
             return (
                 _first_float(row, ("frcr_dncl_amt1", "cash_usd", "usd_cash")),
-                _first_float(row, ("frcr_ord_psbl_amt1", "buying_power_usd", "usd_buying_power")),
+                _first_float(
+                    row, ("frcr_ord_psbl_amt1", "buying_power_usd", "usd_buying_power")
+                ),
             )
     warnings.append("kis_live_us_margin_unavailable: USD margin row not found")
     return None, None
 
 
-async def _load_holdings(kis_client: Any, warnings: list[str]) -> list[Mapping[str, Any]]:
+async def _load_holdings(
+    kis_client: Any, warnings: list[str]
+) -> list[Mapping[str, Any]]:
     method = getattr(kis_client, "fetch_my_overseas_stocks", None)
     if callable(method):
         try:
             rows = await _call_noarg_or_kwargs(method, is_mock=False)
-            return [row for row in rows or [] if isinstance(row, Mapping) and _is_us_holding(row)]
+            return [
+                row
+                for row in rows or []
+                if isinstance(row, Mapping) and _is_us_holding(row)
+            ]
         except Exception as exc:
             warnings.append(f"kis_live_us_holdings_unavailable: {exc}")
             return []
@@ -140,7 +171,9 @@ async def _load_holdings(kis_client: Any, warnings: list[str]) -> list[Mapping[s
     return []
 
 
-async def _load_open_orders(kis_client: Any, warnings: list[str]) -> list[Mapping[str, Any]]:
+async def _load_open_orders(
+    kis_client: Any, warnings: list[str]
+) -> list[Mapping[str, Any]]:
     errors: list[str] = []
     for method_name in _READ_ONLY_ORDER_METHODS:
         method = getattr(kis_client, method_name, None)
@@ -170,28 +203,35 @@ def _order_symbol(row: Mapping[str, Any]) -> str | None:
 
 
 def _order_pending_qty(row: Mapping[str, Any]) -> float:
-    return _first_float(
-        row,
-        (
-            "nccs_qty",
-            "ord_unpr_qty",
-            "remaining_qty",
-            "remainingQty",
-            "rmn_qty",
-            "qty",
-            "ft_ord_qty",
-        ),
-    ) or 0.0
+    return (
+        _first_float(
+            row,
+            (
+                "nccs_qty",
+                "ord_unpr_qty",
+                "remaining_qty",
+                "remainingQty",
+                "rmn_qty",
+                "qty",
+                "ft_ord_qty",
+            ),
+        )
+        or 0.0
+    )
 
 
 def _order_side(row: Mapping[str, Any]) -> str:
-    raw = str(
-        row.get("sll_buy_dvsn_cd")
-        or row.get("sll_buy_dvsn_name")
-        or row.get("side")
-        or row.get("buy_sell")
-        or ""
-    ).strip().lower()
+    raw = (
+        str(
+            row.get("sll_buy_dvsn_cd")
+            or row.get("sll_buy_dvsn_name")
+            or row.get("side")
+            or row.get("buy_sell")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
     if raw in {"02", "buy", "b", "매수"}:
         return "buy"
     if raw in {"01", "sell", "s", "매도"}:
@@ -217,7 +257,9 @@ def _build_open_orders(rows: list[Mapping[str, Any]]) -> list[USOpenOrder]:
             USOpenOrder(
                 symbol=symbol,
                 side=side,
-                quantity=_first_float(row, ("qty", "ord_qty", "ft_ord_qty", "quantity")),
+                quantity=_first_float(
+                    row, ("qty", "ord_qty", "ft_ord_qty", "quantity")
+                ),
                 remaining_qty=pending_qty,
                 pending_qty=pending_qty,
                 order_id=order_id,
@@ -235,7 +277,9 @@ def _pending_sell_by_symbol(orders: list[USOpenOrder]) -> dict[str, float]:
     return pending
 
 
-async def _quote_for_symbol(quote_service: Any, symbol: str) -> tuple[float | None, str]:
+async def _quote_for_symbol(
+    quote_service: Any, symbol: str
+) -> tuple[float | None, str]:
     if quote_service is None:
         return None, "missing"
     for method_name in ("get_us_quote", "get_quote", "quote"):
@@ -244,8 +288,15 @@ async def _quote_for_symbol(quote_service: Any, symbol: str) -> tuple[float | No
             continue
         quote = await _maybe_await(method(symbol))
         if isinstance(quote, Mapping):
-            price = _first_float(quote, ("price", "last_price", "lastPrice", "current_price"))
-            state = str(quote.get("state") or quote.get("price_state") or quote.get("priceState") or "live")
+            price = _first_float(
+                quote, ("price", "last_price", "lastPrice", "current_price")
+            )
+            state = str(
+                quote.get("state")
+                or quote.get("price_state")
+                or quote.get("priceState")
+                or "live"
+            )
         else:
             price = _to_float(
                 getattr(quote, "price", None)
@@ -275,9 +326,15 @@ async def _build_holding(
         warnings.append("kis_live_us_holding_skipped: missing symbol")
         return None
     symbol = to_db_symbol(raw_symbol.upper())
-    quantity = _first_float(row, ("ovrs_cblc_qty", "hldg_qty", "quantity", "qty")) or 0.0
-    average_cost = _first_float(row, ("pchs_avg_pric", "avg_price", "average_cost", "averageCost"))
-    cost_basis = _first_float(row, ("frcr_pchs_amt1", "pchs_amt", "cost_basis", "costBasis"))
+    quantity = (
+        _first_float(row, ("ovrs_cblc_qty", "hldg_qty", "quantity", "qty")) or 0.0
+    )
+    average_cost = _first_float(
+        row, ("pchs_avg_pric", "avg_price", "average_cost", "averageCost")
+    )
+    cost_basis = _first_float(
+        row, ("frcr_pchs_amt1", "pchs_amt", "cost_basis", "costBasis")
+    )
     if cost_basis is None and average_cost is not None:
         cost_basis = quantity * average_cost
 
@@ -288,14 +345,22 @@ async def _build_holding(
         quote_price = None
         price_state = "missing"
 
-    row_price = _first_float(row, ("now_pric2", "now_pric", "last_price", "current_price"))
+    row_price = _first_float(
+        row, ("now_pric2", "now_pric", "last_price", "current_price")
+    )
     last_price = quote_price if quote_price is not None else row_price
     if quote_price is None and price_state != "stale":
         price_state = "missing"
 
     value_usd = quantity * last_price if last_price is not None else None
-    pnl_usd = value_usd - cost_basis if value_usd is not None and cost_basis is not None else None
-    pnl_rate = (pnl_usd / cost_basis * 100.0) if pnl_usd is not None and cost_basis else None
+    pnl_usd = (
+        value_usd - cost_basis
+        if value_usd is not None and cost_basis is not None
+        else None
+    )
+    pnl_rate = (
+        (pnl_usd / cost_basis * 100.0) if pnl_usd is not None and cost_basis else None
+    )
     sellable_qty = _first_float(
         row,
         (
@@ -315,7 +380,10 @@ async def _build_holding(
 
     return USHolding(
         symbol=symbol,
-        display_name=_first_str(row, ("ovrs_item_name", "name", "display_name", "displayName")) or symbol,
+        display_name=_first_str(
+            row, ("ovrs_item_name", "name", "display_name", "displayName")
+        )
+        or symbol,
         quantity=quantity,
         average_cost_usd=average_cost,
         cost_basis_usd=cost_basis,

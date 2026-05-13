@@ -45,7 +45,9 @@ def test_new_buy_cards_size_against_conservative_kis_usd_buying_power_and_skip_h
         account_snapshot=_snapshot(),
         candidates=[
             ScreenedUSNewBuyCandidate(symbol="AAPL", name="Apple", price=200, rsi=45),
-            ScreenedUSNewBuyCandidate(symbol="MSFT", name="Microsoft", price=110, rsi=48, score=91),
+            ScreenedUSNewBuyCandidate(
+                symbol="MSFT", name="Microsoft", price=110, rsi=48, score=91
+            ),
         ],
         research_by_symbol={
             "MSFT": {
@@ -93,11 +95,23 @@ def test_new_buy_cards_attach_open_order_calendar_news_and_concentration_risk_no
                 )
             ],
             open_orders=[
-                USOpenOrder(symbol="NVDA", side="buy", pending_qty=1, remaining_qty=1, order_id="B-1")
+                USOpenOrder(
+                    symbol="NVDA",
+                    side="buy",
+                    pending_qty=1,
+                    remaining_qty=1,
+                    order_id="B-1",
+                )
             ],
         ),
         candidates=[
-            ScreenedUSNewBuyCandidate(symbol="NVDA", name="NVIDIA", price=500, sector="Semiconductors", score=97),
+            ScreenedUSNewBuyCandidate(
+                symbol="NVDA",
+                name="NVIDIA",
+                price=500,
+                sector="Semiconductors",
+                score=97,
+            ),
         ],
         calendar_risks_by_symbol={"NVDA": ["earnings in 3 days"]},
         news_risks_by_symbol={"NVDA": ["export-control headline risk"]},

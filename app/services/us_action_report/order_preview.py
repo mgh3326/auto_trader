@@ -16,7 +16,12 @@ _DEFAULT_MAX_QUANTITY = 5.0
 _DEFAULT_MAX_NOTIONAL_USD = 1000.0
 _DEFAULT_MAX_LIMIT_DEVIATION_PCT = 10.0
 
-_FORBIDDEN_LIVE_ORDER_METHODS = ("submit_order", "place_order", "cancel_order", "modify_order")
+_FORBIDDEN_LIVE_ORDER_METHODS = (
+    "submit_order",
+    "place_order",
+    "cancel_order",
+    "modify_order",
+)
 _REQUIRED_BUY_JOURNAL_FIELDS = (
     "thesis",
     "strategy",
@@ -67,10 +72,16 @@ def _journal_map(
     }
 
 
-def _tradeable_holding_by_symbol(snapshot: KISUSAccountSnapshot) -> dict[str, USHolding]:
+def _tradeable_holding_by_symbol(
+    snapshot: KISUSAccountSnapshot,
+) -> dict[str, USHolding]:
     holdings: dict[str, USHolding] = {}
     for holding in snapshot.holdings:
-        if holding.manual_only or not holding.source_of_truth or not holding.is_tradeable:
+        if (
+            holding.manual_only
+            or not holding.source_of_truth
+            or not holding.is_tradeable
+        ):
             continue
         holdings[_normal_symbol(holding.symbol)] = holding
     return holdings
@@ -80,14 +91,22 @@ def _manual_or_reference_symbols(snapshot: KISUSAccountSnapshot) -> set[str]:
     return {
         _normal_symbol(holding.symbol)
         for holding in snapshot.holdings
-        if holding.manual_only or not holding.source_of_truth or not holding.is_tradeable
+        if holding.manual_only
+        or not holding.source_of_truth
+        or not holding.is_tradeable
     }
 
 
-def _pending_duplicate_count(snapshot: KISUSAccountSnapshot, *, symbol: str, side: str) -> int:
+def _pending_duplicate_count(
+    snapshot: KISUSAccountSnapshot, *, symbol: str, side: str
+) -> int:
     count = 0
     for order in snapshot.open_orders:
-        if order.side == side and order.pending_qty > 0 and _normal_symbol(order.symbol) == symbol:
+        if (
+            order.side == side
+            and order.pending_qty > 0
+            and _normal_symbol(order.symbol) == symbol
+        ):
             count += 1
     return count
 
@@ -241,7 +260,9 @@ def preview_kis_us_live_order(
     if reference_price is None or reference_price <= 0:
         warnings.append("reference_price_missing_for_limit_sanity")
     elif request.limit_price_usd > 0:
-        deviation_pct = abs(request.limit_price_usd - reference_price) / reference_price * 100.0
+        deviation_pct = (
+            abs(request.limit_price_usd - reference_price) / reference_price * 100.0
+        )
         details["limitPriceDeviationPct"] = round(deviation_pct, 4)
         details["maxLimitDeviationPct"] = max_limit_deviation_pct
         if deviation_pct > max_limit_deviation_pct:
