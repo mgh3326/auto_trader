@@ -2,63 +2,25 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 import pytest_asyncio
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import delete, select
+
+from tests.market_events_test_helpers import (
+    build_market_events_app,
+    clean_non_tradingview_market_events,
+)
 
 
 @pytest_asyncio.fixture(autouse=True)
 async def _clean(db_session):
-    from app.models.market_events import (
-        MarketEvent,
-        MarketEventIngestionPartition,
-        MarketEventValue,
-    )
-
-    non_tradingview_events = select(MarketEvent.id).where(
-        MarketEvent.source != "tradingview"
-    )
-    await db_session.execute(
-        delete(MarketEventValue).where(
-            MarketEventValue.event_id.in_(non_tradingview_events)
-        )
-    )
-    await db_session.execute(
-        delete(MarketEvent).where(MarketEvent.source != "tradingview")
-    )
-    await db_session.execute(
-        delete(MarketEventIngestionPartition).where(
-            MarketEventIngestionPartition.source != "tradingview"
-        )
-    )
-    await db_session.commit()
+    await clean_non_tradingview_market_events(db_session)
     yield
-
-
-def _app() -> FastAPI:
-    from app.core.db import AsyncSessionLocal, get_db
-    from app.routers import market_events
-    from app.routers.dependencies import get_authenticated_user
-
-    app = FastAPI()
-    app.include_router(market_events.router)
-    app.dependency_overrides[get_authenticated_user] = lambda: SimpleNamespace(id=7)
-
-    async def _override_get_db():
-        async with AsyncSessionLocal() as session:
-            yield session
-
-    app.dependency_overrides[get_db] = _override_get_db
-    return app
 
 
 @pytest.mark.integration
 def test_discover_calendar_returns_grouped_days(db_session):
-    with TestClient(_app()) as client:
+    with TestClient(build_market_events_app()) as client:
         r = client.get(
             "/trading/api/market-events/discover-calendar"
             "?from_date=2026-05-04&to_date=2026-05-10&today=2026-05-07&tab=all"
@@ -77,7 +39,7 @@ def test_discover_calendar_returns_grouped_days(db_session):
 
 @pytest.mark.integration
 def test_discover_calendar_validates_date_order(db_session):
-    with TestClient(_app()) as client:
+    with TestClient(build_market_events_app()) as client:
         r = client.get(
             "/trading/api/market-events/discover-calendar"
             "?from_date=2026-05-10&to_date=2026-05-04&today=2026-05-07"
@@ -87,7 +49,7 @@ def test_discover_calendar_validates_date_order(db_session):
 
 @pytest.mark.integration
 def test_discover_calendar_rejects_unknown_tab(db_session):
-    with TestClient(_app()) as client:
+    with TestClient(build_market_events_app()) as client:
         r = client.get(
             "/trading/api/market-events/discover-calendar"
             "?from_date=2026-05-04&to_date=2026-05-10&today=2026-05-07&tab=bogus"
@@ -97,11 +59,7 @@ def test_discover_calendar_rejects_unknown_tab(db_session):
 
 @pytest.mark.integration
 def test_discover_calendar_requires_auth():
-    from app.routers import market_events
-
-    app = FastAPI()
-    app.include_router(market_events.router)
-    with TestClient(app) as client:
+    with TestClient(build_market_events_app(authenticated=False)) as client:
         r = client.get(
             "/trading/api/market-events/discover-calendar"
             "?from_date=2026-05-04&to_date=2026-05-10&today=2026-05-07"
