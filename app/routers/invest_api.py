@@ -34,6 +34,7 @@ from app.schemas.invest_feed_research import (
 from app.schemas.invest_fx_dashboard import FxDashboardResponse
 from app.schemas.invest_home import InvestHomeResponse
 from app.schemas.invest_market_dashboard import MarketDashboardResponse
+from app.schemas.invest_market_parity import InvestMarketParityResponse
 from app.schemas.invest_momentum_events import (
     MomentumCandidateItem,
     MomentumCandidatesResponse,
@@ -81,6 +82,7 @@ from app.services.invest_view_model.investor_flow_service import (
 from app.services.invest_view_model.market_dashboard_service import (
     build_market_dashboard,
 )
+from app.services.invest_view_model.market_parity_service import build_market_parity
 from app.services.invest_view_model.relation_resolver import build_relation_resolver
 from app.services.invest_view_model.screener_service import (
     build_screener_presets,
@@ -155,6 +157,26 @@ async def get_market_dashboard(
     """Read-only Naver-style market/index dashboard source (ROB-198)."""
     _ = user
     return await build_market_dashboard()
+
+
+@router.get("/market-parity")
+@router.get("/market/parity")
+async def get_market_parity(
+    user: Annotated[Any, Depends(get_authenticated_user)],
+    market: Literal["kr"] = Query("kr"),
+    include_disabled: Annotated[bool, Query(alias="includeDisabled")] = True,
+    limit: int = Query(20, ge=1, le=20),
+) -> InvestMarketParityResponse:
+    """Read-only market parity cards; no broker/order/watch mutations."""
+    _ = user
+    try:
+        return await build_market_parity(
+            market=market,
+            include_disabled=include_disabled,
+            limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/market/fx/dashboard")

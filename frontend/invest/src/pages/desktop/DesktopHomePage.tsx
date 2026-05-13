@@ -18,10 +18,12 @@ import type { AccountFilterKey } from "../../desktop/LeftContextRail";
 import { RightRemotePanel } from "../../desktop/RightRemotePanel";
 import { useInvestHome } from "../../hooks/useInvestHome";
 import { useMarketDashboard } from "../../hooks/useMarketDashboard";
+import { useMarketParity } from "../../hooks/useMarketParity";
 import { useViewport } from "../../hooks/useViewport";
 import { scopeGroupedToSource } from "../../desktop/scopeHoldings";
 import { DesktopHero } from "../../components/home/DesktopHero";
 import { MarketStrip, marketDashboardToStripItems } from "../../components/home/MarketStrip";
+import { MarketParityStrip } from "../../components/home/MarketParityStrip";
 import { MobileHomePage } from "../mobile/MobileHomePage";
 import { Icon } from "../../ds";
 import type { AssetCategoryKey } from "../../components/AssetCategoryFilter";
@@ -89,6 +91,7 @@ const NAV_CARDS: NavCard[] = [
 export function DesktopHomePage() {
   const home = useInvestHome();
   const market = useMarketDashboard();
+  const marketParity = useMarketParity();
   const [account, setAccount] = useState<AccountFilterKey>("all");
   const [category] = useState<AssetCategoryKey>("all");
 
@@ -168,6 +171,9 @@ export function DesktopHomePage() {
 
               {/* Market index strip — live data from market dashboard */}
               <MarketStrip items={marketStripItems} />
+
+              {/* Market parity strip — read-only reference/괴리 observation, not recommendations */}
+              <MarketParityStrip state={marketParity.state} reload={marketParity.reload} />
 
               {/* Navigation cards — market-entry shortcuts to all /invest surfaces */}
               <div>
