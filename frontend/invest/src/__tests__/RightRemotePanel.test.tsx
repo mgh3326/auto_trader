@@ -248,6 +248,22 @@ test("paper account filters show distinct labels and cash-only empty state", asy
   expect(screen.queryByText("KIS 실계좌 보유종목")).not.toBeInTheDocument();
 });
 
+test("KIS mock filter shows distinct labels and cash-only empty state", async () => {
+  const user = userEvent.setup();
+  renderPanel();
+  await waitFor(() => expect(screen.getByTestId("portfolio-panel")).toBeInTheDocument());
+
+  await user.click(screen.getByRole("button", { name: "KIS 모의" }));
+
+  expect(screen.getByRole("button", { name: "KIS 모의" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByText("KIS 모의 보유종목")).toBeInTheDocument();
+  expect(screen.getByText("KIS 모의 계좌는 표시할 모의/Paper 보유종목이 없습니다.")).toBeInTheDocument();
+  const cashCard = screen.getByTestId("account-cash-card");
+  expect(within(cashCard).getByText("₩1,000,000")).toBeInTheDocument();
+  expect(within(cashCard).getByText("$10")).toBeInTheDocument();
+  expect(screen.queryByText("KIS 실계좌 보유종목")).not.toBeInTheDocument();
+});
+
 test("watchlist tab shows watch symbols", async () => {
   renderPanel();
   await waitFor(() => expect(screen.getByTestId("portfolio-panel")).toBeInTheDocument());

@@ -549,6 +549,54 @@ async def test_kis_mock_reader_passes_is_mock_true(
 
 @pytest.mark.asyncio
 @pytest.mark.unit
+async def test_kis_mock_reader_reports_zero_cost_basis_gain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Zero recorded cost basis should not hide an otherwise valued mock position."""
+
+    class _ZeroCostAccount:
+        async def fetch_my_stocks(
+            self, *, is_mock: bool, is_overseas: bool
+        ) -> list[dict[str, Any]]:
+            assert is_mock is True
+            assert is_overseas is False
+            return [
+                {
+                    "pdno": "000000",
+                    "prdt_name": "무상입고",
+                    "hldg_qty": "1",
+                    "pchs_avg_pric": "0",
+                    "pchs_amt": "0",
+                    "evlu_amt": "12345",
+                    "evlu_pfls_amt": "12345",
+                    "evlu_pfls_rt": "0",
+                }
+            ]
+
+        async def inquire_domestic_cash_balance(
+            self, is_mock: bool = False
+        ) -> dict[str, Any]:
+            assert is_mock is True
+            return {"dnca_tot_amt": 0, "stck_cash_ord_psbl_amt": 0, "raw": {}}
+
+    class _ZeroCostClient:
+        def __init__(self) -> None:
+            self.account = _ZeroCostAccount()
+
+    monkeypatch.setattr(readers, "SafeKISMockClient", _ZeroCostClient)
+    monkeypatch.setattr(readers, "_kis_mock_configured", lambda: True)
+
+    result = await readers.KISMockHomeReader().fetch(user_id=1)
+
+    account = result.accounts[0]
+    assert account.valueKrw == pytest.approx(12_345.0)
+    assert account.costBasisKrw is None
+    assert account.pnlKrw == pytest.approx(12_345.0)
+    assert account.pnlRate is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
 async def test_kis_mock_reader_returns_warning_when_not_configured() -> None:
     result = await readers.KISMockHomeReader().fetch(user_id=1)
 
@@ -740,6 +788,9 @@ async def test_alpaca_paper_reader_maps_positions_and_converts_usd(
     assert account.cashBalances.usd == pytest.approx(500.0)
     assert account.buyingPower.usd == pytest.approx(1000.0)
     assert account.valueKrw == pytest.approx(220 * 1_300.0)
+    assert account.costBasisKrw == pytest.approx(200 * 1_300.0)
+    assert account.pnlKrw == pytest.approx(20 * 1_300.0)
+    assert account.pnlRate == pytest.approx(20 / 200)
 
     h = result.holdings[0]
     assert h.source == "alpaca_paper"

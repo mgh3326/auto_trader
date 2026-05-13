@@ -778,14 +778,15 @@ class KISMockHomeReader:
                 for h in holdings
                 if h.costBasis is not None and h.currency == "KRW"
             )
-            pnl_krw_total = (
-                investment_value_krw - cost_basis_krw if cost_basis_krw > 0 else None
-            )
-            pnl_rate_total = (
-                pnl_krw_total / cost_basis_krw
-                if pnl_krw_total is not None and cost_basis_krw > 0
-                else None
-            )
+            if cost_basis_krw > 0:
+                pnl_krw_total = investment_value_krw - cost_basis_krw
+                pnl_rate_total = pnl_krw_total / cost_basis_krw
+            elif holdings and investment_value_krw > 0:
+                pnl_krw_total = investment_value_krw
+                pnl_rate_total = None
+            else:
+                pnl_krw_total = None
+                pnl_rate_total = None
 
             cash_krw: float | None = None
             buying_power_krw: float | None = None
@@ -977,6 +978,30 @@ class AlpacaPaperHomeReader:
             investment_value_krw = sum(
                 h.valueKrw for h in holdings if h.valueKrw is not None
             )
+            valued_holdings = [h for h in holdings if h.valueKrw is not None]
+            cost_basis_krw_values = [
+                h.costBasis * (h.valueKrw / h.valueNative)
+                for h in valued_holdings
+                if h.costBasis is not None
+                and h.valueNative is not None
+                and h.valueNative > 0
+            ]
+            account_cost_basis_krw = (
+                sum(cost_basis_krw_values)
+                if cost_basis_krw_values
+                and len(cost_basis_krw_values) == len(valued_holdings)
+                else None
+            )
+            account_pnl_krw = (
+                investment_value_krw - account_cost_basis_krw
+                if account_cost_basis_krw is not None
+                else None
+            )
+            account_pnl_rate = (
+                account_pnl_krw / account_cost_basis_krw
+                if account_pnl_krw is not None and account_cost_basis_krw > 0
+                else None
+            )
             # Cash and buying power in USD — keep native, convert to KRW for account
             cash_usd = float(account_snap.cash)
             buying_power_usd = float(account_snap.buying_power)
@@ -988,9 +1013,9 @@ class AlpacaPaperHomeReader:
                 accountKind="paper",
                 includedInHome=False,
                 valueKrw=investment_value_krw,
-                costBasisKrw=None,
-                pnlKrw=None,
-                pnlRate=None,
+                costBasisKrw=account_cost_basis_krw,
+                pnlKrw=account_pnl_krw,
+                pnlRate=account_pnl_rate,
                 cashBalances=CashAmounts(usd=cash_usd),
                 buyingPower=CashAmounts(usd=buying_power_usd),
             )

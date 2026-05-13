@@ -382,14 +382,8 @@ class InvestHomeService:
                     exc,
                     exc_info=True,
                 )
-                # Only emit warning when source is a known valid literal
-                _valid_sources = {
-                    "kis_mock",
-                    "kiwoom_mock",
-                    "alpaca_paper",
-                    "db_simulated",
-                }
-                if reader_source in _valid_sources:
+                # Only emit warning when source is a known valid paper literal.
+                if reader_source in _PAPER:
                     warnings.append(
                         InvestHomeWarning(
                             source=reader_source, message=type(exc).__name__

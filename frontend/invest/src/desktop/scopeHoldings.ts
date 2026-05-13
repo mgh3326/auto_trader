@@ -109,7 +109,7 @@ function sourceLabel(response: AccountPanelResponse, source: AccountSource): str
   const meta = accountSourceMeta(source);
   const account = response.accounts.find((a) => a.source === source);
   if (account?.displayName && (source === "alpaca_paper" || source === "db_simulated" || source === "kiwoom_mock")) {
-    if (account.displayName.includes(meta.label) || account.displayName.includes(meta.shortLabel)) return account.displayName;
+    if (account.displayName === meta.label || account.displayName === meta.shortLabel) return account.displayName;
   }
   return meta.label;
 }

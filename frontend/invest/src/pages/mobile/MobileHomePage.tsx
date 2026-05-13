@@ -186,7 +186,7 @@ export function MobileHomePage() {
           {data.accounts.length > 0 && (
             <section style={{ padding: "0 16px" }} data-testid="mobile-account-row">
               <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4 }}>
-                <PillButton on={account === "all"} onClick={() => setAccount("all")}>
+                <PillButton on={account === "all"} onClick={() => setAccount("all")} tone="accent">
                   전체
                 </PillButton>
                 {data.accounts.map((a) => {
@@ -311,7 +311,7 @@ export function MobileHomePage() {
   );
 }
 
-function PillButton({ on, onClick, children, tone = "paper" }: { on: boolean; onClick: () => void; children: React.ReactNode; tone?: PillTone }) {
+function PillButton({ on, onClick, children, tone = "paper" }: Readonly<{ on: boolean; onClick: () => void; children: React.ReactNode; tone?: PillTone }>) {
   return (
     <button
       type="button"
