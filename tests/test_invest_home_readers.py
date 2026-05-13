@@ -20,6 +20,7 @@ class _FakeKISAccount:
                 "pdno": "005930",
                 "prdt_name": "삼성전자",
                 "hldg_qty": "10",
+                "ord_psbl_qty": "6",
                 "pchs_avg_pric": "70000",
                 "pchs_amt": "700000",
                 "evlu_amt": "720000",
@@ -45,6 +46,7 @@ class _FakeKISAccount:
                 "ovrs_pdno": "AAPL",
                 "ovrs_item_name": "Apple",
                 "ovrs_cblc_qty": "2",
+                "ord_psbl_qty": "1",
                 "pchs_avg_pric": "100",
                 "frcr_pchs_amt1": "200",
                 "ovrs_stck_evlu_amt": "220",
@@ -83,12 +85,26 @@ async def test_kis_reader_excludes_cash_from_value_and_converts_usd(
 
     kr_holding = next(h for h in result.holdings if h.symbol == "005930")
     assert kr_holding.assetCategory == "kr_stock"
+    assert kr_holding.accountKind == "live"
+    assert kr_holding.sourceOfTruth is True
+    assert kr_holding.isTradeable is True
+    assert kr_holding.manualOnly is False
+    assert kr_holding.sellableQuantity == 6
+    assert kr_holding.pendingSellQuantity == 4
+    assert kr_holding.referenceQuantity == 0
 
     us_holding = next(h for h in result.holdings if h.symbol == "AAPL")
     assert us_holding.assetCategory == "us_stock"
     assert us_holding.valueNative == 220
     assert us_holding.valueKrw == 286_000
     assert us_holding.pnlKrw == 26_000
+    assert us_holding.accountKind == "live"
+    assert us_holding.sourceOfTruth is True
+    assert us_holding.isTradeable is True
+    assert us_holding.manualOnly is False
+    assert us_holding.sellableQuantity == 1
+    assert us_holding.pendingSellQuantity == 1
+    assert us_holding.referenceQuantity == 0
 
 
 @pytest.mark.asyncio
@@ -411,6 +427,13 @@ async def test_manual_reader_valuates_with_quote_service(
     assert h.valueKrw == pytest.approx(720_000.0)
     assert h.pnlKrw == pytest.approx(20_000.0)
     assert h.priceState == "live"
+    assert h.accountKind == "manual"
+    assert h.sourceOfTruth is False
+    assert h.isTradeable is False
+    assert h.manualOnly is True
+    assert h.sellableQuantity == 0
+    assert h.pendingSellQuantity == 0
+    assert h.referenceQuantity == 10
     assert result.warning is None
 
 

@@ -105,6 +105,7 @@ class KISHomeReader:
             for s in stocks_kr:
                 qty = float(s.get("hldg_qty", 0))
                 avg_price = float(s.get("pchs_avg_pric", 0))
+                sellable_qty = float(s.get("ord_psbl_qty") or s.get("hldg_qty") or 0)
                 holdings.append(
                     Holding(
                         holdingId=f"kis:kr:{s.get('pdno')}",
@@ -124,12 +125,24 @@ class KISHomeReader:
                         valueKrw=float(s.get("evlu_amt", 0)),
                         pnlKrw=float(s.get("evlu_pfls_amt", 0)),
                         pnlRate=float(s.get("evlu_pfls_rt", 0)) / 100.0,
+                        sourceOfTruth=True,
+                        isTradeable=True,
+                        manualOnly=False,
+                        sellableQuantity=sellable_qty,
+                        pendingSellQuantity=max(qty - sellable_qty, 0.0),
+                        referenceQuantity=0.0,
                     )
                 )
             # Map US
             for s in stocks_us:
                 qty = float(s.get("ovrs_cblc_qty", 0))
                 avg_price = float(s.get("pchs_avg_pric", 0))
+                sellable_qty = float(
+                    s.get("ord_psbl_qty")
+                    or s.get("ovrs_ord_psbl_qty")
+                    or s.get("ovrs_cblc_qty")
+                    or 0
+                )
                 value_native = float(s.get("ovrs_stck_evlu_amt", 0))
                 pnl_native = float(s.get("frcr_evlu_pfls_amt", 0))
                 value_krw = (
@@ -158,6 +171,12 @@ class KISHomeReader:
                         valueKrw=value_krw,
                         pnlKrw=pnl_krw,
                         pnlRate=float(s.get("evlu_pfls_rt", 0)) / 100.0,
+                        sourceOfTruth=True,
+                        isTradeable=True,
+                        manualOnly=False,
+                        sellableQuantity=sellable_qty,
+                        pendingSellQuantity=max(qty - sellable_qty, 0.0),
+                        referenceQuantity=0.0,
                     )
                 )
 
@@ -562,6 +581,12 @@ class ManualHomeReader:
                         pnlKrw=pnl_krw,
                         pnlRate=pnl_rate,
                         priceState=price_state,
+                        sourceOfTruth=False,
+                        isTradeable=False,
+                        manualOnly=True,
+                        sellableQuantity=0.0,
+                        pendingSellQuantity=0.0,
+                        referenceQuantity=qty,
                     )
                 )
 
