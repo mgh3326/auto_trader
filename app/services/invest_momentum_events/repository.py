@@ -20,6 +20,23 @@ from app.services.invest_momentum_events.models import (
 
 
 @dataclass(frozen=True)
+class MomentumCandidateSignal:
+    symbol: str
+    name: str | None
+    score: float
+    latest_snapshot_at: dt.datetime
+    trading_date: dt.date
+    price: object | None
+    change_rate: object | None
+    surface_count: int
+    venue_count: int
+    rank_delta: int | None
+    signals: list[dict]
+    theme_names: list[str]
+    reason_codes: list[str]
+
+
+@dataclass(frozen=True)
 class SnapshotCoverage:
     market: str
     as_of: dt.date
@@ -136,6 +153,195 @@ class InvestMomentumEventSnapshotsRepository:
         )
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
+
+    async def list_candidate_signals(
+        self,
+        *,
+        trading_date: dt.date | None = None,
+        limit: int = 20,
+    ) -> list[MomentumCandidateSignal]:
+        """Score latest persisted Naver momentum snapshots into early-catch candidates.
+
+        Read-only. The scoring intentionally favors cross-surface confirmation:
+        searchTop + quantTop + up + KRX/NXT repetition is stronger than a single
+        price-rank appearance. Rank deltas are computed against the prior same-day
+        snapshot for the same symbol/surface/venue/order combination when present.
+        """
+        conditions = [InvestMomentumEventSnapshot.market == "kr"]
+        if trading_date is not None:
+            conditions.append(InvestMomentumEventSnapshot.trading_date == trading_date)
+
+        latest_result = await self._session.execute(
+            select(func.max(InvestMomentumEventSnapshot.snapshot_at)).where(*conditions)
+        )
+        latest_snapshot_at = latest_result.scalar_one_or_none()
+        if latest_snapshot_at is None:
+            return []
+
+        if trading_date is None:
+            date_result = await self._session.execute(
+                select(InvestMomentumEventSnapshot.trading_date)
+                .where(
+                    InvestMomentumEventSnapshot.snapshot_at == latest_snapshot_at,
+                    InvestMomentumEventSnapshot.market == "kr",
+                )
+                .limit(1)
+            )
+            trading_date = date_result.scalar_one()
+
+        rows_result = await self._session.execute(
+            select(InvestMomentumEventSnapshot)
+            .where(
+                InvestMomentumEventSnapshot.market == "kr",
+                InvestMomentumEventSnapshot.trading_date == trading_date,
+            )
+            .order_by(
+                InvestMomentumEventSnapshot.snapshot_at.asc(),
+                InvestMomentumEventSnapshot.rank.asc(),
+            )
+        )
+        rows = list(rows_result.scalars().all())
+        latest_rows = [row for row in rows if row.snapshot_at == latest_snapshot_at]
+        if not latest_rows:
+            return []
+
+        previous_ranks: dict[tuple[str, str | None, str | None, str], int] = {}
+        for row in rows:
+            if row.snapshot_at >= latest_snapshot_at:
+                continue
+            key = (row.symbol, row.trade_type, row.market_type, row.order_type)
+            previous_ranks[key] = row.rank
+
+        latest_theme_result = await self._session.execute(
+            select(func.max(InvestThemeEventSnapshot.snapshot_at)).where(
+                InvestThemeEventSnapshot.market == "kr",
+                InvestThemeEventSnapshot.trading_date == trading_date,
+            )
+        )
+        latest_theme_snapshot_at = latest_theme_result.scalar_one_or_none()
+        themes_by_symbol: dict[str, list[str]] = {}
+        if latest_theme_snapshot_at is not None:
+            theme_rows_result = await self._session.execute(
+                select(InvestThemeEventSnapshot, InvestThemeEventSnapshotStock)
+                .join(
+                    InvestThemeEventSnapshotStock,
+                    InvestThemeEventSnapshotStock.theme_snapshot_id
+                    == InvestThemeEventSnapshot.id,
+                )
+                .where(
+                    InvestThemeEventSnapshot.market == "kr",
+                    InvestThemeEventSnapshot.trading_date == trading_date,
+                    InvestThemeEventSnapshot.snapshot_at == latest_theme_snapshot_at,
+                )
+            )
+            for theme, stock in theme_rows_result.all():
+                bucket = themes_by_symbol.setdefault(stock.symbol, [])
+                if theme.name not in bucket:
+                    bucket.append(theme.name)
+
+        order_weights = {
+            "searchTop": 34.0,
+            "quantTop": 29.0,
+            "up": 27.0,
+            "priceTop": 18.0,
+        }
+        grouped: dict[str, dict] = {}
+        for row in latest_rows:
+            bucket = grouped.setdefault(
+                row.symbol,
+                {
+                    "symbol": row.symbol,
+                    "name": row.name,
+                    "price": row.price,
+                    "change_rate": row.change_rate,
+                    "score": 0.0,
+                    "surfaces": set(),
+                    "venues": set(),
+                    "signals": [],
+                    "rank_deltas": [],
+                    "reason_codes": set(),
+                },
+            )
+            if not bucket.get("name") and row.name:
+                bucket["name"] = row.name
+            if row.price is not None:
+                bucket["price"] = row.price
+            if row.change_rate is not None:
+                bucket["change_rate"] = row.change_rate
+
+            rank_score = max(0.0, 21.0 - float(row.rank))
+            order_score = order_weights.get(row.order_type, 12.0)
+            score_add = order_score + rank_score
+            if row.change_rate is not None:
+                score_add += min(max(float(row.change_rate), 0.0), 20.0)
+
+            key = (row.symbol, row.trade_type, row.market_type, row.order_type)
+            prev_rank = previous_ranks.get(key)
+            rank_delta = prev_rank - row.rank if prev_rank is not None else None
+            if rank_delta is not None and rank_delta > 0:
+                score_add += min(float(rank_delta) * 1.5, 30.0)
+                bucket["rank_deltas"].append(rank_delta)
+                bucket["reason_codes"].add("rank_improving")
+
+            bucket["score"] += score_add
+            bucket["surfaces"].add(row.order_type)
+            if row.trade_type:
+                bucket["venues"].add(row.trade_type)
+            bucket["signals"].append(
+                {
+                    "orderType": row.order_type,
+                    "tradeType": row.trade_type,
+                    "rank": row.rank,
+                    "rankDelta": rank_delta,
+                    "changeRate": row.change_rate,
+                    "volume": row.volume,
+                    "tradeValue": row.trade_value,
+                }
+            )
+            bucket["reason_codes"].add(f"surface_{row.order_type}")
+
+        candidates: list[MomentumCandidateSignal] = []
+        for symbol, bucket in grouped.items():
+            surface_count = len(bucket["surfaces"])
+            venue_count = len(bucket["venues"])
+            if surface_count >= 2:
+                bucket["score"] += 20.0 * (surface_count - 1)
+                bucket["reason_codes"].add("multi_surface")
+            if venue_count >= 2:
+                bucket["score"] += 12.0
+                bucket["reason_codes"].add("krx_nxt_confirmed")
+            theme_names = themes_by_symbol.get(symbol, [])
+            if theme_names:
+                bucket["score"] += 10.0
+                bucket["reason_codes"].add("theme_leader")
+            rank_delta = max(bucket["rank_deltas"]) if bucket["rank_deltas"] else None
+            candidates.append(
+                MomentumCandidateSignal(
+                    symbol=symbol,
+                    name=bucket["name"],
+                    score=round(float(bucket["score"]), 2),
+                    latest_snapshot_at=latest_snapshot_at,
+                    trading_date=trading_date,
+                    price=bucket["price"],
+                    change_rate=bucket["change_rate"],
+                    surface_count=surface_count,
+                    venue_count=venue_count,
+                    rank_delta=rank_delta,
+                    signals=sorted(
+                        bucket["signals"],
+                        key=lambda item: (
+                            item["rank"],
+                            item["orderType"],
+                            item.get("tradeType") or "",
+                        ),
+                    ),
+                    theme_names=theme_names[:5],
+                    reason_codes=sorted(bucket["reason_codes"]),
+                )
+            )
+
+        candidates.sort(key=lambda item: (-item.score, item.symbol))
+        return candidates[:limit]
 
     async def list_theme_events(
         self,

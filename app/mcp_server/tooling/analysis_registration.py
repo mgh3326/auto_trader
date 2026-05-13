@@ -16,6 +16,7 @@ from app.mcp_server.tooling.analysis_tool_handlers import (
     recommend_stocks_impl,
     screen_stocks_impl,
 )
+from app.mcp_server.tooling.momentum_candidates import get_momentum_candidates_impl
 from app.mcp_server.tooling.research_pipeline_read import (
     research_session_get_impl,
     research_session_list_recent_impl,
@@ -37,6 +38,7 @@ ANALYSIS_TOOL_NAMES: set[str] = {
     "get_correlation",
     "get_dividends",
     "get_fear_greed_index",
+    "get_momentum_candidates",
     "research_session_get",
     "research_session_list_recent",
     "stage_analysis_get",
@@ -46,6 +48,26 @@ ANALYSIS_TOOL_NAMES: set[str] = {
 
 def register_analysis_tools(mcp: FastMCP) -> None:
     """Register MCP tools for analysis, screening, and ranking utilities."""
+
+    @mcp.tool(
+        name="get_momentum_candidates",
+        description=(
+            "Read-only early-catch candidates for 급등 Korean stocks from persisted "
+            "Naver Stock momentum snapshots. Scores cross-surface signals such as "
+            "searchTop, quantTop, up, priceTop, KRX/NXT confirmation, rank deltas, "
+            "and theme leadership. Does not fetch Naver or mutate broker/order state."
+        ),
+    )
+    async def get_momentum_candidates(
+        market: str = "kr",
+        date: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        return await get_momentum_candidates_impl(
+            market=market,
+            date=date,
+            limit=limit,
+        )
 
     @mcp.tool(
         name="get_top_stocks",

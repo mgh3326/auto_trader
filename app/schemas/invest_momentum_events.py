@@ -72,6 +72,33 @@ class ThemeEventsResponse(BaseModel):
     items: list[ThemeEventItem]
 
 
+class MomentumCandidateItem(BaseModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    symbol: str
+    name: str | None = None
+    score: float
+    latest_snapshot_at: dt.datetime = Field(alias="latestSnapshotAt")
+    trading_date: dt.date = Field(alias="tradingDate")
+    price: Decimal | None = None
+    change_rate: Decimal | None = Field(default=None, alias="changeRate")
+    surface_count: int = Field(alias="surfaceCount")
+    venue_count: int = Field(alias="venueCount")
+    rank_delta: int | None = Field(default=None, alias="rankDelta")
+    signals: list[dict[str, Any]]
+    theme_names: list[str] = Field(default_factory=list, alias="themeNames")
+    reason_codes: list[str] = Field(default_factory=list, alias="reasonCodes")
+
+
+class MomentumCandidatesResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    market: str
+    data_state: str = Field(alias="dataState")
+    empty_reason: str | None = Field(default=None, alias="emptyReason")
+    items: list[MomentumCandidateItem]
+
+
 class MomentumCoverageResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 

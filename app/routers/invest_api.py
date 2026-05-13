@@ -32,6 +32,8 @@ from app.schemas.invest_fx_dashboard import FxDashboardResponse
 from app.schemas.invest_home import InvestHomeResponse
 from app.schemas.invest_market_dashboard import MarketDashboardResponse
 from app.schemas.invest_momentum_events import (
+    MomentumCandidateItem,
+    MomentumCandidatesResponse,
     MomentumCoverageResponse,
     MomentumEventItem,
     MomentumEventsResponse,
@@ -516,6 +518,33 @@ async def get_momentum_events(
         data_state="fresh" if rows else "missing",
         empty_reason=None if rows else "no_naver_momentum_snapshots",
         items=[MomentumEventItem.model_validate(row) for row in rows],
+    )
+
+
+@router.get("/momentum/candidates", response_model=MomentumCandidatesResponse)
+async def get_momentum_candidates(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    market: Literal["kr", "us", "crypto"] = Query("kr"),
+    snapshot_date: Annotated[date | None, Query(alias="date")] = None,
+    limit: int = Query(20, ge=1, le=50),
+) -> MomentumCandidatesResponse:
+    """Read-only early-catch candidates scored from persisted Naver momentum snapshots."""
+    if market != "kr":
+        return MomentumCandidatesResponse(
+            market=market,
+            data_state="unsupported",
+            empty_reason="naver_stock_supports_kr_only",
+            items=[],
+        )
+    rows = await InvestMomentumEventSnapshotsRepository(db).list_candidate_signals(
+        trading_date=snapshot_date,
+        limit=limit,
+    )
+    return MomentumCandidatesResponse(
+        market="kr",
+        data_state="fresh" if rows else "missing",
+        empty_reason=None if rows else "no_naver_momentum_snapshots",
+        items=[MomentumCandidateItem.model_validate(row) for row in rows],
     )
 
 
