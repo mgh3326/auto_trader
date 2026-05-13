@@ -17,7 +17,10 @@ from app.services.invest_view_model.fx_dashboard_service import build_fx_dashboa
 
 def _contains_key(payload: Any, forbidden: set[str]) -> bool:
     if isinstance(payload, dict):
-        return any(key in forbidden or _contains_key(value, forbidden) for key, value in payload.items())
+        return any(
+            key in forbidden or _contains_key(value, forbidden)
+            for key, value in payload.items()
+        )
     if isinstance(payload, list):
         return any(_contains_key(item, forbidden) for item in payload)
     return False
@@ -74,7 +77,12 @@ def _sample_payload() -> dict[str, Any]:
         },
         "thresholds": [
             {"level": 1450, "label": "주의", "distancePct": 3.36, "state": "watch"},
-            {"level": 1500, "label": "심리적 저항/당국 경계", "distancePct": -0.09, "state": "near"},
+            {
+                "level": 1500,
+                "label": "심리적 저항/당국 경계",
+                "distancePct": -0.09,
+                "state": "near",
+            },
         ],
         "defenseSignal": {
             "state": "watch",
@@ -82,7 +90,11 @@ def _sample_payload() -> dict[str, Any]:
             "confidence": "low",
             "labelKo": "당국 경계감/방어성 수급 의심",
             "summaryKo": "1500원 부근 접근으로 경계 신호는 있으나 확정 개입 근거는 없습니다.",
-            "reasonsKo": ["1500원 근접", "글로벌 달러 비교 일부 미수집", "사후 검증 자료 없음"],
+            "reasonsKo": [
+                "1500원 근접",
+                "글로벌 달러 비교 일부 미수집",
+                "사후 검증 자료 없음",
+            ],
             "evidence": [
                 {
                     "kind": "price",
@@ -115,9 +127,21 @@ def _sample_payload() -> dict[str, Any]:
                 "source": "deferred",
             }
         ],
-        "foreignFlow": {"dataState": "missing", "summaryKo": "외국인 수급 연결은 후속 작업입니다.", "items": []},
-        "news": {"dataState": "missing", "items": [], "warning": "FX/당국 발언 뉴스 필터는 ROB-220에서 연결"},
-        "events": {"dataState": "missing", "items": [], "warning": "FX macro calendar linkage는 ROB-220에서 연결"},
+        "foreignFlow": {
+            "dataState": "missing",
+            "summaryKo": "외국인 수급 연결은 후속 작업입니다.",
+            "items": [],
+        },
+        "news": {
+            "dataState": "missing",
+            "items": [],
+            "warning": "FX/당국 발언 뉴스 필터는 ROB-220에서 연결",
+        },
+        "events": {
+            "dataState": "missing",
+            "items": [],
+            "warning": "FX macro calendar linkage는 ROB-220에서 연결",
+        },
         "afterVerification": {
             "dataState": "missing",
             "officialEvidence": [],
@@ -152,7 +176,9 @@ def test_fx_dashboard_contract_contains_cautious_disclaimer_shape() -> None:
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_build_fx_dashboard_fixture_has_partial_provider_states() -> None:
-    response = await build_fx_dashboard(as_of=datetime(2026, 5, 13, 8, 58, 16, tzinfo=UTC))
+    response = await build_fx_dashboard(
+        as_of=datetime(2026, 5, 13, 8, 58, 16, tzinfo=UTC)
+    )
 
     assert response.dataState == "partial"
     freshness_states = {item.dataState for item in response.sourceFreshness}
@@ -169,10 +195,14 @@ async def test_build_fx_dashboard_fixture_has_partial_provider_states() -> None:
 def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     app = FastAPI()
     app.include_router(invest_api_router)
-    app.dependency_overrides[get_authenticated_user] = lambda: type("U", (), {"id": 1})()
+    app.dependency_overrides[get_authenticated_user] = lambda: type(
+        "U", (), {"id": 1}
+    )()
 
     async def _stub_dashboard() -> FxDashboardResponse:
-        return await build_fx_dashboard(as_of=datetime(2026, 5, 13, 8, 58, 16, tzinfo=UTC))
+        return await build_fx_dashboard(
+            as_of=datetime(2026, 5, 13, 8, 58, 16, tzinfo=UTC)
+        )
 
     monkeypatch.setattr(invest_api, "build_fx_dashboard", _stub_dashboard)
     return TestClient(app)
