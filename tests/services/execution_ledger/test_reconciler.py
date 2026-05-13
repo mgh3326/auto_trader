@@ -1,0 +1,113 @@
+from __future__ import annotations
+
+import asyncio
+from datetime import UTC, datetime
+from decimal import Decimal
+from types import SimpleNamespace
+
+import pytest
+
+from app.schemas.execution_ledger import (
+    ExecutionLedgerCommitDisabledError,
+    ExecutionLedgerUpsert,
+)
+from app.services.execution_ledger.reconciler import ExecutionLedgerReconciler
+
+
+class FakeRepo:
+    def __init__(self, status: str = "inserted") -> None:
+        self.status = status
+        self.upserts: list[ExecutionLedgerUpsert] = []
+        self.runs = []
+
+    async def classify_fill(self, fill: ExecutionLedgerUpsert) -> str:
+        await asyncio.sleep(0)
+        return self.status
+
+    async def upsert_fill(self, fill: ExecutionLedgerUpsert) -> tuple[str, int]:
+        await asyncio.sleep(0)
+        self.upserts.append(fill)
+        return self.status, 42
+
+    def record_run(self, run) -> None:  # noqa: ANN001
+        self.runs.append(run)
+
+
+async def fake_fetcher(**_kwargs):  # noqa: ANN003
+    await asyncio.sleep(0)
+    return {
+        "orders": [
+            {
+                "symbol": "BTC",
+                "raw_symbol": "KRW-BTC",
+                "instrument_type": "crypto",
+                "side": "buy",
+                "price": 100,
+                "quantity": 2,
+                "total_amount": 200,
+                "fee": 1,
+                "currency": "KRW",
+                "account": "upbit",
+                "order_id": "ord-1",
+                "filled_at": datetime(2026, 5, 13, tzinfo=UTC).isoformat(),
+                "fill_seq": 0,
+                "venue": "upbit_krw",
+                "raw_payload_json": {"safe": True},
+            }
+        ]
+    }
+
+
+@pytest.mark.asyncio
+async def test_reconciler_dry_run_classifies_without_upsert(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.execution_ledger.reconciler.settings",
+        SimpleNamespace(EXECUTION_LEDGER_COMMIT_ENABLED=False),
+    )
+    repo = FakeRepo(status="inserted")
+
+    diff = await ExecutionLedgerReconciler(repo, fetcher=fake_fetcher).run(
+        "upbit", dry_run=True
+    )
+
+    assert diff.would_insert == 1
+    assert diff.committed_insert == 0
+    assert repo.upserts == []
+    assert len(repo.runs) == 1
+    assert repo.runs[0].dry_run is True
+
+
+@pytest.mark.asyncio
+async def test_reconciler_commit_requires_disabled_by_default_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.execution_ledger.reconciler.settings",
+        SimpleNamespace(EXECUTION_LEDGER_COMMIT_ENABLED=False),
+    )
+
+    with pytest.raises(ExecutionLedgerCommitDisabledError):
+        await ExecutionLedgerReconciler(FakeRepo(), fetcher=fake_fetcher).run(
+            "upbit", dry_run=False
+        )
+
+
+@pytest.mark.asyncio
+async def test_reconciler_commit_when_flag_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.execution_ledger.reconciler.settings",
+        SimpleNamespace(EXECUTION_LEDGER_COMMIT_ENABLED=True),
+    )
+    repo = FakeRepo(status="inserted")
+
+    diff = await ExecutionLedgerReconciler(repo, fetcher=fake_fetcher).run(
+        "upbit", dry_run=False
+    )
+
+    assert diff.committed_insert == 1
+    assert len(repo.upserts) == 1
+    assert repo.upserts[0].filled_qty == Decimal("2")

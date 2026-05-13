@@ -10,6 +10,11 @@ from typing import Any
 import app.services.brokers.upbit.client as upbit_service
 from app.core.timezone import KST, now_kst
 from app.services.brokers.kis.client import KISClient
+from app.services.execution_ledger.normalizers import (
+    _normalize_kis_domestic_filled,
+    _normalize_kis_overseas_filled,
+    normalize_upbit_order,
+)
 from app.services.market_data import get_quote
 from app.services.n8n_filled_orders_indicators import _enrich_with_indicators
 
@@ -18,160 +23,98 @@ logger = logging.getLogger(__name__)
 _EQUITY_QUOTE_CONCURRENCY = 5
 
 
-def _strip_crypto_prefix(symbol: str) -> str:
-    upper = str(symbol or "").strip().upper()
-    for prefix in ("KRW-", "USDT-"):
-        if upper.startswith(prefix):
-            return upper[len(prefix) :]
-    return upper
+def _parse_upbit_fill_datetime(value: object) -> datetime | None:
+    """Strictly parse an Upbit fill timestamp for window filtering.
 
-
-def _normalize_upbit_filled(order: dict[str, Any]) -> dict[str, Any] | None:
-    if order.get("state") != "done":
-        return None
-
-    executed_vol = float(order.get("executed_volume") or 0)
-    if executed_vol <= 0:
-        return None
-
-    price = float(order.get("price") or 0)
-    total = price * executed_vol
-    raw_symbol = str(order.get("market", ""))
-    side_raw = str(order.get("side", "")).lower()
-
-    return {
-        "symbol": _strip_crypto_prefix(raw_symbol),
-        "raw_symbol": raw_symbol,
-        "instrument_type": "crypto",
-        "side": "buy" if side_raw == "bid" else "sell",
-        "price": price,
-        "quantity": executed_vol,
-        "total_amount": total,
-        "fee": float(order.get("paid_fee") or 0),
-        "currency": "KRW",
-        "account": "upbit",
-        "order_id": str(order.get("uuid", "")),
-        "filled_at": str(order.get("created_at", "")),
-    }
-
-
-def _parse_filled_at_kst(value: str) -> datetime | None:
+    Execution-ledger normalizers may default malformed provider timestamps to
+    ``now`` for persistence compatibility, but the legacy n8n filled-orders
+    surface must skip rows whose provider timestamp cannot be parsed.
+    """
     text = str(value or "").strip()
     if not text:
         return None
-
     try:
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
-        return None
-
+        if len(text) != 8:
+            return None
+        try:
+            parsed = datetime.strptime(text, "%Y%m%d").replace(tzinfo=KST)
+        except ValueError:
+            return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=KST)
-    else:
-        parsed = parsed.astimezone(KST)
-
-    return parsed
+        return parsed.replace(tzinfo=KST)
+    return parsed.astimezone(KST)
 
 
-def _normalize_kis_domestic_filled(order: dict[str, Any]) -> dict[str, Any] | None:
-    qty = float(order.get("ccld_qty") or order.get("tot_ccld_qty") or 0)
-    if qty <= 0:
-        return None
+async def _fetch_upbit_filled(days: int) -> tuple[list[dict], list[dict]]:  # NOSONAR
+    """Paginate through Upbit closed orders and expand each into per-trade fills.
 
-    price = float(order.get("ccld_unpr") or order.get("avg_prvs") or 0)
-    total = float(order.get("ccld_amt") or order.get("tot_ccld_amt") or price * qty)
-    ord_dt = str(order.get("ord_dt", ""))
-    ord_tmd = str(order.get("ord_tmd") or order.get("ccld_tmd") or "000000")
-
-    filled_at_str = ord_dt
-    if len(ord_dt) == 8 and len(ord_tmd) >= 6:
-        from datetime import datetime
-
-        try:
-            dt = datetime.strptime(f"{ord_dt} {ord_tmd[:6]}", "%Y%m%d %H%M%S")
-            filled_at_str = dt.replace(tzinfo=KST).isoformat()
-        except ValueError:
-            pass
-
-    symbol = str(order.get("pdno") or order.get("stck_code") or "").strip()
-    side_code = str(order.get("sll_buy_dvsn_cd") or "")
-
-    return {
-        "symbol": symbol,
-        "raw_symbol": symbol,
-        "instrument_type": "equity_kr",
-        "side": "sell" if side_code == "01" else "buy",
-        "price": price,
-        "quantity": qty,
-        "total_amount": total,
-        "fee": 0,
-        "currency": "KRW",
-        "account": "kis",
-        "order_id": str(order.get("ord_no") or order.get("odno") or ""),
-        "filled_at": filled_at_str,
-    }
-
-
-def _normalize_kis_overseas_filled(order: dict[str, Any]) -> dict[str, Any] | None:
-    qty = float(order.get("ft_ccld_qty") or order.get("ccld_qty") or 0)
-    if qty <= 0:
-        return None
-
-    price = float(order.get("ft_ccld_unpr3") or order.get("ccld_unpr") or 0)
-    total = float(order.get("ft_ccld_amt3") or order.get("ccld_amt") or price * qty)
-    ord_dt = str(order.get("ord_dt", ""))
-    ord_tmd = str(order.get("ord_tmd") or "000000")
-
-    filled_at_str = ord_dt
-    if len(ord_dt) == 8 and len(ord_tmd) >= 6:
-        from datetime import datetime
-
-        try:
-            dt = datetime.strptime(f"{ord_dt} {ord_tmd[:6]}", "%Y%m%d %H%M%S")
-            filled_at_str = dt.replace(tzinfo=KST).isoformat()
-        except ValueError:
-            pass
-
-    symbol = str(order.get("pdno") or order.get("symb") or "").strip()
-
-    return {
-        "symbol": symbol,
-        "raw_symbol": symbol,
-        "instrument_type": "equity_us",
-        "side": "sell" if str(order.get("sll_buy_dvsn_cd", "")) == "01" else "buy",
-        "price": price,
-        "quantity": qty,
-        "total_amount": total,
-        "fee": 0,
-        "currency": "USD",
-        "account": "kis_overseas",
-        "order_id": str(order.get("odno") or order.get("ord_no") or ""),
-        "filled_at": filled_at_str,
-    }
-
-
-async def _fetch_upbit_filled(days: int) -> tuple[list[dict], list[dict]]:
+    Pages are fetched in descending created_at order.  Pagination stops when a
+    page returns no orders within the requested time window (all remaining pages
+    are older), or when a page is smaller than the requested limit (last page).
+    For each order with executed volume, order detail is fetched to obtain the
+    individual trade breakdown; if the detail call fails the aggregate fill is
+    used as a fallback.
+    """
     try:
-        closed = await upbit_service.fetch_closed_orders(market=None, limit=100)
-        orders = [
-            n for raw in closed if (n := _normalize_upbit_filled(raw)) is not None
-        ]
         cutoff = now_kst() - timedelta(days=days)
-        filtered_orders: list[dict[str, Any]] = []
+        all_fills: list[dict[str, Any]] = []
+        page = 1
+        limit = 100
 
-        for order in orders:
-            parsed_filled_at = _parse_filled_at_kst(order.get("filled_at", ""))
-            if parsed_filled_at is None:
-                logger.warning(
-                    "Upbit filled order skipped due to invalid filled_at: order_id=%s filled_at=%r",
-                    order.get("order_id"),
-                    order.get("filled_at"),
-                )
-                continue
-            if parsed_filled_at >= cutoff:
-                filtered_orders.append(order)
+        while True:
+            closed = await upbit_service.fetch_closed_orders(
+                market=None, limit=limit, page=page
+            )
+            if not closed:
+                break
 
-        return filtered_orders, []
+            page_had_relevant = False
+            for raw in closed:
+                executed_vol = float(raw.get("executed_volume") or 0)
+                if executed_vol <= 0:
+                    continue
+
+                # Fetch order detail to get individual trade breakdown when not
+                # already embedded in the list response.
+                if not raw.get("trades"):
+                    try:
+                        raw = await upbit_service.fetch_order_detail(
+                            str(raw.get("uuid", ""))
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Upbit order detail fetch failed for %s: %s",
+                            raw.get("uuid"),
+                            exc,
+                        )
+
+                fills = normalize_upbit_order(raw)
+                for fill in fills:
+                    parsed_filled_at = _parse_upbit_fill_datetime(
+                        fill.get("filled_at", "")
+                    )
+                    if parsed_filled_at is None:
+                        logger.warning(
+                            "Upbit filled order skipped due to invalid filled_at: order_id=%s filled_at=%r",
+                            fill.get("order_id"),
+                            fill.get("filled_at"),
+                        )
+                        continue
+                    if parsed_filled_at >= cutoff:
+                        page_had_relevant = True
+                        all_fills.append(fill)
+
+            # Orders are returned newest-first; once a whole page is before the
+            # cutoff window there is nothing relevant in subsequent pages.
+            if not page_had_relevant:
+                break
+            if len(closed) < limit:
+                break
+            page += 1
+
+        return all_fills, []
     except Exception as exc:
         logger.warning("Upbit filled-orders fetch failed: %s", exc)
         return [], [{"market": "crypto", "error": str(exc)}]
@@ -203,7 +146,9 @@ async def _fetch_kis_overseas_filled(days: int) -> tuple[list[dict], list[dict]]
         start_date = (now_kst() - timedelta(days=days)).strftime("%Y%m%d")
 
         all_orders: list[dict] = []
-        seen_order_ids: set[str] = set()
+        # Dedup by (order_id, fill_seq) so that multiple partial fills for the
+        # same order are each preserved while true duplicates are dropped.
+        seen_fill_keys: set[tuple[str, int]] = set()
 
         # KIS overseas daily-order inquiry treats NASD as a US-wide history
         # selector in practice: rows may include NYSE/AMEX via ovrs_excg_cd.
@@ -219,9 +164,11 @@ async def _fetch_kis_overseas_filled(days: int) -> tuple[list[dict], list[dict]]
             )
             for raw in raw_orders or []:
                 normalized = _normalize_kis_overseas_filled(raw)
-                if normalized and normalized["order_id"] not in seen_order_ids:
-                    seen_order_ids.add(normalized["order_id"])
-                    all_orders.append(normalized)
+                if normalized:
+                    fill_key = (normalized["order_id"], normalized["fill_seq"])
+                    if fill_key not in seen_fill_keys:
+                        seen_fill_keys.add(fill_key)
+                        all_orders.append(normalized)
         except Exception as exc:
             logger.warning("KIS overseas US-wide fetch failed: %s", exc)
 
