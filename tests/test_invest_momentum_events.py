@@ -4,6 +4,7 @@ import datetime as dt
 from decimal import Decimal
 from pathlib import Path
 
+import httpx
 import pytest
 from sqlalchemy import delete, select
 
@@ -72,6 +73,19 @@ class FixtureNaverFetcher:
         }
 
 
+class UnsupportedCombinationNaverFetcher(FixtureNaverFetcher):
+    async def fetch_domestic_stock_default(self, **kwargs):
+        if kwargs["trade_type"] == "NXT" and kwargs["order_type"] == "priceTop":
+            request = httpx.Request(
+                "GET", "https://stock.naver.com/api/domestic/market/stock/default"
+            )
+            response = httpx.Response(400, request=request)
+            raise httpx.HTTPStatusError(
+                "unsupported combination", request=request, response=response
+            )
+        return await super().fetch_domestic_stock_default(**kwargs)
+
+
 @pytest.mark.asyncio
 async def test_dry_run_job_with_fixture_fetcher_returns_counts_without_db_writes(
     db_session,
@@ -108,6 +122,29 @@ async def test_dry_run_job_with_fixture_fetcher_returns_counts_without_db_writes
         .all()
     )
     assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_builder_skips_unsupported_naver_surface_without_aborting():
+    result = await run_naver_momentum_build(
+        NaverMomentumBuildRequest(
+            trade_types=("KRX", "NXT"),
+            order_types=("up", "priceTop"),
+            theme_sort_types=("changeRate",),
+            page_size=2,
+            commit=False,
+        ),
+        fetcher=UnsupportedCombinationNaverFetcher(),
+    )
+
+    assert result.committed is False
+    assert result.momentum_rows == 3
+    assert result.theme_rows == 2
+    assert result.counts_by_surface["stock:NXT:ALL:priceTop"] == 0
+    assert any(
+        "skipped unsupported Naver surface stock:NXT:ALL:priceTop: HTTP 400" in warning
+        for warning in result.warnings
+    )
 
 
 @pytest.mark.asyncio
@@ -258,3 +295,25 @@ def test_no_scheduler_or_broker_order_watch_mutation_imports_in_new_modules():
     )
     for token in forbidden:
         assert token not in text
+
+
+def test_momentum_event_recurring_schedule_is_disabled_by_default_and_gated(
+    monkeypatch,
+):
+    from app.core.config import settings
+    from app.tasks.invest_momentum_event_tasks import (
+        _csv_tuple,
+        _scheduled_naver_momentum_labels,
+    )
+
+    monkeypatch.setattr(settings, "invest_momentum_events_scheduler_enabled", False)
+    assert _scheduled_naver_momentum_labels() == []
+
+    monkeypatch.setattr(settings, "invest_momentum_events_scheduler_enabled", True)
+    monkeypatch.setattr(
+        settings, "invest_momentum_events_scheduler_cron", "*/10 9-15 * * 1-5"
+    )
+    assert _scheduled_naver_momentum_labels() == [
+        {"cron": "*/10 9-15 * * 1-5", "cron_offset": "Asia/Seoul"}
+    ]
+    assert _csv_tuple("KRX,NXT") == ("KRX", "NXT")
