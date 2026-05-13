@@ -9,6 +9,10 @@ export interface FillRow {
   venue: string;
   instrument_type: string;
   symbol: string;
+  /** Optional display name supplied by backend or future broker/Toss enrichment. */
+  symbol_name?: string | null;
+  /** Camel-case alias tolerated for client-side/backward-compatible enrichers. */
+  symbolName?: string | null;
   raw_symbol: string;
   side: FillSide;
   broker_order_id: string;

@@ -51,9 +51,11 @@ afterEach(() => {
 test("SellHistoryPanel renders sell ledger rows and uses include credentials", async () => {
   render(<SellHistoryPanel />);
 
-  expect(await screen.findByText("000660")).toBeInTheDocument();
+  expect(await screen.findByText("SK하이닉스")).toBeInTheDocument();
+  expect(screen.getByText(/000660/)).toBeInTheDocument();
   expect(screen.getByText("매도 이력")).toBeInTheDocument();
   expect(screen.getAllByText("₩1,959,000").length).toBeGreaterThan(0);
+  expect(screen.getByText("총 판매금액 · KRW")).toBeInTheDocument();
   expect(screen.getByText("보정")).toBeInTheDocument();
   expect(screen.getByText("출처 보정 1")).toBeInTheDocument();
 
@@ -66,7 +68,7 @@ test("SellHistoryPanel renders sell ledger rows and uses include credentials", a
 
 test("SellHistoryPanel refetches with market filter", async () => {
   render(<SellHistoryPanel />);
-  await screen.findByText("000660");
+  await screen.findByText("SK하이닉스");
 
   await userEvent.click(screen.getByRole("button", { name: "국내" }));
 

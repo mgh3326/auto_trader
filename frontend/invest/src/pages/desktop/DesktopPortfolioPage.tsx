@@ -17,6 +17,13 @@ import { MobilePortfolioPage } from "../mobile/MobilePortfolioPage";
 import type { AssetCategoryKey } from "../../components/AssetCategoryFilter";
 import type { AccountSource, HomeSummary } from "../../types/invest";
 
+type PortfolioTab = "holdings" | "sellHistory";
+
+const PORTFOLIO_TABS: { key: PortfolioTab; label: string }[] = [
+  { key: "holdings", label: "보유 현황" },
+  { key: "sellHistory", label: "매도 이력" },
+];
+
 export function InvestPortfolioRoute() {
   const viewport = useViewport();
   return viewport === "mobile" ? <MobilePortfolioPage /> : <DesktopPortfolioPage />;
@@ -26,6 +33,7 @@ export function DesktopPortfolioPage() {
   const home = useInvestHome();
   const [account, setAccount] = useState<AccountFilterKey>("all");
   const [category, setCategory] = useState<AssetCategoryKey>("all");
+  const [activeTab, setActiveTab] = useState<PortfolioTab>("holdings");
 
   const data = home.state.status === "ready" ? home.state.data : null;
 
@@ -101,28 +109,36 @@ export function DesktopPortfolioPage() {
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 <div style={{ fontSize: 12, color: "var(--fg-3)", fontWeight: 700 }}>내 투자</div>
                 <h1 style={{ margin: 0, fontSize: 26, lineHeight: 1.2, letterSpacing: "-0.03em" }}>
-                  통합 보유 현황
+                  {activeTab === "holdings" ? "통합 보유 현황" : "매도 이력"}
                 </h1>
                 <p style={{ margin: 0, color: "var(--fg-3)", fontSize: 13 }}>
-                  KIS, Toss/manual, 모의/수동 계좌를 한 화면에서 비교하고 종목별 출처를 확인합니다.
+                  {activeTab === "holdings"
+                    ? "KIS, Toss/manual, 모의/수동 계좌를 한 화면에서 비교하고 종목별 출처를 확인합니다."
+                    : "KIS/Upbit 체결 보정 ledger 기준 최근 매도 체결을 별도 화면에서 확인합니다."}
                 </p>
               </div>
-              <DesktopHero
-                summary={summary}
-                accountCount={account === "all" ? data.accounts.length : 1}
-                holdings={scopedGrouped}
-              />
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
-                <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, letterSpacing: "-0.01em" }}>
-                  통합 보유 종목 {filteredScoped.length > 0 && `(${filteredScoped.length})`}
-                </h2>
-                <FilterChips value={category} onChange={setCategory} />
-              </div>
-              <UnifiedHoldingsTable
-                holdings={filteredScoped}
-                accounts={data.accounts}
-              />
-              <SellHistoryPanel />
+              <PortfolioTabBar activeTab={activeTab} onChange={setActiveTab} />
+              {activeTab === "holdings" ? (
+                <>
+                  <DesktopHero
+                    summary={summary}
+                    accountCount={account === "all" ? data.accounts.length : 1}
+                    holdings={scopedGrouped}
+                  />
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
+                    <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, letterSpacing: "-0.01em" }}>
+                      통합 보유 종목 {filteredScoped.length > 0 && `(${filteredScoped.length})`}
+                    </h2>
+                    <FilterChips value={category} onChange={setCategory} />
+                  </div>
+                  <UnifiedHoldingsTable
+                    holdings={filteredScoped}
+                    accounts={data.accounts}
+                  />
+                </>
+              ) : (
+                <SellHistoryPanel />
+              )}
               {data.meta?.warnings && data.meta.warnings.length > 0 && (
                 <div
                   role="alert"
@@ -143,5 +159,49 @@ export function DesktopPortfolioPage() {
       }
       right={<RightRemotePanel />}
     />
+  );
+}
+
+function PortfolioTabBar({ activeTab, onChange }: { activeTab: PortfolioTab; onChange: (tab: PortfolioTab) => void }) {
+  return (
+    <div
+      role="tablist"
+      aria-label="내 투자 보기 전환"
+      style={{
+        display: "inline-flex",
+        alignSelf: "flex-start",
+        gap: 6,
+        padding: 4,
+        borderRadius: 999,
+        background: "var(--surface-2)",
+        border: "1px solid var(--border)",
+      }}
+    >
+      {PORTFOLIO_TABS.map((tab) => {
+        const active = activeTab === tab.key;
+        return (
+          <button
+            key={tab.key}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            onClick={() => onChange(tab.key)}
+            style={{
+              border: "none",
+              borderRadius: 999,
+              padding: "8px 14px",
+              fontSize: 13,
+              fontWeight: 800,
+              cursor: "pointer",
+              fontFamily: "inherit",
+              background: active ? "var(--fg)" : "transparent",
+              color: active ? "var(--bg)" : "var(--fg-2)",
+            }}
+          >
+            {tab.label}
+          </button>
+        );
+      })}
+    </div>
   );
 }
