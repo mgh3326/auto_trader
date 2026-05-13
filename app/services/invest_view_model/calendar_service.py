@@ -23,6 +23,7 @@ from app.schemas.invest_calendar import (
     CalendarTab,
     EventType,
     HighlightReason,
+    ImpactTag,
 )
 from app.services.invest_view_model.relation_resolver import RelationResolver
 from app.services.market_events.freshness_service import MarketEventsFreshnessService
@@ -64,6 +65,44 @@ _HIGH_IMPACT_TERMS = (
     "생산자물가",
     "소비자물가",
 )
+_FX_TERMS = (
+    "fx",
+    "forex",
+    "exchange rate",
+    "dollar",
+    "usd",
+    "usd/krw",
+    "usdkrw",
+    "원달러",
+    "달러원",
+    "환율",
+    "외환",
+    "yen",
+    "엔화",
+    "eur",
+    "jpy",
+    "dxy",
+)
+_RATES_TERMS = (
+    "rate",
+    "rates",
+    "yield",
+    "treasury",
+    "bond",
+    "fomc",
+    "boj",
+    "ecb",
+    "bok",
+    "금리",
+    "국채",
+    "채권",
+    "기준금리",
+    "한국은행",
+    "연준",
+)
+_INFLATION_TERMS = ("cpi", "ppi", "pce", "inflation", "price", "물가")
+_JOBS_TERMS = ("nonfarm", "payroll", "unemployment", "jobless", "employment", "고용", "실업")
+_CENTRAL_BANK_TERMS = ("fomc", "fed", "boj", "ecb", "bok", "central bank", "연준", "한국은행", "중앙은행")
 
 _MARKET_LITERAL = cast  # alias — used for type narrowing below
 
@@ -79,8 +118,32 @@ def _event_date_key(value: object | None) -> tuple[int, str]:
 def _is_high_impact_macro(event: CalendarEvent) -> bool:
     if event.eventType != "economic":
         return False
-    haystack = f"{event.title} {event.source}".lower()
+    if event.importance == 3:
+        return True
+    haystack = f"{event.title} {event.source} {event.currency or ''} {event.country or ''}".lower()
     return any(term in haystack for term in _HIGH_IMPACT_TERMS)
+
+
+def _contains_any(haystack: str, terms: tuple[str, ...]) -> bool:
+    return any(term.lower() in haystack for term in terms)
+
+
+def _impact_tags_for_macro(
+    *, title: str, source: str, currency: str | None, country: str | None
+) -> list[ImpactTag]:
+    haystack = f"{title} {source} {currency or ''} {country or ''}".lower()
+    tags: list[ImpactTag] = []
+    if (currency or "").upper() in {"USD", "KRW", "JPY", "CNY", "EUR", "GBP"} or _contains_any(haystack, _FX_TERMS):
+        tags.append("fx")
+    if _contains_any(haystack, _RATES_TERMS):
+        tags.append("rates")
+    if _contains_any(haystack, _INFLATION_TERMS):
+        tags.append("inflation")
+    if _contains_any(haystack, _JOBS_TERMS):
+        tags.append("jobs")
+    if _contains_any(haystack, _CENTRAL_BANK_TERMS):
+        tags.append("central_bank")
+    return tags
 
 
 def _rank_calendar_event(
@@ -348,13 +411,28 @@ async def build_calendar(
             event_time.date() if event_time else from_date
         )
 
+        title = _event_title(raw, market=market, etype=etype)
+        source = str(getattr(raw, "source", "") or "")
+        currency = getattr(raw, "currency", None)
+        country = getattr(raw, "country", None)
         ev = CalendarEvent(
             eventId=event_id,
-            title=_event_title(raw, market=market, etype=etype),
+            title=title,
             market=market,
             eventType=etype,
             eventTimeLocal=_format_kst_time(event_time),
-            source=str(getattr(raw, "source", "") or ""),
+            source=source,
+            country=country,
+            currency=currency,
+            importance=getattr(raw, "importance", None),
+            impactTags=_impact_tags_for_macro(
+                title=title,
+                source=source,
+                currency=currency,
+                country=country,
+            )
+            if etype == "economic"
+            else [],
             actual=actual,
             forecast=forecast,
             previous=previous,

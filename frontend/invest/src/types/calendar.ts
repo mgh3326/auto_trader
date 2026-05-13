@@ -3,6 +3,7 @@ export type CalendarMarket = "kr" | "us" | "crypto" | "global";
 export type EventType = "earnings" | "economic" | "disclosure" | "crypto" | "other";
 export type CalendarRelation = "held" | "watchlist" | "both" | "none";
 export type CalendarSourceState = "fresh" | "stale" | "failed" | "missing";
+export type ImpactTag = "fx" | "rates" | "inflation" | "jobs" | "central_bank";
 export type HighlightReason = "held" | "watchlist" | "major" | "high_impact" | "near_term" | "has_values";
 export type CalendarDayState =
   | "loaded"
@@ -49,6 +50,10 @@ export interface CalendarEvent {
   eventType: EventType;
   eventTimeLocal?: string | null;
   source: string;
+  country?: string | null;
+  currency?: string | null;
+  importance?: number | null;
+  impactTags?: ImpactTag[];
   actual?: string | null;
   forecast?: string | null;
   previous?: string | null;

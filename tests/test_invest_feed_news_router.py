@@ -119,6 +119,50 @@ async def test_feed_news_top_tab(monkeypatch) -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_feed_news_topic_filter_keeps_fx_items(monkeypatch) -> None:
+    from app.services.invest_view_model import feed_news_service as svc
+
+    db = MagicMock()
+    scalar_result = MagicMock()
+    scalar_result.scalars.return_value.all.return_value = [
+        _fake_article(
+            id=101,
+            market="kr",
+            symbol="005930",
+            name="삼성전자",
+            title="원달러 환율 상승에 수출주 강세",
+            keywords=["환율", "달러"],
+        ),
+        _fake_article(
+            id=102,
+            market="kr",
+            symbol="000660",
+            name="SK하이닉스",
+            title="국채 금리 하락에 성장주 반등",
+            keywords=["금리", "국채"],
+        ),
+    ]
+    summary_result = MagicMock()
+    summary_result.all.return_value = []
+    db.execute = AsyncMock(
+        side_effect=[scalar_result, summary_result, _empty_related_result()]
+    )
+    monkeypatch.setattr(
+        svc, "build_market_issues", AsyncMock(return_value=MagicMock(items=[]))
+    )
+
+    resolver = RelationResolver()
+    resp = await svc.build_feed_news(
+        db=db, resolver=resolver, tab="top", limit=30, cursor=None, topic="fx"
+    )
+
+    assert [item.id for item in resp.items] == [101]
+    assert resp.items[0].topicTags == ["fx"]
+    assert "fx" in resp.items[0].tags
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_feed_news_holdings_empty_when_no_holdings(monkeypatch) -> None:
     from app.services.invest_view_model import feed_news_service as svc
 

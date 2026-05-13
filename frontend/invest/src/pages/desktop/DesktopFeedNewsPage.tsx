@@ -5,10 +5,11 @@ import { RightRemotePanel } from "../../desktop/RightRemotePanel";
 import { useViewport } from "../../hooks/useViewport";
 import { fetchFeedNews } from "../../api/feedNews";
 import { fetchFeedResearch } from "../../api/feedResearch";
-import type { FeedNewsResponse } from "../../types/feedNews";
+import type { FeedNewsResponse, FeedTopic } from "../../types/feedNews";
 import type { FeedResearchResponse } from "../../types/feedResearch";
 import { NewsTabs, type FeedContentTab } from "../../components/news/NewsTabs";
 import { NewsListItem } from "../../components/news/NewsListItem";
+import { NewsTopicChips } from "../../components/news/NewsTopicChips";
 import { ResearchListItem } from "../../components/news/ResearchListItem";
 import { MobileFeedNewsPage } from "../mobile/MobileFeedNewsPage";
 
@@ -31,6 +32,7 @@ export function FeedNewsRoute() {
 export function DesktopFeedNewsPage() {
   const [searchParams] = useSearchParams();
   const [tab, setTab] = useState<FeedContentTab>("top");
+  const [topic, setTopic] = useState<FeedTopic | null>(null);
   const [data, setData] = useState<FeedNewsResponse | undefined>();
   const [researchData, setResearchData] = useState<FeedResearchResponse | undefined>();
   const [err, setErr] = useState<string | undefined>();
@@ -58,7 +60,7 @@ export function DesktopFeedNewsPage() {
         .catch((e) => !cancel && setErr(String(e?.message ?? e)));
     } else {
       setData(undefined);
-      fetchFeedNews({ tab, limit: 30 })
+      fetchFeedNews({ tab, limit: 30, ...(topic ? { topic } : {}) })
         .then((r) => !cancel && setData(r))
         .catch((e) => !cancel && setErr(String(e?.message ?? e)));
     }
@@ -66,7 +68,7 @@ export function DesktopFeedNewsPage() {
     return () => {
       cancel = true;
     };
-  }, [tab, searchParams]);
+  }, [tab, topic, searchParams]);
 
   const researchMode = tab === "research";
   const issueById = new Map((data?.issues ?? []).map((i) => [i.id, i] as const));
@@ -87,6 +89,7 @@ export function DesktopFeedNewsPage() {
           </header>
 
           <NewsTabs value={tab} onChange={setTab} />
+          {tab !== "research" && <NewsTopicChips value={topic} onChange={setTopic} />}
 
           <div data-testid="feed-center">
             {err && <div style={{ color: "var(--danger)", marginBottom: 12 }}>오류: {err}</div>}

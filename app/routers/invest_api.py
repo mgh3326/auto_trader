@@ -21,7 +21,7 @@ from app.schemas.invest_calendar import (
     WeeklySummaryResponse,
 )
 from app.schemas.invest_coverage import CoverageMarket, InvestCoverageResponse
-from app.schemas.invest_feed_news import FeedNewsResponse, FeedTab
+from app.schemas.invest_feed_news import FeedNewsResponse, FeedTab, FeedTopic
 from app.schemas.invest_feed_research import (
     FeedResearchFilters,
     FeedResearchResponse,
@@ -340,6 +340,7 @@ async def get_feed_news(
     limit: int = Query(30, ge=1, le=100),
     cursor: str | None = Query(None),
     include_quotes: Annotated[bool, Query(alias="includeQuotes")] = False,
+    topic: FeedTopic | None = Query(None),
 ) -> FeedNewsResponse:
     home = await service.get_home(user_id=user.id)
     resolver = await build_relation_resolver(
@@ -352,6 +353,7 @@ async def get_feed_news(
         limit=limit,
         cursor=cursor,
         include_quotes=include_quotes,
+        topic=topic,
     )
 
 

@@ -16,6 +16,7 @@ from app.schemas.invest_feed_news import (
     FeedNewsMeta,
     FeedNewsResponse,
     FeedTab,
+    FeedTopic,
     NewsMarket,
     NewsRelatedSymbol,
     NewsScope,
@@ -48,6 +49,46 @@ _SNIPPET_MAX_CHARS = 240
 # (top/hot) even when no related symbol is attached.
 _DEFAULT_TAB_KEEP_SCOPES: frozenset[str] = frozenset(
     {"market_wide", "kr_market_wide", "mixed"}
+)
+
+_FX_TERMS = (
+    "fx",
+    "forex",
+    "exchange rate",
+    "currency",
+    "dollar",
+    "usd",
+    "usd/krw",
+    "usdkrw",
+    "원달러",
+    "달러원",
+    "환율",
+    "외환",
+    "달러",
+    "엔화",
+    "yen",
+    "eur",
+    "jpy",
+    "dxy",
+)
+_RATES_TERMS = (
+    "rate",
+    "rates",
+    "interest rate",
+    "yield",
+    "treasury",
+    "bond",
+    "fomc",
+    "fed",
+    "boj",
+    "ecb",
+    "bok",
+    "금리",
+    "국채",
+    "채권",
+    "기준금리",
+    "연준",
+    "한국은행",
 )
 
 
@@ -115,6 +156,32 @@ def _coerce_keywords(value: object) -> list[str]:
     if isinstance(value, str):
         return [value]
     return []
+
+
+def _contains_any(haystack: str, terms: tuple[str, ...]) -> bool:
+    lowered = haystack.casefold()
+    return any(term.casefold() in lowered for term in terms)
+
+
+def _topic_tags_for_row(row: NewsArticle, analysis_summary: str | None) -> list[FeedTopic]:
+    haystack = " ".join(
+        part
+        for part in (
+            row.title,
+            row.summary,
+            analysis_summary,
+            row.source,
+            row.feed_source,
+            " ".join(_coerce_keywords(getattr(row, "keywords", None))),
+        )
+        if part
+    )
+    tags: list[FeedTopic] = []
+    if _contains_any(haystack, _FX_TERMS):
+        tags.append("fx")
+    if _contains_any(haystack, _RATES_TERMS):
+        tags.append("rates")
+    return tags
 
 
 def _add_related_symbol(
@@ -361,6 +428,7 @@ async def build_feed_news(
     cursor: str | None,
     include_quotes: bool = False,
     symbol_filter: tuple[str, NewsMarket] | None = None,
+    topic: FeedTopic | None = None,
 ) -> FeedNewsResponse:
     market_filter: str | None = None
     if symbol_filter is not None:
@@ -511,6 +579,11 @@ async def build_feed_news(
                 )
             )
         )
+        topic_tags = _topic_tags_for_row(row, analysis_summary)
+        for topic_tag in topic_tags:
+            if topic_tag not in scope_tags:
+                scope_tags.append(topic_tag)
+
         items.append(
             FeedNewsItem(
                 id=row.id,
@@ -532,6 +605,7 @@ async def build_feed_news(
                 url=row.url,
                 scope=cast(NewsScope, item_scope),
                 tags=scope_tags,
+                topicTags=topic_tags,
                 category=item_category,
                 noiseReason=item_noise_reason,
             )
@@ -560,6 +634,9 @@ async def build_feed_news(
                 and not i.relatedSymbols
             )
         ]
+
+    if topic is not None:
+        items = [i for i in items if topic in i.tags or topic in i.topicTags]
 
     # Apply holdings/watchlist filters in-memory.
     empty_reason: str | None = None

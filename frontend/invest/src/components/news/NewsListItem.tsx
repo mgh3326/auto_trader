@@ -40,6 +40,12 @@ function formatChangeRate(rate: number | null | undefined): string | null {
   return `${sign}${rate.toFixed(2)}%`;
 }
 
+function symbolChangePct(symbol: FeedRelatedSymbol): number | null {
+  if (typeof symbol.changePct === "number" && Number.isFinite(symbol.changePct)) return symbol.changePct;
+  const quoteRate = symbol.quote?.changeRate;
+  return typeof quoteRate === "number" && Number.isFinite(quoteRate) ? quoteRate : null;
+}
+
 function changeRateColor(rate: number): string {
   if (rate > 0) return "var(--gain)";
   if (rate < 0) return "var(--loss)";
@@ -51,7 +57,8 @@ function relationTone(relation: FeedNewsItem["relation"]): "accent" | "kis" {
 }
 
 function SymbolChip({ symbol }: { symbol: FeedRelatedSymbol }) {
-  const rateText = formatChangeRate(symbol.quote?.changeRate);
+  const changePct = symbolChangePct(symbol);
+  const rateText = formatChangeRate(changePct);
   const marketLabel = MARKET_LABEL[symbol.market];
 
   return (
@@ -96,7 +103,7 @@ function SymbolChip({ symbol }: { symbol: FeedRelatedSymbol }) {
           data-testid="feed-item-symbol-change-rate"
           style={{
             fontFamily: "var(--font-sans)",
-            color: changeRateColor(symbol.quote?.changeRate ?? 0),
+            color: changeRateColor(changePct ?? 0),
             fontWeight: 800,
           }}
         >

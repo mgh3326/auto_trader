@@ -27,6 +27,9 @@ def _fake_event(
     previous: object | None = None,
     values: list[object] | None = None,
     source: str = "test",
+    currency: str | None = None,
+    country: str | None = None,
+    importance: int | None = None,
 ):
     e = MagicMock()
     # MarketEventResponse uses source_event_id, not event_id
@@ -40,6 +43,9 @@ def _fake_event(
     e.event_date = ev_date or date(2026, 5, 4)
     e.release_time_utc = release_time_utc
     e.source = source
+    e.currency = currency
+    e.country = country
+    e.importance = importance
     if values is not None:
         e.values = values
     elif actual is not None or forecast is not None or previous is not None:
