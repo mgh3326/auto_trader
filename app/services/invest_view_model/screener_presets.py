@@ -185,7 +185,7 @@ _SCREENING_FILTERS: dict[str, dict[str, object]] = {
     },
     "crypto_high_volume": {
         "market": "crypto",
-        "sort_by": "volume",
+        "sort_by": "trade_amount",
         "sort_order": "desc",
         "limit": 20,
     },

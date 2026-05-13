@@ -3,6 +3,7 @@ from .analysis import StockAnalysisResult, StockInfo
 from .base import Base
 from .crypto_insight_snapshot import CryptoInsightSnapshot
 from .execution_ledger import ExecutionLedger, ExecutionLedgerReconcileRun
+from .invest_crypto_screener_snapshot import InvestCryptoScreenerSnapshot
 from .invest_momentum_event_snapshot import (
     InvestMomentumEventSnapshot,
     InvestThemeEventSnapshot,
@@ -112,6 +113,7 @@ __all__ = [
     "StockInfo",
     "StockAnalysisResult",
     "InvestorFlowSnapshot",
+    "InvestCryptoScreenerSnapshot",
     "InvestMomentumEventSnapshot",
     "InvestThemeEventSnapshot",
     "InvestThemeEventSnapshotStock",
