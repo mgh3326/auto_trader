@@ -6,7 +6,7 @@ import 하지 않는다. order / watch / scheduler / mutation 경로 import 금�
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime, time
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -19,6 +19,9 @@ from app.schemas.invest_calendar import (
     CalendarResponse,
     CalendarTab,
     WeeklySummaryResponse,
+)
+from app.schemas.invest_common_preferred_disparity import (
+    CommonPreferredDisparityResponse,
 )
 from app.schemas.invest_coverage import CoverageMarket, InvestCoverageResponse
 from app.schemas.invest_crypto import CryptoDashboardResponse
@@ -63,6 +66,9 @@ from app.services.invest_momentum_events.repository import (
 from app.services.invest_screener_snapshots.coverage_service import build_coverage
 from app.services.invest_view_model.account_panel_service import build_account_panel
 from app.services.invest_view_model.calendar_service import build_calendar
+from app.services.invest_view_model.common_preferred_disparity_service import (
+    build_common_preferred_disparity,
+)
 from app.services.invest_view_model.crypto_dashboard_service import (
     build_crypto_dashboard,
 )
@@ -234,6 +240,31 @@ async def get_investor_flow(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/disparity/common-preferred")
+async def get_common_preferred_disparity(
+    user: Annotated[Any, Depends(get_authenticated_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    symbols: str = Query("", description="Optional comma-separated KR common/preferred symbols"),
+    market: Literal["kr"] = Query("kr"),
+    as_of: Annotated[date | None, Query(alias="asOf")] = None,
+    max_stale_days: Annotated[int, Query(alias="maxStaleDays", ge=0, le=30)] = 1,
+    limit: int = Query(10, ge=1, le=50),
+) -> CommonPreferredDisparityResponse:
+    """Read-only common/preferred-share disparity cards (ROB-250)."""
+    _ = user
+    if market != "kr":
+        raise HTTPException(status_code=400, detail="unsupported_market")
+    symbol_list = [part.strip() for part in symbols.split(",") if part.strip()]
+    as_of_dt = datetime.combine(as_of, time.max, tzinfo=UTC) if as_of else None
+    return await build_common_preferred_disparity(
+        db=db,
+        symbols=symbol_list,
+        as_of=as_of_dt,
+        limit=limit,
+        max_stale_days=max_stale_days,
+    )
 
 
 StockDetailMarketParam = Literal["kr", "us", "crypto"]
