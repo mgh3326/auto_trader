@@ -410,6 +410,9 @@ class Settings(BaseSettings):
     RESEARCH_REPORTS_FRESHNESS_MAX_AGE_HOURS: int = 24
     RESEARCH_REPORTS_INGEST_COMMIT_ENABLED: bool = False
 
+    # ROB-211 execution ledger ships inert; commit/backfill activation is a separate approval-gated ops change.
+    EXECUTION_LEDGER_COMMIT_ENABLED: bool = False
+
     trader_agent_id: str = "6b2192cc-14fa-4335-b572-2fe1e0cb54a7"
     paperclip_api_url: str | None = None
     paperclip_api_key: str | None = None

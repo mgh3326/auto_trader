@@ -4,150 +4,26 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any
 
 import app.services.brokers.upbit.client as upbit_service
-from app.core.timezone import KST, now_kst
+from app.core.timezone import now_kst
 from app.services.brokers.kis.client import KISClient
+from app.services.execution_ledger.normalizers import (
+    _normalize_kis_domestic_filled,
+    _normalize_kis_overseas_filled,
+    _normalize_upbit_filled,
+)
+from app.services.execution_ledger.normalizers import (
+    _parse_filled_at as _parse_filled_at_kst,
+)
 from app.services.market_data import get_quote
 from app.services.n8n_filled_orders_indicators import _enrich_with_indicators
 
 logger = logging.getLogger(__name__)
 
 _EQUITY_QUOTE_CONCURRENCY = 5
-
-
-def _strip_crypto_prefix(symbol: str) -> str:
-    upper = str(symbol or "").strip().upper()
-    for prefix in ("KRW-", "USDT-"):
-        if upper.startswith(prefix):
-            return upper[len(prefix) :]
-    return upper
-
-
-def _normalize_upbit_filled(order: dict[str, Any]) -> dict[str, Any] | None:
-    if order.get("state") != "done":
-        return None
-
-    executed_vol = float(order.get("executed_volume") or 0)
-    if executed_vol <= 0:
-        return None
-
-    price = float(order.get("price") or 0)
-    total = price * executed_vol
-    raw_symbol = str(order.get("market", ""))
-    side_raw = str(order.get("side", "")).lower()
-
-    return {
-        "symbol": _strip_crypto_prefix(raw_symbol),
-        "raw_symbol": raw_symbol,
-        "instrument_type": "crypto",
-        "side": "buy" if side_raw == "bid" else "sell",
-        "price": price,
-        "quantity": executed_vol,
-        "total_amount": total,
-        "fee": float(order.get("paid_fee") or 0),
-        "currency": "KRW",
-        "account": "upbit",
-        "order_id": str(order.get("uuid", "")),
-        "filled_at": str(order.get("created_at", "")),
-    }
-
-
-def _parse_filled_at_kst(value: str) -> datetime | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=KST)
-    else:
-        parsed = parsed.astimezone(KST)
-
-    return parsed
-
-
-def _normalize_kis_domestic_filled(order: dict[str, Any]) -> dict[str, Any] | None:
-    qty = float(order.get("ccld_qty") or order.get("tot_ccld_qty") or 0)
-    if qty <= 0:
-        return None
-
-    price = float(order.get("ccld_unpr") or order.get("avg_prvs") or 0)
-    total = float(order.get("ccld_amt") or order.get("tot_ccld_amt") or price * qty)
-    ord_dt = str(order.get("ord_dt", ""))
-    ord_tmd = str(order.get("ord_tmd") or order.get("ccld_tmd") or "000000")
-
-    filled_at_str = ord_dt
-    if len(ord_dt) == 8 and len(ord_tmd) >= 6:
-        from datetime import datetime
-
-        try:
-            dt = datetime.strptime(f"{ord_dt} {ord_tmd[:6]}", "%Y%m%d %H%M%S")
-            filled_at_str = dt.replace(tzinfo=KST).isoformat()
-        except ValueError:
-            pass
-
-    symbol = str(order.get("pdno") or order.get("stck_code") or "").strip()
-    side_code = str(order.get("sll_buy_dvsn_cd") or "")
-
-    return {
-        "symbol": symbol,
-        "raw_symbol": symbol,
-        "instrument_type": "equity_kr",
-        "side": "sell" if side_code == "01" else "buy",
-        "price": price,
-        "quantity": qty,
-        "total_amount": total,
-        "fee": 0,
-        "currency": "KRW",
-        "account": "kis",
-        "order_id": str(order.get("ord_no") or order.get("odno") or ""),
-        "filled_at": filled_at_str,
-    }
-
-
-def _normalize_kis_overseas_filled(order: dict[str, Any]) -> dict[str, Any] | None:
-    qty = float(order.get("ft_ccld_qty") or order.get("ccld_qty") or 0)
-    if qty <= 0:
-        return None
-
-    price = float(order.get("ft_ccld_unpr3") or order.get("ccld_unpr") or 0)
-    total = float(order.get("ft_ccld_amt3") or order.get("ccld_amt") or price * qty)
-    ord_dt = str(order.get("ord_dt", ""))
-    ord_tmd = str(order.get("ord_tmd") or "000000")
-
-    filled_at_str = ord_dt
-    if len(ord_dt) == 8 and len(ord_tmd) >= 6:
-        from datetime import datetime
-
-        try:
-            dt = datetime.strptime(f"{ord_dt} {ord_tmd[:6]}", "%Y%m%d %H%M%S")
-            filled_at_str = dt.replace(tzinfo=KST).isoformat()
-        except ValueError:
-            pass
-
-    symbol = str(order.get("pdno") or order.get("symb") or "").strip()
-
-    return {
-        "symbol": symbol,
-        "raw_symbol": symbol,
-        "instrument_type": "equity_us",
-        "side": "sell" if str(order.get("sll_buy_dvsn_cd", "")) == "01" else "buy",
-        "price": price,
-        "quantity": qty,
-        "total_amount": total,
-        "fee": 0,
-        "currency": "USD",
-        "account": "kis_overseas",
-        "order_id": str(order.get("odno") or order.get("ord_no") or ""),
-        "filled_at": filled_at_str,
-    }
 
 
 async def _fetch_upbit_filled(days: int) -> tuple[list[dict], list[dict]]:
