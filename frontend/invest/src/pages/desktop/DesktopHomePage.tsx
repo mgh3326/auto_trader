@@ -57,6 +57,12 @@ const NAV_CARDS: NavCard[] = [
     icon: <Icon name="bell" size={20} />,
   },
   {
+    to: "/insights",
+    label: "인사이트",
+    desc: "괴리·패리티 read-only 관찰",
+    icon: <Icon name="chart" size={20} />,
+  },
+  {
     to: "/discover",
     label: "발견",
     desc: "투자 아이디어 및 이슈 탐색",

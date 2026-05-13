@@ -138,6 +138,12 @@ export function DesktopMarketPage() {
             </div>
             <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
               <Link
+                to="/insights"
+                style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--fg-1)", fontWeight: 800, textDecoration: "none" }}
+              >
+                인사이트
+              </Link>
+              <Link
                 to="/market/fx"
                 style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--fg-1)", fontWeight: 800, textDecoration: "none" }}
               >

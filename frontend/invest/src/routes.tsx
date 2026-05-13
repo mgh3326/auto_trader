@@ -17,6 +17,7 @@
 // /invest/signals           — AI analysis signals.
 // /invest/calendar          — Earnings/events calendar.
 // /invest/coverage          — Data coverage dashboard.
+// /invest/insights          — Read-only market insight cards.
 // /invest/screener          — Stock screener (골라보기).
 // /invest/stocks/:m/:sym    — Stock detail page.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -31,6 +32,7 @@ import { CalendarRoute } from "./pages/desktop/DesktopCalendarPage";
 import { CoverageRoute } from "./pages/desktop/DesktopCoveragePage";
 import { DesktopScreenerPage } from "./pages/desktop/DesktopScreenerPage";
 import { DesktopMarketPage } from "./pages/desktop/DesktopMarketPage";
+import { DesktopInsightsPage } from "./pages/desktop/DesktopInsightsPage";
 import { FxMacroRoute } from "./pages/desktop/FxMacroPage";
 import { DesktopCryptoPage } from "./pages/desktop/DesktopCryptoPage";
 import { StockDetailPage } from "./pages/stock-detail/StockDetailPage";
@@ -76,6 +78,7 @@ export const router = createBrowserRouter(
     { path: "/calendar", element: <CalendarRoute /> },
     { path: "/coverage", element: <CoverageRoute /> },
     { path: "/market", element: <DesktopMarketPage /> },
+    { path: "/insights", element: <DesktopInsightsPage /> },
     { path: "/market/fx", element: <FxMacroRoute /> },
     { path: "/crypto", element: <DesktopCryptoPage /> },
     { path: "/crypto/:pair", element: <CryptoPairRedirect /> },
