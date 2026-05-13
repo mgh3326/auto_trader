@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 AccountKindLiteral = Literal["live", "manual", "paper"]
 AccountSourceLiteral = Literal[
@@ -64,6 +64,31 @@ class Holding(BaseModel):
     pnlKrw: float | None = None
     pnlRate: float | None = None
     priceState: PriceStateLiteral = "live"
+    sourceOfTruth: bool = True
+    isTradeable: bool = True
+    manualOnly: bool = False
+    sellableQuantity: float | None = None
+    pendingSellQuantity: float = 0.0
+    referenceQuantity: float | None = None
+
+    @model_validator(mode="after")
+    def apply_source_separation_defaults(self) -> Holding:
+        """Keep manual/reference holdings out of tradeable and sellable totals."""
+
+        if self.accountKind == "manual" or self.source in {
+            "toss_manual",
+            "pension_manual",
+            "isa_manual",
+        }:
+            self.sourceOfTruth = False
+            self.isTradeable = False
+            self.manualOnly = True
+            self.sellableQuantity = 0.0
+            self.pendingSellQuantity = 0.0
+            self.referenceQuantity = self.quantity
+        elif self.referenceQuantity is None:
+            self.referenceQuantity = 0.0
+        return self
 
 
 class GroupedSourceBreakdown(BaseModel):
@@ -71,6 +96,7 @@ class GroupedSourceBreakdown(BaseModel):
     holdingId: str
     accountId: str
     source: AccountSourceLiteral
+    accountKind: AccountKindLiteral
     quantity: float
     averageCost: float | None = None
     costBasis: float | None = None
@@ -78,6 +104,12 @@ class GroupedSourceBreakdown(BaseModel):
     valueKrw: float | None = None
     pnlKrw: float | None = None
     pnlRate: float | None = None
+    sourceOfTruth: bool = True
+    isTradeable: bool = True
+    manualOnly: bool = False
+    sellableQuantity: float | None = None
+    pendingSellQuantity: float = 0.0
+    referenceQuantity: float | None = None
 
 
 class GroupedHolding(BaseModel):
@@ -90,6 +122,10 @@ class GroupedHolding(BaseModel):
     displayName: str
     currency: CurrencyLiteral
     totalQuantity: float
+    tradeableQuantity: float = 0.0
+    sellableQuantity: float = 0.0
+    pendingSellQuantity: float = 0.0
+    referenceQuantity: float = 0.0
     averageCost: float | None = None
     costBasis: float | None = None
     valueNative: float | None = None

@@ -67,11 +67,19 @@ export function scopeGroupedToSource(
     let valueNative: number | null = null;
     let valueKrw: number | null = null;
     let pnlKrw: number | null = null;
+    let tradeableQuantity = 0;
+    let sellableQuantity = 0;
+    let pendingSellQuantity = 0;
+    let referenceQuantity = 0;
     let qtyForAvg = 0;
     let costSum = 0;
 
     for (const b of slices) {
       totalQuantity += b.quantity;
+      tradeableQuantity += b.isTradeable ? b.quantity : 0;
+      sellableQuantity += b.sellableQuantity ?? 0;
+      pendingSellQuantity += b.pendingSellQuantity ?? 0;
+      referenceQuantity += b.referenceQuantity ?? (b.manualOnly ? b.quantity : 0);
       if (b.costBasis != null) costBasis = (costBasis ?? 0) + b.costBasis;
       if (b.valueNative != null) valueNative = (valueNative ?? 0) + b.valueNative;
       if (b.valueKrw != null) valueKrw = (valueKrw ?? 0) + b.valueKrw;
@@ -91,6 +99,10 @@ export function scopeGroupedToSource(
     out.push({
       ...g,
       totalQuantity,
+      tradeableQuantity,
+      sellableQuantity,
+      pendingSellQuantity,
+      referenceQuantity,
       averageCost,
       costBasis,
       valueNative,

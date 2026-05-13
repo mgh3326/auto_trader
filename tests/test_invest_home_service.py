@@ -60,6 +60,28 @@ def test_classify_account_kind_maps_sources() -> None:
 
 
 @pytest.mark.unit
+def test_manual_holding_schema_forces_reference_only_defaults() -> None:
+    holding = _h(
+        source="toss_manual",
+        accountKind="manual",
+        quantity=7,
+        sourceOfTruth=True,
+        isTradeable=True,
+        manualOnly=False,
+        sellableQuantity=999,
+        pendingSellQuantity=3,
+        referenceQuantity=0,
+    )
+
+    assert holding.sourceOfTruth is False
+    assert holding.isTradeable is False
+    assert holding.manualOnly is True
+    assert holding.sellableQuantity == 0
+    assert holding.pendingSellQuantity == 0
+    assert holding.referenceQuantity == 7
+
+
+@pytest.mark.unit
 def test_grouped_merges_same_market_assettype_currency_symbol() -> None:
     h_kis = _h(
         holdingId="1",
@@ -75,6 +97,8 @@ def test_grouped_merges_same_market_assettype_currency_symbol() -> None:
         valueKrw=2_148_000,
         pnlKrw=48_000,
         pnlRate=48_000 / 2_100_000,
+        sellableQuantity=25,
+        pendingSellQuantity=5,
     )
     h_toss = _h(
         holdingId="2",
@@ -99,11 +123,33 @@ def test_grouped_merges_same_market_assettype_currency_symbol() -> None:
     assert g.assetCategory == "kr_stock"
     assert g.priceState == "live"
     assert g.totalQuantity == 50
+    assert g.tradeableQuantity == 30
+    assert g.sellableQuantity == 25
+    assert g.pendingSellQuantity == 5
+    assert g.referenceQuantity == 20
     assert g.costBasis == 2_100_000 + 1_376_000
     assert g.averageCost == pytest.approx((2_100_000 + 1_376_000) / 50)
     assert g.valueKrw == 2_148_000 + 1_432_000
     assert sorted(g.includedSources) == ["kis", "toss_manual"]
     assert {b.holdingId for b in g.sourceBreakdown} == {"1", "2"}
+
+    kis = next(b for b in g.sourceBreakdown if b.source == "kis")
+    assert kis.accountKind == "live"
+    assert kis.sourceOfTruth is True
+    assert kis.isTradeable is True
+    assert kis.manualOnly is False
+    assert kis.sellableQuantity == 25
+    assert kis.pendingSellQuantity == 5
+    assert kis.referenceQuantity == 0
+
+    toss = next(b for b in g.sourceBreakdown if b.source == "toss_manual")
+    assert toss.accountKind == "manual"
+    assert toss.sourceOfTruth is False
+    assert toss.isTradeable is False
+    assert toss.manualOnly is True
+    assert toss.sellableQuantity == 0
+    assert toss.pendingSellQuantity == 0
+    assert toss.referenceQuantity == 20
 
 
 @pytest.mark.unit

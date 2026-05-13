@@ -43,6 +43,10 @@ const holdings: GroupedHolding[] = [
     displayName: "삼성전자",
     currency: "KRW",
     totalQuantity: 40,
+    tradeableQuantity: 30,
+    sellableQuantity: 25,
+    pendingSellQuantity: 5,
+    referenceQuantity: 10,
     averageCost: 70000,
     costBasis: 2800000,
     valueNative: 2864000,
@@ -57,6 +61,13 @@ const holdings: GroupedHolding[] = [
         accountId: "kis-main",
         source: "kis",
         quantity: 30,
+        accountKind: "live",
+        sourceOfTruth: true,
+        isTradeable: true,
+        manualOnly: false,
+        sellableQuantity: 25,
+        pendingSellQuantity: 5,
+        referenceQuantity: 0,
         averageCost: 70000,
         valueNative: 2148000,
         valueKrw: 2148000,
@@ -68,6 +79,13 @@ const holdings: GroupedHolding[] = [
         accountId: "toss-benchmark",
         source: "toss_manual",
         quantity: 10,
+        accountKind: "manual",
+        sourceOfTruth: false,
+        isTradeable: false,
+        manualOnly: true,
+        sellableQuantity: 0,
+        pendingSellQuantity: 0,
+        referenceQuantity: 10,
         averageCost: 70000,
         valueNative: 716000,
         valueKrw: 716000,
@@ -91,6 +109,10 @@ test("UnifiedHoldingsTable renders source/account breakdown and stock detail lin
   expect(within(row).getByText("시세 지연")).toBeInTheDocument();
   expect(within(row).getAllByText("KIS 종합").length).toBeGreaterThan(0);
   expect(within(row).getAllByText("Toss 수동 벤치마크").length).toBeGreaterThan(0);
+  expect(within(row).getByText(/매매가능 30주/)).toBeInTheDocument();
+  expect(within(row).getAllByText(/매도가능 25주/).length).toBeGreaterThan(0);
+  expect(within(row).getByText(/주문대기 5주/)).toBeInTheDocument();
+  expect(within(row).getAllByText(/참고전용 10주/).length).toBeGreaterThan(0);
   expect(screen.getAllByTestId("unified-holding-source-breakdown")).toHaveLength(2);
 });
 
