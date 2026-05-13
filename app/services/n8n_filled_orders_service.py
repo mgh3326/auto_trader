@@ -4,19 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 import app.services.brokers.upbit.client as upbit_service
-from app.core.timezone import now_kst
+from app.core.timezone import KST, now_kst
 from app.services.brokers.kis.client import KISClient
 from app.services.execution_ledger.normalizers import (
     _normalize_kis_domestic_filled,
     _normalize_kis_overseas_filled,
     normalize_upbit_order,
-)
-from app.services.execution_ledger.normalizers import (
-    _parse_filled_at as _parse_filled_at_kst,
 )
 from app.services.market_data import get_quote
 from app.services.n8n_filled_orders_indicators import _enrich_with_indicators
@@ -24,6 +21,30 @@ from app.services.n8n_filled_orders_indicators import _enrich_with_indicators
 logger = logging.getLogger(__name__)
 
 _EQUITY_QUOTE_CONCURRENCY = 5
+
+
+def _parse_upbit_fill_datetime(value: object) -> datetime | None:
+    """Strictly parse an Upbit fill timestamp for window filtering.
+
+    Execution-ledger normalizers may default malformed provider timestamps to
+    ``now`` for persistence compatibility, but the legacy n8n filled-orders
+    surface must skip rows whose provider timestamp cannot be parsed.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        if len(text) != 8:
+            return None
+        try:
+            parsed = datetime.strptime(text, "%Y%m%d").replace(tzinfo=KST)
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=KST)
+    return parsed.astimezone(KST)
 
 
 async def _fetch_upbit_filled(days: int) -> tuple[list[dict], list[dict]]:
@@ -71,10 +92,12 @@ async def _fetch_upbit_filled(days: int) -> tuple[list[dict], list[dict]]:
 
                 fills = normalize_upbit_order(raw)
                 for fill in fills:
-                    parsed_filled_at = _parse_filled_at_kst(fill.get("filled_at", ""))
+                    parsed_filled_at = _parse_upbit_fill_datetime(
+                        fill.get("filled_at", "")
+                    )
                     if parsed_filled_at is None:
                         logger.warning(
-                            "Upbit fill skipped due to invalid filled_at: order_id=%s filled_at=%r",
+                            "Upbit filled order skipped due to invalid filled_at: order_id=%s filled_at=%r",
                             fill.get("order_id"),
                             fill.get("filled_at"),
                         )
