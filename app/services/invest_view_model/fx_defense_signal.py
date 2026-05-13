@@ -162,11 +162,16 @@ def _score_rejection(
             dataState="fresh",
         )
     )
+    window_suffix = (
+        f" ({scoring_input.rejected_within_minutes}분 이내)"
+        if scoring_input.rejected_within_minutes is not None
+        else ""
+    )
     if high >= 1499.5 and pullback >= 2.0:
-        reasons.append("1500원 직전 상단 꼬리/되밀림")
+        reasons.append(f"1500원 직전 상단 꼬리/되밀림{window_suffix}")
         return 25
     if high >= 1498.0 and pullback >= 1.0:
-        reasons.append("1500원 부근 되밀림")
+        reasons.append(f"1500원 부근 되밀림{window_suffix}")
         return 15
     return 0
 
@@ -239,22 +244,25 @@ def _score_context(
     reasons: list[str],
     evidence: list[FxDashboardEvidenceItem],
 ) -> int:
-    points = 0
+    """Attach news/authority context without letting context-only evidence score.
+
+    ROB-218 treats news, authority comments, dealer context, and NDF references as
+    explanatory evidence for the user-facing card. Price/rejection/divergence
+    drive the deterministic score; context changes confidence wording only via
+    ``after_verification_has_strong_evidence`` in ``_map_signal``.
+    """
     if scoring_input.news_context:
-        points = max(points, 5)
         reasons.append("환율/당국 경계 뉴스 확인")
         evidence.extend(scoring_input.news_context)
 
     if scoring_input.authority_context:
         evidence.extend(scoring_input.authority_context)
         if scoring_input.after_verification_has_strong_evidence:
-            points = max(points, 15)
             reasons.append("사후 검증 근거 일부 확인")
         else:
-            points = max(points, 5)
             reasons.append("공식/딜러/NDF 사후 근거 확인 필요")
 
-    return min(points, 15)
+    return 0
 
 
 def _map_signal(
@@ -299,9 +307,6 @@ def _is_global_dollar_firm(scoring_input: DefenseScoringInput) -> bool:
 
 
 def _usdkrw_failed_near_1500(scoring_input: DefenseScoringInput) -> bool:
-    spot = scoring_input.spot
-    if spot is not None and 0 <= scoring_input.threshold - spot <= 5:
-        return True
     high = scoring_input.recent_high
     close = scoring_input.recent_close_or_last
     return high is not None and close is not None and high >= 1498.0 and close < high

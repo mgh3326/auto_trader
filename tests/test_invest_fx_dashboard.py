@@ -311,6 +311,62 @@ def test_fx_threshold_state_for_1500_near_and_breached() -> None:
 
 
 @pytest.mark.unit
+def test_fx_defense_signal_does_not_score_context_only_evidence() -> None:
+    base = DefenseScoringInput(
+        spot=1498.7,
+        recent_high=None,
+        recent_close_or_last=None,
+        global_dollar_change_pct=None,
+        krw_cross_change_pcts={},
+    )
+    with_context = DefenseScoringInput(
+        spot=1498.7,
+        recent_high=None,
+        recent_close_or_last=None,
+        global_dollar_change_pct=None,
+        krw_cross_change_pcts={},
+        news_context=[
+            FxDashboardEvidenceItem(
+                kind="news_context",
+                labelKo="환율/당국 경계 뉴스 context-only fixture",
+                value="참고 맥락",
+                source="fixture_fx_news_context",
+                dataState="stale",
+            )
+        ],
+        authority_context=[
+            FxDashboardEvidenceItem(
+                kind="authority_context",
+                labelKo="당국 경계 발언 context-only fixture",
+                value="참고 맥락",
+                source="fixture_authority_context",
+                dataState="fresh",
+            )
+        ],
+    )
+
+    assert _score_defense_signal(base).score == _score_defense_signal(with_context).score
+    assert "환율/당국 경계 뉴스 확인" in _score_defense_signal(with_context).reasonsKo
+
+
+@pytest.mark.unit
+def test_fx_defense_signal_requires_rejection_for_divergence_score() -> None:
+    signal = _score_defense_signal(
+        DefenseScoringInput(
+            spot=1498.7,
+            recent_high=None,
+            recent_close_or_last=None,
+            global_dollar_change_pct=0.25,
+            usdcnh_change_pct=0.16,
+            krw_cross_change_pcts={},
+        )
+    )
+
+    assert signal.score == 30
+    assert "글로벌 달러 강세 대비 USD/KRW 상단 제한" not in signal.reasonsKo
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_build_fx_dashboard_fixture_has_partial_provider_states() -> None:
     response = await build_fx_dashboard(
@@ -329,7 +385,10 @@ async def test_build_fx_dashboard_fixture_has_partial_provider_states() -> None:
     assert response.defenseSignal.notConfirmedIntervention is True
     assert response.defenseSignal.needsAfterVerification is True
     assert "1500원 1.5원 이내 근접" in response.defenseSignal.reasonsKo
-    assert "1500원 부근 되밀림" in response.defenseSignal.reasonsKo
+    assert any(
+        reason.startswith("1500원 부근 되밀림")
+        for reason in response.defenseSignal.reasonsKo
+    )
     assert "글로벌 달러 강세 대비 USD/KRW 상단 제한" in response.defenseSignal.reasonsKo
     _assert_no_confirmed_intervention_claim(response.model_dump())
 
