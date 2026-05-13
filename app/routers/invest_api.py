@@ -50,6 +50,9 @@ from app.schemas.invest_stock_detail import (
     StockDetailOrdersResponse,
     StockDetailResponse,
 )
+from app.schemas.invest_stock_detail_research_consensus import (
+    StockDetailResearchConsensusResponse,
+)
 from app.schemas.investor_flow import InvestorFlowResponse
 from app.services.invest_coverage_service import build_invest_coverage
 from app.services.invest_home_service import InvestHomeService
@@ -84,6 +87,9 @@ from app.services.invest_view_model.stock_detail_candles_service import (
 )
 from app.services.invest_view_model.stock_detail_orders_service import (
     build_stock_detail_orders,
+)
+from app.services.invest_view_model.stock_detail_research_consensus_service import (
+    build_stock_detail_research_consensus,
 )
 from app.services.invest_view_model.stock_detail_service import build_stock_detail
 from app.services.invest_view_model.stock_detail_symbol_resolver import (
@@ -243,6 +249,29 @@ async def get_stock_detail(
     try:
         return await build_stock_detail(
             user_id=user.id,
+            market=market,
+            symbol=symbol,
+            db=db,
+        )
+    except SymbolNotFound as exc:
+        raise HTTPException(status_code=404, detail="symbol_not_found") from exc
+
+
+@router.get("/stock-detail/{market}/{symbol}/research-consensus")
+async def get_stock_detail_research_consensus(
+    market: StockDetailMarketParam,
+    symbol: str,
+    user: Annotated[Any, Depends(get_authenticated_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> StockDetailResearchConsensusResponse:
+    _ = user
+    if market == "crypto":
+        raise HTTPException(
+            status_code=400,
+            detail="research_consensus_supports_kr_us_only",
+        )
+    try:
+        return await build_stock_detail_research_consensus(
             market=market,
             symbol=symbol,
             db=db,
