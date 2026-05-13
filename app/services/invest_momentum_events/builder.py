@@ -3,7 +3,9 @@ from __future__ import annotations
 import datetime as dt
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Any, Protocol
+
+import httpx
 
 from app.services.invest_momentum_events.models import (
     MomentumEventUpsert,
@@ -44,6 +46,35 @@ def _ensure_aware(ts: dt.datetime) -> dt.datetime:
     return ts
 
 
+def _unsupported_upstream_warning(surface: str, error: Exception) -> str | None:
+    """Return a warning when Naver rejects a volatile request combination.
+
+    Naver's revamped stock endpoints are source candidates, not stable contracts.
+    Known unsupported query combinations (for example NXT + priceTop) currently
+    return HTTP 400.  Treat only 400/404 as skip-worthy; timeouts, 5xx, and
+    transport errors should still fail the build so operators notice outages.
+    """
+    if not isinstance(error, httpx.HTTPStatusError):
+        return None
+    status_code = error.response.status_code
+    if status_code not in {400, 404}:
+        return None
+    return f"skipped unsupported Naver surface {surface}: HTTP {status_code}"
+
+
+async def _fetch_or_skip(
+    fetch_call, *, surface: str, warnings: list[str]
+) -> Any | None:
+    try:
+        return await fetch_call()
+    except Exception as exc:
+        warning = _unsupported_upstream_warning(surface, exc)
+        if warning is None:
+            raise
+        warnings.append(warning)
+        return None
+
+
 async def build_payloads_from_naver(
     fetcher: NaverMomentumFetcher,
     *,
@@ -62,13 +93,23 @@ async def build_payloads_from_naver(
     for trade_type in plan.trade_types:
         for market_type in plan.market_types:
             for order_type in plan.order_types:
-                payload = await fetcher.fetch_domestic_stock_default(
-                    trade_type=trade_type,
-                    market_type=market_type,
-                    order_type=order_type,
-                    start_idx=0,
-                    page_size=plan.page_size,
+                surface = f"stock:{trade_type}:{market_type}:{order_type}"
+                payload = await _fetch_or_skip(
+                    lambda trade_type=trade_type, market_type=market_type, order_type=order_type: (
+                        fetcher.fetch_domestic_stock_default(
+                            trade_type=trade_type,
+                            market_type=market_type,
+                            order_type=order_type,
+                            start_idx=0,
+                            page_size=plan.page_size,
+                        )
+                    ),
+                    surface=surface,
+                    warnings=warnings,
                 )
+                if payload is None:
+                    counts[surface] += 0
+                    continue
                 parsed = parse_domestic_stock_default(payload)
                 warnings.extend(parsed.warnings)
                 for row in parsed.rows:
@@ -97,61 +138,75 @@ async def build_payloads_from_naver(
                 )
 
     for sort_type in plan.theme_sort_types:
-        theme_payload = await fetcher.fetch_market_theme_list(
-            sort_type=sort_type, start_idx=0, page_size=min(plan.page_size, 100)
+        theme_payload = await _fetch_or_skip(
+            lambda sort_type=sort_type: fetcher.fetch_market_theme_list(
+                sort_type=sort_type, start_idx=0, page_size=min(plan.page_size, 100)
+            ),
+            surface=f"theme:{sort_type}",
+            warnings=warnings,
         )
-        parsed_themes = parse_upjong_theme_list(theme_payload, event_kind="theme")
-        warnings.extend(parsed_themes.warnings)
-        for row in parsed_themes.rows:
-            themes.append(
-                ThemeEventUpsert(
-                    snapshot_at=snapshot,
-                    trading_date=trading_date,
-                    surface="market_theme_list",
-                    event_kind="theme",
-                    source_event_key=f"theme:{row.source_key}:{sort_type}:ALL",
-                    naver_theme_no=row.naver_theme_no,
-                    name=row.name,
-                    sort_type=sort_type,
-                    rank=row.rank,
-                    market_type="ALL",
-                    change_rate=row.change_rate,
-                    trade_value=row.trade_value,
-                    market_cap=row.market_cap,
-                    stock_count=row.stock_count,
-                    leader_symbols=list(row.leader_symbols),
-                    raw_payload=row.raw_payload,
+        if theme_payload is None:
+            counts[f"theme:{sort_type}"] += 0
+        else:
+            parsed_themes = parse_upjong_theme_list(theme_payload, event_kind="theme")
+            warnings.extend(parsed_themes.warnings)
+            for row in parsed_themes.rows:
+                themes.append(
+                    ThemeEventUpsert(
+                        snapshot_at=snapshot,
+                        trading_date=trading_date,
+                        surface="market_theme_list",
+                        event_kind="theme",
+                        source_event_key=f"theme:{row.source_key}:{sort_type}:ALL",
+                        naver_theme_no=row.naver_theme_no,
+                        name=row.name,
+                        sort_type=sort_type,
+                        rank=row.rank,
+                        market_type="ALL",
+                        change_rate=row.change_rate,
+                        trade_value=row.trade_value,
+                        market_cap=row.market_cap,
+                        stock_count=row.stock_count,
+                        leader_symbols=list(row.leader_symbols),
+                        raw_payload=row.raw_payload,
+                    )
                 )
-            )
-        counts[f"theme:{sort_type}"] += len(parsed_themes.rows)
+            counts[f"theme:{sort_type}"] += len(parsed_themes.rows)
 
-        upjong_payload = await fetcher.fetch_market_upjong_list(
-            sort_type=sort_type, start_idx=0, page_size=min(plan.page_size, 100)
+        upjong_payload = await _fetch_or_skip(
+            lambda sort_type=sort_type: fetcher.fetch_market_upjong_list(
+                sort_type=sort_type, start_idx=0, page_size=min(plan.page_size, 100)
+            ),
+            surface=f"upjong:{sort_type}",
+            warnings=warnings,
         )
-        parsed_upjong = parse_upjong_theme_list(upjong_payload, event_kind="upjong")
-        warnings.extend(parsed_upjong.warnings)
-        for row in parsed_upjong.rows:
-            themes.append(
-                ThemeEventUpsert(
-                    snapshot_at=snapshot,
-                    trading_date=trading_date,
-                    surface="market_upjong_list",
-                    event_kind="upjong",
-                    source_event_key=f"upjong:{row.source_key}:{sort_type}:ALL",
-                    naver_upjong_code=row.naver_upjong_code,
-                    name=row.name,
-                    sort_type=sort_type,
-                    rank=row.rank,
-                    market_type="ALL",
-                    change_rate=row.change_rate,
-                    trade_value=row.trade_value,
-                    market_cap=row.market_cap,
-                    stock_count=row.stock_count,
-                    leader_symbols=list(row.leader_symbols),
-                    raw_payload=row.raw_payload,
+        if upjong_payload is None:
+            counts[f"upjong:{sort_type}"] += 0
+        else:
+            parsed_upjong = parse_upjong_theme_list(upjong_payload, event_kind="upjong")
+            warnings.extend(parsed_upjong.warnings)
+            for row in parsed_upjong.rows:
+                themes.append(
+                    ThemeEventUpsert(
+                        snapshot_at=snapshot,
+                        trading_date=trading_date,
+                        surface="market_upjong_list",
+                        event_kind="upjong",
+                        source_event_key=f"upjong:{row.source_key}:{sort_type}:ALL",
+                        naver_upjong_code=row.naver_upjong_code,
+                        name=row.name,
+                        sort_type=sort_type,
+                        rank=row.rank,
+                        market_type="ALL",
+                        change_rate=row.change_rate,
+                        trade_value=row.trade_value,
+                        market_cap=row.market_cap,
+                        stock_count=row.stock_count,
+                        leader_symbols=list(row.leader_symbols),
+                        raw_payload=row.raw_payload,
+                    )
                 )
-            )
-        counts[f"upjong:{sort_type}"] += len(parsed_upjong.rows)
+            counts[f"upjong:{sort_type}"] += len(parsed_upjong.rows)
 
     return BuildPayloads(
         momentum=tuple(momentum),

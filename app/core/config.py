@@ -318,6 +318,11 @@ class Settings(BaseSettings):
 
     # ROB-222 — Naver momentum/theme event snapshot writes stay dry-run unless explicitly enabled.
     invest_momentum_events_commit_enabled: bool = False
+    invest_momentum_events_scheduler_enabled: bool = False
+    invest_momentum_events_scheduler_cron: str = "*/10 9-15 * * 1-5"
+    invest_momentum_events_scheduler_page_size: int = 50
+    invest_momentum_events_scheduler_trade_types: str = "KRX,NXT"
+    invest_momentum_events_scheduler_order_types: str = "up,quantTop,priceTop,searchTop"
 
     # KRX (한국거래소) 정보데이터시스템
     krx_member_id: str | None = None
