@@ -16,7 +16,7 @@ const PRESETS = {
       description: "일주일 연속 상승세를 보이는 주식",
       badges: ["인기"],
       filterChips: [{ label: "주가등락률", detail: "1주일 전 보다 · 0% 이상" }],
-      metricLabel: "연속상승", market: "kr" as const,
+      metricLabel: "주가등락률", market: "kr" as const,
     },
     {
       id: "cheap_value", name: "아직 저렴한 가치주",
@@ -35,14 +35,14 @@ const ROW = {
   priceLabel: "80,000원", changePctLabel: "+1.23%", changeAmountLabel: "+970원",
   changeDirection: "up" as const, category: "반도체",
   marketCapLabel: "478조원", volumeLabel: "12,345,678",
-  analystLabel: "구매", metricValueLabel: "5일", warnings: [],
+  analystLabel: "구매", metricValueLabel: "+8.00%", warnings: [],
 };
 
 const RESULTS_GAINERS = {
   presetId: "consecutive_gainers", title: "연속 상승세",
   description: "일주일 연속 상승세를 보이는 주식",
   filterChips: [{ label: "주가등락률", detail: "1주일 전 보다 · 0% 이상" }],
-  metricLabel: "연속상승", results: [ROW], warnings: [],
+  metricLabel: "주가등락률", results: [ROW], warnings: [],
   freshness: {
     fetchedAt: "2026-05-10T05:30:00+00:00",
     asOfLabel: "2026.05.10 14:30 기준",

@@ -24,7 +24,7 @@ SCREENER_PRESETS: list[ScreenerPreset] = [
             ScreenerFilterChip(label="주가등락률", detail="1주일 전 보다 · 0% 이상"),
             ScreenerFilterChip(label="주가 연속상승", detail="5일 연속 상승"),
         ],
-        metricLabel="연속상승",
+        metricLabel="주가등락률",
         market="kr",
     ),
     ScreenerPreset(

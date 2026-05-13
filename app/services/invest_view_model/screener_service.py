@@ -110,9 +110,17 @@ def _should_use_snapshot_first(screening_service: Any) -> bool:
 
 async def _load_consecutive_gainers_from_snapshots(
     session: AsyncSession | None, *, market: str, limit: int = _SNAPSHOT_FIRST_LIMIT
-) -> list[dict[str, Any]]:
+) -> list[dict[str, Any]] | None:
+    """Return qualifying rows from the latest snapshot partition only.
+
+    Returns None when the check could not be performed (no session, wrong market,
+    DB error, or no snapshots exist in the table at all). Returns an empty list
+    when the latest partition was found but contains no qualifying rows — callers
+    must NOT fall back to external screening in that case, because historical
+    qualifying rows from older partitions must not be surfaced as current results.
+    """
     if session is None or market not in {"kr", "us"}:
-        return []
+        return None
 
     from app.models.invest_screener_snapshot import InvestScreenerSnapshot
     from app.services.invest_screener_snapshots.freshness import (
@@ -121,21 +129,40 @@ async def _load_consecutive_gainers_from_snapshots(
     )
 
     today = today_trading_date(market)
+
+    # Step 1: resolve the latest snapshot partition date.
+    # This prevents older qualifying partitions from leaking into current results
+    # when the latest partition has zero qualifiers (the known stale-data bug).
+    latest_date_stmt = sa.select(
+        sa.func.max(InvestScreenerSnapshot.snapshot_date)
+    ).where(InvestScreenerSnapshot.market == market)
+    try:
+        latest_date_result = await session.execute(latest_date_stmt)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "failed to read invest_screener_snapshots max date: %s", exc, exc_info=True
+        )
+        return None
+    latest_snapshot_date = latest_date_result.scalar_one_or_none()
+    if latest_snapshot_date is None:
+        return None  # no snapshots in the table; fall through to external
+
+    # Step 2: qualify rows only within that one partition.
     stmt = (
         sa.select(InvestScreenerSnapshot)
         .where(
             InvestScreenerSnapshot.market == market,
+            InvestScreenerSnapshot.snapshot_date == latest_snapshot_date,
             InvestScreenerSnapshot.consecutive_up_days >= 5,
             InvestScreenerSnapshot.week_change_rate >= 0,
         )
         .order_by(
-            InvestScreenerSnapshot.snapshot_date.desc(),
             InvestScreenerSnapshot.week_change_rate.desc().nullslast(),
             InvestScreenerSnapshot.consecutive_up_days.desc(),
             InvestScreenerSnapshot.change_rate.desc().nullslast(),
             InvestScreenerSnapshot.symbol.asc(),
         )
-        .limit(max(limit * 4, limit))
+        .limit(limit)
     )
     try:
         result = await session.execute(stmt)
@@ -143,7 +170,7 @@ async def _load_consecutive_gainers_from_snapshots(
         logger.warning(
             "failed to read invest_screener_snapshots: %s", exc, exc_info=True
         )
-        return []
+        return None
 
     now = datetime.now(UTC)
     rows: list[dict[str, Any]] = []
@@ -181,16 +208,7 @@ async def _load_consecutive_gainers_from_snapshots(
                 "_screener_snapshot_state": state,
             }
         )
-        if len(rows) >= limit:
-            break
-    rows.sort(
-        key=lambda row: (
-            -(row.get("week_change_rate") or 0.0),
-            -(row.get("consecutive_up_days") or 0),
-            -(row.get("change_rate") or 0.0),
-            str(row.get("symbol") or ""),
-        )
-    )
+    # Rows are already ordered by the SQL ORDER BY; no Python re-sort needed.
     return rows
 
 
@@ -202,7 +220,7 @@ def build_screener_presets() -> ScreenerPresetsResponse:
 
 
 _METRIC_FIELD: dict[str, str] = {
-    "consecutive_gainers": "consecutive_up_days",
+    "consecutive_gainers": "week_change_rate",
     "cheap_value": "per",
     "steady_dividend": "dividend_yield",
     "oversold_recovery": "rsi",
@@ -395,10 +413,12 @@ def _metric_value_label(preset_id: str, row: dict[str, Any]) -> tuple[str, list[
     if value is None:
         if field == "consecutive_up_days":
             return "-", ["연속상승 데이터 준비중"]
+        if field == "week_change_rate":
+            return "-", ["주가등락률 데이터 준비중"]
         return "-", [f"{field.upper()} 데이터 준비중"]
     if field == "consecutive_up_days":
         return f"{int(value)}일", []
-    if field == "change_rate":
+    if field in ("week_change_rate", "change_rate"):
         sign = "+" if value > 0 else ""
         return f"{sign}{value:.2f}%", []
     if field in ("per", "pbr", "rsi"):
@@ -501,22 +521,32 @@ async def build_screener_results(
         )
 
     filters = screening_filters_for(preset_id, requested_market)
-    snapshot_rows: list[dict[str, Any]] = []
+    _snapshot_check_result: list[dict[str, Any]] | None = None
     if (
         preset_id == "consecutive_gainers"
         and session is not None
         and _should_use_snapshot_first(screening_service)
     ):
-        snapshot_rows = await _load_consecutive_gainers_from_snapshots(
+        _snapshot_check_result = await _load_consecutive_gainers_from_snapshots(
             session,
             market=requested_market,
             limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
         )
 
-    if snapshot_rows:
+    _snapshot_was_checked = _snapshot_check_result is not None
+    if _snapshot_was_checked:
+        # Snapshot check succeeded (latest partition found); use that result.
+        # Even an empty list must NOT fall through to external screening —
+        # historical qualifying rows from older partitions must stay hidden.
+        snapshot_rows = _snapshot_check_result  # type: ignore[assignment]
+        _snapshot_empty_warnings: list[str] = []
+        if not snapshot_rows:
+            _snapshot_empty_warnings = [
+                "스크리너 스냅샷 업데이트가 필요해 최신 연속 상승세 결과를 표시하지 못했습니다."
+            ]
         raw = {
             "results": snapshot_rows,
-            "warnings": [],
+            "warnings": _snapshot_empty_warnings,
             "timestamp": now().isoformat(),
             "cache_hit": True,
         }
@@ -552,10 +582,15 @@ async def build_screener_results(
     # Aggregate snapshot dataState from enriched rows (set by _enrich_consecutive_up_days when session provided)
     from app.services.invest_screener_snapshots.freshness import aggregate_states
 
-    _row_states: list[str] = [
-        str(r.get("_screener_snapshot_state") or "missing") for r in rows
-    ]
-    _aggregated_data_state = aggregate_states(_row_states)  # type: ignore[arg-type]
+    if _snapshot_was_checked and not rows:
+        # Latest snapshot partition was found but had no qualifying rows —
+        # the data is stale, not missing (snapshots exist, just not qualifying).
+        _aggregated_data_state: str = "stale"
+    else:
+        _row_states: list[str] = [
+            str(r.get("_screener_snapshot_state") or "missing") for r in rows
+        ]
+        _aggregated_data_state = aggregate_states(_row_states)  # type: ignore[arg-type]
     if requested_market == "us" and _aggregated_data_state in {"missing", "stale"}:
         if _US_SCREENER_DATA_NOT_READY_WARNING not in upstream_warnings:
             upstream_warnings.append(_US_SCREENER_DATA_NOT_READY_WARNING)
