@@ -275,6 +275,120 @@ async def test_coverage_reports_unsupported_missing_and_fresh(db_session):
     assert fresh.momentumEvents >= 1
 
 
+@pytest.mark.asyncio
+async def test_repository_scores_momentum_candidates_with_cross_surface_rank_delta_and_theme(
+    db_session,
+):
+    candidate_date = dt.date(2026, 5, 18)
+    previous_snapshot_at = dt.datetime(2026, 5, 18, 9, 10, tzinfo=dt.UTC)
+    latest_snapshot_at = dt.datetime(2026, 5, 18, 9, 20, tzinfo=dt.UTC)
+
+    stale_theme_ids = select(InvestThemeEventSnapshot.id).where(
+        InvestThemeEventSnapshot.trading_date == candidate_date
+    )
+    await db_session.execute(
+        delete(InvestThemeEventSnapshotStock).where(
+            InvestThemeEventSnapshotStock.theme_snapshot_id.in_(stale_theme_ids)
+        )
+    )
+    await db_session.execute(
+        delete(InvestThemeEventSnapshot).where(
+            InvestThemeEventSnapshot.trading_date == candidate_date
+        )
+    )
+    await db_session.execute(
+        delete(InvestMomentumEventSnapshot).where(
+            InvestMomentumEventSnapshot.trading_date == candidate_date
+        )
+    )
+
+    repo = InvestMomentumEventSnapshotsRepository(db_session)
+    base = MomentumEventUpsert(
+        snapshot_at=previous_snapshot_at,
+        trading_date=candidate_date,
+        surface="domestic_market_stock_default",
+        trade_type="KRX",
+        market_type="ALL",
+        order_type="searchTop",
+        rank=18,
+        symbol="123456",
+        name="급등후보",
+        price=Decimal("12000"),
+        change_rate=Decimal("4.5"),
+    )
+    await repo.upsert_momentum(base)
+    await repo.upsert_momentum(
+        base.model_copy(update={"snapshot_at": latest_snapshot_at, "rank": 3})
+    )
+    await repo.upsert_momentum(
+        base.model_copy(
+            update={
+                "snapshot_at": latest_snapshot_at,
+                "trade_type": "NXT",
+                "order_type": "quantTop",
+                "rank": 2,
+                "volume": 1_500_000,
+            }
+        )
+    )
+    await repo.upsert_momentum(
+        base.model_copy(
+            update={
+                "snapshot_at": latest_snapshot_at,
+                "symbol": "654321",
+                "name": "단일신호",
+                "order_type": "priceTop",
+                "rank": 1,
+            }
+        )
+    )
+    await repo.upsert_theme(
+        ThemeEventUpsert(
+            snapshot_at=latest_snapshot_at,
+            trading_date=candidate_date,
+            surface="market_theme_list",
+            event_kind="theme",
+            source_event_key="theme:999:changeRate:ALL",
+            naver_theme_no="999",
+            name="AI반도체",
+            sort_type="changeRate",
+            rank=1,
+            market_type="ALL",
+            stocks=[
+                {
+                    "symbol": "123456",
+                    "name": "급등후보",
+                    "rank": 1,
+                    "order_type": "changeRate",
+                }
+            ],
+        )
+    )
+    await db_session.commit()
+
+    candidates = await repo.list_candidate_signals(
+        trading_date=candidate_date,
+        limit=10,
+    )
+
+    assert [candidate.symbol for candidate in candidates][:2] == ["123456", "654321"]
+    top = candidates[0]
+    assert top.surface_count == 2
+    assert top.venue_count == 2
+    assert top.rank_delta == 15
+    assert top.theme_names == ["AI반도체"]
+    assert "multi_surface" in top.reason_codes
+    assert "krx_nxt_confirmed" in top.reason_codes
+    assert "rank_improving" in top.reason_codes
+    assert "theme_leader" in top.reason_codes
+
+
+def test_mcp_momentum_candidate_tool_is_registered():
+    from app.mcp_server.tooling.analysis_registration import ANALYSIS_TOOL_NAMES
+
+    assert "get_momentum_candidates" in ANALYSIS_TOOL_NAMES
+
+
 def test_no_scheduler_or_broker_order_watch_mutation_imports_in_new_modules():
     root = Path(__file__).resolve().parents[1]
     files = [
