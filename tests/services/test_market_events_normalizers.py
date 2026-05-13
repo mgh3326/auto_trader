@@ -152,8 +152,8 @@ FF_ROW_HIGH_IMPACT = {
     "country": "US",
     "event_date": date(2026, 5, 13),
     "release_time_utc": datetime(2026, 5, 13, 12, 30, tzinfo=UTC),
-    "release_time_local": datetime(2026, 5, 13, 8, 30),
-    "time_hint_raw": "8:30am",
+    "release_time_local": datetime(2026, 5, 13, 12, 30),
+    "time_hint_raw": "12:30pm",
     "impact": "high",
     "actual": "0.3%",
     "forecast": "0.3%",
@@ -174,7 +174,7 @@ def test_normalize_forexfactory_high_impact_event():
     assert event["title"] == "Core CPI m/m"
     assert event["event_date"] == date(2026, 5, 13)
     assert event["release_time_utc"] == datetime(2026, 5, 13, 12, 30, tzinfo=UTC)
-    assert event["source_timezone"] == "America/New_York"
+    assert event["source_timezone"] == "UTC"
     assert event["importance"] == 3
     assert event["status"] == "released"
     assert event["source"] == "forexfactory"
