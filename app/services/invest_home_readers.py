@@ -778,6 +778,30 @@ class KISMockHomeReader:
                 else None
             )
 
+            cash_krw: float | None = None
+            buying_power_krw: float | None = None
+            cash_warning: InvestHomeWarning | None = None
+            try:
+                cash_data = await client.account.inquire_domestic_cash_balance(is_mock=True)
+                raw_balance = cash_data.get("dnca_tot_amt")
+                raw_orderable = cash_data.get("stck_cash_ord_psbl_amt")
+                if raw_balance is not None:
+                    try:
+                        cash_krw = float(raw_balance)
+                    except (TypeError, ValueError):
+                        cash_krw = None
+                if raw_orderable is not None:
+                    try:
+                        buying_power_krw = float(raw_orderable)
+                    except (TypeError, ValueError):
+                        buying_power_krw = None
+            except Exception as exc:
+                logger.warning("KIS mock cash balance fetch failed: %s", exc)
+                cash_warning = InvestHomeWarning(
+                    source="kis_mock",
+                    message="KIS 모의투자 예수금/주문가능 조회 실패",
+                )
+
             account = Account(
                 accountId="kis_mock_account",
                 displayName="KIS 모의투자",
@@ -788,10 +812,10 @@ class KISMockHomeReader:
                 costBasisKrw=cost_basis_krw if cost_basis_krw > 0 else None,
                 pnlKrw=pnl_krw_total,
                 pnlRate=pnl_rate_total,
-                cashBalances=CashAmounts(),
-                buyingPower=CashAmounts(),
+                cashBalances=CashAmounts(krw=cash_krw),
+                buyingPower=CashAmounts(krw=buying_power_krw),
             )
-            return _SourceFetchResult(accounts=[account], holdings=holdings)
+            return _SourceFetchResult(accounts=[account], holdings=holdings, warning=cash_warning)
 
         except Exception as exc:
             logger.warning("KIS mock fetch failed: %s", exc, exc_info=True)

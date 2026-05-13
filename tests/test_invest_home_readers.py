@@ -498,6 +498,14 @@ class _FakeKISMockAccount:
             }
         ]
 
+    async def inquire_domestic_cash_balance(self, is_mock: bool = False) -> dict[str, Any]:
+        assert is_mock is True
+        return {
+            "dnca_tot_amt": 200_000.0,
+            "stck_cash_ord_psbl_amt": 180_000.0,
+            "raw": {},
+        }
+
 
 class _FakeKISMockClient:
     def __init__(self) -> None:
@@ -520,6 +528,10 @@ async def test_kis_mock_reader_passes_is_mock_true(
     assert account.includedInHome is False
     assert account.accountId == "kis_mock_account"
     assert account.valueKrw == 310_000
+    assert account.cashBalances.krw == pytest.approx(200_000.0)
+    assert account.buyingPower.krw == pytest.approx(180_000.0)
+    # Cash must NOT be included in investment value
+    assert account.valueKrw != account.cashBalances.krw
 
     h = result.holdings[0]
     assert h.source == "kis_mock"
@@ -571,6 +583,85 @@ async def test_kis_mock_reader_partial_failure_returns_warning(
 
     assert result.accounts == []
     assert result.holdings == []
+    assert result.warning is not None
+    assert result.warning.source == "kis_mock"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_kis_mock_reader_cash_balance_called_with_is_mock_true(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """inquire_domestic_cash_balance must be called with is_mock=True."""
+    cash_balance_calls: list[bool] = []
+
+    class _TrackingAccount:
+        async def fetch_my_stocks(
+            self, *, is_mock: bool, is_overseas: bool
+        ) -> list[dict[str, Any]]:
+            return []
+
+        async def inquire_domestic_cash_balance(self, is_mock: bool = False) -> dict[str, Any]:
+            cash_balance_calls.append(is_mock)
+            return {"dnca_tot_amt": 50_000.0, "stck_cash_ord_psbl_amt": 40_000.0, "raw": {}}
+
+    class _TrackingClient:
+        def __init__(self) -> None:
+            self.account = _TrackingAccount()
+
+    monkeypatch.setattr(readers, "SafeKISMockClient", _TrackingClient)
+    monkeypatch.setattr(readers, "_kis_mock_configured", lambda: True)
+
+    result = await readers.KISMockHomeReader().fetch(user_id=1)
+
+    assert cash_balance_calls == [True], "inquire_domestic_cash_balance was not called with is_mock=True"
+    account = result.accounts[0]
+    assert account.cashBalances.krw == pytest.approx(50_000.0)
+    assert account.buyingPower.krw == pytest.approx(40_000.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_kis_mock_reader_cash_failure_is_non_fatal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cash balance fetch failure must not block holdings/account — produces a warning."""
+
+    class _CashFailAccount:
+        async def fetch_my_stocks(
+            self, *, is_mock: bool, is_overseas: bool
+        ) -> list[dict[str, Any]]:
+            return [
+                {
+                    "pdno": "005930",
+                    "prdt_name": "삼성전자",
+                    "hldg_qty": "1",
+                    "pchs_avg_pric": "70000",
+                    "pchs_amt": "70000",
+                    "evlu_amt": "72000",
+                    "evlu_pfls_amt": "2000",
+                    "evlu_pfls_rt": "2.857",
+                }
+            ]
+
+        async def inquire_domestic_cash_balance(self, is_mock: bool = False) -> dict[str, Any]:
+            raise RuntimeError("cash API unavailable")
+
+    class _CashFailClient:
+        def __init__(self) -> None:
+            self.account = _CashFailAccount()
+
+    monkeypatch.setattr(readers, "SafeKISMockClient", _CashFailClient)
+    monkeypatch.setattr(readers, "_kis_mock_configured", lambda: True)
+
+    result = await readers.KISMockHomeReader().fetch(user_id=1)
+
+    assert len(result.accounts) == 1
+    assert len(result.holdings) == 1
+    account = result.accounts[0]
+    assert account.cashBalances.krw is None
+    assert account.buyingPower.krw is None
+    # Warning emitted but result is not empty
     assert result.warning is not None
     assert result.warning.source == "kis_mock"
 
