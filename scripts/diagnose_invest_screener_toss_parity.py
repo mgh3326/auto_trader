@@ -223,6 +223,13 @@ def _metrics_for(row: dict[str, Any]) -> dict[str, Any]:
 async def load_auto_trader_rows(
     session: AsyncSession, *, market: str, limit: int
 ) -> list[dict[str, Any]]:
+    """Load qualifying rows using the same single-partition semantics as the API.
+
+    Mirrors _load_consecutive_gainers_from_snapshots: resolves the latest
+    snapshot_date first, then qualifies only within that partition. This prevents
+    stale historical rows from appearing in parity comparisons when the latest
+    partition has no qualifiers.
+    """
     from app.models.invest_screener_snapshot import InvestScreenerSnapshot
     from app.services.invest_screener_snapshots.freshness import (
         classify_state,
@@ -231,21 +238,31 @@ async def load_auto_trader_rows(
 
     today = today_trading_date(market)
     now = datetime.now(UTC)
+
+    # Resolve the latest snapshot partition (mirrors production serving semantics).
+    latest_date_stmt = sa.select(
+        sa.func.max(InvestScreenerSnapshot.snapshot_date)
+    ).where(InvestScreenerSnapshot.market == market)
+    latest_date_result = await session.execute(latest_date_stmt)
+    latest_snapshot_date = latest_date_result.scalar_one_or_none()
+    if latest_snapshot_date is None:
+        return []
+
     stmt = (
         sa.select(InvestScreenerSnapshot)
         .where(
             InvestScreenerSnapshot.market == market,
+            InvestScreenerSnapshot.snapshot_date == latest_snapshot_date,
             InvestScreenerSnapshot.consecutive_up_days >= 5,
             InvestScreenerSnapshot.week_change_rate >= 0,
         )
         .order_by(
-            InvestScreenerSnapshot.snapshot_date.desc(),
             InvestScreenerSnapshot.week_change_rate.desc().nullslast(),
             InvestScreenerSnapshot.consecutive_up_days.desc(),
             InvestScreenerSnapshot.change_rate.desc().nullslast(),
             InvestScreenerSnapshot.symbol.asc(),
         )
-        .limit(max(limit * 4, limit))
+        .limit(limit)
     )
     result = await session.execute(stmt)
     rows: list[dict[str, Any]] = []
@@ -275,16 +292,7 @@ async def load_auto_trader_rows(
                 "_screener_snapshot_state": state,
             }
         )
-        if len(rows) >= limit:
-            break
-    rows.sort(
-        key=lambda row: (
-            -(row.get("week_change_rate") or 0.0),
-            -(row.get("consecutive_up_days") or 0),
-            -(row.get("change_rate") or 0.0),
-            str(row.get("symbol") or ""),
-        )
-    )
+    # Rows already ordered by SQL ORDER BY; no Python re-sort needed.
     return rows
 
 

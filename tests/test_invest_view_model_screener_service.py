@@ -75,6 +75,9 @@ class _FakeExecuteResult:
     def all(self) -> list[Any]:
         return self._rows
 
+    def scalar_one_or_none(self) -> Any | None:
+        return self._scalar_rows[0] if self._scalar_rows else None
+
 
 class _FakeSession:
     def __init__(self, results: list[_FakeExecuteResult]) -> None:
@@ -143,7 +146,7 @@ async def test_build_screener_results_consecutive_gainers_happy_path() -> None:
 
     assert resp.presetId == "consecutive_gainers"
     assert resp.title == "연속 상승세"
-    assert resp.metricLabel == "연속상승"
+    assert resp.metricLabel == "주가등락률"
     assert len(resp.results) == 2
     assert resp.results[0].rank == 1
     assert resp.results[0].symbol == "005930"
@@ -227,27 +230,29 @@ def test_calculate_consecutive_up_days_counts_latest_streak() -> None:
 
 
 @pytest.mark.unit
-def test_consecutive_up_metric_prefers_consecutive_days() -> None:
-    row_warnings: list[str] = []
-    assert (
-        screener_service._metric_value_label(
-            "consecutive_gainers",
-            {"symbol": "005930", "consecutive_up_days": 6, "change_rate": 2.4},
-        )[0]
-        == "6일"
+def test_consecutive_gainers_metric_is_week_change_rate() -> None:
+    label, warnings = screener_service._metric_value_label(
+        "consecutive_gainers",
+        {
+            "symbol": "005930",
+            "week_change_rate": 6.0,
+            "consecutive_up_days": 5,
+            "change_rate": 2.4,
+        },
     )
-    assert row_warnings == []
+    assert label == "+6.00%"
+    assert warnings == []
 
 
 @pytest.mark.unit
-def test_consecutive_up_metric_warns_when_history_unavailable() -> None:
+def test_consecutive_gainers_metric_warns_when_week_change_unavailable() -> None:
     label, warnings = screener_service._metric_value_label(
         "consecutive_gainers",
         {"symbol": "005930", "change_rate": 2.4},
     )
 
     assert label == "-"
-    assert warnings == ["연속상승 데이터 준비중"]
+    assert warnings == ["주가등락률 데이터 준비중"]
 
 
 @pytest.mark.unit
@@ -654,9 +659,9 @@ async def test_build_screener_results_coerces_string_market_cap_values() -> None
     )
 
     assert resp.results[0].marketCapLabel == "478.0조원"
-    assert resp.results[0].warnings == ["연속상승 데이터 준비중"]
+    assert resp.results[0].warnings == ["주가등락률 데이터 준비중"]
     assert resp.results[1].marketCapLabel == "414.7조원"
-    assert resp.results[1].warnings == ["연속상승 데이터 준비중"]
+    assert resp.results[1].warnings == ["주가등락률 데이터 준비중"]
 
 
 @pytest.mark.unit
@@ -901,11 +906,16 @@ async def test_build_screener_results_uses_snapshots_before_external_screening()
     resolver = _FakeResolver(watched={("kr", "005930")})
     session = _FakeSession(
         [
-            _FakeExecuteResult(scalar_rows=[_FakeSnapshot(symbol="005930")]),
-            _FakeExecuteResult(scalar_rows=[_FakeSnapshot(symbol="005930")]),
+            _FakeExecuteResult(scalar_rows=[date(2026, 5, 11)]),  # MAX(snapshot_date)
+            _FakeExecuteResult(
+                scalar_rows=[_FakeSnapshot(symbol="005930")]
+            ),  # qualifying rows
+            _FakeExecuteResult(
+                scalar_rows=[_FakeSnapshot(symbol="005930")]
+            ),  # enrichment
             _FakeExecuteResult(
                 rows=[type("NameRow", (), {"symbol": "005930", "name": "삼성전자"})()]
-            ),
+            ),  # kr_names
         ]
     )
 
@@ -919,7 +929,7 @@ async def test_build_screener_results_uses_snapshots_before_external_screening()
     fake_screening.list_screening.assert_not_called()
     assert resp.results[0].symbol == "005930"
     assert resp.results[0].name == "삼성전자"
-    assert resp.results[0].metricValueLabel == "6일"
+    assert resp.results[0].metricValueLabel == "+3.50%"
     assert resp.freshness.cacheHit is True
 
 
@@ -933,26 +943,9 @@ async def test_build_screener_results_orders_snapshot_rows_by_week_change() -> N
     )()
     session = _FakeSession(
         [
+            _FakeExecuteResult(scalar_rows=[date(2026, 5, 11)]),  # MAX(snapshot_date)
             _FakeExecuteResult(
-                scalar_rows=[
-                    _FakeSnapshot(
-                        symbol="111111",
-                        consecutive_up_days=9,
-                        week_change_rate=Decimal("1.0"),
-                    ),
-                    _FakeSnapshot(
-                        symbol="222222",
-                        consecutive_up_days=5,
-                        week_change_rate=Decimal("8.0"),
-                    ),
-                    _FakeSnapshot(
-                        symbol="333333",
-                        consecutive_up_days=6,
-                        week_change_rate=Decimal("3.0"),
-                    ),
-                ]
-            ),
-            _FakeExecuteResult(
+                # SQL ORDER BY week_change_rate DESC produces this order from DB:
                 scalar_rows=[
                     _FakeSnapshot(
                         symbol="222222",
@@ -970,8 +963,27 @@ async def test_build_screener_results_orders_snapshot_rows_by_week_change() -> N
                         week_change_rate=Decimal("1.0"),
                     ),
                 ]
-            ),
-            _FakeExecuteResult(),
+            ),  # qualifying rows in week_change_rate DESC order (SQL)
+            _FakeExecuteResult(
+                scalar_rows=[
+                    _FakeSnapshot(
+                        symbol="222222",
+                        consecutive_up_days=5,
+                        week_change_rate=Decimal("8.0"),
+                    ),
+                    _FakeSnapshot(
+                        symbol="333333",
+                        consecutive_up_days=6,
+                        week_change_rate=Decimal("3.0"),
+                    ),
+                    _FakeSnapshot(
+                        symbol="111111",
+                        consecutive_up_days=9,
+                        week_change_rate=Decimal("1.0"),
+                    ),
+                ]
+            ),  # enrichment
+            _FakeExecuteResult(),  # kr_names
         ]
     )
 
@@ -983,7 +995,11 @@ async def test_build_screener_results_orders_snapshot_rows_by_week_change() -> N
     )
 
     assert [row.symbol for row in resp.results] == ["222222", "333333", "111111"]
-    assert [row.metricValueLabel for row in resp.results] == ["5일", "6일", "9일"]
+    assert [row.metricValueLabel for row in resp.results] == [
+        "+8.00%",
+        "+3.00%",
+        "+1.00%",
+    ]
 
 
 @pytest.mark.unit
@@ -1009,3 +1025,90 @@ async def test_build_screener_results_redacts_external_connection_failures() -> 
     ]
     assert "api.finnhub" not in " ".join(resp.warnings)
     assert "secret" not in " ".join(resp.warnings)
+
+
+# ---------------------------------------------------------------------------
+# ROB-212: single-partition snapshot regression tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_load_consecutive_gainers_uses_latest_snapshot_partition_only() -> None:
+    """Latest partition with no qualifiers must not expose older qualifying rows."""
+    from app.services.invest_view_model.screener_service import (
+        _load_consecutive_gainers_from_snapshots,
+    )
+
+    # MAX(snapshot_date) returns today (2026-05-13); the qualifying rows query
+    # for that partition returns empty (the known stale-data scenario: 79 rows
+    # exist in older partitions but the latest has 0 qualifiers).
+    session = _FakeSession(
+        [
+            _FakeExecuteResult(scalar_rows=[date(2026, 5, 13)]),  # MAX(snapshot_date)
+            _FakeExecuteResult(scalar_rows=[]),  # latest partition: 0 qualifying rows
+        ]
+    )
+
+    result = await _load_consecutive_gainers_from_snapshots(session, market="kr")
+
+    assert result == [], "must return empty list, not historical qualifiers"
+    assert result is not None, (
+        "None would mean 'could not check'; [] means 'checked and empty'"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_load_consecutive_gainers_returns_none_when_no_snapshot_table_rows() -> (
+    None
+):
+    """When the snapshot table has no rows for the market, returns None (fall through allowed)."""
+    from app.services.invest_view_model.screener_service import (
+        _load_consecutive_gainers_from_snapshots,
+    )
+
+    session = _FakeSession(
+        [
+            _FakeExecuteResult(scalar_rows=[]),  # MAX(snapshot_date) → None
+        ]
+    )
+
+    result = await _load_consecutive_gainers_from_snapshots(session, market="kr")
+
+    assert result is None, (
+        "None signals 'could not check' so external screening may proceed"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_screener_results_warns_and_does_not_fallback_when_latest_partition_empty() -> (
+    None
+):
+    """Stale snapshot (latest partition 0 qualifiers) must warn and NOT surface external results."""
+    fake_screening = type(
+        "ScreenerService",
+        (_FakeProductionScreening,),
+        {"__module__": "app.services.screener_service"},
+    )()
+    session = _FakeSession(
+        [
+            _FakeExecuteResult(scalar_rows=[date(2026, 5, 13)]),  # MAX(snapshot_date)
+            _FakeExecuteResult(
+                scalar_rows=[]
+            ),  # no qualifying rows in latest partition
+        ]
+    )
+
+    resp = await build_screener_results(
+        preset_id="consecutive_gainers",
+        screening_service=fake_screening,
+        resolver=_FakeResolver(watched=set()),
+        session=session,
+    )
+
+    fake_screening.list_screening.assert_not_called()
+    assert resp.results == []
+    assert any("스크리너 스냅샷 업데이트" in w for w in resp.warnings)
+    assert resp.freshness.dataState == "stale"
