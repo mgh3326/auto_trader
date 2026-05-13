@@ -320,6 +320,8 @@ def to_execution_ledger_upsert(
     *,
     broker: str | None = None,
     account_mode: str = "live",
+    source: str = "reconciler",
+    correlation_id: str | None = None,
     source_run_id: uuid.UUID | None = None,
 ) -> ExecutionLedgerUpsert:
     broker_value = broker or (
@@ -347,7 +349,8 @@ def to_execution_ledger_upsert(
         fee_currency=normalized.get("currency"),
         filled_at=_parse_filled_at(normalized.get("filled_at")),
         currency=normalized["currency"],
-        source="reconciler",
+        correlation_id=correlation_id or normalized.get("correlation_id"),
+        source=source,
         source_run_id=source_run_id,
         raw_payload_json=normalized.get("raw_payload_json"),
     )

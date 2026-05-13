@@ -7,6 +7,7 @@ Upbit/KIS 체결 WebSocket을 통합하여 OpenClaw Gateway로 체결 알림을 
 
 import argparse
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -14,12 +15,20 @@ import signal
 import sys
 from collections.abc import Callable
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, cast
 
 from app.core.config import settings
+from app.core.db import AsyncSessionLocal
 from app.monitoring.sentry import capture_exception, init_sentry
 from app.monitoring.trade_notifier import get_trade_notifier
+from app.schemas.execution_ledger import ExecutionLedgerUpsert
+from app.services.execution_ledger.normalizers import _redact_sensitive_keys
+from app.services.execution_ledger.repository import (
+    ExecutionLedgerRepository,
+    UpsertStatus,
+)
 from app.services.fill_notification import (
     FillOrder,
     normalize_kis_fill,
@@ -161,7 +170,20 @@ class UnifiedWebSocketMonitor:
 
         try:
             fill_order = normalize_upbit_fill(order_data)
-            await self._send_fill_notification(fill_order)
+            upsert_status = await self._record_execution_ledger_fill(
+                order_data,
+                fill_order,
+                broker="upbit",
+                correlation_id=str(order_data.get("uuid") or "n/a"),
+            )
+            if upsert_status not in {"updated", "unchanged"}:
+                await self._send_fill_notification(fill_order)
+            else:
+                logger.info(
+                    "Upbit fill notification skipped for duplicate ledger row: symbol=%s status=%s",
+                    fill_order.symbol,
+                    upsert_status,
+                )
             logger.info(
                 f"Upbit fill processed: {fill_order.symbol} {fill_order.side} "
                 f"{fill_order.filled_qty}@{fill_order.filled_price}"
@@ -188,9 +210,23 @@ class UnifiedWebSocketMonitor:
                 fill_order.filled_qty,
                 fill_order.filled_price,
             )
-            await self._send_fill_notification(
-                fill_order, correlation_id=correlation_id
+            upsert_status = await self._record_execution_ledger_fill(
+                event,
+                fill_order,
+                broker="kis",
+                correlation_id=correlation_id,
             )
+            if upsert_status not in {"updated", "unchanged"}:
+                await self._send_fill_notification(
+                    fill_order, correlation_id=correlation_id
+                )
+            else:
+                logger.info(
+                    "KIS fill notification skipped for duplicate ledger row: correlation_id=%s symbol=%s status=%s",
+                    correlation_id,
+                    fill_order.symbol,
+                    upsert_status,
+                )
             logger.info(
                 f"KIS fill processed: {fill_order.symbol} {fill_order.side} "
                 f"{fill_order.filled_qty}@{fill_order.filled_price}"
@@ -232,6 +268,118 @@ class UnifiedWebSocketMonitor:
             return float(value)
         except (TypeError, ValueError):
             return 0.0
+
+    @staticmethod
+    def _ledger_symbol(order: FillOrder) -> str:
+        symbol = order.symbol.strip().upper()
+        if order.market_type == "crypto":
+            for prefix in ("KRW-", "USDT-"):
+                if symbol.startswith(prefix):
+                    return symbol[len(prefix) :]
+        return symbol
+
+    @staticmethod
+    def _ledger_side(order: FillOrder) -> str:
+        return "sell" if order.side in {"ask", "sell"} else "buy"
+
+    @staticmethod
+    def _ledger_instrument_type(order: FillOrder) -> str:
+        if order.market_type == "us":
+            return "equity_us"
+        if order.market_type == "crypto":
+            return "crypto"
+        return "equity_kr"
+
+    @staticmethod
+    def _ledger_fill_seq(event: dict[str, Any], order: FillOrder) -> int:
+        for key in ("fill_seq", "ccld_seq", "ccld_seq_no", "trade_seq"):
+            value = event.get(key)
+            if value not in (None, ""):
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    pass
+        seed = "|".join(
+            str(part or "")
+            for part in (
+                event.get("trade_uuid"),
+                event.get("trade_id"),
+                event.get("uuid"),
+                order.order_id,
+                order.symbol,
+                order.filled_at,
+                order.filled_qty,
+                order.filled_price,
+            )
+        )
+        return int(hashlib.sha256(seed.encode()).hexdigest()[:8], 16) & 2_147_483_647
+
+    async def _record_execution_ledger_fill(
+        self,
+        event: dict[str, Any],
+        order: FillOrder,
+        *,
+        broker: str,
+        correlation_id: str | None = None,
+    ) -> UpsertStatus | None:
+        """Durably upsert one websocket fill before downstream notification.
+
+        The existing execution-ledger commit flag is the explicit activation gate;
+        when disabled we preserve notification behavior and avoid surprise writes.
+        """
+        if not settings.EXECUTION_LEDGER_COMMIT_ENABLED:
+            logger.info(
+                "Execution ledger websocket insert skipped: commit flag disabled symbol=%s broker=%s",
+                order.symbol,
+                broker,
+            )
+            return None
+
+        currency = order.currency or ("USD" if order.market_type == "us" else "KRW")
+        venue = str(
+            event.get("venue")
+            or event.get("ovrs_excg_cd")
+            or event.get("excg_cd")
+            or ("upbit_krw" if broker == "upbit" else "krx")
+        )
+        broker_order_id = str(order.order_id or correlation_id or event.get("order_id") or "")
+        if not broker_order_id:
+            broker_order_id = f"websocket-{self._ledger_fill_seq(event, order)}"
+
+        fill = ExecutionLedgerUpsert(
+            broker=broker,  # type: ignore[arg-type]
+            account_mode="mock" if broker == "kis" and settings.kis_ws_is_mock else "live",
+            venue=venue,
+            instrument_type=self._ledger_instrument_type(order),  # type: ignore[arg-type]
+            symbol=self._ledger_symbol(order),
+            raw_symbol=order.symbol,
+            side=self._ledger_side(order),  # type: ignore[arg-type]
+            broker_order_id=broker_order_id,
+            fill_seq=self._ledger_fill_seq(event, order),
+            filled_qty=Decimal(str(order.filled_qty)),
+            filled_price=Decimal(str(order.filled_price)),
+            filled_notional=Decimal(str(order.filled_amount)) if order.filled_amount else None,
+            fee_amount=None,
+            fee_currency=currency,
+            filled_at=order.filled_at,  # type: ignore[arg-type]
+            currency=currency,  # type: ignore[arg-type]
+            correlation_id=correlation_id,
+            source="websocket",
+            raw_payload_json=_redact_sensitive_keys(event),
+        )
+        async with AsyncSessionLocal() as db:
+            status, row_id = await ExecutionLedgerRepository(db).upsert_fill(fill)
+            await db.commit()
+        logger.info(
+            "Execution ledger websocket upsert committed: broker=%s symbol=%s order_id=%s fill_seq=%s status=%s row_id=%s",
+            broker,
+            fill.symbol,
+            fill.broker_order_id,
+            fill.fill_seq,
+            status,
+            row_id,
+        )
+        return status
 
     async def _send_fill_notification(
         self, order: FillOrder, *, correlation_id: str | None = None

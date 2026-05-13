@@ -8,6 +8,7 @@ import { scopeGroupedToSource } from "../../desktop/scopeHoldings";
 import { pillToneForSource } from "../../desktop/AccountSourceTone";
 import { stockDetailPath } from "../../stockDetailPath";
 import { PL, Pill } from "../../ds";
+import { SellHistoryPanel } from "../../components/my/SellHistoryPanel";
 import type { AccountSource, GroupedHolding, HomeSummary, PriceState } from "../../types/invest";
 import type { AssetCategoryKey } from "../../components/AssetCategoryFilter";
 
@@ -295,6 +296,10 @@ export function MobilePortfolioPage() {
                 })}
               </div>
             )}
+          </section>
+
+          <section style={{ padding: "0 16px" }}>
+            <SellHistoryPanel compact />
           </section>
 
           {data.meta?.warnings && data.meta.warnings.length > 0 && (
