@@ -59,6 +59,17 @@ class TestCryptoScreeningPhases:
         assert not _is_upbit_krw_market_code("USDT-OP")
         assert not _is_upbit_krw_market_code("BTC-PRL")
 
+    def test_resolve_upbit_market_code_accepts_tvscreener_and_upbit_rows(self):
+        from app.mcp_server.tooling.screening.crypto import (
+            _resolve_upbit_market_code_from_row,
+        )
+
+        assert (
+            _resolve_upbit_market_code_from_row({"symbol": "UPBIT:BTCKRW"}) == "KRW-BTC"
+        )
+        assert _resolve_upbit_market_code_from_row({"market": "KRW-ETH"}) == "KRW-ETH"
+        assert _resolve_upbit_market_code_from_row({"symbol": "USDT-OP"}) == "USDT-OP"
+
     @pytest.mark.asyncio
     async def test_normalize_crypto_results_filters_non_krw_upbit_pairs(
         self, monkeypatch

@@ -59,6 +59,23 @@ def _is_upbit_krw_market_code(symbol: Any) -> bool:
     return str(symbol or "").strip().upper().startswith("KRW-")
 
 
+def _resolve_upbit_market_code_from_row(row: Any) -> str | None:
+    """Resolve an Upbit market code from tvscreener or Upbit-shaped rows."""
+    raw_symbol = _clean_text(row.get("symbol")).upper()
+    raw_market = _clean_text(row.get("market")).upper()
+
+    for candidate in (raw_symbol, raw_market):
+        if "-" in candidate:
+            return candidate
+
+    if not raw_symbol:
+        return None
+    try:
+        return tradingview_to_upbit(raw_symbol)
+    except SymbolMappingError:
+        return None
+
+
 # Crypto trade cooldown service singleton
 _cooldown_service: CryptoTradeCooldownService | None = None
 
@@ -203,12 +220,8 @@ async def _normalize_crypto_results(
     # Map raw rows
     raw_results: list[dict[str, Any]] = []
     for _, row in df.iterrows():
-        tradingview_symbol = _clean_text(row.get("symbol")).upper()
-        if not tradingview_symbol:
-            continue
-        try:
-            upbit_symbol = tradingview_to_upbit(tradingview_symbol)
-        except SymbolMappingError:
+        upbit_symbol = _resolve_upbit_market_code_from_row(row)
+        if not upbit_symbol:
             continue
 
         raw_results.append(

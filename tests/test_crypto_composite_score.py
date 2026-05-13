@@ -455,6 +455,26 @@ class TestScreenStocksCryptoScore:
             upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
         )
         monkeypatch.setattr(
+            screening_crypto,
+            "_execute_crypto_query",
+            AsyncMock(
+                return_value=pd.DataFrame(
+                    {
+                        "symbol": ["UPBIT:BTCKRW", "UPBIT:ETHKRW"],
+                        "name": ["BTCKRW", "ETHKRW"],
+                        "description": ["비트코인", "이더리움"],
+                        "price": [100_000_000.0, 5_000_000.0],
+                        "change_percent": [1.0, 2.0],
+                        "value_traded": [1_000_000_000_000.0, 800_000_000_000.0],
+                        "market_cap": [None, None],
+                        "relative_strength_index_14": [55.0, 45.0],
+                        "average_directional_index_14": [20.0, 25.0],
+                        "volume_24h_in_usd": [None, None],
+                    }
+                )
+            ),
+        )
+        monkeypatch.setattr(
             "app.mcp_server.tooling.market_data_indicators._fetch_ohlcv_for_indicators",
             mock_fetch_ohlcv,
         )
