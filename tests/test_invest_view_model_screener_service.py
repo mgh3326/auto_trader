@@ -233,7 +233,12 @@ def test_calculate_consecutive_up_days_counts_latest_streak() -> None:
 def test_consecutive_gainers_metric_is_week_change_rate() -> None:
     label, warnings = screener_service._metric_value_label(
         "consecutive_gainers",
-        {"symbol": "005930", "week_change_rate": 6.0, "consecutive_up_days": 5, "change_rate": 2.4},
+        {
+            "symbol": "005930",
+            "week_change_rate": 6.0,
+            "consecutive_up_days": 5,
+            "change_rate": 2.4,
+        },
     )
     assert label == "+6.00%"
     assert warnings == []
@@ -902,8 +907,12 @@ async def test_build_screener_results_uses_snapshots_before_external_screening()
     session = _FakeSession(
         [
             _FakeExecuteResult(scalar_rows=[date(2026, 5, 11)]),  # MAX(snapshot_date)
-            _FakeExecuteResult(scalar_rows=[_FakeSnapshot(symbol="005930")]),  # qualifying rows
-            _FakeExecuteResult(scalar_rows=[_FakeSnapshot(symbol="005930")]),  # enrichment
+            _FakeExecuteResult(
+                scalar_rows=[_FakeSnapshot(symbol="005930")]
+            ),  # qualifying rows
+            _FakeExecuteResult(
+                scalar_rows=[_FakeSnapshot(symbol="005930")]
+            ),  # enrichment
             _FakeExecuteResult(
                 rows=[type("NameRow", (), {"symbol": "005930", "name": "삼성전자"})()]
             ),  # kr_names
@@ -986,7 +995,11 @@ async def test_build_screener_results_orders_snapshot_rows_by_week_change() -> N
     )
 
     assert [row.symbol for row in resp.results] == ["222222", "333333", "111111"]
-    assert [row.metricValueLabel for row in resp.results] == ["+8.00%", "+3.00%", "+1.00%"]
+    assert [row.metricValueLabel for row in resp.results] == [
+        "+8.00%",
+        "+3.00%",
+        "+1.00%",
+    ]
 
 
 @pytest.mark.unit
@@ -1040,12 +1053,16 @@ async def test_load_consecutive_gainers_uses_latest_snapshot_partition_only() ->
     result = await _load_consecutive_gainers_from_snapshots(session, market="kr")
 
     assert result == [], "must return empty list, not historical qualifiers"
-    assert result is not None, "None would mean 'could not check'; [] means 'checked and empty'"
+    assert result is not None, (
+        "None would mean 'could not check'; [] means 'checked and empty'"
+    )
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_load_consecutive_gainers_returns_none_when_no_snapshot_table_rows() -> None:
+async def test_load_consecutive_gainers_returns_none_when_no_snapshot_table_rows() -> (
+    None
+):
     """When the snapshot table has no rows for the market, returns None (fall through allowed)."""
     from app.services.invest_view_model.screener_service import (
         _load_consecutive_gainers_from_snapshots,
@@ -1059,7 +1076,9 @@ async def test_load_consecutive_gainers_returns_none_when_no_snapshot_table_rows
 
     result = await _load_consecutive_gainers_from_snapshots(session, market="kr")
 
-    assert result is None, "None signals 'could not check' so external screening may proceed"
+    assert result is None, (
+        "None signals 'could not check' so external screening may proceed"
+    )
 
 
 @pytest.mark.unit
@@ -1076,7 +1095,9 @@ async def test_build_screener_results_warns_and_does_not_fallback_when_latest_pa
     session = _FakeSession(
         [
             _FakeExecuteResult(scalar_rows=[date(2026, 5, 13)]),  # MAX(snapshot_date)
-            _FakeExecuteResult(scalar_rows=[]),  # no qualifying rows in latest partition
+            _FakeExecuteResult(
+                scalar_rows=[]
+            ),  # no qualifying rows in latest partition
         ]
     )
 
