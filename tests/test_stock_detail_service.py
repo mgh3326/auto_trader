@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
 
 from app.schemas.invest_stock_detail import StockDetailHolding, StockDetailOrderbook
-from app.services.invest_view_model.stock_detail_service import build_stock_detail
+from app.services.invest_view_model.stock_detail_service import (
+    StockDetailProviders,
+    build_stock_detail,
+)
 from app.services.invest_view_model.stock_detail_symbol_resolver import ResolvedSymbol
 
 
@@ -53,7 +57,7 @@ async def test_build_stock_detail_declares_us_orderbook_unsupported():
         market="us",
         symbol="BRK-B",
         db=SimpleNamespace(),
-        resolver=_resolve_us,
+        providers=StockDetailProviders(resolver=_resolve_us),
     )
 
     assert response.symbol == "BRK.B"
@@ -77,6 +81,7 @@ async def test_build_stock_detail_declares_us_orderbook_unsupported():
 @pytest.mark.asyncio
 async def test_build_stock_detail_maps_holding_and_kr_orderbook_when_available():
     async def holding_provider(user_id, market, symbol, db):
+        await asyncio.sleep(0)
         return StockDetailHolding(
             totalQuantity=2,
             averageCost=70000,
@@ -100,6 +105,7 @@ async def test_build_stock_detail_maps_holding_and_kr_orderbook_when_available()
 
     async def fx_rate_provider():
         nonlocal fx_rate_called
+        await asyncio.sleep(0)
         fx_rate_called = True
         return 1360.0
 
@@ -108,10 +114,12 @@ async def test_build_stock_detail_maps_holding_and_kr_orderbook_when_available()
         market="kr",
         symbol="005930",
         db=SimpleNamespace(),
-        resolver=_resolve_kr,
-        holding_provider=holding_provider,
-        orderbook_provider=orderbook_provider,
-        fx_rate_provider=fx_rate_provider,
+        providers=StockDetailProviders(
+            resolver=_resolve_kr,
+            holding=holding_provider,
+            orderbook=orderbook_provider,
+            fx_rate=fx_rate_provider,
+        ),
     )
 
     assert response.holding is not None
@@ -137,7 +145,7 @@ async def test_build_stock_detail_omits_naver_poc_for_crypto():
         market="crypto",
         symbol="KRW-BTC",
         db=SimpleNamespace(),
-        resolver=_resolve_crypto,
+        providers=StockDetailProviders(resolver=_resolve_crypto),
     )
 
     assert response.market == "crypto"
@@ -150,6 +158,7 @@ async def test_build_stock_detail_omits_naver_poc_for_crypto():
 @pytest.mark.asyncio
 async def test_build_stock_detail_adds_fx_sensitivity_for_us_holding():
     async def holding_provider(user_id, market, symbol, db):
+        await asyncio.sleep(0)
         return StockDetailHolding(
             totalQuantity=2,
             averageCost=200,
@@ -163,6 +172,7 @@ async def test_build_stock_detail_adds_fx_sensitivity_for_us_holding():
         )
 
     async def fx_rate_provider():
+        await asyncio.sleep(0)
         return 1360.0
 
     response = await build_stock_detail(
@@ -170,15 +180,17 @@ async def test_build_stock_detail_adds_fx_sensitivity_for_us_holding():
         market="us",
         symbol="BRK-B",
         db=SimpleNamespace(),
-        resolver=_resolve_us,
-        holding_provider=holding_provider,
-        fx_rate_provider=fx_rate_provider,
+        providers=StockDetailProviders(
+            resolver=_resolve_us,
+            holding=holding_provider,
+            fx_rate=fx_rate_provider,
+        ),
     )
 
     assert response.fxSensitivity is not None
     assert response.fxSensitivity.status == "available"
-    assert response.fxSensitivity.baseFxRate == 1360.0
-    assert response.fxSensitivity.holdingValueNative == 422.68
+    assert response.fxSensitivity.baseFxRate == pytest.approx(1360.0)
+    assert response.fxSensitivity.holdingValueNative == pytest.approx(422.68)
     assert [scenario.rateMovePct for scenario in response.fxSensitivity.scenarios] == [
         -1.0,
         1.0,
@@ -197,6 +209,7 @@ async def test_build_stock_detail_adds_fx_sensitivity_for_us_holding():
 @pytest.mark.asyncio
 async def test_build_stock_detail_degrades_when_us_fx_provider_fails():
     async def holding_provider(user_id, market, symbol, db):
+        await asyncio.sleep(0)
         return StockDetailHolding(
             totalQuantity=2,
             averageCost=200,
@@ -210,6 +223,7 @@ async def test_build_stock_detail_degrades_when_us_fx_provider_fails():
         )
 
     async def fx_rate_provider():
+        await asyncio.sleep(0)
         raise RuntimeError("provider unavailable")
 
     response = await build_stock_detail(
@@ -217,9 +231,11 @@ async def test_build_stock_detail_degrades_when_us_fx_provider_fails():
         market="us",
         symbol="BRK-B",
         db=SimpleNamespace(),
-        resolver=_resolve_us,
-        holding_provider=holding_provider,
-        fx_rate_provider=fx_rate_provider,
+        providers=StockDetailProviders(
+            resolver=_resolve_us,
+            holding=holding_provider,
+            fx_rate=fx_rate_provider,
+        ),
     )
 
     assert response.fxSensitivity is not None

@@ -8,7 +8,7 @@ import pytest
 import pytest_asyncio
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -19,9 +19,22 @@ async def _clean(db_session):
         MarketEventValue,
     )
 
-    await db_session.execute(delete(MarketEventValue))
-    await db_session.execute(delete(MarketEvent))
-    await db_session.execute(delete(MarketEventIngestionPartition))
+    non_tradingview_events = select(MarketEvent.id).where(
+        MarketEvent.source != "tradingview"
+    )
+    await db_session.execute(
+        delete(MarketEventValue).where(
+            MarketEventValue.event_id.in_(non_tradingview_events)
+        )
+    )
+    await db_session.execute(
+        delete(MarketEvent).where(MarketEvent.source != "tradingview")
+    )
+    await db_session.execute(
+        delete(MarketEventIngestionPartition).where(
+            MarketEventIngestionPartition.source != "tradingview"
+        )
+    )
     await db_session.commit()
     yield
 

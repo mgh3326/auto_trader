@@ -272,7 +272,9 @@ class StockDetailFxSensitivity(BaseModel):
             if self.currencyPair != "USD/KRW" or self.baseFxRate is None:
                 raise ValueError("available FX sensitivity requires USD/KRW rate")
             if self.holdingValueNative is None or self.holdingValueNative <= 0:
-                raise ValueError("available FX sensitivity requires positive native value")
+                raise ValueError(
+                    "available FX sensitivity requires positive native value"
+                )
             if not self.scenarios:
                 raise ValueError("available FX sensitivity requires scenarios")
         elif self.scenarios:

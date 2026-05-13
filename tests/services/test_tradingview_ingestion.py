@@ -21,9 +21,22 @@ async def _clean_market_events(db_session):
         MarketEventValue,
     )
 
-    await db_session.execute(delete(MarketEventValue))
-    await db_session.execute(delete(MarketEvent))
-    await db_session.execute(delete(MarketEventIngestionPartition))
+    tradingview_events = select(MarketEvent.id).where(
+        MarketEvent.source == "tradingview"
+    )
+    await db_session.execute(
+        delete(MarketEventValue).where(
+            MarketEventValue.event_id.in_(tradingview_events)
+        )
+    )
+    await db_session.execute(
+        delete(MarketEvent).where(MarketEvent.source == "tradingview")
+    )
+    await db_session.execute(
+        delete(MarketEventIngestionPartition).where(
+            MarketEventIngestionPartition.source == "tradingview"
+        )
+    )
     await db_session.commit()
     yield
 
@@ -85,7 +98,15 @@ async def test_ingest_tradingview_economic_events_succeeds(db_session):
     assert result.category == "economic"
     assert result.market == "global"
 
-    events = (await db_session.execute(select(MarketEvent))).scalars().all()
+    events = (
+        (
+            await db_session.execute(
+                select(MarketEvent).where(MarketEvent.source == "tradingview")
+            )
+        )
+        .scalars()
+        .all()
+    )
     assert len(events) == 1
     e = events[0]
     assert e.category == "economic"
@@ -98,13 +119,27 @@ async def test_ingest_tradingview_economic_events_succeeds(db_session):
     assert e.source_event_id == "4b8e4f00-0e49-4a4a-b6e2-111111111111"
     assert e.source_url == "https://www.bls.gov/cpi/"
 
-    values = (await db_session.execute(select(MarketEventValue))).scalars().all()
+    values = (
+        (
+            await db_session.execute(
+                select(MarketEventValue).where(MarketEventValue.event_id == e.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
     assert len(values) == 1
     assert values[0].metric_name == "actual"
     assert values[0].unit == "%"
 
     parts = (
-        (await db_session.execute(select(MarketEventIngestionPartition)))
+        (
+            await db_session.execute(
+                select(MarketEventIngestionPartition).where(
+                    MarketEventIngestionPartition.source == "tradingview"
+                )
+            )
+        )
         .scalars()
         .all()
     )
@@ -131,7 +166,15 @@ async def test_ingest_tradingview_economic_events_is_idempotent(db_session):
         )
         await db_session.commit()
 
-    events = (await db_session.execute(select(MarketEvent))).scalars().all()
+    events = (
+        (
+            await db_session.execute(
+                select(MarketEvent).where(MarketEvent.source == "tradingview")
+            )
+        )
+        .scalars()
+        .all()
+    )
     assert len(events) == 1
 
 
@@ -153,7 +196,13 @@ async def test_ingest_tradingview_economic_events_records_failure(db_session):
     assert "timed out" in (result.error or "")
 
     parts = (
-        (await db_session.execute(select(MarketEventIngestionPartition)))
+        (
+            await db_session.execute(
+                select(MarketEventIngestionPartition).where(
+                    MarketEventIngestionPartition.source == "tradingview"
+                )
+            )
+        )
         .scalars()
         .all()
     )
@@ -181,7 +230,15 @@ async def test_ingest_tradingview_skips_unparseable_rows(db_session):
     assert result.status == "succeeded"
     assert result.event_count == 1
 
-    events = (await db_session.execute(select(MarketEvent))).scalars().all()
+    events = (
+        (
+            await db_session.execute(
+                select(MarketEvent).where(MarketEvent.source == "tradingview")
+            )
+        )
+        .scalars()
+        .all()
+    )
     assert len(events) == 1
 
 

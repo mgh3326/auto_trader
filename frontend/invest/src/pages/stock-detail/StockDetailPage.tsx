@@ -30,7 +30,9 @@ function fmtQty(v: number): string {
 function fmtKrwSigned(v: number | null | undefined): string {
   if (v == null) return "−";
   const rounded = Math.round(v);
-  const sign = rounded > 0 ? "+" : rounded < 0 ? "−" : "";
+  let sign = "";
+  if (rounded > 0) sign = "+";
+  if (rounded < 0) sign = "−";
   return `${sign}₩${Math.abs(rounded).toLocaleString("ko-KR")}`;
 }
 
@@ -122,7 +124,7 @@ function HoldingCard({ data }: { data: StockDetailResponse }) {
   );
 }
 
-function FxSensitivityCard({ data }: { data: StockDetailFxSensitivity | null }) {
+function FxSensitivityCard({ data }: Readonly<{ data: StockDetailFxSensitivity | null }>) {
   if (!data) return null;
   const isAvailable = data.status === "available";
   const basisLabel = data.basis === "portfolio_value" ? "보유 평가금액 기준" : "가정 기준";

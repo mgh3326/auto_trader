@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -57,22 +58,30 @@ async def _run_optional_block(
     return None
 
 
+@dataclass(frozen=True, slots=True)
+class StockDetailProviders:
+    resolver: Resolver = resolve_symbol
+    quote: Provider = _none_provider
+    screener: Provider = _none_provider
+    valuation: Provider = _none_provider
+    holding: Provider = _none_provider
+    latest_analysis: Provider = _none_provider
+    orderbook: Provider = _none_provider
+    fx_rate: Provider = get_usd_krw_quote
+    naver_enrichment: Provider = build_naver_stock_detail_poc
+    discussion_signal: Provider = build_naver_discussion_signal_poc
+
+
+DEFAULT_STOCK_DETAIL_PROVIDERS = StockDetailProviders()
+
+
 async def build_stock_detail(
     *,
     user_id: int | str,
     market: NewsMarket,
     symbol: str,
-    db: AsyncSession,
-    resolver: Resolver = resolve_symbol,
-    quote_provider: Provider = _none_provider,
-    screener_provider: Provider = _none_provider,
-    valuation_provider: Provider = _none_provider,
-    holding_provider: Provider = _none_provider,
-    latest_analysis_provider: Provider = _none_provider,
-    orderbook_provider: Provider = _none_provider,
-    fx_rate_provider: Provider = get_usd_krw_quote,
-    naver_enrichment_provider: Provider = build_naver_stock_detail_poc,
-    discussion_signal_provider: Provider = build_naver_discussion_signal_poc,
+    db: Any,
+    providers: StockDetailProviders = DEFAULT_STOCK_DETAIL_PROVIDERS,
 ) -> StockDetailResponse:
     """Build the read-only above-the-fold stock-detail view-model.
 
@@ -82,43 +91,43 @@ async def build_stock_detail(
     not perform request-time external fetches or writes.
     """
 
-    resolved = await resolver(market, symbol, db)
+    resolved = await providers.resolver(market, symbol, db)
     warnings: list[str] = []
 
     quote_task = _run_optional_block(
-        "quote", quote_provider(market, resolved.symbol_db, db), warnings
+        "quote", providers.quote(market, resolved.symbol_db, db), warnings
     )
     screener_task = _run_optional_block(
         "screener_snapshot",
-        screener_provider(market, resolved.symbol_db, db),
+        providers.screener(market, resolved.symbol_db, db),
         warnings,
     )
     valuation_task = _run_optional_block(
-        "valuation", valuation_provider(market, resolved.symbol_db, db), warnings
+        "valuation", providers.valuation(market, resolved.symbol_db, db), warnings
     )
     holding_task = _run_optional_block(
         "holding",
-        holding_provider(user_id, market, resolved.symbol_db, db),
+        providers.holding(user_id, market, resolved.symbol_db, db),
         warnings,
     )
     latest_analysis_task = _run_optional_block(
         "latest_analysis",
-        latest_analysis_provider(market, resolved.symbol_db, db),
+        providers.latest_analysis(market, resolved.symbol_db, db),
         warnings,
     )
     naver_enrichment_task = _run_optional_block(
         "naver_enrichment",
-        naver_enrichment_provider(market, resolved.symbol_db, db),
+        providers.naver_enrichment(market, resolved.symbol_db, db),
         warnings,
     )
     discussion_signal_task = _run_optional_block(
         "discussion_signal",
-        discussion_signal_provider(market, resolved.symbol_db, db),
+        providers.discussion_signal(market, resolved.symbol_db, db),
         warnings,
     )
     if market == "kr":
         orderbook_task = _run_optional_block(
-            "orderbook", orderbook_provider(market, resolved.symbol_db, db), warnings
+            "orderbook", providers.orderbook(market, resolved.symbol_db, db), warnings
         )
     else:
         orderbook_task = _none_provider()
@@ -183,7 +192,7 @@ async def build_stock_detail(
         market=market, currency=resolved.currency, holding=holding
     ):
         fx_rate = await _run_optional_block(
-            "fx_sensitivity", fx_rate_provider(), warnings
+            "fx_sensitivity", providers.fx_rate(), warnings
         )
     fx_sensitivity = _build_fx_sensitivity(
         market=market,
@@ -284,4 +293,4 @@ def _build_fx_sensitivity(
     )
 
 
-__all__ = ["build_stock_detail"]
+__all__ = ["StockDetailProviders", "build_stock_detail"]
