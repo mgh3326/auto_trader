@@ -27,6 +27,7 @@ from app.schemas.invest_feed_research import (
     FeedResearchResponse,
     FeedResearchTab,
 )
+from app.schemas.invest_fx_dashboard import FxDashboardResponse
 from app.schemas.invest_home import InvestHomeResponse
 from app.schemas.invest_market_dashboard import MarketDashboardResponse
 from app.schemas.invest_screener import (
@@ -47,6 +48,7 @@ from app.services.invest_view_model.account_panel_service import build_account_p
 from app.services.invest_view_model.calendar_service import build_calendar
 from app.services.invest_view_model.feed_news_service import build_feed_news
 from app.services.invest_view_model.feed_research_service import build_feed_research
+from app.services.invest_view_model.fx_dashboard_service import build_fx_dashboard
 from app.services.invest_view_model.investor_flow_service import (
     build_investor_flow_cards,
 )
@@ -124,6 +126,15 @@ async def get_market_dashboard(
     """Read-only Naver-style market/index dashboard source (ROB-198)."""
     _ = user
     return await build_market_dashboard()
+
+
+@router.get("/market/fx/dashboard")
+async def get_fx_dashboard(
+    user: Annotated[Any, Depends(get_authenticated_user)],
+) -> FxDashboardResponse:
+    """Read-only FX·macro dashboard contract fixture (ROB-216)."""
+    _ = user
+    return await build_fx_dashboard()
 
 
 @router.get("/coverage")
