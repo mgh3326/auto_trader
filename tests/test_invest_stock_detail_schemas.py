@@ -10,6 +10,7 @@ from app.schemas.invest_stock_detail import (
     StockDetailCapabilities,
     StockDetailDiscussionSignal,
     StockDetailDiscussionSignalMetric,
+    StockDetailFxSensitivity,
     StockDetailHolding,
     StockDetailOrderbook,
     StockDetailOrderbookLevel,
@@ -32,7 +33,9 @@ def _base_response(**overrides):
         "screenerSnapshot": None,
         "valuation": None,
         "naverEnrichment": None,
+        "discussionSignal": None,
         "holding": None,
+        "fxSensitivity": None,
         "latestAnalysis": None,
         "orderbookSupport": {"supported": False, "reason": "kr_unavailable"},
         "orderbook": None,
@@ -240,6 +243,84 @@ def test_discussion_signal_wired_into_stock_detail_response():
     assert response.discussionSignal.liveFetchEnabled is False
     assert response.discussionSignal.activityRank == 5
     assert response.discussionSignal.momentum == "rising"
+
+
+def test_fx_sensitivity_available_contract_accepts_scenarios():
+    response = StockDetailResponse.model_validate(
+        _base_response(
+            market="us",
+            symbol="QQQM",
+            currency="USD",
+            assetCategory="us_stock",
+            orderbookSupport={"supported": False, "reason": "us_unsupported"},
+            capabilities=default_capabilities_for_market("us"),
+            fxSensitivity={
+                "status": "available",
+                "currencyPair": "USD/KRW",
+                "baseFxRate": 1360.0,
+                "holdingValueNative": 422.68,
+                "holdingValueKrw": 575000.0,
+                "basis": "portfolio_value",
+                "scenarios": [
+                    {
+                        "rateMovePct": -1.0,
+                        "estimatedKrwImpact": -5748.448,
+                        "estimatedValueKrw": 569096.352,
+                        "label": "USD/KRW -1%",
+                    },
+                    {
+                        "rateMovePct": 1.0,
+                        "estimatedKrwImpact": 5748.448,
+                        "estimatedValueKrw": 580593.248,
+                        "label": "USD/KRW +1%",
+                    },
+                ],
+                "caution": "환율 민감도는 가정치입니다.",
+            },
+        )
+    )
+
+    assert response.fxSensitivity is not None
+    assert response.fxSensitivity.status == "available"
+    assert response.fxSensitivity.scenarios[1].estimatedKrwImpact == pytest.approx(
+        5748.448
+    )
+
+
+def test_fx_sensitivity_available_requires_rate_and_native_value():
+    with pytest.raises(ValidationError, match="requires USD/KRW rate"):
+        StockDetailFxSensitivity(
+            status="available",
+            currencyPair=None,
+            holdingValueNative=10,
+            scenarios=[{"rateMovePct": 1, "label": "USD/KRW +1%"}],
+            caution="x",
+        )
+
+    with pytest.raises(ValidationError, match="requires positive native value"):
+        StockDetailFxSensitivity(
+            status="available",
+            currencyPair="USD/KRW",
+            baseFxRate=1360,
+            holdingValueNative=0,
+            scenarios=[{"rateMovePct": 1, "label": "USD/KRW +1%"}],
+            caution="x",
+        )
+
+
+def test_fx_sensitivity_unavailable_rejects_scenarios():
+    with pytest.raises(ValidationError, match="must not expose scenarios"):
+        StockDetailFxSensitivity(
+            status="not_applicable",
+            scenarios=[{"rateMovePct": 1, "label": "USD/KRW +1%"}],
+            caution="x",
+        )
+
+
+def test_fx_sensitivity_null_for_kr_response_is_valid():
+    response = StockDetailResponse.model_validate(_base_response(fxSensitivity=None))
+
+    assert response.fxSensitivity is None
 
 
 def test_orderbook_required_iff_supported():

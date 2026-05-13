@@ -21,6 +21,13 @@ export type NaverEndpointStatus =
   | "error";
 export type OrderSide = "buy" | "sell" | string;
 export type AnalysisDecision = "buy" | "hold" | "sell";
+export type FxSensitivityStatus =
+  | "available"
+  | "not_applicable"
+  | "missing_holding"
+  | "missing_native_value"
+  | "missing_fx_rate";
+export type FxSensitivityBasis = "portfolio_value" | "fallback_quote" | "not_applicable";
 
 export interface CapabilityFlag {
   supported: boolean;
@@ -109,6 +116,25 @@ export interface StockDetailHolding {
   priceState: PriceState;
 }
 
+export interface StockDetailFxScenario {
+  rateMovePct: number;
+  estimatedKrwImpact: number | null;
+  estimatedValueKrw: number | null;
+  label: string;
+}
+
+export interface StockDetailFxSensitivity {
+  source: "stock_detail_fx_sensitivity";
+  status: FxSensitivityStatus;
+  currencyPair: "USD/KRW" | null;
+  baseFxRate: number | null;
+  holdingValueNative: number | null;
+  holdingValueKrw: number | null;
+  basis: FxSensitivityBasis;
+  scenarios: StockDetailFxScenario[];
+  caution: string;
+}
+
 export interface StockDetailLatestAnalysis {
   id: number;
   modelName: string | null;
@@ -149,6 +175,7 @@ export interface StockDetailResponse {
   valuation: StockDetailValuation | null;
   naverEnrichment: StockDetailNaverEnrichment | null;
   holding: StockDetailHolding | null;
+  fxSensitivity: StockDetailFxSensitivity | null;
   latestAnalysis: StockDetailLatestAnalysis | null;
   orderbookSupport: StockDetailOrderbookSupport;
   orderbook: StockDetailOrderbook | null;

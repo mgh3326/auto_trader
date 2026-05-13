@@ -8,7 +8,10 @@ from app.schemas.invest_stock_detail import StockDetailDiscussionSignal
 from app.services.invest_view_model.naver_discussion_signal_poc import (
     build_naver_discussion_signal_poc,
 )
-from app.services.invest_view_model.stock_detail_service import build_stock_detail
+from app.services.invest_view_model.stock_detail_service import (
+    StockDetailProviders,
+    build_stock_detail,
+)
 from app.services.invest_view_model.stock_detail_symbol_resolver import ResolvedSymbol
 
 
@@ -59,7 +62,7 @@ async def test_build_stock_detail_wires_discussion_signal_for_kr():
         market="kr",
         symbol="005930",
         db=SimpleNamespace(),
-        resolver=resolve_kr,
+        providers=StockDetailProviders(resolver=resolve_kr),
     )
 
     assert response.discussionSignal is not None
@@ -85,7 +88,7 @@ async def test_build_stock_detail_omits_discussion_signal_for_crypto():
         market="crypto",
         symbol="KRW-BTC",
         db=SimpleNamespace(),
-        resolver=resolve_crypto,
+        providers=StockDetailProviders(resolver=resolve_crypto),
     )
 
     assert response.discussionSignal is None

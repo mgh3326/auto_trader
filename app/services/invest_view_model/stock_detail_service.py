@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -11,6 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.schemas.invest_feed_news import NewsMarket
 from app.schemas.invest_stock_detail import (
     StockDetailDiscussionSignal,
+    StockDetailFxScenario,
+    StockDetailFxSensitivity,
     StockDetailHolding,
     StockDetailLatestAnalysis,
     StockDetailNaverEnrichment,
@@ -20,6 +23,7 @@ from app.schemas.invest_stock_detail import (
     default_capabilities_for_market,
     orderbook_support_for_market,
 )
+from app.services.exchange_rate_service import get_usd_krw_quote
 from app.services.invest_view_model.naver_discussion_signal_poc import (
     build_naver_discussion_signal_poc,
 )
@@ -54,21 +58,30 @@ async def _run_optional_block(
     return None
 
 
+@dataclass(frozen=True, slots=True)
+class StockDetailProviders:
+    resolver: Resolver = resolve_symbol
+    quote: Provider = _none_provider
+    screener: Provider = _none_provider
+    valuation: Provider = _none_provider
+    holding: Provider = _none_provider
+    latest_analysis: Provider = _none_provider
+    orderbook: Provider = _none_provider
+    fx_rate: Provider = get_usd_krw_quote
+    naver_enrichment: Provider = build_naver_stock_detail_poc
+    discussion_signal: Provider = build_naver_discussion_signal_poc
+
+
+DEFAULT_STOCK_DETAIL_PROVIDERS = StockDetailProviders()
+
+
 async def build_stock_detail(
     *,
     user_id: int | str,
     market: NewsMarket,
     symbol: str,
-    db: AsyncSession,
-    resolver: Resolver = resolve_symbol,
-    quote_provider: Provider = _none_provider,
-    screener_provider: Provider = _none_provider,
-    valuation_provider: Provider = _none_provider,
-    holding_provider: Provider = _none_provider,
-    latest_analysis_provider: Provider = _none_provider,
-    orderbook_provider: Provider = _none_provider,
-    naver_enrichment_provider: Provider = build_naver_stock_detail_poc,
-    discussion_signal_provider: Provider = build_naver_discussion_signal_poc,
+    db: Any,
+    providers: StockDetailProviders = DEFAULT_STOCK_DETAIL_PROVIDERS,
 ) -> StockDetailResponse:
     """Build the read-only above-the-fold stock-detail view-model.
 
@@ -78,43 +91,43 @@ async def build_stock_detail(
     not perform request-time external fetches or writes.
     """
 
-    resolved = await resolver(market, symbol, db)
+    resolved = await providers.resolver(market, symbol, db)
     warnings: list[str] = []
 
     quote_task = _run_optional_block(
-        "quote", quote_provider(market, resolved.symbol_db, db), warnings
+        "quote", providers.quote(market, resolved.symbol_db, db), warnings
     )
     screener_task = _run_optional_block(
         "screener_snapshot",
-        screener_provider(market, resolved.symbol_db, db),
+        providers.screener(market, resolved.symbol_db, db),
         warnings,
     )
     valuation_task = _run_optional_block(
-        "valuation", valuation_provider(market, resolved.symbol_db, db), warnings
+        "valuation", providers.valuation(market, resolved.symbol_db, db), warnings
     )
     holding_task = _run_optional_block(
         "holding",
-        holding_provider(user_id, market, resolved.symbol_db, db),
+        providers.holding(user_id, market, resolved.symbol_db, db),
         warnings,
     )
     latest_analysis_task = _run_optional_block(
         "latest_analysis",
-        latest_analysis_provider(market, resolved.symbol_db, db),
+        providers.latest_analysis(market, resolved.symbol_db, db),
         warnings,
     )
     naver_enrichment_task = _run_optional_block(
         "naver_enrichment",
-        naver_enrichment_provider(market, resolved.symbol_db, db),
+        providers.naver_enrichment(market, resolved.symbol_db, db),
         warnings,
     )
     discussion_signal_task = _run_optional_block(
         "discussion_signal",
-        discussion_signal_provider(market, resolved.symbol_db, db),
+        providers.discussion_signal(market, resolved.symbol_db, db),
         warnings,
     )
     if market == "kr":
         orderbook_task = _run_optional_block(
-            "orderbook", orderbook_provider(market, resolved.symbol_db, db), warnings
+            "orderbook", providers.orderbook(market, resolved.symbol_db, db), warnings
         )
     else:
         orderbook_task = _none_provider()
@@ -174,6 +187,20 @@ async def build_stock_detail(
     if orderbook is not None and not isinstance(orderbook, StockDetailOrderbook):
         orderbook = StockDetailOrderbook.model_validate(orderbook)
 
+    fx_rate = None
+    if _should_fetch_fx_rate(
+        market=market, currency=resolved.currency, holding=holding
+    ):
+        fx_rate = await _run_optional_block(
+            "fx_sensitivity", providers.fx_rate(), warnings
+        )
+    fx_sensitivity = _build_fx_sensitivity(
+        market=market,
+        currency=resolved.currency,
+        holding=holding,
+        fx_rate=fx_rate,
+    )
+
     return StockDetailResponse(
         symbol=resolved.symbol_db,
         market=market,
@@ -189,6 +216,7 @@ async def build_stock_detail(
         naverEnrichment=naver_enrichment,
         discussionSignal=discussion_signal,
         holding=holding,
+        fxSensitivity=fx_sensitivity,
         latestAnalysis=latest_analysis,
         orderbookSupport=orderbook_support,
         orderbook=orderbook,
@@ -197,4 +225,72 @@ async def build_stock_detail(
     )
 
 
-__all__ = ["build_stock_detail"]
+def _should_fetch_fx_rate(
+    *, market: NewsMarket, currency: str, holding: StockDetailHolding | None
+) -> bool:
+    if market != "us" and currency != "USD":
+        return False
+    return holding is not None and (holding.valueNative or 0) > 0
+
+
+def _build_fx_sensitivity(
+    *,
+    market: NewsMarket,
+    currency: str,
+    holding: StockDetailHolding | None,
+    fx_rate: float | None,
+) -> StockDetailFxSensitivity:
+    caution = (
+        "환율 민감도는 USD/KRW 1% 변동을 보유 평가액에 단순 적용한 가정치이며, "
+        "투자 판단을 대신하는 지표가 아닙니다."
+    )
+    if market != "us" and currency != "USD":
+        return StockDetailFxSensitivity(
+            status="not_applicable",
+            basis="not_applicable",
+            caution="KRW 자산은 별도 USD/KRW 환율 민감도 계산을 표시하지 않습니다.",
+        )
+    if holding is None:
+        return StockDetailFxSensitivity(
+            status="missing_holding",
+            basis="not_applicable",
+            caution="보유 수량이 없어 환율 민감도 계산을 표시하지 않습니다.",
+        )
+    if holding.valueNative is None or holding.valueNative <= 0:
+        return StockDetailFxSensitivity(
+            status="missing_native_value",
+            holdingValueKrw=holding.valueKrw,
+            basis="not_applicable",
+            caution="USD 보유 평가액이 없어 환율 민감도 계산을 표시하지 않습니다.",
+        )
+    if fx_rate is None or fx_rate <= 0:
+        return StockDetailFxSensitivity(
+            status="missing_fx_rate",
+            holdingValueNative=holding.valueNative,
+            holdingValueKrw=holding.valueKrw,
+            basis="not_applicable",
+            caution="USD/KRW 환율을 확인하지 못해 환율 민감도 계산을 표시하지 않습니다.",
+        )
+
+    scenarios = [
+        StockDetailFxScenario(
+            rateMovePct=move_pct,
+            estimatedKrwImpact=holding.valueNative * fx_rate * (move_pct / 100),
+            estimatedValueKrw=holding.valueNative * fx_rate * (1 + move_pct / 100),
+            label=f"USD/KRW {move_pct:+.0f}%",
+        )
+        for move_pct in (-1.0, 1.0)
+    ]
+    return StockDetailFxSensitivity(
+        status="available",
+        currencyPair="USD/KRW",
+        baseFxRate=fx_rate,
+        holdingValueNative=holding.valueNative,
+        holdingValueKrw=holding.valueKrw,
+        basis="portfolio_value",
+        scenarios=scenarios,
+        caution=caution,
+    )
+
+
+__all__ = ["StockDetailProviders", "build_stock_detail"]

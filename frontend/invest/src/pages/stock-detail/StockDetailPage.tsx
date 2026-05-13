@@ -10,6 +10,7 @@ import {
 } from "../../api/stockDetail";
 import type {
   StockDetailCandlesResponse,
+  StockDetailFxSensitivity,
   StockDetailMarket,
   StockDetailNewsResponse,
   StockDetailOrdersResponse,
@@ -24,6 +25,20 @@ function fmtPct(v: number | null | undefined): string {
 
 function fmtQty(v: number): string {
   return `${v.toLocaleString("ko-KR", { maximumFractionDigits: 6 })}주`;
+}
+
+function fmtKrwSigned(v: number | null | undefined): string {
+  if (v == null) return "−";
+  const rounded = Math.round(v);
+  let sign = "";
+  if (rounded > 0) sign = "+";
+  if (rounded < 0) sign = "−";
+  return `${sign}₩${Math.abs(rounded).toLocaleString("ko-KR")}`;
+}
+
+function fmtRate(v: number | null | undefined): string {
+  if (v == null) return "−";
+  return v.toLocaleString("ko-KR", { maximumFractionDigits: 2 });
 }
 
 function marketLabel(market: StockDetailMarket): string {
@@ -105,6 +120,41 @@ function HoldingCard({ data }: { data: StockDetailResponse }) {
       ) : (
         <p style={{ margin: 0, color: "var(--fg-3)" }}>보유 수량이 없습니다.</p>
       )}
+    </Card>
+  );
+}
+
+function FxSensitivityCard({ data }: Readonly<{ data: StockDetailFxSensitivity | null }>) {
+  if (!data) return null;
+  const isAvailable = data.status === "available";
+  const basisLabel = data.basis === "portfolio_value" ? "보유 평가금액 기준" : "가정 기준";
+  return (
+    <Card data-testid="stock-detail-fx-sensitivity" soft>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start" }}>
+        <div>
+          <h2 style={{ margin: "0 0 6px", fontSize: 16 }}>환율 민감도</h2>
+          <p style={{ margin: 0, color: "var(--fg-3)", fontSize: 12 }}>
+            {isAvailable ? `${data.currencyPair} ${fmtRate(data.baseFxRate)} · ${basisLabel}` : data.caution}
+          </p>
+        </div>
+        <Pill tone={isAvailable ? "accent" : "paper"}>가정</Pill>
+      </div>
+      {isAvailable ? (
+        <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 }}>
+          {data.scenarios.map((scenario) => (
+            <div key={scenario.label} style={{ border: "1px solid var(--line)", borderRadius: 14, padding: 12 }}>
+              <div style={{ color: "var(--fg-3)", fontSize: 12 }}>{scenario.label}</div>
+              <div style={{ marginTop: 4, fontWeight: 800, color: (scenario.estimatedKrwImpact ?? 0) >= 0 ? "var(--gain)" : "var(--loss)" }}>
+                {fmtKrwSigned(scenario.estimatedKrwImpact)}
+              </div>
+              <div style={{ marginTop: 4, color: "var(--fg-3)", fontSize: 12 }}>
+                추정 평가액 {scenario.estimatedValueKrw == null ? "−" : `₩${Math.round(scenario.estimatedValueKrw).toLocaleString("ko-KR")}`}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {isAvailable ? <p style={{ margin: "10px 0 0", color: "var(--fg-3)", fontSize: 12 }}>{data.caution}</p> : null}
     </Card>
   );
 }
@@ -301,6 +351,7 @@ export function StockDetailPage() {
               <HeaderCard data={data} />
               <TradeGuardrail data={data} />
               <HoldingCard data={data} />
+              <FxSensitivityCard data={data.fxSensitivity} />
               <ChartCard candles={candles} />
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
                 <OrderbookCard data={data} />
