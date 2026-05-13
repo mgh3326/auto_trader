@@ -41,7 +41,29 @@ _EVENT_TYPE_ORDER: dict[EventType, int] = {
     "other": 4,
 }
 _MARKET_ORDER: dict[CalendarMarket, int] = {"kr": 0, "us": 1, "global": 2, "crypto": 3}
-_HIGH_IMPACT_TERMS = ("cpi", "fomc", "nonfarm", "payroll", "pce", "gdp", "금리", "고용")
+_HIGH_IMPACT_TERMS = (
+    "cpi",
+    "core cpi",
+    "ppi",
+    "core ppi",
+    "producer price",
+    "producer prices",
+    "fomc",
+    "fed interest rate",
+    "interest rate decision",
+    "nonfarm",
+    "payroll",
+    "unemployment rate",
+    "jobless claims",
+    "pce",
+    "gdp",
+    "retail sales",
+    "ism",
+    "금리",
+    "고용",
+    "생산자물가",
+    "소비자물가",
+)
 
 _MARKET_LITERAL = cast  # alias — used for type narrowing below
 
