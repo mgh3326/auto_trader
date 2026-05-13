@@ -32,6 +32,7 @@ import { CoverageRoute } from "./pages/desktop/DesktopCoveragePage";
 import { DesktopScreenerPage } from "./pages/desktop/DesktopScreenerPage";
 import { DesktopMarketPage } from "./pages/desktop/DesktopMarketPage";
 import { FxMacroRoute } from "./pages/desktop/FxMacroPage";
+import { DesktopCryptoPage } from "./pages/desktop/DesktopCryptoPage";
 import { StockDetailPage } from "./pages/stock-detail/StockDetailPage";
 
 // Static legacy /app/* redirect that preserves any ?search and #hash
@@ -49,6 +50,12 @@ function DiscoverIssueRedirect() {
   const { issueId } = useParams();
   const { search, hash } = useLocation();
   return <Navigate to={`/discover/issues/${issueId ?? ""}${search}${hash}`} replace />;
+}
+
+function CryptoPairRedirect() {
+  const { pair } = useParams();
+  const { search, hash } = useLocation();
+  return <Navigate to={`/stocks/crypto/${encodeURIComponent(pair ?? "")}${search}${hash}`} replace />;
 }
 
 export const router = createBrowserRouter(
@@ -70,6 +77,8 @@ export const router = createBrowserRouter(
     { path: "/coverage", element: <CoverageRoute /> },
     { path: "/market", element: <DesktopMarketPage /> },
     { path: "/market/fx", element: <FxMacroRoute /> },
+    { path: "/crypto", element: <DesktopCryptoPage /> },
+    { path: "/crypto/:pair", element: <CryptoPairRedirect /> },
     { path: "/screener", element: <DesktopScreenerPage /> },
     { path: "/stocks/:market/:symbol", element: <StockDetailPage /> },
 
