@@ -318,6 +318,96 @@ async def _load_consecutive_gainers_from_snapshots(
     return rows
 
 
+async def _load_crypto_rows_from_snapshots(
+    session: AsyncSession | None,
+    *,
+    preset_id: str,
+    limit: int = 20,
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
+) -> tuple[list[dict[str, Any]], str] | None:
+    """Return crypto rows from the latest crypto snapshot partition.
+
+    None means there is no usable snapshot partition and live provider fallback is
+    allowed.  An empty list with a state means a latest fresh/partial partition
+    exists but has no qualifiers for the preset; callers must not query older
+    partitions or silently fall back.
+    """
+    if session is None:
+        return None
+
+    from app.services.invest_crypto_screener_snapshots.freshness import (
+        classify_crypto_partition,
+        today_crypto_snapshot_date,
+    )
+    from app.services.invest_crypto_screener_snapshots.repository import (
+        InvestCryptoScreenerSnapshotsRepository,
+    )
+
+    repo = InvestCryptoScreenerSnapshotsRepository(session)
+    try:
+        latest_date = await repo.latest_partition()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("failed to read crypto screener snapshot partition: %s", exc)
+        return None
+    if latest_date is None:
+        return None
+
+    try:
+        rows = await repo.list_latest(
+            preset_id=preset_id,
+            limit=limit,
+            snapshot_date=latest_date,
+        )
+        coverage = await repo.coverage(today=today_crypto_snapshot_date(now()))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("failed to read crypto screener snapshots: %s", exc)
+        return None
+
+    state = classify_crypto_partition(
+        latest_partition_date=coverage.latest_partition_date,
+        row_count=coverage.latest_partition_count,
+        last_computed_at=coverage.last_computed_at,
+        now=now(),
+    )
+    if state in {"missing", "stale"}:
+        return None
+
+    mapped: list[dict[str, Any]] = []
+    for snap in rows:
+        mapped.append(
+            {
+                "symbol": snap.symbol,
+                "market": "crypto",
+                "name": snap.name,
+                "close": float(snap.latest_close)
+                if snap.latest_close is not None
+                else None,
+                "change_rate": float(snap.change_rate)
+                if snap.change_rate is not None
+                else None,
+                "change_amount": float(snap.change_amount)
+                if snap.change_amount is not None
+                else None,
+                "trade_amount_24h": float(snap.trade_amount_24h)
+                if snap.trade_amount_24h is not None
+                else None,
+                "volume_24h": float(snap.volume_24h)
+                if snap.volume_24h is not None
+                else None,
+                "volume_24h_usd": float(snap.volume_24h_usd)
+                if snap.volume_24h_usd is not None
+                else None,
+                "market_cap": float(snap.market_cap)
+                if snap.market_cap is not None
+                else None,
+                "rsi": float(snap.rsi) if snap.rsi is not None else None,
+                "adx": float(snap.adx) if snap.adx is not None else None,
+                "_screener_snapshot_state": state,
+            }
+        )
+    return mapped, state
+
+
 def build_screener_presets(market: str = "kr") -> ScreenerPresetsResponse:
     requested_market = _normalize_market(market)
     return ScreenerPresetsResponse(
@@ -680,16 +770,31 @@ async def build_screener_results(
 
     filters = screening_filters_for(preset_id, requested_market)
     _snapshot_check_result: list[dict[str, Any]] | None = None
-    if (
-        preset_id == "consecutive_gainers"
-        and session is not None
-        and _should_use_snapshot_first(screening_service)
-    ):
-        _snapshot_check_result = await _load_consecutive_gainers_from_snapshots(
-            session,
-            market=requested_market,
-            limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
-        )
+    _snapshot_state_override: str | None = None
+    _snapshot_empty_warning = (
+        "스크리너 스냅샷 업데이트가 필요해 최신 연속 상승세 결과를 표시하지 못했습니다."
+    )
+    if session is not None and _should_use_snapshot_first(screening_service):
+        if preset_id == "consecutive_gainers":
+            _snapshot_check_result = await _load_consecutive_gainers_from_snapshots(
+                session,
+                market=requested_market,
+                limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
+            )
+        elif requested_market == "crypto":
+            _crypto_snapshot_result = await _load_crypto_rows_from_snapshots(
+                session,
+                preset_id=preset_id,
+                limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
+                now=now,
+            )
+            if _crypto_snapshot_result is not None:
+                _snapshot_check_result, _snapshot_state_override = (
+                    _crypto_snapshot_result
+                )
+                _snapshot_empty_warning = (
+                    "최신 암호화폐 스크리너 스냅샷에서 조건에 맞는 결과가 없습니다."
+                )
 
     _snapshot_was_checked = _snapshot_check_result is not None
     if _snapshot_was_checked:
@@ -699,9 +804,7 @@ async def build_screener_results(
         snapshot_rows = _snapshot_check_result  # type: ignore[assignment]
         _snapshot_empty_warnings: list[str] = []
         if not snapshot_rows:
-            _snapshot_empty_warnings = [
-                "스크리너 스냅샷 업데이트가 필요해 최신 연속 상승세 결과를 표시하지 못했습니다."
-            ]
+            _snapshot_empty_warnings = [_snapshot_empty_warning]
         raw = {
             "results": snapshot_rows,
             "warnings": _snapshot_empty_warnings,
@@ -742,8 +845,10 @@ async def build_screener_results(
 
     if _snapshot_was_checked and not rows:
         # Latest snapshot partition was found but had no qualifying rows —
-        # the data is stale, not missing (snapshots exist, just not qualifying).
-        _aggregated_data_state: str = "stale"
+        # the data exists, but this preset has no current qualifiers.  Stock
+        # snapshot semantics keep the historical stale warning; crypto snapshots
+        # can still be fresh/partial 24/7 even when a preset returns zero rows.
+        _aggregated_data_state = _snapshot_state_override or "stale"
     else:
         _row_states: list[str] = [
             str(r.get("_screener_snapshot_state") or "missing") for r in rows

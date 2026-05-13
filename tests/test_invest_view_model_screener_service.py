@@ -78,6 +78,11 @@ class _FakeExecuteResult:
     def scalar_one_or_none(self) -> Any | None:
         return self._scalar_rows[0] if self._scalar_rows else None
 
+    def one(self) -> Any:
+        if self._rows:
+            return self._rows[0]
+        return type("EmptyRow", (), {})()
+
 
 class _FakeSession:
     def __init__(self, results: list[_FakeExecuteResult]) -> None:
@@ -109,6 +114,38 @@ class _FakeSnapshot:
         self.computed_at = kwargs.get(
             "computed_at", datetime(2026, 5, 11, 0, 30, tzinfo=UTC)
         )
+
+
+class _FakeCryptoSnapshot:
+    def __init__(self, **kwargs: Any) -> None:
+        self.symbol = kwargs.get("symbol", "KRW-BTC")
+        self.snapshot_date = kwargs.get("snapshot_date", date(2026, 5, 13))
+        self.name = kwargs.get("name", "Bitcoin")
+        self.latest_close = kwargs.get("latest_close", Decimal("145000000"))
+        self.change_amount = kwargs.get("change_amount", Decimal("1000000"))
+        self.change_rate = kwargs.get("change_rate", Decimal("1.25"))
+        self.trade_amount_24h = kwargs.get("trade_amount_24h", Decimal("123456789000"))
+        self.volume_24h = kwargs.get("volume_24h", Decimal("9876.5"))
+        self.volume_24h_usd = kwargs.get("volume_24h_usd", Decimal("90000000"))
+        self.market_cap = kwargs.get("market_cap", Decimal("1800000000000"))
+        self.rsi = kwargs.get("rsi", Decimal("58.0"))
+        self.adx = kwargs.get("adx", Decimal("24.0"))
+        self.computed_at = kwargs.get(
+            "computed_at", datetime(2026, 5, 13, 2, 30, tzinfo=UTC)
+        )
+
+
+def _coverage_row(
+    *,
+    latest_count: int,
+    stale: int = 0,
+    last: datetime | None = datetime(2026, 5, 13, 2, 30, tzinfo=UTC),
+) -> Any:
+    return type(
+        "CoverageRow",
+        (),
+        {"latest_count": latest_count, "stale": stale, "last": last},
+    )()
 
 
 def _name_row(symbol: str, name: str) -> Any:
@@ -273,7 +310,7 @@ async def test_build_screener_results_forwards_crypto_market_and_formats_crypto_
     fake_screening.list_screening.assert_awaited_once()
     assert fake_screening.list_screening.await_args.kwargs == {
         "market": "crypto",
-        "sort_by": "volume",
+        "sort_by": "trade_amount",
         "sort_order": "desc",
         "limit": 20,
     }
@@ -289,6 +326,127 @@ async def test_build_screener_results_forwards_crypto_market_and_formats_crypto_
     assert row.metricValueLabel == "120,000,000,000"
     assert row.isWatched is True
     assert resolver.calls == [("crypto", "KRW-BTC")]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_screener_results_uses_fresh_crypto_snapshots_first() -> None:
+    fake_screening = type(
+        "ScreenerService",
+        (_FakeProductionScreening,),
+        {"__module__": "app.services.screener_service"},
+    )()
+    session = _FakeSession(
+        [
+            _FakeExecuteResult(scalar_rows=[date(2026, 5, 13)]),
+            _FakeExecuteResult(scalar_rows=[_FakeCryptoSnapshot()]),
+            _FakeExecuteResult(scalar_rows=[date(2026, 5, 13)]),
+            _FakeExecuteResult(rows=[_coverage_row(latest_count=30)]),
+        ]
+    )
+
+    resp = await build_screener_results(
+        preset_id="crypto_high_volume",
+        screening_service=fake_screening,
+        resolver=_FakeResolver(watched={("crypto", "KRW-BTC")}),
+        market="crypto",
+        session=session,
+        now=lambda: datetime(2026, 5, 13, 3, 0, tzinfo=UTC),
+    )
+
+    fake_screening.list_screening.assert_not_called()
+    assert session.calls == 4
+    assert resp.freshness.cacheHit is True
+    assert resp.freshness.dataState == "fresh"
+    row = resp.results[0]
+    assert row.symbol == "KRW-BTC"
+    assert row.priceLabel == "145,000,000원"
+    assert row.metricValueLabel == "123,456,789,000"
+    assert row.isWatched is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_screener_results_does_not_fallback_when_fresh_crypto_snapshot_has_no_qualifiers() -> (
+    None
+):
+    fake_screening = type(
+        "ScreenerService",
+        (_FakeProductionScreening,),
+        {"__module__": "app.services.screener_service"},
+    )()
+    session = _FakeSession(
+        [
+            _FakeExecuteResult(scalar_rows=[date(2026, 5, 13)]),
+            _FakeExecuteResult(scalar_rows=[]),
+            _FakeExecuteResult(scalar_rows=[date(2026, 5, 13)]),
+            _FakeExecuteResult(rows=[_coverage_row(latest_count=30)]),
+        ]
+    )
+
+    resp = await build_screener_results(
+        preset_id="crypto_oversold",
+        screening_service=fake_screening,
+        resolver=_FakeResolver(watched=set()),
+        market="crypto",
+        session=session,
+        now=lambda: datetime(2026, 5, 13, 3, 0, tzinfo=UTC),
+    )
+
+    fake_screening.list_screening.assert_not_called()
+    assert resp.results == []
+    assert any("암호화폐 스크리너 스냅샷" in w for w in resp.warnings)
+    assert resp.freshness.dataState == "fresh"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_screener_results_falls_back_when_crypto_snapshot_is_stale() -> (
+    None
+):
+    fake_screening = type(
+        "ScreenerService",
+        (_FakeProductionScreening,),
+        {"__module__": "app.services.screener_service"},
+    )()
+    fake_screening.list_screening = AsyncMock(
+        return_value={
+            "results": [
+                {
+                    "symbol": "KRW-ETH",
+                    "name": "Ethereum",
+                    "market": "crypto",
+                    "current_price": 4_800_000,
+                    "change_rate": 0.5,
+                    "trade_amount_24h": 50_000_000_000,
+                }
+            ],
+            "warnings": [],
+            "timestamp": datetime(2026, 5, 13, 3, 0, tzinfo=UTC).isoformat(),
+            "cache_hit": False,
+        }
+    )
+    session = _FakeSession(
+        [
+            _FakeExecuteResult(scalar_rows=[date(2026, 5, 12)]),
+            _FakeExecuteResult(scalar_rows=[]),
+            _FakeExecuteResult(scalar_rows=[date(2026, 5, 12)]),
+            _FakeExecuteResult(rows=[_coverage_row(latest_count=30)]),
+        ]
+    )
+
+    resp = await build_screener_results(
+        preset_id="crypto_high_volume",
+        screening_service=fake_screening,
+        resolver=_FakeResolver(watched=set()),
+        market="crypto",
+        session=session,
+        now=lambda: datetime(2026, 5, 13, 3, 0, tzinfo=UTC),
+    )
+
+    fake_screening.list_screening.assert_awaited_once()
+    assert resp.results[0].symbol == "KRW-ETH"
+    assert resp.freshness.cacheHit is False
 
 
 @pytest.mark.unit

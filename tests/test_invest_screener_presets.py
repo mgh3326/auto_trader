@@ -107,7 +107,7 @@ def test_crypto_screening_filters_are_read_only_market_filters() -> None:
 
     assert high_volume == {
         "market": "crypto",
-        "sort_by": "volume",
+        "sort_by": "trade_amount",
         "sort_order": "desc",
         "limit": 20,
     }
