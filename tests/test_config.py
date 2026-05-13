@@ -169,6 +169,48 @@ class TestConfigLoading:
             "TTTC8001R|/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
         ] == {"rate": 10, "period": 1.0}
 
+    def test_public_api_paths_supports_csv_env_string(self, monkeypatch):
+        monkeypatch.setenv("PUBLIC_API_PATHS", "/healthz,/api/n8n/scan")
+
+        cfg = _new_settings()
+
+        assert cfg.PUBLIC_API_PATHS == ["/healthz", "/api/n8n/scan"]
+
+    def test_public_api_paths_supports_json_env_string(self, monkeypatch):
+        monkeypatch.setenv("PUBLIC_API_PATHS", '["/healthz", "/api/n8n/scan"]')
+
+        cfg = _new_settings()
+
+        assert cfg.PUBLIC_API_PATHS == ["/healthz", "/api/n8n/scan"]
+
+    def test_public_api_paths_supports_empty_string_env(self, monkeypatch):
+        monkeypatch.setenv("PUBLIC_API_PATHS", "")
+
+        cfg = _new_settings()
+
+        assert cfg.PUBLIC_API_PATHS == []
+
+    def test_public_api_paths_supports_empty_json_env_string(self, monkeypatch):
+        monkeypatch.setenv("PUBLIC_API_PATHS", "[]")
+
+        cfg = _new_settings()
+
+        assert cfg.PUBLIC_API_PATHS == []
+
+    def test_public_api_paths_rejects_non_string_json_list(self, monkeypatch):
+        monkeypatch.setenv("PUBLIC_API_PATHS", '["/healthz", 1]')
+
+        with pytest.raises(ValidationError, match="PUBLIC_API_PATHS JSON value"):
+            _new_settings()
+
+    def test_constructor_public_api_paths_list_is_preserved(self):
+        cfg = _build_settings(
+            **_required_settings_kwargs(),
+            PUBLIC_API_PATHS=["/healthz"],
+        )
+
+        assert cfg.PUBLIC_API_PATHS == ["/healthz"]
+
     def test_invalid_api_rate_limit_json_raises_validation_error(self, monkeypatch):
         monkeypatch.setenv("KIS_API_RATE_LIMITS", "{not-json}")
 
