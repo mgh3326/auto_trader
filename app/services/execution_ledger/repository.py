@@ -71,11 +71,18 @@ class ExecutionLedgerRepository:
         self.db = db
 
     async def get_by_key(
-        self, broker: str, broker_order_id: str, fill_seq: int
+        self,
+        broker: str,
+        account_mode: str,
+        venue: str,
+        broker_order_id: str,
+        fill_seq: int,
     ) -> ExecutionLedger | None:
         result = await self.db.execute(
             select(ExecutionLedger).where(
                 ExecutionLedger.broker == broker,
+                ExecutionLedger.account_mode == account_mode,
+                ExecutionLedger.venue == venue,
                 ExecutionLedger.broker_order_id == broker_order_id,
                 ExecutionLedger.fill_seq == fill_seq,
             )
@@ -84,7 +91,11 @@ class ExecutionLedgerRepository:
 
     async def classify_fill(self, fill: ExecutionLedgerUpsert) -> UpsertStatus:
         existing = await self.get_by_key(
-            fill.broker, fill.broker_order_id, fill.fill_seq
+            fill.broker,
+            fill.account_mode,
+            fill.venue,
+            fill.broker_order_id,
+            fill.fill_seq,
         )
         if existing is None:
             return "inserted"
@@ -97,7 +108,11 @@ class ExecutionLedgerRepository:
         status = await self.classify_fill(fill)
         if status == "unchanged":
             existing = await self.get_by_key(
-                fill.broker, fill.broker_order_id, fill.fill_seq
+                fill.broker,
+                fill.account_mode,
+                fill.venue,
+                fill.broker_order_id,
+                fill.fill_seq,
             )
             return "unchanged", int(existing.id) if existing else 0
 
@@ -106,11 +121,12 @@ class ExecutionLedgerRepository:
         update_payload = {
             key: getattr(stmt.excluded, key)
             for key in payload
-            if key not in {"broker", "broker_order_id", "fill_seq"}
+            if key
+            not in {"broker", "account_mode", "venue", "broker_order_id", "fill_seq"}
         }
         update_payload["updated_at"] = datetime.now(UTC)
         stmt = stmt.on_conflict_do_update(
-            constraint="uq_execution_ledger_broker_order_fill",
+            constraint="uq_execution_ledger_fill",
             set_=update_payload,
         ).returning(ExecutionLedger.id)
         result = await self.db.execute(stmt)

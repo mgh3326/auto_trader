@@ -13,7 +13,7 @@ from app.services.brokers.kis.client import KISClient
 from app.services.execution_ledger.normalizers import (
     _normalize_kis_domestic_filled,
     _normalize_kis_overseas_filled,
-    _normalize_upbit_filled,
+    normalize_upbit_order,
 )
 from app.services.execution_ledger.normalizers import (
     _parse_filled_at as _parse_filled_at_kst,
@@ -27,27 +27,71 @@ _EQUITY_QUOTE_CONCURRENCY = 5
 
 
 async def _fetch_upbit_filled(days: int) -> tuple[list[dict], list[dict]]:
+    """Paginate through Upbit closed orders and expand each into per-trade fills.
+
+    Pages are fetched in descending created_at order.  Pagination stops when a
+    page returns no orders within the requested time window (all remaining pages
+    are older), or when a page is smaller than the requested limit (last page).
+    For each order with executed volume, order detail is fetched to obtain the
+    individual trade breakdown; if the detail call fails the aggregate fill is
+    used as a fallback.
+    """
     try:
-        closed = await upbit_service.fetch_closed_orders(market=None, limit=100)
-        orders = [
-            n for raw in closed if (n := _normalize_upbit_filled(raw)) is not None
-        ]
         cutoff = now_kst() - timedelta(days=days)
-        filtered_orders: list[dict[str, Any]] = []
+        all_fills: list[dict[str, Any]] = []
+        page = 1
+        limit = 100
 
-        for order in orders:
-            parsed_filled_at = _parse_filled_at_kst(order.get("filled_at", ""))
-            if parsed_filled_at is None:
-                logger.warning(
-                    "Upbit filled order skipped due to invalid filled_at: order_id=%s filled_at=%r",
-                    order.get("order_id"),
-                    order.get("filled_at"),
-                )
-                continue
-            if parsed_filled_at >= cutoff:
-                filtered_orders.append(order)
+        while True:
+            closed = await upbit_service.fetch_closed_orders(
+                market=None, limit=limit, page=page
+            )
+            if not closed:
+                break
 
-        return filtered_orders, []
+            page_had_relevant = False
+            for raw in closed:
+                executed_vol = float(raw.get("executed_volume") or 0)
+                if executed_vol <= 0:
+                    continue
+
+                # Fetch order detail to get individual trade breakdown when not
+                # already embedded in the list response.
+                if not raw.get("trades"):
+                    try:
+                        raw = await upbit_service.fetch_order_detail(
+                            str(raw.get("uuid", ""))
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Upbit order detail fetch failed for %s: %s",
+                            raw.get("uuid"),
+                            exc,
+                        )
+
+                fills = normalize_upbit_order(raw)
+                for fill in fills:
+                    parsed_filled_at = _parse_filled_at_kst(fill.get("filled_at", ""))
+                    if parsed_filled_at is None:
+                        logger.warning(
+                            "Upbit fill skipped due to invalid filled_at: order_id=%s filled_at=%r",
+                            fill.get("order_id"),
+                            fill.get("filled_at"),
+                        )
+                        continue
+                    if parsed_filled_at >= cutoff:
+                        page_had_relevant = True
+                        all_fills.append(fill)
+
+            # Orders are returned newest-first; once a whole page is before the
+            # cutoff window there is nothing relevant in subsequent pages.
+            if not page_had_relevant:
+                break
+            if len(closed) < limit:
+                break
+            page += 1
+
+        return all_fills, []
     except Exception as exc:
         logger.warning("Upbit filled-orders fetch failed: %s", exc)
         return [], [{"market": "crypto", "error": str(exc)}]
@@ -79,7 +123,9 @@ async def _fetch_kis_overseas_filled(days: int) -> tuple[list[dict], list[dict]]
         start_date = (now_kst() - timedelta(days=days)).strftime("%Y%m%d")
 
         all_orders: list[dict] = []
-        seen_order_ids: set[str] = set()
+        # Dedup by (order_id, fill_seq) so that multiple partial fills for the
+        # same order are each preserved while true duplicates are dropped.
+        seen_fill_keys: set[tuple[str, int]] = set()
 
         # KIS overseas daily-order inquiry treats NASD as a US-wide history
         # selector in practice: rows may include NYSE/AMEX via ovrs_excg_cd.
@@ -95,9 +141,11 @@ async def _fetch_kis_overseas_filled(days: int) -> tuple[list[dict], list[dict]]
             )
             for raw in raw_orders or []:
                 normalized = _normalize_kis_overseas_filled(raw)
-                if normalized and normalized["order_id"] not in seen_order_ids:
-                    seen_order_ids.add(normalized["order_id"])
-                    all_orders.append(normalized)
+                if normalized:
+                    fill_key = (normalized["order_id"], normalized["fill_seq"])
+                    if fill_key not in seen_fill_keys:
+                        seen_fill_keys.add(fill_key)
+                        all_orders.append(normalized)
         except Exception as exc:
             logger.warning("KIS overseas US-wide fetch failed: %s", exc)
 

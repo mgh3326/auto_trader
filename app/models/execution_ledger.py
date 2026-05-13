@@ -32,9 +32,11 @@ class ExecutionLedger(Base):
     __table_args__ = (
         UniqueConstraint(
             "broker",
+            "account_mode",
+            "venue",
             "broker_order_id",
             "fill_seq",
-            name="uq_execution_ledger_broker_order_fill",
+            name="uq_execution_ledger_fill",
         ),
         CheckConstraint("broker IN ('kis','upbit')", name="execution_ledger_broker"),
         CheckConstraint(

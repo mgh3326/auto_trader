@@ -55,3 +55,34 @@ def test_values_differ_detects_changed_fill_price() -> None:
     changed = _fill(filled_price=Decimal("100000001"))
 
     assert _values_differ(row, changed) is True
+
+
+# --- Issue 4 regression: wider unique key (account_mode + venue) ---
+
+
+def test_upsert_key_includes_account_mode_and_venue() -> None:
+    """Fills that differ only in account_mode or venue must NOT be considered the same row."""
+    live_fill = _fill(account_mode="live", venue="upbit_krw")
+    mock_fill = _fill(account_mode="mock", venue="upbit_krw")
+    other_venue_fill = _fill(account_mode="live", venue="upbit_usdt")
+
+    # Different account_mode → different key → not equal
+    assert _values_differ(_row(live_fill), mock_fill) is True
+    # Different venue → different key → not equal
+    assert _values_differ(_row(live_fill), other_venue_fill) is True
+    # Same key → same
+    assert _values_differ(_row(live_fill), live_fill) is False
+
+
+def test_two_fills_same_order_different_fill_seq_are_distinct() -> None:
+    """Multiple partial fills for the same order_id must survive as separate rows."""
+    fill_a = _fill(
+        fill_seq=0, filled_qty=Decimal("0.1"), filled_price=Decimal("50000000")
+    )
+    fill_b = _fill(
+        fill_seq=1, filled_qty=Decimal("0.2"), filled_price=Decimal("51000000")
+    )
+
+    # _values_differ compares column values, not keys; the rows are distinct by key
+    assert fill_a.fill_seq != fill_b.fill_seq
+    assert fill_a.broker_order_id == fill_b.broker_order_id
