@@ -47,6 +47,18 @@ logger = logging.getLogger(__name__)
 
 _CRYPTO_MARKET_CAP_CACHE = MarketCapCache(ttl=600)
 
+
+def _is_upbit_krw_market_code(symbol: Any) -> bool:
+    """Return True for Upbit KRW quote-market symbols only.
+
+    TradingView's UPBIT crypto screener includes KRW, BTC, and USDT quote
+    markets.  `/invest` crypto surfaces model Upbit's Korean/KRW market, so
+    fallback/live screener rows must not leak BTC-* or USDT-* pairs into the
+    read model.
+    """
+    return str(symbol or "").strip().upper().startswith("KRW-")
+
+
 # Crypto trade cooldown service singleton
 _cooldown_service: CryptoTradeCooldownService | None = None
 
@@ -218,6 +230,18 @@ async def _normalize_crypto_results(
             }
         )
 
+    pre_krw_filter_total = len(raw_results)
+    raw_results = [
+        item for item in raw_results if _is_upbit_krw_market_code(item.get("symbol"))
+    ]
+    filtered_by_quote_market = pre_krw_filter_total - len(raw_results)
+    if filtered_by_quote_market:
+        logger.info(
+            "filtered %s non-KRW Upbit crypto screener rows from %s live rows",
+            filtered_by_quote_market,
+            pre_krw_filter_total,
+        )
+
     # Fetch Upbit display names and warning markets
     market_codes = [
         str(item.get("symbol") or "").strip().upper() for item in raw_results
@@ -275,18 +299,28 @@ async def _normalize_crypto_results(
     )
     btc_change_24h: float | None = None
     if btc_item is None:
-        warnings.append(
-            "KRW-BTC ticker not found; crash filter uses btc_change_24h=0.0 fallback."
-        )
+        if not pure_market_snapshot:
+            logger.warning(
+                "KRW-BTC ticker not found in Upbit KRW crypto screener rows; "
+                "crash filter uses btc_change_24h=0.0 fallback"
+            )
+            warnings.append(
+                "BTC 기준 데이터가 없어 급락 방어 필터를 기본값으로 적용했습니다."
+            )
     else:
         btc_change_24h = _to_optional_float(
             btc_item.get("signed_change_rate") or btc_item.get("change_rate")
         )
         if btc_change_24h is None:
             btc_change_24h = 0.0
-            warnings.append(
-                "KRW-BTC change rate is missing; crash filter uses btc_change_24h=0.0 fallback."
-            )
+            if not pure_market_snapshot:
+                logger.warning(
+                    "KRW-BTC change rate is missing; crash filter uses "
+                    "btc_change_24h=0.0 fallback"
+                )
+                warnings.append(
+                    "BTC 기준 등락률이 없어 급락 방어 필터를 기본값으로 적용했습니다."
+                )
 
     # Apply warning + crash filters for interactive screening; snapshot builds keep
     # every provider row and only carry warning metadata forward.
