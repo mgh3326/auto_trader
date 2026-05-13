@@ -111,6 +111,10 @@ class _FakeSnapshot:
         )
 
 
+def _name_row(symbol: str, name: str) -> Any:
+    return type("NameRow", (), {"symbol": symbol, "name": name})()
+
+
 class _FakeResolver:
     def __init__(self, watched: set[tuple[str, str]]) -> None:
         self._w = watched
@@ -910,12 +914,11 @@ async def test_build_screener_results_uses_snapshots_before_external_screening()
             _FakeExecuteResult(
                 scalar_rows=[_FakeSnapshot(symbol="005930")]
             ),  # qualifying rows
+            _FakeExecuteResult(rows=[_name_row("005930", "삼성전자")]),  # filter names
             _FakeExecuteResult(
                 scalar_rows=[_FakeSnapshot(symbol="005930")]
             ),  # enrichment
-            _FakeExecuteResult(
-                rows=[type("NameRow", (), {"symbol": "005930", "name": "삼성전자"})()]
-            ),  # kr_names
+            _FakeExecuteResult(rows=[_name_row("005930", "삼성전자")]),  # kr_names
         ]
     )
 
@@ -1056,6 +1059,45 @@ async def test_load_consecutive_gainers_uses_latest_snapshot_partition_only() ->
     assert result is not None, (
         "None would mean 'could not check'; [] means 'checked and empty'"
     )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_load_consecutive_gainers_filters_kr_non_common_stock_names() -> None:
+    """Snapshot-first KR screener should remove obvious ETF/preferred rows before slicing."""
+    from app.services.invest_view_model.screener_service import (
+        _load_consecutive_gainers_from_snapshots,
+    )
+
+    session = _FakeSession(
+        [
+            _FakeExecuteResult(scalar_rows=[date(2026, 5, 13)]),
+            _FakeExecuteResult(
+                scalar_rows=[
+                    _FakeSnapshot(symbol="069500", week_change_rate=Decimal("10.0")),
+                    _FakeSnapshot(symbol="005930", week_change_rate=Decimal("8.0")),
+                    _FakeSnapshot(symbol="005935", week_change_rate=Decimal("7.0")),
+                    _FakeSnapshot(symbol="000660", week_change_rate=Decimal("6.0")),
+                ]
+            ),
+            _FakeExecuteResult(
+                rows=[
+                    _name_row("069500", "KODEX 200"),
+                    _name_row("005930", "삼성전자"),
+                    _name_row("005935", "삼성전자우"),
+                    _name_row("000660", "SK하이닉스"),
+                ]
+            ),
+        ]
+    )
+
+    result = await _load_consecutive_gainers_from_snapshots(
+        session, market="kr", limit=2
+    )
+
+    assert result is not None
+    assert [row["symbol"] for row in result] == ["005930", "000660"]
+    assert [row["name"] for row in result] == ["삼성전자", "SK하이닉스"]
 
 
 @pytest.mark.unit
