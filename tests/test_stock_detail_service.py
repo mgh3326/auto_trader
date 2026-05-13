@@ -58,6 +58,10 @@ async def test_build_stock_detail_declares_us_orderbook_unsupported():
 
     assert response.symbol == "BRK.B"
     assert response.market == "us"
+    assert response.fxSensitivity is not None
+    assert response.fxSensitivity.status == "missing_holding"
+    assert "매수" not in response.fxSensitivity.caution
+    assert "매도" not in response.fxSensitivity.caution
     assert response.naverEnrichment is not None
     assert response.naverEnrichment.naverCode == "BRK.B"
     assert response.naverEnrichment.liveFetchEnabled is False
@@ -92,6 +96,13 @@ async def test_build_stock_detail_maps_holding_and_kr_orderbook_when_available()
             bids=[{"price": 71100, "quantity": 12}],
         )
 
+    fx_rate_called = False
+
+    async def fx_rate_provider():
+        nonlocal fx_rate_called
+        fx_rate_called = True
+        return 1360.0
+
     response = await build_stock_detail(
         user_id=1,
         market="kr",
@@ -100,10 +111,15 @@ async def test_build_stock_detail_maps_holding_and_kr_orderbook_when_available()
         resolver=_resolve_kr,
         holding_provider=holding_provider,
         orderbook_provider=orderbook_provider,
+        fx_rate_provider=fx_rate_provider,
     )
 
     assert response.holding is not None
     assert response.holding.totalQuantity == 2
+    assert response.fxSensitivity is not None
+    assert response.fxSensitivity.status == "not_applicable"
+    assert response.fxSensitivity.scenarios == []
+    assert fx_rate_called is False
     assert response.naverEnrichment is not None
     assert response.naverEnrichment.naverCode == "005930"
     assert (
@@ -125,5 +141,88 @@ async def test_build_stock_detail_omits_naver_poc_for_crypto():
     )
 
     assert response.market == "crypto"
+    assert response.fxSensitivity is not None
+    assert response.fxSensitivity.status == "not_applicable"
     assert response.naverEnrichment is None
     assert response.orderbookSupport.supported is False
+
+
+@pytest.mark.asyncio
+async def test_build_stock_detail_adds_fx_sensitivity_for_us_holding():
+    async def holding_provider(user_id, market, symbol, db):
+        return StockDetailHolding(
+            totalQuantity=2,
+            averageCost=200,
+            costBasis=400,
+            valueNative=422.68,
+            valueKrw=575000,
+            pnlKrw=30000,
+            pnlRate=0.055,
+            includedSources=["kis"],
+            priceState="live",
+        )
+
+    async def fx_rate_provider():
+        return 1360.0
+
+    response = await build_stock_detail(
+        user_id=1,
+        market="us",
+        symbol="BRK-B",
+        db=SimpleNamespace(),
+        resolver=_resolve_us,
+        holding_provider=holding_provider,
+        fx_rate_provider=fx_rate_provider,
+    )
+
+    assert response.fxSensitivity is not None
+    assert response.fxSensitivity.status == "available"
+    assert response.fxSensitivity.baseFxRate == 1360.0
+    assert response.fxSensitivity.holdingValueNative == 422.68
+    assert [scenario.rateMovePct for scenario in response.fxSensitivity.scenarios] == [
+        -1.0,
+        1.0,
+    ]
+    assert response.fxSensitivity.scenarios[0].estimatedKrwImpact == pytest.approx(
+        -5748.448
+    )
+    assert response.fxSensitivity.scenarios[1].estimatedKrwImpact == pytest.approx(
+        5748.448
+    )
+    assert "매수" not in response.fxSensitivity.caution
+    assert "매도" not in response.fxSensitivity.caution
+    assert "추천" not in response.fxSensitivity.caution
+
+
+@pytest.mark.asyncio
+async def test_build_stock_detail_degrades_when_us_fx_provider_fails():
+    async def holding_provider(user_id, market, symbol, db):
+        return StockDetailHolding(
+            totalQuantity=2,
+            averageCost=200,
+            costBasis=400,
+            valueNative=422.68,
+            valueKrw=575000,
+            pnlKrw=30000,
+            pnlRate=0.055,
+            includedSources=["kis"],
+            priceState="live",
+        )
+
+    async def fx_rate_provider():
+        raise RuntimeError("provider unavailable")
+
+    response = await build_stock_detail(
+        user_id=1,
+        market="us",
+        symbol="BRK-B",
+        db=SimpleNamespace(),
+        resolver=_resolve_us,
+        holding_provider=holding_provider,
+        fx_rate_provider=fx_rate_provider,
+    )
+
+    assert response.fxSensitivity is not None
+    assert response.fxSensitivity.status == "missing_fx_rate"
+    assert response.fxSensitivity.scenarios == []
+    assert "fx_sensitivity_unavailable" in response.meta.warnings

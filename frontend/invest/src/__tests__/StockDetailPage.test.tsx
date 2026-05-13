@@ -89,6 +89,30 @@ const aboveFold: StockDetailResponse = {
     includedSources: ["kis"],
     priceState: "live",
   },
+  fxSensitivity: {
+    source: "stock_detail_fx_sensitivity",
+    status: "available",
+    currencyPair: "USD/KRW",
+    baseFxRate: 1360,
+    holdingValueNative: 422.68,
+    holdingValueKrw: 575000,
+    basis: "portfolio_value",
+    scenarios: [
+      {
+        rateMovePct: -1,
+        estimatedKrwImpact: -5748.448,
+        estimatedValueKrw: 569096.352,
+        label: "USD/KRW -1%",
+      },
+      {
+        rateMovePct: 1,
+        estimatedKrwImpact: 5748.448,
+        estimatedValueKrw: 580593.248,
+        label: "USD/KRW +1%",
+      },
+    ],
+    caution: "환율 민감도는 USD/KRW 1% 변동을 보유 평가액에 단순 적용한 가정치입니다.",
+  },
   latestAnalysis: {
     id: 11,
     modelName: "committee",
@@ -183,6 +207,9 @@ test("renders the QQQM stock detail shell from the read-only backend contract", 
   expect(screen.getByText("$211.34")).toBeInTheDocument();
   expect(screen.getByText("+1.06%")).toBeInTheDocument();
   expect(screen.getByTestId("stock-detail-holding")).toHaveTextContent("2주");
+  expect(screen.getByTestId("stock-detail-fx-sensitivity")).toHaveTextContent("환율 민감도");
+  expect(screen.getByTestId("stock-detail-fx-sensitivity")).toHaveTextContent("USD/KRW");
+  expect(screen.getByTestId("stock-detail-fx-sensitivity")).toHaveTextContent("+₩5,748");
   expect(screen.getByTestId("stock-detail-profile")).toHaveTextContent("ETF");
   expect(screen.getByTestId("stock-detail-analysis")).toHaveTextContent("hold");
   expect(screen.getByTestId("stock-detail-naver-poc")).toHaveTextContent("Naver 원천 데이터 PoC");
@@ -219,4 +246,40 @@ test("omits the Naver PoC card when the backend has no safe enrichment map", asy
 
   expect(await screen.findByTestId("stock-detail-shell")).toBeInTheDocument();
   expect(screen.queryByTestId("stock-detail-naver-poc")).not.toBeInTheDocument();
+});
+
+test("renders conservative fallback text when FX sensitivity is not applicable", async () => {
+  vi.mocked(stockApi.fetchStockDetail).mockResolvedValue({
+    ...aboveFold,
+    market: "kr",
+    symbol: "005930",
+    displayName: "삼성전자",
+    exchange: "KOSPI",
+    currency: "KRW",
+    fxSensitivity: {
+      source: "stock_detail_fx_sensitivity",
+      status: "not_applicable",
+      currencyPair: null,
+      baseFxRate: null,
+      holdingValueNative: null,
+      holdingValueKrw: null,
+      basis: "not_applicable",
+      scenarios: [],
+      caution: "KRW 자산은 별도 USD/KRW 환율 민감도 계산을 표시하지 않습니다.",
+    },
+  });
+
+  renderPage();
+
+  expect(await screen.findByTestId("stock-detail-fx-sensitivity")).toHaveTextContent("환율 민감도");
+  expect(screen.getByTestId("stock-detail-fx-sensitivity")).toHaveTextContent("KRW 자산은 별도 USD/KRW 환율 민감도 계산을 표시하지 않습니다.");
+});
+
+test("omits the FX sensitivity card when the backend returns null", async () => {
+  vi.mocked(stockApi.fetchStockDetail).mockResolvedValue({ ...aboveFold, fxSensitivity: null });
+
+  renderPage();
+
+  expect(await screen.findByTestId("stock-detail-shell")).toBeInTheDocument();
+  expect(screen.queryByTestId("stock-detail-fx-sensitivity")).not.toBeInTheDocument();
 });

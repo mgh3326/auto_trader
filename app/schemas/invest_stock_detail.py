@@ -43,6 +43,14 @@ AnalysisDecision = Literal["buy", "hold", "sell"]
 DiscussionSignalStatus = Literal["fixture_backed_poc", "no_go_pending_review"]
 DiscussionSignalMomentum = Literal["rising", "flat", "falling", "unknown"]
 DiscussionSignalFreshness = Literal["fixture", "stale", "missing"]
+FxSensitivityStatus = Literal[
+    "available",
+    "not_applicable",
+    "missing_holding",
+    "missing_native_value",
+    "missing_fx_rate",
+]
+FxSensitivityBasis = Literal["portfolio_value", "fallback_quote", "not_applicable"]
 
 
 class CapabilityFlag(BaseModel):
@@ -236,6 +244,42 @@ class StockDetailHolding(BaseModel):
     priceState: PriceStateLiteral = "live"
 
 
+class StockDetailFxScenario(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rateMovePct: float
+    estimatedKrwImpact: float | None = None
+    estimatedValueKrw: float | None = None
+    label: str
+
+
+class StockDetailFxSensitivity(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: Literal["stock_detail_fx_sensitivity"] = "stock_detail_fx_sensitivity"
+    status: FxSensitivityStatus
+    currencyPair: Literal["USD/KRW"] | None = None
+    baseFxRate: float | None = None
+    holdingValueNative: float | None = None
+    holdingValueKrw: float | None = None
+    basis: FxSensitivityBasis = "not_applicable"
+    scenarios: list[StockDetailFxScenario] = Field(default_factory=list)
+    caution: str
+
+    @model_validator(mode="after")
+    def enforce_status_shape(self) -> StockDetailFxSensitivity:
+        if self.status == "available":
+            if self.currencyPair != "USD/KRW" or self.baseFxRate is None:
+                raise ValueError("available FX sensitivity requires USD/KRW rate")
+            if self.holdingValueNative is None or self.holdingValueNative <= 0:
+                raise ValueError("available FX sensitivity requires positive native value")
+            if not self.scenarios:
+                raise ValueError("available FX sensitivity requires scenarios")
+        elif self.scenarios:
+            raise ValueError("unavailable FX sensitivity must not expose scenarios")
+        return self
+
+
 class StockDetailLatestAnalysis(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -292,6 +336,7 @@ class StockDetailResponse(BaseModel):
     naverEnrichment: StockDetailNaverEnrichment | None = None
     discussionSignal: StockDetailDiscussionSignal | None = None
     holding: StockDetailHolding | None = None
+    fxSensitivity: StockDetailFxSensitivity | None = None
     latestAnalysis: StockDetailLatestAnalysis | None = None
     orderbookSupport: StockDetailOrderbookSupport
     orderbook: StockDetailOrderbook | None = None
