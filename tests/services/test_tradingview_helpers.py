@@ -153,6 +153,46 @@ async def test_fetch_tradingview_raises_on_network_error():
             await tv.fetch_tradingview_events_for_date(date(2026, 5, 13))
 
 
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_fetch_tradingview_raw_sends_browser_origin_headers():
+    from app.services.market_events import tradingview_helpers as tv
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"status": "ok", "result": []}
+
+    class FakeClient:
+        def __init__(self):
+            self.calls = []
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url, *, params=None, headers=None):
+            self.calls.append({"url": url, "params": params, "headers": headers})
+            return FakeResponse()
+
+    fake_client = FakeClient()
+    with patch.object(tv.httpx, "AsyncClient", return_value=fake_client):
+        payload = await tv._fetch_tradingview_raw(date(2026, 5, 13), date(2026, 5, 13))
+
+    assert payload == {"status": "ok", "result": []}
+    assert fake_client.calls[0]["url"] == tv.TRADINGVIEW_CALENDAR_URL
+    assert fake_client.calls[0]["headers"]["Origin"] == "https://www.tradingview.com"
+    assert (
+        fake_client.calls[0]["headers"]["Referer"]
+        == "https://www.tradingview.com/economic-calendar/"
+    )
+    assert "Mozilla/5.0" in fake_client.calls[0]["headers"]["User-Agent"]
+
+
 @pytest.mark.unit
 def test_parse_tv_rows_skips_items_without_parseable_date():
     from app.services.market_events.tradingview_helpers import _parse_tv_rows
