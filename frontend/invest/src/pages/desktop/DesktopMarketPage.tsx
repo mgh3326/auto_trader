@@ -133,13 +133,21 @@ export function DesktopMarketPage() {
                 국내 지수, 글로벌 지수, 환율/매크로, crypto read-only 스냅샷입니다.
               </p>
             </div>
-            <button
-              type="button"
-              onClick={reload}
-              style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--fg-1)", fontWeight: 800, cursor: "pointer" }}
-            >
-              새로고침
-            </button>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <Link
+                to="/market/fx"
+                style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--fg-1)", fontWeight: 800, textDecoration: "none" }}
+              >
+                FX·매크로 상세
+              </Link>
+              <button
+                type="button"
+                onClick={reload}
+                style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--fg-1)", fontWeight: 800, cursor: "pointer" }}
+              >
+                새로고침
+              </button>
+            </div>
           </div>
 
           {state.status === "loading" && <Card>시장 데이터를 불러오는 중…</Card>}

@@ -31,6 +31,7 @@ import { CalendarRoute } from "./pages/desktop/DesktopCalendarPage";
 import { CoverageRoute } from "./pages/desktop/DesktopCoveragePage";
 import { DesktopScreenerPage } from "./pages/desktop/DesktopScreenerPage";
 import { DesktopMarketPage } from "./pages/desktop/DesktopMarketPage";
+import { FxMacroRoute } from "./pages/desktop/FxMacroPage";
 import { StockDetailPage } from "./pages/stock-detail/StockDetailPage";
 
 // Static legacy /app/* redirect that preserves any ?search and #hash
@@ -68,6 +69,7 @@ export const router = createBrowserRouter(
     { path: "/calendar", element: <CalendarRoute /> },
     { path: "/coverage", element: <CoverageRoute /> },
     { path: "/market", element: <DesktopMarketPage /> },
+    { path: "/market/fx", element: <FxMacroRoute /> },
     { path: "/screener", element: <DesktopScreenerPage /> },
     { path: "/stocks/:market/:symbol", element: <StockDetailPage /> },
 

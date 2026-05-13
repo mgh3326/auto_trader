@@ -83,6 +83,7 @@ test("renders market dashboard sections and read-only copy", async () => {
   expect(screen.getByRole("heading", { name: "시장" })).toBeInTheDocument();
   expect(screen.getByText("2,875.25")).toBeInTheDocument();
   expect(screen.getByText("가상자산 시장")).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "FX·매크로 상세" })).toHaveAttribute("href", "/invest/market/fx");
   expect(screen.getAllByText(/kimchi_premium: timeout/).length).toBeGreaterThan(0);
   expect(screen.getByText(/주문·매매 API를 호출하지 않습니다/)).toBeInTheDocument();
 });
