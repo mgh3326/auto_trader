@@ -24,6 +24,13 @@ SENSITIVE_KEY_MARKERS = (
 
 # Upbit order states that represent at least a partial execution
 UPBIT_FILL_STATES: frozenset[str] = frozenset({"done", "cancel"})
+# PostgreSQL Integer columns are signed int32; hash-derived fill_seq values must
+# stay inside that range or classify/upsert lookups fail before any commit.
+MAX_SQL_INT32 = 2_147_483_647
+
+
+def _stable_int32_hash(seed: str) -> int:
+    return int(hashlib.sha256(str(seed).encode()).hexdigest()[:8], 16) & MAX_SQL_INT32
 
 
 def _strip_crypto_prefix(symbol: str) -> str:
@@ -81,7 +88,7 @@ def _redact_sensitive_keys(payload: Any) -> Any:
 
 def _upbit_trade_fill_seq(trade_uuid: str) -> int:
     """Stable fill_seq derived from Upbit trade uuid (SHA-256 truncated)."""
-    return int(hashlib.sha256(str(trade_uuid).encode()).hexdigest()[:8], 16)
+    return _stable_int32_hash(str(trade_uuid))
 
 
 def _normalize_upbit_filled(order: dict[str, Any]) -> dict[str, Any] | None:
@@ -228,7 +235,7 @@ def _domestic_fill_seq(order: dict[str, Any]) -> int:
     seed = "|".join(
         str(order.get(k, "")) for k in ("ord_dt", "ord_tmd", "ccld_tmd", "ccld_qty")
     )
-    return int(hashlib.sha256(seed.encode()).hexdigest()[:8], 16)
+    return _stable_int32_hash(seed)
 
 
 def _overseas_fill_seq(order: dict[str, Any]) -> int:
@@ -248,7 +255,7 @@ def _overseas_fill_seq(order: dict[str, Any]) -> int:
     seed = "|".join(
         str(order.get(k, "")) for k in ("ord_dt", "ord_tmd", "ft_ccld_qty", "odno")
     )
-    return int(hashlib.sha256(seed.encode()).hexdigest()[:8], 16)
+    return _stable_int32_hash(seed)
 
 
 def _normalize_kis_domestic_filled(order: dict[str, Any]) -> dict[str, Any] | None:

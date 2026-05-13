@@ -3,6 +3,8 @@ from __future__ import annotations
 from decimal import Decimal
 
 from app.services.execution_ledger.normalizers import (
+    MAX_SQL_INT32,
+    _domestic_fill_seq,
     _normalize_kis_domestic_filled,
     _normalize_kis_overseas_filled,
     _normalize_upbit_filled,
@@ -232,9 +234,9 @@ def test_overseas_fill_seq_hashes_when_ccld_seq_missing() -> None:
     }
     seq_a = _overseas_fill_seq(order_a)
     seq_b = _overseas_fill_seq(order_b)
-    # Both must be non-negative integers
-    assert seq_a >= 0
-    assert seq_b >= 0
+    # Both must be non-negative PostgreSQL int32 values
+    assert 0 <= seq_a <= MAX_SQL_INT32
+    assert 0 <= seq_b <= MAX_SQL_INT32
     # Different inputs must produce different hashes
     assert seq_a != seq_b
 
@@ -254,7 +256,7 @@ def test_kis_overseas_normalizer_uses_hash_fill_seq_when_no_ccld_seq() -> None:
     }
     normalized = _normalize_kis_overseas_filled(order)
     assert normalized is not None
-    assert normalized["fill_seq"] > 0  # hash, not 0
+    assert 0 < normalized["fill_seq"] <= MAX_SQL_INT32  # hash, not 0
 
 
 def test_kis_overseas_normalizer_two_fills_same_order_different_fill_seq() -> None:
@@ -277,6 +279,34 @@ def test_kis_overseas_normalizer_two_fills_same_order_different_fill_seq() -> No
     assert n2 is not None
     assert n1["order_id"] == n2["order_id"]
     assert n1["fill_seq"] != n2["fill_seq"]
+
+
+def test_hash_derived_fill_seq_values_fit_postgresql_integer() -> None:
+    assert 0 <= _upbit_trade_fill_seq("trade-cancel-1") <= MAX_SQL_INT32
+    assert (
+        0
+        <= _overseas_fill_seq(
+            {
+                "ord_dt": "20260513",
+                "ord_tmd": "140000",
+                "ft_ccld_qty": "2",
+                "odno": "us-order-2",
+            }
+        )
+        <= MAX_SQL_INT32
+    )
+    assert (
+        0
+        <= _domestic_fill_seq(
+            {
+                "ord_dt": "20260513",
+                "ord_tmd": "093000",
+                "ccld_tmd": "093001",
+                "ccld_qty": "1",
+            }
+        )
+        <= MAX_SQL_INT32
+    )
 
 
 def test_kis_domestic_normalizer_maps_sell_execution() -> None:
