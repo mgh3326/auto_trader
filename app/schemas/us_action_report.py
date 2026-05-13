@@ -8,6 +8,8 @@ from pydantic import BaseModel, ConfigDict, Field
 PriceStateLiteral = Literal["live", "stale", "missing"]
 SourceLiteral = Literal["kis_live"]
 OrderSideLiteral = Literal["buy", "sell", "unknown"]
+KISUSOrderPreviewSideLiteral = Literal["buy", "sell"]
+KISUSOrderPreviewStatusLiteral = Literal["pass", "blocked"]
 USHeldActionLiteral = Literal["sell", "trim", "hold", "add", "watch"]
 JournalStatusLiteral = Literal["active", "draft", "missing", "stale", "inactive", "paper"]
 
@@ -110,6 +112,42 @@ class KISUSAccountSnapshot(BaseModel):
     holdings: list[USHolding] = Field(default_factory=list)
     open_orders: list[USOpenOrder] = Field(default_factory=list, alias="openOrders")
     warnings: list[str] = Field(default_factory=list)
+
+
+class KISUSOrderPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    symbol: str
+    side: KISUSOrderPreviewSideLiteral
+    order_type: Literal["limit"] = Field(default="limit", alias="orderType")
+    quantity: float
+    limit_price_usd: float = Field(alias="limitPriceUsd")
+    reference_price_usd: float | None = Field(default=None, alias="referencePriceUsd")
+    thesis: str | None = None
+    strategy: str | None = None
+    target_price_usd: float | None = Field(default=None, alias="targetPriceUsd")
+    stop_loss_usd: float | None = Field(default=None, alias="stopLossUsd")
+    min_hold_days: int | None = Field(default=None, alias="minHoldDays")
+
+
+class KISUSOrderPreviewResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    symbol: str
+    side: KISUSOrderPreviewSideLiteral
+    order_type: Literal["limit"] = Field(default="limit", alias="orderType")
+    quantity: float
+    limit_price_usd: float = Field(alias="limitPriceUsd")
+    notional_usd: float = Field(alias="notionalUsd")
+    status: KISUSOrderPreviewStatusLiteral
+    submit_enabled: bool = Field(default=False, alias="submitEnabled")
+    blocked_reasons: list[str] = Field(default_factory=list, alias="blockedReasons")
+    warnings: list[str] = Field(default_factory=list)
+    check_details: dict[str, object] = Field(default_factory=dict, alias="checkDetails")
+
+
+class KISUSOrderSubmitDisabledError(RuntimeError):
+    """Raised when this preview-only flow is asked to submit a live order."""
 
 
 class USHeldPositionActionCard(BaseModel):
