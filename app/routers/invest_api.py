@@ -30,6 +30,13 @@ from app.schemas.invest_feed_research import (
 from app.schemas.invest_fx_dashboard import FxDashboardResponse
 from app.schemas.invest_home import InvestHomeResponse
 from app.schemas.invest_market_dashboard import MarketDashboardResponse
+from app.schemas.invest_momentum_events import (
+    MomentumCoverageResponse,
+    MomentumEventItem,
+    MomentumEventsResponse,
+    ThemeEventItem,
+    ThemeEventsResponse,
+)
 from app.schemas.invest_screener import (
     ScreenerPresetsResponse,
     ScreenerResultsResponse,
@@ -43,6 +50,10 @@ from app.schemas.invest_stock_detail import (
 from app.schemas.investor_flow import InvestorFlowResponse
 from app.services.invest_coverage_service import build_invest_coverage
 from app.services.invest_home_service import InvestHomeService
+from app.services.invest_momentum_events.coverage_service import build_momentum_coverage
+from app.services.invest_momentum_events.repository import (
+    InvestMomentumEventSnapshotsRepository,
+)
 from app.services.invest_screener_snapshots.coverage_service import build_coverage
 from app.services.invest_view_model.account_panel_service import build_account_panel
 from app.services.invest_view_model.calendar_service import build_calendar
@@ -446,3 +457,89 @@ async def screener_snapshots_coverage(
         else None,
         "dataState": report.dataState,
     }
+
+
+@router.get("/momentum/events", response_model=MomentumEventsResponse)
+async def get_momentum_events(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    market: Literal["kr", "us", "crypto"] = Query("kr"),
+    snapshot_date: Annotated[date | None, Query(alias="date")] = None,
+    surface: str | None = Query(None),
+    order_type: Annotated[str | None, Query(alias="orderType")] = None,
+    trade_type: Annotated[str | None, Query(alias="tradeType")] = None,
+    limit: int = Query(50, ge=1, le=100),
+) -> MomentumEventsResponse:
+    """Read-only persisted Naver momentum snapshots; never fetches Naver on request."""
+    if market != "kr":
+        return MomentumEventsResponse(
+            market=market,
+            data_state="unsupported",
+            empty_reason="naver_stock_supports_kr_only",
+            items=[],
+        )
+    rows = await InvestMomentumEventSnapshotsRepository(db).list_momentum_events(
+        trading_date=snapshot_date,
+        surface=surface,
+        order_type=order_type,
+        trade_type=trade_type,
+        limit=limit,
+    )
+    return MomentumEventsResponse(
+        market="kr",
+        data_state="fresh" if rows else "missing",
+        empty_reason=None if rows else "no_naver_momentum_snapshots",
+        items=[MomentumEventItem.model_validate(row) for row in rows],
+    )
+
+
+@router.get("/momentum/themes", response_model=ThemeEventsResponse)
+async def get_momentum_themes(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    market: Literal["kr", "us", "crypto"] = Query("kr"),
+    snapshot_date: Annotated[date | None, Query(alias="date")] = None,
+    event_kind: Annotated[
+        Literal["theme", "upjong"] | None, Query(alias="eventKind")
+    ] = None,
+    sort_type: Annotated[str | None, Query(alias="sortType")] = None,
+    limit: int = Query(50, ge=1, le=100),
+) -> ThemeEventsResponse:
+    """Read-only persisted Naver theme/upjong snapshots; never fetches Naver on request."""
+    if market != "kr":
+        return ThemeEventsResponse(
+            market=market,
+            data_state="unsupported",
+            empty_reason="naver_stock_supports_kr_only",
+            items=[],
+        )
+    rows = await InvestMomentumEventSnapshotsRepository(db).list_theme_events(
+        trading_date=snapshot_date,
+        event_kind=event_kind,
+        sort_type=sort_type,
+        limit=limit,
+    )
+    return ThemeEventsResponse(
+        market="kr",
+        data_state="fresh" if rows else "missing",
+        empty_reason=None if rows else "no_naver_theme_snapshots",
+        items=[ThemeEventItem.model_validate(row) for row in rows],
+    )
+
+
+@router.get("/momentum/coverage", response_model=MomentumCoverageResponse)
+async def momentum_coverage(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    market: Literal["kr", "us", "crypto"] = Query("kr"),
+    as_of: Annotated[date | None, Query(alias="asOf")] = None,
+) -> MomentumCoverageResponse:
+    """Read-only coverage summary for Naver momentum/theme snapshots (ROB-222)."""
+    report = await build_momentum_coverage(db, market=market, as_of=as_of)
+    return MomentumCoverageResponse(
+        market=report.market,
+        as_of=report.asOf,
+        momentum_events=report.momentumEvents,
+        theme_events=report.themeEvents,
+        last_momentum_snapshot_at=report.lastMomentumSnapshotAt,
+        last_theme_snapshot_at=report.lastThemeSnapshotAt,
+        data_state=report.dataState,
+        empty_reason=report.emptyReason,
+    )
