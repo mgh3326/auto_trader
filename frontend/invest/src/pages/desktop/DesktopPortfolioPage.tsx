@@ -12,6 +12,7 @@ import { scopeGroupedToSource } from "../../desktop/scopeHoldings";
 import { DesktopHero } from "../../components/home/DesktopHero";
 import { FilterChips } from "../../components/home/FilterChips";
 import { UnifiedHoldingsTable } from "../../components/my/UnifiedHoldingsTable";
+import { SellHistoryPanel } from "../../components/my/SellHistoryPanel";
 import { MobilePortfolioPage } from "../mobile/MobilePortfolioPage";
 import type { AssetCategoryKey } from "../../components/AssetCategoryFilter";
 import type { AccountSource, HomeSummary } from "../../types/invest";
@@ -121,6 +122,7 @@ export function DesktopPortfolioPage() {
                 holdings={filteredScoped}
                 accounts={data.accounts}
               />
+              <SellHistoryPanel />
               {data.meta?.warnings && data.meta.warnings.length > 0 && (
                 <div
                   role="alert"

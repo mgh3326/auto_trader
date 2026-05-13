@@ -412,6 +412,10 @@ class Settings(BaseSettings):
 
     # ROB-211 execution ledger ships inert; commit/backfill activation is a separate approval-gated ops change.
     EXECUTION_LEDGER_COMMIT_ENABLED: bool = False
+    # ROB-214 — recurring reconciliation scheduler remains disabled unless explicitly enabled.
+    execution_ledger_reconcile_scheduler_enabled: bool = False
+    execution_ledger_reconcile_scheduler_cron: str = "*/30 * * * *"
+    execution_ledger_reconcile_scheduler_window_hours: int = 24
 
     trader_agent_id: str = "6b2192cc-14fa-4335-b572-2fe1e0cb54a7"
     paperclip_api_url: str | None = None

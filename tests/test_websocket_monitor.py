@@ -109,6 +109,194 @@ class TestUnifiedWebSocketMonitor:
         assert send_mock.await_args.kwargs["correlation_id"] == "corr-kis-1"
 
     @pytest.mark.asyncio
+    async def test_on_kis_execution_records_ledger_before_notification(
+        self, mock_settings: None
+    ) -> None:
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        call_order: list[str] = []
+        monitor = UnifiedWebSocketMonitor()
+
+        async def record_side_effect(*args, **kwargs):
+            call_order.append("ledger")
+
+        async def send_side_effect(*args, **kwargs):
+            call_order.append("notify")
+            return _success_result("req-ledger-first")
+
+        record_mock = AsyncMock(side_effect=record_side_effect)
+        send_mock = AsyncMock(side_effect=send_side_effect)
+        monitor._record_execution_ledger_fill = record_mock
+        monitor.openclaw_client.send_fill_notification = send_mock
+
+        event = {
+            "symbol": "005930",
+            "side": "sell",
+            "fill_yn": "2",
+            "filled_price": 70_000,
+            "filled_qty": 10,
+            "market": "kr",
+            "correlation_id": "corr-kis-ledger-1",
+            "order_id": "kis-order-1",
+        }
+        await monitor._on_kis_execution(event)
+
+        record_mock.assert_awaited_once()
+        send_mock.assert_awaited_once()
+        ledger_args = record_mock.await_args.args
+        ledger_kwargs = record_mock.await_args.kwargs
+        assert ledger_args[0] is event
+        assert isinstance(ledger_args[1], FillOrder)
+        assert ledger_kwargs == {"broker": "kis", "correlation_id": "corr-kis-ledger-1"}
+        assert call_order == ["ledger", "notify"]
+
+    @pytest.mark.asyncio
+    async def test_on_upbit_trade_records_ledger_before_notification(
+        self, mock_settings: None
+    ) -> None:
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        call_order: list[str] = []
+        monitor = UnifiedWebSocketMonitor()
+
+        async def record_side_effect(*args, **kwargs):
+            call_order.append("ledger")
+
+        async def send_side_effect(*args, **kwargs):
+            call_order.append("notify")
+            return _success_result("req-upbit-ledger-first")
+
+        record_mock = AsyncMock(side_effect=record_side_effect)
+        send_mock = AsyncMock(side_effect=send_side_effect)
+        monitor._record_execution_ledger_fill = record_mock
+        monitor.openclaw_client.send_fill_notification = send_mock
+
+        event = {
+            "code": "KRW-BTC",
+            "uuid": "upbit-order-1",
+            "ask_bid": "BID",
+            "trade_price": 50_000_000,
+            "trade_volume": 0.1,
+            "state": "trade",
+            "trade_timestamp": 1_700_000_000_000,
+        }
+        await monitor._on_upbit_order(event)
+
+        record_mock.assert_awaited_once()
+        send_mock.assert_awaited_once()
+        ledger_args = record_mock.await_args.args
+        ledger_kwargs = record_mock.await_args.kwargs
+        assert ledger_args[0] is event
+        assert isinstance(ledger_args[1], FillOrder)
+        assert ledger_kwargs == {"broker": "upbit", "correlation_id": "upbit-order-1"}
+        assert call_order == ["ledger", "notify"]
+
+    @pytest.mark.asyncio
+    async def test_record_execution_ledger_fill_is_inert_until_commit_gate(
+        self, mock_settings: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import websocket_monitor as mod
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        monkeypatch.setattr(settings, "EXECUTION_LEDGER_COMMIT_ENABLED", False)
+
+        class FailingSession:
+            async def __aenter__(self) -> object:  # pragma: no cover
+                raise AssertionError("disabled websocket ledger path must not open DB")
+
+            async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+                return None
+
+        monkeypatch.setattr(mod, "AsyncSessionLocal", lambda: FailingSession())
+        monitor = UnifiedWebSocketMonitor()
+
+        await monitor._record_execution_ledger_fill(
+            {"order_id": "kis-order-disabled"},
+            FillOrder(
+                symbol="005930",
+                side="ask",
+                filled_price=70_000,
+                filled_qty=1,
+                filled_amount=70_000,
+                filled_at="2026-05-12T00:01:09Z",
+                account="mock",
+                order_id="kis-order-disabled",
+                market_type="kr",
+                currency="KRW",
+            ),
+            broker="kis",
+            correlation_id="corr-disabled",
+        )
+
+    @pytest.mark.asyncio
+    async def test_record_execution_ledger_fill_upserts_when_commit_gate_enabled(
+        self, mock_settings: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import websocket_monitor as mod
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        monkeypatch.setattr(settings, "EXECUTION_LEDGER_COMMIT_ENABLED", True)
+        monkeypatch.setattr(settings, "kis_ws_is_mock", False)
+        captured: dict[str, object] = {}
+
+        class FakeSession:
+            async def __aenter__(self) -> object:
+                return self
+
+            async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+                return None
+
+            async def commit(self) -> None:
+                captured["committed"] = True
+
+        class FakeRepository:
+            def __init__(self, db: object) -> None:
+                captured["db"] = db
+
+            async def upsert_fill(self, fill: object) -> tuple[str, int]:
+                captured["fill"] = fill
+                return "inserted", 42
+
+        monkeypatch.setattr(mod, "AsyncSessionLocal", lambda: FakeSession())
+        monkeypatch.setattr(mod, "ExecutionLedgerRepository", FakeRepository)
+        monitor = UnifiedWebSocketMonitor()
+
+        await monitor._record_execution_ledger_fill(
+            {"order_id": "0006421200", "fill_seq": "7", "token": "secret"},
+            FillOrder(
+                symbol="000660",
+                side="ask",
+                filled_price=1_959_000,
+                filled_qty=1,
+                filled_amount=1_959_000,
+                filled_at="2026-05-12T00:01:09Z",
+                account="live",
+                order_id="0006421200",
+                market_type="kr",
+                currency="KRW",
+            ),
+            broker="kis",
+            correlation_id="corr-kis-upsert",
+        )
+
+        fill = captured["fill"]
+        assert captured["committed"] is True
+        assert fill.broker == "kis"
+        assert fill.account_mode == "live"
+        assert fill.venue == "krx"
+        assert fill.instrument_type == "equity_kr"
+        assert fill.symbol == "000660"
+        assert fill.side == "sell"
+        assert fill.broker_order_id == "0006421200"
+        assert fill.fill_seq == 7
+        assert str(fill.filled_qty) == "1"
+        assert str(fill.filled_price) == "1959000"
+        assert fill.currency == "KRW"
+        assert fill.correlation_id == "corr-kis-upsert"
+        assert fill.source == "websocket"
+        assert fill.raw_payload_json["token"] == "[REDACTED]"
+
+    @pytest.mark.asyncio
     async def test_on_kis_execution_forwards_us_currency_for_overseas_fill(
         self, mock_settings: None
     ) -> None:
