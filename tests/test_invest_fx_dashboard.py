@@ -217,7 +217,9 @@ def test_fx_defense_signal_scores_near_1500_rejection_as_elevated() -> None:
 
 
 @pytest.mark.unit
-def test_fx_defense_signal_does_not_score_missing_cross_market_data_as_evidence() -> None:
+def test_fx_defense_signal_does_not_score_missing_cross_market_data_as_evidence() -> (
+    None
+):
     signal = _score_defense_signal(
         DefenseScoringInput(
             spot=1498.7,
@@ -242,7 +244,9 @@ def test_fx_defense_signal_does_not_score_missing_cross_market_data_as_evidence(
 
 
 @pytest.mark.unit
-def test_fx_defense_signal_requires_after_verification_for_high_score_without_confirming_intervention() -> None:
+def test_fx_defense_signal_requires_after_verification_for_high_score_without_confirming_intervention() -> (
+    None
+):
     signal = _score_defense_signal(
         DefenseScoringInput(
             spot=1500.2,
@@ -274,7 +278,9 @@ def test_fx_defense_signal_requires_after_verification_for_high_score_without_co
 
 
 @pytest.mark.unit
-def test_fx_defense_signal_strong_context_stays_cautious_without_missing_conflict() -> None:
+def test_fx_defense_signal_strong_context_stays_cautious_without_missing_conflict() -> (
+    None
+):
     signal = _score_defense_signal(
         DefenseScoringInput(
             spot=1500.2,
@@ -345,7 +351,9 @@ def test_fx_defense_signal_does_not_score_context_only_evidence() -> None:
         ],
     )
 
-    assert _score_defense_signal(base).score == _score_defense_signal(with_context).score
+    assert (
+        _score_defense_signal(base).score == _score_defense_signal(with_context).score
+    )
     assert "환율/당국 경계 뉴스 확인" in _score_defense_signal(with_context).reasonsKo
 
 

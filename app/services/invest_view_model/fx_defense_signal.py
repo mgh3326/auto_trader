@@ -51,7 +51,9 @@ def _threshold_state(*, level: float, spot: float | None) -> str:
     return "watch"
 
 
-def _score_defense_signal(scoring_input: DefenseScoringInput) -> FxDashboardDefenseSignal:
+def _score_defense_signal(
+    scoring_input: DefenseScoringInput,
+) -> FxDashboardDefenseSignal:
     reasons: list[str] = []
     evidence: list[FxDashboardEvidenceItem] = []
     score = 0
@@ -128,7 +130,8 @@ def _score_defense_signal(scoring_input: DefenseScoringInput) -> FxDashboardDefe
         reasonsKo=reasons,
         evidence=evidence,
         notConfirmedIntervention=True,
-        needsAfterVerification=state != "none" or not scoring_input.after_verification_has_strong_evidence,
+        needsAfterVerification=state != "none"
+        or not scoring_input.after_verification_has_strong_evidence,
     )
 
 
@@ -286,7 +289,9 @@ def _map_signal(
     if score < 70:
         return (
             "elevated",
-            "high" if scoring_input.after_verification_has_strong_evidence else "medium",
+            "high"
+            if scoring_input.after_verification_has_strong_evidence
+            else "medium",
             "1500원 부근 방어성 오퍼 의심",
             "1500원 부근 가격 되밀림과 비교 지표가 겹쳐 방어성 오퍼 가능성이 높아졌지만 확정 개입으로 볼 수는 없습니다.",
         )
