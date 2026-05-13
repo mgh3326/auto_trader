@@ -1,8 +1,8 @@
 """Per-day ForexFactory economic-calendar fetch helper (ROB-132).
 
 Fetches `ff_calendar_thisweek.xml` and (when needed) `ff_calendar_nextweek.xml`,
-parses each event into a uniform dict, converts ET wall-clock times to UTC, and
-filters to rows whose ET-day matches the requested target_date.
+parses each event into a uniform dict, treats ForexFactory feed times as UTC,
+and filters to rows whose feed date matches the requested target_date.
 
 Caller passes the resulting rows into
 `app.services.market_events.normalizers.normalize_forexfactory_event_row`.
@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 THISWEEK_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.xml"
 NEXTWEEK_URL = "https://nfs.faireconomy.media/ff_calendar_nextweek.xml"
 ET_TZ = ZoneInfo("America/New_York")
+FOREXFACTORY_FEED_TZ = UTC
 
 RETRIABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 
@@ -250,7 +251,10 @@ def _parse_one_xml(xml_text: str) -> list[dict[str, Any]]:
                 hour,
                 minute,
             )
-            release_utc = release_local.replace(tzinfo=ET_TZ).astimezone(UTC)
+            # ForexFactory's public XML feed emits clock times in UTC/GMT.
+            # Do not interpret them as US/Eastern; doing so shifts high-impact
+            # US releases (for example 12:30pm UTC PPI/CPI) four hours late.
+            release_utc = release_local.replace(tzinfo=FOREXFACTORY_FEED_TZ)
             id_iso = release_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
         source_event_id = f"ff::{currency}::{title}::{id_iso}"

@@ -255,7 +255,7 @@ def normalize_forexfactory_event_row(
         "event_date": event_date,
         "release_time_utc": row.get("release_time_utc"),
         "release_time_local": row.get("release_time_local"),
-        "source_timezone": "America/New_York",
+        "source_timezone": "UTC",
         "time_hint": row.get("time_hint_raw") or "unknown",
         "importance": importance,
         "status": status,
