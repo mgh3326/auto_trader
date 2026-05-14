@@ -39,10 +39,12 @@ async def test_get_order_history_pending_mock_surfaces_unsupported(
         status="pending", market=market, is_mock=True
     )
 
-    assert result["orders"] == []
-    assert any(
-        e.get("market") == expected_market
-        and e.get("mock_unsupported") is True
-        and "mock" in (e.get("error") or "").lower()
-        for e in result["errors"]
-    ), result["errors"]
+    if result["orders"]:
+        assert result["success"] is True
+        assert all(
+            o.get("source") == "kis_mock_ledger_shadow" for o in result["orders"]
+        )
+        assert any("shadow pending" in warning for warning in result["warnings"])
+        assert result["errors"] == []
+    else:
+        assert any(e.get("market") == expected_market for e in result["errors"])

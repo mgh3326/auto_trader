@@ -619,7 +619,6 @@ async def test_save_helper_persists_lifecycle_state(monkeypatch):
     assert params["lifecycle_state"] == "accepted"
 
 
-
 # ---------------------------------------------------------------------------
 # ROB-255: KIS mock DB shadow pending helpers
 # ---------------------------------------------------------------------------

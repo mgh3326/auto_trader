@@ -628,7 +628,9 @@ async def _validate_sell_side(
             )
             if not dry_run:
                 return 0.0, 0.0, order_error_fn(message)
-            return 0.0, 0.0, order_error_fn(f"Preview blocked: {message}")
+            logger.warning(
+                "KIS mock sell preview proceeding without shadow exposure: %s", message
+            )
         reserved_qty = _to_float(exposure.get("sell_reserved_quantity"), default=0.0)
         if reserved_qty > 0:
             available_quantity = max(0.0, available_quantity - reserved_qty)
