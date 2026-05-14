@@ -9,6 +9,7 @@ import {
   fetchStockDetailOrders,
   fetchStockDetailResearchConsensus,
 } from "../../api/stockDetail";
+import { InvestorFlowCard } from "../../desktop/stock-detail/InvestorFlowCard";
 import type {
   StockDetailCandlesResponse,
   StockDetailFxSensitivity,
@@ -412,6 +413,9 @@ export function StockDetailPage() {
                 <OrdersCard orders={orders} />
               </div>
               <NewsCard news={news} />
+              {data.market === "kr" && data.investorFlow ? (
+                <InvestorFlowCard data={data.investorFlow} />
+              ) : null}
               {data.meta.warnings.length > 0 ? (
                 <Card soft>
                   {data.meta.warnings.map((w) => <div key={w}>{w}</div>)}

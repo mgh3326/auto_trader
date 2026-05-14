@@ -49,6 +49,7 @@ const aboveFold: StockDetailResponse = {
     asOf: "2026-05-09T00:00:00Z",
     freshness: "ok",
   },
+  investorFlow: null,
   naverEnrichment: {
     source: "naver_stock_detail_poc",
     market: "us",
