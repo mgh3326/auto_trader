@@ -14,6 +14,7 @@ import httpx
 import app.services.brokers.upbit.client as upbit_service
 from app.core.config import settings
 from app.mcp_server.caller_identity import get_caller_agent_id, get_caller_source
+from app.mcp_server.tooling.kis_mock_ledger import _get_kis_mock_shadow_exposure
 from app.mcp_server.tooling.market_data_quotes import (
     _fetch_quote_equity_kr,
     _fetch_quote_equity_us,
@@ -598,6 +599,7 @@ async def _validate_sell_side(
     order_error_fn: Any,
     defensive_trim_ctx: DefensiveTrimContext | None = None,
     is_mock: bool = False,
+    dry_run: bool = False,
 ) -> tuple[float, float, dict[str, Any] | None]:
     """Validate sell-side: check holdings, locked, price constraints.
 
@@ -613,6 +615,24 @@ async def _validate_sell_side(
 
     available_quantity = _to_float(holdings.get("quantity"), default=0.0)
     locked_quantity = _to_float(holdings.get("locked"), default=0.0)
+
+    if is_mock and market_type in ("equity_kr", "equity_us"):
+        exposure = await _get_kis_mock_shadow_exposure(
+            normalized_symbol=normalized_symbol,
+            market_type=market_type,
+        )
+        if exposure.get("confidence") != "db_shadow_pending":
+            message = (
+                "KIS mock DB shadow pending confidence unknown; cannot verify "
+                "sellable quantity without risking duplicate sell allocation."
+            )
+            if not dry_run:
+                return 0.0, 0.0, order_error_fn(message)
+            return 0.0, 0.0, order_error_fn(f"Preview blocked: {message}")
+        reserved_qty = _to_float(exposure.get("sell_reserved_quantity"), default=0.0)
+        if reserved_qty > 0:
+            available_quantity = max(0.0, available_quantity - reserved_qty)
+            locked_quantity += reserved_qty
 
     if quantity is not None and quantity > available_quantity:
         return (
@@ -687,6 +707,20 @@ async def _check_balance_and_warn(
             balance_exc,
         )
         raise
+
+    if is_mock and market_type in ("equity_kr", "equity_us"):
+        exposure = await _get_kis_mock_shadow_exposure(market_type=market_type)
+        if exposure.get("confidence") != "db_shadow_pending":
+            message = (
+                "KIS mock DB shadow pending confidence unknown; cannot verify "
+                "orderable cash without risking duplicate buy allocation."
+            )
+            if not dry_run:
+                return None, order_error_fn(message)
+            return f"Preview warning: {message}", None
+        reserved_amount = _to_float(exposure.get("buy_reserved_amount"), default=0.0)
+        if reserved_amount > 0:
+            balance = max(0.0, balance - reserved_amount)
 
     if balance >= order_amount:
         return None, None
