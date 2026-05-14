@@ -11,6 +11,7 @@ import { buildScopedPortfolioPanel, type AccountFilterKey } from "./scopeHolding
 import { accountSourceMeta } from "./AccountSourceMeta";
 import type { GroupedHolding, WatchSymbol } from "../types/invest";
 import { formatRelativeTime } from "../format/relativeTime";
+import { stockDetailPath } from "../stockDetailPath";
 
 type RightPanelTab = "portfolio" | "watchlist" | "recent" | "realtime";
 type RealtimeSubTab = "kr" | "us" | "crypto";
@@ -29,6 +30,10 @@ const MARKET_LABEL: Record<MarketKey, string> = {
   us: "US",
   crypto: "CRYPTO",
 };
+
+function stockRouteForMarketKey(market: MarketKey, symbol: string): string {
+  return `/stocks/${market}/${encodeURIComponent(symbol)}`;
+}
 
 function fmtKrw(v?: number | null): string {
   if (v == null) return "—";
@@ -336,10 +341,7 @@ function PortfolioPanel({ onNavigate }: Readonly<{ onNavigate: NavigateToSymbol 
                         lastViewedAt: new Date().toISOString(),
                         source: "right-panel",
                       };
-                      onNavigate(
-                        `/signals?symbol=${encodeURIComponent(h.symbol)}&market=${mk}`,
-                        sym,
-                      );
+                      onNavigate(stockDetailPath(h.market, h.symbol) ?? stockRouteForMarketKey(mk, h.symbol), sym);
                     }}
                     right={(
                       <div style={{ textAlign: "right", flexShrink: 0 }}>
@@ -489,10 +491,7 @@ function RecentPanel({
               market={r.market}
               symbol={r.symbol}
               onClick={() => {
-                onNavigate(
-                  `/signals?symbol=${encodeURIComponent(r.symbol)}&market=${r.market}`,
-                  { ...r, lastViewedAt: new Date().toISOString() },
-                );
+                onNavigate(stockRouteForMarketKey(r.market, r.symbol), { ...r, lastViewedAt: new Date().toISOString() });
               }}
               right={ago ? <div style={{ fontSize: 11, color: "var(--fg-3)", flexShrink: 0 }}>{ago}</div> : undefined}
             />
@@ -621,10 +620,7 @@ function RealtimePanel({
                       lastViewedAt: new Date().toISOString(),
                       source: "right-panel",
                     };
-                    onNavigate(
-                      `/signals?symbol=${encodeURIComponent(symbol)}&market=${market}`,
-                      sym,
-                    );
+                    onNavigate(stockRouteForMarketKey(market, symbol), sym);
                   }}
                   meta={(
                     <>

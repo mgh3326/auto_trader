@@ -13,16 +13,11 @@ import { DesktopHero } from "../../components/home/DesktopHero";
 import { FilterChips } from "../../components/home/FilterChips";
 import { UnifiedHoldingsTable } from "../../components/my/UnifiedHoldingsTable";
 import { SellHistoryPanel } from "../../components/my/SellHistoryPanel";
+import { PORTFOLIO_TABS, usePortfolioTabSearchParam, type PortfolioTab } from "../../components/my/portfolioTabs";
+import { SignalsPanel } from "../../components/signals/SignalsPanel";
 import { MobilePortfolioPage } from "../mobile/MobilePortfolioPage";
 import type { AssetCategoryKey } from "../../components/AssetCategoryFilter";
 import type { AccountSource, HomeSummary } from "../../types/invest";
-
-type PortfolioTab = "holdings" | "sellHistory";
-
-const PORTFOLIO_TABS: { key: PortfolioTab; label: string }[] = [
-  { key: "holdings", label: "보유 현황" },
-  { key: "sellHistory", label: "매도 이력" },
-];
 
 export function InvestPortfolioRoute() {
   const viewport = useViewport();
@@ -31,9 +26,9 @@ export function InvestPortfolioRoute() {
 
 export function DesktopPortfolioPage() {
   const home = useInvestHome();
+  const [activeTab, setActiveTab] = usePortfolioTabSearchParam();
   const [account, setAccount] = useState<AccountFilterKey>("all");
   const [category, setCategory] = useState<AssetCategoryKey>("all");
-  const [activeTab, setActiveTab] = useState<PortfolioTab>("holdings");
 
   const data = home.state.status === "ready" ? home.state.data : null;
 
@@ -109,11 +104,13 @@ export function DesktopPortfolioPage() {
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 <div style={{ fontSize: 12, color: "var(--fg-3)", fontWeight: 700 }}>내 투자</div>
                 <h1 style={{ margin: 0, fontSize: 26, lineHeight: 1.2, letterSpacing: "-0.03em" }}>
-                  {activeTab === "holdings" ? "통합 보유 현황" : "매도 이력"}
+                  {activeTab === "holdings" ? "통합 보유 현황" : activeTab === "signals" ? "내 투자 시그널" : "매도 이력"}
                 </h1>
                 <p style={{ margin: 0, color: "var(--fg-3)", fontSize: 13 }}>
                   {activeTab === "holdings"
                     ? "KIS, Toss/manual, 모의/수동 계좌를 한 화면에서 비교하고 종목별 출처를 확인합니다."
+                    : activeTab === "signals"
+                      ? "보유·관심 종목과 시장별 AI 분석 시그널을 내 투자 화면에서 함께 확인합니다."
                     : "KIS/Upbit 체결 보정 ledger 기준 최근 매도 체결을 별도 화면에서 확인합니다."}
                 </p>
               </div>
@@ -136,6 +133,8 @@ export function DesktopPortfolioPage() {
                     accounts={data.accounts}
                   />
                 </>
+              ) : activeTab === "signals" ? (
+                <SignalsPanel />
               ) : (
                 <SellHistoryPanel />
               )}
