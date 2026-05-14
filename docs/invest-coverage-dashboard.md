@@ -103,6 +103,47 @@ Expected semantics:
 - Nav label: `커버리지`
 - The UI groups counts by state, lists surface-level gaps, shows Naver/Toss candidate readiness chips, renders actionability priority/action/queue/approval gates, and optionally shows symbol-level coverage for screener/news/investor-flow.
 
+## KR action-report readiness
+
+ROB-256 adds a dedicated read-only readiness API for domestic-stock action-report prerequisites:
+
+Endpoint: `GET /invest/api/kr/action-readiness`
+
+Query parameters:
+- `symbol`: optional six-digit KR equity code. Invalid/non-KR symbols return `overallState="blocked"` without provider or broker calls.
+
+Contract:
+- The endpoint maps existing `/invest/api/coverage` read-model surfaces plus the existing `InvestHomeService` account-panel read path into action-report readiness metadata.
+- KIS live is authoritative for tradeable KR holdings, cash/orderable state, open-order visibility, and sellable quantity.
+- `/invest` DB/read models are product authority for quotes/OHLCV/technical-readiness, screeners, Naver momentum/theme reference data, investor flow, news/issues/disclosures, calendar, valuation/research, and historical execution/fill readiness.
+- Manual/paper holdings and Toss/Naver/external sources are reference/candidate/supporting only; they must not be rendered as action-readiness `sourceOfTruth`.
+- Missing, stale, partial, failed, unsupported, or unwired data is shown as `missing`, `degraded`, `blocked`, `unsupported`, or `unknown`/`확인 불가`; the service must not estimate missing values.
+- The endpoint does not submit/cancel/modify orders, mutate watch/order-intent ledgers, run production DB writes/backfills, activate schedulers, or scrape Toss/Naver/provider pages from request paths.
+
+Response highlights:
+- `overallState`: `ready`, `degraded`, `blocked`, `missing`, `unsupported`, or `unknown`.
+- `canGenerateBuyReport` / `canGenerateSellReport`: conservative readiness booleans, not trade recommendations.
+- `families`: grouped readiness cards with `authority`, `sourceOfTruth`, `references`, coverage state, blockers, warnings, notes, and advisory `actionability`.
+- `sourcePolicy`: human-readable source-authority rules echoed to the frontend.
+
+Readiness family mapping:
+
+| Family | Authority | Blocks/degrades |
+| --- | --- | --- |
+| `kis_live_holdings`, `kis_live_cash_orderable`, `kis_live_open_orders`, `kis_live_sellable_quantity` | KIS live via existing account-panel read path | Cash blocks buy readiness; holdings/sellable blocks sell readiness; unavailable live broker/account state is `확인 불가`. |
+| `trade_journals` | `auto_trader` live trade journals | Missing active thesis/target/stop context degrades reports and is mandatory context before sell recommendations. |
+| `quotes`, `ohlcv`, `technical_indicators`, `support_resistance` | `/invest` read models | Missing quote for a requested symbol blocks action reports; unwired indicator/support-resistance surfaces degrade rather than fabricate values. |
+| `orderbook_session`, `nxt_eligibility`, `pending_order_reconciliation` | `/invest` read models plus KIS live authority where already represented elsewhere | Missing reconciliation/open-order visibility blocks or degrades; no request-path orderbook fetch is introduced. |
+| `screener_snapshots`, `naver_momentum_events`, `naver_momentum_candidates`, `naver_theme_events`, `investor_flow` | `/invest` read models; Naver is reference/candidate only | Stale/missing data degrades reports. |
+| `news_feed`, `issue_clusters`, `disclosures`, `calendar_events` | `/invest` read models | Missing/stale context degrades reports and renders `확인 불가`. |
+| `valuation_fundamentals`, `research_reports`, `research_consensus` | `/invest` read models | Missing/stale valuation or consensus degrades; full report bodies remain excluded when existing policy excludes them. |
+| `execution_ledger`, `sell_history` | `/invest` historical ledger/read models; KIS live remains current open-order/sellable authority | Stale/missing historical fill/sell history degrades sell reports. |
+
+Frontend placement:
+- `/invest/coverage` now renders a top `KR 액션 리포트 준비도` card for KR mode before the raw coverage table.
+- It shows overall state, buy/sell report readiness, blockers, degraded signals, source policy, and grouped family cards.
+- It intentionally renders advisory actionability text only; no order/backfill/scheduler/run controls are present.
+
 ## Approval gates
 
 Any production remediation discovered from coverage output requires a separate approval packet and task. This issue does not approve:
