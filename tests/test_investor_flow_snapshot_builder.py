@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
+from pathlib import Path
 
 import pytest
 
 from app.services.investor_flow_snapshots.builder import build_investor_flow_snapshots
+
+_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "investor_flow"
 
 
 async def _fake_fetcher(symbol: str, days: int):
@@ -74,3 +78,14 @@ async def test_build_investor_flow_snapshots_warns_and_skips_empty_or_invalid_ro
     assert "900303: no investor-flow rows returned" in result.warnings
     assert "900304: row 0 has invalid date" in result.warnings
     assert "900304: no valid investor-flow rows built" in result.warnings
+
+
+def test_403550_naver_fixture_loads_and_has_expected_shape():
+    fixture = json.loads((_FIXTURE_DIR / "403550_naver_sample.json").read_text())
+    assert fixture["symbol"] == "403550"
+    assert fixture["source"] == "naver_finance"
+    payloads = fixture["rows"]
+    assert len(payloads) == 10
+    assert payloads[0]["date"] == "2026-05-12"
+    assert isinstance(payloads[0]["foreign_net"], int)
+    assert isinstance(payloads[0]["institutional_net"], int)
