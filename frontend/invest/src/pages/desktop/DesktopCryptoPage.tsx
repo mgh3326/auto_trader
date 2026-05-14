@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { DesktopShell } from "../../desktop/DesktopShell";
 import { RightRemotePanel } from "../../desktop/RightRemotePanel";
-import { fetchCryptoDashboard } from "../../api/investCrypto";
-import type { CryptoDashboardResponse, CryptoMarketCard } from "../../types/investCrypto";
+import { fetchCryptoDashboard, fetchCryptoNaverReference } from "../../api/investCrypto";
+import type { CryptoDashboardResponse, CryptoMarketCard, NaverCryptoReferenceResponse } from "../../types/investCrypto";
 import "../../desktop/screener/screener.css";
 
 function formatKrw(value: number | null): string {
@@ -74,19 +74,82 @@ function cryptoErrorMessage(error: unknown): string {
   return text || "크립토 대시보드 데이터를 일시적으로 불러오지 못했습니다.";
 }
 
+function ReferencePanel({ reference }: { reference: NaverCryptoReferenceResponse }) {
+  const kimchi = reference.kimchiPremium;
+  return (
+    <section style={{ marginTop: 18, padding: 16, border: "1px solid var(--border)", borderRadius: 14, background: "var(--surface)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline" }}>
+        <div>
+          <h2 style={{ margin: 0 }}>Naver 참고 지표</h2>
+          <p style={{ marginTop: 6, color: "var(--fg-3)" }}>출처 라벨이 있는 읽기 전용 참고 데이터입니다. 주문 실행 없음.</p>
+        </div>
+        <span className="screener-chip">{reference.capabilities.execution.state}</span>
+      </div>
+      {reference.warnings.length > 0 && (
+        <div style={{ marginTop: 10, color: "var(--fg-3)", fontSize: 13 }}>
+          {reference.warnings.slice(0, 3).join(" · ")}
+        </div>
+      )}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginTop: 14 }}>
+        <div>
+          <strong>김치 프리미엄</strong>
+          <div style={{ marginTop: 4 }}>{kimchi?.premiumPct === null || kimchi?.premiumPct === undefined ? "-" : `${kimchi.premiumPct.toFixed(2)}%`}</div>
+          <div style={{ color: "var(--fg-3)", fontSize: 12 }}>{kimchi?.caution ?? "참고용 매크로 지표"}</div>
+        </div>
+        <div>
+          <strong>프로필</strong>
+          <div style={{ marginTop: 4 }}>{reference.profile?.displayName ?? reference.symbol ?? "-"}</div>
+          <div style={{ color: "var(--fg-3)", fontSize: 12 }}>{reference.profile?.officialMarket ?? "UPBIT/KRW"} · reference-only</div>
+        </div>
+        <div>
+          <strong>뉴스</strong>
+          <div style={{ marginTop: 4 }}>{reference.news?.items.length ?? 0}건</div>
+          <div style={{ color: "var(--fg-3)", fontSize: 12 }}>{reference.news?.items[0]?.title ?? "최근 크립토 뉴스 없음"}</div>
+        </div>
+      </div>
+      {reference.rank.length > 0 && (
+        <div style={{ marginTop: 14, display: "grid", gap: 8 }}>
+          {reference.rank.slice(0, 5).map((item) => (
+            <div key={item.symbol} style={{ display: "flex", justifyContent: "space-between", gap: 12, color: "var(--fg-2)", fontSize: 13 }}>
+              <span>#{item.rank} {item.displayName} <span style={{ color: "var(--fg-3)" }}>{item.source}</span></span>
+              <span>{formatKrw(item.priceKrw)} · {formatPct(item.changeRate24h)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap", gap: 6 }}>
+        {reference.sources.map((source) => (
+          <span key={`${source.source}-${source.state}`} className="screener-chip">
+            {source.label}: {source.state}
+          </span>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export function DesktopCryptoPage() {
   const [data, setData] = useState<CryptoDashboardResponse | undefined>();
+  const [reference, setReference] = useState<NaverCryptoReferenceResponse | undefined>();
   const [err, setErr] = useState<string | undefined>();
 
   useEffect(() => {
     let cancel = false;
     setErr(undefined);
-    fetchCryptoDashboard({ limit: 20 })
-      .then((response) => {
-        if (cancel) return;
-        setData(response);
-      })
-      .catch((error) => !cancel && setErr(cryptoErrorMessage(error)));
+    Promise.allSettled([
+      fetchCryptoDashboard({ limit: 20 }),
+      fetchCryptoNaverReference({ symbol: "KRW-BTC", limit: 20 }),
+    ]).then(([dashboardResult, referenceResult]) => {
+      if (cancel) return;
+      if (dashboardResult.status === "fulfilled") {
+        setData(dashboardResult.value);
+      } else {
+        setErr(cryptoErrorMessage(dashboardResult.reason));
+      }
+      if (referenceResult.status === "fulfilled") {
+        setReference(referenceResult.value);
+      }
+    });
     return () => { cancel = true; };
   }, []);
 
@@ -126,6 +189,7 @@ export function DesktopCryptoPage() {
               <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 12, marginTop: 16 }}>
                 {data.cards.map((card) => <CryptoCard key={card.symbol} card={card} />)}
               </section>
+              {reference && <ReferencePanel reference={reference} />}
               <section style={{ marginTop: 18, padding: 16, border: "1px solid var(--border)", borderRadius: 14 }}>
                 <h2 style={{ marginTop: 0 }}>기능 상태</h2>
                 <p style={{ color: "var(--fg-3)" }}>체결/주문 실행: {data.capabilities.execution.state} · 실시간 스트리밍: {data.capabilities.liveStreaming.state}</p>

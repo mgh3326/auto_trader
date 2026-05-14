@@ -18,6 +18,7 @@ from app.schemas.invest_crypto import (
     CryptoDashboardMeta,
     CryptoDashboardResponse,
     CryptoInsightsSummary,
+    NaverCryptoReferenceResponse,
 )
 from app.schemas.invest_home import InvestHomeResponse, InvestHomeResponseMeta
 from app.services.invest_home_service import build_grouped_holdings, build_home_summary
@@ -83,3 +84,46 @@ def test_crypto_dashboard_endpoint_uses_read_only_view_model(
     assert calls["dashboard"]["user_id"] == 7
     assert calls["dashboard"]["limit"] == 3
     assert calls["dashboard"]["resolver"] is not None
+
+
+@pytest.mark.unit
+def test_crypto_naver_reference_endpoint_uses_read_only_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: dict[str, Any] = {}
+
+    async def fake_relation_resolver(
+        db: Any, *, user_id: int, held_pairs: set[tuple[str, str]]
+    ):
+        calls["relation"] = {"db": db, "user_id": user_id, "held_pairs": held_pairs}
+        return object()
+
+    async def fake_reference(**kwargs: Any) -> NaverCryptoReferenceResponse:
+        calls["reference"] = kwargs
+        return NaverCryptoReferenceResponse(
+            asOf=datetime(2026, 5, 14, 12, tzinfo=UTC),
+            symbol="KRW-BTC",
+            rank=[],
+            profile=None,
+            news=None,
+            kimchiPremium=None,
+            sources=[],
+            warnings=["read_only_no_order_watch_or_broker_mutation"],
+        )
+
+    monkeypatch.setattr(invest_api, "build_relation_resolver", fake_relation_resolver)
+    monkeypatch.setattr(invest_api, "build_naver_crypto_reference", fake_reference)
+
+    response = TestClient(_build_app()).get(
+        "/invest/api/crypto/naver-reference?symbol=BTC&limit=4"
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["market"] == "crypto"
+    assert payload["symbol"] == "KRW-BTC"
+    assert "read_only_no_order_watch_or_broker_mutation" in payload["warnings"]
+    assert calls["relation"]["user_id"] == 7
+    assert calls["reference"]["symbol"] == "BTC"
+    assert calls["reference"]["limit"] == 4
+    assert calls["reference"]["resolver"] is not None
