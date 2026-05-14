@@ -21,6 +21,46 @@ export interface ScreenerPresetsResponse {
   selectedPresetId: string | null;
 }
 
+export type ScreenerDataSourceKind =
+  | "upbit_official"
+  | "tvscreener_upbit"
+  | "mcp_screen_stocks"
+  | "naver_reference"
+  | "coingecko_reference"
+  | "external_reference"
+  | "snapshot_cache";
+
+export type ScreenerSourceState =
+  | "supported"
+  | "cached"
+  | "reference_only"
+  | "partial"
+  | "unavailable"
+  | "fallback";
+
+export type ScreenerRiskSeverity = "info" | "warning" | "danger";
+
+export interface ScreenerSourceContext {
+  source: ScreenerDataSourceKind;
+  label: string;
+  state: ScreenerSourceState;
+  fetchedAt: string | null;
+  detail: string | null;
+}
+
+export interface ScreenerRiskContext {
+  kind: string;
+  label: string;
+  severity: ScreenerRiskSeverity;
+  source: ScreenerDataSourceKind | null;
+}
+
+export interface ScreenerCandidateContext {
+  scoreLabel: string | null;
+  reasons: string[];
+  source: ScreenerDataSourceKind | null;
+}
+
 export interface ScreenerResultRow {
   rank: number;
   symbol: string;
@@ -38,6 +78,9 @@ export interface ScreenerResultRow {
   analystLabel: string;
   metricValueLabel: string;
   warnings: string[];
+  sourceContext?: ScreenerSourceContext[];
+  riskContext?: ScreenerRiskContext[];
+  candidateContext?: ScreenerCandidateContext | null;
 }
 
 export type ScreenerFreshnessSource = "live" | "cached" | "previous_session";
@@ -61,4 +104,5 @@ export interface ScreenerResultsResponse {
   results: ScreenerResultRow[];
   warnings: string[];
   freshness: ScreenerFreshness;
+  sources?: ScreenerSourceContext[];
 }

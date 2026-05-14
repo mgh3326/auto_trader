@@ -90,7 +90,22 @@ const CRYPTO_RESULTS = {
     marketCapLabel: "$2.10T",
     category: "Crypto",
     metricValueLabel: "120,000,000,000",
+    sourceContext: [
+      { source: "snapshot_cache" as const, label: "스냅샷 캐시", state: "cached" as const, fetchedAt: null, detail: null },
+      { source: "tvscreener_upbit" as const, label: "TV Screener Upbit", state: "supported" as const, fetchedAt: null, detail: null },
+    ],
+    riskContext: [
+      { kind: "low_rsi", label: "RSI 31.5 저점권", severity: "info" as const, source: "tvscreener_upbit" as const },
+    ],
+    candidateContext: {
+      scoreLabel: "거래대금 120,000,000,000",
+      reasons: ["24시간 KRW 거래대금 상위"],
+      source: "tvscreener_upbit" as const,
+    },
   }],
+  sources: [
+    { source: "snapshot_cache" as const, label: "스냅샷 캐시", state: "cached" as const, fetchedAt: null, detail: null },
+  ],
 };
 
 function wrap(ui: React.ReactElement) {
@@ -196,6 +211,10 @@ test("switches to the crypto market", async () => {
   await userEvent.click(screen.getByRole("button", { name: "가상자산" }));
 
   await waitFor(() => expect(screen.getByText("Bitcoin")).toBeInTheDocument());
+  expect(screen.getByText("스냅샷 캐시")).toBeInTheDocument();
+  expect(screen.getByText("TV Screener Upbit")).toBeInTheDocument();
+  expect(screen.getByText("RSI 31.5 저점권")).toBeInTheDocument();
+  expect(screen.getByText("24시간 KRW 거래대금 상위")).toBeInTheDocument();
   expect(screenerApi.fetchScreenerPresets).toHaveBeenCalledWith("crypto");
   expect(screenerApi.fetchScreenerResults).toHaveBeenCalledWith("crypto_high_volume", "crypto");
 });
