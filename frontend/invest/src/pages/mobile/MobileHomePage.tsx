@@ -44,7 +44,7 @@ const NAV_CARDS: MobileNavCard[] = [
     icon: <Icon name="flash" size={18} />,
   },
   {
-    to: "/signals",
+    to: "/my?tab=signals",
     label: "시그널",
     desc: "AI 분석 신호",
     icon: <Icon name="chart" size={18} />,

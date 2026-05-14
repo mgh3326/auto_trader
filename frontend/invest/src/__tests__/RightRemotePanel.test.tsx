@@ -1,7 +1,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { vi, beforeEach, test, expect } from "vitest";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { RightRemotePanel } from "../desktop/RightRemotePanel";
 import { AccountPanelProvider } from "../desktop/AccountPanelProvider";
 import * as panelApi from "../api/accountPanel";
@@ -142,9 +142,15 @@ function renderPanel() {
     <AccountPanelProvider>
       <MemoryRouter basename="/invest" initialEntries={["/invest/"]}>
         <RightRemotePanel />
+        <LocationProbe />
       </MemoryRouter>
     </AccountPanelProvider>,
   );
+}
+
+function LocationProbe() {
+  const location = useLocation();
+  return <div data-testid="location-probe" data-path={`${location.pathname}${location.search}`} />;
 }
 
 beforeEach(() => {
@@ -270,6 +276,19 @@ test("watchlist tab shows watch symbols", async () => {
   await userEvent.click(screen.getByRole("tab", { name: "관심" }));
   expect(screen.getByTestId("watchlist-panel")).toBeInTheDocument();
   expect(screen.getByText("Apple Inc.")).toBeInTheDocument();
+});
+
+test("portfolio and recent symbol clicks navigate to stock detail pages", async () => {
+  const user = userEvent.setup();
+  renderPanel();
+  await waitFor(() => expect(screen.getByTestId("portfolio-panel")).toBeInTheDocument());
+
+  await user.click(screen.getByRole("button", { name: /Tesla/ }));
+  expect(screen.getByTestId("location-probe")).toHaveAttribute("data-path", "/stocks/us/TSLA");
+
+  await user.click(screen.getByRole("tab", { name: "최근 본" }));
+  await user.click(screen.getByRole("button", { name: /Tesla/ }));
+  expect(screen.getByTestId("location-probe")).toHaveAttribute("data-path", "/stocks/us/TSLA");
 });
 
 test("recent tab shows empty state initially", async () => {

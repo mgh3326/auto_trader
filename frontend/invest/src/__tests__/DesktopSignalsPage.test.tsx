@@ -1,27 +1,19 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { vi, beforeEach, test, expect } from "vitest";
 import { MemoryRouter } from "react-router-dom";
-import { DesktopSignalsPage } from "../pages/desktop/DesktopSignalsPage";
-import { AccountPanelProvider } from "../desktop/AccountPanelProvider";
+import { SignalsPanel } from "../components/signals/SignalsPanel";
 import * as signalsApi from "../api/signals";
-import * as panelApi from "../api/accountPanel";
 
 function wrap(ui: React.ReactElement) {
   return (
-    <AccountPanelProvider>
-      <MemoryRouter basename="/invest" initialEntries={["/invest/signals"]}>
-        {ui}
-      </MemoryRouter>
-    </AccountPanelProvider>
+    <MemoryRouter basename="/invest" initialEntries={["/invest/my?tab=signals"]}>
+      {ui}
+    </MemoryRouter>
   );
 }
 
 beforeEach(() => {
-  vi.spyOn(panelApi, "fetchAccountPanel").mockResolvedValue({
-    homeSummary: { includedSources: [], excludedSources: [], totalValueKrw: 0 },
-    accounts: [], groupedHoldings: [], watchSymbols: [], sourceVisuals: [],
-    meta: { warnings: [], watchlistAvailable: true },
-  });
+  vi.restoreAllMocks();
   vi.spyOn(signalsApi, "fetchSignals").mockResolvedValue({
     tab: "mine", asOf: new Date().toISOString(),
     items: [{
@@ -34,13 +26,13 @@ beforeEach(() => {
 });
 
 test("renders signal list and shows empty default detail", async () => {
-  render(wrap(<DesktopSignalsPage />));
+  render(wrap(<SignalsPanel />));
   await waitFor(() => expect(screen.getAllByTestId("signal-list-item")).toHaveLength(1));
   expect(screen.getByText("시그널을 선택하세요.")).toBeInTheDocument();
 });
 
 test("does not render buy/sell CTA buttons", async () => {
-  render(wrap(<DesktopSignalsPage />));
+  render(wrap(<SignalsPanel />));
   await waitFor(() => expect(screen.getAllByTestId("signal-list-item")).toHaveLength(1));
   // The decision label ('매수' / '매도') renders as a decorative status pill
   // (a <span>, not actionable). The safety guarantee here is that no

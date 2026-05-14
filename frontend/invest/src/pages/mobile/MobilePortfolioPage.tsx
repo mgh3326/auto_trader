@@ -9,15 +9,10 @@ import { pillToneForSource } from "../../desktop/AccountSourceTone";
 import { stockDetailPath } from "../../stockDetailPath";
 import { PL, Pill } from "../../ds";
 import { SellHistoryPanel } from "../../components/my/SellHistoryPanel";
+import { PORTFOLIO_TABS, usePortfolioTabSearchParam, type PortfolioTab } from "../../components/my/portfolioTabs";
+import { SignalsPanel } from "../../components/signals/SignalsPanel";
 import type { AccountSource, GroupedHolding, HomeSummary, PriceState } from "../../types/invest";
 import type { AssetCategoryKey } from "../../components/AssetCategoryFilter";
-
-type PortfolioTab = "holdings" | "sellHistory";
-
-const PORTFOLIO_TABS: { key: PortfolioTab; label: string }[] = [
-  { key: "holdings", label: "보유 현황" },
-  { key: "sellHistory", label: "매도 이력" },
-];
 
 function fmtKrw(v: number | null | undefined): string {
   if (v == null) return "—";
@@ -55,9 +50,9 @@ function priceStateTone(priceState: PriceState): "accent" | "warn" | "paper" {
 
 export function MobilePortfolioPage() {
   const home = useInvestHome();
+  const [activeTab, setActiveTab] = usePortfolioTabSearchParam();
   const [account, setAccount] = useState<"all" | AccountSource>("all");
   const [category, setCategory] = useState<AssetCategoryKey>("all");
-  const [activeTab, setActiveTab] = useState<PortfolioTab>("holdings");
 
   const data = home.state.status === "ready" ? home.state.data : null;
 
@@ -312,6 +307,10 @@ export function MobilePortfolioPage() {
             )}
               </section>
             </>
+          ) : activeTab === "signals" ? (
+            <section style={{ padding: "0 16px" }}>
+              <SignalsPanel compact />
+            </section>
           ) : (
             <section style={{ padding: "0 16px" }}>
               <SellHistoryPanel compact />
@@ -346,7 +345,7 @@ function PortfolioTabBar({ activeTab, onChange }: { activeTab: PortfolioTab; onC
       aria-label="내 투자 보기 전환"
       style={{
         display: "grid",
-        gridTemplateColumns: "1fr 1fr",
+        gridTemplateColumns: `repeat(${PORTFOLIO_TABS.length}, 1fr)`,
         gap: 4,
         padding: 4,
         borderRadius: 999,

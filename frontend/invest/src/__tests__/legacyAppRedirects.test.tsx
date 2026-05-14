@@ -29,9 +29,6 @@ vi.mock("../pages/desktop/DesktopFeedNewsPage", () => ({
 vi.mock("../pages/desktop/DesktopDiscoverPage", () => ({
   InvestDiscoverRoute: makeSentinel("canonical-discover"),
 }));
-vi.mock("../pages/desktop/DesktopSignalsPage", () => ({
-  SignalsRoute: makeSentinel("canonical-signals"),
-}));
 vi.mock("../pages/desktop/DesktopCalendarPage", () => ({
   CalendarRoute: makeSentinel("canonical-calendar"),
 }));

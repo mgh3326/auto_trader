@@ -1,13 +1,9 @@
 import { useEffect, useState } from "react";
-import { DesktopShell } from "../../desktop/DesktopShell";
-import { RightRemotePanel } from "../../desktop/RightRemotePanel";
-import { useViewport } from "../../hooks/useViewport";
 import { fetchSignals } from "../../api/signals";
-import type { SignalsResponse, SignalTab, SignalCard as SignalCardData } from "../../types/signals";
-import { SignalCard } from "../../components/signals/SignalCard";
 import { Card, Pill } from "../../ds";
 import { formatRelativeTime } from "../../format/relativeTime";
-import { MobileSignalsPage } from "../mobile/MobileSignalsPage";
+import type { SignalCard as SignalCardData, SignalsResponse, SignalTab } from "../../types/signals";
+import { SignalCard } from "./SignalCard";
 
 const TABS: { key: SignalTab; label: string }[] = [
   { key: "mine", label: "내 투자 / 관심" },
@@ -16,11 +12,7 @@ const TABS: { key: SignalTab; label: string }[] = [
   { key: "crypto", label: "크립토" },
 ];
 
-export function SignalsRoute() {
-  return useViewport() === "mobile" ? <MobileSignalsPage /> : <DesktopSignalsPage />;
-}
-
-export function DesktopSignalsPage() {
+export function SignalsPanel({ compact = false }: { compact?: boolean }) {
   const [tab, setTab] = useState<SignalTab>("mine");
   const [data, setData] = useState<SignalsResponse | undefined>();
   const [err, setErr] = useState<string | undefined>();
@@ -39,36 +31,38 @@ export function DesktopSignalsPage() {
     };
   }, [tab]);
 
+  if (compact) {
+    return (
+      <div data-testid="signals-panel" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <SignalTabBar activeTab={tab} onChange={setTab} compact />
+        {err && <div style={{ color: "var(--danger)" }}>오류: {err}</div>}
+        {data?.meta.emptyReason && (
+          <div style={{ color: "var(--fg-3)", fontSize: 13 }}>결과 없음 ({data.meta.emptyReason})</div>
+        )}
+        <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 10 }}>
+          {(data?.items ?? []).map((s) => (
+            <li key={s.id}>
+              <SignalCard signal={s} variant="grid" />
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  }
+
   return (
-    <DesktopShell
-      left={
+    <div
+      data-testid="signals-panel"
+      style={{
+        display: "grid",
+        gridTemplateColumns: "minmax(260px,0.9fr) minmax(360px,1.25fr)",
+        gap: 16,
+        alignItems: "start",
+      }}
+    >
+      <Card padded={false} style={{ padding: 14 }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <nav style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            {TABS.map((t) => {
-              const active = tab === t.key;
-              return (
-                <button
-                  key={t.key}
-                  data-testid={`signal-tab-${t.key}`}
-                  onClick={() => setTab(t.key)}
-                  style={{
-                    textAlign: "left",
-                    padding: "6px 10px",
-                    borderRadius: 8,
-                    background: active ? "var(--surface-2)" : "transparent",
-                    color: active ? "var(--fg)" : "var(--fg-2)",
-                    fontWeight: active ? 700 : 600,
-                    border: "none",
-                    cursor: "pointer",
-                    fontSize: 13,
-                    fontFamily: "inherit",
-                  }}
-                >
-                  {t.label}
-                </button>
-              );
-            })}
-          </nav>
+          <SignalTabBar activeTab={tab} onChange={setTab} />
           {err && <div style={{ color: "var(--danger)", fontSize: 12 }}>오류: {err}</div>}
           {data?.meta.emptyReason && (
             <div style={{ fontSize: 12, color: "var(--fg-3)" }}>결과 없음 ({data.meta.emptyReason})</div>
@@ -85,18 +79,66 @@ export function DesktopSignalsPage() {
             ))}
           </ul>
         </div>
-      }
-      center={
-        <Card data-testid="signal-detail" padded={false} style={{ padding: 24 }}>
-          {!selected ? (
-            <div style={{ color: "var(--fg-3)" }}>시그널을 선택하세요.</div>
-          ) : (
-            <SignalDetail signal={selected} />
-          )}
-        </Card>
-      }
-      right={<RightRemotePanel />}
-    />
+      </Card>
+      <Card data-testid="signal-detail" padded={false} style={{ padding: 24, minHeight: 220 }}>
+        {!selected ? (
+          <div style={{ color: "var(--fg-3)" }}>시그널을 선택하세요.</div>
+        ) : (
+          <SignalDetail signal={selected} />
+        )}
+      </Card>
+    </div>
+  );
+}
+
+function SignalTabBar({
+  activeTab,
+  onChange,
+  compact = false,
+}: {
+  activeTab: SignalTab;
+  onChange: (tab: SignalTab) => void;
+  compact?: boolean;
+}) {
+  return (
+    <nav
+      aria-label="시그널 필터"
+      style={{
+        display: "flex",
+        flexDirection: compact ? "row" : "column",
+        gap: compact ? 6 : 4,
+        overflowX: compact ? "auto" : undefined,
+        paddingBottom: compact ? 4 : undefined,
+      }}
+    >
+      {TABS.map((t) => {
+        const active = activeTab === t.key;
+        return (
+          <button
+            key={t.key}
+            data-testid={`signal-tab-${t.key}`}
+            type="button"
+            onClick={() => onChange(t.key)}
+            style={{
+              flex: compact ? "0 0 auto" : undefined,
+              textAlign: "left",
+              padding: compact ? "6px 12px" : "6px 10px",
+              borderRadius: compact ? 999 : 8,
+              background: active ? (compact ? "var(--fg)" : "var(--surface-2)") : compact ? "var(--surface-2)" : "transparent",
+              color: active ? (compact ? "var(--bg)" : "var(--fg)") : "var(--fg-2)",
+              fontWeight: active ? 700 : 600,
+              border: "none",
+              cursor: "pointer",
+              fontSize: compact ? 12 : 13,
+              fontFamily: "inherit",
+              whiteSpace: compact ? "nowrap" : undefined,
+            }}
+          >
+            {t.label}
+          </button>
+        );
+      })}
+    </nav>
   );
 }
 

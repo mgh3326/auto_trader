@@ -14,7 +14,7 @@
 //
 // /invest/feed/news         — News and research feed.
 // /invest/discover          — Issue discovery / investment ideas.
-// /invest/signals           — AI analysis signals.
+// /invest/my?tab=signals    — AI analysis signals within MY.
 // /invest/calendar          — Earnings/events calendar.
 // /invest/coverage          — Data coverage dashboard.
 // /invest/insights          — Read-only market insight cards.
@@ -27,7 +27,6 @@ import { InvestHomeRoute } from "./pages/desktop/DesktopHomePage";
 import { InvestPortfolioRoute } from "./pages/desktop/DesktopPortfolioPage";
 import { FeedNewsRoute } from "./pages/desktop/DesktopFeedNewsPage";
 import { InvestDiscoverRoute } from "./pages/desktop/DesktopDiscoverPage";
-import { SignalsRoute } from "./pages/desktop/DesktopSignalsPage";
 import { CalendarRoute } from "./pages/desktop/DesktopCalendarPage";
 import { CoverageRoute } from "./pages/desktop/DesktopCoveragePage";
 import { DesktopScreenerPage } from "./pages/desktop/DesktopScreenerPage";
@@ -74,7 +73,6 @@ export const router = createBrowserRouter(
     { path: "/feed/news", element: <FeedNewsRoute /> },
     { path: "/discover", element: <InvestDiscoverRoute /> },
     { path: "/discover/issues/:issueId", element: <DiscoverIssueDetailPage /> },
-    { path: "/signals", element: <SignalsRoute /> },
     { path: "/calendar", element: <CalendarRoute /> },
     { path: "/coverage", element: <CoverageRoute /> },
     { path: "/market", element: <DesktopMarketPage /> },

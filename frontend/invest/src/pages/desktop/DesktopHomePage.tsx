@@ -5,7 +5,7 @@
 //   /invest/my       → detailed holdings/portfolio table (see DesktopPortfolioPage).
 //   /invest/feed/news → news feed
 //   /invest/discover  → issue discovery
-//   /invest/signals   → signals
+//   /invest/my?tab=signals → signals inside MY
 //   /invest/calendar  → earnings/events calendar
 //   /invest/coverage  → data coverage dashboard
 //   /invest/screener  → stock screener
@@ -69,7 +69,7 @@ const NAV_CARDS: NavCard[] = [
     icon: <Icon name="flash" size={20} />,
   },
   {
-    to: "/signals",
+    to: "/my?tab=signals",
     label: "시그널",
     desc: "AI 분석 신호 및 추천",
     icon: <Icon name="chart" size={20} />,
