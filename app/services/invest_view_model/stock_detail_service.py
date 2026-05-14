@@ -15,6 +15,7 @@ from app.schemas.invest_stock_detail import (
     StockDetailFxScenario,
     StockDetailFxSensitivity,
     StockDetailHolding,
+    StockDetailInvestorFlow,
     StockDetailLatestAnalysis,
     StockDetailNaverEnrichment,
     StockDetailOrderbook,
@@ -22,6 +23,9 @@ from app.schemas.invest_stock_detail import (
     StockDetailResponse,
     default_capabilities_for_market,
     orderbook_support_for_market,
+)
+from app.services.invest_view_model.investor_flow_service import (
+    latest_items_for_symbols as _latest_investor_flow_items,
 )
 from app.services.exchange_rate_service import get_usd_krw_quote
 from app.services.invest_view_model.naver_discussion_signal_poc import (
@@ -43,6 +47,39 @@ Provider = Callable[..., Awaitable[Any]]
 
 async def _none_provider(*args: Any, **kwargs: Any) -> None:
     return None
+
+
+async def _default_investor_flow_provider(
+    market: NewsMarket, symbol: str, db: Any
+) -> StockDetailInvestorFlow | None:
+    if market != "kr":
+        return None
+    items = await _latest_investor_flow_items(db=db, symbols=[symbol], market="kr")
+    item = items.get(symbol)
+    if item is None:
+        return StockDetailInvestorFlow(symbol=symbol, dataState="missing")
+    return StockDetailInvestorFlow(
+        symbol=item.symbol,
+        dataState=item.dataState,
+        snapshotDate=item.snapshotDate.isoformat() if item.snapshotDate else None,
+        collectedAt=item.collectedAt,
+        snapshotSource=item.source,
+        foreignNet=item.foreignNet,
+        institutionNet=item.institutionNet,
+        individualNet=item.individualNet,
+        foreignNetBuyRank=item.foreignNetBuyRank,
+        foreignNetSellRank=item.foreignNetSellRank,
+        institutionNetBuyRank=item.institutionNetBuyRank,
+        institutionNetSellRank=item.institutionNetSellRank,
+        doubleBuy=item.doubleBuy,
+        doubleSell=item.doubleSell,
+        foreignConsecutiveBuyDays=item.foreignConsecutiveBuyDays,
+        foreignConsecutiveSellDays=item.foreignConsecutiveSellDays,
+        institutionConsecutiveBuyDays=item.institutionConsecutiveBuyDays,
+        institutionConsecutiveSellDays=item.institutionConsecutiveSellDays,
+        individualConsecutiveBuyDays=item.individualConsecutiveBuyDays,
+        individualConsecutiveSellDays=item.individualConsecutiveSellDays,
+    )
 
 
 async def _run_optional_block(
@@ -70,6 +107,7 @@ class StockDetailProviders:
     fx_rate: Provider = get_usd_krw_quote
     naver_enrichment: Provider = build_naver_stock_detail_poc
     discussion_signal: Provider = build_naver_discussion_signal_poc
+    investor_flow: Provider = _default_investor_flow_provider
 
 
 DEFAULT_STOCK_DETAIL_PROVIDERS = StockDetailProviders()
@@ -129,8 +167,14 @@ async def build_stock_detail(
         orderbook_task = _run_optional_block(
             "orderbook", providers.orderbook(market, resolved.symbol_db, db), warnings
         )
+        investor_flow_task = _run_optional_block(
+            "investor_flow",
+            providers.investor_flow(market, resolved.symbol_db, db),
+            warnings,
+        )
     else:
         orderbook_task = _none_provider()
+        investor_flow_task = _none_provider()
 
     (
         quote,
@@ -141,6 +185,7 @@ async def build_stock_detail(
         naver_enrichment,
         discussion_signal,
         orderbook,
+        investor_flow,
     ) = await asyncio.gather(
         quote_task,
         screener_task,
@@ -150,6 +195,7 @@ async def build_stock_detail(
         naver_enrichment_task,
         discussion_signal_task,
         orderbook_task,
+        investor_flow_task,
     )
 
     capabilities = default_capabilities_for_market(market)
@@ -186,6 +232,10 @@ async def build_stock_detail(
         )
     if orderbook is not None and not isinstance(orderbook, StockDetailOrderbook):
         orderbook = StockDetailOrderbook.model_validate(orderbook)
+    if investor_flow is not None and not isinstance(
+        investor_flow, StockDetailInvestorFlow
+    ):
+        investor_flow = StockDetailInvestorFlow.model_validate(investor_flow)
 
     fx_rate = None
     if _should_fetch_fx_rate(
@@ -215,6 +265,7 @@ async def build_stock_detail(
         valuation=valuation,
         naverEnrichment=naver_enrichment,
         discussionSignal=discussion_signal,
+        investorFlow=investor_flow,
         holding=holding,
         fxSensitivity=fx_sensitivity,
         latestAnalysis=latest_analysis,
