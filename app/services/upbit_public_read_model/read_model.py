@@ -124,7 +124,9 @@ async def close_default_read_model() -> None:
     _DEFAULT_REDIS_CLIENT = None
     if redis_client is None:
         return
-    close = getattr(redis_client, "aclose", None) or getattr(redis_client, "close", None)
+    close = getattr(redis_client, "aclose", None) or getattr(
+        redis_client, "close", None
+    )
     if close is None:
         return
     result = close()

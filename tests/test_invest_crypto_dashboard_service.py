@@ -170,7 +170,9 @@ async def test_dashboard_records_stale_source_state_from_read_model():
 
 
 @pytest.mark.asyncio
-async def test_default_dashboard_reuses_single_upbit_read_model_redis_client(monkeypatch):
+async def test_default_dashboard_reuses_single_upbit_read_model_redis_client(
+    monkeypatch,
+):
     import fakeredis.aioredis
 
     from app.services.upbit_public_read_model import close_default_read_model
@@ -229,9 +231,7 @@ async def test_default_dashboard_reuses_single_upbit_read_model_redis_client(mon
     )
 
     try:
-        first = await build_crypto_dashboard(
-            db=FakeSession([_market()], []), user_id=7
-        )
+        first = await build_crypto_dashboard(db=FakeSession([_market()], []), user_id=7)
         second = await build_crypto_dashboard(
             db=FakeSession([_market()], []), user_id=7
         )
