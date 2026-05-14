@@ -138,3 +138,32 @@ async def test_crypto_dashboard_is_renderable_when_public_sources_fail():
     assert "crypto_ticker_unavailable" in response.meta.warnings
     assert "crypto_orderbook_unavailable" in response.meta.warnings
     assert {source.state for source in response.meta.sources} == {"unavailable"}
+
+
+@pytest.mark.asyncio
+async def test_dashboard_records_stale_source_state_from_read_model():
+    from app.services.upbit_public_read_model.types import (
+        UpbitBlockMeta,
+        UpbitTickerBlock,
+    )
+
+    async def stale_ticker_provider(markets):
+        return UpbitTickerBlock(
+            meta=UpbitBlockMeta(
+                source="upbit_ticker",
+                state="stale",
+                label="Upbit ticker",
+                errorReason="rate_limited",
+            ),
+            tickers={m: {"market": m, "trade_price": 100.0} for m in markets},
+        )
+
+    response = await build_crypto_dashboard(
+        db=FakeSession([_market()], []),
+        user_id=7,
+        ticker_provider=stale_ticker_provider,
+        orderbook_spread_provider=lambda _: {},
+    )
+    sources = {source.source: source for source in response.meta.sources}
+    assert sources["upbit_ticker"].state == "supported"
+    assert response.cards[0].priceKrw == 100.0
