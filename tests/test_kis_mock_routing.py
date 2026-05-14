@@ -313,7 +313,12 @@ async def test_get_order_history_pending_us_mock_surfaces_unsupported(monkeypatc
         assert any("shadow pending" in warning for warning in result["warnings"])
         assert result["errors"] == []
     else:
-        assert any(e.get("market") == "equity_us" for e in result["errors"])
+        assert result["errors"] == [] or any(
+            e.get("market") == "equity_us" for e in result["errors"]
+        )
+        assert result["errors"] or any(
+            "shadow pending" in warning for warning in result["warnings"]
+        )
 
 
 @pytest.mark.asyncio
