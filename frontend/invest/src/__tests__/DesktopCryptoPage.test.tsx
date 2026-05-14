@@ -8,7 +8,7 @@ vi.mock("../desktop/RightRemotePanel", () => ({
 
 import { DesktopCryptoPage } from "../pages/desktop/DesktopCryptoPage";
 import * as cryptoApi from "../api/investCrypto";
-import type { CryptoDashboardResponse } from "../types/investCrypto";
+import type { CryptoDashboardResponse, NaverCryptoReferenceResponse } from "../types/investCrypto";
 
 const dashboard: CryptoDashboardResponse = {
   asOf: "2026-05-13T12:00:00Z",
@@ -108,8 +108,69 @@ const dashboard: CryptoDashboardResponse = {
   meta: { warnings: [], sources: [{ source: "upbit_ticker", state: "supported", label: "Upbit ticker", fetchedAt: "2026-05-13T12:00:00Z" }] },
 };
 
+const reference: NaverCryptoReferenceResponse = {
+  market: "crypto",
+  asOf: "2026-05-13T12:01:00Z",
+  symbol: "KRW-BTC",
+  rank: [
+    {
+      rank: 1,
+      symbol: "KRW-BTC",
+      displayName: "비트코인",
+      priceKrw: 101000000,
+      changeRate24h: 0.0123,
+      tradeAmount24h: 12345678900,
+      rsi: 55.5,
+      marketWarning: false,
+      source: "tvscreener_upbit",
+    },
+  ],
+  profile: {
+    symbol: "KRW-BTC",
+    baseSymbol: "BTC",
+    displayName: "비트코인",
+    koreanName: "비트코인",
+    englishName: "Bitcoin",
+    naverUrl: "https://m.stock.naver.com/crypto/UPBIT/KRW-BTC",
+    officialMarket: "UPBIT/KRW",
+    referenceNotes: ["reference-only"],
+  },
+  news: { items: [{ id: 1, title: "BTC reference news", publisher: "fixture", url: "https://example.test/btc" }] },
+  kimchiPremium: {
+    baseSymbol: "BTC",
+    premiumPct: 2.5,
+    domesticPriceKrw: 101000000,
+    overseasPriceKrw: 98500000,
+    state: "available",
+    source: "mcp_kimchi_premium",
+    caution: "참고용 매크로 지표",
+  },
+  sources: [
+    {
+      source: "naver_reference",
+      label: "Naver crypto reference fixture",
+      state: "reference_only",
+      fetchedAt: null,
+      cacheAgeSeconds: null,
+      freshness: "fixture",
+      errorCode: null,
+      referenceOnly: true,
+    },
+  ],
+  warnings: ["naver_crypto_reference_only"],
+  capabilities: {
+    rank: { state: "supported", reason: null },
+    price: { state: "supported", reason: null },
+    profile: { state: "reference_only", reason: "naver_fixture_reference_only" },
+    news: { state: "supported", reason: null },
+    kimchiPremium: { state: "reference_only", reason: "macro_reference_only" },
+    execution: { state: "read_only_mvp", reason: "no_order_execution_controls" },
+  },
+};
+
 beforeEach(() => {
   vi.spyOn(cryptoApi, "fetchCryptoDashboard").mockResolvedValue(dashboard);
+  vi.spyOn(cryptoApi, "fetchCryptoNaverReference").mockResolvedValue(reference);
 });
 
 test("renders crypto dashboard cards and read-only capability states", async () => {
@@ -121,12 +182,17 @@ test("renders crypto dashboard cards and read-only capability states", async () 
 
   expect(await screen.findByTestId("crypto-dashboard")).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "크립토 대시보드" })).toBeInTheDocument();
-  expect(screen.getByText("비트코인")).toBeInTheDocument();
+  expect(screen.getAllByText("비트코인").length).toBeGreaterThan(0);
   expect(screen.getByText("101,000,000원")).toBeInTheDocument();
   expect(screen.getByText("보유")).toBeInTheDocument();
   expect(screen.getByText("미체결")).toBeInTheDocument();
   expect(screen.getByText(/주문·감시·동기화 작업은 실행하지 않습니다/)).toBeInTheDocument();
   expect(screen.getByText(/체결\/주문 실행: read_only_mvp/)).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: "Naver 참고 지표" })).toBeInTheDocument();
+  expect(screen.getByText("2.50%")).toBeInTheDocument();
+  expect(screen.getByText("BTC reference news")).toBeInTheDocument();
+  expect(screen.getByText(/Naver crypto reference fixture: reference_only/)).toBeInTheDocument();
+  expect(cryptoApi.fetchCryptoNaverReference).toHaveBeenCalledWith({ symbol: "KRW-BTC", limit: 20 });
 });
 
 test("renders risk summary, card risk labels, and candidate insight rows", async () => {

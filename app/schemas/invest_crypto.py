@@ -11,6 +11,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.schemas.invest_feed_news import FeedNewsResponse
+
 CryptoCapabilityState = Literal[
     "supported",
     "unavailable",
@@ -39,6 +41,16 @@ CryptoCandidateReasonKind = Literal[
     "pending_order",
     "data_quality",
 ]
+CryptoReferenceSourceState = Literal[
+    "available",
+    "cached",
+    "fixture",
+    "reference_only",
+    "stale",
+    "unavailable",
+    "error",
+]
+CryptoReferenceFreshness = Literal["fresh", "partial", "stale", "missing", "fixture"]
 CryptoPendingOrderSide = Literal["buy", "sell"] | str
 
 
@@ -212,3 +224,101 @@ class CryptoDashboardResponse(BaseModel):
         default_factory=CryptoDashboardCapabilities
     )
     meta: CryptoDashboardMeta
+
+
+class CryptoReferenceSourceMeta(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: str
+    label: str
+    state: CryptoReferenceSourceState
+    fetchedAt: datetime | None = None
+    cacheAgeSeconds: float | None = None
+    freshness: CryptoReferenceFreshness
+    errorCode: str | None = None
+    referenceOnly: bool = False
+
+
+class NaverCryptoRankItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rank: int = Field(ge=1)
+    symbol: str
+    displayName: str
+    priceKrw: float | None = None
+    changeRate24h: float | None = None
+    tradeAmount24h: float | None = None
+    rsi: float | None = None
+    marketWarning: bool | None = None
+    source: str
+
+
+class NaverCryptoProfile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    symbol: str
+    baseSymbol: str
+    displayName: str
+    koreanName: str | None = None
+    englishName: str | None = None
+    naverUrl: str | None = None
+    officialMarket: str | None = None
+    referenceNotes: list[str] = Field(default_factory=list)
+
+
+class NaverCryptoKimchiPremium(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    baseSymbol: str
+    premiumPct: float | None = None
+    domesticPriceKrw: float | None = None
+    overseasPriceKrw: float | None = None
+    state: CryptoReferenceSourceState
+    source: str
+    caution: str
+
+
+class NaverCryptoReferenceCapabilities(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rank: CryptoCapabilityFlag = Field(
+        default_factory=lambda: CryptoCapabilityFlag(state="supported")
+    )
+    price: CryptoCapabilityFlag = Field(
+        default_factory=lambda: CryptoCapabilityFlag(state="supported")
+    )
+    profile: CryptoCapabilityFlag = Field(
+        default_factory=lambda: CryptoCapabilityFlag(
+            state="reference_only", reason="naver_fixture_reference_only"
+        )
+    )
+    news: CryptoCapabilityFlag = Field(
+        default_factory=lambda: CryptoCapabilityFlag(state="supported")
+    )
+    kimchiPremium: CryptoCapabilityFlag = Field(
+        default_factory=lambda: CryptoCapabilityFlag(
+            state="reference_only", reason="macro_reference_only"
+        )
+    )
+    execution: CryptoCapabilityFlag = Field(
+        default_factory=lambda: CryptoCapabilityFlag(
+            state="read_only_mvp", reason="no_order_execution_controls"
+        )
+    )
+
+
+class NaverCryptoReferenceResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    market: Literal["crypto"] = "crypto"
+    asOf: datetime
+    symbol: str | None = None
+    rank: list[NaverCryptoRankItem] = Field(default_factory=list)
+    profile: NaverCryptoProfile | None = None
+    news: FeedNewsResponse | None = None
+    kimchiPremium: NaverCryptoKimchiPremium | None = None
+    sources: list[CryptoReferenceSourceMeta] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    capabilities: NaverCryptoReferenceCapabilities = Field(
+        default_factory=NaverCryptoReferenceCapabilities
+    )
