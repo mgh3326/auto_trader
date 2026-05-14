@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import get_db
 from app.routers.dependencies import get_authenticated_user
 from app.schemas.invest_account_panel import AccountPanelResponse
+from app.schemas.invest_action_readiness import KrActionReadinessResponse
 from app.schemas.invest_calendar import (
     CalendarResponse,
     CalendarTab,
@@ -66,6 +67,9 @@ from app.services.invest_momentum_events.repository import (
 )
 from app.services.invest_screener_snapshots.coverage_service import build_coverage
 from app.services.invest_view_model.account_panel_service import build_account_panel
+from app.services.invest_view_model.action_readiness_service import (
+    build_kr_action_readiness,
+)
 from app.services.invest_view_model.calendar_service import build_calendar
 from app.services.invest_view_model.common_preferred_disparity_service import (
     build_common_preferred_disparity,
@@ -233,6 +237,22 @@ async def get_invest_coverage(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/kr/action-readiness")
+async def get_kr_action_readiness(
+    user: Annotated[Any, Depends(get_authenticated_user)],
+    service: Annotated[InvestHomeService, Depends(get_invest_home_service)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    symbol: str = Query("", description="Optional six-digit KR equity symbol"),
+) -> KrActionReadinessResponse:
+    """Read-only KR action-report readiness/source dashboard (ROB-256)."""
+    return await build_kr_action_readiness(
+        db=db,
+        user_id=user.id,
+        home_service=service,
+        symbol=symbol or None,
+    )
 
 
 @router.get("/account-panel")
