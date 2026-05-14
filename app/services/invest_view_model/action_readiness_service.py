@@ -9,7 +9,8 @@ scrape external sites from the request path.
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,6 +43,144 @@ _SOURCE_POLICY = [
     "Toss/Naver/external sources are displayed only as reference, candidate, or supporting signals and are never source-of-truth for action readiness.",
     "Unavailable data is surfaced as stale/missing/partial/failed/unsupported/확인 불가 rather than estimated.",
 ]
+
+
+@dataclass(frozen=True)
+class _SurfaceFamilySpec:
+    key: str
+    label_ko: str
+    category: str
+    surface_name: str | None = None
+    impact: ActionReportImpact = "degrades_report"
+    critical: bool = False
+    extra_references: tuple[str, ...] = ()
+    extra_notes: tuple[str, ...] = ()
+    links: tuple[ActionReadinessLink, ...] = ()
+
+
+_READ_MODEL = "Market/read-model data"
+_CONTEXT = "News/calendar/research context"
+_EXECUTION = "Execution/history"
+
+_AGGREGATE_LEADING_SPECS = (
+    _SurfaceFamilySpec(
+        "quotes",
+        "시세 / 현재가",
+        _READ_MODEL,
+        "quotes",
+        links=(ActionReadinessLink(label="Coverage", href="/invest/coverage"),),
+    ),
+    _SurfaceFamilySpec("ohlcv", "OHLCV 캔들", _READ_MODEL, "ohlcv"),
+)
+
+_COMMON_PRE_VALUATION_SPECS = (
+    _SurfaceFamilySpec(
+        "technical_indicators",
+        "기술지표",
+        _READ_MODEL,
+        extra_notes=(
+            "No separate durable indicator readiness surface is wired; do not calculate indicators in this request path.",
+        ),
+    ),
+    _SurfaceFamilySpec(
+        "support_resistance",
+        "지지/저항",
+        _READ_MODEL,
+        extra_notes=(
+            "No durable support/resistance readiness surface is wired; values must not be fabricated.",
+        ),
+    ),
+    _SurfaceFamilySpec(
+        "orderbook_session",
+        "호가 / 세션",
+        _READ_MODEL,
+        "orderbook_nxt_capability",
+        extra_notes=(
+            "This reports local NXT/session capability, not a request-path orderbook fetch.",
+        ),
+    ),
+    _SurfaceFamilySpec(
+        "nxt_eligibility", "NXT 대상 여부", _READ_MODEL, "orderbook_nxt_capability"
+    ),
+    _SurfaceFamilySpec(
+        "screener_snapshots", "스크리너 스냅샷", _READ_MODEL, "screener_snapshots"
+    ),
+    _SurfaceFamilySpec(
+        "naver_momentum_events",
+        "Naver 모멘텀 이벤트",
+        _READ_MODEL,
+        extra_references=("naver_reference",),
+        extra_notes=(
+            "Naver momentum events are reference/candidate only and not source-of-truth.",
+        ),
+    ),
+    _SurfaceFamilySpec(
+        "naver_momentum_candidates",
+        "Naver 모멘텀 후보",
+        _READ_MODEL,
+        extra_references=("naver_reference",),
+        extra_notes=(
+            "Momentum candidates are aggregate reference data only, not trading instructions.",
+        ),
+    ),
+    _SurfaceFamilySpec(
+        "naver_theme_events",
+        "Naver 테마 이벤트",
+        _READ_MODEL,
+        extra_references=("naver_reference",),
+        extra_notes=("Theme events are aggregate reference data only.",),
+    ),
+    _SurfaceFamilySpec("investor_flow", "투자자 수급", _READ_MODEL, "investor_flow"),
+    _SurfaceFamilySpec("news_feed", "뉴스 피드", _CONTEXT, "news_feed"),
+    _SurfaceFamilySpec("issue_clusters", "시장 이슈 클러스터", _CONTEXT),
+    _SurfaceFamilySpec("disclosures", "공시", _CONTEXT),
+    _SurfaceFamilySpec("calendar_events", "캘린더 이벤트", _CONTEXT, "calendar_events"),
+)
+
+_AGGREGATE_VALUATION_SPEC = _SurfaceFamilySpec(
+    "valuation_fundamentals",
+    "밸류에이션 / 펀더멘털",
+    _CONTEXT,
+    "valuation_fundamentals",
+)
+
+_COMMON_POST_VALUATION_SPECS = (
+    _SurfaceFamilySpec("research_reports", "리서치 리포트", _CONTEXT, "research_reports"),
+    _SurfaceFamilySpec(
+        "research_consensus",
+        "리서치 컨센서스",
+        _CONTEXT,
+        extra_notes=(
+            "No distinct durable research-consensus readiness surface is wired; research report freshness is not treated as consensus availability.",
+        ),
+    ),
+    _SurfaceFamilySpec(
+        "execution_ledger",
+        "체결 / 실행 이력",
+        _EXECUTION,
+        extra_notes=(
+            "No distinct execution/fill ledger readiness surface is wired; pending orders are not treated as historical fills.",
+        ),
+    ),
+    _SurfaceFamilySpec(
+        "sell_history",
+        "매도 이력",
+        _EXECUTION,
+        extra_notes=(
+            "No distinct sell-history readiness surface is wired; do not infer sell history from pending orders.",
+        ),
+    ),
+    _SurfaceFamilySpec(
+        "pending_order_reconciliation",
+        "미체결 주문 reconcile",
+        _EXECUTION,
+        critical=True,
+        impact="blocks_all_action_reports",
+        extra_notes=(
+            "Pending-order table freshness alone does not prove live open-order reconciliation; fail closed until a reconciliation read-model is wired.",
+        ),
+    ),
+)
 
 
 def _safe_actionability(
@@ -157,6 +296,30 @@ def _surface_family(
         notes=list(surface.notes) + list(extra_notes),
         links=list(links),
     )
+
+
+def _surface_family_from_spec(
+    spec: _SurfaceFamilySpec,
+    surface_lookup: Callable[[str], InvestCoverageSurface | None],
+) -> ActionReadinessFamily:
+    return _surface_family(
+        key=spec.key,
+        label_ko=spec.label_ko,
+        category=spec.category,
+        surface=surface_lookup(spec.surface_name) if spec.surface_name else None,
+        impact=spec.impact,
+        critical=spec.critical,
+        extra_references=spec.extra_references,
+        extra_notes=spec.extra_notes,
+        links=spec.links,
+    )
+
+
+def _surface_families_from_specs(
+    specs: Sequence[_SurfaceFamilySpec],
+    surface_lookup: Callable[[str], InvestCoverageSurface | None],
+) -> list[ActionReadinessFamily]:
+    return [_surface_family_from_spec(spec, surface_lookup) for spec in specs]
 
 
 def _symbol_state_from_latest_date(
@@ -646,343 +809,25 @@ async def build_kr_action_readiness(
             await _symbol_ohlcv_family(
                 db, symbol=normalized_symbol, trading_day=coverage.tradingDate
             ),
-            _surface_family(
-                key="technical_indicators",
-                label_ko="기술지표",
-                category="Market/read-model data",
-                surface=None,
-                impact="degrades_report",
-                extra_notes=[
-                    "No separate durable indicator readiness surface is wired; do not calculate indicators in this request path."
-                ],
-            ),
-            _surface_family(
-                key="support_resistance",
-                label_ko="지지/저항",
-                category="Market/read-model data",
-                surface=None,
-                impact="degrades_report",
-                extra_notes=[
-                    "No durable support/resistance readiness surface is wired; values must not be fabricated."
-                ],
-            ),
-            _surface_family(
-                key="orderbook_session",
-                label_ko="호가 / 세션",
-                category="Market/read-model data",
-                surface=s("orderbook_nxt_capability"),
-                impact="degrades_report",
-                extra_notes=[
-                    "This reports local NXT/session capability, not a request-path orderbook fetch."
-                ],
-            ),
-            _surface_family(
-                key="nxt_eligibility",
-                label_ko="NXT 대상 여부",
-                category="Market/read-model data",
-                surface=s("orderbook_nxt_capability"),
-            ),
-            _surface_family(
-                key="screener_snapshots",
-                label_ko="스크리너 스냅샷",
-                category="Market/read-model data",
-                surface=s("screener_snapshots"),
-            ),
-            _surface_family(
-                key="naver_momentum_events",
-                label_ko="Naver 모멘텀 이벤트",
-                category="Market/read-model data",
-                surface=None,
-                impact="degrades_report",
-                extra_references=["naver_reference"],
-                extra_notes=[
-                    "Naver momentum events are reference/candidate only and not source-of-truth."
-                ],
-            ),
-            _surface_family(
-                key="naver_momentum_candidates",
-                label_ko="Naver 모멘텀 후보",
-                category="Market/read-model data",
-                surface=None,
-                impact="degrades_report",
-                extra_references=["naver_reference"],
-                extra_notes=[
-                    "Momentum candidates are aggregate reference data only, not trading instructions."
-                ],
-            ),
-            _surface_family(
-                key="naver_theme_events",
-                label_ko="Naver 테마 이벤트",
-                category="Market/read-model data",
-                surface=None,
-                impact="degrades_report",
-                extra_references=["naver_reference"],
-                extra_notes=["Theme events are aggregate reference data only."],
-            ),
-            _surface_family(
-                key="investor_flow",
-                label_ko="투자자 수급",
-                category="Market/read-model data",
-                surface=s("investor_flow"),
-            ),
-            _surface_family(
-                key="news_feed",
-                label_ko="뉴스 피드",
-                category="News/calendar/research context",
-                surface=s("news_feed"),
-            ),
-            _surface_family(
-                key="issue_clusters",
-                label_ko="시장 이슈 클러스터",
-                category="News/calendar/research context",
-                surface=None,
-                impact="degrades_report",
-            ),
-            _surface_family(
-                key="disclosures",
-                label_ko="공시",
-                category="News/calendar/research context",
-                surface=None,
-                impact="degrades_report",
-            ),
-            _surface_family(
-                key="calendar_events",
-                label_ko="캘린더 이벤트",
-                category="News/calendar/research context",
-                surface=s("calendar_events"),
-            ),
+            *_surface_families_from_specs(_COMMON_PRE_VALUATION_SPECS, s),
             await _symbol_valuation_family(
                 db, symbol=normalized_symbol, trading_day=coverage.tradingDate
             ),
-            _surface_family(
-                key="research_reports",
-                label_ko="리서치 리포트",
-                category="News/calendar/research context",
-                surface=s("research_reports"),
-            ),
-            _surface_family(
-                key="research_consensus",
-                label_ko="리서치 컨센서스",
-                category="News/calendar/research context",
-                surface=None,
-                impact="degrades_report",
-                extra_notes=[
-                    "No distinct durable research-consensus readiness surface is wired; research report freshness is not treated as consensus availability."
-                ],
-            ),
-            _surface_family(
-                key="execution_ledger",
-                label_ko="체결 / 실행 이력",
-                category="Execution/history",
-                surface=None,
-                impact="degrades_report",
-                extra_notes=[
-                    "No distinct execution/fill ledger readiness surface is wired; pending orders are not treated as historical fills."
-                ],
-            ),
-            _surface_family(
-                key="sell_history",
-                label_ko="매도 이력",
-                category="Execution/history",
-                surface=None,
-                impact="degrades_report",
-                extra_notes=[
-                    "No distinct sell-history readiness surface is wired; do not infer sell history from pending orders."
-                ],
-            ),
-            _surface_family(
-                key="pending_order_reconciliation",
-                label_ko="미체결 주문 reconcile",
-                category="Execution/history",
-                surface=None,
-                critical=True,
-                impact="blocks_all_action_reports",
-                extra_notes=[
-                    "Pending-order table freshness alone does not prove live open-order reconciliation; fail closed until a reconciliation read-model is wired."
-                ],
-            ),
+            *_surface_families_from_specs(_COMMON_POST_VALUATION_SPECS, s),
         ]
         families.extend(symbol_market_families)
         _apply_symbol_surface_diagnostics(families, coverage, symbol=normalized_symbol)
     else:
         families.extend(
-            [
-                _surface_family(
-                    key="quotes",
-                    label_ko="시세 / 현재가",
-                    category="Market/read-model data",
-                    surface=s("quotes"),
-                    critical=False,
-                    impact="degrades_report",
-                    links=[
-                        ActionReadinessLink(label="Coverage", href="/invest/coverage")
-                    ],
+            _surface_families_from_specs(
+                (
+                    *_AGGREGATE_LEADING_SPECS,
+                    *_COMMON_PRE_VALUATION_SPECS,
+                    _AGGREGATE_VALUATION_SPEC,
+                    *_COMMON_POST_VALUATION_SPECS,
                 ),
-                _surface_family(
-                    key="ohlcv",
-                    label_ko="OHLCV 캔들",
-                    category="Market/read-model data",
-                    surface=s("ohlcv"),
-                ),
-                _surface_family(
-                    key="technical_indicators",
-                    label_ko="기술지표",
-                    category="Market/read-model data",
-                    surface=None,
-                    impact="degrades_report",
-                    extra_notes=[
-                        "No separate durable indicator readiness surface is wired; do not calculate indicators in this request path."
-                    ],
-                ),
-                _surface_family(
-                    key="support_resistance",
-                    label_ko="지지/저항",
-                    category="Market/read-model data",
-                    surface=None,
-                    impact="degrades_report",
-                    extra_notes=[
-                        "No durable support/resistance readiness surface is wired; values must not be fabricated."
-                    ],
-                ),
-                _surface_family(
-                    key="orderbook_session",
-                    label_ko="호가 / 세션",
-                    category="Market/read-model data",
-                    surface=s("orderbook_nxt_capability"),
-                    impact="degrades_report",
-                    extra_notes=[
-                        "This reports local NXT/session capability, not a request-path orderbook fetch."
-                    ],
-                ),
-                _surface_family(
-                    key="nxt_eligibility",
-                    label_ko="NXT 대상 여부",
-                    category="Market/read-model data",
-                    surface=s("orderbook_nxt_capability"),
-                ),
-                _surface_family(
-                    key="screener_snapshots",
-                    label_ko="스크리너 스냅샷",
-                    category="Market/read-model data",
-                    surface=s("screener_snapshots"),
-                ),
-                _surface_family(
-                    key="naver_momentum_events",
-                    label_ko="Naver 모멘텀 이벤트",
-                    category="Market/read-model data",
-                    surface=None,
-                    impact="degrades_report",
-                    extra_references=["naver_reference"],
-                    extra_notes=[
-                        "Naver momentum events are reference/candidate only and not source-of-truth."
-                    ],
-                ),
-                _surface_family(
-                    key="naver_momentum_candidates",
-                    label_ko="Naver 모멘텀 후보",
-                    category="Market/read-model data",
-                    surface=None,
-                    impact="degrades_report",
-                    extra_references=["naver_reference"],
-                    extra_notes=[
-                        "Momentum candidates are aggregate reference data only, not trading instructions."
-                    ],
-                ),
-                _surface_family(
-                    key="naver_theme_events",
-                    label_ko="Naver 테마 이벤트",
-                    category="Market/read-model data",
-                    surface=None,
-                    impact="degrades_report",
-                    extra_references=["naver_reference"],
-                    extra_notes=["Theme events are aggregate reference data only."],
-                ),
-                _surface_family(
-                    key="investor_flow",
-                    label_ko="투자자 수급",
-                    category="Market/read-model data",
-                    surface=s("investor_flow"),
-                ),
-                _surface_family(
-                    key="news_feed",
-                    label_ko="뉴스 피드",
-                    category="News/calendar/research context",
-                    surface=s("news_feed"),
-                ),
-                _surface_family(
-                    key="issue_clusters",
-                    label_ko="시장 이슈 클러스터",
-                    category="News/calendar/research context",
-                    surface=None,
-                    impact="degrades_report",
-                ),
-                _surface_family(
-                    key="disclosures",
-                    label_ko="공시",
-                    category="News/calendar/research context",
-                    surface=None,
-                    impact="degrades_report",
-                ),
-                _surface_family(
-                    key="calendar_events",
-                    label_ko="캘린더 이벤트",
-                    category="News/calendar/research context",
-                    surface=s("calendar_events"),
-                ),
-                _surface_family(
-                    key="valuation_fundamentals",
-                    label_ko="밸류에이션 / 펀더멘털",
-                    category="News/calendar/research context",
-                    surface=s("valuation_fundamentals"),
-                ),
-                _surface_family(
-                    key="research_reports",
-                    label_ko="리서치 리포트",
-                    category="News/calendar/research context",
-                    surface=s("research_reports"),
-                ),
-                _surface_family(
-                    key="research_consensus",
-                    label_ko="리서치 컨센서스",
-                    category="News/calendar/research context",
-                    surface=None,
-                    impact="degrades_report",
-                    extra_notes=[
-                        "No distinct durable research-consensus readiness surface is wired; research report freshness is not treated as consensus availability."
-                    ],
-                ),
-                _surface_family(
-                    key="execution_ledger",
-                    label_ko="체결 / 실행 이력",
-                    category="Execution/history",
-                    surface=None,
-                    impact="degrades_report",
-                    extra_notes=[
-                        "No distinct execution/fill ledger readiness surface is wired; pending orders are not treated as historical fills."
-                    ],
-                ),
-                _surface_family(
-                    key="sell_history",
-                    label_ko="매도 이력",
-                    category="Execution/history",
-                    surface=None,
-                    impact="degrades_report",
-                    extra_notes=[
-                        "No distinct sell-history readiness surface is wired; do not infer sell history from pending orders."
-                    ],
-                ),
-                _surface_family(
-                    key="pending_order_reconciliation",
-                    label_ko="미체결 주문 reconcile",
-                    category="Execution/history",
-                    surface=None,
-                    critical=True,
-                    impact="blocks_all_action_reports",
-                    extra_notes=[
-                        "Pending-order table freshness alone does not prove live open-order reconciliation; fail closed until a reconciliation read-model is wired."
-                    ],
-                ),
-            ]
+                s,
+            )
         )
 
     blockers: list[str] = []
