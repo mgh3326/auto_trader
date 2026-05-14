@@ -127,6 +127,7 @@ async def alpaca_paper_execution_preflight_check(
     expected_signal_symbol: str | None = None,
     expected_execution_symbol: str | None = None,
     stale_after_minutes: int = 30,
+    legacy_cycle_blockers_as_warnings: bool = False,
     lifecycle_correlation_id: str | None = None,
     client_order_id: str | None = None,
     candidate_uuid: str | None = None,
@@ -146,6 +147,10 @@ async def alpaca_paper_execution_preflight_check(
     behavior used by broad cycle runners. ``session_uuid`` is surfaced as a
     response scope marker for decision-session callers; ledger scoping still
     uses correlation/provenance keys because the Alpaca ledger has no session FK.
+    ``legacy_cycle_blockers_as_warnings`` is an explicit Alpaca Paper test-mode
+    switch: residual-position and stale-preview cleanup findings are returned as
+    warnings, while open-order conflicts, duplicate IDs, ledger/fill anomalies,
+    symbol mismatches, and other execution-safety findings remain blockers.
     """
     if limit < 1:
         raise ValueError("limit must be >= 1")
@@ -203,6 +208,7 @@ async def alpaca_paper_execution_preflight_check(
         expected_signal_symbol=expected_signal_symbol,
         expected_execution_symbol=expected_execution_symbol,
         stale_after_minutes=stale_after_minutes,
+        legacy_cycle_blockers_as_warnings=legacy_cycle_blockers_as_warnings,
     )
     data = report.to_dict()
     data.update(
@@ -212,6 +218,7 @@ async def alpaca_paper_execution_preflight_check(
             "source": "alpaca_paper_execution_preflight",
             "read_only": True,
             "limit": limit,
+            "legacy_cycle_blockers_as_warnings": legacy_cycle_blockers_as_warnings,
             "scoped_by": scoped_by,
             "session_uuid": scope["session_uuid"],
         }

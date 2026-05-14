@@ -142,7 +142,14 @@ callers may pass `lifecycle_correlation_id`, `client_order_id`, `candidate_uuid`
 `briefing_artifact_run_uuid`, or an `approval_packet` containing those keys; the
 tool then reads only matching ledger rows and returns `scoped_by` so decision
 sessions do not get blocked by unrelated recent ETH/SOL/BTC rows. Calls without
-scope keep the broad recent-ledger safety behavior for global runners. ROB-93
+scope keep the broad recent-ledger safety behavior for global runners. Passing
+`legacy_cycle_blockers_as_warnings=True` is an explicit Alpaca Paper execution
+flow test-mode: residual positions and stale preview/approval packets are
+returned as warnings instead of blockers so operators can test buy/sell/order
+adjust/close flows on a used paper account. It does not weaken open-order
+conflicts, duplicate `client_order_id`, ledger/order/fill anomalies, missing
+linked sells, unclosed sell snapshots, or symbol mismatches; those remain
+blocking. ROB-93
 checks include unexpected open orders, residual positions, duplicate
 `client_order_id`, filled buys without linked sells, filled sells without a zero
 final position snapshot, ledger/order/fill mismatches, stale previews/approval
