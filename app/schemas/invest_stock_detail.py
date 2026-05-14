@@ -230,6 +230,49 @@ class StockDetailDiscussionSignal(BaseModel):
         return self
 
 
+InvestorFlowDetailState = Literal["fresh", "stale", "missing"]
+
+
+class StockDetailInvestorFlow(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: Literal["investor_flow_snapshots"] = "investor_flow_snapshots"
+    market: Literal["kr"] = "kr"
+    symbol: str
+    dataState: InvestorFlowDetailState
+    snapshotDate: str | None = None
+    collectedAt: datetime | None = None
+    snapshotSource: str | None = None
+    foreignNet: int | None = None
+    institutionNet: int | None = None
+    individualNet: int | None = None
+    foreignNetBuyRank: int | None = None
+    foreignNetSellRank: int | None = None
+    institutionNetBuyRank: int | None = None
+    institutionNetSellRank: int | None = None
+    doubleBuy: bool = False
+    doubleSell: bool = False
+    foreignConsecutiveBuyDays: int | None = None
+    foreignConsecutiveSellDays: int | None = None
+    institutionConsecutiveBuyDays: int | None = None
+    institutionConsecutiveSellDays: int | None = None
+    individualConsecutiveBuyDays: int | None = None
+    individualConsecutiveSellDays: int | None = None
+    cautionLabel: str = "투자자별 수급은 과거 신호이며 매매 판단을 대신하지 않습니다."
+
+    @model_validator(mode="after")
+    def enforce_kr_only(self) -> StockDetailInvestorFlow:
+        if self.market != "kr":
+            raise ValueError("investor_flow is KR-only in /invest stock detail")
+        if self.dataState == "missing" and (
+            self.foreignNet is not None or self.institutionNet is not None
+        ):
+            raise ValueError(
+                "missing investor_flow must not expose any flow values"
+            )
+        return self
+
+
 class StockDetailHolding(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -337,6 +380,7 @@ class StockDetailResponse(BaseModel):
     valuation: StockDetailValuation | None = None
     naverEnrichment: StockDetailNaverEnrichment | None = None
     discussionSignal: StockDetailDiscussionSignal | None = None
+    investorFlow: StockDetailInvestorFlow | None = None
     holding: StockDetailHolding | None = None
     fxSensitivity: StockDetailFxSensitivity | None = None
     latestAnalysis: StockDetailLatestAnalysis | None = None
