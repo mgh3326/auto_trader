@@ -39,6 +39,7 @@ async def _resolve_us(market, raw_symbol, db):
     )
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_kr_detail_includes_investor_flow_when_provider_returns_payload():
     async def fake_investor_flow(market, symbol, db):
@@ -71,6 +72,7 @@ async def test_kr_detail_includes_investor_flow_when_provider_returns_payload():
     assert response.investorFlow.doubleBuy is True
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_us_detail_does_not_call_investor_flow_provider():
     calls = []
@@ -94,6 +96,7 @@ async def test_us_detail_does_not_call_investor_flow_provider():
     assert calls == []
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_investor_flow_provider_failure_warns_but_keeps_response():
     async def boom(market, symbol, db):
@@ -114,6 +117,7 @@ async def test_investor_flow_provider_failure_warns_but_keeps_response():
     assert "investor_flow_unavailable" in response.meta.warnings
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_kr_detail_investor_flow_defaults_to_none_without_snapshots(monkeypatch):
     from unittest.mock import AsyncMock
@@ -142,6 +146,7 @@ async def test_kr_detail_investor_flow_defaults_to_none_without_snapshots(monkey
     assert "거래량" in " ".join(response.investorFlow.unavailableLabels)
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_kr_detail_default_investor_flow_includes_daily_rows(monkeypatch):
     from datetime import date

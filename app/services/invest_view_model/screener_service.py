@@ -167,20 +167,58 @@ def _investor_flow_chip_for_item(
     return None
 
 
+def _investor_flow_item_from_screener_row(
+    row: dict[str, Any],
+) -> InvestorFlowItem | None:
+    symbol = str(row.get("symbol") or "").strip().upper()
+    if not symbol:
+        return None
+
+    snapshot_state = str(row.get("_screener_snapshot_state") or "").strip()
+    data_state = snapshot_state if snapshot_state in {"fresh", "stale"} else "fresh"
+    return InvestorFlowItem(
+        symbol=symbol,
+        market="kr",
+        dataState=data_state,
+        snapshotDate=row.get("snapshot_date"),
+        foreignNet=row.get("foreign_net"),
+        institutionNet=row.get("institution_net"),
+        individualNet=row.get("individual_net"),
+        doubleBuy=bool(row.get("double_buy")),
+        doubleSell=bool(row.get("double_sell")),
+        foreignConsecutiveBuyDays=row.get("foreign_consecutive_buy_days"),
+        foreignConsecutiveSellDays=row.get("foreign_consecutive_sell_days"),
+        institutionConsecutiveBuyDays=row.get("institution_consecutive_buy_days"),
+        institutionConsecutiveSellDays=row.get("institution_consecutive_sell_days"),
+        individualConsecutiveBuyDays=row.get("individual_consecutive_buy_days"),
+        individualConsecutiveSellDays=row.get("individual_consecutive_sell_days"),
+    )
+
+
 async def _hydrate_investor_flow_chips(
     *, db: Any, market: str, rows: list[dict[str, Any]]
 ) -> dict[str, ScreenerInvestorFlowChip]:
     if market != "kr" or not rows or db is None:
         return {}
-    symbols = sorted({str(r.get("symbol")) for r in rows if r.get("symbol")})
+    chips: dict[str, ScreenerInvestorFlowChip] = {}
+    for row in rows:
+        item = _investor_flow_item_from_screener_row(row)
+        if item is None:
+            continue
+        chip = _investor_flow_chip_for_item(item)
+        if chip is not None:
+            chips[item.symbol] = chip
+
+    symbols = sorted(
+        {str(r.get("symbol")) for r in rows if r.get("symbol")} - set(chips.keys())
+    )
     if not symbols:
-        return {}
+        return chips
     try:
         items = await _latest_investor_flow_items(db=db, symbols=symbols, market="kr")
     except Exception as exc:  # noqa: BLE001
         logger.warning("screener investor-flow hydrate failed: %s", exc, exc_info=True)
-        return {}
-    chips: dict[str, ScreenerInvestorFlowChip] = {}
+        return chips
     for symbol, item in items.items():
         chip = _investor_flow_chip_for_item(item)
         if chip is not None:

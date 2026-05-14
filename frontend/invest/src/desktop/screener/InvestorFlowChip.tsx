@@ -10,7 +10,7 @@ const TONE_CLASS: Record<ScreenerInvestorFlowChip["tone"], string> = {
   neutral: "investor-flow-chip--neutral",
 };
 
-export function InvestorFlowChip({ chip }: { chip: ScreenerInvestorFlowChip }) {
+export function InvestorFlowChip({ chip }: Readonly<{ chip: ScreenerInvestorFlowChip }>) {
   const title = chip.snapshotDate ? `${chip.label} (${chip.snapshotDate})` : chip.label;
   return (
     <span

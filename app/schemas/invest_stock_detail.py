@@ -318,7 +318,9 @@ class StockDetailInvestorFlow(BaseModel):
         if self.market != "kr":
             raise ValueError("investor_flow is KR-only in /invest stock detail")
         if self.dataState == "missing" and (
-            self.foreignNet is not None or self.institutionNet is not None
+            self.foreignNet is not None
+            or self.institutionNet is not None
+            or self.individualNet is not None
         ):
             raise ValueError("missing investor_flow must not expose any flow values")
         return self

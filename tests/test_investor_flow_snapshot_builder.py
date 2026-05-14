@@ -28,6 +28,7 @@ async def _fake_fetcher(symbol: str, days: int):
     return {"symbol": symbol, "data": fixtures[symbol]}
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_build_investor_flow_snapshots_derives_streaks_ranks_and_individual():
     collected_at = dt.datetime(2026, 5, 12, 7, 0, tzinfo=dt.UTC)
@@ -62,6 +63,7 @@ async def test_build_investor_flow_snapshots_derives_streaks_ranks_and_individua
     assert sell_leader.institution_net_sell_rank == 1
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_build_investor_flow_snapshots_warns_and_skips_empty_or_invalid_rows():
     async def fake_fetcher(symbol: str, days: int):
@@ -80,6 +82,7 @@ async def test_build_investor_flow_snapshots_warns_and_skips_empty_or_invalid_ro
     assert "900304: no valid investor-flow rows built" in result.warnings
 
 
+@pytest.mark.unit
 def test_403550_naver_fixture_loads_and_has_expected_shape():
     fixture = json.loads((_FIXTURE_DIR / "403550_naver_sample.json").read_text())
     assert fixture["symbol"] == "403550"

@@ -37,6 +37,7 @@ def _item(**overrides) -> InvestorFlowItem:
     return InvestorFlowItem(**defaults)
 
 
+@pytest.mark.unit
 def test_double_buy_takes_precedence():
     chip = _investor_flow_chip_for_item(
         _item(
@@ -50,6 +51,7 @@ def test_double_buy_takes_precedence():
     assert "쌍끌이 매수" in chip.label
 
 
+@pytest.mark.unit
 def test_foreign_consecutive_buy_only():
     chip = _investor_flow_chip_for_item(_item(foreignConsecutiveBuyDays=5))
     assert chip is not None
@@ -57,16 +59,19 @@ def test_foreign_consecutive_buy_only():
     assert chip.label == "외국인 5일 순매수"
 
 
+@pytest.mark.unit
 def test_no_chip_when_signals_below_threshold():
     chip = _investor_flow_chip_for_item(_item(foreignConsecutiveBuyDays=2))
     assert chip is None
 
 
+@pytest.mark.unit
 def test_missing_state_yields_no_chip():
     chip = _investor_flow_chip_for_item(_item(dataState="missing"))
     assert chip is None
 
 
+@pytest.mark.unit
 def test_stale_state_annotates_label():
     chip = _investor_flow_chip_for_item(
         _item(dataState="stale", foreignConsecutiveBuyDays=4)
@@ -76,6 +81,7 @@ def test_stale_state_annotates_label():
     assert "1일 지연" in chip.label
 
 
+@pytest.mark.unit
 def test_double_sell_chip():
     chip = _investor_flow_chip_for_item(
         _item(
@@ -89,6 +95,7 @@ def test_double_sell_chip():
     assert "쌍끌이 매도" in chip.label
 
 
+@pytest.mark.unit
 def test_institution_consecutive_buy():
     chip = _investor_flow_chip_for_item(_item(institutionConsecutiveBuyDays=4))
     assert chip is not None
@@ -96,6 +103,7 @@ def test_institution_consecutive_buy():
     assert "기관 4일 순매수" in chip.label
 
 
+@pytest.mark.unit
 def test_institution_consecutive_sell():
     chip = _investor_flow_chip_for_item(_item(institutionConsecutiveSellDays=3))
     assert chip is not None
@@ -130,6 +138,7 @@ async def test_hydrate_swallows_provider_failures(monkeypatch):
     assert chips == {}
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_hydrate_returns_chip_for_matching_snapshot(monkeypatch):
     fake_item = _item(foreignConsecutiveBuyDays=4)
@@ -162,6 +171,7 @@ class _StubScreeningService:
         }
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_investor_flow_momentum_preset_uses_snapshot_discovery(
     db_session, monkeypatch

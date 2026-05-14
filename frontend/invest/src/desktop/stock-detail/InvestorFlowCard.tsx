@@ -19,7 +19,9 @@ const STATE_LABEL: Record<InvestorFlowDetailState, string> = {
 
 function fmtSignedShares(v: number | null | undefined): string {
   if (v == null) return "−";
-  const sign = v > 0 ? "+" : v < 0 ? "−" : "";
+  let sign = "";
+  if (v > 0) sign = "+";
+  else if (v < 0) sign = "−";
   return `${sign}${Math.abs(v).toLocaleString("ko-KR")}주`;
 }
 
@@ -55,7 +57,7 @@ function sourceLabel(data: StockDetailInvestorFlow): string {
   return `${source} · ${basis}${collected} · delayed/read-only`;
 }
 
-function FlowMetric({ label, value, sub }: { label: string; value: string; sub: string }) {
+function FlowMetric({ label, value, sub }: Readonly<{ label: string; value: string; sub: string }>) {
   return (
     <div style={{ border: "1px solid var(--line)", borderRadius: 14, padding: 12 }}>
       <div style={{ color: "var(--fg-3)", fontSize: 11 }}>{label}</div>
@@ -65,13 +67,13 @@ function FlowMetric({ label, value, sub }: { label: string; value: string; sub: 
   );
 }
 
-function RowTonePill({ row }: { row: StockDetailInvestorFlowDailyRow }) {
+function RowTonePill({ row }: Readonly<{ row: StockDetailInvestorFlowDailyRow }>) {
   if (row.doubleBuy) return <Pill tone="gain">쌍끌이</Pill>;
   if (row.doubleSell) return <Pill tone="loss">동반 매도</Pill>;
   return <Pill tone="paper">관찰</Pill>;
 }
 
-function InvestorFlowSummary({ data }: { data: StockDetailInvestorFlow }) {
+function InvestorFlowSummary({ data }: Readonly<{ data: StockDetailInvestorFlow }>) {
   const summary = data.periodSummary;
   const decomposition = data.buyerDecomposition;
   if (!summary && !decomposition) return null;
@@ -113,7 +115,7 @@ function InvestorFlowSummary({ data }: { data: StockDetailInvestorFlow }) {
   );
 }
 
-function DailyRowsTable({ rows }: { rows: StockDetailInvestorFlowDailyRow[] }) {
+function DailyRowsTable({ rows }: Readonly<{ rows: StockDetailInvestorFlowDailyRow[] }>) {
   if (rows.length === 0) {
     return (
       <p style={{ margin: "12px 0 0", color: "var(--fg-3)", fontSize: 12 }}>
@@ -157,7 +159,7 @@ function DailyRowsTable({ rows }: { rows: StockDetailInvestorFlowDailyRow[] }) {
   );
 }
 
-export function InvestorFlowCard({ data }: { data: StockDetailInvestorFlow }) {
+export function InvestorFlowCard({ data }: Readonly<{ data: StockDetailInvestorFlow }>) {
   const dailyRows = data.dailyRows ?? [];
   const isMissing = data.dataState === "missing";
   return (

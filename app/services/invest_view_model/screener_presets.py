@@ -12,6 +12,7 @@ from app.schemas.invest_screener import ScreenerFilterChip, ScreenerPreset
 DEFAULT_PRESET_ID = "consecutive_gainers"
 CONSECUTIVE_GAINERS_LIMIT = 80
 CRYPTO_DEFAULT_PRESET_ID = "crypto_high_volume"
+_KR_ONLY_PRESET_IDS = {"investor_flow_momentum"}
 
 
 SCREENER_PRESETS: list[ScreenerPreset] = [
@@ -255,7 +256,10 @@ def preset_definitions(market: str = "kr") -> list[ScreenerPreset]:
     normalized_market = _normalize_requested_market(market)
     if normalized_market == "crypto":
         return [_with_market(p, "crypto") for p in CRYPTO_SCREENER_PRESETS]
-    return [_with_market(p, normalized_market) for p in SCREENER_PRESETS]
+    presets = SCREENER_PRESETS
+    if normalized_market != "kr":
+        presets = [p for p in SCREENER_PRESETS if p.id not in _KR_ONLY_PRESET_IDS]
+    return [_with_market(p, normalized_market) for p in presets]
 
 
 def get_preset(preset_id: str, market: str = "kr") -> ScreenerPreset | None:

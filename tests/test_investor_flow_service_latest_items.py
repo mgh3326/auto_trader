@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import datetime as dt
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.investor_flow_snapshot import InvestorFlowSnapshot
 from app.services.invest_view_model.investor_flow_service import (
@@ -37,6 +38,7 @@ def _row(symbol: str, snapshot_date: dt.date) -> InvestorFlowSnapshot:
     )
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_latest_items_for_symbols_returns_dict_keyed_by_symbol(monkeypatch):
     today = dt.date(2026, 5, 13)
@@ -50,8 +52,8 @@ async def test_latest_items_for_symbols_returns_dict_keyed_by_symbol(monkeypatch
     )
 
     result = await latest_items_for_symbols(
-        db=SimpleNamespace(),
-        symbols=["403550", " 003550 "],
+        db=MagicMock(spec=AsyncSession),
+        symbols=["403550", " 403550 "],
         as_of=today,
         max_stale_days=1,
     )
@@ -62,6 +64,7 @@ async def test_latest_items_for_symbols_returns_dict_keyed_by_symbol(monkeypatch
     fake_repo.latest_by_symbols.assert_awaited_once()
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_latest_items_for_symbols_marks_stale_when_age_exceeds_threshold(
     monkeypatch,
@@ -76,7 +79,7 @@ async def test_latest_items_for_symbols_marks_stale_when_age_exceeds_threshold(
     )
 
     result = await latest_items_for_symbols(
-        db=SimpleNamespace(),
+        db=MagicMock(spec=AsyncSession),
         symbols=["403550"],
         as_of=today,
         max_stale_days=1,
@@ -85,6 +88,7 @@ async def test_latest_items_for_symbols_marks_stale_when_age_exceeds_threshold(
     assert result["403550"].dataState == "stale"
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_latest_items_for_symbols_empty_input_returns_empty(monkeypatch):
     result = await latest_items_for_symbols(
@@ -95,6 +99,7 @@ async def test_latest_items_for_symbols_empty_input_returns_empty(monkeypatch):
     assert result == {}
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_latest_items_for_symbols_non_kr_raises(monkeypatch):
     with pytest.raises(ValueError, match="kr"):

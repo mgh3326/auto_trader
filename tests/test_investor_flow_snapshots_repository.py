@@ -10,6 +10,7 @@ from app.services.investor_flow_snapshots.repository import (
 )
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_upsert_and_latest_by_symbols_returns_fresh_snapshot(db_session):
     repo = InvestorFlowSnapshotsRepository(db_session)
@@ -51,6 +52,7 @@ async def test_upsert_and_latest_by_symbols_returns_fresh_snapshot(db_session):
     assert row.source == "naver_finance"
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_latest_by_symbols_picks_newest_snapshot_per_symbol(db_session):
     repo = InvestorFlowSnapshotsRepository(db_session)
@@ -88,6 +90,7 @@ async def test_latest_by_symbols_picks_newest_snapshot_per_symbol(db_session):
     assert rows[0].double_buy is True
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_recent_by_symbol_returns_descending_daily_history(db_session):
     repo = InvestorFlowSnapshotsRepository(db_session)
