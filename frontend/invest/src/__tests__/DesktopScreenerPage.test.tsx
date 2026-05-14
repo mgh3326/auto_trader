@@ -25,6 +25,13 @@ const PRESETS = {
       filterChips: [{ label: "PER", detail: "15 이하" }],
       metricLabel: "PER", market: "kr" as const,
     },
+    {
+      id: "investor_flow_momentum", name: "수급 모멘텀",
+      description: "외국인 연속 순매수·쌍끌이 매수 스냅샷 기반 후보",
+      badges: ["MVP"],
+      filterChips: [{ label: "투자자별 수급", detail: "외국인 3일+ 또는 쌍끌이" }],
+      metricLabel: "외국인 순매수", market: "kr" as const,
+    },
   ],
   selectedPresetId: "consecutive_gainers",
 };
@@ -60,6 +67,26 @@ const RESULTS_VALUE = {
   metricLabel: "PER",
   filterChips: [{ label: "PER", detail: "15 이하" }],
   results: [{ ...ROW, metricValueLabel: "14.0" }],
+};
+
+const RESULTS_INVESTOR_FLOW = {
+  ...RESULTS_GAINERS,
+  presetId: "investor_flow_momentum", title: "수급 모멘텀",
+  description: "외국인 연속 순매수·쌍끌이 매수 스냅샷 기반 후보",
+  metricLabel: "외국인 순매수",
+  filterChips: [{ label: "투자자별 수급", detail: "외국인 3일+ 또는 쌍끌이" }],
+  results: [{
+    ...ROW,
+    symbol: "403550",
+    name: "에스케이엔펄스",
+    metricValueLabel: "+20,859주",
+    investorFlowChip: {
+      label: "외국인 4일 순매수",
+      tone: "foreign_buy" as const,
+      dataState: "fresh" as const,
+      snapshotDate: "2026-05-13",
+    },
+  }],
 };
 
 const CRYPTO_PRESETS = {
@@ -134,7 +161,9 @@ beforeEach(() => {
         }],
       };
     }
-    return id === "cheap_value" ? RESULTS_VALUE : RESULTS_GAINERS;
+    if (id === "cheap_value") return RESULTS_VALUE;
+    if (id === "investor_flow_momentum") return RESULTS_INVESTOR_FLOW;
+    return RESULTS_GAINERS;
   });
 });
 
@@ -161,6 +190,19 @@ test("shows an empty-state message when results are empty", async () => {
   await waitFor(() =>
     expect(screen.getByText(/표시할 종목이 없습니다/)).toBeInTheDocument(),
   );
+});
+
+
+test("renders the investor-flow MVP preset and result chip", async () => {
+  render(wrap(<DesktopScreenerPage />));
+  await waitFor(() => expect(screen.getByText("삼성전자")).toBeInTheDocument());
+
+  await userEvent.click(screen.getByTestId("screener-preset-investor_flow_momentum"));
+
+  await waitFor(() => expect(screen.getByText("에스케이엔펄스")).toBeInTheDocument());
+  expect(screen.getByText("외국인 연속 순매수·쌍끌이 매수 스냅샷 기반 후보")).toBeInTheDocument();
+  expect(screen.getByText("외국인 4일 순매수")).toBeInTheDocument();
+  expect(screenerApi.fetchScreenerResults).toHaveBeenCalledWith("investor_flow_momentum", "kr");
 });
 
 
