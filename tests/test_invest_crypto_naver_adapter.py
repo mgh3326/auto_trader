@@ -57,15 +57,11 @@ async def test_naver_crypto_reference_aggregates_rank_profile_news_and_kimchi() 
             {
                 "market": "KRW-BTC",
                 "trade_price": 91000000,
-                "timestamp": int(
-                    datetime(2026, 5, 14, 12, tzinfo=UTC).timestamp() * 1000
-                ),
+                "timestamp": int(datetime(2026, 5, 14, 12, tzinfo=UTC).timestamp() * 1000),
             }
         ]
 
-    async def news_provider(
-        db: Any, resolver: RelationResolver, symbol: str | None, limit: int
-    ):
+    async def news_provider(db: Any, resolver: RelationResolver, symbol: str | None, limit: int):
         assert symbol == "KRW-BTC"
         return FeedNewsResponse(
             tab="crypto",
@@ -119,21 +115,13 @@ async def test_naver_crypto_reference_aggregates_rank_profile_news_and_kimchi() 
     assert source_by_name["naver_reference"].referenceOnly is True
     assert source_by_name["naver_reference"].freshness == "fixture"
     assert source_by_name["tvscreener_upbit"].state in {"cached", "stale"}
-    assert source_by_name["tvscreener_upbit"].fetchedAt == datetime(
-        2026, 5, 14, 12, tzinfo=UTC
-    )
+    assert source_by_name["tvscreener_upbit"].fetchedAt == datetime(2026, 5, 14, 12, tzinfo=UTC)
     assert source_by_name["tvscreener_upbit"].cacheAgeSeconds is not None
-    assert source_by_name["upbit_official"].fetchedAt == datetime(
-        2026, 5, 14, 12, tzinfo=UTC
-    )
+    assert source_by_name["upbit_official"].fetchedAt == datetime(2026, 5, 14, 12, tzinfo=UTC)
     assert source_by_name["upbit_official"].cacheAgeSeconds is not None
-    assert source_by_name["feed_news"].fetchedAt == datetime(
-        2026, 5, 14, 12, tzinfo=UTC
-    )
+    assert source_by_name["feed_news"].fetchedAt == datetime(2026, 5, 14, 12, tzinfo=UTC)
     assert source_by_name["mcp_kimchi_premium"].referenceOnly is True
-    assert source_by_name["mcp_kimchi_premium"].fetchedAt == datetime(
-        2026, 5, 14, 12, tzinfo=UTC
-    )
+    assert source_by_name["mcp_kimchi_premium"].fetchedAt == datetime(2026, 5, 14, 12, tzinfo=UTC)
 
 
 @pytest.mark.unit
@@ -161,9 +149,7 @@ async def test_naver_crypto_reference_defaults_do_not_call_uncached_live_upbit_t
             )
         ]
 
-    async def news_provider(
-        db: Any, resolver: RelationResolver, symbol: str | None, limit: int
-    ):
+    async def news_provider(db: Any, resolver: RelationResolver, symbol: str | None, limit: int):
         return FeedNewsResponse(
             tab="crypto",
             asOf=datetime.now(UTC) - timedelta(minutes=5),
@@ -202,9 +188,7 @@ async def test_naver_crypto_reference_marks_stale_cached_read_model_sources() ->
             )
         ]
 
-    async def news_provider(
-        db: Any, resolver: RelationResolver, symbol: str | None, limit: int
-    ):
+    async def news_provider(db: Any, resolver: RelationResolver, symbol: str | None, limit: int):
         return FeedNewsResponse(
             tab="crypto",
             asOf=stale_at,
@@ -248,9 +232,7 @@ async def test_naver_crypto_reference_gracefully_records_provider_failures() -> 
     async def ticker_provider(markets: list[str]):
         raise RuntimeError("ticker down")
 
-    async def news_provider(
-        db: Any, resolver: RelationResolver, symbol: str | None, limit: int
-    ):
+    async def news_provider(db: Any, resolver: RelationResolver, symbol: str | None, limit: int):
         raise RuntimeError("news down")
 
     async def kimchi_provider(base_symbol: str):
@@ -275,9 +257,7 @@ async def test_naver_crypto_reference_gracefully_records_provider_failures() -> 
     assert "crypto_rank_snapshot_unavailable" in response.warnings
     assert "crypto_news_unavailable" in response.warnings
     assert "crypto_kimchi_premium_unavailable" in response.warnings
-    error_sources = {
-        source.source for source in response.sources if source.state == "error"
-    }
+    error_sources = {source.source for source in response.sources if source.state == "error"}
     assert {"tvscreener_upbit", "feed_news", "mcp_kimchi_premium"} <= error_sources
 
 

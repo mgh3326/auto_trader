@@ -47,6 +47,7 @@ CryptoReferenceSourceState = Literal[
     "fixture",
     "reference_only",
     "stale",
+    "live",
     "unavailable",
     "error",
 ]

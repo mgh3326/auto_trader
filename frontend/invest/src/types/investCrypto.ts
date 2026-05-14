@@ -12,10 +12,11 @@ export type CryptoReferenceSourceState =
   | "fixture"
   | "reference_only"
   | "stale"
+  | "live"
   | "unavailable"
   | "error";
 
-export type CryptoReferenceFreshness = "fresh" | "partial" | "stale" | "missing" | "fixture";
+export type CryptoReferenceFreshness = "fresh" | "partial" | "stale" | "missing" | "fixture" | "live";
 
 export type CryptoRiskBadgeKind =
   | "thin_orderbook"
