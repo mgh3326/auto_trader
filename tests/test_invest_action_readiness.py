@@ -92,7 +92,9 @@ def _coverage() -> InvestCoverageResponse:
     )
 
 
-def _home(*, symbol: str = "005930", sellable_quantity: float | None = 1.0) -> InvestHomeResponse:
+def _home(
+    *, symbol: str = "005930", sellable_quantity: float | None = 1.0
+) -> InvestHomeResponse:
     return InvestHomeResponse(
         homeSummary=HomeSummary(
             includedSources=["kis"],
@@ -173,7 +175,10 @@ async def test_build_kr_action_readiness_uses_empty_symbol_list_and_kis_authorit
     assert family_by_key["sell_history"].state == "unknown"
     assert family_by_key["research_consensus"].state == "unknown"
     assert family_by_key["naver_momentum_events"].authority == "auto_trader_read_model"
-    assert family_by_key["naver_momentum_events"].sourceOfTruth == "auto_trader_read_model/unwired"
+    assert (
+        family_by_key["naver_momentum_events"].sourceOfTruth
+        == "auto_trader_read_model/unwired"
+    )
     assert "naver_reference" in family_by_key["naver_momentum_events"].references
     assert response.canGenerateBuyReport is False
     assert any("KIS live 미체결 주문" in blocker for blocker in response.blockers)
@@ -198,7 +203,12 @@ async def test_symbol_scoped_sell_readiness_blocks_when_live_holding_missing(
                 _ScalarResult("000660"),
                 _OneResult((0, None)),
                 _ScalarResult(dt.datetime(2026, 5, 14, 9, 0, tzinfo=dt.UTC)),
-                _OneResult((dt.datetime(2026, 5, 14, 9, 0, tzinfo=dt.UTC), dt.date(2026, 5, 14))),
+                _OneResult(
+                    (
+                        dt.datetime(2026, 5, 14, 9, 0, tzinfo=dt.UTC),
+                        dt.date(2026, 5, 14),
+                    )
+                ),
                 _ScalarResult(dt.date(2026, 5, 14)),
             ]
         ),

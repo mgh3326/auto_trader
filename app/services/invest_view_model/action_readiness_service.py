@@ -44,7 +44,9 @@ _SOURCE_POLICY = [
 ]
 
 
-def _safe_actionability(reason: str, *, priority: str = "high") -> CoverageActionability:
+def _safe_actionability(
+    reason: str, *, priority: str = "high"
+) -> CoverageActionability:
     if priority == "none":
         return CoverageActionability(
             priority="none",
@@ -66,7 +68,8 @@ def _safe_actionability(reason: str, *, priority: str = "high") -> CoverageActio
 
 def _coverage_state_to_readiness(
     state: CoverageState,
-    *, critical: bool = False,
+    *,
+    critical: bool = False,
 ) -> ActionReadinessState:
     if state == "fresh":
         return "ready"
@@ -105,7 +108,9 @@ def _surface_family(
 ) -> ActionReadinessFamily:
     if surface is None:
         state: ActionReadinessState = "unknown" if not critical else "blocked"
-        blockers = [f"{key}: 확인 불가 — durable /invest read-model surface is not wired."]
+        blockers = [
+            f"{key}: 확인 불가 — durable /invest read-model surface is not wired."
+        ]
         return ActionReadinessFamily(
             key=key,
             labelKo=label_ko,
@@ -134,7 +139,11 @@ def _surface_family(
         labelKo=label_ko,
         category=category,
         state=readiness,
-        impact=("blocks_all_action_reports" if critical and readiness == "blocked" else impact),
+        impact=(
+            "blocks_all_action_reports"
+            if critical and readiness == "blocked"
+            else impact
+        ),
         authority=authority,
         sourceOfTruth=source_override or surface.sourceOfTruth,
         references=surface.references,
@@ -208,13 +217,23 @@ async def _symbol_quote_family(
         latestDate=latest_date,
         coverageState=None,
         actionability=_safe_actionability(
-            blockers[0] if blockers else warnings[0] if warnings else f"{symbol} quote read-model is visible.",
+            blockers[0]
+            if blockers
+            else warnings[0]
+            if warnings
+            else f"{symbol} quote read-model is visible.",
             priority="blocked" if blockers else "high" if warnings else "none",
         ),
         blockers=blockers,
         warnings=warnings,
-        notes=["Symbol-scoped quote readiness is checked from the durable read-model only; no request-path provider fetch is made."],
-        links=[ActionReadinessLink(label="Stock detail", href=f"/invest/stocks/kr/{symbol}")],
+        notes=[
+            "Symbol-scoped quote readiness is checked from the durable read-model only; no request-path provider fetch is made."
+        ],
+        links=[
+            ActionReadinessLink(
+                label="Stock detail", href=f"/invest/stocks/kr/{symbol}"
+            )
+        ],
     )
 
 
@@ -266,7 +285,9 @@ async def _symbol_ohlcv_family(
         ),
         blockers=blockers,
         warnings=warnings,
-        notes=["Symbol-scoped OHLCV readiness is checked from kr_candles_1m only; no request-path provider fetch is made."],
+        notes=[
+            "Symbol-scoped OHLCV readiness is checked from kr_candles_1m only; no request-path provider fetch is made."
+        ],
     )
 
 
@@ -308,7 +329,9 @@ async def _symbol_valuation_family(
         ),
         blockers=blockers,
         warnings=warnings,
-        notes=["Symbol-scoped valuation readiness is checked from the durable read-model only; no request-path provider fetch is made."],
+        notes=[
+            "Symbol-scoped valuation readiness is checked from the durable read-model only; no request-path provider fetch is made."
+        ],
     )
 
 
@@ -339,7 +362,9 @@ def _apply_symbol_surface_diagnostics(
             family.blockers.append(warning)
         else:
             family.warnings.append(warning)
-        family.notes.append("Aggregate market coverage was overridden by symbol-scoped coverage diagnostics for action-readiness.")
+        family.notes.append(
+            "Aggregate market coverage was overridden by symbol-scoped coverage diagnostics for action-readiness."
+        )
 
 
 def _broker_family(
@@ -350,16 +375,26 @@ def _broker_family(
     home: InvestHomeResponse | None,
     symbol: str | None,
 ) -> ActionReadinessFamily:
-    live_accounts = [account for account in (home.accounts if home else []) if account.source == "kis" and account.accountKind == "live"]
+    live_accounts = [
+        account
+        for account in (home.accounts if home else [])
+        if account.source == "kis" and account.accountKind == "live"
+    ]
     live_kr_holdings = [
         holding
         for holding in (home.holdings if home else [])
-        if holding.source == "kis" and holding.accountKind == "live" and holding.market == "KR"
+        if holding.source == "kis"
+        and holding.accountKind == "live"
+        and holding.market == "KR"
     ]
     if symbol:
-        live_kr_holdings = [holding for holding in live_kr_holdings if holding.symbol == symbol]
+        live_kr_holdings = [
+            holding for holding in live_kr_holdings if holding.symbol == symbol
+        ]
 
-    warnings = [w.message for w in (home.meta.warnings if home else []) if w.source == "kis"]
+    warnings = [
+        w.message for w in (home.meta.warnings if home else []) if w.source == "kis"
+    ]
     has_kis_warning = bool(warnings)
     state: ActionReadinessState = "ready"
     blockers: list[str] = []
@@ -371,7 +406,10 @@ def _broker_family(
         blockers.append(f"{label_ko}: KIS live 확인 불가")
     elif key == "kis_live_cash_orderable":
         has_orderable = any(
-            (account.buyingPower.krw is not None or account.cashBalances.krw is not None)
+            (
+                account.buyingPower.krw is not None
+                or account.cashBalances.krw is not None
+            )
             for account in live_accounts
         )
         if not has_orderable:
@@ -397,7 +435,9 @@ def _broker_family(
         # authority, so absence of a live open-order snapshot is fail-closed.
         state = "blocked"
         blockers.append("KIS live 미체결 주문 확인 불가")
-        notes.append("pending_orders read-model과 reconcile 상태는 별도 가족에서 함께 표시합니다.")
+        notes.append(
+            "pending_orders read-model과 reconcile 상태는 별도 가족에서 함께 표시합니다."
+        )
 
     if state == "ready" and not live_accounts:
         state = "blocked"
@@ -412,15 +452,22 @@ def _broker_family(
         authority="kis_live_broker",
         sourceOfTruth="KIS live via existing InvestHomeService/account-panel",
         references=["manual_or_paper_reference"],
-        actionability=_safe_actionability(blockers[0] if blockers else latest_note, priority="blocked" if blockers else "none"),
+        actionability=_safe_actionability(
+            blockers[0] if blockers else latest_note,
+            priority="blocked" if blockers else "none",
+        ),
         blockers=blockers,
         warnings=warnings,
         notes=[latest_note, *notes],
-        links=[ActionReadinessLink(label="Account panel", href="/invest/api/account-panel")],
+        links=[
+            ActionReadinessLink(label="Account panel", href="/invest/api/account-panel")
+        ],
     )
 
 
-async def _trade_journal_family(db: AsyncSession, symbol: str | None) -> ActionReadinessFamily:
+async def _trade_journal_family(
+    db: AsyncSession, symbol: str | None
+) -> ActionReadinessFamily:
     stmt = sa.select(sa.func.count(), sa.func.max(TradeJournal.updated_at)).where(
         TradeJournal.status == "active",
         TradeJournal.account_type == "live",
@@ -430,7 +477,13 @@ async def _trade_journal_family(db: AsyncSession, symbol: str | None) -> ActionR
     count, latest_at = (await db.execute(stmt)).one()
     active_count = int(count or 0)
     state: ActionReadinessState = "ready" if active_count else "missing"
-    warnings = [] if active_count else ["활성 live trade journal 확인 불가 — sell report는 thesis/target/stop 확인이 필요합니다."]
+    warnings = (
+        []
+        if active_count
+        else [
+            "활성 live trade journal 확인 불가 — sell report는 thesis/target/stop 확인이 필요합니다."
+        ]
+    )
     return ActionReadinessFamily(
         key="trade_journals",
         labelKo="투자 저널 / thesis",
@@ -443,10 +496,15 @@ async def _trade_journal_family(db: AsyncSession, symbol: str | None) -> ActionR
         latestAt=latest_at,
         counts=None,
         coverageState=None,
-        actionability=_safe_actionability(warnings[0] if warnings else "Active live trade journals are visible.", priority="high" if warnings else "none"),
+        actionability=_safe_actionability(
+            warnings[0] if warnings else "Active live trade journals are visible.",
+            priority="high" if warnings else "none",
+        ),
         blockers=[],
         warnings=warnings,
-        notes=["Sell action reports must check active journals before any sell recommendation."],
+        notes=[
+            "Sell action reports must check active journals before any sell recommendation."
+        ],
     )
 
 
@@ -458,7 +516,9 @@ async def build_kr_action_readiness(
     symbol: str | None = None,
 ) -> KrActionReadinessResponse:
     normalized_symbol = symbol.strip().upper() if symbol and symbol.strip() else None
-    if normalized_symbol is not None and not (normalized_symbol.isdigit() and len(normalized_symbol) == 6):
+    if normalized_symbol is not None and not (
+        normalized_symbol.isdigit() and len(normalized_symbol) == 6
+    ):
         now = dt.datetime.now(dt.UTC)
         blocker = "symbol_not_kr_equity: KR 심볼은 6자리 종목코드여야 합니다. 확인 불가"
         return KrActionReadinessResponse(
@@ -470,7 +530,9 @@ async def build_kr_action_readiness(
             families=[],
             blockers=[blocker],
             sourcePolicy=_SOURCE_POLICY,
-            notes=["No provider or broker request was made for unsupported symbol input."],
+            notes=[
+                "No provider or broker request was made for unsupported symbol input."
+            ],
         )
 
     symbol_exists = True
@@ -508,7 +570,9 @@ async def build_kr_action_readiness(
                     actionability=_safe_actionability(
                         "KR symbol universe에서 심볼 확인 불가", priority="blocked"
                     ),
-                    blockers=[f"{normalized_symbol} not found in active kr_symbol_universe"],
+                    blockers=[
+                        f"{normalized_symbol} not found in active kr_symbol_universe"
+                    ],
                     warnings=[],
                     notes=[
                         "No coverage, account-panel, broker, or provider request was made for unresolved symbol input.",
@@ -518,7 +582,9 @@ async def build_kr_action_readiness(
             ],
             blockers=[blocker],
             sourcePolicy=_SOURCE_POLICY,
-            notes=["No provider or broker request was made for unresolved symbol input."],
+            notes=[
+                "No provider or broker request was made for unresolved symbol input."
+            ],
         )
 
     coverage = await build_invest_coverage(
@@ -574,54 +640,348 @@ async def build_kr_action_readiness(
 
     if normalized_symbol:
         symbol_market_families = [
-            await _symbol_quote_family(db, symbol=normalized_symbol, trading_day=coverage.tradingDate),
-            await _symbol_ohlcv_family(db, symbol=normalized_symbol, trading_day=coverage.tradingDate),
-            _surface_family(key="technical_indicators", label_ko="기술지표", category="Market/read-model data", surface=None, impact="degrades_report", extra_notes=["No separate durable indicator readiness surface is wired; do not calculate indicators in this request path."]),
-            _surface_family(key="support_resistance", label_ko="지지/저항", category="Market/read-model data", surface=None, impact="degrades_report", extra_notes=["No durable support/resistance readiness surface is wired; values must not be fabricated."]),
-            _surface_family(key="orderbook_session", label_ko="호가 / 세션", category="Market/read-model data", surface=s("orderbook_nxt_capability"), impact="degrades_report", extra_notes=["This reports local NXT/session capability, not a request-path orderbook fetch."]),
-            _surface_family(key="nxt_eligibility", label_ko="NXT 대상 여부", category="Market/read-model data", surface=s("orderbook_nxt_capability")),
-            _surface_family(key="screener_snapshots", label_ko="스크리너 스냅샷", category="Market/read-model data", surface=s("screener_snapshots")),
-            _surface_family(key="naver_momentum_events", label_ko="Naver 모멘텀 이벤트", category="Market/read-model data", surface=None, impact="degrades_report", extra_references=["naver_reference"], extra_notes=["Naver momentum events are reference/candidate only and not source-of-truth."]),
-            _surface_family(key="naver_momentum_candidates", label_ko="Naver 모멘텀 후보", category="Market/read-model data", surface=None, impact="degrades_report", extra_references=["naver_reference"], extra_notes=["Momentum candidates are aggregate reference data only, not trading instructions."]),
-            _surface_family(key="naver_theme_events", label_ko="Naver 테마 이벤트", category="Market/read-model data", surface=None, impact="degrades_report", extra_references=["naver_reference"], extra_notes=["Theme events are aggregate reference data only."]),
-            _surface_family(key="investor_flow", label_ko="투자자 수급", category="Market/read-model data", surface=s("investor_flow")),
-            _surface_family(key="news_feed", label_ko="뉴스 피드", category="News/calendar/research context", surface=s("news_feed")),
-            _surface_family(key="issue_clusters", label_ko="시장 이슈 클러스터", category="News/calendar/research context", surface=None, impact="degrades_report"),
-            _surface_family(key="disclosures", label_ko="공시", category="News/calendar/research context", surface=None, impact="degrades_report"),
-            _surface_family(key="calendar_events", label_ko="캘린더 이벤트", category="News/calendar/research context", surface=s("calendar_events")),
-            await _symbol_valuation_family(db, symbol=normalized_symbol, trading_day=coverage.tradingDate),
-            _surface_family(key="research_reports", label_ko="리서치 리포트", category="News/calendar/research context", surface=s("research_reports")),
-            _surface_family(key="research_consensus", label_ko="리서치 컨센서스", category="News/calendar/research context", surface=None, impact="degrades_report", extra_notes=["No distinct durable research-consensus readiness surface is wired; research report freshness is not treated as consensus availability."]),
-            _surface_family(key="execution_ledger", label_ko="체결 / 실행 이력", category="Execution/history", surface=None, impact="degrades_report", extra_notes=["No distinct execution/fill ledger readiness surface is wired; pending orders are not treated as historical fills."]),
-            _surface_family(key="sell_history", label_ko="매도 이력", category="Execution/history", surface=None, impact="degrades_report", extra_notes=["No distinct sell-history readiness surface is wired; do not infer sell history from pending orders."]),
-            _surface_family(key="pending_order_reconciliation", label_ko="미체결 주문 reconcile", category="Execution/history", surface=None, critical=True, impact="blocks_all_action_reports", extra_notes=["Pending-order table freshness alone does not prove live open-order reconciliation; fail closed until a reconciliation read-model is wired."]),
+            await _symbol_quote_family(
+                db, symbol=normalized_symbol, trading_day=coverage.tradingDate
+            ),
+            await _symbol_ohlcv_family(
+                db, symbol=normalized_symbol, trading_day=coverage.tradingDate
+            ),
+            _surface_family(
+                key="technical_indicators",
+                label_ko="기술지표",
+                category="Market/read-model data",
+                surface=None,
+                impact="degrades_report",
+                extra_notes=[
+                    "No separate durable indicator readiness surface is wired; do not calculate indicators in this request path."
+                ],
+            ),
+            _surface_family(
+                key="support_resistance",
+                label_ko="지지/저항",
+                category="Market/read-model data",
+                surface=None,
+                impact="degrades_report",
+                extra_notes=[
+                    "No durable support/resistance readiness surface is wired; values must not be fabricated."
+                ],
+            ),
+            _surface_family(
+                key="orderbook_session",
+                label_ko="호가 / 세션",
+                category="Market/read-model data",
+                surface=s("orderbook_nxt_capability"),
+                impact="degrades_report",
+                extra_notes=[
+                    "This reports local NXT/session capability, not a request-path orderbook fetch."
+                ],
+            ),
+            _surface_family(
+                key="nxt_eligibility",
+                label_ko="NXT 대상 여부",
+                category="Market/read-model data",
+                surface=s("orderbook_nxt_capability"),
+            ),
+            _surface_family(
+                key="screener_snapshots",
+                label_ko="스크리너 스냅샷",
+                category="Market/read-model data",
+                surface=s("screener_snapshots"),
+            ),
+            _surface_family(
+                key="naver_momentum_events",
+                label_ko="Naver 모멘텀 이벤트",
+                category="Market/read-model data",
+                surface=None,
+                impact="degrades_report",
+                extra_references=["naver_reference"],
+                extra_notes=[
+                    "Naver momentum events are reference/candidate only and not source-of-truth."
+                ],
+            ),
+            _surface_family(
+                key="naver_momentum_candidates",
+                label_ko="Naver 모멘텀 후보",
+                category="Market/read-model data",
+                surface=None,
+                impact="degrades_report",
+                extra_references=["naver_reference"],
+                extra_notes=[
+                    "Momentum candidates are aggregate reference data only, not trading instructions."
+                ],
+            ),
+            _surface_family(
+                key="naver_theme_events",
+                label_ko="Naver 테마 이벤트",
+                category="Market/read-model data",
+                surface=None,
+                impact="degrades_report",
+                extra_references=["naver_reference"],
+                extra_notes=["Theme events are aggregate reference data only."],
+            ),
+            _surface_family(
+                key="investor_flow",
+                label_ko="투자자 수급",
+                category="Market/read-model data",
+                surface=s("investor_flow"),
+            ),
+            _surface_family(
+                key="news_feed",
+                label_ko="뉴스 피드",
+                category="News/calendar/research context",
+                surface=s("news_feed"),
+            ),
+            _surface_family(
+                key="issue_clusters",
+                label_ko="시장 이슈 클러스터",
+                category="News/calendar/research context",
+                surface=None,
+                impact="degrades_report",
+            ),
+            _surface_family(
+                key="disclosures",
+                label_ko="공시",
+                category="News/calendar/research context",
+                surface=None,
+                impact="degrades_report",
+            ),
+            _surface_family(
+                key="calendar_events",
+                label_ko="캘린더 이벤트",
+                category="News/calendar/research context",
+                surface=s("calendar_events"),
+            ),
+            await _symbol_valuation_family(
+                db, symbol=normalized_symbol, trading_day=coverage.tradingDate
+            ),
+            _surface_family(
+                key="research_reports",
+                label_ko="리서치 리포트",
+                category="News/calendar/research context",
+                surface=s("research_reports"),
+            ),
+            _surface_family(
+                key="research_consensus",
+                label_ko="리서치 컨센서스",
+                category="News/calendar/research context",
+                surface=None,
+                impact="degrades_report",
+                extra_notes=[
+                    "No distinct durable research-consensus readiness surface is wired; research report freshness is not treated as consensus availability."
+                ],
+            ),
+            _surface_family(
+                key="execution_ledger",
+                label_ko="체결 / 실행 이력",
+                category="Execution/history",
+                surface=None,
+                impact="degrades_report",
+                extra_notes=[
+                    "No distinct execution/fill ledger readiness surface is wired; pending orders are not treated as historical fills."
+                ],
+            ),
+            _surface_family(
+                key="sell_history",
+                label_ko="매도 이력",
+                category="Execution/history",
+                surface=None,
+                impact="degrades_report",
+                extra_notes=[
+                    "No distinct sell-history readiness surface is wired; do not infer sell history from pending orders."
+                ],
+            ),
+            _surface_family(
+                key="pending_order_reconciliation",
+                label_ko="미체결 주문 reconcile",
+                category="Execution/history",
+                surface=None,
+                critical=True,
+                impact="blocks_all_action_reports",
+                extra_notes=[
+                    "Pending-order table freshness alone does not prove live open-order reconciliation; fail closed until a reconciliation read-model is wired."
+                ],
+            ),
         ]
         families.extend(symbol_market_families)
         _apply_symbol_surface_diagnostics(families, coverage, symbol=normalized_symbol)
     else:
         families.extend(
             [
-                _surface_family(key="quotes", label_ko="시세 / 현재가", category="Market/read-model data", surface=s("quotes"), critical=False, impact="degrades_report", links=[ActionReadinessLink(label="Coverage", href="/invest/coverage")]),
-                _surface_family(key="ohlcv", label_ko="OHLCV 캔들", category="Market/read-model data", surface=s("ohlcv")),
-                _surface_family(key="technical_indicators", label_ko="기술지표", category="Market/read-model data", surface=None, impact="degrades_report", extra_notes=["No separate durable indicator readiness surface is wired; do not calculate indicators in this request path."]),
-                _surface_family(key="support_resistance", label_ko="지지/저항", category="Market/read-model data", surface=None, impact="degrades_report", extra_notes=["No durable support/resistance readiness surface is wired; values must not be fabricated."]),
-                _surface_family(key="orderbook_session", label_ko="호가 / 세션", category="Market/read-model data", surface=s("orderbook_nxt_capability"), impact="degrades_report", extra_notes=["This reports local NXT/session capability, not a request-path orderbook fetch."]),
-                _surface_family(key="nxt_eligibility", label_ko="NXT 대상 여부", category="Market/read-model data", surface=s("orderbook_nxt_capability")),
-                _surface_family(key="screener_snapshots", label_ko="스크리너 스냅샷", category="Market/read-model data", surface=s("screener_snapshots")),
-                _surface_family(key="naver_momentum_events", label_ko="Naver 모멘텀 이벤트", category="Market/read-model data", surface=None, impact="degrades_report", extra_references=["naver_reference"], extra_notes=["Naver momentum events are reference/candidate only and not source-of-truth."]),
-                _surface_family(key="naver_momentum_candidates", label_ko="Naver 모멘텀 후보", category="Market/read-model data", surface=None, impact="degrades_report", extra_references=["naver_reference"], extra_notes=["Momentum candidates are aggregate reference data only, not trading instructions."]),
-                _surface_family(key="naver_theme_events", label_ko="Naver 테마 이벤트", category="Market/read-model data", surface=None, impact="degrades_report", extra_references=["naver_reference"], extra_notes=["Theme events are aggregate reference data only."]),
-                _surface_family(key="investor_flow", label_ko="투자자 수급", category="Market/read-model data", surface=s("investor_flow")),
-                _surface_family(key="news_feed", label_ko="뉴스 피드", category="News/calendar/research context", surface=s("news_feed")),
-                _surface_family(key="issue_clusters", label_ko="시장 이슈 클러스터", category="News/calendar/research context", surface=None, impact="degrades_report"),
-                _surface_family(key="disclosures", label_ko="공시", category="News/calendar/research context", surface=None, impact="degrades_report"),
-                _surface_family(key="calendar_events", label_ko="캘린더 이벤트", category="News/calendar/research context", surface=s("calendar_events")),
-                _surface_family(key="valuation_fundamentals", label_ko="밸류에이션 / 펀더멘털", category="News/calendar/research context", surface=s("valuation_fundamentals")),
-                _surface_family(key="research_reports", label_ko="리서치 리포트", category="News/calendar/research context", surface=s("research_reports")),
-                _surface_family(key="research_consensus", label_ko="리서치 컨센서스", category="News/calendar/research context", surface=None, impact="degrades_report", extra_notes=["No distinct durable research-consensus readiness surface is wired; research report freshness is not treated as consensus availability."]),
-                _surface_family(key="execution_ledger", label_ko="체결 / 실행 이력", category="Execution/history", surface=None, impact="degrades_report", extra_notes=["No distinct execution/fill ledger readiness surface is wired; pending orders are not treated as historical fills."]),
-                _surface_family(key="sell_history", label_ko="매도 이력", category="Execution/history", surface=None, impact="degrades_report", extra_notes=["No distinct sell-history readiness surface is wired; do not infer sell history from pending orders."]),
-                _surface_family(key="pending_order_reconciliation", label_ko="미체결 주문 reconcile", category="Execution/history", surface=None, critical=True, impact="blocks_all_action_reports", extra_notes=["Pending-order table freshness alone does not prove live open-order reconciliation; fail closed until a reconciliation read-model is wired."]),
+                _surface_family(
+                    key="quotes",
+                    label_ko="시세 / 현재가",
+                    category="Market/read-model data",
+                    surface=s("quotes"),
+                    critical=False,
+                    impact="degrades_report",
+                    links=[
+                        ActionReadinessLink(label="Coverage", href="/invest/coverage")
+                    ],
+                ),
+                _surface_family(
+                    key="ohlcv",
+                    label_ko="OHLCV 캔들",
+                    category="Market/read-model data",
+                    surface=s("ohlcv"),
+                ),
+                _surface_family(
+                    key="technical_indicators",
+                    label_ko="기술지표",
+                    category="Market/read-model data",
+                    surface=None,
+                    impact="degrades_report",
+                    extra_notes=[
+                        "No separate durable indicator readiness surface is wired; do not calculate indicators in this request path."
+                    ],
+                ),
+                _surface_family(
+                    key="support_resistance",
+                    label_ko="지지/저항",
+                    category="Market/read-model data",
+                    surface=None,
+                    impact="degrades_report",
+                    extra_notes=[
+                        "No durable support/resistance readiness surface is wired; values must not be fabricated."
+                    ],
+                ),
+                _surface_family(
+                    key="orderbook_session",
+                    label_ko="호가 / 세션",
+                    category="Market/read-model data",
+                    surface=s("orderbook_nxt_capability"),
+                    impact="degrades_report",
+                    extra_notes=[
+                        "This reports local NXT/session capability, not a request-path orderbook fetch."
+                    ],
+                ),
+                _surface_family(
+                    key="nxt_eligibility",
+                    label_ko="NXT 대상 여부",
+                    category="Market/read-model data",
+                    surface=s("orderbook_nxt_capability"),
+                ),
+                _surface_family(
+                    key="screener_snapshots",
+                    label_ko="스크리너 스냅샷",
+                    category="Market/read-model data",
+                    surface=s("screener_snapshots"),
+                ),
+                _surface_family(
+                    key="naver_momentum_events",
+                    label_ko="Naver 모멘텀 이벤트",
+                    category="Market/read-model data",
+                    surface=None,
+                    impact="degrades_report",
+                    extra_references=["naver_reference"],
+                    extra_notes=[
+                        "Naver momentum events are reference/candidate only and not source-of-truth."
+                    ],
+                ),
+                _surface_family(
+                    key="naver_momentum_candidates",
+                    label_ko="Naver 모멘텀 후보",
+                    category="Market/read-model data",
+                    surface=None,
+                    impact="degrades_report",
+                    extra_references=["naver_reference"],
+                    extra_notes=[
+                        "Momentum candidates are aggregate reference data only, not trading instructions."
+                    ],
+                ),
+                _surface_family(
+                    key="naver_theme_events",
+                    label_ko="Naver 테마 이벤트",
+                    category="Market/read-model data",
+                    surface=None,
+                    impact="degrades_report",
+                    extra_references=["naver_reference"],
+                    extra_notes=["Theme events are aggregate reference data only."],
+                ),
+                _surface_family(
+                    key="investor_flow",
+                    label_ko="투자자 수급",
+                    category="Market/read-model data",
+                    surface=s("investor_flow"),
+                ),
+                _surface_family(
+                    key="news_feed",
+                    label_ko="뉴스 피드",
+                    category="News/calendar/research context",
+                    surface=s("news_feed"),
+                ),
+                _surface_family(
+                    key="issue_clusters",
+                    label_ko="시장 이슈 클러스터",
+                    category="News/calendar/research context",
+                    surface=None,
+                    impact="degrades_report",
+                ),
+                _surface_family(
+                    key="disclosures",
+                    label_ko="공시",
+                    category="News/calendar/research context",
+                    surface=None,
+                    impact="degrades_report",
+                ),
+                _surface_family(
+                    key="calendar_events",
+                    label_ko="캘린더 이벤트",
+                    category="News/calendar/research context",
+                    surface=s("calendar_events"),
+                ),
+                _surface_family(
+                    key="valuation_fundamentals",
+                    label_ko="밸류에이션 / 펀더멘털",
+                    category="News/calendar/research context",
+                    surface=s("valuation_fundamentals"),
+                ),
+                _surface_family(
+                    key="research_reports",
+                    label_ko="리서치 리포트",
+                    category="News/calendar/research context",
+                    surface=s("research_reports"),
+                ),
+                _surface_family(
+                    key="research_consensus",
+                    label_ko="리서치 컨센서스",
+                    category="News/calendar/research context",
+                    surface=None,
+                    impact="degrades_report",
+                    extra_notes=[
+                        "No distinct durable research-consensus readiness surface is wired; research report freshness is not treated as consensus availability."
+                    ],
+                ),
+                _surface_family(
+                    key="execution_ledger",
+                    label_ko="체결 / 실행 이력",
+                    category="Execution/history",
+                    surface=None,
+                    impact="degrades_report",
+                    extra_notes=[
+                        "No distinct execution/fill ledger readiness surface is wired; pending orders are not treated as historical fills."
+                    ],
+                ),
+                _surface_family(
+                    key="sell_history",
+                    label_ko="매도 이력",
+                    category="Execution/history",
+                    surface=None,
+                    impact="degrades_report",
+                    extra_notes=[
+                        "No distinct sell-history readiness surface is wired; do not infer sell history from pending orders."
+                    ],
+                ),
+                _surface_family(
+                    key="pending_order_reconciliation",
+                    label_ko="미체결 주문 reconcile",
+                    category="Execution/history",
+                    surface=None,
+                    critical=True,
+                    impact="blocks_all_action_reports",
+                    extra_notes=[
+                        "Pending-order table freshness alone does not prove live open-order reconciliation; fail closed until a reconciliation read-model is wired."
+                    ],
+                ),
             ]
         )
 
@@ -631,7 +991,9 @@ async def build_kr_action_readiness(
         if family.blockers:
             blockers.extend(f"{family.key}: {blocker}" for blocker in family.blockers)
         elif family.state in {"degraded", "missing", "unknown"}:
-            degraded.append(f"{family.key}: {family.warnings[0] if family.warnings else family.state}")
+            degraded.append(
+                f"{family.key}: {family.warnings[0] if family.warnings else family.state}"
+            )
 
     buy_blocked = any(
         family.state == "blocked"
