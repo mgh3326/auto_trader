@@ -233,6 +233,19 @@ class StockDetailDiscussionSignal(BaseModel):
 InvestorFlowDetailState = Literal["fresh", "stale", "missing"]
 
 
+class StockDetailInvestorFlowDailyRow(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    snapshotDate: str
+    collectedAt: datetime | None = None
+    source: str | None = None
+    foreignNet: int | None = None
+    institutionNet: int | None = None
+    individualNet: int | None = None
+    doubleBuy: bool = False
+    doubleSell: bool = False
+
+
 class StockDetailInvestorFlow(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -258,7 +271,10 @@ class StockDetailInvestorFlow(BaseModel):
     institutionConsecutiveSellDays: int | None = None
     individualConsecutiveBuyDays: int | None = None
     individualConsecutiveSellDays: int | None = None
-    cautionLabel: str = "투자자별 수급은 과거 신호이며 매매 판단을 대신하지 않습니다."
+    dailyRows: list[StockDetailInvestorFlowDailyRow] = Field(default_factory=list)
+    cautionLabel: str = (
+        "투자자별 수급은 지연된 과거 참고 데이터이며 매매 판단을 대신하지 않습니다."
+    )
 
     @model_validator(mode="after")
     def enforce_kr_only(self) -> StockDetailInvestorFlow:

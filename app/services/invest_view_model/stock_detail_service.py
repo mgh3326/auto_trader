@@ -16,6 +16,7 @@ from app.schemas.invest_stock_detail import (
     StockDetailFxSensitivity,
     StockDetailHolding,
     StockDetailInvestorFlow,
+    StockDetailInvestorFlowDailyRow,
     StockDetailLatestAnalysis,
     StockDetailNaverEnrichment,
     StockDetailOrderbook,
@@ -38,6 +39,9 @@ from app.services.invest_view_model.stock_detail_symbol_resolver import (
     ResolvedSymbol,
     resolve_symbol,
 )
+from app.services.investor_flow_snapshots.repository import (
+    InvestorFlowSnapshotsRepository,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +53,27 @@ async def _none_provider(*args: Any, **kwargs: Any) -> None:
     return None
 
 
+def _daily_row_from_snapshot(row: Any) -> StockDetailInvestorFlowDailyRow:
+    return StockDetailInvestorFlowDailyRow(
+        snapshotDate=row.snapshot_date.isoformat(),
+        collectedAt=row.collected_at,
+        source=row.source,
+        foreignNet=row.foreign_net,
+        institutionNet=row.institution_net,
+        individualNet=row.individual_net,
+        doubleBuy=row.double_buy,
+        doubleSell=row.double_sell,
+    )
+
+
+async def _recent_investor_flow_rows(
+    *, db: Any, symbol: str, limit: int = 10
+) -> list[StockDetailInvestorFlowDailyRow]:
+    repo = InvestorFlowSnapshotsRepository(db)
+    rows = await repo.recent_by_symbol(market="kr", symbol=symbol, limit=limit)
+    return [_daily_row_from_snapshot(row) for row in rows]
+
+
 async def _default_investor_flow_provider(
     market: NewsMarket, symbol: str, db: Any
 ) -> StockDetailInvestorFlow | None:
@@ -56,8 +81,11 @@ async def _default_investor_flow_provider(
         return None
     items = await _latest_investor_flow_items(db=db, symbols=[symbol], market="kr")
     item = items.get(symbol)
+    daily_rows = await _recent_investor_flow_rows(db=db, symbol=symbol)
     if item is None:
-        return StockDetailInvestorFlow(symbol=symbol, dataState="missing")
+        return StockDetailInvestorFlow(
+            symbol=symbol, dataState="missing", dailyRows=daily_rows
+        )
     return StockDetailInvestorFlow(
         symbol=item.symbol,
         dataState=item.dataState,
@@ -79,6 +107,7 @@ async def _default_investor_flow_provider(
         institutionConsecutiveSellDays=item.institutionConsecutiveSellDays,
         individualConsecutiveBuyDays=item.individualConsecutiveBuyDays,
         individualConsecutiveSellDays=item.individualConsecutiveSellDays,
+        dailyRows=daily_rows,
     )
 
 

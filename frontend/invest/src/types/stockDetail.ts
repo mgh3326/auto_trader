@@ -30,6 +30,17 @@ export type FxSensitivityStatus =
 export type FxSensitivityBasis = "portfolio_value" | "fallback_quote" | "not_applicable";
 export type InvestorFlowDetailState = "fresh" | "stale" | "missing";
 
+export interface StockDetailInvestorFlowDailyRow {
+  snapshotDate: string;
+  collectedAt: string | null;
+  source: string | null;
+  foreignNet: number | null;
+  institutionNet: number | null;
+  individualNet: number | null;
+  doubleBuy: boolean;
+  doubleSell: boolean;
+}
+
 export interface StockDetailInvestorFlow {
   source: "investor_flow_snapshots";
   market: "kr";
@@ -53,6 +64,7 @@ export interface StockDetailInvestorFlow {
   institutionConsecutiveSellDays: number | null;
   individualConsecutiveBuyDays: number | null;
   individualConsecutiveSellDays: number | null;
+  dailyRows: StockDetailInvestorFlowDailyRow[];
   cautionLabel: string;
 }
 

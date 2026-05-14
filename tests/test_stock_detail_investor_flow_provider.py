@@ -4,7 +4,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.schemas.invest_stock_detail import StockDetailInvestorFlow
+from app.schemas.invest_stock_detail import (
+    StockDetailInvestorFlow,
+    StockDetailInvestorFlowDailyRow,
+)
 from app.services.invest_view_model.stock_detail_service import (
     StockDetailProviders,
     build_stock_detail,
@@ -119,6 +122,10 @@ async def test_kr_detail_investor_flow_defaults_to_none_without_snapshots(monkey
         "app.services.invest_view_model.stock_detail_service._latest_investor_flow_items",
         AsyncMock(return_value={}),
     )
+    monkeypatch.setattr(
+        "app.services.invest_view_model.stock_detail_service._recent_investor_flow_rows",
+        AsyncMock(return_value=[]),
+    )
     response = await build_stock_detail(
         user_id=1,
         market="kr",
@@ -129,3 +136,64 @@ async def test_kr_detail_investor_flow_defaults_to_none_without_snapshots(monkey
     assert response.investorFlow is not None
     assert response.investorFlow.dataState == "missing"
     assert response.investorFlow.foreignNet is None
+    assert response.investorFlow.dailyRows == []
+
+
+@pytest.mark.asyncio
+async def test_kr_detail_default_investor_flow_includes_daily_rows(monkeypatch):
+    from datetime import date
+    from unittest.mock import AsyncMock
+
+    from app.schemas.investor_flow import InvestorFlowItem
+
+    monkeypatch.setattr(
+        "app.services.invest_view_model.stock_detail_service._latest_investor_flow_items",
+        AsyncMock(
+            return_value={
+                "403550": InvestorFlowItem(
+                    symbol="403550",
+                    dataState="fresh",
+                    snapshotDate=date(2026, 5, 13),
+                    source="naver_finance",
+                    foreignNet=20859,
+                    institutionNet=-12931,
+                    individualNet=125586,
+                    foreignConsecutiveBuyDays=4,
+                )
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.invest_view_model.stock_detail_service._recent_investor_flow_rows",
+        AsyncMock(
+            return_value=[
+                StockDetailInvestorFlowDailyRow(
+                    snapshotDate="2026-05-13",
+                    source="naver_finance",
+                    foreignNet=20859,
+                    institutionNet=-12931,
+                    individualNet=125586,
+                ),
+                StockDetailInvestorFlowDailyRow(
+                    snapshotDate="2026-05-12",
+                    source="naver_finance",
+                    foreignNet=440,
+                    institutionNet=-1024,
+                    individualNet=590,
+                ),
+            ]
+        ),
+    )
+
+    response = await build_stock_detail(
+        user_id=1,
+        market="kr",
+        symbol="403550",
+        db=SimpleNamespace(),
+        providers=StockDetailProviders(resolver=_resolve_kr),
+    )
+
+    assert response.investorFlow is not None
+    assert response.investorFlow.dailyRows[0].snapshotDate == "2026-05-13"
+    assert response.investorFlow.dailyRows[0].foreignNet == 20859
+    assert "지연된 과거 참고 데이터" in response.investorFlow.cautionLabel
