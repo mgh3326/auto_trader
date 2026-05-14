@@ -167,3 +167,82 @@ async def test_dashboard_records_stale_source_state_from_read_model():
     sources = {source.source: source for source in response.meta.sources}
     assert sources["upbit_ticker"].state == "supported"
     assert response.cards[0].priceKrw == 100.0
+
+
+@pytest.mark.asyncio
+async def test_default_dashboard_reuses_single_upbit_read_model_redis_client(monkeypatch):
+    import fakeredis.aioredis
+
+    from app.services.upbit_public_read_model import close_default_read_model
+
+    await close_default_read_model()
+    redis_clients = []
+
+    async def create_redis_client():
+        client = fakeredis.aioredis.FakeRedis(decode_responses=False)
+        redis_clients.append(client)
+        return client
+
+    async def fetch_tickers(markets):
+        return [
+            {
+                "market": market,
+                "trade_price": 101000000,
+                "signed_change_rate": 0.0123,
+                "signed_change_price": 1230000,
+                "acc_trade_price_24h": 12345678900,
+                "acc_trade_volume_24h": 234.5,
+            }
+            for market in markets
+        ]
+
+    async def fetch_orderbooks(markets):
+        return {
+            market: {
+                "market": market,
+                "orderbook_units": [
+                    {
+                        "ask_price": 101000000,
+                        "bid_price": 100900000,
+                        "ask_size": 1,
+                        "bid_size": 1,
+                    }
+                ],
+            }
+            for market in markets
+        }
+
+    async def fetch_trades(_market, _count):
+        return []
+
+    monkeypatch.setattr(
+        "app.services.ohlcv_cache_common.create_redis_client", create_redis_client
+    )
+    monkeypatch.setattr(
+        "app.services.brokers.upbit.client.fetch_multiple_tickers", fetch_tickers
+    )
+    monkeypatch.setattr(
+        "app.services.upbit_orderbook.fetch_multiple_orderbooks", fetch_orderbooks
+    )
+    monkeypatch.setattr(
+        "app.services.brokers.upbit.public_trades.fetch_recent_trades", fetch_trades
+    )
+
+    try:
+        first = await build_crypto_dashboard(
+            db=FakeSession([_market()], []), user_id=7
+        )
+        second = await build_crypto_dashboard(
+            db=FakeSession([_market()], []), user_id=7
+        )
+
+        assert len(redis_clients) == 1
+        assert first.cards[0].priceKrw == 101000000
+        assert second.cards[0].priceKrw == 101000000
+        assert {source.source for source in first.meta.sources} >= {
+            "upbit_ticker",
+            "upbit_orderbook",
+        }
+        assert first.meta.warnings == []
+    finally:
+        await close_default_read_model()

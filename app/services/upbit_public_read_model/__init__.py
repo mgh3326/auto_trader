@@ -2,6 +2,7 @@
 
 from app.services.upbit_public_read_model.read_model import (
     UpbitPublicReadModel,
+    close_default_read_model,
     get_default_read_model,
 )
 from app.services.upbit_public_read_model.types import (
@@ -20,6 +21,7 @@ from app.services.upbit_public_read_model.types import (
 
 __all__ = [
     "UpbitPublicReadModel",
+    "close_default_read_model",
     "get_default_read_model",
     "UpbitBlockMeta",
     "UpbitBlockState",

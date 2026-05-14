@@ -17,6 +17,9 @@ from app.services.upbit_public_read_model.trades_cache import TradesCache
 from app.services.upbit_public_read_model.types import UpbitPublicSnapshot, _now_utc
 
 _TRADES_CONCURRENCY = 4
+_DEFAULT_READ_MODEL: UpbitPublicReadModel | None = None
+_DEFAULT_REDIS_CLIENT: Any | None = None
+_DEFAULT_READ_MODEL_LOCK = asyncio.Lock()
 
 
 class UpbitPublicReadModel:
@@ -83,14 +86,11 @@ class UpbitPublicReadModel:
         )
 
 
-async def get_default_read_model(redis_client=None) -> UpbitPublicReadModel:
+def _build_read_model(redis_client) -> UpbitPublicReadModel:
     from app.services.brokers.upbit.client import fetch_multiple_tickers
     from app.services.brokers.upbit.public_trades import fetch_recent_trades
-    from app.services.ohlcv_cache_common import create_redis_client
     from app.services.upbit_orderbook import fetch_multiple_orderbooks
 
-    if redis_client is None:
-        redis_client = await create_redis_client()
     return UpbitPublicReadModel(
         redis=redis_client,
         ticker_fetcher=fetch_multiple_tickers,
@@ -98,3 +98,35 @@ async def get_default_read_model(redis_client=None) -> UpbitPublicReadModel:
         trades_fetcher=fetch_recent_trades,
         warnings_provider=db_universe_warnings_provider,
     )
+
+
+async def get_default_read_model(redis_client=None) -> UpbitPublicReadModel:
+    """Return the shared default Upbit read model unless a custom client is injected."""
+    if redis_client is not None:
+        return _build_read_model(redis_client)
+
+    global _DEFAULT_READ_MODEL, _DEFAULT_REDIS_CLIENT
+    if _DEFAULT_READ_MODEL is None:
+        async with _DEFAULT_READ_MODEL_LOCK:
+            if _DEFAULT_READ_MODEL is None:
+                from app.services.ohlcv_cache_common import create_redis_client
+
+                _DEFAULT_REDIS_CLIENT = await create_redis_client()
+                _DEFAULT_READ_MODEL = _build_read_model(_DEFAULT_REDIS_CLIENT)
+    return _DEFAULT_READ_MODEL
+
+
+async def close_default_read_model() -> None:
+    """Close and reset the shared default Redis client/read model."""
+    global _DEFAULT_READ_MODEL, _DEFAULT_REDIS_CLIENT
+    redis_client = _DEFAULT_REDIS_CLIENT
+    _DEFAULT_READ_MODEL = None
+    _DEFAULT_REDIS_CLIENT = None
+    if redis_client is None:
+        return
+    close = getattr(redis_client, "aclose", None) or getattr(redis_client, "close", None)
+    if close is None:
+        return
+    result = close()
+    if asyncio.iscoroutine(result):
+        await result
