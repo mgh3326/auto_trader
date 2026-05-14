@@ -25,9 +25,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.schemas.invest_screener import (
     ChangeDirection,
     ScreenerFreshness,
+    ScreenerInvestorFlowChip,
     ScreenerPresetsResponse,
     ScreenerResultRow,
     ScreenerResultsResponse,
+)
+from app.schemas.investor_flow import InvestorFlowItem
+from app.services.invest_view_model.investor_flow_service import (
+    latest_items_for_symbols as _latest_investor_flow_items,
 )
 from app.services.invest_view_model.screener_presets import (
     CRYPTO_DEFAULT_PRESET_ID,
@@ -89,7 +94,96 @@ _KR_TOSS_EXCLUDED_NAME_TOKENS = (
     "TDF",
 )
 _KR_PREFERRED_SUFFIXES = ("우", "우B", "우C")
+_INVESTOR_FLOW_MIN_STREAK = 3
+_INVESTOR_FLOW_STALE_SUFFIX = " · 1일 지연"
 logger = logging.getLogger(__name__)
+
+
+def _investor_flow_chip_for_item(
+    item: InvestorFlowItem,
+) -> ScreenerInvestorFlowChip | None:
+    if item.dataState == "missing":
+        return None
+
+    def _annotate(label: str) -> str:
+        return label + _INVESTOR_FLOW_STALE_SUFFIX if item.dataState == "stale" else label
+
+    snapshot = item.snapshotDate.isoformat() if item.snapshotDate else None
+
+    if item.doubleBuy:
+        streak = max(
+            item.foreignConsecutiveBuyDays or 0,
+            item.institutionConsecutiveBuyDays or 0,
+        )
+        label = "쌍끌이 매수" + (f" {streak}일" if streak >= 2 else "")
+        return ScreenerInvestorFlowChip(
+            label=_annotate(label),
+            tone="double_buy",
+            dataState=item.dataState,
+            snapshotDate=snapshot,
+        )
+    if item.doubleSell:
+        streak = max(
+            item.foreignConsecutiveSellDays or 0,
+            item.institutionConsecutiveSellDays or 0,
+        )
+        label = "쌍끌이 매도" + (f" {streak}일" if streak >= 2 else "")
+        return ScreenerInvestorFlowChip(
+            label=_annotate(label),
+            tone="double_sell",
+            dataState=item.dataState,
+            snapshotDate=snapshot,
+        )
+    if (item.foreignConsecutiveBuyDays or 0) >= _INVESTOR_FLOW_MIN_STREAK:
+        return ScreenerInvestorFlowChip(
+            label=_annotate(f"외국인 {item.foreignConsecutiveBuyDays}일 순매수"),
+            tone="foreign_buy",
+            dataState=item.dataState,
+            snapshotDate=snapshot,
+        )
+    if (item.foreignConsecutiveSellDays or 0) >= _INVESTOR_FLOW_MIN_STREAK:
+        return ScreenerInvestorFlowChip(
+            label=_annotate(f"외국인 {item.foreignConsecutiveSellDays}일 순매도"),
+            tone="foreign_sell",
+            dataState=item.dataState,
+            snapshotDate=snapshot,
+        )
+    if (item.institutionConsecutiveBuyDays or 0) >= _INVESTOR_FLOW_MIN_STREAK:
+        return ScreenerInvestorFlowChip(
+            label=_annotate(f"기관 {item.institutionConsecutiveBuyDays}일 순매수"),
+            tone="institution_buy",
+            dataState=item.dataState,
+            snapshotDate=snapshot,
+        )
+    if (item.institutionConsecutiveSellDays or 0) >= _INVESTOR_FLOW_MIN_STREAK:
+        return ScreenerInvestorFlowChip(
+            label=_annotate(f"기관 {item.institutionConsecutiveSellDays}일 순매도"),
+            tone="institution_sell",
+            dataState=item.dataState,
+            snapshotDate=snapshot,
+        )
+    return None
+
+
+async def _hydrate_investor_flow_chips(
+    *, db: Any, market: str, rows: list[dict[str, Any]]
+) -> dict[str, ScreenerInvestorFlowChip]:
+    if market != "kr" or not rows or db is None:
+        return {}
+    symbols = sorted({str(r.get("symbol")) for r in rows if r.get("symbol")})
+    if not symbols:
+        return {}
+    try:
+        items = await _latest_investor_flow_items(db=db, symbols=symbols, market="kr")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("screener investor-flow hydrate failed: %s", exc, exc_info=True)
+        return {}
+    chips: dict[str, ScreenerInvestorFlowChip] = {}
+    for symbol, item in items.items():
+        chip = _investor_flow_chip_for_item(item)
+        if chip is not None:
+            chips[symbol] = chip
+    return chips
 
 
 class _ScreeningServiceProto(Protocol):
@@ -886,6 +980,10 @@ async def build_screener_results(
             )
             _kr_names = {row_t.symbol: row_t.name for row_t in _kr_result.all()}
 
+    investor_flow_chips = await _hydrate_investor_flow_chips(
+        db=session, market=requested_market, rows=rows
+    )
+
     results: list[ScreenerResultRow] = []
     for idx, row in enumerate(rows, start=1):
         market = _normalize_market(row.get("market") or requested_market)
@@ -932,6 +1030,7 @@ async def build_screener_results(
                 volumeLabel=_format_volume_label(row, market),
                 analystLabel=str(row.get("analyst_label") or "-"),
                 metricValueLabel=metric_label,
+                investorFlowChip=investor_flow_chips.get(symbol),
                 warnings=row_warnings,
             )
         )
