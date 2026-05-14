@@ -34,6 +34,9 @@ const baseResponse = {
       source_run_id: "run-1",
       created_at: "2026-05-13T07:20:32Z",
       updated_at: null,
+      cost_basis_notional: "1500000.0000",
+      realized_profit: "459000.0000",
+      realized_profit_rate: "30.6000",
     },
   ],
 };
@@ -56,6 +59,9 @@ test("SellHistoryPanel renders sell ledger rows and uses include credentials", a
   expect(screen.getByText("매도 이력")).toBeInTheDocument();
   expect(screen.getAllByText("₩1,959,000").length).toBeGreaterThan(0);
   expect(screen.getByText("총 판매금액 · KRW")).toBeInTheDocument();
+  expect(screen.getByText("판매수익 · KRW")).toBeInTheDocument();
+  expect(screen.getAllByText("+₩459,000").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("수익률 +30.6%").length).toBeGreaterThan(0);
   expect(screen.getByText("보정")).toBeInTheDocument();
   expect(screen.getByText("출처 보정 1")).toBeInTheDocument();
 
