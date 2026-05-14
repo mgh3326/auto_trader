@@ -37,10 +37,18 @@ from app.services.research_reports.query_service import ResearchReportsQueryServ
 logger = logging.getLogger(__name__)
 
 ResearchConsensusMarket = Literal["kr", "us"]
-Resolver = Callable[[ResearchConsensusMarket, str, AsyncSession], Awaitable[ResolvedSymbol]]
-OpinionsProvider = Callable[[str, ResearchConsensusMarket, int], Awaitable[dict[str, Any]]]
-CitationsProvider = Callable[[AsyncSession, str, int], Awaitable[list[ResearchReportCitation]]]
-ReadinessProvider = Callable[[AsyncSession, str | None, int], Awaitable[ResearchReportsReadinessResponse]]
+Resolver = Callable[
+    [ResearchConsensusMarket, str, AsyncSession], Awaitable[ResolvedSymbol]
+]
+OpinionsProvider = Callable[
+    [str, ResearchConsensusMarket, int], Awaitable[dict[str, Any]]
+]
+CitationsProvider = Callable[
+    [AsyncSession, str, int], Awaitable[list[ResearchReportCitation]]
+]
+ReadinessProvider = Callable[
+    [AsyncSession, str | None, int], Awaitable[ResearchReportsReadinessResponse]
+]
 
 DEFAULT_OPINION_LIMIT = 10
 DEFAULT_CITATION_LIMIT = 5
@@ -50,13 +58,17 @@ DEFAULT_MAX_AGE_HOURS = 24
 async def _default_opinions_provider(
     symbol: str, market: ResearchConsensusMarket, limit: int
 ) -> dict[str, Any]:
-    return await handle_get_investment_opinions(symbol=symbol, market=market, limit=limit)
+    return await handle_get_investment_opinions(
+        symbol=symbol, market=market, limit=limit
+    )
 
 
 async def _default_citations_provider(
     db: AsyncSession, symbol: str, limit: int
 ) -> list[ResearchReportCitation]:
-    result = await ResearchReportsQueryService(db).find_relevant(symbol=symbol, limit=limit)
+    result = await ResearchReportsQueryService(db).find_relevant(
+        symbol=symbol, limit=limit
+    )
     return result.citations
 
 
@@ -134,7 +146,9 @@ async def build_stock_detail_research_consensus(
     empty_reason = None
     if state == "missing":
         empty_reason = (
-            "provider_error" if provider_error else "no_analyst_consensus_or_research_reports"
+            "provider_error"
+            if provider_error
+            else "no_analyst_consensus_or_research_reports"
         )
 
     return StockDetailResearchConsensusResponse(
@@ -280,7 +294,9 @@ def _source_of_truth(
     return "none"
 
 
-def _state(has_consensus: bool, has_citations: bool) -> StockDetailResearchConsensusState:
+def _state(
+    has_consensus: bool, has_citations: bool
+) -> StockDetailResearchConsensusState:
     if has_consensus and has_citations:
         return "ready"
     if has_consensus or has_citations:

@@ -74,7 +74,12 @@ def discover_common_preferred_pairs(
         )
 
     if include_seed:
-        for common_symbol, common_name, preferred_symbol, preferred_name in SEED_COMMON_PREFERRED_PAIRS:
+        for (
+            common_symbol,
+            common_name,
+            preferred_symbol,
+            preferred_name,
+        ) in SEED_COMMON_PREFERRED_PAIRS:
             if not _include(common_symbol, preferred_symbol):
                 continue
             common = by_symbol.get(common_symbol)
@@ -85,11 +90,15 @@ def discover_common_preferred_pairs(
                     common_symbol=common_symbol,
                     common_name=common.name if common is not None else common_name,
                     preferred_symbol=preferred_symbol,
-                    preferred_name=preferred.name if preferred is not None else preferred_name,
+                    preferred_name=preferred.name
+                    if preferred is not None
+                    else preferred_name,
                     exchange=(preferred.exchange if preferred is not None else None)
                     or (common.exchange if common is not None else None),
                     mapping_source="seed_samsung_pair",
                 ),
             )
 
-    return sorted(pairs.values(), key=lambda pair: (pair.common_symbol, pair.preferred_symbol))
+    return sorted(
+        pairs.values(), key=lambda pair: (pair.common_symbol, pair.preferred_symbol)
+    )

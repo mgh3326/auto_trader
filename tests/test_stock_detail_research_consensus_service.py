@@ -59,8 +59,18 @@ async def test_build_stock_detail_research_consensus_combines_opinions_and_citat
             "source": "naver",
             "current_price": 70000,
             "opinions": [
-                {"firm": "A증권", "rating": "매수", "target_price": 84000, "date": "2026-05-13"},
-                {"firm": "B증권", "rating": "중립", "target_price": 72000, "date": "2026-05-12"},
+                {
+                    "firm": "A증권",
+                    "rating": "매수",
+                    "target_price": 84000,
+                    "date": "2026-05-13",
+                },
+                {
+                    "firm": "B증권",
+                    "rating": "중립",
+                    "target_price": 72000,
+                    "date": "2026-05-12",
+                },
             ],
         }
 
@@ -73,7 +83,9 @@ async def test_build_stock_detail_research_consensus_combines_opinions_and_citat
                 published_at=now,
                 excerpt="메모리 회복과 AI 수요를 점검합니다.",
                 detail_url="https://example.com/reports/1",
-                symbol_candidates=[{"symbol": "005930", "market": "kr", "source": "ticker"}],
+                symbol_candidates=[
+                    {"symbol": "005930", "market": "kr", "source": "ticker"}
+                ],
                 attribution_publisher="Naver",
                 attribution_copyright_notice="copyright",
             )
@@ -120,7 +132,14 @@ async def test_build_stock_detail_research_consensus_combines_opinions_and_citat
     assert response.citations[0].title == "삼성전자 실적 프리뷰"
 
     dumped = response.model_dump(by_alias=True)
-    forbidden = {"pdf_body", "pdf_text", "extracted_text", "full_text", "raw_payload", "raw_payload_json"}
+    forbidden = {
+        "pdf_body",
+        "pdf_text",
+        "extracted_text",
+        "full_text",
+        "raw_payload",
+        "raw_payload_json",
+    }
     assert forbidden.isdisjoint(str(dumped).lower())
 
 
@@ -289,7 +308,9 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
 
 
 @pytest.mark.unit
-def test_research_consensus_route_returns_read_only_contract(client: TestClient) -> None:
+def test_research_consensus_route_returns_read_only_contract(
+    client: TestClient,
+) -> None:
     response = client.get("/invest/api/stock-detail/us/QQQM/research-consensus")
 
     assert response.status_code == 200
@@ -323,7 +344,9 @@ def test_research_consensus_route_maps_symbol_not_found(
     async def _raise_not_found(**kwargs):
         raise SymbolNotFound("missing")
 
-    monkeypatch.setattr(invest_api, "build_stock_detail_research_consensus", _raise_not_found)
+    monkeypatch.setattr(
+        invest_api, "build_stock_detail_research_consensus", _raise_not_found
+    )
 
     response = client.get("/invest/api/stock-detail/us/MISSING/research-consensus")
 

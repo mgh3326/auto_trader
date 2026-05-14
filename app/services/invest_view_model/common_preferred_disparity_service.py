@@ -56,7 +56,9 @@ def _round(value: float | None, digits: int = 2) -> float | None:
     return round(value, digits)
 
 
-def _disparity_pct(common_price: float | None, preferred_price: float | None) -> float | None:
+def _disparity_pct(
+    common_price: float | None, preferred_price: float | None
+) -> float | None:
     if common_price is None or preferred_price is None or common_price <= 0:
         return None
     return ((common_price - preferred_price) / common_price) * 100.0
@@ -157,7 +159,10 @@ def _build_windows(
         if not values:
             windows.append(
                 DisparityPeriodWindow(
-                    period=period, sampleCount=0, dataState="missing", emptyReason="quote_window_missing"
+                    period=period,
+                    sampleCount=0,
+                    dataState="missing",
+                    emptyReason="quote_window_missing",
                 )
             )
             continue
@@ -184,11 +189,16 @@ def _build_windows(
 
 async def _load_active_universe(db: AsyncSession) -> list[KRSymbolRow]:
     result = await db.execute(
-        sa.select(KRSymbolUniverse.symbol, KRSymbolUniverse.name, KRSymbolUniverse.exchange)
+        sa.select(
+            KRSymbolUniverse.symbol, KRSymbolUniverse.name, KRSymbolUniverse.exchange
+        )
         .where(KRSymbolUniverse.is_active.is_(True))
         .order_by(KRSymbolUniverse.symbol.asc())
     )
-    return [KRSymbolRow(symbol=row.symbol, name=row.name, exchange=row.exchange) for row in result.all()]
+    return [
+        KRSymbolRow(symbol=row.symbol, name=row.name, exchange=row.exchange)
+        for row in result.all()
+    ]
 
 
 async def _load_quote_rows(
@@ -234,7 +244,9 @@ async def build_common_preferred_disparity(
     effective_as_of = _as_aware(as_of) or now
     wanted = {s.strip() for s in symbols or [] if s.strip()}
     universe_rows = await _load_active_universe(db)
-    pairs = discover_common_preferred_pairs(universe_rows, symbols=wanted or None)[:limit]
+    pairs = discover_common_preferred_pairs(universe_rows, symbols=wanted or None)[
+        :limit
+    ]
     if not pairs:
         return CommonPreferredDisparityResponse(
             state="missing",
@@ -244,7 +256,9 @@ async def build_common_preferred_disparity(
             warnings=["preferred_pair_mapping_heuristic_no_match"],
         )
 
-    quote_symbols = {pair.common_symbol for pair in pairs} | {pair.preferred_symbol for pair in pairs}
+    quote_symbols = {pair.common_symbol for pair in pairs} | {
+        pair.preferred_symbol for pair in pairs
+    }
     quotes = await _load_quote_rows(db, symbols=quote_symbols, as_of=effective_as_of)
     cards: list[CommonPreferredDisparityCard] = []
     global_warnings = ["preferred_pair_mapping_heuristic"]
@@ -253,7 +267,9 @@ async def build_common_preferred_disparity(
     for pair in pairs:
         common_rows = quotes.get(pair.common_symbol, [])
         preferred_rows = quotes.get(pair.preferred_symbol, [])
-        source, common_quote, preferred_quote = _choose_same_source_quote(common_rows, preferred_rows)
+        source, common_quote, preferred_quote = _choose_same_source_quote(
+            common_rows, preferred_rows
+        )
         warnings = [f"pair_mapping:{pair.mapping_source}"]
         empty_reason = None
         data_state = "fresh"
@@ -269,7 +285,9 @@ async def build_common_preferred_disparity(
             common_ts = _as_aware(common_quote.snapshot_at) or effective_as_of
             preferred_ts = _as_aware(preferred_quote.snapshot_at) or effective_as_of
             source_as_of = min(common_ts, preferred_ts)
-            freshness_sec = max(0, int((effective_as_of - source_as_of).total_seconds()))
+            freshness_sec = max(
+                0, int((effective_as_of - source_as_of).total_seconds())
+            )
             common_price = _to_float(common_quote.price)
             preferred_price = _to_float(preferred_quote.price)
             disparity = _disparity_pct(common_price, preferred_price)
@@ -290,7 +308,9 @@ async def build_common_preferred_disparity(
             source=source,
             as_of=effective_as_of,
         )
-        if data_state == "fresh" and any(window.dataState != "fresh" for window in windows):
+        if data_state == "fresh" and any(
+            window.dataState != "fresh" for window in windows
+        ):
             data_state = "partial"
             warnings.append("quote_window_partial")
 

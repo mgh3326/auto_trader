@@ -56,7 +56,9 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
                 )
             ],
             warnings=[],
-            notes=["Read-only market parity dashboard; no broker/order/watch mutations."],
+            notes=[
+                "Read-only market parity dashboard; no broker/order/watch mutations."
+            ],
         )
 
     monkeypatch.setattr(invest_api, "build_market_parity", _stub_market_parity)

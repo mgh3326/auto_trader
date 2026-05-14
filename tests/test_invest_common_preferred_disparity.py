@@ -37,12 +37,16 @@ def test_seed_pair_discovers_samsung_common_preferred() -> None:
         symbols={"005930"},
     )
 
-    assert [(p.common_symbol, p.preferred_symbol) for p in pairs] == [("005930", "005935")]
+    assert [(p.common_symbol, p.preferred_symbol) for p in pairs] == [
+        ("005930", "005935")
+    ]
     assert pairs[0].mapping_source == "heuristic_name_suffix"
 
 
 @pytest.mark.asyncio
-async def test_build_common_preferred_disparity_calculates_discount_and_zscore(db_session) -> None:
+async def test_build_common_preferred_disparity_calculates_discount_and_zscore(
+    db_session,
+) -> None:
     now = dt.datetime(2026, 5, 14, 6, 0, tzinfo=dt.UTC)
     common_symbol = "901001"
     preferred_symbol = "901002"
@@ -52,13 +56,25 @@ async def test_build_common_preferred_disparity_calculates_discount_and_zscore(d
         )
     )
     await db_session.execute(
-        sa.delete(KRSymbolUniverse).where(KRSymbolUniverse.symbol.in_([common_symbol, preferred_symbol]))
+        sa.delete(KRSymbolUniverse).where(
+            KRSymbolUniverse.symbol.in_([common_symbol, preferred_symbol])
+        )
     )
     await db_session.commit()
     db_session.add_all(
         [
-            KRSymbolUniverse(symbol=common_symbol, name="테스트홀딩", exchange="KOSPI", is_active=True),
-            KRSymbolUniverse(symbol=preferred_symbol, name="테스트홀딩우", exchange="KOSPI", is_active=True),
+            KRSymbolUniverse(
+                symbol=common_symbol,
+                name="테스트홀딩",
+                exchange="KOSPI",
+                is_active=True,
+            ),
+            KRSymbolUniverse(
+                symbol=preferred_symbol,
+                name="테스트홀딩우",
+                exchange="KOSPI",
+                is_active=True,
+            ),
         ]
     )
     prices = [
@@ -117,7 +133,9 @@ async def test_build_common_preferred_disparity_calculates_discount_and_zscore(d
 
 
 @pytest.mark.asyncio
-async def test_common_preferred_disparity_requires_same_source_quotes(db_session) -> None:
+async def test_common_preferred_disparity_requires_same_source_quotes(
+    db_session,
+) -> None:
     now = dt.datetime(2026, 5, 14, 6, 0, tzinfo=dt.UTC)
     common_symbol = "901011"
     preferred_symbol = "901012"
@@ -127,15 +145,41 @@ async def test_common_preferred_disparity_requires_same_source_quotes(db_session
         )
     )
     await db_session.execute(
-        sa.delete(KRSymbolUniverse).where(KRSymbolUniverse.symbol.in_([common_symbol, preferred_symbol]))
+        sa.delete(KRSymbolUniverse).where(
+            KRSymbolUniverse.symbol.in_([common_symbol, preferred_symbol])
+        )
     )
     await db_session.commit()
     db_session.add_all(
         [
-            KRSymbolUniverse(symbol=common_symbol, name="소스테스트", exchange="KOSPI", is_active=True),
-            KRSymbolUniverse(symbol=preferred_symbol, name="소스테스트우", exchange="KOSPI", is_active=True),
-            MarketQuoteSnapshot(id=2500100, market="kr", symbol=common_symbol, source="kis", snapshot_at=now, price=Decimal("100000")),
-            MarketQuoteSnapshot(id=2500101, market="kr", symbol=preferred_symbol, source="naver_finance", snapshot_at=now, price=Decimal("80000")),
+            KRSymbolUniverse(
+                symbol=common_symbol,
+                name="소스테스트",
+                exchange="KOSPI",
+                is_active=True,
+            ),
+            KRSymbolUniverse(
+                symbol=preferred_symbol,
+                name="소스테스트우",
+                exchange="KOSPI",
+                is_active=True,
+            ),
+            MarketQuoteSnapshot(
+                id=2500100,
+                market="kr",
+                symbol=common_symbol,
+                source="kis",
+                snapshot_at=now,
+                price=Decimal("100000"),
+            ),
+            MarketQuoteSnapshot(
+                id=2500101,
+                market="kr",
+                symbol=preferred_symbol,
+                source="naver_finance",
+                snapshot_at=now,
+                price=Decimal("80000"),
+            ),
         ]
     )
     await db_session.commit()
@@ -162,7 +206,10 @@ def test_common_preferred_schema_uses_camel_case() -> None:
                 preferredName="삼성전자우",
                 dataState="missing",
                 emptyReason="same_source_quote_pair_missing",
-                source=DisparitySource(source="market_quote_snapshots", sourceOfTruth="market_quote_snapshots"),
+                source=DisparitySource(
+                    source="market_quote_snapshots",
+                    sourceOfTruth="market_quote_snapshots",
+                ),
             )
         ],
     )
@@ -177,7 +224,9 @@ def test_common_preferred_schema_uses_camel_case() -> None:
 def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     app = FastAPI()
     app.include_router(invest_api_router)
-    app.dependency_overrides[get_authenticated_user] = lambda: type("U", (), {"id": 1})()
+    app.dependency_overrides[get_authenticated_user] = lambda: type(
+        "U", (), {"id": 1}
+    )()
 
     async def _fake_db():
         yield object()
@@ -203,7 +252,9 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
                     zScore=1.25,
                     dataState="fresh",
                     tone="discount",
-                    source=DisparitySource(source="kis", sourceOfTruth="market_quote_snapshots"),
+                    source=DisparitySource(
+                        source="kis", sourceOfTruth="market_quote_snapshots"
+                    ),
                 )
             ],
         )
@@ -212,8 +263,12 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     return TestClient(app)
 
 
-def test_common_preferred_disparity_router_returns_camel_case(client: TestClient) -> None:
-    response = client.get("/invest/api/disparity/common-preferred?symbols=005930,005935&limit=1")
+def test_common_preferred_disparity_router_returns_camel_case(
+    client: TestClient,
+) -> None:
+    response = client.get(
+        "/invest/api/disparity/common-preferred?symbols=005930,005935&limit=1"
+    )
 
     assert response.status_code == 200
     body = response.json()
@@ -224,7 +279,9 @@ def test_common_preferred_disparity_router_returns_camel_case(client: TestClient
     assert "매수·매도 신호" in body["cards"][0]["caution"]
 
 
-def test_common_preferred_disparity_router_enforces_limit_bounds(client: TestClient) -> None:
+def test_common_preferred_disparity_router_enforces_limit_bounds(
+    client: TestClient,
+) -> None:
     response = client.get("/invest/api/disparity/common-preferred?limit=0")
 
     assert response.status_code == 422

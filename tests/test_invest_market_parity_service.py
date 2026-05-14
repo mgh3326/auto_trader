@@ -15,27 +15,37 @@ _AS_OF = datetime(2026, 5, 14, 0, 0, tzinfo=UTC)
 
 
 class _StubParityProvider:
-    def __init__(self, *, fail_proxy: bool = False, include_synthetic: bool = True) -> None:
+    def __init__(
+        self, *, fail_proxy: bool = False, include_synthetic: bool = True
+    ) -> None:
         self.fail_proxy = fail_proxy
         self.include_synthetic = include_synthetic
 
     async def get_index_quote(self, symbol: str) -> ParityQuote | None:
         assert symbol == "KOSPI"
-        return ParityQuote(symbol=symbol, price=Decimal("100"), source="fixture", as_of=_AS_OF)
+        return ParityQuote(
+            symbol=symbol, price=Decimal("100"), source="fixture", as_of=_AS_OF
+        )
 
     async def get_proxy_quote(self, symbol: str) -> ParityQuote | None:
         if self.fail_proxy:
             raise RuntimeError("proxy fixture unavailable")
         assert symbol == "EWY"
-        return ParityQuote(symbol=symbol, price=Decimal("10"), source="fixture", as_of=_AS_OF)
+        return ParityQuote(
+            symbol=symbol, price=Decimal("10"), source="fixture", as_of=_AS_OF
+        )
 
     async def get_fx_rate(self, pair: str) -> ParityQuote | None:
         assert pair == "USD/KRW"
-        return ParityQuote(symbol=pair, price=Decimal("11"), source="fixture", as_of=_AS_OF)
+        return ParityQuote(
+            symbol=pair, price=Decimal("11"), source="fixture", as_of=_AS_OF
+        )
 
     async def get_stablecoin_rate(self, pair: str) -> ParityQuote | None:
         assert pair == "USDT/KRW"
-        return ParityQuote(symbol=pair, price=Decimal("11.55"), source="fixture", as_of=_AS_OF)
+        return ParityQuote(
+            symbol=pair, price=Decimal("11.55"), source="fixture", as_of=_AS_OF
+        )
 
     async def get_crypto_kimchi_premium(self, symbol: str) -> dict[str, Any] | None:
         assert symbol == "BTC"
@@ -45,11 +55,15 @@ class _StubParityProvider:
         if not self.include_synthetic:
             return None
         prices = {"xyz:SMSN": Decimal("8"), "xyz:SKHX": Decimal("5")}
-        return ParityQuote(symbol=symbol, price=prices[symbol], source="fixture", as_of=_AS_OF)
+        return ParityQuote(
+            symbol=symbol, price=prices[symbol], source="fixture", as_of=_AS_OF
+        )
 
     async def get_kr_stock_quote(self, symbol: str) -> ParityQuote | None:
         prices = {"005930": Decimal("88"), "000660": Decimal("60")}
-        return ParityQuote(symbol=symbol, price=prices[symbol], source="fixture", as_of=_AS_OF)
+        return ParityQuote(
+            symbol=symbol, price=prices[symbol], source="fixture", as_of=_AS_OF
+        )
 
 
 class _ApprovalGatedProvider(_StubParityProvider):
@@ -128,7 +142,9 @@ async def test_build_market_parity_redacts_provider_exception_to_warning() -> No
     response = await build_market_parity(_StubParityProvider(fail_proxy=True))
 
     assert response.state == "partial"
-    index = next(card for card in response.cards if card.id == "ewy-kospi-implied-parity")
+    index = next(
+        card for card in response.cards if card.id == "ewy-kospi-implied-parity"
+    )
     assert index.dataState == "missing"
     assert index.emptyReason == "proxy_quote_missing"
     assert any("proxy:EWY" in warning for warning in response.warnings)

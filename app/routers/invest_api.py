@@ -268,7 +268,9 @@ async def get_investor_flow(
 async def get_common_preferred_disparity(
     user: Annotated[Any, Depends(get_authenticated_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
-    symbols: str = Query("", description="Optional comma-separated KR common/preferred symbols"),
+    symbols: str = Query(
+        "", description="Optional comma-separated KR common/preferred symbols"
+    ),
     market: Literal["kr"] = Query("kr"),
     as_of: Annotated[date | None, Query(alias="asOf")] = None,
     max_stale_days: Annotated[int, Query(alias="maxStaleDays", ge=0, le=30)] = 1,

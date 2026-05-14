@@ -13,8 +13,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.research_reports import ResearchReportCitation
 
-StockDetailResearchConsensusState = Literal["ready", "partial", "missing", "unsupported", "error"]
-StockDetailResearchConsensusDataState = Literal["fresh", "stale", "missing", "unsupported", "error"]
+StockDetailResearchConsensusState = Literal[
+    "ready", "partial", "missing", "unsupported", "error"
+]
+StockDetailResearchConsensusDataState = Literal[
+    "fresh", "stale", "missing", "unsupported", "error"
+]
 StockDetailResearchConsensusEmptyReason = Literal[
     "no_analyst_consensus_or_research_reports",
     "market_unsupported",

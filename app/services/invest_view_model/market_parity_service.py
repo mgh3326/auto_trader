@@ -236,12 +236,16 @@ async def _build_index_card(
     provider: MarketParityProvider, config: IndexParityConfig
 ) -> tuple[InvestMarketParityCard, list[str]]:
     base, base_warning = await _capture(
-        f"index:{config.base_symbol}", lambda: provider.get_index_quote(config.base_symbol)
+        f"index:{config.base_symbol}",
+        lambda: provider.get_index_quote(config.base_symbol),
     )
     proxy, proxy_warning = await _capture(
-        f"proxy:{config.proxy_symbol}", lambda: provider.get_proxy_quote(config.proxy_symbol)
+        f"proxy:{config.proxy_symbol}",
+        lambda: provider.get_proxy_quote(config.proxy_symbol),
     )
-    fx, fx_warning = await _capture("fx:USD/KRW", lambda: provider.get_fx_rate("USD/KRW"))
+    fx, fx_warning = await _capture(
+        "fx:USD/KRW", lambda: provider.get_fx_rate("USD/KRW")
+    )
     warnings = [w for w in [base_warning, proxy_warning, fx_warning] if w]
     missing: list[str] = []
     if base is None:
@@ -269,7 +273,9 @@ async def _build_index_card(
             premiumPct=premium,
             tone=_tone(premium),
             formula=_INDEX_PARITY_FORMULA,
-            dataState="stale" if any(leg.stale for leg in [base, proxy, fx]) else "fresh",
+            dataState="stale"
+            if any(leg.stale for leg in [base, proxy, fx])
+            else "fresh",
             source=_source(
                 source="market_index+proxy+fx",
                 source_of_truth="market_index/provider_fixture/fx",
@@ -284,7 +290,9 @@ async def _build_index_card(
 async def _build_stablecoin_card(
     provider: MarketParityProvider,
 ) -> tuple[InvestMarketParityCard, list[str]]:
-    usd, usd_warning = await _capture("fx:USD/KRW", lambda: provider.get_fx_rate("USD/KRW"))
+    usd, usd_warning = await _capture(
+        "fx:USD/KRW", lambda: provider.get_fx_rate("USD/KRW")
+    )
     usdt, usdt_warning = await _capture(
         "stablecoin:USDT/KRW", lambda: provider.get_stablecoin_rate("USDT/KRW")
     )
@@ -337,7 +345,9 @@ async def _build_stablecoin_card(
     )
 
 
-def _extract_kimchi(payload: Any) -> tuple[float | None, str, datetime | None, list[str]]:
+def _extract_kimchi(
+    payload: Any,
+) -> tuple[float | None, str, datetime | None, list[str]]:
     row: dict[str, Any] | None = None
     if isinstance(payload, list) and payload:
         first = payload[0]
@@ -362,7 +372,9 @@ async def _build_kimchi_card(
     )
     premium, symbol, as_of, payload_warnings = _extract_kimchi(payload)
     warnings = [w for w in [warning, *payload_warnings] if w]
-    state: InvestParityState = "fresh" if premium is not None and not warnings else "missing"
+    state: InvestParityState = (
+        "fresh" if premium is not None and not warnings else "missing"
+    )
     return (
         InvestMarketParityCard(
             id="btc-kimchi-premium",
@@ -396,7 +408,9 @@ async def _build_synthetic_card(
         f"synthetic:{config.synthetic_symbol}",
         lambda: provider.get_synthetic_quote(config.synthetic_symbol),
     )
-    fx, fx_warning = await _capture("fx:USD/KRW", lambda: provider.get_fx_rate("USD/KRW"))
+    fx, fx_warning = await _capture(
+        "fx:USD/KRW", lambda: provider.get_fx_rate("USD/KRW")
+    )
     warnings = [w for w in [base_warning, synthetic_warning, fx_warning] if w]
     if synthetic is None:
         return (
@@ -465,7 +479,9 @@ async def _build_synthetic_card(
             premiumPct=premium,
             tone=_tone(premium),
             formula=_SYNTHETIC_FORMULA,
-            dataState="stale" if any(leg.stale for leg in [base, synthetic, fx]) else "fresh",
+            dataState="stale"
+            if any(leg.stale for leg in [base, synthetic, fx])
+            else "fresh",
             source=_source(
                 source="kr_quote+synthetic+fx",
                 source_of_truth="provider_fixture/hyperliquid_approval_required",
@@ -477,13 +493,19 @@ async def _build_synthetic_card(
     )
 
 
-def _response_state(cards: list[InvestMarketParityCard], warnings: list[str]) -> InvestParityState:
+def _response_state(
+    cards: list[InvestMarketParityCard], warnings: list[str]
+) -> InvestParityState:
     if not cards:
         return "missing"
     usable = [card for card in cards if card.dataState in {"fresh", "stale", "partial"}]
     if not usable:
         return "missing"
-    if warnings or len(usable) < len(cards) or any(card.dataState != "fresh" for card in usable):
+    if (
+        warnings
+        or len(usable) < len(cards)
+        or any(card.dataState != "fresh" for card in usable)
+    ):
         return "partial"
     return "fresh"
 
