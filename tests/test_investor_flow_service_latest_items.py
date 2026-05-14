@@ -41,9 +41,7 @@ def _row(symbol: str, snapshot_date: dt.date) -> InvestorFlowSnapshot:
 async def test_latest_items_for_symbols_returns_dict_keyed_by_symbol(monkeypatch):
     today = dt.date(2026, 5, 13)
     fake_repo = SimpleNamespace(
-        latest_by_symbols=AsyncMock(
-            return_value=[_row("403550", dt.date(2026, 5, 12))]
-        )
+        latest_by_symbols=AsyncMock(return_value=[_row("403550", dt.date(2026, 5, 12))])
     )
 
     monkeypatch.setattr(
@@ -70,9 +68,7 @@ async def test_latest_items_for_symbols_marks_stale_when_age_exceeds_threshold(
 ):
     today = dt.date(2026, 5, 13)
     fake_repo = SimpleNamespace(
-        latest_by_symbols=AsyncMock(
-            return_value=[_row("403550", dt.date(2026, 5, 10))]
-        )
+        latest_by_symbols=AsyncMock(return_value=[_row("403550", dt.date(2026, 5, 10))])
     )
     monkeypatch.setattr(
         "app.services.invest_view_model.investor_flow_service.InvestorFlowSnapshotsRepository",

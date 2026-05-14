@@ -24,10 +24,10 @@ from app.schemas.invest_stock_detail import (
     default_capabilities_for_market,
     orderbook_support_for_market,
 )
+from app.services.exchange_rate_service import get_usd_krw_quote
 from app.services.invest_view_model.investor_flow_service import (
     latest_items_for_symbols as _latest_investor_flow_items,
 )
-from app.services.exchange_rate_service import get_usd_krw_quote
 from app.services.invest_view_model.naver_discussion_signal_poc import (
     build_naver_discussion_signal_poc,
 )

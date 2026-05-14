@@ -56,7 +56,10 @@ async def test_kr_detail_includes_investor_flow_when_provider_returns_payload():
         investor_flow=fake_investor_flow,
     )
     response = await build_stock_detail(
-        user_id=1, market="kr", symbol="403550", db=SimpleNamespace(),
+        user_id=1,
+        market="kr",
+        symbol="403550",
+        db=SimpleNamespace(),
         providers=providers,
     )
     assert response.investorFlow is not None
@@ -78,7 +81,10 @@ async def test_us_detail_does_not_call_investor_flow_provider():
         investor_flow=fake_investor_flow,
     )
     response = await build_stock_detail(
-        user_id=1, market="us", symbol="AAPL", db=SimpleNamespace(),
+        user_id=1,
+        market="us",
+        symbol="AAPL",
+        db=SimpleNamespace(),
         providers=providers,
     )
     assert response.investorFlow is None
@@ -95,7 +101,10 @@ async def test_investor_flow_provider_failure_warns_but_keeps_response():
         investor_flow=boom,
     )
     response = await build_stock_detail(
-        user_id=1, market="kr", symbol="403550", db=SimpleNamespace(),
+        user_id=1,
+        market="kr",
+        symbol="403550",
+        db=SimpleNamespace(),
         providers=providers,
     )
     assert response.investorFlow is None
@@ -111,7 +120,10 @@ async def test_kr_detail_investor_flow_defaults_to_none_without_snapshots(monkey
         AsyncMock(return_value={}),
     )
     response = await build_stock_detail(
-        user_id=1, market="kr", symbol="403550", db=SimpleNamespace(),
+        user_id=1,
+        market="kr",
+        symbol="403550",
+        db=SimpleNamespace(),
         providers=StockDetailProviders(resolver=_resolve_kr),
     )
     assert response.investorFlow is not None

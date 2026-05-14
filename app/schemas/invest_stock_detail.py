@@ -267,9 +267,7 @@ class StockDetailInvestorFlow(BaseModel):
         if self.dataState == "missing" and (
             self.foreignNet is not None or self.institutionNet is not None
         ):
-            raise ValueError(
-                "missing investor_flow must not expose any flow values"
-            )
+            raise ValueError("missing investor_flow must not expose any flow values")
         return self
 
 

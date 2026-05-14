@@ -97,9 +97,7 @@ async def latest_items_for_symbols(
         market="kr", symbols=normalized_symbols, as_of=today
     )
     return {
-        row.symbol: _item_from_snapshot(
-            row, as_of=today, max_stale_days=max_stale_days
-        )
+        row.symbol: _item_from_snapshot(row, as_of=today, max_stale_days=max_stale_days)
         for row in rows
     }
 

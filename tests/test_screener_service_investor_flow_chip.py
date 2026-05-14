@@ -14,20 +14,20 @@ from app.services.invest_view_model.screener_service import (
 
 
 def _item(**overrides) -> InvestorFlowItem:
-    defaults = dict(
-        symbol="403550",
-        market="kr",
-        dataState="fresh",
-        snapshotDate=dt.date(2026, 5, 12),
-        doubleBuy=False,
-        doubleSell=False,
-        foreignConsecutiveBuyDays=None,
-        foreignConsecutiveSellDays=None,
-        institutionConsecutiveBuyDays=None,
-        institutionConsecutiveSellDays=None,
-        individualConsecutiveBuyDays=None,
-        individualConsecutiveSellDays=None,
-    )
+    defaults = {
+        "symbol": "403550",
+        "market": "kr",
+        "dataState": "fresh",
+        "snapshotDate": dt.date(2026, 5, 12),
+        "doubleBuy": False,
+        "doubleSell": False,
+        "foreignConsecutiveBuyDays": None,
+        "foreignConsecutiveSellDays": None,
+        "institutionConsecutiveBuyDays": None,
+        "institutionConsecutiveSellDays": None,
+        "individualConsecutiveBuyDays": None,
+        "individualConsecutiveSellDays": None,
+    }
     defaults.update(overrides)
     return InvestorFlowItem(**defaults)
 
@@ -73,7 +73,11 @@ def test_stale_state_annotates_label():
 
 def test_double_sell_chip():
     chip = _investor_flow_chip_for_item(
-        _item(doubleSell=True, foreignConsecutiveSellDays=3, institutionConsecutiveSellDays=2)
+        _item(
+            doubleSell=True,
+            foreignConsecutiveSellDays=3,
+            institutionConsecutiveSellDays=2,
+        )
     )
     assert chip is not None
     assert chip.tone == "double_sell"

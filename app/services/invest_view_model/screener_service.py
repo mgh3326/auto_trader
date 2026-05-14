@@ -106,7 +106,9 @@ def _investor_flow_chip_for_item(
         return None
 
     def _annotate(label: str) -> str:
-        return label + _INVESTOR_FLOW_STALE_SUFFIX if item.dataState == "stale" else label
+        return (
+            label + _INVESTOR_FLOW_STALE_SUFFIX if item.dataState == "stale" else label
+        )
 
     snapshot = item.snapshotDate.isoformat() if item.snapshotDate else None
 
