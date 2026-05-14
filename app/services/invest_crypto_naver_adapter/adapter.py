@@ -10,7 +10,7 @@ from __future__ import annotations
 import inspect
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -93,15 +93,145 @@ def _ticker_map(rows: Sequence[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return mapped
 
 
+_SOURCE_STALE_AFTER_SECONDS = 24 * 60 * 60
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _parse_source_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return _as_utc(value)
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day, tzinfo=UTC)
+    if isinstance(value, (int, float)):
+        # Upbit ticker timestamps are millisecond epochs. Accept seconds too.
+        seconds = float(value) / 1000 if float(value) > 10_000_000_000 else float(value)
+        try:
+            return datetime.fromtimestamp(seconds, tz=UTC)
+        except (OverflowError, OSError, ValueError):
+            return None
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        try:
+            return _as_utc(datetime.fromisoformat(raw.replace("Z", "+00:00")))
+        except ValueError:
+            return None
+    return None
+
+
+def _row_value(row: Any, key: str) -> Any:
+    if isinstance(row, dict):
+        return row.get(key)
+    return getattr(row, key, None)
+
+
+def _source_timestamp_from_rows(rows: Sequence[Any], keys: Sequence[str]) -> datetime | None:
+    timestamps: list[datetime] = []
+    for row in rows:
+        for key in keys:
+            parsed = _parse_source_datetime(_row_value(row, key))
+            if parsed is not None:
+                timestamps.append(parsed)
+                break
+    return max(timestamps) if timestamps else None
+
+
+def _cache_age_seconds(*, now: datetime, fetched_at: datetime | None) -> float | None:
+    if fetched_at is None:
+        return None
+    return max(0.0, (now - fetched_at).total_seconds())
+
+
+def _cached_source_meta(
+    *,
+    source: str,
+    label: str,
+    has_data: bool,
+    fetched_at: datetime | None,
+    now: datetime,
+    stale_after_seconds: int = _SOURCE_STALE_AFTER_SECONDS,
+) -> CryptoReferenceSourceMeta:
+    if not has_data:
+        return CryptoReferenceSourceMeta(
+            source=source,
+            label=label,
+            state="unavailable",
+            freshness="missing",
+        )
+    age_seconds = _cache_age_seconds(now=now, fetched_at=fetched_at)
+    is_stale = age_seconds is not None and age_seconds > stale_after_seconds
+    return CryptoReferenceSourceMeta(
+        source=source,
+        label=label,
+        state="stale" if is_stale else "cached",
+        fetchedAt=fetched_at,
+        cacheAgeSeconds=age_seconds,
+        freshness="stale" if is_stale else ("fresh" if fetched_at is not None else "partial"),
+    )
+
+
+def _provider_source_meta(
+    *,
+    source: str,
+    label: str,
+    has_data: bool,
+    fetched_at: datetime | None,
+    now: datetime,
+    reference_only: bool = False,
+    stale_after_seconds: int = _SOURCE_STALE_AFTER_SECONDS,
+) -> CryptoReferenceSourceMeta:
+    if not has_data:
+        return CryptoReferenceSourceMeta(
+            source=source,
+            label=label,
+            state="unavailable",
+            freshness="missing",
+            referenceOnly=reference_only,
+        )
+    if fetched_at is None:
+        return CryptoReferenceSourceMeta(
+            source=source,
+            label=label,
+            state="live",
+            fetchedAt=now,
+            freshness="live",
+            referenceOnly=reference_only,
+        )
+    meta = _cached_source_meta(
+        source=source,
+        label=label,
+        has_data=True,
+        fetched_at=fetched_at,
+        now=now,
+        stale_after_seconds=stale_after_seconds,
+    )
+    if reference_only:
+        return meta.model_copy(update={"referenceOnly": True})
+    return meta
+
+
 async def _default_rank_provider(db: AsyncSession, limit: int) -> Sequence[Any]:
     repo = InvestCryptoScreenerSnapshotsRepository(db)
     return await repo.list_latest(preset_id="crypto_momentum", limit=limit)
 
 
 async def _default_ticker_provider(markets: list[str]) -> list[dict[str, Any]]:
-    from app.services.brokers.upbit.client import fetch_multiple_tickers
+    """Default ticker provider intentionally avoids live request-path HTTP.
 
-    return await fetch_multiple_tickers(markets)
+    The Naver reference endpoint is a read-model/fixture view. Live Upbit ticker
+    fetches are volatile external HTTP and must be injected explicitly by callers
+    that can label them as live data.
+    """
+
+    return []
 
 
 async def _default_news_provider(
@@ -125,9 +255,13 @@ async def _default_news_provider(
 
 
 async def _default_kimchi_provider(base_symbol: str) -> dict[str, Any] | list[dict[str, Any]] | None:
-    from app.mcp_server.tooling.fundamentals._crypto import handle_get_kimchi_premium
+    """Default kimchi provider intentionally avoids uncached live HTTP.
 
-    return await handle_get_kimchi_premium(base_symbol or "BTC")
+    A caller may inject a live or cached provider; without one the endpoint still
+    returns fixture/read-model data and marks kimchi premium unavailable.
+    """
+
+    return None
 
 
 async def _load_universe_fallback(db: AsyncSession, *, limit: int) -> list[UpbitSymbolUniverse]:
@@ -289,13 +423,16 @@ async def build_naver_crypto_reference(
     rank_provider = providers.rank_provider or _default_rank_provider
     try:
         rank_rows = await _maybe_await(rank_provider(db, limit))
+        rank_fetched_at = _source_timestamp_from_rows(
+            rank_rows, ("computed_at", "updated_at", "created_at", "snapshot_date")
+        )
         sources.append(
-            CryptoReferenceSourceMeta(
+            _cached_source_meta(
                 source="tvscreener_upbit",
                 label="Persisted crypto screener snapshots",
-                state="available" if rank_rows else "unavailable",
-                fetchedAt=now if rank_rows else None,
-                freshness="fresh" if rank_rows else "missing",
+                has_data=bool(rank_rows),
+                fetched_at=rank_fetched_at,
+                now=now,
             )
         )
     except Exception:
@@ -321,13 +458,18 @@ async def build_naver_crypto_reference(
         ticker_provider = providers.ticker_provider or _default_ticker_provider
         try:
             ticker_rows = list(await _maybe_await(ticker_provider(markets)))
+            ticker_fetched_at = _source_timestamp_from_rows(
+                ticker_rows,
+                ("fetched_at", "fetchedAt", "cached_at", "updated_at", "timestamp", "trade_timestamp"),
+            )
             sources.append(
-                CryptoReferenceSourceMeta(
+                _provider_source_meta(
                     source="upbit_official",
                     label="Upbit official/public ticker",
-                    state="available" if ticker_rows else "unavailable",
-                    fetchedAt=now if ticker_rows else None,
-                    freshness="fresh" if ticker_rows else "missing",
+                    has_data=bool(ticker_rows),
+                    fetched_at=ticker_fetched_at,
+                    now=now,
+                    stale_after_seconds=60,
                 )
             )
         except Exception:
@@ -371,7 +513,7 @@ async def build_naver_crypto_reference(
         CryptoReferenceSourceMeta(
             source="naver_reference",
             label="Naver crypto reference fixture",
-            state="reference_only" if profile else "unavailable",
+            state="fixture" if profile else "unavailable",
             freshness="fixture" if profile else "missing",
             referenceOnly=True,
         )
@@ -382,12 +524,12 @@ async def build_naver_crypto_reference(
     try:
         news = await _maybe_await(news_provider(db, resolver, normalized_symbol, min(limit, 20)))
         sources.append(
-            CryptoReferenceSourceMeta(
+            _cached_source_meta(
                 source="feed_news",
                 label="Persisted crypto news feed",
-                state="available" if news and news.items else "unavailable",
-                fetchedAt=now if news else None,
-                freshness="fresh" if news and news.items else "missing",
+                has_data=bool(news and news.items),
+                fetched_at=_parse_source_datetime(getattr(news, "asOf", None)),
+                now=now,
             )
         )
         if news and news.meta.warnings:
@@ -408,14 +550,19 @@ async def build_naver_crypto_reference(
     kimchi_provider = providers.kimchi_provider or _default_kimchi_provider
     try:
         kimchi_payload = await _maybe_await(kimchi_provider(base_symbol))
+        kimchi_row = _first_kimchi_row(kimchi_payload)
         sources.append(
-            CryptoReferenceSourceMeta(
+            _provider_source_meta(
                 source="mcp_kimchi_premium",
                 label="Kimchi premium reference",
-                state="available" if _first_kimchi_row(kimchi_payload) else "unavailable",
-                fetchedAt=now if _first_kimchi_row(kimchi_payload) else None,
-                freshness="fresh" if _first_kimchi_row(kimchi_payload) else "missing",
-                referenceOnly=True,
+                has_data=bool(kimchi_row),
+                fetched_at=_source_timestamp_from_rows(
+                    [kimchi_row] if kimchi_row else [],
+                    ("fetched_at", "fetchedAt", "cached_at", "updated_at", "timestamp"),
+                ),
+                now=now,
+                reference_only=True,
+                stale_after_seconds=10 * 60,
             )
         )
     except Exception:
