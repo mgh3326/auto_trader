@@ -1,0 +1,18 @@
+{
+  "symbol": "403550",
+  "name": "에스케이엔펄스",
+  "source": "naver_finance",
+  "captured_at": "2026-05-13T00:00:00+00:00",
+  "rows": [
+    {"date": "2026-05-12", "foreign_net":  450123, "institutional_net":  120044},
+    {"date": "2026-05-09", "foreign_net":  221890, "institutional_net":   55012},
+    {"date": "2026-05-08", "foreign_net":   80120, "institutional_net":   31200},
+    {"date": "2026-05-07", "foreign_net":   12345, "institutional_net":  -10220},
+    {"date": "2026-05-02", "foreign_net":  -45100, "institutional_net":   62000},
+    {"date": "2026-05-01", "foreign_net":  -88010, "institutional_net":   71005},
+    {"date": "2026-04-30", "foreign_net":  -90212, "institutional_net":  102330},
+    {"date": "2026-04-29", "foreign_net":   23000, "institutional_net":  -28000},
+    {"date": "2026-04-28", "foreign_net":   45000, "institutional_net":  -33000},
+    {"date": "2026-04-25", "foreign_net":   10000, "institutional_net":   -5000}
+  ]
+}

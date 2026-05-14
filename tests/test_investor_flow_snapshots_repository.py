@@ -10,6 +10,7 @@ from app.services.investor_flow_snapshots.repository import (
 )
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_upsert_and_latest_by_symbols_returns_fresh_snapshot(db_session):
     repo = InvestorFlowSnapshotsRepository(db_session)
@@ -51,6 +52,7 @@ async def test_upsert_and_latest_by_symbols_returns_fresh_snapshot(db_session):
     assert row.source == "naver_finance"
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_latest_by_symbols_picks_newest_snapshot_per_symbol(db_session):
     repo = InvestorFlowSnapshotsRepository(db_session)
@@ -86,3 +88,33 @@ async def test_latest_by_symbols_picks_newest_snapshot_per_symbol(db_session):
     assert len(rows) == 1
     assert rows[0].snapshot_date == dt.date(2026, 5, 11)
     assert rows[0].double_buy is True
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_recent_by_symbol_returns_descending_daily_history(db_session):
+    repo = InvestorFlowSnapshotsRepository(db_session)
+    symbol = "900193"
+    for day, foreign_net in [(9, 90), (10, -10), (11, 110)]:
+        await repo.upsert(
+            InvestorFlowSnapshotUpsert(
+                market="kr",
+                symbol=symbol,
+                snapshot_date=dt.date(2026, 5, day),
+                foreign_net=foreign_net,
+                institution_net=day,
+                individual_net=-foreign_net,
+                source="naver_finance",
+            )
+        )
+    await db_session.commit()
+
+    rows = await repo.recent_by_symbol(
+        market="kr", symbol=symbol, as_of=dt.date(2026, 5, 11), limit=2
+    )
+
+    assert [row.snapshot_date for row in rows] == [
+        dt.date(2026, 5, 11),
+        dt.date(2026, 5, 10),
+    ]
+    assert rows[0].foreign_net == 110

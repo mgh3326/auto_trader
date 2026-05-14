@@ -25,9 +25,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.schemas.invest_screener import (
     ChangeDirection,
     ScreenerFreshness,
+    ScreenerInvestorFlowChip,
     ScreenerPresetsResponse,
     ScreenerResultRow,
     ScreenerResultsResponse,
+)
+from app.schemas.investor_flow import InvestorFlowItem
+from app.services.invest_view_model.investor_flow_service import (
+    latest_items_for_symbols as _latest_investor_flow_items,
 )
 from app.services.invest_view_model.screener_presets import (
     CRYPTO_DEFAULT_PRESET_ID,
@@ -89,7 +94,136 @@ _KR_TOSS_EXCLUDED_NAME_TOKENS = (
     "TDF",
 )
 _KR_PREFERRED_SUFFIXES = ("우", "우B", "우C")
+_INVESTOR_FLOW_MIN_STREAK = 3
+_INVESTOR_FLOW_STALE_SUFFIX = " · 1일 지연"
 logger = logging.getLogger(__name__)
+
+
+def _investor_flow_chip_for_item(
+    item: InvestorFlowItem,
+) -> ScreenerInvestorFlowChip | None:
+    if item.dataState == "missing":
+        return None
+
+    def _annotate(label: str) -> str:
+        return (
+            label + _INVESTOR_FLOW_STALE_SUFFIX if item.dataState == "stale" else label
+        )
+
+    snapshot = item.snapshotDate.isoformat() if item.snapshotDate else None
+
+    if item.doubleBuy:
+        streak = max(
+            item.foreignConsecutiveBuyDays or 0,
+            item.institutionConsecutiveBuyDays or 0,
+        )
+        label = "쌍끌이 매수" + (f" {streak}일" if streak >= 2 else "")
+        return ScreenerInvestorFlowChip(
+            label=_annotate(label),
+            tone="double_buy",
+            dataState=item.dataState,
+            snapshotDate=snapshot,
+        )
+    if item.doubleSell:
+        streak = max(
+            item.foreignConsecutiveSellDays or 0,
+            item.institutionConsecutiveSellDays or 0,
+        )
+        label = "쌍끌이 매도" + (f" {streak}일" if streak >= 2 else "")
+        return ScreenerInvestorFlowChip(
+            label=_annotate(label),
+            tone="double_sell",
+            dataState=item.dataState,
+            snapshotDate=snapshot,
+        )
+    if (item.foreignConsecutiveBuyDays or 0) >= _INVESTOR_FLOW_MIN_STREAK:
+        return ScreenerInvestorFlowChip(
+            label=_annotate(f"외국인 {item.foreignConsecutiveBuyDays}일 순매수"),
+            tone="foreign_buy",
+            dataState=item.dataState,
+            snapshotDate=snapshot,
+        )
+    if (item.foreignConsecutiveSellDays or 0) >= _INVESTOR_FLOW_MIN_STREAK:
+        return ScreenerInvestorFlowChip(
+            label=_annotate(f"외국인 {item.foreignConsecutiveSellDays}일 순매도"),
+            tone="foreign_sell",
+            dataState=item.dataState,
+            snapshotDate=snapshot,
+        )
+    if (item.institutionConsecutiveBuyDays or 0) >= _INVESTOR_FLOW_MIN_STREAK:
+        return ScreenerInvestorFlowChip(
+            label=_annotate(f"기관 {item.institutionConsecutiveBuyDays}일 순매수"),
+            tone="institution_buy",
+            dataState=item.dataState,
+            snapshotDate=snapshot,
+        )
+    if (item.institutionConsecutiveSellDays or 0) >= _INVESTOR_FLOW_MIN_STREAK:
+        return ScreenerInvestorFlowChip(
+            label=_annotate(f"기관 {item.institutionConsecutiveSellDays}일 순매도"),
+            tone="institution_sell",
+            dataState=item.dataState,
+            snapshotDate=snapshot,
+        )
+    return None
+
+
+def _investor_flow_item_from_screener_row(
+    row: dict[str, Any],
+) -> InvestorFlowItem | None:
+    symbol = str(row.get("symbol") or "").strip().upper()
+    if not symbol:
+        return None
+
+    snapshot_state = str(row.get("_screener_snapshot_state") or "").strip()
+    data_state = snapshot_state if snapshot_state in {"fresh", "stale"} else "fresh"
+    return InvestorFlowItem(
+        symbol=symbol,
+        market="kr",
+        dataState=data_state,
+        snapshotDate=row.get("snapshot_date"),
+        foreignNet=row.get("foreign_net"),
+        institutionNet=row.get("institution_net"),
+        individualNet=row.get("individual_net"),
+        doubleBuy=bool(row.get("double_buy")),
+        doubleSell=bool(row.get("double_sell")),
+        foreignConsecutiveBuyDays=row.get("foreign_consecutive_buy_days"),
+        foreignConsecutiveSellDays=row.get("foreign_consecutive_sell_days"),
+        institutionConsecutiveBuyDays=row.get("institution_consecutive_buy_days"),
+        institutionConsecutiveSellDays=row.get("institution_consecutive_sell_days"),
+        individualConsecutiveBuyDays=row.get("individual_consecutive_buy_days"),
+        individualConsecutiveSellDays=row.get("individual_consecutive_sell_days"),
+    )
+
+
+async def _hydrate_investor_flow_chips(
+    *, db: Any, market: str, rows: list[dict[str, Any]]
+) -> dict[str, ScreenerInvestorFlowChip]:
+    if market != "kr" or not rows or db is None:
+        return {}
+    chips: dict[str, ScreenerInvestorFlowChip] = {}
+    for row in rows:
+        item = _investor_flow_item_from_screener_row(row)
+        if item is None:
+            continue
+        chip = _investor_flow_chip_for_item(item)
+        if chip is not None:
+            chips[item.symbol] = chip
+
+    symbols = sorted(
+        {str(r.get("symbol")) for r in rows if r.get("symbol")} - set(chips.keys())
+    )
+    if not symbols:
+        return chips
+    try:
+        items = await _latest_investor_flow_items(db=db, symbols=symbols, market="kr")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("screener investor-flow hydrate failed: %s", exc, exc_info=True)
+        return chips
+    for symbol, item in items.items():
+        chip = _investor_flow_chip_for_item(item)
+        if chip is not None:
+            chips[symbol] = chip
+    return chips
 
 
 class _ScreeningServiceProto(Protocol):
@@ -318,6 +452,110 @@ async def _load_consecutive_gainers_from_snapshots(
     return rows
 
 
+async def _load_investor_flow_discovery_from_snapshots(
+    session: AsyncSession | None, *, market: str, limit: int = 20
+) -> list[dict[str, Any]] | None:
+    """Return MVP 수급 discovery rows from persisted investor_flow_snapshots.
+
+    This preset is intentionally snapshot-only/read-only: if durable snapshots are
+    unavailable, callers may fall back to the generic screener service, but no
+    request-time Naver scraping is introduced here.
+    """
+    if session is None or market != "kr":
+        return None
+
+    from app.models.investor_flow_snapshot import InvestorFlowSnapshot
+
+    latest_date_stmt = sa.select(sa.func.max(InvestorFlowSnapshot.snapshot_date)).where(
+        InvestorFlowSnapshot.market == "kr"
+    )
+    try:
+        latest_date_result = await session.execute(latest_date_stmt)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "failed to read investor_flow_snapshots max date: %s", exc, exc_info=True
+        )
+        return None
+    latest_snapshot_date = latest_date_result.scalar_one_or_none()
+    if latest_snapshot_date is None:
+        return None
+
+    candidate_limit = max(limit * 5, limit + 60)
+    stmt = (
+        sa.select(InvestorFlowSnapshot)
+        .where(
+            InvestorFlowSnapshot.market == "kr",
+            InvestorFlowSnapshot.snapshot_date == latest_snapshot_date,
+            sa.or_(
+                InvestorFlowSnapshot.double_buy.is_(True),
+                InvestorFlowSnapshot.foreign_consecutive_buy_days
+                >= _INVESTOR_FLOW_MIN_STREAK,
+                InvestorFlowSnapshot.foreign_net_buy_rank.is_not(None),
+            ),
+        )
+        .order_by(
+            InvestorFlowSnapshot.double_buy.desc(),
+            InvestorFlowSnapshot.foreign_consecutive_buy_days.desc().nullslast(),
+            InvestorFlowSnapshot.foreign_net_buy_rank.asc().nullslast(),
+            InvestorFlowSnapshot.foreign_net.desc().nullslast(),
+            InvestorFlowSnapshot.symbol.asc(),
+        )
+        .limit(candidate_limit)
+    )
+    try:
+        result = await session.execute(stmt)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("failed to read investor_flow_snapshots: %s", exc, exc_info=True)
+        return None
+    candidate_snaps = result.scalars().all()
+
+    symbol_names: dict[str, str] = {}
+    if candidate_snaps:
+        from app.models.kr_symbol_universe import KRSymbolUniverse
+
+        candidate_symbols = [snap.symbol for snap in candidate_snaps]
+        try:
+            name_result = await session.execute(
+                sa.select(KRSymbolUniverse.symbol, KRSymbolUniverse.name).where(
+                    KRSymbolUniverse.symbol.in_(candidate_symbols),
+                    KRSymbolUniverse.is_active.is_(True),
+                )
+            )
+            symbol_names = {row.symbol: row.name for row in name_result.all()}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "failed to read kr_symbol_universe for investor-flow screener: %s",
+                exc,
+                exc_info=True,
+            )
+
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for snap in candidate_snaps:
+        if snap.symbol in seen:
+            continue
+        if not _is_kr_toss_common_stock(snap.symbol, symbol_names.get(snap.symbol)):
+            continue
+        seen.add(snap.symbol)
+        rows.append(
+            {
+                "symbol": snap.symbol,
+                "market": "kr",
+                "name": symbol_names.get(snap.symbol),
+                "foreign_net": snap.foreign_net,
+                "institution_net": snap.institution_net,
+                "individual_net": snap.individual_net,
+                "foreign_consecutive_buy_days": snap.foreign_consecutive_buy_days,
+                "institution_consecutive_buy_days": snap.institution_consecutive_buy_days,
+                "double_buy": snap.double_buy,
+                "_screener_snapshot_state": "fresh",
+            }
+        )
+        if len(rows) >= limit:
+            break
+    return rows
+
+
 async def _load_crypto_rows_from_snapshots(
     session: AsyncSession | None,
     *,
@@ -425,6 +663,7 @@ _METRIC_FIELD: dict[str, str] = {
     "oversold_recovery": "rsi",
     "high_volume_momentum": "volume",
     "growth_expectation": "change_rate",
+    "investor_flow_momentum": "foreign_net",
     "crypto_high_volume": "trade_amount_24h",
     "crypto_oversold": "rsi",
     "crypto_momentum": "change_rate",
@@ -675,6 +914,9 @@ def _metric_value_label(preset_id: str, row: dict[str, Any]) -> tuple[str, list[
         return f"{float(value):.2f}%", []
     if field in ("volume", "trade_amount_24h"):
         return f"{int(float(value)):,}", []
+    if field == "foreign_net":
+        sign = "+" if int(value) > 0 else "−" if int(value) < 0 else ""
+        return f"{sign}{abs(int(value)):,}주", []
     return str(value), []
 
 
@@ -781,6 +1023,15 @@ async def build_screener_results(
                 market=requested_market,
                 limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
             )
+        elif preset_id == "investor_flow_momentum":
+            _snapshot_check_result = await _load_investor_flow_discovery_from_snapshots(
+                session,
+                market=requested_market,
+                limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
+            )
+            _snapshot_empty_warning = (
+                "최신 수급 스냅샷에서 조건에 맞는 결과가 없습니다."
+            )
         elif requested_market == "crypto":
             _crypto_snapshot_result = await _load_crypto_rows_from_snapshots(
                 session,
@@ -795,6 +1046,16 @@ async def build_screener_results(
                 _snapshot_empty_warning = (
                     "최신 암호화폐 스크리너 스냅샷에서 조건에 맞는 결과가 없습니다."
                 )
+
+    if preset_id == "investor_flow_momentum" and _snapshot_check_result is None:
+        # This preset is deliberately persisted-snapshot-only. Do not fall
+        # through to the generic screener provider, which neither supports the
+        # investor-flow filters nor guarantees no request-time external lookup.
+        _snapshot_check_result = []
+        _snapshot_state_override = "missing"
+        _snapshot_empty_warning = (
+            "수급 스냅샷이 아직 적재되지 않아 수급 모멘텀 후보를 표시할 수 없습니다."
+        )
 
     _snapshot_was_checked = _snapshot_check_result is not None
     if _snapshot_was_checked:
@@ -886,6 +1147,10 @@ async def build_screener_results(
             )
             _kr_names = {row_t.symbol: row_t.name for row_t in _kr_result.all()}
 
+    investor_flow_chips = await _hydrate_investor_flow_chips(
+        db=session, market=requested_market, rows=rows
+    )
+
     results: list[ScreenerResultRow] = []
     for idx, row in enumerate(rows, start=1):
         market = _normalize_market(row.get("market") or requested_market)
@@ -932,6 +1197,7 @@ async def build_screener_results(
                 volumeLabel=_format_volume_label(row, market),
                 analystLabel=str(row.get("analyst_label") or "-"),
                 metricValueLabel=metric_label,
+                investorFlowChip=investor_flow_chips.get(symbol),
                 warnings=row_warnings,
             )
         )

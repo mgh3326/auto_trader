@@ -28,6 +28,78 @@ export type FxSensitivityStatus =
   | "missing_native_value"
   | "missing_fx_rate";
 export type FxSensitivityBasis = "portfolio_value" | "fallback_quote" | "not_applicable";
+export type InvestorFlowDetailState = "fresh" | "stale" | "missing";
+
+export interface StockDetailInvestorFlowDailyRow {
+  snapshotDate: string;
+  collectedAt: string | null;
+  source: string | null;
+  close: number | null;
+  changeRate: number | null;
+  volume: number | null;
+  foreignNet: number | null;
+  foreignHoldingShares: number | null;
+  foreignHoldingRate: number | null;
+  institutionNet: number | null;
+  individualNet: number | null;
+  doubleBuy: boolean;
+  doubleSell: boolean;
+}
+
+export interface StockDetailInvestorFlowPeriodSummary {
+  windowDays: number;
+  rowCount: number;
+  foreignNetTotal: number | null;
+  institutionNetTotal: number | null;
+  individualNetTotal: number | null;
+  foreignBuyDays: number;
+  foreignSellDays: number;
+  foreignFlatDays: number;
+  foreignNetToVolumeRatio: number | null;
+  foreignHoldingSharesChange: number | null;
+  foreignHoldingRateChange: number | null;
+  unavailableLabels: string[];
+}
+
+export interface StockDetailInvestorFlowBuyerDecomposition {
+  snapshotDate: string;
+  label: string;
+  leadingBuyer: "foreign" | "institution" | "individual" | "mixed" | "unknown";
+  foreignNet: number | null;
+  institutionNet: number | null;
+  individualNet: number | null;
+  note: string;
+}
+
+export interface StockDetailInvestorFlow {
+  source: "investor_flow_snapshots";
+  market: "kr";
+  symbol: string;
+  dataState: InvestorFlowDetailState;
+  snapshotDate: string | null;
+  collectedAt: string | null;
+  snapshotSource: string | null;
+  foreignNet: number | null;
+  institutionNet: number | null;
+  individualNet: number | null;
+  foreignNetBuyRank: number | null;
+  foreignNetSellRank: number | null;
+  institutionNetBuyRank: number | null;
+  institutionNetSellRank: number | null;
+  doubleBuy: boolean;
+  doubleSell: boolean;
+  foreignConsecutiveBuyDays: number | null;
+  foreignConsecutiveSellDays: number | null;
+  institutionConsecutiveBuyDays: number | null;
+  institutionConsecutiveSellDays: number | null;
+  individualConsecutiveBuyDays: number | null;
+  individualConsecutiveSellDays: number | null;
+  dailyRows: StockDetailInvestorFlowDailyRow[];
+  periodSummary: StockDetailInvestorFlowPeriodSummary | null;
+  buyerDecomposition: StockDetailInvestorFlowBuyerDecomposition | null;
+  unavailableLabels: string[];
+  cautionLabel: string;
+}
 
 export interface CapabilityFlag {
   supported: boolean;
@@ -174,6 +246,7 @@ export interface StockDetailResponse {
   screenerSnapshot: StockDetailScreenerSnapshot | null;
   valuation: StockDetailValuation | null;
   naverEnrichment: StockDetailNaverEnrichment | null;
+  investorFlow: StockDetailInvestorFlow | null;
   holding: StockDetailHolding | null;
   fxSensitivity: StockDetailFxSensitivity | null;
   latestAnalysis: StockDetailLatestAnalysis | null;

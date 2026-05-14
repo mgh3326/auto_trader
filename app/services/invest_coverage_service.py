@@ -76,10 +76,12 @@ async def build_invest_coverage(
     surfaces: list[InvestCoverageSurface] = []
     surfaces.extend(await _symbol_universe_surfaces(db, market_norm))
     surfaces.extend(await _screener_surfaces(db, market_norm, trading_day))
-    surfaces.extend(await _news_surfaces(db, market_norm, now))
+    surfaces.extend(await _news_surfaces(db, market_norm, now, symbols=symbol_list))
     surfaces.extend(await _calendar_surfaces(db, market_norm, trading_day, now))
     surfaces.extend(await _research_report_surfaces(db, market_norm, now))
-    surfaces.extend(await _investor_flow_surfaces(db, market_norm, trading_day))
+    surfaces.extend(
+        await _investor_flow_surfaces(db, market_norm, trading_day, symbols=symbol_list)
+    )
     surfaces.extend(await _holdings_surfaces(db, market_norm, now))
     surfaces.extend(await _pending_order_surfaces(db, market_norm, now))
     surfaces.extend(await _orderbook_nxt_surfaces(db, market_norm))
@@ -516,12 +518,19 @@ async def _screener_surfaces(
 
 
 async def _news_surfaces(
-    db: AsyncSession, market: str, now: dt.datetime
+    db: AsyncSession,
+    market: str,
+    now: dt.datetime,
+    *,
+    symbols: list[str] | None = None,
 ) -> list[InvestCoverageSurface]:
     markets = ["kr", "us", "crypto"] if market == "all" else [market]
     rows: list[InvestCoverageSurface] = []
     # news_articles.article_published_at is a timestamp without timezone.
     stale_cutoff = now.replace(tzinfo=None) - dt.timedelta(hours=24)
+    scoped_symbols = sorted(
+        {symbol.strip().upper() for symbol in (symbols or []) if symbol.strip()}
+    )
     for m in markets:
         run = (
             await db.execute(
@@ -534,19 +543,24 @@ async def _news_surfaces(
                 .limit(1)
             )
         ).scalar_one_or_none()
-        article_row = (
-            await db.execute(
-                sa.select(
-                    sa.func.count()
-                    .filter(NewsArticle.article_published_at >= stale_cutoff)
-                    .label("fresh"),
-                    sa.func.count()
-                    .filter(NewsArticle.article_published_at < stale_cutoff)
-                    .label("stale"),
-                    sa.func.max(NewsArticle.article_published_at).label("latest_at"),
-                ).where(NewsArticle.market == m)
+        article_query = sa.select(
+            sa.func.count(sa.distinct(NewsArticle.id))
+            .filter(NewsArticle.article_published_at >= stale_cutoff)
+            .label("fresh"),
+            sa.func.count(sa.distinct(NewsArticle.id))
+            .filter(NewsArticle.article_published_at < stale_cutoff)
+            .label("stale"),
+            sa.func.max(NewsArticle.article_published_at).label("latest_at"),
+        ).where(NewsArticle.market == m)
+        if scoped_symbols:
+            article_query = article_query.join(
+                NewsArticleRelatedSymbol,
+                NewsArticleRelatedSymbol.article_id == NewsArticle.id,
+            ).where(
+                NewsArticleRelatedSymbol.market == m,
+                NewsArticleRelatedSymbol.symbol.in_(scoped_symbols),
             )
-        ).one()
+        article_row = (await db.execute(article_query)).one()
         fresh = int(article_row.fresh or 0)
         stale = int(article_row.stale or 0)
         state = _state_from_counts(fresh=fresh, stale=stale)
@@ -718,7 +732,11 @@ async def _research_report_surfaces(
 
 
 async def _investor_flow_surfaces(
-    db: AsyncSession, market: str, trading_day: dt.date
+    db: AsyncSession,
+    market: str,
+    trading_day: dt.date,
+    *,
+    symbols: list[str] | None = None,
 ) -> list[InvestCoverageSurface]:
     if market in {"us", "crypto"}:
         return [
@@ -733,8 +751,16 @@ async def _investor_flow_surfaces(
         ]
     markets = ["kr"] if market in {"kr", "all"} else []
     rows: list[InvestCoverageSurface] = []
-    expected = await _universe_count(db, "kr")
+    scoped_symbols = sorted(
+        {symbol.strip().upper() for symbol in (symbols or []) if symbol.strip()}
+    )
+    expected = (
+        len(scoped_symbols) if scoped_symbols else await _universe_count(db, "kr")
+    )
     for m in markets:
+        predicates = [InvestorFlowSnapshot.market == m]
+        if scoped_symbols:
+            predicates.append(InvestorFlowSnapshot.symbol.in_(scoped_symbols))
         row = (
             await db.execute(
                 sa.select(
@@ -748,7 +774,7 @@ async def _investor_flow_surfaces(
                     sa.func.max(InvestorFlowSnapshot.snapshot_date).label(
                         "latest_date"
                     ),
-                ).where(InvestorFlowSnapshot.market == m)
+                ).where(*predicates)
             )
         ).one()
         fresh = int(row.fresh or 0)
