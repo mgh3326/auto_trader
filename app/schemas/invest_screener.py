@@ -13,6 +13,24 @@ from pydantic import BaseModel, ConfigDict, Field
 
 ScreenerMarket = Literal["kr", "us", "crypto"]
 ChangeDirection = Literal["up", "down", "flat"]
+InvestorFlowChipTone = Literal[
+    "double_buy",
+    "double_sell",
+    "foreign_buy",
+    "foreign_sell",
+    "institution_buy",
+    "institution_sell",
+    "neutral",
+]
+InvestorFlowChipState = Literal["fresh", "stale", "missing"]
+
+
+class ScreenerInvestorFlowChip(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: str
+    tone: InvestorFlowChipTone
+    dataState: InvestorFlowChipState
+    snapshotDate: str | None = None
 
 
 class ScreenerFilterChip(BaseModel):
@@ -49,6 +67,7 @@ class ScreenerResultRow(BaseModel):
     volumeLabel: str
     analystLabel: str
     metricValueLabel: str
+    investorFlowChip: ScreenerInvestorFlowChip | None = None
     warnings: list[str] = Field(default_factory=list)
 
 
