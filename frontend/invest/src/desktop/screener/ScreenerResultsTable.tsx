@@ -1,4 +1,5 @@
 import "./screener.css";
+import { InvestorFlowChip } from "./InvestorFlowChip";
 import type { ScreenerResultRow } from "../../types/screener";
 
 interface Props {
@@ -58,7 +59,10 @@ export function ScreenerResultsTable({ rows, metricLabel }: Props) {
             <td>{r.marketCapLabel}</td>
             <td>{r.volumeLabel}</td>
             <td>{r.analystLabel}</td>
-            <td>{r.metricValueLabel}</td>
+            <td>
+              {r.metricValueLabel}
+              {r.investorFlowChip ? <InvestorFlowChip chip={r.investorFlowChip} /> : null}
+            </td>
           </tr>
         ))}
       </tbody>

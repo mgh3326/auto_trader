@@ -1,5 +1,21 @@
 export type ScreenerMarket = "kr" | "us" | "crypto";
 export type ScreenerChangeDirection = "up" | "down" | "flat";
+export type InvestorFlowChipTone =
+  | "double_buy"
+  | "double_sell"
+  | "foreign_buy"
+  | "foreign_sell"
+  | "institution_buy"
+  | "institution_sell"
+  | "neutral";
+export type InvestorFlowChipState = "fresh" | "stale" | "missing";
+
+export interface ScreenerInvestorFlowChip {
+  label: string;
+  tone: InvestorFlowChipTone;
+  dataState: InvestorFlowChipState;
+  snapshotDate: string | null;
+}
 
 export interface ScreenerFilterChip {
   label: string;
@@ -37,6 +53,7 @@ export interface ScreenerResultRow {
   volumeLabel: string;
   analystLabel: string;
   metricValueLabel: string;
+  investorFlowChip: ScreenerInvestorFlowChip | null;
   warnings: string[];
 }
 

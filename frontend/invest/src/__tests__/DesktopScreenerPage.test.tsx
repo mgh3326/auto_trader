@@ -35,7 +35,7 @@ const ROW = {
   priceLabel: "80,000원", changePctLabel: "+1.23%", changeAmountLabel: "+970원",
   changeDirection: "up" as const, category: "반도체",
   marketCapLabel: "478조원", volumeLabel: "12,345,678",
-  analystLabel: "구매", metricValueLabel: "+8.00%", warnings: [],
+  analystLabel: "구매", metricValueLabel: "+8.00%", investorFlowChip: null, warnings: [],
 };
 
 const RESULTS_GAINERS = {
