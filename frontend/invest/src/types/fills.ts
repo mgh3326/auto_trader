@@ -29,6 +29,9 @@ export interface FillRow {
   source_run_id: string | null;
   created_at: string | null;
   updated_at: string | null;
+  cost_basis_notional?: string | null;
+  realized_profit?: string | null;
+  realized_profit_rate?: string | null;
 }
 
 export interface FillSourceBreakdown {

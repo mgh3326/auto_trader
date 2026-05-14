@@ -86,6 +86,9 @@ class ExecutionLedgerRead(BaseModel):
     source_run_id: uuid.UUID | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    cost_basis_notional: Decimal | None = None
+    realized_profit: Decimal | None = None
+    realized_profit_rate: Decimal | None = None
 
 
 class SourceBreakdown(BaseModel):

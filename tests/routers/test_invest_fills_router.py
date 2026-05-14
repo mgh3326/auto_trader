@@ -68,11 +68,12 @@ def _reconcile_run_row(broker: str = "kis"):
     )
 
 
-def _make_db(data_rows, reconcile_rows):
-    """Return an AsyncSession-like mock serving two distinct execute() calls.
+def _make_db(data_rows, reconcile_rows, history_rows=None):
+    """Return an AsyncSession-like mock serving ledger/history/freshness queries.
 
     First call → data rows (main ledger query).
-    Second call → reconcile_rows (latest_run_per_broker subquery).
+    Optional second call → history_rows (sell-history cost-basis query).
+    Remaining calls → reconcile_rows (latest_run_per_broker subquery).
     """
 
     def _scalars_for(rows):
@@ -96,6 +97,8 @@ def _make_db(data_rows, reconcile_rows):
         call_count += 1
         if call_count == 1:
             return _scalars_for(data_rows)
+        if history_rows is not None and call_count == 2:
+            return _scalars_for(history_rows)
         return _scalars_for(reconcile_rows)
 
     db = AsyncMock()
@@ -243,9 +246,25 @@ def test_fills_by_symbol_with_fresh_run_shows_stale_not_missing():
 
 @pytest.mark.unit
 def test_sell_history_returns_200_with_sell_rows():
-    row = _ledger_row(side="sell", broker_order_id="sell-001")
+    buy = _ledger_row(
+        id=10,
+        side="buy",
+        broker_order_id="buy-001",
+        filled_qty=Decimal("10"),
+        filled_price=Decimal("60000"),
+        filled_notional=Decimal("600000"),
+        filled_at=datetime(2026, 5, 9, 9, 0, tzinfo=UTC),
+    )
+    row = _ledger_row(
+        side="sell",
+        broker_order_id="sell-001",
+        filled_qty=Decimal("10"),
+        filled_price=Decimal("70000"),
+        filled_notional=Decimal("700000"),
+        filled_at=datetime(2026, 5, 10, 9, 0, tzinfo=UTC),
+    )
     run = _reconcile_run_row("kis")
-    db = _make_db([row], [run])
+    db = _make_db([row], [run], history_rows=[buy, row])
     client = TestClient(_make_app(db))
 
     resp = client.get("/trading/api/invest/fills/sell-history")
@@ -253,6 +272,8 @@ def test_sell_history_returns_200_with_sell_rows():
     data = resp.json()
     assert data["count"] == 1
     assert data["items"][0]["side"] == "sell"
+    assert data["items"][0]["realized_profit"] == "100000"
+    assert data["items"][0]["realized_profit_rate"].startswith("16.666")
     assert "source_breakdown" in data
     assert "data_state" in data
 
@@ -272,9 +293,35 @@ def test_sell_history_empty_with_no_runs():
 
 @pytest.mark.unit
 def test_sell_history_market_filter_param_accepted():
-    row = _ledger_row(side="sell", instrument_type="crypto", broker="upbit")
+    buy = _ledger_row(
+        id=10,
+        side="buy",
+        broker="upbit",
+        instrument_type="crypto",
+        venue="upbit",
+        symbol="KRW-BTC",
+        raw_symbol="KRW-BTC",
+        broker_order_id="buy-crypto-001",
+        filled_qty=Decimal("0.01000000"),
+        filled_price=Decimal("100000000"),
+        filled_notional=Decimal("1000000"),
+        filled_at=datetime(2026, 5, 9, 9, 0, tzinfo=UTC),
+    )
+    row = _ledger_row(
+        side="sell",
+        instrument_type="crypto",
+        broker="upbit",
+        venue="upbit",
+        symbol="KRW-BTC",
+        raw_symbol="KRW-BTC",
+        broker_order_id="sell-crypto-001",
+        filled_qty=Decimal("0.01000000"),
+        filled_price=Decimal("110000000"),
+        filled_notional=Decimal("1100000"),
+        filled_at=datetime(2026, 5, 10, 9, 0, tzinfo=UTC),
+    )
     run = _reconcile_run_row("upbit")
-    db = _make_db([row], [run])
+    db = _make_db([row], [run], history_rows=[buy, row])
     client = TestClient(_make_app(db))
 
     resp = client.get("/trading/api/invest/fills/sell-history?market=crypto&days=7")

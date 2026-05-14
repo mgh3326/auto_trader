@@ -43,6 +43,26 @@ function formatMoney(value: string | number | null | undefined, currency: string
   return `${n.toLocaleString("ko-KR")} ${currency}`;
 }
 
+function formatSignedMoney(value: string | number | null | undefined, currency: string): string {
+  const n = toNumber(value);
+  if (n == null) return "—";
+  const sign = n > 0 ? "+" : n < 0 ? "-" : "";
+  return `${sign}${formatMoney(Math.abs(n), currency)}`;
+}
+
+function formatRate(value: string | number | null | undefined): string {
+  const n = toNumber(value);
+  if (n == null) return "—";
+  const sign = n > 0 ? "+" : "";
+  return `${sign}${n.toLocaleString("ko-KR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`;
+}
+
+function signedColor(value: string | number | null | undefined): string {
+  const n = toNumber(value);
+  if (n == null || n === 0) return "var(--fg-2)";
+  return n > 0 ? "var(--gain)" : "var(--danger)";
+}
+
 function formatQty(row: FillRow): string {
   const qty = toNumber(row.filled_qty);
   if (qty == null) return "—";
@@ -98,6 +118,25 @@ function totalByCurrency(rows: FillRow[]): { currency: string; total: number }[]
   return Array.from(totals.entries()).map(([currency, total]) => ({ currency, total }));
 }
 
+function profitByCurrency(rows: FillRow[]): { currency: string; profit: number; costBasis: number; rate: number | null }[] {
+  const totals = new Map<string, { profit: number; costBasis: number }>();
+  for (const row of rows) {
+    const profit = toNumber(row.realized_profit);
+    const costBasis = toNumber(row.cost_basis_notional);
+    if (profit == null || costBasis == null) continue;
+    const current = totals.get(row.currency) ?? { profit: 0, costBasis: 0 };
+    current.profit += profit;
+    current.costBasis += costBasis;
+    totals.set(row.currency, current);
+  }
+  return Array.from(totals.entries()).map(([currency, value]) => ({
+    currency,
+    profit: value.profit,
+    costBasis: value.costBasis,
+    rate: value.costBasis > 0 ? (value.profit / value.costBasis) * 100 : null,
+  }));
+}
+
 export function SellHistoryPanel({ compact = false }: { compact?: boolean }) {
   const [market, setMarket] = useState<FillMarket | "all">("all");
   const [state, setState] = useState<
@@ -126,6 +165,7 @@ export function SellHistoryPanel({ compact = false }: { compact?: boolean }) {
   const dataState = state.status === "ready" ? state.data.data_state : null;
   const breakdownLabel = state.status === "ready" ? sourceBreakdownLabel(state.data) : null;
   const saleTotals = useMemo(() => totalByCurrency(rows), [rows]);
+  const profitTotals = useMemo(() => profitByCurrency(rows), [rows]);
 
   return (
     <section
@@ -227,9 +267,28 @@ export function SellHistoryPanel({ compact = false }: { compact?: boolean }) {
               </div>
             </div>
           ))}
-          <div style={{ alignSelf: "center", fontSize: 11, color: "var(--fg-3)" }}>
-            실현손익/수익률은 매수 원가 매칭이 추가되면 토스 수익분석처럼 표시됩니다.
-          </div>
+          {profitTotals.map(({ currency, profit, rate }) => (
+            <div
+              key={`profit-${currency}`}
+              style={{
+                borderRadius: 12,
+                background: "var(--surface-2)",
+                padding: "8px 10px",
+                minWidth: compact ? 0 : 150,
+              }}
+            >
+              <div style={{ fontSize: 10, color: "var(--fg-3)", fontWeight: 700 }}>판매수익 · {currency}</div>
+              <div style={{ marginTop: 2, fontSize: compact ? 13 : 15, fontWeight: 900, fontFeatureSettings: '"tnum"', color: signedColor(profit) }}>
+                {formatSignedMoney(profit, currency)}
+              </div>
+              <div style={{ marginTop: 2, fontSize: 11, color: signedColor(rate) }}>수익률 {formatRate(rate)}</div>
+            </div>
+          ))}
+          {profitTotals.length === 0 && saleTotals.length > 0 && (
+            <div style={{ alignSelf: "center", fontSize: 11, color: "var(--fg-3)" }}>
+              매수 원가가 매칭된 체결부터 토스 수익분석처럼 판매수익/수익률이 표시됩니다.
+            </div>
+          )}
         </div>
       )}
 
@@ -251,14 +310,16 @@ export function SellHistoryPanel({ compact = false }: { compact?: boolean }) {
 
       {state.status === "ready" && rows.length > 0 && (
         <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: compact ? 0 : 720 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: compact ? 0 : 900 }}>
             <thead>
               <tr style={{ color: "var(--fg-3)", fontSize: 11, textAlign: "left" }}>
                 <th style={{ padding: "8px 14px", borderTop: "1px solid var(--divider)", borderBottom: "1px solid var(--divider)" }}>일시</th>
                 <th style={{ padding: "8px 14px", borderTop: "1px solid var(--divider)", borderBottom: "1px solid var(--divider)" }}>종목</th>
                 {!compact && <th style={{ padding: "8px 14px", borderTop: "1px solid var(--divider)", borderBottom: "1px solid var(--divider)" }}>수량</th>}
                 <th style={{ padding: "8px 14px", borderTop: "1px solid var(--divider)", borderBottom: "1px solid var(--divider)", textAlign: "right" }}>단가</th>
-                <th style={{ padding: "8px 14px", borderTop: "1px solid var(--divider)", borderBottom: "1px solid var(--divider)", textAlign: "right" }}>금액</th>
+                <th style={{ padding: "8px 14px", borderTop: "1px solid var(--divider)", borderBottom: "1px solid var(--divider)", textAlign: "right" }}>총 판매금액</th>
+                {!compact && <th style={{ padding: "8px 14px", borderTop: "1px solid var(--divider)", borderBottom: "1px solid var(--divider)", textAlign: "right" }}>판매수익</th>}
+                {!compact && <th style={{ padding: "8px 14px", borderTop: "1px solid var(--divider)", borderBottom: "1px solid var(--divider)", textAlign: "right" }}>수익률</th>}
                 {!compact && <th style={{ padding: "8px 14px", borderTop: "1px solid var(--divider)", borderBottom: "1px solid var(--divider)" }}>출처</th>}
               </tr>
             </thead>
@@ -285,6 +346,16 @@ export function SellHistoryPanel({ compact = false }: { compact?: boolean }) {
                   <td style={{ padding: "10px 14px", borderBottom: "1px solid var(--divider)", fontSize: 13, fontWeight: 800, textAlign: "right", fontFeatureSettings: '"tnum"' }}>
                     {formatMoney(row.filled_notional, row.currency)}
                   </td>
+                  {!compact && (
+                    <td style={{ padding: "10px 14px", borderBottom: "1px solid var(--divider)", fontSize: 13, fontWeight: 800, textAlign: "right", fontFeatureSettings: '"tnum"', color: signedColor(row.realized_profit) }}>
+                      {formatSignedMoney(row.realized_profit, row.currency)}
+                    </td>
+                  )}
+                  {!compact && (
+                    <td style={{ padding: "10px 14px", borderBottom: "1px solid var(--divider)", fontSize: 13, fontWeight: 800, textAlign: "right", fontFeatureSettings: '"tnum"', color: signedColor(row.realized_profit_rate) }}>
+                      {formatRate(row.realized_profit_rate)}
+                    </td>
+                  )}
                   {!compact && <td style={{ padding: "10px 14px", borderBottom: "1px solid var(--divider)", fontSize: 12, color: "var(--fg-3)" }}>{sourceLabel(row)}</td>}
                 </tr>
                 );
