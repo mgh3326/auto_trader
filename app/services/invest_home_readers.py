@@ -8,7 +8,7 @@ DB write / backfill 금지 — read-only 조회만 사용.
 from __future__ import annotations
 
 import logging
-from typing import Protocol
+from typing import Any, Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -614,4 +614,422 @@ class ManualHomeReader:
                 accounts=[],
                 holdings=[],
                 warning=InvestHomeWarning(source="toss_manual", message=str(exc)),
+            )
+
+
+# ---------------------------------------------------------------------------
+# ROB-238: KIS mock (paper) reader
+# ---------------------------------------------------------------------------
+
+
+class _KISMockSettingsProxy:
+    """Proxy that maps mock-specific KIS settings to the standard KIS field names.
+
+    Prevents live KIS credentials from leaking into the mock client path.
+    """
+
+    def __init__(self, real_settings: Any) -> None:
+        self._real = real_settings
+
+    @property
+    def kis_app_key(self) -> str | None:
+        return self._real.kis_mock_app_key
+
+    @property
+    def kis_app_secret(self) -> str | None:
+        return self._real.kis_mock_app_secret
+
+    @property
+    def kis_account_no(self) -> str | None:
+        return self._real.kis_mock_account_no
+
+    @property
+    def kis_base_url(self) -> str:
+        return (
+            self._real.kis_mock_base_url
+            or "https://openapivts.koreainvestment.com:29443"
+        )
+
+    @property
+    def kis_access_token(self) -> str | None:
+        return self._real.kis_mock_access_token
+
+    @kis_access_token.setter
+    def kis_access_token(self, value: str | None) -> None:
+        self._real.kis_mock_access_token = value
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._real, name)
+
+
+class SafeKISMockClient(BaseKISClient):
+    """Mutation-safe KIS mock client using mock-specific credentials and endpoint.
+
+    Uses a separate Redis token namespace (kis_mock) to avoid sharing tokens
+    with the live KIS client.
+    """
+
+    def __init__(self) -> None:
+        from app.core.config import settings as _settings
+        from app.services.redis_token_manager import RedisTokenManager
+
+        self._mock_settings = _KISMockSettingsProxy(_settings)
+        # Call super().__init__() — since _settings property is overridden,
+        # _hdr_base will use mock app key/secret automatically.
+        super().__init__()
+        # Override token manager to use separate Redis namespace for mock tokens.
+        self._token_manager = RedisTokenManager(namespace="kis_mock")
+        self.account = AccountClient(self)
+
+    @property
+    def _settings(self) -> Any:  # type: ignore[override]
+        return self._mock_settings
+
+    def _kis_url(self, path: str) -> str:
+        base_url = (self._mock_settings.kis_base_url or "").rstrip("/")
+        if not base_url:
+            base_url = "https://openapivts.koreainvestment.com:29443"
+        return f"{base_url}{path}"
+
+
+def _kis_mock_configured() -> bool:
+    """Return True only when all required KIS mock credentials are present."""
+    from app.core.config import settings as _settings
+
+    return bool(
+        getattr(_settings, "kis_mock_enabled", False)
+        and getattr(_settings, "kis_mock_app_key", None)
+        and getattr(_settings, "kis_mock_app_secret", None)
+        and getattr(_settings, "kis_mock_account_no", None)
+    )
+
+
+class KISMockHomeReader:
+    """KIS 모의투자 계좌 read-only reader (ROB-238).
+
+    Returns paper-tagged Account/Holding rows excluded from home totals.
+    Returns empty result with sanitized warning when mock credentials are absent.
+    """
+
+    source: str = "kis_mock"
+
+    def __init__(self) -> None:
+        pass
+
+    async def fetch(self, *, user_id: int) -> _SourceFetchResult:
+        if not _kis_mock_configured():
+            logger.info("KIS mock reader: not configured, skipping")
+            return _SourceFetchResult(
+                accounts=[],
+                holdings=[],
+                warning=InvestHomeWarning(
+                    source="kis_mock",
+                    message="KIS 모의투자 미설정 (KIS_MOCK_ENABLED 또는 자격증명 없음)",
+                ),
+            )
+
+        try:
+            client = SafeKISMockClient()
+            stocks_kr = await client.account.fetch_my_stocks(
+                is_mock=True, is_overseas=False
+            )
+
+            holdings: list[Holding] = []
+            for s in stocks_kr:
+                qty = float(s.get("hldg_qty", 0))
+                avg_price = float(s.get("pchs_avg_pric", 0))
+                value_krw = float(s.get("evlu_amt", 0))
+                cost_basis = float(s.get("pchs_amt", 0)) or (qty * avg_price)
+                pnl_krw = float(s.get("evlu_pfls_amt", 0))
+                pnl_rate_raw = s.get("evlu_pfls_rt")
+                pnl_rate = (
+                    float(pnl_rate_raw) / 100.0
+                    if pnl_rate_raw not in (None, "", "0", 0)
+                    else None
+                )
+                holdings.append(
+                    Holding(
+                        holdingId=f"kis_mock:kr:{s.get('pdno')}",
+                        accountId="kis_mock_account",
+                        source="kis_mock",
+                        accountKind="paper",
+                        symbol=str(s.get("pdno")),
+                        market="KR",
+                        assetType="equity",
+                        assetCategory="kr_stock",
+                        displayName=str(s.get("prdt_name")),
+                        quantity=qty,
+                        averageCost=avg_price if avg_price > 0 else None,
+                        costBasis=cost_basis if cost_basis > 0 else None,
+                        currency="KRW",
+                        valueNative=value_krw,
+                        valueKrw=value_krw,
+                        pnlKrw=pnl_krw,
+                        pnlRate=pnl_rate,
+                        priceState="live" if value_krw > 0 else "missing",
+                    )
+                )
+
+            investment_value_krw = sum(
+                h.valueKrw for h in holdings if h.valueKrw is not None
+            )
+            cost_basis_krw = sum(
+                h.costBasis
+                for h in holdings
+                if h.costBasis is not None and h.currency == "KRW"
+            )
+            if cost_basis_krw > 0:
+                pnl_krw_total = investment_value_krw - cost_basis_krw
+                pnl_rate_total = pnl_krw_total / cost_basis_krw
+            elif holdings and investment_value_krw > 0:
+                pnl_krw_total = investment_value_krw
+                pnl_rate_total = None
+            else:
+                pnl_krw_total = None
+                pnl_rate_total = None
+
+            cash_krw: float | None = None
+            buying_power_krw: float | None = None
+            cash_warning: InvestHomeWarning | None = None
+            try:
+                cash_data = await client.account.inquire_domestic_cash_balance(
+                    is_mock=True
+                )
+                raw_balance = cash_data.get("dnca_tot_amt")
+                raw_orderable = cash_data.get("stck_cash_ord_psbl_amt")
+                if raw_balance is not None:
+                    try:
+                        cash_krw = float(raw_balance)
+                    except (TypeError, ValueError):
+                        cash_krw = None
+                if raw_orderable is not None:
+                    try:
+                        buying_power_krw = float(raw_orderable)
+                    except (TypeError, ValueError):
+                        buying_power_krw = None
+            except Exception as exc:
+                logger.warning("KIS mock cash balance fetch failed: %s", exc)
+                cash_warning = InvestHomeWarning(
+                    source="kis_mock",
+                    message="KIS 모의투자 예수금/주문가능 조회 실패",
+                )
+
+            account = Account(
+                accountId="kis_mock_account",
+                displayName="KIS 모의투자",
+                source="kis_mock",
+                accountKind="paper",
+                includedInHome=False,
+                valueKrw=investment_value_krw,
+                costBasisKrw=cost_basis_krw if cost_basis_krw > 0 else None,
+                pnlKrw=pnl_krw_total,
+                pnlRate=pnl_rate_total,
+                cashBalances=CashAmounts(krw=cash_krw),
+                buyingPower=CashAmounts(krw=buying_power_krw),
+            )
+            return _SourceFetchResult(
+                accounts=[account], holdings=holdings, warning=cash_warning
+            )
+
+        except Exception as exc:
+            logger.warning("KIS mock fetch failed: %s", exc, exc_info=True)
+            return _SourceFetchResult(
+                accounts=[],
+                holdings=[],
+                warning=InvestHomeWarning(
+                    source="kis_mock",
+                    message="KIS 모의투자 조회 실패",
+                ),
+            )
+
+
+# ---------------------------------------------------------------------------
+# ROB-238: Alpaca Paper reader
+# ---------------------------------------------------------------------------
+
+
+class AlpacaPaperHomeReader:
+    """Alpaca Paper 계좌 read-only reader (ROB-238).
+
+    Exposes only get_account / list_positions from AlpacaPaperBrokerService.
+    Mutation methods (submit_order, cancel_order) are never imported or called.
+    Returns paper-tagged rows excluded from home totals.
+    """
+
+    source: str = "alpaca_paper"
+
+    def __init__(self) -> None:
+        pass
+
+    @staticmethod
+    def _make_service() -> Any:
+        from app.services.brokers.alpaca.service import AlpacaPaperBrokerService
+
+        return AlpacaPaperBrokerService()
+
+    async def fetch(self, *, user_id: int) -> _SourceFetchResult:
+        from app.services.brokers.alpaca.exceptions import (
+            AlpacaPaperConfigurationError,
+            AlpacaPaperEndpointError,
+        )
+
+        try:
+            svc = self._make_service()
+        except AlpacaPaperConfigurationError:
+            logger.info("Alpaca Paper reader: not configured, skipping")
+            return _SourceFetchResult(
+                accounts=[],
+                holdings=[],
+                warning=InvestHomeWarning(
+                    source="alpaca_paper",
+                    message="Alpaca Paper 미설정 (자격증명 없음)",
+                ),
+            )
+        except AlpacaPaperEndpointError as exc:
+            logger.warning("Alpaca Paper endpoint error: %s", exc)
+            return _SourceFetchResult(
+                accounts=[],
+                holdings=[],
+                warning=InvestHomeWarning(
+                    source="alpaca_paper",
+                    message="Alpaca Paper 엔드포인트 오류",
+                ),
+            )
+        except Exception as exc:
+            logger.warning("Alpaca Paper service init failed: %s", exc, exc_info=True)
+            return _SourceFetchResult(
+                accounts=[],
+                holdings=[],
+                warning=InvestHomeWarning(
+                    source="alpaca_paper",
+                    message="Alpaca Paper 초기화 실패",
+                ),
+            )
+
+        try:
+            account_snap = await svc.get_account()
+            positions = await svc.list_positions()
+
+            usd_krw_rate: float | None = None
+            fx_warning: InvestHomeWarning | None = None
+            try:
+                usd_krw_rate = await get_usd_krw_rate()
+            except Exception as exc:
+                logger.warning("USD/KRW FX fetch failed for Alpaca: %s", exc)
+                fx_warning = InvestHomeWarning(
+                    source="alpaca_paper",
+                    message="USD 환율 조회 실패 — KRW 환산 불가",
+                )
+
+            holdings: list[Holding] = []
+            for pos in positions:
+                qty = float(pos.qty)
+                avg_price = float(pos.avg_entry_price)
+                cost_basis_usd = qty * avg_price
+                value_native: float | None = (
+                    float(pos.market_value) if pos.market_value is not None else None
+                )
+                pnl_native: float | None = (
+                    float(pos.unrealized_pl) if pos.unrealized_pl is not None else None
+                )
+                current_price: float | None = (
+                    float(pos.current_price) if pos.current_price is not None else None
+                )
+
+                value_krw: float | None = (
+                    value_native * usd_krw_rate
+                    if value_native is not None and usd_krw_rate is not None
+                    else None
+                )
+                pnl_krw: float | None = (
+                    pnl_native * usd_krw_rate
+                    if pnl_native is not None and usd_krw_rate is not None
+                    else None
+                )
+                pnl_rate: float | None = (
+                    pnl_native / cost_basis_usd
+                    if pnl_native is not None and cost_basis_usd > 0
+                    else None
+                )
+
+                holdings.append(
+                    Holding(
+                        holdingId=f"alpaca_paper:{pos.symbol}",
+                        accountId="alpaca_paper_account",
+                        source="alpaca_paper",
+                        accountKind="paper",
+                        symbol=pos.symbol,
+                        market="US",
+                        assetType="equity",
+                        assetCategory="us_stock",
+                        displayName=pos.symbol,
+                        quantity=qty,
+                        averageCost=avg_price if avg_price > 0 else None,
+                        costBasis=cost_basis_usd if cost_basis_usd > 0 else None,
+                        currency="USD",
+                        valueNative=value_native,
+                        valueKrw=value_krw,
+                        pnlKrw=pnl_krw,
+                        pnlRate=pnl_rate,
+                        priceState="live" if current_price is not None else "missing",
+                    )
+                )
+
+            investment_value_krw = sum(
+                h.valueKrw for h in holdings if h.valueKrw is not None
+            )
+            valued_holdings = [h for h in holdings if h.valueKrw is not None]
+            cost_basis_krw_values = [
+                h.costBasis * (h.valueKrw / h.valueNative)
+                for h in valued_holdings
+                if h.costBasis is not None
+                and h.valueNative is not None
+                and h.valueNative > 0
+            ]
+            account_cost_basis_krw = (
+                sum(cost_basis_krw_values)
+                if cost_basis_krw_values
+                and len(cost_basis_krw_values) == len(valued_holdings)
+                else None
+            )
+            account_pnl_krw = (
+                investment_value_krw - account_cost_basis_krw
+                if account_cost_basis_krw is not None
+                else None
+            )
+            account_pnl_rate = (
+                account_pnl_krw / account_cost_basis_krw
+                if account_pnl_krw is not None and account_cost_basis_krw > 0
+                else None
+            )
+            # Cash and buying power in USD — keep native, convert to KRW for account
+            cash_usd = float(account_snap.cash)
+            buying_power_usd = float(account_snap.buying_power)
+
+            account = Account(
+                accountId="alpaca_paper_account",
+                displayName="Alpaca Paper",
+                source="alpaca_paper",
+                accountKind="paper",
+                includedInHome=False,
+                valueKrw=investment_value_krw,
+                costBasisKrw=account_cost_basis_krw,
+                pnlKrw=account_pnl_krw,
+                pnlRate=account_pnl_rate,
+                cashBalances=CashAmounts(usd=cash_usd),
+                buyingPower=CashAmounts(usd=buying_power_usd),
+            )
+            return _SourceFetchResult(
+                accounts=[account], holdings=holdings, warning=fx_warning
+            )
+
+        except Exception as exc:
+            logger.warning("Alpaca Paper fetch failed: %s", exc, exc_info=True)
+            return _SourceFetchResult(
+                accounts=[],
+                holdings=[],
+                warning=InvestHomeWarning(
+                    source="alpaca_paper",
+                    message="Alpaca Paper 조회 실패",
+                ),
             )

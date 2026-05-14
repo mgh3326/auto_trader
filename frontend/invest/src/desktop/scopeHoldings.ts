@@ -1,4 +1,5 @@
 import type { AccountPanelResponse, AccountSource, CashAmounts, GroupedHolding } from "../types/invest";
+import { accountSourceMeta } from "./AccountSourceMeta";
 
 export type AccountFilterKey = "all" | AccountSource;
 
@@ -24,18 +25,6 @@ export interface ScopedPortfolioPanel {
   pnlRate: number | null;
   cashBalances: CashAmounts;
 }
-
-const SOURCE_LABELS: Partial<Record<AccountSource, string>> = {
-  kis: "KIS",
-  upbit: "Upbit",
-  toss_manual: "Toss/manual",
-  pension_manual: "연금/manual",
-  isa_manual: "ISA/manual",
-  kis_mock: "KIS Mock",
-  kiwoom_mock: "Kiwoom Mock",
-  alpaca_paper: "Alpaca Paper",
-  db_simulated: "DB simulated",
-};
 
 // When the user filters the home view to a single source/account, the grouped
 // rows must be reduced to that source's slice so the table totals match the
@@ -117,12 +106,12 @@ export function scopeGroupedToSource(
 }
 
 function sourceLabel(response: AccountPanelResponse, source: AccountSource): string {
-  if (SOURCE_LABELS[source]) return SOURCE_LABELS[source]!;
-  const visual = response.sourceVisuals.find((v) => v.source === source);
-  if (visual?.displayName) return visual.displayName;
+  const meta = accountSourceMeta(source);
   const account = response.accounts.find((a) => a.source === source);
-  if (account?.displayName) return account.displayName;
-  return source;
+  if (account?.displayName && (source === "alpaca_paper" || source === "db_simulated" || source === "kiwoom_mock")) {
+    if (account.displayName === meta.label || account.displayName === meta.shortLabel) return account.displayName;
+  }
+  return meta.label;
 }
 
 function sumCash(accounts: AccountPanelResponse["accounts"]): CashAmounts {
@@ -180,7 +169,7 @@ function optionFor(response: AccountPanelResponse, key: AccountFilterKey): Accou
     return {
       key: "all",
       label: "전체",
-      cashBalances: sumCash(response.accounts),
+      cashBalances: sumCash(response.accounts.filter((account) => account.includedInHome)),
       totalValueKrw: response.homeSummary.totalValueKrw,
       costBasisKrw: response.homeSummary.costBasisKrw ?? null,
       pnlKrw: response.homeSummary.pnlKrw ?? null,

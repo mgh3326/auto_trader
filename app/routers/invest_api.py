@@ -99,7 +99,9 @@ def get_invest_home_service(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> InvestHomeService:
     from app.services.invest_home_readers import (
+        AlpacaPaperHomeReader,
         KISHomeReader,
+        KISMockHomeReader,
         ManualHomeReader,
         SafeKISClient,
         UpbitHomeReader,
@@ -113,6 +115,7 @@ def get_invest_home_service(
         kis_reader=KISHomeReader(db),
         upbit_reader=UpbitHomeReader(db),
         manual_reader=ManualHomeReader(db, quote_service=quote_service),
+        paper_readers=[KISMockHomeReader(), AlpacaPaperHomeReader()],
     )
 
 

@@ -1,13 +1,25 @@
 import type { AccountSource } from "../types/invest";
+import { accountSourceMeta } from "../desktop/AccountSourceMeta";
 
 export type AccountKey = AccountSource | "all";
 
-const LABELS: Partial<Record<AccountKey, string>> = {
-  all: "전체",
-  kis: "KIS 실계좌",
-  upbit: "Upbit",
-  toss_manual: "Toss 수동",
-};
+function labelFor(key: AccountKey): string {
+  if (key === "all") return "전체";
+  return accountSourceMeta(key).label;
+}
+
+const OPTIONS: AccountKey[] = [
+  "all",
+  "kis",
+  "upbit",
+  "toss_manual",
+  "pension_manual",
+  "isa_manual",
+  "kis_mock",
+  "kiwoom_mock",
+  "alpaca_paper",
+  "db_simulated",
+];
 
 export function AccountSelector({
   active,
@@ -16,7 +28,7 @@ export function AccountSelector({
   active: AccountKey;
   onChange: (s: AccountKey) => void;
 }) {
-  const options: AccountKey[] = ["all", "kis", "upbit", "toss_manual"];
+  const options = OPTIONS;
 
   return (
     <div
@@ -53,7 +65,7 @@ export function AccountSelector({
               transition: "all 0.2s",
             }}
           >
-            {LABELS[s] || s}
+            {labelFor(s)}
           </button>
         );
       })}

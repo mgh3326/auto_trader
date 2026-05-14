@@ -472,3 +472,522 @@ async def test_manual_reader_does_not_fabricate_value_from_cost_basis(
     assert result.holdings[0].assetCategory == "kr_stock"
     assert result.holdings[0].priceState == "missing"
     assert result.warning is not None
+
+
+# ---------------------------------------------------------------------------
+# ROB-238: KISMockHomeReader tests
+# ---------------------------------------------------------------------------
+
+
+class _FakeKISMockAccount:
+    async def fetch_my_stocks(
+        self, *, is_mock: bool, is_overseas: bool
+    ) -> list[dict[str, Any]]:
+        assert is_mock is True
+        assert is_overseas is False
+        return [
+            {
+                "pdno": "005935",
+                "prdt_name": "삼성전자우",
+                "hldg_qty": "5",
+                "pchs_avg_pric": "60000",
+                "pchs_amt": "300000",
+                "evlu_amt": "310000",
+                "evlu_pfls_amt": "10000",
+                "evlu_pfls_rt": "3.3333",
+            }
+        ]
+
+    async def inquire_domestic_cash_balance(
+        self, is_mock: bool = False
+    ) -> dict[str, Any]:
+        assert is_mock is True
+        return {
+            "dnca_tot_amt": 200_000.0,
+            "stck_cash_ord_psbl_amt": 180_000.0,
+            "raw": {},
+        }
+
+
+class _FakeKISMockClient:
+    def __init__(self) -> None:
+        self.account = _FakeKISMockAccount()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_kis_mock_reader_passes_is_mock_true(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(readers, "SafeKISMockClient", _FakeKISMockClient)
+    monkeypatch.setattr(readers, "_kis_mock_configured", lambda: True)
+
+    result = await readers.KISMockHomeReader().fetch(user_id=1)
+
+    account = result.accounts[0]
+    assert account.source == "kis_mock"
+    assert account.accountKind == "paper"
+    assert account.includedInHome is False
+    assert account.accountId == "kis_mock_account"
+    assert account.valueKrw == 310_000
+    assert account.cashBalances.krw == pytest.approx(200_000.0)
+    assert account.buyingPower.krw == pytest.approx(180_000.0)
+    # Cash must NOT be included in investment value
+    assert account.valueKrw != account.cashBalances.krw
+
+    h = result.holdings[0]
+    assert h.source == "kis_mock"
+    assert h.accountKind == "paper"
+    assert h.symbol == "005935"
+    assert h.assetCategory == "kr_stock"
+    assert h.currency == "KRW"
+    assert h.valueKrw == 310_000
+    assert h.costBasis == 300_000
+    assert h.pnlKrw == 10_000
+    assert h.pnlRate == pytest.approx(3.3333 / 100.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_kis_mock_reader_reports_zero_cost_basis_gain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Zero recorded cost basis should not hide an otherwise valued mock position."""
+
+    class _ZeroCostAccount:
+        async def fetch_my_stocks(
+            self, *, is_mock: bool, is_overseas: bool
+        ) -> list[dict[str, Any]]:
+            assert is_mock is True
+            assert is_overseas is False
+            return [
+                {
+                    "pdno": "000000",
+                    "prdt_name": "무상입고",
+                    "hldg_qty": "1",
+                    "pchs_avg_pric": "0",
+                    "pchs_amt": "0",
+                    "evlu_amt": "12345",
+                    "evlu_pfls_amt": "12345",
+                    "evlu_pfls_rt": "0",
+                }
+            ]
+
+        async def inquire_domestic_cash_balance(
+            self, is_mock: bool = False
+        ) -> dict[str, Any]:
+            assert is_mock is True
+            return {"dnca_tot_amt": 0, "stck_cash_ord_psbl_amt": 0, "raw": {}}
+
+    class _ZeroCostClient:
+        def __init__(self) -> None:
+            self.account = _ZeroCostAccount()
+
+    monkeypatch.setattr(readers, "SafeKISMockClient", _ZeroCostClient)
+    monkeypatch.setattr(readers, "_kis_mock_configured", lambda: True)
+
+    result = await readers.KISMockHomeReader().fetch(user_id=1)
+
+    account = result.accounts[0]
+    assert account.valueKrw == pytest.approx(12_345.0)
+    assert account.costBasisKrw is None
+    assert account.pnlKrw == pytest.approx(12_345.0)
+    assert account.pnlRate is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_kis_mock_reader_ignores_unparseable_cash_amounts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bad mock cash strings should not poison holdings or account valuation."""
+
+    class _BadCashAccount:
+        async def fetch_my_stocks(
+            self, *, is_mock: bool, is_overseas: bool
+        ) -> list[dict[str, Any]]:
+            assert is_mock is True
+            assert is_overseas is False
+            return []
+
+        async def inquire_domestic_cash_balance(
+            self, is_mock: bool = False
+        ) -> dict[str, Any]:
+            assert is_mock is True
+            return {
+                "dnca_tot_amt": "not-a-number",
+                "stck_cash_ord_psbl_amt": "also-bad",
+                "raw": {},
+            }
+
+    class _BadCashClient:
+        def __init__(self) -> None:
+            self.account = _BadCashAccount()
+
+    monkeypatch.setattr(readers, "SafeKISMockClient", _BadCashClient)
+    monkeypatch.setattr(readers, "_kis_mock_configured", lambda: True)
+
+    result = await readers.KISMockHomeReader().fetch(user_id=1)
+
+    account = result.accounts[0]
+    assert account.valueKrw == 0
+    assert account.costBasisKrw is None
+    assert account.pnlKrw is None
+    assert account.pnlRate is None
+    assert account.cashBalances.krw is None
+    assert account.buyingPower.krw is None
+    assert result.warning is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_kis_mock_reader_returns_warning_when_not_configured() -> None:
+    result = await readers.KISMockHomeReader().fetch(user_id=1)
+
+    assert result.accounts == []
+    assert result.holdings == []
+    assert result.warning is not None
+    assert result.warning.source == "kis_mock"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_kis_mock_reader_partial_failure_returns_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _BrokenKISMockClient:
+        def __init__(self) -> None:
+            self.account = None
+
+        async def fetch_my_stocks(self, **kwargs: Any) -> list[dict[str, Any]]:
+            raise RuntimeError("mock API down")
+
+    class _BrokenAccount:
+        async def fetch_my_stocks(self, **kwargs: Any) -> list[dict[str, Any]]:
+            raise RuntimeError("mock API down")
+
+    class _BrokenClient:
+        def __init__(self) -> None:
+            self.account = _BrokenAccount()
+
+    monkeypatch.setattr(readers, "SafeKISMockClient", _BrokenClient)
+    monkeypatch.setattr(readers, "_kis_mock_configured", lambda: True)
+
+    result = await readers.KISMockHomeReader().fetch(user_id=1)
+
+    assert result.accounts == []
+    assert result.holdings == []
+    assert result.warning is not None
+    assert result.warning.source == "kis_mock"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_kis_mock_reader_cash_balance_called_with_is_mock_true(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """inquire_domestic_cash_balance must be called with is_mock=True."""
+    cash_balance_calls: list[bool] = []
+
+    class _TrackingAccount:
+        async def fetch_my_stocks(
+            self, *, is_mock: bool, is_overseas: bool
+        ) -> list[dict[str, Any]]:
+            return []
+
+        async def inquire_domestic_cash_balance(
+            self, is_mock: bool = False
+        ) -> dict[str, Any]:
+            cash_balance_calls.append(is_mock)
+            return {
+                "dnca_tot_amt": 50_000.0,
+                "stck_cash_ord_psbl_amt": 40_000.0,
+                "raw": {},
+            }
+
+    class _TrackingClient:
+        def __init__(self) -> None:
+            self.account = _TrackingAccount()
+
+    monkeypatch.setattr(readers, "SafeKISMockClient", _TrackingClient)
+    monkeypatch.setattr(readers, "_kis_mock_configured", lambda: True)
+
+    result = await readers.KISMockHomeReader().fetch(user_id=1)
+
+    assert cash_balance_calls == [True], (
+        "inquire_domestic_cash_balance was not called with is_mock=True"
+    )
+    account = result.accounts[0]
+    assert account.cashBalances.krw == pytest.approx(50_000.0)
+    assert account.buyingPower.krw == pytest.approx(40_000.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_kis_mock_reader_cash_failure_is_non_fatal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cash balance fetch failure must not block holdings/account — produces a warning."""
+
+    class _CashFailAccount:
+        async def fetch_my_stocks(
+            self, *, is_mock: bool, is_overseas: bool
+        ) -> list[dict[str, Any]]:
+            return [
+                {
+                    "pdno": "005930",
+                    "prdt_name": "삼성전자",
+                    "hldg_qty": "1",
+                    "pchs_avg_pric": "70000",
+                    "pchs_amt": "70000",
+                    "evlu_amt": "72000",
+                    "evlu_pfls_amt": "2000",
+                    "evlu_pfls_rt": "2.857",
+                }
+            ]
+
+        async def inquire_domestic_cash_balance(
+            self, is_mock: bool = False
+        ) -> dict[str, Any]:
+            raise RuntimeError("cash API unavailable")
+
+    class _CashFailClient:
+        def __init__(self) -> None:
+            self.account = _CashFailAccount()
+
+    monkeypatch.setattr(readers, "SafeKISMockClient", _CashFailClient)
+    monkeypatch.setattr(readers, "_kis_mock_configured", lambda: True)
+
+    result = await readers.KISMockHomeReader().fetch(user_id=1)
+
+    assert len(result.accounts) == 1
+    assert len(result.holdings) == 1
+    account = result.accounts[0]
+    assert account.cashBalances.krw is None
+    assert account.buyingPower.krw is None
+    # Warning emitted but result is not empty
+    assert result.warning is not None
+    assert result.warning.source == "kis_mock"
+
+
+# ---------------------------------------------------------------------------
+# ROB-238: AlpacaPaperHomeReader tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_alpaca_paper_reader_maps_positions_and_converts_usd(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from decimal import Decimal
+
+    from app.services.brokers.alpaca.schemas import AccountSnapshot, Position
+
+    fake_account = AccountSnapshot(
+        id="alpaca-test",
+        buying_power=Decimal("1000"),
+        cash=Decimal("500"),
+        portfolio_value=Decimal("5500"),
+        status="ACTIVE",
+    )
+    fake_positions = [
+        Position(
+            asset_id="aapl-id",
+            symbol="AAPL",
+            qty=Decimal("2"),
+            avg_entry_price=Decimal("100"),
+            current_price=Decimal("110"),
+            market_value=Decimal("220"),
+            unrealized_pl=Decimal("20"),
+            side="long",
+        )
+    ]
+
+    class _FakeAlpacaSvc:
+        async def get_account(self) -> AccountSnapshot:
+            return fake_account
+
+        async def list_positions(self) -> list[Position]:
+            return fake_positions
+
+    monkeypatch.setattr(
+        readers.AlpacaPaperHomeReader,
+        "_make_service",
+        staticmethod(lambda: _FakeAlpacaSvc()),
+    )
+
+    async def _fx() -> float:
+        return 1_300.0
+
+    monkeypatch.setattr(readers, "get_usd_krw_rate", _fx)
+
+    result = await readers.AlpacaPaperHomeReader().fetch(user_id=1)
+
+    account = result.accounts[0]
+    assert account.source == "alpaca_paper"
+    assert account.accountKind == "paper"
+    assert account.includedInHome is False
+    assert account.accountId == "alpaca_paper_account"
+    assert account.cashBalances.usd == pytest.approx(500.0)
+    assert account.buyingPower.usd == pytest.approx(1000.0)
+    assert account.valueKrw == pytest.approx(220 * 1_300.0)
+    assert account.costBasisKrw == pytest.approx(200 * 1_300.0)
+    assert account.pnlKrw == pytest.approx(20 * 1_300.0)
+    assert account.pnlRate == pytest.approx(20 / 200)
+
+    h = result.holdings[0]
+    assert h.source == "alpaca_paper"
+    assert h.accountKind == "paper"
+    assert h.symbol == "AAPL"
+    assert h.market == "US"
+    assert h.currency == "USD"
+    assert h.assetCategory == "us_stock"
+    assert h.valueNative == pytest.approx(220.0)
+    assert h.valueKrw == pytest.approx(220 * 1_300.0)
+    assert h.pnlKrw == pytest.approx(20 * 1_300.0)
+    assert h.pnlRate == pytest.approx(20 / 200)
+    assert h.priceState == "live"
+    assert result.warning is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_alpaca_paper_reader_keeps_account_pnl_unknown_when_basis_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from decimal import Decimal
+
+    from app.services.brokers.alpaca.schemas import AccountSnapshot, Position
+
+    class _MissingBasisSvc:
+        async def get_account(self) -> AccountSnapshot:
+            return AccountSnapshot(
+                id="alpaca-missing-basis",
+                buying_power=Decimal("100"),
+                cash=Decimal("50"),
+                portfolio_value=Decimal("100"),
+                status="ACTIVE",
+            )
+
+        async def list_positions(self) -> list[Position]:
+            return [
+                Position(
+                    asset_id="free-share",
+                    symbol="FREE",
+                    qty=Decimal("1"),
+                    avg_entry_price=Decimal("0"),
+                    current_price=Decimal("50"),
+                    market_value=Decimal("50"),
+                    unrealized_pl=Decimal("50"),
+                    side="long",
+                ),
+                Position(
+                    asset_id="missing-price",
+                    symbol="MISS",
+                    qty=Decimal("1"),
+                    avg_entry_price=Decimal("10"),
+                    current_price=None,
+                    market_value=None,
+                    unrealized_pl=None,
+                    side="long",
+                ),
+            ]
+
+    monkeypatch.setattr(
+        readers.AlpacaPaperHomeReader,
+        "_make_service",
+        staticmethod(lambda: _MissingBasisSvc()),
+    )
+
+    async def _fx() -> float:
+        return 1_300.0
+
+    monkeypatch.setattr(readers, "get_usd_krw_rate", _fx)
+
+    result = await readers.AlpacaPaperHomeReader().fetch(user_id=1)
+
+    account = result.accounts[0]
+    assert account.valueKrw == pytest.approx(50 * 1_300.0)
+    assert account.costBasisKrw is None
+    assert account.pnlKrw is None
+    assert account.pnlRate is None
+
+    free = next(h for h in result.holdings if h.symbol == "FREE")
+    assert free.valueKrw == pytest.approx(50 * 1_300.0)
+    assert free.costBasis is None
+    assert free.priceState == "live"
+
+    missing = next(h for h in result.holdings if h.symbol == "MISS")
+    assert missing.valueKrw is None
+    assert missing.pnlKrw is None
+    assert missing.priceState == "missing"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_alpaca_paper_reader_not_configured_returns_warning() -> None:
+    from app.services.brokers.alpaca.exceptions import AlpacaPaperConfigurationError
+
+    class _Reader(readers.AlpacaPaperHomeReader):
+        @staticmethod
+        def _make_service() -> Any:
+            raise AlpacaPaperConfigurationError("no creds")
+
+    result = await _Reader().fetch(user_id=1)
+
+    assert result.accounts == []
+    assert result.holdings == []
+    assert result.warning is not None
+    assert result.warning.source == "alpaca_paper"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_alpaca_paper_reader_mutation_methods_not_called(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify that submit_order and cancel_order are never called during fetch."""
+    from decimal import Decimal
+
+    from app.services.brokers.alpaca.schemas import AccountSnapshot
+
+    mutation_called: list[str] = []
+
+    class _SafeFakeAlpacaSvc:
+        async def get_account(self) -> AccountSnapshot:
+            return AccountSnapshot(
+                id="safe-test",
+                buying_power=Decimal("0"),
+                cash=Decimal("0"),
+                portfolio_value=Decimal("0"),
+                status="ACTIVE",
+            )
+
+        async def list_positions(self) -> list[Any]:
+            return []
+
+        async def submit_order(self, *args: Any, **kwargs: Any) -> Any:
+            mutation_called.append("submit_order")
+            raise AssertionError("submit_order must not be called from Invest Home")
+
+        async def cancel_order(self, *args: Any, **kwargs: Any) -> Any:
+            mutation_called.append("cancel_order")
+            raise AssertionError("cancel_order must not be called from Invest Home")
+
+    monkeypatch.setattr(
+        readers.AlpacaPaperHomeReader,
+        "_make_service",
+        staticmethod(lambda: _SafeFakeAlpacaSvc()),
+    )
+
+    async def _fx() -> float:
+        return 1_300.0
+
+    monkeypatch.setattr(readers, "get_usd_krw_rate", _fx)
+
+    await readers.AlpacaPaperHomeReader().fetch(user_id=1)
+
+    assert mutation_called == [], (
+        "Mutation methods were called during Invest Home fetch"
+    )
