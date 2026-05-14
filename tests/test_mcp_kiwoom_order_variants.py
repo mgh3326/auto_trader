@@ -157,39 +157,160 @@ async def test_cancel_rejects_unsafe_order_ids(monkeypatch, bad_id):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_place_order_confirmed_returns_explicit_not_implemented_failure(
-    monkeypatch,
+def _patch_fake_kiwoom_order_client(
+    monkeypatch, mod, responses: dict[str, dict[str, Any]]
 ):
-    """dry_run=False + confirm=True must NOT return stub success — that would
-    trick operators into thinking a real mock order was submitted."""
+    calls: list[dict[str, Any]] = []
+
+    class FakeKiwoomMockClient:
+        @classmethod
+        def from_app_settings(cls):
+            calls.append({"client": "from_app_settings"})
+            return cls()
+
+    class FakeOrderClient:
+        def __init__(self, client):
+            calls.append({"order_client": client.__class__.__name__})
+
+        async def place_buy_order(self, **kwargs):
+            calls.append({"method": "buy", **kwargs})
+            return responses["buy"]
+
+        async def place_sell_order(self, **kwargs):
+            calls.append({"method": "sell", **kwargs})
+            return responses["sell"]
+
+    monkeypatch.setattr(mod, "_mock_config_error", lambda: None)
+    monkeypatch.setattr(mod, "KiwoomMockClient", FakeKiwoomMockClient, raising=False)
+    monkeypatch.setattr(
+        mod, "KiwoomDomesticOrderClient", FakeOrderClient, raising=False
+    )
+    return calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("side", "quantity", "price", "broker_response", "extra_assertions"),
+    [
+        (
+            "buy",
+            1,
+            70000,
+            {"return_code": 0, "return_msg": "정상", "ord_no": "0000111222"},
+            {"return_code": 0, "ord_no": "0000111222"},
+        ),
+        (
+            "sell",
+            2,
+            71000,
+            {
+                "return_code": "0",
+                "return_msg": "정상",
+                "ord_no": "0000222333",
+                "continuation": {"cont_yn": "N", "next_key": ""},
+            },
+            {
+                "return_code": "0",
+                "ord_no": "0000222333",
+                "continuation": {"cont_yn": "N", "next_key": ""},
+            },
+        ),
+    ],
+)
+async def test_place_order_confirmed_calls_kiwoom_mock_order_client(
+    monkeypatch,
+    side,
+    quantity,
+    price,
+    broker_response,
+    extra_assertions,
+):
+    """dry_run=False + confirm=True should call the Kiwoom mock client once.
+
+    This must not return a local stub success: the response should come from
+    KiwoomDomesticOrderClient using KiwoomMockClient.from_app_settings().
+    """
 
     from app.mcp_server.tooling import orders_kiwoom_variants as mod
 
-    impl_calls = {"count": 0}
-
-    async def fake_impl(**kwargs):
-        impl_calls["count"] += 1
-        return {"success": True}
-
-    monkeypatch.setattr(mod, "_mock_config_error", lambda: None)
-    monkeypatch.setattr(mod, "_kiwoom_mock_place_order_impl", fake_impl)
+    fallback_response = {"return_code": 0, "return_msg": "정상", "ord_no": "unused"}
+    calls = _patch_fake_kiwoom_order_client(
+        monkeypatch,
+        mod,
+        responses={
+            "buy": fallback_response,
+            "sell": fallback_response,
+            side: broker_response,
+        },
+    )
     mcp = DummyMCP()
     _register(mcp)
 
     response = await mcp.tools["kiwoom_mock_place_order"](
         symbol="005930",
-        side="buy",
-        quantity=1,
-        price=70000,
+        side=side,
+        quantity=quantity,
+        price=price,
         dry_run=False,
         confirm=True,
     )
 
-    assert response["success"] is False
-    assert "not implemented" in response["error"].lower()
+    assert response["success"] is True
+    assert response["source"] == "kiwoom"
     assert response["account_mode"] == "kiwoom_mock"
-    assert impl_calls["count"] == 0
+    assert response["dry_run"] is False
+    assert response["broker_response"] == broker_response
+    assert response["return_msg"] == "정상"
+    for key, value in extra_assertions.items():
+        assert response[key] == value
+    assert calls == [
+        {"client": "from_app_settings"},
+        {"order_client": "FakeKiwoomMockClient"},
+        {
+            "method": side,
+            "symbol": "005930",
+            "quantity": quantity,
+            "price": price,
+            "exchange": "KRX",
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_place_order_confirmed_rejects_unexpected_side_without_broker_call(
+    monkeypatch,
+):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    calls = {"client": 0, "order_client": 0}
+
+    class FakeKiwoomMockClient:
+        @classmethod
+        def from_app_settings(cls):
+            calls["client"] += 1
+            return cls()
+
+    class FakeOrderClient:
+        def __init__(self, client):  # noqa: ARG002
+            calls["order_client"] += 1
+
+    monkeypatch.setattr(mod, "KiwoomMockClient", FakeKiwoomMockClient, raising=False)
+    monkeypatch.setattr(
+        mod, "KiwoomDomesticOrderClient", FakeOrderClient, raising=False
+    )
+
+    response = await mod._kiwoom_mock_place_order_impl(
+        symbol="005930",
+        side="hold",
+        quantity=1,
+        price=70000,
+        exchange="KRX",
+        dry_run=False,
+    )
+
+    assert response["success"] is False
+    assert "buy" in response["error"]
+    assert calls == {"client": 0, "order_client": 0}
 
 
 @pytest.mark.asyncio
