@@ -145,7 +145,9 @@ _AGGREGATE_VALUATION_SPEC = _SurfaceFamilySpec(
 )
 
 _COMMON_POST_VALUATION_SPECS = (
-    _SurfaceFamilySpec("research_reports", "리서치 리포트", _CONTEXT, "research_reports"),
+    _SurfaceFamilySpec(
+        "research_reports", "리서치 리포트", _CONTEXT, "research_reports"
+    ),
     _SurfaceFamilySpec(
         "research_consensus",
         "리서치 컨센서스",
