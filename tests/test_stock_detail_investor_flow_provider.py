@@ -137,6 +137,9 @@ async def test_kr_detail_investor_flow_defaults_to_none_without_snapshots(monkey
     assert response.investorFlow.dataState == "missing"
     assert response.investorFlow.foreignNet is None
     assert response.investorFlow.dailyRows == []
+    assert response.investorFlow.periodSummary is None
+    assert response.investorFlow.buyerDecomposition is None
+    assert "거래량" in " ".join(response.investorFlow.unavailableLabels)
 
 
 @pytest.mark.asyncio
@@ -196,4 +199,16 @@ async def test_kr_detail_default_investor_flow_includes_daily_rows(monkeypatch):
     assert response.investorFlow is not None
     assert response.investorFlow.dailyRows[0].snapshotDate == "2026-05-13"
     assert response.investorFlow.dailyRows[0].foreignNet == 20859
+    assert response.investorFlow.dailyRows[0].close is None
+    assert response.investorFlow.periodSummary is not None
+    assert response.investorFlow.periodSummary.windowDays == 2
+    assert response.investorFlow.periodSummary.foreignNetTotal == 21299
+    assert response.investorFlow.periodSummary.institutionNetTotal == -13955
+    assert response.investorFlow.periodSummary.individualNetTotal == 126176
+    assert response.investorFlow.periodSummary.foreignBuyDays == 2
+    assert response.investorFlow.periodSummary.foreignNetToVolumeRatio is None
+    assert response.investorFlow.buyerDecomposition is not None
+    assert response.investorFlow.buyerDecomposition.leadingBuyer == "individual"
+    assert response.investorFlow.buyerDecomposition.label == "개인 주도"
+    assert "거래량" in " ".join(response.investorFlow.unavailableLabels)
     assert "지연된 과거 참고 데이터" in response.investorFlow.cautionLabel

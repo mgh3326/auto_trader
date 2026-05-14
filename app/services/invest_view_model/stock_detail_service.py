@@ -16,7 +16,9 @@ from app.schemas.invest_stock_detail import (
     StockDetailFxSensitivity,
     StockDetailHolding,
     StockDetailInvestorFlow,
+    StockDetailInvestorFlowBuyerDecomposition,
     StockDetailInvestorFlowDailyRow,
+    StockDetailInvestorFlowPeriodSummary,
     StockDetailLatestAnalysis,
     StockDetailNaverEnrichment,
     StockDetailOrderbook,
@@ -67,11 +69,98 @@ def _daily_row_from_snapshot(row: Any) -> StockDetailInvestorFlowDailyRow:
 
 
 async def _recent_investor_flow_rows(
-    *, db: Any, symbol: str, limit: int = 10
+    *, db: Any, symbol: str, limit: int = 20
 ) -> list[StockDetailInvestorFlowDailyRow]:
     repo = InvestorFlowSnapshotsRepository(db)
     rows = await repo.recent_by_symbol(market="kr", symbol=symbol, limit=limit)
     return [_daily_row_from_snapshot(row) for row in rows]
+
+
+def _sum_known(values: list[int | None]) -> int | None:
+    known = [value for value in values if value is not None]
+    if not known:
+        return None
+    return sum(known)
+
+
+def _build_period_summary(
+    daily_rows: list[StockDetailInvestorFlowDailyRow],
+) -> StockDetailInvestorFlowPeriodSummary | None:
+    if not daily_rows:
+        return None
+    foreign_values = [row.foreignNet for row in daily_rows]
+    volume_values = [row.volume for row in daily_rows if row.volume is not None]
+    foreign_total = _sum_known(foreign_values)
+    volume_total = sum(volume_values) if volume_values else None
+    unavailable = [
+        "종가/등락률/거래량은 investor_flow_snapshots 저장소에 아직 없어 일별 표에서 준비중으로 표시됩니다.",
+        "외국인 보유주수/보유율은 investor_flow_snapshots 저장소에 아직 없어 변화율을 계산하지 않습니다.",
+    ]
+    return StockDetailInvestorFlowPeriodSummary(
+        windowDays=len(daily_rows),
+        rowCount=len(daily_rows),
+        foreignNetTotal=foreign_total,
+        institutionNetTotal=_sum_known([row.institutionNet for row in daily_rows]),
+        individualNetTotal=_sum_known([row.individualNet for row in daily_rows]),
+        foreignBuyDays=sum(
+            1 for value in foreign_values if value is not None and value > 0
+        ),
+        foreignSellDays=sum(
+            1 for value in foreign_values if value is not None and value < 0
+        ),
+        foreignFlatDays=sum(1 for value in foreign_values if value == 0),
+        foreignNetToVolumeRatio=(foreign_total / volume_total)
+        if foreign_total is not None and volume_total
+        else None,
+        foreignHoldingSharesChange=None,
+        foreignHoldingRateChange=None,
+        unavailableLabels=unavailable,
+    )
+
+
+def _build_buyer_decomposition(
+    daily_rows: list[StockDetailInvestorFlowDailyRow],
+) -> StockDetailInvestorFlowBuyerDecomposition | None:
+    if not daily_rows:
+        return None
+    # Without price/change-rate storage, use the latest available row as the
+    # decomposition proxy and label the price leg explicitly unavailable.
+    row = daily_rows[0]
+    buyers = {
+        "foreign": row.foreignNet,
+        "institution": row.institutionNet,
+        "individual": row.individualNet,
+    }
+    positive = {k: v for k, v in buyers.items() if v is not None and v > 0}
+    if not positive:
+        leading = "unknown"
+    else:
+        max_value = max(positive.values())
+        leaders = [k for k, v in positive.items() if v == max_value]
+        leading = leaders[0] if len(leaders) == 1 else "mixed"
+    label_by_leader = {
+        "foreign": "외국인 주도",
+        "institution": "기관 주도",
+        "individual": "개인 주도",
+        "mixed": "복합 주도",
+        "unknown": "주도 매수자 불명",
+    }
+    return StockDetailInvestorFlowBuyerDecomposition(
+        snapshotDate=row.snapshotDate,
+        label=label_by_leader[leading],
+        leadingBuyer=leading,
+        foreignNet=row.foreignNet,
+        institutionNet=row.institutionNet,
+        individualNet=row.individualNet,
+        note="급등일 여부는 종가/등락률 저장 전까지 판별하지 않고, 최신 수급 행의 매수 주체 분해만 표시합니다.",
+    )
+
+
+_INVESTOR_FLOW_UNAVAILABLE_LABELS = [
+    "일별 종가/등락률/거래량: 저장소 미적재",
+    "외국인 보유주수/보유율: 저장소 미적재",
+    "외국인 순매수/거래량 강도: 거래량 저장 전까지 계산 불가",
+]
 
 
 async def _default_investor_flow_provider(
@@ -82,9 +171,16 @@ async def _default_investor_flow_provider(
     items = await _latest_investor_flow_items(db=db, symbols=[symbol], market="kr")
     item = items.get(symbol)
     daily_rows = await _recent_investor_flow_rows(db=db, symbol=symbol)
+    period_summary = _build_period_summary(daily_rows)
+    buyer_decomposition = _build_buyer_decomposition(daily_rows)
     if item is None:
         return StockDetailInvestorFlow(
-            symbol=symbol, dataState="missing", dailyRows=daily_rows
+            symbol=symbol,
+            dataState="missing",
+            dailyRows=daily_rows,
+            periodSummary=period_summary,
+            buyerDecomposition=buyer_decomposition,
+            unavailableLabels=_INVESTOR_FLOW_UNAVAILABLE_LABELS,
         )
     return StockDetailInvestorFlow(
         symbol=item.symbol,
@@ -108,6 +204,9 @@ async def _default_investor_flow_provider(
         individualConsecutiveBuyDays=item.individualConsecutiveBuyDays,
         individualConsecutiveSellDays=item.individualConsecutiveSellDays,
         dailyRows=daily_rows,
+        periodSummary=period_summary,
+        buyerDecomposition=buyer_decomposition,
+        unavailableLabels=_INVESTOR_FLOW_UNAVAILABLE_LABELS,
     )
 
 

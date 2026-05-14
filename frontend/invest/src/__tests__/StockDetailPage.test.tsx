@@ -422,7 +422,12 @@ test("renders KR investor-flow summary and daily rows as read-only reference dat
           snapshotDate: "2026-05-13",
           collectedAt: "2026-05-13T15:40:00Z",
           source: "naver_finance",
+          close: null,
+          changeRate: null,
+          volume: null,
           foreignNet: 20859,
+          foreignHoldingShares: null,
+          foreignHoldingRate: null,
           institutionNet: -12931,
           individualNet: 125586,
           doubleBuy: false,
@@ -432,13 +437,42 @@ test("renders KR investor-flow summary and daily rows as read-only reference dat
           snapshotDate: "2026-05-12",
           collectedAt: "2026-05-12T15:40:00Z",
           source: "naver_finance",
+          close: null,
+          changeRate: null,
+          volume: null,
           foreignNet: 440,
+          foreignHoldingShares: null,
+          foreignHoldingRate: null,
           institutionNet: 1024,
           individualNet: -1464,
           doubleBuy: true,
           doubleSell: false,
         },
       ],
+      periodSummary: {
+        windowDays: 2,
+        rowCount: 2,
+        foreignNetTotal: 21299,
+        institutionNetTotal: -11907,
+        individualNetTotal: 124122,
+        foreignBuyDays: 2,
+        foreignSellDays: 0,
+        foreignFlatDays: 0,
+        foreignNetToVolumeRatio: null,
+        foreignHoldingSharesChange: null,
+        foreignHoldingRateChange: null,
+        unavailableLabels: ["거래량 저장 전까지 계산 불가"],
+      },
+      buyerDecomposition: {
+        snapshotDate: "2026-05-13",
+        label: "개인 주도",
+        leadingBuyer: "individual",
+        foreignNet: 20859,
+        institutionNet: -12931,
+        individualNet: 125586,
+        note: "최신 수급 행 기준입니다.",
+      },
+      unavailableLabels: ["외국인 순매수/거래량 강도: 거래량 저장 전까지 계산 불가"],
       cautionLabel: "투자자별 수급은 지연된 과거 참고 데이터이며 매매 판단을 대신하지 않습니다.",
     },
   });
@@ -450,6 +484,9 @@ test("renders KR investor-flow summary and daily rows as read-only reference dat
   expect(card).toHaveTextContent("naver_finance · 기준일 2026-05-13");
   expect(card).toHaveTextContent("+20,859주");
   expect(card).toHaveTextContent("−12,931주");
+  expect(card).toHaveTextContent("최근 2거래일 수급 요약");
+  expect(card).toHaveTextContent("주도 매수자 분해");
+  expect(card).toHaveTextContent("개인 주도");
   expect(card).toHaveTextContent("2026-05-12");
   expect(card).toHaveTextContent("쌍끌이");
   expect(card).toHaveTextContent("매매 판단을 대신하지 않습니다");

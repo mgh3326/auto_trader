@@ -34,11 +34,41 @@ export interface StockDetailInvestorFlowDailyRow {
   snapshotDate: string;
   collectedAt: string | null;
   source: string | null;
+  close: number | null;
+  changeRate: number | null;
+  volume: number | null;
   foreignNet: number | null;
+  foreignHoldingShares: number | null;
+  foreignHoldingRate: number | null;
   institutionNet: number | null;
   individualNet: number | null;
   doubleBuy: boolean;
   doubleSell: boolean;
+}
+
+export interface StockDetailInvestorFlowPeriodSummary {
+  windowDays: number;
+  rowCount: number;
+  foreignNetTotal: number | null;
+  institutionNetTotal: number | null;
+  individualNetTotal: number | null;
+  foreignBuyDays: number;
+  foreignSellDays: number;
+  foreignFlatDays: number;
+  foreignNetToVolumeRatio: number | null;
+  foreignHoldingSharesChange: number | null;
+  foreignHoldingRateChange: number | null;
+  unavailableLabels: string[];
+}
+
+export interface StockDetailInvestorFlowBuyerDecomposition {
+  snapshotDate: string;
+  label: string;
+  leadingBuyer: "foreign" | "institution" | "individual" | "mixed" | "unknown";
+  foreignNet: number | null;
+  institutionNet: number | null;
+  individualNet: number | null;
+  note: string;
 }
 
 export interface StockDetailInvestorFlow {
@@ -65,6 +95,9 @@ export interface StockDetailInvestorFlow {
   individualConsecutiveBuyDays: number | null;
   individualConsecutiveSellDays: number | null;
   dailyRows: StockDetailInvestorFlowDailyRow[];
+  periodSummary: StockDetailInvestorFlowPeriodSummary | null;
+  buyerDecomposition: StockDetailInvestorFlowBuyerDecomposition | null;
+  unavailableLabels: string[];
   cautionLabel: string;
 }
 

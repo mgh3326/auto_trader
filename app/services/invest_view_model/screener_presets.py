@@ -78,6 +78,19 @@ SCREENER_PRESETS: list[ScreenerPreset] = [
         market="kr",
     ),
     ScreenerPreset(
+        id="investor_flow_momentum",
+        name="수급 모멘텀",
+        description="외국인 연속 순매수·쌍끌이 매수 스냅샷 기반 후보",
+        badges=["MVP"],
+        filterChips=[
+            ScreenerFilterChip(label="국내", detail=None),
+            ScreenerFilterChip(label="투자자별 수급", detail="외국인 3일+ 또는 쌍끌이"),
+            ScreenerFilterChip(label="데이터", detail="지연 스냅샷 기반"),
+        ],
+        metricLabel="외국인 순매수",
+        market="kr",
+    ),
+    ScreenerPreset(
         id="growth_expectation",
         name="성장 기대주",
         description="시가총액이 충분하고 등락률 상위인 성장 기대 종목",
@@ -181,6 +194,15 @@ _SCREENING_FILTERS: dict[str, dict[str, object]] = {
         "sort_by": "change_rate",
         "sort_order": "desc",
         "min_market_cap": 1_000_000_000_000.0,
+        "limit": 20,
+    },
+    "investor_flow_momentum": {
+        "market": "kr",
+        "asset_type": "stock",
+        "sort_by": "investor_flow",
+        "sort_order": "desc",
+        "min_foreign_consecutive_buy_days": 3,
+        "include_double_buy": True,
         "limit": 20,
     },
     "crypto_high_volume": {

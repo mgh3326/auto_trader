@@ -414,6 +414,110 @@ async def _load_consecutive_gainers_from_snapshots(
     return rows
 
 
+async def _load_investor_flow_discovery_from_snapshots(
+    session: AsyncSession | None, *, market: str, limit: int = 20
+) -> list[dict[str, Any]] | None:
+    """Return MVP 수급 discovery rows from persisted investor_flow_snapshots.
+
+    This preset is intentionally snapshot-only/read-only: if durable snapshots are
+    unavailable, callers may fall back to the generic screener service, but no
+    request-time Naver scraping is introduced here.
+    """
+    if session is None or market != "kr":
+        return None
+
+    from app.models.investor_flow_snapshot import InvestorFlowSnapshot
+
+    latest_date_stmt = sa.select(sa.func.max(InvestorFlowSnapshot.snapshot_date)).where(
+        InvestorFlowSnapshot.market == "kr"
+    )
+    try:
+        latest_date_result = await session.execute(latest_date_stmt)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "failed to read investor_flow_snapshots max date: %s", exc, exc_info=True
+        )
+        return None
+    latest_snapshot_date = latest_date_result.scalar_one_or_none()
+    if latest_snapshot_date is None:
+        return None
+
+    candidate_limit = max(limit * 5, limit + 60)
+    stmt = (
+        sa.select(InvestorFlowSnapshot)
+        .where(
+            InvestorFlowSnapshot.market == "kr",
+            InvestorFlowSnapshot.snapshot_date == latest_snapshot_date,
+            sa.or_(
+                InvestorFlowSnapshot.double_buy.is_(True),
+                InvestorFlowSnapshot.foreign_consecutive_buy_days
+                >= _INVESTOR_FLOW_MIN_STREAK,
+                InvestorFlowSnapshot.foreign_net_buy_rank.is_not(None),
+            ),
+        )
+        .order_by(
+            InvestorFlowSnapshot.double_buy.desc(),
+            InvestorFlowSnapshot.foreign_consecutive_buy_days.desc().nullslast(),
+            InvestorFlowSnapshot.foreign_net_buy_rank.asc().nullslast(),
+            InvestorFlowSnapshot.foreign_net.desc().nullslast(),
+            InvestorFlowSnapshot.symbol.asc(),
+        )
+        .limit(candidate_limit)
+    )
+    try:
+        result = await session.execute(stmt)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("failed to read investor_flow_snapshots: %s", exc, exc_info=True)
+        return None
+    candidate_snaps = result.scalars().all()
+
+    symbol_names: dict[str, str] = {}
+    if candidate_snaps:
+        from app.models.kr_symbol_universe import KRSymbolUniverse
+
+        candidate_symbols = [snap.symbol for snap in candidate_snaps]
+        try:
+            name_result = await session.execute(
+                sa.select(KRSymbolUniverse.symbol, KRSymbolUniverse.name).where(
+                    KRSymbolUniverse.symbol.in_(candidate_symbols),
+                    KRSymbolUniverse.is_active.is_(True),
+                )
+            )
+            symbol_names = {row.symbol: row.name for row in name_result.all()}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "failed to read kr_symbol_universe for investor-flow screener: %s",
+                exc,
+                exc_info=True,
+            )
+
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for snap in candidate_snaps:
+        if snap.symbol in seen:
+            continue
+        if not _is_kr_toss_common_stock(snap.symbol, symbol_names.get(snap.symbol)):
+            continue
+        seen.add(snap.symbol)
+        rows.append(
+            {
+                "symbol": snap.symbol,
+                "market": "kr",
+                "name": symbol_names.get(snap.symbol),
+                "foreign_net": snap.foreign_net,
+                "institution_net": snap.institution_net,
+                "individual_net": snap.individual_net,
+                "foreign_consecutive_buy_days": snap.foreign_consecutive_buy_days,
+                "institution_consecutive_buy_days": snap.institution_consecutive_buy_days,
+                "double_buy": snap.double_buy,
+                "_screener_snapshot_state": "fresh",
+            }
+        )
+        if len(rows) >= limit:
+            break
+    return rows
+
+
 async def _load_crypto_rows_from_snapshots(
     session: AsyncSession | None,
     *,
@@ -521,6 +625,7 @@ _METRIC_FIELD: dict[str, str] = {
     "oversold_recovery": "rsi",
     "high_volume_momentum": "volume",
     "growth_expectation": "change_rate",
+    "investor_flow_momentum": "foreign_net",
     "crypto_high_volume": "trade_amount_24h",
     "crypto_oversold": "rsi",
     "crypto_momentum": "change_rate",
@@ -771,6 +876,9 @@ def _metric_value_label(preset_id: str, row: dict[str, Any]) -> tuple[str, list[
         return f"{float(value):.2f}%", []
     if field in ("volume", "trade_amount_24h"):
         return f"{int(float(value)):,}", []
+    if field == "foreign_net":
+        sign = "+" if int(value) > 0 else "−" if int(value) < 0 else ""
+        return f"{sign}{abs(int(value)):,}주", []
     return str(value), []
 
 
@@ -877,6 +985,15 @@ async def build_screener_results(
                 market=requested_market,
                 limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
             )
+        elif preset_id == "investor_flow_momentum":
+            _snapshot_check_result = await _load_investor_flow_discovery_from_snapshots(
+                session,
+                market=requested_market,
+                limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
+            )
+            _snapshot_empty_warning = (
+                "최신 수급 스냅샷에서 조건에 맞는 결과가 없습니다."
+            )
         elif requested_market == "crypto":
             _crypto_snapshot_result = await _load_crypto_rows_from_snapshots(
                 session,
@@ -891,6 +1008,16 @@ async def build_screener_results(
                 _snapshot_empty_warning = (
                     "최신 암호화폐 스크리너 스냅샷에서 조건에 맞는 결과가 없습니다."
                 )
+
+    if preset_id == "investor_flow_momentum" and _snapshot_check_result is None:
+        # This preset is deliberately persisted-snapshot-only. Do not fall
+        # through to the generic screener provider, which neither supports the
+        # investor-flow filters nor guarantees no request-time external lookup.
+        _snapshot_check_result = []
+        _snapshot_state_override = "missing"
+        _snapshot_empty_warning = (
+            "수급 스냅샷이 아직 적재되지 않아 수급 모멘텀 후보를 표시할 수 없습니다."
+        )
 
     _snapshot_was_checked = _snapshot_check_result is not None
     if _snapshot_was_checked:

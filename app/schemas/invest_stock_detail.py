@@ -239,11 +239,45 @@ class StockDetailInvestorFlowDailyRow(BaseModel):
     snapshotDate: str
     collectedAt: datetime | None = None
     source: str | None = None
+    close: float | None = None
+    changeRate: float | None = None
+    volume: int | None = None
     foreignNet: int | None = None
+    foreignHoldingShares: int | None = None
+    foreignHoldingRate: float | None = None
     institutionNet: int | None = None
     individualNet: int | None = None
     doubleBuy: bool = False
     doubleSell: bool = False
+
+
+class StockDetailInvestorFlowPeriodSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    windowDays: int
+    rowCount: int
+    foreignNetTotal: int | None = None
+    institutionNetTotal: int | None = None
+    individualNetTotal: int | None = None
+    foreignBuyDays: int = 0
+    foreignSellDays: int = 0
+    foreignFlatDays: int = 0
+    foreignNetToVolumeRatio: float | None = None
+    foreignHoldingSharesChange: int | None = None
+    foreignHoldingRateChange: float | None = None
+    unavailableLabels: list[str] = Field(default_factory=list)
+
+
+class StockDetailInvestorFlowBuyerDecomposition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    snapshotDate: str
+    label: str
+    leadingBuyer: Literal["foreign", "institution", "individual", "mixed", "unknown"]
+    foreignNet: int | None = None
+    institutionNet: int | None = None
+    individualNet: int | None = None
+    note: str
 
 
 class StockDetailInvestorFlow(BaseModel):
@@ -272,6 +306,9 @@ class StockDetailInvestorFlow(BaseModel):
     individualConsecutiveBuyDays: int | None = None
     individualConsecutiveSellDays: int | None = None
     dailyRows: list[StockDetailInvestorFlowDailyRow] = Field(default_factory=list)
+    periodSummary: StockDetailInvestorFlowPeriodSummary | None = None
+    buyerDecomposition: StockDetailInvestorFlowBuyerDecomposition | None = None
+    unavailableLabels: list[str] = Field(default_factory=list)
     cautionLabel: str = (
         "투자자별 수급은 지연된 과거 참고 데이터이며 매매 판단을 대신하지 않습니다."
     )
