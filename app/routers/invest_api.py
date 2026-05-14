@@ -6,7 +6,7 @@ import 하지 않는다. order / watch / scheduler / mutation 경로 import 금�
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime, time
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -20,6 +20,9 @@ from app.schemas.invest_calendar import (
     CalendarTab,
     WeeklySummaryResponse,
 )
+from app.schemas.invest_common_preferred_disparity import (
+    CommonPreferredDisparityResponse,
+)
 from app.schemas.invest_coverage import CoverageMarket, InvestCoverageResponse
 from app.schemas.invest_crypto import CryptoDashboardResponse
 from app.schemas.invest_feed_news import FeedNewsResponse, FeedTab, FeedTopic
@@ -31,6 +34,7 @@ from app.schemas.invest_feed_research import (
 from app.schemas.invest_fx_dashboard import FxDashboardResponse
 from app.schemas.invest_home import InvestHomeResponse
 from app.schemas.invest_market_dashboard import MarketDashboardResponse
+from app.schemas.invest_market_parity import InvestMarketParityResponse
 from app.schemas.invest_momentum_events import (
     MomentumCandidateItem,
     MomentumCandidatesResponse,
@@ -50,6 +54,9 @@ from app.schemas.invest_stock_detail import (
     StockDetailOrdersResponse,
     StockDetailResponse,
 )
+from app.schemas.invest_stock_detail_research_consensus import (
+    StockDetailResearchConsensusResponse,
+)
 from app.schemas.investor_flow import InvestorFlowResponse
 from app.services.invest_coverage_service import build_invest_coverage
 from app.services.invest_home_service import InvestHomeService
@@ -60,6 +67,9 @@ from app.services.invest_momentum_events.repository import (
 from app.services.invest_screener_snapshots.coverage_service import build_coverage
 from app.services.invest_view_model.account_panel_service import build_account_panel
 from app.services.invest_view_model.calendar_service import build_calendar
+from app.services.invest_view_model.common_preferred_disparity_service import (
+    build_common_preferred_disparity,
+)
 from app.services.invest_view_model.crypto_dashboard_service import (
     build_crypto_dashboard,
 )
@@ -72,6 +82,7 @@ from app.services.invest_view_model.investor_flow_service import (
 from app.services.invest_view_model.market_dashboard_service import (
     build_market_dashboard,
 )
+from app.services.invest_view_model.market_parity_service import build_market_parity
 from app.services.invest_view_model.relation_resolver import build_relation_resolver
 from app.services.invest_view_model.screener_service import (
     build_screener_presets,
@@ -84,6 +95,9 @@ from app.services.invest_view_model.stock_detail_candles_service import (
 )
 from app.services.invest_view_model.stock_detail_orders_service import (
     build_stock_detail_orders,
+)
+from app.services.invest_view_model.stock_detail_research_consensus_service import (
+    build_stock_detail_research_consensus,
 )
 from app.services.invest_view_model.stock_detail_service import build_stock_detail
 from app.services.invest_view_model.stock_detail_symbol_resolver import (
@@ -146,6 +160,26 @@ async def get_market_dashboard(
     """Read-only Naver-style market/index dashboard source (ROB-198)."""
     _ = user
     return await build_market_dashboard()
+
+
+@router.get("/market-parity")
+@router.get("/market/parity")
+async def get_market_parity(
+    user: Annotated[Any, Depends(get_authenticated_user)],
+    market: Literal["kr"] = Query("kr"),
+    include_disabled: Annotated[bool, Query(alias="includeDisabled")] = True,
+    limit: int = Query(20, ge=1, le=20),
+) -> InvestMarketParityResponse:
+    """Read-only market parity cards; no broker/order/watch mutations."""
+    _ = user
+    try:
+        return await build_market_parity(
+            market=market,
+            include_disabled=include_disabled,
+            limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/market/fx/dashboard")
@@ -233,6 +267,33 @@ async def get_investor_flow(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.get("/disparity/common-preferred")
+async def get_common_preferred_disparity(
+    user: Annotated[Any, Depends(get_authenticated_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    symbols: str = Query(
+        "", description="Optional comma-separated KR common/preferred symbols"
+    ),
+    market: Literal["kr"] = Query("kr"),
+    as_of: Annotated[date | None, Query(alias="asOf")] = None,
+    max_stale_days: Annotated[int, Query(alias="maxStaleDays", ge=0, le=30)] = 1,
+    limit: int = Query(10, ge=1, le=50),
+) -> CommonPreferredDisparityResponse:
+    """Read-only common/preferred-share disparity cards (ROB-250)."""
+    _ = user
+    if market != "kr":
+        raise HTTPException(status_code=400, detail="unsupported_market")
+    symbol_list = [part.strip() for part in symbols.split(",") if part.strip()]
+    as_of_dt = datetime.combine(as_of, time.max, tzinfo=UTC) if as_of else None
+    return await build_common_preferred_disparity(
+        db=db,
+        symbols=symbol_list,
+        as_of=as_of_dt,
+        limit=limit,
+        max_stale_days=max_stale_days,
+    )
+
+
 StockDetailMarketParam = Literal["kr", "us", "crypto"]
 
 
@@ -246,6 +307,29 @@ async def get_stock_detail(
     try:
         return await build_stock_detail(
             user_id=user.id,
+            market=market,
+            symbol=symbol,
+            db=db,
+        )
+    except SymbolNotFound as exc:
+        raise HTTPException(status_code=404, detail="symbol_not_found") from exc
+
+
+@router.get("/stock-detail/{market}/{symbol}/research-consensus")
+async def get_stock_detail_research_consensus(
+    market: StockDetailMarketParam,
+    symbol: str,
+    user: Annotated[Any, Depends(get_authenticated_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> StockDetailResearchConsensusResponse:
+    _ = user
+    if market == "crypto":
+        raise HTTPException(
+            status_code=400,
+            detail="research_consensus_supports_kr_us_only",
+        )
+    try:
+        return await build_stock_detail_research_consensus(
             market=market,
             symbol=symbol,
             db=db,

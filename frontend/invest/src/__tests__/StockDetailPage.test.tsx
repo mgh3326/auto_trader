@@ -1,12 +1,13 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { StockDetailPage } from "../pages/stock-detail/StockDetailPage";
 import * as stockApi from "../api/stockDetail";
 import type {
   StockDetailCandlesResponse,
   StockDetailNewsResponse,
   StockDetailOrdersResponse,
+  StockDetailResearchConsensusResponse,
   StockDetailResponse,
 } from "../types/stockDetail";
 
@@ -181,9 +182,59 @@ const news: StockDetailNewsResponse = {
   meta: { warnings: [] },
 };
 
-function renderPage() {
+const researchConsensus: StockDetailResearchConsensusResponse = {
+  symbol: "QQQM",
+  market: "us",
+  displayName: "Invesco NASDAQ 100 ETF",
+  state: "ready",
+  dataState: "fresh",
+  emptyReason: null,
+  warnings: [],
+  sourceOfTruth: "analyst_opinions_and_research_reports",
+  asOf: "2026-05-10T09:31:00Z",
+  stale: false,
+  consensus: {
+    source: "yfinance",
+    buyCount: 7,
+    holdCount: 2,
+    sellCount: 0,
+    strongBuyCount: 3,
+    totalCount: 9,
+    avgTargetPrice: 235,
+    medianTargetPrice: 236,
+    minTargetPrice: 220,
+    maxTargetPrice: 250,
+    upsidePct: 11.2,
+    currentPrice: 211.34,
+  },
+  citations: [
+    {
+      source: "issuer_ir",
+      title: "QQQM holdings note",
+      analyst: "ETF Desk",
+      published_at: "2026-05-10T08:30:00Z",
+      category: "ETF",
+      detail_url: "https://example.com/research/qqqm",
+      pdf_url: null,
+      excerpt: "Nasdaq 100 구성 종목 변화와 기술주 집중도를 요약합니다.",
+      symbol_candidates: [{ symbol: "QQQM", market: "us", source: "ticker" }],
+      attribution_publisher: "Issuer",
+      attribution_copyright_notice: "metadata only",
+    },
+  ],
+  freshness: {
+    isReady: true,
+    isStale: false,
+    latestRunUuid: "run-1",
+    latestFinishedAt: "2026-05-10T09:00:00Z",
+    latestReportCount: 1,
+    maxAgeHours: 24,
+  },
+};
+
+function renderPage(path = "/invest/stocks/us/QQQM") {
   return render(
-    <MemoryRouter basename="/invest" initialEntries={["/invest/stocks/us/QQQM"]}>
+    <MemoryRouter basename="/invest" initialEntries={[path]}>
       <Routes>
         <Route path="/stocks/:market/:symbol" element={<StockDetailPage />} />
       </Routes>
@@ -196,6 +247,11 @@ beforeEach(() => {
   vi.spyOn(stockApi, "fetchStockDetailCandles").mockResolvedValue(candles);
   vi.spyOn(stockApi, "fetchStockDetailOrders").mockResolvedValue(orders);
   vi.spyOn(stockApi, "fetchStockDetailNews").mockResolvedValue(news);
+  vi.spyOn(stockApi, "fetchStockDetailResearchConsensus").mockResolvedValue(researchConsensus);
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 test("renders the QQQM stock detail shell from the read-only backend contract", async () => {
@@ -218,6 +274,87 @@ test("renders the QQQM stock detail shell from the read-only backend contract", 
   await waitFor(() => expect(stockApi.fetchStockDetailCandles).toHaveBeenCalledWith({ market: "us", symbol: "QQQM", period: "1d" }));
   expect(await screen.findByTestId("stock-detail-chart")).toHaveTextContent("3개 캔들");
   expect(await screen.findByTestId("stock-detail-news")).toHaveTextContent("QQQM tracks Nasdaq rally");
+});
+
+test("renders research consensus ready state with analyst metrics and compact citations", async () => {
+  renderPage();
+
+  const card = await screen.findByTestId("stock-detail-research-consensus");
+  expect(card).toHaveTextContent("리서치 · 컨센서스");
+  expect(card).toHaveTextContent("최신");
+  expect(card).toHaveTextContent("Buy");
+  expect(card).toHaveTextContent("7/9");
+  expect(card).toHaveTextContent("QQQM holdings note");
+  expect(card).toHaveTextContent("ETF Desk");
+  expect(card).not.toHaveTextContent("raw_payload");
+  await waitFor(() => expect(stockApi.fetchStockDetailResearchConsensus).toHaveBeenCalledWith({ market: "us", symbol: "QQQM" }));
+});
+
+test("renders research consensus empty state when no opinions or citations are available", async () => {
+  vi.mocked(stockApi.fetchStockDetailResearchConsensus).mockResolvedValue({
+    ...researchConsensus,
+    state: "missing",
+    dataState: "missing",
+    emptyReason: "no_analyst_consensus_or_research_reports",
+    sourceOfTruth: "none",
+    consensus: null,
+    citations: [],
+  });
+
+  renderPage();
+
+  const card = await screen.findByTestId("stock-detail-research-consensus");
+  expect(card).toHaveTextContent("데이터 없음");
+  expect(card).toHaveTextContent("애널리스트 컨센서스와 리서치 인용이 없습니다.");
+});
+
+test("renders research consensus stale and warning state", async () => {
+  vi.mocked(stockApi.fetchStockDetailResearchConsensus).mockResolvedValue({
+    ...researchConsensus,
+    state: "partial",
+    dataState: "stale",
+    stale: true,
+    warnings: ["research_reports_stale"],
+    sourceOfTruth: "research_reports",
+    consensus: null,
+    freshness: { ...researchConsensus.freshness, isReady: false, isStale: true },
+  });
+
+  renderPage();
+
+  const card = await screen.findByTestId("stock-detail-research-consensus");
+  expect(card).toHaveTextContent("오래된 데이터");
+  expect(card).toHaveTextContent("컨센서스 없이 리서치 인용만 표시합니다.");
+  expect(card).toHaveTextContent("경고: research_reports_stale");
+});
+
+test("renders research consensus fetch error state without blocking the page", async () => {
+  vi.mocked(stockApi.fetchStockDetailResearchConsensus).mockRejectedValue(new Error("offline"));
+
+  renderPage();
+
+  expect(await screen.findByTestId("stock-detail-shell")).toBeInTheDocument();
+  expect(await screen.findByTestId("stock-detail-research-consensus")).toHaveTextContent("리서치 데이터를 사용할 수 없습니다.");
+});
+
+test("does not fetch or render research consensus for crypto symbols", async () => {
+  vi.mocked(stockApi.fetchStockDetail).mockResolvedValue({
+    ...aboveFold,
+    symbol: "KRW-BTC",
+    market: "crypto",
+    displayName: "Bitcoin",
+    exchange: "UPBIT",
+    currency: "KRW",
+    assetCategory: "crypto",
+    naverEnrichment: null,
+    fxSensitivity: null,
+  });
+
+  renderPage("/invest/stocks/crypto/KRW-BTC");
+
+  expect(await screen.findByTestId("stock-detail-shell")).toBeInTheDocument();
+  expect(stockApi.fetchStockDetailResearchConsensus).not.toHaveBeenCalled();
+  expect(screen.queryByTestId("stock-detail-research-consensus")).not.toBeInTheDocument();
 });
 
 test("keeps buy/sell controls disabled and shows explicit orderbook plus empty order history states", async () => {

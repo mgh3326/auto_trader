@@ -3,6 +3,7 @@ import type {
   StockDetailMarket,
   StockDetailNewsResponse,
   StockDetailOrdersResponse,
+  StockDetailResearchConsensusResponse,
   StockDetailResponse,
 } from "../types/stockDetail";
 
@@ -21,6 +22,13 @@ export async function fetchStockDetail(params: {
   symbol: string;
 }): Promise<StockDetailResponse> {
   return getJson<StockDetailResponse>(stockDetailPath(params.market, params.symbol));
+}
+
+export async function fetchStockDetailResearchConsensus(params: {
+  market: StockDetailMarket;
+  symbol: string;
+}): Promise<StockDetailResearchConsensusResponse> {
+  return getJson<StockDetailResearchConsensusResponse>(`${stockDetailPath(params.market, params.symbol)}/research-consensus`);
 }
 
 export async function fetchStockDetailCandles(params: {

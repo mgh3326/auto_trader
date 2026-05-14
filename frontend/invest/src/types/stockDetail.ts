@@ -192,6 +192,61 @@ export interface StockDetailCandle {
   volume: number | null;
 }
 
+export interface StockDetailResearchCitation {
+  source: string;
+  title: string | null;
+  analyst: string | null;
+  published_at_text?: string | null;
+  published_at?: string | null;
+  category: string | null;
+  detail_url: string | null;
+  pdf_url: string | null;
+  excerpt: string | null;
+  symbol_candidates: Array<{ symbol: string; market?: string | null; source?: string | null }>;
+  attribution_publisher: string | null;
+  attribution_copyright_notice: string | null;
+}
+
+export interface StockDetailAnalystConsensus {
+  source: string | null;
+  buyCount: number;
+  holdCount: number;
+  sellCount: number;
+  strongBuyCount: number;
+  totalCount: number;
+  avgTargetPrice: number | null;
+  medianTargetPrice: number | null;
+  minTargetPrice: number | null;
+  maxTargetPrice: number | null;
+  upsidePct: number | null;
+  currentPrice: number | null;
+}
+
+export interface StockDetailResearchFreshness {
+  isReady: boolean;
+  isStale: boolean;
+  latestRunUuid: string | null;
+  latestFinishedAt: string | null;
+  latestReportCount: number;
+  maxAgeHours: number;
+}
+
+export interface StockDetailResearchConsensusResponse {
+  symbol: string;
+  market: "kr" | "us";
+  displayName: string;
+  state: "ready" | "partial" | "missing" | "unsupported" | "error";
+  dataState: "fresh" | "stale" | "missing" | "unsupported" | "error";
+  emptyReason: "no_analyst_consensus_or_research_reports" | "market_unsupported" | "provider_error" | null;
+  warnings: string[];
+  sourceOfTruth: "analyst_opinions_and_research_reports" | "analyst_opinions" | "research_reports" | "none";
+  asOf: string;
+  stale: boolean;
+  consensus: StockDetailAnalystConsensus | null;
+  citations: StockDetailResearchCitation[];
+  freshness: StockDetailResearchFreshness;
+}
+
 export interface StockDetailCandlesResponse {
   symbol: string;
   market: StockDetailMarket;
