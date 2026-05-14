@@ -93,6 +93,23 @@ def test_residual_position_blocks_new_cycle():
 
 
 @pytest.mark.unit
+def test_residual_position_can_warn_in_paper_execution_test_mode():
+    report = build_paper_execution_preflight_report(
+        positions=[{"symbol": "BTCUSD", "qty": "0.001", "asset_class": "crypto"}],
+        legacy_cycle_blockers_as_warnings=True,
+    )
+
+    assert report.status == "pass"
+    assert report.should_block is False
+    anomaly = next(
+        a for a in report.anomalies if a.check_id == "residual_position_exists"
+    )
+    assert anomaly.severity == PaperExecutionAnomalySeverity.warning
+    assert report.counts["warning"] == 1
+    assert report.counts["block"] == 0
+
+
+@pytest.mark.unit
 def test_duplicate_client_order_id_blocks_against_packet_and_ledger():
     report = build_paper_execution_preflight_report(
         ledger_rows=[
@@ -245,6 +262,61 @@ def test_stale_preview_blocks():
     }
     assert anomaly.details["rows"][0]["recommended_lifecycle_state"] == (
         STALE_PREVIEW_CLEANUP_REQUIRED_STATE
+    )
+
+
+@pytest.mark.unit
+def test_stale_preview_can_warn_in_paper_execution_test_mode():
+    now = datetime(2026, 5, 3, 12, 0, tzinfo=UTC)
+    report = build_paper_execution_preflight_report(
+        ledger_rows=[
+            _row(
+                client_order_id="stale-preview",
+                side="buy",
+                lifecycle_state="previewed",
+                order_status=None,
+                filled_qty=None,
+                created_at=now - timedelta(minutes=45),
+            )
+        ],
+        now=now,
+        stale_after_minutes=30,
+        legacy_cycle_blockers_as_warnings=True,
+    )
+
+    assert report.status == "pass"
+    assert report.should_block is False
+    anomaly = next(
+        a for a in report.anomalies if a.check_id == "stale_preview_or_approval_packet"
+    )
+    assert anomaly.severity == PaperExecutionAnomalySeverity.warning
+    assert anomaly.details["recommended_action"] == STALE_PREVIEW_CLEANUP_ACTION
+    assert report.counts["warning"] == 1
+    assert report.counts["block"] == 0
+
+
+@pytest.mark.unit
+def test_test_mode_still_blocks_open_order_conflicts():
+    report = build_paper_execution_preflight_report(
+        open_orders=[
+            {
+                "id": "order-1",
+                "client_order_id": "rob93-open-001",
+                "symbol": "BTCUSD",
+                "status": "accepted",
+                "side": "buy",
+            }
+        ],
+        positions=[{"symbol": "BTCUSD", "qty": "0.001", "asset_class": "crypto"}],
+        legacy_cycle_blockers_as_warnings=True,
+    )
+
+    assert report.status == "blocked"
+    assert report.should_block is True
+    severities = {a.check_id: a.severity for a in report.anomalies}
+    assert severities["unexpected_open_orders"] == PaperExecutionAnomalySeverity.block
+    assert (
+        severities["residual_position_exists"] == PaperExecutionAnomalySeverity.warning
     )
 
 
