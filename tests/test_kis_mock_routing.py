@@ -296,7 +296,9 @@ def test_modify_order_kis_mock_dry_run_does_not_instantiate_kis(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_get_order_history_pending_us_mock_surfaces_unsupported(monkeypatch):
+async def test_get_order_history_pending_us_mock_surfaces_unsupported(
+    monkeypatch, caplog
+):
     """Mock pending US history must NOT silently return empty."""
     from app.mcp_server.tooling import orders_history
 
@@ -317,7 +319,8 @@ async def test_get_order_history_pending_us_mock_surfaces_unsupported(monkeypatc
             e.get("market") == "equity_us" for e in result["errors"]
         )
         assert result["errors"] or any(
-            "shadow pending" in warning for warning in result["warnings"]
+            "using DB shadow pending ledger" in record.getMessage()
+            for record in caplog.records
         )
 
 

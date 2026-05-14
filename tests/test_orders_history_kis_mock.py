@@ -27,6 +27,7 @@ class PendingMockUnsupportedKIS:
 @pytest.mark.parametrize("market", ["kr", "us"])
 async def test_get_order_history_pending_mock_surfaces_unsupported(
     monkeypatch,
+    caplog,
     market: str,
 ):
     """Mock pending history must surface a structured mock-unsupported error."""
@@ -51,5 +52,6 @@ async def test_get_order_history_pending_mock_surfaces_unsupported(
             e.get("market") == expected_market for e in result["errors"]
         )
         assert result["errors"] or any(
-            "shadow pending" in warning for warning in result["warnings"]
+            "using DB shadow pending ledger" in record.getMessage()
+            for record in caplog.records
         )
