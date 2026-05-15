@@ -45,6 +45,11 @@ async def create_analysis_report(
 
 
 @router.get(
+    "/invest/api/action-center/reports",
+    response_model=AnalysisReportListResponse,
+    summary="List action center analysis report artifacts",
+)
+@router.get(
     "/trading/api/analysis-reports",
     response_model=AnalysisReportListResponse,
     summary="List analysis report artifacts",
@@ -58,6 +63,11 @@ async def list_analysis_reports(
     return await service.list_reports(market=market, status=status_filter, limit=limit)
 
 
+@router.get(
+    "/invest/api/action-center/reports/{report_uuid}",
+    response_model=AnalysisReportResponse,
+    summary="Get one action center analysis report artifact",
+)
 @router.get(
     "/trading/api/analysis-reports/{report_uuid}",
     response_model=AnalysisReportResponse,

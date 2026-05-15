@@ -183,6 +183,7 @@ def test_router_create_and_read_contract_uses_service_without_broker_submission(
             return created
 
         async def list_reports(self, **kwargs):
+            assert kwargs == {"market": "kr", "status": "draft", "limit": 10}
             return {"count": 1, "items": [created]}
 
         async def get_report(self, report_uuid: str):
@@ -209,6 +210,26 @@ def test_router_create_and_read_contract_uses_service_without_broker_submission(
         body = response.json()
         assert body["candidates"][0]["execution_state"] == "not_submitted"
         assert body["data_freshness"]["cash_balance"] == "확인 불가"
+
+        report_list_response = client.get(
+            "/invest/api/action-center/reports?market=kr&status=draft&limit=10"
+        )
+        assert report_list_response.status_code == 200
+        assert (
+            report_list_response.json()["items"][0]["report_uuid"]
+            == created["report_uuid"]
+        )
+
+        report_detail_response = client.get(
+            f"/invest/api/action-center/reports/{created['report_uuid']}"
+        )
+        assert report_detail_response.status_code == 200
+        assert report_detail_response.json()["report_uuid"] == created["report_uuid"]
+
+        missing_report_response = client.get(
+            "/invest/api/action-center/reports/00000000-0000-4000-8000-00000000ffff"
+        )
+        assert missing_report_response.status_code == 404
 
         read_response = client.get("/invest/api/action-center/candidates")
         assert read_response.status_code == 200
