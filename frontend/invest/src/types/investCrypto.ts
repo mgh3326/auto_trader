@@ -6,6 +6,18 @@ export type CryptoCapabilityState =
   | "deferred"
   | "read_only_mvp";
 
+export type CryptoReferenceSourceState =
+  | "available"
+  | "cached"
+  | "fixture"
+  | "reference_only"
+  | "stale"
+  | "live"
+  | "unavailable"
+  | "error";
+
+export type CryptoReferenceFreshness = "fresh" | "partial" | "stale" | "missing" | "fixture" | "live";
+
 export type CryptoRiskBadgeKind =
   | "thin_orderbook"
   | "held"
@@ -98,4 +110,70 @@ export interface CryptoDashboardResponse {
   insights: CryptoInsightsSummary;
   capabilities: CryptoDashboardCapabilities;
   meta: { warnings: string[]; sources: CryptoSourceState[] };
+}
+
+export interface CryptoReferenceSourceMeta {
+  source: string;
+  label: string;
+  state: CryptoReferenceSourceState;
+  fetchedAt: string | null;
+  cacheAgeSeconds: number | null;
+  freshness: CryptoReferenceFreshness;
+  errorCode: string | null;
+  referenceOnly: boolean;
+}
+
+export interface NaverCryptoRankItem {
+  rank: number;
+  symbol: string;
+  displayName: string;
+  priceKrw: number | null;
+  changeRate24h: number | null;
+  tradeAmount24h: number | null;
+  rsi: number | null;
+  marketWarning: boolean | null;
+  source: string;
+}
+
+export interface NaverCryptoProfile {
+  symbol: string;
+  baseSymbol: string;
+  displayName: string;
+  koreanName: string | null;
+  englishName: string | null;
+  naverUrl: string | null;
+  officialMarket: string | null;
+  referenceNotes: string[];
+}
+
+export interface NaverCryptoKimchiPremium {
+  baseSymbol: string;
+  premiumPct: number | null;
+  domesticPriceKrw: number | null;
+  overseasPriceKrw: number | null;
+  state: CryptoReferenceSourceState;
+  source: string;
+  caution: string;
+}
+
+export interface NaverCryptoReferenceCapabilities {
+  rank: CryptoCapabilityFlag;
+  price: CryptoCapabilityFlag;
+  profile: CryptoCapabilityFlag;
+  news: CryptoCapabilityFlag;
+  kimchiPremium: CryptoCapabilityFlag;
+  execution: CryptoCapabilityFlag;
+}
+
+export interface NaverCryptoReferenceResponse {
+  market: "crypto";
+  asOf: string;
+  symbol: string | null;
+  rank: NaverCryptoRankItem[];
+  profile: NaverCryptoProfile | null;
+  news: { items: Array<{ id: number; title: string; publisher: string | null; url: string }> } | null;
+  kimchiPremium: NaverCryptoKimchiPremium | null;
+  sources: CryptoReferenceSourceMeta[];
+  warnings: string[];
+  capabilities: NaverCryptoReferenceCapabilities;
 }
