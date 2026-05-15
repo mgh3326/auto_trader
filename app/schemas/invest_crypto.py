@@ -27,6 +27,32 @@ CryptoRiskBadgeKind = Literal[
     "pending_order",
     "data_unavailable",
     "high_volatility",
+    "low_liquidity",
+    "candidate_watch",
+    "momentum_candidate",
+]
+CryptoRiskLevel = Literal["low", "medium", "high", "unknown"]
+CryptoCandidateReasonKind = Literal[
+    "momentum",
+    "liquidity",
+    "spread",
+    "watched",
+    "held",
+    "pending_order",
+    "data_quality",
+]
+CryptoReferenceSourceState = Literal[
+    "available",
+    "cached",
+    "fixture",
+    "reference_only",
+    "stale",
+    "live",
+    "unavailable",
+    "error",
+]
+CryptoReferenceFreshness = Literal[
+    "fresh", "partial", "stale", "missing", "fixture", "live"
 ]
 CryptoReferenceSourceState = Literal[
     "available",
@@ -98,6 +124,30 @@ class CryptoRiskBadge(BaseModel):
     severity: Literal["info", "warning", "danger"] = "info"
 
 
+class CryptoRiskSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    level: CryptoRiskLevel
+    score: int = Field(ge=0, le=100)
+    reasons: list[str] = Field(default_factory=list)
+
+
+class CryptoCandidateInsight(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    symbol: str
+    baseSymbol: str
+    displayName: str
+    rank: int = Field(ge=1)
+    score: int = Field(ge=0, le=100)
+    reasons: list[CryptoCandidateReasonKind] = Field(default_factory=list)
+    summary: str
+    isHeld: bool = False
+    isWatched: bool = False
+    hasPendingOrder: bool = False
+    riskLevel: CryptoRiskLevel
+
+
 class CryptoMarketCard(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -113,6 +163,7 @@ class CryptoMarketCard(BaseModel):
     isHeld: bool = False
     isWatched: bool = False
     badges: list[CryptoRiskBadge] = Field(default_factory=list)
+    risk: CryptoRiskSummary | None = None
 
 
 class CryptoHoldingSummary(BaseModel):
@@ -165,6 +216,7 @@ class CryptoInsightsSummary(BaseModel):
 
     badges: list[CryptoRiskBadge] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+    candidates: list[CryptoCandidateInsight] = Field(default_factory=list)
 
 
 class CryptoDashboardMeta(BaseModel):
