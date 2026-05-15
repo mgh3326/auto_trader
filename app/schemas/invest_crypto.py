@@ -38,7 +38,9 @@ CryptoReferenceSourceState = Literal[
     "unavailable",
     "error",
 ]
-CryptoReferenceFreshness = Literal["fresh", "partial", "stale", "missing", "fixture", "live"]
+CryptoReferenceFreshness = Literal[
+    "fresh", "partial", "stale", "missing", "fixture", "live"
+]
 CryptoPendingOrderSide = Literal["buy", "sell"] | str
 
 

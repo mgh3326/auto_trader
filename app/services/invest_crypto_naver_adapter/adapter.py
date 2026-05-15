@@ -35,12 +35,20 @@ from app.services.invest_crypto_screener_snapshots.repository import (
 from app.services.invest_view_model.relation_resolver import RelationResolver
 
 RankProvider = Callable[[AsyncSession, int], Awaitable[Sequence[Any]] | Sequence[Any]]
-TickerProvider = Callable[[list[str]], Awaitable[list[dict[str, Any]]] | list[dict[str, Any]]]
+TickerProvider = Callable[
+    [list[str]], Awaitable[list[dict[str, Any]]] | list[dict[str, Any]]
+]
 NewsProvider = Callable[
     [AsyncSession, RelationResolver, str | None, int],
     Awaitable[FeedNewsResponse | None] | FeedNewsResponse | None,
 ]
-KimchiProvider = Callable[[str], Awaitable[dict[str, Any] | list[dict[str, Any]] | None] | dict[str, Any] | list[dict[str, Any]] | None]
+KimchiProvider = Callable[
+    [str],
+    Awaitable[dict[str, Any] | list[dict[str, Any]] | None]
+    | dict[str, Any]
+    | list[dict[str, Any]]
+    | None,
+]
 
 
 @dataclass(frozen=True)
@@ -133,7 +141,9 @@ def _row_value(row: Any, key: str) -> Any:
     return getattr(row, key, None)
 
 
-def _source_timestamp_from_rows(rows: Sequence[Any], keys: Sequence[str]) -> datetime | None:
+def _source_timestamp_from_rows(
+    rows: Sequence[Any], keys: Sequence[str]
+) -> datetime | None:
     timestamps: list[datetime] = []
     for row in rows:
         for key in keys:
@@ -174,7 +184,9 @@ def _cached_source_meta(
         state="stale" if is_stale else "cached",
         fetchedAt=fetched_at,
         cacheAgeSeconds=age_seconds,
-        freshness="stale" if is_stale else ("fresh" if fetched_at is not None else "partial"),
+        freshness="stale"
+        if is_stale
+        else ("fresh" if fetched_at is not None else "partial"),
     )
 
 
@@ -254,7 +266,9 @@ async def _default_news_provider(
     )
 
 
-async def _default_kimchi_provider(base_symbol: str) -> dict[str, Any] | list[dict[str, Any]] | None:
+async def _default_kimchi_provider(
+    base_symbol: str,
+) -> dict[str, Any] | list[dict[str, Any]] | None:
     """Default kimchi provider intentionally avoids uncached live HTTP.
 
     A caller may inject a live or cached provider; without one the endpoint still
@@ -264,7 +278,9 @@ async def _default_kimchi_provider(base_symbol: str) -> dict[str, Any] | list[di
     return None
 
 
-async def _load_universe_fallback(db: AsyncSession, *, limit: int) -> list[UpbitSymbolUniverse]:
+async def _load_universe_fallback(
+    db: AsyncSession, *, limit: int
+) -> list[UpbitSymbolUniverse]:
     stmt = (
         select(UpbitSymbolUniverse)
         .where(
@@ -283,7 +299,9 @@ def _decimal_float(value: Decimal | float | int | str | None) -> float | None:
 
 
 def _market_from_row(row: Any) -> str | None:
-    return normalize_krw_symbol(getattr(row, "symbol", None) or getattr(row, "market", None))
+    return normalize_krw_symbol(
+        getattr(row, "symbol", None) or getattr(row, "market", None)
+    )
 
 
 def _name_from_row(row: Any, symbol: str) -> str:
@@ -298,7 +316,8 @@ def _name_from_row(row: Any, symbol: str) -> str:
 
 
 def _rank_item_from_snapshot(
-    *, rank: int,
+    *,
+    rank: int,
     row: Any,
     ticker: dict[str, Any] | None,
 ) -> NaverCryptoRankItem | None:
@@ -322,7 +341,8 @@ def _rank_item_from_snapshot(
 
 
 def _rank_item_from_universe(
-    *, rank: int,
+    *,
+    rank: int,
     row: UpbitSymbolUniverse,
     ticker: dict[str, Any] | None,
 ) -> NaverCryptoRankItem:
@@ -340,14 +360,20 @@ def _rank_item_from_universe(
     )
 
 
-def _build_profile(symbol: str | None, rank: Sequence[NaverCryptoRankItem]) -> NaverCryptoProfile | None:
-    target = normalize_krw_symbol(symbol) if symbol else (rank[0].symbol if rank else None)
+def _build_profile(
+    symbol: str | None, rank: Sequence[NaverCryptoRankItem]
+) -> NaverCryptoProfile | None:
+    target = (
+        normalize_krw_symbol(symbol) if symbol else (rank[0].symbol if rank else None)
+    )
     if target is None:
         return None
     fixture = NAVER_CRYPTO_REFERENCES.get(target, {})
     rank_match = next((item for item in rank if item.symbol == target), None)
     base = str(fixture.get("baseSymbol") or _base_symbol(target))
-    display_name = str(fixture.get("displayName") or (rank_match.displayName if rank_match else base))
+    display_name = str(
+        fixture.get("displayName") or (rank_match.displayName if rank_match else base)
+    )
     notes = list(fixture.get("referenceNotes") or [])
     if not notes:
         notes = [
@@ -358,15 +384,21 @@ def _build_profile(symbol: str | None, rank: Sequence[NaverCryptoRankItem]) -> N
         symbol=target,
         baseSymbol=base,
         displayName=display_name,
-        koreanName=str(fixture.get("koreanName")) if fixture.get("koreanName") else None,
-        englishName=str(fixture.get("englishName")) if fixture.get("englishName") else None,
+        koreanName=str(fixture.get("koreanName"))
+        if fixture.get("koreanName")
+        else None,
+        englishName=str(fixture.get("englishName"))
+        if fixture.get("englishName")
+        else None,
         naverUrl=str(fixture.get("naverUrl")) if fixture.get("naverUrl") else None,
         officialMarket="UPBIT/KRW",
         referenceNotes=notes,
     )
 
 
-def _first_kimchi_row(payload: dict[str, Any] | list[dict[str, Any]] | None) -> dict[str, Any] | None:
+def _first_kimchi_row(
+    payload: dict[str, Any] | list[dict[str, Any]] | None,
+) -> dict[str, Any] | None:
     if isinstance(payload, list):
         return payload[0] if payload else None
     if isinstance(payload, dict):
@@ -374,7 +406,9 @@ def _first_kimchi_row(payload: dict[str, Any] | list[dict[str, Any]] | None) -> 
     return None
 
 
-def _build_kimchi(base_symbol: str, payload: dict[str, Any] | list[dict[str, Any]] | None) -> NaverCryptoKimchiPremium:
+def _build_kimchi(
+    base_symbol: str, payload: dict[str, Any] | list[dict[str, Any]] | None
+) -> NaverCryptoKimchiPremium:
     row = _first_kimchi_row(payload)
     if not row:
         return NaverCryptoKimchiPremium(
@@ -387,10 +421,22 @@ def _build_kimchi(base_symbol: str, payload: dict[str, Any] | list[dict[str, Any
             caution="김치 프리미엄은 참고용 매크로 지표이며 주문 실행 신호가 아닙니다.",
         )
     return NaverCryptoKimchiPremium(
-        baseSymbol=str(row.get("base_symbol") or row.get("symbol") or base_symbol).replace("KRW-", ""),
-        premiumPct=_float_or_none(row.get("premium_pct") or row.get("kimchi_premium") or row.get("premium")),
-        domesticPriceKrw=_float_or_none(row.get("domestic_price_krw") or row.get("upbit_price_krw") or row.get("upbit_price")),
-        overseasPriceKrw=_float_or_none(row.get("overseas_price_krw") or row.get("binance_price_krw") or row.get("global_price_krw")),
+        baseSymbol=str(
+            row.get("base_symbol") or row.get("symbol") or base_symbol
+        ).replace("KRW-", ""),
+        premiumPct=_float_or_none(
+            row.get("premium_pct") or row.get("kimchi_premium") or row.get("premium")
+        ),
+        domesticPriceKrw=_float_or_none(
+            row.get("domestic_price_krw")
+            or row.get("upbit_price_krw")
+            or row.get("upbit_price")
+        ),
+        overseasPriceKrw=_float_or_none(
+            row.get("overseas_price_krw")
+            or row.get("binance_price_krw")
+            or row.get("global_price_krw")
+        ),
         state="available",
         source="mcp_kimchi_premium",
         caution="김치 프리미엄은 참고용 매크로 지표이며 주문 실행 신호가 아닙니다.",
@@ -460,7 +506,14 @@ async def build_naver_crypto_reference(
             ticker_rows = list(await _maybe_await(ticker_provider(markets)))
             ticker_fetched_at = _source_timestamp_from_rows(
                 ticker_rows,
-                ("fetched_at", "fetchedAt", "cached_at", "updated_at", "timestamp", "trade_timestamp"),
+                (
+                    "fetched_at",
+                    "fetchedAt",
+                    "cached_at",
+                    "updated_at",
+                    "timestamp",
+                    "trade_timestamp",
+                ),
             )
             sources.append(
                 _provider_source_meta(
@@ -488,7 +541,9 @@ async def build_naver_crypto_reference(
     rank_items: list[NaverCryptoRankItem] = []
     for index, row in enumerate(rank_rows, start=1):
         market = _market_from_row(row)
-        item = _rank_item_from_snapshot(rank=index, row=row, ticker=ticker_by_market.get(market or ""))
+        item = _rank_item_from_snapshot(
+            rank=index, row=row, ticker=ticker_by_market.get(market or "")
+        )
         if item:
             rank_items.append(item)
 
@@ -499,7 +554,9 @@ async def build_naver_crypto_reference(
                 _rank_item_from_universe(
                     rank=index,
                     row=row,
-                    ticker=ticker_by_market.get(normalize_krw_symbol(row.market) or row.market.upper()),
+                    ticker=ticker_by_market.get(
+                        normalize_krw_symbol(row.market) or row.market.upper()
+                    ),
                 )
                 for index, row in enumerate(universe_rows, start=1)
             ]
@@ -522,7 +579,9 @@ async def build_naver_crypto_reference(
     news: FeedNewsResponse | None = None
     news_provider = providers.news_provider or _default_news_provider
     try:
-        news = await _maybe_await(news_provider(db, resolver, normalized_symbol, min(limit, 20)))
+        news = await _maybe_await(
+            news_provider(db, resolver, normalized_symbol, min(limit, 20))
+        )
         sources.append(
             _cached_source_meta(
                 source="feed_news",
@@ -588,11 +647,21 @@ async def build_naver_crypto_reference(
         sources=sources,
         warnings=list(dict.fromkeys(warnings)),
         capabilities=NaverCryptoReferenceCapabilities(
-            rank=CryptoCapabilityFlag(state="supported" if rank_items else "unavailable"),
-            price=CryptoCapabilityFlag(state="supported" if ticker_rows or rank_items else "unavailable"),
-            profile=CryptoCapabilityFlag(state="reference_only", reason="naver_fixture_reference_only"),
+            rank=CryptoCapabilityFlag(
+                state="supported" if rank_items else "unavailable"
+            ),
+            price=CryptoCapabilityFlag(
+                state="supported" if ticker_rows or rank_items else "unavailable"
+            ),
+            profile=CryptoCapabilityFlag(
+                state="reference_only", reason="naver_fixture_reference_only"
+            ),
             news=CryptoCapabilityFlag(state="supported" if news else "unavailable"),
-            kimchiPremium=CryptoCapabilityFlag(state="reference_only", reason="macro_reference_only"),
-            execution=CryptoCapabilityFlag(state="read_only_mvp", reason="no_order_execution_controls"),
+            kimchiPremium=CryptoCapabilityFlag(
+                state="reference_only", reason="macro_reference_only"
+            ),
+            execution=CryptoCapabilityFlag(
+                state="read_only_mvp", reason="no_order_execution_controls"
+            ),
         ),
     )
