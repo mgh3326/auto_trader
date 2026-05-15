@@ -1,7 +1,7 @@
 """add_us_candles_1d
 
 Revision ID: 142b01f2eba0
-Revises: 20260513_rob225
+Revises: 20260515_rob257
 Create Date: 2026-05-15 11:07:14.331675
 
 """
@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "142b01f2eba0"
-down_revision: str | Sequence[str] | None = "20260513_rob225"
+down_revision: str | Sequence[str] | None = "20260515_rob257"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
