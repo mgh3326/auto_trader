@@ -59,6 +59,15 @@ class DailyCandlesRepository:
     def __init__(self, *, session: AsyncSession) -> None:
         self._session = session
 
+    @property
+    def session(self) -> AsyncSession:
+        """Expose the underlying session for callers that need to run their own queries.
+
+        Used by the daily-candle sync orchestrator for universe-resolution queries
+        that should share the repository's session and transaction context.
+        """
+        return self._session
+
     @staticmethod
     def _config(market: MarketKey) -> SyncTableConfig:
         return _TABLE_CONFIGS[market]
