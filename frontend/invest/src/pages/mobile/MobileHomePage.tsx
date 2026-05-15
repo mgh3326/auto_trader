@@ -55,6 +55,12 @@ const NAV_CARDS: MobileNavCard[] = [
     desc: "실적·배당 일정",
     icon: <Icon name="calendar" size={18} />,
   },
+  {
+    to: "/action-center",
+    label: "액션 센터",
+    desc: "승인 대기 후보",
+    icon: <Icon name="flash" size={18} />,
+  },
 ];
 
 export function MobileHomePage() {

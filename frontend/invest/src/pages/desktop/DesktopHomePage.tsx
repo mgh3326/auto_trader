@@ -92,6 +92,12 @@ const NAV_CARDS: NavCard[] = [
     desc: "조건별 종목 필터링",
     icon: <Icon name="search" size={20} />,
   },
+  {
+    to: "/action-center",
+    label: "액션 센터",
+    desc: "애널리스트 리포트와 승인 대기 후보",
+    icon: <Icon name="flash" size={20} />,
+  },
 ];
 
 export function DesktopHomePage() {
