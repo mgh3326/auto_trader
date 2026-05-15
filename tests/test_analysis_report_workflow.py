@@ -259,3 +259,26 @@ async def test_mcp_analysis_report_create_returns_decision_artifact(
     assert result["success"] is True
     assert result["report"]["candidates"][0]["execution_state"] == "not_submitted"
     assert result["idempotent"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    [
+        ("data_freshness", []),
+        ("metadata", []),
+        ("source_policy", ""),
+        ("candidates", ""),
+    ],
+)
+async def test_mcp_analysis_report_create_preserves_falsy_bad_types(
+    field: str,
+    bad_value: object,
+) -> None:
+    import app.mcp_server.tooling.analysis_reports_handlers as mod
+
+    bad_payload = _sample_create_payload()
+    bad_payload[field] = bad_value
+
+    with pytest.raises(ValueError):
+        await mod.analysis_report_create_impl(**bad_payload)

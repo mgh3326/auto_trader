@@ -20,7 +20,42 @@ ANALYSIS_REPORT_TOOL_NAMES: set[str] = {
 }
 
 
-async def analysis_report_create_impl(**payload: Any) -> dict:
+async def analysis_report_create_impl(
+    idempotency_key: str,
+    report_type: str,
+    market: str,
+    summary: str,
+    account_scope: str | None = None,
+    status: str = "draft",
+    risk_summary: str | None = None,
+    data_freshness: dict[str, Any] | None = None,
+    coverage: dict[str, Any] | None = None,
+    source_policy: list[str] | None = None,
+    safety_notes: list[str] | None = None,
+    metadata: dict[str, Any] | None = None,
+    stage_results: list[dict[str, Any]] | None = None,
+    candidates: list[dict[str, Any]] | None = None,
+    published_at: str | None = None,
+    valid_until: str | None = None,
+) -> dict:
+    payload = {
+        "idempotency_key": idempotency_key,
+        "report_type": report_type,
+        "market": market,
+        "account_scope": account_scope,
+        "status": status,
+        "summary": summary,
+        "risk_summary": risk_summary,
+        "data_freshness": {} if data_freshness is None else data_freshness,
+        "coverage": {} if coverage is None else coverage,
+        "source_policy": [] if source_policy is None else source_policy,
+        "safety_notes": [] if safety_notes is None else safety_notes,
+        "metadata": {} if metadata is None else metadata,
+        "stage_results": [] if stage_results is None else stage_results,
+        "candidates": [] if candidates is None else candidates,
+        "published_at": published_at,
+        "valid_until": valid_until,
+    }
     request = AnalysisReportCreateRequest.model_validate(payload)
     async with AsyncSessionLocal() as db:
         service = AnalysisReportService(db)
