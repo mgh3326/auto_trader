@@ -62,15 +62,17 @@ def _read_dev_database_url() -> str | None:
     return None
 
 
-_DEV_DB_URL = _read_dev_database_url() or os.environ.get(
-    "DEV_DATABASE_URL",
-    "postgresql+asyncpg://postgres:postgres@localhost:5434/auto_trader",
-)
+_DEV_DB_URL = _read_dev_database_url() or os.environ.get("DEV_DATABASE_URL")
 
 
 @pytest_asyncio.fixture
 async def dev_session():
-    """Async session against the dev Timescale container."""
+    """Async session against an explicitly configured dev Timescale database."""
+    if not _DEV_DB_URL:
+        pytest.skip(
+            "DEV_DATABASE_URL or local .env DATABASE_URL is required for live Timescale integration tests"
+        )
+
     engine = create_async_engine(_DEV_DB_URL, echo=False)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     async with factory() as session:
