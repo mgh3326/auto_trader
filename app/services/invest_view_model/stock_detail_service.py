@@ -7,10 +7,21 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.pending_order import PendingOrder
+from app.schemas.invest_crypto import (
+    CryptoPendingOrderItem,
+    CryptoPendingOrdersSummary,
+    CryptoSourceState,
+)
 from app.schemas.invest_feed_news import NewsMarket
 from app.schemas.invest_stock_detail import (
+    CryptoDetail,
+    CryptoDetailProfile,
+    CryptoRecentTradeItem,
+    CryptoRecentTrades,
     StockDetailDiscussionSignal,
     StockDetailFxScenario,
     StockDetailFxSensitivity,
@@ -20,6 +31,7 @@ from app.schemas.invest_stock_detail import (
     StockDetailInvestorFlowDailyRow,
     StockDetailInvestorFlowPeriodSummary,
     StockDetailLatestAnalysis,
+    StockDetailMeta,
     StockDetailNaverEnrichment,
     StockDetailOrderbook,
     StockDetailQuote,
@@ -28,6 +40,9 @@ from app.schemas.invest_stock_detail import (
     orderbook_support_for_market,
 )
 from app.services.exchange_rate_service import get_usd_krw_quote
+from app.services.invest_view_model.crypto_preorder_check import (
+    build_crypto_preorder_checklist,
+)
 from app.services.invest_view_model.investor_flow_service import (
     latest_items_for_symbols as _latest_investor_flow_items,
 )
@@ -53,6 +68,186 @@ Provider = Callable[..., Awaitable[Any]]
 
 async def _none_provider(*args: Any, **kwargs: Any) -> None:
     return None
+
+
+def _base_crypto_symbol(symbol: str) -> str:
+    normalized = str(symbol or "").upper()
+    if normalized.startswith("KRW-"):
+        return normalized.split("-", 1)[1]
+    if normalized.endswith("-KRW"):
+        return normalized.rsplit("-", 1)[0]
+    return normalized
+
+
+def _pending_symbol_variants(symbol: str) -> set[str]:
+    upper = str(symbol or "").upper()
+    base = _base_crypto_symbol(upper)
+    return {upper, base, f"KRW-{base}", f"{base}-KRW"}
+
+
+def _float_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_upbit_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    text = str(value)
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed
+
+
+async def _default_quote_provider(
+    market: NewsMarket, symbol: str, db: Any
+) -> StockDetailQuote | None:
+    _ = db
+    if market != "crypto":
+        return None
+    from app.services.brokers.upbit.client import fetch_multiple_tickers
+
+    rows = await fetch_multiple_tickers([symbol])
+    if not rows:
+        return None
+    row = rows[0]
+    price = _float_or_none(row.get("trade_price"))
+    change_amount = _float_or_none(row.get("signed_change_price"))
+    change_rate = _float_or_none(row.get("signed_change_rate"))
+    if change_rate is not None:
+        change_rate *= 100
+    previous_close = (
+        price - change_amount
+        if price is not None and change_amount is not None
+        else None
+    )
+    return StockDetailQuote(
+        price=price,
+        previousClose=previous_close,
+        changeAmount=change_amount,
+        changeRate=change_rate,
+        asOf=datetime.now(UTC),
+        priceState="live" if price is not None else "missing",
+    )
+
+
+async def _default_orderbook_provider(
+    market: NewsMarket, symbol: str, db: Any
+) -> StockDetailOrderbook | None:
+    _ = db
+    if market != "crypto":
+        return None
+    from app.services.upbit_orderbook import fetch_orderbook
+
+    book = await fetch_orderbook(symbol)
+    units = list(book.get("orderbook_units") or [])
+    if not units:
+        return None
+    asks = []
+    bids = []
+    for unit in units[:10]:
+        ask_price = _float_or_none(unit.get("ask_price"))
+        ask_size = _float_or_none(unit.get("ask_size"))
+        bid_price = _float_or_none(unit.get("bid_price"))
+        bid_size = _float_or_none(unit.get("bid_size"))
+        if ask_price is not None and ask_size is not None:
+            asks.append({"price": ask_price, "quantity": ask_size})
+        if bid_price is not None and bid_size is not None:
+            bids.append({"price": bid_price, "quantity": bid_size})
+    if not asks and not bids:
+        return None
+    return StockDetailOrderbook(asOf=datetime.now(UTC), asks=asks, bids=bids)
+
+
+async def _default_recent_trades_provider(
+    market: NewsMarket, symbol: str, db: Any
+) -> CryptoRecentTrades | None:
+    _ = db
+    if market != "crypto":
+        return None
+    import httpx
+
+    url = "https://api.upbit.com/v1/trades/ticks"
+    async with httpx.AsyncClient(timeout=5) as client:
+        response = await client.get(url, params={"market": symbol, "count": 15})
+        response.raise_for_status()
+        rows = response.json()
+    items = []
+    for row in rows or []:
+        price = _float_or_none(row.get("trade_price"))
+        volume = _float_or_none(row.get("trade_volume"))
+        if price is None or volume is None:
+            continue
+        items.append(
+            CryptoRecentTradeItem(
+                tradeTime=_parse_upbit_datetime(
+                    row.get("trade_timestamp") or row.get("trade_date_utc")
+                ),
+                priceKrw=price,
+                volume=volume,
+                side=row.get("ask_bid"),
+                sequentialId=row.get("sequential_id"),
+            )
+        )
+    return CryptoRecentTrades(
+        items=items,
+        emptyState=None if items else "no_recent_trades",
+        state="supported" if items else "empty",
+        asOf=datetime.now(UTC),
+    )
+
+
+async def _default_pending_orders_provider(
+    user_id: int | str, market: NewsMarket, symbol: str, db: Any
+) -> CryptoPendingOrdersSummary | None:
+    if market != "crypto":
+        return None
+    if not hasattr(db, "execute"):
+        return CryptoPendingOrdersSummary(items=[], emptyState="no_pending_orders")
+    variants = _pending_symbol_variants(symbol)
+    stmt = (
+        select(PendingOrder)
+        .where(
+            PendingOrder.user_id == int(user_id),
+            PendingOrder.market == "crypto",
+            PendingOrder.venue == "upbit",
+            PendingOrder.symbol.in_(sorted(variants)),
+            or_(PendingOrder.status == "open", PendingOrder.status == "partial_fill"),
+        )
+        .order_by(PendingOrder.ordered_at.desc().nullslast())
+        .limit(20)
+    )
+    result = await db.execute(stmt)
+    rows = list(result.scalars().all())
+    items = [
+        CryptoPendingOrderItem(
+            orderId=row.broker_order_id,
+            symbol=str(row.symbol).upper(),
+            baseSymbol=_base_crypto_symbol(str(row.symbol)),
+            side=row.side,
+            orderType=row.order_type,
+            price=_float_or_none(row.price),
+            quantity=float(row.quantity or 0),
+            filledQuantity=float(row.filled_quantity or 0),
+            status=row.status,
+            orderedAt=row.ordered_at,
+            updatedAt=row.updated_at,
+        )
+        for row in rows
+    ]
+    return CryptoPendingOrdersSummary(
+        items=items, emptyState=None if items else "no_pending_orders"
+    )
 
 
 def _daily_row_from_snapshot(row: Any) -> StockDetailInvestorFlowDailyRow:
@@ -226,16 +421,18 @@ async def _run_optional_block(
 @dataclass(frozen=True, slots=True)
 class StockDetailProviders:
     resolver: Resolver = resolve_symbol
-    quote: Provider = _none_provider
+    quote: Provider = _default_quote_provider
     screener: Provider = _none_provider
     valuation: Provider = _none_provider
     holding: Provider = _none_provider
     latest_analysis: Provider = _none_provider
-    orderbook: Provider = _none_provider
+    orderbook: Provider = _default_orderbook_provider
     fx_rate: Provider = get_usd_krw_quote
     naver_enrichment: Provider = build_naver_stock_detail_poc
     discussion_signal: Provider = build_naver_discussion_signal_poc
     investor_flow: Provider = _default_investor_flow_provider
+    recent_trades: Provider = _default_recent_trades_provider
+    pending_orders: Provider = _default_pending_orders_provider
 
 
 DEFAULT_STOCK_DETAIL_PROVIDERS = StockDetailProviders()
@@ -291,18 +488,34 @@ async def build_stock_detail(
         providers.discussion_signal(market, resolved.symbol_db, db),
         warnings,
     )
-    if market == "kr":
+    if market in {"kr", "crypto"}:
         orderbook_task = _run_optional_block(
             "orderbook", providers.orderbook(market, resolved.symbol_db, db), warnings
         )
+    else:
+        orderbook_task = _none_provider()
+    if market == "kr":
         investor_flow_task = _run_optional_block(
             "investor_flow",
             providers.investor_flow(market, resolved.symbol_db, db),
             warnings,
         )
     else:
-        orderbook_task = _none_provider()
         investor_flow_task = _none_provider()
+    if market == "crypto":
+        recent_trades_task = _run_optional_block(
+            "crypto_recent_trades",
+            providers.recent_trades(market, resolved.symbol_db, db),
+            warnings,
+        )
+        pending_orders_task = _run_optional_block(
+            "crypto_pending_orders",
+            providers.pending_orders(user_id, market, resolved.symbol_db, db),
+            warnings,
+        )
+    else:
+        recent_trades_task = _none_provider()
+        pending_orders_task = _none_provider()
 
     (
         quote,
@@ -314,6 +527,8 @@ async def build_stock_detail(
         discussion_signal,
         orderbook,
         investor_flow,
+        recent_trades,
+        pending_orders,
     ) = await asyncio.gather(
         quote_task,
         screener_task,
@@ -324,6 +539,8 @@ async def build_stock_detail(
         discussion_signal_task,
         orderbook_task,
         investor_flow_task,
+        recent_trades_task,
+        pending_orders_task,
     )
 
     capabilities = default_capabilities_for_market(market)
@@ -364,6 +581,24 @@ async def build_stock_detail(
         investor_flow, StockDetailInvestorFlow
     ):
         investor_flow = StockDetailInvestorFlow.model_validate(investor_flow)
+    if recent_trades is not None and not isinstance(recent_trades, CryptoRecentTrades):
+        recent_trades = CryptoRecentTrades.model_validate(recent_trades)
+    if pending_orders is not None and not isinstance(
+        pending_orders, CryptoPendingOrdersSummary
+    ):
+        pending_orders = CryptoPendingOrdersSummary.model_validate(pending_orders)
+
+    if market == "crypto" and orderbook is None:
+        orderbook_support = orderbook_support.model_copy(
+            update={"supported": False, "reason": "provider_unavailable"}
+        )
+        capabilities = capabilities.model_copy(
+            update={
+                "orderbook": capabilities.orderbook.model_copy(
+                    update={"supported": False, "reason": "provider_unavailable"}
+                )
+            }
+        )
 
     fx_rate = None
     if _should_fetch_fx_rate(
@@ -378,6 +613,69 @@ async def build_stock_detail(
         holding=holding,
         fx_rate=fx_rate,
     )
+
+    crypto_detail = None
+    if market == "crypto":
+        if recent_trades is None:
+            recent_trades = CryptoRecentTrades(
+                items=[],
+                emptyState="no_recent_trades",
+                state="unavailable",
+                warnings=["crypto_recent_trades_unavailable"],
+            )
+        if pending_orders is None:
+            pending_orders = CryptoPendingOrdersSummary(
+                items=[], emptyState="no_pending_orders"
+            )
+        base_symbol = _base_crypto_symbol(resolved.symbol_db)
+        crypto_sources = [
+            CryptoSourceState(
+                source="upbit_ticker",
+                state="supported" if quote else "unavailable",
+                label="Upbit ticker" if quote else "Upbit ticker unavailable",
+                fetchedAt=datetime.now(UTC),
+            ),
+            CryptoSourceState(
+                source="upbit_orderbook",
+                state="supported" if orderbook else "unavailable",
+                label="Upbit orderbook" if orderbook else "Upbit orderbook unavailable",
+                fetchedAt=datetime.now(UTC),
+            ),
+            CryptoSourceState(
+                source="upbit_recent_trades",
+                state="supported"
+                if recent_trades.state != "unavailable"
+                else "unavailable",
+                label="Upbit recent trades",
+                fetchedAt=recent_trades.asOf,
+            ),
+            CryptoSourceState(
+                source="pending_orders",
+                state="supported",
+                label="Read-only pending orders",
+                fetchedAt=datetime.now(UTC),
+            ),
+        ]
+        crypto_detail = CryptoDetail(
+            profile=CryptoDetailProfile(
+                symbol=resolved.symbol_db,
+                baseSymbol=base_symbol,
+                displayNameKo=resolved.display_name,
+                displayNameEn=base_symbol,
+                asOf=datetime.now(UTC),
+            ),
+            recentTrades=recent_trades,
+            pendingOrders=pending_orders,
+            preOrderChecklist=build_crypto_preorder_checklist(
+                quote=quote,
+                orderbook=orderbook,
+                recent_trades=recent_trades,
+                holding=holding,
+                pending_orders=pending_orders,
+                warnings=warnings,
+            ),
+            sources=crypto_sources,
+        )
 
     return StockDetailResponse(
         symbol=resolved.symbol_db,
@@ -400,7 +698,8 @@ async def build_stock_detail(
         orderbookSupport=orderbook_support,
         orderbook=orderbook,
         capabilities=capabilities,
-        meta={"computedAt": datetime.now(UTC), "warnings": warnings},
+        cryptoDetail=crypto_detail,
+        meta=StockDetailMeta(computedAt=datetime.now(UTC), warnings=warnings),
     )
 
 

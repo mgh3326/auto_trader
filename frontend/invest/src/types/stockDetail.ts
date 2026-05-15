@@ -2,7 +2,7 @@ import type { AccountSource, AssetCategory, AssetType, Currency, PriceState } fr
 import type { FeedNewsResponse } from "./feedNews";
 
 export type StockDetailMarket = "kr" | "us" | "crypto";
-export type OrderbookUnsupportedReason = "us_unsupported" | "crypto_deferred" | "kr_unavailable";
+export type OrderbookUnsupportedReason = "us_unsupported" | "crypto_deferred" | "kr_unavailable" | "provider_unavailable";
 export type CapabilityUnsupportedReason =
   | "read_only_mvp"
   | "out_of_mvp_scope"
@@ -233,6 +233,70 @@ export interface StockDetailOrderbookSupport extends CapabilityFlag {
   reason: OrderbookUnsupportedReason | null;
 }
 
+export interface CryptoRecentTradeItem {
+  tradeTime: string | null;
+  priceKrw: number;
+  volume: number;
+  side: string | null;
+  sequentialId: string | number | null;
+  source: "upbit_recent_trades";
+}
+
+export interface CryptoRecentTrades {
+  items: CryptoRecentTradeItem[];
+  emptyState: "no_recent_trades" | null;
+  source: "upbit_recent_trades";
+  state: "supported" | "empty" | "unavailable";
+  asOf: string | null;
+  warnings: string[];
+}
+
+export interface CryptoPreOrderCheckItem {
+  key: string;
+  label: string;
+  state: "ok" | "warning" | "danger" | "unavailable" | "info";
+  detail: string;
+  source: string;
+  computedAt: string;
+}
+
+export interface CryptoDetail {
+  profile: {
+    symbol: string;
+    baseSymbol: string;
+    displayNameKo: string | null;
+    displayNameEn: string | null;
+    quoteCurrency: "KRW";
+    source: string;
+    state: "supported" | "unavailable";
+    asOf: string | null;
+  };
+  recentTrades: CryptoRecentTrades;
+  pendingOrders: {
+    items: Array<{
+      orderId: string | null;
+      symbol: string;
+      baseSymbol: string;
+      side: string;
+      orderType: string | null;
+      price: number | null;
+      quantity: number;
+      filledQuantity: number;
+      status: string;
+      orderedAt: string | null;
+      updatedAt: string | null;
+    }>;
+    emptyState: "no_pending_orders" | null;
+  };
+  preOrderChecklist: {
+    mode: "informational_only";
+    items: CryptoPreOrderCheckItem[];
+    disclaimer: string;
+    sources: string[];
+  };
+  sources: Array<{ source: string; state: string; label: string; fetchedAt: string | null }>;
+}
+
 export interface StockDetailResponse {
   symbol: string;
   market: StockDetailMarket;
@@ -253,6 +317,7 @@ export interface StockDetailResponse {
   orderbookSupport: StockDetailOrderbookSupport;
   orderbook: StockDetailOrderbook | null;
   capabilities: StockDetailCapabilities;
+  cryptoDetail: CryptoDetail | null;
   meta: { computedAt: string; warnings: string[] };
 }
 

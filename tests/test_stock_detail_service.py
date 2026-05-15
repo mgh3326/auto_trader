@@ -6,7 +6,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.schemas.invest_stock_detail import StockDetailHolding, StockDetailOrderbook
+from app.schemas.invest_crypto import CryptoPendingOrdersSummary
+from app.schemas.invest_stock_detail import (
+    CryptoRecentTrades,
+    StockDetailHolding,
+    StockDetailOrderbook,
+    StockDetailQuote,
+)
 from app.services.invest_view_model.stock_detail_service import (
     StockDetailProviders,
     build_stock_detail,
@@ -140,12 +146,26 @@ async def test_build_stock_detail_maps_holding_and_kr_orderbook_when_available()
 
 @pytest.mark.asyncio
 async def test_build_stock_detail_omits_naver_poc_for_crypto():
+    async def no_quote_provider(market, symbol, db):
+        return None
+
+    async def no_orderbook_provider(market, symbol, db):
+        return None
+
+    async def no_recent_trades_provider(market, symbol, db):
+        return None
+
     response = await build_stock_detail(
         user_id=1,
         market="crypto",
         symbol="KRW-BTC",
         db=SimpleNamespace(),
-        providers=StockDetailProviders(resolver=_resolve_crypto),
+        providers=StockDetailProviders(
+            resolver=_resolve_crypto,
+            quote=no_quote_provider,
+            orderbook=no_orderbook_provider,
+            recent_trades=no_recent_trades_provider,
+        ),
     )
 
     assert response.market == "crypto"
@@ -153,6 +173,7 @@ async def test_build_stock_detail_omits_naver_poc_for_crypto():
     assert response.fxSensitivity.status == "not_applicable"
     assert response.naverEnrichment is None
     assert response.orderbookSupport.supported is False
+    assert response.orderbookSupport.reason == "provider_unavailable"
 
 
 @pytest.mark.asyncio
@@ -242,3 +263,108 @@ async def test_build_stock_detail_degrades_when_us_fx_provider_fails():
     assert response.fxSensitivity.status == "missing_fx_rate"
     assert response.fxSensitivity.scenarios == []
     assert "fx_sensitivity_unavailable" in response.meta.warnings
+
+
+def test_build_stock_detail_crypto_includes_read_only_detail_and_preorder_check():
+    async def quote_provider(market, symbol, db):
+        assert market == "crypto"
+        assert symbol == "KRW-BTC"
+        return StockDetailQuote(
+            price=100_000_000,
+            previousClose=99_000_000,
+            changeAmount=1_000_000,
+            changeRate=1.01,
+            asOf=datetime.now(UTC),
+            priceState="live",
+        )
+
+    async def orderbook_provider(market, symbol, db):
+        return StockDetailOrderbook(
+            asks=[{"price": 100_100_000, "quantity": 0.5}],
+            bids=[{"price": 100_000_000, "quantity": 0.4}],
+        )
+
+    async def recent_trades_provider(market, symbol, db):
+        return CryptoRecentTrades(
+            state="supported",
+            items=[
+                {
+                    "priceKrw": 100_000_000,
+                    "volume": 0.01,
+                    "tradeTime": datetime.now(UTC),
+                }
+            ],
+        )
+
+    async def pending_orders_provider(user_id, market, symbol, db):
+        return CryptoPendingOrdersSummary(items=[], emptyState="no_pending_orders")
+
+    providers = StockDetailProviders(
+        resolver=_resolve_crypto,
+        quote=quote_provider,
+        orderbook=orderbook_provider,
+        recent_trades=recent_trades_provider,
+        pending_orders=pending_orders_provider,
+    )
+
+    response = asyncio.run(
+        build_stock_detail(
+            user_id=7,
+            market="crypto",
+            symbol="btc",
+            db=SimpleNamespace(),
+            providers=providers,
+        )
+    )
+
+    assert response.symbol == "KRW-BTC"
+    assert response.orderbookSupport.supported is True
+    assert response.orderbookSupport.reason is None
+    assert response.capabilities.orderbook.supported is True
+    assert response.capabilities.execution.supported is False
+    assert response.capabilities.execution.reason == "read_only_mvp"
+    assert response.cryptoDetail is not None
+    assert response.cryptoDetail.profile.baseSymbol == "BTC"
+    assert response.cryptoDetail.pendingOrders.emptyState == "no_pending_orders"
+    assert response.cryptoDetail.preOrderChecklist.mode == "informational_only"
+    assert any(
+        item.key == "read_only_guardrail"
+        for item in response.cryptoDetail.preOrderChecklist.items
+    )
+
+
+def test_build_stock_detail_crypto_orderbook_provider_unavailable_is_explicit():
+    async def failing_orderbook_provider(market, symbol, db):
+        raise RuntimeError("provider down")
+
+    async def no_quote_provider(market, symbol, db):
+        return None
+
+    async def no_recent_trades_provider(market, symbol, db):
+        return None
+
+    providers = StockDetailProviders(
+        resolver=_resolve_crypto,
+        quote=no_quote_provider,
+        orderbook=failing_orderbook_provider,
+        recent_trades=no_recent_trades_provider,
+    )
+
+    response = asyncio.run(
+        build_stock_detail(
+            user_id=7,
+            market="crypto",
+            symbol="KRW-BTC",
+            db=SimpleNamespace(),
+            providers=providers,
+        )
+    )
+
+    assert response.orderbook is None
+    assert response.orderbookSupport.supported is False
+    assert response.orderbookSupport.reason == "provider_unavailable"
+    assert response.capabilities.orderbook.supported is False
+    assert response.capabilities.orderbook.reason == "provider_unavailable"
+    assert "orderbook_unavailable" in response.meta.warnings
+    assert response.cryptoDetail is not None
+    assert response.cryptoDetail.recentTrades.state == "unavailable"
