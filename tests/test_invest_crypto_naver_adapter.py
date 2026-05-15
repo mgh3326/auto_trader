@@ -105,14 +105,14 @@ async def test_naver_crypto_reference_aggregates_rank_profile_news_and_kimchi() 
 
     assert response.symbol == "KRW-BTC"
     assert response.rank[0].symbol == "KRW-BTC"
-    assert response.rank[0].priceKrw == 90000000.0
+    assert response.rank[0].priceKrw == pytest.approx(90000000.0)
     assert response.profile is not None
     assert response.profile.naverUrl is not None
     assert response.profile.referenceNotes
     assert response.news is not None
     assert response.news.items[0].title == "BTC reference news"
     assert response.kimchiPremium is not None
-    assert response.kimchiPremium.premiumPct == 2.5
+    assert response.kimchiPremium.premiumPct == pytest.approx(2.5)
     assert response.capabilities.execution.state == "read_only_mvp"
     assert "naver_crypto_reference_only" in response.warnings
     source_by_name = {source.source: source for source in response.sources}
@@ -179,7 +179,7 @@ async def test_naver_crypto_reference_defaults_do_not_call_uncached_live_upbit_t
         ),
     )
 
-    assert response.rank[0].priceKrw == 90000000.0
+    assert response.rank[0].priceKrw == pytest.approx(90000000.0)
     source_by_name = {source.source: source for source in response.sources}
     assert source_by_name["upbit_official"].state == "unavailable"
     assert source_by_name["upbit_official"].freshness == "missing"
