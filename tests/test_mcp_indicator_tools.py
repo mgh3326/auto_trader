@@ -311,6 +311,8 @@ async def test_portfolio_indicators_crypto_ticker_failure_falls_back_to_close(
 async def test_fetch_ohlcv_for_indicators_crypto_uses_upbit_service_boundary(
     monkeypatch,
 ):
+    from unittest.mock import patch
+
     service_df = pd.DataFrame(
         {
             "date": [date(2026, 2, 13), date(2026, 2, 14)],
@@ -324,58 +326,66 @@ async def test_fetch_ohlcv_for_indicators_crypto_uses_upbit_service_boundary(
     )
     service_mock = AsyncMock(return_value=service_df)
 
-    monkeypatch.setattr(upbit_service, "fetch_ohlcv", service_mock)
-
-    result = await market_data_indicators._fetch_ohlcv_for_indicators(
-        "KRW-BTC", "crypto", count=2
-    )
+    with (
+        patch(
+            "app.services.daily_candles.repository.DailyCandlesRepository.fetch_recent",
+            new=AsyncMock(return_value=[]),
+        ),
+        patch(
+            "app.services.daily_candles.repository.DailyCandlesRepository.upsert_rows",
+            new=AsyncMock(return_value=2),
+        ),
+        patch("app.services.brokers.upbit.client.fetch_ohlcv", service_mock),
+    ):
+        result = await market_data_indicators._fetch_ohlcv_for_indicators(
+            "KRW-BTC", "crypto", count=2
+        )
 
     assert len(result) == 2
     service_mock.assert_awaited_once_with(
         market="KRW-BTC",
         days=2,
         period="day",
-        end_date=None,
     )
 
 
 @pytest.mark.asyncio
 async def test_fetch_ohlcv_for_indicators_kr_uses_un_market(monkeypatch):
+    from unittest.mock import patch
+
     service_df = _single_row_df()
-    called: dict[str, object] = {}
-    cache_called: dict[str, object] = {}
+    fetch_called_with: dict[str, object] = {}
 
-    class DummyKISClient:
-        async def inquire_daily_itemchartprice(self, code, market, n, period):
-            called["code"] = code
-            called["market"] = market
-            called["n"] = n
-            called["period"] = period
-            return service_df
+    async def mock_fetch_kr_daily(*, kis, code, n, market="J", period="D", end_date=None):
+        fetch_called_with["code"] = code
+        fetch_called_with["market"] = market
+        fetch_called_with["n"] = n
+        fetch_called_with["period"] = period
+        return service_df
 
-    async def mock_get_candles(symbol, count, period, raw_fetcher, route=None):
-        cache_called["symbol"] = symbol
-        cache_called["count"] = count
-        cache_called["period"] = period
-        return await raw_fetcher(count)
-
-    monkeypatch.setattr(market_data_indicators, "KISClient", DummyKISClient)
-    monkeypatch.setattr(
-        market_data_indicators.kis_ohlcv_cache, "get_candles", mock_get_candles
-    )
-
-    result = await market_data_indicators._fetch_ohlcv_for_indicators(
-        "005930", "equity_kr", count=300
-    )
+    with (
+        patch(
+            "app.services.daily_candles.repository.DailyCandlesRepository.fetch_recent",
+            new=AsyncMock(return_value=[]),
+        ),
+        patch(
+            "app.services.daily_candles.repository.DailyCandlesRepository.upsert_rows",
+            new=AsyncMock(return_value=1),
+        ),
+        patch(
+            "app.services.daily_candles.kis_daily_fetcher.fetch_kr_daily_unclamped",
+            side_effect=mock_fetch_kr_daily,
+        ),
+    ):
+        result = await market_data_indicators._fetch_ohlcv_for_indicators(
+            "005930", "equity_kr", count=300
+        )
 
     assert len(result) == 1
-    assert cache_called["symbol"] == "005930"
-    assert cache_called["count"] == 250
-    assert cache_called["period"] == "day"
-    assert called["code"] == "005930"
-    assert called["market"] == "J"
-    assert called["n"] == 250
-    assert called["period"] == "D"
+    assert fetch_called_with["code"] == "005930"
+    assert fetch_called_with["market"] == "J"
+    assert fetch_called_with["n"] == 300
+    assert fetch_called_with["period"] == "D"
 
 
 @pytest.mark.asyncio
@@ -705,68 +715,95 @@ async def test_get_support_resistance_uses_single_ohlcv_fetch(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_fetch_ohlcv_for_indicators_kr_warm_cache_avoids_kis_call(monkeypatch):
-    """When cache returns data, KIS raw fetcher should NOT be called."""
-    service_df = _single_row_df()
-    kis_called = False
+    """When DB has fresh, sufficient rows, KIS raw fetcher should NOT be called."""
+    from datetime import UTC, datetime, timedelta
+    from unittest.mock import patch
 
-    class DummyKISClient:
-        async def inquire_daily_itemchartprice(self, **kwargs):
-            nonlocal kis_called
-            kis_called = True
-            return service_df
+    from app.services.daily_candles.repository import DailyCandleRow
 
-    async def mock_get_candles_warm(symbol, count, period, raw_fetcher, route=None):
-        return service_df
+    today = datetime.now(UTC).replace(hour=12, minute=0, second=0, microsecond=0)
+    cached_rows = [
+        DailyCandleRow(
+            time_utc=today - timedelta(days=i),
+            symbol="005930",
+            partition="KRX",
+            open=70000.0,
+            high=71000.0,
+            low=69500.0,
+            close=70500.0,
+            adj_close=None,
+            volume=1000.0,
+            value=70500000.0,
+            source="kis",
+        )
+        for i in range(250)
+    ]
 
-    monkeypatch.setattr(market_data_indicators, "KISClient", DummyKISClient)
-    monkeypatch.setattr(
-        market_data_indicators.kis_ohlcv_cache, "get_candles", mock_get_candles_warm
-    )
+    with (
+        patch(
+            "app.services.daily_candles.repository.DailyCandlesRepository.fetch_recent",
+            new=AsyncMock(return_value=list(reversed(cached_rows))),
+        ),
+        patch(
+            "app.mcp_server.tooling.market_data_indicators._cache_is_fresh_equity",
+            return_value=True,
+        ),
+        patch(
+            "app.services.daily_candles.kis_daily_fetcher.fetch_kr_daily_unclamped",
+            new=AsyncMock(),
+        ) as mock_kis,
+    ):
+        result = await market_data_indicators._fetch_ohlcv_for_indicators(
+            "005930", "equity_kr", count=250
+        )
 
-    result = await market_data_indicators._fetch_ohlcv_for_indicators(
-        "005930", "equity_kr", count=250
-    )
-
-    assert len(result) == 1
-    assert not kis_called, "KIS should not be called when cache is warm"
+    assert len(result) == 250
+    mock_kis.assert_not_awaited()  # KIS should not be called when DB cache is warm
 
 
 @pytest.mark.asyncio
 async def test_fetch_ohlcv_for_indicators_crypto_unaffected_by_cache(monkeypatch):
-    """Crypto path should NOT use kis_ohlcv_cache at all."""
-    cache_called = False
-
-    async def mock_get_candles(**kwargs):
-        nonlocal cache_called
-        cache_called = True
-        return pd.DataFrame()
-
-    monkeypatch.setattr(
-        market_data_indicators.kis_ohlcv_cache, "get_candles", mock_get_candles
-    )
+    """Crypto path should NOT call KIS; it uses Upbit exclusively."""
+    from unittest.mock import patch
 
     rows = 50
     dates = pd.date_range("2024-01-01", periods=rows, freq="D")
 
-    async def mock_upbit_fetch(market, days, period, end_date=None):
-        return pd.DataFrame(
-            {
-                "date": dates[:days],
-                "open": [100.0] * min(days, rows),
-                "high": [110.0] * min(days, rows),
-                "low": [90.0] * min(days, rows),
-                "close": [105.0] * min(days, rows),
-                "volume": [1000] * min(days, rows),
-            }
-        )
-
-    monkeypatch.setattr(upbit_service, "fetch_ohlcv", mock_upbit_fetch)
-
-    result = await market_data_indicators._fetch_ohlcv_for_indicators(
-        "KRW-BTC", "crypto", count=50
+    upbit_df = pd.DataFrame(
+        {
+            "date": dates,
+            "open": [100.0] * rows,
+            "high": [110.0] * rows,
+            "low": [90.0] * rows,
+            "close": [105.0] * rows,
+            "volume": [1000.0] * rows,
+            "value": [105000.0] * rows,
+        }
     )
 
-    assert not cache_called, "Crypto path should not use kis_ohlcv_cache"
+    with (
+        patch(
+            "app.services.daily_candles.repository.DailyCandlesRepository.fetch_recent",
+            new=AsyncMock(return_value=[]),
+        ),
+        patch(
+            "app.services.daily_candles.repository.DailyCandlesRepository.upsert_rows",
+            new=AsyncMock(return_value=rows),
+        ),
+        patch(
+            "app.services.brokers.upbit.client.fetch_ohlcv",
+            new=AsyncMock(return_value=upbit_df),
+        ),
+        patch(
+            "app.services.daily_candles.kis_daily_fetcher.fetch_kr_daily_unclamped",
+            new=AsyncMock(),
+        ) as mock_kis,
+    ):
+        result = await market_data_indicators._fetch_ohlcv_for_indicators(
+            "KRW-BTC", "crypto", count=rows
+        )
+
+    mock_kis.assert_not_awaited()  # Crypto path should never touch KIS
     assert len(result) == rows
 
 
