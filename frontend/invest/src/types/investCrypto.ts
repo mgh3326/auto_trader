@@ -11,7 +11,21 @@ export type CryptoRiskBadgeKind =
   | "held"
   | "pending_order"
   | "data_unavailable"
-  | "high_volatility";
+  | "high_volatility"
+  | "low_liquidity"
+  | "candidate_watch"
+  | "momentum_candidate";
+
+export type CryptoRiskLevel = "low" | "medium" | "high" | "unknown";
+
+export type CryptoCandidateReasonKind =
+  | "momentum"
+  | "liquidity"
+  | "spread"
+  | "watched"
+  | "held"
+  | "pending_order"
+  | "data_quality";
 
 export interface CryptoSourceState {
   source: string;
@@ -41,6 +55,26 @@ export interface CryptoRiskBadge {
   severity: "info" | "warning" | "danger";
 }
 
+export interface CryptoRiskSummary {
+  level: CryptoRiskLevel;
+  score: number;
+  reasons: string[];
+}
+
+export interface CryptoCandidateInsight {
+  symbol: string;
+  baseSymbol: string;
+  displayName: string;
+  rank: number;
+  score: number;
+  reasons: CryptoCandidateReasonKind[];
+  summary: string;
+  isHeld: boolean;
+  isWatched: boolean;
+  hasPendingOrder: boolean;
+  riskLevel: CryptoRiskLevel;
+}
+
 export interface CryptoMarketCard {
   symbol: string;
   baseSymbol: string;
@@ -54,6 +88,7 @@ export interface CryptoMarketCard {
   isHeld: boolean;
   isWatched: boolean;
   badges: CryptoRiskBadge[];
+  risk: CryptoRiskSummary | null;
 }
 
 export interface CryptoHoldingSummary {
@@ -86,6 +121,7 @@ export interface CryptoPendingOrdersSummary {
 export interface CryptoInsightsSummary {
   badges: CryptoRiskBadge[];
   notes: string[];
+  candidates: CryptoCandidateInsight[];
 }
 
 export interface CryptoDashboardResponse {

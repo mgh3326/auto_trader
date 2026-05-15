@@ -3,7 +3,12 @@ import { Link } from "react-router-dom";
 import { DesktopShell } from "../../desktop/DesktopShell";
 import { RightRemotePanel } from "../../desktop/RightRemotePanel";
 import { fetchCryptoDashboard } from "../../api/investCrypto";
-import type { CryptoDashboardResponse, CryptoMarketCard } from "../../types/investCrypto";
+import type {
+  CryptoCandidateInsight,
+  CryptoDashboardResponse,
+  CryptoMarketCard,
+  CryptoRiskLevel,
+} from "../../types/investCrypto";
 import "../../desktop/screener/screener.css";
 
 function formatKrw(value: number | null): string {
@@ -22,6 +27,34 @@ function cardMetric(card: CryptoMarketCard): string {
     return `거래대금 ${(card.accTradePrice24h / 1_0000_0000).toFixed(1)}억`;
   }
   return `거래대금 ${Math.round(card.accTradePrice24h).toLocaleString("ko-KR")}`;
+}
+
+const riskLabels: Record<CryptoRiskLevel, string> = {
+  high: "높음",
+  medium: "중간",
+  low: "낮음",
+  unknown: "미확인",
+};
+
+const reasonLabels: Record<string, string> = {
+  momentum: "변화",
+  liquidity: "유동성",
+  spread: "호가 안정",
+  watched: "검토 목록",
+  held: "보유",
+  pending_order: "미체결",
+  data_quality: "데이터 확인",
+};
+
+function riskCounts(cards: CryptoMarketCard[]): Record<CryptoRiskLevel, number> {
+  return cards.reduce<Record<CryptoRiskLevel, number>>(
+    (counts, card) => {
+      const level = card.risk?.level ?? "unknown";
+      counts[level] += 1;
+      return counts;
+    },
+    { high: 0, medium: 0, low: 0, unknown: 0 },
+  );
 }
 
 function CryptoCard({ card }: { card: CryptoMarketCard }) {
@@ -53,6 +86,14 @@ function CryptoCard({ card }: { card: CryptoMarketCard }) {
       <div style={{ marginTop: 12, color: "var(--fg-3)", fontSize: 13 }}>
         {cardMetric(card)} · 호가 스프레드 {card.orderbookSpreadPct === null ? "-" : `${card.orderbookSpreadPct.toFixed(3)}%`}
       </div>
+      {card.risk && (
+        <div style={{ marginTop: 8, color: "var(--fg-2)", fontSize: 13 }}>
+          리스크 {riskLabels[card.risk.level]} · {card.risk.score}
+          {card.risk.reasons.length > 0 && (
+            <span style={{ color: "var(--fg-3)" }}> · {card.risk.reasons.slice(0, 2).join(" · ")}</span>
+          )}
+        </div>
+      )}
       {card.badges.length > 0 && (
         <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 6 }}>
           {card.badges.map((badge, idx) => (
@@ -63,6 +104,62 @@ function CryptoCard({ card }: { card: CryptoMarketCard }) {
         </div>
       )}
     </Link>
+  );
+}
+
+function RiskSummary({ cards }: { cards: CryptoMarketCard[] }) {
+  const counts = riskCounts(cards);
+  return (
+    <section aria-label="리스크 요약" style={{ marginTop: 16, padding: 16, border: "1px solid var(--border)", borderRadius: 14 }}>
+      <h2 style={{ marginTop: 0 }}>리스크 요약</h2>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+        {(["high", "medium", "low", "unknown"] as CryptoRiskLevel[]).map((level) => (
+          <span key={level} className="screener-chip">
+            {riskLabels[level]} {counts[level]}
+          </span>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function CandidateInsightCard({ candidate }: { candidate: CryptoCandidateInsight }) {
+  return (
+    <article style={{ padding: 12, border: "1px solid var(--border)", borderRadius: 12 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+        <strong>{candidate.rank}. {candidate.displayName}</strong>
+        <span>점수 {candidate.score}</span>
+      </div>
+      <div style={{ marginTop: 4, color: "var(--fg-3)", fontSize: 13 }}>
+        {candidate.symbol} · 리스크 {riskLabels[candidate.riskLevel]}
+      </div>
+      <p style={{ margin: "8px 0", color: "var(--fg-2)" }}>{candidate.summary}</p>
+      {candidate.reasons.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {candidate.reasons.map((reason) => (
+            <span key={reason} className="screener-chip">{reasonLabels[reason] ?? reason}</span>
+          ))}
+        </div>
+      )}
+    </article>
+  );
+}
+
+function CandidateInsights({ candidates }: { candidates: CryptoCandidateInsight[] }) {
+  return (
+    <section aria-label="후보 인사이트" style={{ marginTop: 18, padding: 16, border: "1px solid var(--border)", borderRadius: 14 }}>
+      <h2 style={{ marginTop: 0 }}>후보 인사이트</h2>
+      <p style={{ color: "var(--fg-3)" }}>후보 인사이트는 참고용이며 주문/감시 등록을 실행하지 않습니다.</p>
+      {candidates.length === 0 ? (
+        <p style={{ color: "var(--fg-3)" }}>조건에 맞는 후보 인사이트가 없습니다.</p>
+      ) : (
+        <div style={{ display: "grid", gap: 10 }}>
+          {candidates.map((candidate) => (
+            <CandidateInsightCard key={candidate.symbol} candidate={candidate} />
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -123,6 +220,8 @@ export function DesktopCryptoPage() {
                   {data.meta.warnings.map((warning) => <li key={warning}>{warning}</li>)}
                 </ul>
               )}
+              <RiskSummary cards={data.cards} />
+              <CandidateInsights candidates={data.insights.candidates ?? []} />
               <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 12, marginTop: 16 }}>
                 {data.cards.map((card) => <CryptoCard key={card.symbol} card={card} />)}
               </section>
