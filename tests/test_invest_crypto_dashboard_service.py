@@ -209,7 +209,9 @@ async def test_crypto_dashboard_candidate_insights_are_read_only_and_ranked():
         ]
 
     async def spread_provider(_markets):
-        return {row.market: (0.2 if row.market != "KRW-CCC" else 0.8) for row in markets}
+        return {
+            row.market: (0.2 if row.market != "KRW-CCC" else 0.8) for row in markets
+        }
 
     resolver = RelationResolver(watch={("crypto", "KRW-AAA"), ("crypto", "KRW-BBB")})
     response = await build_crypto_dashboard(
@@ -231,7 +233,14 @@ async def test_crypto_dashboard_candidate_insights_are_read_only_and_ranked():
     assert bbb.hasPendingOrder is True
     assert "pending_order" in bbb.reasons
     serialized = [candidate.model_dump() for candidate in candidates]
-    forbidden_fields = {"action", "execute", "order", "watchIntent", "clientOrderId", "mutation"}
+    forbidden_fields = {
+        "action",
+        "execute",
+        "order",
+        "watchIntent",
+        "clientOrderId",
+        "mutation",
+    }
     for item in serialized:
         assert forbidden_fields.isdisjoint(item)
 
@@ -286,7 +295,10 @@ async def test_crypto_dashboard_sorts_cards_by_move_then_volume_before_limit():
 
 @pytest.mark.asyncio
 async def test_crypto_dashboard_ranks_full_universe_before_limit():
-    markets = [_market(f"KRW-{index:03d}", f"C{index:03d}", f"코인{index:03d}") for index in range(60)]
+    markets = [
+        _market(f"KRW-{index:03d}", f"C{index:03d}", f"코인{index:03d}")
+        for index in range(60)
+    ]
     top_market = markets[-1].market
 
     async def ticker_provider(requested_markets):

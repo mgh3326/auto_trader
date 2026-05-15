@@ -249,7 +249,10 @@ def _candidate_score(
     if card.isWatched:
         score += 35
         reasons.append("watched")
-    if card.changeRate24h is not None and abs(card.changeRate24h) >= ELEVATED_MOMENTUM_ABS_CHANGE:
+    if (
+        card.changeRate24h is not None
+        and abs(card.changeRate24h) >= ELEVATED_MOMENTUM_ABS_CHANGE
+    ):
         score += 25
         reasons.append("momentum")
     if (
@@ -258,7 +261,10 @@ def _candidate_score(
     ):
         score += 20
         reasons.append("liquidity")
-    if card.orderbookSpreadPct is not None and card.orderbookSpreadPct <= THIN_ORDERBOOK_SPREAD_PCT:
+    if (
+        card.orderbookSpreadPct is not None
+        and card.orderbookSpreadPct <= THIN_ORDERBOOK_SPREAD_PCT
+    ):
         score += 10
         reasons.append("spread")
     if card.isHeld:
@@ -292,7 +298,9 @@ def _build_candidate_insights(
     *,
     limit: int = CANDIDATE_MAX_ITEMS,
 ) -> list[CryptoCandidateInsight]:
-    ranked: list[tuple[int, float, str, CryptoMarketCard, list[CryptoCandidateReasonKind], str]] = []
+    ranked: list[
+        tuple[int, float, str, CryptoMarketCard, list[CryptoCandidateReasonKind], str]
+    ] = []
     for card in cards:
         risk = card.risk
         if risk is None or risk.level == "unknown":
@@ -561,7 +569,10 @@ async def build_crypto_dashboard(
                     kind="candidate_watch", label="관심 후보", severity="info"
                 )
             )
-        elif card.changeRate24h is not None and abs(card.changeRate24h) >= ELEVATED_MOMENTUM_ABS_CHANGE:
+        elif (
+            card.changeRate24h is not None
+            and abs(card.changeRate24h) >= ELEVATED_MOMENTUM_ABS_CHANGE
+        ):
             card.badges.append(
                 CryptoRiskBadge(
                     kind="momentum_candidate", label="모멘텀 후보", severity="info"
@@ -573,9 +584,17 @@ async def build_crypto_dashboard(
             badge
             for card in cards
             for badge in card.badges
-            if badge.kind in {"thin_orderbook", "data_unavailable", "high_volatility", "low_liquidity"}
+            if badge.kind
+            in {
+                "thin_orderbook",
+                "data_unavailable",
+                "high_volatility",
+                "low_liquidity",
+            }
         ][:5],
-        notes=["읽기 전용 대시보드입니다. 후보 인사이트는 참고용이며 상태 변경을 실행하지 않습니다."],
+        notes=[
+            "읽기 전용 대시보드입니다. 후보 인사이트는 참고용이며 상태 변경을 실행하지 않습니다."
+        ],
         candidates=candidates,
     )
 
