@@ -190,12 +190,13 @@ Check TaskIQ logs and KIS token health (`app/services/redis_token_manager.py`).
 
 ## Rollback
 
+Before running the downgrade, verify the target revision is what you expect:
+
 ```bash
-uv run alembic downgrade <rev-before-us_candles_1d>
+uv run alembic history | head -20
 ```
 
-The revision immediately before the first daily candle migration is `9f1a2b3c4d5e`
-(the alembic head prior to this PR). To roll back all three daily candle tables:
+Then downgrade to the revision IMMEDIATELY BEFORE `add_us_candles_1d`. As of this PR's authoring that revision is `9f1a2b3c4d5e` (`add investor flow snapshots`), but check before running — additional migrations may have been added since.
 
 ```bash
 uv run alembic downgrade 9f1a2b3c4d5e

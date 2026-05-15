@@ -103,3 +103,45 @@ class TestSyncOneSymbol:
         assert result.fallback_used is True
         repo.session.commit.assert_awaited_once()
         repo.session.rollback.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_kr_commit_failure_triggers_rollback(self):
+        repo = MagicMock()
+        repo.latest_time_utc = AsyncMock(return_value=None)
+        repo.upsert_rows = AsyncMock(return_value=10)
+        repo.session = MagicMock()
+        repo.session.commit = AsyncMock(side_effect=RuntimeError("db error"))
+        repo.session.rollback = AsyncMock()
+
+        frame = pd.DataFrame(
+            {
+                "date": pd.date_range("2024-01-01", periods=10, freq="B"),
+                "open": [100.0] * 10,
+                "high": [101.0] * 10,
+                "low": [99.0] * 10,
+                "close": [100.5] * 10,
+                "volume": [1000] * 10,
+                "value": [100500] * 10,
+            }
+        )
+        kis_fetcher = AsyncMock(return_value=frame)
+
+        svc = DailyCandleSyncService(
+            repository=repo,
+            kis_kr_fetcher=kis_fetcher,
+            kis_us_fetcher=AsyncMock(),
+            yahoo_us_fetcher=AsyncMock(),
+            upbit_crypto_fetcher=AsyncMock(),
+        )
+
+        with pytest.raises(RuntimeError, match="db error"):
+            await svc.sync_one(
+                target=SyncTarget(
+                    market=MarketKey.KR, symbol="005930", partition="KRX"
+                ),
+                horizon_bars=400,
+            )
+
+        repo.upsert_rows.assert_awaited_once()  # upsert ran
+        repo.session.commit.assert_awaited_once()  # commit attempted
+        repo.session.rollback.assert_awaited_once()  # rollback called
