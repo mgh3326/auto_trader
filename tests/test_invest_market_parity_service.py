@@ -1,0 +1,165 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from decimal import Decimal
+from typing import Any
+
+import pytest
+
+from app.services.invest_view_model.market_parity_service import (
+    ParityQuote,
+    build_market_parity,
+)
+
+_AS_OF = datetime(2026, 5, 14, 0, 0, tzinfo=UTC)
+
+
+class _StubParityProvider:
+    def __init__(
+        self, *, fail_proxy: bool = False, include_synthetic: bool = True
+    ) -> None:
+        self.fail_proxy = fail_proxy
+        self.include_synthetic = include_synthetic
+
+    async def get_index_quote(self, symbol: str) -> ParityQuote | None:
+        assert symbol == "KOSPI"
+        return ParityQuote(
+            symbol=symbol, price=Decimal("100"), source="fixture", as_of=_AS_OF
+        )
+
+    async def get_proxy_quote(self, symbol: str) -> ParityQuote | None:
+        if self.fail_proxy:
+            raise RuntimeError("proxy fixture unavailable")
+        assert symbol == "EWY"
+        return ParityQuote(
+            symbol=symbol, price=Decimal("10"), source="fixture", as_of=_AS_OF
+        )
+
+    async def get_fx_rate(self, pair: str) -> ParityQuote | None:
+        assert pair == "USD/KRW"
+        return ParityQuote(
+            symbol=pair, price=Decimal("11"), source="fixture", as_of=_AS_OF
+        )
+
+    async def get_stablecoin_rate(self, pair: str) -> ParityQuote | None:
+        assert pair == "USDT/KRW"
+        return ParityQuote(
+            symbol=pair, price=Decimal("11.55"), source="fixture", as_of=_AS_OF
+        )
+
+    async def get_crypto_kimchi_premium(self, symbol: str) -> dict[str, Any] | None:
+        assert symbol == "BTC"
+        return {"symbol": "BTC", "premium_pct": 2.41, "as_of": _AS_OF.isoformat()}
+
+    async def get_synthetic_quote(self, symbol: str) -> ParityQuote | None:
+        if not self.include_synthetic:
+            return None
+        prices = {"xyz:SMSN": Decimal("8"), "xyz:SKHX": Decimal("5")}
+        return ParityQuote(
+            symbol=symbol, price=prices[symbol], source="fixture", as_of=_AS_OF
+        )
+
+    async def get_kr_stock_quote(self, symbol: str) -> ParityQuote | None:
+        prices = {"005930": Decimal("88"), "000660": Decimal("60")}
+        return ParityQuote(
+            symbol=symbol, price=prices[symbol], source="fixture", as_of=_AS_OF
+        )
+
+
+class _ApprovalGatedProvider(_StubParityProvider):
+    def __init__(self) -> None:
+        super().__init__(include_synthetic=False)
+
+    async def get_proxy_quote(self, symbol: str) -> ParityQuote | None:
+        _ = symbol
+        return None
+
+    async def get_fx_rate(self, pair: str) -> ParityQuote | None:
+        _ = pair
+        return None
+
+    async def get_stablecoin_rate(self, pair: str) -> ParityQuote | None:
+        _ = pair
+        return None
+
+    async def get_kr_stock_quote(self, symbol: str) -> ParityQuote | None:
+        _ = symbol
+        return None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_market_parity_calculates_stubbed_cards() -> None:
+    response = await build_market_parity(_StubParityProvider())
+
+    assert response.state == "fresh"
+    cards = {card.id: card for card in response.cards}
+
+    index = cards["ewy-kospi-implied-parity"]
+    assert index.dataState == "fresh"
+    assert index.basePrice == 100
+    assert index.proxyPrice == 10
+    assert index.fxRate == 11
+    assert index.impliedValue == 110
+    assert index.premiumPct == 10
+    assert index.tone == "premium"
+
+    stablecoin = cards["usdt-krw-usd-krw-premium"]
+    assert stablecoin.dataState == "fresh"
+    assert stablecoin.usdKrw == 11
+    assert stablecoin.usdtKrw == 11.55
+    assert stablecoin.premiumPct == 5
+
+    sms = cards["005930-xyz-smsn"]
+    assert sms.syntheticSymbol == "xyz:SMSN"
+    assert sms.basePrice == 88
+    assert sms.syntheticPrice == 8
+    assert sms.impliedValue == 88
+    assert sms.premiumPct == 0
+    assert sms.tone == "flat"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_market_parity_defaults_to_approval_gated_missing_cards() -> None:
+    response = await build_market_parity(_ApprovalGatedProvider())
+
+    assert response.state == "partial"
+    cards = {card.id: card for card in response.cards}
+    assert cards["ewy-kospi-implied-parity"].dataState == "missing"
+    assert cards["ewy-kospi-implied-parity"].emptyReason == "proxy_quote_missing"
+    assert cards["usdt-krw-usd-krw-premium"].dataState == "missing"
+    assert cards["usdt-krw-usd-krw-premium"].emptyReason == "fx_source_not_configured"
+    assert cards["005930-xyz-smsn"].dataState == "disabled"
+    assert cards["005930-xyz-smsn"].emptyReason == "hyperliquid_source_not_approved"
+    assert "hyperliquid_source_not_approved" in cards["005930-xyz-smsn"].source.warnings
+    assert any("raoni.xyz" in note for note in response.notes)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_market_parity_redacts_provider_exception_to_warning() -> None:
+    response = await build_market_parity(_StubParityProvider(fail_proxy=True))
+
+    assert response.state == "partial"
+    index = next(
+        card for card in response.cards if card.id == "ewy-kospi-implied-parity"
+    )
+    assert index.dataState == "missing"
+    assert index.emptyReason == "proxy_quote_missing"
+    assert any("proxy:EWY" in warning for warning in response.warnings)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_market_parity_can_hide_disabled_cards() -> None:
+    response = await build_market_parity(
+        _ApprovalGatedProvider(), include_disabled=False, limit=20
+    )
+
+    assert all(card.dataState != "disabled" for card in response.cards)
+    assert {card.type for card in response.cards} == {
+        "index_implied_parity",
+        "stablecoin_fx_premium",
+        "crypto_kimchi_premium",
+    }

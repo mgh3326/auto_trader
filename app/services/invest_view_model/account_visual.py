@@ -27,7 +27,7 @@ _VISUAL_MAP: dict[str, tuple[Tone, BadgeText, str]] = {
     "toss_manual": ("dashed", "Manual", "토스 수동"),
     "pension_manual": ("dashed", "Manual", "연금 수동"),
     "isa_manual": ("dashed", "Manual", "ISA 수동"),
-    "db_simulated": ("dashed", "Manual", "시뮬레이션"),
+    "db_simulated": ("dashed", "Paper", "시뮬레이션"),
 }
 
 

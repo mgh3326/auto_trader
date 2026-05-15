@@ -70,3 +70,21 @@ def test_invest_home_service_no_mutation_imports() -> None:
     v = _violations(loaded, FORBIDDEN_MUTATION_MODULES)
     if v:
         pytest.fail(f"Forbidden imports in invest_home_service: {v}")
+
+
+@pytest.mark.unit
+def test_crypto_dashboard_service_no_mutation_imports() -> None:
+    root = Path(__file__).resolve().parent.parent
+    loaded = _loaded("app.services.invest_view_model.crypto_dashboard_service", root)
+    v = _violations(loaded, FORBIDDEN_MUTATION_MODULES)
+    if v:
+        pytest.fail(f"Forbidden imports in crypto_dashboard_service: {v}")
+
+
+@pytest.mark.unit
+def test_market_parity_service_no_mutation_imports() -> None:
+    root = Path(__file__).resolve().parent.parent
+    loaded = _loaded("app.services.invest_view_model.market_parity_service", root)
+    v = _violations(loaded, FORBIDDEN_MUTATION_MODULES)
+    if v:
+        pytest.fail(f"Forbidden imports in market_parity_service: {v}")

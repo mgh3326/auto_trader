@@ -1,6 +1,7 @@
 import type { MarketIssue } from "./newsIssues";
 
 export type FeedTab = "top" | "latest" | "hot" | "holdings" | "watchlist" | "kr" | "us" | "crypto";
+export type FeedTopic = "fx" | "rates";
 export type RelationKind = "held" | "watchlist" | "both" | "none";
 export type FeedNewsScope = "market_wide" | "symbol_specific" | "mixed" | "kr_market_wide";
 
@@ -25,6 +26,12 @@ export interface FeedRelatedSymbol {
   matchReason?: string | null;
   matchedTerm?: string | null;
   quote?: FeedRelatedSymbolQuote | null;
+  currentPrice?: number | null;
+  previousClose?: number | null;
+  change?: number | null;
+  changePct?: number | null;
+  quoteSource?: string | null;
+  quoteAsOf?: string | null;
 }
 
 export interface FeedNewsItem {
@@ -54,9 +61,10 @@ export interface FeedNewsItem {
   summarySnippet?: string | null;
   relation: RelationKind;
   url: string;
-  // ROB-155 / ROB-169 — additive read-layer classification.
+  // ROB-155 / ROB-169 / ROB-220 — additive read-layer classification.
   scope?: FeedNewsScope;
   tags?: string[];
+  topicTags?: FeedTopic[];
   category?: string | null;
   noiseReason?: string | null;
 }

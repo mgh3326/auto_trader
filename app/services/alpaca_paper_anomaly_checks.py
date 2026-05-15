@@ -294,6 +294,7 @@ def build_paper_execution_preflight_report(
     expected_execution_symbol: str | None = None,
     now: datetime | None = None,
     stale_after_minutes: int = 30,
+    legacy_cycle_blockers_as_warnings: bool = False,
 ) -> PaperExecutionPreflightReport:
     """Build a read-only Alpaca Paper execution preflight anomaly report.
 
@@ -310,6 +311,13 @@ def build_paper_execution_preflight_report(
         expected_execution_symbol: Optional symbol expected at Alpaca Paper.
         now: Clock injection for deterministic tests.
         stale_after_minutes: Preview/approval max age before blocking.
+        legacy_cycle_blockers_as_warnings: When True, downgrade the legacy
+            single-cycle cleanup gates (residual positions and stale preview
+            rows) to warnings. This is intended for Alpaca Paper execution-flow
+            testing where operators deliberately exercise buy/sell/adjust/close
+            paths against an already-used paper account. Open orders,
+            duplicate client IDs, ledger/order/fill mismatches, unclosed sells,
+            missing linked sells, and symbol mismatches still block.
     """
     checked_at = _as_aware_utc(now) or datetime.now(UTC)
     unscoped_ledger = list(ledger_rows)
@@ -359,7 +367,9 @@ def build_paper_execution_preflight_report(
     if residual_positions:
         add(
             "residual_position_exists",
-            PaperExecutionAnomalySeverity.block,
+            PaperExecutionAnomalySeverity.warning
+            if legacy_cycle_blockers_as_warnings
+            else PaperExecutionAnomalySeverity.block,
             "Residual Alpaca Paper position exists before starting a new cycle",
             {
                 "count": len(residual_positions),
@@ -496,7 +506,9 @@ def build_paper_execution_preflight_report(
     if stale_rows:
         add(
             "stale_preview_or_approval_packet",
-            PaperExecutionAnomalySeverity.block,
+            PaperExecutionAnomalySeverity.warning
+            if legacy_cycle_blockers_as_warnings
+            else PaperExecutionAnomalySeverity.block,
             "Preview or approval packet is older than the allowed threshold",
             {
                 "stale_after_minutes": stale_after_minutes,

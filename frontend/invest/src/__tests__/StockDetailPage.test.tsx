@@ -1,12 +1,13 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { StockDetailPage } from "../pages/stock-detail/StockDetailPage";
 import * as stockApi from "../api/stockDetail";
 import type {
   StockDetailCandlesResponse,
   StockDetailNewsResponse,
   StockDetailOrdersResponse,
+  StockDetailResearchConsensusResponse,
   StockDetailResponse,
 } from "../types/stockDetail";
 
@@ -48,6 +49,7 @@ const aboveFold: StockDetailResponse = {
     asOf: "2026-05-09T00:00:00Z",
     freshness: "ok",
   },
+  investorFlow: null,
   naverEnrichment: {
     source: "naver_stock_detail_poc",
     market: "us",
@@ -88,6 +90,30 @@ const aboveFold: StockDetailResponse = {
     pnlRate: 5.5,
     includedSources: ["kis"],
     priceState: "live",
+  },
+  fxSensitivity: {
+    source: "stock_detail_fx_sensitivity",
+    status: "available",
+    currencyPair: "USD/KRW",
+    baseFxRate: 1360,
+    holdingValueNative: 422.68,
+    holdingValueKrw: 575000,
+    basis: "portfolio_value",
+    scenarios: [
+      {
+        rateMovePct: -1,
+        estimatedKrwImpact: -5748.448,
+        estimatedValueKrw: 569096.352,
+        label: "USD/KRW -1%",
+      },
+      {
+        rateMovePct: 1,
+        estimatedKrwImpact: 5748.448,
+        estimatedValueKrw: 580593.248,
+        label: "USD/KRW +1%",
+      },
+    ],
+    caution: "환율 민감도는 USD/KRW 1% 변동을 보유 평가액에 단순 적용한 가정치입니다.",
   },
   latestAnalysis: {
     id: 11,
@@ -157,9 +183,59 @@ const news: StockDetailNewsResponse = {
   meta: { warnings: [] },
 };
 
-function renderPage() {
+const researchConsensus: StockDetailResearchConsensusResponse = {
+  symbol: "QQQM",
+  market: "us",
+  displayName: "Invesco NASDAQ 100 ETF",
+  state: "ready",
+  dataState: "fresh",
+  emptyReason: null,
+  warnings: [],
+  sourceOfTruth: "analyst_opinions_and_research_reports",
+  asOf: "2026-05-10T09:31:00Z",
+  stale: false,
+  consensus: {
+    source: "yfinance",
+    buyCount: 7,
+    holdCount: 2,
+    sellCount: 0,
+    strongBuyCount: 3,
+    totalCount: 9,
+    avgTargetPrice: 235,
+    medianTargetPrice: 236,
+    minTargetPrice: 220,
+    maxTargetPrice: 250,
+    upsidePct: 11.2,
+    currentPrice: 211.34,
+  },
+  citations: [
+    {
+      source: "issuer_ir",
+      title: "QQQM holdings note",
+      analyst: "ETF Desk",
+      published_at: "2026-05-10T08:30:00Z",
+      category: "ETF",
+      detail_url: "https://example.com/research/qqqm",
+      pdf_url: null,
+      excerpt: "Nasdaq 100 구성 종목 변화와 기술주 집중도를 요약합니다.",
+      symbol_candidates: [{ symbol: "QQQM", market: "us", source: "ticker" }],
+      attribution_publisher: "Issuer",
+      attribution_copyright_notice: "metadata only",
+    },
+  ],
+  freshness: {
+    isReady: true,
+    isStale: false,
+    latestRunUuid: "run-1",
+    latestFinishedAt: "2026-05-10T09:00:00Z",
+    latestReportCount: 1,
+    maxAgeHours: 24,
+  },
+};
+
+function renderPage(path = "/invest/stocks/us/QQQM") {
   return render(
-    <MemoryRouter basename="/invest" initialEntries={["/invest/stocks/us/QQQM"]}>
+    <MemoryRouter basename="/invest" initialEntries={[path]}>
       <Routes>
         <Route path="/stocks/:market/:symbol" element={<StockDetailPage />} />
       </Routes>
@@ -172,6 +248,11 @@ beforeEach(() => {
   vi.spyOn(stockApi, "fetchStockDetailCandles").mockResolvedValue(candles);
   vi.spyOn(stockApi, "fetchStockDetailOrders").mockResolvedValue(orders);
   vi.spyOn(stockApi, "fetchStockDetailNews").mockResolvedValue(news);
+  vi.spyOn(stockApi, "fetchStockDetailResearchConsensus").mockResolvedValue(researchConsensus);
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 test("renders the QQQM stock detail shell from the read-only backend contract", async () => {
@@ -183,6 +264,9 @@ test("renders the QQQM stock detail shell from the read-only backend contract", 
   expect(screen.getByText("$211.34")).toBeInTheDocument();
   expect(screen.getByText("+1.06%")).toBeInTheDocument();
   expect(screen.getByTestId("stock-detail-holding")).toHaveTextContent("2주");
+  expect(screen.getByTestId("stock-detail-fx-sensitivity")).toHaveTextContent("환율 민감도");
+  expect(screen.getByTestId("stock-detail-fx-sensitivity")).toHaveTextContent("USD/KRW");
+  expect(screen.getByTestId("stock-detail-fx-sensitivity")).toHaveTextContent("+₩5,748");
   expect(screen.getByTestId("stock-detail-profile")).toHaveTextContent("ETF");
   expect(screen.getByTestId("stock-detail-analysis")).toHaveTextContent("hold");
   expect(screen.getByTestId("stock-detail-naver-poc")).toHaveTextContent("Naver 원천 데이터 PoC");
@@ -191,6 +275,87 @@ test("renders the QQQM stock detail shell from the read-only backend contract", 
   await waitFor(() => expect(stockApi.fetchStockDetailCandles).toHaveBeenCalledWith({ market: "us", symbol: "QQQM", period: "1d" }));
   expect(await screen.findByTestId("stock-detail-chart")).toHaveTextContent("3개 캔들");
   expect(await screen.findByTestId("stock-detail-news")).toHaveTextContent("QQQM tracks Nasdaq rally");
+});
+
+test("renders research consensus ready state with analyst metrics and compact citations", async () => {
+  renderPage();
+
+  const card = await screen.findByTestId("stock-detail-research-consensus");
+  expect(card).toHaveTextContent("리서치 · 컨센서스");
+  expect(card).toHaveTextContent("최신");
+  expect(card).toHaveTextContent("Buy");
+  expect(card).toHaveTextContent("7/9");
+  expect(card).toHaveTextContent("QQQM holdings note");
+  expect(card).toHaveTextContent("ETF Desk");
+  expect(card).not.toHaveTextContent("raw_payload");
+  await waitFor(() => expect(stockApi.fetchStockDetailResearchConsensus).toHaveBeenCalledWith({ market: "us", symbol: "QQQM" }));
+});
+
+test("renders research consensus empty state when no opinions or citations are available", async () => {
+  vi.mocked(stockApi.fetchStockDetailResearchConsensus).mockResolvedValue({
+    ...researchConsensus,
+    state: "missing",
+    dataState: "missing",
+    emptyReason: "no_analyst_consensus_or_research_reports",
+    sourceOfTruth: "none",
+    consensus: null,
+    citations: [],
+  });
+
+  renderPage();
+
+  const card = await screen.findByTestId("stock-detail-research-consensus");
+  expect(card).toHaveTextContent("데이터 없음");
+  expect(card).toHaveTextContent("애널리스트 컨센서스와 리서치 인용이 없습니다.");
+});
+
+test("renders research consensus stale and warning state", async () => {
+  vi.mocked(stockApi.fetchStockDetailResearchConsensus).mockResolvedValue({
+    ...researchConsensus,
+    state: "partial",
+    dataState: "stale",
+    stale: true,
+    warnings: ["research_reports_stale"],
+    sourceOfTruth: "research_reports",
+    consensus: null,
+    freshness: { ...researchConsensus.freshness, isReady: false, isStale: true },
+  });
+
+  renderPage();
+
+  const card = await screen.findByTestId("stock-detail-research-consensus");
+  expect(card).toHaveTextContent("오래된 데이터");
+  expect(card).toHaveTextContent("컨센서스 없이 리서치 인용만 표시합니다.");
+  expect(card).toHaveTextContent("경고: research_reports_stale");
+});
+
+test("renders research consensus fetch error state without blocking the page", async () => {
+  vi.mocked(stockApi.fetchStockDetailResearchConsensus).mockRejectedValue(new Error("offline"));
+
+  renderPage();
+
+  expect(await screen.findByTestId("stock-detail-shell")).toBeInTheDocument();
+  expect(await screen.findByTestId("stock-detail-research-consensus")).toHaveTextContent("리서치 데이터를 사용할 수 없습니다.");
+});
+
+test("does not fetch or render research consensus for crypto symbols", async () => {
+  vi.mocked(stockApi.fetchStockDetail).mockResolvedValue({
+    ...aboveFold,
+    symbol: "KRW-BTC",
+    market: "crypto",
+    displayName: "Bitcoin",
+    exchange: "UPBIT",
+    currency: "KRW",
+    assetCategory: "crypto",
+    naverEnrichment: null,
+    fxSensitivity: null,
+  });
+
+  renderPage("/invest/stocks/crypto/KRW-BTC");
+
+  expect(await screen.findByTestId("stock-detail-shell")).toBeInTheDocument();
+  expect(stockApi.fetchStockDetailResearchConsensus).not.toHaveBeenCalled();
+  expect(screen.queryByTestId("stock-detail-research-consensus")).not.toBeInTheDocument();
 });
 
 test("keeps buy/sell controls disabled and shows explicit orderbook plus empty order history states", async () => {
@@ -219,4 +384,147 @@ test("omits the Naver PoC card when the backend has no safe enrichment map", asy
 
   expect(await screen.findByTestId("stock-detail-shell")).toBeInTheDocument();
   expect(screen.queryByTestId("stock-detail-naver-poc")).not.toBeInTheDocument();
+});
+
+test("renders KR investor-flow summary and daily rows as read-only reference data", async () => {
+  vi.mocked(stockApi.fetchStockDetail).mockResolvedValue({
+    ...aboveFold,
+    market: "kr",
+    symbol: "403550",
+    displayName: "쏘카",
+    exchange: "KOSPI",
+    currency: "KRW",
+    investorFlow: {
+      source: "investor_flow_snapshots",
+      market: "kr",
+      symbol: "403550",
+      dataState: "fresh",
+      snapshotDate: "2026-05-13",
+      collectedAt: "2026-05-13T15:40:00Z",
+      snapshotSource: "naver_finance",
+      foreignNet: 20859,
+      institutionNet: -12931,
+      individualNet: 125586,
+      foreignNetBuyRank: null,
+      foreignNetSellRank: null,
+      institutionNetBuyRank: null,
+      institutionNetSellRank: null,
+      doubleBuy: false,
+      doubleSell: false,
+      foreignConsecutiveBuyDays: 4,
+      foreignConsecutiveSellDays: null,
+      institutionConsecutiveBuyDays: null,
+      institutionConsecutiveSellDays: 1,
+      individualConsecutiveBuyDays: 2,
+      individualConsecutiveSellDays: null,
+      dailyRows: [
+        {
+          snapshotDate: "2026-05-13",
+          collectedAt: "2026-05-13T15:40:00Z",
+          source: "naver_finance",
+          close: null,
+          changeRate: null,
+          volume: null,
+          foreignNet: 20859,
+          foreignHoldingShares: null,
+          foreignHoldingRate: null,
+          institutionNet: -12931,
+          individualNet: 125586,
+          doubleBuy: false,
+          doubleSell: false,
+        },
+        {
+          snapshotDate: "2026-05-12",
+          collectedAt: "2026-05-12T15:40:00Z",
+          source: "naver_finance",
+          close: null,
+          changeRate: null,
+          volume: null,
+          foreignNet: 440,
+          foreignHoldingShares: null,
+          foreignHoldingRate: null,
+          institutionNet: 1024,
+          individualNet: -1464,
+          doubleBuy: true,
+          doubleSell: false,
+        },
+      ],
+      periodSummary: {
+        windowDays: 2,
+        rowCount: 2,
+        foreignNetTotal: 21299,
+        institutionNetTotal: -11907,
+        individualNetTotal: 124122,
+        foreignBuyDays: 2,
+        foreignSellDays: 0,
+        foreignFlatDays: 0,
+        foreignNetToVolumeRatio: null,
+        foreignHoldingSharesChange: null,
+        foreignHoldingRateChange: null,
+        unavailableLabels: ["거래량 저장 전까지 계산 불가"],
+      },
+      buyerDecomposition: {
+        snapshotDate: "2026-05-13",
+        label: "개인 주도",
+        leadingBuyer: "individual",
+        foreignNet: 20859,
+        institutionNet: -12931,
+        individualNet: 125586,
+        note: "최신 수급 행 기준입니다.",
+      },
+      unavailableLabels: ["외국인 순매수/거래량 강도: 거래량 저장 전까지 계산 불가"],
+      cautionLabel: "투자자별 수급은 지연된 과거 참고 데이터이며 매매 판단을 대신하지 않습니다.",
+    },
+  });
+
+  renderPage();
+
+  const card = await screen.findByTestId("stock-detail-investor-flow");
+  expect(card).toHaveTextContent("투자자별 매매동향 · 수급 흐름");
+  expect(card).toHaveTextContent("naver_finance · 기준일 2026-05-13");
+  expect(card).toHaveTextContent("+20,859주");
+  expect(card).toHaveTextContent("−12,931주");
+  expect(card).toHaveTextContent("최근 2거래일 수급 요약");
+  expect(card).toHaveTextContent("주도 매수자 분해");
+  expect(card).toHaveTextContent("개인 주도");
+  expect(card).toHaveTextContent("2026-05-12");
+  expect(card).toHaveTextContent("쌍끌이");
+  expect(card).toHaveTextContent("매매 판단을 대신하지 않습니다");
+});
+
+
+test("renders conservative fallback text when FX sensitivity is not applicable", async () => {
+  vi.mocked(stockApi.fetchStockDetail).mockResolvedValue({
+    ...aboveFold,
+    market: "kr",
+    symbol: "005930",
+    displayName: "삼성전자",
+    exchange: "KOSPI",
+    currency: "KRW",
+    fxSensitivity: {
+      source: "stock_detail_fx_sensitivity",
+      status: "not_applicable",
+      currencyPair: null,
+      baseFxRate: null,
+      holdingValueNative: null,
+      holdingValueKrw: null,
+      basis: "not_applicable",
+      scenarios: [],
+      caution: "KRW 자산은 별도 USD/KRW 환율 민감도 계산을 표시하지 않습니다.",
+    },
+  });
+
+  renderPage();
+
+  expect(await screen.findByTestId("stock-detail-fx-sensitivity")).toHaveTextContent("환율 민감도");
+  expect(screen.getByTestId("stock-detail-fx-sensitivity")).toHaveTextContent("KRW 자산은 별도 USD/KRW 환율 민감도 계산을 표시하지 않습니다.");
+});
+
+test("omits the FX sensitivity card when the backend returns null", async () => {
+  vi.mocked(stockApi.fetchStockDetail).mockResolvedValue({ ...aboveFold, fxSensitivity: null });
+
+  renderPage();
+
+  expect(await screen.findByTestId("stock-detail-shell")).toBeInTheDocument();
+  expect(screen.queryByTestId("stock-detail-fx-sensitivity")).not.toBeInTheDocument();
 });

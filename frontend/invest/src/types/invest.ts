@@ -53,6 +53,12 @@ export interface Holding {
   pnlKrw?: number | null;
   pnlRate?: number | null;
   priceState: PriceState;
+  sourceOfTruth?: boolean;
+  isTradeable?: boolean;
+  manualOnly?: boolean;
+  sellableQuantity?: number | null;
+  pendingSellQuantity?: number;
+  referenceQuantity?: number | null;
 }
 
 export interface GroupedSourceBreakdown {
@@ -66,6 +72,13 @@ export interface GroupedSourceBreakdown {
   valueKrw?: number | null;
   pnlKrw?: number | null;
   pnlRate?: number | null;
+  accountKind?: AccountKind;
+  sourceOfTruth?: boolean;
+  isTradeable?: boolean;
+  manualOnly?: boolean;
+  sellableQuantity?: number;
+  pendingSellQuantity?: number;
+  referenceQuantity?: number;
 }
 
 export interface GroupedHolding {
@@ -77,6 +90,10 @@ export interface GroupedHolding {
   displayName: string;
   currency: Currency;
   totalQuantity: number;
+  tradeableQuantity?: number;
+  sellableQuantity?: number;
+  pendingSellQuantity?: number;
+  referenceQuantity?: number;
   averageCost?: number | null;
   costBasis?: number | null;
   valueNative?: number | null;

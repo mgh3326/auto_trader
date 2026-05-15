@@ -26,6 +26,10 @@ def _fake_event(
     forecast: object | None = None,
     previous: object | None = None,
     values: list[object] | None = None,
+    source: str = "test",
+    currency: str | None = None,
+    country: str | None = None,
+    importance: int | None = None,
 ):
     e = MagicMock()
     # MarketEventResponse uses source_event_id, not event_id
@@ -38,7 +42,10 @@ def _fake_event(
     e.title = f"event {event_id}" if title is None else title
     e.event_date = ev_date or date(2026, 5, 4)
     e.release_time_utc = release_time_utc
-    e.source = "test"
+    e.source = source
+    e.currency = currency
+    e.country = country
+    e.importance = importance
     if values is not None:
         e.values = values
     elif actual is not None or forecast is not None or previous is not None:
@@ -255,6 +262,80 @@ async def test_calendar_cluster_top_events_and_summary_are_priority_aware(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("event_id", "title", "market", "value_fields", "tab"),
+    [
+        (
+            "us-ppi",
+            "USD PPI m/m",
+            "us",
+            {"actual": "0.5", "forecast": "0.3", "previous": "0.2"},
+            "all",
+        ),
+        (
+            "producer-prices",
+            "US Producer Price Index",
+            "global",
+            {"forecast": "0.3"},
+            "economic",
+        ),
+    ],
+)
+async def test_calendar_promotes_ppi_terms_in_dense_economic_cluster(
+    monkeypatch,
+    event_id: str,
+    title: str,
+    market: str,
+    value_fields: dict[str, str],
+    tab: str,
+) -> None:
+    from app.services.invest_view_model import calendar_service as svc
+
+    fake_resp = MagicMock()
+    fake_resp.events = [
+        *[
+            _fake_event(
+                event_id=f"routine-{i}",
+                category="economic",
+                market=market,
+                title=f"routine macro {i}",
+            )
+            for i in range(12)
+        ],
+        _fake_event(
+            event_id=event_id,
+            category="economic",
+            market=market,
+            title=title,
+            **value_fields,
+        ),
+    ]
+    fake_query_service = MagicMock(list_for_range=AsyncMock(return_value=fake_resp))
+    monkeypatch.setattr(svc, "MarketEventsQueryService", lambda db: fake_query_service)
+    _patch_freshness(monkeypatch, svc, date(2026, 5, 4), date(2026, 5, 4))
+
+    resp = await svc.build_calendar(
+        db=MagicMock(),
+        resolver=RelationResolver(),
+        from_date=date(2026, 5, 4),
+        to_date=date(2026, 5, 4),
+        tab=tab,
+    )
+
+    day = resp.days[0]
+    top = day.clusters[0].topEvents[0]
+    assert len(day.clusters) == 1
+    assert day.clusters[0].eventType == "economic"
+    assert day.clusters[0].market == market
+    assert top.eventId == event_id
+    assert "high_impact" in top.highlightReasons
+    assert "has_values" in top.highlightReasons
+    assert day.summary is not None
+    assert day.summary.highlightEventIds[0] == event_id
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_calendar_polishes_blank_kr_title_kst_time_and_values(
     monkeypatch,
 ) -> None:
@@ -438,3 +519,100 @@ async def test_calendar_marks_loaded_when_events_present(monkeypatch) -> None:
         tab="all",
     )
     assert resp.days[0].dataState == "loaded"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_calendar_prefers_tradingview_over_forexfactory_duplicate(
+    monkeypatch,
+) -> None:
+    from app.services.invest_view_model import calendar_service as svc
+
+    fake_resp = MagicMock()
+    fake_resp.events = [
+        _fake_event(
+            event_id="ff-cpi",
+            category="economic",
+            market="global",
+            source="forexfactory",
+            title="US CPI",
+            actual=None,
+            forecast="0.3",
+            previous="0.2",
+        ),
+        _fake_event(
+            event_id="tv-cpi",
+            category="economic",
+            market="global",
+            source="tradingview",
+            title="US CPI",
+            actual="0.4",
+            forecast="0.3",
+            previous="0.2",
+        ),
+    ]
+    fake_query_service = MagicMock()
+    fake_query_service.list_for_range = AsyncMock(return_value=fake_resp)
+    monkeypatch.setattr(svc, "MarketEventsQueryService", lambda db: fake_query_service)
+    _patch_freshness(monkeypatch, svc, date(2026, 5, 4), date(2026, 5, 4))
+
+    resp = await svc.build_calendar(
+        db=MagicMock(),
+        resolver=RelationResolver(),
+        from_date=date(2026, 5, 4),
+        to_date=date(2026, 5, 4),
+        tab="economic",
+    )
+
+    events = resp.days[0].events
+    assert len(events) == 1
+    assert events[0].eventId == "tv-cpi"
+    assert events[0].source == "tradingview"
+    assert events[0].actual == "0.4"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_calendar_keeps_forexfactory_when_tradingview_missing(
+    monkeypatch,
+) -> None:
+    from app.services.invest_view_model import calendar_service as svc
+
+    fake_resp = MagicMock()
+    fake_resp.events = [
+        _fake_event(
+            event_id="ff-cpi",
+            category="economic",
+            market="global",
+            source="forexfactory",
+            title="US CPI",
+            actual=None,
+            forecast="0.3",
+            previous="0.2",
+        ),
+        _fake_event(
+            event_id="ff-jobs",
+            category="economic",
+            market="global",
+            source="forexfactory",
+            title="US Nonfarm Payrolls",
+            actual="175",
+            forecast="170",
+            previous="165",
+        ),
+    ]
+    fake_query_service = MagicMock()
+    fake_query_service.list_for_range = AsyncMock(return_value=fake_resp)
+    monkeypatch.setattr(svc, "MarketEventsQueryService", lambda db: fake_query_service)
+    _patch_freshness(monkeypatch, svc, date(2026, 5, 4), date(2026, 5, 4))
+
+    resp = await svc.build_calendar(
+        db=MagicMock(),
+        resolver=RelationResolver(),
+        from_date=date(2026, 5, 4),
+        to_date=date(2026, 5, 4),
+        tab="economic",
+    )
+
+    event_ids = [event.eventId for event in resp.days[0].events]
+    assert event_ids == ["ff-cpi", "ff-jobs"]

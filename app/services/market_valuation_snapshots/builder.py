@@ -1,0 +1,137 @@
+from __future__ import annotations
+
+import asyncio
+import datetime as dt
+import logging
+from collections.abc import Awaitable, Callable, Iterable
+from dataclasses import dataclass
+from decimal import Decimal
+from typing import Any
+
+from app.services.market_quote_snapshots.builder import redact_sensitive_payload
+from app.services.market_valuation_snapshots.repository import (
+    MarketValuationSnapshotUpsert,
+)
+
+logger = logging.getLogger(__name__)
+ValuationFetcher = Callable[[str, str], Awaitable[dict[str, Any]]]
+
+
+@dataclass(frozen=True)
+class MarketValuationBuildResult:
+    payloads: tuple[MarketValuationSnapshotUpsert, ...]
+    warnings: tuple[str, ...] = ()
+
+
+def _to_decimal(value: Any) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+async def default_valuation_fetcher(symbol: str, market: str) -> dict[str, Any]:
+    if market == "kr":
+        from app.services.naver_finance.valuation import fetch_valuation
+
+        return await fetch_valuation(symbol)
+    if market == "us":
+        from app.services.brokers.yahoo.client import (
+            fetch_fast_info,
+            fetch_fundamental_info,
+        )
+
+        fast_info, fundamentals = await asyncio.gather(
+            fetch_fast_info(symbol), fetch_fundamental_info(symbol)
+        )
+        return {**fast_info, **fundamentals}
+    raise ValueError(f"unsupported market: {market}")
+
+
+def _source_for_market(market: str) -> str:
+    return "naver_finance" if market == "kr" else "yahoo"
+
+
+def _payload_from_raw(
+    *, market: str, symbol: str, snapshot_date: dt.date, raw: dict[str, Any]
+) -> MarketValuationSnapshotUpsert:
+    return MarketValuationSnapshotUpsert(
+        market=market,
+        symbol=symbol,
+        snapshot_date=snapshot_date,
+        source=_source_for_market(market),
+        per=_to_decimal(raw.get("per") or raw.get("PER") or raw.get("trailingPE")),
+        pbr=_to_decimal(raw.get("pbr") or raw.get("PBR") or raw.get("priceToBook")),
+        roe=_to_decimal(raw.get("roe") or raw.get("ROE")),
+        dividend_yield=_to_decimal(
+            raw.get("dividend_yield")
+            or raw.get("Dividend Yield")
+            or raw.get("trailingAnnualDividendYield")
+        ),
+        market_cap=_to_decimal(raw.get("market_cap") or raw.get("marketCap")),
+        high_52w=_to_decimal(raw.get("high_52w") or raw.get("yearHigh")),
+        low_52w=_to_decimal(raw.get("low_52w") or raw.get("yearLow")),
+        raw_payload=redact_sensitive_payload(dict(raw)),
+    )
+
+
+async def build_valuation_snapshots_for_market(
+    *,
+    market: str,
+    symbols: Iterable[str],
+    snapshot_date: dt.date,
+    concurrency: int = 4,
+    fetcher: ValuationFetcher | None = None,
+) -> MarketValuationBuildResult:
+    market_norm = market.strip().lower()
+    if market_norm not in {"kr", "us"}:
+        raise ValueError(f"unsupported market: {market}")
+    fetch = fetcher or default_valuation_fetcher
+    sem = asyncio.Semaphore(max(1, concurrency))
+    symbols_list = [symbol.strip().upper() for symbol in symbols if symbol.strip()]
+    payloads: list[MarketValuationSnapshotUpsert | None] = [None] * len(symbols_list)
+    warnings: list[str] = []
+
+    async def _one(idx: int, symbol: str) -> None:
+        async with sem:
+            try:
+                raw = await fetch(symbol, market_norm)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "valuation snapshot fetch failed market=%s symbol=%s: %s",
+                    market_norm,
+                    symbol,
+                    exc,
+                )
+                warnings.append(f"{symbol}: fetch failed ({exc})")
+                return
+            payload = _payload_from_raw(
+                market=market_norm, symbol=symbol, snapshot_date=snapshot_date, raw=raw
+            )
+            if not any(
+                getattr(payload, field) is not None
+                for field in (
+                    "per",
+                    "pbr",
+                    "roe",
+                    "dividend_yield",
+                    "market_cap",
+                    "high_52w",
+                    "low_52w",
+                )
+            ):
+                warnings.append(
+                    f"{symbol}: skipped because valuation metrics are unavailable"
+                )
+                return
+            payloads[idx] = payload
+
+    await asyncio.gather(
+        *(_one(idx, symbol) for idx, symbol in enumerate(symbols_list))
+    )
+    return MarketValuationBuildResult(
+        payloads=tuple(payload for payload in payloads if payload is not None),
+        warnings=tuple(warnings),
+    )

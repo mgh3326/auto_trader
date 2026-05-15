@@ -75,6 +75,14 @@ class _FakeExecuteResult:
     def all(self) -> list[Any]:
         return self._rows
 
+    def scalar_one_or_none(self) -> Any | None:
+        return self._scalar_rows[0] if self._scalar_rows else None
+
+    def one(self) -> Any:
+        if self._rows:
+            return self._rows[0]
+        return type("EmptyRow", (), {})()
+
 
 class _FakeSession:
     def __init__(self, results: list[_FakeExecuteResult]) -> None:
@@ -106,6 +114,42 @@ class _FakeSnapshot:
         self.computed_at = kwargs.get(
             "computed_at", datetime(2026, 5, 11, 0, 30, tzinfo=UTC)
         )
+
+
+class _FakeCryptoSnapshot:
+    def __init__(self, **kwargs: Any) -> None:
+        self.symbol = kwargs.get("symbol", "KRW-BTC")
+        self.snapshot_date = kwargs.get("snapshot_date", date(2026, 5, 13))
+        self.name = kwargs.get("name", "Bitcoin")
+        self.latest_close = kwargs.get("latest_close", Decimal("145000000"))
+        self.change_amount = kwargs.get("change_amount", Decimal("1000000"))
+        self.change_rate = kwargs.get("change_rate", Decimal("1.25"))
+        self.trade_amount_24h = kwargs.get("trade_amount_24h", Decimal("123456789000"))
+        self.volume_24h = kwargs.get("volume_24h", Decimal("9876.5"))
+        self.volume_24h_usd = kwargs.get("volume_24h_usd", Decimal("90000000"))
+        self.market_cap = kwargs.get("market_cap", Decimal("1800000000000"))
+        self.rsi = kwargs.get("rsi", Decimal("58.0"))
+        self.adx = kwargs.get("adx", Decimal("24.0"))
+        self.computed_at = kwargs.get(
+            "computed_at", datetime(2026, 5, 13, 2, 30, tzinfo=UTC)
+        )
+
+
+def _coverage_row(
+    *,
+    latest_count: int,
+    stale: int = 0,
+    last: datetime | None = datetime(2026, 5, 13, 2, 30, tzinfo=UTC),
+) -> Any:
+    return type(
+        "CoverageRow",
+        (),
+        {"latest_count": latest_count, "stale": stale, "last": last},
+    )()
+
+
+def _name_row(symbol: str, name: str) -> Any:
+    return type("NameRow", (), {"symbol": symbol, "name": name})()
 
 
 class _FakeResolver:
@@ -143,7 +187,7 @@ async def test_build_screener_results_consecutive_gainers_happy_path() -> None:
 
     assert resp.presetId == "consecutive_gainers"
     assert resp.title == "연속 상승세"
-    assert resp.metricLabel == "연속상승"
+    assert resp.metricLabel == "주가등락률"
     assert len(resp.results) == 2
     assert resp.results[0].rank == 1
     assert resp.results[0].symbol == "005930"
@@ -217,6 +261,195 @@ async def test_build_screener_results_forwards_us_market_and_formats_us_labels()
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_screener_presets_returns_crypto_presets() -> None:
+    resp = build_screener_presets("crypto")
+
+    assert resp.selectedPresetId == "crypto_high_volume"
+    assert [p.id for p in resp.presets] == [
+        "crypto_high_volume",
+        "crypto_oversold",
+        "crypto_momentum",
+    ]
+    assert all(p.market == "crypto" for p in resp.presets)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_screener_results_forwards_crypto_market_and_formats_crypto_labels() -> (
+    None
+):
+    fake_screening = MagicMock()
+    fake_screening.list_screening = AsyncMock(
+        return_value={
+            "results": [
+                {
+                    "symbol": "KRW-BTC",
+                    "name": "Bitcoin",
+                    "market": "crypto",
+                    "category": "Crypto",
+                    "market_cap_usd": 2_100_000_000_000,
+                    "current_price": 150_000_000,
+                    "change_rate": 2.5,
+                    "change_amount": 1_250_000,
+                    "trade_amount_24h": 120_000_000_000,
+                }
+            ],
+            "warnings": [],
+        }
+    )
+    resolver = _FakeResolver(watched={("crypto", "KRW-BTC")})
+
+    resp = await build_screener_results(
+        preset_id="crypto_high_volume",
+        screening_service=fake_screening,
+        resolver=resolver,
+        market="crypto",
+    )
+
+    fake_screening.list_screening.assert_awaited_once()
+    assert fake_screening.list_screening.await_args.kwargs == {
+        "market": "crypto",
+        "sort_by": "trade_amount",
+        "sort_order": "desc",
+        "limit": 20,
+    }
+    row = resp.results[0]
+    assert resp.presetId == "crypto_high_volume"
+    assert row.market == "crypto"
+    assert row.symbol == "KRW-BTC"
+    assert row.name == "Bitcoin"
+    assert row.priceLabel == "150,000,000원"
+    assert row.changeAmountLabel == "+1,250,000원"
+    assert row.marketCapLabel == "$2.10T"
+    assert row.volumeLabel == "120,000,000,000"
+    assert row.metricValueLabel == "120,000,000,000"
+    assert row.isWatched is True
+    assert resolver.calls == [("crypto", "KRW-BTC")]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_screener_results_uses_fresh_crypto_snapshots_first() -> None:
+    fake_screening = type(
+        "ScreenerService",
+        (_FakeProductionScreening,),
+        {"__module__": "app.services.screener_service"},
+    )()
+    session = _FakeSession(
+        [
+            _FakeExecuteResult(scalar_rows=[date(2026, 5, 13)]),
+            _FakeExecuteResult(scalar_rows=[_FakeCryptoSnapshot()]),
+            _FakeExecuteResult(scalar_rows=[date(2026, 5, 13)]),
+            _FakeExecuteResult(rows=[_coverage_row(latest_count=30)]),
+        ]
+    )
+
+    resp = await build_screener_results(
+        preset_id="crypto_high_volume",
+        screening_service=fake_screening,
+        resolver=_FakeResolver(watched={("crypto", "KRW-BTC")}),
+        market="crypto",
+        session=session,
+        now=lambda: datetime(2026, 5, 13, 3, 0, tzinfo=UTC),
+    )
+
+    fake_screening.list_screening.assert_not_called()
+    assert session.calls == 4
+    assert resp.freshness.cacheHit is True
+    assert resp.freshness.dataState == "fresh"
+    row = resp.results[0]
+    assert row.symbol == "KRW-BTC"
+    assert row.priceLabel == "145,000,000원"
+    assert row.metricValueLabel == "123,456,789,000"
+    assert row.isWatched is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_screener_results_does_not_fallback_when_fresh_crypto_snapshot_has_no_qualifiers() -> (
+    None
+):
+    fake_screening = type(
+        "ScreenerService",
+        (_FakeProductionScreening,),
+        {"__module__": "app.services.screener_service"},
+    )()
+    session = _FakeSession(
+        [
+            _FakeExecuteResult(scalar_rows=[date(2026, 5, 13)]),
+            _FakeExecuteResult(scalar_rows=[]),
+            _FakeExecuteResult(scalar_rows=[date(2026, 5, 13)]),
+            _FakeExecuteResult(rows=[_coverage_row(latest_count=30)]),
+        ]
+    )
+
+    resp = await build_screener_results(
+        preset_id="crypto_oversold",
+        screening_service=fake_screening,
+        resolver=_FakeResolver(watched=set()),
+        market="crypto",
+        session=session,
+        now=lambda: datetime(2026, 5, 13, 3, 0, tzinfo=UTC),
+    )
+
+    fake_screening.list_screening.assert_not_called()
+    assert resp.results == []
+    assert any("암호화폐 스크리너 스냅샷" in w for w in resp.warnings)
+    assert resp.freshness.dataState == "fresh"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_screener_results_falls_back_when_crypto_snapshot_is_stale() -> (
+    None
+):
+    fake_screening = type(
+        "ScreenerService",
+        (_FakeProductionScreening,),
+        {"__module__": "app.services.screener_service"},
+    )()
+    fake_screening.list_screening = AsyncMock(
+        return_value={
+            "results": [
+                {
+                    "symbol": "KRW-ETH",
+                    "name": "Ethereum",
+                    "market": "crypto",
+                    "current_price": 4_800_000,
+                    "change_rate": 0.5,
+                    "trade_amount_24h": 50_000_000_000,
+                }
+            ],
+            "warnings": [],
+            "timestamp": datetime(2026, 5, 13, 3, 0, tzinfo=UTC).isoformat(),
+            "cache_hit": False,
+        }
+    )
+    session = _FakeSession(
+        [
+            _FakeExecuteResult(scalar_rows=[date(2026, 5, 12)]),
+            _FakeExecuteResult(scalar_rows=[]),
+            _FakeExecuteResult(scalar_rows=[date(2026, 5, 12)]),
+            _FakeExecuteResult(rows=[_coverage_row(latest_count=30)]),
+        ]
+    )
+
+    resp = await build_screener_results(
+        preset_id="crypto_high_volume",
+        screening_service=fake_screening,
+        resolver=_FakeResolver(watched=set()),
+        market="crypto",
+        session=session,
+        now=lambda: datetime(2026, 5, 13, 3, 0, tzinfo=UTC),
+    )
+
+    fake_screening.list_screening.assert_awaited_once()
+    assert resp.results[0].symbol == "KRW-ETH"
+    assert resp.freshness.cacheHit is False
+
+
+@pytest.mark.unit
 def test_calculate_consecutive_up_days_counts_latest_streak() -> None:
     assert screener_service.calculate_consecutive_up_days([100, 101, 102, 103]) == 3
     assert (
@@ -227,27 +460,29 @@ def test_calculate_consecutive_up_days_counts_latest_streak() -> None:
 
 
 @pytest.mark.unit
-def test_consecutive_up_metric_prefers_consecutive_days() -> None:
-    row_warnings: list[str] = []
-    assert (
-        screener_service._metric_value_label(
-            "consecutive_gainers",
-            {"symbol": "005930", "consecutive_up_days": 6, "change_rate": 2.4},
-        )[0]
-        == "6일"
+def test_consecutive_gainers_metric_is_week_change_rate() -> None:
+    label, warnings = screener_service._metric_value_label(
+        "consecutive_gainers",
+        {
+            "symbol": "005930",
+            "week_change_rate": 6.0,
+            "consecutive_up_days": 5,
+            "change_rate": 2.4,
+        },
     )
-    assert row_warnings == []
+    assert label == "+6.00%"
+    assert warnings == []
 
 
 @pytest.mark.unit
-def test_consecutive_up_metric_warns_when_history_unavailable() -> None:
+def test_consecutive_gainers_metric_warns_when_week_change_unavailable() -> None:
     label, warnings = screener_service._metric_value_label(
         "consecutive_gainers",
         {"symbol": "005930", "change_rate": 2.4},
     )
 
     assert label == "-"
-    assert warnings == ["연속상승 데이터 준비중"]
+    assert warnings == ["주가등락률 데이터 준비중"]
 
 
 @pytest.mark.unit
@@ -654,9 +889,9 @@ async def test_build_screener_results_coerces_string_market_cap_values() -> None
     )
 
     assert resp.results[0].marketCapLabel == "478.0조원"
-    assert resp.results[0].warnings == ["연속상승 데이터 준비중"]
+    assert resp.results[0].warnings == ["주가등락률 데이터 준비중"]
     assert resp.results[1].marketCapLabel == "414.7조원"
-    assert resp.results[1].warnings == ["연속상승 데이터 준비중"]
+    assert resp.results[1].warnings == ["주가등락률 데이터 준비중"]
 
 
 @pytest.mark.unit
@@ -901,11 +1136,15 @@ async def test_build_screener_results_uses_snapshots_before_external_screening()
     resolver = _FakeResolver(watched={("kr", "005930")})
     session = _FakeSession(
         [
-            _FakeExecuteResult(scalar_rows=[_FakeSnapshot(symbol="005930")]),
-            _FakeExecuteResult(scalar_rows=[_FakeSnapshot(symbol="005930")]),
+            _FakeExecuteResult(scalar_rows=[date(2026, 5, 11)]),  # MAX(snapshot_date)
             _FakeExecuteResult(
-                rows=[type("NameRow", (), {"symbol": "005930", "name": "삼성전자"})()]
-            ),
+                scalar_rows=[_FakeSnapshot(symbol="005930")]
+            ),  # qualifying rows
+            _FakeExecuteResult(rows=[_name_row("005930", "삼성전자")]),  # filter names
+            _FakeExecuteResult(
+                scalar_rows=[_FakeSnapshot(symbol="005930")]
+            ),  # enrichment
+            _FakeExecuteResult(rows=[_name_row("005930", "삼성전자")]),  # kr_names
         ]
     )
 
@@ -919,7 +1158,7 @@ async def test_build_screener_results_uses_snapshots_before_external_screening()
     fake_screening.list_screening.assert_not_called()
     assert resp.results[0].symbol == "005930"
     assert resp.results[0].name == "삼성전자"
-    assert resp.results[0].metricValueLabel == "6일"
+    assert resp.results[0].metricValueLabel == "+3.50%"
     assert resp.freshness.cacheHit is True
 
 
@@ -933,26 +1172,9 @@ async def test_build_screener_results_orders_snapshot_rows_by_week_change() -> N
     )()
     session = _FakeSession(
         [
+            _FakeExecuteResult(scalar_rows=[date(2026, 5, 11)]),  # MAX(snapshot_date)
             _FakeExecuteResult(
-                scalar_rows=[
-                    _FakeSnapshot(
-                        symbol="111111",
-                        consecutive_up_days=9,
-                        week_change_rate=Decimal("1.0"),
-                    ),
-                    _FakeSnapshot(
-                        symbol="222222",
-                        consecutive_up_days=5,
-                        week_change_rate=Decimal("8.0"),
-                    ),
-                    _FakeSnapshot(
-                        symbol="333333",
-                        consecutive_up_days=6,
-                        week_change_rate=Decimal("3.0"),
-                    ),
-                ]
-            ),
-            _FakeExecuteResult(
+                # SQL ORDER BY week_change_rate DESC produces this order from DB:
                 scalar_rows=[
                     _FakeSnapshot(
                         symbol="222222",
@@ -970,8 +1192,27 @@ async def test_build_screener_results_orders_snapshot_rows_by_week_change() -> N
                         week_change_rate=Decimal("1.0"),
                     ),
                 ]
-            ),
-            _FakeExecuteResult(),
+            ),  # qualifying rows in week_change_rate DESC order (SQL)
+            _FakeExecuteResult(
+                scalar_rows=[
+                    _FakeSnapshot(
+                        symbol="222222",
+                        consecutive_up_days=5,
+                        week_change_rate=Decimal("8.0"),
+                    ),
+                    _FakeSnapshot(
+                        symbol="333333",
+                        consecutive_up_days=6,
+                        week_change_rate=Decimal("3.0"),
+                    ),
+                    _FakeSnapshot(
+                        symbol="111111",
+                        consecutive_up_days=9,
+                        week_change_rate=Decimal("1.0"),
+                    ),
+                ]
+            ),  # enrichment
+            _FakeExecuteResult(),  # kr_names
         ]
     )
 
@@ -983,7 +1224,11 @@ async def test_build_screener_results_orders_snapshot_rows_by_week_change() -> N
     )
 
     assert [row.symbol for row in resp.results] == ["222222", "333333", "111111"]
-    assert [row.metricValueLabel for row in resp.results] == ["5일", "6일", "9일"]
+    assert [row.metricValueLabel for row in resp.results] == [
+        "+8.00%",
+        "+3.00%",
+        "+1.00%",
+    ]
 
 
 @pytest.mark.unit
@@ -1009,3 +1254,129 @@ async def test_build_screener_results_redacts_external_connection_failures() -> 
     ]
     assert "api.finnhub" not in " ".join(resp.warnings)
     assert "secret" not in " ".join(resp.warnings)
+
+
+# ---------------------------------------------------------------------------
+# ROB-212: single-partition snapshot regression tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_load_consecutive_gainers_uses_latest_snapshot_partition_only() -> None:
+    """Latest partition with no qualifiers must not expose older qualifying rows."""
+    from app.services.invest_view_model.screener_service import (
+        _load_consecutive_gainers_from_snapshots,
+    )
+
+    # MAX(snapshot_date) returns today (2026-05-13); the qualifying rows query
+    # for that partition returns empty (the known stale-data scenario: 79 rows
+    # exist in older partitions but the latest has 0 qualifiers).
+    session = _FakeSession(
+        [
+            _FakeExecuteResult(scalar_rows=[date(2026, 5, 13)]),  # MAX(snapshot_date)
+            _FakeExecuteResult(scalar_rows=[]),  # latest partition: 0 qualifying rows
+        ]
+    )
+
+    result = await _load_consecutive_gainers_from_snapshots(session, market="kr")
+
+    assert result == [], "must return empty list, not historical qualifiers"
+    assert result is not None, (
+        "None would mean 'could not check'; [] means 'checked and empty'"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_load_consecutive_gainers_filters_kr_non_common_stock_names() -> None:
+    """Snapshot-first KR screener should remove obvious ETF/preferred rows before slicing."""
+    from app.services.invest_view_model.screener_service import (
+        _load_consecutive_gainers_from_snapshots,
+    )
+
+    session = _FakeSession(
+        [
+            _FakeExecuteResult(scalar_rows=[date(2026, 5, 13)]),
+            _FakeExecuteResult(
+                scalar_rows=[
+                    _FakeSnapshot(symbol="069500", week_change_rate=Decimal("10.0")),
+                    _FakeSnapshot(symbol="005930", week_change_rate=Decimal("8.0")),
+                    _FakeSnapshot(symbol="005935", week_change_rate=Decimal("7.0")),
+                    _FakeSnapshot(symbol="000660", week_change_rate=Decimal("6.0")),
+                ]
+            ),
+            _FakeExecuteResult(
+                rows=[
+                    _name_row("069500", "KODEX 200"),
+                    _name_row("005930", "삼성전자"),
+                    _name_row("005935", "삼성전자우"),
+                    _name_row("000660", "SK하이닉스"),
+                ]
+            ),
+        ]
+    )
+
+    result = await _load_consecutive_gainers_from_snapshots(
+        session, market="kr", limit=2
+    )
+
+    assert result is not None
+    assert [row["symbol"] for row in result] == ["005930", "000660"]
+    assert [row["name"] for row in result] == ["삼성전자", "SK하이닉스"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_load_consecutive_gainers_returns_none_when_no_snapshot_table_rows() -> (
+    None
+):
+    """When the snapshot table has no rows for the market, returns None (fall through allowed)."""
+    from app.services.invest_view_model.screener_service import (
+        _load_consecutive_gainers_from_snapshots,
+    )
+
+    session = _FakeSession(
+        [
+            _FakeExecuteResult(scalar_rows=[]),  # MAX(snapshot_date) → None
+        ]
+    )
+
+    result = await _load_consecutive_gainers_from_snapshots(session, market="kr")
+
+    assert result is None, (
+        "None signals 'could not check' so external screening may proceed"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_screener_results_warns_and_does_not_fallback_when_latest_partition_empty() -> (
+    None
+):
+    """Stale snapshot (latest partition 0 qualifiers) must warn and NOT surface external results."""
+    fake_screening = type(
+        "ScreenerService",
+        (_FakeProductionScreening,),
+        {"__module__": "app.services.screener_service"},
+    )()
+    session = _FakeSession(
+        [
+            _FakeExecuteResult(scalar_rows=[date(2026, 5, 13)]),  # MAX(snapshot_date)
+            _FakeExecuteResult(
+                scalar_rows=[]
+            ),  # no qualifying rows in latest partition
+        ]
+    )
+
+    resp = await build_screener_results(
+        preset_id="consecutive_gainers",
+        screening_service=fake_screening,
+        resolver=_FakeResolver(watched=set()),
+        session=session,
+    )
+
+    fake_screening.list_screening.assert_not_called()
+    assert resp.results == []
+    assert any("스크리너 스냅샷 업데이트" in w for w in resp.warnings)
+    assert resp.freshness.dataState == "stale"

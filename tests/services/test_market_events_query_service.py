@@ -7,21 +7,13 @@ from decimal import Decimal
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete
+
+from tests.market_events_test_helpers import clean_non_tradingview_market_events
 
 
 @pytest_asyncio.fixture(autouse=True)
 async def _clean_market_events(db_session):
-    from app.models.market_events import (
-        MarketEvent,
-        MarketEventIngestionPartition,
-        MarketEventValue,
-    )
-
-    await db_session.execute(delete(MarketEventValue))
-    await db_session.execute(delete(MarketEvent))
-    await db_session.execute(delete(MarketEventIngestionPartition))
-    await db_session.commit()
+    await clean_non_tradingview_market_events(db_session)
     yield
 
 

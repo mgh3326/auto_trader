@@ -147,8 +147,11 @@ test("touches an in-month date in the strip and scrolls/highlights that day sect
     const may13 = document.querySelector('[data-day-anchor="2026-05-13"]')!;
     expect(may13).toHaveAttribute("data-selected", "true");
     expect(scrollSpy).toHaveBeenCalled();
-    // The cluster still shows in the May 13 section.
-    expect(within(may13 as HTMLElement).getByText("미국 실적 발표 327건")).toBeInTheDocument();
+    // The cluster still shows in the May 13 section, with the top event rendered
+    // separately and the overflow count reflecting the remaining events.
+    const overflow = within(may13 as HTMLElement).getByTestId("calendar-cluster-overflow");
+    expect(overflow).toHaveTextContent("미국 실적 발표");
+    expect(overflow).toHaveTextContent("326");
   } finally {
     Element.prototype.scrollIntoView = originalScroll;
   }

@@ -47,6 +47,35 @@ logger = logging.getLogger(__name__)
 
 _CRYPTO_MARKET_CAP_CACHE = MarketCapCache(ttl=600)
 
+
+def _is_upbit_krw_market_code(symbol: Any) -> bool:
+    """Return True for Upbit KRW quote-market symbols only.
+
+    TradingView's UPBIT crypto screener includes KRW, BTC, and USDT quote
+    markets.  `/invest` crypto surfaces model Upbit's Korean/KRW market, so
+    fallback/live screener rows must not leak BTC-* or USDT-* pairs into the
+    read model.
+    """
+    return str(symbol or "").strip().upper().startswith("KRW-")
+
+
+def _resolve_upbit_market_code_from_row(row: Any) -> str | None:
+    """Resolve an Upbit market code from tvscreener or Upbit-shaped rows."""
+    raw_symbol = _clean_text(row.get("symbol")).upper()
+    raw_market = _clean_text(row.get("market")).upper()
+
+    for candidate in (raw_symbol, raw_market):
+        if "-" in candidate:
+            return candidate
+
+    if not raw_symbol:
+        return None
+    try:
+        return tradingview_to_upbit(raw_symbol)
+    except SymbolMappingError:
+        return None
+
+
 # Crypto trade cooldown service singleton
 _cooldown_service: CryptoTradeCooldownService | None = None
 
@@ -174,11 +203,13 @@ async def _normalize_crypto_results(
     min_market_cap: float | None,
     filters_applied: dict[str, Any],
     limit: int,
+    pure_market_snapshot: bool = False,
 ) -> dict[str, Any]:
-    """Map tvscreener crypto DataFrame to filtered candidate list and finalize.
+    """Map tvscreener crypto DataFrame to candidate rows and finalize.
 
-    Applies Upbit symbol mapping, warning-market filter, crash filter,
-    cooldown filter, RSI filter, and delegates to finalize_crypto_screen.
+    The normal MCP screening path applies warning-market, crash, and
+    stop-loss-cooldown filters.  Snapshot builds pass ``pure_market_snapshot``
+    so persisted rows remain provider/account-state agnostic market data.
     """
     warnings: list[str] = []
     if min_market_cap is not None:
@@ -189,12 +220,8 @@ async def _normalize_crypto_results(
     # Map raw rows
     raw_results: list[dict[str, Any]] = []
     for _, row in df.iterrows():
-        tradingview_symbol = _clean_text(row.get("symbol")).upper()
-        if not tradingview_symbol:
-            continue
-        try:
-            upbit_symbol = tradingview_to_upbit(tradingview_symbol)
-        except SymbolMappingError:
+        upbit_symbol = _resolve_upbit_market_code_from_row(row)
+        if not upbit_symbol:
             continue
 
         raw_results.append(
@@ -214,6 +241,18 @@ async def _normalize_crypto_results(
                     row.get("volume_24h_in_usd")
                 ),
             }
+        )
+
+    pre_krw_filter_total = len(raw_results)
+    raw_results = [
+        item for item in raw_results if _is_upbit_krw_market_code(item.get("symbol"))
+    ]
+    filtered_by_quote_market = pre_krw_filter_total - len(raw_results)
+    if filtered_by_quote_market:
+        logger.info(
+            "filtered %s non-KRW Upbit crypto screener rows from %s live rows",
+            filtered_by_quote_market,
+            pre_krw_filter_total,
         )
 
     # Fetch Upbit display names and warning markets
@@ -273,33 +312,47 @@ async def _normalize_crypto_results(
     )
     btc_change_24h: float | None = None
     if btc_item is None:
-        warnings.append(
-            "KRW-BTC ticker not found; crash filter uses btc_change_24h=0.0 fallback."
-        )
+        if not pure_market_snapshot:
+            logger.warning(
+                "KRW-BTC ticker not found in Upbit KRW crypto screener rows; "
+                "crash filter uses btc_change_24h=0.0 fallback"
+            )
+            warnings.append(
+                "BTC 기준 데이터가 없어 급락 방어 필터를 기본값으로 적용했습니다."
+            )
     else:
         btc_change_24h = _to_optional_float(
             btc_item.get("signed_change_rate") or btc_item.get("change_rate")
         )
         if btc_change_24h is None:
             btc_change_24h = 0.0
-            warnings.append(
-                "KRW-BTC change rate is missing; crash filter uses btc_change_24h=0.0 fallback."
-            )
+            if not pure_market_snapshot:
+                logger.warning(
+                    "KRW-BTC change rate is missing; crash filter uses "
+                    "btc_change_24h=0.0 fallback"
+                )
+                warnings.append(
+                    "BTC 기준 등락률이 없어 급락 방어 필터를 기본값으로 적용했습니다."
+                )
 
-    # Apply warning + crash filters, build candidates
+    # Apply warning + crash filters for interactive screening; snapshot builds keep
+    # every provider row and only carry warning metadata forward.
     filtered_by_warning = 0
     filtered_by_crash = 0
     candidates: list[dict[str, Any]] = []
     for raw_item in raw_results:
         market_code = str(raw_item.get("symbol") or "").strip().upper()
-        if market_code in warning_markets:
+        is_warning_market = market_code in warning_markets
+        if is_warning_market and not pure_market_snapshot:
             filtered_by_warning += 1
             continue
 
         coin_change_24h = raw_item.get("signed_change_rate")
         if coin_change_24h is None:
             coin_change_24h = raw_item.get("change_rate")
-        if not is_safe_drop(coin_change_24h, btc_change_24h):
+        if not pure_market_snapshot and not is_safe_drop(
+            coin_change_24h, btc_change_24h
+        ):
             filtered_by_crash += 1
             continue
 
@@ -322,7 +375,7 @@ async def _normalize_crypto_results(
             "volume_24h": ticker_volume_map.get(market_code, 0.0),
             "market_cap": _to_optional_float(raw_item.get("tv_market_cap")),
             "market_cap_rank": None,
-            "market_warning": None,
+            "market_warning": is_warning_market if pure_market_snapshot else None,
             "rsi": _to_optional_float(raw_item.get("rsi")),
             "volume_ratio": None,
             "candle_type": "flat",
@@ -340,27 +393,34 @@ async def _normalize_crypto_results(
             if item.get("rsi") is not None and float(item["rsi"]) <= max_rsi
         ]
 
-    # Cooldown filter + coingecko fetch
-    coingecko_fetch_task = asyncio.create_task(_run_crypto_coingecko_fetch())
+    # Cooldown filter + coingecko fetch.  Snapshot builds must not consult
+    # account/trade-state cooldowns and should not blend in non-Upbit/TV market
+    # data before persistence.
+    coingecko_fetch_task = (
+        None
+        if pure_market_snapshot
+        else asyncio.create_task(_run_crypto_coingecko_fetch())
+    )
     try:
         filtered_by_cooldown = 0
-        try:
-            cooldown_service = _get_crypto_trade_cooldown_service()
-            blocked_symbols = await cooldown_service.filter_symbols_in_cooldown(
-                str(item.get("symbol") or "") for item in candidates
-            )
-            if blocked_symbols:
-                candidates = [
-                    item
-                    for item in candidates
-                    if str(item.get("symbol") or "").strip().upper()
-                    not in blocked_symbols
-                ]
-                filtered_by_cooldown = len(blocked_symbols)
-        except Exception as exc:
-            warnings.append(
-                f"Stop-loss cooldown filter failed; showing all candidates ({type(exc).__name__}: {exc})"
-            )
+        if not pure_market_snapshot:
+            try:
+                cooldown_service = _get_crypto_trade_cooldown_service()
+                blocked_symbols = await cooldown_service.filter_symbols_in_cooldown(
+                    str(item.get("symbol") or "") for item in candidates
+                )
+                if blocked_symbols:
+                    candidates = [
+                        item
+                        for item in candidates
+                        if str(item.get("symbol") or "").strip().upper()
+                        not in blocked_symbols
+                    ]
+                    filtered_by_cooldown = len(blocked_symbols)
+            except Exception as exc:
+                warnings.append(
+                    f"Stop-loss cooldown filter failed; showing all candidates ({type(exc).__name__}: {exc})"
+                )
 
         if max_rsi is not None:
             candidates = [
@@ -370,9 +430,19 @@ async def _normalize_crypto_results(
             ]
 
         metric_diagnostics = _empty_rsi_enrichment_diagnostics()
-        coingecko_payload = await coingecko_fetch_task
+        coingecko_payload = (
+            {
+                "data": {},
+                "cached": False,
+                "age_seconds": None,
+                "stale": False,
+                "error": None,
+            }
+            if coingecko_fetch_task is None
+            else await coingecko_fetch_task
+        )
     finally:
-        if not coingecko_fetch_task.done():
+        if coingecko_fetch_task is not None and not coingecko_fetch_task.done():
             coingecko_fetch_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await coingecko_fetch_task
@@ -406,6 +476,7 @@ async def _screen_crypto_via_tvscreener(
     sort_by: str,
     sort_order: str,
     limit: int,
+    pure_market_snapshot: bool = False,
 ) -> dict[str, Any]:
     (
         min_dividend_yield_input,
@@ -453,6 +524,7 @@ async def _screen_crypto_via_tvscreener(
         min_market_cap=min_market_cap,
         filters_applied=filters_applied,
         limit=limit,
+        pure_market_snapshot=pure_market_snapshot,
     )
 
 

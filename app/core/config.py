@@ -259,6 +259,12 @@ class Settings(BaseSettings):
     research_run_refresh_user_id: int | None = None
     research_run_refresh_market_hours_only: bool = True
 
+    # ROB-208 — market events rolling scheduler + activation gate
+    market_events_ingest_commit_enabled: bool = False
+    market_events_rolling_window_days_back: int = 7
+    market_events_rolling_window_days_forward: int = 60
+    market_events_rolling_window_max_partitions_per_run: int = 90
+
     @property
     def telegram_chat_ids(self) -> list[str]:
         """단일 chat_id를 리스트로 변환 (하위 호환성 유지)"""
@@ -306,6 +312,17 @@ class Settings(BaseSettings):
     # WiseFn KR earnings calendar (ROB-171)
     # Default False until the upstream contract is confirmed; CI never calls live.
     wisefn_earnings_enabled: bool = False
+
+    # ROB-204 — Prefect/manual US screener snapshot writes stay dry-run unless explicitly enabled.
+    invest_screener_snapshots_commit_enabled: bool = False
+
+    # ROB-222 — Naver momentum/theme event snapshot writes stay dry-run unless explicitly enabled.
+    invest_momentum_events_commit_enabled: bool = False
+    invest_momentum_events_scheduler_enabled: bool = False
+    invest_momentum_events_scheduler_cron: str = "*/10 9-15 * * 1-5"
+    invest_momentum_events_scheduler_page_size: int = 50
+    invest_momentum_events_scheduler_trade_types: str = "KRX,NXT"
+    invest_momentum_events_scheduler_order_types: str = "up,quantTop,priceTop,searchTop"
 
     # KRX (한국거래소) 정보데이터시스템
     krx_member_id: str | None = None
@@ -389,11 +406,24 @@ class Settings(BaseSettings):
 
     # N8N API Key Authentication
     N8N_API_KEY: str = ""
-    PUBLIC_API_PATHS: list[str] = []
+    PUBLIC_API_PATHS: Annotated[list[str], NoDecode] = []
 
     # news-ingestor machine-to-machine bulk ingest authentication
     NEWS_INGESTOR_INGEST_TOKEN: str = ""
     NEWS_INGESTOR_INGEST_TOKEN_HEADER: str = "X-News-Ingestor-Token"
+
+    # research-reports machine-to-machine bulk ingest authentication
+    RESEARCH_REPORTS_INGEST_TOKEN: str = ""
+    RESEARCH_REPORTS_INGEST_TOKEN_HEADER: str = "X-Research-Reports-Ingest-Token"
+    RESEARCH_REPORTS_FRESHNESS_MAX_AGE_HOURS: int = 24
+    RESEARCH_REPORTS_INGEST_COMMIT_ENABLED: bool = False
+
+    # ROB-211 execution ledger ships inert; commit/backfill activation is a separate approval-gated ops change.
+    EXECUTION_LEDGER_COMMIT_ENABLED: bool = False
+    # ROB-214 — recurring reconciliation scheduler remains disabled unless explicitly enabled.
+    execution_ledger_reconcile_scheduler_enabled: bool = False
+    execution_ledger_reconcile_scheduler_cron: str = "*/30 * * * *"
+    execution_ledger_reconcile_scheduler_window_hours: int = 24
 
     trader_agent_id: str = "6b2192cc-14fa-4335-b572-2fe1e0cb54a7"
     paperclip_api_url: str | None = None
@@ -473,7 +503,19 @@ class Settings(BaseSettings):
     def validate_public_api_paths(cls, v: list[str] | str) -> list[str]:
         """Ensure PUBLIC_API_PATHS is parsed consistently from env strings."""
         if isinstance(v, str):
-            return [path.strip() for path in v.split(",") if path.strip()]
+            value = v.strip()
+            if not value:
+                return []
+            if value.startswith("["):
+                parsed = json.loads(value)
+                if not isinstance(parsed, list) or not all(
+                    isinstance(path, str) for path in parsed
+                ):
+                    raise ValueError(
+                        "PUBLIC_API_PATHS JSON value must be a string list"
+                    )
+                return [path.strip() for path in parsed if path.strip()]
+            return [path.strip() for path in value.split(",") if path.strip()]
         return v or []
 
     @field_validator("SENTRY_TRACES_SAMPLE_RATE", "SENTRY_PROFILES_SAMPLE_RATE")

@@ -3,7 +3,59 @@ import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
 
 import { DesktopMarketPage } from "../pages/desktop/DesktopMarketPage";
+import * as disparityApi from "../api/commonPreferredDisparity";
 import * as marketApi from "../api/marketDashboard";
+import type { CommonPreferredDisparityResponse } from "../types/commonPreferredDisparity";
+
+const DISPARITY_PAYLOAD: CommonPreferredDisparityResponse = {
+  market: "kr",
+  state: "fresh",
+  asOf: "2026-05-14T06:00:00Z",
+  cards: [
+    {
+      id: "005930-005935",
+      commonSymbol: "005930",
+      commonName: "삼성전자",
+      preferredSymbol: "005935",
+      preferredName: "삼성전자우",
+      commonPrice: 100000,
+      preferredPrice: 78000,
+      disparityPct: 22,
+      preferredDiscountPct: 22,
+      preferredPremiumPct: -22,
+      zScore: 1.25,
+      tone: "discount" as const,
+      dataState: "fresh" as const,
+      primaryWindow: "20d",
+      windows: [
+        {
+          period: "20d" as const,
+          sampleCount: 3,
+          meanDisparityPct: 20,
+          minDisparityPct: 18,
+          maxDisparityPct: 22,
+          zScore: 1.25,
+          dataState: "fresh" as const,
+          emptyReason: null,
+        },
+      ],
+      source: {
+        source: "kis",
+        sourceOfTruth: "market_quote_snapshots",
+        asOf: "2026-05-14T06:00:00Z",
+        stale: false,
+        freshnessSec: 0,
+        warnings: [],
+      },
+      emptyReason: null,
+      formula: "((commonPrice - preferredPrice) / commonPrice) * 100",
+      warnings: [],
+      caution: "괴리율은 가격 차이 참고 지표이며 매수·매도 신호가 아닙니다.",
+    },
+  ],
+  warnings: [],
+  notes: ["MarketQuoteSnapshot 기반 read-only 표시입니다."],
+};
 
 const MARKET_PAYLOAD = {
   asOf: "2026-05-11T05:00:00Z",
@@ -73,7 +125,9 @@ function wrap(ui: React.ReactElement) {
 }
 
 beforeEach(() => {
+  vi.restoreAllMocks();
   vi.spyOn(marketApi, "fetchMarketDashboard").mockResolvedValue(MARKET_PAYLOAD);
+  vi.spyOn(disparityApi, "fetchCommonPreferredDisparity").mockResolvedValue(DISPARITY_PAYLOAD);
 });
 
 test("renders market dashboard sections and read-only copy", async () => {
@@ -83,6 +137,11 @@ test("renders market dashboard sections and read-only copy", async () => {
   expect(screen.getByRole("heading", { name: "시장" })).toBeInTheDocument();
   expect(screen.getByText("2,875.25")).toBeInTheDocument();
   expect(screen.getByText("가상자산 시장")).toBeInTheDocument();
+  expect(screen.getByText("보통주/우선주 괴리")).toBeInTheDocument();
+  expect(screen.getByText("삼성전자 / 삼성전자우")).toBeInTheDocument();
+  expect(screen.getByText(/005930 · 005935 · kis/)).toBeInTheDocument();
+  expect(screen.getByText(/매수·매도 신호가 아닙니다/)).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "FX·매크로 상세" })).toHaveAttribute("href", "/invest/market/fx");
   expect(screen.getAllByText(/kimchi_premium: timeout/).length).toBeGreaterThan(0);
   expect(screen.getByText(/주문·매매 API를 호출하지 않습니다/)).toBeInTheDocument();
 });

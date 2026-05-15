@@ -17,7 +17,7 @@ SAMPLE_XML = """<?xml version="1.0" encoding="UTF-8"?>
     <title>Core CPI m/m</title>
     <country>USD</country>
     <date>05-13-2026</date>
-    <time>8:30am</time>
+    <time>12:30pm</time>
     <impact>High</impact>
     <forecast>0.3%</forecast>
     <previous>0.4%</previous>
@@ -61,14 +61,14 @@ async def test_fetch_forexfactory_for_date_filters_to_target_day():
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_fetch_forexfactory_converts_et_to_utc_and_emits_stable_id():
+async def test_fetch_forexfactory_treats_feed_time_as_utc_and_emits_stable_id():
     from app.services.market_events import forexfactory_helpers as ff
 
     with patch.object(ff, "_fetch_xml_documents", AsyncMock(return_value=[SAMPLE_XML])):
         rows = await ff.fetch_forexfactory_events_for_date(date(2026, 5, 13))
 
     cpi = next(r for r in rows if r["title"] == "Core CPI m/m")
-    # 8:30am ET in May (EDT, UTC-4) -> 12:30 UTC.
+    # ForexFactory XML feed time is already UTC/GMT: 12:30pm -> 12:30 UTC.
     assert cpi["release_time_utc"] == datetime(2026, 5, 13, 12, 30, tzinfo=UTC)
     assert cpi["currency"] == "USD"
     assert cpi["impact"] == "high"

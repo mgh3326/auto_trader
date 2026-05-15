@@ -1,5 +1,6 @@
 import type { AccountPanelResponse, WatchSymbol } from "../types/invest";
 import { Button, Card, Icon, PL, Pill } from "../ds";
+import { displayNameWithSource } from "./AccountSourceMeta";
 import { pillToneForSource, visualBySource } from "./AccountSourceTone";
 
 function fmtKrw(v?: number | null): string {
@@ -126,7 +127,7 @@ export function RightAccountPanel({
                       color: "var(--fg-1)",
                     }}
                   >
-                    {a.displayName}
+                    {displayNameWithSource(a)}
                   </span>
                   <Pill tone={tone} size="sm">
                     {visual?.badge ?? tone.toUpperCase()}

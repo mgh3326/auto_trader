@@ -200,3 +200,19 @@ class ResearchReportCitation(BaseModel):
 class ResearchReportCitationListResponse(BaseModel):
     count: int
     citations: list[ResearchReportCitation] = Field(default_factory=list)
+
+
+class ResearchReportsReadinessResponse(BaseModel):
+    """Compact freshness signal — no body / no excerpt fields."""
+
+    source: str | None = None
+    is_ready: bool
+    is_stale: bool
+    latest_run_uuid: str | None = None
+    latest_started_at: datetime | None = None
+    latest_finished_at: datetime | None = None
+    latest_inserted_count: int = 0
+    latest_skipped_count: int = 0
+    latest_report_count: int = 0
+    warnings: list[str] = Field(default_factory=list)
+    max_age_hours: int

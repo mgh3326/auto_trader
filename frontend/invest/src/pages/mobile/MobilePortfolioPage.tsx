@@ -8,6 +8,9 @@ import { scopeGroupedToSource } from "../../desktop/scopeHoldings";
 import { pillToneForSource } from "../../desktop/AccountSourceTone";
 import { stockDetailPath } from "../../stockDetailPath";
 import { PL, Pill } from "../../ds";
+import { SellHistoryPanel } from "../../components/my/SellHistoryPanel";
+import { PORTFOLIO_TABS, usePortfolioTabSearchParam, type PortfolioTab } from "../../components/my/portfolioTabs";
+import { SignalsPanel } from "../../components/signals/SignalsPanel";
 import type { AccountSource, GroupedHolding, HomeSummary, PriceState } from "../../types/invest";
 import type { AssetCategoryKey } from "../../components/AssetCategoryFilter";
 
@@ -47,6 +50,7 @@ function priceStateTone(priceState: PriceState): "accent" | "warn" | "paper" {
 
 export function MobilePortfolioPage() {
   const home = useInvestHome();
+  const [activeTab, setActiveTab] = usePortfolioTabSearchParam();
   const [account, setAccount] = useState<"all" | AccountSource>("all");
   const [category, setCategory] = useState<AssetCategoryKey>("all");
 
@@ -140,7 +144,13 @@ export function MobilePortfolioPage() {
             )}
           </section>
 
-          {/* Account selector */}
+          <section style={{ padding: "0 16px" }}>
+            <PortfolioTabBar activeTab={activeTab} onChange={setActiveTab} />
+          </section>
+
+          {activeTab === "holdings" ? (
+            <>
+              {/* Account selector */}
           {data.accounts.length > 0 && (
             <section style={{ padding: "0 16px" }} data-testid="mobile-portfolio-account-row">
               <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4 }}>
@@ -295,7 +305,17 @@ export function MobilePortfolioPage() {
                 })}
               </div>
             )}
-          </section>
+              </section>
+            </>
+          ) : activeTab === "signals" ? (
+            <section style={{ padding: "0 16px" }}>
+              <SignalsPanel compact />
+            </section>
+          ) : (
+            <section style={{ padding: "0 16px" }}>
+              <SellHistoryPanel compact />
+            </section>
+          )}
 
           {data.meta?.warnings && data.meta.warnings.length > 0 && (
             <div
@@ -315,6 +335,50 @@ export function MobilePortfolioPage() {
         </div>
       )}
     </MobileShell>
+  );
+}
+
+function PortfolioTabBar({ activeTab, onChange }: { activeTab: PortfolioTab; onChange: (tab: PortfolioTab) => void }) {
+  return (
+    <div
+      role="tablist"
+      aria-label="내 투자 보기 전환"
+      style={{
+        display: "grid",
+        gridTemplateColumns: `repeat(${PORTFOLIO_TABS.length}, 1fr)`,
+        gap: 4,
+        padding: 4,
+        borderRadius: 999,
+        background: "var(--surface-2)",
+        border: "1px solid var(--border)",
+      }}
+    >
+      {PORTFOLIO_TABS.map((tab) => {
+        const active = activeTab === tab.key;
+        return (
+          <button
+            key={tab.key}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            onClick={() => onChange(tab.key)}
+            style={{
+              border: "none",
+              borderRadius: 999,
+              padding: "8px 10px",
+              background: active ? "var(--fg)" : "transparent",
+              color: active ? "var(--bg)" : "var(--fg-2)",
+              fontSize: 12,
+              fontWeight: 700,
+              cursor: "pointer",
+              fontFamily: "inherit",
+            }}
+          >
+            {tab.label}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 

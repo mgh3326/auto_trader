@@ -191,6 +191,7 @@ def test_screener_consecutive_gainers_returns_streak_and_freshness() -> None:
                 "change_rate": 1.23,
                 "change_amount": 970,
                 "consecutive_up_days": 6,
+                "week_change_rate": 8.50,
                 "volume": 12_345_678,
             },
             {
@@ -203,6 +204,7 @@ def test_screener_consecutive_gainers_returns_streak_and_freshness() -> None:
                 "change_rate": 0.8,
                 "change_amount": 360,
                 "consecutive_up_days": 5,
+                "week_change_rate": 3.20,
                 "volume": 3_000_000,
             },
         ],
@@ -223,13 +225,12 @@ def test_screener_consecutive_gainers_returns_streak_and_freshness() -> None:
     assert freshness is not None
     assert freshness["asOfLabel"].endswith("기준")
     assert freshness["source"] in ("live", "cached", "previous_session")
-    # All results must show streak >= 5 days
+    # Metric is now 1-week change rate (Toss-parity primary metric)
     results = body["results"]
     assert len(results) == 2
     for row in results:
         label = row["metricValueLabel"]
-        assert label.endswith("일"), f"Expected N일 label, got: {label}"
-        assert int(label[:-1]) >= 5, f"Expected streak >= 5, got: {label}"
+        assert "%" in label, f"Expected week_change_rate % label, got: {label}"
     # Verify the Toss-parity preset filters passed to the service
     assert stub.calls
     assert stub.calls[0].get("min_consecutive_up_days") == 5

@@ -11,6 +11,8 @@ from app.schemas.invest_screener import ScreenerFilterChip, ScreenerPreset
 
 DEFAULT_PRESET_ID = "consecutive_gainers"
 CONSECUTIVE_GAINERS_LIMIT = 80
+CRYPTO_DEFAULT_PRESET_ID = "crypto_high_volume"
+_KR_ONLY_PRESET_IDS = {"investor_flow_momentum"}
 
 
 SCREENER_PRESETS: list[ScreenerPreset] = [
@@ -24,7 +26,7 @@ SCREENER_PRESETS: list[ScreenerPreset] = [
             ScreenerFilterChip(label="주가등락률", detail="1주일 전 보다 · 0% 이상"),
             ScreenerFilterChip(label="주가 연속상승", detail="5일 연속 상승"),
         ],
-        metricLabel="연속상승",
+        metricLabel="주가등락률",
         market="kr",
     ),
     ScreenerPreset(
@@ -77,6 +79,19 @@ SCREENER_PRESETS: list[ScreenerPreset] = [
         market="kr",
     ),
     ScreenerPreset(
+        id="investor_flow_momentum",
+        name="수급 모멘텀",
+        description="외국인 연속 순매수·쌍끌이 매수 스냅샷 기반 후보",
+        badges=["MVP"],
+        filterChips=[
+            ScreenerFilterChip(label="국내", detail=None),
+            ScreenerFilterChip(label="투자자별 수급", detail="외국인 3일+ 또는 쌍끌이"),
+            ScreenerFilterChip(label="데이터", detail="지연 스냅샷 기반"),
+        ],
+        metricLabel="외국인 순매수",
+        market="kr",
+    ),
+    ScreenerPreset(
         id="growth_expectation",
         name="성장 기대주",
         description="시가총액이 충분하고 등락률 상위인 성장 기대 종목",
@@ -88,6 +103,46 @@ SCREENER_PRESETS: list[ScreenerPreset] = [
         ],
         metricLabel="주가등락률",
         market="kr",
+    ),
+]
+
+
+CRYPTO_SCREENER_PRESETS: list[ScreenerPreset] = [
+    ScreenerPreset(
+        id="crypto_high_volume",
+        name="거래대금 상위 코인",
+        description="Upbit 거래대금이 큰 가상자산",
+        badges=["가상자산"],
+        filterChips=[
+            ScreenerFilterChip(label="가상자산", detail=None),
+            ScreenerFilterChip(label="거래대금", detail="24시간 상위"),
+        ],
+        metricLabel="거래대금",
+        market="crypto",
+    ),
+    ScreenerPreset(
+        id="crypto_oversold",
+        name="저RSI 반등 후보",
+        description="RSI가 낮아 과매도 구간에 가까운 가상자산",
+        badges=[],
+        filterChips=[
+            ScreenerFilterChip(label="가상자산", detail=None),
+            ScreenerFilterChip(label="RSI", detail="35 이하"),
+        ],
+        metricLabel="RSI",
+        market="crypto",
+    ),
+    ScreenerPreset(
+        id="crypto_momentum",
+        name="상승률 상위 코인",
+        description="단기 상승률이 높은 Upbit 가상자산",
+        badges=[],
+        filterChips=[
+            ScreenerFilterChip(label="가상자산", detail=None),
+            ScreenerFilterChip(label="등락률", detail="상위"),
+        ],
+        metricLabel="등락률",
+        market="crypto",
     ),
 ]
 
@@ -142,11 +197,45 @@ _SCREENING_FILTERS: dict[str, dict[str, object]] = {
         "min_market_cap": 1_000_000_000_000.0,
         "limit": 20,
     },
+    "investor_flow_momentum": {
+        "market": "kr",
+        "asset_type": "stock",
+        "sort_by": "investor_flow",
+        "sort_order": "desc",
+        "min_foreign_consecutive_buy_days": 3,
+        "include_double_buy": True,
+        "limit": 20,
+    },
+    "crypto_high_volume": {
+        "market": "crypto",
+        "sort_by": "trade_amount",
+        "sort_order": "desc",
+        "limit": 20,
+    },
+    "crypto_oversold": {
+        "market": "crypto",
+        "sort_by": "rsi",
+        "sort_order": "asc",
+        "max_rsi": 35.0,
+        "limit": 20,
+    },
+    "crypto_momentum": {
+        "market": "crypto",
+        "sort_by": "change_rate",
+        "sort_order": "desc",
+        "limit": 20,
+    },
 }
 
 
 def _market_chip(market: str) -> ScreenerFilterChip:
-    return ScreenerFilterChip(label="미국" if market == "us" else "국내", detail=None)
+    if market == "us":
+        label = "미국"
+    elif market == "crypto":
+        label = "가상자산"
+    else:
+        label = "국내"
+    return ScreenerFilterChip(label=label, detail=None)
 
 
 def _with_market(preset: ScreenerPreset, market: str) -> ScreenerPreset:
@@ -158,15 +247,27 @@ def _with_market(preset: ScreenerPreset, market: str) -> ScreenerPreset:
     return preset.model_copy(update={"market": market, "filterChips": chips})
 
 
+def _normalize_requested_market(market: str) -> str:
+    return market if market in {"kr", "us", "crypto"} else "kr"
+
+
 def preset_definitions(market: str = "kr") -> list[ScreenerPreset]:
     """Return preset definitions localized for the requested market."""
-    normalized_market = "us" if market == "us" else "kr"
-    return [_with_market(p, normalized_market) for p in SCREENER_PRESETS]
+    normalized_market = _normalize_requested_market(market)
+    if normalized_market == "crypto":
+        return [_with_market(p, "crypto") for p in CRYPTO_SCREENER_PRESETS]
+    presets = SCREENER_PRESETS
+    if normalized_market != "kr":
+        presets = [p for p in SCREENER_PRESETS if p.id not in _KR_ONLY_PRESET_IDS]
+    return [_with_market(p, normalized_market) for p in presets]
 
 
 def get_preset(preset_id: str, market: str = "kr") -> ScreenerPreset | None:
-    normalized_market = "us" if market == "us" else "kr"
-    for p in SCREENER_PRESETS:
+    normalized_market = _normalize_requested_market(market)
+    catalog = (
+        CRYPTO_SCREENER_PRESETS if normalized_market == "crypto" else SCREENER_PRESETS
+    )
+    for p in catalog:
         if p.id == preset_id:
             return _with_market(p, normalized_market)
     return None
@@ -177,7 +278,15 @@ def screening_filters_for(preset_id: str, market: str = "kr") -> dict[str, objec
     filters = dict(_SCREENING_FILTERS.get(preset_id, {}))
     if not filters:
         return {}
-    normalized_market = "us" if market == "us" else "kr"
+    normalized_market = _normalize_requested_market(market)
+    crypto_ids = {p.id for p in CRYPTO_SCREENER_PRESETS}
+    if normalized_market == "crypto":
+        if preset_id not in crypto_ids:
+            return {}
+        filters["market"] = "crypto"
+        return filters
+    if preset_id in crypto_ids:
+        return {}
     filters["market"] = normalized_market
     if normalized_market == "us":
         # The US screening path supports PER/dividend/RSI/volume/change filters,

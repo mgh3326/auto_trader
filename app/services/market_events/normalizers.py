@@ -255,7 +255,7 @@ def normalize_forexfactory_event_row(
         "event_date": event_date,
         "release_time_utc": row.get("release_time_utc"),
         "release_time_local": row.get("release_time_local"),
-        "source_timezone": "America/New_York",
+        "source_timezone": "UTC",
         "time_hint": row.get("time_hint_raw") or "unknown",
         "importance": importance,
         "status": status,
@@ -374,3 +374,91 @@ def normalize_wisefn_earnings_row(
         "raw_payload_json": _row_to_jsonable(row),
     }
     return event, []
+
+
+_TV_IMPORTANCE_MAP: dict[int, int] = {1: 1, 2: 2, 3: 3}
+
+
+def normalize_tradingview_event_row(
+    row: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Normalize one TradingView economic-calendar row into MarketEvent + values dicts.
+
+    The row shape is produced by
+    `app.services.market_events.tradingview_helpers.fetch_tradingview_events_for_date`.
+    Fields: id/title/country/date_utc/period/actual/forecast/previous/unit/
+            source/source_url/ticker/importance/_raw
+    """
+    title = (row.get("title") or "").strip()
+    date_utc = row.get("date_utc")
+    if not title or date_utc is None:
+        raise ValueError("tradingview row missing title or date_utc")
+
+    event_date = date_utc.date()
+    country = row.get("country")
+
+    importance_raw = row.get("importance")
+    importance: int | None = None
+    if importance_raw is not None:
+        try:
+            importance = _TV_IMPORTANCE_MAP.get(int(importance_raw))
+        except (ValueError, TypeError):
+            importance = None
+
+    event_id = row.get("id")
+    if event_id:
+        source_event_id = str(event_id)
+    else:
+        ts = date_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+        source_event_id = f"tv::{country}::{title}::{ts}"
+
+    actual_raw = row.get("actual")
+    status = "released" if actual_raw not in (None, "", "-") else "scheduled"
+
+    raw_payload_json: dict[str, Any] = dict(row.get("_raw") or row)
+    raw_payload_json.pop("_raw", None)
+    raw_payload_json.pop("date_utc", None)
+
+    event = {
+        "category": "economic",
+        "market": "global",
+        "country": country,
+        "currency": None,
+        "symbol": row.get("ticker") or None,
+        "company_name": None,
+        "title": title,
+        "event_date": event_date,
+        "release_time_utc": date_utc,
+        "release_time_local": None,
+        "source_timezone": "UTC",
+        "time_hint": "unknown",
+        "importance": importance,
+        "status": status,
+        "source": "tradingview",
+        "source_event_id": source_event_id,
+        "source_url": row.get("source_url"),
+        "fiscal_year": None,
+        "fiscal_quarter": None,
+        "raw_payload_json": raw_payload_json,
+    }
+
+    period = row.get("period") or None
+    unit = row.get("unit") or None
+    actual_dec = _to_decimal(actual_raw)
+    forecast_dec = _to_decimal(row.get("forecast"))
+    previous_dec = _to_decimal(row.get("previous"))
+
+    values: list[dict[str, Any]] = []
+    if any(v is not None for v in (actual_dec, forecast_dec, previous_dec)):
+        values.append(
+            {
+                "metric_name": "actual",
+                "period": period,
+                "actual": actual_dec,
+                "forecast": forecast_dec,
+                "previous": previous_dec,
+                "unit": unit,
+            }
+        )
+
+    return event, values

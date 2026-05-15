@@ -6,6 +6,7 @@ import type {
   CalendarEvent,
   HighlightReason,
   CalendarSourceStatus,
+  ImpactTag,
 } from "../../types/calendar";
 
 export type DisplayEventType = "earnings" | "macro" | "other";
@@ -29,6 +30,7 @@ export interface CalendarEventVM {
   badges: string[];
   displayPriority?: number;
   highlightReasons?: HighlightReason[];
+  impactTags?: ImpactTag[];
 }
 
 export interface CalendarClusterVM {
@@ -105,6 +107,7 @@ export function toEventVM(event: CalendarEvent, date: string): CalendarEventVM {
     badges: event.badges,
     displayPriority: event.displayPriority ?? 0,
     highlightReasons: event.highlightReasons ?? [],
+    impactTags: event.impactTags ?? [],
   };
 }
 

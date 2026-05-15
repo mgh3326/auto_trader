@@ -21,6 +21,8 @@ from app.models.pending_order import PendingOrder
 from app.models.research_reports import ResearchReport, ResearchReportIngestionRun
 from app.models.us_symbol_universe import USSymbolUniverse
 from app.schemas.invest_coverage import (
+    CoverageActionability,
+    CoverageApprovalGate,
     CoverageCandidateKind,
     CoverageCandidateReadiness,
     CoverageMarket,
@@ -32,6 +34,17 @@ from app.schemas.invest_coverage import (
     InvestCoverageSymbol,
 )
 from app.services.invest_screener_snapshots.freshness import today_trading_date
+from app.services.market_data_coverage.ohlcv_freshness import (
+    kr_candles_freshness,
+    us_candles_freshness,
+)
+from app.services.market_quote_snapshots.freshness import freshness_window_minutes
+from app.services.market_quote_snapshots.repository import (
+    MarketQuoteSnapshotsRepository,
+)
+from app.services.market_valuation_snapshots.repository import (
+    MarketValuationSnapshotsRepository,
+)
 
 SUPPORTED_STATES: list[CoverageState] = [
     "fresh",
@@ -63,14 +76,26 @@ async def build_invest_coverage(
     surfaces: list[InvestCoverageSurface] = []
     surfaces.extend(await _symbol_universe_surfaces(db, market_norm))
     surfaces.extend(await _screener_surfaces(db, market_norm, trading_day))
-    surfaces.extend(await _news_surfaces(db, market_norm, now))
+    surfaces.extend(await _news_surfaces(db, market_norm, now, symbols=symbol_list))
     surfaces.extend(await _calendar_surfaces(db, market_norm, trading_day, now))
     surfaces.extend(await _research_report_surfaces(db, market_norm, now))
-    surfaces.extend(await _investor_flow_surfaces(db, market_norm, trading_day))
+    surfaces.extend(
+        await _investor_flow_surfaces(db, market_norm, trading_day, symbols=symbol_list)
+    )
     surfaces.extend(await _holdings_surfaces(db, market_norm, now))
     surfaces.extend(await _pending_order_surfaces(db, market_norm, now))
     surfaces.extend(await _orderbook_nxt_surfaces(db, market_norm))
+    surfaces.extend(await _ohlcv_surfaces(db, market_norm, trading_day))
+    surfaces.extend(await _quote_surfaces(db, market_norm, now))
+    surfaces.extend(await _valuation_surfaces(db, market_norm, trading_day))
     surfaces.extend(_provider_unwired_surfaces(market_norm))
+    for surface in surfaces:
+        surface.actionability = _actionability_for_surface(
+            surface=surface.surface,
+            state=surface.state,
+            market=surface.market,
+            source_of_truth=surface.sourceOfTruth,
+        )
 
     symbol_rows = await _symbol_rows(db, market_norm, symbol_list, trading_day)
     gaps = [
@@ -123,6 +148,145 @@ def _state_from_counts(
     if stale > 0:
         return "stale"
     return "fresh"
+
+
+_SURFACE_QUEUE: dict[str, str] = {
+    "symbol_universe": "invest-data-read-models",
+    "screener_snapshots": "invest-screener-snapshots",
+    "news_feed": "news-ingestor",
+    "calendar_events": "market-events-ingestion",
+    "research_reports": "research-report-ingestion",
+    "investor_flow": "investor-flow-ingestion",
+    "holdings": "account-panel-read-model",
+    "pending_orders": "order-reconciliation-read-model",
+    "orderbook_nxt_capability": "kr-symbol-universe",
+    "quotes": "market-quote-snapshots",
+    "ohlcv": "market-candle-snapshots",
+    "valuation_fundamentals": "market-valuation-snapshots",
+}
+
+
+_SCHEDULER_QUEUES = {
+    "invest-screener-snapshots",
+    "news-ingestor",
+    "market-events-ingestion",
+    "research-report-ingestion",
+    "investor-flow-ingestion",
+}
+
+
+def _actionability_for_surface(
+    *,
+    surface: str,
+    state: CoverageState,
+    market: str | None,
+    source_of_truth: str,
+) -> CoverageActionability:
+    """Return advisory remediation metadata without executing remediation."""
+
+    queue = _SURFACE_QUEUE.get(surface, "invest-data-read-models")
+    market_label = market or "all"
+    if state == "fresh":
+        return CoverageActionability(
+            priority="none",
+            action="monitor",
+            queue="none",
+            reason=f"{surface} coverage for {market_label} is fresh.",
+        )
+    if state == "unsupported":
+        return CoverageActionability(
+            priority="none",
+            action="unsupported_no_action",
+            queue="none",
+            reason=f"{surface} is intentionally unsupported for {market_label} in the current /invest contract.",
+        )
+    if state == "provider_unwired":
+        return CoverageActionability(
+            priority="blocked",
+            action="provider_contract_needed",
+            queue="provider-contract",
+            approvalGates=["code_review"],
+            reason=f"{surface} has no durable read-model/provider contract wired yet; sourceOfTruth={source_of_truth}.",
+        )
+    if state == "error":
+        return CoverageActionability(
+            priority="high",
+            action="investigate",
+            queue=queue,
+            approvalGates=["code_review"],
+            reason=f"{surface} coverage needs investigation before remediation.",
+        )
+
+    gates: list[CoverageApprovalGate] = ["production_db_write_approval"]
+    if queue in _SCHEDULER_QUEUES:
+        gates.append("scheduler_activation_approval")
+    if state == "missing":
+        action = (
+            "backfill_candidate"
+            if queue != "provider-contract"
+            else "provider_contract_needed"
+        )
+        priority = "high"
+    else:
+        action = "repair_read_model"
+        priority = "medium"
+    return CoverageActionability(
+        priority=priority,
+        action=action,
+        queue=queue,
+        approvalGates=gates,
+        reason=f"{surface} is {state} for {market_label}; remediation is advisory and requires approval before writes or scheduler changes.",
+    )
+
+
+def _actionability_for_symbol(
+    surfaces: dict[str, CoverageState],
+) -> CoverageActionability:
+    actionable_states = {
+        name: state
+        for name, state in surfaces.items()
+        if state not in {"fresh", "unsupported"}
+    }
+    if not actionable_states:
+        if surfaces and all(state == "unsupported" for state in surfaces.values()):
+            return CoverageActionability(
+                priority="none",
+                action="unsupported_no_action",
+                queue="none",
+                reason="No symbol-level remediation is available for unsupported surfaces.",
+            )
+        return CoverageActionability(
+            priority="none",
+            action="monitor",
+            queue="none",
+            reason="Symbol-level diagnostics are fresh or intentionally unsupported.",
+        )
+    if "provider_unwired" in actionable_states.values():
+        return CoverageActionability(
+            priority="blocked",
+            action="provider_contract_needed",
+            queue="provider-contract",
+            approvalGates=["code_review"],
+            reason="One or more symbol diagnostics need a provider/read-model contract before remediation.",
+        )
+    if "missing" in actionable_states.values():
+        return CoverageActionability(
+            priority="high",
+            action="backfill_candidate",
+            queue="invest-data-read-models",
+            approvalGates=[
+                "production_db_write_approval",
+                "scheduler_activation_approval",
+            ],
+            reason="One or more symbol diagnostics are missing; this is a candidate only, not an execution trigger.",
+        )
+    return CoverageActionability(
+        priority="medium",
+        action="repair_read_model",
+        queue="invest-data-read-models",
+        approvalGates=["production_db_write_approval"],
+        reason="One or more symbol diagnostics are stale/partial; remediation needs separate approval.",
+    )
 
 
 async def _naver_finance_investor_flow_candidate(
@@ -354,12 +518,19 @@ async def _screener_surfaces(
 
 
 async def _news_surfaces(
-    db: AsyncSession, market: str, now: dt.datetime
+    db: AsyncSession,
+    market: str,
+    now: dt.datetime,
+    *,
+    symbols: list[str] | None = None,
 ) -> list[InvestCoverageSurface]:
     markets = ["kr", "us", "crypto"] if market == "all" else [market]
     rows: list[InvestCoverageSurface] = []
     # news_articles.article_published_at is a timestamp without timezone.
     stale_cutoff = now.replace(tzinfo=None) - dt.timedelta(hours=24)
+    scoped_symbols = sorted(
+        {symbol.strip().upper() for symbol in (symbols or []) if symbol.strip()}
+    )
     for m in markets:
         run = (
             await db.execute(
@@ -372,19 +543,24 @@ async def _news_surfaces(
                 .limit(1)
             )
         ).scalar_one_or_none()
-        article_row = (
-            await db.execute(
-                sa.select(
-                    sa.func.count()
-                    .filter(NewsArticle.article_published_at >= stale_cutoff)
-                    .label("fresh"),
-                    sa.func.count()
-                    .filter(NewsArticle.article_published_at < stale_cutoff)
-                    .label("stale"),
-                    sa.func.max(NewsArticle.article_published_at).label("latest_at"),
-                ).where(NewsArticle.market == m)
+        article_query = sa.select(
+            sa.func.count(sa.distinct(NewsArticle.id))
+            .filter(NewsArticle.article_published_at >= stale_cutoff)
+            .label("fresh"),
+            sa.func.count(sa.distinct(NewsArticle.id))
+            .filter(NewsArticle.article_published_at < stale_cutoff)
+            .label("stale"),
+            sa.func.max(NewsArticle.article_published_at).label("latest_at"),
+        ).where(NewsArticle.market == m)
+        if scoped_symbols:
+            article_query = article_query.join(
+                NewsArticleRelatedSymbol,
+                NewsArticleRelatedSymbol.article_id == NewsArticle.id,
+            ).where(
+                NewsArticleRelatedSymbol.market == m,
+                NewsArticleRelatedSymbol.symbol.in_(scoped_symbols),
             )
-        ).one()
+        article_row = (await db.execute(article_query)).one()
         fresh = int(article_row.fresh or 0)
         stale = int(article_row.stale or 0)
         state = _state_from_counts(fresh=fresh, stale=stale)
@@ -556,7 +732,11 @@ async def _research_report_surfaces(
 
 
 async def _investor_flow_surfaces(
-    db: AsyncSession, market: str, trading_day: dt.date
+    db: AsyncSession,
+    market: str,
+    trading_day: dt.date,
+    *,
+    symbols: list[str] | None = None,
 ) -> list[InvestCoverageSurface]:
     if market in {"us", "crypto"}:
         return [
@@ -571,8 +751,16 @@ async def _investor_flow_surfaces(
         ]
     markets = ["kr"] if market in {"kr", "all"} else []
     rows: list[InvestCoverageSurface] = []
-    expected = await _universe_count(db, "kr")
+    scoped_symbols = sorted(
+        {symbol.strip().upper() for symbol in (symbols or []) if symbol.strip()}
+    )
+    expected = (
+        len(scoped_symbols) if scoped_symbols else await _universe_count(db, "kr")
+    )
     for m in markets:
+        predicates = [InvestorFlowSnapshot.market == m]
+        if scoped_symbols:
+            predicates.append(InvestorFlowSnapshot.symbol.in_(scoped_symbols))
         row = (
             await db.execute(
                 sa.select(
@@ -586,7 +774,7 @@ async def _investor_flow_surfaces(
                     sa.func.max(InvestorFlowSnapshot.snapshot_date).label(
                         "latest_date"
                     ),
-                ).where(InvestorFlowSnapshot.market == m)
+                ).where(*predicates)
             )
         ).one()
         fresh = int(row.fresh or 0)
@@ -805,57 +993,185 @@ async def _orderbook_nxt_surfaces(
     return rows
 
 
-def _provider_unwired_surfaces(market: str) -> list[InvestCoverageSurface]:
+async def _ohlcv_surfaces(
+    db: AsyncSession, market: str, trading_day: dt.date
+) -> list[InvestCoverageSurface]:
     markets = ["kr", "us", "crypto"] if market == "all" else [market]
     rows: list[InvestCoverageSurface] = []
     for m in markets:
-        for surface, label, warning in [
-            (
-                "quotes",
-                "Quotes",
-                "No durable /invest quote snapshot read model is wired; quote calls remain provider-backed elsewhere.",
-            ),
-            (
-                "ohlcv",
-                "OHLCV candles",
-                "No durable /invest OHLCV candle read model is wired for Toss-parity coverage.",
-            ),
-            (
-                "valuation_fundamentals",
-                "Valuation/fundamentals",
-                "No complete durable fundamentals read model is wired for Toss-parity coverage.",
-            ),
-        ]:
-            surface_row = InvestCoverageSurface(
-                surface=surface,
-                label=label,
-                market=m,
-                state="provider_unwired",
-                sourceOfTruth="read_model_gap",
-                warnings=[warning],
+        if m == "kr":
+            state, latest_at, latest_date, fresh, stale = await kr_candles_freshness(
+                db, trading_day=trading_day
             )
-            if surface == "quotes" and m == "kr":
-                surface_row.sourceCandidates.append(
-                    _naver_static_candidate(
-                        name="naver_finance",
-                        surface="quotes",
-                        kind="candidate",
-                        readiness="request_time_only",
-                        note="naver_finance domestic quote endpoints are available request-time only; no durable /invest quote read-model.",
-                    )
+            rows.append(
+                InvestCoverageSurface(
+                    surface="ohlcv",
+                    label="OHLCV candles",
+                    market="kr",
+                    state=state,
+                    sourceOfTruth="kr_candles_1m",
+                    latestAt=latest_at,
+                    latestDate=latest_date,
+                    counts=InvestCoverageCounts(
+                        fresh=fresh, stale=stale, total=fresh + stale
+                    ),
+                    warnings=[]
+                    if state == "fresh"
+                    else [
+                        "KR 1m candle read model is not fresh for the requested trading day."
+                    ],
                 )
-            elif surface == "valuation_fundamentals" and m == "kr":
-                surface_row.sourceCandidates.append(
-                    _naver_static_candidate(
-                        name="naver_finance",
-                        surface="valuation_fundamentals",
-                        kind="candidate",
-                        readiness="request_time_only",
-                        note="naver_finance financial/profile endpoints are request-time only; no durable fundamentals read-model.",
-                    )
+            )
+        elif m == "us":
+            state, latest_at, latest_date, fresh, stale = await us_candles_freshness(
+                db, trading_day=trading_day
+            )
+            rows.append(
+                InvestCoverageSurface(
+                    surface="ohlcv",
+                    label="OHLCV candles",
+                    market="us",
+                    state=state,
+                    sourceOfTruth="us_candles_1m",
+                    latestAt=latest_at,
+                    latestDate=latest_date,
+                    counts=InvestCoverageCounts(
+                        fresh=fresh, stale=stale, total=fresh + stale
+                    ),
+                    warnings=[]
+                    if state == "fresh"
+                    else [
+                        "US 1m candle read model is not fresh for the requested trading day."
+                    ],
                 )
-            rows.append(surface_row)
+            )
+        else:
+            rows.append(
+                InvestCoverageSurface(
+                    surface="ohlcv",
+                    label="OHLCV candles",
+                    market=m,
+                    state="unsupported",
+                    sourceOfTruth="market_candles_read_model",
+                    warnings=[
+                        "Crypto OHLCV coverage is not in the current /invest durable read-model contract."
+                    ],
+                )
+            )
     return rows
+
+
+async def _quote_surfaces(
+    db: AsyncSession, market: str, now: dt.datetime
+) -> list[InvestCoverageSurface]:
+    markets = ["kr", "us", "crypto"] if market == "all" else [market]
+    rows: list[InvestCoverageSurface] = []
+    repo = MarketQuoteSnapshotsRepository(db)
+    for m in markets:
+        cutoff = now - dt.timedelta(minutes=freshness_window_minutes(m))
+        counts = await repo.coverage_counts(m, fresh_after=cutoff)
+        state = _state_from_counts(
+            fresh=counts.fresh_symbols,
+            stale=counts.stale_symbols,
+            total=counts.total_symbols,
+        )
+        row = InvestCoverageSurface(
+            surface="quotes",
+            label="Quotes",
+            market=m,
+            state=state,
+            sourceOfTruth="market_quote_snapshots",
+            latestAt=counts.latest_snapshot_at,
+            counts=InvestCoverageCounts(
+                fresh=counts.fresh_symbols,
+                stale=counts.stale_symbols,
+                total=counts.total_symbols,
+            ),
+            warnings=[]
+            if state == "fresh"
+            else [
+                "Quote snapshot read model is stale or missing for one or more symbols."
+            ],
+        )
+        if m == "kr":
+            row.sourceCandidates.append(
+                _naver_static_candidate(
+                    name="naver_finance",
+                    surface="quotes",
+                    kind="candidate",
+                    readiness="request_time_only",
+                    note="naver_finance domestic quote endpoints are available request-time only; durable /invest coverage uses market_quote_snapshots.",
+                )
+            )
+        rows.append(row)
+    return rows
+
+
+async def _valuation_surfaces(
+    db: AsyncSession, market: str, trading_day: dt.date
+) -> list[InvestCoverageSurface]:
+    markets = ["kr", "us", "crypto"] if market == "all" else [market]
+    rows: list[InvestCoverageSurface] = []
+    repo = MarketValuationSnapshotsRepository(db)
+    for m in markets:
+        if m not in {"kr", "us"}:
+            rows.append(
+                InvestCoverageSurface(
+                    surface="valuation_fundamentals",
+                    label="Valuation/fundamentals",
+                    market=m,
+                    state="unsupported",
+                    sourceOfTruth="market_valuation_snapshots",
+                    warnings=[
+                        "Crypto valuation/fundamentals are not in the current /invest durable read-model contract."
+                    ],
+                )
+            )
+            continue
+        counts = await repo.coverage_counts(m, fresh_date=trading_day)
+        state = _state_from_counts(
+            fresh=counts.fresh_symbols,
+            stale=counts.stale_symbols,
+            total=counts.total_symbols,
+        )
+        row = InvestCoverageSurface(
+            surface="valuation_fundamentals",
+            label="Valuation/fundamentals",
+            market=m,
+            state=state,
+            sourceOfTruth="market_valuation_snapshots",
+            latestAt=counts.latest_at,
+            latestDate=counts.latest_date,
+            counts=InvestCoverageCounts(
+                fresh=counts.fresh_symbols,
+                stale=counts.stale_symbols,
+                total=counts.total_symbols,
+            ),
+            warnings=[]
+            if state == "fresh"
+            else [
+                "Valuation snapshot read model is stale or missing for one or more symbols."
+            ],
+        )
+        if m == "kr":
+            row.sourceCandidates.append(
+                _naver_static_candidate(
+                    name="naver_finance",
+                    surface="valuation_fundamentals",
+                    kind="candidate",
+                    readiness="request_time_only",
+                    note="naver_finance financial/profile endpoints are request-time only; durable /invest coverage uses market_valuation_snapshots.",
+                )
+            )
+        rows.append(row)
+    return rows
+
+
+def _provider_unwired_surfaces(market: str) -> list[InvestCoverageSurface]:
+    # ROB-206 wires durable OHLCV, quote, and valuation coverage surfaces for
+    # KR/US via read-model freshness checks. Keep this hook for future gaps but
+    # do not emit stale provider_unwired placeholders for those surfaces.
+    return []
 
 
 async def _symbol_rows(
@@ -864,9 +1180,21 @@ async def _symbol_rows(
     symbols: list[str],
     trading_day: dt.date,
 ) -> list[InvestCoverageSymbol]:
-    if not symbols or market not in {"kr", "us"}:
+    if not symbols:
         return []
+    if market == "all":
+        return await _symbol_rows_all_markets(db, symbols, trading_day)
+    if market not in {"kr", "us"}:
+        return [_unsupported_symbol_row(symbol, market) for symbol in symbols]
+    return await _symbol_rows_for_market(db, market, symbols, trading_day)
 
+
+async def _symbol_rows_for_market(
+    db: AsyncSession,
+    market: str,
+    symbols: list[str],
+    trading_day: dt.date,
+) -> list[InvestCoverageSymbol]:
     screener_rows = (
         await db.execute(
             sa.select(
@@ -972,9 +1300,102 @@ async def _symbol_rows(
                     for name, state in surfaces.items()
                     if state in {"missing", "stale", "unsupported"}
                 ],
+                actionability=_actionability_for_symbol(surfaces),
             )
         )
     return out
+
+
+async def _symbol_rows_all_markets(
+    db: AsyncSession,
+    symbols: list[str],
+    trading_day: dt.date,
+) -> list[InvestCoverageSymbol]:
+    market_by_symbol = await _resolve_symbol_markets(db, symbols)
+    partitioned: dict[str, list[str]] = {"kr": [], "us": []}
+    unsupported: dict[str, InvestCoverageSymbol] = {}
+    for symbol in symbols:
+        resolved_market = market_by_symbol.get(symbol)
+        if resolved_market in partitioned:
+            partitioned[resolved_market].append(symbol)
+        else:
+            unsupported[symbol] = _unsupported_symbol_row(
+                symbol, resolved_market or "unknown"
+            )
+
+    rows_by_symbol: dict[str, InvestCoverageSymbol] = {}
+    for resolved_market, market_symbols in partitioned.items():
+        if not market_symbols:
+            continue
+        for row in await _symbol_rows_for_market(
+            db, resolved_market, market_symbols, trading_day
+        ):
+            rows_by_symbol[row.symbol] = row
+    rows_by_symbol.update(unsupported)
+    return [rows_by_symbol[symbol] for symbol in symbols if symbol in rows_by_symbol]
+
+
+async def _resolve_symbol_markets(
+    db: AsyncSession, symbols: list[str]
+) -> dict[str, str]:
+    kr_symbols = {
+        symbol
+        for (symbol,) in (
+            await db.execute(
+                sa.select(KRSymbolUniverse.symbol).where(
+                    KRSymbolUniverse.symbol.in_(symbols),
+                    KRSymbolUniverse.is_active.is_(True),
+                )
+            )
+        ).all()
+    }
+    us_symbols = {
+        symbol
+        for (symbol,) in (
+            await db.execute(
+                sa.select(USSymbolUniverse.symbol).where(
+                    USSymbolUniverse.symbol.in_(symbols),
+                    USSymbolUniverse.is_active.is_(True),
+                )
+            )
+        ).all()
+    }
+    resolved: dict[str, str] = {}
+    for symbol in symbols:
+        if symbol in kr_symbols:
+            resolved[symbol] = "kr"
+        elif symbol in us_symbols:
+            resolved[symbol] = "us"
+        elif symbol.isdigit() and len(symbol) == 6:
+            resolved[symbol] = "kr"
+        elif symbol.isalpha() and symbol.upper() == symbol:
+            resolved[symbol] = "us"
+        elif symbol.startswith("KRW-"):
+            resolved[symbol] = "crypto"
+        else:
+            resolved[symbol] = "unknown"
+    return resolved
+
+
+def _unsupported_symbol_row(symbol: str, market: str) -> InvestCoverageSymbol:
+    surfaces: dict[str, CoverageState] = {
+        "screener_snapshots": "unsupported",
+        "news_feed": "unsupported",
+        "investor_flow": "unsupported",
+        "naver_investor_flow": "unsupported",
+    }
+    latest_dates: dict[str, dt.date | None] = dict.fromkeys(surfaces)
+    display_market = market if market in {"crypto", "unknown"} else market
+    return InvestCoverageSymbol(
+        symbol=symbol,
+        market=display_market,
+        surfaces=surfaces,
+        latestDates=latest_dates,
+        warnings=[
+            f"symbol-level diagnostics are not implemented for {display_market} symbols"
+        ],
+        actionability=_actionability_for_symbol(surfaces),
+    )
 
 
 def _date_state(latest: dt.date | None, trading_day: dt.date) -> CoverageState:

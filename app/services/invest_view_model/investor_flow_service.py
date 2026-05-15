@@ -71,6 +71,37 @@ def _aggregate_state(items: list[InvestorFlowItem]) -> str:
     return "partial"
 
 
+async def latest_items_for_symbols(
+    *,
+    db: AsyncSession,
+    symbols: list[str],
+    market: str = "kr",
+    as_of: dt.date | None = None,
+    max_stale_days: int = 1,
+) -> dict[str, InvestorFlowItem]:
+    """Return {symbol -> fresh/stale InvestorFlowItem} for snapshots that exist.
+
+    Symbols with no snapshot are absent from the dict. Read-only; no live fetch.
+    """
+    normalized_market = market.strip().lower()
+    if normalized_market != "kr":
+        raise ValueError("investor_flow only supports market=kr")
+    today = as_of or dt.date.today()
+    normalized_symbols = [
+        _normalize_symbol(symbol) for symbol in symbols if symbol.strip()
+    ]
+    if not normalized_symbols:
+        return {}
+    repo = InvestorFlowSnapshotsRepository(db)
+    rows = await repo.latest_by_symbols(
+        market="kr", symbols=normalized_symbols, as_of=today
+    )
+    return {
+        row.symbol: _item_from_snapshot(row, as_of=today, max_stale_days=max_stale_days)
+        for row in rows
+    }
+
+
 async def build_investor_flow_cards(
     *,
     db: AsyncSession,

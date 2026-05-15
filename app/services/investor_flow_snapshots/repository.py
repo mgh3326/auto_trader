@@ -85,6 +85,36 @@ class InvestorFlowSnapshotsRepository:
         )
         await self._session.execute(stmt)
 
+    async def recent_by_symbol(
+        self,
+        *,
+        market: str,
+        symbol: str,
+        as_of: dt.date | None = None,
+        limit: int = 10,
+    ) -> list[InvestorFlowSnapshot]:
+        normalized_symbol = _normalize_symbol(symbol)
+        if not normalized_symbol:
+            return []
+        stmt = select(InvestorFlowSnapshot).where(
+            InvestorFlowSnapshot.market == market.strip().lower(),
+            InvestorFlowSnapshot.symbol == normalized_symbol,
+        )
+        if as_of is not None:
+            stmt = stmt.where(InvestorFlowSnapshot.snapshot_date <= as_of)
+        result = await self._session.execute(
+            stmt.order_by(
+                InvestorFlowSnapshot.snapshot_date.desc(),
+                InvestorFlowSnapshot.source.asc(),
+            ).limit(limit)
+        )
+        rows = list(result.scalars().all())
+        by_date: dict[dt.date, InvestorFlowSnapshot] = {}
+        for row in rows:
+            # Keep deterministic source precedence if multiple source snapshots exist.
+            by_date.setdefault(row.snapshot_date, row)
+        return list(by_date.values())
+
     async def latest_by_symbols(
         self,
         *,

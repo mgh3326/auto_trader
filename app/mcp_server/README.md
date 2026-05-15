@@ -142,7 +142,14 @@ callers may pass `lifecycle_correlation_id`, `client_order_id`, `candidate_uuid`
 `briefing_artifact_run_uuid`, or an `approval_packet` containing those keys; the
 tool then reads only matching ledger rows and returns `scoped_by` so decision
 sessions do not get blocked by unrelated recent ETH/SOL/BTC rows. Calls without
-scope keep the broad recent-ledger safety behavior for global runners. ROB-93
+scope keep the broad recent-ledger safety behavior for global runners. Passing
+`legacy_cycle_blockers_as_warnings=True` is an explicit Alpaca Paper execution
+flow test-mode: residual positions and stale preview/approval packets are
+returned as warnings instead of blockers so operators can test buy/sell/order
+adjust/close flows on a used paper account. It does not weaken open-order
+conflicts, duplicate `client_order_id`, ledger/order/fill anomalies, missing
+linked sells, unclosed sell snapshots, or symbol mismatches; those remain
+blocking. ROB-93
 checks include unexpected open orders, residual positions, duplicate
 `client_order_id`, filled buys without linked sells, filled sells without a zero
 final position snapshot, ledger/order/fill mismatches, stale previews/approval
@@ -320,20 +327,31 @@ The error names variables only — never values.
 Parameters:
 - `symbol`: KR equity symbol/code or Upbit market code (required)
 - `market`: defaults to `"kr"`; supports KR aliases (`"kr"`, `"kospi"`, `"kosdaq"`, `"korea"`, `"kis"`, `"equity_kr"`) plus crypto aliases (`"crypto"`, `"upbit"`)
+- `venue`: optional, KR equity only; selects the KIS trading venue for the orderbook. Non-blank values are rejected for crypto. Defaults to `"krx"` (KRX regular session) for backward compatibility.
+
+Venue mapping (KR equity only):
+| `venue` input | Canonical venue | KIS code | Korean label |
+|---|---|---|---|
+| `null`, `""`, `"krx"`, `"regular"`, `"j"` | `krx` | `J` | `KRX` |
+| `"nxt"`, `"ntx"`, `"nx"`, `"afterhours"`, `"extended"` | `nxt` | `NX` | `NXT` |
+| `"unified"`, `"combined"`, `"integrated"`, `"all"`, `"un"`, `"통합"`, `"통합시장"` | `unified` | `UN` | `통합` |
 
 Behavior:
 - KR requests follow the existing KR quote normalization path, including zero-padding numeric codes such as `5930 -> 005930`
 - Crypto orderbook requests require explicit `market="crypto"` (or `"upbit"`) and a raw `KRW-*` symbol such as `KRW-BTC`; plain coins (`BTC`) and non-KRW crypto pairs (`USDT-BTC`) raise an argument error
-- Valid KR requests use KIS `inquire-asking-price-exp-ccn` and return 10-level asks/bids, total residual quantities, expected match metadata, and integer-valued `price`, `quantity`, `total_ask_qty`, `total_bid_qty`, and `spread`
+- Providing a non-blank `venue` with `market="crypto"` raises an argument error
+- Valid KR requests use KIS endpoint `inquire-asking-price-exp-ccn` (TR_ID `FHKST01010200`) and return 10-level asks/bids, total residual quantities, expected match metadata, and integer-valued `price`, `quantity`, `total_ask_qty`, `total_bid_qty`, and `spread`
 - Valid crypto requests use Upbit orderbook data and return the same shared snapshot fields, but `price`, `quantity`, `total_ask_qty`, `total_bid_qty`, and `spread` can be fractional numbers
 - `expected_qty` keeps the public `int | null` contract; when KIS leaves `output2.antc_cnqn` blank or omits it, the response serializes `expected_qty` as `null` instead of inventing a fallback quantity
 - During the NXT session (`16:00`-`20:00` KST), KIS may return `expected_price` while leaving `expected_qty` blank or absent; this is treated as a valid upstream state, not an MCP error
 - Successful responses always include MCP-only derived fields: `pressure`, `pressure_desc`, `spread`, `spread_pct`, `bid_walls`, and `ask_walls`
+- Successful KR responses include venue diagnostics: `venue`, `venue_label`, `kis_market_code`, `source_endpoint`, `source_tr_id`, `is_empty_book`, `requires_final_recheck`, and (when empty) `empty_reason`
 - Successful KR responses use `source: "kis"`, `instrument_type: "equity_kr"`, and return `bid_walls: []`, `ask_walls: []`
 - Successful crypto responses use `source: "upbit"`, `instrument_type: "crypto"`, and may return non-empty wall arrays
 - Invalid input raises; upstream failures for otherwise valid requests return an in-band error payload via the shared MCP error contract. When the underlying exception is a `DomainServiceError`, the payload may also include `error_type`
+- `venue` does not affect order routing or trading venue defaults; this is market-data only. WebSocket streaming for NXT/UN is out of scope for this REST read-only slice.
 
-Response format:
+Response format (KR equity):
 ```json
 {
   "symbol": "005930",
@@ -351,11 +369,28 @@ Response format:
   "expected_price": 70050,
   "expected_qty": null,
   "bid_walls": [],
-  "ask_walls": []
+  "ask_walls": [],
+  "venue": "nxt",
+  "venue_label": "NXT",
+  "kis_market_code": "NX",
+  "source_endpoint": "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn",
+  "source_tr_id": "FHKST01010200",
+  "is_empty_book": false,
+  "requires_final_recheck": false
 }
 ```
 
 `expected_qty: null` means KIS did not provide `antc_cnqn`; it does not by itself indicate a tool failure.
+
+KR-only diagnostic fields:
+- `venue`: canonical venue name (`"krx"`, `"nxt"`, `"unified"`)
+- `venue_label`: Korean-facing label (`"KRX"`, `"NXT"`, `"통합"`)
+- `kis_market_code`: KIS `FID_COND_MRKT_DIV_CODE` sent to KIS (`"J"`, `"NX"`, `"UN"`)
+- `source_endpoint`: REST endpoint path used
+- `source_tr_id`: KIS TR_ID used
+- `is_empty_book`: `true` when the orderbook returned no asks and no bids
+- `requires_final_recheck`: `true` for empty KR books (caller should re-check before acting on empty depth)
+- `empty_reason`: stable short string (e.g. `"empty_kis_orderbook"`) when `is_empty_book` is `true`; absent when book is non-empty
 
 Derived fields:
 - `pressure` is derived from `bid_ask_ratio` using fixed inclusive boundaries:

@@ -8,8 +8,10 @@ import type { PillTone } from "../ds";
 import { fetchSignals } from "../api/signals";
 import type { SignalCard } from "../types/signals";
 import { buildScopedPortfolioPanel, type AccountFilterKey } from "./scopeHoldings";
+import { accountSourceMeta } from "./AccountSourceMeta";
 import type { GroupedHolding, WatchSymbol } from "../types/invest";
 import { formatRelativeTime } from "../format/relativeTime";
+import { stockDetailPath } from "../stockDetailPath";
 
 type RightPanelTab = "portfolio" | "watchlist" | "recent" | "realtime";
 type RealtimeSubTab = "kr" | "us" | "crypto";
@@ -28,6 +30,10 @@ const MARKET_LABEL: Record<MarketKey, string> = {
   us: "US",
   crypto: "CRYPTO",
 };
+
+function stockRouteForMarketKey(market: MarketKey, symbol: string): string {
+  return `/stocks/${market}/${encodeURIComponent(symbol)}`;
+}
 
 function fmtKrw(v?: number | null): string {
   if (v == null) return "—";
@@ -215,6 +221,12 @@ function PortfolioPanel({ onNavigate }: Readonly<{ onNavigate: NavigateToSymbol 
   };
 
   const sectionLabel = `${scoped.selected.label} 보유종목`;
+  const selectedSourceMeta = scoped.selected.source ? accountSourceMeta(scoped.selected.source) : null;
+  const emptyText = selectedKey === "all"
+    ? "보유 종목이 없습니다."
+    : selectedSourceMeta?.tone === "paper"
+      ? `${scoped.selected.label} 계좌는 표시할 모의/Paper 보유종목이 없습니다.`
+      : "선택한 계좌에 표시할 보유종목이 없습니다.";
   const hasCash = scoped.cashBalances.krw != null || scoped.cashBalances.usd != null;
 
   return (
@@ -309,7 +321,7 @@ function PortfolioPanel({ onNavigate }: Readonly<{ onNavigate: NavigateToSymbol 
         </div>
         {sorted.length === 0 ? (
           <div data-testid="holdings-empty" style={{ fontSize: 12, color: "var(--fg-3)", padding: "8px 0" }}>
-            {selectedKey === "all" ? "보유 종목이 없습니다." : "선택한 계좌에 표시할 보유종목이 없습니다."}
+            {emptyText}
           </div>
         ) : (
           <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column" }}>
@@ -329,10 +341,7 @@ function PortfolioPanel({ onNavigate }: Readonly<{ onNavigate: NavigateToSymbol 
                         lastViewedAt: new Date().toISOString(),
                         source: "right-panel",
                       };
-                      onNavigate(
-                        `/signals?symbol=${encodeURIComponent(h.symbol)}&market=${mk}`,
-                        sym,
-                      );
+                      onNavigate(stockDetailPath(h.market, h.symbol) ?? stockRouteForMarketKey(mk, h.symbol), sym);
                     }}
                     right={(
                       <div style={{ textAlign: "right", flexShrink: 0 }}>
@@ -482,10 +491,7 @@ function RecentPanel({
               market={r.market}
               symbol={r.symbol}
               onClick={() => {
-                onNavigate(
-                  `/signals?symbol=${encodeURIComponent(r.symbol)}&market=${r.market}`,
-                  { ...r, lastViewedAt: new Date().toISOString() },
-                );
+                onNavigate(stockRouteForMarketKey(r.market, r.symbol), { ...r, lastViewedAt: new Date().toISOString() });
               }}
               right={ago ? <div style={{ fontSize: 11, color: "var(--fg-3)", flexShrink: 0 }}>{ago}</div> : undefined}
             />
@@ -614,10 +620,7 @@ function RealtimePanel({
                       lastViewedAt: new Date().toISOString(),
                       source: "right-panel",
                     };
-                    onNavigate(
-                      `/signals?symbol=${encodeURIComponent(symbol)}&market=${market}`,
-                      sym,
-                    );
+                    onNavigate(stockRouteForMarketKey(market, symbol), sym);
                   }}
                   meta={(
                     <>

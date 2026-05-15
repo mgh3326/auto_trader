@@ -8,6 +8,12 @@ import { InvestHomeRoute } from "../pages/desktop/DesktopHomePage";
 vi.mock("../hooks/useInvestHome", () => ({
   useInvestHome: () => ({ state: { status: "loading" }, reload: () => {} }),
 }));
+vi.mock("../hooks/useMarketDashboard", () => ({
+  useMarketDashboard: () => ({ state: { status: "loading" }, reload: () => {} }),
+}));
+vi.mock("../hooks/useMarketParity", () => ({
+  useMarketParity: () => ({ state: { status: "loading" }, reload: () => {} }),
+}));
 vi.mock("../desktop/useAccountPanel", () => ({
   useAccountPanel: () => ({ data: undefined, error: undefined, loading: true, reload: () => {} }),
 }));

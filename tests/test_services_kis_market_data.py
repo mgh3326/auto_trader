@@ -916,6 +916,34 @@ class TestKISInquireOrderbook:
         assert output1 == {"askp1": "70100", "askp_rsqn1": "111"}
         assert output2 is None
 
+    @pytest.mark.asyncio
+    async def test_inquire_orderbook_snapshot_sends_nx_market_code(self):
+        from app.services.brokers.kis.client import KISClient
+
+        client = KISClient()
+        client._ensure_token = AsyncMock(return_value=None)
+        request_mock = AsyncMock(
+            return_value={
+                "rt_cd": "0",
+                "output1": {"askp1": "70100", "askp_rsqn1": "111"},
+                "output2": {"antc_cnpr": "70200", "antc_cnqn": "500"},
+            }
+        )
+        client._request_with_rate_limit = request_mock
+
+        output1, output2 = await client.inquire_orderbook_snapshot(
+            "005930", market="NX"
+        )
+
+        assert output1 == {"askp1": "70100", "askp_rsqn1": "111"}
+        call_kwargs = request_mock.call_args
+        params = call_kwargs.kwargs.get("params", {}) or (
+            call_kwargs.args[1] if len(call_kwargs.args) > 1 else {}
+        )
+        body = call_kwargs.kwargs.get("body", {}) or {}
+        sent_payload = {**params, **body}
+        assert sent_payload.get("FID_COND_MRKT_DIV_CODE") == "NX"
+
 
 @pytest.mark.asyncio
 async def test_kis_inquire_short_selling_uses_daily_short_sale_contract(monkeypatch):

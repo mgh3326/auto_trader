@@ -14,9 +14,10 @@
 //
 // /invest/feed/news         — News and research feed.
 // /invest/discover          — Issue discovery / investment ideas.
-// /invest/signals           — AI analysis signals.
+// /invest/my?tab=signals    — AI analysis signals within MY.
 // /invest/calendar          — Earnings/events calendar.
 // /invest/coverage          — Data coverage dashboard.
+// /invest/insights          — Read-only market insight cards.
 // /invest/screener          — Stock screener (골라보기).
 // /invest/stocks/:m/:sym    — Stock detail page.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -26,11 +27,13 @@ import { InvestHomeRoute } from "./pages/desktop/DesktopHomePage";
 import { InvestPortfolioRoute } from "./pages/desktop/DesktopPortfolioPage";
 import { FeedNewsRoute } from "./pages/desktop/DesktopFeedNewsPage";
 import { InvestDiscoverRoute } from "./pages/desktop/DesktopDiscoverPage";
-import { SignalsRoute } from "./pages/desktop/DesktopSignalsPage";
 import { CalendarRoute } from "./pages/desktop/DesktopCalendarPage";
 import { CoverageRoute } from "./pages/desktop/DesktopCoveragePage";
 import { DesktopScreenerPage } from "./pages/desktop/DesktopScreenerPage";
 import { DesktopMarketPage } from "./pages/desktop/DesktopMarketPage";
+import { DesktopInsightsPage } from "./pages/desktop/DesktopInsightsPage";
+import { FxMacroRoute } from "./pages/desktop/FxMacroPage";
+import { DesktopCryptoPage } from "./pages/desktop/DesktopCryptoPage";
 import { StockDetailPage } from "./pages/stock-detail/StockDetailPage";
 
 // Static legacy /app/* redirect that preserves any ?search and #hash
@@ -50,6 +53,12 @@ function DiscoverIssueRedirect() {
   return <Navigate to={`/discover/issues/${issueId ?? ""}${search}${hash}`} replace />;
 }
 
+function CryptoPairRedirect() {
+  const { pair } = useParams();
+  const { search, hash } = useLocation();
+  return <Navigate to={`/stocks/crypto/${encodeURIComponent(pair ?? "")}${search}${hash}`} replace />;
+}
+
 export const router = createBrowserRouter(
   [
     // Canonical /invest routes — the home view is responsive
@@ -64,10 +73,13 @@ export const router = createBrowserRouter(
     { path: "/feed/news", element: <FeedNewsRoute /> },
     { path: "/discover", element: <InvestDiscoverRoute /> },
     { path: "/discover/issues/:issueId", element: <DiscoverIssueDetailPage /> },
-    { path: "/signals", element: <SignalsRoute /> },
     { path: "/calendar", element: <CalendarRoute /> },
     { path: "/coverage", element: <CoverageRoute /> },
     { path: "/market", element: <DesktopMarketPage /> },
+    { path: "/insights", element: <DesktopInsightsPage /> },
+    { path: "/market/fx", element: <FxMacroRoute /> },
+    { path: "/crypto", element: <DesktopCryptoPage /> },
+    { path: "/crypto/:pair", element: <CryptoPairRedirect /> },
     { path: "/screener", element: <DesktopScreenerPage /> },
     { path: "/stocks/:market/:symbol", element: <StockDetailPage /> },
 

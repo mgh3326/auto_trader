@@ -74,7 +74,7 @@ async def test_us_resolver_filters_active(monkeypatch, db_session):
             return False
 
     monkeypatch.setattr(
-        "scripts.build_invest_screener_snapshots.AsyncSessionLocal",
+        "app.jobs.invest_screener_snapshots.AsyncSessionLocal",
         lambda: _AsyncCtx(db_session),
     )
     out = await _resolve_symbols(market="us", override=[], limit=10)

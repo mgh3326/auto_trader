@@ -1,6 +1,6 @@
 import type { GroupedHolding } from "../../types/invest";
 import { Pill } from "../../ds";
-import { pillToneForSource } from "../../desktop/AccountSourceTone";
+import { accountSourceMeta, quoteFreshnessLabel } from "../../desktop/AccountSourceMeta";
 import type { AssetCategoryKey } from "../AssetCategoryFilter";
 
 const COLS = "minmax(0,1.8fr) 100px 120px 140px 100px";
@@ -68,7 +68,10 @@ export function HoldingsTable({
           const dir = (h.pnlRate ?? 0) >= 0 ? "up" : "down";
           const color = dir === "up" ? "var(--gain)" : "var(--loss)";
           const arrow = dir === "up" ? "▲" : "▼";
-          const tone = h.includedSources[0] ? pillToneForSource(h.includedSources[0]) : "paper";
+          const sourceMeta = h.includedSources[0] ? accountSourceMeta(h.includedSources[0]) : null;
+          const tone = sourceMeta?.tone ?? "paper";
+          const sourceLabel = sourceMeta?.shortLabel ?? "계좌";
+          const freshness = quoteFreshnessLabel(h.priceState);
           const value = h.valueNative ?? h.valueKrw;
           return (
             <div
@@ -120,8 +123,9 @@ export function HoldingsTable({
                     <span style={{ fontSize: 11, color: "var(--fg-3)", fontFamily: "var(--font-mono)" }}>{h.symbol}</span>
                     <span aria-hidden style={{ width: 2, height: 2, background: "var(--fg-4)", borderRadius: 999 }} />
                     <Pill tone={tone} size="sm">
-                      {tone.toUpperCase()}
+                      {sourceLabel}
                     </Pill>
+                    <span style={{ fontSize: 11, color: "var(--fg-3)" }}>{freshness}</span>
                   </div>
                 </div>
               </div>

@@ -81,6 +81,32 @@ function SourceChip({ source, accounts }: { source: AccountSource; accounts: Acc
   );
 }
 
+function QuantityCell({ holding }: { holding: GroupedHolding }) {
+  const tradeable = holding.tradeableQuantity ?? holding.totalQuantity;
+  const sellable = holding.sellableQuantity ?? tradeable;
+  const pendingSell = holding.pendingSellQuantity ?? 0;
+  const reference = holding.referenceQuantity ?? 0;
+
+  return (
+    <div style={{ textAlign: "right", color: "var(--fg-1)", fontWeight: 600 }}>
+      <div>{fmtQty(holding.totalQuantity, holding.assetType)}</div>
+      <div style={{ marginTop: 3, fontSize: 11, color: "var(--fg-3)", fontWeight: 500 }}>
+        매매가능 {fmtQty(tradeable, holding.assetType)} · 매도가능 {fmtQty(sellable, holding.assetType)}
+      </div>
+      {pendingSell > 0 && (
+        <div style={{ marginTop: 2, fontSize: 11, color: "var(--warn)", fontWeight: 500 }}>
+          주문대기 {fmtQty(pendingSell, holding.assetType)}
+        </div>
+      )}
+      {reference > 0 && (
+        <div style={{ marginTop: 2, fontSize: 11, color: "var(--fg-3)", fontWeight: 500 }}>
+          참고전용 {fmtQty(reference, holding.assetType)}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function BreakdownLine({
   item,
   accounts,
@@ -93,6 +119,11 @@ function BreakdownLine({
   assetType: GroupedHolding["assetType"];
 }) {
   const name = accountName(accounts, item.accountId) ?? sourceLabel(accounts, item.source);
+  const sellable = item.sellableQuantity ?? (item.isTradeable ? item.quantity : 0);
+  const reference = item.referenceQuantity ?? (item.manualOnly ? item.quantity : 0);
+  const metaLabel = item.manualOnly
+    ? `참고전용 ${fmtQty(reference, assetType)}`
+    : `매도가능 ${fmtQty(sellable, assetType)}`;
   return (
     <div
       data-testid="unified-holding-source-breakdown"
@@ -106,7 +137,9 @@ function BreakdownLine({
       }}
     >
       <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</span>
-      <span style={{ color: "var(--fg-3)", fontFeatureSettings: '"tnum"' }}>{fmtQty(item.quantity, assetType)}</span>
+      <span style={{ color: "var(--fg-3)", fontFeatureSettings: '"tnum"' }}>
+        {fmtQty(item.quantity, assetType)} · {metaLabel}
+      </span>
       <span style={{ color: plColor(item.pnlRate), fontWeight: 700, fontFeatureSettings: '"tnum"' }}>
         {fmtMoney(item.valueNative ?? item.valueKrw, currency)} · {fmtPct(item.pnlRate)}
       </span>
@@ -210,9 +243,7 @@ export function UnifiedHoldingsTable({
                 </div>
               </div>
 
-              <div style={{ textAlign: "right", color: "var(--fg-1)", fontWeight: 600 }}>
-                {fmtQty(holding.totalQuantity, holding.assetType)}
-              </div>
+              <QuantityCell holding={holding} />
               <div style={{ textAlign: "right", color: "var(--fg-2)", fontWeight: 600 }}>
                 {fmtMoney(holding.averageCost, holding.currency)}
                 {holding.currency === "USD" && <span style={{ fontSize: 10, color: "var(--fg-3)", marginLeft: 4 }}>USD</span>}

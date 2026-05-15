@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { Sparkline } from "../../ds";
 import type { MarketDashboardResponse, MarketDashboardTone } from "../../types/marketDashboard";
 
@@ -8,6 +9,7 @@ export interface MarketStripItem {
   pct: number;
   direction: "up" | "down" | "flat";
   spark?: number[];
+  href?: string;
 }
 
 const COLOR: Record<MarketStripItem["direction"], string> = {
@@ -28,18 +30,20 @@ function toDirection(tone: MarketDashboardTone): MarketStripItem["direction"] {
 
 export function marketDashboardToStripItems(data: MarketDashboardResponse | null): MarketStripItem[] {
   if (!data) return [];
-  const sections = ["kr_market", "global_indices"];
+  const sections = ["kr_market", "global_indices", "fx_macro"];
   return data.sections
     .filter((section) => sections.includes(section.id))
-    .flatMap((section) => section.metrics)
-    .slice(0, 4)
-    .map((metric) => ({
-      name: metric.label,
-      value: metric.value ?? "—",
-      changeLabel: metric.change != null ? `${metric.change >= 0 ? "+" : ""}${metric.change.toLocaleString()}` : "변동 정보 없음",
-      pct: metric.changePct ?? 0,
-      direction: toDirection(metric.tone),
-    }));
+    .flatMap((section) =>
+      section.metrics.map((metric) => ({
+        name: section.id === "fx_macro" ? `FX·매크로 ${metric.label}` : metric.label,
+        value: metric.value ?? "—",
+        changeLabel: metric.change != null ? `${metric.change >= 0 ? "+" : ""}${metric.change.toLocaleString()}` : "변동 정보 없음",
+        pct: metric.changePct ?? 0,
+        direction: toDirection(metric.tone),
+        href: section.id === "fx_macro" ? "/market/fx" : undefined,
+      })),
+    )
+    .slice(0, 5);
 }
 
 export function MarketStrip({ items }: { items: MarketStripItem[] }) {
@@ -71,15 +75,15 @@ export function MarketStrip({ items }: { items: MarketStripItem[] }) {
     <div data-testid="market-strip" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
       {items.map((m) => {
         const c = COLOR[m.direction];
-        return (
+        const card = (
           <div
-            key={m.name}
             style={{
               padding: 12,
               background: "var(--surface)",
               border: "1px solid var(--border)",
               borderRadius: 14,
               boxShadow: "var(--shadow-1)",
+              minHeight: 92,
             }}
           >
             <div style={{ fontSize: 12, fontWeight: 600, color: "var(--fg-2)" }}>{m.name}</div>
@@ -89,12 +93,20 @@ export function MarketStrip({ items }: { items: MarketStripItem[] }) {
               {m.changeLabel} · {m.pct >= 0 ? "+" : ""}
               {m.pct.toFixed(2)}%
             </div>
+            {m.href && <div style={{ color: "var(--accent)", fontWeight: 900, fontSize: 12, marginTop: 6 }}>상세 보기</div>}
             {m.spark && m.spark.length > 1 && (
               <div style={{ marginTop: 6 }}>
                 <Sparkline points={m.spark} color={c} width={200} height={28} />
               </div>
             )}
           </div>
+        );
+        return m.href ? (
+          <Link key={m.name} to={m.href} style={{ textDecoration: "none", color: "inherit" }}>
+            {card}
+          </Link>
+        ) : (
+          <div key={m.name}>{card}</div>
         );
       })}
     </div>

@@ -8,7 +8,7 @@ mutation 경로(submit/cancel/modify/place_order/watch/order-intent/scheduler/wo
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 
 from app.schemas.invest_home import (
@@ -50,6 +50,26 @@ def _group_id(h: Holding) -> str:
     return f"{h.market}:{h.assetType}:{h.currency}:{_normalize_symbol(h.symbol)}"
 
 
+def _is_tradeable_holding(h: Holding) -> bool:
+    return h.sourceOfTruth and h.isTradeable and not h.manualOnly
+
+
+def _sellable_quantity(h: Holding) -> float:
+    if not _is_tradeable_holding(h):
+        return 0.0
+    if h.sellableQuantity is not None:
+        return max(h.sellableQuantity, 0.0)
+    return max(h.quantity - h.pendingSellQuantity, 0.0)
+
+
+def _reference_quantity(h: Holding) -> float:
+    if h.referenceQuantity is not None:
+        return max(h.referenceQuantity, 0.0)
+    if h.manualOnly or not _is_tradeable_holding(h):
+        return max(h.quantity, 0.0)
+    return 0.0
+
+
 def build_grouped_holdings(holdings: Iterable[Holding]) -> list[GroupedHolding]:
     buckets: dict[str, list[Holding]] = {}
     for h in holdings:
@@ -59,6 +79,12 @@ def build_grouped_holdings(holdings: Iterable[Holding]) -> list[GroupedHolding]:
     for gid, items in buckets.items():
         first = items[0]
         total_qty = sum(h.quantity for h in items)
+        tradeable_qty = sum(h.quantity for h in items if _is_tradeable_holding(h))
+        sellable_qty = sum(_sellable_quantity(h) for h in items)
+        pending_sell_qty = sum(
+            h.pendingSellQuantity for h in items if _is_tradeable_holding(h)
+        )
+        reference_qty = sum(_reference_quantity(h) for h in items)
         cost_vals = [h.costBasis for h in items]
         avg_cost: float | None = None
         cost_basis: float | None = None
@@ -146,6 +172,10 @@ def build_grouped_holdings(holdings: Iterable[Holding]) -> list[GroupedHolding]:
                 displayName=first.displayName,
                 currency=first.currency,
                 totalQuantity=total_qty,
+                tradeableQuantity=tradeable_qty,
+                sellableQuantity=sellable_qty,
+                pendingSellQuantity=pending_sell_qty,
+                referenceQuantity=reference_qty,
                 averageCost=avg_cost,
                 costBasis=cost_basis,
                 valueNative=value_native,
@@ -159,6 +189,7 @@ def build_grouped_holdings(holdings: Iterable[Holding]) -> list[GroupedHolding]:
                         holdingId=h.holdingId,
                         accountId=h.accountId,
                         source=h.source,
+                        accountKind=h.accountKind,
                         quantity=h.quantity,
                         averageCost=h.averageCost,
                         costBasis=h.costBasis,
@@ -166,6 +197,12 @@ def build_grouped_holdings(holdings: Iterable[Holding]) -> list[GroupedHolding]:
                         valueKrw=h.valueKrw,
                         pnlKrw=h.pnlKrw,
                         pnlRate=h.pnlRate,
+                        sourceOfTruth=h.sourceOfTruth,
+                        isTradeable=h.isTradeable,
+                        manualOnly=h.manualOnly,
+                        sellableQuantity=_sellable_quantity(h),
+                        pendingSellQuantity=h.pendingSellQuantity,
+                        referenceQuantity=_reference_quantity(h),
                     )
                     for h in items
                 ],
@@ -268,10 +305,18 @@ class _SourceFetchResult:
 class InvestHomeService:
     """Read-only 합성 서비스. mutation 경로 호출 금지."""
 
-    def __init__(self, *, kis_reader, upbit_reader, manual_reader) -> None:
+    def __init__(
+        self,
+        *,
+        kis_reader,
+        upbit_reader,
+        manual_reader,
+        paper_readers: Sequence[object] | None = None,
+    ) -> None:
         self._kis = kis_reader
         self._upbit = upbit_reader
         self._manual = manual_reader
+        self._paper_readers: Sequence[object] = paper_readers or []
 
     async def get_home(self, *, user_id: int) -> InvestHomeResponse:
         warnings: list[InvestHomeWarning] = []
@@ -317,6 +362,34 @@ class InvestHomeService:
                         source=src, message=str(exc) or type(exc).__name__
                     )
                 )
+
+        # Paper readers — each is a read-only adapter (e.g. KISMockHomeReader,
+        # AlpacaPaperHomeReader). Partial failure must not affect live accounts.
+        for reader in self._paper_readers:
+            # Readers expose an optional `source` attribute for warning attribution.
+            reader_source: str = getattr(reader, "source", None) or "kis_mock"
+            try:
+                result = await reader.fetch(user_id=user_id)  # type: ignore[union-attr]
+                accounts.extend(result.accounts)
+                holdings.extend(result.holdings)
+                if result.warning is not None:
+                    warnings.append(result.warning)
+            except Exception as exc:
+                src_name = type(reader).__name__
+                logger.warning(
+                    "[invest_home] paper reader %s failed: %s",
+                    src_name,
+                    exc,
+                    exc_info=True,
+                )
+                # Only emit warning when source is a known valid paper literal.
+                if reader_source in _PAPER:
+                    warnings.append(
+                        InvestHomeWarning(
+                            source=reader_source, message=type(exc).__name__
+                        )  # type: ignore[arg-type]
+                    )
+
         return InvestHomeResponse(
             homeSummary=build_home_summary(accounts),
             accounts=accounts,

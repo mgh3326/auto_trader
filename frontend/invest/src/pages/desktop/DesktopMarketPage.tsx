@@ -1,6 +1,8 @@
 import { Link } from "react-router-dom";
+import { CommonPreferredDisparityCardView } from "../../components/CommonPreferredDisparityCard";
 import { DesktopShell } from "../../desktop/DesktopShell";
 import { Card } from "../../ds";
+import { useCommonPreferredDisparity } from "../../hooks/useCommonPreferredDisparity";
 import { useMarketDashboard } from "../../hooks/useMarketDashboard";
 import type { MarketDashboardMetric, MarketDashboardSection, MarketDashboardState, MarketDashboardTone } from "../../types/marketDashboard";
 
@@ -120,6 +122,7 @@ function SectionCard({ section }: { section: MarketDashboardSection }) {
 
 export function DesktopMarketPage() {
   const { state, reload } = useMarketDashboard();
+  const disparityState = useCommonPreferredDisparity();
   const data = state.status === "ready" ? state.data : null;
 
   return (
@@ -133,13 +136,27 @@ export function DesktopMarketPage() {
                 국내 지수, 글로벌 지수, 환율/매크로, crypto read-only 스냅샷입니다.
               </p>
             </div>
-            <button
-              type="button"
-              onClick={reload}
-              style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--fg-1)", fontWeight: 800, cursor: "pointer" }}
-            >
-              새로고침
-            </button>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <Link
+                to="/insights"
+                style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--fg-1)", fontWeight: 800, textDecoration: "none" }}
+              >
+                인사이트
+              </Link>
+              <Link
+                to="/market/fx"
+                style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--fg-1)", fontWeight: 800, textDecoration: "none" }}
+              >
+                FX·매크로 상세
+              </Link>
+              <button
+                type="button"
+                onClick={reload}
+                style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--fg-1)", fontWeight: 800, cursor: "pointer" }}
+              >
+                새로고침
+              </button>
+            </div>
           </div>
 
           {state.status === "loading" && <Card>시장 데이터를 불러오는 중…</Card>}
@@ -159,6 +176,9 @@ export function DesktopMarketPage() {
                   <div style={{ marginTop: 10, color: "var(--warn)", fontSize: 12 }}>{data.warnings.map((w) => `⚠ ${w}`).join(" · ")}</div>
                 )}
               </Card>
+              {disparityState.status === "loading" && <Card>보통주/우선주 괴리 데이터를 불러오는 중…</Card>}
+              {disparityState.status === "error" && <Card><span style={{ color: "var(--danger)" }}>보통주/우선주 괴리 데이터를 일시적으로 불러오지 못했습니다.</span></Card>}
+              {disparityState.status === "ready" && <CommonPreferredDisparityCardView data={disparityState.data} />}
               {data.sections.map((section) => <SectionCard key={section.id} section={section} />)}
             </>
           )}

@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.schemas.news_issues import MarketIssue
 
 FeedTab = Literal["top", "latest", "hot", "holdings", "watchlist", "kr", "us", "crypto"]
+FeedTopic = Literal["fx", "rates"]
 NewsMarket = Literal["kr", "us", "crypto"]
 RelationKind = Literal["held", "watchlist", "both", "none"]
 # ROB-155: article scope — market_wide means broad macro/index/sector article;
@@ -77,6 +78,7 @@ class FeedNewsItem(BaseModel):
     # ROB-155: additive read-layer classification fields; defaults preserve backward compat.
     scope: NewsScope = "symbol_specific"
     tags: list[str] = Field(default_factory=list)
+    topicTags: list[FeedTopic] = Field(default_factory=list)
     category: str | None = None
     noiseReason: str | None = None
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -11,7 +12,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.schemas.invest_feed_news import NewsMarket
 from app.schemas.invest_stock_detail import (
     StockDetailDiscussionSignal,
+    StockDetailFxScenario,
+    StockDetailFxSensitivity,
     StockDetailHolding,
+    StockDetailInvestorFlow,
+    StockDetailInvestorFlowBuyerDecomposition,
+    StockDetailInvestorFlowDailyRow,
+    StockDetailInvestorFlowPeriodSummary,
     StockDetailLatestAnalysis,
     StockDetailNaverEnrichment,
     StockDetailOrderbook,
@@ -19,6 +26,10 @@ from app.schemas.invest_stock_detail import (
     StockDetailResponse,
     default_capabilities_for_market,
     orderbook_support_for_market,
+)
+from app.services.exchange_rate_service import get_usd_krw_quote
+from app.services.invest_view_model.investor_flow_service import (
+    latest_items_for_symbols as _latest_investor_flow_items,
 )
 from app.services.invest_view_model.naver_discussion_signal_poc import (
     build_naver_discussion_signal_poc,
@@ -30,6 +41,9 @@ from app.services.invest_view_model.stock_detail_symbol_resolver import (
     ResolvedSymbol,
     resolve_symbol,
 )
+from app.services.investor_flow_snapshots.repository import (
+    InvestorFlowSnapshotsRepository,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +53,161 @@ Provider = Callable[..., Awaitable[Any]]
 
 async def _none_provider(*args: Any, **kwargs: Any) -> None:
     return None
+
+
+def _daily_row_from_snapshot(row: Any) -> StockDetailInvestorFlowDailyRow:
+    return StockDetailInvestorFlowDailyRow(
+        snapshotDate=row.snapshot_date.isoformat(),
+        collectedAt=row.collected_at,
+        source=row.source,
+        foreignNet=row.foreign_net,
+        institutionNet=row.institution_net,
+        individualNet=row.individual_net,
+        doubleBuy=row.double_buy,
+        doubleSell=row.double_sell,
+    )
+
+
+async def _recent_investor_flow_rows(
+    *, db: Any, symbol: str, limit: int = 20
+) -> list[StockDetailInvestorFlowDailyRow]:
+    repo = InvestorFlowSnapshotsRepository(db)
+    rows = await repo.recent_by_symbol(market="kr", symbol=symbol, limit=limit)
+    return [_daily_row_from_snapshot(row) for row in rows]
+
+
+def _sum_known(values: list[int | None]) -> int | None:
+    known = [value for value in values if value is not None]
+    if not known:
+        return None
+    return sum(known)
+
+
+def _build_period_summary(
+    daily_rows: list[StockDetailInvestorFlowDailyRow],
+) -> StockDetailInvestorFlowPeriodSummary | None:
+    if not daily_rows:
+        return None
+    foreign_values = [row.foreignNet for row in daily_rows]
+    volume_values = [row.volume for row in daily_rows if row.volume is not None]
+    foreign_total = _sum_known(foreign_values)
+    volume_total = sum(volume_values) if volume_values else None
+    unavailable = [
+        "종가/등락률/거래량은 investor_flow_snapshots 저장소에 아직 없어 일별 표에서 준비중으로 표시됩니다.",
+        "외국인 보유주수/보유율은 investor_flow_snapshots 저장소에 아직 없어 변화율을 계산하지 않습니다.",
+    ]
+    return StockDetailInvestorFlowPeriodSummary(
+        windowDays=len(daily_rows),
+        rowCount=len(daily_rows),
+        foreignNetTotal=foreign_total,
+        institutionNetTotal=_sum_known([row.institutionNet for row in daily_rows]),
+        individualNetTotal=_sum_known([row.individualNet for row in daily_rows]),
+        foreignBuyDays=sum(
+            1 for value in foreign_values if value is not None and value > 0
+        ),
+        foreignSellDays=sum(
+            1 for value in foreign_values if value is not None and value < 0
+        ),
+        foreignFlatDays=sum(1 for value in foreign_values if value == 0),
+        foreignNetToVolumeRatio=(foreign_total / volume_total)
+        if foreign_total is not None and volume_total
+        else None,
+        foreignHoldingSharesChange=None,
+        foreignHoldingRateChange=None,
+        unavailableLabels=unavailable,
+    )
+
+
+def _build_buyer_decomposition(
+    daily_rows: list[StockDetailInvestorFlowDailyRow],
+) -> StockDetailInvestorFlowBuyerDecomposition | None:
+    if not daily_rows:
+        return None
+    # Without price/change-rate storage, use the latest available row as the
+    # decomposition proxy and label the price leg explicitly unavailable.
+    row = daily_rows[0]
+    buyers = {
+        "foreign": row.foreignNet,
+        "institution": row.institutionNet,
+        "individual": row.individualNet,
+    }
+    positive = {k: v for k, v in buyers.items() if v is not None and v > 0}
+    if not positive:
+        leading = "unknown"
+    else:
+        max_value = max(positive.values())
+        leaders = [k for k, v in positive.items() if v == max_value]
+        leading = leaders[0] if len(leaders) == 1 else "mixed"
+    label_by_leader = {
+        "foreign": "외국인 주도",
+        "institution": "기관 주도",
+        "individual": "개인 주도",
+        "mixed": "복합 주도",
+        "unknown": "주도 매수자 불명",
+    }
+    return StockDetailInvestorFlowBuyerDecomposition(
+        snapshotDate=row.snapshotDate,
+        label=label_by_leader[leading],
+        leadingBuyer=leading,
+        foreignNet=row.foreignNet,
+        institutionNet=row.institutionNet,
+        individualNet=row.individualNet,
+        note="급등일 여부는 종가/등락률 저장 전까지 판별하지 않고, 최신 수급 행의 매수 주체 분해만 표시합니다.",
+    )
+
+
+_INVESTOR_FLOW_UNAVAILABLE_LABELS = [
+    "일별 종가/등락률/거래량: 저장소 미적재",
+    "외국인 보유주수/보유율: 저장소 미적재",
+    "외국인 순매수/거래량 강도: 거래량 저장 전까지 계산 불가",
+]
+
+
+async def _default_investor_flow_provider(
+    market: NewsMarket, symbol: str, db: Any
+) -> StockDetailInvestorFlow | None:
+    if market != "kr":
+        return None
+    items = await _latest_investor_flow_items(db=db, symbols=[symbol], market="kr")
+    item = items.get(symbol)
+    daily_rows = await _recent_investor_flow_rows(db=db, symbol=symbol)
+    period_summary = _build_period_summary(daily_rows)
+    buyer_decomposition = _build_buyer_decomposition(daily_rows)
+    if item is None:
+        return StockDetailInvestorFlow(
+            symbol=symbol,
+            dataState="missing",
+            dailyRows=daily_rows,
+            periodSummary=period_summary,
+            buyerDecomposition=buyer_decomposition,
+            unavailableLabels=_INVESTOR_FLOW_UNAVAILABLE_LABELS,
+        )
+    return StockDetailInvestorFlow(
+        symbol=item.symbol,
+        dataState=item.dataState,
+        snapshotDate=item.snapshotDate.isoformat() if item.snapshotDate else None,
+        collectedAt=item.collectedAt,
+        snapshotSource=item.source,
+        foreignNet=item.foreignNet,
+        institutionNet=item.institutionNet,
+        individualNet=item.individualNet,
+        foreignNetBuyRank=item.foreignNetBuyRank,
+        foreignNetSellRank=item.foreignNetSellRank,
+        institutionNetBuyRank=item.institutionNetBuyRank,
+        institutionNetSellRank=item.institutionNetSellRank,
+        doubleBuy=item.doubleBuy,
+        doubleSell=item.doubleSell,
+        foreignConsecutiveBuyDays=item.foreignConsecutiveBuyDays,
+        foreignConsecutiveSellDays=item.foreignConsecutiveSellDays,
+        institutionConsecutiveBuyDays=item.institutionConsecutiveBuyDays,
+        institutionConsecutiveSellDays=item.institutionConsecutiveSellDays,
+        individualConsecutiveBuyDays=item.individualConsecutiveBuyDays,
+        individualConsecutiveSellDays=item.individualConsecutiveSellDays,
+        dailyRows=daily_rows,
+        periodSummary=period_summary,
+        buyerDecomposition=buyer_decomposition,
+        unavailableLabels=_INVESTOR_FLOW_UNAVAILABLE_LABELS,
+    )
 
 
 async def _run_optional_block(
@@ -54,21 +223,31 @@ async def _run_optional_block(
     return None
 
 
+@dataclass(frozen=True, slots=True)
+class StockDetailProviders:
+    resolver: Resolver = resolve_symbol
+    quote: Provider = _none_provider
+    screener: Provider = _none_provider
+    valuation: Provider = _none_provider
+    holding: Provider = _none_provider
+    latest_analysis: Provider = _none_provider
+    orderbook: Provider = _none_provider
+    fx_rate: Provider = get_usd_krw_quote
+    naver_enrichment: Provider = build_naver_stock_detail_poc
+    discussion_signal: Provider = build_naver_discussion_signal_poc
+    investor_flow: Provider = _default_investor_flow_provider
+
+
+DEFAULT_STOCK_DETAIL_PROVIDERS = StockDetailProviders()
+
+
 async def build_stock_detail(
     *,
     user_id: int | str,
     market: NewsMarket,
     symbol: str,
-    db: AsyncSession,
-    resolver: Resolver = resolve_symbol,
-    quote_provider: Provider = _none_provider,
-    screener_provider: Provider = _none_provider,
-    valuation_provider: Provider = _none_provider,
-    holding_provider: Provider = _none_provider,
-    latest_analysis_provider: Provider = _none_provider,
-    orderbook_provider: Provider = _none_provider,
-    naver_enrichment_provider: Provider = build_naver_stock_detail_poc,
-    discussion_signal_provider: Provider = build_naver_discussion_signal_poc,
+    db: Any,
+    providers: StockDetailProviders = DEFAULT_STOCK_DETAIL_PROVIDERS,
 ) -> StockDetailResponse:
     """Build the read-only above-the-fold stock-detail view-model.
 
@@ -78,46 +257,52 @@ async def build_stock_detail(
     not perform request-time external fetches or writes.
     """
 
-    resolved = await resolver(market, symbol, db)
+    resolved = await providers.resolver(market, symbol, db)
     warnings: list[str] = []
 
     quote_task = _run_optional_block(
-        "quote", quote_provider(market, resolved.symbol_db, db), warnings
+        "quote", providers.quote(market, resolved.symbol_db, db), warnings
     )
     screener_task = _run_optional_block(
         "screener_snapshot",
-        screener_provider(market, resolved.symbol_db, db),
+        providers.screener(market, resolved.symbol_db, db),
         warnings,
     )
     valuation_task = _run_optional_block(
-        "valuation", valuation_provider(market, resolved.symbol_db, db), warnings
+        "valuation", providers.valuation(market, resolved.symbol_db, db), warnings
     )
     holding_task = _run_optional_block(
         "holding",
-        holding_provider(user_id, market, resolved.symbol_db, db),
+        providers.holding(user_id, market, resolved.symbol_db, db),
         warnings,
     )
     latest_analysis_task = _run_optional_block(
         "latest_analysis",
-        latest_analysis_provider(market, resolved.symbol_db, db),
+        providers.latest_analysis(market, resolved.symbol_db, db),
         warnings,
     )
     naver_enrichment_task = _run_optional_block(
         "naver_enrichment",
-        naver_enrichment_provider(market, resolved.symbol_db, db),
+        providers.naver_enrichment(market, resolved.symbol_db, db),
         warnings,
     )
     discussion_signal_task = _run_optional_block(
         "discussion_signal",
-        discussion_signal_provider(market, resolved.symbol_db, db),
+        providers.discussion_signal(market, resolved.symbol_db, db),
         warnings,
     )
     if market == "kr":
         orderbook_task = _run_optional_block(
-            "orderbook", orderbook_provider(market, resolved.symbol_db, db), warnings
+            "orderbook", providers.orderbook(market, resolved.symbol_db, db), warnings
+        )
+        investor_flow_task = _run_optional_block(
+            "investor_flow",
+            providers.investor_flow(market, resolved.symbol_db, db),
+            warnings,
         )
     else:
         orderbook_task = _none_provider()
+        investor_flow_task = _none_provider()
 
     (
         quote,
@@ -128,6 +313,7 @@ async def build_stock_detail(
         naver_enrichment,
         discussion_signal,
         orderbook,
+        investor_flow,
     ) = await asyncio.gather(
         quote_task,
         screener_task,
@@ -137,6 +323,7 @@ async def build_stock_detail(
         naver_enrichment_task,
         discussion_signal_task,
         orderbook_task,
+        investor_flow_task,
     )
 
     capabilities = default_capabilities_for_market(market)
@@ -173,6 +360,24 @@ async def build_stock_detail(
         )
     if orderbook is not None and not isinstance(orderbook, StockDetailOrderbook):
         orderbook = StockDetailOrderbook.model_validate(orderbook)
+    if investor_flow is not None and not isinstance(
+        investor_flow, StockDetailInvestorFlow
+    ):
+        investor_flow = StockDetailInvestorFlow.model_validate(investor_flow)
+
+    fx_rate = None
+    if _should_fetch_fx_rate(
+        market=market, currency=resolved.currency, holding=holding
+    ):
+        fx_rate = await _run_optional_block(
+            "fx_sensitivity", providers.fx_rate(), warnings
+        )
+    fx_sensitivity = _build_fx_sensitivity(
+        market=market,
+        currency=resolved.currency,
+        holding=holding,
+        fx_rate=fx_rate,
+    )
 
     return StockDetailResponse(
         symbol=resolved.symbol_db,
@@ -188,7 +393,9 @@ async def build_stock_detail(
         valuation=valuation,
         naverEnrichment=naver_enrichment,
         discussionSignal=discussion_signal,
+        investorFlow=investor_flow,
         holding=holding,
+        fxSensitivity=fx_sensitivity,
         latestAnalysis=latest_analysis,
         orderbookSupport=orderbook_support,
         orderbook=orderbook,
@@ -197,4 +404,72 @@ async def build_stock_detail(
     )
 
 
-__all__ = ["build_stock_detail"]
+def _should_fetch_fx_rate(
+    *, market: NewsMarket, currency: str, holding: StockDetailHolding | None
+) -> bool:
+    if market != "us" and currency != "USD":
+        return False
+    return holding is not None and (holding.valueNative or 0) > 0
+
+
+def _build_fx_sensitivity(
+    *,
+    market: NewsMarket,
+    currency: str,
+    holding: StockDetailHolding | None,
+    fx_rate: float | None,
+) -> StockDetailFxSensitivity:
+    caution = (
+        "환율 민감도는 USD/KRW 1% 변동을 보유 평가액에 단순 적용한 가정치이며, "
+        "투자 판단을 대신하는 지표가 아닙니다."
+    )
+    if market != "us" and currency != "USD":
+        return StockDetailFxSensitivity(
+            status="not_applicable",
+            basis="not_applicable",
+            caution="KRW 자산은 별도 USD/KRW 환율 민감도 계산을 표시하지 않습니다.",
+        )
+    if holding is None:
+        return StockDetailFxSensitivity(
+            status="missing_holding",
+            basis="not_applicable",
+            caution="보유 수량이 없어 환율 민감도 계산을 표시하지 않습니다.",
+        )
+    if holding.valueNative is None or holding.valueNative <= 0:
+        return StockDetailFxSensitivity(
+            status="missing_native_value",
+            holdingValueKrw=holding.valueKrw,
+            basis="not_applicable",
+            caution="USD 보유 평가액이 없어 환율 민감도 계산을 표시하지 않습니다.",
+        )
+    if fx_rate is None or fx_rate <= 0:
+        return StockDetailFxSensitivity(
+            status="missing_fx_rate",
+            holdingValueNative=holding.valueNative,
+            holdingValueKrw=holding.valueKrw,
+            basis="not_applicable",
+            caution="USD/KRW 환율을 확인하지 못해 환율 민감도 계산을 표시하지 않습니다.",
+        )
+
+    scenarios = [
+        StockDetailFxScenario(
+            rateMovePct=move_pct,
+            estimatedKrwImpact=holding.valueNative * fx_rate * (move_pct / 100),
+            estimatedValueKrw=holding.valueNative * fx_rate * (1 + move_pct / 100),
+            label=f"USD/KRW {move_pct:+.0f}%",
+        )
+        for move_pct in (-1.0, 1.0)
+    ]
+    return StockDetailFxSensitivity(
+        status="available",
+        currencyPair="USD/KRW",
+        baseFxRate=fx_rate,
+        holdingValueNative=holding.valueNative,
+        holdingValueKrw=holding.valueKrw,
+        basis="portfolio_value",
+        scenarios=scenarios,
+        caution=caution,
+    )
+
+
+__all__ = ["StockDetailProviders", "build_stock_detail"]

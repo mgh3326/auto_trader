@@ -5,7 +5,7 @@
 //   /invest/my       → detailed holdings/portfolio table (see DesktopPortfolioPage).
 //   /invest/feed/news → news feed
 //   /invest/discover  → issue discovery
-//   /invest/signals   → signals
+//   /invest/my?tab=signals → signals inside MY
 //   /invest/calendar  → earnings/events calendar
 //   /invest/coverage  → data coverage dashboard
 //   /invest/screener  → stock screener
@@ -18,10 +18,12 @@ import type { AccountFilterKey } from "../../desktop/LeftContextRail";
 import { RightRemotePanel } from "../../desktop/RightRemotePanel";
 import { useInvestHome } from "../../hooks/useInvestHome";
 import { useMarketDashboard } from "../../hooks/useMarketDashboard";
+import { useMarketParity } from "../../hooks/useMarketParity";
 import { useViewport } from "../../hooks/useViewport";
 import { scopeGroupedToSource } from "../../desktop/scopeHoldings";
 import { DesktopHero } from "../../components/home/DesktopHero";
 import { MarketStrip, marketDashboardToStripItems } from "../../components/home/MarketStrip";
+import { MarketParityStrip } from "../../components/home/MarketParityStrip";
 import { MobileHomePage } from "../mobile/MobileHomePage";
 import { Icon } from "../../ds";
 import type { AssetCategoryKey } from "../../components/AssetCategoryFilter";
@@ -55,13 +57,19 @@ const NAV_CARDS: NavCard[] = [
     icon: <Icon name="bell" size={20} />,
   },
   {
+    to: "/insights",
+    label: "인사이트",
+    desc: "괴리·패리티 read-only 관찰",
+    icon: <Icon name="chart" size={20} />,
+  },
+  {
     to: "/discover",
     label: "발견",
     desc: "투자 아이디어 및 이슈 탐색",
     icon: <Icon name="flash" size={20} />,
   },
   {
-    to: "/signals",
+    to: "/my?tab=signals",
     label: "시그널",
     desc: "AI 분석 신호 및 추천",
     icon: <Icon name="chart" size={20} />,
@@ -71,6 +79,12 @@ const NAV_CARDS: NavCard[] = [
     label: "캘린더",
     desc: "실적 발표·배당 일정",
     icon: <Icon name="calendar" size={20} />,
+  },
+  {
+    to: "/market/fx",
+    label: "FX·매크로",
+    desc: "환율 경고 및 사후 검증 참고",
+    icon: <Icon name="chart" size={20} />,
   },
   {
     to: "/screener",
@@ -83,6 +97,7 @@ const NAV_CARDS: NavCard[] = [
 export function DesktopHomePage() {
   const home = useInvestHome();
   const market = useMarketDashboard();
+  const marketParity = useMarketParity();
   const [account, setAccount] = useState<AccountFilterKey>("all");
   const [category] = useState<AssetCategoryKey>("all");
 
@@ -162,6 +177,9 @@ export function DesktopHomePage() {
 
               {/* Market index strip — live data from market dashboard */}
               <MarketStrip items={marketStripItems} />
+
+              {/* Market parity strip — read-only reference/괴리 observation, not recommendations */}
+              <MarketParityStrip state={marketParity.state} reload={marketParity.reload} />
 
               {/* Navigation cards — market-entry shortcuts to all /invest surfaces */}
               <div>

@@ -306,6 +306,14 @@ async def test_get_orderbook_parses_kr_snapshot(
         bid_ask_ratio=1.5,
         expected_price=70050,
         expected_qty=42,
+        venue="krx",
+        venue_label="KRX",
+        kis_market_code="J",
+        source_endpoint="/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn",
+        source_tr_id="FHKST01010200",
+        is_empty_book=False,
+        requires_final_recheck=False,
+        empty_reason=None,
     )
     assert type(snapshot.asks[0].price) is int
     assert type(snapshot.asks[0].quantity) is int
@@ -727,6 +735,170 @@ async def test_get_orderbook_rejects_unsupported_markets(market: str) -> None:
         match="get_orderbook only supports KR equity and KRW crypto markets",
     ):
         await market_data_service.get_orderbook("005930", market)
+
+
+# ---------------------------------------------------------------------------
+# Venue-aware KR orderbook tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_kr_venue_nxt_passes_nx_to_kis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DummyKIS:
+        async def inquire_orderbook_snapshot(self, code: str, market: str = "J"):
+            assert code == "005930"
+            assert market == "NX"
+            return (
+                {
+                    "askp1": "70200",
+                    "askp_rsqn1": "10",
+                    "bidp1": "69900",
+                    "bidp_rsqn1": "20",
+                    "total_askp_rsqn": "10",
+                    "total_bidp_rsqn": "20",
+                },
+                None,
+            )
+
+    monkeypatch.setattr(market_data_service, "KISClient", lambda: DummyKIS())
+
+    snapshot = await market_data_service.get_orderbook("005930", "kr", venue="nxt")
+
+    assert snapshot.venue == "nxt"
+    assert snapshot.kis_market_code == "NX"
+    assert snapshot.venue_label == "NXT"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("venue_input", ["unified", "통합", "통합시장", "UN", "un"])
+async def test_get_orderbook_kr_venue_unified_passes_un_to_kis(
+    monkeypatch: pytest.MonkeyPatch, venue_input: str
+) -> None:
+    class DummyKIS:
+        async def inquire_orderbook_snapshot(self, code: str, market: str = "J"):
+            assert market == "UN"
+            return (
+                {
+                    "askp1": "70200",
+                    "askp_rsqn1": "10",
+                    "bidp1": "69900",
+                    "bidp_rsqn1": "20",
+                    "total_askp_rsqn": "10",
+                    "total_bidp_rsqn": "20",
+                },
+                None,
+            )
+
+    monkeypatch.setattr(market_data_service, "KISClient", lambda: DummyKIS())
+
+    snapshot = await market_data_service.get_orderbook(
+        "005930", "kr", venue=venue_input
+    )
+
+    assert snapshot.venue == "unified"
+    assert snapshot.kis_market_code == "UN"
+    assert snapshot.venue_label == "통합"
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_kr_default_still_uses_j(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DummyKIS:
+        async def inquire_orderbook_snapshot(self, code: str, market: str = "J"):
+            assert market == "J"
+            return (
+                {
+                    "askp1": "70200",
+                    "askp_rsqn1": "10",
+                    "bidp1": "69900",
+                    "bidp_rsqn1": "20",
+                    "total_askp_rsqn": "10",
+                    "total_bidp_rsqn": "20",
+                },
+                None,
+            )
+
+    monkeypatch.setattr(market_data_service, "KISClient", lambda: DummyKIS())
+
+    snapshot = await market_data_service.get_orderbook("005930")
+
+    assert snapshot.venue == "krx"
+    assert snapshot.kis_market_code == "J"
+    assert snapshot.venue_label == "KRX"
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_rejects_unknown_kr_venue() -> None:
+    with pytest.raises(ValueError, match="unsupported KR orderbook venue"):
+        await market_data_service.get_orderbook("005930", "kr", venue="invalid_venue")
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_crypto_rejects_nonblank_venue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(
+        ValueError, match="venue is only supported for KR equity orderbook"
+    ):
+        await market_data_service.get_orderbook("KRW-BTC", "crypto", venue="nxt")
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_kr_populates_diagnostic_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DummyKIS:
+        async def inquire_orderbook_snapshot(self, code: str, market: str = "J"):
+            return (
+                {
+                    "askp1": "70200",
+                    "askp_rsqn1": "10",
+                    "bidp1": "69900",
+                    "bidp_rsqn1": "20",
+                    "total_askp_rsqn": "10",
+                    "total_bidp_rsqn": "20",
+                },
+                None,
+            )
+
+    monkeypatch.setattr(market_data_service, "KISClient", lambda: DummyKIS())
+
+    snapshot = await market_data_service.get_orderbook("005930", "kr")
+
+    assert (
+        snapshot.source_endpoint
+        == "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn"
+    )
+    assert snapshot.source_tr_id == "FHKST01010200"
+    assert snapshot.is_empty_book is False
+    assert snapshot.requires_final_recheck is False
+    assert snapshot.empty_reason is None
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_kr_empty_book_sets_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DummyKIS:
+        async def inquire_orderbook_snapshot(self, code: str, market: str = "J"):
+            return (
+                {
+                    "total_askp_rsqn": "0",
+                    "total_bidp_rsqn": "0",
+                },
+                None,
+            )
+
+    monkeypatch.setattr(market_data_service, "KISClient", lambda: DummyKIS())
+
+    snapshot = await market_data_service.get_orderbook("005930", "kr", venue="nxt")
+
+    assert snapshot.is_empty_book is True
+    assert snapshot.requires_final_recheck is True
+    assert snapshot.empty_reason == "empty_kis_orderbook"
 
 
 @pytest.mark.asyncio

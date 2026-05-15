@@ -7,12 +7,16 @@ import {
   fetchStockDetailCandles,
   fetchStockDetailNews,
   fetchStockDetailOrders,
+  fetchStockDetailResearchConsensus,
 } from "../../api/stockDetail";
+import { InvestorFlowCard } from "../../desktop/stock-detail/InvestorFlowCard";
 import type {
   StockDetailCandlesResponse,
+  StockDetailFxSensitivity,
   StockDetailMarket,
   StockDetailNewsResponse,
   StockDetailOrdersResponse,
+  StockDetailResearchConsensusResponse,
   StockDetailResponse,
 } from "../../types/stockDetail";
 
@@ -24,6 +28,20 @@ function fmtPct(v: number | null | undefined): string {
 
 function fmtQty(v: number): string {
   return `${v.toLocaleString("ko-KR", { maximumFractionDigits: 6 })}주`;
+}
+
+function fmtKrwSigned(v: number | null | undefined): string {
+  if (v == null) return "−";
+  const rounded = Math.round(v);
+  let sign = "";
+  if (rounded > 0) sign = "+";
+  if (rounded < 0) sign = "−";
+  return `${sign}₩${Math.abs(rounded).toLocaleString("ko-KR")}`;
+}
+
+function fmtRate(v: number | null | undefined): string {
+  if (v == null) return "−";
+  return v.toLocaleString("ko-KR", { maximumFractionDigits: 2 });
 }
 
 function marketLabel(market: StockDetailMarket): string {
@@ -109,6 +127,41 @@ function HoldingCard({ data }: { data: StockDetailResponse }) {
   );
 }
 
+function FxSensitivityCard({ data }: Readonly<{ data: StockDetailFxSensitivity | null }>) {
+  if (!data) return null;
+  const isAvailable = data.status === "available";
+  const basisLabel = data.basis === "portfolio_value" ? "보유 평가금액 기준" : "가정 기준";
+  return (
+    <Card data-testid="stock-detail-fx-sensitivity" soft>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start" }}>
+        <div>
+          <h2 style={{ margin: "0 0 6px", fontSize: 16 }}>환율 민감도</h2>
+          <p style={{ margin: 0, color: "var(--fg-3)", fontSize: 12 }}>
+            {isAvailable ? `${data.currencyPair} ${fmtRate(data.baseFxRate)} · ${basisLabel}` : data.caution}
+          </p>
+        </div>
+        <Pill tone={isAvailable ? "accent" : "paper"}>가정</Pill>
+      </div>
+      {isAvailable ? (
+        <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 }}>
+          {data.scenarios.map((scenario) => (
+            <div key={scenario.label} style={{ border: "1px solid var(--line)", borderRadius: 14, padding: 12 }}>
+              <div style={{ color: "var(--fg-3)", fontSize: 12 }}>{scenario.label}</div>
+              <div style={{ marginTop: 4, fontWeight: 800, color: (scenario.estimatedKrwImpact ?? 0) >= 0 ? "var(--gain)" : "var(--loss)" }}>
+                {fmtKrwSigned(scenario.estimatedKrwImpact)}
+              </div>
+              <div style={{ marginTop: 4, color: "var(--fg-3)", fontSize: 12 }}>
+                추정 평가액 {scenario.estimatedValueKrw == null ? "−" : `₩${Math.round(scenario.estimatedValueKrw).toLocaleString("ko-KR")}`}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {isAvailable ? <p style={{ margin: "10px 0 0", color: "var(--fg-3)", fontSize: 12 }}>{data.caution}</p> : null}
+    </Card>
+  );
+}
+
 function Metric({ label, value }: { label: string; value: string }) {
   return (
     <div>
@@ -165,6 +218,48 @@ function ProfileCard({ data }: { data: StockDetailResponse }) {
           <Metric label="52주 저가" value={data.valuation.low52w?.toLocaleString("en-US") ?? "−"} />
           <Metric label="배당" value={fmtPct(data.valuation.dividendYield)} />
         </div>
+      ) : null}
+    </Card>
+  );
+}
+
+function ResearchConsensusCard({ data, error }: { data: StockDetailResearchConsensusResponse | undefined; error: string | undefined }) {
+  const consensus = data?.consensus;
+  const stateLabel = data?.dataState === "stale" ? "오래된 데이터" : data?.state === "partial" ? "일부 데이터" : data?.state === "missing" ? "데이터 없음" : "최신";
+  return (
+    <Card data-testid="stock-detail-research-consensus">
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start" }}>
+        <div>
+          <h2 style={{ margin: "0 0 8px", fontSize: 16 }}>리서치 · 컨센서스</h2>
+          {!data && !error ? <p style={{ margin: 0, color: "var(--fg-3)" }}>리서치 데이터를 불러오는 중입니다…</p> : null}
+          {error ? <p style={{ margin: 0, color: "var(--danger)" }}>리서치 데이터를 사용할 수 없습니다.</p> : null}
+        </div>
+        {data ? <Pill tone={data.dataState === "fresh" ? "accent" : data.dataState === "stale" ? "paper" : "loss"}>{stateLabel}</Pill> : null}
+      </div>
+      {data && consensus ? (
+        <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 10 }}>
+          <Metric label="Buy" value={`${consensus.buyCount}/${consensus.totalCount}`} />
+          <Metric label="Hold" value={`${consensus.holdCount}`} />
+          <Metric label="목표가 평균" value={consensus.avgTargetPrice == null ? "−" : Math.round(consensus.avgTargetPrice).toLocaleString("ko-KR")} />
+          <Metric label="상승여력" value={fmtPct(consensus.upsidePct)} />
+        </div>
+      ) : null}
+      {data && !consensus && !error ? (
+        <p style={{ margin: "10px 0 0", color: "var(--fg-3)" }}>{data.emptyReason ? "애널리스트 컨센서스와 리서치 인용이 없습니다." : "컨센서스 없이 리서치 인용만 표시합니다."}</p>
+      ) : null}
+      {data && data.citations.length > 0 ? (
+        <ul style={{ listStyle: "none", margin: "12px 0 0", padding: 0, display: "flex", flexDirection: "column", gap: 8 }}>
+          {data.citations.slice(0, 3).map((citation, index) => (
+            <li key={`${citation.source}-${citation.title ?? index}`}>
+              <div style={{ fontWeight: 700 }}>{citation.title ?? "제목 없음"}</div>
+              <div style={{ color: "var(--fg-3)", fontSize: 12 }}>{citation.source}{citation.analyst ? ` · ${citation.analyst}` : ""}</div>
+              {citation.excerpt ? <p style={{ margin: "4px 0 0", color: "var(--fg-2)", fontSize: 12 }}>{citation.excerpt}</p> : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {data && data.warnings.length > 0 ? (
+        <p style={{ margin: "10px 0 0", color: "var(--fg-3)", fontSize: 12 }}>경고: {data.warnings.join(", ")}</p>
       ) : null}
     </Card>
   );
@@ -253,6 +348,8 @@ export function StockDetailPage() {
   const [candles, setCandles] = useState<StockDetailCandlesResponse | undefined>();
   const [orders, setOrders] = useState<StockDetailOrdersResponse | undefined>();
   const [news, setNews] = useState<StockDetailNewsResponse | undefined>();
+  const [researchConsensus, setResearchConsensus] = useState<StockDetailResearchConsensusResponse | undefined>();
+  const [researchErr, setResearchErr] = useState<string | undefined>();
   const [err, setErr] = useState<string | undefined>();
 
   useEffect(() => {
@@ -261,11 +358,18 @@ export function StockDetailPage() {
     setCandles(undefined);
     setOrders(undefined);
     setNews(undefined);
+    setResearchConsensus(undefined);
+    setResearchErr(undefined);
     setErr(undefined);
 
     fetchStockDetail({ market, symbol })
       .then((r) => !cancel && setData(r))
       .catch((e) => !cancel && setErr(String(e?.message ?? e)));
+    if (market !== "crypto") {
+      fetchStockDetailResearchConsensus({ market, symbol })
+        .then((r) => !cancel && setResearchConsensus(r))
+        .catch((e) => !cancel && setResearchErr(String(e?.message ?? e)));
+    }
     fetchStockDetailCandles({ market, symbol, period: "1d" })
       .then((r) => !cancel && setCandles(r))
       .catch(() => undefined);
@@ -284,11 +388,12 @@ export function StockDetailPage() {
   const right = useMemo(() => (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       {data ? <ProfileCard data={data} /> : null}
+      {data && market !== "crypto" ? <ResearchConsensusCard data={researchConsensus} error={researchErr} /> : null}
       {data ? <AnalysisCard data={data} /> : null}
       {data ? <NaverPocCard data={data} /> : null}
       <MemoCard />
     </div>
-  ), [data]);
+  ), [data, market, researchConsensus, researchErr]);
 
   return (
     <DesktopShell
@@ -301,12 +406,16 @@ export function StockDetailPage() {
               <HeaderCard data={data} />
               <TradeGuardrail data={data} />
               <HoldingCard data={data} />
+              <FxSensitivityCard data={data.fxSensitivity} />
               <ChartCard candles={candles} />
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
                 <OrderbookCard data={data} />
                 <OrdersCard orders={orders} />
               </div>
               <NewsCard news={news} />
+              {data.market === "kr" && data.investorFlow ? (
+                <InvestorFlowCard data={data.investorFlow} />
+              ) : null}
               {data.meta.warnings.length > 0 ? (
                 <Card soft>
                   {data.meta.warnings.map((w) => <div key={w}>{w}</div>)}
