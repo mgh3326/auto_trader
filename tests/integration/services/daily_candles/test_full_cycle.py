@@ -172,7 +172,7 @@ class TestFullCycle:
             )
             assert len(fetched) == 1
             assert fetched[0].source == "kis"
-            assert fetched[0].close == 100.5  # KIS row not clobbered
+            assert fetched[0].close == pytest.approx(100.5)  # KIS row not clobbered
         except Exception:
             await dev_session.rollback()
             raise

@@ -224,9 +224,7 @@ async def _cache_first_kr(*, symbol: str, count: int) -> pd.DataFrame:
             kis = _KISClient()
             frame = await fetch_kr_daily_unclamped(kis=kis, code=symbol, n=count)
         except Exception:
-            logger.exception(
-                "KIS fetch failed for KR symbol=%s; returning cached rows", symbol
-            )
+            logger.exception("KIS fetch failed for KR symbol; returning cached rows")
             return _rows_to_frame(cached)
 
         from app.services.daily_candles.converters import frame_to_rows
@@ -259,10 +257,7 @@ async def _cache_first_us(*, symbol: str, count: int) -> pd.DataFrame:
         try:
             partition = await get_us_exchange_by_symbol(symbol, db=session)
         except Exception:
-            logger.warning(
-                "Could not resolve US exchange for symbol=%s; defaulting to NASD",
-                symbol,
-            )
+            logger.warning("Could not resolve US exchange; defaulting to NASD")
             partition = "NASD"
 
         repo = DailyCandlesRepository(session=session)
@@ -284,9 +279,7 @@ async def _cache_first_us(*, symbol: str, count: int) -> pd.DataFrame:
                 kis=kis, symbol=symbol, exchange_code=partition, n=count
             )
         except Exception:
-            logger.exception(
-                "KIS fetch failed for US symbol=%s; returning cached rows", symbol
-            )
+            logger.exception("KIS fetch failed for US symbol; returning cached rows")
             return _rows_to_frame(cached)
 
         from app.services.daily_candles.converters import frame_to_rows
@@ -297,15 +290,11 @@ async def _cache_first_us(*, symbol: str, count: int) -> pd.DataFrame:
 
         if not repo_rows:
             # KIS returned empty — try Yahoo fallback.
-            logger.warning(
-                "KIS returned no rows for US symbol=%s exchange=%s; trying Yahoo fallback",
-                symbol,
-                partition,
-            )
+            logger.warning("KIS returned no rows for US symbol; trying Yahoo fallback")
             try:
                 yahoo_rows = await fetch_us_daily_yahoo_fallback(symbol=symbol, n=count)
             except Exception:
-                logger.exception("Yahoo fallback failed for symbol=%s", symbol)
+                logger.exception("Yahoo fallback failed for US symbol")
                 yahoo_rows = []
 
             if yahoo_rows:
@@ -365,7 +354,7 @@ async def _cache_first_crypto(*, symbol: str, count: int) -> pd.DataFrame:
             )
         except Exception:
             logger.exception(
-                "Upbit fetch failed for crypto symbol=%s; returning cached rows", symbol
+                "Upbit fetch failed for crypto symbol; returning cached rows"
             )
             return _rows_to_frame(cached)
 

@@ -28,7 +28,7 @@ class TestFetchUsDailyYahooFallback:
         ):
             rows = await fetch_us_daily_yahoo_fallback(symbol="ILLIQUIDETF", n=3)
         assert len(rows) == 3
-        assert rows[0].adj_close == 99.0
+        assert rows[0].adj_close == pytest.approx(99.0)
         assert all(r.symbol == "ILLIQUIDETF" for r in rows)
 
     @pytest.mark.asyncio
