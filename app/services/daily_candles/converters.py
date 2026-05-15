@@ -49,22 +49,12 @@ def frame_to_rows(
 
         close = float(record["close"])
         # Explicit None check (not truthiness) preserves legitimate 0.0 values.
-        volume = (
-            float(record["volume"]) if record.get("volume") is not None else 0.0
-        )
-        open_value = (
-            float(record["open"]) if record.get("open") is not None else close
-        )
-        high_value = (
-            float(record["high"]) if record.get("high") is not None else close
-        )
-        low_value = (
-            float(record["low"]) if record.get("low") is not None else close
-        )
+        volume = float(record["volume"]) if record.get("volume") is not None else 0.0
+        open_value = float(record["open"]) if record.get("open") is not None else close
+        high_value = float(record["high"]) if record.get("high") is not None else close
+        low_value = float(record["low"]) if record.get("low") is not None else close
         raw_value = record.get("value")
-        computed_value = (
-            float(raw_value) if raw_value is not None else close * volume
-        )
+        computed_value = float(raw_value) if raw_value is not None else close * volume
 
         adj_close_raw = record.get("adj_close")
         adj_close: float | None = (

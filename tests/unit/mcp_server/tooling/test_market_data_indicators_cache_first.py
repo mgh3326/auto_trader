@@ -5,8 +5,11 @@ import pandas as pd
 import pytest
 
 
-def _make_row(symbol: str, partition: str, t: datetime, close: float, source: str = "kis"):
+def _make_row(
+    symbol: str, partition: str, t: datetime, close: float, source: str = "kis"
+):
     from app.services.daily_candles.repository import DailyCandleRow
+
     return DailyCandleRow(
         time_utc=t,
         symbol=symbol,

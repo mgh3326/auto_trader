@@ -155,8 +155,6 @@ def _evaluate_stock_probe_result(
     return TvScreenerCapabilityState.UNKNOWN
 
 
-
-
 class TvScreenerService:
     """Async wrapper service for tvscreener library with error handling and retry logic.
 

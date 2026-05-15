@@ -24,12 +24,8 @@ class MarketKey(enum.StrEnum):
 
 
 _TABLE_CONFIGS: dict[MarketKey, SyncTableConfig] = {
-    MarketKey.US: SyncTableConfig(
-        table_name="us_candles_1d", partition_col="exchange"
-    ),
-    MarketKey.KR: SyncTableConfig(
-        table_name="kr_candles_1d", partition_col="venue"
-    ),
+    MarketKey.US: SyncTableConfig(table_name="us_candles_1d", partition_col="exchange"),
+    MarketKey.KR: SyncTableConfig(table_name="kr_candles_1d", partition_col="venue"),
     MarketKey.CRYPTO: SyncTableConfig(
         table_name="crypto_candles_1d", partition_col="market"
     ),
@@ -170,9 +166,7 @@ class DailyCandlesRepository:
     ) -> list[DailyCandleRow]:
         cfg = self._config(market)
         adj_close_select = (
-            "adj_close, "
-            if self._supports_adj_close(market)
-            else "NULL AS adj_close, "
+            "adj_close, " if self._supports_adj_close(market) else "NULL AS adj_close, "
         )
         sql = text(
             f"""

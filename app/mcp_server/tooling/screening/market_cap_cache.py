@@ -18,6 +18,7 @@ def _rank_priority(rank: int | None) -> int:
         return 1_000_000_000
     return rank
 
+
 class MarketCapCache:
     def __init__(self, ttl: int = 600) -> None:
         self.ttl = ttl

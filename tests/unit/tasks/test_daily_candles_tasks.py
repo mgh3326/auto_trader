@@ -6,6 +6,7 @@ TaskIQ version (AsyncTaskiqDecoratedTask). Verified via:
   => {'schedule': [{'cron': '*/10 * * * *', 'cron_offset': 'Asia/Seoul'}]}
 """
 
+
 def test_cron_schedules_are_registered():
     from app.tasks import daily_candles_tasks
 
@@ -18,14 +19,18 @@ def test_cron_schedules_use_asia_seoul_timezone():
     """Verify all three tasks use Asia/Seoul cron_offset, matching project convention."""
     from app.tasks import daily_candles_tasks
 
-    for attr_name in ("sync_kr_daily_task", "sync_us_daily_task", "sync_crypto_daily_task"):
+    for attr_name in (
+        "sync_kr_daily_task",
+        "sync_us_daily_task",
+        "sync_crypto_daily_task",
+    ):
         task = getattr(daily_candles_tasks, attr_name)
         # task.labels is the correct attribute on AsyncTaskiqDecoratedTask
         schedule = task.labels.get("schedule") if hasattr(task, "labels") else None
         assert schedule is not None, f"{attr_name} missing schedule"
-        assert any(
-            entry.get("cron_offset") == "Asia/Seoul" for entry in schedule
-        ), f"{attr_name} missing Asia/Seoul cron_offset"
+        assert any(entry.get("cron_offset") == "Asia/Seoul" for entry in schedule), (
+            f"{attr_name} missing Asia/Seoul cron_offset"
+        )
 
 
 def test_cron_expressions_match_spec():

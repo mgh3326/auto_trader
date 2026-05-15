@@ -72,8 +72,13 @@ class TestSyncOneSymbol:
             YahooFallbackRow(
                 time_utc=datetime(2024, 5, day, tzinfo=UTC),
                 symbol="ILLIQUID",
-                open=10.0, high=11.0, low=9.0, close=10.5,
-                adj_close=10.4, volume=100.0, value=1050.0,
+                open=10.0,
+                high=11.0,
+                low=9.0,
+                close=10.5,
+                adj_close=10.4,
+                volume=100.0,
+                value=1050.0,
             )
             for day in range(1, 6)
         ]
@@ -145,3 +150,25 @@ class TestSyncOneSymbol:
         repo.upsert_rows.assert_awaited_once()  # upsert ran
         repo.session.commit.assert_awaited_once()  # commit attempted
         repo.session.rollback.assert_awaited_once()  # rollback called
+
+
+@pytest.mark.asyncio
+async def test_service_close_awaits_callbacks():
+    repo = MagicMock()
+    repo.session = MagicMock()
+    repo.session.commit = AsyncMock()
+    repo.session.rollback = AsyncMock()
+    close_callback = AsyncMock()
+
+    svc = DailyCandleSyncService(
+        repository=repo,
+        kis_kr_fetcher=AsyncMock(),
+        kis_us_fetcher=AsyncMock(),
+        yahoo_us_fetcher=AsyncMock(),
+        upbit_crypto_fetcher=AsyncMock(),
+        close_callbacks=[close_callback],
+    )
+
+    await svc.close()
+
+    close_callback.assert_awaited_once()

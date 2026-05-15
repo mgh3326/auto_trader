@@ -58,25 +58,26 @@ def _build_parser() -> argparse.ArgumentParser:
 
 async def _amain(args: argparse.Namespace) -> int:
     market_key, default_bars, default_partition = _MARKET_DEFAULTS[args.market]
-    horizon = (
-        args.horizon_bars if args.horizon_bars is not None else default_bars
-    )
+    horizon = args.horizon_bars if args.horizon_bars is not None else default_bars
     partition = args.partition or default_partition
     symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
 
     svc = await _build_default_service()
-    for symbol in symbols:
-        target = SyncTarget(market=market_key, symbol=symbol, partition=partition)
-        if args.dry_run:
-            logger.info("DRY RUN - would sync %s", target)
-            continue
-        result = await svc.sync_one(target=target, horizon_bars=horizon)
-        logger.info(
-            "backfill done symbol=%s upserted=%d fallback=%s",
-            symbol,
-            result.rows_upserted,
-            result.fallback_used,
-        )
+    try:
+        for symbol in symbols:
+            target = SyncTarget(market=market_key, symbol=symbol, partition=partition)
+            if args.dry_run:
+                logger.info("DRY RUN - would sync %s", target)
+                continue
+            result = await svc.sync_one(target=target, horizon_bars=horizon)
+            logger.info(
+                "backfill done symbol=%s upserted=%d fallback=%s",
+                symbol,
+                result.rows_upserted,
+                result.fallback_used,
+            )
+    finally:
+        await svc.close()
     return 0
 
 

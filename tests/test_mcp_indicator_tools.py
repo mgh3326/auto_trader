@@ -356,7 +356,9 @@ async def test_fetch_ohlcv_for_indicators_kr_uses_un_market(monkeypatch):
     service_df = _single_row_df()
     fetch_called_with: dict[str, object] = {}
 
-    async def mock_fetch_kr_daily(*, kis, code, n, market="J", period="D", end_date=None):
+    async def mock_fetch_kr_daily(
+        *, kis, code, n, market="J", period="D", end_date=None
+    ):
         fetch_called_with["code"] = code
         fetch_called_with["market"] = market
         fetch_called_with["n"] = n

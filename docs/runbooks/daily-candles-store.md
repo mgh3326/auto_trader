@@ -202,10 +202,21 @@ Then downgrade to the revision IMMEDIATELY BEFORE `add_us_candles_1d`. As of thi
 uv run alembic downgrade 9f1a2b3c4d5e
 ```
 
-Cron jobs are effectively no-ops after downgrade because `_fetch_ohlcv_for_indicators`
-falls back to the external-API path when the DB tables are absent — the
-`fetch_recent` call returns empty, and the external API call still proceeds
-normally. No service restart is required after rollback.
+After downgrading, restart the API/worker/scheduler processes onto the rolled-back
+code revision before leaving production running. The cache-first read path can
+fall back to the external API when the DB read model is absent, but the scheduled
+daily candle tasks introduced by this PR must not keep running after the
+`*_candles_1d` tables are dropped. If only the database is downgraded while the
+new scheduler code remains loaded, the cron tasks will continue to execute and
+return structured failures.
+
+Recommended rollback sequence:
+
+1. Stop or pause the TaskIQ scheduler.
+2. Downgrade Alembic to the pre-daily-candles revision.
+3. Deploy/restart the previous application revision, or keep the scheduler paused
+   until the code and database are aligned again.
+4. Verify `/healthz` and one read-only indicator path.
 
 ---
 

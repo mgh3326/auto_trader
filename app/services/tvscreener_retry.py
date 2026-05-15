@@ -35,6 +35,7 @@ class TvScreenerTimeoutError(TvScreenerError):
 
     pass
 
+
 async def fetch_tvscreener_with_retry(
     screener_callable: Callable[[], pd.DataFrame],
     *,
@@ -89,7 +90,10 @@ async def fetch_tvscreener_with_retry(
             exc_type = type(exc).__name__
             exc_msg = str(exc)
 
-            if "malformed" in exc_msg.lower() or exc_type == "MalformedRequestException":
+            if (
+                "malformed" in exc_msg.lower()
+                or exc_type == "MalformedRequestException"
+            ):
                 logger.warning(
                     "%s received malformed request error (attempt %d/%d): %s: %s",
                     operation_name,
@@ -109,7 +113,10 @@ async def fetch_tvscreener_with_retry(
                     f"{operation_name} failed with malformed request: {exc_msg}"
                 ) from exc
 
-            if "rate limit" in exc_msg.lower() or "too many requests" in exc_msg.lower():
+            if (
+                "rate limit" in exc_msg.lower()
+                or "too many requests" in exc_msg.lower()
+            ):
                 logger.warning(
                     "%s hit rate limit (attempt %d/%d): %s",
                     operation_name,

@@ -198,7 +198,6 @@ def _rows_to_frame(rows: list) -> pd.DataFrame:
     return df.sort_values("date").reset_index(drop=True)
 
 
-
 async def _cache_first_kr(*, symbol: str, count: int) -> pd.DataFrame:
     """Read KR daily candles from DB; fall back to KIS and upsert on miss."""
     from app.core.db import AsyncSessionLocal
@@ -232,7 +231,9 @@ async def _cache_first_kr(*, symbol: str, count: int) -> pd.DataFrame:
 
         from app.services.daily_candles.converters import frame_to_rows
 
-        repo_rows = frame_to_rows(frame, symbol=symbol, partition=partition, source="kis")
+        repo_rows = frame_to_rows(
+            frame, symbol=symbol, partition=partition, source="kis"
+        )
         if repo_rows:
             await repo.upsert_rows(market=MarketKey.KR, rows=repo_rows)
             await session.commit()
@@ -259,7 +260,8 @@ async def _cache_first_us(*, symbol: str, count: int) -> pd.DataFrame:
             partition = await get_us_exchange_by_symbol(symbol, db=session)
         except Exception:
             logger.warning(
-                "Could not resolve US exchange for symbol=%s; defaulting to NASD", symbol
+                "Could not resolve US exchange for symbol=%s; defaulting to NASD",
+                symbol,
             )
             partition = "NASD"
 
@@ -289,7 +291,9 @@ async def _cache_first_us(*, symbol: str, count: int) -> pd.DataFrame:
 
         from app.services.daily_candles.converters import frame_to_rows
 
-        repo_rows = frame_to_rows(frame, symbol=symbol, partition=partition, source="kis")
+        repo_rows = frame_to_rows(
+            frame, symbol=symbol, partition=partition, source="kis"
+        )
 
         if not repo_rows:
             # KIS returned empty — try Yahoo fallback.

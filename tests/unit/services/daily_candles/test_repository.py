@@ -10,7 +10,9 @@ from app.services.daily_candles.repository import (
 )
 
 
-def _row(symbol: str, partition: str, t: datetime, close: float, source: str = "kis") -> DailyCandleRow:
+def _row(
+    symbol: str, partition: str, t: datetime, close: float, source: str = "kis"
+) -> DailyCandleRow:
     return DailyCandleRow(
         time_utc=t,
         symbol=symbol,
