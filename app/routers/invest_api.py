@@ -25,7 +25,10 @@ from app.schemas.invest_common_preferred_disparity import (
     CommonPreferredDisparityResponse,
 )
 from app.schemas.invest_coverage import CoverageMarket, InvestCoverageResponse
-from app.schemas.invest_crypto import CryptoDashboardResponse
+from app.schemas.invest_crypto import (
+    CryptoDashboardResponse,
+    NaverCryptoReferenceResponse,
+)
 from app.schemas.invest_feed_news import FeedNewsResponse, FeedTab, FeedTopic
 from app.schemas.invest_feed_research import (
     FeedResearchFilters,
@@ -60,6 +63,7 @@ from app.schemas.invest_stock_detail_research_consensus import (
 )
 from app.schemas.investor_flow import InvestorFlowResponse
 from app.services.invest_coverage_service import build_invest_coverage
+from app.services.invest_crypto_naver_adapter import build_naver_crypto_reference
 from app.services.invest_home_service import InvestHomeService
 from app.services.invest_momentum_events.coverage_service import build_momentum_coverage
 from app.services.invest_momentum_events.repository import (
@@ -212,6 +216,32 @@ async def get_crypto_dashboard(
         user_id=user.id,
         resolver=resolver,
         limit=limit,
+    )
+
+
+@router.get("/crypto/naver-reference")
+async def get_crypto_naver_reference(
+    user: Annotated[Any, Depends(get_authenticated_user)],
+    service: Annotated[InvestHomeService, Depends(get_invest_home_service)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    symbol: str | None = Query(None, description="Optional KRW pair or base symbol"),
+    limit: int = Query(20, ge=1, le=50),
+) -> NaverCryptoReferenceResponse:
+    """Read-only Naver-style crypto reference adapter.
+
+    This endpoint aggregates source-labeled public/read-model data and fixture
+    metadata only. It never syncs, submits orders, mutates watch/order-intent
+    state, or writes production data.
+    """
+    home = await service.get_home(user_id=user.id)
+    resolver = await build_relation_resolver(
+        db, user_id=user.id, held_pairs=_held_pairs_from_home(home)
+    )
+    return await build_naver_crypto_reference(
+        db=db,
+        symbol=symbol,
+        limit=limit,
+        resolver=resolver,
     )
 
 

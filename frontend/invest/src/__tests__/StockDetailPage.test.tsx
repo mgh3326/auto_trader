@@ -127,6 +127,7 @@ const aboveFold: StockDetailResponse = {
   },
   orderbookSupport: { supported: false, reason: "us_unsupported" },
   orderbook: null,
+  cryptoDetail: null,
   capabilities: {
     candles: { supported: true, intradaySupported: true },
     orderbook: { supported: false, reason: "us_unsupported" },

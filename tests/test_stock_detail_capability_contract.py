@@ -10,7 +10,7 @@ from app.schemas.invest_stock_detail import default_capabilities_for_market
     [
         ("kr", True, None),
         ("us", False, "us_unsupported"),
-        ("crypto", False, "crypto_deferred"),
+        ("crypto", True, None),
     ],
 )
 def test_stock_detail_capabilities_keep_read_only_contract(

@@ -56,6 +56,7 @@ function currencyValue(currency: string, value: number | null | undefined) {
 function orderbookMessage(data: StockDetailResponse): string {
   if (data.orderbookSupport.supported && data.orderbook) return "호가를 표시합니다";
   if (data.orderbookSupport.reason === "us_unsupported") return "US 호가는 아직 지원하지 않습니다";
+  if (data.orderbookSupport.reason === "provider_unavailable") return "호가 제공자 데이터를 사용할 수 없습니다";
   if (data.orderbookSupport.reason === "crypto_deferred") return "크립토 호가는 다음 단계에서 연결합니다";
   return "호가 데이터를 사용할 수 없습니다";
 }
@@ -203,6 +204,40 @@ function OrdersCard({ orders }: { orders: StockDetailOrdersResponse | undefined 
       {!orders ? <p style={{ margin: 0, color: "var(--fg-3)" }}>불러오는 중입니다…</p> : null}
       {orders && empty ? <p style={{ margin: 0, color: "var(--fg-3)" }}>체결 내역이 없습니다.</p> : null}
       {orders && !empty ? <ul>{orders.items.map((o) => <li key={o.orderId ?? `${o.side}-${o.filledAt}`}>{o.side} {o.quantity}</li>)}</ul> : null}
+    </Card>
+  );
+}
+
+function CryptoDetailCard({ data }: { data: StockDetailResponse }) {
+  const crypto = data.cryptoDetail;
+  if (!crypto) return null;
+  const pendingCount = crypto.pendingOrders.items.length;
+  const recent = crypto.recentTrades.items.slice(0, 3);
+  return (
+    <Card data-testid="stock-detail-crypto-detail" soft>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start" }}>
+        <div>
+          <h2 style={{ margin: "0 0 6px", fontSize: 16 }}>크립토 사전 체크</h2>
+          <p style={{ margin: 0, color: "var(--fg-3)", fontSize: 12 }}>
+            {crypto.profile.baseSymbol} · 미체결 {pendingCount}건 · {crypto.preOrderChecklist.mode}
+          </p>
+        </div>
+        <Pill tone="upbit">read-only</Pill>
+      </div>
+      <ul style={{ margin: "12px 0 0", paddingLeft: 18, color: "var(--fg-2)", fontSize: 13 }}>
+        {crypto.preOrderChecklist.items.slice(0, 6).map((item) => (
+          <li key={item.key}><strong>{item.label}</strong> · {item.detail}</li>
+        ))}
+      </ul>
+      <p style={{ margin: "10px 0 0", color: "var(--fg-3)", fontSize: 12 }}>{crypto.preOrderChecklist.disclaimer}</p>
+      {recent.length > 0 ? (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ color: "var(--fg-3)", fontSize: 12, marginBottom: 6 }}>최근 체결</div>
+          <ul style={{ margin: 0, paddingLeft: 18, color: "var(--fg-2)", fontSize: 13 }}>
+            {recent.map((trade) => <li key={`${trade.sequentialId ?? trade.tradeTime}-${trade.priceKrw}`}>₩{Math.round(trade.priceKrw).toLocaleString("ko-KR")} · {trade.volume.toLocaleString("ko-KR", { maximumFractionDigits: 6 })}</li>)}
+          </ul>
+        </div>
+      ) : null}
     </Card>
   );
 }
@@ -389,6 +424,7 @@ export function StockDetailPage() {
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       {data ? <ProfileCard data={data} /> : null}
       {data && market !== "crypto" ? <ResearchConsensusCard data={researchConsensus} error={researchErr} /> : null}
+      {data && market === "crypto" ? <CryptoDetailCard data={data} /> : null}
       {data ? <AnalysisCard data={data} /> : null}
       {data ? <NaverPocCard data={data} /> : null}
       <MemoCard />

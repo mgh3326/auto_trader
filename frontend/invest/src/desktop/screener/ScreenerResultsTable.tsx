@@ -49,6 +49,39 @@ export function ScreenerResultsTable({ rows, metricLabel }: Props) {
             <td className="screener-name-cell">
               <span className="screener-symbol-badge">{r.symbol}</span>
               <span className="screener-symbol-name">{r.name}</span>
+              {r.market === "crypto" && (
+                <div className="screener-context-stack">
+                  {(r.sourceContext ?? []).length > 0 && (
+                    <div className="screener-context-row" aria-label="데이터 출처">
+                      {(r.sourceContext ?? []).map((source) => (
+                        <span
+                          key={`${r.symbol}-${source.source}-${source.state}`}
+                          className={`screener-context-chip screener-context-chip--${source.state}`}
+                        >
+                          {source.label}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {(r.riskContext ?? []).length > 0 && (
+                    <div className="screener-context-row" aria-label="리스크 맥락">
+                      {(r.riskContext ?? []).map((risk) => (
+                        <span
+                          key={`${r.symbol}-${risk.kind}`}
+                          className={`screener-risk-chip screener-risk-chip--${risk.severity}`}
+                        >
+                          {risk.label}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {r.candidateContext && r.candidateContext.reasons.length > 0 && (
+                    <div className="screener-candidate-context">
+                      {r.candidateContext.reasons.join(" · ")}
+                    </div>
+                  )}
+                </div>
+              )}
             </td>
             <td>{r.priceLabel}</td>
             <td className={directionClass[r.changeDirection]}>

@@ -217,6 +217,7 @@ class Settings(BaseSettings):
     )
 
     upbit_ohlcv_cache_enabled: bool = True
+    upbit_public_read_model_cache_enabled: bool = True
     upbit_ohlcv_cache_max_days: int = 400
     upbit_ohlcv_cache_lock_ttl_seconds: int = 10
     yahoo_ohlcv_cache_enabled: bool = True
