@@ -386,15 +386,27 @@ async def test_dashboard_records_stale_source_state_from_read_model():
 async def test_default_dashboard_reuses_single_upbit_read_model_redis_client(
     monkeypatch,
 ):
-    import fakeredis.aioredis
-
     from app.services.upbit_public_read_model import close_default_read_model
+
+    class FakeRedis:
+        def __init__(self):
+            self.values: dict[str, str] = {}
+            self.closed = False
+
+        async def get(self, key: str):
+            return self.values.get(key)
+
+        async def set(self, key: str, value: str, *, ex: int | None = None):
+            self.values[key] = value
+
+        async def aclose(self):
+            self.closed = True
 
     await close_default_read_model()
     redis_clients = []
 
     async def create_redis_client():
-        client = fakeredis.aioredis.FakeRedis(decode_responses=False)
+        client = FakeRedis()
         redis_clients.append(client)
         return client
 
