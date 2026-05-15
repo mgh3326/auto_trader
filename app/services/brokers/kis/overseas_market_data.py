@@ -233,6 +233,59 @@ class OverseasMarketDataMixin(MarketDataBase):
         rows = await self._paginate_overseas_daily(symbol, excd, n, period)
         return self._build_overseas_daily_frame(rows, n)
 
+    async def inquire_overseas_daily_price_unclamped(
+        self,
+        symbol: str,
+        exchange_code: str = "NASD",
+        n: int = 200,
+        period: str = "D",
+        max_iterations: int = 20,
+    ) -> pd.DataFrame:
+        """Batch-ingest variant of inquire_overseas_daily_price.
+
+        Allows raising the pagination iteration cap from 5 (display path)
+        to a value sufficient for the batch backfill horizon. Same
+        underlying KIS endpoint and exchange-code mapping.
+        """
+        excd_map = {"NASD": "NAS", "NYSE": "NYS", "AMEX": "AMS"}
+        excd = excd_map.get(exchange_code, exchange_code[:3])
+
+        rows: list[dict] = []
+        iteration = 0
+        while len(rows) < n and iteration < max_iterations:
+            if rows:
+                oldest_date = min(r.get("xymd", "99999999") for r in rows)
+                try:
+                    oldest_dt = datetime.datetime.strptime(oldest_date, "%Y%m%d")
+                    bymd = (oldest_dt - datetime.timedelta(days=1)).strftime("%Y%m%d")
+                except Exception:
+                    bymd = ""
+            else:
+                bymd = ""
+
+            params = {
+                "AUTH": "",
+                "EXCD": excd,
+                "SYMB": to_kis_symbol(symbol),
+                "GUBN": {"D": "0", "W": "1", "M": "2"}.get(period.upper(), "0"),
+                "BYMD": bymd,
+                "MODP": "1",
+            }
+            js = await self._request_with_token_retry(
+                tr_id=constants.OVERSEAS_DAILY_CHART_TR,
+                url=self._kis_url(constants.OVERSEAS_DAILY_CHART_URL),
+                params=params,
+                timeout=10,
+                api_name="inquire_overseas_daily_price_unclamped",
+            )
+            chunk = js.get("output2") or js.get("output") or []
+            if not chunk:
+                break
+            rows.extend(chunk)
+            iteration += 1
+
+        return self._build_overseas_daily_frame(rows, n)
+
     # ── Minute Chart ──
 
     async def inquire_overseas_minute_chart(

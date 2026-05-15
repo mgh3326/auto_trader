@@ -176,6 +176,20 @@ class KISClient(BaseKISClient):
             code, market, n, adj, period, end_date, per_call_days
         )
 
+    async def inquire_daily_itemchartprice_unclamped(
+        self,
+        code: str,
+        market: str = "J",
+        n: int = 200,
+        adj: bool = True,
+        period: str = "D",
+        end_date: datetime.date | None = None,
+        per_call_days: int = 150,
+    ) -> pd.DataFrame:
+        return await self._market_data.inquire_daily_itemchartprice_unclamped(
+            code, market, n, adj, period, end_date, per_call_days
+        )
+
     async def inquire_investor(
         self, code: str, market: str = "J"
     ) -> list[dict[str, Any]]:
@@ -236,6 +250,18 @@ class KISClient(BaseKISClient):
     ) -> pd.DataFrame:
         return await self._market_data.inquire_overseas_daily_price(
             symbol, exchange_code, n, period
+        )
+
+    async def inquire_overseas_daily_price_unclamped(
+        self,
+        symbol: str,
+        exchange_code: str = "NASD",
+        n: int = 200,
+        period: str = "D",
+        max_iterations: int = 20,
+    ) -> pd.DataFrame:
+        return await self._market_data.inquire_overseas_daily_price_unclamped(
+            symbol, exchange_code, n, period, max_iterations
         )
 
     async def inquire_overseas_minute_chart(
