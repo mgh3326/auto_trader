@@ -17,6 +17,9 @@ class TestSyncOneSymbol:
         repo = MagicMock()
         repo.latest_time_utc = AsyncMock(return_value=None)
         repo.upsert_rows = AsyncMock(return_value=10)
+        repo.session = MagicMock()
+        repo.session.commit = AsyncMock()
+        repo.session.rollback = AsyncMock()
 
         frame = pd.DataFrame(
             {
@@ -51,12 +54,17 @@ class TestSyncOneSymbol:
         upserted_rows = repo.upsert_rows.await_args.kwargs["rows"]
         assert all(r.source == "kis" for r in upserted_rows)
         assert result.rows_upserted == 10
+        repo.session.commit.assert_awaited_once()
+        repo.session.rollback.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_us_kis_empty_falls_back_to_yahoo(self):
         repo = MagicMock()
         repo.latest_time_utc = AsyncMock(return_value=None)
         repo.upsert_rows = AsyncMock(return_value=5)
+        repo.session = MagicMock()
+        repo.session.commit = AsyncMock()
+        repo.session.rollback = AsyncMock()
 
         from app.services.daily_candles.yahoo_us_fallback import YahooFallbackRow
 
@@ -93,3 +101,5 @@ class TestSyncOneSymbol:
         assert all(r.source == "yahoo_fallback" for r in upserted_rows)
         assert result.rows_upserted == 5
         assert result.fallback_used is True
+        repo.session.commit.assert_awaited_once()
+        repo.session.rollback.assert_not_awaited()

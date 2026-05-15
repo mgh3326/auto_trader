@@ -210,39 +210,22 @@ normally. No service restart is required after rollback.
 
 ## Known limitations
 
-### Rowcount metric is 0 and CLI backfill inserts 0 rows
+### Rowcount metric always reports 0
 
 `DailyCandlesRepository.upsert_rows()` (and `sync_market_universe`'s
-`rows_upserted` total) returns 0 even when the INSERT executes, for two
-compounding reasons:
-
-1. **asyncpg batch-execute rowcount**: asyncpg's `executemany`-style returns
-   `rowcount = -1` for batch statements, so the Python-side count is always 0.
-   This also affects the existing intraday `us_candles_sync_service`.
-
-2. **Missing session commit in `_build_default_service`**: The backfill CLI
-   path (`scripts/backfill_daily_candles.py` → `_build_default_service()`)
-   creates a session via `AsyncSessionLocal()` but never calls
-   `session.commit()`. The INSERT is executed inside an implicit transaction
-   that is rolled back when the session object is garbage-collected at process
-   exit. As a result, the CLI backfill currently inserts 0 rows into the DB.
-   The cron path (`run_daily_candles_sync`) has the same issue.
-
-   **Workaround until fixed:** Use `session.commit()` after `upsert_rows()`
-   in `_build_default_service`, or run the backfill via a context that commits
-   the session explicitly.
-
-   **Tracked as follow-up:** Add `await session.commit()` (and `session.close()`)
-   in `_build_default_service` after `sync_one`/`sync_market_universe`
-   completes, or refactor to use `async with AsyncSessionLocal() as session:`.
+`rows_upserted` total) returns 0 even when rows are successfully inserted.
+This is due to asyncpg's `executemany`-style batch execute returning
+`rowcount = -1` for batch statements, so the Python-side count is always 0.
+The same behaviour affects the existing intraday `us_candles_sync_service`.
 
 Log output from the CLI will show:
 ```
 backfill done symbol=005930 upserted=0 fallback=False
 ```
-The `upserted=0` here reflects both issues above. Query the table directly
+The `upserted=0` here reflects the asyncpg rowcount quirk only — rows are
+committed. Query the table directly
 (`SELECT COUNT(*) FROM public.kr_candles_1d WHERE symbol='005930'`) to verify
-whether any rows were actually committed.
+coverage.
 
 ### adj_close enrichment is not yet run by any scheduled task
 

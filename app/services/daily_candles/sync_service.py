@@ -82,6 +82,7 @@ class DailyCandleSyncService:
         frame = await self._kis_kr(code=target.symbol, n=horizon_bars)
         rows = _frame_to_rows(frame, target=target, source="kis")
         upserted = await self._repository.upsert_rows(market=target.market, rows=rows)
+        await self._commit_or_rollback()
         return SyncOneResult(
             target=target, rows_upserted=upserted, fallback_used=False
         )
@@ -97,6 +98,7 @@ class DailyCandleSyncService:
             upserted = await self._repository.upsert_rows(
                 market=target.market, rows=rows
             )
+            await self._commit_or_rollback()
             return SyncOneResult(
                 target=target, rows_upserted=upserted, fallback_used=False
             )
@@ -133,6 +135,7 @@ class DailyCandleSyncService:
         upserted = await self._repository.upsert_rows(
             market=target.market, rows=repo_rows
         )
+        await self._commit_or_rollback()
         return SyncOneResult(
             target=target, rows_upserted=upserted, fallback_used=True
         )
@@ -143,6 +146,7 @@ class DailyCandleSyncService:
         frame = await self._upbit(market=target.symbol, days=horizon_bars)
         rows = _frame_to_rows(frame, target=target, source="upbit")
         upserted = await self._repository.upsert_rows(market=target.market, rows=rows)
+        await self._commit_or_rollback()
         return SyncOneResult(
             target=target, rows_upserted=upserted, fallback_used=False
         )
@@ -226,6 +230,19 @@ class DailyCandleSyncService:
                 for row in result
             ]
         raise ValueError(f"Unknown market: {market}")
+
+    async def _commit_or_rollback(self) -> None:
+        """Commit the repository session after a successful upsert; rollback on error.
+
+        The session is owned by the repository and exposed via its public
+        ``session`` property.
+        """
+        session = self._repository.session
+        try:
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
 
 
 def _frame_to_rows(
