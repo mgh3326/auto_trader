@@ -198,56 +198,6 @@ def _rows_to_frame(rows: list) -> pd.DataFrame:
     return df.sort_values("date").reset_index(drop=True)
 
 
-def _frame_to_repo_rows(
-    frame: pd.DataFrame, *, symbol: str, partition: str, source: str
-) -> list:
-    """Convert a DataFrame (with 'date', 'open', ...) to a list of DailyCandleRow.
-
-    Uses explicit ``is not None`` checks for OHLC fields to avoid silently
-    replacing 0.0 with the close price.
-    """
-    from app.services.daily_candles.repository import DailyCandleRow
-
-    if frame.empty or "close" not in frame.columns:
-        return []
-    out: list[DailyCandleRow] = []
-    for record in frame.to_dict("records"):
-        raw_date = record.get("date")
-        if raw_date is None:
-            raw_date = record.get("datetime")
-        if raw_date is None:
-            continue
-        ts = pd.Timestamp(raw_date)
-        if ts.tzinfo is None:
-            ts = ts.tz_localize(UTC)
-        else:
-            ts = ts.tz_convert(UTC)
-        close = float(record["close"])
-        volume = (
-            float(record["volume"]) if record.get("volume") is not None else 0.0
-        )
-        open_value = float(record["open"]) if record.get("open") is not None else close
-        high_value = float(record["high"]) if record.get("high") is not None else close
-        low_value = float(record["low"]) if record.get("low") is not None else close
-        raw_value = record.get("value")
-        value = float(raw_value) if raw_value is not None else close * volume
-        out.append(
-            DailyCandleRow(
-                time_utc=ts.to_pydatetime(),
-                symbol=symbol,
-                partition=partition,
-                open=open_value,
-                high=high_value,
-                low=low_value,
-                close=close,
-                adj_close=None,
-                volume=volume,
-                value=value,
-                source=source,
-            )
-        )
-    return out
-
 
 async def _cache_first_kr(*, symbol: str, count: int) -> pd.DataFrame:
     """Read KR daily candles from DB; fall back to KIS and upsert on miss."""
@@ -280,9 +230,9 @@ async def _cache_first_kr(*, symbol: str, count: int) -> pd.DataFrame:
             )
             return _rows_to_frame(cached)
 
-        repo_rows = _frame_to_repo_rows(
-            frame, symbol=symbol, partition=partition, source="kis"
-        )
+        from app.services.daily_candles.converters import frame_to_rows
+
+        repo_rows = frame_to_rows(frame, symbol=symbol, partition=partition, source="kis")
         if repo_rows:
             await repo.upsert_rows(market=MarketKey.KR, rows=repo_rows)
             await session.commit()
@@ -337,9 +287,9 @@ async def _cache_first_us(*, symbol: str, count: int) -> pd.DataFrame:
             )
             return _rows_to_frame(cached)
 
-        repo_rows = _frame_to_repo_rows(
-            frame, symbol=symbol, partition=partition, source="kis"
-        )
+        from app.services.daily_candles.converters import frame_to_rows
+
+        repo_rows = frame_to_rows(frame, symbol=symbol, partition=partition, source="kis")
 
         if not repo_rows:
             # KIS returned empty — try Yahoo fallback.
@@ -415,7 +365,9 @@ async def _cache_first_crypto(*, symbol: str, count: int) -> pd.DataFrame:
             )
             return _rows_to_frame(cached)
 
-        repo_rows = _frame_to_repo_rows(
+        from app.services.daily_candles.converters import frame_to_rows
+
+        repo_rows = frame_to_rows(
             frame, symbol=symbol, partition=partition, source="upbit"
         )
         if repo_rows:
@@ -1174,7 +1126,6 @@ __all__ = [
     "_cache_is_fresh_equity",
     "_cache_is_fresh_crypto",
     "_rows_to_frame",
-    "_frame_to_repo_rows",
     "_cache_first_kr",
     "_cache_first_us",
     "_cache_first_crypto",

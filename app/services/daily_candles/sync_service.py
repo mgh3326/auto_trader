@@ -15,11 +15,11 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC
 from typing import Any
 
 import pandas as pd
 
+from app.services.daily_candles.converters import frame_to_rows
 from app.services.daily_candles.repository import (
     DailyCandleRow,
     DailyCandlesRepository,
@@ -80,7 +80,9 @@ class DailyCandleSyncService:
         self, target: SyncTarget, horizon_bars: int
     ) -> SyncOneResult:
         frame = await self._kis_kr(code=target.symbol, n=horizon_bars)
-        rows = _frame_to_rows(frame, target=target, source="kis")
+        rows = frame_to_rows(
+            frame, symbol=target.symbol, partition=target.partition, source="kis"
+        )
         upserted = await self._repository.upsert_rows(market=target.market, rows=rows)
         await self._commit_or_rollback()
         return SyncOneResult(
@@ -93,7 +95,9 @@ class DailyCandleSyncService:
         frame = await self._kis_us(
             symbol=target.symbol, exchange_code=target.partition, n=horizon_bars
         )
-        rows = _frame_to_rows(frame, target=target, source="kis")
+        rows = frame_to_rows(
+            frame, symbol=target.symbol, partition=target.partition, source="kis"
+        )
         if rows:
             upserted = await self._repository.upsert_rows(
                 market=target.market, rows=rows
@@ -144,7 +148,9 @@ class DailyCandleSyncService:
         self, target: SyncTarget, horizon_bars: int
     ) -> SyncOneResult:
         frame = await self._upbit(market=target.symbol, days=horizon_bars)
-        rows = _frame_to_rows(frame, target=target, source="upbit")
+        rows = frame_to_rows(
+            frame, symbol=target.symbol, partition=target.partition, source="upbit"
+        )
         upserted = await self._repository.upsert_rows(market=target.market, rows=rows)
         await self._commit_or_rollback()
         return SyncOneResult(
@@ -244,55 +250,6 @@ class DailyCandleSyncService:
             await session.rollback()
             raise
 
-
-def _frame_to_rows(
-    frame: pd.DataFrame, *, target: SyncTarget, source: str
-) -> list[DailyCandleRow]:
-    if frame.empty or "close" not in frame.columns:
-        return []
-    out: list[DailyCandleRow] = []
-    for record in frame.to_dict("records"):
-        raw_date = record.get("date")
-        if raw_date is None:
-            raw_date = record.get("datetime")
-        if raw_date is None:
-            continue
-        ts = pd.Timestamp(raw_date)
-        if ts.tzinfo is None:
-            ts = ts.tz_localize(UTC)
-        else:
-            ts = ts.tz_convert(UTC)
-        close = float(record["close"])
-        volume = float(record.get("volume") or 0.0)
-        # Use explicit None checks (not `or`) for OHLC to avoid 0.0
-        # silently being replaced with `close`.
-        open_value = (
-            float(record["open"]) if record.get("open") is not None else close
-        )
-        high_value = (
-            float(record["high"]) if record.get("high") is not None else close
-        )
-        low_value = (
-            float(record["low"]) if record.get("low") is not None else close
-        )
-        raw_value = record.get("value")
-        value = float(raw_value) if raw_value is not None else close * volume
-        out.append(
-            DailyCandleRow(
-                time_utc=ts.to_pydatetime(),
-                symbol=target.symbol,
-                partition=target.partition,
-                open=open_value,
-                high=high_value,
-                low=low_value,
-                close=close,
-                adj_close=None,  # primary-source rows never set adj_close at ingest; enrichment is separate
-                volume=volume,
-                value=value,
-                source=source,
-            )
-        )
-    return out
 
 
 async def _build_default_service() -> DailyCandleSyncService:
