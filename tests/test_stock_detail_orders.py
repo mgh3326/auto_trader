@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 
 import pytest
@@ -86,3 +87,48 @@ async def test_stock_detail_orders_clamps_days_at_365():
     )
 
     assert seen["days"] == 365
+
+
+@pytest.mark.asyncio
+async def test_stock_detail_orders_timeout_degrades_to_empty_with_warning():
+    async def fetcher(days, markets):
+        await asyncio.sleep(0.05)
+        return [
+            {
+                "symbol": "BTC",
+                "side": "buy",
+                "quantity": 1,
+                "price": 100,
+                "filled_at": datetime.now(UTC),
+                "order_id": "late",
+            }
+        ]
+
+    response = await build_stock_detail_orders(
+        market="crypto",
+        symbol="KRW-BTC",
+        fetcher=fetcher,
+        timeout_seconds=0.001,
+    )
+
+    assert response.symbol == "BTC"
+    assert response.items == []
+    assert response.meta.emptyState == "no_filled_orders"
+    assert response.meta.warnings == ["filled_orders_timeout"]
+
+
+@pytest.mark.asyncio
+async def test_stock_detail_orders_fetch_error_degrades_to_empty_with_warning():
+    async def fetcher(days, markets):
+        raise RuntimeError("broker history unavailable")
+
+    response = await build_stock_detail_orders(
+        market="crypto",
+        symbol="BTC-KRW",
+        fetcher=fetcher,
+    )
+
+    assert response.symbol == "BTC"
+    assert response.items == []
+    assert response.meta.emptyState == "no_filled_orders"
+    assert response.meta.warnings == ["filled_orders_unavailable"]

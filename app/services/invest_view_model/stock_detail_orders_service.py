@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -11,6 +13,9 @@ from app.services.invest_view_model.stock_detail_symbol_resolver import (
 )
 
 FilledOrdersFetcher = Callable[[int, list[NewsMarket]], Awaitable[list[dict[str, Any]]]]
+
+logger = logging.getLogger(__name__)
+_FILLED_ORDERS_TIMEOUT_SECONDS = 3
 
 
 def _canonical_order_symbol(market: NewsMarket, symbol: str) -> str:
@@ -55,12 +60,35 @@ async def build_stock_detail_orders(
     days: int = 90,
     limit: int = 30,
     cursor: str | None = None,
+    timeout_seconds: float = _FILLED_ORDERS_TIMEOUT_SECONDS,
 ) -> StockDetailOrdersResponse:
     days_clamped = max(1, min(days, 365))
     limit_clamped = max(1, min(limit, 100))
     offset = max(0, int(cursor or 0))
     canonical = _canonical_order_symbol(market, symbol)
-    rows = await fetcher(days_clamped, [market])
+    warnings: list[str] = []
+    try:
+        rows = await asyncio.wait_for(
+            fetcher(days_clamped, [market]), timeout=timeout_seconds
+        )
+    except TimeoutError:
+        logger.warning(
+            "stock-detail filled-orders fetch timed out: market=%s symbol=%s days=%s",
+            market,
+            symbol,
+            days_clamped,
+        )
+        rows = []
+        warnings.append("filled_orders_timeout")
+    except Exception as exc:
+        logger.warning(
+            "stock-detail filled-orders fetch unavailable: market=%s symbol=%s error=%s",
+            market,
+            symbol,
+            exc,
+        )
+        rows = []
+        warnings.append("filled_orders_unavailable")
     filtered = [row for row in rows if _row_symbol(row, market) == canonical]
     page = filtered[offset : offset + limit_clamped]
     next_offset = offset + limit_clamped
@@ -92,7 +120,7 @@ async def build_stock_detail_orders(
         nextCursor=next_cursor,
         meta={
             "emptyState": "no_filled_orders" if not filtered else None,
-            "warnings": [],
+            "warnings": warnings,
         },
     )
 
