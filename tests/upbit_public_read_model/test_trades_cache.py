@@ -73,5 +73,5 @@ async def test_trades_cache_returns_fresh_when_redis_is_unavailable():
     cache = TradesCache(redis=BrokenRedis(), fetcher=fetcher)
     block = await cache.get("KRW-BTC", 50)
     assert block.meta.state == "fresh"
-    assert block.trades["KRW-BTC"][0]["trade_price"] == 1.0
+    assert block.trades["KRW-BTC"][0]["trade_price"] == pytest.approx(1.0)
     assert calls == 1

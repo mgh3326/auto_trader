@@ -49,7 +49,7 @@ async def test_ticker_cache_returns_stale_on_fetch_failure(fake_redis, monkeypat
     cache._fetcher = fetcher_fail
     block = await cache.get(["KRW-BTC"])
     assert block.meta.state == "stale"
-    assert block.tickers["KRW-BTC"]["trade_price"] == 1.0
+    assert block.tickers["KRW-BTC"]["trade_price"] == pytest.approx(1.0)
 
 
 @pytest.mark.asyncio
@@ -76,5 +76,5 @@ async def test_ticker_cache_returns_fresh_when_redis_is_unavailable():
     cache = TickerCache(redis=BrokenRedis(), fetcher=fetcher)
     block = await cache.get(["KRW-BTC"])
     assert block.meta.state == "fresh"
-    assert block.tickers["KRW-BTC"]["trade_price"] == 1.0
+    assert block.tickers["KRW-BTC"]["trade_price"] == pytest.approx(1.0)
     assert calls == 1

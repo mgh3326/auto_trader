@@ -38,9 +38,9 @@ def _float_or_none(value: Any) -> float | None:
 
 def _spread_pct(book: dict[str, Any]) -> float | None:
     units = list(book.get("orderbook_units") or [])
-    if not units:
+    first_unit = next(iter(units), None)
+    if first_unit is None:
         return None
-    first_unit = units[0]
     ask = _float_or_none(first_unit.get("ask_price"))
     bid = _float_or_none(first_unit.get("bid_price"))
     if ask is None or bid is None or bid <= 0:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime
@@ -27,10 +26,8 @@ _NS = "upbit:public:read:ticker:v1"
 
 
 def _key(markets: list[str]) -> str:
-    digest = hashlib.sha1(
-        ",".join(sorted({m.upper() for m in markets})).encode("utf-8")
-    ).hexdigest()
-    return f"{_NS}:{digest}"
+    normalized = ",".join(sorted({m.upper() for m in markets}))
+    return f"{_NS}:{normalized}"
 
 
 class TickerCache:

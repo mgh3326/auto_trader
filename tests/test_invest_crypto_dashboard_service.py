@@ -397,7 +397,7 @@ async def test_dashboard_records_stale_source_state_from_read_model():
     )
     sources = {source.source: source for source in response.meta.sources}
     assert sources["upbit_ticker"].state == "supported"
-    assert response.cards[0].priceKrw == 100.0
+    assert response.cards[0].priceKrw == pytest.approx(100.0)
 
 
 @pytest.mark.asyncio
