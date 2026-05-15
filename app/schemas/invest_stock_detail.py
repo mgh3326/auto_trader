@@ -5,6 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.schemas.invest_crypto import CryptoPendingOrdersSummary, CryptoSourceState
 from app.schemas.invest_feed_news import FeedNewsResponse, NewsMarket
 from app.schemas.invest_home import (
     AccountSourceLiteral,
@@ -19,6 +20,7 @@ OrderbookUnsupportedReason = Literal[
     "us_unsupported",
     "crypto_deferred",
     "kr_unavailable",
+    "provider_unavailable",
 ]
 CapabilityUnsupportedReason = Literal[
     "read_only_mvp",
@@ -410,6 +412,75 @@ class StockDetailOrderbookSupport(CapabilityFlag):
     reason: OrderbookUnsupportedReason | None = None
 
 
+CryptoRecentTradesState = Literal["supported", "empty", "unavailable"]
+CryptoPreOrderCheckState = Literal["ok", "warning", "danger", "unavailable", "info"]
+
+
+class CryptoDetailProfile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    symbol: str
+    baseSymbol: str
+    displayNameKo: str | None = None
+    displayNameEn: str | None = None
+    quoteCurrency: Literal["KRW"] = "KRW"
+    source: str = "upbit_symbol_universe"
+    state: Literal["supported", "unavailable"] = "supported"
+    asOf: datetime | None = None
+
+
+class CryptoRecentTradeItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tradeTime: datetime | None = None
+    priceKrw: float
+    volume: float
+    side: str | None = None
+    sequentialId: str | int | None = None
+    source: Literal["upbit_recent_trades"] = "upbit_recent_trades"
+
+
+class CryptoRecentTrades(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[CryptoRecentTradeItem] = Field(default_factory=list)
+    emptyState: Literal["no_recent_trades"] | None = None
+    source: Literal["upbit_recent_trades"] = "upbit_recent_trades"
+    state: CryptoRecentTradesState
+    asOf: datetime | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
+class CryptoPreOrderCheckItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: str
+    label: str
+    state: CryptoPreOrderCheckState
+    detail: str
+    source: str
+    computedAt: datetime
+
+
+class CryptoPreOrderChecklist(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["informational_only"] = "informational_only"
+    items: list[CryptoPreOrderCheckItem] = Field(default_factory=list)
+    disclaimer: str = "참고용 체크리스트입니다. 주문을 생성하거나 승인하지 않습니다."
+    sources: list[str] = Field(default_factory=list)
+
+
+class CryptoDetail(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    profile: CryptoDetailProfile
+    recentTrades: CryptoRecentTrades
+    pendingOrders: CryptoPendingOrdersSummary
+    preOrderChecklist: CryptoPreOrderChecklist
+    sources: list[CryptoSourceState] = Field(default_factory=list)
+
+
 class StockDetailMeta(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -440,6 +511,7 @@ class StockDetailResponse(BaseModel):
     orderbookSupport: StockDetailOrderbookSupport
     orderbook: StockDetailOrderbook | None = None
     capabilities: StockDetailCapabilities
+    cryptoDetail: CryptoDetail | None = None
     meta: StockDetailMeta
 
     @model_validator(mode="after")
@@ -522,7 +594,7 @@ def default_capabilities_for_market(
         )
     return StockDetailCapabilities(
         candles=CandleCapability(supported=True, intradaySupported=False),
-        orderbook=CapabilityFlag(supported=False, reason="crypto_deferred"),
+        orderbook=CapabilityFlag(supported=True, reason=None),
     )
 
 
@@ -533,4 +605,4 @@ def orderbook_support_for_market(
         return StockDetailOrderbookSupport(supported=True, reason=None)
     if market == "us":
         return StockDetailOrderbookSupport(supported=False, reason="us_unsupported")
-    return StockDetailOrderbookSupport(supported=False, reason="crypto_deferred")
+    return StockDetailOrderbookSupport(supported=True, reason=None)
