@@ -116,7 +116,7 @@ async def _default_orderbook_spread_provider(
 
 
 async def _load_active_krw_markets(
-    db: AsyncSession, *, limit: int
+    db: AsyncSession, *, limit: int | None = None
 ) -> list[UpbitSymbolUniverse]:
     stmt = (
         select(UpbitSymbolUniverse)
@@ -125,8 +125,9 @@ async def _load_active_krw_markets(
             UpbitSymbolUniverse.is_active.is_(True),
         )
         .order_by(UpbitSymbolUniverse.market.asc())
-        .limit(limit)
     )
+    if limit is not None:
+        stmt = stmt.limit(limit)
     result = await db.execute(stmt)
     return list(result.scalars().all())
 
@@ -339,14 +340,16 @@ async def build_crypto_dashboard(
     limit = max(1, min(limit, 50))
     orderbook_limit = max(0, min(orderbook_limit, limit))
 
-    universe = await _load_active_krw_markets(db, limit=limit)
-    markets = [row.market.upper() for row in universe]
+    # Load the active KRW universe before ticker ranking. The page is a
+    # top-movers/volume view, not an alphabetical slice of active markets.
+    universe = await _load_active_krw_markets(db)
+    all_markets = [row.market.upper() for row in universe]
 
     tickers: dict[str, dict[str, Any]] = {}
-    if markets:
+    if all_markets:
         provider = ticker_provider or _default_ticker_provider
         try:
-            tickers = _ticker_map(await _maybe_await(provider(markets)))
+            tickers = _ticker_map(await _maybe_await(provider(all_markets)))
             sources.append(
                 CryptoSourceState(
                     source="upbit_ticker",
@@ -362,6 +365,15 @@ async def build_crypto_dashboard(
                     source="upbit_ticker", state="unavailable", label="Upbit ticker"
                 )
             )
+
+    def _market_rank(row: UpbitSymbolUniverse) -> tuple[float, float, str]:
+        ticker = tickers.get(row.market.upper(), {})
+        change = abs(_float_or_none(ticker.get("signed_change_rate")) or 0)
+        trade_amount = _float_or_none(ticker.get("acc_trade_price_24h")) or 0
+        return (-change, -trade_amount, row.market.upper())
+
+    ranked_universe = sorted(universe, key=_market_rank)[:limit]
+    markets = [row.market.upper() for row in ranked_universe]
 
     spreads: dict[str, float | None] = {}
     if markets and orderbook_limit > 0:
@@ -391,13 +403,21 @@ async def build_crypto_dashboard(
 
     pending_rows = await _load_pending_orders(db, user_id=user_id, symbols=markets)
     pending_summary = _build_pending_summary(pending_rows)
+    sources.append(
+        CryptoSourceState(
+            source="pending_orders",
+            state="supported",
+            label="Pending orders read model",
+            fetchedAt=now,
+        )
+    )
     pending_by_base = {
         item.baseSymbol for item in pending_summary.items if item.baseSymbol
     }
 
     cards: list[CryptoMarketCard] = []
     held_symbols: list[str] = []
-    for row in universe:
+    for row in ranked_universe:
         symbol = row.market.upper()
         base = row.base_currency.upper()
         ticker = tickers.get(symbol, {})
@@ -496,6 +516,22 @@ async def build_crypto_dashboard(
         )
 
     candidates = _build_candidate_insights(cards, pending_by_base)
+    sources.extend(
+        [
+            CryptoSourceState(
+                source="mcp_risk_reference",
+                state="reference_only",
+                label="MCP risk reference",
+                fetchedAt=now,
+            ),
+            CryptoSourceState(
+                source="mcp_candidate_reference",
+                state="reference_only",
+                label="MCP candidate reference",
+                fetchedAt=now,
+            ),
+        ]
+    )
     candidate_symbols = {candidate.symbol for candidate in candidates}
     for card in cards:
         if card.symbol not in candidate_symbols:

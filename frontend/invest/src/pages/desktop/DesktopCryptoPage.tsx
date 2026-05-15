@@ -8,6 +8,7 @@ import type {
   CryptoDashboardResponse,
   CryptoMarketCard,
   CryptoRiskLevel,
+  CryptoSourceState,
   NaverCryptoReferenceResponse,
 } from "../../types/investCrypto";
 import "../../desktop/screener/screener.css";
@@ -20,6 +21,33 @@ function formatKrw(value: number | null): string {
 function formatPct(value: number | null): string {
   if (value === null || Number.isNaN(value)) return "-";
   return `${(value * 100).toFixed(2)}%`;
+}
+
+function sourceFreshness(fetchedAt: string | null | undefined): string {
+  if (!fetchedAt) return "freshness unavailable";
+  return `fetched ${fetchedAt}`;
+}
+
+function sourceSummary(sources: CryptoSourceState[], sourceIds: string[]): string {
+  const selected = sources.filter((source) => sourceIds.includes(source.source));
+  if (selected.length === 0) return "출처: 확인 불가";
+  return `출처: ${selected.map((source) => `${source.label} ${source.state} (${sourceFreshness(source.fetchedAt)})`).join(" · ")}`;
+}
+
+function SourceLabels({ sources, sourceIds }: { sources: CryptoSourceState[]; sourceIds: string[] }) {
+  const selected = sources.filter((source) => sourceIds.includes(source.source));
+  if (selected.length === 0) {
+    return <span className="screener-chip">출처 확인 불가</span>;
+  }
+  return (
+    <>
+      {selected.map((source) => (
+        <span key={`${source.source}-${source.state}`} className="screener-chip">
+          {source.label}: {source.state} · {sourceFreshness(source.fetchedAt)}
+        </span>
+      ))}
+    </>
+  );
 }
 
 function cardMetric(card: CryptoMarketCard): string {
@@ -58,7 +86,7 @@ function riskCounts(cards: CryptoMarketCard[]): Record<CryptoRiskLevel, number> 
   );
 }
 
-function CryptoCard({ card }: { card: CryptoMarketCard }) {
+function CryptoCard({ card, sources }: { card: CryptoMarketCard; sources: CryptoSourceState[] }) {
   return (
     <Link
       to={`/crypto/${encodeURIComponent(card.symbol)}`}
@@ -87,6 +115,9 @@ function CryptoCard({ card }: { card: CryptoMarketCard }) {
       <div style={{ marginTop: 12, color: "var(--fg-3)", fontSize: 13 }}>
         {cardMetric(card)} · 호가 스프레드 {card.orderbookSpreadPct === null ? "-" : `${card.orderbookSpreadPct.toFixed(3)}%`}
       </div>
+      <div style={{ marginTop: 8, color: "var(--fg-3)", fontSize: 12 }}>
+        {sourceSummary(sources, ["upbit_ticker", "upbit_orderbook"])}
+      </div>
       {card.risk && (
         <div style={{ marginTop: 8, color: "var(--fg-2)", fontSize: 13 }}>
           리스크 {riskLabels[card.risk.level]} · {card.risk.score}
@@ -108,7 +139,7 @@ function CryptoCard({ card }: { card: CryptoMarketCard }) {
   );
 }
 
-function RiskSummary({ cards }: { cards: CryptoMarketCard[] }) {
+function RiskSummary({ cards, sources }: { cards: CryptoMarketCard[]; sources: CryptoSourceState[] }) {
   const counts = riskCounts(cards);
   return (
     <section aria-label="리스크 요약" style={{ marginTop: 16, padding: 16, border: "1px solid var(--border)", borderRadius: 14 }}>
@@ -119,6 +150,9 @@ function RiskSummary({ cards }: { cards: CryptoMarketCard[] }) {
             {riskLabels[level]} {counts[level]}
           </span>
         ))}
+      </div>
+      <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 6 }}>
+        <SourceLabels sources={sources} sourceIds={["upbit_ticker", "upbit_orderbook", "pending_orders", "mcp_risk_reference"]} />
       </div>
     </section>
   );
@@ -146,11 +180,14 @@ function CandidateInsightCard({ candidate }: { candidate: CryptoCandidateInsight
   );
 }
 
-function CandidateInsights({ candidates }: { candidates: CryptoCandidateInsight[] }) {
+function CandidateInsights({ candidates, sources }: { candidates: CryptoCandidateInsight[]; sources: CryptoSourceState[] }) {
   return (
     <section aria-label="후보 인사이트" style={{ marginTop: 18, padding: 16, border: "1px solid var(--border)", borderRadius: 14 }}>
       <h2 style={{ marginTop: 0 }}>후보 인사이트</h2>
       <p style={{ color: "var(--fg-3)" }}>후보 인사이트는 참고용이며 주문/감시 등록을 실행하지 않습니다.</p>
+      <div style={{ marginBottom: 10, display: "flex", flexWrap: "wrap", gap: 6 }}>
+        <SourceLabels sources={sources} sourceIds={["upbit_ticker", "upbit_orderbook", "pending_orders", "mcp_candidate_reference"]} />
+      </div>
       {candidates.length === 0 ? (
         <p style={{ color: "var(--fg-3)" }}>조건에 맞는 후보 인사이트가 없습니다.</p>
       ) : (
@@ -218,9 +255,24 @@ function ReferencePanel({ reference }: { reference: NaverCryptoReferenceResponse
       <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap", gap: 6 }}>
         {reference.sources.map((source) => (
           <span key={`${source.source}-${source.state}`} className="screener-chip">
-            {source.label}: {source.state}
+            {source.label}: {source.state} · {source.freshness} · {source.fetchedAt ?? "freshness unavailable"}
           </span>
         ))}
+      </div>
+    </section>
+  );
+}
+
+function ReferenceFallback() {
+  return (
+    <section style={{ marginTop: 18, padding: 16, border: "1px solid var(--border)", borderRadius: 14, background: "var(--surface)" }}>
+      <h2 style={{ margin: 0 }}>Naver 참고 지표</h2>
+      <p style={{ color: "var(--fg-3)" }}>
+        Naver/MCP 참고 지표를 불러오지 못했습니다. 대시보드 시세·리스크 카드는 계속 읽기 전용으로 표시됩니다.
+      </p>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        <span className="screener-chip">Naver crypto reference: unavailable · freshness unavailable</span>
+        <span className="screener-chip">MCP kimchi premium: unavailable · freshness unavailable</span>
       </div>
     </section>
   );
@@ -284,12 +336,12 @@ export function DesktopCryptoPage() {
                   {data.meta.warnings.map((warning) => <li key={warning}>{warning}</li>)}
                 </ul>
               )}
-              <RiskSummary cards={data.cards} />
-              <CandidateInsights candidates={data.insights.candidates ?? []} />
+              <RiskSummary cards={data.cards} sources={data.meta.sources} />
+              <CandidateInsights candidates={data.insights.candidates ?? []} sources={data.meta.sources} />
               <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 12, marginTop: 16 }}>
-                {data.cards.map((card) => <CryptoCard key={card.symbol} card={card} />)}
+                {data.cards.map((card) => <CryptoCard key={card.symbol} card={card} sources={data.meta.sources} />)}
               </section>
-              {reference && <ReferencePanel reference={reference} />}
+              {reference ? <ReferencePanel reference={reference} /> : <ReferenceFallback />}
               <section style={{ marginTop: 18, padding: 16, border: "1px solid var(--border)", borderRadius: 14 }}>
                 <h2 style={{ marginTop: 0 }}>기능 상태</h2>
                 <p style={{ color: "var(--fg-3)" }}>체결/주문 실행: {data.capabilities.execution.state} · 실시간 스트리밍: {data.capabilities.liveStreaming.state}</p>

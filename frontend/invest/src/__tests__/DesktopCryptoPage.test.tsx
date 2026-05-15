@@ -105,7 +105,15 @@ const dashboard: CryptoDashboardResponse = {
     liveStreaming: { state: "deferred", reason: null },
     execution: { state: "read_only_mvp", reason: null },
   },
-  meta: { warnings: [], sources: [{ source: "upbit_ticker", state: "supported", label: "Upbit ticker", fetchedAt: "2026-05-13T12:00:00Z" }] },
+  meta: {
+    warnings: [],
+    sources: [
+      { source: "upbit_ticker", state: "supported", label: "Upbit ticker", fetchedAt: "2026-05-13T12:00:00Z" },
+      { source: "pending_orders", state: "supported", label: "Pending orders read model", fetchedAt: "2026-05-13T12:00:00Z" },
+      { source: "mcp_risk_reference", state: "reference_only", label: "MCP risk reference", fetchedAt: "2026-05-13T12:00:00Z" },
+      { source: "mcp_candidate_reference", state: "reference_only", label: "MCP candidate reference", fetchedAt: "2026-05-13T12:00:00Z" },
+    ],
+  },
 };
 
 const reference: NaverCryptoReferenceResponse = {
@@ -188,10 +196,12 @@ test("renders crypto dashboard cards and read-only capability states", async () 
   expect(screen.getByText("미체결")).toBeInTheDocument();
   expect(screen.getByText(/주문·감시·동기화 작업은 실행하지 않습니다/)).toBeInTheDocument();
   expect(screen.getByText(/체결\/주문 실행: read_only_mvp/)).toBeInTheDocument();
+  expect(screen.getAllByText(/Upbit ticker supported.*fetched 2026-05-13/).length).toBeGreaterThan(0);
+  expect(screen.getAllByText(/Upbit ticker: supported .*fetched 2026-05-13/).length).toBeGreaterThan(0);
   expect(await screen.findByRole("heading", { name: "Naver 참고 지표" })).toBeInTheDocument();
   expect(screen.getByText("2.50%")).toBeInTheDocument();
   expect(screen.getByText("BTC reference news")).toBeInTheDocument();
-  expect(screen.getByText(/Naver crypto reference fixture: reference_only/)).toBeInTheDocument();
+  expect(screen.getByText(/Naver crypto reference fixture: reference_only .* fixture .* freshness unavailable/)).toBeInTheDocument();
   expect(cryptoApi.fetchCryptoNaverReference).toHaveBeenCalledWith({ symbol: "KRW-BTC", limit: 20 });
 });
 
@@ -205,6 +215,7 @@ test("renders risk summary, card risk labels, and candidate insight rows", async
   const summary = await screen.findByLabelText("리스크 요약");
   expect(within(summary).getByText("중간 1")).toBeInTheDocument();
   expect(within(summary).getByText("낮음 1")).toBeInTheDocument();
+  expect(within(summary).getByText(/MCP risk reference: reference_only/)).toBeInTheDocument();
   expect(screen.getByText(/리스크 중간 · 35/)).toBeInTheDocument();
   expect(screen.getByText("변동성 주의")).toBeInTheDocument();
   expect(screen.getByText("거래대금 낮음")).toBeInTheDocument();
@@ -213,6 +224,7 @@ test("renders risk summary, card risk labels, and candidate insight rows", async
   const candidates = screen.getByLabelText("후보 인사이트");
   expect(within(candidates).getByText("1. 비트코인")).toBeInTheDocument();
   expect(within(candidates).getByText(/후보 인사이트는 참고용/)).toBeInTheDocument();
+  expect(within(candidates).getByText(/MCP candidate reference: reference_only/)).toBeInTheDocument();
   expect(within(candidates).getByText("검토 목록")).toBeInTheDocument();
   expect(within(candidates).getByText("유동성")).toBeInTheDocument();
   expect(within(candidates).queryByRole("button", { name: /주문|매수|매도|실행|등록/ })).not.toBeInTheDocument();
@@ -231,4 +243,18 @@ test("renders empty candidate insight state", async () => {
   );
 
   expect(await screen.findByText("조건에 맞는 후보 인사이트가 없습니다.")).toBeInTheDocument();
+});
+
+test("renders Naver/MCP fallback labels when reference request fails", async () => {
+  vi.spyOn(cryptoApi, "fetchCryptoNaverReference").mockRejectedValue(new Error("reference down"));
+
+  render(
+    <MemoryRouter basename="/invest" initialEntries={["/invest/crypto"]}>
+      <DesktopCryptoPage />
+    </MemoryRouter>,
+  );
+
+  expect(await screen.findByText(/Naver\/MCP 참고 지표를 불러오지 못했습니다/)).toBeInTheDocument();
+  expect(screen.getByText("Naver crypto reference: unavailable · freshness unavailable")).toBeInTheDocument();
+  expect(screen.getByText("MCP kimchi premium: unavailable · freshness unavailable")).toBeInTheDocument();
 });

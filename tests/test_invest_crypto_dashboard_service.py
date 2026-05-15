@@ -78,7 +78,7 @@ async def test_crypto_dashboard_maps_ticker_spread_relation_and_pending_orders()
             {
                 "market": "KRW-BTC",
                 "trade_price": 101000000,
-                "signed_change_rate": 0.0123,
+                "signed_change_rate": 0.041,
                 "signed_change_price": 1230000,
                 "acc_trade_price_24h": 12345678900,
                 "acc_trade_volume_24h": 234.5,
@@ -86,7 +86,7 @@ async def test_crypto_dashboard_maps_ticker_spread_relation_and_pending_orders()
             {
                 "market": "KRW-ETH",
                 "trade_price": 5200000,
-                "signed_change_rate": 0.052,
+                "signed_change_rate": 0.032,
                 "signed_change_price": 260000,
                 "acc_trade_price_24h": 8500000000,
                 "acc_trade_volume_24h": 1000,
@@ -131,8 +131,18 @@ async def test_crypto_dashboard_maps_ticker_spread_relation_and_pending_orders()
     assert response.pendingOrders.items[0].orderId == "upbit-open-1"
     assert response.pendingOrders.emptyState is None
     assert response.capabilities.execution.state == "read_only_mvp"
-    assert [candidate.symbol for candidate in response.insights.candidates] == ["KRW-ETH"]
-    assert response.insights.candidates[0].reasons[:2] == ["watched", "momentum"]
+    assert [candidate.symbol for candidate in response.insights.candidates][:2] == [
+        "KRW-ETH",
+        "KRW-BTC",
+    ]
+    assert response.insights.candidates[0].reasons[:2] == ["watched", "liquidity"]
+    assert {source.source for source in response.meta.sources} >= {
+        "upbit_ticker",
+        "upbit_orderbook",
+        "pending_orders",
+        "mcp_risk_reference",
+        "mcp_candidate_reference",
+    }
 
 
 @pytest.mark.asyncio
@@ -227,6 +237,87 @@ async def test_crypto_dashboard_candidate_insights_are_read_only_and_ranked():
 
 
 @pytest.mark.asyncio
+async def test_crypto_dashboard_sorts_cards_by_move_then_volume_before_limit():
+    markets = [
+        _market("KRW-AAA", "AAA", "에이"),
+        _market("KRW-BBB", "BBB", "비"),
+        _market("KRW-CCC", "CCC", "씨"),
+    ]
+
+    async def ticker_provider(requested_markets):
+        assert requested_markets == ["KRW-AAA", "KRW-BBB", "KRW-CCC"]
+        return [
+            {
+                "market": "KRW-AAA",
+                "trade_price": 1000,
+                "signed_change_rate": 0.01,
+                "acc_trade_price_24h": 10_000_000_000,
+            },
+            {
+                "market": "KRW-BBB",
+                "trade_price": 1000,
+                "signed_change_rate": -0.07,
+                "acc_trade_price_24h": 100_000_000,
+            },
+            {
+                "market": "KRW-CCC",
+                "trade_price": 1000,
+                "signed_change_rate": 0.07,
+                "acc_trade_price_24h": 200_000_000,
+            },
+        ]
+
+    async def spread_provider(requested_markets):
+        assert requested_markets == ["KRW-CCC", "KRW-BBB"]
+        return dict.fromkeys(requested_markets, 0.2)
+
+    response = await build_crypto_dashboard(
+        db=FakeSession(markets, []),
+        user_id=7,
+        ticker_provider=ticker_provider,
+        orderbook_spread_provider=spread_provider,
+        limit=2,
+        orderbook_limit=2,
+    )
+
+    assert [card.symbol for card in response.cards] == ["KRW-CCC", "KRW-BBB"]
+    assert "KRW-AAA" not in [card.symbol for card in response.cards]
+
+
+@pytest.mark.asyncio
+async def test_crypto_dashboard_ranks_full_universe_before_limit():
+    markets = [_market(f"KRW-{index:03d}", f"C{index:03d}", f"코인{index:03d}") for index in range(60)]
+    top_market = markets[-1].market
+
+    async def ticker_provider(requested_markets):
+        assert requested_markets == [market.market for market in markets]
+        return [
+            {
+                "market": market.market,
+                "trade_price": 1000,
+                "signed_change_rate": 0.2 if market.market == top_market else 0.01,
+                "acc_trade_price_24h": 10_000_000_000,
+            }
+            for market in markets
+        ]
+
+    async def spread_provider(requested_markets):
+        assert requested_markets == [top_market]
+        return {top_market: 0.2}
+
+    response = await build_crypto_dashboard(
+        db=FakeSession(markets, []),
+        user_id=7,
+        ticker_provider=ticker_provider,
+        orderbook_spread_provider=spread_provider,
+        limit=1,
+        orderbook_limit=1,
+    )
+
+    assert [card.symbol for card in response.cards] == [top_market]
+
+
+@pytest.mark.asyncio
 async def test_crypto_dashboard_is_renderable_when_public_sources_fail():
     async def failing_ticker(_markets):
         raise RuntimeError("upstream down")
@@ -250,4 +341,13 @@ async def test_crypto_dashboard_is_renderable_when_public_sources_fail():
     assert response.pendingOrders.emptyState == "no_pending_orders"
     assert "crypto_ticker_unavailable" in response.meta.warnings
     assert "crypto_orderbook_unavailable" in response.meta.warnings
-    assert {source.state for source in response.meta.sources} == {"unavailable"}
+    assert {source.source for source in response.meta.sources} >= {
+        "upbit_ticker",
+        "pending_orders",
+        "mcp_risk_reference",
+        "mcp_candidate_reference",
+    }
+    states = {source.source: source.state for source in response.meta.sources}
+    assert states["upbit_ticker"] == "unavailable"
+    assert states["pending_orders"] == "supported"
+    assert states["mcp_risk_reference"] == "reference_only"
