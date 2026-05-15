@@ -73,19 +73,17 @@ async def build_stock_detail_orders(
         )
     except TimeoutError:
         logger.warning(
-            "stock-detail filled-orders fetch timed out: market=%s symbol=%s days=%s",
+            "stock-detail filled-orders fetch timed out: market=%s days=%s",
             market,
-            symbol,
             days_clamped,
         )
         rows = []
         warnings.append("filled_orders_timeout")
     except Exception as exc:
         logger.warning(
-            "stock-detail filled-orders fetch unavailable: market=%s symbol=%s error=%s",
+            "stock-detail filled-orders fetch unavailable: market=%s error_type=%s",
             market,
-            symbol,
-            exc,
+            type(exc).__name__,
         )
         rows = []
         warnings.append("filled_orders_unavailable")

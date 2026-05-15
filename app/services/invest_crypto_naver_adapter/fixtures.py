@@ -7,6 +7,11 @@ side-effect free.
 
 from __future__ import annotations
 
+REFERENCE_ONLY_NOTE = "Naver crypto metadata is fixture/reference-only in ROB-234."
+EXECUTABLE_SOURCE_NOTE = (
+    "Use Upbit official/public read-model prices as the executable source of truth."
+)
+
 NAVER_CRYPTO_REFERENCES: dict[str, dict[str, str | list[str]]] = {
     "KRW-BTC": {
         "baseSymbol": "BTC",
@@ -14,10 +19,7 @@ NAVER_CRYPTO_REFERENCES: dict[str, dict[str, str | list[str]]] = {
         "englishName": "Bitcoin",
         "displayName": "비트코인",
         "naverUrl": "https://m.stock.naver.com/crypto/UPBIT/KRW-BTC",
-        "referenceNotes": [
-            "Naver crypto metadata is fixture/reference-only in ROB-234.",
-            "Use Upbit official/public read-model prices as the executable source of truth.",
-        ],
+        "referenceNotes": [REFERENCE_ONLY_NOTE, EXECUTABLE_SOURCE_NOTE],
     },
     "KRW-ETH": {
         "baseSymbol": "ETH",
@@ -25,10 +27,7 @@ NAVER_CRYPTO_REFERENCES: dict[str, dict[str, str | list[str]]] = {
         "englishName": "Ethereum",
         "displayName": "이더리움",
         "naverUrl": "https://m.stock.naver.com/crypto/UPBIT/KRW-ETH",
-        "referenceNotes": [
-            "Naver crypto metadata is fixture/reference-only in ROB-234.",
-            "Use Upbit official/public read-model prices as the executable source of truth.",
-        ],
+        "referenceNotes": [REFERENCE_ONLY_NOTE, EXECUTABLE_SOURCE_NOTE],
     },
     "KRW-XRP": {
         "baseSymbol": "XRP",
@@ -36,10 +35,7 @@ NAVER_CRYPTO_REFERENCES: dict[str, dict[str, str | list[str]]] = {
         "englishName": "XRP",
         "displayName": "엑스알피",
         "naverUrl": "https://m.stock.naver.com/crypto/UPBIT/KRW-XRP",
-        "referenceNotes": [
-            "Naver crypto metadata is fixture/reference-only in ROB-234.",
-            "Use Upbit official/public read-model prices as the executable source of truth.",
-        ],
+        "referenceNotes": [REFERENCE_ONLY_NOTE, EXECUTABLE_SOURCE_NOTE],
     },
     "KRW-SOL": {
         "baseSymbol": "SOL",
@@ -47,9 +43,6 @@ NAVER_CRYPTO_REFERENCES: dict[str, dict[str, str | list[str]]] = {
         "englishName": "Solana",
         "displayName": "솔라나",
         "naverUrl": "https://m.stock.naver.com/crypto/UPBIT/KRW-SOL",
-        "referenceNotes": [
-            "Naver crypto metadata is fixture/reference-only in ROB-234.",
-            "Use Upbit official/public read-model prices as the executable source of truth.",
-        ],
+        "referenceNotes": [REFERENCE_ONLY_NOTE, EXECUTABLE_SOURCE_NOTE],
     },
 }

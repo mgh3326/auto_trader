@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.pending_order import PendingOrder
 from app.services.invest_view_model.crypto_dashboard_service import (
@@ -39,6 +41,10 @@ class FakeSession:
         if len(self.statements) == 1:
             return _Result(self.universe_rows)
         return _Result(self.pending_rows)
+
+
+def _session(universe_rows, pending_rows=None) -> AsyncSession:
+    return cast(AsyncSession, FakeSession(universe_rows, pending_rows))
 
 
 def _market(market="KRW-BTC", base="BTC", korean_name="비트코인"):
@@ -101,7 +107,7 @@ async def test_crypto_dashboard_maps_ticker_spread_relation_and_pending_orders()
         held={("crypto", "KRW-BTC")}, watch={("crypto", "KRW-ETH")}
     )
     response = await build_crypto_dashboard(
-        db=FakeSession(
+        db=_session(
             [_market(), _market("KRW-ETH", "ETH", "이더리움")], [_pending("BTC")]
         ),
         user_id=7,
@@ -163,7 +169,7 @@ async def test_crypto_dashboard_marks_high_volatility_and_low_liquidity():
         return {"KRW-XRP": 0.1}
 
     response = await build_crypto_dashboard(
-        db=FakeSession([_market("KRW-XRP", "XRP", "리플")], []),
+        db=_session([_market("KRW-XRP", "XRP", "리플")], []),
         user_id=7,
         ticker_provider=ticker_provider,
         orderbook_spread_provider=spread_provider,
@@ -215,7 +221,7 @@ async def test_crypto_dashboard_candidate_insights_are_read_only_and_ranked():
 
     resolver = RelationResolver(watch={("crypto", "KRW-AAA"), ("crypto", "KRW-BBB")})
     response = await build_crypto_dashboard(
-        db=FakeSession(markets, [_pending("BBB")]),
+        db=_session(markets, [_pending("BBB")]),
         user_id=7,
         resolver=resolver,
         ticker_provider=ticker_provider,
@@ -281,7 +287,7 @@ async def test_crypto_dashboard_sorts_cards_by_move_then_volume_before_limit():
         return dict.fromkeys(requested_markets, 0.2)
 
     response = await build_crypto_dashboard(
-        db=FakeSession(markets, []),
+        db=_session(markets, []),
         user_id=7,
         ticker_provider=ticker_provider,
         orderbook_spread_provider=spread_provider,
@@ -318,7 +324,7 @@ async def test_crypto_dashboard_ranks_full_universe_before_limit():
         return {top_market: 0.2}
 
     response = await build_crypto_dashboard(
-        db=FakeSession(markets, []),
+        db=_session(markets, []),
         user_id=7,
         ticker_provider=ticker_provider,
         orderbook_spread_provider=spread_provider,
@@ -338,7 +344,7 @@ async def test_crypto_dashboard_is_renderable_when_public_sources_fail():
         raise RuntimeError("upstream down")
 
     response = await build_crypto_dashboard(
-        db=FakeSession([_market()], []),
+        db=_session([_market()], []),
         user_id=7,
         ticker_provider=failing_ticker,
         orderbook_spread_provider=failing_spread,
@@ -384,7 +390,7 @@ async def test_dashboard_records_stale_source_state_from_read_model():
         )
 
     response = await build_crypto_dashboard(
-        db=FakeSession([_market()], []),
+        db=_session([_market()], []),
         user_id=7,
         ticker_provider=stale_ticker_provider,
         orderbook_spread_provider=lambda _: {},
@@ -468,10 +474,8 @@ async def test_default_dashboard_reuses_single_upbit_read_model_redis_client(
     )
 
     try:
-        first = await build_crypto_dashboard(db=FakeSession([_market()], []), user_id=7)
-        second = await build_crypto_dashboard(
-            db=FakeSession([_market()], []), user_id=7
-        )
+        first = await build_crypto_dashboard(db=_session([_market()], []), user_id=7)
+        second = await build_crypto_dashboard(db=_session([_market()], []), user_id=7)
 
         assert len(redis_clients) == 1
         assert first.cards[0].priceKrw == 101000000

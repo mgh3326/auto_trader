@@ -40,8 +40,9 @@ def _spread_pct(book: dict[str, Any]) -> float | None:
     units = list(book.get("orderbook_units") or [])
     if not units:
         return None
-    ask = _float_or_none(units[0].get("ask_price"))
-    bid = _float_or_none(units[0].get("bid_price"))
+    first_unit = units[0]
+    ask = _float_or_none(first_unit.get("ask_price"))
+    bid = _float_or_none(first_unit.get("bid_price"))
     if ask is None or bid is None or bid <= 0:
         return None
     return ((ask - bid) / bid) * 100

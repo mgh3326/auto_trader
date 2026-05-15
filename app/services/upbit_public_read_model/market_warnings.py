@@ -46,6 +46,29 @@ async def fetch_market_event_details() -> list[dict[str, Any]]:
     return payload
 
 
+def _entries_from_rows(
+    rows: list[UpbitSymbolUniverse],
+) -> dict[str, UpbitMarketWarningEntry]:
+    return {
+        row.market.upper(): UpbitMarketWarningEntry(
+            market=row.market.upper(), warning=(row.market_warning or "NONE")
+        )
+        for row in rows
+    }
+
+
+def _merge_event_details(
+    entries: dict[str, UpbitMarketWarningEntry], details: list[dict[str, Any]]
+) -> dict[str, UpbitMarketWarningEntry]:
+    by_market = {str(item.get("market") or "").upper(): item for item in details}
+    return {
+        market: entry.model_copy(
+            update={"event": by_market.get(market, {}).get("market_event")}
+        )
+        for market, entry in entries.items()
+    }
+
+
 class MarketWarningsService:
     def __init__(
         self,
@@ -66,7 +89,35 @@ class MarketWarningsService:
         db: AsyncSession | None = None,
     ) -> UpbitMarketWarningsBlock:
         requested = {m.upper() for m in markets} if markets else None
+        rows = await self._load_rows(requested=requested, db=db)
+        latest = max((getattr(row, "updated_at", None) for row in rows), default=None)
+        entries = _entries_from_rows(rows)
+        state = "fresh" if entries else "missing"
+        error_reason = None
 
+        if include_event_detail and entries:
+            try:
+                details = await self._get_detail_rows()
+                entries = _merge_event_details(entries, details)
+            except Exception as exc:  # noqa: BLE001
+                state = "stale" if entries else "unavailable"
+                error_reason = classify_error(exc)
+
+        return UpbitMarketWarningsBlock(
+            meta=UpbitBlockMeta(
+                source="upbit_market_warnings",
+                state=state,
+                label="Upbit market warnings (universe)",
+                fetchedAt=latest or _now_utc(),
+                ttlSeconds=WARNINGS_TTL_SECONDS,
+                errorReason=error_reason,
+            ),
+            entries=entries,
+        )
+
+    async def _load_rows(
+        self, *, requested: set[str] | None, db: AsyncSession | None
+    ) -> list[UpbitSymbolUniverse]:
         async def load(session: AsyncSession) -> list[UpbitSymbolUniverse]:
             stmt = select(UpbitSymbolUniverse).where(
                 UpbitSymbolUniverse.quote_currency == "KRW",
@@ -79,44 +130,10 @@ class MarketWarningsService:
             )
             return list(result.scalars().all())
 
-        if db is None:
-            async with self._db_session_factory() as session:
-                rows = await load(session)
-        else:
-            rows = await load(db)
-        latest = max((getattr(row, "updated_at", None) for row in rows), default=None)
-        entries = {
-            row.market.upper(): UpbitMarketWarningEntry(
-                market=row.market.upper(), warning=(row.market_warning or "NONE")
-            )
-            for row in rows
-        }
-        state = "fresh" if entries else "missing"
-        label = "Upbit market warnings (universe)"
-        error_reason = None
-        if include_event_detail and entries:
-            try:
-                details = await self._get_detail_rows()
-                by_market = {
-                    str(item.get("market") or "").upper(): item for item in details
-                }
-                for market, entry in list(entries.items()):
-                    event = by_market.get(market, {}).get("market_event")
-                    entries[market] = entry.model_copy(update={"event": event})
-            except Exception as exc:  # noqa: BLE001
-                state = "stale" if entries else "unavailable"
-                error_reason = classify_error(exc)
-        return UpbitMarketWarningsBlock(
-            meta=UpbitBlockMeta(
-                source="upbit_market_warnings",
-                state=state,
-                label=label,
-                fetchedAt=latest or _now_utc(),
-                ttlSeconds=WARNINGS_TTL_SECONDS,
-                errorReason=error_reason,
-            ),
-            entries=entries,
-        )
+        if db is not None:
+            return await load(db)
+        async with self._db_session_factory() as session:
+            return await load(session)
 
     async def _get_detail_rows(self) -> list[dict[str, Any]]:
         if self._redis is not None:
@@ -139,7 +156,14 @@ class MarketWarningsService:
         return rows
 
 
-async def db_universe_warnings_provider(
-    markets: list[str] | None = None,
-) -> UpbitMarketWarningsBlock:
-    return await MarketWarningsService().get(markets)
+_default_service = MarketWarningsService()
+get_market_warnings = _default_service.get
+db_universe_warnings_provider = _default_service.get
+
+__all__ = [
+    "MarketWarningsProvider",
+    "MarketWarningsService",
+    "db_universe_warnings_provider",
+    "fetch_market_event_details",
+    "get_market_warnings",
+]

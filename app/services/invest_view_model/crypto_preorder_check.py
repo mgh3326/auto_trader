@@ -29,6 +29,87 @@ def _spread_pct(orderbook: StockDetailOrderbook | None) -> float | None:
     return ((ask - bid) / bid) * 100
 
 
+def _data_freshness_item(
+    *,
+    quote: StockDetailQuote | None,
+    orderbook: StockDetailOrderbook | None,
+    recent_trades: CryptoRecentTrades,
+    warning_set: set[str],
+    computed_at: datetime,
+) -> CryptoPreOrderCheckItem:
+    data_unavailable = any(
+        token in warning_set
+        for token in {
+            "crypto_ticker_unavailable",
+            "crypto_orderbook_unavailable",
+            "crypto_recent_trades_unavailable",
+        }
+    )
+    if quote is None or orderbook is None or recent_trades.state == "unavailable":
+        data_unavailable = True
+    return CryptoPreOrderCheckItem(
+        key="data_freshness",
+        label="데이터 신선도",
+        state="warning" if data_unavailable else "ok",
+        detail=(
+            "일부 Upbit 공개 데이터가 없어 참고 신뢰도를 낮춥니다."
+            if data_unavailable
+            else "시세·호가·체결 공개 데이터를 확인했습니다."
+        ),
+        source="upbit_public_reads",
+        computedAt=computed_at,
+    )
+
+
+def _spread_item(
+    orderbook: StockDetailOrderbook | None, *, computed_at: datetime
+) -> CryptoPreOrderCheckItem:
+    spread = _spread_pct(orderbook)
+    spread_state = "unavailable"
+    spread_detail = "호가 스프레드를 계산할 수 없습니다."
+    if spread is not None:
+        if spread > 1.0:
+            spread_state = "danger"
+            spread_detail = f"최우선 호가 스프레드가 {spread:.2f}%로 넓습니다."
+        elif spread > 0.5:
+            spread_state = "warning"
+            spread_detail = f"최우선 호가 스프레드가 {spread:.2f}%입니다."
+        else:
+            spread_state = "ok"
+            spread_detail = f"최우선 호가 스프레드가 {spread:.2f}%입니다."
+    return CryptoPreOrderCheckItem(
+        key="orderbook_spread",
+        label="호가 스프레드",
+        state=spread_state,  # type: ignore[arg-type]
+        detail=spread_detail,
+        source="upbit_orderbook",
+        computedAt=computed_at,
+    )
+
+
+def _volatility_item(
+    quote: StockDetailQuote | None, *, computed_at: datetime
+) -> CryptoPreOrderCheckItem:
+    move = quote.changeRate if quote else None
+    if move is None:
+        state = "unavailable"
+        detail = "24시간 변동률을 확인할 수 없습니다."
+    elif abs(move) >= 10:
+        state = "warning"
+        detail = f"24시간 변동률이 {move:.2f}%로 큽니다."
+    else:
+        state = "ok"
+        detail = f"24시간 변동률 {move:.2f}%입니다."
+    return CryptoPreOrderCheckItem(
+        key="volatility_24h",
+        label="24시간 변동성",
+        state=state,  # type: ignore[arg-type]
+        detail=detail,
+        source="upbit_ticker",
+        computedAt=computed_at,
+    )
+
+
 def build_crypto_preorder_checklist(
     *,
     quote: StockDetailQuote | None,
@@ -43,77 +124,17 @@ def build_crypto_preorder_checklist(
 
     now = computed_at or datetime.now(UTC)
     warning_set = set(warnings or [])
-    items: list[CryptoPreOrderCheckItem] = []
-
-    data_unavailable = any(
-        token in warning_set
-        for token in {
-            "crypto_ticker_unavailable",
-            "crypto_orderbook_unavailable",
-            "crypto_recent_trades_unavailable",
-        }
-    )
-    if quote is None or orderbook is None or recent_trades.state == "unavailable":
-        data_unavailable = True
-    items.append(
-        CryptoPreOrderCheckItem(
-            key="data_freshness",
-            label="데이터 신선도",
-            state="warning" if data_unavailable else "ok",
-            detail=(
-                "일부 Upbit 공개 데이터가 없어 참고 신뢰도를 낮춥니다."
-                if data_unavailable
-                else "시세·호가·체결 공개 데이터를 확인했습니다."
-            ),
-            source="upbit_public_reads",
-            computedAt=now,
-        )
-    )
-
-    spread = _spread_pct(orderbook)
-    spread_state = "unavailable"
-    spread_detail = "호가 스프레드를 계산할 수 없습니다."
-    if spread is not None:
-        if spread > 1.0:
-            spread_state = "danger"
-            spread_detail = f"최우선 호가 스프레드가 {spread:.2f}%로 넓습니다."
-        elif spread > 0.5:
-            spread_state = "warning"
-            spread_detail = f"최우선 호가 스프레드가 {spread:.2f}%입니다."
-        else:
-            spread_state = "ok"
-            spread_detail = f"최우선 호가 스프레드가 {spread:.2f}%입니다."
-    items.append(
-        CryptoPreOrderCheckItem(
-            key="orderbook_spread",
-            label="호가 스프레드",
-            state=spread_state,  # type: ignore[arg-type]
-            detail=spread_detail,
-            source="upbit_orderbook",
-            computedAt=now,
-        )
-    )
-
-    move = quote.changeRate if quote else None
-    if move is None:
-        state = "unavailable"
-        detail = "24시간 변동률을 확인할 수 없습니다."
-    elif abs(move) >= 10:
-        state = "warning"
-        detail = f"24시간 변동률이 {move:.2f}%로 큽니다."
-    else:
-        state = "ok"
-        detail = f"24시간 변동률 {move:.2f}%입니다."
-    items.append(
-        CryptoPreOrderCheckItem(
-            key="volatility_24h",
-            label="24시간 변동성",
-            state=state,  # type: ignore[arg-type]
-            detail=detail,
-            source="upbit_ticker",
-            computedAt=now,
-        )
-    )
+    items: list[CryptoPreOrderCheckItem] = [
+        _data_freshness_item(
+            quote=quote,
+            orderbook=orderbook,
+            recent_trades=recent_trades,
+            warning_set=warning_set,
+            computed_at=now,
+        ),
+        _spread_item(orderbook, computed_at=now),
+        _volatility_item(quote, computed_at=now),
+    ]
 
     has_pending = bool(pending_orders.items)
     items.append(
