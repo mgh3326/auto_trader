@@ -23,6 +23,24 @@ InvestorFlowChipTone = Literal[
     "neutral",
 ]
 InvestorFlowChipState = Literal["fresh", "stale", "missing"]
+ScreenerDataSourceKind = Literal[
+    "upbit_official",
+    "tvscreener_upbit",
+    "mcp_screen_stocks",
+    "naver_reference",
+    "coingecko_reference",
+    "external_reference",
+    "snapshot_cache",
+]
+ScreenerSourceState = Literal[
+    "supported",
+    "cached",
+    "reference_only",
+    "partial",
+    "unavailable",
+    "fallback",
+]
+ScreenerRiskSeverity = Literal["info", "warning", "danger"]
 
 
 class ScreenerInvestorFlowChip(BaseModel):
@@ -50,6 +68,30 @@ class ScreenerPreset(BaseModel):
     market: ScreenerMarket = "kr"
 
 
+class ScreenerSourceContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source: ScreenerDataSourceKind
+    label: str
+    state: ScreenerSourceState
+    fetchedAt: str | None = None
+    detail: str | None = None
+
+
+class ScreenerRiskContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: str
+    label: str
+    severity: ScreenerRiskSeverity = "info"
+    source: ScreenerDataSourceKind | None = None
+
+
+class ScreenerCandidateContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    scoreLabel: str | None = None
+    reasons: list[str] = Field(default_factory=list)
+    source: ScreenerDataSourceKind | None = None
+
+
 class ScreenerResultRow(BaseModel):
     model_config = ConfigDict(extra="forbid")
     rank: int = Field(ge=1)
@@ -69,6 +111,9 @@ class ScreenerResultRow(BaseModel):
     metricValueLabel: str
     investorFlowChip: ScreenerInvestorFlowChip | None = None
     warnings: list[str] = Field(default_factory=list)
+    sourceContext: list[ScreenerSourceContext] = Field(default_factory=list)
+    riskContext: list[ScreenerRiskContext] = Field(default_factory=list)
+    candidateContext: ScreenerCandidateContext | None = None
 
 
 class ScreenerPresetsResponse(BaseModel):
@@ -97,3 +142,4 @@ class ScreenerResultsResponse(BaseModel):
     results: list[ScreenerResultRow]
     warnings: list[str] = Field(default_factory=list)
     freshness: ScreenerFreshness
+    sources: list[ScreenerSourceContext] = Field(default_factory=list)

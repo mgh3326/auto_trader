@@ -24,11 +24,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.invest_screener import (
     ChangeDirection,
+    ScreenerCandidateContext,
     ScreenerFreshness,
     ScreenerInvestorFlowChip,
     ScreenerPresetsResponse,
     ScreenerResultRow,
     ScreenerResultsResponse,
+    ScreenerRiskContext,
+    ScreenerSourceContext,
 )
 from app.schemas.investor_flow import InvestorFlowItem
 from app.services.invest_view_model.investor_flow_service import (
@@ -238,22 +241,26 @@ def _safe_warning(message: Any) -> str:
     text = _clean_text(message)
     if not text:
         return "스크리너 데이터 소스가 일시적으로 응답하지 않습니다."
+    normalized_text = text.lower()
     noisy_markers = (
-        "HTTPSConnectionPool(",
-        "ConnectionError",
-        "ConnectError",
-        "NameResolutionError",
+        "httpsconnectionpool(",
+        "connectionerror",
+        "connecterror",
+        "nameresolutionerror",
         "nodename nor servname",
-        "Could not resolve host",
+        "could not resolve host",
         "getaddrinfo()",
-        "Max retries exceeded",
+        "max retries exceeded",
         "api.finnhub.io",
+        "api.upbit.com",
+        "upbit",
+        "coingecko",
         "scanner.tradingview.com",
         "query1.finance.yahoo.com",
         "query2.finance.yahoo.com",
         "token=",
     )
-    if any(marker in text for marker in noisy_markers):
+    if any(marker in normalized_text for marker in noisy_markers):
         return "외부 시세/스크리너 데이터 소스 연결이 일시적으로 불안정해 일부 결과를 갱신하지 못했습니다."
     if len(text) > _MAX_WARNING_CHARS:
         return text[: _MAX_WARNING_CHARS - 1].rstrip() + "…"
@@ -640,6 +647,10 @@ async def _load_crypto_rows_from_snapshots(
                 else None,
                 "rsi": float(snap.rsi) if snap.rsi is not None else None,
                 "adx": float(snap.adx) if snap.adx is not None else None,
+                "source": "tvscreener_upbit",
+                "computed_at": snap.computed_at.isoformat()
+                if getattr(snap, "computed_at", None) is not None
+                else None,
                 "_screener_snapshot_state": state,
             }
         )
@@ -759,6 +770,28 @@ def _normalize_symbol(row: dict[str, Any], market: str) -> tuple[str, list[str]]
         return symbol, []
 
     return symbol.upper(), []
+
+
+def _normalize_crypto_symbol(row: dict[str, Any]) -> tuple[str, list[str]]:
+    raw_values = [
+        _clean_text(row.get(key))
+        for key in ("symbol", "original_market", "code", "ticker", "market_code")
+    ]
+    for raw in raw_values:
+        if not raw:
+            continue
+        symbol = raw.upper().replace("/", "-").replace("_", "-")
+        if symbol.startswith("KRW-") and len(symbol) > 4:
+            return symbol, []
+        if symbol.endswith("-KRW") and len(symbol) > 4:
+            return f"KRW-{symbol[:-4]}", []
+        if symbol.startswith("UPBIT:"):
+            pair = symbol.split(":", 1)[1]
+            if pair.endswith("KRW") and len(pair) > 3:
+                return f"KRW-{pair[:-3]}", []
+        if symbol.endswith("KRW") and "-" not in symbol and ":" not in symbol:
+            return f"KRW-{symbol[:-3]}", []
+    return "", ["비KRW 가상자산 행은 제외했습니다."]
 
 
 def _coerce_float(value: Any) -> float | None:
@@ -918,6 +951,180 @@ def _metric_value_label(preset_id: str, row: dict[str, Any]) -> tuple[str, list[
         sign = "+" if int(value) > 0 else "−" if int(value) < 0 else ""
         return f"{sign}{abs(int(value)):,}주", []
     return str(value), []
+
+
+def _source_label(source: str) -> str:
+    return {
+        "snapshot_cache": "스냅샷 캐시",
+        "tvscreener_upbit": "TV Screener Upbit",
+        "mcp_screen_stocks": "MCP screen_stocks",
+        "upbit_official": "Upbit 공식 데이터",
+        "coingecko_reference": "CoinGecko 참고 데이터",
+        "naver_reference": "Naver 참고 데이터",
+        "external_reference": "외부 참고 데이터",
+    }.get(source, source)
+
+
+def _source_context(
+    source: str,
+    *,
+    state: str = "supported",
+    fetched_at: str | None = None,
+    detail: str | None = None,
+) -> ScreenerSourceContext:
+    return ScreenerSourceContext(
+        source=source,  # type: ignore[arg-type]
+        label=_source_label(source),
+        state=state,  # type: ignore[arg-type]
+        fetchedAt=fetched_at,
+        detail=detail,
+    )
+
+
+def _dedupe_sources(
+    sources: Sequence[ScreenerSourceContext],
+) -> list[ScreenerSourceContext]:
+    deduped: list[ScreenerSourceContext] = []
+    seen: set[tuple[str, str]] = set()
+    for source in sources:
+        key = (source.source, source.state)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(source)
+    return deduped
+
+
+def _crypto_row_source_context(
+    row: dict[str, Any], *, snapshot_was_checked: bool, raw: dict[str, Any]
+) -> list[ScreenerSourceContext]:
+    sources: list[ScreenerSourceContext] = []
+    fetched_at = _clean_text(row.get("computed_at") or row.get("fetched_at")) or None
+    if snapshot_was_checked:
+        sources.append(
+            _source_context("snapshot_cache", state="cached", fetched_at=fetched_at)
+        )
+    else:
+        sources.append(_source_context("mcp_screen_stocks", state="fallback"))
+
+    row_source = _clean_text(row.get("source")).lower()
+    meta = raw.get("meta") if isinstance(raw.get("meta"), dict) else {}
+    meta_source = _clean_text(
+        meta.get("source") if isinstance(meta, dict) else ""
+    ).lower()
+    if row_source in {"tvscreener", "tvscreener_upbit"} or meta_source in {
+        "tvscreener",
+        "tvscreener_upbit",
+    }:
+        sources.append(_source_context("tvscreener_upbit"))
+    if row.get("market_warning") is not None or row.get("warning") is not None:
+        sources.append(_source_context("upbit_official"))
+    if row.get("market_cap") is not None or row.get("market_cap_rank") is not None:
+        sources.append(_source_context("coingecko_reference", state="reference_only"))
+    return _dedupe_sources(sources)
+
+
+def _screen_response_sources(
+    *, requested_market: str, snapshot_was_checked: bool, raw: dict[str, Any]
+) -> list[ScreenerSourceContext]:
+    if requested_market != "crypto":
+        return []
+    sample_row: dict[str, Any] = {}
+    rows = raw.get("results") or raw.get("stocks") or []
+    if rows:
+        sample_row = rows[0]
+    sources = _crypto_row_source_context(
+        sample_row, snapshot_was_checked=snapshot_was_checked, raw=raw
+    )
+    meta = raw.get("meta") if isinstance(raw.get("meta"), dict) else {}
+    if isinstance(meta, dict) and meta.get("coingecko_cached"):
+        sources.append(_source_context("coingecko_reference", state="reference_only"))
+    return _dedupe_sources(sources)
+
+
+def _crypto_risk_context(row: dict[str, Any]) -> list[ScreenerRiskContext]:
+    risks: list[ScreenerRiskContext] = []
+    if row.get("market_warning") or row.get("warning"):
+        risks.append(
+            ScreenerRiskContext(
+                kind="market_warning",
+                label="Upbit 유의 종목",
+                severity="warning",
+                source="upbit_official",
+            )
+        )
+    if (
+        _coerce_float(row.get("close") or row.get("price") or row.get("current_price"))
+        is None
+    ):
+        risks.append(
+            ScreenerRiskContext(
+                kind="data_unavailable",
+                label="가격 데이터 준비중",
+                severity="warning",
+            )
+        )
+    rsi = _coerce_float(row.get("rsi"))
+    if rsi is not None and rsi <= 35:
+        risks.append(
+            ScreenerRiskContext(
+                kind="low_rsi",
+                label=f"RSI {rsi:.1f} 저점권",
+                severity="info",
+                source="tvscreener_upbit",
+            )
+        )
+    adx = _coerce_float(row.get("adx"))
+    if adx is not None and adx >= 25:
+        risks.append(
+            ScreenerRiskContext(
+                kind="trend_strength",
+                label=f"ADX {adx:.1f} 추세 강도",
+                severity="info",
+                source="tvscreener_upbit",
+            )
+        )
+    return risks
+
+
+def _crypto_candidate_source(row: dict[str, Any]) -> str:
+    row_source = _clean_text(row.get("source")).lower()
+    if row_source in {"tvscreener", "tvscreener_upbit"}:
+        return "tvscreener_upbit"
+    if row_source in {"upbit", "upbit_official"}:
+        return "upbit_official"
+    if row_source:
+        return "external_reference"
+    return "mcp_screen_stocks"
+
+
+def _crypto_candidate_context(
+    row: dict[str, Any], preset_id: str
+) -> ScreenerCandidateContext | None:
+    reasons: list[str] = []
+    score_label: str | None = None
+    if preset_id == "crypto_high_volume":
+        trade_amount = _coerce_float(_metric_raw_value("trade_amount_24h", row))
+        if trade_amount is not None:
+            score_label = f"거래대금 {int(trade_amount):,}"
+            reasons.append("24시간 KRW 거래대금 상위")
+    elif preset_id == "crypto_oversold":
+        rsi = _coerce_float(row.get("rsi"))
+        if rsi is not None:
+            score_label = f"RSI {rsi:.1f}"
+            reasons.append("RSI 저점권 후보")
+    elif preset_id == "crypto_momentum":
+        change_rate = _coerce_float(row.get("change_rate"))
+        if change_rate is not None:
+            score_label = f"{change_rate:+.2f}%"
+            reasons.append("단기 상승 모멘텀 후보")
+    if not reasons:
+        return None
+    return ScreenerCandidateContext(
+        scoreLabel=score_label,
+        reasons=reasons,
+        source=_crypto_candidate_source(row),  # type: ignore[arg-type]
+    )
 
 
 def _format_relative_korean(delta_seconds: int) -> str:
@@ -1150,11 +1357,22 @@ async def build_screener_results(
     investor_flow_chips = await _hydrate_investor_flow_chips(
         db=session, market=requested_market, rows=rows
     )
-
+    response_sources = _screen_response_sources(
+        requested_market=requested_market,
+        snapshot_was_checked=_snapshot_was_checked,
+        raw=raw,
+    )
     results: list[ScreenerResultRow] = []
-    for idx, row in enumerate(rows, start=1):
+    excluded_crypto_rows = 0
+    for row in rows:
         market = _normalize_market(row.get("market") or requested_market)
-        symbol, symbol_warnings = _normalize_symbol(row, market)
+        if market == "crypto":
+            symbol, symbol_warnings = _normalize_crypto_symbol(row)
+            if not symbol:
+                excluded_crypto_rows += 1
+                continue
+        else:
+            symbol, symbol_warnings = _normalize_symbol(row, market)
         market_cap_label, market_cap_warnings = _format_market_cap(row, market)
         change_pct_label, direction = _format_change_pct(row.get("change_rate"))
         _enrich_consecutive_up_days(preset_id, row)
@@ -1162,9 +1380,17 @@ async def build_screener_results(
         relation = resolver.relation(market, symbol)
         is_watched = relation in ("watchlist", "both")
         row_warnings = symbol_warnings + market_cap_warnings + metric_warnings
+        source_context = (
+            _crypto_row_source_context(
+                row, snapshot_was_checked=_snapshot_was_checked, raw=raw
+            )
+            if market == "crypto"
+            else []
+        )
+        response_sources = _dedupe_sources([*response_sources, *source_context])
         results.append(
             ScreenerResultRow(
-                rank=idx,
+                rank=len(results) + 1,
                 symbol=symbol,
                 market=market,  # type: ignore[arg-type]
                 name=_kr_names.get(symbol) or _clean_text(row.get("name")) or symbol,
@@ -1199,8 +1425,19 @@ async def build_screener_results(
                 metricValueLabel=metric_label,
                 investorFlowChip=investor_flow_chips.get(symbol),
                 warnings=row_warnings,
+                sourceContext=source_context,
+                riskContext=_crypto_risk_context(row) if market == "crypto" else [],
+                candidateContext=_crypto_candidate_context(row, preset_id)
+                if market == "crypto"
+                else None,
             )
         )
+
+    if (
+        excluded_crypto_rows
+        and "비KRW 가상자산 행은 제외했습니다." not in upstream_warnings
+    ):
+        upstream_warnings.append("비KRW 가상자산 행은 제외했습니다.")
 
     return ScreenerResultsResponse(
         presetId=preset.id,
@@ -1211,4 +1448,5 @@ async def build_screener_results(
         results=results,
         warnings=upstream_warnings,
         freshness=freshness,
+        sources=response_sources,
     )

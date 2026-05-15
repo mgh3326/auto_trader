@@ -367,6 +367,131 @@ async def test_build_screener_results_uses_fresh_crypto_snapshots_first() -> Non
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_crypto_snapshot_rows_include_source_risk_and_candidate_context() -> None:
+    fake_screening = type(
+        "ScreenerService",
+        (_FakeProductionScreening,),
+        {"__module__": "app.services.screener_service"},
+    )()
+    session = _FakeSession(
+        [
+            _FakeExecuteResult(scalar_rows=[date(2026, 5, 13)]),
+            _FakeExecuteResult(
+                scalar_rows=[
+                    _FakeCryptoSnapshot(
+                        rsi=Decimal("31.5"),
+                        trade_amount_24h=Decimal("234000000000"),
+                    )
+                ]
+            ),
+            _FakeExecuteResult(scalar_rows=[date(2026, 5, 13)]),
+            _FakeExecuteResult(rows=[_coverage_row(latest_count=30)]),
+        ]
+    )
+
+    resp = await build_screener_results(
+        preset_id="crypto_high_volume",
+        screening_service=fake_screening,
+        resolver=_FakeResolver(watched=set()),
+        market="crypto",
+        session=session,
+        now=lambda: datetime(2026, 5, 13, 3, 0, tzinfo=UTC),
+    )
+
+    assert {source.source for source in resp.sources} >= {
+        "snapshot_cache",
+        "tvscreener_upbit",
+    }
+    row = resp.results[0]
+    assert {source.source for source in row.sourceContext} >= {
+        "snapshot_cache",
+        "tvscreener_upbit",
+    }
+    assert any(risk.kind == "low_rsi" for risk in row.riskContext)
+    assert row.candidateContext is not None
+    assert row.candidateContext.reasons
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_crypto_fallback_filters_to_upbit_krw_and_labels_mcp_sources() -> None:
+    fake_screening = MagicMock()
+    fake_screening.list_screening = AsyncMock(
+        return_value={
+            "results": [
+                {
+                    "symbol": "KRW-BTC",
+                    "market": "crypto",
+                    "name": "Bitcoin",
+                    "current_price": 150_000_000,
+                    "change_rate": 2.5,
+                    "trade_amount_24h": 120_000_000_000,
+                    "source": "tvscreener",
+                },
+                {
+                    "symbol": "BTC/USDT",
+                    "market": "crypto",
+                    "name": "Bitcoin/Tether",
+                    "current_price": 100_000,
+                    "change_rate": 1.0,
+                    "trade_amount_24h": 1,
+                },
+                {
+                    "symbol": "XRP/KRW",
+                    "market": "crypto",
+                    "name": "XRP",
+                    "current_price": 3_200,
+                    "change_rate": 3.0,
+                    "trade_amount_24h": 40_000_000_000,
+                    "source": "upbit_official",
+                },
+                {
+                    "symbol": "UPBIT:ETHKRW",
+                    "market": "crypto",
+                    "name": "Ethereum",
+                    "current_price": 4_800_000,
+                    "change_rate": 0.5,
+                    "trade_amount_24h": 50_000_000_000,
+                    "market_cap_rank": 2,
+                },
+            ],
+            "warnings": [
+                "HTTPSConnectionPool(host='API.UPBIT.COM'): TOKEN=synthetic-credential",
+            ],
+            "meta": {"source": "tvscreener", "coingecko_cached": True},
+        }
+    )
+
+    resp = await build_screener_results(
+        preset_id="crypto_high_volume",
+        screening_service=fake_screening,
+        resolver=_FakeResolver(watched=set()),
+        market="crypto",
+    )
+
+    assert [row.symbol for row in resp.results] == ["KRW-BTC", "KRW-XRP", "KRW-ETH"]
+    assert all(row.market == "crypto" for row in resp.results)
+    assert any("비KRW" in warning for warning in resp.warnings)
+    warning_text = " ".join(resp.warnings)
+    assert "api.upbit.com" not in warning_text.lower()
+    assert "token=" not in warning_text.lower()
+    assert {source.source for source in resp.sources} >= {
+        "mcp_screen_stocks",
+        "tvscreener_upbit",
+        "coingecko_reference",
+    }
+    assert {source.source for source in resp.results[0].sourceContext} >= {
+        "mcp_screen_stocks",
+        "tvscreener_upbit",
+    }
+    assert any(
+        source.source == "coingecko_reference" and source.state == "reference_only"
+        for source in resp.results[2].sourceContext
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_build_screener_results_does_not_fallback_when_fresh_crypto_snapshot_has_no_qualifiers() -> (
     None
 ):
