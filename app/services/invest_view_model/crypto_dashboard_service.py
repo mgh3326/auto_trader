@@ -25,12 +25,8 @@ from app.schemas.invest_crypto import (
 )
 from app.services.invest_view_model.relation_resolver import RelationResolver
 
-TickerProvider = Callable[
-    [list[str]], Awaitable[list[dict[str, Any]]] | list[dict[str, Any]]
-]
-OrderbookSpreadProvider = Callable[
-    [list[str]], Awaitable[dict[str, float | None]] | dict[str, float | None]
-]
+TickerProvider = Callable[[list[str]], Awaitable[Any] | Any]
+OrderbookSpreadProvider = Callable[[list[str]], Awaitable[Any] | Any]
 
 
 async def _maybe_await(value):
@@ -75,32 +71,54 @@ def _pending_symbol_variants(symbols: Sequence[str]) -> set[str]:
     return variants
 
 
-async def _default_ticker_provider(markets: list[str]) -> list[dict[str, Any]]:
-    from app.services.brokers.upbit.client import fetch_multiple_tickers
+async def _default_ticker_provider(markets: list[str]):
+    from app.services.upbit_public_read_model import get_default_read_model
 
-    return await fetch_multiple_tickers(markets)
+    read_model = await get_default_read_model()
+    return await read_model.get_tickers(markets)
 
 
-async def _default_orderbook_spread_provider(
-    markets: list[str],
-) -> dict[str, float | None]:
-    from app.services.upbit_orderbook import fetch_multiple_orderbooks
+async def _default_orderbook_spread_provider(markets: list[str]):
+    from app.services.upbit_public_read_model import get_default_read_model
 
-    spreads: dict[str, float | None] = {}
-    orderbooks = await fetch_multiple_orderbooks(markets)
-    for market, book in orderbooks.items():
-        units = list(book.get("orderbook_units") or [])
-        if not units:
-            spreads[str(market).upper()] = None
-            continue
-        best = units[0]
-        ask = _float_or_none(best.get("ask_price"))
-        bid = _float_or_none(best.get("bid_price"))
-        if ask is None or bid is None or bid <= 0:
-            spreads[str(market).upper()] = None
-            continue
-        spreads[str(market).upper()] = ((ask - bid) / bid) * 100
-    return spreads
+    read_model = await get_default_read_model()
+    return await read_model.get_orderbooks(markets)
+
+
+def _normalize_ticker_provider_result(
+    result: Any,
+) -> tuple[dict[str, dict[str, Any]], Any | None]:
+    if hasattr(result, "tickers") and hasattr(result, "meta"):
+        return dict(result.tickers), result.meta
+    return _ticker_map(result or []), None
+
+
+def _normalize_orderbook_provider_result(
+    result: Any,
+) -> tuple[dict[str, float | None], Any | None]:
+    if hasattr(result, "spreadsPct") and hasattr(result, "meta"):
+        return {
+            str(k).upper(): v for k, v in dict(result.spreadsPct).items()
+        }, result.meta
+    return {str(k).upper(): v for k, v in dict(result or {}).items()}, None
+
+
+def _crypto_source_from_upbit_meta(
+    meta: Any, *, fallback_source: str, fallback_label: str, fetched_at: datetime
+) -> CryptoSourceState:
+    if meta is not None:
+        try:
+            from app.services.upbit_public_read_model import to_crypto_source_state
+
+            return to_crypto_source_state(meta)
+        except Exception:  # noqa: BLE001 - fallback keeps dashboard renderable
+            pass
+    return CryptoSourceState(
+        source=fallback_source,
+        state="supported",
+        label=fallback_label,
+        fetchedAt=fetched_at,
+    )
 
 
 async def _load_active_krw_markets(
@@ -192,13 +210,14 @@ async def build_crypto_dashboard(
     if markets:
         provider = ticker_provider or _default_ticker_provider
         try:
-            tickers = _ticker_map(await _maybe_await(provider(markets)))
+            result = await _maybe_await(provider(markets))
+            tickers, ticker_meta = _normalize_ticker_provider_result(result)
             sources.append(
-                CryptoSourceState(
-                    source="upbit_ticker",
-                    state="supported",
-                    label="Upbit ticker",
-                    fetchedAt=now,
+                _crypto_source_from_upbit_meta(
+                    ticker_meta,
+                    fallback_source="upbit_ticker",
+                    fallback_label="Upbit ticker",
+                    fetched_at=now,
                 )
             )
         except Exception:
@@ -215,14 +234,14 @@ async def build_crypto_dashboard(
             orderbook_spread_provider or _default_orderbook_spread_provider
         )
         try:
-            raw_spreads = await _maybe_await(spread_provider(markets[:orderbook_limit]))
-            spreads = {str(k).upper(): v for k, v in dict(raw_spreads).items()}
+            raw_result = await _maybe_await(spread_provider(markets[:orderbook_limit]))
+            spreads, orderbook_meta = _normalize_orderbook_provider_result(raw_result)
             sources.append(
-                CryptoSourceState(
-                    source="upbit_orderbook",
-                    state="supported",
-                    label="Upbit orderbook",
-                    fetchedAt=now,
+                _crypto_source_from_upbit_meta(
+                    orderbook_meta,
+                    fallback_source="upbit_orderbook",
+                    fallback_label="Upbit orderbook",
+                    fetched_at=now,
                 )
             )
         except Exception:
