@@ -15,6 +15,7 @@ const REPORTS_PAYLOAD = {
       riskSummary: "정규장 확인 필요",
       dataFreshness: { accountFeasibility: "확인 불가" },
       coverage: { liquidity: "degraded" },
+      sourcePolicy: [],
       safetyNotes: ["주문 실행이 아닙니다."],
       createdAt: "2026-05-15T00:00:00Z",
       publishedAt: "2026-05-15T00:01:00Z",
@@ -37,6 +38,11 @@ const CANDIDATES_PAYLOAD = {
       actionType: "buy_candidate",
       priority: 10,
       confidence: 0.72,
+      quantity: null,
+      quantityPct: null,
+      notional: null,
+      limitPrice: null,
+      currency: null,
       thesis: "실적 모멘텀",
       riskNotes: ["뉴스 리스크 확인 필요"],
       verification: { accountFeasibility: "확인 불가" },
@@ -88,6 +94,55 @@ test("fetchActionCenterCandidates reads the non-executing candidate queue endpoi
   expect(fetchMock).toHaveBeenCalledWith("/invest/api/action-center/candidates", {
     credentials: "include",
     signal: undefined,
+  });
+});
+
+test("action center API normalizes backend items and snake_case fields", async () => {
+  vi.spyOn(globalThis, "fetch")
+    .mockResolvedValueOnce(new Response(JSON.stringify({ count: 1, items: [{
+      report_uuid: "report-2",
+      report_type: "daily",
+      market: "kr",
+      account_scope: null,
+      created_by_profile: "analyst",
+      status: "published",
+      summary: "요약",
+      risk_summary: null,
+      data_freshness: {},
+      coverage: {},
+      source_policy: ["KIS live authority"],
+      safety_notes: ["주문 실행이 아닙니다."],
+      created_at: "2026-05-15T00:00:00Z",
+      published_at: null,
+      valid_until: null,
+      stages: [{ stage_key: "account", source: "kis", status: "unavailable", freshness_at: null, unavailable_reason: "확인 불가", warnings: [] }],
+      candidates: [],
+    }] }), { status: 200, headers: { "content-type": "application/json" } }))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ count: 1, items: [{
+      candidate_uuid: "cand-2",
+      report_uuid: "report-2",
+      symbol: "005930",
+      market: "kr",
+      side: "buy",
+      action_type: "buy_candidate",
+      priority: 1,
+      thesis: "테스트",
+      risk_notes: ["확인 필요"],
+      verification: {},
+      blocking_reasons: [],
+      approval_status: "awaiting_approval",
+      approval_type: "manual",
+      execution_state: "not_submitted",
+      created_at: "2026-05-15T00:02:00Z",
+    }] }), { status: 200, headers: { "content-type": "application/json" } }));
+
+  await expect(fetchActionCenterReports()).resolves.toMatchObject({
+    reports: [{ reportUuid: "report-2", sourcePolicy: ["KIS live authority"], stageResults: [{ stageKey: "account", unavailableReason: "확인 불가" }] }],
+    unavailableLabel: "확인 불가",
+  });
+  await expect(fetchActionCenterCandidates()).resolves.toMatchObject({
+    candidates: [{ candidateUuid: "cand-2", actionType: "buy_candidate", riskNotes: ["확인 필요"], blockingReasons: [] }],
+    unavailableLabel: "확인 불가",
   });
 });
 
