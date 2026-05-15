@@ -467,6 +467,61 @@ class DomesticMarketDataMixin(MarketDataBase):
 
         return self._build_domestic_daily_frame(rows, n)
 
+    async def inquire_daily_itemchartprice_unclamped(
+        self,
+        code: str,
+        market: str = "J",
+        n: int = 200,
+        adj: bool = True,
+        period: str = "D",
+        end_date: datetime.date | None = None,
+        per_call_days: int = 150,
+    ) -> pd.DataFrame:
+        """Batch-ingest variant of inquire_daily_itemchartprice.
+
+        Bypasses normalize_daily_chart_lookback so callers driving the
+        durable daily candle store / backfill jobs can request horizons
+        longer than the display safety clamp. Identical pagination loop
+        otherwise.
+        """
+        if n < 1:
+            raise ValueError("n must be greater than or equal to 1")
+
+        end = end_date or datetime.date.today()
+        rows: list[dict] = []
+
+        while len(rows) < n:
+            start = end - datetime.timedelta(days=per_call_days)
+            params = {
+                "FID_COND_MRKT_DIV_CODE": market,
+                "FID_INPUT_ISCD": code.zfill(6),
+                "FID_PERIOD_DIV_CODE": period,
+                "FID_ORG_ADJ_PRC": "0" if adj else "1",
+                "FID_INPUT_DATE_1": start.strftime("%Y%m%d"),
+                "FID_INPUT_DATE_2": end.strftime("%Y%m%d"),
+            }
+            js = await self._request_with_token_retry(
+                tr_id=constants.DOMESTIC_DAILY_CHART_TR,
+                url=self._kis_url(constants.DOMESTIC_DAILY_CHART_URL),
+                params=params,
+                api_name="inquire_daily_itemchartprice_unclamped",
+            )
+            chunk = js.get("output2") or js.get("output") or []
+            if not chunk:
+                break
+            _validate_daily_itemchartprice_chunk(chunk)
+            rows.extend(chunk)
+            oldest_str = min(str(c["stck_bsop_date"]) for c in chunk)
+            try:
+                oldest = datetime.datetime.strptime(oldest_str, "%Y%m%d").date()
+            except ValueError as exc:
+                raise RuntimeError(
+                    "Malformed KIS daily chart payload: invalid stck_bsop_date format"
+                ) from exc
+            end = oldest - datetime.timedelta(days=1)
+
+        return self._build_domestic_daily_frame(rows, n)
+
     # ── Intraday / Minute Chart ──
 
     async def inquire_time_dailychartprice(

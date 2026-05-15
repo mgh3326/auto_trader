@@ -1,5 +1,6 @@
 from app.tasks import (
     crypto_pending_order_alert_tasks,
+    daily_candles_tasks,
     daily_scan_tasks,
     execution_ledger,
     intraday_order_review_tasks,
@@ -22,6 +23,7 @@ from app.tasks import (
 
 TASKIQ_TASK_MODULES = (
     crypto_pending_order_alert_tasks,
+    daily_candles_tasks,
     daily_scan_tasks,
     execution_ledger,
     intraday_order_review_tasks,

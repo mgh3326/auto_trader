@@ -10,13 +10,42 @@ import asyncio
 import importlib
 import logging
 import re
-import time
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
-from enum import StrEnum
 from typing import Any
 
 import pandas as pd
+
+from app.services.tvscreener_capabilities import (
+    _CAPABILITY_CACHE_MISS as _CAPABILITY_CACHE_MISS,
+)
+from app.services.tvscreener_capabilities import (
+    _CRYPTO_CAPABILITY_ALIASES as _CRYPTO_CAPABILITY_ALIASES,
+)
+from app.services.tvscreener_capabilities import (
+    _STOCK_CAPABILITY_ALIASES as _STOCK_CAPABILITY_ALIASES,
+)
+from app.services.tvscreener_capabilities import (
+    _STOCK_CAPABILITY_PROBE_LIMIT as _STOCK_CAPABILITY_PROBE_LIMIT,
+)
+from app.services.tvscreener_capabilities import (
+    TvScreenerCapabilitySnapshot as TvScreenerCapabilitySnapshot,
+)
+from app.services.tvscreener_capabilities import (
+    TvScreenerCapabilityState as TvScreenerCapabilityState,
+)
+from app.services.tvscreener_capabilities import (
+    _shared_capability_registry as _shared_capability_registry,
+)
+from app.services.tvscreener_capabilities import (
+    _TvScreenerCapabilityRegistry as _TvScreenerCapabilityRegistry,
+)
+from app.services.tvscreener_retry import (
+    TvScreenerError,
+    TvScreenerMalformedRequestError,
+    TvScreenerRateLimitError,
+    TvScreenerTimeoutError,
+    fetch_tvscreener_with_retry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -126,142 +155,6 @@ def _evaluate_stock_probe_result(
     return TvScreenerCapabilityState.UNKNOWN
 
 
-class TvScreenerError(Exception):
-    """Base exception for TvScreener service errors."""
-
-    pass
-
-
-class TvScreenerRateLimitError(TvScreenerError):
-    """Raised when TradingView API rate limit is exceeded."""
-
-    pass
-
-
-class TvScreenerMalformedRequestError(TvScreenerError):
-    """Raised when TradingView rejects a malformed request."""
-
-    pass
-
-
-class TvScreenerTimeoutError(TvScreenerError):
-    """Raised when a TvScreener request times out."""
-
-    pass
-
-
-class TvScreenerCapabilityState(StrEnum):
-    USABLE = "usable"
-    UNSUPPORTED = "unsupported"
-    UNKNOWN = "unknown"
-
-
-@dataclass(frozen=True)
-class TvScreenerCapabilitySnapshot:
-    screener: str
-    market: str
-    statuses: dict[str, TvScreenerCapabilityState]
-    fields: dict[str, object | None]
-
-    def status(self, capability_name: str) -> TvScreenerCapabilityState:
-        return self.statuses.get(capability_name, TvScreenerCapabilityState.UNKNOWN)
-
-    def field(self, capability_name: str) -> object | None:
-        return self.fields.get(capability_name)
-
-    def is_usable(self, capability_name: str) -> bool:
-        return (
-            self.status(capability_name) is TvScreenerCapabilityState.USABLE
-            and self.field(capability_name) is not None
-        )
-
-
-_STOCK_CAPABILITY_ALIASES: dict[str, tuple[str, ...]] = {
-    "name": ("NAME",),
-    "price": ("PRICE",),
-    "rsi": ("RELATIVE_STRENGTH_INDEX_14",),
-    "adx": ("AVERAGE_DIRECTIONAL_INDEX_14",),
-    "volume": ("VOLUME",),
-    "change_rate": ("CHANGE_PERCENT",),
-    "market_cap": ("MARKET_CAPITALIZATION", "MARKET_CAP_BASIC"),
-    "pe": ("PRICE_TO_EARNINGS_RATIO_TTM", "PRICE_TO_EARNINGS_TTM"),
-    "pbr": ("PRICE_TO_BOOK_FQ", "PRICE_TO_BOOK_MRQ", "PRICE_BOOK_CURRENT"),
-    "dividend_yield": (
-        "DIVIDEND_YIELD_FORWARD",
-        "DIVIDEND_YIELD_RECENT",
-        "DIVIDEND_YIELD_CURRENT",
-    ),
-    "sector": ("SECTOR",),
-}
-
-_CRYPTO_CAPABILITY_ALIASES: dict[str, tuple[str, ...]] = {
-    "name": ("NAME",),
-    "description": ("DESCRIPTION",),
-    "price": ("PRICE",),
-    "rsi": ("RELATIVE_STRENGTH_INDEX_14",),
-    "adx": ("AVERAGE_DIRECTIONAL_INDEX_14",),
-    "value_traded": ("VALUE_TRADED",),
-    "market_cap": ("MARKET_CAP",),
-}
-
-_CAPABILITY_CACHE_MISS = object()
-
-
-class _TvScreenerCapabilityRegistry:
-    def __init__(self) -> None:
-        self._field_cache: dict[tuple[str, str], object | None] = {}
-        self._status_cache: dict[tuple[str, str, str], TvScreenerCapabilityState] = {}
-        self._probe_locks: dict[tuple[str, str, str], asyncio.Lock] = {}
-
-    def get_field(self, screener: str, capability_name: str) -> object:
-        return self._field_cache.get(
-            (screener, capability_name),
-            _CAPABILITY_CACHE_MISS,
-        )
-
-    def set_field(
-        self,
-        screener: str,
-        capability_name: str,
-        field: object | None,
-    ) -> None:
-        self._field_cache[(screener, capability_name)] = field
-
-    def get_status(
-        self,
-        screener: str,
-        market: str,
-        capability_name: str,
-    ) -> TvScreenerCapabilityState | None:
-        return self._status_cache.get((screener, market, capability_name))
-
-    def set_status(
-        self,
-        screener: str,
-        market: str,
-        capability_name: str,
-        status: TvScreenerCapabilityState,
-    ) -> None:
-        self._status_cache[(screener, market, capability_name)] = status
-
-    def get_probe_lock(
-        self,
-        screener: str,
-        market: str,
-        capability_name: str,
-    ) -> asyncio.Lock:
-        cache_key = (screener, market, capability_name)
-        lock = self._probe_locks.get(cache_key)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._probe_locks[cache_key] = lock
-        return lock
-
-
-_shared_capability_registry = _TvScreenerCapabilityRegistry()
-_STOCK_CAPABILITY_PROBE_LIMIT = 3
-
-
 class TvScreenerService:
     """Async wrapper service for tvscreener library with error handling and retry logic.
 
@@ -316,180 +209,19 @@ class TvScreenerService:
         screener_callable: Callable[[], pd.DataFrame],
         operation_name: str = "screener_query",
     ) -> pd.DataFrame:
-        """Execute a tvscreener query with retry logic and exponential backoff.
-
-        Parameters
-        ----------
-        screener_callable : Callable[[], pd.DataFrame]
-            Synchronous callable that returns a pandas DataFrame from tvscreener
-        operation_name : str, optional
-            Name of the operation for logging, by default "screener_query"
-
-        Returns
-        -------
-        pd.DataFrame
-            Results from the tvscreener query
-
-        Raises
-        ------
-        TvScreenerRateLimitError
-            If rate limit is exceeded after all retries
-        TvScreenerMalformedRequestError
-            If request is malformed and retries are exhausted
-        TvScreenerTimeoutError
-            If request times out
-        TvScreenerError
-            For other unexpected errors
-
-        Notes
-        -----
-        - Uses asyncio.to_thread() to wrap synchronous tvscreener calls
-        - Implements exponential backoff: delay = base_delay * (2 ** attempt)
-        - Logs all errors and retry attempts for debugging
-        """
-        for attempt in range(self.max_retries):
-            start_time = time.time()
-            try:
-                logger.debug(
-                    "Executing %s (attempt %d/%d)",
-                    operation_name,
-                    attempt + 1,
-                    self.max_retries,
-                )
-
-                # Execute synchronous tvscreener call in thread pool
-                result = await asyncio.wait_for(
-                    asyncio.to_thread(screener_callable),
-                    timeout=self.timeout,
-                )
-
-                elapsed = time.time() - start_time
-                logger.info(
-                    "%s completed successfully in %.2fs (attempt %d/%d)",
-                    operation_name,
-                    elapsed,
-                    attempt + 1,
-                    self.max_retries,
-                )
-
-                return result
-
-            except TimeoutError as exc:
-                elapsed = time.time() - start_time
-                logger.error(
-                    "%s timed out after %.2fs (attempt %d/%d)",
-                    operation_name,
-                    elapsed,
-                    attempt + 1,
-                    self.max_retries,
-                )
-                if attempt < self.max_retries - 1:
-                    delay = self.base_delay * (2**attempt)
-                    logger.info("Retrying after %.2fs delay...", delay)
-                    await asyncio.sleep(delay)
-                    continue
-                raise TvScreenerTimeoutError(
-                    f"{operation_name} timed out after {self.timeout}s"
-                ) from exc
-
-            except Exception as exc:
-                # Try to identify specific error types from tvscreener
-                exc_type = type(exc).__name__
-                exc_msg = str(exc)
-
-                # Check for rate limiting indicators
-                if (
-                    "malformed" in exc_msg.lower()
-                    or exc_type == "MalformedRequestException"
-                ):
-                    logger.warning(
-                        "%s received malformed request error (attempt %d/%d): %s: %s",
-                        operation_name,
-                        attempt + 1,
-                        self.max_retries,
-                        exc_type,
-                        exc_msg,
-                    )
-                    if attempt < self.max_retries - 1:
-                        delay = self.base_delay * (2**attempt)
-                        logger.info(
-                            "Rate limit suspected, retrying after %.2fs delay...", delay
-                        )
-                        await asyncio.sleep(delay)
-                        continue
-                    raise TvScreenerMalformedRequestError(
-                        f"{operation_name} failed with malformed request: {exc_msg}"
-                    ) from exc
-
-                # Check for explicit rate limit errors
-                if (
-                    "rate limit" in exc_msg.lower()
-                    or "too many requests" in exc_msg.lower()
-                ):
-                    logger.warning(
-                        "%s hit rate limit (attempt %d/%d): %s",
-                        operation_name,
-                        attempt + 1,
-                        self.max_retries,
-                        exc_msg,
-                    )
-                    if attempt < self.max_retries - 1:
-                        delay = self.base_delay * (2**attempt)
-                        logger.info("Retrying after %.2fs delay...", delay)
-                        await asyncio.sleep(delay)
-                        continue
-                    raise TvScreenerRateLimitError(
-                        f"{operation_name} exceeded rate limit: {exc_msg}"
-                    ) from exc
-
-                # Unexpected error - log and raise
-                logger.error(
-                    "%s failed with unexpected error (attempt %d/%d): %s: %s",
-                    operation_name,
-                    attempt + 1,
-                    self.max_retries,
-                    exc_type,
-                    exc_msg,
-                    exc_info=True,
-                )
-                if attempt < self.max_retries - 1:
-                    delay = self.base_delay * (2**attempt)
-                    logger.info("Retrying after %.2fs delay...", delay)
-                    await asyncio.sleep(delay)
-                    continue
-                raise TvScreenerError(
-                    f"{operation_name} failed: {exc_type}: {exc_msg}"
-                ) from exc
-
-        raise TvScreenerError(
-            f"{operation_name} failed after {self.max_retries} attempts"
+        """Execute a tvscreener query with retry logic and exponential backoff."""
+        return await fetch_tvscreener_with_retry(
+            screener_callable,
+            operation_name=operation_name,
+            max_retries=self.max_retries,
+            base_delay=self.base_delay,
+            timeout=self.timeout,
         )
 
     async def discover_fields(
         self, screener_class: type, field_enum: type
     ) -> list[tuple[str, Any]]:
-        """Discover which fields are available for a screener type.
-
-        This utility inspects the field enum to determine which fields are actually
-        available, which is important because some fields (like ADX for crypto)
-        may not be available despite being in the enum.
-
-        Parameters
-        ----------
-        screener_class : type
-            The screener class (e.g., CryptoScreener, StockScreener)
-        field_enum : type
-            The field enum class (e.g., CryptoField, StockField)
-
-        Returns
-        -------
-        list[tuple[str, Any]]
-            List of (field_name, field_value) tuples for available fields
-
-        Notes
-        -----
-        Results are cached to avoid repeated introspection.
-        """
+        """Discover which fields are available for a screener type."""
         cache_key = f"{screener_class.__name__}:{field_enum.__name__}"
 
         # Return cached results if available

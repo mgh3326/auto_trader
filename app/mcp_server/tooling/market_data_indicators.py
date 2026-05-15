@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import logging
+from datetime import UTC, timedelta
+from functools import lru_cache
 from typing import Any, Literal
 
+import exchange_calendars as xcals
 import numpy as np
 import pandas as pd
 
@@ -19,6 +23,8 @@ from app.mcp_server.tooling.shared import (
     to_optional_float as _to_optional_float,
 )
 from app.services.brokers.kis.client import KISClient
+
+logger = logging.getLogger(__name__)
 
 IndicatorType = Literal[
     "sma", "ema", "rsi", "macd", "bollinger", "atr", "pivot", "adx", "stoch_rsi", "obv"
@@ -88,26 +94,10 @@ async def _fetch_ohlcv_for_indicators(
     symbol: str, market_type: str, count: int = 250
 ) -> pd.DataFrame:
     if market_type == "crypto":
-        return await _fetch_ohlcv_crypto_paginated(symbol, count=count, period="day")
+        return await _cache_first_crypto(symbol=symbol, count=count)
     if market_type == "equity_kr":
-        capped_count = min(count, 250)
-        kis = KISClient()
-
-        async def _raw_fetch_kr_daily(n: int) -> pd.DataFrame:
-            return await kis.inquire_daily_itemchartprice(
-                code=symbol, market="J", n=n, period="D"
-            )
-
-        return await kis_ohlcv_cache.get_candles(
-            symbol=symbol,
-            count=capped_count,
-            period="day",
-            raw_fetcher=_raw_fetch_kr_daily,
-        )
-    capped_count = min(count, 250)
-    return await yahoo_service.fetch_ohlcv(
-        ticker=symbol, days=capped_count, period="day"
-    )
+        return await _cache_first_kr(symbol=symbol, count=count)
+    return await _cache_first_us(symbol=symbol, count=count)
 
 
 async def _fetch_ohlcv_for_volume_profile(
@@ -134,6 +124,249 @@ async def _fetch_ohlcv_for_volume_profile(
     return await yahoo_service.fetch_ohlcv(
         ticker=symbol, days=period_days, period="day"
     )
+
+
+# ---------------------------------------------------------------------------
+# Daily candle store helpers (cache-first read path)
+# ---------------------------------------------------------------------------
+
+_OHLCV_COLUMNS = ["date", "open", "high", "low", "close", "volume", "value"]
+
+
+@lru_cache(maxsize=4)
+def _get_calendar(exchange: str):
+    return xcals.get_calendar(exchange)
+
+
+def _latest_exchange_session(exchange: str) -> datetime.date | None:
+    """Return the most-recent past session date for the given exchange.
+
+    `exchange` accepts any calendar name supported by exchange_calendars
+    (e.g., 'XKRX', 'XNYS').
+    """
+    cal = _get_calendar(exchange)
+    now = datetime.datetime.now(datetime.UTC)
+    try:
+        session = cal.minute_to_past_session(pd.Timestamp(now), count=1)
+    except Exception:
+        return None
+    return pd.Timestamp(session).date()
+
+
+def _cache_is_fresh_equity(rows: list, exchange: str) -> bool:
+    """Cache is fresh if the newest row covers the latest closed exchange session."""
+    if not rows:
+        return False
+    latest_session = _latest_exchange_session(exchange)
+    if latest_session is None:
+        return False
+    latest_row = max(r.time_utc for r in rows)
+    return pd.Timestamp(latest_row).date() >= latest_session
+
+
+def _cache_is_fresh_crypto(rows: list) -> bool:
+    """Return True if the newest row's timestamp is within the last 24 hours."""
+    if not rows:
+        return False
+    newest = max(r.time_utc for r in rows)
+    if newest.tzinfo is None:
+        newest = newest.replace(tzinfo=UTC)
+    return datetime.datetime.now(UTC) - newest < timedelta(hours=24)
+
+
+def _rows_to_frame(rows: list) -> pd.DataFrame:
+    """Convert a list of DailyCandleRow to a DataFrame with standard OHLCV columns."""
+    if not rows:
+        return pd.DataFrame(columns=_OHLCV_COLUMNS)
+    records = []
+    for row in rows:
+        ts = row.time_utc
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=UTC)
+        records.append(
+            {
+                "date": ts.date(),
+                "open": row.open,
+                "high": row.high,
+                "low": row.low,
+                "close": row.close,
+                "volume": row.volume,
+                "value": row.value,
+            }
+        )
+    df = pd.DataFrame(records, columns=_OHLCV_COLUMNS)
+    return df.sort_values("date").reset_index(drop=True)
+
+
+async def _cache_first_kr(*, symbol: str, count: int) -> pd.DataFrame:
+    """Read KR daily candles from DB; fall back to KIS and upsert on miss."""
+    from app.core.db import AsyncSessionLocal
+    from app.services.brokers.kis.client import KISClient as _KISClient
+    from app.services.daily_candles.kis_daily_fetcher import fetch_kr_daily_unclamped
+    from app.services.daily_candles.repository import DailyCandlesRepository, MarketKey
+
+    partition = "KRX"
+    async with AsyncSessionLocal() as session:
+        repo = DailyCandlesRepository(session=session)
+        cached = await repo.fetch_recent(
+            market=MarketKey.KR, symbol=symbol, partition=partition, count=count
+        )
+        if len(cached) >= count and _cache_is_fresh_equity(cached, "XKRX"):
+            logger.debug(
+                "daily_candles cache hit market=%s symbol=%s rows=%d",
+                "kr",
+                symbol,
+                len(cached),
+            )
+            return _rows_to_frame(cached)
+
+        try:
+            kis = _KISClient()
+            frame = await fetch_kr_daily_unclamped(kis=kis, code=symbol, n=count)
+        except Exception:
+            logger.exception("KIS fetch failed for KR symbol; returning cached rows")
+            return _rows_to_frame(cached)
+
+        from app.services.daily_candles.converters import frame_to_rows
+
+        repo_rows = frame_to_rows(
+            frame, symbol=symbol, partition=partition, source="kis"
+        )
+        if repo_rows:
+            await repo.upsert_rows(market=MarketKey.KR, rows=repo_rows)
+            await session.commit()
+        return _rows_to_frame(repo_rows) if repo_rows else _rows_to_frame(cached)
+
+
+async def _cache_first_us(*, symbol: str, count: int) -> pd.DataFrame:
+    """Read US daily candles from DB; fall back to KIS (then Yahoo) and upsert on miss."""
+    from app.core.db import AsyncSessionLocal
+    from app.services.brokers.kis.client import KISClient as _KISClient
+    from app.services.daily_candles.kis_daily_fetcher import fetch_us_daily_unclamped
+    from app.services.daily_candles.repository import (
+        DailyCandlesRepository,
+        MarketKey,
+    )
+    from app.services.daily_candles.yahoo_us_fallback import (
+        fetch_us_daily_yahoo_fallback,
+    )
+    from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
+
+    async with AsyncSessionLocal() as session:
+        # Resolve exchange partition; fall back to "NASD" on any error.
+        try:
+            partition = await get_us_exchange_by_symbol(symbol, db=session)
+        except Exception:
+            logger.warning("Could not resolve US exchange; defaulting to NASD")
+            partition = "NASD"
+
+        repo = DailyCandlesRepository(session=session)
+        cached = await repo.fetch_recent(
+            market=MarketKey.US, symbol=symbol, partition=partition, count=count
+        )
+        if len(cached) >= count and _cache_is_fresh_equity(cached, "XNYS"):
+            logger.debug(
+                "daily_candles cache hit market=%s symbol=%s rows=%d",
+                "us",
+                symbol,
+                len(cached),
+            )
+            return _rows_to_frame(cached)
+
+        try:
+            kis = _KISClient()
+            frame = await fetch_us_daily_unclamped(
+                kis=kis, symbol=symbol, exchange_code=partition, n=count
+            )
+        except Exception:
+            logger.exception("KIS fetch failed for US symbol; returning cached rows")
+            return _rows_to_frame(cached)
+
+        from app.services.daily_candles.converters import frame_to_rows
+
+        repo_rows = frame_to_rows(
+            frame, symbol=symbol, partition=partition, source="kis"
+        )
+
+        if not repo_rows:
+            # KIS returned empty — try Yahoo fallback.
+            logger.warning("KIS returned no rows for US symbol; trying Yahoo fallback")
+            try:
+                yahoo_rows = await fetch_us_daily_yahoo_fallback(symbol=symbol, n=count)
+            except Exception:
+                logger.exception("Yahoo fallback failed for US symbol")
+                yahoo_rows = []
+
+            if yahoo_rows:
+                from app.services.daily_candles.repository import DailyCandleRow
+
+                repo_rows = [
+                    DailyCandleRow(
+                        time_utc=r.time_utc,
+                        symbol=r.symbol,
+                        partition=partition,
+                        open=r.open,
+                        high=r.high,
+                        low=r.low,
+                        close=r.close,
+                        adj_close=r.adj_close,
+                        volume=r.volume,
+                        value=r.value,
+                        source="yahoo_fallback",
+                    )
+                    for r in yahoo_rows
+                ]
+
+        if repo_rows:
+            await repo.upsert_rows(market=MarketKey.US, rows=repo_rows)
+            await session.commit()
+        return _rows_to_frame(repo_rows) if repo_rows else _rows_to_frame(cached)
+
+
+async def _cache_first_crypto(*, symbol: str, count: int) -> pd.DataFrame:
+    """Read crypto daily candles from DB; fall back to Upbit and upsert on miss."""
+    from app.core.db import AsyncSessionLocal
+    from app.services.daily_candles.repository import DailyCandlesRepository, MarketKey
+
+    # Derive the market quote currency from the symbol (e.g. "KRW-BTC" → "KRW").
+    if "-" in symbol:
+        partition = symbol.split("-", 1)[0]
+    else:
+        partition = "KRW"
+
+    async with AsyncSessionLocal() as session:
+        repo = DailyCandlesRepository(session=session)
+        cached = await repo.fetch_recent(
+            market=MarketKey.CRYPTO, symbol=symbol, partition=partition, count=count
+        )
+        if len(cached) >= count and _cache_is_fresh_crypto(cached):
+            logger.debug(
+                "daily_candles cache hit market=%s symbol=%s rows=%d",
+                "crypto",
+                symbol,
+                len(cached),
+            )
+            return _rows_to_frame(cached)
+
+        try:
+            frame = await upbit_service.fetch_ohlcv(
+                market=symbol, days=count, period="day"
+            )
+        except Exception:
+            logger.exception(
+                "Upbit fetch failed for crypto symbol; returning cached rows"
+            )
+            return _rows_to_frame(cached)
+
+        from app.services.daily_candles.converters import frame_to_rows
+
+        repo_rows = frame_to_rows(
+            frame, symbol=symbol, partition=partition, source="upbit"
+        )
+        if repo_rows:
+            await repo.upsert_rows(market=MarketKey.CRYPTO, rows=repo_rows)
+            await session.commit()
+        return _rows_to_frame(repo_rows) if repo_rows else _rows_to_frame(cached)
 
 
 def _normalize_crypto_symbol(symbol: str) -> str:
@@ -883,6 +1116,12 @@ __all__ = [
     "_fetch_ohlcv_crypto_paginated",
     "_fetch_ohlcv_for_indicators",
     "_fetch_ohlcv_for_volume_profile",
+    "_cache_is_fresh_equity",
+    "_cache_is_fresh_crypto",
+    "_rows_to_frame",
+    "_cache_first_kr",
+    "_cache_first_us",
+    "_cache_first_crypto",
     "_normalize_crypto_symbol",
     "_apply_realtime_price_to_last_close",
     "_compute_crypto_realtime_rsi_from_frame",
