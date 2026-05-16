@@ -1,5 +1,11 @@
 # `/invest/app/*` retirement inventory
 
+> Follow-up deletion status (2026-05-16): the one-release-cycle soak
+> window has completed. The retired legacy `/invest/app/*` pages,
+> components, and component tests listed below were removed; canonical
+> `/invest/*` routes and legacy redirects remain in `routes.tsx`.
+> `AssetCategoryKey` now lives in `frontend/invest/src/types/filters.ts`.
+
 Companion to `docs/plans/2026-05-08-invest-design-system-migration-implementation-plan.md`.
 
 This Stage 6 doc inventories the legacy `/invest/app/*` mobile-only
@@ -30,7 +36,7 @@ Notes:
   `<DiscoverIssueRedirect>` shim that reads the param and emits the
   canonical path; static redirects use plain `<Navigate to=…>`.
 
-## Legacy components — preserved this PR, candidate for deletion
+## Legacy components — removed after soak
 
 These files are no longer reachable from the live router after the
 redirects ship, but stay in-tree for one release cycle so any
@@ -73,7 +79,7 @@ follow-up will move that type into a shared `types/filters.ts`.
 `pages/desktop/DesktopDiscoverPage` and `pages/mobile/MobileDiscoverPage`
 both consume `describeDirection` and `sortMarketIssues`.
 
-## Legacy tests — preserved this PR, candidate for update/deletion
+## Legacy tests — removed after soak
 
 ```
 frontend/invest/src/__tests__/HomePage.test.tsx           # tests the legacy /app HomePage

@@ -1,7 +1,7 @@
 import type { GroupedHolding } from "../../types/invest";
 import { Pill } from "../../ds";
 import { accountSourceMeta, quoteFreshnessLabel } from "../../desktop/AccountSourceMeta";
-import type { AssetCategoryKey } from "../AssetCategoryFilter";
+import type { AssetCategoryKey } from "../../types/filters";
 
 const COLS = "minmax(0,1.8fr) 100px 120px 140px 100px";
 

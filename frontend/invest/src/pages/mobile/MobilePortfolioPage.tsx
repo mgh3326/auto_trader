@@ -12,7 +12,7 @@ import { SellHistoryPanel } from "../../components/my/SellHistoryPanel";
 import { PORTFOLIO_TABS, usePortfolioTabSearchParam, type PortfolioTab } from "../../components/my/portfolioTabs";
 import { SignalsPanel } from "../../components/signals/SignalsPanel";
 import type { AccountSource, GroupedHolding, HomeSummary, PriceState } from "../../types/invest";
-import type { AssetCategoryKey } from "../../components/AssetCategoryFilter";
+import type { AssetCategoryKey } from "../../types/filters";
 
 function fmtKrw(v: number | null | undefined): string {
   if (v == null) return "—";

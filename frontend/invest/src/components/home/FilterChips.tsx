@@ -1,4 +1,4 @@
-import type { AssetCategoryKey } from "../AssetCategoryFilter";
+import type { AssetCategoryKey } from "../../types/filters";
 
 const OPTIONS: { key: AssetCategoryKey; label: string }[] = [
   { key: "all", label: "전체" },
