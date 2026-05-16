@@ -198,26 +198,28 @@ beforeEach(() => {
   vi.mocked(useActionCenter).mockReturnValue(readyState);
 });
 
-test("renders analyst reports, candidate queue, and unavailable markers", () => {
+test("renders report history with each report's own candidates", () => {
   render(wrap(<DesktopActionCenterPage />));
 
   expect(screen.getByRole("heading", { name: "액션 센터" })).toBeInTheDocument();
+  expect(screen.getByText("리포트별 검토 이력")).toBeInTheDocument();
   expect(screen.getByText("최신 코인 액션 리포트")).toBeInTheDocument();
-  expect(screen.queryByText("삼성전자 후보와 현금 여력 점검")).not.toBeInTheDocument();
+  expect(screen.getByText("삼성전자 후보와 현금 여력 점검")).toBeInTheDocument();
   expect(screen.getByText("KRW-ONDO")).toBeInTheDocument();
-  expect(screen.queryByText("005930")).not.toBeInTheDocument();
+  expect(screen.getByText("005930")).toBeInTheDocument();
   expect(screen.getByText("88.80994671")).toBeInTheDocument();
   expect(screen.getByText("541")).toBeInTheDocument();
-  expect(screen.getByText(/정규장 확인 필요/)).toBeInTheDocument();
+  expect(screen.getByText(/이전 리포트 대비/)).toBeInTheDocument();
+  expect(screen.getByText(/매수\/매도 실행 전 계좌/)).toBeInTheDocument();
 });
 
 test("uses actionable fallbacks instead of 확인 불가 for non-order or percentage-based candidates", () => {
   render(wrap(<DesktopActionCenterPage />));
 
   expect(screen.getByText("KRW-SOL")).toBeInTheDocument();
-  expect(screen.getByText("비중 기준 산정")).toBeInTheDocument();
+  expect(screen.getAllByText("비중 기준 산정").length).toBeGreaterThanOrEqual(1);
   expect(screen.getByText("20.000000%")).toBeInTheDocument();
-  expect(screen.getByText("수량 확인 후 산정")).toBeInTheDocument();
+  expect(screen.getAllByText("수량 확인 후 산정").length).toBeGreaterThanOrEqual(1);
   expect(screen.getByText("추가 확인 필요: 스테이킹 잠금/매도 가능 수량 확인 필요")).toBeInTheDocument();
 
   expect(screen.getByText("KRW-POLYX")).toBeInTheDocument();
@@ -227,15 +229,15 @@ test("uses actionable fallbacks instead of 확인 불가 for non-order or percen
 test("keeps approval controls read-only and separates approval from execution state", () => {
   render(wrap(<DesktopActionCenterPage />));
 
-  expect(screen.getAllByText("승인 상태: awaiting_approval").length).toBeGreaterThanOrEqual(1);
-  expect(screen.getAllByText("실행 상태: not_submitted").length).toBeGreaterThanOrEqual(1);
+  expect(screen.getAllByText("승인 상태: 승인 대기").length).toBeGreaterThanOrEqual(1);
+  expect(screen.getAllByText("실행 상태: 미제출").length).toBeGreaterThanOrEqual(1);
   for (const button of screen.getAllByRole("button", { name: "승인 기록은 수동 처리" })) {
     expect(button).toBeDisabled();
   }
   for (const button of screen.getAllByRole("button", { name: "거절 기록은 수동 처리" })) {
     expect(button).toBeDisabled();
   }
-  expect(screen.getByText(/의사결정\/승인 대기 자료이며 주문 실행이 아닙니다/)).toBeInTheDocument();
+  expect(screen.getByText(/리포트별 판단 근거와 승인 후보를 묶어 보는 읽기 전용 검토 화면/)).toBeInTheDocument();
 });
 
 test("renders loading and error states without hiding non-execution copy", () => {
