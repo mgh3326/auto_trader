@@ -1,9 +1,28 @@
 import { Button, Card } from "../../ds";
 import type { AnalysisCandidate } from "../../types/actionCenter";
-import { StatusBadge } from "./StatusBadge";
+import { StatusBadge, statusText } from "./StatusBadge";
 
 const UNAVAILABLE = "확인 불가";
 const NOT_APPLICABLE = "해당 없음";
+
+const MARKET_LABELS: Record<string, string> = {
+  crypto: "코인",
+  kr: "국내주식",
+  us: "미국주식",
+};
+
+const ACTION_TYPE_LABELS: Record<string, string> = {
+  stop_exit_sell: "손절 매도 검토",
+  watch_partial_trim: "부분 축소 관찰",
+  exclude_new_buy: "신규 매수 제외",
+  buy_candidate: "매수 후보",
+  sell_candidate: "매도 후보",
+};
+
+const SIDE_LABELS: Record<string, string> = {
+  buy: "매수",
+  sell: "매도",
+};
 
 function hasValue(value: unknown): boolean {
   return value != null && value !== "";
@@ -21,6 +40,18 @@ function formatValue(value: unknown, suffix = ""): string {
 function displayValue(value: unknown, suffix = "", fallback = UNAVAILABLE): string {
   if (!hasValue(value)) return fallback;
   return formatValue(value, suffix);
+}
+
+function marketText(market: string): string {
+  return MARKET_LABELS[market] ?? market;
+}
+
+function actionTypeText(actionType: string): string {
+  return ACTION_TYPE_LABELS[actionType] ?? actionType;
+}
+
+function sideText(side: string): string {
+  return SIDE_LABELS[side] ?? side;
 }
 
 function quantityValue(candidate: AnalysisCandidate): string {
@@ -50,10 +81,33 @@ function notionalValue(candidate: AnalysisCandidate): string {
   return "승인 시 산정";
 }
 
+function normalizeUserText(value: unknown): string {
+  if (value == null || value === "") return UNAVAILABLE;
+  return String(value)
+    .replace(/^확인 불가[:：]?\s*/i, "추가 확인 필요: ")
+    .replace(/not applicable: rejected candidate/gi, "거절 후보라 계좌 검증 대상 아님")
+    .replace(/neutral orderbook; not enough to justify chase/gi, "호가 중립 · 추격 매수 근거 부족")
+    .replace(/momentum reversal risk elevated/gi, "모멘텀 반전 위험 증가")
+    .replace(/staking lock\/sellable quantity must be checked/gi, "스테이킹 잠금·매도 가능 수량 확인 필요")
+    .replace(/spread about 0\.075%; limit-only/gi, "스프레드 약 0.075% · 지정가만 사용")
+    .replace(/portfolio concentration risk/gi, "포트폴리오 집중 위험")
+    .replace(/Momentum is strong, but RSI 70\.37 and price is above upper Bollinger\. Exclude chase buy until pullback\./gi, "모멘텀은 강하지만 RSI 70.37 및 볼린저 상단 돌파로 과열 구간입니다. 눌림 전 추격 매수는 제외합니다.")
+    .replace(/Overbought extension risk/gi, "과열 연장 위험")
+    .replace(/Avoid chase buy/gi, "추격 매수 회피")
+    .replace(/RSI 70\.37 and price above upper Bollinger/gi, "RSI 70.37 및 볼린저 상단 돌파")
+    .replace(/Portfolio already crypto-heavy; no need to add beta/gi, "포트폴리오의 코인 비중이 이미 높아 추가 베타 노출 불필요")
+    .replace(/SOL concentration is high across spot\+staking\. Partial spot trim can reduce concentration only after sellable quantity and staking lock status are confirmed\./gi, "SOL 현물·스테이킹 합산 비중이 높습니다. 매도 가능 수량과 스테이킹 잠금 상태를 확인한 뒤에만 현물 일부 축소가 가능합니다.");
+}
+
 function verificationValue(candidate: AnalysisCandidate, key: string): string {
   const raw = candidate.verification?.[key];
-  if (raw == null || raw === "") return UNAVAILABLE;
-  return String(raw).replace(/^확인 불가[:：]\s*/, "추가 확인 필요: ");
+  const normalized = normalizeUserText(raw);
+  if (normalized === UNAVAILABLE && isRejectedOrExcluded(candidate)) return NOT_APPLICABLE;
+  return normalized;
+}
+
+function translatedList(values: string[]): string {
+  return values.map(normalizeUserText).join(" · ");
 }
 
 export function CandidateCard({ candidate }: { candidate: AnalysisCandidate }) {
@@ -63,7 +117,7 @@ export function CandidateCard({ candidate }: { candidate: AnalysisCandidate }) {
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start" }}>
           <div>
             <div style={{ color: "var(--fg-3)", fontSize: 12, fontWeight: 800 }}>
-              {candidate.market} · {candidate.actionType} · priority {candidate.priority}
+              {marketText(candidate.market)} · {actionTypeText(candidate.actionType)} · 우선순위 {candidate.priority}
             </div>
             <h3 style={{ margin: "4px 0 0", fontSize: 22, letterSpacing: "-0.03em" }}>{candidate.symbol}</h3>
           </div>
@@ -74,31 +128,31 @@ export function CandidateCard({ candidate }: { candidate: AnalysisCandidate }) {
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(135px, 1fr))", gap: 8 }}>
-          <Metric label="side" value={candidate.side} />
+          <Metric label="방향" value={sideText(candidate.side)} />
           <Metric label="수량" value={quantityValue(candidate)} />
           <Metric label="비중" value={quantityPctValue(candidate)} />
           <Metric label="지정가" value={limitPriceValue(candidate)} />
           <Metric label="금액" value={notionalValue(candidate)} />
-          <Metric label="confidence" value={displayValue(candidate.confidence)} />
+          <Metric label="신뢰도" value={displayValue(candidate.confidence)} />
         </div>
 
         <div>
-          <div style={{ fontWeight: 900, marginBottom: 6 }}>Thesis</div>
-          <p style={{ margin: 0, color: "var(--fg-2)", fontSize: 13, lineHeight: 1.6, overflowWrap: "anywhere" }}>{candidate.thesis}</p>
+          <div style={{ fontWeight: 900, marginBottom: 6 }}>판단 근거</div>
+          <p style={{ margin: 0, color: "var(--fg-2)", fontSize: 13, lineHeight: 1.6, overflowWrap: "anywhere" }}>{normalizeUserText(candidate.thesis)}</p>
         </div>
 
         <div style={{ display: "grid", gap: 8 }}>
           <div style={{ fontWeight: 900 }}>검증/리스크</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 8 }}>
-            <Metric label="계좌 feasibility" value={verificationValue(candidate, "accountFeasibility")} warn />
+            <Metric label="계좌 검증" value={verificationValue(candidate, "accountFeasibility")} warn />
             <Metric label="시장/유동성" value={verificationValue(candidate, "liquidity")} warn />
             <Metric label="이벤트/뉴스 리스크" value={verificationValue(candidate, "eventNewsRisk")} warn />
           </div>
           {candidate.riskNotes.length > 0 && (
-            <div style={{ color: "var(--warn)", fontSize: 12, lineHeight: 1.6, overflowWrap: "anywhere" }}>{candidate.riskNotes.join(" · ")}</div>
+            <div style={{ color: "var(--warn)", fontSize: 12, lineHeight: 1.6, overflowWrap: "anywhere" }}>{translatedList(candidate.riskNotes)}</div>
           )}
           {candidate.blockingReasons.length > 0 && (
-            <div style={{ color: "var(--danger)", fontSize: 12, lineHeight: 1.6, overflowWrap: "anywhere" }}>{candidate.blockingReasons.join(" · ")}</div>
+            <div style={{ color: "var(--danger)", fontSize: 12, lineHeight: 1.6, overflowWrap: "anywhere" }}>{translatedList(candidate.blockingReasons)}</div>
           )}
         </div>
 
@@ -106,8 +160,8 @@ export function CandidateCard({ candidate }: { candidate: AnalysisCandidate }) {
           <Button type="button" variant="secondary" disabled>승인 기록은 수동 처리</Button>
           <Button type="button" variant="ghost" disabled>거절 기록은 수동 처리</Button>
           <div style={{ color: "var(--fg-3)", fontSize: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <span>승인 상태: {candidate.approvalStatus}</span>
-            <span>실행 상태: {candidate.executionState}</span>
+            <span>승인 상태: {statusText(candidate.approvalStatus)}</span>
+            <span>실행 상태: {statusText(candidate.executionState)}</span>
           </div>
         </div>
       </div>
