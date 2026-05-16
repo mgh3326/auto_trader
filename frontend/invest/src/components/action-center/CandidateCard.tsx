@@ -3,17 +3,57 @@ import type { AnalysisCandidate } from "../../types/actionCenter";
 import { StatusBadge } from "./StatusBadge";
 
 const UNAVAILABLE = "확인 불가";
+const NOT_APPLICABLE = "해당 없음";
 
-function displayValue(value: unknown, suffix = ""): string {
-  if (value == null || value === "") return UNAVAILABLE;
+function hasValue(value: unknown): boolean {
+  return value != null && value !== "";
+}
+
+function isRejectedOrExcluded(candidate: AnalysisCandidate): boolean {
+  return candidate.approvalStatus === "rejected" || candidate.actionType.startsWith("exclude_");
+}
+
+function formatValue(value: unknown, suffix = ""): string {
   if (typeof value === "number") return `${value.toLocaleString("ko-KR")}${suffix}`;
   return `${String(value)}${suffix}`;
+}
+
+function displayValue(value: unknown, suffix = "", fallback = UNAVAILABLE): string {
+  if (!hasValue(value)) return fallback;
+  return formatValue(value, suffix);
+}
+
+function quantityValue(candidate: AnalysisCandidate): string {
+  if (hasValue(candidate.quantity)) return formatValue(candidate.quantity);
+  if (isRejectedOrExcluded(candidate)) return NOT_APPLICABLE;
+  if (hasValue(candidate.quantityPct)) return "비중 기준 산정";
+  return "승인 시 산정";
+}
+
+function quantityPctValue(candidate: AnalysisCandidate): string {
+  if (hasValue(candidate.quantityPct)) return formatValue(candidate.quantityPct, "%");
+  if (hasValue(candidate.quantity)) return "수량 기준";
+  if (isRejectedOrExcluded(candidate)) return NOT_APPLICABLE;
+  return "승인 시 산정";
+}
+
+function limitPriceValue(candidate: AnalysisCandidate): string {
+  if (hasValue(candidate.limitPrice)) return formatValue(candidate.limitPrice);
+  if (isRejectedOrExcluded(candidate)) return NOT_APPLICABLE;
+  return "승인 시 재확인";
+}
+
+function notionalValue(candidate: AnalysisCandidate): string {
+  if (hasValue(candidate.notional)) return formatValue(candidate.notional, candidate.currency ? ` ${candidate.currency}` : "");
+  if (isRejectedOrExcluded(candidate)) return NOT_APPLICABLE;
+  if (hasValue(candidate.quantityPct) || hasValue(candidate.quantity)) return "수량 확인 후 산정";
+  return "승인 시 산정";
 }
 
 function verificationValue(candidate: AnalysisCandidate, key: string): string {
   const raw = candidate.verification?.[key];
   if (raw == null || raw === "") return UNAVAILABLE;
-  return String(raw);
+  return String(raw).replace(/^확인 불가[:：]\s*/, "추가 확인 필요: ");
 }
 
 export function CandidateCard({ candidate }: { candidate: AnalysisCandidate }) {
@@ -35,10 +75,10 @@ export function CandidateCard({ candidate }: { candidate: AnalysisCandidate }) {
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(135px, 1fr))", gap: 8 }}>
           <Metric label="side" value={candidate.side} />
-          <Metric label="수량" value={displayValue(candidate.quantity)} />
-          <Metric label="비중" value={displayValue(candidate.quantityPct, "%")} />
-          <Metric label="지정가" value={displayValue(candidate.limitPrice)} />
-          <Metric label="금액" value={displayValue(candidate.notional, candidate.currency ? ` ${candidate.currency}` : "")} />
+          <Metric label="수량" value={quantityValue(candidate)} />
+          <Metric label="비중" value={quantityPctValue(candidate)} />
+          <Metric label="지정가" value={limitPriceValue(candidate)} />
+          <Metric label="금액" value={notionalValue(candidate)} />
           <Metric label="confidence" value={displayValue(candidate.confidence)} />
         </div>
 

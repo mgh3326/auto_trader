@@ -100,6 +100,62 @@ const readyState = {
           validUntil: null,
         },
         {
+          candidateUuid: "cand-3",
+          reportUuid: "report-2",
+          symbol: "KRW-SOL",
+          market: "crypto",
+          side: "sell",
+          actionType: "watch_partial_trim",
+          quantity: null,
+          quantityPct: "20.000000",
+          limitPrice: "133000",
+          notional: null,
+          currency: "KRW",
+          priority: 4,
+          confidence: 0.58,
+          thesis: "비중 기준 일부 축소 후보입니다.",
+          riskNotes: ["매도 가능 수량 확인 필요"],
+          verification: {
+            accountFeasibility: "확인 불가: 스테이킹 잠금/매도 가능 수량 확인 필요",
+            liquidity: "스프레드 확인",
+            eventNewsRisk: "비중 집중 위험",
+          },
+          blockingReasons: [],
+          approvalStatus: "awaiting_approval",
+          approvalType: "manual",
+          executionState: "not_submitted",
+          createdAt: "2026-05-16T00:03:00Z",
+          validUntil: null,
+        },
+        {
+          candidateUuid: "cand-4",
+          reportUuid: "report-2",
+          symbol: "KRW-POLYX",
+          market: "crypto",
+          side: "buy",
+          actionType: "exclude_new_buy",
+          quantity: null,
+          quantityPct: null,
+          limitPrice: null,
+          notional: null,
+          currency: "KRW",
+          priority: 5,
+          confidence: 0.7,
+          thesis: "추격 매수 제외 후보입니다.",
+          riskNotes: ["과열 위험"],
+          verification: {
+            accountFeasibility: "거절 후보라 계좌 검증 대상 아님",
+            liquidity: "중립",
+            eventNewsRisk: "반전 위험",
+          },
+          blockingReasons: ["추격 매수 회피"],
+          approvalStatus: "rejected",
+          approvalType: "manual",
+          executionState: "not_submitted",
+          createdAt: "2026-05-16T00:04:00Z",
+          validUntil: null,
+        },
+        {
           candidateUuid: "cand-1",
           reportUuid: "report-1",
           symbol: "005930",
@@ -155,13 +211,30 @@ test("renders analyst reports, candidate queue, and unavailable markers", () => 
   expect(screen.getByText(/정규장 확인 필요/)).toBeInTheDocument();
 });
 
+test("uses actionable fallbacks instead of 확인 불가 for non-order or percentage-based candidates", () => {
+  render(wrap(<DesktopActionCenterPage />));
+
+  expect(screen.getByText("KRW-SOL")).toBeInTheDocument();
+  expect(screen.getByText("비중 기준 산정")).toBeInTheDocument();
+  expect(screen.getByText("20.000000%")).toBeInTheDocument();
+  expect(screen.getByText("수량 확인 후 산정")).toBeInTheDocument();
+  expect(screen.getByText("추가 확인 필요: 스테이킹 잠금/매도 가능 수량 확인 필요")).toBeInTheDocument();
+
+  expect(screen.getByText("KRW-POLYX")).toBeInTheDocument();
+  expect(screen.getAllByText("해당 없음").length).toBeGreaterThanOrEqual(4);
+});
+
 test("keeps approval controls read-only and separates approval from execution state", () => {
   render(wrap(<DesktopActionCenterPage />));
 
-  expect(screen.getByText("승인 상태: awaiting_approval")).toBeInTheDocument();
-  expect(screen.getByText("실행 상태: not_submitted")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "승인 기록은 수동 처리" })).toBeDisabled();
-  expect(screen.getByRole("button", { name: "거절 기록은 수동 처리" })).toBeDisabled();
+  expect(screen.getAllByText("승인 상태: awaiting_approval").length).toBeGreaterThanOrEqual(1);
+  expect(screen.getAllByText("실행 상태: not_submitted").length).toBeGreaterThanOrEqual(1);
+  for (const button of screen.getAllByRole("button", { name: "승인 기록은 수동 처리" })) {
+    expect(button).toBeDisabled();
+  }
+  for (const button of screen.getAllByRole("button", { name: "거절 기록은 수동 처리" })) {
+    expect(button).toBeDisabled();
+  }
   expect(screen.getByText(/의사결정\/승인 대기 자료이며 주문 실행이 아닙니다/)).toBeInTheDocument();
 });
 
