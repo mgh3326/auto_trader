@@ -1,5 +1,6 @@
 import { NavLink } from "react-router-dom";
 import { Icon } from "../ds";
+import { ThemeToggle } from "../theme/ThemeToggle";
 
 const LINKS: { to: string; label: string; end?: boolean }[] = [
   { to: "/", label: "홈", end: true },
@@ -120,6 +121,8 @@ export function DesktopHeader() {
           ⌘K
         </span>
       </div>
+
+      <ThemeToggle variant="compact" />
 
       <button
         type="button"
