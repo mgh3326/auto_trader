@@ -6,7 +6,7 @@ const UNAVAILABLE = "확인 불가";
 
 function valueText(value: unknown): string {
   if (value == null || value === "") return UNAVAILABLE;
-  if (Array.isArray(value)) return value.length === 0 ? UNAVAILABLE : value.join(", ");
+  if (Array.isArray(value)) return value.length === 0 ? UNAVAILABLE : value.join(" · ");
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
 }
@@ -17,11 +17,22 @@ function KeyValueGrid({ values }: { values: Record<string, unknown> }) {
     return <div style={{ color: "var(--fg-3)", fontSize: 12 }}>{UNAVAILABLE}</div>;
   }
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8 }}>
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8 }}>
       {entries.map(([key, value]) => (
-        <div key={key} style={{ padding: 10, borderRadius: 12, background: "var(--surface-2)", display: "grid", gap: 3 }}>
-          <div style={{ color: "var(--fg-3)", fontSize: 11 }}>{key}</div>
-          <div style={{ color: valueText(value) === UNAVAILABLE ? "var(--warn)" : "var(--fg-1)", fontWeight: 800, fontSize: 12 }}>
+        <div key={key} style={{ padding: 10, borderRadius: 12, background: "var(--surface-2)", display: "grid", gap: 3, minWidth: 0 }}>
+          <div style={{ color: "var(--fg-3)", fontSize: 11, overflowWrap: "anywhere" }}>{key}</div>
+          <div
+            style={{
+              color: valueText(value) === UNAVAILABLE ? "var(--warn)" : "var(--fg-1)",
+              fontWeight: 800,
+              fontSize: 12,
+              lineHeight: 1.45,
+              maxHeight: 96,
+              overflow: "auto",
+              overflowWrap: "anywhere",
+              whiteSpace: "pre-wrap",
+            }}
+          >
             {valueText(value)}
           </div>
         </div>
@@ -54,7 +65,7 @@ export function DataVerificationPanel({ report }: { report: AnalysisReport }) {
         <div>
           <div style={{ fontWeight: 900, marginBottom: 4 }}>데이터 검증</div>
           <div style={{ color: "var(--fg-3)", fontSize: 12, lineHeight: 1.5 }}>
-            KIS live가 계좌·주문 권한의 기준입니다. Toss/Naver는 교차 검증 참고이며, 확인되지 않은 핵심 값은 {UNAVAILABLE}로 표시합니다.
+            MCP 계좌·주문 데이터가 권위 기준입니다. Toss/Naver는 교차 검증 참고이며, 확인되지 않은 핵심 값은 {UNAVAILABLE}로 표시합니다.
           </div>
         </div>
         <div>

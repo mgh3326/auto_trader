@@ -28,6 +28,16 @@ function StatusCard({ children }: { children: React.ReactNode }) {
 
 export function ActionCenterContent({ compact = false }: { compact?: boolean }) {
   const actionCenter = useActionCenter();
+  const reports = actionCenter.state.status === "ready" ? actionCenter.state.reports.reports : [];
+  const latestReport = reports[0];
+  const visibleReports = latestReport ? [latestReport] : [];
+  const latestReportUuid = latestReport?.reportUuid;
+  const candidates =
+    actionCenter.state.status === "ready"
+      ? latestReportUuid
+        ? actionCenter.state.candidates.candidates.filter((candidate) => candidate.reportUuid === latestReportUuid)
+        : actionCenter.state.candidates.candidates
+      : [];
 
   return (
     <div style={{ padding: compact ? "14px 16px 22px" : 24, display: "grid", gap: 16 }}>
@@ -63,24 +73,24 @@ export function ActionCenterContent({ compact = false }: { compact?: boolean }) 
           <section style={{ display: "grid", gap: 10 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10 }}>
               <h2 style={{ margin: 0, fontSize: 18 }}>최신 애널리스트 리포트</h2>
-              <span style={{ color: "var(--fg-3)", fontSize: 12 }}>{actionCenter.state.reports.reports.length}개</span>
+              <span style={{ color: "var(--fg-3)", fontSize: 12 }}>{visibleReports.length}개</span>
             </div>
-            {actionCenter.state.reports.reports.length === 0 ? (
+            {visibleReports.length === 0 ? (
               <StatusCard>표시할 리포트가 없습니다. 확인 불가</StatusCard>
             ) : (
-              actionCenter.state.reports.reports.map((report) => <AnalystReportCard key={report.reportUuid} report={report} />)
+              visibleReports.map((report) => <AnalystReportCard key={report.reportUuid} report={report} />)
             )}
           </section>
 
           <section style={{ display: "grid", gap: 10 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10 }}>
               <h2 style={{ margin: 0, fontSize: 18 }}>승인 대기 후보</h2>
-              <span style={{ color: "var(--fg-3)", fontSize: 12 }}>{actionCenter.state.candidates.candidates.length}개</span>
+              <span style={{ color: "var(--fg-3)", fontSize: 12 }}>{candidates.length}개</span>
             </div>
-            {actionCenter.state.candidates.candidates.length === 0 ? (
+            {candidates.length === 0 ? (
               <StatusCard>표시할 후보가 없습니다. 확인 불가</StatusCard>
             ) : (
-              actionCenter.state.candidates.candidates.map((candidate) => (
+              candidates.map((candidate) => (
                 <CandidateCard key={candidate.candidateUuid} candidate={candidate} />
               ))
             )}
