@@ -6,6 +6,7 @@ const UNAVAILABLE = "확인 불가";
 
 function displayValue(value: unknown, suffix = ""): string {
   if (value == null || value === "") return UNAVAILABLE;
+  if (typeof value === "number") return `${value.toLocaleString("ko-KR")}${suffix}`;
   return `${String(value)}${suffix}`;
 }
 
@@ -32,7 +33,7 @@ export function CandidateCard({ candidate }: { candidate: AnalysisCandidate }) {
           </div>
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(135px, 1fr))", gap: 8 }}>
           <Metric label="side" value={candidate.side} />
           <Metric label="수량" value={displayValue(candidate.quantity)} />
           <Metric label="비중" value={displayValue(candidate.quantityPct, "%")} />
@@ -43,7 +44,7 @@ export function CandidateCard({ candidate }: { candidate: AnalysisCandidate }) {
 
         <div>
           <div style={{ fontWeight: 900, marginBottom: 6 }}>Thesis</div>
-          <p style={{ margin: 0, color: "var(--fg-2)", fontSize: 13, lineHeight: 1.6 }}>{candidate.thesis}</p>
+          <p style={{ margin: 0, color: "var(--fg-2)", fontSize: 13, lineHeight: 1.6, overflowWrap: "anywhere" }}>{candidate.thesis}</p>
         </div>
 
         <div style={{ display: "grid", gap: 8 }}>
@@ -54,10 +55,10 @@ export function CandidateCard({ candidate }: { candidate: AnalysisCandidate }) {
             <Metric label="이벤트/뉴스 리스크" value={verificationValue(candidate, "eventNewsRisk")} warn />
           </div>
           {candidate.riskNotes.length > 0 && (
-            <div style={{ color: "var(--warn)", fontSize: 12, lineHeight: 1.6 }}>{candidate.riskNotes.join(" · ")}</div>
+            <div style={{ color: "var(--warn)", fontSize: 12, lineHeight: 1.6, overflowWrap: "anywhere" }}>{candidate.riskNotes.join(" · ")}</div>
           )}
           {candidate.blockingReasons.length > 0 && (
-            <div style={{ color: "var(--danger)", fontSize: 12, lineHeight: 1.6 }}>{candidate.blockingReasons.join(" · ")}</div>
+            <div style={{ color: "var(--danger)", fontSize: 12, lineHeight: 1.6, overflowWrap: "anywhere" }}>{candidate.blockingReasons.join(" · ")}</div>
           )}
         </div>
 
@@ -77,9 +78,9 @@ export function CandidateCard({ candidate }: { candidate: AnalysisCandidate }) {
 function Metric({ label, value, warn = false }: { label: string; value: string; warn?: boolean }) {
   const unavailable = value === UNAVAILABLE;
   return (
-    <div style={{ padding: 10, borderRadius: 12, background: "var(--surface-2)", display: "grid", gap: 3 }}>
-      <div style={{ color: "var(--fg-3)", fontSize: 11 }}>{label}</div>
-      <div style={{ color: warn || unavailable ? "var(--warn)" : "var(--fg-1)", fontWeight: 900, fontSize: 12 }}>{value}</div>
+    <div style={{ padding: 10, borderRadius: 12, background: "var(--surface-2)", display: "grid", gap: 3, minWidth: 0 }}>
+      <div style={{ color: "var(--fg-3)", fontSize: 11, overflowWrap: "anywhere" }}>{label}</div>
+      <div style={{ color: warn || unavailable ? "var(--warn)" : "var(--fg-1)", fontWeight: 900, fontSize: 12, overflowWrap: "anywhere" }}>{value}</div>
     </div>
   );
 }
