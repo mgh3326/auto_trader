@@ -10,12 +10,21 @@ Cloudflare Tunnel
 
 HAProxy owns the stable origin ports. The deploy script bootstraps the inactive color, smokes it directly, atomically swaps HAProxy's backend, smokes the public path, then drains the old color. Worker, scheduler, kis-websocket, upbit-websocket remain single-active and continue to use `current`.
 
-## First-time cutover (one-shot)
+## First-time bootstrap (CRITICAL ORDERING)
+
+**The first `scripts/deploy-native.sh` invocation after this PR merges will fail catastrophically if the operator skips the cutover script.** Reason: the new `deploy-native.sh` flow calls `haproxy_swap_to_color`, which expects HAProxy to be already loaded as a launchd job; if HAProxy was never bootstrapped, the SIGUSR2 reload errors out under `set -e` and the deploy bails after `rsync --delete` has already removed the legacy single-port `api`/`mcp` plists from disk. The previously-running `api`/`mcp` processes survive but are orphaned with no plist on disk.
+
+Run the cutover EXACTLY ONCE, before any `deploy-native.sh` invocation that includes ROB-259 changes.
 
 Prerequisites:
 
-- The release containing `ops/native/*` is deployed under `$AUTO_TRADER_BASE/current`.
-- `brew install haproxy` has been run on the production Mac.
+- `brew install haproxy` on the production Mac. Verify with `haproxy -v`.
+- A release containing `ops/native/*` is on disk under `$AUTO_TRADER_BASE/current`. If this is the very first deploy of ROB-259, stage it MANUALLY (do NOT run `deploy-native.sh` yet):
+  1. `cd $AUTO_TRADER_BASE/releases && git clone --local /Users/mgh3326/work/auto_trader <sha>`
+  2. `cd <sha> && git checkout --detach <sha> && uv sync --frozen`
+  3. Build frontends if needed: `(cd frontend/trading-decision && npm ci && npm run build)` and same for `frontend/invest`
+  4. `ln -sfn $AUTO_TRADER_BASE/releases/<sha> $AUTO_TRADER_BASE/current`
+- Confirm `.env.prod.native` either does not set `MCP_HOST` or sets it to `127.0.0.1`. The MCP server default is `0.0.0.0` which still works behind HAProxy but exposes the per-color ports on all interfaces.
 
 Run:
 
@@ -31,6 +40,10 @@ Verify after:
 - `curl http://127.0.0.1:8000/healthz` returns 200 (HAProxy → :8001).
 - `curl -H 'Accept: text/event-stream' http://127.0.0.1:8765/mcp` returns 400 or 401 (HAProxy → :8766).
 - `curl https://trader.robinco.dev/healthz` returns 200.
+
+**Only after this verification is complete is `scripts/deploy-native.sh <sha>` safe to run.**
+
+After cutover, if HAProxy starts but `logs/com.robinco.auto-trader.haproxy.err.log` shows nothing for the first request, check whether `/var/run/syslog` is accessible to the user-domain launchd context (macOS Sequoia hardened this). If syslog access is denied, switch `log /var/run/syslog ...` to `log stderr ...` in `ops/native/haproxy/haproxy.cfg.tmpl` for the affected box.
 
 ## Normal deploy
 

@@ -140,6 +140,13 @@ deploy_bluegreen_flow() {
     drain_color mcp "$mcp_new" || true
     return 1
   fi
+  if [[ "$api_new" != "$mcp_new" ]]; then
+    if ! probe_color_direct "$mcp_new"; then
+      drain_color api "$api_new" || true
+      drain_color mcp "$mcp_new" || true
+      return 1
+    fi
+  fi
 
   if ! haproxy_swap_to_color api "$api_new"; then
     set_active_color api "$api_active"
