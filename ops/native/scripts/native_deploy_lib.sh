@@ -152,6 +152,68 @@ probe_public_stable() {
   return 1
 }
 
+# capture_bluegreen_state
+# Print the pre-deploy api/mcp colors and color-symlink targets as four
+# space-separated fields on a single line:
+#   <api_color> <mcp_color> <blue_target_or_-> <green_target_or_->
+# Missing color symlinks are reported as `-`.
+capture_bluegreen_state() {
+  local api mcp blue green
+  api="$(detect_active_color api)"
+  mcp="$(detect_active_color mcp)"
+  blue="$(readlink "$AUTO_TRADER_BASE/current-blue" 2>/dev/null || true)"
+  green="$(readlink "$AUTO_TRADER_BASE/current-green" 2>/dev/null || true)"
+  printf '%s %s %s %s\n' "$api" "$mcp" "${blue:--}" "${green:--}"
+}
+
+# rollback_bluegreen_post_deploy <api_pre> <mcp_pre> <blue_pre> <green_pre>
+# Restore api/mcp state files, color symlinks, color launchd jobs, and HAProxy
+# config to the snapshot captured before deploy_bluegreen_flow succeeded.
+# Use `-` for blue_pre/green_pre to indicate "was not a symlink".
+#
+# Best-effort: each step continues on failure. The caller (deploy-native.sh
+# rollback) logs warnings; manual intervention may still be needed if launchd
+# refuses to bootstrap.
+rollback_bluegreen_post_deploy() {
+  local api_pre="$1" mcp_pre="$2" blue_pre="$3" green_pre="$4"
+  _bg_validate_color "$api_pre" || return $?
+  _bg_validate_color "$mcp_pre" || return $?
+
+  local api_cur mcp_cur
+  api_cur="$(detect_active_color api)"
+  mcp_cur="$(detect_active_color mcp)"
+  echo "rollback_bluegreen_post_deploy: restoring api $api_cur->$api_pre mcp $mcp_cur->$mcp_pre" >&2
+
+  # 1. State files (atomic via mktemp+mv inside set_active_color)
+  set_active_color api "$api_pre" || true
+  set_active_color mcp "$mcp_pre" || true
+
+  # 2. Color symlinks (only if we captured a real target)
+  if [[ "$blue_pre" != "-" && -n "$blue_pre" ]]; then
+    ln -sfn "$blue_pre" "$AUTO_TRADER_BASE/current-blue"
+  fi
+  if [[ "$green_pre" != "-" && -n "$green_pre" ]]; then
+    ln -sfn "$green_pre" "$AUTO_TRADER_BASE/current-green"
+  fi
+
+  # 3. Launchd jobs — re-bootstrap pre-active color, drain current-active.
+  if [[ "$api_pre" != "$api_cur" ]]; then
+    bootstrap_color api "$api_pre" || \
+      echo "warning: failed to re-bootstrap api-$api_pre; manual launchctl bootstrap needed" >&2
+    drain_color api "$api_cur" || true
+  fi
+  if [[ "$mcp_pre" != "$mcp_cur" ]]; then
+    bootstrap_color mcp "$mcp_pre" || \
+      echo "warning: failed to re-bootstrap mcp-$mcp_pre; manual launchctl bootstrap needed" >&2
+    drain_color mcp "$mcp_cur" || true
+  fi
+
+  # 4. HAProxy live cfg + reload (uses restored state files)
+  AUTO_TRADER_HAPROXY_TEMPLATE="$AUTO_TRADER_BASE/scripts/haproxy/haproxy.cfg.tmpl" \
+    bash "$AUTO_TRADER_BASE/scripts/haproxy_switch.sh" || \
+    echo "warning: post-rollback haproxy_switch failed; verify $AUTO_TRADER_BASE/shared/haproxy/haproxy.cfg manually" >&2
+}
+
 # deploy_bluegreen_flow <release_path>
 deploy_bluegreen_flow() {
   local release="$1"

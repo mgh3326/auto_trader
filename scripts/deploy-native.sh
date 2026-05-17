@@ -51,6 +51,16 @@ SINGLE_ACTIVE_LABELS=(
 NEW_RELEASE="$RELEASES/$SHA"
 PREVIOUS_RELEASE="$(readlink "$CURRENT" 2>/dev/null || true)"
 SWITCHED=0
+# Snapshot of the api/mcp blue/green state captured BEFORE deploy_bluegreen_flow.
+# Set to 1 once deploy_bluegreen_flow has committed (state files + HAProxy live
+# cfg now point at the new color). The rollback handler uses this to decide
+# whether it also needs to roll back the api/mcp half (color state, color
+# symlinks, color launchd jobs, HAProxy cfg).
+BLUEGREEN_COMMITTED=0
+API_PRE_COLOR=""
+MCP_PRE_COLOR=""
+BLUE_PRE_TARGET=""
+GREEN_PRE_TARGET=""
 
 log() {
   printf '[%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*"
@@ -209,6 +219,23 @@ rollback() {
   local exit_code=$?
   echo "Deploy failed with exit code $exit_code" >&2
 
+  # ROB-259 review: when deploy_bluegreen_flow committed but a later step
+  # (restart_single_active_services, run_healthcheck) failed, the api/mcp
+  # half is now on the new release while worker/scheduler/websocket are
+  # still on PREVIOUS_RELEASE. Roll back api/mcp first so the whole system
+  # ends up on the previous release together.
+  if (( BLUEGREEN_COMMITTED == 1 )); then
+    if declare -F rollback_bluegreen_post_deploy >/dev/null 2>&1; then
+      echo "Rolling back api/mcp blue/green to api=$API_PRE_COLOR mcp=$MCP_PRE_COLOR" >&2
+      rollback_bluegreen_post_deploy \
+        "$API_PRE_COLOR" "$MCP_PRE_COLOR" \
+        "${BLUE_PRE_TARGET:--}" "${GREEN_PRE_TARGET:--}" || \
+        echo "warning: api/mcp blue/green rollback reported errors; verify manually" >&2
+    else
+      echo "warning: rollback_bluegreen_post_deploy not loaded; api/mcp not rolled back" >&2
+    fi
+  fi
+
   if [[ "$SWITCHED" == "1" && -n "${PREVIOUS_RELEASE:-}" && -d "$PREVIOUS_RELEASE" ]]; then
     echo "Rolling back current symlink to: $PREVIOUS_RELEASE" >&2
     ln -sfn "$PREVIOUS_RELEASE" "$CURRENT"
@@ -283,11 +310,19 @@ log "Preflight: verifying HAProxy baseline from previous cutover"
 source "$NEW_RELEASE/ops/native/scripts/native_deploy_lib.sh"
 require_haproxy_baseline
 
+log "Capturing pre-deploy api/mcp blue/green state for rollback"
+read -r API_PRE_COLOR MCP_PRE_COLOR BLUE_PRE_TARGET GREEN_PRE_TARGET <<<"$(capture_bluegreen_state)"
+log "pre-deploy: api=$API_PRE_COLOR mcp=$MCP_PRE_COLOR blue=$BLUE_PRE_TARGET green=$GREEN_PRE_TARGET"
+
 log "Syncing release ops into base"
 sync_release_ops_to_base
 
 log "Running blue/green deploy for api + mcp"
 deploy_bluegreen_flow "$NEW_RELEASE"
+# deploy_bluegreen_flow only returns success after state files, HAProxy cfg,
+# new-color bootstrap, and public smoke all succeeded. From here on, any
+# failure must also roll back the api/mcp half via rollback_bluegreen_post_deploy.
+BLUEGREEN_COMMITTED=1
 
 log "Switching current symlink (worker/scheduler/websockets)"
 ln -sfn "$NEW_RELEASE" "$CURRENT"

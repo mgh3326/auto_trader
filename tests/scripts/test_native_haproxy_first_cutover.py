@@ -68,11 +68,17 @@ def test_main_invokes_required_steps_in_order() -> None:
         "cleanup_legacy_backup",
     ]
     indices = [_first_index_of_call(lines, step) for step in required_order]
-    missing = [step for step, i in zip(required_order, indices) if i is None]
+    missing = [
+        step for step, i in zip(required_order, indices, strict=True) if i is None
+    ]
     assert not missing, f"main() is missing required steps: {missing}"
     # Monotonically increasing
     for prev_step, prev_i, step, i in zip(
-        required_order, indices, required_order[1:], indices[1:]
+        required_order,
+        indices,
+        required_order[1:],
+        indices[1:],
+        strict=False,
     ):
         assert prev_i is not None and i is not None
         assert prev_i < i, (
@@ -253,8 +259,9 @@ def test_restore_legacy_or_fail_reinstalls_and_bootstraps(tmp_path: Path) -> Non
         "# Trip the trap by running false in a subshell that returns 7\n"
         "( exit 7 ) || restore_legacy_or_fail || true\n"
     )
-    proc = _bash_eval(snippet, env)
-    # restore_legacy_or_fail calls exit, so the outer || true catches it.
+    # restore_legacy_or_fail calls exit, so the outer || true catches it; we
+    # don't inspect the proc directly — we verify the side effects.
+    _bash_eval(snippet, env)
     log = launchctl_log.read_text()
     assert "bootstrap" in log
     assert "com.robinco.auto-trader.api" in log

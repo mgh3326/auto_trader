@@ -236,9 +236,7 @@ def test_deploy_rolls_back_api_state_on_api_swap_failure(tmp_path: Path) -> None
         "exit 1\n"
     )
     (base / "scripts" / "haproxy_switch.sh").chmod(0o755)
-    proc = _run_bash(
-        f'deploy_bluegreen_flow "{base}/releases/sha-new"', base, tmp_path
-    )
+    proc = _run_bash(f'deploy_bluegreen_flow "{base}/releases/sha-new"', base, tmp_path)
     assert proc.returncode != 0
     assert (base / "shared" / "api-active-color").read_text().strip() == "blue"
     assert (base / "shared" / "mcp-active-color").read_text().strip() == "blue"
@@ -273,9 +271,7 @@ def test_deploy_rolls_back_both_states_on_mcp_swap_failure(tmp_path: Path) -> No
         "exit 0\n"
     )
     (base / "scripts" / "haproxy_switch.sh").chmod(0o755)
-    proc = _run_bash(
-        f'deploy_bluegreen_flow "{base}/releases/sha-new"', base, tmp_path
-    )
+    proc = _run_bash(f'deploy_bluegreen_flow "{base}/releases/sha-new"', base, tmp_path)
     assert proc.returncode != 0, proc.stdout
     # Both state files must be back to blue
     assert (base / "shared" / "api-active-color").read_text().strip() == "blue"
