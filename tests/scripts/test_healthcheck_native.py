@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import subprocess
-import textwrap
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -42,10 +41,10 @@ def _build_curl_stub(tmp_path: Path, port_to_status: dict[int, int]) -> Path:
         lines += [
             f'  *127.0.0.1:{port}*)',
             f'    if [[ "$capture_status" == "1" ]]; then echo "{status}"; exit 0;',
-            f'    elif [[ "$fsS" == "1" ]]; then',
+            '    elif [[ "$fsS" == "1" ]]; then',
             f'      if [[ "{status}" == "200" ]]; then exit 0; else exit 22; fi',
-            f'    else exit 0; fi',
-            f'    ;;',
+            '    else exit 0; fi',
+            '    ;;',
         ]
     lines += ['  *) echo "no stub for $url" >&2; exit 6 ;;', 'esac']
     stub.write_text("\n".join(lines) + "\n")
@@ -93,7 +92,7 @@ def test_direct_rejects_invalid_color(tmp_path: Path) -> None:
     bin_dir = _build_curl_stub(tmp_path, {})
     env = _common_env(tmp_path, bin_dir)
     proc = subprocess.run(["bash", str(HC), "--direct", "purple"], check=False, capture_output=True, text=True, env=env)
-    assert proc.returncode != 0
+    assert proc.returncode == 64, proc.stderr
     assert "invalid color" in proc.stderr.lower() or "purple" in proc.stderr.lower()
 
 
@@ -101,7 +100,7 @@ def test_unknown_arg_rejected(tmp_path: Path) -> None:
     bin_dir = _build_curl_stub(tmp_path, {})
     env = _common_env(tmp_path, bin_dir)
     proc = subprocess.run(["bash", str(HC), "--bogus"], check=False, capture_output=True, text=True, env=env)
-    assert proc.returncode != 0
+    assert proc.returncode == 64, proc.stderr
 
 
 def test_default_mode_fails_when_api_down(tmp_path: Path) -> None:
@@ -116,3 +115,11 @@ def test_default_mode_fails_when_mcp_returns_unexpected(tmp_path: Path) -> None:
     env = _common_env(tmp_path, bin_dir)
     proc = subprocess.run(["bash", str(HC)], check=False, capture_output=True, text=True, env=env)
     assert proc.returncode != 0
+
+
+def test_direct_without_color_exits_64(tmp_path: Path) -> None:
+    bin_dir = _build_curl_stub(tmp_path, {})
+    env = _common_env(tmp_path, bin_dir)
+    proc = subprocess.run(["bash", str(HC), "--direct"], check=False, capture_output=True, text=True, env=env)
+    assert proc.returncode == 64, proc.stderr
+    assert "blue" in proc.stderr.lower() and "green" in proc.stderr.lower()

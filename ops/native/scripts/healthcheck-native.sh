@@ -19,8 +19,13 @@ while (( $# > 0 )); do
   case "$1" in
     --direct)
       MODE="direct"
-      COLOR="${2:?--direct requires color}"
-      shift 2
+      shift
+      COLOR="${1:-}"
+      if [[ -z "$COLOR" ]]; then
+        echo "--direct requires color (blue|green)" >&2
+        exit 64
+      fi
+      shift
       ;;
     *)
       echo "unknown arg: $1" >&2
