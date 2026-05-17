@@ -6,8 +6,6 @@ import os
 import subprocess
 from pathlib import Path
 
-import pytest
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SWITCH = REPO_ROOT / "ops" / "native" / "scripts" / "haproxy_switch.sh"
 TEMPLATE = REPO_ROOT / "ops" / "native" / "haproxy" / "haproxy.cfg.tmpl"
@@ -64,3 +62,35 @@ def test_switch_rolls_back_on_validation_failure(tmp_path: Path) -> None:
     proc = _run({}, base)
     assert proc.returncode != 0
     assert live.read_text() == "KEEP-ME\n"
+
+
+def test_switch_rejects_unknown_reload_mode(tmp_path: Path) -> None:
+    base = _setup_base(tmp_path)
+    proc = _run({"AUTO_TRADER_HAPROXY_RELOAD": "bogus"}, base)
+    assert proc.returncode == 64
+    assert "unknown AUTO_TRADER_HAPROXY_RELOAD" in proc.stderr
+
+
+def test_switch_launchctl_mode_sends_sigusr2(tmp_path: Path) -> None:
+    base = _setup_base(tmp_path)
+    # Build a launchctl stub that records its argv to a file
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "launchctl"
+    log = tmp_path / "launchctl.log"
+    stub.write_text(f'#!/usr/bin/env bash\necho "$@" >>"{log}"\nexit 0\n')
+    stub.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "AUTO_TRADER_BASE": str(base),
+        "AUTO_TRADER_HAPROXY_TEMPLATE": str(TEMPLATE),
+        "AUTO_TRADER_HAPROXY_RELOAD": "launchctl",
+        "AUTO_TRADER_HAPROXY_LABEL": "test.label",
+    }
+    proc = subprocess.run(["bash", str(SWITCH)], check=False, capture_output=True, text=True, env=env)
+    assert proc.returncode == 0, proc.stderr
+    # launchctl was invoked with the SIGUSR2 + gui/<uid>/<label> args
+    recorded = log.read_text()
+    assert "kill SIGUSR2" in recorded
+    assert "test.label" in recorded
