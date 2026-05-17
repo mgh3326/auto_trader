@@ -7,7 +7,6 @@ Apple Silicon Homebrew layouts.
 
 from __future__ import annotations
 
-import os
 import subprocess
 from pathlib import Path
 
