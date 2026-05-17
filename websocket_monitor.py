@@ -34,7 +34,7 @@ from app.services.fill_notification import (
     normalize_kis_fill,
     normalize_upbit_fill,
 )
-from app.services.kis_websocket import KISExecutionWebSocket
+from app.services.kis_websocket import KISAppKeyInUseError, KISExecutionWebSocket
 from app.services.openclaw_client import OpenClawClient
 from app.services.upbit_websocket import UpbitMyOrderWebSocket
 
@@ -46,6 +46,7 @@ DEFAULT_HEARTBEAT_PATH = "/tmp/websocket_monitor_heartbeat.json"
 DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 5.0
 DEFAULT_HEALTH_LOG_INTERVAL_SECONDS = 300.0
 DEFAULT_RECONNECT_DELAY_SECONDS = 5.0
+DEFAULT_KIS_APPKEY_IN_USE_BACKOFF_SECONDS = 1800.0
 
 
 class UnifiedWebSocketMonitor:
@@ -97,6 +98,12 @@ class UnifiedWebSocketMonitor:
             os.environ.get(
                 "WS_MONITOR_RECONNECT_DELAY_SECONDS",
                 str(DEFAULT_RECONNECT_DELAY_SECONDS),
+            )
+        )
+        self._kis_appkey_in_use_backoff_seconds = float(
+            os.environ.get(
+                "WS_MONITOR_KIS_APPKEY_IN_USE_BACKOFF_SECONDS",
+                str(DEFAULT_KIS_APPKEY_IN_USE_BACKOFF_SECONDS),
             )
         )
         self._last_heartbeat_at = 0.0
@@ -342,13 +349,17 @@ class UnifiedWebSocketMonitor:
             or event.get("excg_cd")
             or ("upbit_krw" if broker == "upbit" else "krx")
         )
-        broker_order_id = str(order.order_id or correlation_id or event.get("order_id") or "")
+        broker_order_id = str(
+            order.order_id or correlation_id or event.get("order_id") or ""
+        )
         if not broker_order_id:
             broker_order_id = f"websocket-{self._ledger_fill_seq(event, order)}"
 
         fill = ExecutionLedgerUpsert(
             broker=broker,  # type: ignore[arg-type]
-            account_mode="mock" if broker == "kis" and settings.kis_ws_is_mock else "live",
+            account_mode="mock"
+            if broker == "kis" and settings.kis_ws_is_mock
+            else "live",
             venue=venue,
             instrument_type=self._ledger_instrument_type(order),  # type: ignore[arg-type]
             symbol=self._ledger_symbol(order),
@@ -358,7 +369,9 @@ class UnifiedWebSocketMonitor:
             fill_seq=self._ledger_fill_seq(event, order),
             filled_qty=Decimal(str(order.filled_qty)),
             filled_price=Decimal(str(order.filled_price)),
-            filled_notional=Decimal(str(order.filled_amount)) if order.filled_amount else None,
+            filled_notional=Decimal(str(order.filled_amount))
+            if order.filled_amount
+            else None,
             fee_amount=None,
             fee_currency=currency,
             filled_at=order.filled_at,  # type: ignore[arg-type]
@@ -509,6 +522,20 @@ class UnifiedWebSocketMonitor:
                 else:
                     logger.info("KIS WebSocket exiting (stop signal)")
                     break
+            except KISAppKeyInUseError as e:
+                logger.error(
+                    "KIS WebSocket appkey is already in use; keeping this single "
+                    "monitor alive but pausing reconnects for %.1fs to avoid "
+                    "approval-key churn: %s",
+                    self._kis_appkey_in_use_backoff_seconds,
+                    e,
+                )
+                if self.is_running:
+                    self._fold_kis_socket_stats(self.kis_ws)
+                    self.kis_ws = None
+                    await asyncio.sleep(self._kis_appkey_in_use_backoff_seconds)
+                else:
+                    raise
             except Exception as e:
                 logger.error("KIS WebSocket error: %s", e, exc_info=True)
                 if self.is_running:

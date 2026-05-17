@@ -8,6 +8,7 @@ from app.services.kis_websocket import (
     DOMESTIC_EXECUTION_TR_REAL,
     OVERSEAS_EXECUTION_TR_MOCK,
     OVERSEAS_EXECUTION_TR_REAL,
+    KISAppKeyInUseError,
     KISExecutionWebSocket,
     KISSubscriptionAckError,
 )
@@ -234,7 +235,7 @@ class TestKISWebSocketClient:
         assert close_mock.await_count >= 1
 
     @pytest.mark.asyncio
-    async def test_reissues_approval_key_on_already_in_use_msg_code(
+    async def test_already_in_use_msg_code_fails_fast_without_reissuing_key(
         self, execution_callback
     ):
         client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=False)
@@ -242,20 +243,15 @@ class TestKISWebSocketClient:
         client.reconnect_delay = 0
         client.max_reconnect_attempts = 3
         client.approval_key = "cached-key"
-        called = False
 
-        async def connect_fail_then_success() -> None:
-            nonlocal called
-            if not called:
-                called = True
-                raise KISSubscriptionAckError(
-                    tr_id=DOMESTIC_EXECUTION_TR_REAL,
-                    rt_cd="9",
-                    msg_cd="OPSP8996",
-                    msg1="ALREADY IN USE appkey",
-                )
-            client.is_connected = True
-
+        connect_mock = AsyncMock(
+            side_effect=KISSubscriptionAckError(
+                tr_id=DOMESTIC_EXECUTION_TR_REAL,
+                rt_cd="9",
+                msg_cd="OPSP8996",
+                msg1="ALREADY IN USE appkey",
+            )
+        )
         reissue_mock = AsyncMock(return_value="fresh-key-2")
         cache_mock = AsyncMock()
         close_mock = AsyncMock()
@@ -273,11 +269,7 @@ class TestKISWebSocketClient:
                     return_value="ws://ops.koreainvestment.com:21000/tryitout"
                 ),
             ),
-            patch.object(
-                client,
-                "_connect_and_subscribe_internal",
-                new=AsyncMock(side_effect=connect_fail_then_success),
-            ),
+            patch.object(client, "_connect_and_subscribe_internal", connect_mock),
             patch.object(client, "_close_websocket_best_effort", close_mock),
             patch(
                 "app.services.kis_websocket_internal.approval_keys._issue_approval_key",
@@ -288,13 +280,15 @@ class TestKISWebSocketClient:
                 cache_mock,
             ),
         ):
-            await client.connect_and_subscribe()
+            with pytest.raises(KISAppKeyInUseError, match="already in use"):
+                await client.connect_and_subscribe()
 
-        assert client.is_connected is True
-        assert client.approval_key == "fresh-key-2"
-        reissue_mock.assert_awaited_once()
-        cache_mock.assert_awaited_once_with("fresh-key-2")
-        assert close_mock.await_count >= 1
+        assert client.is_connected is False
+        assert client.approval_key == "cached-key"
+        connect_mock.assert_awaited_once()
+        reissue_mock.assert_not_awaited()
+        cache_mock.assert_not_awaited()
+        close_mock.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_connect_and_subscribe_raises_after_max_attempts(
