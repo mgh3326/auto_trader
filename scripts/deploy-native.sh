@@ -274,12 +274,19 @@ log "Running Alembic migrations"
 # destructive downgrades into this path without a separate data rollback runbook.
 ENV_FILE="$SHARED_ENV" uv run alembic upgrade head
 
+log "Preflight: verifying HAProxy baseline from previous cutover"
+# Source the lib from the release dir so the preflight is checked BEFORE the
+# rsync --delete in sync_release_ops_to_base. If this script fails preflight,
+# legacy plists in $PLIST_DIR are untouched and the operator can recover by
+# running scripts/native_haproxy_first_cutover.sh.
+# shellcheck source=/dev/null
+source "$NEW_RELEASE/ops/native/scripts/native_deploy_lib.sh"
+require_haproxy_baseline
+
 log "Syncing release ops into base"
 sync_release_ops_to_base
 
 log "Running blue/green deploy for api + mcp"
-# shellcheck source=/dev/null
-source "$BASE/scripts/native_deploy_lib.sh"
 deploy_bluegreen_flow "$NEW_RELEASE"
 
 log "Switching current symlink (worker/scheduler/websockets)"

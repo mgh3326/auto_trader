@@ -26,7 +26,9 @@ def _stub_dir(tmp_path: Path, *, with_haproxy: bool) -> Path:
     return bin_dir
 
 
-def _run(env_extra: dict[str, str], tmp_path: Path, with_haproxy: bool) -> subprocess.CompletedProcess:
+def _run(
+    env_extra: dict[str, str], tmp_path: Path, with_haproxy: bool
+) -> subprocess.CompletedProcess:
     bin_dir = _stub_dir(tmp_path, with_haproxy=with_haproxy)
     # Need /usr/bin:/bin on PATH so subprocess can find `bash` itself; the test
     # controls haproxy availability by whether we wrote a stub into bin_dir.

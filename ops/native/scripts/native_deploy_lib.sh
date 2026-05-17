@@ -13,6 +13,52 @@ source "$SCRIPT_DIR_NDL/native_bluegreen_lib.sh"
 
 _ndl_uid() { id -u; }
 
+# require_haproxy_baseline
+# Fail-fast preflight before deploy-native.sh rsync's plists with --delete.
+# Verifies that scripts/native_haproxy_first_cutover.sh has run and the HAProxy
+# blue/green baseline is in place. Without this guard, a first deploy that
+# skips cutover would `rsync --delete` the legacy api/mcp plists, SIGUSR2 a
+# nonexistent HAProxy launchd job, and leave the system half-installed.
+#
+# Required:
+#   AUTO_TRADER_BASE
+# Optional override (mainly for tests):
+#   AUTO_TRADER_HAPROXY_LABEL   (default com.robinco.auto-trader.haproxy)
+#   LAUNCHCTL_BIN               (default launchctl)
+require_haproxy_baseline() {
+  local errors=0
+  local label="${AUTO_TRADER_HAPROXY_LABEL:-com.robinco.auto-trader.haproxy}"
+  local launchctl_bin="${LAUNCHCTL_BIN:-launchctl}"
+
+  if ! "$launchctl_bin" list "$label" >/dev/null 2>&1; then
+    echo "preflight: launchd job '$label' is not loaded" >&2
+    errors=1
+  fi
+
+  for f in \
+    "$AUTO_TRADER_BASE/shared/api-active-color" \
+    "$AUTO_TRADER_BASE/shared/mcp-active-color" \
+    "$AUTO_TRADER_BASE/shared/haproxy/haproxy.cfg"
+  do
+    if [[ ! -f "$f" ]]; then
+      echo "preflight: missing required file $f" >&2
+      errors=1
+    fi
+  done
+
+  if [[ ! -e "$AUTO_TRADER_BASE/current-blue" && ! -e "$AUTO_TRADER_BASE/current-green" ]]; then
+    echo "preflight: neither current-blue nor current-green symlink exists" >&2
+    errors=1
+  fi
+
+  if (( errors > 0 )); then
+    echo "" >&2
+    echo "preflight: HAProxy blue/green baseline is not set up." >&2
+    echo "Run scripts/native_haproxy_first_cutover.sh first (see docs/runbooks/native-haproxy-blue-green.md)." >&2
+    return 78
+  fi
+}
+
 _ndl_plist_path() {
   local service="$1" color="$2"
   echo "$AUTO_TRADER_BASE/plists/com.robinco.auto-trader.${service}-${color}.plist"
