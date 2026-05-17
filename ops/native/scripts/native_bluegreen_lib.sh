@@ -39,13 +39,13 @@ _bg_validate_service() {
 # Prints "blue" or "green". Defaults to "blue" if the state file is missing.
 detect_active_color() {
   local service="$1"
-  _bg_validate_service "$service"
+  _bg_validate_service "$service" || return $?
   local file
   file="$(_bg_color_file "$service")"
   if [[ -f "$file" ]]; then
     local raw
     raw="$(tr -d '[:space:]' <"$file")"
-    _bg_validate_color "$raw"
+    _bg_validate_color "$raw" || return $?
     echo "$raw"
   else
     echo "blue"
@@ -56,7 +56,7 @@ detect_active_color() {
 # Echo the opposite color.
 inactive_color() {
   local color="$1"
-  _bg_validate_color "$color"
+  _bg_validate_color "$color" || return $?
   if [[ "$color" == "blue" ]]; then
     echo "green"
   else
@@ -68,8 +68,8 @@ inactive_color() {
 # Atomically replace the state file.
 set_active_color() {
   local service="$1" color="$2"
-  _bg_validate_service "$service"
-  _bg_validate_color "$color"
+  _bg_validate_service "$service" || return $?
+  _bg_validate_color "$color" || return $?
   local file tmp
   file="$(_bg_color_file "$service")"
   mkdir -p "$(dirname "$file")"
@@ -81,8 +81,8 @@ set_active_color() {
 # color_port <service> <color>
 color_port() {
   local service="$1" color="$2"
-  _bg_validate_service "$service"
-  _bg_validate_color "$color"
+  _bg_validate_service "$service" || return $?
+  _bg_validate_color "$color" || return $?
   case "${service}_${color}" in
     api_blue)   echo 8001 ;;
     api_green)  echo 8002 ;;
@@ -94,8 +94,8 @@ color_port() {
 # color_label <service> <color>
 color_label() {
   local service="$1" color="$2"
-  _bg_validate_service "$service"
-  _bg_validate_color "$color"
+  _bg_validate_service "$service" || return $?
+  _bg_validate_color "$color" || return $?
   echo "com.robinco.auto-trader.${service}-${color}"
 }
 
@@ -103,6 +103,6 @@ color_label() {
 # Path to the per-color "current" symlink consumed by run-api.sh/run-mcp.sh.
 color_current_symlink() {
   local color="$1"
-  _bg_validate_color "$color"
+  _bg_validate_color "$color" || return $?
   echo "$AUTO_TRADER_BASE/current-${color}"
 }

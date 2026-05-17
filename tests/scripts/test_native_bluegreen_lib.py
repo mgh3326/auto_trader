@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 import subprocess
-import textwrap
 from pathlib import Path
-
-import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LIB = REPO_ROOT / "ops" / "native" / "scripts" / "native_bluegreen_lib.sh"
