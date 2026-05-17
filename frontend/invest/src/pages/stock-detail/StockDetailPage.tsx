@@ -420,16 +420,28 @@ export function StockDetailPage() {
     };
   }, [market, symbol]);
 
-  const right = useMemo(() => (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      {data ? <ProfileCard data={data} /> : null}
-      {data && market !== "crypto" ? <ResearchConsensusCard data={researchConsensus} error={researchErr} /> : null}
-      {data && market === "crypto" ? <CryptoDetailCard data={data} /> : null}
-      {data ? <AnalysisCard data={data} /> : null}
-      {data ? <NaverPocCard data={data} /> : null}
-      <MemoCard />
-    </div>
-  ), [data, market, researchConsensus, researchErr]);
+  const sideDetails = useMemo(() => {
+    if (!data) {
+      return <MemoCard />;
+    }
+    return (
+      <div
+        data-testid="stock-detail-side"
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
+          gap: 14,
+        }}
+      >
+        <ProfileCard data={data} />
+        {market !== "crypto" ? <ResearchConsensusCard data={researchConsensus} error={researchErr} /> : null}
+        {market === "crypto" ? <CryptoDetailCard data={data} /> : null}
+        <AnalysisCard data={data} />
+        <NaverPocCard data={data} />
+        <MemoCard />
+      </div>
+    );
+  }, [data, market, researchConsensus, researchErr]);
 
   return (
     <DesktopShell
@@ -458,11 +470,11 @@ export function StockDetailPage() {
                 </Card>
               ) : null}
               <Hairline />
+              {sideDetails}
             </>
           ) : null}
         </div>
       }
-      right={right}
     />
   );
 }

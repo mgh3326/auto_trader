@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { DesktopShell } from "../../desktop/DesktopShell";
-import { RightRemotePanel } from "../../desktop/RightRemotePanel";
 import { useViewport } from "../../hooks/useViewport";
 import { useNewsIssues } from "../../hooks/useNewsIssues";
 import { sortMarketIssues } from "../../components/discover/severity";
@@ -87,7 +86,6 @@ export function DesktopDiscoverPage() {
           </div>
         </>
       }
-      right={<RightRemotePanel />}
     />
   );
 }

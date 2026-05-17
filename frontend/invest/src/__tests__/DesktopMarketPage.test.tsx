@@ -5,6 +5,8 @@ import { beforeEach, expect, test, vi } from "vitest";
 import { DesktopMarketPage } from "../pages/desktop/DesktopMarketPage";
 import * as disparityApi from "../api/commonPreferredDisparity";
 import * as marketApi from "../api/marketDashboard";
+import { AccountPanelProvider } from "../desktop/AccountPanelProvider";
+import { mockRightRail } from "../test/mockRightRail";
 import type { CommonPreferredDisparityResponse } from "../types/commonPreferredDisparity";
 
 const DISPARITY_PAYLOAD: CommonPreferredDisparityResponse = {
@@ -121,11 +123,17 @@ const MARKET_PAYLOAD = {
 };
 
 function wrap(ui: React.ReactElement) {
-  return <MemoryRouter basename="/invest" initialEntries={["/invest/market"]}>{ui}</MemoryRouter>;
+  return (
+    <AccountPanelProvider>
+      <MemoryRouter basename="/invest" initialEntries={["/invest/market"]}>{ui}</MemoryRouter>
+    </AccountPanelProvider>
+  );
 }
 
 beforeEach(() => {
   vi.restoreAllMocks();
+  localStorage.clear();
+  mockRightRail();
   vi.spyOn(marketApi, "fetchMarketDashboard").mockResolvedValue(MARKET_PAYLOAD);
   vi.spyOn(disparityApi, "fetchCommonPreferredDisparity").mockResolvedValue(DISPARITY_PAYLOAD);
 });

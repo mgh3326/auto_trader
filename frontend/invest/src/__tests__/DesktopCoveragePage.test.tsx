@@ -4,6 +4,8 @@ import { beforeEach, expect, test, vi } from "vitest";
 
 import * as coverageApi from "../api/coverage";
 import { CoverageRoute } from "../pages/desktop/DesktopCoveragePage";
+import { AccountPanelProvider } from "../desktop/AccountPanelProvider";
+import { mockRightRail } from "../test/mockRightRail";
 import type { InvestCoverageResponse } from "../types/coverage";
 
 const BASE_ACTIONABILITY = {
@@ -108,10 +110,16 @@ const COVERAGE_PAYLOAD: InvestCoverageResponse = {
 };
 
 function wrap(ui: React.ReactElement) {
-  return <MemoryRouter basename="/invest" initialEntries={["/invest/coverage"]}>{ui}</MemoryRouter>;
+  return (
+    <AccountPanelProvider>
+      <MemoryRouter basename="/invest" initialEntries={["/invest/coverage"]}>{ui}</MemoryRouter>
+    </AccountPanelProvider>
+  );
 }
 
 beforeEach(() => {
+  localStorage.clear();
+  mockRightRail();
   vi.spyOn(coverageApi, "fetchInvestCoverage").mockResolvedValue(COVERAGE_PAYLOAD);
 });
 

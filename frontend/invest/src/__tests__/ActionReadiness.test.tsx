@@ -3,6 +3,8 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { fetchKrActionReadiness } from "../api/actionReadiness";
 import { CoverageRoute } from "../pages/desktop/DesktopCoveragePage";
+import { AccountPanelProvider } from "../desktop/AccountPanelProvider";
+import { mockRightRail } from "../test/mockRightRail";
 
 const actionability = {
   priority: "none",
@@ -113,6 +115,8 @@ function readinessResponse() {
 
 const fetchMock = vi.fn();
 beforeEach(() => {
+  localStorage.clear();
+  mockRightRail();
   fetchMock.mockReset();
   fetchMock.mockImplementation((input: RequestInfo | URL) => {
     const url = String(input);
@@ -142,9 +146,11 @@ test("action readiness API client builds symbol query and includes credentials",
 
 test("coverage page renders KR action readiness blockers and source boundaries without execution buttons", async () => {
   render(
-    <MemoryRouter basename="/invest" initialEntries={["/invest/coverage"]}>
-      <CoverageRoute />
-    </MemoryRouter>,
+    <AccountPanelProvider>
+      <MemoryRouter basename="/invest" initialEntries={["/invest/coverage"]}>
+        <CoverageRoute />
+      </MemoryRouter>
+    </AccountPanelProvider>,
   );
 
   expect(await screen.findByText("KR 액션 리포트 준비도")).toBeInTheDocument();

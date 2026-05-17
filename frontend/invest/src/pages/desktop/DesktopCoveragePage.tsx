@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { fetchKrActionReadiness } from "../../api/actionReadiness";
 import { fetchInvestCoverage } from "../../api/coverage";
+import { PageSafetyNote } from "../../components/PageSafetyNote";
 import { DesktopShell } from "../../desktop/DesktopShell";
 import { Card } from "../../ds";
 import type {
@@ -399,6 +400,17 @@ export function CoverageRoute() {
     <DesktopShell
       center={
         <div style={{ padding: 24, display: "grid", gap: 16 }}>
+        <PageSafetyNote
+          routeId="coverage"
+          heading="ROB-201 원칙"
+          tag="커버리지"
+          items={[
+            "source-of-truth는 로컬 DB/read-model만",
+            "Toss/Naver는 기준·후보 신호로만 표기",
+            "매매 추천·주문·백필·요청 중 스크래핑 없음",
+            "Actionability는 승인 게이트를 표시하는 advisory metadata이며 실행 버튼이 아님",
+          ]}
+        />
         <div>
           <h1 style={{ margin: 0, fontSize: 26, letterSpacing: "-0.04em" }}>데이터 커버리지</h1>
           <p style={{ margin: "6px 0 0", color: "var(--fg-2)", fontSize: 14 }}>
@@ -482,17 +494,6 @@ export function CoverageRoute() {
           </>
         )}
         </div>
-      }
-      right={
-        <Card>
-          <div style={{ fontWeight: 800, marginBottom: 8 }}>ROB-201 원칙</div>
-          <ul style={{ margin: 0, paddingLeft: 18, color: "var(--fg-2)", fontSize: 13 }}>
-            <li>source-of-truth는 로컬 DB/read-model만</li>
-            <li>Toss/Naver는 기준·후보 신호로만 표기</li>
-            <li>매매 추천·주문·백필·요청 중 스크래핑 없음</li>
-            <li>Actionability는 승인 게이트를 표시하는 advisory metadata이며 실행 버튼이 아님</li>
-          </ul>
-        </Card>
       }
     />
   );

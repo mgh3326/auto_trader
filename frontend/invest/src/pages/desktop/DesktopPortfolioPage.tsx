@@ -5,7 +5,6 @@ import { useMemo, useState } from "react";
 import { DesktopShell } from "../../desktop/DesktopShell";
 import { LeftContextRail } from "../../desktop/LeftContextRail";
 import type { AccountFilterKey } from "../../desktop/LeftContextRail";
-import { RightRemotePanel } from "../../desktop/RightRemotePanel";
 import { useInvestHome } from "../../hooks/useInvestHome";
 import { useViewport } from "../../hooks/useViewport";
 import { scopeGroupedToSource } from "../../desktop/scopeHoldings";
@@ -156,7 +155,6 @@ export function DesktopPortfolioPage() {
           )}
         </>
       }
-      right={<RightRemotePanel />}
     />
   );
 }

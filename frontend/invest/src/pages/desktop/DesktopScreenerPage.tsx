@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { DesktopShell } from "../../desktop/DesktopShell";
-import { RightRemotePanel } from "../../desktop/RightRemotePanel";
 import { ScreenerPresetSidebar } from "../../desktop/screener/ScreenerPresetSidebar";
 import { ScreenerFilterBar } from "../../desktop/screener/ScreenerFilterBar";
 import { ScreenerResultsTable } from "../../desktop/screener/ScreenerResultsTable";
@@ -139,7 +138,6 @@ export function DesktopScreenerPage() {
           />
         </div>
       }
-      right={<RightRemotePanel />}
     />
   );
 }
