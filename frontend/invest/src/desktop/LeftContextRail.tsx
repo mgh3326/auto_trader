@@ -1,6 +1,6 @@
 import type { Account } from "../types/invest";
 import { accountSourceMeta, displayNameWithSource } from "./AccountSourceMeta";
-import type { AssetCategoryKey } from "../components/AssetCategoryFilter";
+import type { AssetCategoryKey } from "../types/filters";
 
 interface ItemProps {
   label: string;

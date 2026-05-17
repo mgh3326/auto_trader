@@ -86,10 +86,10 @@ export const router = createBrowserRouter(
     { path: "/action-center", element: <ActionCenterRoute /> },
     { path: "/stocks/:market/:symbol", element: <StockDetailPage /> },
 
-    // Stage 6: legacy /invest/app/* URLs redirect to their canonical
-    // /invest/* siblings. The legacy components remain in-tree (not
-    // mounted) for one release cycle; deletion lands in a follow-up
-    // PR per docs/plans/2026-05-09-invest-app-retirement-inventory.md.
+    // Legacy /invest/app/* URLs redirect to their canonical /invest/*
+    // siblings. The retired legacy components were removed after the
+    // one-release-cycle soak per
+    // docs/plans/2026-05-09-invest-app-retirement-inventory.md.
     // Each redirect preserves the original ?search and #hash.
     { path: "/app", element: <RedirectWithSearch to="/" /> },
     { path: "/app/paper", element: <RedirectWithSearch to="/" /> },
