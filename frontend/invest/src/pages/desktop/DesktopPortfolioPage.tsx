@@ -16,7 +16,7 @@ import { SellHistoryPanel } from "../../components/my/SellHistoryPanel";
 import { PORTFOLIO_TABS, usePortfolioTabSearchParam, type PortfolioTab } from "../../components/my/portfolioTabs";
 import { SignalsPanel } from "../../components/signals/SignalsPanel";
 import { MobilePortfolioPage } from "../mobile/MobilePortfolioPage";
-import type { AssetCategoryKey } from "../../components/AssetCategoryFilter";
+import type { AssetCategoryKey } from "../../types/filters";
 import type { AccountSource, HomeSummary } from "../../types/invest";
 
 export function InvestPortfolioRoute() {

@@ -26,7 +26,7 @@ import { MarketStrip, marketDashboardToStripItems } from "../../components/home/
 import { MarketParityStrip } from "../../components/home/MarketParityStrip";
 import { MobileHomePage } from "../mobile/MobileHomePage";
 import { Icon } from "../../ds";
-import type { AssetCategoryKey } from "../../components/AssetCategoryFilter";
+import type { AssetCategoryKey } from "../../types/filters";
 import type { AccountSource, HomeSummary } from "../../types/invest";
 
 // Single canonical /invest home — picks the desktop or mobile renderer
