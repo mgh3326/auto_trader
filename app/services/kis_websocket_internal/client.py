@@ -27,6 +27,10 @@ from .protocol import (
 logger = logging.getLogger(__name__)
 
 
+class KISAppKeyInUseError(RuntimeError):
+    """Raised when KIS rejects the websocket subscription because appkey is in use."""
+
+
 class KISExecutionWebSocket:
     """
     KIS 체결 WebSocket 클라이언트
@@ -116,6 +120,24 @@ class KISExecutionWebSocket:
             except Exception as e:
                 self.current_attempt += 1
                 ack_error = e if isinstance(e, KISSubscriptionAckError) else None
+                if ack_error is not None and ack_error.msg_cd == "OPSP8996":
+                    logger.error(
+                        "KIS WebSocket appkey already in use; stopping reconnect loop without "
+                        "reissuing approval key: attempt=%s/%s tr_id=%s msg1=%s "
+                        "last_message_at=%s last_execution_at=%s last_pingpong_at=%s",
+                        self.current_attempt,
+                        self.max_reconnect_attempts,
+                        ack_error.tr_id,
+                        ack_error.msg1,
+                        self.last_message_at,
+                        self.last_execution_at,
+                        self.last_pingpong_at,
+                    )
+                    await self._close_websocket_best_effort()
+                    raise KISAppKeyInUseError(
+                        "KIS WebSocket appkey is already in use by another session. "
+                        "Keep only one KIS execution websocket owner active."
+                    ) from e
                 recoverable_ack_failure = (
                     ack_error is not None
                     and ack_error.msg_cd in RECOVERABLE_APPROVAL_MSG_CODES

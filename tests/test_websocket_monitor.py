@@ -1147,3 +1147,53 @@ class TestAutoReconnect:
         fake_ws.connect_and_subscribe.assert_awaited_once()
         assert "Upbit WebSocket connected" not in caplog.text
         assert "Reconnecting Upbit" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_kis_supervisor_backs_off_on_appkey_in_use_without_churn(
+        self,
+        mock_settings: None,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import websocket_monitor
+        from app.services.kis_websocket import KISAppKeyInUseError
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        monitor = UnifiedWebSocketMonitor(mode="kis")
+        monitor.is_running = True
+        monitor._kis_appkey_in_use_backoff_seconds = 123.0
+
+        class FakeKisWs:
+            is_connected = False
+            messages_received = 0
+            execution_events_received = 0
+            last_message_at = None
+            last_execution_at = None
+            last_pingpong_at = None
+
+            def __init__(self, *args, **kwargs):
+                self.is_running = False
+                self.connect_and_subscribe = AsyncMock(
+                    side_effect=KISAppKeyInUseError("already in use")
+                )
+                self.listen = AsyncMock()
+
+        fake_ws = FakeKisWs()
+
+        def fake_factory(*args, **kwargs):
+            return fake_ws
+
+        async def stop_after_backoff(seconds: float) -> None:
+            assert seconds == pytest.approx(123.0)
+            monitor.is_running = False
+
+        monkeypatch.setattr(websocket_monitor, "KISExecutionWebSocket", fake_factory)
+        monkeypatch.setattr(websocket_monitor.asyncio, "sleep", stop_after_backoff)
+        caplog.set_level("ERROR")
+
+        await monitor._start_kis_supervisor()
+
+        fake_ws.connect_and_subscribe.assert_awaited_once()
+        fake_ws.listen.assert_not_awaited()
+        assert monitor.kis_ws is None
+        assert "pausing reconnects" in caplog.text

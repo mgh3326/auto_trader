@@ -12,7 +12,10 @@ from app.services.kis_websocket_internal.approval_keys import (
     close_approval_key_redis,
     get_approval_key,
 )
-from app.services.kis_websocket_internal.client import KISExecutionWebSocket
+from app.services.kis_websocket_internal.client import (
+    KISAppKeyInUseError,
+    KISExecutionWebSocket,
+)
 from app.services.kis_websocket_internal.constants import (
     APPROVAL_KEY_CACHE_KEY,
     APPROVAL_KEY_TTL_SECONDS,
@@ -51,6 +54,7 @@ __all__ = [
     "EXECUTION_TR_CODES",
     "ExecutionMessageParser",
     "KISExecutionWebSocket",
+    "KISAppKeyInUseError",
     "KISSubscriptionAckError",
     "OVERSEAS_EXECUTION_TR",
     "OVERSEAS_EXECUTION_TR_CODES",
