@@ -191,7 +191,11 @@ def test_deploy_script_exports_base_before_sourcing_native_lib() -> None:
     """
     body = DEPLOY.read_text()
     export_line = body.find('export AUTO_TRADER_BASE="$BASE"')
-    source_line = body.find('source "$NEW_RELEASE/ops/native/scripts/native_deploy_lib.sh"')
+    source_line = body.find(
+        'source "$NEW_RELEASE/ops/native/scripts/native_deploy_lib.sh"'
+    )
     assert export_line != -1, "deploy-native.sh must export AUTO_TRADER_BASE"
     assert source_line != -1, "deploy-native.sh must source native_deploy_lib.sh"
-    assert export_line < source_line, "AUTO_TRADER_BASE must be exported before sourcing native_deploy_lib.sh"
+    assert export_line < source_line, (
+        "AUTO_TRADER_BASE must be exported before sourcing native_deploy_lib.sh"
+    )
