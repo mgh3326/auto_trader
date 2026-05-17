@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { CommonPreferredDisparityCardView } from "../../components/CommonPreferredDisparityCard";
+import { PageSafetyNote } from "../../components/PageSafetyNote";
 import { DesktopShell } from "../../desktop/DesktopShell";
 import { Card } from "../../ds";
 import { useCommonPreferredDisparity } from "../../hooks/useCommonPreferredDisparity";
@@ -129,6 +130,18 @@ export function DesktopMarketPage() {
     <DesktopShell
       center={
         <div style={{ padding: 24, display: "grid", gap: 16 }}>
+          <PageSafetyNote
+            routeId="market"
+            heading="읽기 전용 원칙"
+            tag="시장 페이지"
+            items={[
+              "주문·매매 API를 호출하지 않습니다.",
+              "시장/지수 provider 응답을 표시만 합니다.",
+              <>
+                <Link to="/coverage" style={{ color: "inherit" }}>커버리지</Link>에서 freshness를 별도 확인합니다.
+              </>,
+            ]}
+          />
           <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "start", flexWrap: "wrap" }}>
             <div>
               <h1 style={{ margin: 0, fontSize: 28, letterSpacing: "-0.05em" }}>시장</h1>
@@ -183,16 +196,6 @@ export function DesktopMarketPage() {
             </>
           )}
         </div>
-      }
-      right={
-        <Card>
-          <div style={{ fontWeight: 900, marginBottom: 8 }}>읽기 전용 원칙</div>
-          <ul style={{ margin: 0, paddingLeft: 18, color: "var(--fg-2)", fontSize: 13, lineHeight: 1.7 }}>
-            <li>주문·매매 API를 호출하지 않습니다.</li>
-            <li>시장/지수 provider 응답을 표시만 합니다.</li>
-            <li><Link to="/coverage" style={{ color: "inherit" }}>커버리지</Link>에서 freshness를 별도 확인합니다.</li>
-          </ul>
-        </Card>
       }
     />
   );

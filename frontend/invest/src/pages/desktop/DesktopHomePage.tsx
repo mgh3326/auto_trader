@@ -15,7 +15,6 @@ import { Link } from "react-router-dom";
 import { DesktopShell } from "../../desktop/DesktopShell";
 import { LeftContextRail } from "../../desktop/LeftContextRail";
 import type { AccountFilterKey } from "../../desktop/LeftContextRail";
-import { RightRemotePanel } from "../../desktop/RightRemotePanel";
 import { useInvestHome } from "../../hooks/useInvestHome";
 import { useMarketDashboard } from "../../hooks/useMarketDashboard";
 import { useMarketParity } from "../../hooks/useMarketParity";
@@ -280,7 +279,6 @@ export function DesktopHomePage() {
           )}
         </>
       }
-      right={<RightRemotePanel />}
     />
   );
 }

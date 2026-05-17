@@ -25,6 +25,35 @@ const TABS: { key: RightPanelTab; label: string }[] = [
   { key: "realtime", label: "실시간" },
 ];
 
+const RIGHT_RAIL_TAB_STORAGE_KEY = "invest:right-rail-tab";
+
+const RAIL_ICON_TABS: { key: RightPanelTab; label: string; icon: "chart" | "heart" | "clock" | "flash" }[] = [
+  { key: "portfolio", label: "내 투자", icon: "chart" },
+  { key: "watchlist", label: "관심", icon: "heart" },
+  { key: "recent", label: "최근 본", icon: "clock" },
+  { key: "realtime", label: "실시간", icon: "flash" },
+];
+
+function readStoredTab(): RightPanelTab {
+  try {
+    const value = window.localStorage.getItem(RIGHT_RAIL_TAB_STORAGE_KEY);
+    if (value === "portfolio" || value === "watchlist" || value === "recent" || value === "realtime") {
+      return value;
+    }
+  } catch {
+    /* ignore */
+  }
+  return "portfolio";
+}
+
+function writeStoredTab(tab: RightPanelTab): void {
+  try {
+    window.localStorage.setItem(RIGHT_RAIL_TAB_STORAGE_KEY, tab);
+  } catch {
+    /* ignore */
+  }
+}
+
 const MARKET_LABEL: Record<MarketKey, string> = {
   kr: "KR",
   us: "US",
@@ -639,10 +668,153 @@ function RealtimePanel({
   );
 }
 
-export function RightRemotePanel() {
-  const [activeTab, setActiveTab] = useState<RightPanelTab>("portfolio");
+function RailIconButton({
+  label,
+  icon,
+  active,
+  onClick,
+  ariaLabel,
+}: Readonly<{
+  label?: string;
+  icon: "chart" | "heart" | "clock" | "flash" | "expandLeft" | "settings";
+  active?: boolean;
+  onClick: () => void;
+  ariaLabel?: string;
+}>) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-current={active ? "true" : undefined}
+      aria-label={ariaLabel ?? label}
+      style={{
+        width: 44,
+        height: label ? 52 : 36,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 4,
+        borderRadius: 10,
+        color: active ? "var(--fg)" : "var(--fg-3)",
+        background: "transparent",
+        border: "none",
+        fontFamily: "inherit",
+        fontSize: 10,
+        cursor: "pointer",
+      }}
+    >
+      <span style={{ color: active ? "var(--accent)" : "currentColor" }}>
+        <Icon name={icon} size={20} />
+      </span>
+      {label ? <span>{label}</span> : null}
+    </button>
+  );
+}
+
+function CollapsedRail({
+  activeTab,
+  onPickTab,
+  onExpand,
+}: Readonly<{
+  activeTab: RightPanelTab;
+  onPickTab: (tab: RightPanelTab) => void;
+  onExpand: () => void;
+}>) {
+  return (
+    <div
+      data-testid="right-remote-panel-collapsed"
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 4,
+        padding: "8px 6px",
+        alignItems: "center",
+      }}
+    >
+      <RailIconButton
+        icon="expandLeft"
+        ariaLabel="패널 펼치기"
+        onClick={onExpand}
+      />
+      {RAIL_ICON_TABS.map((tab) => (
+        <RailIconButton
+          key={tab.key}
+          label={tab.label}
+          icon={tab.icon}
+          active={tab.key === activeTab}
+          onClick={() => onPickTab(tab.key)}
+        />
+      ))}
+      <div style={{ height: 1, alignSelf: "stretch", background: "var(--divider)", margin: "8px 6px" }} />
+      <RailIconButton icon="settings" ariaLabel="설정" onClick={() => { /* settings entry — placeholder */ }} />
+    </div>
+  );
+}
+
+function PaneHeader({ onCollapse }: Readonly<{ onCollapse?: () => void }>) {
+  if (!onCollapse) return null;
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "flex-end",
+        paddingBottom: 8,
+        marginBottom: 4,
+        borderBottom: "1px solid var(--divider)",
+      }}
+    >
+      <button
+        type="button"
+        onClick={onCollapse}
+        aria-label="패널 접기"
+        data-testid="right-remote-panel-collapse"
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 6,
+          padding: "4px 10px",
+          borderRadius: 999,
+          background: "var(--surface-2)",
+          color: "var(--fg-2)",
+          border: "none",
+          fontFamily: "inherit",
+          fontSize: 11,
+          fontWeight: 600,
+          cursor: "pointer",
+        }}
+      >
+        접기
+        <span
+          style={{
+            fontFamily: "var(--font-mono)",
+            fontSize: 10,
+            color: "var(--fg-3)",
+          }}
+        >
+          ⌘.
+        </span>
+      </button>
+    </div>
+  );
+}
+
+export function RightRemotePanel({
+  collapsed = false,
+  onCollapseChange,
+}: Readonly<{
+  collapsed?: boolean;
+  onCollapseChange?: (value: boolean) => void;
+}> = {}) {
+  const [activeTab, setActiveTabState] = useState<RightPanelTab>(() => readStoredTab());
   const [recentRefreshKey, setRecentRefreshKey] = useState(0);
   const navigate = useNavigate();
+
+  const setActiveTab = useCallback((tab: RightPanelTab) => {
+    setActiveTabState(tab);
+    writeStoredTab(tab);
+  }, []);
 
   const handleNavigate = useCallback(
     (path: string, sym: RecentInvestSymbol) => {
@@ -653,8 +825,24 @@ export function RightRemotePanel() {
     [navigate],
   );
 
+  if (collapsed) {
+    return (
+      <div data-testid="right-remote-panel" data-collapsed="true">
+        <CollapsedRail
+          activeTab={activeTab}
+          onPickTab={(tab) => {
+            setActiveTab(tab);
+            onCollapseChange?.(false);
+          }}
+          onExpand={() => onCollapseChange?.(false)}
+        />
+      </div>
+    );
+  }
+
   return (
-    <div data-testid="right-remote-panel">
+    <div data-testid="right-remote-panel" data-collapsed="false">
+      <PaneHeader onCollapse={onCollapseChange ? () => onCollapseChange(true) : undefined} />
       <TabBar active={activeTab} onChange={setActiveTab} />
       {activeTab === "portfolio" && <PortfolioPanel onNavigate={handleNavigate} />}
       {activeTab === "watchlist" && <WatchlistPanel onNavigate={handleNavigate} />}

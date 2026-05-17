@@ -5,6 +5,8 @@ import { beforeEach, expect, test, vi } from "vitest";
 import { DesktopInsightsPage } from "../pages/desktop/DesktopInsightsPage";
 import { useCommonPreferredDisparity } from "../hooks/useCommonPreferredDisparity";
 import { useMarketParity } from "../hooks/useMarketParity";
+import { AccountPanelProvider } from "../desktop/AccountPanelProvider";
+import { mockRightRail } from "../test/mockRightRail";
 
 vi.mock("../hooks/useMarketParity", () => ({ useMarketParity: vi.fn() }));
 vi.mock("../hooks/useCommonPreferredDisparity", () => ({ useCommonPreferredDisparity: vi.fn() }));
@@ -90,10 +92,16 @@ const disparityReady = {
 };
 
 function wrap(ui: React.ReactElement) {
-  return <MemoryRouter basename="/invest" initialEntries={["/invest/insights"]}>{ui}</MemoryRouter>;
+  return (
+    <AccountPanelProvider>
+      <MemoryRouter basename="/invest" initialEntries={["/invest/insights"]}>{ui}</MemoryRouter>
+    </AccountPanelProvider>
+  );
 }
 
 beforeEach(() => {
+  localStorage.clear();
+  mockRightRail();
   vi.mocked(useMarketParity).mockReturnValue(marketParityReady);
   vi.mocked(useCommonPreferredDisparity).mockReturnValue(disparityReady);
 });

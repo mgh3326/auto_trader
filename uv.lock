@@ -300,7 +300,7 @@ requires-dist = [
     { name = "itsdangerous", specifier = ">=2.0.0,<3.0.0" },
     { name = "jinja2", specifier = ">=3.1.6,<4.0.0" },
     { name = "lxml", specifier = ">=6.0.2,<7.0.0" },
-    { name = "openai", specifier = ">=1.82.0,<2.0.0" },
+    { name = "openai", specifier = ">=2.37.0,<2.38.0" },
     { name = "opendartreader", specifier = ">=0.2.3" },
     { name = "pandas", specifier = ">=3.0.0,<3.1.0" },
     { name = "pandas-stubs", specifier = "==3.0.0.260204" },
@@ -1747,7 +1747,7 @@ wheels = [
 
 [[package]]
 name = "openai"
-version = "1.109.1"
+version = "2.37.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -1759,9 +1759,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c6/a1/a303104dc55fc546a3f6914c842d3da471c64eec92043aef8f652eb6c524/openai-1.109.1.tar.gz", hash = "sha256:d173ed8dbca665892a6db099b4a2dfac624f94d20a93f46eb0b56aae940ed869", size = 564133, upload-time = "2025-09-24T13:00:53.075Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/32/50/5901f01ef14e6c27788beb91e54fef5d6204fb5fb9e97402fc8a14de2e32/openai-2.37.0.tar.gz", hash = "sha256:f4bc562cc5f3a43d40d678105572d9d44765f6e0f50c125f63055419b72f4bd9", size = 754706, upload-time = "2026-05-15T22:30:35.428Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1d/2a/7dd3d207ec669cacc1f186fd856a0f61dbc255d24f6fdc1a6715d6051b0f/openai-1.109.1-py3-none-any.whl", hash = "sha256:6bcaf57086cf59159b8e27447e4e7dd019db5d29a438072fbd49c290c7e65315", size = 948627, upload-time = "2025-09-24T13:00:50.754Z" },
+    { url = "https://files.pythonhosted.org/packages/ed/4c/bce61680d0699a78a405fd9a67989b175ba020590428831aab2ab1d2be7c/openai-2.37.0-py3-none-any.whl", hash = "sha256:814633888b8f3b1ffd6615697c6e4ef93632d08b7c2e28c8c5ef3556e5a10107", size = 1303238, upload-time = "2026-05-15T22:30:32.767Z" },
 ]
 
 [[package]]
@@ -1787,8 +1787,10 @@ dependencies = [
     { name = "requests" },
     { name = "requests-file" },
 ]
+sdist = { url = "https://files.pythonhosted.org/packages/82/e5/00be4f53842519e96a939e3c2a69c7e192cc81a2a264918e245bcf511d62/opendartreader-0.2.3.tar.gz", hash = "sha256:a2b942670b8c7fb3b93ff99ddb6efdf4253ef3a78de6b6981ed77dc7ad312205", size = 3535941, upload-time = "2026-05-09T17:58:15.228Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d9/23/e76575618af74b3572b6791b6e1cc403832af9cb2d6c6961a0749b37bf84/OpenDartReader-0.2.3-py3-none-any.whl", hash = "sha256:710c01969e5b01dc1b7bc78a9f5f13cad11623cdb2f6ed45110f6cd40a111ecc", size = 27544, upload-time = "2023-03-15T07:17:25.548Z" },
+    { url = "https://files.pythonhosted.org/packages/9e/3a/d7157baf92ca9d88fe09ecbc8ddd3481e61af00371aa05b64ca3ca617695/opendartreader-0.2.3-py3-none-any.whl", hash = "sha256:f0d97fbba28b5f63e07e575357a38ffe255a741afa4a27f5f32d4dda1094aec9", size = 3590331, upload-time = "2026-05-09T17:58:12.707Z" },
 ]
 
 [[package]]

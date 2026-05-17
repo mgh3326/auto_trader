@@ -4,6 +4,8 @@ import { beforeEach, expect, test, vi } from "vitest";
 
 import { FxMacroRoute } from "../pages/desktop/FxMacroPage";
 import * as fxApi from "../api/fxDashboard";
+import { AccountPanelProvider } from "../desktop/AccountPanelProvider";
+import { mockRightRail } from "../test/mockRightRail";
 import type { FxDashboardResponse } from "../types/fxDashboard";
 
 const FX_PAYLOAD: FxDashboardResponse = {
@@ -57,11 +59,17 @@ const FX_PAYLOAD: FxDashboardResponse = {
 };
 
 function wrap(ui: React.ReactElement) {
-  return <MemoryRouter basename="/invest" initialEntries={["/invest/market/fx"]}>{ui}</MemoryRouter>;
+  return (
+    <AccountPanelProvider>
+      <MemoryRouter basename="/invest" initialEntries={["/invest/market/fx"]}>{ui}</MemoryRouter>
+    </AccountPanelProvider>
+  );
 }
 
 beforeEach(() => {
+  localStorage.clear();
   Object.defineProperty(window, "innerWidth", { writable: true, configurable: true, value: 1280 });
+  mockRightRail();
   vi.spyOn(fxApi, "fetchFxDashboard").mockResolvedValue(FX_PAYLOAD);
 });
 

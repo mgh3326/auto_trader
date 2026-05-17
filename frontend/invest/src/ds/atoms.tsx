@@ -267,7 +267,10 @@ export type IconName =
   | "person"
   | "sun"
   | "moon"
-  | "monitor";
+  | "monitor"
+  | "heart"
+  | "clock"
+  | "expandLeft";
 
 const ICON_PATHS: Record<IconName, ReactNode> = {
   home: <path d="M3 9.5L12 3l9 6.5V20a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1V9.5z" />,
@@ -331,6 +334,16 @@ const ICON_PATHS: Record<IconName, ReactNode> = {
       <path d="M8 21h8M12 18v3" />
     </>
   ),
+  heart: (
+    <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
+  ),
+  clock: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3 2" />
+    </>
+  ),
+  expandLeft: <path d="M13 6l-6 6 6 6M19 6l-6 6 6 6" />,
 };
 
 export function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
