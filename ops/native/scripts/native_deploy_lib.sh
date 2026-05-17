@@ -142,12 +142,14 @@ deploy_bluegreen_flow() {
   fi
 
   if ! haproxy_swap_to_color api "$api_new"; then
+    set_active_color api "$api_active"
     drain_color api "$api_new" || true
     drain_color mcp "$mcp_new" || true
     return 1
   fi
   if ! haproxy_swap_to_color mcp "$mcp_new"; then
     set_active_color api "$api_active"
+    set_active_color mcp "$mcp_active"
     AUTO_TRADER_HAPROXY_TEMPLATE="$AUTO_TRADER_BASE/scripts/haproxy/haproxy.cfg.tmpl" \
       bash "$AUTO_TRADER_BASE/scripts/haproxy_switch.sh" || true
     drain_color api "$api_new" || true

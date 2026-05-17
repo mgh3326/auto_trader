@@ -17,6 +17,10 @@ PLISTS = [
     "com.robinco.auto-trader.api-green.plist",
     "com.robinco.auto-trader.mcp-blue.plist",
     "com.robinco.auto-trader.mcp-green.plist",
+    "com.robinco.auto-trader.worker.plist",
+    "com.robinco.auto-trader.scheduler.plist",
+    "com.robinco.auto-trader.kis-websocket.plist",
+    "com.robinco.auto-trader.upbit-websocket.plist",
 ]
 
 

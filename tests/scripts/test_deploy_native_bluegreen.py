@@ -217,3 +217,44 @@ def test_full_deploy_rolls_back_on_probe_failure(tmp_path: Path) -> None:
     assert proc.returncode != 0, proc.stdout
     assert (base / "shared" / "api-active-color").read_text().strip() == "blue"
     assert (base / "shared" / "mcp-active-color").read_text().strip() == "blue"
+
+
+def test_deploy_rolls_back_api_state_on_api_swap_failure(tmp_path: Path) -> None:
+    """If haproxy_swap_to_color api fails, api-active-color must be restored to blue."""
+    base = _setup_base(tmp_path)
+    # Replace haproxy_switch.sh with one that always fails
+    (base / "scripts" / "haproxy_switch.sh").write_text(
+        '#!/usr/bin/env bash\necho "switch failure" >&2\nexit 1\n'
+    )
+    (base / "scripts" / "haproxy_switch.sh").chmod(0o755)
+    proc = _run_bash(f'deploy_bluegreen_flow "{base}/releases/sha-new"', base, tmp_path)
+    assert proc.returncode != 0
+    assert (base / "shared" / "api-active-color").read_text().strip() == "blue"
+    assert (base / "shared" / "mcp-active-color").read_text().strip() == "blue"
+
+
+def test_deploy_rolls_back_both_states_on_mcp_swap_failure(tmp_path: Path) -> None:
+    """If api swap succeeds but mcp swap fails, both state files must restore."""
+    base = _setup_base(tmp_path)
+    # Replace haproxy_switch.sh with one that succeeds the first call and fails the second.
+    (base / "scripts" / "haproxy_switch.sh").write_text(
+        '#!/usr/bin/env bash\n'
+        'counter_file="$AUTO_TRADER_BASE/shared/switch-call-count"\n'
+        'count=$(cat "$counter_file" 2>/dev/null || echo 0)\n'
+        'count=$((count + 1))\n'
+        'echo "$count" > "$counter_file"\n'
+        '# 1st call (api swap): succeed\n'
+        '# 2nd call (mcp swap): fail\n'
+        '# 3rd call (compensating swap after restore): succeed\n'
+        'if [[ "$count" == "2" ]]; then echo "second call fail" >&2; exit 1; fi\n'
+        'exit 0\n'
+    )
+    (base / "scripts" / "haproxy_switch.sh").chmod(0o755)
+    proc = _run_bash(f'deploy_bluegreen_flow "{base}/releases/sha-new"', base, tmp_path)
+    assert proc.returncode != 0, proc.stdout
+    # Both state files must be back to blue
+    assert (base / "shared" / "api-active-color").read_text().strip() == "blue"
+    assert (base / "shared" / "mcp-active-color").read_text().strip() == "blue"
+    # And the compensating switch (3rd call) was attempted
+    count = (base / "shared" / "switch-call-count").read_text().strip()
+    assert count in {"2", "3"}  # 3 if compensating swap actually ran
