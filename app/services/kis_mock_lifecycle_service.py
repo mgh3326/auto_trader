@@ -39,18 +39,29 @@ class KISMockLifecycleService:
     def __init__(self, db: AsyncSession) -> None:
         self._db = db
 
-    async def list_open_orders(self, *, limit: int = 100) -> list[KISMockOrderLedger]:
+    async def list_open_orders(
+        self,
+        *,
+        limit: int = 100,
+        symbol: str | None = None,
+        instrument_type: str | None = None,
+        side: str | None = None,
+    ) -> list[KISMockOrderLedger]:
         if limit < 1:
             raise ValueError("limit must be >= 1")
-        stmt = (
-            select(KISMockOrderLedger)
-            .where(KISMockOrderLedger.lifecycle_state.in_(OPEN_LIFECYCLE_STATES))
-            .order_by(
-                KISMockOrderLedger.trade_date.asc(),
-                KISMockOrderLedger.id.asc(),
-            )
-            .limit(limit)
+        stmt = select(KISMockOrderLedger).where(
+            KISMockOrderLedger.lifecycle_state.in_(OPEN_LIFECYCLE_STATES)
         )
+        if symbol:
+            stmt = stmt.where(KISMockOrderLedger.symbol == symbol)
+        if instrument_type:
+            stmt = stmt.where(KISMockOrderLedger.instrument_type == instrument_type)
+        if side:
+            stmt = stmt.where(KISMockOrderLedger.side == side)
+        stmt = stmt.order_by(
+            KISMockOrderLedger.trade_date.asc(),
+            KISMockOrderLedger.id.asc(),
+        ).limit(limit)
         result = await self._db.execute(stmt)
         return list(result.scalars().all())
 

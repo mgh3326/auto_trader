@@ -16,6 +16,15 @@ from app.jobs.kis_mock_reconciliation_job import run_kis_mock_reconciliation
 from app.mcp_server.tooling.shared import logger
 from app.mcp_server.tooling.shared import to_float as _to_float
 from app.models.review import KISMockOrderLedger
+from app.services.kis_mock_lifecycle_service import KISMockLifecycleService
+
+KIS_MOCK_SHADOW_PENDING_SOURCE = "kis_mock_ledger_shadow"
+KIS_MOCK_SHADOW_PENDING_CONFIDENCE = "db_shadow_pending"
+KIS_MOCK_SHADOW_PENDING_WARNING = (
+    "KIS mock pending-order broker endpoints are unsupported/incomplete; "
+    "non-terminal review.kis_mock_order_ledger rows are treated as shadow pending. "
+    "KIS mock daily-ccld zero rows are not proof of no pending orders."
+)
 
 _LEDGER_STATUS_TO_LIFECYCLE: dict[str, str] = {
     "accepted": "accepted",
@@ -79,6 +88,106 @@ def _order_session_factory() -> async_sessionmaker[AsyncSession]:
     return typing_cast(
         async_sessionmaker[AsyncSession], typing_cast(object, AsyncSessionLocal)
     )
+
+
+def _decimal_to_float(value: Any) -> float:
+    return _to_float(value, default=0.0)
+
+
+def _shadow_row_to_order(row: KISMockOrderLedger) -> dict[str, Any]:
+    ordered_at = row.trade_date.isoformat() if row.trade_date else None
+    return {
+        "order_id": row.order_no or f"ledger:{row.id}",
+        "ledger_id": row.id,
+        "symbol": row.symbol,
+        "market": "kr" if row.instrument_type == "equity_kr" else "us",
+        "instrument_type": row.instrument_type,
+        "side": row.side,
+        "order_type": row.order_type,
+        "status": "pending",
+        "lifecycle_state": row.lifecycle_state,
+        "ordered_qty": _decimal_to_float(row.quantity),
+        "remaining_qty": _decimal_to_float(row.quantity),
+        "filled_qty": 0.0,
+        "ordered_price": _decimal_to_float(row.price),
+        "amount": _decimal_to_float(row.amount),
+        "currency": row.currency,
+        "ordered_at": ordered_at,
+        "created_at": ordered_at,
+        "source": KIS_MOCK_SHADOW_PENDING_SOURCE,
+        "confidence": KIS_MOCK_SHADOW_PENDING_CONFIDENCE,
+        "warning": KIS_MOCK_SHADOW_PENDING_WARNING,
+    }
+
+
+async def _list_kis_mock_shadow_pending_orders(
+    *,
+    normalized_symbol: str | None = None,
+    market_type: str | None = None,
+    side: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """Return DB shadow pending rows for KIS mock.
+
+    This is intentionally DB-only. It compensates for official KIS mock pending
+    inquiry gaps without treating KIS daily-ccld empty output as no pending.
+    """
+    async with _order_session_factory()() as db:
+        svc = KISMockLifecycleService(db)
+        rows = await svc.list_open_orders(
+            limit=limit,
+            symbol=normalized_symbol,
+            instrument_type=market_type,
+            side=side,
+        )
+    return [_shadow_row_to_order(row) for row in rows]
+
+
+async def _get_kis_mock_shadow_exposure(
+    *,
+    normalized_symbol: str | None = None,
+    market_type: str | None = None,
+    limit: int = 1000,
+) -> dict[str, Any]:
+    """Summarize non-terminal KIS mock ledger exposure.
+
+    On DB/query failure, confidence becomes ``unknown`` so execution paths can
+    fail closed rather than over-allocating cash or sellable quantity.
+    """
+    try:
+        rows = await _list_kis_mock_shadow_pending_orders(
+            normalized_symbol=normalized_symbol,
+            market_type=market_type,
+            limit=limit,
+        )
+    except Exception as exc:
+        logger.warning("Failed to read KIS mock shadow pending ledger: %s", exc)
+        return {
+            "confidence": "unknown",
+            "error": str(exc) or exc.__class__.__name__,
+            "source": KIS_MOCK_SHADOW_PENDING_SOURCE,
+            "warning": KIS_MOCK_SHADOW_PENDING_WARNING,
+            "buy_reserved_amount": 0.0,
+            "sell_reserved_quantity": 0.0,
+            "orders": [],
+        }
+
+    buy_reserved = sum(
+        _decimal_to_float(row.get("amount")) for row in rows if row.get("side") == "buy"
+    )
+    sell_reserved = sum(
+        _decimal_to_float(row.get("remaining_qty"))
+        for row in rows
+        if row.get("side") == "sell"
+    )
+    return {
+        "confidence": KIS_MOCK_SHADOW_PENDING_CONFIDENCE,
+        "source": KIS_MOCK_SHADOW_PENDING_SOURCE,
+        "warning": KIS_MOCK_SHADOW_PENDING_WARNING if rows else None,
+        "buy_reserved_amount": buy_reserved,
+        "sell_reserved_quantity": sell_reserved,
+        "orders": rows,
+    }
 
 
 async def _save_kis_mock_order_ledger(

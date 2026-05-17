@@ -5,6 +5,10 @@ from __future__ import annotations
 from typing import Any, Literal
 
 import app.services.brokers.upbit.client as upbit_service
+from app.mcp_server.tooling.kis_mock_ledger import (
+    KIS_MOCK_SHADOW_PENDING_WARNING,
+    _list_kis_mock_shadow_pending_orders,
+)
 from app.mcp_server.tooling.order_execution import (
     _calculate_date_range,
     _normalize_market_type_to_external,
@@ -172,7 +176,16 @@ async def _fetch_kr_orders(
 
     if status in ("all", "pending"):
         logger.debug("Fetching KR pending orders, symbol=%s", normalized_symbol)
-        open_ops = await _call_kis(kis.inquire_korea_orders, is_mock=is_mock)
+        try:
+            open_ops = await _call_kis(kis.inquire_korea_orders, is_mock=is_mock)
+        except Exception as exc:
+            if not is_mock:
+                raise
+            logger.warning(
+                "KIS mock broker pending-orders inquiry unavailable; using DB shadow pending ledger: %s",
+                exc,
+            )
+            open_ops = []
         if open_ops:
             logger.debug("Raw API response keys: %s", list(open_ops[0].keys()))
         for o in open_ops:
@@ -180,6 +193,12 @@ async def _fetch_kr_orders(
             if normalized_symbol and o_sym != normalized_symbol:
                 continue
             fetched.append(_normalize_kis_domestic_order(o))
+        if is_mock:
+            shadow_orders = await _list_kis_mock_shadow_pending_orders(
+                normalized_symbol=normalized_symbol,
+                market_type="equity_kr",
+            )
+            fetched.extend(shadow_orders)
 
     if status in ("all", "filled", "cancelled") and normalized_symbol:
         lookup_days = effective_days if effective_days is not None else 30
@@ -232,16 +251,22 @@ async def _fetch_us_orders(
                     fetched.append(_normalize_kis_overseas_order(o))
             except Exception as exc:
                 if is_mock and "mock" in str(exc).lower():
-                    # Surface mock-unsupported once per market, not per exchange.
-                    raise RuntimeError(
-                        "kis_mock: overseas pending-orders inquiry is not "
-                        "available in mock mode"
-                    ) from exc
+                    logger.warning(
+                        "kis_mock: overseas pending-orders inquiry unavailable; using DB shadow pending ledger: %s",
+                        exc,
+                    )
+                    break
                 logger.warning(
                     "US pending-orders inquiry failed for exchange=%s: %s",
                     ex,
                     exc,
                 )
+        if is_mock:
+            shadow_orders = await _list_kis_mock_shadow_pending_orders(
+                normalized_symbol=normalized_symbol,
+                market_type="equity_us",
+            )
+            fetched.extend(shadow_orders)
 
     if status in ("all", "filled", "cancelled") and normalized_symbol:
         lookup_days = effective_days if effective_days is not None else 30
@@ -392,6 +417,9 @@ def _build_history_response(
         "truncated": truncated,
         "total_available": total_available,
         "errors": errors,
+        "warnings": [KIS_MOCK_SHADOW_PENDING_WARNING]
+        if any(o.get("source") == "kis_mock_ledger_shadow" for o in response_orders)
+        else [],
     }
 
 

@@ -875,6 +875,7 @@ async def _place_order_impl(
                 order_error_fn=_order_error,
                 defensive_trim_ctx=defensive_trim_ctx,
                 is_mock=is_mock,
+                dry_run=dry_run,
             )
             if sell_error is not None:
                 return sell_error
@@ -893,7 +894,8 @@ async def _place_order_impl(
                 is_mock=is_mock,
             )
         except ValueError as preview_exc:
-            return _order_error(str(preview_exc))
+            preview_error = str(preview_exc) or preview_exc.__class__.__name__
+            return _order_error(f"Order preview failed: {preview_error}")
 
         order_amount = _to_float(dry_run_result.get("estimated_value"), default=0.0)
 
