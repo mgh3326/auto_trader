@@ -109,7 +109,7 @@ drain_color() {
 probe_color_direct() {
   local color="$1"
   _bg_validate_color "$color" || return $?
-  local attempts="${AUTO_TRADER_HEALTHCHECK_ATTEMPTS:-6}"
+  local attempts="${AUTO_TRADER_HEALTHCHECK_ATTEMPTS:-24}"
   local interval="${AUTO_TRADER_HEALTHCHECK_INTERVAL_SECONDS:-5}"
   local hc="$AUTO_TRADER_BASE/scripts/healthcheck-native.sh"
   local attempt
@@ -137,7 +137,7 @@ haproxy_swap_to_color() {
 
 # probe_public_stable
 probe_public_stable() {
-  local attempts="${AUTO_TRADER_HEALTHCHECK_ATTEMPTS:-6}"
+  local attempts="${AUTO_TRADER_HEALTHCHECK_ATTEMPTS:-24}"
   local interval="${AUTO_TRADER_HEALTHCHECK_INTERVAL_SECONDS:-5}"
   local hc="$AUTO_TRADER_BASE/scripts/healthcheck-native.sh"
   local attempt

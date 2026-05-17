@@ -148,6 +148,11 @@ def test_probe_color_direct_passes(tmp_path: Path) -> None:
     assert proc.returncode == 0, proc.stderr + proc.stdout
 
 
+def test_healthcheck_default_attempts_allow_slow_cold_start() -> None:
+    body = LIB.read_text()
+    assert "AUTO_TRADER_HEALTHCHECK_ATTEMPTS:-24" in body
+
+
 def test_haproxy_swap_to_color_updates_state(tmp_path: Path) -> None:
     base = _setup_base(tmp_path)
     proc = _run_bash("haproxy_swap_to_color api green", base, tmp_path)
