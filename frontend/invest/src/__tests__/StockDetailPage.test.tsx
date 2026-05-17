@@ -3,6 +3,8 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { StockDetailPage } from "../pages/stock-detail/StockDetailPage";
 import * as stockApi from "../api/stockDetail";
+import { AccountPanelProvider } from "../desktop/AccountPanelProvider";
+import { mockRightRail } from "../test/mockRightRail";
 import type {
   StockDetailCandlesResponse,
   StockDetailNewsResponse,
@@ -236,15 +238,19 @@ const researchConsensus: StockDetailResearchConsensusResponse = {
 
 function renderPage(path = "/invest/stocks/us/QQQM") {
   return render(
-    <MemoryRouter basename="/invest" initialEntries={[path]}>
-      <Routes>
-        <Route path="/stocks/:market/:symbol" element={<StockDetailPage />} />
-      </Routes>
-    </MemoryRouter>,
+    <AccountPanelProvider>
+      <MemoryRouter basename="/invest" initialEntries={[path]}>
+        <Routes>
+          <Route path="/stocks/:market/:symbol" element={<StockDetailPage />} />
+        </Routes>
+      </MemoryRouter>
+    </AccountPanelProvider>,
   );
 }
 
 beforeEach(() => {
+  localStorage.clear();
+  mockRightRail();
   vi.spyOn(stockApi, "fetchStockDetail").mockResolvedValue(aboveFold);
   vi.spyOn(stockApi, "fetchStockDetailCandles").mockResolvedValue(candles);
   vi.spyOn(stockApi, "fetchStockDetailOrders").mockResolvedValue(orders);

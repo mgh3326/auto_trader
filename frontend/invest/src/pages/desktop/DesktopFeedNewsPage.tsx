@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { DesktopShell } from "../../desktop/DesktopShell";
-import { RightRemotePanel } from "../../desktop/RightRemotePanel";
 import { useViewport } from "../../hooks/useViewport";
 import { fetchFeedNews } from "../../api/feedNews";
 import { fetchFeedResearch } from "../../api/feedResearch";
@@ -129,7 +128,6 @@ export function DesktopFeedNewsPage() {
           </div>
         </>
       }
-      right={<RightRemotePanel />}
     />
   );
 }

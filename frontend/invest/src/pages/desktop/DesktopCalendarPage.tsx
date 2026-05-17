@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
 import { DesktopShell } from "../../desktop/DesktopShell";
-import { RightRemotePanel } from "../../desktop/RightRemotePanel";
 import { useViewport } from "../../hooks/useViewport";
 import { fetchCalendar, fetchWeeklySummary } from "../../api/calendar";
 import type { CalendarDaySummary, CalendarResponse, WeeklySummaryResponse } from "../../types/calendar";
@@ -254,7 +253,6 @@ export function DesktopCalendarPage() {
             </Card>
           </>
         }
-        right={<RightRemotePanel />}
       />
       {showSummary && (
         <EventDetailModal

@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { DesktopShell } from "../../desktop/DesktopShell";
+import { PageSafetyNote } from "../../components/PageSafetyNote";
 import { Card } from "../../ds";
 import { FxCollectionCard, FxDefenseSignalCard, FxDeferredSectionsCard, FxQuoteCard, FxSourceFreshnessList, FxStatePill, FxThresholdCard } from "../../components/fx/FxDashboardCards";
 import { useFxDashboard } from "../../hooks/useFxDashboard";
@@ -46,16 +47,20 @@ function StatusCard({ data }: { data: FxDashboardResponse }) {
   );
 }
 
-function SafetyCard() {
+function SafetyNote() {
   return (
-    <Card>
-      <div style={{ fontWeight: 900, marginBottom: 8 }}>읽기 전용 원칙</div>
-      <ul style={{ margin: 0, paddingLeft: 18, color: "var(--fg-2)", fontSize: 13, lineHeight: 1.7 }}>
-        <li>주문·매매 API, watch/order intent, scheduler activation을 호출하지 않습니다.</li>
-        <li>당국 개입은 확정 표현하지 않고 사후 검증 필요 여부만 표시합니다.</li>
-        <li><Link to="/market" style={{ color: "inherit" }}>시장 대시보드</Link>와 동일한 읽기 전용 분석 영역입니다.</li>
-      </ul>
-    </Card>
+    <PageSafetyNote
+      routeId="market-fx"
+      heading="읽기 전용 원칙"
+      tag="FX·매크로"
+      items={[
+        "주문·매매 API, watch/order intent, scheduler activation을 호출하지 않습니다.",
+        "당국 개입은 확정 표현하지 않고 사후 검증 필요 여부만 표시합니다.",
+        <>
+          <Link to="/market" style={{ color: "inherit" }}>시장 대시보드</Link>와 동일한 읽기 전용 분석 영역입니다.
+        </>,
+      ]}
+    />
   );
 }
 
@@ -89,13 +94,14 @@ function FxMain({ mobile = false }: { mobile?: boolean }) {
 
   return (
     <div style={{ padding: mobile ? 16 : 24, display: "grid", gap: 16, maxWidth: mobile ? 860 : undefined, margin: mobile ? "0 auto" : undefined }}>
+      {!mobile && <SafetyNote />}
       <Header data={data} onReload={reload} />
       {state.status === "loading" && <Card>FX·매크로 데이터를 불러오는 중…</Card>}
       {state.status === "error" && (
         <Card><span style={{ color: "var(--danger)" }}>FX·매크로 데이터를 일시적으로 불러오지 못했습니다.</span></Card>
       )}
       {data && <FxContent data={data} />}
-      {mobile && <SafetyCard />}
+      {mobile && <SafetyNote />}
     </div>
   );
 }
@@ -113,7 +119,6 @@ export function FxMacroRoute() {
   return (
     <DesktopShell
       center={<FxMain />}
-      right={<SafetyCard />}
     />
   );
 }

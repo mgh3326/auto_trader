@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { CommonPreferredDisparityCardView } from "../../components/CommonPreferredDisparityCard";
 import { MarketParityStrip } from "../../components/home/MarketParityStrip";
+import { PageSafetyNote } from "../../components/PageSafetyNote";
 import { DesktopShell } from "../../desktop/DesktopShell";
 import { Card } from "../../ds";
 import { useCommonPreferredDisparity } from "../../hooks/useCommonPreferredDisparity";
@@ -41,16 +42,31 @@ function DecisionCard() {
   );
 }
 
-function ReadOnlyGuardrailCard() {
+function ReadOnlyGuardrailNote() {
+  return (
+    <PageSafetyNote
+      routeId="insights"
+      heading="읽기 전용 가드레일"
+      tag="인사이트"
+      items={[
+        "주문·매매·watch mutation API를 호출하지 않습니다.",
+        "기존 read-only /invest/api 응답만 표시합니다.",
+        "데이터 수집 활성화·백필·production DB write는 별도 승인 후 진행합니다.",
+        "raoni.xyz API에 production 의존성을 추가하지 않습니다.",
+      ]}
+    />
+  );
+}
+
+function RelatedScreensCard() {
   return (
     <Card>
-      <div style={{ fontWeight: 900, marginBottom: 8 }}>읽기 전용 가드레일</div>
-      <ul style={{ margin: 0, paddingLeft: 18, color: "var(--fg-2)", fontSize: 13, lineHeight: 1.7 }}>
-        <li>주문·매매·watch mutation API를 호출하지 않습니다.</li>
-        <li>기존 read-only /invest/api 응답만 표시합니다.</li>
-        <li>데이터 수집 활성화·백필·production DB write는 별도 승인 후 진행합니다.</li>
-        <li>raoni.xyz API에 production 의존성을 추가하지 않습니다.</li>
-      </ul>
+      <div style={{ fontWeight: 900, marginBottom: 8 }}>관련 화면</div>
+      <div style={{ display: "grid", gap: 8, fontSize: 13 }}>
+        <Link to="/" style={{ color: "var(--fg-1)", textDecoration: "none" }}>홈 compact 요약</Link>
+        <Link to="/market" style={{ color: "var(--fg-1)", textDecoration: "none" }}>시장 대시보드</Link>
+        <Link to="/stocks/kr/005930" style={{ color: "var(--fg-1)", textDecoration: "none" }}>종목 상세 리서치 예시</Link>
+      </div>
     </Card>
   );
 }
@@ -63,6 +79,7 @@ export function DesktopInsightsPage() {
     <DesktopShell
       center={
         <div style={{ padding: 24, display: "grid", gap: 16 }}>
+          <ReadOnlyGuardrailNote />
           <DecisionCard />
 
           <Card>
@@ -72,19 +89,8 @@ export function DesktopInsightsPage() {
           {disparity.status === "loading" && <SectionStatus>보통주/우선주 괴리 데이터를 불러오는 중…</SectionStatus>}
           {disparity.status === "error" && <SectionStatus>보통주/우선주 괴리 데이터를 일시적으로 불러오지 못했습니다.</SectionStatus>}
           {disparity.status === "ready" && <CommonPreferredDisparityCardView data={disparity.data} />}
-        </div>
-      }
-      right={
-        <div style={{ display: "grid", gap: 12 }}>
-          <ReadOnlyGuardrailCard />
-          <Card>
-            <div style={{ fontWeight: 900, marginBottom: 8 }}>관련 화면</div>
-            <div style={{ display: "grid", gap: 8, fontSize: 13 }}>
-              <Link to="/" style={{ color: "var(--fg-1)", textDecoration: "none" }}>홈 compact 요약</Link>
-              <Link to="/market" style={{ color: "var(--fg-1)", textDecoration: "none" }}>시장 대시보드</Link>
-              <Link to="/stocks/kr/005930" style={{ color: "var(--fg-1)", textDecoration: "none" }}>종목 상세 리서치 예시</Link>
-            </div>
-          </Card>
+
+          <RelatedScreensCard />
         </div>
       }
     />

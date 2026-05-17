@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { DesktopShell } from "../../desktop/DesktopShell";
-import { RightRemotePanel } from "../../desktop/RightRemotePanel";
 import { fetchCryptoDashboard, fetchCryptoNaverReference } from "../../api/investCrypto";
 import type {
   CryptoCandidateInsight,
@@ -351,7 +350,6 @@ export function DesktopCryptoPage() {
           )}
         </main>
       }
-      right={<RightRemotePanel />}
     />
   );
 }
