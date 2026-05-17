@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.robinco.auto-trader.haproxy</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/mgh3326/services/auto_trader/scripts/run-haproxy.sh</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/mgh3326/services/auto_trader/shared/haproxy</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/mgh3326</string>
+    <key>PATH</key>
+    <string>/Users/mgh3326/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/mgh3326/services/auto_trader/logs/com.robinco.auto-trader.haproxy.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/mgh3326/services/auto_trader/logs/com.robinco.auto-trader.haproxy.err.log</string>
+</dict>
+</plist>

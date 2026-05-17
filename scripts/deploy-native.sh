@@ -39,12 +39,9 @@ SOURCE_REPO="${AUTO_TRADER_SOURCE_REPO:-$HOME/work/auto_trader}"
 SHARED_ENV="${AUTO_TRADER_ENV_FILE:-$BASE/shared/.env.prod.native}"
 LOG_DIR="$BASE/logs"
 PLIST_DIR="${AUTO_TRADER_PLIST_DIR:-$BASE/plists}"
-MCP_NOFILE_LIMIT="${AUTO_TRADER_MCP_NOFILE_LIMIT:-4096}"
 SERVER_HEALTHCHECK="$BASE/scripts/healthcheck-native.sh"
 
-LABELS=(
-  "com.robinco.auto-trader.api"
-  "com.robinco.auto-trader.mcp"
+SINGLE_ACTIVE_LABELS=(
   "com.robinco.auto-trader.worker"
   "com.robinco.auto-trader.scheduler"
   "com.robinco.auto-trader.kis-websocket"
@@ -54,6 +51,16 @@ LABELS=(
 NEW_RELEASE="$RELEASES/$SHA"
 PREVIOUS_RELEASE="$(readlink "$CURRENT" 2>/dev/null || true)"
 SWITCHED=0
+# Snapshot of the api/mcp blue/green state captured BEFORE deploy_bluegreen_flow.
+# Set to 1 once deploy_bluegreen_flow has committed (state files + HAProxy live
+# cfg now point at the new color). The rollback handler uses this to decide
+# whether it also needs to roll back the api/mcp half (color state, color
+# symlinks, color launchd jobs, HAProxy cfg).
+BLUEGREEN_COMMITTED=0
+API_PRE_COLOR=""
+MCP_PRE_COLOR=""
+BLUE_PRE_TARGET=""
+GREEN_PRE_TARGET=""
 
 log() {
   printf '[%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*"
@@ -67,20 +74,13 @@ require_file() {
   fi
 }
 
-apply_mcp_plist_fd_limit() {
-  local plist="$1"
-
-  if [[ "$(basename "$plist")" != com.robinco.auto-trader.mcp*.plist ]]; then
-    return 0
-  fi
-
-  /usr/libexec/PlistBuddy -c 'Delete :SoftResourceLimits:NumberOfFiles' "$plist" 2>/dev/null || true
-  /usr/libexec/PlistBuddy -c 'Delete :HardResourceLimits:NumberOfFiles' "$plist" 2>/dev/null || true
-  /usr/libexec/PlistBuddy -c 'Add :SoftResourceLimits dict' "$plist" 2>/dev/null || true
-  /usr/libexec/PlistBuddy -c 'Add :HardResourceLimits dict' "$plist" 2>/dev/null || true
-  /usr/libexec/PlistBuddy -c "Add :SoftResourceLimits:NumberOfFiles integer $MCP_NOFILE_LIMIT" "$plist"
-  /usr/libexec/PlistBuddy -c "Add :HardResourceLimits:NumberOfFiles integer $MCP_NOFILE_LIMIT" "$plist"
-  plutil -lint "$plist" >/dev/null
+sync_release_ops_to_base() {
+  log "Syncing ops/native plists+scripts+haproxy from release"
+  rsync -a --delete "$NEW_RELEASE/ops/native/plists/" "$PLIST_DIR/"
+  rsync -a "$NEW_RELEASE/ops/native/scripts/" "$BASE/scripts/"
+  mkdir -p "$BASE/scripts/haproxy"
+  rsync -a "$NEW_RELEASE/ops/native/haproxy/" "$BASE/scripts/haproxy/"
+  chmod +x "$BASE/scripts/"*.sh 2>/dev/null || true
 }
 
 build_frontend_workspace() {
@@ -123,11 +123,11 @@ build_frontend() {
   build_frontend_workspace "invest" "frontend/invest"
 }
 
-restart_services() {
+restart_single_active_services() {
   local uid_num label plist target attempt
   uid_num="$(id -u)"
 
-  for label in "${LABELS[@]}"; do
+  for label in "${SINGLE_ACTIVE_LABELS[@]}"; do
     plist="$PLIST_DIR/$label.plist"
     target="$HOME/Library/LaunchAgents/$label.plist"
 
@@ -136,10 +136,8 @@ restart_services() {
       return 78
     fi
 
-    apply_mcp_plist_fd_limit "$plist"
     install -m 0644 "$plist" "$target"
     launchctl bootout "gui/$uid_num/$label" 2>/dev/null || true
-    launchctl bootout "gui/$uid_num" "$target" 2>/dev/null || true
 
     for attempt in {1..5}; do
       if launchctl bootstrap "gui/$uid_num" "$target"; then
@@ -221,10 +219,27 @@ rollback() {
   local exit_code=$?
   echo "Deploy failed with exit code $exit_code" >&2
 
+  # ROB-259 review: when deploy_bluegreen_flow committed but a later step
+  # (restart_single_active_services, run_healthcheck) failed, the api/mcp
+  # half is now on the new release while worker/scheduler/websocket are
+  # still on PREVIOUS_RELEASE. Roll back api/mcp first so the whole system
+  # ends up on the previous release together.
+  if (( BLUEGREEN_COMMITTED == 1 )); then
+    if declare -F rollback_bluegreen_post_deploy >/dev/null 2>&1; then
+      echo "Rolling back api/mcp blue/green to api=$API_PRE_COLOR mcp=$MCP_PRE_COLOR" >&2
+      rollback_bluegreen_post_deploy \
+        "$API_PRE_COLOR" "$MCP_PRE_COLOR" \
+        "${BLUE_PRE_TARGET:--}" "${GREEN_PRE_TARGET:--}" || \
+        echo "warning: api/mcp blue/green rollback reported errors; verify manually" >&2
+    else
+      echo "warning: rollback_bluegreen_post_deploy not loaded; api/mcp not rolled back" >&2
+    fi
+  fi
+
   if [[ "$SWITCHED" == "1" && -n "${PREVIOUS_RELEASE:-}" && -d "$PREVIOUS_RELEASE" ]]; then
     echo "Rolling back current symlink to: $PREVIOUS_RELEASE" >&2
     ln -sfn "$PREVIOUS_RELEASE" "$CURRENT"
-    restart_services || true
+    restart_single_active_services || true
   else
     echo "No symlink switch happened, or previous release is unavailable; skipping rollback restart" >&2
   fi
@@ -286,12 +301,35 @@ log "Running Alembic migrations"
 # destructive downgrades into this path without a separate data rollback runbook.
 ENV_FILE="$SHARED_ENV" uv run alembic upgrade head
 
-log "Switching current symlink"
+log "Preflight: verifying HAProxy baseline from previous cutover"
+# Source the lib from the release dir so the preflight is checked BEFORE the
+# rsync --delete in sync_release_ops_to_base. If this script fails preflight,
+# legacy plists in $PLIST_DIR are untouched and the operator can recover by
+# running scripts/native_haproxy_first_cutover.sh.
+# shellcheck source=/dev/null
+source "$NEW_RELEASE/ops/native/scripts/native_deploy_lib.sh"
+require_haproxy_baseline
+
+log "Capturing pre-deploy api/mcp blue/green state for rollback"
+read -r API_PRE_COLOR MCP_PRE_COLOR BLUE_PRE_TARGET GREEN_PRE_TARGET <<<"$(capture_bluegreen_state)"
+log "pre-deploy: api=$API_PRE_COLOR mcp=$MCP_PRE_COLOR blue=$BLUE_PRE_TARGET green=$GREEN_PRE_TARGET"
+
+log "Syncing release ops into base"
+sync_release_ops_to_base
+
+log "Running blue/green deploy for api + mcp"
+deploy_bluegreen_flow "$NEW_RELEASE"
+# deploy_bluegreen_flow only returns success after state files, HAProxy cfg,
+# new-color bootstrap, and public smoke all succeeded. From here on, any
+# failure must also roll back the api/mcp half via rollback_bluegreen_post_deploy.
+BLUEGREEN_COMMITTED=1
+
+log "Switching current symlink (worker/scheduler/websockets)"
 ln -sfn "$NEW_RELEASE" "$CURRENT"
 SWITCHED=1
 
-log "Restarting launchd services"
-restart_services
+log "Restarting single-active services"
+restart_single_active_services
 
 log "Running healthcheck"
 run_healthcheck

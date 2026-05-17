@@ -16,10 +16,12 @@ Mirrors the structure of ``orders_kis_variants.py``.
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from app.core.config import validate_kiwoom_mock_config
 from app.services.brokers.kiwoom import constants
+from app.services.brokers.kiwoom.client import KiwoomMockClient
+from app.services.brokers.kiwoom.domestic_orders import KiwoomDomesticOrderClient
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -142,19 +144,75 @@ def _confirmed_not_implemented(tool_name: str) -> dict[str, Any]:
 
 
 async def _kiwoom_mock_place_order_impl(**kwargs: Any) -> dict[str, Any]:
-    # Real implementation would build KiwoomMockClient.from_app_settings()
-    # and call KiwoomDomesticOrderClient.place_buy_order/place_sell_order.
-    # In this PR we only support dry_run; live submission is intentionally
-    # blocked at the tool boundary (see register()).
-    return {
-        "success": True,
-        "dry_run": kwargs.get("dry_run", True),
-        "side": kwargs.get("side"),
-        "symbol": kwargs.get("symbol"),
-        "quantity": kwargs.get("quantity"),
-        "price": kwargs.get("price"),
+    symbol = str(kwargs.get("symbol") or "").strip()
+    side = kwargs.get("side")
+    quantity_value = kwargs.get("quantity")
+    price_value = kwargs.get("price")
+    if quantity_value is None or price_value is None:
+        raise ValueError("kiwoom_mock_place_order requires quantity and price")
+    quantity = int(quantity_value)
+    price = int(price_value)
+    dry_run = bool(kwargs.get("dry_run", True))
+    exchange = kwargs.get("exchange") or constants.MOCK_EXCHANGE_KRX
+
+    base_response = {
+        "source": "kiwoom",
         "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
+        "dry_run": dry_run,
+        "side": side,
+        "symbol": symbol,
+        "quantity": quantity,
+        "price": price,
+        "exchange": str(exchange).strip().upper(),
     }
+    if dry_run:
+        return {"success": True, **base_response}
+    if side not in {"buy", "sell"}:
+        return {
+            "success": False,
+            **base_response,
+            "error": f"kiwoom_mock_place_order supports side='buy' or 'sell'; got {side!r}.",
+        }
+
+    try:
+        client = KiwoomMockClient.from_app_settings()
+        order_client = KiwoomDomesticOrderClient(cast(Any, client))
+        if side == "buy":
+            broker_response = await order_client.place_buy_order(
+                symbol=symbol,
+                quantity=quantity,
+                price=price,
+                exchange=exchange,
+            )
+        else:
+            broker_response = await order_client.place_sell_order(
+                symbol=symbol,
+                quantity=quantity,
+                price=price,
+                exchange=exchange,
+            )
+    except Exception as exc:  # noqa: BLE001 - MCP tools should fail closed with JSON
+        return {
+            "success": False,
+            **base_response,
+            "error": f"kiwoom_mock_place_order failed: {type(exc).__name__}: {exc}",
+        }
+
+    return_code = broker_response.get("return_code", constants.SUCCESS_RETURN_CODE)
+    try:
+        success = int(return_code) == constants.SUCCESS_RETURN_CODE
+    except (TypeError, ValueError):
+        success = return_code in (None, "", "0")
+
+    response = {
+        "success": success,
+        **base_response,
+        "broker_response": broker_response,
+    }
+    for key in ("return_code", "return_msg", "continuation", "ord_no", "order_no"):
+        if key in broker_response:
+            response[key] = broker_response[key]
+    return response
 
 
 async def _kiwoom_mock_preview_impl(**kwargs: Any) -> dict[str, Any]:
@@ -265,20 +323,19 @@ def register(mcp: FastMCP) -> None:
         ):
             if guard:
                 return guard
-        if not dry_run:
-            if not confirm:
-                return {
-                    "success": False,
-                    "error": "kiwoom_mock_place_order requires confirm=True when dry_run=False.",
-                    "source": "kiwoom",
-                    "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
-                }
-            return _confirmed_not_implemented("kiwoom_mock_place_order")
+        if not dry_run and not confirm:
+            return {
+                "success": False,
+                "error": "kiwoom_mock_place_order requires confirm=True when dry_run=False.",
+                "source": "kiwoom",
+                "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
+            }
         return await _kiwoom_mock_place_order_impl(
             symbol=symbol,
             side=side,
             quantity=quantity,
             price=price,
+            exchange=exchange,
             dry_run=dry_run,
         )
 

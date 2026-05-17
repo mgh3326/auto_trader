@@ -617,3 +617,101 @@ async def test_save_helper_persists_lifecycle_state(monkeypatch):
     # Verify that lifecycle_state is in the insert values
     params = captured["stmt"].compile().params
     assert params["lifecycle_state"] == "accepted"
+
+
+# ---------------------------------------------------------------------------
+# ROB-255: KIS mock DB shadow pending helpers
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_shadow_pending_orders_are_formatted_from_lifecycle_rows(monkeypatch):
+    from datetime import UTC, datetime
+    from decimal import Decimal
+    from types import SimpleNamespace
+
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    class FakeDB:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            pass
+
+    class FakeSvc:
+        def __init__(self, db):
+            self.db = db
+
+        async def list_open_orders(self, **kwargs):
+            assert kwargs["symbol"] == "005930"
+            assert kwargs["instrument_type"] == "equity_kr"
+            return [
+                SimpleNamespace(
+                    id=123,
+                    trade_date=datetime(2026, 5, 14, 9, 1, tzinfo=UTC),
+                    symbol="005930",
+                    instrument_type="equity_kr",
+                    side="buy",
+                    order_type="limit",
+                    quantity=Decimal("2"),
+                    price=Decimal("70000"),
+                    amount=Decimal("140000"),
+                    currency="KRW",
+                    order_no="MOCK-255",
+                    lifecycle_state="accepted",
+                )
+            ]
+
+    monkeypatch.setattr(
+        kis_mock_ledger, "_order_session_factory", lambda: lambda: FakeDB()
+    )
+    monkeypatch.setattr(kis_mock_ledger, "KISMockLifecycleService", FakeSvc)
+
+    rows = await kis_mock_ledger._list_kis_mock_shadow_pending_orders(
+        normalized_symbol="005930", market_type="equity_kr"
+    )
+
+    assert rows == [
+        {
+            "order_id": "MOCK-255",
+            "ledger_id": 123,
+            "symbol": "005930",
+            "market": "kr",
+            "instrument_type": "equity_kr",
+            "side": "buy",
+            "order_type": "limit",
+            "status": "pending",
+            "lifecycle_state": "accepted",
+            "ordered_qty": 2.0,
+            "remaining_qty": 2.0,
+            "filled_qty": 0.0,
+            "ordered_price": 70000.0,
+            "amount": 140000.0,
+            "currency": "KRW",
+            "ordered_at": "2026-05-14T09:01:00+00:00",
+            "created_at": "2026-05-14T09:01:00+00:00",
+            "source": "kis_mock_ledger_shadow",
+            "confidence": "db_shadow_pending",
+            "warning": kis_mock_ledger.KIS_MOCK_SHADOW_PENDING_WARNING,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_shadow_exposure_unknown_on_db_error(monkeypatch):
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    async def boom(**kwargs):
+        raise RuntimeError("db unavailable")
+
+    monkeypatch.setattr(kis_mock_ledger, "_list_kis_mock_shadow_pending_orders", boom)
+
+    result = await kis_mock_ledger._get_kis_mock_shadow_exposure(
+        normalized_symbol="005930", market_type="equity_kr"
+    )
+
+    assert result["confidence"] == "unknown"
+    assert result["buy_reserved_amount"] == 0.0
+    assert result["sell_reserved_quantity"] == 0.0
+    assert "db unavailable" in result["error"]
