@@ -180,3 +180,22 @@ def test_deploy_script_sources_lib_from_release_not_base() -> None:
         r'source\s+"\$NEW_RELEASE/ops/native/scripts/native_deploy_lib\.sh"',
         body,
     ), "deploy-native.sh must source the lib from $NEW_RELEASE for the preflight"
+
+
+def test_deploy_script_exports_base_before_sourcing_native_lib() -> None:
+    """deploy-native.sh local BASE must be exported before native_deploy_lib.sh is sourced.
+
+    The blue/green helpers run under `set -u` and directly reference
+    AUTO_TRADER_BASE. A deploy that only sets local BASE but never exports
+    AUTO_TRADER_BASE fails at preflight with `AUTO_TRADER_BASE not set`.
+    """
+    body = DEPLOY.read_text()
+    export_line = body.find('export AUTO_TRADER_BASE="$BASE"')
+    source_line = body.find(
+        'source "$NEW_RELEASE/ops/native/scripts/native_deploy_lib.sh"'
+    )
+    assert export_line != -1, "deploy-native.sh must export AUTO_TRADER_BASE"
+    assert source_line != -1, "deploy-native.sh must source native_deploy_lib.sh"
+    assert export_line < source_line, (
+        "AUTO_TRADER_BASE must be exported before sourcing native_deploy_lib.sh"
+    )

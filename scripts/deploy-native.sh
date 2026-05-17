@@ -41,6 +41,13 @@ LOG_DIR="$BASE/logs"
 PLIST_DIR="${AUTO_TRADER_PLIST_DIR:-$BASE/plists}"
 SERVER_HEALTHCHECK="$BASE/scripts/healthcheck-native.sh"
 
+# The blue/green helper libraries are sourced later and expect these values as
+# environment variables rather than deploy-native.sh-local shell variables.
+export AUTO_TRADER_BASE="$BASE"
+export AUTO_TRADER_SOURCE_REPO="$SOURCE_REPO"
+export AUTO_TRADER_ENV_FILE="$SHARED_ENV"
+export AUTO_TRADER_PLIST_DIR="$PLIST_DIR"
+
 SINGLE_ACTIVE_LABELS=(
   "com.robinco.auto-trader.worker"
   "com.robinco.auto-trader.scheduler"
