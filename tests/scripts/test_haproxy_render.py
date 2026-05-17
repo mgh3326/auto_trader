@@ -111,3 +111,29 @@ def test_api_backend_health_check_unchanged(tmp_path: Path) -> None:
     body = out.read_text()
     assert "option httpchk GET /healthz" in body
     assert "http-check expect status 200" in body
+
+
+def test_no_daemon_directive_in_rendered_config(tmp_path: Path) -> None:
+    """ROB-259 review: `daemon` must not be in the global section.
+
+    launchd supervises run-haproxy.sh which exec's `haproxy -W -f ...` in
+    the foreground. The `daemon` directive would fork haproxy into the
+    background; launchd's KeepAlive=true would then see the parent exit
+    and continuously restart, fighting the master-worker model.
+    """
+    out = tmp_path / "haproxy.cfg"
+    proc = _render("blue", "blue", out)
+    assert proc.returncode == 0, proc.stderr
+    body = out.read_text()
+    # The literal `daemon` keyword must not appear as a global directive.
+    # Match it as a standalone line to avoid false-positives on words that
+    # contain "daemon" (none expected, but defensive).
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped == "daemon":
+            raise AssertionError(
+                "rendered haproxy.cfg contains `daemon` directive; remove it "
+                "so launchd can foreground-supervise the master process"
+            )
+    # master-worker is still required for SIGUSR2 seamless reload.
+    assert any(line.strip() == "master-worker" for line in body.splitlines())

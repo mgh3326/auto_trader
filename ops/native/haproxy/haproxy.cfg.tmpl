@@ -1,7 +1,9 @@
 global
     log /var/run/syslog local0 info
     maxconn 4096
-    daemon
+    # NOTE: no `daemon` directive — launchd supervises run-haproxy.sh, which
+    # exec's `haproxy -W -f ...` in the foreground. `daemon` would fork into
+    # the background and confuse KeepAlive=true.
     master-worker
 
 defaults

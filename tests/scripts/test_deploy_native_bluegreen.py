@@ -220,21 +220,44 @@ def test_full_deploy_rolls_back_on_probe_failure(tmp_path: Path) -> None:
 
 
 def test_deploy_rolls_back_api_state_on_api_swap_failure(tmp_path: Path) -> None:
-    """If haproxy_swap_to_color api fails, api-active-color must be restored to blue."""
+    """If haproxy_swap_to_color api fails, api-active-color must be restored to blue
+    AND a compensating haproxy_switch must run so the live cfg matches the restored state.
+    """
     base = _setup_base(tmp_path)
-    # Replace haproxy_switch.sh with one that always fails
+    # Replace haproxy_switch.sh with one that always fails, BUT counts calls so we can
+    # verify the compensating switch is attempted (vs silently skipped).
     (base / "scripts" / "haproxy_switch.sh").write_text(
-        '#!/usr/bin/env bash\necho "switch failure" >&2\nexit 1\n'
+        "#!/usr/bin/env bash\n"
+        'counter_file="$AUTO_TRADER_BASE/shared/switch-call-count"\n'
+        'count=$(cat "$counter_file" 2>/dev/null || echo 0)\n'
+        "count=$((count + 1))\n"
+        'echo "$count" > "$counter_file"\n'
+        'echo "switch failure (call $count)" >&2\n'
+        "exit 1\n"
     )
     (base / "scripts" / "haproxy_switch.sh").chmod(0o755)
-    proc = _run_bash(f'deploy_bluegreen_flow "{base}/releases/sha-new"', base, tmp_path)
+    proc = _run_bash(
+        f'deploy_bluegreen_flow "{base}/releases/sha-new"', base, tmp_path
+    )
     assert proc.returncode != 0
     assert (base / "shared" / "api-active-color").read_text().strip() == "blue"
     assert (base / "shared" / "mcp-active-color").read_text().strip() == "blue"
+    # Tight assertion: exactly 2 calls. 1st = api swap (failed), 2nd = compensating
+    # switch after state restore (also failed in this test, but MUST have been
+    # attempted). Permissive `in {"1","2"}` would hide a regression that silently
+    # skips the compensating call.
+    count = (base / "shared" / "switch-call-count").read_text().strip()
+    assert count == "2", (
+        f"expected exactly 2 haproxy_switch invocations (api swap + compensating "
+        f"switch), got {count}. Compensating switch is missing from the api-swap "
+        f"failure rollback path."
+    )
 
 
 def test_deploy_rolls_back_both_states_on_mcp_swap_failure(tmp_path: Path) -> None:
-    """If api swap succeeds but mcp swap fails, both state files must restore."""
+    """If api swap succeeds but mcp swap fails, both state files must restore
+    AND a compensating haproxy_switch must run after the restore.
+    """
     base = _setup_base(tmp_path)
     # Replace haproxy_switch.sh with one that succeeds the first call and fails the second.
     (base / "scripts" / "haproxy_switch.sh").write_text(
@@ -250,11 +273,20 @@ def test_deploy_rolls_back_both_states_on_mcp_swap_failure(tmp_path: Path) -> No
         "exit 0\n"
     )
     (base / "scripts" / "haproxy_switch.sh").chmod(0o755)
-    proc = _run_bash(f'deploy_bluegreen_flow "{base}/releases/sha-new"', base, tmp_path)
+    proc = _run_bash(
+        f'deploy_bluegreen_flow "{base}/releases/sha-new"', base, tmp_path
+    )
     assert proc.returncode != 0, proc.stdout
     # Both state files must be back to blue
     assert (base / "shared" / "api-active-color").read_text().strip() == "blue"
     assert (base / "shared" / "mcp-active-color").read_text().strip() == "blue"
-    # And the compensating switch (3rd call) was attempted
+    # Tight assertion: exactly 3 calls. 1st = api swap (ok), 2nd = mcp swap (fail),
+    # 3rd = compensating switch after restoring both colors. Previously this was
+    # `count in {"2","3"}` which silently allowed a regression that skips the
+    # compensating call.
     count = (base / "shared" / "switch-call-count").read_text().strip()
-    assert count in {"2", "3"}  # 3 if compensating swap actually ran
+    assert count == "3", (
+        f"expected exactly 3 haproxy_switch invocations (api ok, mcp fail, "
+        f"compensating), got {count}. Compensating switch is missing from the "
+        f"mcp-swap failure rollback path."
+    )

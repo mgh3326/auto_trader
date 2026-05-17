@@ -195,7 +195,13 @@ deploy_bluegreen_flow() {
   fi
 
   if ! haproxy_swap_to_color api "$api_new"; then
+    # ROB-259 review: restore api state AND run compensating switch so the
+    # live HAProxy cfg matches the restored state. Without the switch, a
+    # partially-succeeded haproxy_swap_to_color could leave the live cfg
+    # pointing at the new color while the state file says old.
     set_active_color api "$api_active"
+    AUTO_TRADER_HAPROXY_TEMPLATE="$AUTO_TRADER_BASE/scripts/haproxy/haproxy.cfg.tmpl" \
+      bash "$AUTO_TRADER_BASE/scripts/haproxy_switch.sh" || true
     drain_color api "$api_new" || true
     drain_color mcp "$mcp_new" || true
     return 1
