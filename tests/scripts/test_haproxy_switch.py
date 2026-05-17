@@ -20,7 +20,9 @@ def _run(env_extra: dict[str, str], base: Path) -> subprocess.CompletedProcess:
         "AUTO_TRADER_HAPROXY_RELOAD": "skip",
         **env_extra,
     }
-    return subprocess.run(["bash", str(SWITCH)], check=False, capture_output=True, text=True, env=env)
+    return subprocess.run(
+        ["bash", str(SWITCH)], check=False, capture_output=True, text=True, env=env
+    )
 
 
 def _setup_base(tmp_path: Path) -> Path:
@@ -88,7 +90,9 @@ def test_switch_launchctl_mode_sends_sigusr2(tmp_path: Path) -> None:
         "AUTO_TRADER_HAPROXY_RELOAD": "launchctl",
         "AUTO_TRADER_HAPROXY_LABEL": "test.label",
     }
-    proc = subprocess.run(["bash", str(SWITCH)], check=False, capture_output=True, text=True, env=env)
+    proc = subprocess.run(
+        ["bash", str(SWITCH)], check=False, capture_output=True, text=True, env=env
+    )
     assert proc.returncode == 0, proc.stderr
     # launchctl was invoked with the SIGUSR2 + gui/<uid>/<label> args
     recorded = log.read_text()

@@ -1,4 +1,4 @@
-#!/bin/zsh
+#!/usr/bin/env bash
 # ROB-259: color-aware FastMCP launcher.
 #
 # The MCP server reads `MCP_PORT` (see app/mcp_server/main.py: _env_int("MCP_PORT", 8765)).

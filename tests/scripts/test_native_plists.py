@@ -32,7 +32,12 @@ def test_plist_exists(name: str) -> None:
 @pytest.mark.skipif(shutil.which("plutil") is None, reason="plutil not available")
 @pytest.mark.parametrize("name", PLISTS)
 def test_plist_lints(name: str) -> None:
-    proc = subprocess.run(["plutil", "-lint", str(PLIST_DIR / name)], check=False, capture_output=True, text=True)
+    proc = subprocess.run(
+        ["plutil", "-lint", str(PLIST_DIR / name)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
 

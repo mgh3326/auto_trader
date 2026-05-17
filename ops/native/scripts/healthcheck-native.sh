@@ -1,4 +1,4 @@
-#!/bin/zsh
+#!/usr/bin/env bash
 # ROB-259: healthcheck-native.sh with direct-color and stable modes.
 #
 # Usage:

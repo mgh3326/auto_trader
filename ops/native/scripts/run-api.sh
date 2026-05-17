@@ -1,4 +1,4 @@
-#!/bin/zsh
+#!/usr/bin/env bash
 # ROB-259: color-aware FastAPI launcher.
 set -euo pipefail
 

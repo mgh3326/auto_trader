@@ -238,16 +238,16 @@ def test_deploy_rolls_back_both_states_on_mcp_swap_failure(tmp_path: Path) -> No
     base = _setup_base(tmp_path)
     # Replace haproxy_switch.sh with one that succeeds the first call and fails the second.
     (base / "scripts" / "haproxy_switch.sh").write_text(
-        '#!/usr/bin/env bash\n'
+        "#!/usr/bin/env bash\n"
         'counter_file="$AUTO_TRADER_BASE/shared/switch-call-count"\n'
         'count=$(cat "$counter_file" 2>/dev/null || echo 0)\n'
-        'count=$((count + 1))\n'
+        "count=$((count + 1))\n"
         'echo "$count" > "$counter_file"\n'
-        '# 1st call (api swap): succeed\n'
-        '# 2nd call (mcp swap): fail\n'
-        '# 3rd call (compensating swap after restore): succeed\n'
+        "# 1st call (api swap): succeed\n"
+        "# 2nd call (mcp swap): fail\n"
+        "# 3rd call (compensating swap after restore): succeed\n"
         'if [[ "$count" == "2" ]]; then echo "second call fail" >&2; exit 1; fi\n'
-        'exit 0\n'
+        "exit 0\n"
     )
     (base / "scripts" / "haproxy_switch.sh").chmod(0o755)
     proc = _run_bash(f'deploy_bluegreen_flow "{base}/releases/sha-new"', base, tmp_path)

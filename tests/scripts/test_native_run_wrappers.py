@@ -21,7 +21,7 @@ def _build_base(tmp_path: Path, color: str) -> Path:
     # Minimal common.sh that mirrors the production behavior the wrapper relies on.
     (base / "scripts" / "common.sh").write_text(
         "#!/bin/zsh\n"
-        'set -euo pipefail\n'
+        "set -euo pipefail\n"
         'export AUTO_TRADER_BASE="${AUTO_TRADER_BASE:-$HOME/services/auto_trader}"\n'
         'export AUTO_TRADER_CURRENT="${AUTO_TRADER_CURRENT:-$AUTO_TRADER_BASE/current}"\n'
         'export AUTO_TRADER_ENV_FILE="${AUTO_TRADER_ENV_FILE:-$AUTO_TRADER_BASE/shared/.env.prod.native}"\n'
@@ -29,19 +29,19 @@ def _build_base(tmp_path: Path, color: str) -> Path:
         '[[ -d "$AUTO_TRADER_CURRENT" ]] || { echo "AUTO_TRADER_CURRENT missing: $AUTO_TRADER_CURRENT" >&2; exit 70; }\n'
         '[[ -f "$AUTO_TRADER_ENV_FILE" ]] || { echo "AUTO_TRADER_ENV_FILE missing" >&2; exit 78; }\n'
         'cd "$AUTO_TRADER_CURRENT"\n'
-        '_export_selected_env_prefixes() {\n'
+        "_export_selected_env_prefixes() {\n"
         '  local prefixes=("$@")\n'
-        '  local key value prefix\n'
+        "  local key value prefix\n"
         '  while IFS="=" read -r key value; do\n'
         '    [[ -z "${key:-}" || "$key" == \\#* ]] && continue\n'
         '    key="${key%%[[:space:]]*}"\n'
         '    for prefix in "${prefixes[@]}"; do\n'
         '      if [[ "$key" == ${prefix}* ]]; then\n'
         '        export "$key=$value"\n'
-        '      fi\n'
-        '    done\n'
+        "      fi\n"
+        "    done\n"
         '  done < "$AUTO_TRADER_ENV_FILE"\n'
-        '}\n'
+        "}\n"
     )
     return base
 
@@ -52,7 +52,7 @@ def _uv_stub_dir(tmp_path: Path) -> Path:
     bin_dir.mkdir(exist_ok=True)
     stub = bin_dir / "uv"
     stub.write_text(
-        '#!/usr/bin/env bash\n'
+        "#!/usr/bin/env bash\n"
         'echo "argv=$*"\n'
         'echo "MCP_PORT=${MCP_PORT:-unset}"\n'
         'echo "AUTO_TRADER_CURRENT=${AUTO_TRADER_CURRENT:-unset}"\n'
@@ -62,7 +62,9 @@ def _uv_stub_dir(tmp_path: Path) -> Path:
     return bin_dir
 
 
-def _run(script: Path, color: str, port_env: dict[str, str], tmp_path: Path) -> subprocess.CompletedProcess:
+def _run(
+    script: Path, color: str, port_env: dict[str, str], tmp_path: Path
+) -> subprocess.CompletedProcess:
     base = _build_base(tmp_path, color)
     bin_dir = _uv_stub_dir(tmp_path)
     env = {
@@ -72,10 +74,13 @@ def _run(script: Path, color: str, port_env: dict[str, str], tmp_path: Path) -> 
         "AUTO_TRADER_COLOR": color,
         **port_env,
     }
-    return subprocess.run(["bash", str(script)], check=False, capture_output=True, text=True, env=env)
+    return subprocess.run(
+        ["bash", str(script)], check=False, capture_output=True, text=True, env=env
+    )
 
 
 # ----- run-api ---------------------------------------------------------------
+
 
 def test_run_api_explicit_port(tmp_path: Path) -> None:
     proc = _run(RUN_API, "blue", {"AUTO_TRADER_API_PORT": "8001"}, tmp_path)
@@ -110,6 +115,7 @@ def test_run_api_cds_into_color_current(tmp_path: Path) -> None:
 
 
 # ----- run-mcp ---------------------------------------------------------------
+
 
 def test_run_mcp_exports_mcp_port_explicit(tmp_path: Path) -> None:
     proc = _run(RUN_MCP, "blue", {"AUTO_TRADER_MCP_PORT": "8766"}, tmp_path)

@@ -14,8 +14,14 @@ RENDER = REPO_ROOT / "ops" / "native" / "scripts" / "haproxy_render.sh"
 TEMPLATE = REPO_ROOT / "ops" / "native" / "haproxy" / "haproxy.cfg.tmpl"
 
 
-def _render(api_color: str, mcp_color: str, out_path: Path) -> subprocess.CompletedProcess:
-    env = {**os.environ, "AUTO_TRADER_API_ACTIVE_COLOR": api_color, "AUTO_TRADER_MCP_ACTIVE_COLOR": mcp_color}
+def _render(
+    api_color: str, mcp_color: str, out_path: Path
+) -> subprocess.CompletedProcess:
+    env = {
+        **os.environ,
+        "AUTO_TRADER_API_ACTIVE_COLOR": api_color,
+        "AUTO_TRADER_MCP_ACTIVE_COLOR": mcp_color,
+    }
     return subprocess.run(
         ["bash", str(RENDER), str(TEMPLATE), str(out_path)],
         check=False,
