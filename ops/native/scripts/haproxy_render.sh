@@ -54,7 +54,8 @@ mcp_backup_line() {
   fi
 }
 
-TMP="$(mktemp -t haproxy-render.XXXXXX)"
+mkdir -p "$(dirname "$OUT")"
+TMP="$(mktemp "$(dirname "$OUT")/haproxy-render.XXXXXX")"
 trap 'rm -f "$TMP"' EXIT
 
 sed \

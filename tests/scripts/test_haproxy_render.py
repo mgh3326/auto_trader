@@ -34,11 +34,11 @@ def test_render_blue_blue(tmp_path: Path) -> None:
     assert "bind 127.0.0.1:8000" in body
     assert "bind 127.0.0.1:8765" in body
     # API blue active backend is :8001, green is backup
-    assert "server api_blue 127.0.0.1:8001 check" in body
-    assert "server api_green 127.0.0.1:8002 check backup" in body
+    assert "server api_blue 127.0.0.1:8001 check\n" in body
+    assert "server api_green 127.0.0.1:8002 check backup\n" in body
     # MCP same
-    assert "server mcp_blue 127.0.0.1:8766 check" in body
-    assert "server mcp_green 127.0.0.1:8767 check backup" in body
+    assert "server mcp_blue 127.0.0.1:8766 check\n" in body
+    assert "server mcp_green 127.0.0.1:8767 check backup\n" in body
 
 
 def test_render_blue_green_mixed(tmp_path: Path) -> None:
