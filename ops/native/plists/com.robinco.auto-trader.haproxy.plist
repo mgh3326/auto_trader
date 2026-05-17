@@ -6,10 +6,7 @@
   <string>com.robinco.auto-trader.haproxy</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/opt/homebrew/bin/haproxy</string>
-    <string>-W</string>
-    <string>-f</string>
-    <string>/Users/mgh3326/services/auto_trader/shared/haproxy/haproxy.cfg</string>
+    <string>/Users/mgh3326/services/auto_trader/scripts/run-haproxy.sh</string>
   </array>
   <key>WorkingDirectory</key>
   <string>/Users/mgh3326/services/auto_trader/shared/haproxy</string>

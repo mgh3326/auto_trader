@@ -65,12 +65,16 @@ def test_common_sh_in_bundle() -> None:
     assert (SCRIPTS_DIR / "common.sh").is_file()
 
 
-@pytest.mark.parametrize(
-    "wrapper",
-    sorted(p for p in SCRIPTS_DIR.glob("run-*.sh")),
+# run-haproxy.sh is the only run-* wrapper that does not need the python-app
+# bootstrap from common.sh (it just exec's the haproxy binary). Exclude it.
+_RUN_WRAPPERS_NEEDING_COMMON_SH = sorted(
+    p for p in SCRIPTS_DIR.glob("run-*.sh") if p.name != "run-haproxy.sh"
 )
+
+
+@pytest.mark.parametrize("wrapper", _RUN_WRAPPERS_NEEDING_COMMON_SH)
 def test_run_wrapper_sources_common_sh(wrapper: Path) -> None:
-    """Every run-* wrapper sources common.sh from the deployed scripts dir."""
+    """Every python-app run-* wrapper sources common.sh from the deployed scripts dir."""
     body = wrapper.read_text()
     assert re.search(r"source\s+\".*?/scripts/common\.sh\"", body), (
         f"{wrapper.name} does not source common.sh; expected `source "

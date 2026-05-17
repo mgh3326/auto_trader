@@ -44,8 +44,11 @@ def test_plist_lints(name: str) -> None:
 def test_haproxy_plist_label() -> None:
     body = (PLIST_DIR / "com.robinco.auto-trader.haproxy.plist").read_text()
     assert "<string>com.robinco.auto-trader.haproxy</string>" in body
-    assert "haproxy" in body  # ProgramArguments references haproxy binary
-    assert "shared/haproxy/haproxy.cfg" in body
+    # ProgramArguments must route through the wrapper so the haproxy binary
+    # is resolved via `command -v haproxy` at runtime (works on Intel + Apple
+    # Silicon Homebrew). The plist must NOT hardcode /opt/homebrew/bin/haproxy.
+    assert "scripts/run-haproxy.sh" in body
+    assert "/opt/homebrew/bin/haproxy" not in body
 
 
 def test_api_blue_plist_port() -> None:
