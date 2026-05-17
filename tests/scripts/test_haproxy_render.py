@@ -76,3 +76,38 @@ def test_rendered_config_validates(tmp_path: Path) -> None:
         text=True,
     )
     assert proc.returncode == 0, proc.stderr
+
+
+def test_mcp_backend_health_check_sends_event_stream_accept(tmp_path: Path) -> None:
+    """ROB-259 review issue 10: HAProxy's mcp backend health check must send
+    the same Accept: text/event-stream header that the native healthcheck and
+    cloudflared use, so FastMCP returns the expected 400/401 status. Without
+    the header, FastMCP can respond with a different status (e.g. 406) and
+    HAProxy would mark the backend DOWN even when the app is healthy.
+    """
+    out = tmp_path / "haproxy.cfg"
+    proc = _render("blue", "blue", out)
+    assert proc.returncode == 0, proc.stderr
+    body = out.read_text()
+
+    # The send line must include the Accept header for the MCP backend.
+    assert "http-check send" in body, "expected http-check send in bk_mcp"
+    assert "Accept text/event-stream" in body, (
+        "MCP backend health check is missing the Accept: text/event-stream "
+        "header; FastMCP may respond with a non-401 status without it"
+    )
+
+    # And expect 400 or 401 (FastMCP unauthenticated reply class)
+    assert "http-check expect status 400,401" in body
+
+
+def test_api_backend_health_check_unchanged(tmp_path: Path) -> None:
+    """The api backend continues to use the simple `option httpchk GET /healthz`
+    form because /healthz does not depend on any Accept header.
+    """
+    out = tmp_path / "haproxy.cfg"
+    proc = _render("blue", "blue", out)
+    assert proc.returncode == 0, proc.stderr
+    body = out.read_text()
+    assert "option httpchk GET /healthz" in body
+    assert "http-check expect status 200" in body

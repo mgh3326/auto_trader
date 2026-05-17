@@ -39,7 +39,12 @@ backend bk_api
     {{API_BACKUP_LINE}}
 
 backend bk_mcp
-    option httpchk GET /mcp
+    # ROB-259 review: send the same Accept: text/event-stream header that
+    # cloudflared/native healthcheck send, so FastMCP returns the expected
+    # 400/401 status. Without the header FastMCP can respond with a different
+    # status (e.g. 406) and HAProxy would mark the backend DOWN.
+    option httpchk
+    http-check send meth GET uri /mcp ver HTTP/1.1 hdr Host trader-mcp.robinco.dev hdr Accept text/event-stream
     http-check expect status 400,401
     timeout server 1h
     timeout tunnel 1h
