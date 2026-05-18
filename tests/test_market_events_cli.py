@@ -63,21 +63,26 @@ def test_parse_args_rejects_unsupported_source_category_combo():
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_run_ingest_dispatches_per_day(db_session, monkeypatch):
+    """Per-day dispatch path still works for non-finnhub sources."""
+    from app.core import config as config_mod
     from scripts import ingest_market_events as cli
+
+    monkeypatch.setattr(config_mod.settings, "wisefn_earnings_enabled", True)
 
     fake = AsyncMock(
         return_value=type("R", (), {"status": "succeeded", "event_count": 0})()
     )
-    monkeypatch.setitem(cli.SUPPORTED, ("finnhub", "earnings", "us"), fake)
+    monkeypatch.setitem(cli.SUPPORTED, ("wisefn", "earnings", "kr"), fake)
 
     await cli.run_ingest(
         db=db_session,
-        source="finnhub",
+        source="wisefn",
         category="earnings",
-        market="us",
+        market="kr",
         from_date=date(2026, 5, 7),
         to_date=date(2026, 5, 9),
         dry_run=False,
+        force=False,
     )
     assert fake.await_count == 3
 
@@ -146,6 +151,7 @@ async def test_run_ingest_dry_run_does_not_call_orchestrator(db_session, monkeyp
         from_date=date(2026, 5, 13),
         to_date=date(2026, 5, 13),
         dry_run=True,
+        force=False,
     )
     assert rc == 0
     fake.assert_not_awaited()
@@ -281,6 +287,7 @@ async def test_run_ingest_skips_wisefn_when_flag_disabled(
         from_date=date(2026, 5, 1),
         to_date=date(2026, 5, 1),
         dry_run=False,
+        force=False,
     )
 
     assert rc == 0
@@ -308,6 +315,7 @@ async def test_run_ingest_calls_wisefn_when_flag_enabled(db_session, monkeypatch
         from_date=date(2026, 5, 1),
         to_date=date(2026, 5, 2),
         dry_run=False,
+        force=False,
     )
 
     assert rc == 0
@@ -374,6 +382,7 @@ async def test_cli_forexfactory_run_reuses_single_cache_across_days(
         from_date=date(2026, 5, 11),
         to_date=date(2026, 5, 24),
         dry_run=False,
+        force=False,
     )
 
     assert call_log.count(ff.THISWEEK_URL) == 1
@@ -457,6 +466,167 @@ async def test_run_ingest_dispatches_tradingview_economic_global(
         from_date=date(2026, 5, 13),
         to_date=date(2026, 5, 13),
         dry_run=False,
+        force=False,
     )
     assert rc == 0
     fake.assert_awaited_once_with(db_session, date(2026, 5, 13))
+
+
+# ---------------------------------------------------------------------------
+# ROB-264: range-aware US earnings CLI dispatch
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_cli_finnhub_earnings_us_uses_range_path(db_session, monkeypatch):
+    from scripts import ingest_market_events as cli
+
+    fake_range = AsyncMock(return_value=[])
+    monkeypatch.setattr(cli, "ingest_us_earnings_for_range", fake_range)
+
+    per_day = AsyncMock()
+    monkeypatch.setitem(cli.SUPPORTED, ("finnhub", "earnings", "us"), per_day)
+
+    rc = await cli.run_ingest(
+        db=db_session,
+        source="finnhub",
+        category="earnings",
+        market="us",
+        from_date=date(2026, 5, 11),
+        to_date=date(2026, 5, 13),
+        dry_run=False,
+        force=False,
+    )
+
+    assert rc == 0
+    fake_range.assert_awaited_once_with(
+        db_session,
+        date(2026, 5, 11),
+        date(2026, 5, 13),
+        skip_succeeded=True,
+    )
+    per_day.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_cli_finnhub_earnings_us_force_disables_skip(db_session, monkeypatch):
+    from scripts import ingest_market_events as cli
+
+    fake_range = AsyncMock(return_value=[])
+    monkeypatch.setattr(cli, "ingest_us_earnings_for_range", fake_range)
+
+    rc = await cli.run_ingest(
+        db=db_session,
+        source="finnhub",
+        category="earnings",
+        market="us",
+        from_date=date(2026, 5, 11),
+        to_date=date(2026, 5, 13),
+        dry_run=False,
+        force=True,
+    )
+
+    assert rc == 0
+    fake_range.assert_awaited_once_with(
+        db_session,
+        date(2026, 5, 11),
+        date(2026, 5, 13),
+        skip_succeeded=False,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_cli_finnhub_earnings_us_dry_run_does_not_call_range(
+    db_session, monkeypatch
+):
+    from scripts import ingest_market_events as cli
+
+    fake_range = AsyncMock()
+    monkeypatch.setattr(cli, "ingest_us_earnings_for_range", fake_range)
+
+    rc = await cli.run_ingest(
+        db=db_session,
+        source="finnhub",
+        category="earnings",
+        market="us",
+        from_date=date(2026, 5, 11),
+        to_date=date(2026, 5, 13),
+        dry_run=True,
+        force=False,
+    )
+
+    assert rc == 0
+    fake_range.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_cli_finnhub_earnings_us_429_marks_failed_summary(
+    db_session, monkeypatch, capsys
+):
+    from app.services.market_events.finnhub_helpers import (
+        FinnhubQuotaExceededError,
+    )
+    from scripts import ingest_market_events as cli
+
+    fake_range = AsyncMock(side_effect=FinnhubQuotaExceededError("limit reached"))
+    monkeypatch.setattr(cli, "ingest_us_earnings_for_range", fake_range)
+
+    rc = await cli.run_ingest(
+        db=db_session,
+        source="finnhub",
+        category="earnings",
+        market="us",
+        from_date=date(2026, 5, 11),
+        to_date=date(2026, 5, 13),
+        dry_run=False,
+        force=False,
+    )
+
+    assert rc == 2
+    import json as _json
+
+    summary = _json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert summary["failed"] >= 1
+    assert summary["succeeded"] == 0
+    assert summary.get("error") == "finnhub_quota_exceeded"
+
+
+@pytest.mark.unit
+def test_parse_args_force_flag():
+    from scripts.ingest_market_events import parse_args
+
+    ns = parse_args(
+        [
+            "--source",
+            "finnhub",
+            "--category",
+            "earnings",
+            "--market",
+            "us",
+            "--from-date",
+            "2026-05-11",
+            "--to-date",
+            "2026-05-13",
+            "--force",
+        ]
+    )
+    assert ns.force is True
+
+
+@pytest.mark.unit
+def test_parse_args_force_defaults_false():
+    from scripts.ingest_market_events import parse_args
+
+    ns = parse_args(
+        [
+            "--from-date",
+            "2026-05-11",
+            "--to-date",
+            "2026-05-13",
+        ]
+    )
+    assert ns.force is False

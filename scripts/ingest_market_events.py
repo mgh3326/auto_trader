@@ -40,6 +40,7 @@ import logging
 import re
 from collections.abc import Iterator
 from datetime import date, timedelta
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -47,12 +48,16 @@ from app.core.cli import setup_logging_and_sentry
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.monitoring.sentry import capture_exception
+from app.services.market_events.finnhub_helpers import (
+    FinnhubQuotaExceededError,
+)
 from app.services.market_events.ingestion import (
     ingest_economic_events_for_date,
     ingest_kr_disclosures_for_date,
     ingest_kr_earnings_wisefn_for_date,
     ingest_tradingview_economic_events_for_date,
     ingest_us_earnings_for_date,
+    ingest_us_earnings_for_range,
 )
 
 logger = logging.getLogger(__name__)
@@ -137,6 +142,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="ISO end date (inclusive). Required when --from-date is used.",
     )
     parser.add_argument("--dry-run", action="store_true", dest="dry_run")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        dest="force",
+        help=(
+            "Reprocess already-succeeded partitions. Default skips them to "
+            "preserve external API quota on reruns."
+        ),
+    )
     ns = parser.parse_args(argv)
 
     if ns.month is not None:
@@ -181,11 +195,22 @@ async def run_ingest(
     from_date: date,
     to_date: date,
     dry_run: bool,
+    force: bool = False,
 ) -> int:
     enabled, reason = _is_source_enabled(source, category, market)
     if not enabled and not dry_run:
         logger.warning("%s; skipping run for %s..%s", reason, from_date, to_date)
         return 0
+
+    # Range-aware path: one Finnhub API call per CLI invocation (ROB-264).
+    if (source, category, market) == ("finnhub", "earnings", "us"):
+        return await _run_finnhub_us_earnings_range(
+            db=db,
+            from_date=from_date,
+            to_date=to_date,
+            dry_run=dry_run,
+            force=force,
+        )
 
     fn = SUPPORTED[(source, category, market)]
 
@@ -255,6 +280,107 @@ async def run_ingest(
     return 0 if failed == 0 else 2
 
 
+async def _run_finnhub_us_earnings_range(
+    *,
+    db: AsyncSession,
+    from_date: date,
+    to_date: date,
+    dry_run: bool,
+    force: bool,
+) -> int:
+    """Single-call range path for (finnhub, earnings, us) (ROB-264)."""
+    source = "finnhub"
+    category = "earnings"
+    market = "us"
+
+    if dry_run:
+        partition_count = (to_date - from_date).days + 1
+        logger.info(
+            "[DRY-RUN] would range-ingest %s/%s/%s for %s..%s (%d partitions, force=%s)",
+            source,
+            category,
+            market,
+            from_date,
+            to_date,
+            partition_count,
+            force,
+        )
+        summary_dry: dict[str, Any] = {
+            "source": source,
+            "category": category,
+            "market": market,
+            "from_date": from_date.isoformat(),
+            "to_date": to_date.isoformat(),
+            "dry_run": True,
+            "succeeded": partition_count,
+            "failed": 0,
+        }
+        import json as _json
+
+        print(_json.dumps(summary_dry))
+        return 0
+
+    error_label: str | None = None
+    succeeded = 0
+    failed = 0
+    try:
+        results = await ingest_us_earnings_for_range(
+            db,
+            from_date,
+            to_date,
+            skip_succeeded=not force,
+        )
+        for r in results:
+            if r.status == "succeeded":
+                succeeded += 1
+                logger.info(
+                    "ingested %s events for %s/%s/%s on %s",
+                    r.event_count,
+                    source,
+                    category,
+                    market,
+                    r.partition_date,
+                )
+            else:
+                failed += 1
+                logger.error(
+                    "ingest failed for %s/%s/%s on %s: %s",
+                    source,
+                    category,
+                    market,
+                    r.partition_date,
+                    r.error,
+                )
+    except FinnhubQuotaExceededError as exc:
+        error_label = "finnhub_quota_exceeded"
+        logger.error(
+            "finnhub quota exhausted for %s..%s; failing closed without "
+            "mutating remaining partitions: %s",
+            from_date,
+            to_date,
+            exc,
+        )
+        failed += 1
+
+    summary: dict[str, Any] = {
+        "source": source,
+        "category": category,
+        "market": market,
+        "from_date": from_date.isoformat(),
+        "to_date": to_date.isoformat(),
+        "dry_run": False,
+        "succeeded": succeeded,
+        "failed": failed,
+    }
+    if error_label:
+        summary["error"] = error_label
+    import json as _json
+
+    print(_json.dumps(summary))
+    logger.info("ingest complete: %s", summary)
+    return 0 if failed == 0 else 2
+
+
 async def main(argv: list[str] | None = None) -> int:
     setup_logging_and_sentry(service_name="market-events-ingest")
     ns = parse_args(argv)
@@ -269,6 +395,7 @@ async def main(argv: list[str] | None = None) -> int:
                 from_date=ns.from_date,
                 to_date=ns.to_date,
                 dry_run=ns.dry_run,
+                force=ns.force,
             )
     except Exception as exc:
         capture_exception(exc, process="ingest_market_events")
