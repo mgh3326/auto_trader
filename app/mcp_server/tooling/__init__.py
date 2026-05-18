@@ -21,7 +21,6 @@ from typing import Any
 
 __all__ = [
     "MARKET_REPORT_TOOL_NAMES",
-    "WATCH_ALERT_TOOL_NAMES",
     "TRADE_PROFILE_TOOL_NAMES",
     "NEWS_TOOL_NAMES",
     "TRADE_JOURNAL_TOOL_NAMES",
@@ -29,7 +28,6 @@ __all__ = [
     "register_market_report_tools",
     "register_trade_journal_tools",
     "register_trade_profile_tools",
-    "register_watch_alert_tools",
     "register_news_tools",
 ]
 
@@ -69,14 +67,6 @@ _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
     "register_trade_profile_tools": (
         "app.mcp_server.tooling.trade_profile_registration",
         "register_trade_profile_tools",
-    ),
-    "WATCH_ALERT_TOOL_NAMES": (
-        "app.mcp_server.tooling.watch_alerts_registration",
-        "WATCH_ALERT_TOOL_NAMES",
-    ),
-    "register_watch_alert_tools": (
-        "app.mcp_server.tooling.watch_alerts_registration",
-        "register_watch_alert_tools",
     ),
 }
 

@@ -92,9 +92,9 @@ const NAV_CARDS: NavCard[] = [
     icon: <Icon name="search" size={20} />,
   },
   {
-    to: "/action-center",
-    label: "액션 센터",
-    desc: "애널리스트 리포트와 승인 대기 후보",
+    to: "/reports",
+    label: "투자 리포트",
+    desc: "리포트별 액션·와치·리스크 검토",
     icon: <Icon name="flash" size={20} />,
   },
 ];

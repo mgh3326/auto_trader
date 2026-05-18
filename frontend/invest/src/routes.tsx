@@ -19,7 +19,8 @@
 // /invest/coverage          — Data coverage dashboard.
 // /invest/insights          — Read-only market insight cards.
 // /invest/screener          — Stock screener (골라보기).
-// /invest/action-center     — Analyst report / approval candidate action center.
+// /invest/reports                 — Investment report list (ROB-265).
+// /invest/reports/:reportUuid     — Single investment report bundle.
 // /invest/stocks/:m/:sym    — Stock detail page.
 // ─────────────────────────────────────────────────────────────────────────────
 import { createBrowserRouter, Navigate, useLocation, useParams } from "react-router-dom";
