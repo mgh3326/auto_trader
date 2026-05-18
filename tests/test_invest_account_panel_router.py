@@ -14,7 +14,7 @@ from app.schemas.invest_home import (
     InvestHomeResponse,
     InvestHomeResponseMeta,
 )
-from app.services.invest_home_service import build_grouped_holdings
+from app.services.invest_home_service import _AccountPanelView, build_grouped_holdings
 
 
 @pytest.mark.unit
@@ -52,7 +52,7 @@ async def test_account_panel_combines_home_and_watch(monkeypatch) -> None:
             currency="USD",
         ),
     ]
-    fake_home = InvestHomeResponse(
+    fake_view = _AccountPanelView(
         homeSummary=HomeSummary(
             includedSources=["kis"], excludedSources=[], totalValueKrw=0.0
         ),
@@ -68,12 +68,11 @@ async def test_account_panel_combines_home_and_watch(monkeypatch) -> None:
                 buyingPower=CashAmounts(),
             )
         ],
-        holdings=holdings,
         groupedHoldings=build_grouped_holdings(holdings),
-        meta=InvestHomeResponseMeta(),
+        warnings=[],
     )
     home_service = MagicMock()
-    home_service.get_home = AsyncMock(return_value=fake_home)
+    home_service.build_account_panel_view = AsyncMock(return_value=fake_view)
     db = MagicMock()
     monkeypatch.setattr(
         "app.services.invest_view_model.account_panel_service._load_watch_symbols",
@@ -99,3 +98,51 @@ async def test_account_panel_combines_home_and_watch(monkeypatch) -> None:
     # All known sources represented in sourceVisuals
     sources = {v.source for v in resp.sourceVisuals}
     assert {"kis", "upbit", "alpaca_paper", "kis_mock"}.issubset(sources)
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_build_account_panel_uses_slim_view_path(monkeypatch):
+    from app.services.invest_view_model.account_panel_service import build_account_panel
+
+    call_log: list[str] = []
+
+    class _StubService:
+        async def get_home(self, **kwargs):
+            call_log.append("get_home")
+            raise AssertionError("build_account_panel must not call get_home")
+
+        async def build_account_panel_view(self, **kwargs):
+            call_log.append("build_account_panel_view")
+            from app.schemas.invest_home import HomeSummary
+            from app.services.invest_home_service import _AccountPanelView
+            return _AccountPanelView(
+                homeSummary=HomeSummary(
+                    includedSources=[],
+                    excludedSources=[],
+                    totalValueKrw=0,
+                ),
+                accounts=[],
+                groupedHoldings=[],
+                warnings=[],
+            )
+
+    class _DBStub:
+        async def execute(self, _stmt):
+            class _R:
+                def all(self):
+                    return []
+            return _R()
+
+    monkeypatch.setattr(
+        "app.services.invest_view_model.account_panel_service._load_watch_symbols",
+        AsyncMock(return_value=([], True)),
+    )
+
+    resp = await build_account_panel(
+        user_id=1, db=_DBStub(), home_service=_StubService()
+    )
+
+    assert "build_account_panel_view" in call_log
+    assert "get_home" not in call_log
+    assert resp.homeSummary.totalValueKrw == 0

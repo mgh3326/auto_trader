@@ -302,6 +302,16 @@ class _SourceFetchResult:
     )
 
 
+@dataclass(frozen=True)
+class _AccountPanelView:
+    """Slim view used by /account-panel — excludes full holdings/hidden tracking."""
+
+    homeSummary: "HomeSummary"
+    accounts: list["Account"]
+    groupedHoldings: list["GroupedHolding"]
+    warnings: list["InvestHomeWarning"]
+
+
 class InvestHomeService:
     """Read-only 합성 서비스. mutation 경로 호출 금지."""
 
@@ -408,4 +418,79 @@ class InvestHomeService:
                 hiddenCounts=hidden_counts,
                 hiddenHoldings=hidden_holdings,
             ),
+        )
+
+    async def build_account_panel_view(
+        self,
+        *,
+        user_id: int,
+        include_paper: bool = False,
+        paper_sources: frozenset[str] | None = None,
+    ) -> _AccountPanelView:
+        """Slim path for /account-panel — skips holdings detail and hidden tracking.
+
+        Runs the same reader fetches as get_home() (live/manual + optionally paper),
+        but does not assemble the full Holdings list or hidden_holdings/hidden_counts
+        tracking since the panel UI does not use those fields.
+        """
+        warnings: list[InvestHomeWarning] = []
+        accounts: list[Account] = []
+        holdings: list[Holding] = []
+
+        for fetcher, src in (
+            (self._kis.fetch, "kis"),
+            (self._upbit.fetch, "upbit"),
+            (self._manual.fetch, "toss_manual"),
+        ):
+            try:
+                result: _SourceFetchResult = await fetcher(user_id=user_id)
+                accounts.extend(result.accounts)
+                holdings.extend(result.holdings)
+                if result.warning is not None:
+                    warnings.append(result.warning)
+                if src == "toss_manual":
+                    toss_account = build_manual_account_from_holdings(result.holdings)
+                    if toss_account is not None:
+                        accounts.append(toss_account)
+            except Exception as exc:
+                logger.warning(
+                    "[invest_home] %s fetch failed: %s", src, exc, exc_info=True
+                )
+                warnings.append(
+                    InvestHomeWarning(
+                        source=src, message=str(exc) or type(exc).__name__
+                    )
+                )
+
+        if include_paper:
+            for reader in self._paper_readers:
+                reader_source: str = getattr(reader, "source", None) or "kis_mock"
+                if paper_sources is not None and reader_source not in paper_sources:
+                    continue
+                try:
+                    result = await reader.fetch(user_id=user_id)  # type: ignore[union-attr]
+                    accounts.extend(result.accounts)
+                    holdings.extend(result.holdings)
+                    if result.warning is not None:
+                        warnings.append(result.warning)
+                except Exception as exc:
+                    src_name = type(reader).__name__
+                    logger.warning(
+                        "[invest_home] paper reader %s failed: %s",
+                        src_name,
+                        exc,
+                        exc_info=True,
+                    )
+                    if reader_source in _PAPER:
+                        warnings.append(
+                            InvestHomeWarning(
+                                source=reader_source, message=type(exc).__name__
+                            )  # type: ignore[arg-type]
+                        )
+
+        return _AccountPanelView(
+            homeSummary=build_home_summary(accounts),
+            accounts=accounts,
+            groupedHoldings=build_grouped_holdings(holdings),
+            warnings=warnings,
         )
