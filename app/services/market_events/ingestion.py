@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -113,6 +113,128 @@ async def ingest_us_earnings_for_date(
             partition_date=target_date,
             error=exc,
         )
+
+
+async def ingest_us_earnings_for_range(
+    db: AsyncSession,
+    from_date: date,
+    to_date: date,
+    *,
+    skip_succeeded: bool = True,
+) -> list[IngestionRunResult]:
+    """Range-aware US earnings ingestion (ROB-264).
+
+    Calls Finnhub once for the entire [from_date, to_date] window, groups rows
+    by `event_date`, and writes one `market_event_ingestion_partitions` row per
+    day in the window — including days with zero events.
+
+    When `skip_succeeded=True` (default), days already marked
+    `status='succeeded'` in the partition table are left untouched. Use
+    `skip_succeeded=False` for explicit replay.
+
+    Raises:
+        FinnhubQuotaExceededError: 429 from Finnhub. No partitions are mutated;
+            callers should fail closed and retry after quota resets.
+    """
+    if from_date > to_date:
+        raise ValueError("from_date must be <= to_date")
+
+    source = "finnhub"
+    category = "earnings"
+    market = "us"
+    repo = MarketEventsRepository(db)
+
+    all_dates: list[date] = []
+    cur = from_date
+    while cur <= to_date:
+        all_dates.append(cur)
+        cur += timedelta(days=1)
+
+    succeeded_set: set[date] = set()
+    if skip_succeeded:
+        succeeded_set = await repo.list_succeeded_partitions_in_range(
+            source=source,
+            category=category,
+            market=market,
+            from_date=from_date,
+            to_date=to_date,
+        )
+
+    dates_to_process = [d for d in all_dates if d not in succeeded_set]
+    if not dates_to_process:
+        logger.info(
+            "all %d partitions already succeeded for %s..%s; skipping fetch",
+            len(all_dates),
+            from_date,
+            to_date,
+        )
+        return []
+
+    response = await fetch_earnings_calendar_finnhub(
+        None, from_date.isoformat(), to_date.isoformat()
+    )
+    rows = response.get("earnings", []) if isinstance(response, dict) else []
+
+    rows_by_date: dict[date, list[dict[str, Any]]] = {d: [] for d in dates_to_process}
+    for row in rows:
+        raw_date = row.get("date")
+        if not raw_date:
+            continue
+        try:
+            ev_date = date.fromisoformat(raw_date)
+        except ValueError:
+            logger.warning("skipping finnhub row with bad date: %s", row)
+            continue
+        if ev_date in rows_by_date:
+            rows_by_date[ev_date].append(row)
+
+    results: list[IngestionRunResult] = []
+    for d in dates_to_process:
+        partition = await repo.get_or_create_partition(
+            source=source,
+            category=category,
+            market=market,
+            partition_date=d,
+        )
+        await repo.mark_partition_running(partition)
+        try:
+            upserted = 0
+            for row in rows_by_date[d]:
+                try:
+                    event_dict, value_dicts = normalize_finnhub_earnings_row(row)
+                except ValueError as exc:
+                    logger.warning(
+                        "skipping unparseable finnhub row: %s (%s)", row, exc
+                    )
+                    continue
+                await repo.upsert_event_with_values(event_dict, value_dicts)
+                upserted += 1
+            await repo.mark_partition_succeeded(partition, event_count=upserted)
+            await db.commit()
+            results.append(
+                IngestionRunResult(
+                    source=source,
+                    category=category,
+                    market=market,
+                    partition_date=d,
+                    status="succeeded",
+                    event_count=upserted,
+                )
+            )
+        except Exception as exc:
+            logger.exception("finnhub earnings ingestion failed for %s", d)
+            failed = await _mark_failed_after_exception(
+                db,
+                source=source,
+                category=category,
+                market=market,
+                partition_date=d,
+                error=exc,
+            )
+            await db.commit()
+            results.append(failed)
+
+    return results
 
 
 async def ingest_kr_disclosures_for_date(

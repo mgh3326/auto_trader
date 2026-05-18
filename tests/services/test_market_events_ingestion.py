@@ -349,3 +349,95 @@ async def test_economic_ingestion_marks_failed_rate_limited(db_session):
     )
     assert result.status == "failed"
     assert result.error == "forexfactory_rate_limited"
+
+
+# ---------------------------------------------------------------------------
+# ROB-264: range-aware US earnings ingestion
+# ---------------------------------------------------------------------------
+
+
+FINNHUB_RESPONSE_RANGE_MULTI_DATE = {
+    "symbol": None,
+    "instrument_type": "equity_us",
+    "source": "finnhub",
+    "from_date": "2026-05-11",
+    "to_date": "2026-05-13",
+    "count": 3,
+    "earnings": [
+        {
+            "symbol": "AAA",
+            "date": "2026-05-11",
+            "hour": "bmo",
+            "eps_estimate": 1.0,
+            "eps_actual": None,
+            "revenue_estimate": 100,
+            "revenue_actual": None,
+            "quarter": 1,
+            "year": 2026,
+        },
+        {
+            "symbol": "BBB",
+            "date": "2026-05-11",
+            "hour": "amc",
+            "eps_estimate": 2.0,
+            "eps_actual": None,
+            "revenue_estimate": 200,
+            "revenue_actual": None,
+            "quarter": 1,
+            "year": 2026,
+        },
+        {
+            "symbol": "CCC",
+            "date": "2026-05-13",
+            "hour": "amc",
+            "eps_estimate": 3.0,
+            "eps_actual": None,
+            "revenue_estimate": 300,
+            "revenue_actual": None,
+            "quarter": 1,
+            "year": 2026,
+        },
+    ],
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_ingest_us_earnings_for_range_groups_by_date(db_session, monkeypatch):
+    from app.models.market_events import MarketEvent, MarketEventIngestionPartition
+    from app.services.market_events import ingestion
+
+    fake = AsyncMock(return_value=FINNHUB_RESPONSE_RANGE_MULTI_DATE)
+    monkeypatch.setattr(ingestion, "fetch_earnings_calendar_finnhub", fake)
+
+    results = await ingestion.ingest_us_earnings_for_range(
+        db_session, date(2026, 5, 11), date(2026, 5, 13)
+    )
+    await db_session.commit()
+
+    fake.assert_awaited_once_with(None, "2026-05-11", "2026-05-13")
+
+    assert [r.partition_date for r in results] == [
+        date(2026, 5, 11),
+        date(2026, 5, 12),
+        date(2026, 5, 13),
+    ]
+    assert [r.status for r in results] == ["succeeded", "succeeded", "succeeded"]
+    assert [r.event_count for r in results] == [2, 0, 1]
+
+    events = (await db_session.execute(select(MarketEvent))).scalars().all()
+    assert sorted(e.symbol for e in events) == ["AAA", "BBB", "CCC"]
+
+    parts = (
+        (await db_session.execute(select(MarketEventIngestionPartition)))
+        .scalars()
+        .all()
+    )
+    parts_by_date = {p.partition_date: p for p in parts}
+    assert set(parts_by_date.keys()) == {
+        date(2026, 5, 11),
+        date(2026, 5, 12),
+        date(2026, 5, 13),
+    }
+    assert parts_by_date[date(2026, 5, 12)].status == "succeeded"
+    assert parts_by_date[date(2026, 5, 12)].event_count == 0
