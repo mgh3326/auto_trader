@@ -19,7 +19,7 @@ from app.services.invest_home_service import build_grouped_holdings, build_home_
 
 
 class _StubService:
-    async def get_home(self, *, user_id: int) -> InvestHomeResponse:
+    async def get_home(self, *, user_id: int, **kwargs) -> InvestHomeResponse:
         accounts = [
             Account(
                 accountId="a1",
@@ -127,3 +127,63 @@ def test_get_home_returns_200_with_schema(client: TestClient) -> None:
     )
     assert body["groupedHoldings"][0]["groupId"] == "KR:equity:KRW:005930"
     assert body["meta"]["warnings"][0]["source"] == "upbit"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_home_endpoint_default_does_not_request_paper():
+    received: dict = {}
+
+    class _PaperStubService:
+        async def get_home(self, *, user_id, include_paper=False, paper_sources=None):
+            received["include_paper"] = include_paper
+            received["paper_sources"] = paper_sources
+            return InvestHomeResponse(
+                homeSummary=build_home_summary([]),
+                accounts=[], holdings=[], groupedHoldings=[],
+                meta=InvestHomeResponseMeta(warnings=[]),
+            )
+
+    from fastapi import FastAPI
+    from httpx import AsyncClient, ASGITransport
+    app = FastAPI()
+    app.include_router(invest_api_router)
+    app.dependency_overrides[get_authenticated_user] = lambda: type("U", (), {"id": 1})()
+    app.dependency_overrides[get_invest_home_service] = lambda: _PaperStubService()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.get("/invest/api/home")
+
+    assert r.status_code == 200
+    assert received["include_paper"] is False
+    assert received["paper_sources"] is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_home_endpoint_passes_include_paper_query():
+    received: dict = {}
+
+    class _PaperStubService:
+        async def get_home(self, *, user_id, include_paper=False, paper_sources=None):
+            received["include_paper"] = include_paper
+            received["paper_sources"] = paper_sources
+            return InvestHomeResponse(
+                homeSummary=build_home_summary([]),
+                accounts=[], holdings=[], groupedHoldings=[],
+                meta=InvestHomeResponseMeta(warnings=[]),
+            )
+
+    from fastapi import FastAPI
+    from httpx import AsyncClient, ASGITransport
+    app = FastAPI()
+    app.include_router(invest_api_router)
+    app.dependency_overrides[get_authenticated_user] = lambda: type("U", (), {"id": 1})()
+    app.dependency_overrides[get_invest_home_service] = lambda: _PaperStubService()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.get("/invest/api/home?includePaper=true&paperSources=kis_mock,alpaca_paper")
+
+    assert r.status_code == 200
+    assert received["include_paper"] is True
+    assert received["paper_sources"] == frozenset({"kis_mock", "alpaca_paper"})

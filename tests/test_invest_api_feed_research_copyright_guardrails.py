@@ -54,7 +54,7 @@ def _make_app():
     )
 
     class _StubService:
-        async def get_home(self, *, user_id: int) -> InvestHomeResponse:
+        async def get_home(self, *, user_id: int, **kwargs) -> InvestHomeResponse:
             return InvestHomeResponse(
                 homeSummary=build_home_summary([]),
                 accounts=[],

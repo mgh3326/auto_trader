@@ -679,6 +679,8 @@ async def build_kr_action_readiness(
     user_id: int,
     home_service: InvestHomeService,
     symbol: str | None = None,
+    include_paper: bool = False,
+    paper_sources: frozenset[str] | None = None,
 ) -> KrActionReadinessResponse:
     normalized_symbol = symbol.strip().upper() if symbol and symbol.strip() else None
     if normalized_symbol is not None and not (
@@ -759,7 +761,11 @@ async def build_kr_action_readiness(
     home: InvestHomeResponse | None = None
     home_unavailable = False
     try:
-        home = await home_service.get_home(user_id=user_id)
+        home = await home_service.get_home(
+            user_id=user_id,
+            include_paper=include_paper,
+            paper_sources=paper_sources,
+        )
     except Exception:  # read-only partial failure: surface 확인 불가
         home_unavailable = True
 

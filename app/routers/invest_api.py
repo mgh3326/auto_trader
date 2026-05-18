@@ -114,6 +114,18 @@ from app.services.invest_view_model.stock_detail_symbol_resolver import (
 )
 from app.services.invest_view_model.weekly_summary_service import build_weekly_summary
 
+def _parse_paper_sources(value: str | None) -> frozenset[str] | None:
+    """Parse comma-separated paper source identifiers into a frozenset.
+
+    Returns None when value is None or empty — meaning "all paper sources"
+    when include_paper is True.
+    """
+    if not value:
+        return None
+    parts = [part.strip() for part in value.split(",") if part.strip()]
+    return frozenset(parts) if parts else None
+
+
 router = APIRouter(prefix="/invest/api", tags=["invest"])
 
 
@@ -157,8 +169,14 @@ def get_screener_service_dep():
 async def get_home(
     user: Annotated[Any, Depends(get_authenticated_user)],
     service: Annotated[InvestHomeService, Depends(get_invest_home_service)],
+    include_paper: Annotated[bool, Query(alias="includePaper")] = False,
+    paper_sources: Annotated[str | None, Query(alias="paperSources")] = None,
 ) -> InvestHomeResponse:
-    return await service.get_home(user_id=user.id)
+    return await service.get_home(
+        user_id=user.id,
+        include_paper=include_paper,
+        paper_sources=_parse_paper_sources(paper_sources),
+    )
 
 
 @router.get("/market")
@@ -205,9 +223,15 @@ async def get_crypto_dashboard(
     service: Annotated[InvestHomeService, Depends(get_invest_home_service)],
     db: Annotated[AsyncSession, Depends(get_db)],
     limit: int = Query(20, ge=1, le=50),
+    include_paper: Annotated[bool, Query(alias="includePaper")] = False,
+    paper_sources: Annotated[str | None, Query(alias="paperSources")] = None,
 ) -> CryptoDashboardResponse:
     """Read-only crypto dashboard; never syncs or mutates broker/order state."""
-    home = await service.get_home(user_id=user.id)
+    home = await service.get_home(
+        user_id=user.id,
+        include_paper=include_paper,
+        paper_sources=_parse_paper_sources(paper_sources),
+    )
     resolver = await build_relation_resolver(
         db, user_id=user.id, held_pairs=_held_pairs_from_home(home)
     )
@@ -226,6 +250,8 @@ async def get_crypto_naver_reference(
     db: Annotated[AsyncSession, Depends(get_db)],
     symbol: str | None = Query(None, description="Optional KRW pair or base symbol"),
     limit: int = Query(20, ge=1, le=50),
+    include_paper: Annotated[bool, Query(alias="includePaper")] = False,
+    paper_sources: Annotated[str | None, Query(alias="paperSources")] = None,
 ) -> NaverCryptoReferenceResponse:
     """Read-only Naver-style crypto reference adapter.
 
@@ -233,7 +259,11 @@ async def get_crypto_naver_reference(
     metadata only. It never syncs, submits orders, mutates watch/order-intent
     state, or writes production data.
     """
-    home = await service.get_home(user_id=user.id)
+    home = await service.get_home(
+        user_id=user.id,
+        include_paper=include_paper,
+        paper_sources=_parse_paper_sources(paper_sources),
+    )
     resolver = await build_relation_resolver(
         db, user_id=user.id, held_pairs=_held_pairs_from_home(home)
     )
@@ -275,6 +305,8 @@ async def get_kr_action_readiness(
     service: Annotated[InvestHomeService, Depends(get_invest_home_service)],
     db: Annotated[AsyncSession, Depends(get_db)],
     symbol: str = Query("", description="Optional six-digit KR equity symbol"),
+    include_paper: Annotated[bool, Query(alias="includePaper")] = False,
+    paper_sources: Annotated[str | None, Query(alias="paperSources")] = None,
 ) -> KrActionReadinessResponse:
     """Read-only KR action-report readiness/source dashboard (ROB-256)."""
     return await build_kr_action_readiness(
@@ -282,6 +314,8 @@ async def get_kr_action_readiness(
         user_id=user.id,
         home_service=service,
         symbol=symbol or None,
+        include_paper=include_paper,
+        paper_sources=_parse_paper_sources(paper_sources),
     )
 
 
@@ -290,8 +324,16 @@ async def get_account_panel(
     user: Annotated[Any, Depends(get_authenticated_user)],
     service: Annotated[InvestHomeService, Depends(get_invest_home_service)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    include_paper: Annotated[bool, Query(alias="includePaper")] = False,
+    paper_sources: Annotated[str | None, Query(alias="paperSources")] = None,
 ) -> AccountPanelResponse:
-    return await build_account_panel(user_id=user.id, db=db, home_service=service)
+    return await build_account_panel(
+        user_id=user.id,
+        db=db,
+        home_service=service,
+        include_paper=include_paper,
+        paper_sources=_parse_paper_sources(paper_sources),
+    )
 
 
 @router.get("/investor-flow")
@@ -466,8 +508,14 @@ async def get_signals(
     db: Annotated[AsyncSession, Depends(get_db)],
     tab: SignalTab = Query("mine"),
     limit: int = Query(20, ge=1, le=100),
+    include_paper: Annotated[bool, Query(alias="includePaper")] = False,
+    paper_sources: Annotated[str | None, Query(alias="paperSources")] = None,
 ) -> SignalsResponse:
-    home = await service.get_home(user_id=user.id)
+    home = await service.get_home(
+        user_id=user.id,
+        include_paper=include_paper,
+        paper_sources=_parse_paper_sources(paper_sources),
+    )
     resolver = await build_relation_resolver(
         db, user_id=user.id, held_pairs=_held_pairs_from_home(home)
     )
@@ -482,8 +530,14 @@ async def get_calendar(
     from_date: date = Query(...),
     to_date: date = Query(...),
     tab: CalendarTab = Query("all"),
+    include_paper: Annotated[bool, Query(alias="includePaper")] = False,
+    paper_sources: Annotated[str | None, Query(alias="paperSources")] = None,
 ) -> CalendarResponse:
-    home = await service.get_home(user_id=user.id)
+    home = await service.get_home(
+        user_id=user.id,
+        include_paper=include_paper,
+        paper_sources=_parse_paper_sources(paper_sources),
+    )
     resolver = await build_relation_resolver(
         db, user_id=user.id, held_pairs=_held_pairs_from_home(home)
     )
@@ -515,8 +569,14 @@ async def get_feed_news(
     cursor: str | None = Query(None),
     include_quotes: Annotated[bool, Query(alias="includeQuotes")] = False,
     topic: FeedTopic | None = Query(None),
+    include_paper: Annotated[bool, Query(alias="includePaper")] = False,
+    paper_sources: Annotated[str | None, Query(alias="paperSources")] = None,
 ) -> FeedNewsResponse:
-    home = await service.get_home(user_id=user.id)
+    home = await service.get_home(
+        user_id=user.id,
+        include_paper=include_paper,
+        paper_sources=_parse_paper_sources(paper_sources),
+    )
     resolver = await build_relation_resolver(
         db, user_id=user.id, held_pairs=_held_pairs_from_home(home)
     )
@@ -546,10 +606,16 @@ async def get_feed_research(
     query: str | None = Query(None),
     from_date: date | None = Query(None, alias="fromDate"),
     to_date: date | None = Query(None, alias="toDate"),
+    include_paper: Annotated[bool, Query(alias="includePaper")] = False,
+    paper_sources: Annotated[str | None, Query(alias="paperSources")] = None,
 ) -> FeedResearchResponse:
     if from_date and to_date and from_date > to_date:
         raise HTTPException(status_code=400, detail="fromDate must be <= toDate")
-    home = await service.get_home(user_id=user.id)
+    home = await service.get_home(
+        user_id=user.id,
+        include_paper=include_paper,
+        paper_sources=_parse_paper_sources(paper_sources),
+    )
     resolver = await build_relation_resolver(
         db, user_id=user.id, held_pairs=_held_pairs_from_home(home)
     )
@@ -590,8 +656,14 @@ async def get_screener_results_endpoint(
     screening_service: Annotated[Any, Depends(get_screener_service_dep)],
     preset: str = Query(..., min_length=1),
     market: Literal["kr", "us", "crypto"] = Query("kr"),
+    include_paper: Annotated[bool, Query(alias="includePaper")] = False,
+    paper_sources: Annotated[str | None, Query(alias="paperSources")] = None,
 ) -> ScreenerResultsResponse:
-    home = await service.get_home(user_id=user.id)
+    home = await service.get_home(
+        user_id=user.id,
+        include_paper=include_paper,
+        paper_sources=_parse_paper_sources(paper_sources),
+    )
     resolver = await build_relation_resolver(
         db, user_id=user.id, held_pairs=_held_pairs_from_home(home)
     )
