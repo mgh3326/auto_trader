@@ -65,6 +65,14 @@ class WatchConditionPayload(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    @model_validator(mode="after")
+    def _default_threshold_key(self) -> WatchConditionPayload:
+        # Canonical form: str(Decimal). Caller can override if they need
+        # a different dedup key (e.g. rounded value).
+        if self.threshold_key is None:
+            self.threshold_key = str(self.threshold)
+        return self
+
 
 class IngestReportItem(BaseModel):
     """One proposal item attached to an ingested report."""
