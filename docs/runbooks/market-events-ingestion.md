@@ -50,6 +50,62 @@ uv run python -m scripts.ingest_market_events \
 Recommended rolling window for the future Prefect schedule:
 **today - 7 days through today + 60 days.**
 
+## US earnings: range-aware ingestion (ROB-264)
+
+`(source, category, market) == (finnhub, earnings, us)` is routed through
+`ingest_us_earnings_for_range` in `app/services/market_events/ingestion.py`,
+which issues **one** Finnhub `earningsCalendar` call for the full
+`--from-date`..`--to-date` window and writes one partition row per day
+(including zero-event days).
+
+Already-succeeded partitions are skipped by default to preserve quota on
+reruns. The CLI/orchestrator uses `partition.status='succeeded'` as the
+authoritative skip signal — `event_count > 0` is NOT a substitute, because a
+failed partition can still carry a non-zero `event_count` from an earlier
+partial run.
+
+### Safe recovery after a 429
+
+If a daily run hits a Finnhub quota error, **do not** rerun the full rolling
+window. Doing so reconsumes quota on already-succeeded dates and is likely to
+hit 429 again before reaching the failed tail.
+
+Recommended recovery paths, in order of preference:
+
+1. **Wait for quota reset, rerun the full rolling window.** Skip-already-
+   succeeded means only the previously-failed dates will be reprocessed.
+2. **Narrow recovery for the failed tail.** Rerun with a tight
+   `--from-date`/`--to-date` covering just the failed partitions (look up
+   the failed range in `market_event_ingestion_partitions` where
+   `status='failed'` and `last_error LIKE '%FinnhubAPI%429%'`).
+3. **Force replay for a known-stale window.** Pass `--force` to reprocess
+   already-succeeded partitions. This consumes quota for the full window and
+   is only appropriate when the upstream data has been corrected.
+
+### CLI examples
+
+```bash
+# Normal rolling window (already-succeeded dates are skipped automatically)
+uv run python -m scripts.ingest_market_events \
+  --source finnhub --category earnings --market us \
+  --from-date 2026-05-11 --to-date 2026-07-17
+
+# Force replay of an already-ingested range (consumes quota)
+uv run python -m scripts.ingest_market_events \
+  --source finnhub --category earnings --market us \
+  --from-date 2026-05-11 --to-date 2026-05-17 --force
+
+# Narrow recovery of a failed tail
+uv run python -m scripts.ingest_market_events \
+  --source finnhub --category earnings --market us \
+  --from-date 2026-07-10 --to-date 2026-07-17
+```
+
+On a 429, the CLI exits with code `2` and prints a summary line whose JSON
+includes `"error": "finnhub_quota_exceeded"`. No partition rows are mutated
+on the failed call; partition state from previous successful runs is
+preserved as-is.
+
 ## Read API
 
 * `GET /trading/api/market-events/today?on_date=YYYY-MM-DD&category=&market=&source=`
