@@ -142,7 +142,11 @@ probe_public_stable() {
   local hc="$AUTO_TRADER_BASE/scripts/healthcheck-native.sh"
   local attempt
   for ((attempt = 1; attempt <= attempts; attempt++)); do
-    if "$hc"; then
+    # Deploy-time stable probing should validate the newly switched API/MCP
+    # routing only. KIS/Upbit websocket monitors are singleton background
+    # services with independent external session state; a transient KIS appkey
+    # lock must not roll back an otherwise healthy API/MCP deployment.
+    if AUTO_TRADER_HEALTHCHECK_SKIP_WS=1 "$hc"; then
       return 0
     fi
     if (( attempt < attempts )); then
