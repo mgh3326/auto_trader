@@ -26,6 +26,7 @@ from app.models.investment_reports import (
     InvestmentReportItem,
     InvestmentReportItemDecision,
     InvestmentWatchAlert,
+    InvestmentWatchEvent,
 )
 
 _ALL_TABLES = [
@@ -33,6 +34,7 @@ _ALL_TABLES = [
     InvestmentReportItem.__table__,
     InvestmentReportItemDecision.__table__,
     InvestmentWatchAlert.__table__,
+    InvestmentWatchEvent.__table__,
 ]
 
 
@@ -452,3 +454,135 @@ async def test_alert_target_kind_index_allowed(session: AsyncSession) -> None:
     session.add(alert)
     await session.commit()
     assert alert.target_kind == "index"
+
+
+# ---------------------------------------------------------------------------
+# InvestmentWatchEvent
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_event_round_trip(session: AsyncSession) -> None:
+    report = await _make_report(session)
+    item = InvestmentReportItem(**_base_item_payload(report.id))
+    session.add(item)
+    await session.commit()
+    await session.refresh(item)
+    alert = InvestmentWatchAlert(
+        **_base_alert_payload(report.report_uuid, item.item_uuid)
+    )
+    session.add(alert)
+    await session.commit()
+    await session.refresh(alert)
+
+    event = InvestmentWatchEvent(
+        event_uuid=uuid.uuid4(),
+        idempotency_key=f"{alert.alert_uuid}:2026-05-18:70000",
+        alert_id=alert.id,
+        source_report_uuid=report.report_uuid,
+        source_item_uuid=item.item_uuid,
+        current_value=69500,
+        threshold=70000,
+        outcome="notified",
+        correlation_id=str(uuid.uuid4()),
+        kst_date="2026-05-18",
+    )
+    session.add(event)
+    await session.commit()
+    assert event.id is not None
+
+
+@pytest.mark.asyncio
+async def test_event_outcome_check(session: AsyncSession) -> None:
+    report = await _make_report(session)
+    item = InvestmentReportItem(**_base_item_payload(report.id))
+    session.add(item)
+    await session.commit()
+    await session.refresh(item)
+
+    session.add(
+        InvestmentWatchEvent(
+            event_uuid=uuid.uuid4(),
+            idempotency_key=f"x-{uuid.uuid4()}",
+            source_report_uuid=report.report_uuid,
+            source_item_uuid=item.item_uuid,
+            threshold=70000,
+            outcome="auto_executed",  # not in allowed set
+            correlation_id=str(uuid.uuid4()),
+            kst_date="2026-05-18",
+        )
+    )
+    with pytest.raises(sa.exc.IntegrityError):
+        await session.commit()
+    await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_event_idempotency_dedup(session: AsyncSession) -> None:
+    report = await _make_report(session)
+    item = InvestmentReportItem(**_base_item_payload(report.id))
+    session.add(item)
+    await session.commit()
+    await session.refresh(item)
+
+    key = f"dup-event-{uuid.uuid4()}"
+    base = dict(
+        source_report_uuid=report.report_uuid,
+        source_item_uuid=item.item_uuid,
+        threshold=70000,
+        outcome="notified",
+        correlation_id=str(uuid.uuid4()),
+        kst_date="2026-05-18",
+    )
+
+    session.add(
+        InvestmentWatchEvent(
+            event_uuid=uuid.uuid4(), idempotency_key=key, **base
+        )
+    )
+    await session.commit()
+
+    session.add(
+        InvestmentWatchEvent(
+            event_uuid=uuid.uuid4(), idempotency_key=key, **base
+        )
+    )
+    with pytest.raises(sa.exc.IntegrityError):
+        await session.commit()
+    await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_event_survives_alert_deletion(session: AsyncSession) -> None:
+    report = await _make_report(session)
+    item = InvestmentReportItem(**_base_item_payload(report.id))
+    session.add(item)
+    await session.commit()
+    await session.refresh(item)
+
+    alert = InvestmentWatchAlert(
+        **_base_alert_payload(report.report_uuid, item.item_uuid)
+    )
+    session.add(alert)
+    await session.commit()
+    await session.refresh(alert)
+
+    event = InvestmentWatchEvent(
+        event_uuid=uuid.uuid4(),
+        idempotency_key=f"keep-{uuid.uuid4()}",
+        alert_id=alert.id,
+        source_report_uuid=report.report_uuid,
+        source_item_uuid=item.item_uuid,
+        threshold=70000,
+        outcome="notified",
+        correlation_id=str(uuid.uuid4()),
+        kst_date="2026-05-18",
+    )
+    session.add(event)
+    await session.commit()
+
+    await session.delete(alert)
+    await session.commit()
+
+    # SET NULL fires at the DB level. SQLAlchemy's identity map still has
+    # the stale alert_id, so refresh the event row from disk explicitly.
+    await session.refresh(event)
+    assert event.alert_id is None
