@@ -24,11 +24,13 @@ from app.models.base import Base
 from app.models.investment_reports import (
     InvestmentReport,
     InvestmentReportItem,
+    InvestmentReportItemDecision,
 )
 
 _ALL_TABLES = [
     InvestmentReport.__table__,
     InvestmentReportItem.__table__,
+    InvestmentReportItemDecision.__table__,
 ]
 
 
@@ -280,3 +282,80 @@ async def test_cascade_delete_from_report(session: AsyncSession) -> None:
         sa.select(sa.func.count()).select_from(InvestmentReportItem)
     )
     assert remaining == 0
+
+
+# ---------------------------------------------------------------------------
+# InvestmentReportItemDecision
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_decision_round_trip(session: AsyncSession) -> None:
+    report = await _make_report(session)
+    item = InvestmentReportItem(**_base_item_payload(report.id))
+    session.add(item)
+    await session.commit()
+    await session.refresh(item)
+
+    decision = InvestmentReportItemDecision(
+        item_id=item.id,
+        decision_uuid=uuid.uuid4(),
+        idempotency_key=f"dec-{uuid.uuid4()}",
+        decision="approve",
+        actor="operator-test",
+    )
+    session.add(decision)
+    await session.commit()
+
+    fetched = await session.scalar(
+        sa.select(InvestmentReportItemDecision).where(
+            InvestmentReportItemDecision.id == decision.id
+        )
+    )
+    assert fetched.decision == "approve"
+
+
+@pytest.mark.asyncio
+async def test_decision_check_rejects_unknown(session: AsyncSession) -> None:
+    report = await _make_report(session)
+    item = InvestmentReportItem(**_base_item_payload(report.id))
+    session.add(item)
+    await session.commit()
+    await session.refresh(item)
+
+    session.add(
+        InvestmentReportItemDecision(
+            item_id=item.id,
+            decision_uuid=uuid.uuid4(),
+            idempotency_key=f"dec-{uuid.uuid4()}",
+            decision="unknown-verb",
+            actor="operator-test",
+        )
+    )
+    with pytest.raises(sa.exc.IntegrityError):
+        await session.commit()
+    await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_multiple_decisions_per_item_allowed(session: AsyncSession) -> None:
+    report = await _make_report(session)
+    item = InvestmentReportItem(**_base_item_payload(report.id))
+    session.add(item)
+    await session.commit()
+    await session.refresh(item)
+
+    for verb in ("defer", "approve"):
+        session.add(
+            InvestmentReportItemDecision(
+                item_id=item.id,
+                decision_uuid=uuid.uuid4(),
+                idempotency_key=f"dec-{uuid.uuid4()}",
+                decision=verb,
+                actor="operator-test",
+            )
+        )
+    await session.commit()
+
+    total = await session.scalar(
+        sa.select(sa.func.count()).select_from(InvestmentReportItemDecision)
+    )
+    assert total == 2
