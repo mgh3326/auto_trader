@@ -159,3 +159,125 @@ class InvestmentReport(Base):
     )
     published_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     valid_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+
+
+# ---------------------------------------------------------------------------
+# review.investment_report_items — action/watch/risk items owned by a report
+# ---------------------------------------------------------------------------
+class InvestmentReportItem(Base):
+    """Report-owned proposal item. Source of truth for proposed watches.
+
+    Locked refinements:
+    * ``item_kind ∈ {action, watch, risk}`` only.
+    * ``item_status`` excludes ``executed`` — execution lives in trade
+      journals/broker ledgers, never on a report item.
+    * ``target_kind`` preserved so the watch scanner's asset/index/fx
+      dispatch can be reproduced.
+    """
+
+    __tablename__ = "investment_report_items"
+    __table_args__ = (
+        UniqueConstraint("item_uuid", name="uq_investment_report_items_item_uuid"),
+        UniqueConstraint(
+            "idempotency_key", name="uq_investment_report_items_idempotency_key"
+        ),
+        CheckConstraint(
+            "item_kind IN ('action','watch','risk')",
+            name="ck_investment_report_items_item_kind",
+        ),
+        CheckConstraint(
+            "status IN ('proposed','approved','denied','deferred','activated','expired')",
+            name="ck_investment_report_items_status",
+        ),
+        CheckConstraint(
+            "target_kind IN ('asset','index','fx')",
+            name="ck_investment_report_items_target_kind",
+        ),
+        CheckConstraint(
+            "side IS NULL OR side IN ('buy','sell')",
+            name="ck_investment_report_items_side",
+        ),
+        CheckConstraint(
+            "intent IN ('buy_review','sell_review','risk_review',"
+            "'trend_recovery_review','rebalance_review')",
+            name="ck_investment_report_items_intent",
+        ),
+        # Watch items must carry a watch_condition payload.
+        CheckConstraint(
+            "item_kind <> 'watch' OR watch_condition IS NOT NULL",
+            name="ck_investment_report_items_watch_has_condition",
+        ),
+        Index(
+            "ix_investment_report_items_report",
+            "report_id",
+            "status",
+        ),
+        Index(
+            "ix_investment_report_items_kind_status",
+            "item_kind",
+            "status",
+        ),
+        Index(
+            "ix_investment_report_items_symbol",
+            "symbol",
+        ),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    report_id: Mapped[int] = mapped_column(
+        ForeignKey("review.investment_reports.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    item_uuid: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False, default=uuid.uuid4
+    )
+    idempotency_key: Mapped[str] = mapped_column(Text, nullable=False)
+
+    item_kind: Mapped[str] = mapped_column(Text, nullable=False)
+    symbol: Mapped[str | None] = mapped_column(Text)
+    side: Mapped[str | None] = mapped_column(Text)
+    intent: Mapped[str] = mapped_column(Text, nullable=False)
+    target_kind: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'asset'")
+    )
+
+    priority: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    confidence: Mapped[float | None] = mapped_column(Numeric(8, 4))
+
+    rationale: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_snapshot: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    watch_condition: Mapped[dict | None] = mapped_column(JSONB)
+    trigger_checklist: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    max_action: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+
+    valid_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'proposed'")
+    )
+    item_metadata: Mapped[dict] = mapped_column(
+        "metadata",
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
