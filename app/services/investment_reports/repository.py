@@ -1,0 +1,314 @@
+"""ROB-265 — Thin SQLAlchemy DAO over the five investment_* tables.
+
+The repository contains no business logic. Validation, idempotency
+composition, and status transitions live in the business services
+(``ingestion``, ``decisions``, ``watch_activation``, ``query_service``).
+
+Pattern matches ``app/services/watch_order_intent_service.py`` —
+class-based with an injected ``AsyncSession``. The repository flushes
+when it has to update an attached row but never commits; callers own
+the transaction boundary.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any
+from uuid import UUID
+
+import sqlalchemy as sa
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.investment_reports import (
+    InvestmentReport,
+    InvestmentReportItem,
+    InvestmentReportItemDecision,
+    InvestmentWatchAlert,
+    InvestmentWatchEvent,
+)
+
+
+class InvestmentReportsRepository:
+    """DAO over investment_reports / items / decisions / alerts / events."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    # ------------------------------------------------------------------
+    # Reports
+    # ------------------------------------------------------------------
+    async def insert_report(self, **fields: Any) -> InvestmentReport:
+        row = InvestmentReport(**fields)
+        self._session.add(row)
+        await self._session.flush()
+        await self._session.refresh(row)
+        return row
+
+    async def get_report_by_id(self, report_id: int) -> InvestmentReport | None:
+        return await self._session.scalar(
+            sa.select(InvestmentReport).where(InvestmentReport.id == report_id)
+        )
+
+    async def get_report_by_uuid(
+        self, report_uuid: UUID
+    ) -> InvestmentReport | None:
+        return await self._session.scalar(
+            sa.select(InvestmentReport).where(
+                InvestmentReport.report_uuid == report_uuid
+            )
+        )
+
+    async def get_report_by_idempotency_key(
+        self, idempotency_key: str
+    ) -> InvestmentReport | None:
+        return await self._session.scalar(
+            sa.select(InvestmentReport).where(
+                InvestmentReport.idempotency_key == idempotency_key
+            )
+        )
+
+    async def list_reports(
+        self,
+        *,
+        market: str | None = None,
+        market_session: str | None = None,
+        account_scope: str | None = None,
+        status: str | None = None,
+        report_type: str | None = None,
+        limit: int = 20,
+    ) -> list[InvestmentReport]:
+        stmt = sa.select(InvestmentReport).order_by(
+            InvestmentReport.created_at.desc(), InvestmentReport.id.desc()
+        )
+        stmt = self._apply_report_filters(
+            stmt,
+            market=market,
+            market_session=market_session,
+            account_scope=account_scope,
+            status=status,
+            report_type=report_type,
+        )
+        stmt = stmt.limit(limit)
+        result = await self._session.scalars(stmt)
+        return list(result.all())
+
+    async def latest_report(
+        self,
+        *,
+        market: str | None = None,
+        market_session: str | None = None,
+        account_scope: str | None = None,
+        status: str | None = None,
+        report_type: str | None = None,
+    ) -> InvestmentReport | None:
+        stmt = sa.select(InvestmentReport).order_by(
+            InvestmentReport.created_at.desc(), InvestmentReport.id.desc()
+        )
+        stmt = self._apply_report_filters(
+            stmt,
+            market=market,
+            market_session=market_session,
+            account_scope=account_scope,
+            status=status,
+            report_type=report_type,
+        )
+        return await self._session.scalar(stmt.limit(1))
+
+    @staticmethod
+    def _apply_report_filters(
+        stmt: sa.Select,
+        *,
+        market: str | None,
+        market_session: str | None,
+        account_scope: str | None,
+        status: str | None,
+        report_type: str | None,
+    ) -> sa.Select:
+        if market is not None:
+            stmt = stmt.where(InvestmentReport.market == market)
+        if market_session is not None:
+            stmt = stmt.where(InvestmentReport.market_session == market_session)
+        if account_scope is not None:
+            stmt = stmt.where(InvestmentReport.account_scope == account_scope)
+        if status is not None:
+            stmt = stmt.where(InvestmentReport.status == status)
+        if report_type is not None:
+            stmt = stmt.where(InvestmentReport.report_type == report_type)
+        return stmt
+
+    # ------------------------------------------------------------------
+    # Items
+    # ------------------------------------------------------------------
+    async def insert_item(self, **fields: Any) -> InvestmentReportItem:
+        row = InvestmentReportItem(**fields)
+        self._session.add(row)
+        await self._session.flush()
+        await self._session.refresh(row)
+        return row
+
+    async def get_item_by_uuid(
+        self, item_uuid: UUID
+    ) -> InvestmentReportItem | None:
+        return await self._session.scalar(
+            sa.select(InvestmentReportItem).where(
+                InvestmentReportItem.item_uuid == item_uuid
+            )
+        )
+
+    async def list_items_for_report(
+        self, report_id: int
+    ) -> list[InvestmentReportItem]:
+        result = await self._session.scalars(
+            sa.select(InvestmentReportItem)
+            .where(InvestmentReportItem.report_id == report_id)
+            .order_by(InvestmentReportItem.created_at.asc())
+        )
+        return list(result.all())
+
+    async def update_item_status(self, item_id: int, status: str) -> None:
+        await self._session.execute(
+            sa.update(InvestmentReportItem)
+            .where(InvestmentReportItem.id == item_id)
+            .values(status=status)
+        )
+
+    # ------------------------------------------------------------------
+    # Decisions
+    # ------------------------------------------------------------------
+    async def insert_decision(self, **fields: Any) -> InvestmentReportItemDecision:
+        row = InvestmentReportItemDecision(**fields)
+        self._session.add(row)
+        await self._session.flush()
+        await self._session.refresh(row)
+        return row
+
+    async def get_decision_by_idempotency_key(
+        self, idempotency_key: str
+    ) -> InvestmentReportItemDecision | None:
+        return await self._session.scalar(
+            sa.select(InvestmentReportItemDecision).where(
+                InvestmentReportItemDecision.idempotency_key == idempotency_key
+            )
+        )
+
+    async def list_decisions_for_item(
+        self, item_id: int
+    ) -> list[InvestmentReportItemDecision]:
+        result = await self._session.scalars(
+            sa.select(InvestmentReportItemDecision)
+            .where(InvestmentReportItemDecision.item_id == item_id)
+            .order_by(InvestmentReportItemDecision.created_at.asc())
+        )
+        return list(result.all())
+
+    # ------------------------------------------------------------------
+    # Alerts
+    # ------------------------------------------------------------------
+    async def insert_alert(self, **fields: Any) -> InvestmentWatchAlert:
+        row = InvestmentWatchAlert(**fields)
+        self._session.add(row)
+        await self._session.flush()
+        await self._session.refresh(row)
+        return row
+
+    async def get_alert_by_idempotency_key(
+        self, idempotency_key: str
+    ) -> InvestmentWatchAlert | None:
+        return await self._session.scalar(
+            sa.select(InvestmentWatchAlert).where(
+                InvestmentWatchAlert.idempotency_key == idempotency_key
+            )
+        )
+
+    async def list_active_alerts(
+        self,
+        *,
+        market: str | None = None,
+        valid_at: datetime | None = None,
+    ) -> list[InvestmentWatchAlert]:
+        stmt = sa.select(InvestmentWatchAlert).where(
+            InvestmentWatchAlert.status == "active"
+        )
+        if market is not None:
+            stmt = stmt.where(InvestmentWatchAlert.market == market)
+        if valid_at is not None:
+            stmt = stmt.where(InvestmentWatchAlert.valid_until > valid_at)
+        stmt = stmt.order_by(InvestmentWatchAlert.activated_at.desc())
+        result = await self._session.scalars(stmt)
+        return list(result.all())
+
+    async def list_alerts_for_source_reports(
+        self, source_report_uuids: list[UUID], *, status: str | None = None
+    ) -> list[InvestmentWatchAlert]:
+        if not source_report_uuids:
+            return []
+        stmt = sa.select(InvestmentWatchAlert).where(
+            InvestmentWatchAlert.source_report_uuid.in_(source_report_uuids)
+        )
+        if status is not None:
+            stmt = stmt.where(InvestmentWatchAlert.status == status)
+        stmt = stmt.order_by(InvestmentWatchAlert.activated_at.desc())
+        result = await self._session.scalars(stmt)
+        return list(result.all())
+
+    async def update_alert_status(self, alert_id: int, status: str) -> None:
+        await self._session.execute(
+            sa.update(InvestmentWatchAlert)
+            .where(InvestmentWatchAlert.id == alert_id)
+            .values(status=status)
+        )
+
+    # ------------------------------------------------------------------
+    # Events
+    # ------------------------------------------------------------------
+    async def insert_event(self, **fields: Any) -> InvestmentWatchEvent:
+        row = InvestmentWatchEvent(**fields)
+        self._session.add(row)
+        await self._session.flush()
+        await self._session.refresh(row)
+        return row
+
+    async def list_events_for_alert(
+        self, alert_id: int, *, limit: int = 50
+    ) -> list[InvestmentWatchEvent]:
+        result = await self._session.scalars(
+            sa.select(InvestmentWatchEvent)
+            .where(InvestmentWatchEvent.alert_id == alert_id)
+            .order_by(InvestmentWatchEvent.created_at.desc())
+            .limit(limit)
+        )
+        return list(result.all())
+
+    async def list_events_for_source_reports(
+        self,
+        source_report_uuids: list[UUID],
+        *,
+        since: datetime | None = None,
+        limit: int = 50,
+    ) -> list[InvestmentWatchEvent]:
+        if not source_report_uuids:
+            return []
+        stmt = sa.select(InvestmentWatchEvent).where(
+            InvestmentWatchEvent.source_report_uuid.in_(source_report_uuids)
+        )
+        if since is not None:
+            stmt = stmt.where(InvestmentWatchEvent.created_at >= since)
+        stmt = stmt.order_by(InvestmentWatchEvent.created_at.desc()).limit(limit)
+        result = await self._session.scalars(stmt)
+        return list(result.all())
+
+    async def list_decisions_for_items(
+        self,
+        item_ids: list[int],
+        *,
+        limit: int = 100,
+    ) -> list[InvestmentReportItemDecision]:
+        if not item_ids:
+            return []
+        result = await self._session.scalars(
+            sa.select(InvestmentReportItemDecision)
+            .where(InvestmentReportItemDecision.item_id.in_(item_ids))
+            .order_by(InvestmentReportItemDecision.created_at.desc())
+            .limit(limit)
+        )
+        return list(result.all())
