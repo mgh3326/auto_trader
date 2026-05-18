@@ -114,6 +114,7 @@ async def test_build_account_panel_uses_slim_view_path(monkeypatch):
             call_log.append("build_account_panel_view")
             from app.schemas.invest_home import HomeSummary
             from app.services.invest_home_service import _AccountPanelView
+
             return _AccountPanelView(
                 homeSummary=HomeSummary(
                     includedSources=[],
@@ -130,6 +131,7 @@ async def test_build_account_panel_uses_slim_view_path(monkeypatch):
             class _R:
                 def all(self):
                     return []
+
             return _R()
 
     monkeypatch.setattr(

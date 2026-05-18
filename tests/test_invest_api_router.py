@@ -140,18 +140,25 @@ async def test_home_endpoint_default_does_not_request_paper():
             received["paper_sources"] = paper_sources
             return InvestHomeResponse(
                 homeSummary=build_home_summary([]),
-                accounts=[], holdings=[], groupedHoldings=[],
+                accounts=[],
+                holdings=[],
+                groupedHoldings=[],
                 meta=InvestHomeResponseMeta(warnings=[]),
             )
 
     from fastapi import FastAPI
-    from httpx import AsyncClient, ASGITransport
+    from httpx import ASGITransport, AsyncClient
+
     app = FastAPI()
     app.include_router(invest_api_router)
-    app.dependency_overrides[get_authenticated_user] = lambda: type("U", (), {"id": 1})()
+    app.dependency_overrides[get_authenticated_user] = lambda: type(
+        "U", (), {"id": 1}
+    )()
     app.dependency_overrides[get_invest_home_service] = lambda: _PaperStubService()
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
         r = await client.get("/invest/api/home")
 
     assert r.status_code == 200
@@ -170,19 +177,28 @@ async def test_home_endpoint_passes_include_paper_query():
             received["paper_sources"] = paper_sources
             return InvestHomeResponse(
                 homeSummary=build_home_summary([]),
-                accounts=[], holdings=[], groupedHoldings=[],
+                accounts=[],
+                holdings=[],
+                groupedHoldings=[],
                 meta=InvestHomeResponseMeta(warnings=[]),
             )
 
     from fastapi import FastAPI
-    from httpx import AsyncClient, ASGITransport
+    from httpx import ASGITransport, AsyncClient
+
     app = FastAPI()
     app.include_router(invest_api_router)
-    app.dependency_overrides[get_authenticated_user] = lambda: type("U", (), {"id": 1})()
+    app.dependency_overrides[get_authenticated_user] = lambda: type(
+        "U", (), {"id": 1}
+    )()
     app.dependency_overrides[get_invest_home_service] = lambda: _PaperStubService()
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        r = await client.get("/invest/api/home?includePaper=true&paperSources=kis_mock,alpaca_paper")
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        r = await client.get(
+            "/invest/api/home?includePaper=true&paperSources=kis_mock,alpaca_paper"
+        )
 
     assert r.status_code == 200
     assert received["include_paper"] is True

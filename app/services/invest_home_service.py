@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass, field
 
 import sentry_sdk
-from dataclasses import dataclass, field
 
 from app.schemas.invest_home import (
     Account,
@@ -356,9 +356,7 @@ class InvestHomeService:
             span_name = (
                 "invest.home.manual" if src == "toss_manual" else f"invest.home.{src}"
             )
-            with sentry_sdk.start_span(
-                op="invest.home.reader", name=span_name
-            ) as span:
+            with sentry_sdk.start_span(op="invest.home.reader", name=span_name) as span:
                 span.set_tag("source", src)
                 span.set_tag("include_paper", include_paper)
                 if paper_sources is not None:
@@ -373,7 +371,9 @@ class InvestHomeService:
                     if result.warning is not None:
                         warnings.append(result.warning)
                     if src == "toss_manual":
-                        toss_account = build_manual_account_from_holdings(result.holdings)
+                        toss_account = build_manual_account_from_holdings(
+                            result.holdings
+                        )
                         if toss_account is not None:
                             accounts.append(toss_account)
                 except Exception as exc:
@@ -398,9 +398,7 @@ class InvestHomeService:
                     span.set_tag("source", reader_source)
                     span.set_tag("include_paper", True)
                     if paper_sources is not None:
-                        span.set_tag(
-                            "paper_sources", ",".join(sorted(paper_sources))
-                        )
+                        span.set_tag("paper_sources", ",".join(sorted(paper_sources)))
                     try:
                         result = await reader.fetch(user_id=user_id)  # type: ignore[union-attr]
                         accounts.extend(result.accounts)
@@ -466,7 +464,9 @@ class InvestHomeService:
                 (self._manual.fetch, "toss_manual"),
             ):
                 span_name = (
-                    "invest.home.manual" if src == "toss_manual" else f"invest.home.{src}"
+                    "invest.home.manual"
+                    if src == "toss_manual"
+                    else f"invest.home.{src}"
                 )
                 with sentry_sdk.start_span(
                     op="invest.home.reader", name=span_name
@@ -482,7 +482,9 @@ class InvestHomeService:
                         if result.warning is not None:
                             warnings.append(result.warning)
                         if src == "toss_manual":
-                            toss_account = build_manual_account_from_holdings(result.holdings)
+                            toss_account = build_manual_account_from_holdings(
+                                result.holdings
+                            )
                             if toss_account is not None:
                                 accounts.append(toss_account)
                     except Exception as exc:
