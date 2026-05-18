@@ -145,6 +145,10 @@ restart_single_active_services() {
 
     install -m 0644 "$plist" "$target"
     launchctl bootout "gui/$uid_num/$label" 2>/dev/null || true
+    # macOS launchd can keep a failed/disabled plist-path registration around
+    # after label bootout, causing bootstrap to return EIO even though the label
+    # is no longer visible. Also boot out the installed plist path before retrying.
+    launchctl bootout "gui/$uid_num" "$target" 2>/dev/null || true
 
     for attempt in {1..5}; do
       if launchctl bootstrap "gui/$uid_num" "$target"; then

@@ -207,6 +207,30 @@ def test_rollback_noop_when_pre_equals_current(tmp_path: Path) -> None:
     assert "mcp-green" not in log
 
 
+def test_restart_single_active_bootouts_installed_plist_path_before_bootstrap() -> None:
+    """Launchd can retain a plist-path registration after label bootout.
+
+    The single-active restart path must clear both the label and installed plist
+    target before bootstrapping again; otherwise production deploy can fail with
+    `Bootstrap failed: 5: Input/output error` while recovering worker/scheduler.
+    """
+    body = DEPLOY.read_text()
+    m = re.search(
+        r"^restart_single_active_services\s*\(\s*\)\s*\{(.*?)^\}",
+        body,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert m, "restart_single_active_services() function not found"
+    fn = m.group(1)
+    label_bootout = 'launchctl bootout "gui/$uid_num/$label"'
+    target_bootout = 'launchctl bootout "gui/$uid_num" "$target"'
+    bootstrap = 'launchctl bootstrap "gui/$uid_num" "$target"'
+    assert label_bootout in fn
+    assert target_bootout in fn
+    assert bootstrap in fn
+    assert fn.index(label_bootout) < fn.index(target_bootout) < fn.index(bootstrap)
+
+
 # ---------------------------------------------------------------------------
 # Static-analysis on deploy-native.sh wiring
 # ---------------------------------------------------------------------------
