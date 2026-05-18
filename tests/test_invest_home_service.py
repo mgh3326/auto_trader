@@ -712,3 +712,89 @@ async def test_get_home_invokes_all_paper_readers_when_sources_none():
 
     assert _SpyKisMock.called is True
     assert _SpyAlpaca.called is True
+
+
+# ---------------------------------------------------------------------------
+# ROB-267 Task 4: paper reader exception graceful fallback tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_paper_reader_exception_does_not_break_live_response():
+    from app.services.invest_home_service import InvestHomeService, _SourceFetchResult
+    from app.schemas.invest_home import Account
+
+    class _StubLiveReader:
+        async def fetch(self, *, user_id):
+            return _SourceFetchResult(
+                accounts=[
+                    Account(
+                        accountId="kis_real",
+                        displayName="KIS 실계좌",
+                        source="kis",
+                        accountKind="live",
+                        includedInHome=True,
+                        valueKrw=1_000_000,
+                        costBasisKrw=900_000,
+                        pnlKrw=100_000,
+                        pnlRate=0.11,
+                        cashBalances=Account.model_fields["cashBalances"].default_factory(),
+                        buyingPower=Account.model_fields["buyingPower"].default_factory(),
+                    )
+                ],
+                holdings=[],
+            )
+
+    class _EmptyReader:
+        async def fetch(self, *, user_id):
+            return _SourceFetchResult(accounts=[], holdings=[])
+
+    class _ExplodingPaperReader:
+        source = "kis_mock"
+        async def fetch(self, *, user_id):
+            raise RuntimeError("paper api down")
+
+    service = InvestHomeService(
+        kis_reader=_StubLiveReader(),
+        upbit_reader=_EmptyReader(),
+        manual_reader=_EmptyReader(),
+        paper_readers=[_ExplodingPaperReader()],
+    )
+
+    resp = await service.get_home(user_id=1, include_paper=True)
+
+    assert len(resp.accounts) == 1
+    assert resp.accounts[0].source == "kis"
+    assert resp.accounts[0].valueKrw == 1_000_000
+    assert any(w.source == "kis_mock" for w in resp.meta.warnings)
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_paper_reader_exception_does_not_break_account_panel_view():
+    from app.services.invest_home_service import InvestHomeService, _SourceFetchResult
+
+    class _EmptyReader:
+        async def fetch(self, *, user_id):
+            return _SourceFetchResult(accounts=[], holdings=[])
+
+    class _ExplodingPaperReader:
+        source = "alpaca_paper"
+        async def fetch(self, *, user_id):
+            raise RuntimeError("alpaca outage")
+
+    service = InvestHomeService(
+        kis_reader=_EmptyReader(),
+        upbit_reader=_EmptyReader(),
+        manual_reader=_EmptyReader(),
+        paper_readers=[_ExplodingPaperReader()],
+    )
+
+    view = await service.build_account_panel_view(
+        user_id=1, include_paper=True, paper_sources=frozenset({"alpaca_paper"})
+    )
+
+    assert any(w.source == "alpaca_paper" for w in view.warnings)
+    # live/manual accounts list is empty in this stub but response still succeeds
+    assert view.accounts == []
