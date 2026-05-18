@@ -57,12 +57,13 @@ describe("fetchInvestmentReports", () => {
 
     const result = await fetchInvestmentReports();
     expect(result.reports).toHaveLength(1);
-    expect(result.reports[0].reportUuid).toBe("uuid-1");
-    expect(result.reports[0].reportType).toBe("kr_morning");
-    expect(result.reports[0].marketSession).toBe("regular");
-    expect(result.reports[0].accountScope).toBe("kis_mock");
-    expect(result.reports[0].executionMode).toBe("mock_preview");
-    expect(result.reports[0].createdByProfile).toBe("test");
+    const report = result.reports[0]!;
+    expect(report.reportUuid).toBe("uuid-1");
+    expect(report.reportType).toBe("kr_morning");
+    expect(report.marketSession).toBe("regular");
+    expect(report.accountScope).toBe("kis_mock");
+    expect(report.executionMode).toBe("mock_preview");
+    expect(report.createdByProfile).toBe("test");
   });
 
   it("passes query params to the backend", async () => {
@@ -180,15 +181,18 @@ describe("fetchInvestmentReportBundle", () => {
     expect(bundle.report.marketSession).toBe("nxt");
     expect(bundle.report.accountScope).toBe("kis_live");
     expect(bundle.report.executionMode).toBe("advisory_only");
-    expect(bundle.items[0].watchCondition).toEqual({
+    const item = bundle.items[0]!;
+    expect(item.watchCondition).toEqual({
       metric: "rsi",
       operator: "below",
       threshold: 30,
     });
-    expect(bundle.decisionsByItemUuid["item-1"][0].decisionUuid).toBe("dec-1");
-    expect(bundle.events[0].deliveryStatus).toBe("delivered");
-    expect(bundle.events[0].deliveryAttempts).toBe(1);
-    expect(bundle.events[0].deliveredAt).toBe("2026-05-19T00:01:00Z");
+    const itemDecisions = bundle.decisionsByItemUuid["item-1"]!;
+    expect(itemDecisions[0]!.decisionUuid).toBe("dec-1");
+    const event = bundle.events[0]!;
+    expect(event.deliveryStatus).toBe("delivered");
+    expect(event.deliveryAttempts).toBe(1);
+    expect(event.deliveredAt).toBe("2026-05-19T00:01:00Z");
   });
 
   it("URL-encodes the report_uuid", async () => {

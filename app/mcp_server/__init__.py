@@ -51,7 +51,6 @@ AVAILABLE_TOOL_NAMES = [
     "modify_order",
     "screen_stocks",
     "recommend_stocks",
-    "manage_watch_alerts",
     "get_asset_profile",
     "set_asset_profile",
 ]
