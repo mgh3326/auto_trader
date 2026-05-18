@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable, Sequence
+
+import sentry_sdk
 from dataclasses import dataclass, field
 
 from app.schemas.invest_home import (
@@ -351,67 +353,74 @@ class InvestHomeService:
             (self._upbit.fetch, "upbit"),
             (self._manual.fetch, "toss_manual"),
         ):
-            try:
-                if src == "kis" or src == "upbit":
+            span_name = (
+                "invest.home.manual" if src == "toss_manual" else f"invest.home.{src}"
+            )
+            with sentry_sdk.start_span(
+                op="invest.home.reader", name=span_name
+            ) as span:
+                span.set_tag("source", src)
+                span.set_tag("include_paper", include_paper)
+                if paper_sources is not None:
+                    span.set_tag("paper_sources", ",".join(sorted(paper_sources)))
+                try:
                     result: _SourceFetchResult = await fetcher(user_id=user_id)
-                else:
-                    result: _SourceFetchResult = await self._manual.fetch(
-                        user_id=user_id
+                    accounts.extend(result.accounts)
+                    holdings.extend(result.holdings)
+                    hidden_holdings.extend(result.hidden_holdings)
+                    hidden_counts.upbitInactive += result.hidden_counts.upbitInactive
+                    hidden_counts.upbitDust += result.hidden_counts.upbitDust
+                    if result.warning is not None:
+                        warnings.append(result.warning)
+                    if src == "toss_manual":
+                        toss_account = build_manual_account_from_holdings(result.holdings)
+                        if toss_account is not None:
+                            accounts.append(toss_account)
+                except Exception as exc:
+                    logger.warning(
+                        "[invest_home] %s fetch failed: %s", src, exc, exc_info=True
+                    )
+                    warnings.append(
+                        InvestHomeWarning(
+                            source=src, message=str(exc) or type(exc).__name__
+                        )
                     )
 
-                accounts.extend(result.accounts)
-                holdings.extend(result.holdings)
-                hidden_holdings.extend(result.hidden_holdings)
-                hidden_counts.upbitInactive += result.hidden_counts.upbitInactive
-                hidden_counts.upbitDust += result.hidden_counts.upbitDust
-
-                if result.warning is not None:
-                    warnings.append(result.warning)
-
-                # Synthetic Toss Manual Account
-                if src == "toss_manual":
-                    toss_account = build_manual_account_from_holdings(result.holdings)
-                    if toss_account is not None:
-                        accounts.append(toss_account)
-
-            except Exception as exc:  # 부분 실패 — 전체 API 는 살림
-                logger.warning(
-                    "[invest_home] %s fetch failed: %s", src, exc, exc_info=True
-                )
-                warnings.append(
-                    InvestHomeWarning(
-                        source=src, message=str(exc) or type(exc).__name__
-                    )
-                )
-
-        # Paper readers — gated by include_paper flag and optional paper_sources filter.
-        # Default (include_paper=False) skips all paper readers entirely so that
-        # /invest 기본 경로에서 KIS mock / Alpaca Paper API 호출이 발생하지 않는다.
         if include_paper:
             for reader in self._paper_readers:
                 reader_source: str = getattr(reader, "source", None) or "kis_mock"
                 if paper_sources is not None and reader_source not in paper_sources:
                     continue
-                try:
-                    result = await reader.fetch(user_id=user_id)  # type: ignore[union-attr]
-                    accounts.extend(result.accounts)
-                    holdings.extend(result.holdings)
-                    if result.warning is not None:
-                        warnings.append(result.warning)
-                except Exception as exc:
-                    src_name = type(reader).__name__
-                    logger.warning(
-                        "[invest_home] paper reader %s failed: %s",
-                        src_name,
-                        exc,
-                        exc_info=True,
-                    )
-                    if reader_source in _PAPER:
-                        warnings.append(
-                            InvestHomeWarning(
-                                source=reader_source, message=type(exc).__name__
-                            )  # type: ignore[arg-type]
+                with sentry_sdk.start_span(
+                    op="invest.home.reader",
+                    name=f"invest.home.{reader_source}",
+                ) as span:
+                    span.set_tag("source", reader_source)
+                    span.set_tag("include_paper", True)
+                    if paper_sources is not None:
+                        span.set_tag(
+                            "paper_sources", ",".join(sorted(paper_sources))
                         )
+                    try:
+                        result = await reader.fetch(user_id=user_id)  # type: ignore[union-attr]
+                        accounts.extend(result.accounts)
+                        holdings.extend(result.holdings)
+                        if result.warning is not None:
+                            warnings.append(result.warning)
+                    except Exception as exc:
+                        src_name = type(reader).__name__
+                        logger.warning(
+                            "[invest_home] paper reader %s failed: %s",
+                            src_name,
+                            exc,
+                            exc_info=True,
+                        )
+                        if reader_source in _PAPER:
+                            warnings.append(
+                                InvestHomeWarning(
+                                    source=reader_source, message=type(exc).__name__
+                                )  # type: ignore[arg-type]
+                            )
 
         return InvestHomeResponse(
             homeSummary=build_home_summary(accounts),
@@ -440,64 +449,91 @@ class InvestHomeService:
         flat ``holdings`` response field and Upbit hidden-counts tracking are
         omitted since the panel UI does not use them.
         """
-        warnings: list[InvestHomeWarning] = []
-        accounts: list[Account] = []
-        holdings: list[Holding] = []
+        with sentry_sdk.start_span(
+            op="invest.account_panel", name="invest.account_panel.build"
+        ) as outer:
+            outer.set_tag("include_paper", include_paper)
+            if paper_sources is not None:
+                outer.set_tag("paper_sources", ",".join(sorted(paper_sources)))
 
-        for fetcher, src in (
-            (self._kis.fetch, "kis"),
-            (self._upbit.fetch, "upbit"),
-            (self._manual.fetch, "toss_manual"),
-        ):
-            try:
-                result: _SourceFetchResult = await fetcher(user_id=user_id)
-                accounts.extend(result.accounts)
-                holdings.extend(result.holdings)
-                if result.warning is not None:
-                    warnings.append(result.warning)
-                if src == "toss_manual":
-                    toss_account = build_manual_account_from_holdings(result.holdings)
-                    if toss_account is not None:
-                        accounts.append(toss_account)
-            except Exception as exc:
-                logger.warning(
-                    "[invest_home] %s fetch failed: %s", src, exc, exc_info=True
-                )
-                warnings.append(
-                    InvestHomeWarning(
-                        source=src, message=str(exc) or type(exc).__name__
-                    )
-                )
+            warnings: list[InvestHomeWarning] = []
+            accounts: list[Account] = []
+            holdings: list[Holding] = []
 
-        if include_paper:
-            for reader in self._paper_readers:
-                reader_source: str = getattr(reader, "source", None) or "kis_mock"
-                if paper_sources is not None and reader_source not in paper_sources:
-                    continue
-                try:
-                    result = await reader.fetch(user_id=user_id)  # type: ignore[union-attr]
-                    accounts.extend(result.accounts)
-                    holdings.extend(result.holdings)
-                    if result.warning is not None:
-                        warnings.append(result.warning)
-                except Exception as exc:
-                    src_name = type(reader).__name__
-                    logger.warning(
-                        "[invest_home] paper reader %s failed: %s",
-                        src_name,
-                        exc,
-                        exc_info=True,
-                    )
-                    if reader_source in _PAPER:
+            for fetcher, src in (
+                (self._kis.fetch, "kis"),
+                (self._upbit.fetch, "upbit"),
+                (self._manual.fetch, "toss_manual"),
+            ):
+                span_name = (
+                    "invest.home.manual" if src == "toss_manual" else f"invest.home.{src}"
+                )
+                with sentry_sdk.start_span(
+                    op="invest.home.reader", name=span_name
+                ) as span:
+                    span.set_tag("source", src)
+                    span.set_tag("include_paper", include_paper)
+                    if paper_sources is not None:
+                        span.set_tag("paper_sources", ",".join(sorted(paper_sources)))
+                    try:
+                        result: _SourceFetchResult = await fetcher(user_id=user_id)
+                        accounts.extend(result.accounts)
+                        holdings.extend(result.holdings)
+                        if result.warning is not None:
+                            warnings.append(result.warning)
+                        if src == "toss_manual":
+                            toss_account = build_manual_account_from_holdings(result.holdings)
+                            if toss_account is not None:
+                                accounts.append(toss_account)
+                    except Exception as exc:
+                        logger.warning(
+                            "[invest_home] %s fetch failed: %s", src, exc, exc_info=True
+                        )
                         warnings.append(
                             InvestHomeWarning(
-                                source=reader_source, message=type(exc).__name__
-                            )  # type: ignore[arg-type]
+                                source=src, message=str(exc) or type(exc).__name__
+                            )
                         )
 
-        return _AccountPanelView(
-            homeSummary=build_home_summary(accounts),
-            accounts=accounts,
-            groupedHoldings=build_grouped_holdings(holdings),
-            warnings=warnings,
-        )
+            if include_paper:
+                for reader in self._paper_readers:
+                    reader_source: str = getattr(reader, "source", None) or "kis_mock"
+                    if paper_sources is not None and reader_source not in paper_sources:
+                        continue
+                    with sentry_sdk.start_span(
+                        op="invest.home.reader",
+                        name=f"invest.home.{reader_source}",
+                    ) as span:
+                        span.set_tag("source", reader_source)
+                        span.set_tag("include_paper", True)
+                        if paper_sources is not None:
+                            span.set_tag(
+                                "paper_sources", ",".join(sorted(paper_sources))
+                            )
+                        try:
+                            result = await reader.fetch(user_id=user_id)  # type: ignore[union-attr]
+                            accounts.extend(result.accounts)
+                            holdings.extend(result.holdings)
+                            if result.warning is not None:
+                                warnings.append(result.warning)
+                        except Exception as exc:
+                            src_name = type(reader).__name__
+                            logger.warning(
+                                "[invest_home] paper reader %s failed: %s",
+                                src_name,
+                                exc,
+                                exc_info=True,
+                            )
+                            if reader_source in _PAPER:
+                                warnings.append(
+                                    InvestHomeWarning(
+                                        source=reader_source, message=type(exc).__name__
+                                    )  # type: ignore[arg-type]
+                                )
+
+            return _AccountPanelView(
+                homeSummary=build_home_summary(accounts),
+                accounts=accounts,
+                groupedHoldings=build_grouped_holdings(holdings),
+                warnings=warnings,
+            )
