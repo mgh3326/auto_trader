@@ -215,3 +215,33 @@ class MarketEventsRepository:
         partition.last_error = error[:2000]
         partition.retry_count = (partition.retry_count or 0) + 1
         await self.db.flush()
+
+    async def list_succeeded_partitions_in_range(
+        self,
+        *,
+        source: str,
+        category: str,
+        market: str,
+        from_date: date,
+        to_date: date,
+    ) -> set[date]:
+        """Return the set of `partition_date`s with status='succeeded' in the
+        inclusive window.
+
+        Used to skip already-succeeded partitions during rolling-window ingestion
+        and avoid unnecessarily reconsuming external API quota on a rerun.
+
+        Note: callers MUST NOT use `event_count > 0` as a substitute for
+        `status='succeeded'`. A failed partition can still carry a non-zero
+        `event_count` from an earlier partial run.
+        """
+        stmt = select(MarketEventIngestionPartition.partition_date).where(
+            MarketEventIngestionPartition.source == source,
+            MarketEventIngestionPartition.category == category,
+            MarketEventIngestionPartition.market == market,
+            MarketEventIngestionPartition.status == "succeeded",
+            MarketEventIngestionPartition.partition_date >= from_date,
+            MarketEventIngestionPartition.partition_date <= to_date,
+        )
+        rows = (await self.db.execute(stmt)).scalars().all()
+        return set(rows)
