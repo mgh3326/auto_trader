@@ -153,6 +153,14 @@ function LocationProbe() {
   return <div data-testid="location-probe" data-path={`${location.pathname}${location.search}`} />;
 }
 
+const INITIAL_PANEL_WITHOUT_PAPER: AccountPanelResponse = {
+  ...PANEL_RESP,
+  accounts: PANEL_RESP.accounts.filter((account) => account.accountKind !== "paper"),
+  groupedHoldings: PANEL_RESP.groupedHoldings.filter(
+    (holding) => !holding.includedSources.some((source) => source === "kis_mock" || source === "alpaca_paper"),
+  ),
+};
+
 beforeEach(() => {
   vi.restoreAllMocks();
   vi.spyOn(panelApi, "fetchAccountPanel").mockResolvedValue(PANEL_RESP);
@@ -323,6 +331,41 @@ test("portfolio 탭 mount 시 includePaper=false 로 load", async () => {
   const firstCall = fetchSpy.mock.calls[0]?.[0];
   expect(firstCall?.includePaper).toBeFalsy();
   expect(firstCall?.paperSources).toBeUndefined();
+});
+
+test("paper source visuals render lazy filter buttons before paper readers load", async () => {
+  const user = userEvent.setup();
+  const fetchSpy = vi
+    .spyOn(panelApi, "fetchAccountPanel")
+    .mockResolvedValueOnce(INITIAL_PANEL_WITHOUT_PAPER)
+    .mockResolvedValueOnce(PANEL_RESP);
+
+  renderPanel();
+  await waitFor(() => expect(screen.getByTestId("portfolio-panel")).toBeInTheDocument());
+
+  expect(screen.getByRole("button", { name: "KIS 모의" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Alpaca Paper" })).toBeInTheDocument();
+  expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+  await user.click(screen.getByRole("button", { name: "KIS 모의" }));
+
+  await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2));
+  expect(fetchSpy.mock.calls[1]?.[0]).toMatchObject({
+    includePaper: true,
+    paperSources: ["kis_mock"],
+  });
+});
+
+test("watchlist tab lazy-loads account panel when it is the stored initial tab", async () => {
+  const fetchSpy = vi.spyOn(panelApi, "fetchAccountPanel").mockResolvedValue(PANEL_RESP);
+  localStorage.setItem("invest:right-rail-tab", "watchlist");
+
+  renderPanel();
+
+  await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1));
+  expect(fetchSpy.mock.calls[0]?.[0]).toMatchObject({ includePaper: false });
+  await waitFor(() => expect(screen.getByTestId("watchlist-panel")).toBeInTheDocument());
+  expect(screen.getByText("Apple Inc.")).toBeInTheDocument();
 });
 
 test("KIS 모의 버튼 클릭 시 paperSources=['kis_mock'] 로 lazy fetch", async () => {

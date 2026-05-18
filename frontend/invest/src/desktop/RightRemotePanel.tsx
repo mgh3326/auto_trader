@@ -435,9 +435,15 @@ function PortfolioPanel({ onNavigate }: Readonly<{ onNavigate: NavigateToSymbol 
 }
 
 function WatchlistPanel({ onNavigate }: Readonly<{ onNavigate: NavigateToSymbol }>) {
-  const { data, error, loading } = useAccountPanel();
+  const { data, error, loading, load } = useAccountPanel();
 
-  if (loading) {
+  useEffect(() => {
+    if (data === undefined && !loading && !error) {
+      load({ includePaper: false });
+    }
+  }, [data, loading, error, load]);
+
+  if (loading || (data === undefined && error === undefined)) {
     return (
       <div data-testid="watchlist-panel-skeleton" style={{ padding: 8, color: "var(--fg-3)", fontSize: 13 }}>
         불러오는 중…
