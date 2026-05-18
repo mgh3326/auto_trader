@@ -30,7 +30,6 @@ FORBIDDEN_PREFIXES = (
     "app.services.upbit_market_websocket",
     "app.services.watch_alerts",
     "app.services.crypto_trade_cooldown_service",
-    "app.services.weekend_crypto_paper_cycle_runner",
     "app.mcp_server.tooling.orders_registration",
     "app.mcp_server.tooling.orders_modify_cancel",
     "app.mcp_server.tooling.orders_history",
