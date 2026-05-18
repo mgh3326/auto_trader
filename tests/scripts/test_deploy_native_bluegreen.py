@@ -153,6 +153,27 @@ def test_healthcheck_default_attempts_allow_slow_cold_start() -> None:
     assert "AUTO_TRADER_HEALTHCHECK_ATTEMPTS:-24" in body
 
 
+def test_probe_public_stable_skips_websocket_singletons(tmp_path: Path) -> None:
+    base = _setup_base(tmp_path)
+    healthcheck_log = tmp_path / "healthcheck.log"
+    (base / "scripts" / "healthcheck-native.sh").write_text(
+        "#!/usr/bin/env bash\n"
+        f'echo "skip=${{AUTO_TRADER_HEALTHCHECK_SKIP_WS:-0}} args=$*" >>"{healthcheck_log}"\n'
+        '[[ "${AUTO_TRADER_HEALTHCHECK_SKIP_WS:-0}" == "1" ]]\n'
+    )
+    (base / "scripts" / "healthcheck-native.sh").chmod(0o755)
+
+    proc = _run_bash(
+        "probe_public_stable",
+        base,
+        tmp_path,
+        extra_env={"AUTO_TRADER_HEALTHCHECK_SKIP_WS": "0"},
+    )
+
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    assert "skip=1 args=" in healthcheck_log.read_text()
+
+
 def test_haproxy_swap_to_color_updates_state(tmp_path: Path) -> None:
     base = _setup_base(tmp_path)
     proc = _run_bash("haproxy_swap_to_color api green", base, tmp_path)
