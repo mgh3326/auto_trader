@@ -441,3 +441,107 @@ async def test_ingest_us_earnings_for_range_groups_by_date(db_session, monkeypat
     }
     assert parts_by_date[date(2026, 5, 12)].status == "succeeded"
     assert parts_by_date[date(2026, 5, 12)].event_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_ingest_us_earnings_for_range_skips_succeeded_by_default(
+    db_session, monkeypatch
+):
+    from app.models.market_events import MarketEventIngestionPartition
+    from app.services.market_events import ingestion
+    from app.services.market_events.repository import MarketEventsRepository
+
+    repo = MarketEventsRepository(db_session)
+    for d in (date(2026, 5, 11), date(2026, 5, 12)):
+        p = await repo.get_or_create_partition(
+            source="finnhub", category="earnings", market="us", partition_date=d
+        )
+        await repo.mark_partition_succeeded(p, event_count=1)
+    await db_session.commit()
+
+    fake = AsyncMock(return_value=FINNHUB_RESPONSE_RANGE_MULTI_DATE)
+    monkeypatch.setattr(ingestion, "fetch_earnings_calendar_finnhub", fake)
+
+    results = await ingestion.ingest_us_earnings_for_range(
+        db_session, date(2026, 5, 11), date(2026, 5, 13)
+    )
+    await db_session.commit()
+
+    fake.assert_awaited_once()
+    assert [r.partition_date for r in results] == [date(2026, 5, 13)]
+    assert results[0].status == "succeeded"
+    assert results[0].event_count == 1
+
+    parts = (
+        (await db_session.execute(select(MarketEventIngestionPartition)))
+        .scalars()
+        .all()
+    )
+    parts_by_date = {p.partition_date: p for p in parts}
+    assert parts_by_date[date(2026, 5, 11)].event_count == 1
+    assert parts_by_date[date(2026, 5, 12)].event_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_ingest_us_earnings_for_range_force_replays_succeeded(
+    db_session, monkeypatch
+):
+    from app.services.market_events import ingestion
+    from app.services.market_events.repository import MarketEventsRepository
+
+    repo = MarketEventsRepository(db_session)
+    p = await repo.get_or_create_partition(
+        source="finnhub",
+        category="earnings",
+        market="us",
+        partition_date=date(2026, 5, 11),
+    )
+    await repo.mark_partition_succeeded(p, event_count=99)
+    await db_session.commit()
+
+    fake = AsyncMock(return_value=FINNHUB_RESPONSE_RANGE_MULTI_DATE)
+    monkeypatch.setattr(ingestion, "fetch_earnings_calendar_finnhub", fake)
+
+    results = await ingestion.ingest_us_earnings_for_range(
+        db_session,
+        date(2026, 5, 11),
+        date(2026, 5, 13),
+        skip_succeeded=False,
+    )
+    await db_session.commit()
+
+    assert [r.partition_date for r in results] == [
+        date(2026, 5, 11),
+        date(2026, 5, 12),
+        date(2026, 5, 13),
+    ]
+    assert results[0].event_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_ingest_us_earnings_for_range_all_succeeded_skips_fetch(
+    db_session, monkeypatch
+):
+    from app.services.market_events import ingestion
+    from app.services.market_events.repository import MarketEventsRepository
+
+    repo = MarketEventsRepository(db_session)
+    for d in (date(2026, 5, 11), date(2026, 5, 12), date(2026, 5, 13)):
+        p = await repo.get_or_create_partition(
+            source="finnhub", category="earnings", market="us", partition_date=d
+        )
+        await repo.mark_partition_succeeded(p, event_count=0)
+    await db_session.commit()
+
+    fake = AsyncMock()
+    monkeypatch.setattr(ingestion, "fetch_earnings_calendar_finnhub", fake)
+
+    results = await ingestion.ingest_us_earnings_for_range(
+        db_session, date(2026, 5, 11), date(2026, 5, 13)
+    )
+
+    fake.assert_not_awaited()
+    assert results == []
