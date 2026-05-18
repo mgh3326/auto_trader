@@ -9,6 +9,7 @@ isolated from any migration-managed tables.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import pytest
 import pytest_asyncio
@@ -68,6 +69,10 @@ async def session() -> AsyncSession:
             await cleanup.commit()
     finally:
         await engine.dispose()
+
+
+def _future(days: int = 7) -> datetime:
+    return datetime.now(UTC) + timedelta(days=days)
 
 
 def _base_payload(**overrides) -> dict:
@@ -227,9 +232,41 @@ async def test_item_kind_check(session: AsyncSession) -> None:
 async def test_watch_item_requires_condition(session: AsyncSession) -> None:
     report = await _make_report(session)
     # Missing watch_condition for item_kind='watch' → violation.
+    # valid_until is supplied so the failure is unambiguously the
+    # watch_has_condition CHECK, not the watch_has_expiry CHECK.
     session.add(
         InvestmentReportItem(
-            **_base_item_payload(report.id, item_kind="watch", side=None)
+            **_base_item_payload(
+                report.id,
+                item_kind="watch",
+                side=None,
+                valid_until=_future(),
+            )
+        )
+    )
+    with pytest.raises(sa.exc.IntegrityError):
+        await session.commit()
+    await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_watch_item_requires_valid_until(session: AsyncSession) -> None:
+    """Watch items are time-bounded; missing valid_until → violation."""
+    report = await _make_report(session)
+    session.add(
+        InvestmentReportItem(
+            **_base_item_payload(
+                report.id,
+                item_kind="watch",
+                side=None,
+                intent="trend_recovery_review",
+                watch_condition={
+                    "metric": "rsi",
+                    "operator": "below",
+                    "threshold": 30,
+                    "target_kind": "asset",
+                },
+            )
         )
     )
     with pytest.raises(sa.exc.IntegrityError):
@@ -252,6 +289,7 @@ async def test_watch_item_with_condition_inserts(session: AsyncSession) -> None:
                 "threshold": 30,
                 "target_kind": "asset",
             },
+            valid_until=_future(),
         )
     )
     session.add(item)
@@ -384,6 +422,28 @@ def _base_alert_payload(
         "intent": "buy_review",
         "action_mode": "notify_only",
         "rationale": "저점 매수 후보 모니터링",
+        "valid_until": _future(),
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _base_event_snapshot(**overrides) -> dict:
+    """Required immutable trigger-identity columns on investment_watch_events.
+
+    Watch events MUST carry these even after the source alert is deleted
+    (Plan 1 patch — preserves audit identity).
+    """
+    payload: dict = {
+        "market": "kr",
+        "target_kind": "asset",
+        "symbol": "005930",
+        "metric": "price",
+        "operator": "below",
+        "threshold": 70000,
+        "threshold_key": "70000",
+        "intent": "buy_review",
+        "action_mode": "notify_only",
     }
     payload.update(overrides)
     return payload
@@ -405,6 +465,25 @@ async def test_alert_round_trip(session: AsyncSession) -> None:
     await session.refresh(alert)
     assert alert.status == "active"
     assert alert.target_kind == "asset"
+
+
+@pytest.mark.asyncio
+async def test_active_alert_requires_valid_until(session: AsyncSession) -> None:
+    """investment_watch_alerts.valid_until is NOT NULL — Plan 1 patch."""
+    report = await _make_report(session)
+    item = InvestmentReportItem(**_base_item_payload(report.id))
+    session.add(item)
+    await session.commit()
+    await session.refresh(item)
+
+    session.add(
+        InvestmentWatchAlert(
+            **_base_alert_payload(report.report_uuid, item.item_uuid, valid_until=None)
+        )
+    )
+    with pytest.raises(sa.exc.IntegrityError):
+        await session.commit()
+    await session.rollback()
 
 
 @pytest.mark.asyncio
@@ -478,10 +557,10 @@ async def test_event_round_trip(session: AsyncSession) -> None:
         source_report_uuid=report.report_uuid,
         source_item_uuid=item.item_uuid,
         current_value=69500,
-        threshold=70000,
         outcome="notified",
         correlation_id=str(uuid.uuid4()),
         kst_date="2026-05-18",
+        **_base_event_snapshot(),
     )
     session.add(event)
     await session.commit()
@@ -502,10 +581,10 @@ async def test_event_outcome_check(session: AsyncSession) -> None:
             idempotency_key=f"x-{uuid.uuid4()}",
             source_report_uuid=report.report_uuid,
             source_item_uuid=item.item_uuid,
-            threshold=70000,
             outcome="auto_executed",  # not in allowed set
             correlation_id=str(uuid.uuid4()),
             kst_date="2026-05-18",
+            **_base_event_snapshot(),
         )
     )
     with pytest.raises(sa.exc.IntegrityError):
@@ -525,10 +604,10 @@ async def test_event_idempotency_dedup(session: AsyncSession) -> None:
     base: dict = {
         "source_report_uuid": report.report_uuid,
         "source_item_uuid": item.item_uuid,
-        "threshold": 70000,
         "outcome": "notified",
         "correlation_id": str(uuid.uuid4()),
         "kst_date": "2026-05-18",
+        **_base_event_snapshot(),
     }
 
     session.add(
@@ -565,10 +644,10 @@ async def test_event_survives_alert_deletion(session: AsyncSession) -> None:
         alert_id=alert.id,
         source_report_uuid=report.report_uuid,
         source_item_uuid=item.item_uuid,
-        threshold=70000,
         outcome="notified",
         correlation_id=str(uuid.uuid4()),
         kst_date="2026-05-18",
+        **_base_event_snapshot(),
     )
     session.add(event)
     await session.commit()
@@ -580,3 +659,16 @@ async def test_event_survives_alert_deletion(session: AsyncSession) -> None:
     # the stale alert_id, so refresh the event row from disk explicitly.
     await session.refresh(event)
     assert event.alert_id is None
+
+    # Plan 1 patch — trigger identity must survive alert deletion.
+    assert event.market == "kr"
+    assert event.target_kind == "asset"
+    assert event.symbol == "005930"
+    assert event.metric == "price"
+    assert event.operator == "below"
+    assert float(event.threshold) == 70000
+    assert event.threshold_key == "70000"
+    assert event.intent == "buy_review"
+    assert event.action_mode == "notify_only"
+    assert event.source_report_uuid == report.report_uuid
+    assert event.source_item_uuid == item.item_uuid
