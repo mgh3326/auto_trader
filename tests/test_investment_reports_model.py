@@ -25,12 +25,14 @@ from app.models.investment_reports import (
     InvestmentReport,
     InvestmentReportItem,
     InvestmentReportItemDecision,
+    InvestmentWatchAlert,
 )
 
 _ALL_TABLES = [
     InvestmentReport.__table__,
     InvestmentReportItem.__table__,
     InvestmentReportItemDecision.__table__,
+    InvestmentWatchAlert.__table__,
 ]
 
 
@@ -359,3 +361,94 @@ async def test_multiple_decisions_per_item_allowed(session: AsyncSession) -> Non
         sa.select(sa.func.count()).select_from(InvestmentReportItemDecision)
     )
     assert total == 2
+
+
+# ---------------------------------------------------------------------------
+# InvestmentWatchAlert
+# ---------------------------------------------------------------------------
+def _base_alert_payload(
+    report_uuid: uuid.UUID, item_uuid: uuid.UUID, **overrides
+) -> dict:
+    payload = dict(
+        alert_uuid=uuid.uuid4(),
+        idempotency_key=f"alert-{uuid.uuid4()}",
+        source_report_uuid=report_uuid,
+        source_item_uuid=item_uuid,
+        market="kr",
+        target_kind="asset",
+        symbol="005930",
+        metric="price",
+        operator="below",
+        threshold=70000,
+        threshold_key="70000",
+        intent="buy_review",
+        action_mode="notify_only",
+        rationale="저점 매수 후보 모니터링",
+    )
+    payload.update(overrides)
+    return payload
+
+
+@pytest.mark.asyncio
+async def test_alert_round_trip(session: AsyncSession) -> None:
+    report = await _make_report(session)
+    item = InvestmentReportItem(**_base_item_payload(report.id))
+    session.add(item)
+    await session.commit()
+    await session.refresh(item)
+
+    alert = InvestmentWatchAlert(
+        **_base_alert_payload(report.report_uuid, item.item_uuid)
+    )
+    session.add(alert)
+    await session.commit()
+    await session.refresh(alert)
+    assert alert.status == "active"
+    assert alert.target_kind == "asset"
+
+
+@pytest.mark.asyncio
+async def test_alert_action_mode_check(session: AsyncSession) -> None:
+    report = await _make_report(session)
+    item = InvestmentReportItem(**_base_item_payload(report.id))
+    session.add(item)
+    await session.commit()
+    await session.refresh(item)
+
+    session.add(
+        InvestmentWatchAlert(
+            **_base_alert_payload(
+                report.report_uuid,
+                item.item_uuid,
+                action_mode="auto_execute",
+            )
+        )
+    )
+    with pytest.raises(sa.exc.IntegrityError):
+        await session.commit()
+    await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_alert_target_kind_index_allowed(session: AsyncSession) -> None:
+    """Scanner asset/index/fx dimensions must survive."""
+    report = await _make_report(session)
+    item = InvestmentReportItem(
+        **_base_item_payload(report.id, target_kind="index", symbol="KOSPI")
+    )
+    session.add(item)
+    await session.commit()
+    await session.refresh(item)
+
+    alert = InvestmentWatchAlert(
+        **_base_alert_payload(
+            report.report_uuid,
+            item.item_uuid,
+            target_kind="index",
+            symbol="KOSPI",
+            metric="price",
+        )
+    )
+    session.add(alert)
+    await session.commit()
+    assert alert.target_kind == "index"

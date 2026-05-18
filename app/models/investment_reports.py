@@ -333,3 +333,119 @@ class InvestmentReportItemDecision(Base):
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+# ---------------------------------------------------------------------------
+# review.investment_watch_alerts — activated watch projection (ROB-265)
+# ---------------------------------------------------------------------------
+class InvestmentWatchAlert(Base):
+    """Immutable activation snapshot for an approved watch item.
+
+    Items are the source of truth; alerts duplicate scanner-critical fields
+    so the scanner doesn't have to join back to items on every tick. Once
+    activated, the snapshot fields here are not mutated except for
+    ``status`` and ``updated_at``.
+    """
+
+    __tablename__ = "investment_watch_alerts"
+    __table_args__ = (
+        UniqueConstraint("alert_uuid", name="uq_investment_watch_alerts_alert_uuid"),
+        UniqueConstraint(
+            "idempotency_key", name="uq_investment_watch_alerts_idempotency_key"
+        ),
+        CheckConstraint(
+            "status IN ('active','triggered','expired','canceled')",
+            name="ck_investment_watch_alerts_status",
+        ),
+        CheckConstraint(
+            "target_kind IN ('asset','index','fx')",
+            name="ck_investment_watch_alerts_target_kind",
+        ),
+        CheckConstraint(
+            "operator IN ('above','below')",
+            name="ck_investment_watch_alerts_operator",
+        ),
+        CheckConstraint(
+            "action_mode IN ('notify_only','preview_only','approval_required')",
+            name="ck_investment_watch_alerts_action_mode",
+        ),
+        CheckConstraint(
+            "market IN ('kr','us','crypto')",
+            name="ck_investment_watch_alerts_market",
+        ),
+        Index(
+            "ix_investment_watch_alerts_market_status",
+            "market",
+            "status",
+        ),
+        Index(
+            "ix_investment_watch_alerts_status_valid_until",
+            "status",
+            "valid_until",
+        ),
+        Index(
+            "ix_investment_watch_alerts_source_report",
+            "source_report_uuid",
+        ),
+        Index(
+            "ix_investment_watch_alerts_source_item",
+            "source_item_uuid",
+        ),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    alert_uuid: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False, default=uuid.uuid4
+    )
+    idempotency_key: Mapped[str] = mapped_column(Text, nullable=False)
+
+    source_report_uuid: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False
+    )
+    source_item_uuid: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False
+    )
+
+    market: Mapped[str] = mapped_column(Text, nullable=False)
+    target_kind: Mapped[str] = mapped_column(Text, nullable=False)
+    symbol: Mapped[str] = mapped_column(Text, nullable=False)
+    metric: Mapped[str] = mapped_column(Text, nullable=False)
+    operator: Mapped[str] = mapped_column(Text, nullable=False)
+    threshold: Mapped[float] = mapped_column(Numeric(20, 8), nullable=False)
+    threshold_key: Mapped[str] = mapped_column(Text, nullable=False)
+
+    intent: Mapped[str] = mapped_column(Text, nullable=False)
+    action_mode: Mapped[str] = mapped_column(Text, nullable=False)
+    rationale: Mapped[str] = mapped_column(Text, nullable=False)
+    trigger_checklist: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    max_action: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+
+    valid_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'active'")
+    )
+    alert_metadata: Mapped[dict] = mapped_column(
+        "metadata",
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
+    )
+    activated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
