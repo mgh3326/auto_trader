@@ -1,113 +1,45 @@
-# Raspberry Pi 배포 가이드
+# Raspberry Pi Docker 배포 가이드 (Retired)
 
-라즈베리파이(권장: Pi 5, 8GB)에서 Auto Trader를 `docker-compose.prod.yml`로 배포하는 절차입니다.
+> **상태:** 폐기됨 / 사용 금지  
+> **이유:** ROB-263에서 Raspberry Pi Docker production deploy 경로를 제거했습니다.  
+> **현재 production 경로:** MacBook native launchd 배포만 사용합니다.
 
-## 빠른 시작
+## 현재 운영 원칙
 
-```bash
-git clone <repo> ~/auto_trader
-cd ~/auto_trader
-cp env.prod.example .env.prod
-nano .env.prod
+- Auto Trader production은 MacBook native 서비스(`launchd`)가 단일 owner입니다.
+- 특히 KIS websocket은 **MacBook native single-owner**로만 운영해야 합니다.
+- Raspberry Pi에서 `docker-compose.prod.yml` 또는 `docker-compose.n8n.yml`로 production stack을 다시 올리면 KIS websocket appkey/session 점유 충돌(`OPSP8996 ALREADY IN USE appkey`)을 재발시킬 수 있습니다.
 
-# 마이그레이션
-docker compose --env-file .env.prod -f docker-compose.prod.yml --profile migration up migration
-
-# 서비스 실행
-docker compose --env-file .env.prod -f docker-compose.prod.yml up -d
-
-# HTTPS reverse proxy가 필요하면
-docker compose -f docker-compose.monitoring-rpi.yml up -d caddy
-```
-
-## 1. 시스템 준비
+## 사용해야 하는 배포 경로
 
 ```bash
-sudo apt update && sudo apt upgrade -y
-curl -fsSL https://get.docker.com -o get-docker.sh
-sudo sh get-docker.sh
-sudo usermod -aG docker $USER
-newgrp docker
-sudo apt install -y docker-compose-plugin
+# GitHub Actions
+.github/workflows/deploy-macos-native.yml
+
+# 원격 MacBook native 배포 스크립트
+scripts/deploy-native.sh
 ```
 
-## 2. .env.prod 필수 값
+수동 배포가 필요하면 `Deploy MacBook Native Production` workflow를 사용하거나, 운영 runbook에 따라 `scripts/deploy-native.sh`를 통해 MacBook native 서비스를 갱신하세요.
 
-- `DATABASE_URL` (네이티브 PostgreSQL)
-- `REDIS_URL` (네이티브 Redis)
-- `API_PORT`
-- `GITHUB_REPOSITORY`
-- API 키들
-- `DOCS_ENABLED=false`
+## 과거 Raspberry Pi stack 정리 명령
 
-Sentry:
+아래 명령은 **새 배포용이 아니라 기존 Raspberry Pi host 정리용**입니다.
 
 ```bash
-SENTRY_DSN=https://<key>@o0.ingest.sentry.io/0
-SENTRY_ENVIRONMENT=production
-SENTRY_TRACES_SAMPLE_RATE=1.0
-SENTRY_PROFILES_SAMPLE_RATE=1.0
-SENTRY_SEND_DEFAULT_PII=true
-SENTRY_ENABLE_LOG_EVENTS=true
+cd /home/mgh3326/auto_trader
+
+docker compose --env-file .env.prod -f docker-compose.prod.yml down --remove-orphans
+docker compose --env-file .env.prod -f docker-compose.n8n.yml down --remove-orphans
 ```
 
-릴리즈는 이미지 빌드 SHA 또는 현재 git HEAD에서 자동 해상도됩니다.
-
-선택 (Caddy):
+정리 후에는 다음을 확인하세요.
 
 ```bash
-ACME_EMAIL=your_email@example.com
-DOMAIN_NAME=your_domain.com
+docker ps -a | grep '^auto_trader_' || true
+ps aux | grep -E 'websocket_monitor|kis_websocket|upbit_websocket' | grep -v grep || true
 ```
 
-## 3. 실행 및 확인
+## 참고
 
-```bash
-docker compose --env-file .env.prod -f docker-compose.prod.yml pull
-docker compose --env-file .env.prod -f docker-compose.prod.yml up -d
-
-docker compose --env-file .env.prod -f docker-compose.prod.yml ps
-curl http://localhost:8000/healthz
-curl http://127.0.0.1:5678/healthz   # n8n
-```
-
-로그 확인:
-
-```bash
-docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f api
-docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f worker
-docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f mcp
-docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f upbit_websocket
-docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f kis_websocket
-docker compose -f docker-compose.n8n.yml logs -f  # n8n
-
-# Caddy 로그
-docker compose -f docker-compose.monitoring-rpi.yml logs -f caddy
-```
-
-## 4. Sentry 확인
-
-- 단일 프로젝트에서 `service` 태그 조회
-- api/worker/mcp/ws 5개 서비스 이벤트 분리 확인
-- Errors + Transactions + Profiles 유입 확인
-
-## 5. 운영 명령어
-
-```bash
-# 재시작
-docker compose --env-file .env.prod -f docker-compose.prod.yml restart
-
-# 중지
-docker compose --env-file .env.prod -f docker-compose.prod.yml stop
-
-# 중지 및 제거
-docker compose --env-file .env.prod -f docker-compose.prod.yml down
-```
-
-## 6. 성능 점검
-
-```bash
-docker stats
-free -h
-df -h
-```
+이 문서는 과거 운영 흔적을 남기기 위한 retired 문서입니다. 신규 Raspberry Pi Docker production 설정 절차를 추가하지 마세요.
