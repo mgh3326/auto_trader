@@ -519,7 +519,7 @@ async def test_paper_readers_appear_in_accounts_but_excluded_from_home_summary()
         manual_reader=manual_reader,
         paper_readers=[mock_paper_reader],
     )
-    response = await service.get_home(user_id=1)
+    response = await service.get_home(user_id=1, include_paper=True)
 
     # Both accounts are present
     sources = {a.source for a in response.accounts}
@@ -572,7 +572,7 @@ async def test_paper_reader_partial_failure_does_not_break_live_accounts() -> No
         manual_reader=manual_reader,
         paper_readers=[broken_reader],
     )
-    response = await service.get_home(user_id=1)
+    response = await service.get_home(user_id=1, include_paper=True)
 
     # Live KIS account still present
     assert any(a.source == "kis" for a in response.accounts)
@@ -604,3 +604,335 @@ async def test_service_without_paper_readers_unchanged() -> None:
     response = await service.get_home(user_id=1)
     assert response.accounts == []
     assert response.homeSummary.totalValueKrw == 0
+
+
+# ---------------------------------------------------------------------------
+# ROB-267: include_paper / paper_sources gating tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_get_home_does_not_invoke_paper_readers_when_include_paper_false():
+    from app.services.invest_home_service import InvestHomeService, _SourceFetchResult
+
+    class _Stub:
+        async def fetch(self, *, user_id):
+            return _SourceFetchResult(accounts=[], holdings=[])
+
+    class _SpyPaperReader:
+        source = "kis_mock"
+        called = False
+
+        async def fetch(self, *, user_id):
+            type(self).called = True
+            return _SourceFetchResult(accounts=[], holdings=[])
+
+    spy = _SpyPaperReader()
+    service = InvestHomeService(
+        kis_reader=_Stub(),
+        upbit_reader=_Stub(),
+        manual_reader=_Stub(),
+        paper_readers=[spy],
+    )
+
+    await service.get_home(user_id=1)
+
+    assert _SpyPaperReader.called is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_get_home_invokes_only_requested_paper_sources():
+    from app.services.invest_home_service import InvestHomeService, _SourceFetchResult
+
+    class _Stub:
+        async def fetch(self, *, user_id):
+            return _SourceFetchResult(accounts=[], holdings=[])
+
+    class _SpyKisMock:
+        source = "kis_mock"
+        called = False
+
+        async def fetch(self, *, user_id):
+            type(self).called = True
+            return _SourceFetchResult(accounts=[], holdings=[])
+
+    class _SpyAlpaca:
+        source = "alpaca_paper"
+        called = False
+
+        async def fetch(self, *, user_id):
+            type(self).called = True
+            return _SourceFetchResult(accounts=[], holdings=[])
+
+    service = InvestHomeService(
+        kis_reader=_Stub(),
+        upbit_reader=_Stub(),
+        manual_reader=_Stub(),
+        paper_readers=[_SpyKisMock(), _SpyAlpaca()],
+    )
+
+    await service.get_home(
+        user_id=1, include_paper=True, paper_sources=frozenset({"kis_mock"})
+    )
+
+    assert _SpyKisMock.called is True
+    assert _SpyAlpaca.called is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_get_home_invokes_all_paper_readers_when_sources_none():
+    from app.services.invest_home_service import InvestHomeService, _SourceFetchResult
+
+    class _Stub:
+        async def fetch(self, *, user_id):
+            return _SourceFetchResult(accounts=[], holdings=[])
+
+    class _SpyKisMock:
+        source = "kis_mock"
+        called = False
+
+        async def fetch(self, *, user_id):
+            type(self).called = True
+            return _SourceFetchResult(accounts=[], holdings=[])
+
+    class _SpyAlpaca:
+        source = "alpaca_paper"
+        called = False
+
+        async def fetch(self, *, user_id):
+            type(self).called = True
+            return _SourceFetchResult(accounts=[], holdings=[])
+
+    service = InvestHomeService(
+        kis_reader=_Stub(),
+        upbit_reader=_Stub(),
+        manual_reader=_Stub(),
+        paper_readers=[_SpyKisMock(), _SpyAlpaca()],
+    )
+
+    await service.get_home(user_id=1, include_paper=True, paper_sources=None)
+
+    assert _SpyKisMock.called is True
+    assert _SpyAlpaca.called is True
+
+
+# ---------------------------------------------------------------------------
+# ROB-267 Task 4: paper reader exception graceful fallback tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_paper_reader_exception_does_not_break_live_response():
+    from app.schemas.invest_home import Account
+    from app.services.invest_home_service import InvestHomeService, _SourceFetchResult
+
+    class _StubLiveReader:
+        async def fetch(self, *, user_id):
+            return _SourceFetchResult(
+                accounts=[
+                    Account(
+                        accountId="kis_real",
+                        displayName="KIS 실계좌",
+                        source="kis",
+                        accountKind="live",
+                        includedInHome=True,
+                        valueKrw=1_000_000,
+                        costBasisKrw=900_000,
+                        pnlKrw=100_000,
+                        pnlRate=0.11,
+                        cashBalances=Account.model_fields[
+                            "cashBalances"
+                        ].default_factory(),
+                        buyingPower=Account.model_fields[
+                            "buyingPower"
+                        ].default_factory(),
+                    )
+                ],
+                holdings=[],
+            )
+
+    class _EmptyReader:
+        async def fetch(self, *, user_id):
+            return _SourceFetchResult(accounts=[], holdings=[])
+
+    class _ExplodingPaperReader:
+        source = "kis_mock"
+
+        async def fetch(self, *, user_id):
+            raise RuntimeError("paper api down")
+
+    service = InvestHomeService(
+        kis_reader=_StubLiveReader(),
+        upbit_reader=_EmptyReader(),
+        manual_reader=_EmptyReader(),
+        paper_readers=[_ExplodingPaperReader()],
+    )
+
+    resp = await service.get_home(user_id=1, include_paper=True)
+
+    assert len(resp.accounts) == 1
+    assert resp.accounts[0].source == "kis"
+    assert resp.accounts[0].valueKrw == 1_000_000
+    assert any(w.source == "kis_mock" for w in resp.meta.warnings)
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_paper_reader_exception_does_not_break_account_panel_view():
+    from app.services.invest_home_service import InvestHomeService, _SourceFetchResult
+
+    class _EmptyReader:
+        async def fetch(self, *, user_id):
+            return _SourceFetchResult(accounts=[], holdings=[])
+
+    class _ExplodingPaperReader:
+        source = "alpaca_paper"
+
+        async def fetch(self, *, user_id):
+            raise RuntimeError("alpaca outage")
+
+    service = InvestHomeService(
+        kis_reader=_EmptyReader(),
+        upbit_reader=_EmptyReader(),
+        manual_reader=_EmptyReader(),
+        paper_readers=[_ExplodingPaperReader()],
+    )
+
+    view = await service.build_account_panel_view(
+        user_id=1, include_paper=True, paper_sources=frozenset({"alpaca_paper"})
+    )
+
+    assert any(w.source == "alpaca_paper" for w in view.warnings)
+    # live/manual accounts list is empty in this stub but response still succeeds
+    assert view.accounts == []
+
+
+# ---------------------------------------------------------------------------
+# ROB-267 Task 5: per-reader Sentry span tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_get_home_creates_reader_spans(monkeypatch):
+    """Verify per-reader Sentry spans are emitted for observability."""
+    import sentry_sdk
+
+    from app.services.invest_home_service import InvestHomeService, _SourceFetchResult
+
+    spans: list[tuple[str, dict]] = []
+
+    class _RecordingSpan:
+        def __init__(self, op, name, **kwargs):
+            self.op = op
+            self.name = name
+            self.tags = {}
+            self.data = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            spans.append(
+                (
+                    self.name,
+                    {"op": self.op, "tags": dict(self.tags), "data": dict(self.data)},
+                )
+            )
+            return False
+
+        def set_tag(self, k, v):
+            self.tags[k] = v
+
+        def set_data(self, k, v):
+            self.data[k] = v
+
+    def _fake_start_span(*, op=None, name=None, **_kw):
+        return _RecordingSpan(op=op, name=name)
+
+    monkeypatch.setattr(sentry_sdk, "start_span", _fake_start_span)
+
+    class _EmptyReader:
+        async def fetch(self, *, user_id):
+            return _SourceFetchResult(accounts=[], holdings=[])
+
+    class _Paper:
+        source = "kis_mock"
+
+        async def fetch(self, *, user_id):
+            return _SourceFetchResult(accounts=[], holdings=[])
+
+    service = InvestHomeService(
+        kis_reader=_EmptyReader(),
+        upbit_reader=_EmptyReader(),
+        manual_reader=_EmptyReader(),
+        paper_readers=[_Paper()],
+    )
+
+    await service.get_home(
+        user_id=1, include_paper=True, paper_sources=frozenset({"kis_mock"})
+    )
+
+    names = [n for n, _ in spans]
+    assert "invest.home.kis" in names
+    assert "invest.home.upbit" in names
+    assert "invest.home.manual" in names
+    assert "invest.home.kis_mock" in names
+
+    kis_mock_span = next(meta for n, meta in spans if n == "invest.home.kis_mock")
+    assert kis_mock_span["tags"].get("source") == "kis_mock"
+    assert kis_mock_span["tags"].get("include_paper") is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_get_home_default_skips_paper_spans(monkeypatch):
+    import sentry_sdk
+
+    from app.services.invest_home_service import InvestHomeService, _SourceFetchResult
+
+    spans: list[str] = []
+
+    class _RecordingSpan:
+        def __init__(self, op, name, **kwargs):
+            self.name = name
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            spans.append(self.name)
+            return False
+
+        def set_tag(self, *_):
+            pass
+
+        def set_data(self, *_):
+            pass
+
+    monkeypatch.setattr(sentry_sdk, "start_span", lambda **kw: _RecordingSpan(**kw))
+
+    class _Stub:
+        async def fetch(self, *, user_id):
+            return _SourceFetchResult(accounts=[], holdings=[])
+
+    class _Paper:
+        source = "alpaca_paper"
+
+        async def fetch(self, *, user_id):
+            return _SourceFetchResult(accounts=[], holdings=[])
+
+    service = InvestHomeService(
+        kis_reader=_Stub(),
+        upbit_reader=_Stub(),
+        manual_reader=_Stub(),
+        paper_readers=[_Paper()],
+    )
+    await service.get_home(user_id=1)
+
+    assert "invest.home.alpaca_paper" not in spans
+    assert "invest.home.kis_mock" not in spans

@@ -25,7 +25,7 @@ from app.services.invest_home_service import build_grouped_holdings, build_home_
 
 
 class _StubHomeService:
-    async def get_home(self, *, user_id: int) -> InvestHomeResponse:
+    async def get_home(self, *, user_id: int, **kwargs) -> InvestHomeResponse:
         return InvestHomeResponse(
             homeSummary=build_home_summary([]),
             accounts=[],

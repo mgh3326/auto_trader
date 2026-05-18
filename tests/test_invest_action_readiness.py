@@ -51,7 +51,7 @@ class _FakeHomeService:
         self.home = home
         self.user_ids: list[int] = []
 
-    async def get_home(self, *, user_id: int) -> InvestHomeResponse:
+    async def get_home(self, *, user_id: int, **_kwargs: Any) -> InvestHomeResponse:
         self.user_ids.append(user_id)
         return self.home
 

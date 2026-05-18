@@ -20,17 +20,23 @@ async def build_account_panel(
     user_id: int,
     db: AsyncSession,
     home_service: InvestHomeService,
+    include_paper: bool = False,
+    paper_sources: frozenset[str] | None = None,
 ) -> AccountPanelResponse:
-    home = await home_service.get_home(user_id=user_id)
+    view = await home_service.build_account_panel_view(
+        user_id=user_id,
+        include_paper=include_paper,
+        paper_sources=paper_sources,
+    )
     watch_symbols, watch_available = await _load_watch_symbols(db, user_id=user_id)
     return AccountPanelResponse(
-        homeSummary=home.homeSummary,
-        accounts=home.accounts,
-        groupedHoldings=home.groupedHoldings,
+        homeSummary=view.homeSummary,
+        accounts=view.accounts,
+        groupedHoldings=view.groupedHoldings,
         watchSymbols=watch_symbols,
         sourceVisuals=all_visuals(),
         meta=AccountPanelMeta(
-            warnings=home.meta.warnings,
+            warnings=view.warnings,
             watchlistAvailable=watch_available,
         ),
     )

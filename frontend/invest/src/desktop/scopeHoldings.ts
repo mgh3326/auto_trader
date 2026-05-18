@@ -105,6 +105,20 @@ export function scopeGroupedToSource(
   return out;
 }
 
+const PAPER_FILTER_SOURCES: ReadonlySet<AccountSource> = new Set([
+  "kis_mock",
+  "kiwoom_mock",
+  "alpaca_paper",
+  "db_simulated",
+]);
+
+// Paper/mock readers are intentionally excluded from the initial account-panel
+// fetch. Still render their filter chips from sourceVisuals so the user has a
+// visible entry-point that can trigger the source-specific lazy fetch.
+function isPaperFilterSource(source: AccountSource): boolean {
+  return PAPER_FILTER_SOURCES.has(source);
+}
+
 function sourceLabel(response: AccountPanelResponse, source: AccountSource): string {
   const meta = accountSourceMeta(source);
   const account = response.accounts.find((a) => a.source === source);
@@ -197,6 +211,11 @@ export function buildAccountFilterOptions(response: AccountPanelResponse): Accou
   for (const holding of response.groupedHoldings) {
     for (const source of holding.includedSources) {
       sources.add(source);
+    }
+  }
+  for (const visual of response.sourceVisuals) {
+    if (isPaperFilterSource(visual.source)) {
+      sources.add(visual.source);
     }
   }
 
