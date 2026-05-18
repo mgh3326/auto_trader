@@ -281,3 +281,55 @@ class InvestmentReportItem(Base):
         onupdate=func.now(),
         nullable=False,
     )
+
+
+# ---------------------------------------------------------------------------
+# review.investment_report_item_decisions — operator decision audit (ROB-265)
+# ---------------------------------------------------------------------------
+class InvestmentReportItemDecision(Base):
+    """One decision row per (item, actor, idempotency_key).
+
+    Multiple decisions per item are allowed (e.g. ``defer`` → later
+    ``approve``). The latest-decision query is left to the service layer.
+    """
+
+    __tablename__ = "investment_report_item_decisions"
+    __table_args__ = (
+        UniqueConstraint(
+            "decision_uuid",
+            name="uq_investment_report_item_decisions_decision_uuid",
+        ),
+        UniqueConstraint(
+            "idempotency_key",
+            name="uq_investment_report_item_decisions_idempotency_key",
+        ),
+        CheckConstraint(
+            "decision IN ('approve','deny','defer','skip','partial_approve')",
+            name="ck_investment_report_item_decisions_decision",
+        ),
+        Index(
+            "ix_investment_report_item_decisions_item_created",
+            "item_id",
+            "created_at",
+        ),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    item_id: Mapped[int] = mapped_column(
+        ForeignKey("review.investment_report_items.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    decision_uuid: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False, default=uuid.uuid4
+    )
+    idempotency_key: Mapped[str] = mapped_column(Text, nullable=False)
+
+    decision: Mapped[str] = mapped_column(Text, nullable=False)
+    decision_note: Mapped[str | None] = mapped_column(Text)
+    actor: Mapped[str] = mapped_column(Text, nullable=False)
+    approved_payload_snapshot: Mapped[dict | None] = mapped_column(JSONB)
+
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
+    )
