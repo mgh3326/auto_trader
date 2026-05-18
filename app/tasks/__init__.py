@@ -17,7 +17,6 @@ from app.tasks import (
     upbit_symbol_universe_tasks,
     us_candles_tasks,
     us_symbol_universe_tasks,
-    watch_proximity_tasks,
     watch_scan_tasks,
 )
 
@@ -34,7 +33,6 @@ TASKIQ_TASK_MODULES = (
     market_valuation_snapshot_tasks,
     research_reports_ingest_tasks,
     research_run_refresh_tasks,
-    watch_proximity_tasks,
     watch_scan_tasks,
     kr_candles_tasks,
     kr_symbol_universe_tasks,
