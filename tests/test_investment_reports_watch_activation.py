@@ -3,27 +3,13 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
-import pytest_asyncio
 import sqlalchemy as sa
-from sqlalchemy.ext.asyncio import (
-    AsyncSession,
-    async_sessionmaker,
-    create_async_engine,
-)
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
-from app.models.base import Base
-from app.models.investment_reports import (
-    InvestmentReport,
-    InvestmentReportItem,
-    InvestmentReportItemDecision,
-    InvestmentWatchAlert,
-    InvestmentWatchEvent,
-)
+from app.models.investment_reports import InvestmentReportItem
 from app.schemas.investment_reports import (
     ActivateWatchRequest,
     IngestReportItem,
@@ -39,48 +25,15 @@ from app.services.investment_reports.ingestion import (
 )
 from app.services.investment_reports.repository import InvestmentReportsRepository
 from app.services.investment_reports.watch_activation import WatchActivationService
-
-_ALL_TABLES = [
-    InvestmentReport.__table__,
-    InvestmentReportItem.__table__,
-    InvestmentReportItemDecision.__table__,
-    InvestmentWatchAlert.__table__,
-    InvestmentWatchEvent.__table__,
-]
-
-
-@pytest_asyncio.fixture
-async def session() -> AsyncSession:
-    engine = create_async_engine(settings.DATABASE_URL, future=True)
-    async with engine.begin() as conn:
-        await conn.run_sync(
-            Base.metadata.create_all, tables=_ALL_TABLES, checkfirst=True
-        )
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-    try:
-        async with factory() as sess:
-            try:
-                yield sess
-            finally:
-                await sess.rollback()
-        async with factory() as cleanup:
-            for table in reversed(_ALL_TABLES):
-                await cleanup.execute(
-                    sa.text(
-                        f'TRUNCATE TABLE review."{table.name}" RESTART IDENTITY CASCADE'
-                    )
-                )
-            await cleanup.commit()
-    finally:
-        await engine.dispose()
-
-
-def _future(days: int = 7) -> datetime:
-    return datetime.now(UTC) + timedelta(days=days)
+from tests._investment_reports_helpers import future_datetime
 
 
 async def _seed_approved_watch_item(
     session: AsyncSession,
+    *,
+    kst_date: str = "2026-05-18",
+    client_item_key: str = "watch-1",
+    symbol: str = "005930",
 ) -> InvestmentReportItem:
     ingest = InvestmentReportIngestionService(session)
     report = await ingest.ingest(
@@ -93,17 +46,18 @@ async def _seed_approved_watch_item(
             created_by_profile="test",
             title="t",
             summary="s",
-            kst_date="2026-05-18",
+            kst_date=kst_date,
             items=[
                 IngestReportItem(
+                    client_item_key=client_item_key,
                     item_kind="watch",
-                    symbol="005930",
+                    symbol=symbol,
                     intent="trend_recovery_review",
                     rationale="r",
                     watch_condition=WatchConditionPayload(
                         metric="rsi", operator="below", threshold=Decimal("30")
                     ),
-                    valid_until=_future(),
+                    valid_until=future_datetime(),
                 )
             ],
         )
@@ -112,9 +66,7 @@ async def _seed_approved_watch_item(
     items = await repo.list_items_for_report(report.id)
     watch_item = items[0]
 
-    # Approve it so activation is allowed.
-    decisions = InvestmentReportDecisionService(session)
-    await decisions.record(
+    await InvestmentReportDecisionService(session).record(
         RecordDecisionRequest(
             item_uuid=watch_item.item_uuid,
             decision="approve",
@@ -132,8 +84,7 @@ async def test_activate_copies_snapshot_and_transitions_item(
     session: AsyncSession,
 ) -> None:
     item = await _seed_approved_watch_item(session)
-    service = WatchActivationService(session)
-    alert = await service.activate(
+    alert = await WatchActivationService(session).activate(
         ActivateWatchRequest(item_uuid=item.item_uuid, actor="operator-test")
     )
     assert alert.market == "kr"
@@ -184,6 +135,7 @@ async def test_activate_rejects_non_watch_item(session: AsyncSession) -> None:
             kst_date="2026-05-18",
             items=[
                 IngestReportItem(
+                    client_item_key="action-1",
                     item_kind="action",
                     symbol="005930",
                     side="buy",
@@ -196,7 +148,6 @@ async def test_activate_rejects_non_watch_item(session: AsyncSession) -> None:
     repo = InvestmentReportsRepository(session)
     items = await repo.list_items_for_report(report.id)
     action_item = items[0]
-    # Approve so the only remaining failure is item_kind != watch.
     await InvestmentReportDecisionService(session).record(
         RecordDecisionRequest(
             item_uuid=action_item.item_uuid,
@@ -204,9 +155,8 @@ async def test_activate_rejects_non_watch_item(session: AsyncSession) -> None:
             actor="operator-test",
         )
     )
-    service = WatchActivationService(session)
     with pytest.raises(ValueError, match="only watch items"):
-        await service.activate(
+        await WatchActivationService(session).activate(
             ActivateWatchRequest(item_uuid=action_item.item_uuid, actor="operator-test")
         )
 
@@ -226,6 +176,7 @@ async def test_activate_rejects_unapproved_watch(session: AsyncSession) -> None:
             kst_date="2026-05-18",
             items=[
                 IngestReportItem(
+                    client_item_key="watch-1",
                     item_kind="watch",
                     symbol="005930",
                     intent="trend_recovery_review",
@@ -233,7 +184,7 @@ async def test_activate_rejects_unapproved_watch(session: AsyncSession) -> None:
                     watch_condition=WatchConditionPayload(
                         metric="rsi", operator="below", threshold=30
                     ),
-                    valid_until=_future(),
+                    valid_until=future_datetime(),
                 )
             ],
         )
@@ -241,19 +192,16 @@ async def test_activate_rejects_unapproved_watch(session: AsyncSession) -> None:
     repo = InvestmentReportsRepository(session)
     items = await repo.list_items_for_report(report.id)
     watch_item = items[0]
-    # Skip approval — status stays 'proposed'.
-    service = WatchActivationService(session)
     with pytest.raises(ValueError, match="only approved items"):
-        await service.activate(
+        await WatchActivationService(session).activate(
             ActivateWatchRequest(item_uuid=watch_item.item_uuid, actor="operator-test")
         )
 
 
 @pytest.mark.asyncio
 async def test_activate_rejects_unknown_item(session: AsyncSession) -> None:
-    service = WatchActivationService(session)
     with pytest.raises(ValueError, match="item not found"):
-        await service.activate(
+        await WatchActivationService(session).activate(
             ActivateWatchRequest(item_uuid=uuid.uuid4(), actor="operator-test")
         )
 
@@ -264,8 +212,7 @@ async def test_alert_snapshot_does_not_mutate_when_item_changes(
 ) -> None:
     """Once activated, mutating the source item does not change the alert."""
     item = await _seed_approved_watch_item(session)
-    service = WatchActivationService(session)
-    alert = await service.activate(
+    alert = await WatchActivationService(session).activate(
         ActivateWatchRequest(item_uuid=item.item_uuid, actor="operator-test")
     )
     original_rationale = alert.rationale
@@ -282,3 +229,37 @@ async def test_alert_snapshot_does_not_mutate_when_item_changes(
     refreshed_alert = await repo.get_alert_by_idempotency_key(alert_key)
     assert refreshed_alert is not None
     assert refreshed_alert.rationale == original_rationale
+
+
+@pytest.mark.asyncio
+async def test_caller_supplied_idempotency_key_cross_item_collision_rejected(
+    session: AsyncSession,
+) -> None:
+    """Plan 2 hardening #1: a caller-supplied idempotency_key that collides
+    with an existing alert sourced from a DIFFERENT item must raise, not
+    silently return the wrong alert.
+    """
+    item_a = await _seed_approved_watch_item(
+        session, client_item_key="watch-a", symbol="005930"
+    )
+    item_b = await _seed_approved_watch_item(
+        session, kst_date="2026-05-19", client_item_key="watch-b", symbol="000660"
+    )
+    shared_key = f"shared-alert-{uuid.uuid4()}"
+    service = WatchActivationService(session)
+
+    await service.activate(
+        ActivateWatchRequest(
+            item_uuid=item_a.item_uuid,
+            actor="operator",
+            idempotency_key=shared_key,
+        )
+    )
+    with pytest.raises(ValueError, match="already used for a different watch item"):
+        await service.activate(
+            ActivateWatchRequest(
+                item_uuid=item_b.item_uuid,
+                actor="operator",
+                idempotency_key=shared_key,
+            )
+        )
