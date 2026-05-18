@@ -612,6 +612,7 @@ async def test_service_without_paper_readers_unchanged() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.unit
 async def test_get_home_does_not_invoke_paper_readers_when_include_paper_false():
     from app.services.invest_home_service import InvestHomeService, _SourceFetchResult
 
@@ -640,6 +641,7 @@ async def test_get_home_does_not_invoke_paper_readers_when_include_paper_false()
 
 
 @pytest.mark.asyncio
+@pytest.mark.unit
 async def test_get_home_invokes_only_requested_paper_sources():
     from app.services.invest_home_service import InvestHomeService, _SourceFetchResult
 
@@ -677,6 +679,7 @@ async def test_get_home_invokes_only_requested_paper_sources():
 
 
 @pytest.mark.asyncio
+@pytest.mark.unit
 async def test_get_home_invokes_all_paper_readers_when_sources_none():
     from app.services.invest_home_service import InvestHomeService, _SourceFetchResult
 
