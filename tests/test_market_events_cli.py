@@ -38,6 +38,14 @@ def test_parse_args_defaults():
 
 
 @pytest.mark.unit
+def test_parse_args_rejects_reversed_range():
+    from scripts.ingest_market_events import parse_args
+
+    with pytest.raises(SystemExit):
+        parse_args(["--from-date", "2026-05-13", "--to-date", "2026-05-11"])
+
+
+@pytest.mark.unit
 def test_parse_args_rejects_unsupported_source_category_combo():
     import argparse
 
@@ -85,6 +93,31 @@ async def test_run_ingest_dispatches_per_day(db_session, monkeypatch):
         force=False,
     )
     assert fake.await_count == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_run_ingest_rejects_reversed_range_before_dispatch(
+    db_session, monkeypatch
+):
+    from scripts import ingest_market_events as cli
+
+    fake_range = AsyncMock()
+    monkeypatch.setattr(cli, "ingest_us_earnings_for_range", fake_range)
+
+    with pytest.raises(ValueError, match="from_date must be <= to_date"):
+        await cli.run_ingest(
+            db=db_session,
+            source="finnhub",
+            category="earnings",
+            market="us",
+            from_date=date(2026, 5, 13),
+            to_date=date(2026, 5, 11),
+            dry_run=True,
+            force=False,
+        )
+
+    fake_range.assert_not_awaited()
 
 
 @pytest.mark.unit
@@ -593,6 +626,7 @@ async def test_cli_finnhub_earnings_us_429_marks_failed_summary(
     assert summary["failed"] >= 1
     assert summary["succeeded"] == 0
     assert summary.get("error") == "finnhub_quota_exceeded"
+    assert summary["aborted"] is True
 
 
 @pytest.mark.unit

@@ -1365,7 +1365,7 @@ EOF
 
 Edit `docs/runbooks/market-events-ingestion.md`. After the "## CLI" section (immediately before "## Read API"), insert:
 
-```markdown
+````markdown
 ## US earnings: range-aware ingestion (ROB-264)
 
 `(source, category, market) == (finnhub, earnings, us)` is routed through
@@ -1388,12 +1388,14 @@ hit 429 again before reaching the failed tail.
 
 Recommended recovery paths, in order of preference:
 
-1. **Wait for quota reset, rerun the full rolling window.** Skip-already-
-   succeeded means only the previously-failed dates will be reprocessed.
-2. **Narrow recovery for the failed tail.** Rerun with a tight
+1. **Narrow recovery for the failed tail after quota reset.** Rerun with a tight
    `--from-date`/`--to-date` covering just the failed partitions (look up
    the failed range in `market_event_ingestion_partitions` where
    `status='failed'` and `last_error LIKE '%FinnhubAPI%429%'`).
+2. **Rerun the normal rolling window only if the failed range is unknown.**
+   The range-aware path still makes one external Finnhub call for the missing
+   span, while skip-already-succeeded preserves partition rows and avoids DB
+   rewrites for completed dates.
 3. **Force replay for a known-stale window.** Pass `--force` to reprocess
    already-succeeded partitions. This consumes quota for the full window and
    is only appropriate when the upstream data has been corrected.
@@ -1418,10 +1420,10 @@ uv run python -m scripts.ingest_market_events \
 ```
 
 On a 429, the CLI exits with code `2` and prints a summary line whose JSON
-includes `"error": "finnhub_quota_exceeded"`. No partition rows are mutated
-on the failed call; partition state from previous successful runs is
-preserved as-is.
-```
+includes `"error": "finnhub_quota_exceeded"` and `"aborted": true`. No
+partition rows are mutated on the failed call; partition state from previous
+successful runs is preserved as-is.
+````
 
 - [ ] **Step 2: Commit**
 

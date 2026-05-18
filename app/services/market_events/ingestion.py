@@ -170,8 +170,10 @@ async def ingest_us_earnings_for_range(
         )
         return []
 
+    fetch_from = min(dates_to_process)
+    fetch_to = max(dates_to_process)
     response = await fetch_earnings_calendar_finnhub(
-        None, from_date.isoformat(), to_date.isoformat()
+        None, fetch_from.isoformat(), fetch_to.isoformat()
     )
     rows = response.get("earnings", []) if isinstance(response, dict) else []
 

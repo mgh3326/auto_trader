@@ -468,7 +468,7 @@ async def test_ingest_us_earnings_for_range_skips_succeeded_by_default(
     )
     await db_session.commit()
 
-    fake.assert_awaited_once()
+    fake.assert_awaited_once_with(None, "2026-05-13", "2026-05-13")
     assert [r.partition_date for r in results] == [date(2026, 5, 13)]
     assert results[0].status == "succeeded"
     assert results[0].event_count == 1

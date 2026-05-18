@@ -170,6 +170,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             f"unsupported source/category/market combination: {key}. "
             f"supported: {sorted(SUPPORTED.keys())}"
         )
+    if ns.from_date > ns.to_date:
+        parser.error("--from-date must be less than or equal to --to-date")
     return ns
 
 
@@ -197,6 +199,9 @@ async def run_ingest(
     dry_run: bool,
     force: bool = False,
 ) -> int:
+    if from_date > to_date:
+        raise ValueError("from_date must be <= to_date")
+
     enabled, reason = _is_source_enabled(source, category, market)
     if not enabled and not dry_run:
         logger.warning("%s; skipping run for %s..%s", reason, from_date, to_date)
@@ -374,6 +379,7 @@ async def _run_finnhub_us_earnings_range(
     }
     if error_label:
         summary["error"] = error_label
+        summary["aborted"] = True
     import json as _json
 
     print(_json.dumps(summary))
