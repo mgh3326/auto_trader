@@ -10,10 +10,16 @@ Locked semantics:
 * Watch is a **review trigger**, never an automatic order instruction.
 * No broker / live order mutation from this path.
 * Notification target is **Hermes**, never OpenClaw.
+* The alert only transitions to ``triggered`` after Hermes confirms
+  delivery. ``skipped`` (HERMES_ENABLED=False) and ``failed`` deliveries
+  leave the alert ``active`` so the next scan loop can re-attempt
+  against the existing event row (looked up via the idempotency_key
+  collision). The event row carries the delivery-tracking columns
+  (``delivery_status`` / ``delivery_reason`` / ``delivered_at`` /
+  ``delivery_attempts``) for audit + frontend visibility.
 * ``investment_watch_events.idempotency_key`` is unique on
-  ``event:{alert_uuid}:{kst_date}:{threshold_key}`` — a re-fire on the
-  same KST day at the same threshold is a DB-level no-op (the scanner
-  records it as ``ignored`` for that loop iteration and moves on).
+  ``event:{alert_uuid}:{kst_date}:{threshold_key}`` — same-day collisions
+  trigger the retry path (NOT a silent no-op).
 """
 
 from __future__ import annotations
@@ -48,9 +54,10 @@ logger = logging.getLogger(__name__)
 
 
 # action_mode → starting outcome on the event row. Hermes delivery
-# success/failure is tracked separately (logs + scan summary); it does
-# NOT mutate this column after the fact (Plan 4 is fire-and-log;
-# a Plan 5+ follow-up could add an outbox/retry).
+# success/failure is tracked separately via the delivery_status /
+# delivery_reason / delivered_at / delivery_attempts columns; the
+# original ``outcome`` is the operator-facing classification of what
+# the watch represented (notified / review_required / preview_attached).
 _OUTCOME_BY_ACTION_MODE: dict[str, str] = {
     "notify_only": "notified",
     "preview_only": "preview_attached",
@@ -147,39 +154,48 @@ class InvestmentWatchScanner:
                 if not is_triggered(current_value, alert.operator, threshold_value):
                     continue
 
-                # Trigger detected — persist the event + transition the alert.
-                emission = await self._emit_event(
+                # Insert (or look up existing) event row with delivery_status='pending'.
+                emission = await self._upsert_event(
                     db=db,
                     repo=repo,
                     alert=alert,
                     current_value=current_value,
                 )
                 if emission is None:
+                    # Same-day collision and existing event is already delivered;
+                    # nothing left to do for this loop iteration.
                     stats.duplicates += 1
                     continue
 
-                stats.triggered += 1
-                stats.details.append(emission["detail"])
+                is_first_attempt = emission["is_first_attempt"]
 
-                # Hermes delivery is best-effort. Event row already persisted.
-                delivery = await self._hermes.send_review_trigger(emission["payload"])
-                if delivery.status == "success":
-                    stats.notified += 1
-                elif delivery.status == "skipped":
-                    stats.skipped_delivery += 1
+                if is_first_attempt:
+                    stats.triggered += 1
+                    stats.details.append(emission["detail"])
                 else:
-                    stats.failed_delivery += 1
-                    logger.warning(
-                        "Hermes review-trigger delivery failed: "
-                        "alert_uuid=%s event_uuid=%s reason=%s",
-                        alert.alert_uuid,
-                        emission["event_uuid"],
-                        delivery.reason,
-                    )
+                    # No new event row this iteration — we found an
+                    # existing pending/failed/skipped row from earlier
+                    # in the day and are re-attempting delivery against
+                    # it. Count as a duplicate so the scan summary
+                    # reflects "row reused, not created".
+                    stats.duplicates += 1
+
+                # Attempt Hermes delivery and gate the alert transition on it.
+                delivery = await self._hermes.send_review_trigger(emission["payload"])
+                await self._record_delivery_outcome(
+                    db=db,
+                    repo=repo,
+                    alert_id=emission["alert_id"],
+                    alert_uuid=emission["alert_uuid"],
+                    event_id=emission["event_id"],
+                    event_uuid=emission["event_uuid"],
+                    delivery=delivery,
+                    stats=stats,
+                )
 
             return stats.summary(normalized_market, market_open=market_open)
 
-    async def _emit_event(
+    async def _upsert_event(
         self,
         *,
         db: AsyncSession,
@@ -187,83 +203,178 @@ class InvestmentWatchScanner:
         alert: Any,
         current_value: float,
     ) -> dict[str, Any] | None:
-        outcome = _OUTCOME_BY_ACTION_MODE.get(alert.action_mode, "notified")
+        """Insert a fresh event row, or load the existing one for retry.
+
+        Returns ``None`` if a same-day event already exists and was
+        already delivered (nothing to do). Otherwise returns the event
+        row + payload + ``is_first_attempt`` flag.
+        """
+        # Snapshot the alert into plain locals before any commit/rollback —
+        # a rolled-back transaction expires SQLAlchemy attribute state, and
+        # later reads of ``alert.xxx`` would trigger a lazy refresh from
+        # the wrong session context (MissingGreenlet).
+        alert_id = alert.id
+        alert_uuid_value = alert.alert_uuid
+        alert_source_report_uuid = alert.source_report_uuid
+        alert_source_item_uuid = alert.source_item_uuid
+        alert_market = alert.market
+        alert_target_kind = alert.target_kind
+        alert_symbol = alert.symbol
+        alert_metric = alert.metric
+        alert_operator = alert.operator
+        alert_threshold = alert.threshold
+        alert_threshold_key = alert.threshold_key
+        alert_intent = alert.intent
+        alert_action_mode = alert.action_mode
+
+        outcome = _OUTCOME_BY_ACTION_MODE.get(alert_action_mode, "notified")
         correlation_id = uuid4().hex
         kst_date = now_kst().date().isoformat()
         idempotency_key = watch_event_key(
-            alert_uuid=str(alert.alert_uuid),
+            alert_uuid=str(alert_uuid_value),
             kst_date=kst_date,
-            threshold_key=alert.threshold_key,
+            threshold_key=alert_threshold_key,
         )
         current_value_decimal = Decimal(str(current_value))
         scanner_snapshot: dict[str, Any] = {
-            "metric": alert.metric,
-            "operator": alert.operator,
+            "metric": alert_metric,
+            "operator": alert_operator,
             "current_value": current_value,
-            "threshold": float(alert.threshold),
+            "threshold": float(alert_threshold),
         }
 
+        is_first_attempt = True
         try:
             event = await repo.insert_event(
                 event_uuid=uuid4(),
                 idempotency_key=idempotency_key,
-                alert_id=alert.id,
-                source_report_uuid=alert.source_report_uuid,
-                source_item_uuid=alert.source_item_uuid,
-                market=alert.market,
-                target_kind=alert.target_kind,
-                symbol=alert.symbol,
-                metric=alert.metric,
-                operator=alert.operator,
-                threshold=alert.threshold,
-                threshold_key=alert.threshold_key,
-                intent=alert.intent,
-                action_mode=alert.action_mode,
+                alert_id=alert_id,
+                source_report_uuid=alert_source_report_uuid,
+                source_item_uuid=alert_source_item_uuid,
+                market=alert_market,
+                target_kind=alert_target_kind,
+                symbol=alert_symbol,
+                metric=alert_metric,
+                operator=alert_operator,
+                threshold=alert_threshold,
+                threshold_key=alert_threshold_key,
+                intent=alert_intent,
+                action_mode=alert_action_mode,
                 current_value=current_value_decimal,
                 scanner_snapshot=scanner_snapshot,
                 outcome=outcome,
                 correlation_id=correlation_id,
                 kst_date=kst_date,
             )
-            await repo.update_alert_status(alert.id, "triggered")
             await db.commit()
         except IntegrityError:
-            # Same-day re-fire — already emitted. No-op.
+            # Same-day re-fire — load the existing row and retry delivery
+            # if it's still pending/skipped/failed.
             await db.rollback()
-            return None
+            event = await repo.get_event_by_idempotency_key(idempotency_key)
+            if event is None:
+                return None
+            if event.delivery_status == "delivered":
+                # Already delivered on a previous run — no work to do.
+                return None
+            is_first_attempt = False
 
+        # Build the Hermes payload from the event row's persisted fields so
+        # a retry sends the exact same identity snapshot that's on disk.
         payload = ReviewTriggerPayload(
             event_uuid=event.event_uuid,
-            alert_uuid=alert.alert_uuid,
-            source_report_uuid=alert.source_report_uuid,
-            source_item_uuid=alert.source_item_uuid,
-            correlation_id=correlation_id,
-            kst_date=kst_date,
-            market=alert.market,
-            target_kind=alert.target_kind,
-            symbol=alert.symbol,
-            metric=alert.metric,
-            operator=alert.operator,
-            threshold=alert.threshold,
-            threshold_key=alert.threshold_key,
-            intent=alert.intent,
-            action_mode=alert.action_mode,
-            current_value=current_value_decimal,
-            scanner_snapshot=scanner_snapshot,
-            outcome=outcome,
+            alert_uuid=alert_uuid_value,
+            source_report_uuid=event.source_report_uuid,
+            source_item_uuid=event.source_item_uuid,
+            correlation_id=event.correlation_id,
+            kst_date=event.kst_date,
+            market=event.market,
+            target_kind=event.target_kind,
+            symbol=event.symbol,
+            metric=event.metric,
+            operator=event.operator,
+            threshold=Decimal(str(event.threshold)),
+            threshold_key=event.threshold_key,
+            intent=event.intent,
+            action_mode=event.action_mode,
+            current_value=(
+                Decimal(str(event.current_value))
+                if event.current_value is not None
+                else None
+            ),
+            scanner_snapshot=event.scanner_snapshot,
+            outcome=event.outcome,
         )
         return {
+            "event": event,
+            "event_id": event.id,
             "event_uuid": event.event_uuid,
+            "alert_id": alert_id,
+            "alert_uuid": alert_uuid_value,
             "payload": payload,
+            "is_first_attempt": is_first_attempt,
             "detail": {
-                "alert_uuid": str(alert.alert_uuid),
+                "alert_uuid": str(alert_uuid_value),
                 "event_uuid": str(event.event_uuid),
-                "outcome": outcome,
-                "symbol": alert.symbol,
+                "outcome": event.outcome,
+                "symbol": alert_symbol,
                 "current_value": current_value,
-                "threshold": float(alert.threshold),
+                "threshold": float(alert_threshold),
             },
         }
+
+    async def _record_delivery_outcome(
+        self,
+        *,
+        db: AsyncSession,
+        repo: InvestmentReportsRepository,
+        alert_id: int,
+        alert_uuid: Any,
+        event_id: int,
+        event_uuid: Any,
+        delivery: Any,
+        stats: _ScanStats,
+    ) -> None:
+        """Update event delivery columns and gate alert.status on success.
+
+        Plan 4 hardening: ``alert.status`` only transitions to
+        ``triggered`` when ``delivery.status == 'success'``. A
+        ``skipped`` or ``failed`` delivery leaves the alert ``active``
+        so the next scan loop can re-attempt against the existing event
+        row (looked up via the idempotency_key collision).
+        """
+        delivered_at: datetime | None = None
+        delivery_reason: str | None = None
+
+        if delivery.status == "success":
+            delivery_status = "delivered"
+            delivered_at = datetime.now(UTC)
+            stats.notified += 1
+        elif delivery.status == "skipped":
+            delivery_status = "skipped"
+            delivery_reason = delivery.reason or "hermes_disabled"
+            stats.skipped_delivery += 1
+        else:
+            delivery_status = "failed"
+            delivery_reason = delivery.reason or "unknown"
+            stats.failed_delivery += 1
+            logger.warning(
+                "Hermes review-trigger delivery failed: "
+                "alert_uuid=%s event_uuid=%s reason=%s",
+                alert_uuid,
+                event_uuid,
+                delivery_reason,
+            )
+
+        await repo.update_event_delivery(
+            event_id,
+            delivery_status=delivery_status,
+            delivery_reason=delivery_reason,
+            delivered_at=delivered_at,
+        )
+        if delivery_status == "delivered":
+            await repo.update_alert_status(alert_id, "triggered")
+        await db.commit()
 
     async def run(self) -> dict[str, dict[str, Any]]:
         results: dict[str, dict[str, Any]] = {}

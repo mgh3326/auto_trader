@@ -303,7 +303,16 @@ class InvestmentWatchAlertResponse(BaseModel):
 
 
 class InvestmentWatchEventResponse(BaseModel):
-    """Single ``investment_watch_events`` row."""
+    """Single ``investment_watch_events`` row.
+
+    Plan 4 hardening — Hermes delivery tracking columns
+    (``delivery_status`` / ``delivery_reason`` / ``delivered_at`` /
+    ``delivery_attempts``) are surfaced so operators / frontend can
+    see whether the notification actually reached Hermes. The alert
+    is only consumed (status='triggered') once delivery_status reaches
+    ``delivered``; a ``skipped`` or ``failed`` row means the watch is
+    still active and the next scan loop will re-attempt.
+    """
 
     event_uuid: UUID
     alert_id: int | None
@@ -331,6 +340,10 @@ class InvestmentWatchEventResponse(BaseModel):
     follow_up_report_item_id: int | None
     correlation_id: str
     kst_date: str
+    delivery_status: Literal["pending", "delivered", "skipped", "failed"]
+    delivery_reason: str | None
+    delivered_at: datetime | None
+    delivery_attempts: int
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

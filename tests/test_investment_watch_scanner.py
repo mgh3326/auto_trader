@@ -200,6 +200,26 @@ async def test_scan_market_triggered_notify_only_emits_event_and_hermes_call(
     )
     assert status_value == "triggered"
 
+    # Plan 4 hardening — event row carries delivery status / timestamp /
+    # attempt counter so a future operator UI can show what actually
+    # reached Hermes.
+    delivery_row = await session.execute(
+        sa.text(
+            "SELECT delivery_status, delivered_at, delivery_attempts, "
+            "delivery_reason "
+            "FROM review.investment_watch_events "
+            "WHERE alert_id = :alert_id"
+        ),
+        {"alert_id": alert.id},
+    )
+    delivery_status, delivered_at, delivery_attempts, delivery_reason = (
+        delivery_row.one()
+    )
+    assert delivery_status == "delivered"
+    assert delivered_at is not None
+    assert delivery_attempts == 1
+    assert delivery_reason is None
+
 
 @pytest.mark.asyncio
 async def test_scan_market_approval_required_outcome(
@@ -264,10 +284,15 @@ async def test_scan_market_skips_closed_market_except_fx(
 
 
 @pytest.mark.asyncio
-async def test_scan_market_hermes_failure_keeps_event_row(
+async def test_scan_market_hermes_failure_does_not_consume_alert(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Delivery failure does not roll back the event row."""
+    """Plan 4 hardening — failed Hermes delivery leaves alert active.
+
+    The event row is still persisted (auditable, retryable) but the
+    alert.status stays 'active' so the next scan loop will re-attempt
+    delivery against the existing event row.
+    """
     alert = await _seed_active_kr_alert(session)
 
     async def _fake_current_value(**_kwargs) -> float:
@@ -288,8 +313,7 @@ async def test_scan_market_hermes_failure_keeps_event_row(
     assert summary["notified"] == 0
     assert summary["failed_delivery"] == 1
 
-    # Event row still persisted; alert still transitioned. Use raw SQL
-    # on a fresh transaction to bypass the test session's identity map.
+    # Event row persisted, alert NOT transitioned.
     await session.commit()
     status_value = await session.scalar(
         sa.text(
@@ -297,14 +321,149 @@ async def test_scan_market_hermes_failure_keeps_event_row(
         ),
         {"uuid": str(alert.alert_uuid)},
     )
-    assert status_value == "triggered"
-    event_count = await session.scalar(
+    assert status_value == "active"
+    delivery_row = await session.execute(
         sa.text(
-            "SELECT COUNT(*) FROM review.investment_watch_events WHERE alert_id = :alert_id"
+            "SELECT delivery_status, delivery_reason, delivered_at, delivery_attempts "
+            "FROM review.investment_watch_events WHERE alert_id = :alert_id"
         ),
         {"alert_id": alert.id},
     )
+    delivery_status, delivery_reason, delivered_at, delivery_attempts = (
+        delivery_row.one()
+    )
+    assert delivery_status == "failed"
+    assert delivery_reason == "http_500"
+    assert delivered_at is None
+    assert delivery_attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_scan_market_hermes_skipped_does_not_consume_alert(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Plan 4 hardening — disabled Hermes (skipped) keeps the alert active.
+
+    Useful for dev/test runs where HERMES_ENABLED=False — the scanner
+    still writes audit history of what would have fired, but does not
+    silently consume a real watch.
+    """
+    alert = await _seed_active_kr_alert(session)
+
+    async def _fake_current_value(**_kwargs) -> float:
+        return 25.0
+
+    monkeypatch.setattr(scanner_module, "is_market_open", lambda _market: True)
+    monkeypatch.setattr(scanner_module, "get_current_value", _fake_current_value)
+
+    stub = _StubHermesClient(delivery=HermesDeliveryResult(status="skipped"))
+    scanner = InvestmentWatchScanner(hermes_client=stub)
+    summary = await scanner.scan_market("kr")
+
+    assert summary["triggered"] == 1
+    assert summary["notified"] == 0
+    assert summary["skipped_delivery"] == 1
+
+    await session.commit()
+    status_value = await session.scalar(
+        sa.text(
+            "SELECT status FROM review.investment_watch_alerts WHERE alert_uuid = :uuid"
+        ),
+        {"uuid": str(alert.alert_uuid)},
+    )
+    assert status_value == "active"
+    delivery_status = await session.scalar(
+        sa.text(
+            "SELECT delivery_status FROM review.investment_watch_events "
+            "WHERE alert_id = :alert_id"
+        ),
+        {"alert_id": alert.id},
+    )
+    assert delivery_status == "skipped"
+
+
+@pytest.mark.asyncio
+async def test_re_fire_after_failed_delivery_retries_and_consumes_on_success(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Plan 4 hardening — outbox-shaped retry on the next scan iteration.
+
+    Scan 1: Hermes 500 → event.delivery_status='failed', alert stays active.
+    Scan 2: Hermes 200 → existing event row updated to 'delivered',
+    delivery_attempts increments to 2, alert finally transitions to
+    'triggered'. No duplicate event row is inserted.
+    """
+    alert = await _seed_active_kr_alert(session)
+    # Capture identity columns before crossing async-session boundaries —
+    # the scanner uses its own session and the test session's identity
+    # map gets stale once the scanner commits.
+    alert_id = alert.id
+    alert_uuid_str = str(alert.alert_uuid)
+
+    async def _fake_current_value(**_kwargs) -> float:
+        return 25.0
+
+    monkeypatch.setattr(scanner_module, "is_market_open", lambda _market: True)
+    monkeypatch.setattr(scanner_module, "get_current_value", _fake_current_value)
+
+    failing = _StubHermesClient(
+        delivery=HermesDeliveryResult(
+            status="failed", http_status=500, reason="http_500"
+        )
+    )
+    scanner_fail = InvestmentWatchScanner(hermes_client=failing)
+    summary_first = await scanner_fail.scan_market("kr")
+    assert summary_first["triggered"] == 1
+    assert summary_first["failed_delivery"] == 1
+
+    # Scan 2: same alert, same conditions, Hermes now succeeds. The test
+    # session is not touched between scans so its identity-map state
+    # doesn't interfere with the scanner's own AsyncSessionLocal.
+    succeeding = _StubHermesClient(
+        delivery=HermesDeliveryResult(status="success", http_status=200)
+    )
+    scanner_ok = InvestmentWatchScanner(hermes_client=succeeding)
+    summary_second = await scanner_ok.scan_market("kr")
+
+    # Idempotency collision → re-attempt against the existing row, not a
+    # new insert. summary['triggered'] counts only NEW event rows, so the
+    # retry-on-existing case shows up as ``duplicates`` but the delivery
+    # itself succeeded and notified increments.
+    assert summary_second["duplicates"] == 1
+    assert summary_second["notified"] == 1
+    assert len(succeeding.calls) == 1
+    assert len(failing.calls) == 1  # didn't grow
+
+    await session.commit()
+    # Single event row, now delivered + 2 attempts; alert transitioned.
+    event_row = await session.execute(
+        sa.text(
+            "SELECT delivery_status, delivery_attempts, delivered_at "
+            "FROM review.investment_watch_events WHERE alert_id = :alert_id"
+        ),
+        {"alert_id": alert_id},
+    )
+    delivery_status, delivery_attempts, delivered_at = event_row.one()
+    assert delivery_status == "delivered"
+    assert delivery_attempts == 2
+    assert delivered_at is not None
+
+    event_count = await session.scalar(
+        sa.text(
+            "SELECT COUNT(*) FROM review.investment_watch_events "
+            "WHERE alert_id = :alert_id"
+        ),
+        {"alert_id": alert_id},
+    )
     assert event_count == 1
+
+    final_status = await session.scalar(
+        sa.text(
+            "SELECT status FROM review.investment_watch_alerts WHERE alert_uuid = :uuid"
+        ),
+        {"uuid": alert_uuid_str},
+    )
+    assert final_status == "triggered"
 
 
 @pytest.mark.asyncio
