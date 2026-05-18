@@ -35,7 +35,7 @@ MCP 연동 후:
 
 **원래 목적은 [OpenClaw](https://openclaw.ai) 연동입니다.** [Infra-5편](https://mgh3326.tistory.com/242)에서 OpenClaw를 통해 LLM 분석을 오프로딩하는 구조를 만들었는데, OpenClaw가 MCP 클라이언트를 지원하기 때문에 우리 트레이딩 시스템의 데이터를 MCP 도구로 노출하면 OpenClaw 에이전트가 직접 시세 조회, 포트폴리오 확인, 매매까지 할 수 있습니다.
 
-개발 과정에서 **로컬 테스트용으로 Claude Desktop과 Claude Code를 사용**했는데, 결과가 기대 이상이었습니다. 35개 도구를 자유자재로 조합하여 종합 분석 보고서를 만들어주는 것을 보고, **MCP 서버를 배포하여 Claude Desktop에서도 원격으로 접속**할 수 있게 할 계획입니다.
+개발 과정에서 **로컬 테스트용으로 Claude Desktop과 Claude Code를 사용**했는데, 결과가 기대 이상이었습니다. 34개 도구를 자유자재로 조합하여 종합 분석 보고서를 만들어주는 것을 보고, **MCP 서버를 배포하여 Claude Desktop에서도 원격으로 접속**할 수 있게 할 계획입니다.
 
 ```
 활용 시나리오:
@@ -630,7 +630,7 @@ OpenClaw Agent가 MCP 서버에 접속:
 → 종합 분석 결과를 Telegram으로 응답
 ```
 
-OpenClaw는 MCP 클라이언트를 기본 지원하기 때문에, 서버를 배포해 두면 별도 설정 없이 에이전트가 35개 도구를 모두 활용할 수 있습니다. 라즈베리파이에서 운영 중인 auto_trader와 같은 네트워크에서 동작하므로 지연 시간도 최소화됩니다.
+OpenClaw는 MCP 클라이언트를 기본 지원하기 때문에, 서버를 배포해 두면 별도 설정 없이 에이전트가 34개 도구를 모두 활용할 수 있습니다. 라즈베리파이에서 운영 중인 auto_trader와 같은 네트워크에서 동작하므로 지연 시간도 최소화됩니다.
 
 ### Claude Desktop / Claude Code 연동
 
@@ -829,7 +829,7 @@ def mock_naver_finance(monkeypatch):
 
 현재 로컬에서 검증이 완료되었고, 라즈베리파이에 Docker Compose로 배포하여 OpenClaw 에이전트와 상시 연동할 예정입니다. 배포가 완료되면:
 - **OpenClaw**: Telegram에서 "삼성전자 분석해줘"로 AI 종합 분석
-- **Claude Desktop**: 집이든 사무실이든 원격 MCP 서버에 접속하여 동일한 35개 도구 활용
+- **Claude Desktop**: 집이든 사무실이든 원격 MCP 서버에 접속하여 동일한 34개 도구 활용
 
 **추가로 고려할 수 있는 기능:**
 - OpenClaw 에이전트의 자동 리밸런싱 워크플로우
