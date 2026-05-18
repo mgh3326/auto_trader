@@ -10,7 +10,7 @@
 - MCP handlers: 6 tools — `investment_report_create`, `investment_report_list`, `investment_report_get`, `investment_report_decide_item`, `investment_report_activate_watch`, `investment_report_context_get`. Each opens its own `AsyncSessionLocal`.
 - Pydantic response models in `app/schemas/investment_reports.py` use `from_attributes=True` to convert ORM rows. The router & MCP both serialise through these, so the JSON shape is consistent across surfaces.
 - Wiring: `app/main.py` includes the new router; `app/mcp_server/tooling/registry.py` calls a new `register_investment_report_tools`.
-- OpenClaw payload schema work is deferred to Plan 4 (it's scanner-driven and only meaningful once the scanner emits `investment_watch_events`).
+- Hermes review-trigger notification payload contract is deferred to Plan 4 (it's scanner-driven and only meaningful once the scanner emits `investment_watch_events`).
 
 **Tech stack:** FastAPI (existing patterns), Pydantic v2 (existing), pytest-asyncio + httpx TestClient.
 
@@ -97,8 +97,8 @@ Create `app/mcp_server/tooling/investment_reports_handlers.py` with 6 `*_impl` f
 
 ## Out of scope (deferred to Plans 4/5)
 
-- OpenClaw notification payload update (Plan 4 — wires the scanner that emits the events).
-- Watch scanner re-wire onto `investment_watch_alerts` / `investment_watch_events` (Plan 4).
+- Hermes review-trigger notification payload update (Plan 4 — wires the scanner that emits the events).
+- Watch scanner re-wire onto `investment_watch_alerts` / `investment_watch_events`, emitting Hermes review-trigger notifications instead of legacy OpenClaw payloads (Plan 4).
 - Frontend `/invest/reports` views (Plan 5).
 - Legacy clean cut — `analysis_*` and `watch_order_intent_ledger_*` removal (Plan 5).
 - Sentry / observability instrumentation on the new tools (follow-up if needed).
