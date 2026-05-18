@@ -62,9 +62,6 @@ from app.mcp_server.tooling.paper_analytics_registration import (
 from app.mcp_server.tooling.paper_journal_registration import (
     register_paper_journal_tools,
 )
-from app.mcp_server.tooling.paperclip_comment_registration import (
-    register_paperclip_comment_tools,
-)
 from app.mcp_server.tooling.portfolio_registration import register_portfolio_tools
 from app.mcp_server.tooling.trade_journal_registration import (
     register_trade_journal_tools,
@@ -80,9 +77,6 @@ from app.mcp_server.tooling.watch_alerts_registration import (
 )
 from app.mcp_server.tooling.watch_order_intent_ledger_read import (
     register_watch_order_intent_ledger_tools,
-)
-from app.mcp_server.tooling.weekend_crypto_paper_cycle import (
-    register_weekend_crypto_paper_cycle_tools,
 )
 
 if TYPE_CHECKING:
@@ -113,12 +107,10 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     register_alpaca_paper_orders_tools(mcp)
     register_alpaca_paper_ledger_read_tools(mcp)
     register_watch_order_intent_ledger_tools(mcp)
-    register_weekend_crypto_paper_cycle_tools(mcp)
 
     # Always: read-only with account_mode (mock-safe via ROB-28)
     register_portfolio_tools(mcp)
     register_trade_journal_tools(mcp)
-    register_paperclip_comment_tools(mcp)
     register_execution_comment_tools(mcp)
     register_paper_account_tools(mcp)
     register_paper_analytics_tools(mcp)

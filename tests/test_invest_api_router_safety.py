@@ -23,7 +23,6 @@ FORBIDDEN_MUTATION_MODULES = [
     "app.services.kis_websocket_internal",
     "app.services.upbit_websocket",
     "app.services.alpaca_paper_ledger_service",
-    "app.services.weekend_crypto_paper_cycle_runner",
     "app.tasks",
 ]
 
