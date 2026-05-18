@@ -37,3 +37,125 @@ from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func, text
 
 from app.models.base import Base
+
+
+# ---------------------------------------------------------------------------
+# review.investment_reports — report header (ROB-265)
+# ---------------------------------------------------------------------------
+class InvestmentReport(Base):
+    """Report-scoped header artifact. Owns items, decisions, and watches.
+
+    ``thesis_text`` and ``no_action_note`` are report-level fields (locked
+    refinement: kept off the item table to avoid ``item_kind`` bloat).
+    ``previous_report_uuid`` is a trace hint only — context retrieval is
+    a query in a later plan, not a single-link traversal.
+    """
+
+    __tablename__ = "investment_reports"
+    __table_args__ = (
+        UniqueConstraint("report_uuid", name="uq_investment_reports_report_uuid"),
+        UniqueConstraint(
+            "idempotency_key", name="uq_investment_reports_idempotency_key"
+        ),
+        CheckConstraint(
+            "status IN ('draft','published','decided','expired','superseded')",
+            name="ck_investment_reports_status",
+        ),
+        CheckConstraint(
+            "execution_mode IN ('advisory_only','mock_preview')",
+            name="ck_investment_reports_execution_mode",
+        ),
+        CheckConstraint(
+            "account_scope IS NULL OR account_scope IN "
+            "('kis_live','kis_mock','alpaca_paper','upbit_live')",
+            name="ck_investment_reports_account_scope",
+        ),
+        CheckConstraint(
+            "market IN ('kr','us','crypto')",
+            name="ck_investment_reports_market",
+        ),
+        CheckConstraint(
+            "market_session IS NULL OR market_session IN "
+            "('regular','nxt','pre','post','24x7')",
+            name="ck_investment_reports_market_session",
+        ),
+        # Advisory-only invariants — locked refinement #6.
+        # If account is live, execution_mode MUST be advisory_only.
+        CheckConstraint(
+            "account_scope IS DISTINCT FROM 'kis_live' "
+            "OR execution_mode = 'advisory_only'",
+            name="ck_investment_reports_live_advisory_only",
+        ),
+        # If session is NXT, execution_mode MUST be advisory_only.
+        CheckConstraint(
+            "market_session IS DISTINCT FROM 'nxt' "
+            "OR execution_mode = 'advisory_only'",
+            name="ck_investment_reports_nxt_advisory_only",
+        ),
+        Index(
+            "ix_investment_reports_market_session_created",
+            "market",
+            "market_session",
+            "created_at",
+        ),
+        Index("ix_investment_reports_status_created", "status", "created_at"),
+        Index(
+            "ix_investment_reports_report_type_created", "report_type", "created_at"
+        ),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    report_uuid: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False, default=uuid.uuid4
+    )
+    idempotency_key: Mapped[str] = mapped_column(Text, nullable=False)
+
+    report_type: Mapped[str] = mapped_column(Text, nullable=False)
+    market: Mapped[str] = mapped_column(Text, nullable=False)
+    market_session: Mapped[str | None] = mapped_column(Text)
+    account_scope: Mapped[str | None] = mapped_column(Text)
+    execution_mode: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'advisory_only'")
+    )
+    created_by_profile: Mapped[str] = mapped_column(Text, nullable=False)
+
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    risk_summary: Mapped[str | None] = mapped_column(Text)
+    thesis_text: Mapped[str | None] = mapped_column(Text)
+    no_action_note: Mapped[str | None] = mapped_column(Text)
+
+    market_snapshot: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    portfolio_snapshot: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+
+    previous_report_uuid: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True)
+    )
+
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'draft'")
+    )
+    report_metadata: Mapped[dict] = mapped_column(
+        "metadata",
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+    published_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    valid_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
