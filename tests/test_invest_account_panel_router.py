@@ -11,8 +11,6 @@ from app.schemas.invest_home import (
     CashAmounts,
     Holding,
     HomeSummary,
-    InvestHomeResponse,
-    InvestHomeResponseMeta,
 )
 from app.services.invest_home_service import _AccountPanelView, build_grouped_holdings
 

@@ -304,12 +304,17 @@ class _SourceFetchResult:
 
 @dataclass(frozen=True)
 class _AccountPanelView:
-    """Slim view used by /account-panel — excludes full holdings/hidden tracking."""
+    """Slim view used by /account-panel.
 
-    homeSummary: "HomeSummary"
-    accounts: list["Account"]
-    groupedHoldings: list["GroupedHolding"]
-    warnings: list["InvestHomeWarning"]
+    Skips the flat ``holdings`` response field and ``hidden_holdings`` /
+    ``hidden_counts`` tracking that the panel UI does not consume.
+    ``groupedHoldings`` is still assembled from the collected holdings.
+    """
+
+    homeSummary: HomeSummary
+    accounts: list[Account]
+    groupedHoldings: list[GroupedHolding]
+    warnings: list[InvestHomeWarning]
 
 
 class InvestHomeService:
@@ -427,11 +432,13 @@ class InvestHomeService:
         include_paper: bool = False,
         paper_sources: frozenset[str] | None = None,
     ) -> _AccountPanelView:
-        """Slim path for /account-panel — skips holdings detail and hidden tracking.
+        """Slim path for /account-panel — skips the flat holdings response field
+        and hidden_holdings/hidden_counts tracking.
 
-        Runs the same reader fetches as get_home() (live/manual + optionally paper),
-        but does not assemble the full Holdings list or hidden_holdings/hidden_counts
-        tracking since the panel UI does not use those fields.
+        Runs the same reader fetches as get_home() (live/manual + optionally paper).
+        groupedHoldings is still assembled from the collected holdings; only the
+        flat ``holdings`` response field and Upbit hidden-counts tracking are
+        omitted since the panel UI does not use them.
         """
         warnings: list[InvestHomeWarning] = []
         accounts: list[Account] = []
