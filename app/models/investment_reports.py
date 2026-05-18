@@ -449,3 +449,82 @@ class InvestmentWatchAlert(Base):
         onupdate=func.now(),
         nullable=False,
     )
+
+
+# ---------------------------------------------------------------------------
+# review.investment_watch_events — scanner trigger events (ROB-265)
+# ---------------------------------------------------------------------------
+class InvestmentWatchEvent(Base):
+    """Scanner-emitted trigger event linked back to source report/item.
+
+    Replaces every legacy write path that went through
+    ``watch_order_intent_ledger``. ``idempotency_key`` is
+    ``alert_uuid:kst_date:threshold_key`` so a single watch can only
+    fire once per day per threshold cross.
+    """
+
+    __tablename__ = "investment_watch_events"
+    __table_args__ = (
+        UniqueConstraint("event_uuid", name="uq_investment_watch_events_event_uuid"),
+        UniqueConstraint(
+            "idempotency_key", name="uq_investment_watch_events_idempotency_key"
+        ),
+        CheckConstraint(
+            "outcome IN ('notified','review_required','preview_attached',"
+            "'expired','ignored','failed')",
+            name="ck_investment_watch_events_outcome",
+        ),
+        Index(
+            "ix_investment_watch_events_alert_created",
+            "alert_id",
+            "created_at",
+        ),
+        Index(
+            "ix_investment_watch_events_source_report",
+            "source_report_uuid",
+        ),
+        Index(
+            "ix_investment_watch_events_kst_date",
+            "kst_date",
+        ),
+        Index(
+            "ix_investment_watch_events_outcome_created",
+            "outcome",
+            "created_at",
+        ),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    event_uuid: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False, default=uuid.uuid4
+    )
+    idempotency_key: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # SET NULL so historical events survive an alert deletion (audit).
+    alert_id: Mapped[int | None] = mapped_column(
+        ForeignKey("review.investment_watch_alerts.id", ondelete="SET NULL")
+    )
+    source_report_uuid: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False
+    )
+    source_item_uuid: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False
+    )
+
+    current_value: Mapped[float | None] = mapped_column(Numeric(20, 8))
+    threshold: Mapped[float] = mapped_column(Numeric(20, 8), nullable=False)
+    scanner_snapshot: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    outcome: Mapped[str] = mapped_column(Text, nullable=False)
+    follow_up_report_item_id: Mapped[int | None] = mapped_column(
+        ForeignKey("review.investment_report_items.id", ondelete="SET NULL")
+    )
+
+    correlation_id: Mapped[str] = mapped_column(Text, nullable=False)
+    kst_date: Mapped[str] = mapped_column(Text, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
+    )
