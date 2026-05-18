@@ -88,8 +88,7 @@ class InvestmentReport(Base):
         ),
         # If session is NXT, execution_mode MUST be advisory_only.
         CheckConstraint(
-            "market_session IS DISTINCT FROM 'nxt' "
-            "OR execution_mode = 'advisory_only'",
+            "market_session IS DISTINCT FROM 'nxt' OR execution_mode = 'advisory_only'",
             name="ck_investment_reports_nxt_advisory_only",
         ),
         Index(
@@ -99,9 +98,7 @@ class InvestmentReport(Base):
             "created_at",
         ),
         Index("ix_investment_reports_status_created", "status", "created_at"),
-        Index(
-            "ix_investment_reports_report_type_created", "report_type", "created_at"
-        ),
+        Index("ix_investment_reports_report_type_created", "report_type", "created_at"),
         {"schema": "review"},
     )
 

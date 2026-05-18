@@ -61,9 +61,7 @@ def upgrade() -> None:
             nullable=False,
             server_default=_jsonb_default("{}"),
         ),
-        sa.Column(
-            "previous_report_uuid", postgresql.UUID(as_uuid=True), nullable=True
-        ),
+        sa.Column("previous_report_uuid", postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column(
             "status", sa.Text(), nullable=False, server_default=sa.text("'draft'")
         ),
@@ -115,8 +113,7 @@ def upgrade() -> None:
             name="ck_investment_reports_live_advisory_only",
         ),
         sa.CheckConstraint(
-            "market_session IS DISTINCT FROM 'nxt' "
-            "OR execution_mode = 'advisory_only'",
+            "market_session IS DISTINCT FROM 'nxt' OR execution_mode = 'advisory_only'",
             name="ck_investment_reports_nxt_advisory_only",
         ),
         sa.UniqueConstraint("report_uuid", name="uq_investment_reports_report_uuid"),
@@ -246,9 +243,7 @@ def upgrade() -> None:
             ["review.investment_reports.id"],
             ondelete="CASCADE",
         ),
-        sa.UniqueConstraint(
-            "item_uuid", name="uq_investment_report_items_item_uuid"
-        ),
+        sa.UniqueConstraint("item_uuid", name="uq_investment_report_items_item_uuid"),
         sa.UniqueConstraint(
             "idempotency_key", name="uq_investment_report_items_idempotency_key"
         ),
@@ -330,12 +325,8 @@ def upgrade() -> None:
         sa.Column("id", sa.BigInteger(), primary_key=True, nullable=False),
         sa.Column("alert_uuid", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("idempotency_key", sa.Text(), nullable=False),
-        sa.Column(
-            "source_report_uuid", postgresql.UUID(as_uuid=True), nullable=False
-        ),
-        sa.Column(
-            "source_item_uuid", postgresql.UUID(as_uuid=True), nullable=False
-        ),
+        sa.Column("source_report_uuid", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("source_item_uuid", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("market", sa.Text(), nullable=False),
         sa.Column("target_kind", sa.Text(), nullable=False),
         sa.Column("symbol", sa.Text(), nullable=False),
@@ -406,9 +397,7 @@ def upgrade() -> None:
             "market IN ('kr','us','crypto')",
             name="ck_investment_watch_alerts_market",
         ),
-        sa.UniqueConstraint(
-            "alert_uuid", name="uq_investment_watch_alerts_alert_uuid"
-        ),
+        sa.UniqueConstraint("alert_uuid", name="uq_investment_watch_alerts_alert_uuid"),
         sa.UniqueConstraint(
             "idempotency_key", name="uq_investment_watch_alerts_idempotency_key"
         ),
@@ -448,12 +437,8 @@ def upgrade() -> None:
         sa.Column("event_uuid", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("idempotency_key", sa.Text(), nullable=False),
         sa.Column("alert_id", sa.BigInteger(), nullable=True),
-        sa.Column(
-            "source_report_uuid", postgresql.UUID(as_uuid=True), nullable=False
-        ),
-        sa.Column(
-            "source_item_uuid", postgresql.UUID(as_uuid=True), nullable=False
-        ),
+        sa.Column("source_report_uuid", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("source_item_uuid", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("current_value", sa.Numeric(20, 8), nullable=True),
         sa.Column("threshold", sa.Numeric(20, 8), nullable=False),
         sa.Column(
@@ -487,9 +472,7 @@ def upgrade() -> None:
             ["review.investment_report_items.id"],
             ondelete="SET NULL",
         ),
-        sa.UniqueConstraint(
-            "event_uuid", name="uq_investment_watch_events_event_uuid"
-        ),
+        sa.UniqueConstraint("event_uuid", name="uq_investment_watch_events_event_uuid"),
         sa.UniqueConstraint(
             "idempotency_key",
             name="uq_investment_watch_events_idempotency_key",
