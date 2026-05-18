@@ -519,7 +519,7 @@ async def test_paper_readers_appear_in_accounts_but_excluded_from_home_summary()
         manual_reader=manual_reader,
         paper_readers=[mock_paper_reader],
     )
-    response = await service.get_home(user_id=1)
+    response = await service.get_home(user_id=1, include_paper=True)
 
     # Both accounts are present
     sources = {a.source for a in response.accounts}
@@ -572,7 +572,7 @@ async def test_paper_reader_partial_failure_does_not_break_live_accounts() -> No
         manual_reader=manual_reader,
         paper_readers=[broken_reader],
     )
-    response = await service.get_home(user_id=1)
+    response = await service.get_home(user_id=1, include_paper=True)
 
     # Live KIS account still present
     assert any(a.source == "kis" for a in response.accounts)
@@ -604,3 +604,108 @@ async def test_service_without_paper_readers_unchanged() -> None:
     response = await service.get_home(user_id=1)
     assert response.accounts == []
     assert response.homeSummary.totalValueKrw == 0
+
+
+# ---------------------------------------------------------------------------
+# ROB-267: include_paper / paper_sources gating tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_home_does_not_invoke_paper_readers_when_include_paper_false():
+    from app.services.invest_home_service import InvestHomeService, _SourceFetchResult
+
+    class _Stub:
+        async def fetch(self, *, user_id):
+            return _SourceFetchResult(accounts=[], holdings=[])
+
+    class _SpyPaperReader:
+        source = "kis_mock"
+        called = False
+        async def fetch(self, *, user_id):
+            type(self).called = True
+            return _SourceFetchResult(accounts=[], holdings=[])
+
+    spy = _SpyPaperReader()
+    service = InvestHomeService(
+        kis_reader=_Stub(),
+        upbit_reader=_Stub(),
+        manual_reader=_Stub(),
+        paper_readers=[spy],
+    )
+
+    await service.get_home(user_id=1)
+
+    assert _SpyPaperReader.called is False
+
+
+@pytest.mark.asyncio
+async def test_get_home_invokes_only_requested_paper_sources():
+    from app.services.invest_home_service import InvestHomeService, _SourceFetchResult
+
+    class _Stub:
+        async def fetch(self, *, user_id):
+            return _SourceFetchResult(accounts=[], holdings=[])
+
+    class _SpyKisMock:
+        source = "kis_mock"
+        called = False
+        async def fetch(self, *, user_id):
+            type(self).called = True
+            return _SourceFetchResult(accounts=[], holdings=[])
+
+    class _SpyAlpaca:
+        source = "alpaca_paper"
+        called = False
+        async def fetch(self, *, user_id):
+            type(self).called = True
+            return _SourceFetchResult(accounts=[], holdings=[])
+
+    service = InvestHomeService(
+        kis_reader=_Stub(),
+        upbit_reader=_Stub(),
+        manual_reader=_Stub(),
+        paper_readers=[_SpyKisMock(), _SpyAlpaca()],
+    )
+
+    await service.get_home(
+        user_id=1, include_paper=True, paper_sources=frozenset({"kis_mock"})
+    )
+
+    assert _SpyKisMock.called is True
+    assert _SpyAlpaca.called is False
+
+
+@pytest.mark.asyncio
+async def test_get_home_invokes_all_paper_readers_when_sources_none():
+    from app.services.invest_home_service import InvestHomeService, _SourceFetchResult
+
+    class _Stub:
+        async def fetch(self, *, user_id):
+            return _SourceFetchResult(accounts=[], holdings=[])
+
+    class _SpyKisMock:
+        source = "kis_mock"
+        called = False
+        async def fetch(self, *, user_id):
+            type(self).called = True
+            return _SourceFetchResult(accounts=[], holdings=[])
+
+    class _SpyAlpaca:
+        source = "alpaca_paper"
+        called = False
+        async def fetch(self, *, user_id):
+            type(self).called = True
+            return _SourceFetchResult(accounts=[], holdings=[])
+
+    service = InvestHomeService(
+        kis_reader=_Stub(),
+        upbit_reader=_Stub(),
+        manual_reader=_Stub(),
+        paper_readers=[_SpyKisMock(), _SpyAlpaca()],
+    )
+
+    await service.get_home(user_id=1, include_paper=True, paper_sources=None)
+
+    assert _SpyKisMock.called is True
+    assert _SpyAlpaca.called is True

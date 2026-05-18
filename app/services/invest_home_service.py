@@ -318,7 +318,13 @@ class InvestHomeService:
         self._manual = manual_reader
         self._paper_readers: Sequence[object] = paper_readers or []
 
-    async def get_home(self, *, user_id: int) -> InvestHomeResponse:
+    async def get_home(
+        self,
+        *,
+        user_id: int,
+        include_paper: bool = False,
+        paper_sources: frozenset[str] | None = None,
+    ) -> InvestHomeResponse:
         warnings: list[InvestHomeWarning] = []
         accounts: list[Account] = []
         holdings: list[Holding] = []
@@ -363,32 +369,34 @@ class InvestHomeService:
                     )
                 )
 
-        # Paper readers — each is a read-only adapter (e.g. KISMockHomeReader,
-        # AlpacaPaperHomeReader). Partial failure must not affect live accounts.
-        for reader in self._paper_readers:
-            # Readers expose an optional `source` attribute for warning attribution.
-            reader_source: str = getattr(reader, "source", None) or "kis_mock"
-            try:
-                result = await reader.fetch(user_id=user_id)  # type: ignore[union-attr]
-                accounts.extend(result.accounts)
-                holdings.extend(result.holdings)
-                if result.warning is not None:
-                    warnings.append(result.warning)
-            except Exception as exc:
-                src_name = type(reader).__name__
-                logger.warning(
-                    "[invest_home] paper reader %s failed: %s",
-                    src_name,
-                    exc,
-                    exc_info=True,
-                )
-                # Only emit warning when source is a known valid paper literal.
-                if reader_source in _PAPER:
-                    warnings.append(
-                        InvestHomeWarning(
-                            source=reader_source, message=type(exc).__name__
-                        )  # type: ignore[arg-type]
+        # Paper readers — gated by include_paper flag and optional paper_sources filter.
+        # Default (include_paper=False) skips all paper readers entirely so that
+        # /invest 기본 경로에서 KIS mock / Alpaca Paper API 호출이 발생하지 않는다.
+        if include_paper:
+            for reader in self._paper_readers:
+                reader_source: str = getattr(reader, "source", None) or "kis_mock"
+                if paper_sources is not None and reader_source not in paper_sources:
+                    continue
+                try:
+                    result = await reader.fetch(user_id=user_id)  # type: ignore[union-attr]
+                    accounts.extend(result.accounts)
+                    holdings.extend(result.holdings)
+                    if result.warning is not None:
+                        warnings.append(result.warning)
+                except Exception as exc:
+                    src_name = type(reader).__name__
+                    logger.warning(
+                        "[invest_home] paper reader %s failed: %s",
+                        src_name,
+                        exc,
+                        exc_info=True,
                     )
+                    if reader_source in _PAPER:
+                        warnings.append(
+                            InvestHomeWarning(
+                                source=reader_source, message=type(exc).__name__
+                            )  # type: ignore[arg-type]
+                        )
 
         return InvestHomeResponse(
             homeSummary=build_home_summary(accounts),
