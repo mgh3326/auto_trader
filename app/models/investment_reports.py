@@ -204,6 +204,12 @@ class InvestmentReportItem(Base):
             "item_kind <> 'watch' OR watch_condition IS NOT NULL",
             name="ck_investment_report_items_watch_has_condition",
         ),
+        # Watches are time-bounded re-evaluation triggers, not permanent
+        # alerts — every watch item must carry an expiry.
+        CheckConstraint(
+            "item_kind <> 'watch' OR valid_until IS NOT NULL",
+            name="ck_investment_report_items_watch_has_expiry",
+        ),
         Index(
             "ix_investment_report_items_report",
             "report_id",
@@ -422,7 +428,12 @@ class InvestmentWatchAlert(Base):
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
 
-    valid_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    # Watches are time-bounded by contract — alerts must always carry an
+    # expiry. Status transitions to ``expired`` once ``valid_until`` passes
+    # (transition logic lives in the scanner re-wire, Plan 4).
+    valid_until: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
     status: Mapped[str] = mapped_column(
         Text, nullable=False, server_default=text("'active'")
     )
@@ -458,6 +469,18 @@ class InvestmentWatchEvent(Base):
     ``watch_order_intent_ledger``. ``idempotency_key`` is
     ``alert_uuid:kst_date:threshold_key`` so a single watch can only
     fire once per day per threshold cross.
+
+    **Audit identity is self-contained.** Because ``alert_id`` is
+    ``ON DELETE SET NULL``, the event row must carry the full immutable
+    trigger snapshot (``market``, ``target_kind``, ``symbol``, ``metric``,
+    ``operator``, ``threshold``, ``threshold_key``, ``intent``,
+    ``action_mode``) so it remains audit-useful after the source alert
+    is removed.
+
+    ``source_report_uuid`` / ``source_item_uuid`` are logical audit links
+    (no FK on purpose) — the snapshot fields above are the canonical
+    record. Plan 2's service layer validates source existence/consistency
+    at write time.
     """
 
     __tablename__ = "investment_watch_events"
@@ -470,6 +493,22 @@ class InvestmentWatchEvent(Base):
             "outcome IN ('notified','review_required','preview_attached',"
             "'expired','ignored','failed')",
             name="ck_investment_watch_events_outcome",
+        ),
+        CheckConstraint(
+            "market IN ('kr','us','crypto')",
+            name="ck_investment_watch_events_market",
+        ),
+        CheckConstraint(
+            "target_kind IN ('asset','index','fx')",
+            name="ck_investment_watch_events_target_kind",
+        ),
+        CheckConstraint(
+            "operator IN ('above','below')",
+            name="ck_investment_watch_events_operator",
+        ),
+        CheckConstraint(
+            "action_mode IN ('notify_only','preview_only','approval_required')",
+            name="ck_investment_watch_events_action_mode",
         ),
         Index(
             "ix_investment_watch_events_alert_created",
@@ -509,8 +548,19 @@ class InvestmentWatchEvent(Base):
         PG_UUID(as_uuid=True), nullable=False
     )
 
-    current_value: Mapped[float | None] = mapped_column(Numeric(20, 8))
+    # Immutable trigger-identity snapshot copied from the source alert at
+    # event creation. Must survive alert deletion.
+    market: Mapped[str] = mapped_column(Text, nullable=False)
+    target_kind: Mapped[str] = mapped_column(Text, nullable=False)
+    symbol: Mapped[str] = mapped_column(Text, nullable=False)
+    metric: Mapped[str] = mapped_column(Text, nullable=False)
+    operator: Mapped[str] = mapped_column(Text, nullable=False)
     threshold: Mapped[float] = mapped_column(Numeric(20, 8), nullable=False)
+    threshold_key: Mapped[str] = mapped_column(Text, nullable=False)
+    intent: Mapped[str] = mapped_column(Text, nullable=False)
+    action_mode: Mapped[str] = mapped_column(Text, nullable=False)
+
+    current_value: Mapped[float | None] = mapped_column(Numeric(20, 8))
     scanner_snapshot: Mapped[dict] = mapped_column(
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )

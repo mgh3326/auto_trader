@@ -238,6 +238,10 @@ def upgrade() -> None:
             "item_kind <> 'watch' OR watch_condition IS NOT NULL",
             name="ck_investment_report_items_watch_has_condition",
         ),
+        sa.CheckConstraint(
+            "item_kind <> 'watch' OR valid_until IS NOT NULL",
+            name="ck_investment_report_items_watch_has_expiry",
+        ),
         sa.ForeignKeyConstraint(
             ["report_id"],
             ["review.investment_reports.id"],
@@ -349,7 +353,7 @@ def upgrade() -> None:
             nullable=False,
             server_default=_jsonb_default("{}"),
         ),
-        sa.Column("valid_until", sa.TIMESTAMP(timezone=True), nullable=True),
+        sa.Column("valid_until", sa.TIMESTAMP(timezone=True), nullable=False),
         sa.Column(
             "status", sa.Text(), nullable=False, server_default=sa.text("'active'")
         ),
@@ -439,8 +443,18 @@ def upgrade() -> None:
         sa.Column("alert_id", sa.BigInteger(), nullable=True),
         sa.Column("source_report_uuid", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("source_item_uuid", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column("current_value", sa.Numeric(20, 8), nullable=True),
+        # Immutable trigger-identity snapshot. NOT NULL because the event
+        # must remain audit-useful after the source alert is deleted.
+        sa.Column("market", sa.Text(), nullable=False),
+        sa.Column("target_kind", sa.Text(), nullable=False),
+        sa.Column("symbol", sa.Text(), nullable=False),
+        sa.Column("metric", sa.Text(), nullable=False),
+        sa.Column("operator", sa.Text(), nullable=False),
         sa.Column("threshold", sa.Numeric(20, 8), nullable=False),
+        sa.Column("threshold_key", sa.Text(), nullable=False),
+        sa.Column("intent", sa.Text(), nullable=False),
+        sa.Column("action_mode", sa.Text(), nullable=False),
+        sa.Column("current_value", sa.Numeric(20, 8), nullable=True),
         sa.Column(
             "scanner_snapshot",
             postgresql.JSONB(astext_type=sa.Text()),
@@ -461,6 +475,22 @@ def upgrade() -> None:
             "outcome IN ('notified','review_required','preview_attached',"
             "'expired','ignored','failed')",
             name="ck_investment_watch_events_outcome",
+        ),
+        sa.CheckConstraint(
+            "market IN ('kr','us','crypto')",
+            name="ck_investment_watch_events_market",
+        ),
+        sa.CheckConstraint(
+            "target_kind IN ('asset','index','fx')",
+            name="ck_investment_watch_events_target_kind",
+        ),
+        sa.CheckConstraint(
+            "operator IN ('above','below')",
+            name="ck_investment_watch_events_operator",
+        ),
+        sa.CheckConstraint(
+            "action_mode IN ('notify_only','preview_only','approval_required')",
+            name="ck_investment_watch_events_action_mode",
         ),
         sa.ForeignKeyConstraint(
             ["alert_id"],
