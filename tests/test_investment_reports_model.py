@@ -21,10 +21,14 @@ from sqlalchemy.ext.asyncio import (
 
 from app.core.config import settings
 from app.models.base import Base
-from app.models.investment_reports import InvestmentReport
+from app.models.investment_reports import (
+    InvestmentReport,
+    InvestmentReportItem,
+)
 
 _ALL_TABLES = [
     InvestmentReport.__table__,
+    InvestmentReportItem.__table__,
 ]
 
 
@@ -160,3 +164,119 @@ async def test_status_check_rejects_unknown_value(session: AsyncSession) -> None
     with pytest.raises(sa.exc.IntegrityError):
         await session.commit()
     await session.rollback()
+
+
+# ---------------------------------------------------------------------------
+# InvestmentReportItem
+# ---------------------------------------------------------------------------
+async def _make_report(session: AsyncSession, **overrides) -> InvestmentReport:
+    row = InvestmentReport(**_base_payload(**overrides))
+    session.add(row)
+    await session.commit()
+    await session.refresh(row)
+    return row
+
+
+def _base_item_payload(report_id: int, **overrides) -> dict:
+    payload = dict(
+        report_id=report_id,
+        item_uuid=uuid.uuid4(),
+        idempotency_key=f"item-{uuid.uuid4()}",
+        item_kind="action",
+        symbol="005930",
+        side="buy",
+        intent="buy_review",
+        target_kind="asset",
+        priority=10,
+        rationale="정규장 확인 후 수동 승인 후보",
+    )
+    payload.update(overrides)
+    return payload
+
+
+@pytest.mark.asyncio
+async def test_item_round_trip(session: AsyncSession) -> None:
+    report = await _make_report(session)
+    item = InvestmentReportItem(**_base_item_payload(report.id))
+    session.add(item)
+    await session.commit()
+    await session.refresh(item)
+    assert item.status == "proposed"
+    assert item.target_kind == "asset"
+    assert item.trigger_checklist == []
+
+
+@pytest.mark.asyncio
+async def test_item_kind_check(session: AsyncSession) -> None:
+    report = await _make_report(session)
+    session.add(
+        InvestmentReportItem(**_base_item_payload(report.id, item_kind="bogus"))
+    )
+    with pytest.raises(sa.exc.IntegrityError):
+        await session.commit()
+    await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_watch_item_requires_condition(session: AsyncSession) -> None:
+    report = await _make_report(session)
+    # Missing watch_condition for item_kind='watch' → violation.
+    session.add(
+        InvestmentReportItem(
+            **_base_item_payload(report.id, item_kind="watch", side=None)
+        )
+    )
+    with pytest.raises(sa.exc.IntegrityError):
+        await session.commit()
+    await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_watch_item_with_condition_inserts(session: AsyncSession) -> None:
+    report = await _make_report(session)
+    item = InvestmentReportItem(
+        **_base_item_payload(
+            report.id,
+            item_kind="watch",
+            side=None,
+            intent="trend_recovery_review",
+            watch_condition={
+                "metric": "rsi",
+                "operator": "below",
+                "threshold": 30,
+                "target_kind": "asset",
+            },
+        )
+    )
+    session.add(item)
+    await session.commit()
+    assert item.watch_condition["metric"] == "rsi"
+
+
+@pytest.mark.asyncio
+async def test_target_kind_check_rejects_unknown(session: AsyncSession) -> None:
+    report = await _make_report(session)
+    session.add(
+        InvestmentReportItem(
+            **_base_item_payload(report.id, target_kind="commodity")
+        )
+    )
+    with pytest.raises(sa.exc.IntegrityError):
+        await session.commit()
+    await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_cascade_delete_from_report(session: AsyncSession) -> None:
+    report = await _make_report(session)
+    session.add(InvestmentReportItem(**_base_item_payload(report.id)))
+    session.add(InvestmentReportItem(**_base_item_payload(report.id)))
+    await session.commit()
+
+    await session.delete(report)
+    await session.commit()
+
+    remaining = await session.scalar(
+        sa.select(sa.func.count()).select_from(InvestmentReportItem)
+    )
+    assert remaining == 0
