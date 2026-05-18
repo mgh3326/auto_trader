@@ -31,9 +31,7 @@ class WatchActivationService:
         self._session = session
         self._repo = repository or InvestmentReportsRepository(session)
 
-    async def activate(
-        self, request: ActivateWatchRequest
-    ) -> InvestmentWatchAlert:
+    async def activate(self, request: ActivateWatchRequest) -> InvestmentWatchAlert:
         item = await self._repo.get_item_by_uuid(request.item_uuid)
         if item is None:
             raise ValueError(f"item not found: {request.item_uuid}")

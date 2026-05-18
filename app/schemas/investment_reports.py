@@ -48,9 +48,7 @@ WatchMetricLiteral = Literal["price", "rsi", "trade_value"]
 WatchOperatorLiteral = Literal["above", "below"]
 WatchActionModeLiteral = Literal["notify_only", "preview_only", "approval_required"]
 
-DecisionVerbLiteral = Literal[
-    "approve", "deny", "defer", "skip", "partial_approve"
-]
+DecisionVerbLiteral = Literal["approve", "deny", "defer", "skip", "partial_approve"]
 
 
 class WatchConditionPayload(BaseModel):
@@ -141,10 +139,7 @@ class IngestReportRequest(BaseModel):
     @model_validator(mode="after")
     def _validate_advisory_only(self) -> IngestReportRequest:
         # Defense in depth — DB CHECK already enforces this.
-        if (
-            self.account_scope == "kis_live"
-            and self.execution_mode != "advisory_only"
-        ):
+        if self.account_scope == "kis_live" and self.execution_mode != "advisory_only":
             raise ValueError(
                 "account_scope='kis_live' requires execution_mode='advisory_only'"
             )

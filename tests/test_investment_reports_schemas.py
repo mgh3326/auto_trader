@@ -108,18 +108,14 @@ def test_kis_live_with_mock_preview_rejected() -> None:
 def test_nxt_session_with_mock_preview_rejected() -> None:
     with pytest.raises(ValidationError) as exc_info:
         IngestReportRequest(
-            **_base_report_kwargs(
-                market_session="nxt", execution_mode="mock_preview"
-            )
+            **_base_report_kwargs(market_session="nxt", execution_mode="mock_preview")
         )
     assert "advisory_only" in str(exc_info.value)
 
 
 def test_kis_live_with_advisory_only_allowed() -> None:
     req = IngestReportRequest(
-        **_base_report_kwargs(
-            account_scope="kis_live", execution_mode="advisory_only"
-        )
+        **_base_report_kwargs(account_scope="kis_live", execution_mode="advisory_only")
     )
     assert req.account_scope == "kis_live"
 
