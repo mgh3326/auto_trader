@@ -545,3 +545,31 @@ async def test_ingest_us_earnings_for_range_all_succeeded_skips_fetch(
 
     fake.assert_not_awaited()
     assert results == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_ingest_us_earnings_for_range_429_is_fail_closed(
+    db_session, monkeypatch
+):
+    from app.models.market_events import MarketEventIngestionPartition
+    from app.services.market_events import ingestion
+    from app.services.market_events.finnhub_helpers import (
+        FinnhubQuotaExceededError,
+    )
+
+    fake = AsyncMock(side_effect=FinnhubQuotaExceededError("limit reached"))
+    monkeypatch.setattr(ingestion, "fetch_earnings_calendar_finnhub", fake)
+
+    with pytest.raises(FinnhubQuotaExceededError):
+        await ingestion.ingest_us_earnings_for_range(
+            db_session, date(2026, 5, 11), date(2026, 5, 13)
+        )
+    await db_session.rollback()
+
+    parts = (
+        (await db_session.execute(select(MarketEventIngestionPartition)))
+        .scalars()
+        .all()
+    )
+    assert parts == []
