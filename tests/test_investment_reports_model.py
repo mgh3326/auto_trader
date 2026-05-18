@@ -1,27 +1,18 @@
-"""ROB-265 — InvestmentReport ORM + advisory-only invariant tests.
+"""ROB-265 — Investment-report ORM + DB-level CHECK constraint tests.
 
-These exercise DB-level CHECK constraints, so they require the real
-PostgreSQL configured by ``tests/conftest.py``. The fixture creates and
-drops the new ``investment_*`` tables per test against the live test DB,
-isolated from any migration-managed tables.
+Constraint exercises go through ``assert_integrity_error`` and the
+shared async session fixture from ``tests/_investment_reports_helpers``
+so the per-test boilerplate stays small.
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime, timedelta
 
 import pytest
-import pytest_asyncio
 import sqlalchemy as sa
-from sqlalchemy.ext.asyncio import (
-    AsyncSession,
-    async_sessionmaker,
-    create_async_engine,
-)
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
-from app.models.base import Base
 from app.models.investment_reports import (
     InvestmentReport,
     InvestmentReportItem,
@@ -29,52 +20,19 @@ from app.models.investment_reports import (
     InvestmentWatchAlert,
     InvestmentWatchEvent,
 )
+from tests._investment_reports_helpers import (
+    assert_integrity_error,
+    future_datetime,
+)
 
-_ALL_TABLES = [
-    InvestmentReport.__table__,
-    InvestmentReportItem.__table__,
-    InvestmentReportItemDecision.__table__,
-    InvestmentWatchAlert.__table__,
-    InvestmentWatchEvent.__table__,
-]
-
-
-@pytest_asyncio.fixture
-async def session() -> AsyncSession:
-    """Per-test session with table-managed clean state.
-
-    Tables are created once (idempotent if migration already owns them) and
-    truncated between tests. Avoids ``Base.metadata.drop_all`` which would
-    try to drop the shared ``instrument_type`` enum used by other models.
-    """
-    engine = create_async_engine(settings.DATABASE_URL, future=True)
-    async with engine.begin() as conn:
-        await conn.run_sync(
-            Base.metadata.create_all, tables=_ALL_TABLES, checkfirst=True
-        )
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-    try:
-        async with factory() as sess:
-            try:
-                yield sess
-            finally:
-                await sess.rollback()
-        async with factory() as cleanup:
-            for table in reversed(_ALL_TABLES):
-                await cleanup.execute(
-                    sa.text(
-                        f'TRUNCATE TABLE review."{table.name}" RESTART IDENTITY CASCADE'
-                    )
-                )
-            await cleanup.commit()
-    finally:
-        await engine.dispose()
+# ``session`` fixture is provided by the
+# ``tests._investment_reports_helpers`` pytest plugin (registered in
+# ``tests/conftest.py``), so it doesn't need to be imported here.
 
 
-def _future(days: int = 7) -> datetime:
-    return datetime.now(UTC) + timedelta(days=days)
-
-
+# ---------------------------------------------------------------------------
+# Payload builders (local to this file — schemas-layer builders live in P2)
+# ---------------------------------------------------------------------------
 def _base_payload(**overrides) -> dict:
     payload: dict = {
         "report_uuid": uuid.uuid4(),
@@ -93,6 +51,79 @@ def _base_payload(**overrides) -> dict:
     return payload
 
 
+def _base_item_payload(report_id: int, **overrides) -> dict:
+    payload: dict = {
+        "report_id": report_id,
+        "item_uuid": uuid.uuid4(),
+        "idempotency_key": f"item-{uuid.uuid4()}",
+        "item_kind": "action",
+        "symbol": "005930",
+        "side": "buy",
+        "intent": "buy_review",
+        "target_kind": "asset",
+        "priority": 10,
+        "rationale": "정규장 확인 후 수동 승인 후보",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _base_alert_payload(
+    report_uuid: uuid.UUID, item_uuid: uuid.UUID, **overrides
+) -> dict:
+    payload: dict = {
+        "alert_uuid": uuid.uuid4(),
+        "idempotency_key": f"alert-{uuid.uuid4()}",
+        "source_report_uuid": report_uuid,
+        "source_item_uuid": item_uuid,
+        "market": "kr",
+        "target_kind": "asset",
+        "symbol": "005930",
+        "metric": "price",
+        "operator": "below",
+        "threshold": 70000,
+        "threshold_key": "70000",
+        "intent": "buy_review",
+        "action_mode": "notify_only",
+        "rationale": "저점 매수 후보 모니터링",
+        "valid_until": future_datetime(),
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _base_event_snapshot(**overrides) -> dict:
+    """Required immutable trigger-identity columns on investment_watch_events.
+
+    Watch events MUST carry these even after the source alert is deleted
+    (Plan 1 patch — preserves audit identity).
+    """
+    payload: dict = {
+        "market": "kr",
+        "target_kind": "asset",
+        "symbol": "005930",
+        "metric": "price",
+        "operator": "below",
+        "threshold": 70000,
+        "threshold_key": "70000",
+        "intent": "buy_review",
+        "action_mode": "notify_only",
+    }
+    payload.update(overrides)
+    return payload
+
+
+async def _make_report(session: AsyncSession, **overrides) -> InvestmentReport:
+    row = InvestmentReport(**_base_payload(**overrides))
+    session.add(row)
+    await session.commit()
+    await session.refresh(row)
+    return row
+
+
+# ---------------------------------------------------------------------------
+# InvestmentReport
+# ---------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_round_trip_insert(session: AsyncSession) -> None:
     row = InvestmentReport(**_base_payload())
@@ -114,11 +145,9 @@ async def test_idempotency_key_is_unique(session: AsyncSession) -> None:
     key = f"dup-{uuid.uuid4()}"
     session.add(InvestmentReport(**_base_payload(idempotency_key=key)))
     await session.commit()
-
-    session.add(InvestmentReport(**_base_payload(idempotency_key=key)))
-    with pytest.raises(sa.exc.IntegrityError):
-        await session.commit()
-    await session.rollback()
+    await assert_integrity_error(
+        session, InvestmentReport(**_base_payload(idempotency_key=key))
+    )
 
 
 @pytest.mark.asyncio
@@ -126,17 +155,12 @@ async def test_advisory_only_invariant_blocks_live_with_mock_preview(
     session: AsyncSession,
 ) -> None:
     """kis_live account scope MUST pair with execution_mode='advisory_only'."""
-    session.add(
+    await assert_integrity_error(
+        session,
         InvestmentReport(
-            **_base_payload(
-                account_scope="kis_live",
-                execution_mode="mock_preview",
-            )
-        )
+            **_base_payload(account_scope="kis_live", execution_mode="mock_preview")
+        ),
     )
-    with pytest.raises(sa.exc.IntegrityError):
-        await session.commit()
-    await session.rollback()
 
 
 @pytest.mark.asyncio
@@ -144,10 +168,7 @@ async def test_advisory_only_invariant_allows_live_with_advisory_only(
     session: AsyncSession,
 ) -> None:
     row = InvestmentReport(
-        **_base_payload(
-            account_scope="kis_live",
-            execution_mode="advisory_only",
-        )
+        **_base_payload(account_scope="kis_live", execution_mode="advisory_only")
     )
     session.add(row)
     await session.commit()
@@ -156,55 +177,24 @@ async def test_advisory_only_invariant_allows_live_with_advisory_only(
 
 @pytest.mark.asyncio
 async def test_nxt_session_requires_advisory_only(session: AsyncSession) -> None:
-    session.add(
+    await assert_integrity_error(
+        session,
         InvestmentReport(
-            **_base_payload(
-                market_session="nxt",
-                execution_mode="mock_preview",
-            )
-        )
+            **_base_payload(market_session="nxt", execution_mode="mock_preview")
+        ),
     )
-    with pytest.raises(sa.exc.IntegrityError):
-        await session.commit()
-    await session.rollback()
 
 
 @pytest.mark.asyncio
 async def test_status_check_rejects_unknown_value(session: AsyncSession) -> None:
-    session.add(InvestmentReport(**_base_payload(status="bogus")))
-    with pytest.raises(sa.exc.IntegrityError):
-        await session.commit()
-    await session.rollback()
+    await assert_integrity_error(
+        session, InvestmentReport(**_base_payload(status="bogus"))
+    )
 
 
 # ---------------------------------------------------------------------------
 # InvestmentReportItem
 # ---------------------------------------------------------------------------
-async def _make_report(session: AsyncSession, **overrides) -> InvestmentReport:
-    row = InvestmentReport(**_base_payload(**overrides))
-    session.add(row)
-    await session.commit()
-    await session.refresh(row)
-    return row
-
-
-def _base_item_payload(report_id: int, **overrides) -> dict:
-    payload: dict = {
-        "report_id": report_id,
-        "item_uuid": uuid.uuid4(),
-        "idempotency_key": f"item-{uuid.uuid4()}",
-        "item_kind": "action",
-        "symbol": "005930",
-        "side": "buy",
-        "intent": "buy_review",
-        "target_kind": "asset",
-        "priority": 10,
-        "rationale": "정규장 확인 후 수동 승인 후보",
-    }
-    payload.update(overrides)
-    return payload
-
-
 @pytest.mark.asyncio
 async def test_item_round_trip(session: AsyncSession) -> None:
     report = await _make_report(session)
@@ -220,40 +210,39 @@ async def test_item_round_trip(session: AsyncSession) -> None:
 @pytest.mark.asyncio
 async def test_item_kind_check(session: AsyncSession) -> None:
     report = await _make_report(session)
-    session.add(
-        InvestmentReportItem(**_base_item_payload(report.id, item_kind="bogus"))
+    await assert_integrity_error(
+        session,
+        InvestmentReportItem(**_base_item_payload(report.id, item_kind="bogus")),
     )
-    with pytest.raises(sa.exc.IntegrityError):
-        await session.commit()
-    await session.rollback()
 
 
 @pytest.mark.asyncio
 async def test_watch_item_requires_condition(session: AsyncSession) -> None:
+    """Missing watch_condition for item_kind='watch' → violation.
+
+    ``valid_until`` is supplied so the failure is unambiguously the
+    watch_has_condition CHECK, not the watch_has_expiry CHECK.
+    """
     report = await _make_report(session)
-    # Missing watch_condition for item_kind='watch' → violation.
-    # valid_until is supplied so the failure is unambiguously the
-    # watch_has_condition CHECK, not the watch_has_expiry CHECK.
-    session.add(
+    await assert_integrity_error(
+        session,
         InvestmentReportItem(
             **_base_item_payload(
                 report.id,
                 item_kind="watch",
                 side=None,
-                valid_until=_future(),
+                valid_until=future_datetime(),
             )
-        )
+        ),
     )
-    with pytest.raises(sa.exc.IntegrityError):
-        await session.commit()
-    await session.rollback()
 
 
 @pytest.mark.asyncio
 async def test_watch_item_requires_valid_until(session: AsyncSession) -> None:
     """Watch items are time-bounded; missing valid_until → violation."""
     report = await _make_report(session)
-    session.add(
+    await assert_integrity_error(
+        session,
         InvestmentReportItem(
             **_base_item_payload(
                 report.id,
@@ -267,11 +256,8 @@ async def test_watch_item_requires_valid_until(session: AsyncSession) -> None:
                     "target_kind": "asset",
                 },
             )
-        )
+        ),
     )
-    with pytest.raises(sa.exc.IntegrityError):
-        await session.commit()
-    await session.rollback()
 
 
 @pytest.mark.asyncio
@@ -289,7 +275,7 @@ async def test_watch_item_with_condition_inserts(session: AsyncSession) -> None:
                 "threshold": 30,
                 "target_kind": "asset",
             },
-            valid_until=_future(),
+            valid_until=future_datetime(),
         )
     )
     session.add(item)
@@ -300,12 +286,10 @@ async def test_watch_item_with_condition_inserts(session: AsyncSession) -> None:
 @pytest.mark.asyncio
 async def test_target_kind_check_rejects_unknown(session: AsyncSession) -> None:
     report = await _make_report(session)
-    session.add(
-        InvestmentReportItem(**_base_item_payload(report.id, target_kind="commodity"))
+    await assert_integrity_error(
+        session,
+        InvestmentReportItem(**_base_item_payload(report.id, target_kind="commodity")),
     )
-    with pytest.raises(sa.exc.IntegrityError):
-        await session.commit()
-    await session.rollback()
 
 
 @pytest.mark.asyncio
@@ -361,18 +345,16 @@ async def test_decision_check_rejects_unknown(session: AsyncSession) -> None:
     await session.commit()
     await session.refresh(item)
 
-    session.add(
+    await assert_integrity_error(
+        session,
         InvestmentReportItemDecision(
             item_id=item.id,
             decision_uuid=uuid.uuid4(),
             idempotency_key=f"dec-{uuid.uuid4()}",
             decision="unknown-verb",
             actor="operator-test",
-        )
+        ),
     )
-    with pytest.raises(sa.exc.IntegrityError):
-        await session.commit()
-    await session.rollback()
 
 
 @pytest.mark.asyncio
@@ -404,51 +386,6 @@ async def test_multiple_decisions_per_item_allowed(session: AsyncSession) -> Non
 # ---------------------------------------------------------------------------
 # InvestmentWatchAlert
 # ---------------------------------------------------------------------------
-def _base_alert_payload(
-    report_uuid: uuid.UUID, item_uuid: uuid.UUID, **overrides
-) -> dict:
-    payload: dict = {
-        "alert_uuid": uuid.uuid4(),
-        "idempotency_key": f"alert-{uuid.uuid4()}",
-        "source_report_uuid": report_uuid,
-        "source_item_uuid": item_uuid,
-        "market": "kr",
-        "target_kind": "asset",
-        "symbol": "005930",
-        "metric": "price",
-        "operator": "below",
-        "threshold": 70000,
-        "threshold_key": "70000",
-        "intent": "buy_review",
-        "action_mode": "notify_only",
-        "rationale": "저점 매수 후보 모니터링",
-        "valid_until": _future(),
-    }
-    payload.update(overrides)
-    return payload
-
-
-def _base_event_snapshot(**overrides) -> dict:
-    """Required immutable trigger-identity columns on investment_watch_events.
-
-    Watch events MUST carry these even after the source alert is deleted
-    (Plan 1 patch — preserves audit identity).
-    """
-    payload: dict = {
-        "market": "kr",
-        "target_kind": "asset",
-        "symbol": "005930",
-        "metric": "price",
-        "operator": "below",
-        "threshold": 70000,
-        "threshold_key": "70000",
-        "intent": "buy_review",
-        "action_mode": "notify_only",
-    }
-    payload.update(overrides)
-    return payload
-
-
 @pytest.mark.asyncio
 async def test_alert_round_trip(session: AsyncSession) -> None:
     report = await _make_report(session)
@@ -476,14 +413,12 @@ async def test_active_alert_requires_valid_until(session: AsyncSession) -> None:
     await session.commit()
     await session.refresh(item)
 
-    session.add(
+    await assert_integrity_error(
+        session,
         InvestmentWatchAlert(
             **_base_alert_payload(report.report_uuid, item.item_uuid, valid_until=None)
-        )
+        ),
     )
-    with pytest.raises(sa.exc.IntegrityError):
-        await session.commit()
-    await session.rollback()
 
 
 @pytest.mark.asyncio
@@ -494,18 +429,16 @@ async def test_alert_action_mode_check(session: AsyncSession) -> None:
     await session.commit()
     await session.refresh(item)
 
-    session.add(
+    await assert_integrity_error(
+        session,
         InvestmentWatchAlert(
             **_base_alert_payload(
                 report.report_uuid,
                 item.item_uuid,
                 action_mode="auto_execute",
             )
-        )
+        ),
     )
-    with pytest.raises(sa.exc.IntegrityError):
-        await session.commit()
-    await session.rollback()
 
 
 @pytest.mark.asyncio
@@ -575,7 +508,8 @@ async def test_event_outcome_check(session: AsyncSession) -> None:
     await session.commit()
     await session.refresh(item)
 
-    session.add(
+    await assert_integrity_error(
+        session,
         InvestmentWatchEvent(
             event_uuid=uuid.uuid4(),
             idempotency_key=f"x-{uuid.uuid4()}",
@@ -585,11 +519,8 @@ async def test_event_outcome_check(session: AsyncSession) -> None:
             correlation_id=str(uuid.uuid4()),
             kst_date="2026-05-18",
             **_base_event_snapshot(),
-        )
+        ),
     )
-    with pytest.raises(sa.exc.IntegrityError):
-        await session.commit()
-    await session.rollback()
 
 
 @pytest.mark.asyncio
@@ -614,13 +545,10 @@ async def test_event_idempotency_dedup(session: AsyncSession) -> None:
         InvestmentWatchEvent(event_uuid=uuid.uuid4(), idempotency_key=key, **base)
     )
     await session.commit()
-
-    session.add(
-        InvestmentWatchEvent(event_uuid=uuid.uuid4(), idempotency_key=key, **base)
+    await assert_integrity_error(
+        session,
+        InvestmentWatchEvent(event_uuid=uuid.uuid4(), idempotency_key=key, **base),
     )
-    with pytest.raises(sa.exc.IntegrityError):
-        await session.commit()
-    await session.rollback()
 
 
 @pytest.mark.asyncio

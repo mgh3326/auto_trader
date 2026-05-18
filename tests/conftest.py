@@ -361,7 +361,7 @@ def sample_gemini_response():
 
 
 # Markers for different test types
-pytest_plugins = ["pytest_asyncio"]
+pytest_plugins = ["pytest_asyncio", "tests._investment_reports_helpers"]
 
 
 def pytest_configure(config):
