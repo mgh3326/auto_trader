@@ -40,6 +40,9 @@ from app.mcp_server.tooling.execution_comment_registration import (
     register_execution_comment_tools,
 )
 from app.mcp_server.tooling.fundamentals_registration import register_fundamentals_tools
+from app.mcp_server.tooling.investment_reports_handlers import (
+    register_investment_report_tools,
+)
 from app.mcp_server.tooling.market_brief_registration import (
     register_market_brief_tools,
 )
@@ -96,6 +99,7 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     register_fundamentals_tools(mcp)
     register_analysis_tools(mcp)
     register_analysis_report_tools(mcp)
+    register_investment_report_tools(mcp)
     register_watch_alert_tools(mcp)
     register_trade_profile_tools(mcp)
     register_market_report_tools(mcp)

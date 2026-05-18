@@ -189,3 +189,202 @@ class ActivateWatchRequest(BaseModel):
     item_uuid: UUID
     actor: str
     idempotency_key: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Response models (Plan 3 — HTTP / MCP read surface)
+# ---------------------------------------------------------------------------
+#
+# All response models use ``from_attributes=True`` so they can be built
+# directly from an ORM instance via ``Model.model_validate(row)``.
+# ``populate_by_name=True`` is set on response models that need to surface
+# a ``metadata`` JSON field — the ORM attribute is ``report_metadata``
+# but the API contract exposes the plain ``metadata`` key.
+
+
+class InvestmentReportResponse(BaseModel):
+    """Single ``investment_reports`` row, serialised for HTTP / MCP."""
+
+    report_uuid: UUID
+    report_type: str
+    market: MarketLiteral
+    market_session: MarketSessionLiteral | None
+    account_scope: AccountScopeLiteral | None
+    execution_mode: ExecutionModeLiteral
+    created_by_profile: str
+    title: str
+    summary: str
+    risk_summary: str | None
+    thesis_text: str | None
+    no_action_note: str | None
+    market_snapshot: dict[str, Any]
+    portfolio_snapshot: dict[str, Any]
+    previous_report_uuid: UUID | None
+    status: ReportStatusLiteral
+    metadata: dict[str, Any] = Field(
+        validation_alias="report_metadata", serialization_alias="metadata"
+    )
+    created_at: datetime
+    updated_at: datetime
+    published_at: datetime | None
+    valid_until: datetime | None
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
+class InvestmentReportItemResponse(BaseModel):
+    """Single ``investment_report_items`` row."""
+
+    item_uuid: UUID
+    item_kind: ItemKindLiteral
+    symbol: str | None
+    side: ItemSideLiteral | None
+    intent: ItemIntentLiteral
+    target_kind: TargetKindLiteral
+    priority: int
+    confidence: Decimal | None
+    rationale: str
+    evidence_snapshot: dict[str, Any]
+    watch_condition: dict[str, Any] | None
+    trigger_checklist: list[Any]
+    max_action: dict[str, Any]
+    valid_until: datetime | None
+    status: ItemStatusLiteral
+    metadata: dict[str, Any] = Field(
+        validation_alias="item_metadata", serialization_alias="metadata"
+    )
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
+class InvestmentReportItemDecisionResponse(BaseModel):
+    """Single ``investment_report_item_decisions`` row."""
+
+    decision_uuid: UUID
+    decision: DecisionVerbLiteral
+    actor: str
+    decision_note: str | None
+    approved_payload_snapshot: dict[str, Any] | None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class InvestmentWatchAlertResponse(BaseModel):
+    """Single ``investment_watch_alerts`` row."""
+
+    alert_uuid: UUID
+    source_report_uuid: UUID
+    source_item_uuid: UUID
+    market: MarketLiteral
+    target_kind: TargetKindLiteral
+    symbol: str
+    metric: WatchMetricLiteral
+    operator: WatchOperatorLiteral
+    threshold: Decimal
+    threshold_key: str
+    intent: ItemIntentLiteral
+    action_mode: WatchActionModeLiteral
+    rationale: str
+    trigger_checklist: list[Any]
+    max_action: dict[str, Any]
+    valid_until: datetime
+    status: Literal["active", "triggered", "expired", "canceled"]
+    metadata: dict[str, Any] = Field(
+        validation_alias="alert_metadata", serialization_alias="metadata"
+    )
+    created_at: datetime
+    activated_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
+class InvestmentWatchEventResponse(BaseModel):
+    """Single ``investment_watch_events`` row."""
+
+    event_uuid: UUID
+    alert_id: int | None
+    source_report_uuid: UUID
+    source_item_uuid: UUID
+    market: MarketLiteral
+    target_kind: TargetKindLiteral
+    symbol: str
+    metric: WatchMetricLiteral
+    operator: WatchOperatorLiteral
+    threshold: Decimal
+    threshold_key: str
+    intent: ItemIntentLiteral
+    action_mode: WatchActionModeLiteral
+    current_value: Decimal | None
+    scanner_snapshot: dict[str, Any]
+    outcome: Literal[
+        "notified",
+        "review_required",
+        "preview_attached",
+        "expired",
+        "ignored",
+        "failed",
+    ]
+    follow_up_report_item_id: int | None
+    correlation_id: str
+    kst_date: str
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class InvestmentReportBundle(BaseModel):
+    """``investment_report_get`` / ``GET /.../investment-reports/{uuid}``.
+
+    ``decisions_by_item_uuid`` is keyed by string UUID for external
+    consumers (the service-layer dict is keyed by the integer item.id).
+    """
+
+    report: InvestmentReportResponse
+    items: list[InvestmentReportItemResponse]
+    decisions_by_item_uuid: dict[str, list[InvestmentReportItemDecisionResponse]]
+    alerts: list[InvestmentWatchAlertResponse]
+    events: list[InvestmentWatchEventResponse]
+
+
+class InvestmentReportListResponse(BaseModel):
+    """``investment_report_list`` / ``GET /.../investment-reports``."""
+
+    reports: list[InvestmentReportResponse]
+
+
+class PreviousReportContextResponse(BaseModel):
+    """``investment_report_context_get`` / ``GET /.../investment-reports/context``."""
+
+    prior_reports: list[InvestmentReportResponse]
+    unresolved_deferred_items: list[InvestmentReportItemResponse]
+    active_watches: list[InvestmentWatchAlertResponse]
+    triggered_events: list[InvestmentWatchEventResponse]
+    recent_decisions: list[InvestmentReportItemDecisionResponse]
+
+
+class InvestmentReportCreateResponse(BaseModel):
+    """``investment_report_create`` MCP return shape."""
+
+    success: bool = True
+    idempotent: bool
+    report: InvestmentReportResponse
+
+
+class InvestmentReportDecideItemResponse(BaseModel):
+    """``investment_report_decide_item`` MCP return shape."""
+
+    success: bool = True
+    decision: InvestmentReportItemDecisionResponse
+    item: InvestmentReportItemResponse
+
+
+class InvestmentReportActivateWatchResponse(BaseModel):
+    """``investment_report_activate_watch`` MCP return shape."""
+
+    success: bool = True
+    alert: InvestmentWatchAlertResponse
+    item: InvestmentReportItemResponse
