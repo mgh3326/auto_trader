@@ -23,9 +23,7 @@ async def test_fetch_earnings_calendar_finnhub_maps_429_to_quota_error(monkeypat
         status_code=429,
         message="API limit reached. Please try again later. Remaining Limit: 0",
     )
-    monkeypatch.setattr(
-        finnhub_helpers, "_get_finnhub_client", lambda: fake_client
-    )
+    monkeypatch.setattr(finnhub_helpers, "_get_finnhub_client", lambda: fake_client)
 
     with pytest.raises(finnhub_helpers.FinnhubQuotaExceededError) as exc_info:
         await finnhub_helpers.fetch_earnings_calendar_finnhub(
@@ -45,9 +43,7 @@ async def test_fetch_earnings_calendar_finnhub_passes_through_non_429(monkeypatc
     fake_client.earnings_calendar.side_effect = _FakeFinnhubAPIException(
         status_code=500, message="upstream boom"
     )
-    monkeypatch.setattr(
-        finnhub_helpers, "_get_finnhub_client", lambda: fake_client
-    )
+    monkeypatch.setattr(finnhub_helpers, "_get_finnhub_client", lambda: fake_client)
 
     with pytest.raises(_FakeFinnhubAPIException):
         await finnhub_helpers.fetch_earnings_calendar_finnhub(

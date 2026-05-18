@@ -549,9 +549,7 @@ async def test_ingest_us_earnings_for_range_all_succeeded_skips_fetch(
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_ingest_us_earnings_for_range_429_is_fail_closed(
-    db_session, monkeypatch
-):
+async def test_ingest_us_earnings_for_range_429_is_fail_closed(db_session, monkeypatch):
     from app.models.market_events import MarketEventIngestionPartition
     from app.services.market_events import ingestion
     from app.services.market_events.finnhub_helpers import (
