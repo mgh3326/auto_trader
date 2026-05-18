@@ -71,19 +71,19 @@ async def session() -> AsyncSession:
 
 
 def _base_payload(**overrides) -> dict:
-    payload = dict(
-        report_uuid=uuid.uuid4(),
-        idempotency_key=f"key-{uuid.uuid4()}",
-        report_type="kr_morning",
-        market="kr",
-        market_session="regular",
-        account_scope="kis_mock",
-        execution_mode="mock_preview",
-        created_by_profile="test",
-        title="테스트 리포트",
-        summary="요약",
-        status="draft",
-    )
+    payload: dict = {
+        "report_uuid": uuid.uuid4(),
+        "idempotency_key": f"key-{uuid.uuid4()}",
+        "report_type": "kr_morning",
+        "market": "kr",
+        "market_session": "regular",
+        "account_scope": "kis_mock",
+        "execution_mode": "mock_preview",
+        "created_by_profile": "test",
+        "title": "테스트 리포트",
+        "summary": "요약",
+        "status": "draft",
+    }
     payload.update(overrides)
     return payload
 
@@ -184,18 +184,18 @@ async def _make_report(session: AsyncSession, **overrides) -> InvestmentReport:
 
 
 def _base_item_payload(report_id: int, **overrides) -> dict:
-    payload = dict(
-        report_id=report_id,
-        item_uuid=uuid.uuid4(),
-        idempotency_key=f"item-{uuid.uuid4()}",
-        item_kind="action",
-        symbol="005930",
-        side="buy",
-        intent="buy_review",
-        target_kind="asset",
-        priority=10,
-        rationale="정규장 확인 후 수동 승인 후보",
-    )
+    payload: dict = {
+        "report_id": report_id,
+        "item_uuid": uuid.uuid4(),
+        "idempotency_key": f"item-{uuid.uuid4()}",
+        "item_kind": "action",
+        "symbol": "005930",
+        "side": "buy",
+        "intent": "buy_review",
+        "target_kind": "asset",
+        "priority": 10,
+        "rationale": "정규장 확인 후 수동 승인 후보",
+    }
     payload.update(overrides)
     return payload
 
@@ -263,9 +263,7 @@ async def test_watch_item_with_condition_inserts(session: AsyncSession) -> None:
 async def test_target_kind_check_rejects_unknown(session: AsyncSession) -> None:
     report = await _make_report(session)
     session.add(
-        InvestmentReportItem(
-            **_base_item_payload(report.id, target_kind="commodity")
-        )
+        InvestmentReportItem(**_base_item_payload(report.id, target_kind="commodity"))
     )
     with pytest.raises(sa.exc.IntegrityError):
         await session.commit()
@@ -371,22 +369,22 @@ async def test_multiple_decisions_per_item_allowed(session: AsyncSession) -> Non
 def _base_alert_payload(
     report_uuid: uuid.UUID, item_uuid: uuid.UUID, **overrides
 ) -> dict:
-    payload = dict(
-        alert_uuid=uuid.uuid4(),
-        idempotency_key=f"alert-{uuid.uuid4()}",
-        source_report_uuid=report_uuid,
-        source_item_uuid=item_uuid,
-        market="kr",
-        target_kind="asset",
-        symbol="005930",
-        metric="price",
-        operator="below",
-        threshold=70000,
-        threshold_key="70000",
-        intent="buy_review",
-        action_mode="notify_only",
-        rationale="저점 매수 후보 모니터링",
-    )
+    payload: dict = {
+        "alert_uuid": uuid.uuid4(),
+        "idempotency_key": f"alert-{uuid.uuid4()}",
+        "source_report_uuid": report_uuid,
+        "source_item_uuid": item_uuid,
+        "market": "kr",
+        "target_kind": "asset",
+        "symbol": "005930",
+        "metric": "price",
+        "operator": "below",
+        "threshold": 70000,
+        "threshold_key": "70000",
+        "intent": "buy_review",
+        "action_mode": "notify_only",
+        "rationale": "저점 매수 후보 모니터링",
+    }
     payload.update(overrides)
     return payload
 
@@ -524,26 +522,22 @@ async def test_event_idempotency_dedup(session: AsyncSession) -> None:
     await session.refresh(item)
 
     key = f"dup-event-{uuid.uuid4()}"
-    base = dict(
-        source_report_uuid=report.report_uuid,
-        source_item_uuid=item.item_uuid,
-        threshold=70000,
-        outcome="notified",
-        correlation_id=str(uuid.uuid4()),
-        kst_date="2026-05-18",
-    )
+    base: dict = {
+        "source_report_uuid": report.report_uuid,
+        "source_item_uuid": item.item_uuid,
+        "threshold": 70000,
+        "outcome": "notified",
+        "correlation_id": str(uuid.uuid4()),
+        "kst_date": "2026-05-18",
+    }
 
     session.add(
-        InvestmentWatchEvent(
-            event_uuid=uuid.uuid4(), idempotency_key=key, **base
-        )
+        InvestmentWatchEvent(event_uuid=uuid.uuid4(), idempotency_key=key, **base)
     )
     await session.commit()
 
     session.add(
-        InvestmentWatchEvent(
-            event_uuid=uuid.uuid4(), idempotency_key=key, **base
-        )
+        InvestmentWatchEvent(event_uuid=uuid.uuid4(), idempotency_key=key, **base)
     )
     with pytest.raises(sa.exc.IntegrityError):
         await session.commit()

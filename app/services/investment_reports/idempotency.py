@@ -84,9 +84,7 @@ def watch_activation_key(*, source_item_uuid: str) -> str:
     return ":".join(["activation", _slot(source_item_uuid)])
 
 
-def watch_event_key(
-    *, alert_uuid: str, kst_date: str, threshold_key: str
-) -> str:
+def watch_event_key(*, alert_uuid: str, kst_date: str, threshold_key: str) -> str:
     """One event per (alert, day, threshold)."""
     return ":".join(
         [

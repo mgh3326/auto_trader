@@ -101,9 +101,7 @@ def test_item_key_condition_change_changes_key() -> None:
 
 
 def test_watch_activation_key() -> None:
-    assert (
-        watch_activation_key(source_item_uuid="ITEM-UUID") == "activation:item-uuid"
-    )
+    assert watch_activation_key(source_item_uuid="ITEM-UUID") == "activation:item-uuid"
 
 
 def test_watch_event_key() -> None:
