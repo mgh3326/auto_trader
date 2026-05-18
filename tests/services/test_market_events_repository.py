@@ -240,3 +240,62 @@ async def test_partition_failure_increments_retry_count(db_session):
     await repo.mark_partition_failed(p, error="another")
     assert p.retry_count == 2
     await db_session.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_list_succeeded_partitions_in_range(db_session):
+    from app.services.market_events.repository import MarketEventsRepository
+
+    repo = MarketEventsRepository(db_session)
+
+    succeeded_dates = [date(2026, 5, 11), date(2026, 5, 12)]
+    failed_dates = [date(2026, 5, 13)]
+    other_market_date = date(2026, 5, 11)
+
+    for d in succeeded_dates:
+        p = await repo.get_or_create_partition(
+            source="finnhub", category="earnings", market="us", partition_date=d
+        )
+        await repo.mark_partition_succeeded(p, event_count=3)
+    for d in failed_dates:
+        p = await repo.get_or_create_partition(
+            source="finnhub", category="earnings", market="us", partition_date=d
+        )
+        await repo.mark_partition_failed(p, error="boom")
+    other = await repo.get_or_create_partition(
+        source="dart",
+        category="disclosure",
+        market="kr",
+        partition_date=other_market_date,
+    )
+    await repo.mark_partition_succeeded(other, event_count=1)
+    await db_session.commit()
+
+    result = await repo.list_succeeded_partitions_in_range(
+        source="finnhub",
+        category="earnings",
+        market="us",
+        from_date=date(2026, 5, 11),
+        to_date=date(2026, 5, 13),
+    )
+
+    assert result == {date(2026, 5, 11), date(2026, 5, 12)}
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_list_succeeded_partitions_in_range_empty(db_session):
+    from app.services.market_events.repository import MarketEventsRepository
+
+    repo = MarketEventsRepository(db_session)
+
+    result = await repo.list_succeeded_partitions_in_range(
+        source="finnhub",
+        category="earnings",
+        market="us",
+        from_date=date(2026, 5, 11),
+        to_date=date(2026, 5, 13),
+    )
+
+    assert result == set()
