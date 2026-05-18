@@ -18,6 +18,17 @@ type RealtimeSubTab = "kr" | "us" | "crypto";
 type MarketKey = "kr" | "us" | "crypto";
 type NavigateToSymbol = (path: string, sym: RecentInvestSymbol) => void;
 
+const PAPER_SOURCES: ReadonlySet<string> = new Set([
+  "kis_mock",
+  "kiwoom_mock",
+  "alpaca_paper",
+  "db_simulated",
+]);
+
+function isPaperSource(source: string | undefined): boolean {
+  return source !== undefined && PAPER_SOURCES.has(source);
+}
+
 const TABS: { key: RightPanelTab; label: string }[] = [
   { key: "portfolio", label: "내 투자" },
   { key: "watchlist", label: "관심" },
@@ -197,10 +208,18 @@ function TabBar({
 }
 
 function PortfolioPanel({ onNavigate }: Readonly<{ onNavigate: NavigateToSymbol }>) {
-  const { data, error, loading, refreshing, reload } = useAccountPanel();
+  const { data, error, loading, refreshing, reload, load, loadedPaperSources } = useAccountPanel();
   const [selectedAccountKey, setSelectedAccountKey] = useState<AccountFilterKey>("all");
 
-  if (loading) {
+  // Lazy load on first mount of the portfolio tab. Skip if data is already
+  // loaded (e.g., the user switched away and came back).
+  useEffect(() => {
+    if (data === undefined && !loading && !error) {
+      load({ includePaper: false });
+    }
+  }, [data, loading, error, load]);
+
+  if (loading || (data === undefined && error === undefined)) {
     return (
       <div data-testid="portfolio-panel-skeleton" style={{ padding: 8, color: "var(--fg-3)", fontSize: 13 }}>
         불러오는 중…
@@ -289,7 +308,19 @@ function PortfolioPanel({ onNavigate }: Readonly<{ onNavigate: NavigateToSymbol 
               key={option.key}
               type="button"
               aria-pressed={isActive}
-              onClick={() => setSelectedAccountKey(option.key)}
+              onClick={() => {
+                setSelectedAccountKey(option.key);
+                const src = option.source;
+                if (isPaperSource(src) && src !== undefined) {
+                  // Only fetch if this paper source isn't already in the loaded set.
+                  if (!loadedPaperSources.includes(src)) {
+                    load({ includePaper: true, paperSources: [src] });
+                  }
+                } else if (loadedPaperSources.length > 0) {
+                  // User picked a non-paper option after paper data was loaded — drop paper.
+                  load({ includePaper: false });
+                }
+              }}
               style={{
                 padding: "5px 10px",
                 borderRadius: 999,
@@ -404,9 +435,15 @@ function PortfolioPanel({ onNavigate }: Readonly<{ onNavigate: NavigateToSymbol 
 }
 
 function WatchlistPanel({ onNavigate }: Readonly<{ onNavigate: NavigateToSymbol }>) {
-  const { data, error, loading } = useAccountPanel();
+  const { data, error, loading, load } = useAccountPanel();
 
-  if (loading) {
+  useEffect(() => {
+    if (data === undefined && !loading && !error) {
+      load({ includePaper: false });
+    }
+  }, [data, loading, error, load]);
+
+  if (loading || (data === undefined && error === undefined)) {
     return (
       <div data-testid="watchlist-panel-skeleton" style={{ padding: 8, color: "var(--fg-3)", fontSize: 13 }}>
         불러오는 중…

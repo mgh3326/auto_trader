@@ -14,7 +14,7 @@ export function useInvestHome() {
   useEffect(() => {
     const controller = new AbortController();
     setState({ status: "loading" });
-    fetchInvestHome(controller.signal)
+    fetchInvestHome({ signal: controller.signal })
       .then((data) => setState({ status: "ready", data }))
       .catch((e) => {
         if (controller.signal.aborted) return;

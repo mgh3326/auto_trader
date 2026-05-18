@@ -33,7 +33,7 @@ def _make_app(held=None, watch=None):
         def __init__(self, holdings=None):
             self._holdings = holdings or []
 
-        async def get_home(self, *, user_id: int) -> InvestHomeResponse:
+        async def get_home(self, *, user_id: int, **kwargs) -> InvestHomeResponse:
             accounts: list[Account] = []
             return InvestHomeResponse(
                 homeSummary=build_home_summary(accounts),
