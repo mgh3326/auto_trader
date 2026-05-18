@@ -3,65 +3,16 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime, timedelta
 
 import pytest
-import pytest_asyncio
-import sqlalchemy as sa
-from sqlalchemy.ext.asyncio import (
-    AsyncSession,
-    async_sessionmaker,
-    create_async_engine,
-)
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
-from app.models.base import Base
 from app.models.investment_reports import (
     InvestmentReport,
     InvestmentReportItem,
-    InvestmentReportItemDecision,
-    InvestmentWatchAlert,
-    InvestmentWatchEvent,
 )
 from app.services.investment_reports.repository import InvestmentReportsRepository
-
-_ALL_TABLES = [
-    InvestmentReport.__table__,
-    InvestmentReportItem.__table__,
-    InvestmentReportItemDecision.__table__,
-    InvestmentWatchAlert.__table__,
-    InvestmentWatchEvent.__table__,
-]
-
-
-@pytest_asyncio.fixture
-async def session() -> AsyncSession:
-    engine = create_async_engine(settings.DATABASE_URL, future=True)
-    async with engine.begin() as conn:
-        await conn.run_sync(
-            Base.metadata.create_all, tables=_ALL_TABLES, checkfirst=True
-        )
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-    try:
-        async with factory() as sess:
-            try:
-                yield sess
-            finally:
-                await sess.rollback()
-        async with factory() as cleanup:
-            for table in reversed(_ALL_TABLES):
-                await cleanup.execute(
-                    sa.text(
-                        f'TRUNCATE TABLE review."{table.name}" RESTART IDENTITY CASCADE'
-                    )
-                )
-            await cleanup.commit()
-    finally:
-        await engine.dispose()
-
-
-def _future(days: int = 7) -> datetime:
-    return datetime.now(UTC) + timedelta(days=days)
+from tests._investment_reports_helpers import future_datetime
 
 
 async def _insert_report(
@@ -141,12 +92,10 @@ async def test_list_reports_filters_by_market_and_status(
 async def test_latest_report_returns_most_recent(session: AsyncSession) -> None:
     repo = InvestmentReportsRepository(session)
     await _insert_report(repo, market="kr")
-    second = await _insert_report(repo, market="kr")
+    await _insert_report(repo, market="kr")
     third = await _insert_report(repo, market="kr")
     latest = await repo.latest_report(market="kr")
     assert latest is not None
-    assert latest.id in {second.id, third.id}  # most recent two
-    # The very last inserted should be the latest.
     assert latest.id == third.id
 
 
@@ -209,7 +158,7 @@ async def test_alert_insert_and_active_listing(session: AsyncSession) -> None:
         intent="buy_review",
         action_mode="notify_only",
         rationale="r",
-        valid_until=_future(),
+        valid_until=future_datetime(),
     )
     actives = await repo.list_active_alerts(market="kr")
     assert any(a.id == alert.id for a in actives)
@@ -235,7 +184,7 @@ async def test_event_insert_and_list_for_alert(session: AsyncSession) -> None:
         intent="buy_review",
         action_mode="notify_only",
         rationale="r",
-        valid_until=_future(),
+        valid_until=future_datetime(),
     )
     event = await repo.insert_event(
         event_uuid=uuid.uuid4(),
@@ -284,7 +233,7 @@ async def test_list_alerts_for_source_reports(session: AsyncSession) -> None:
         intent="buy_review",
         action_mode="notify_only",
         rationale="r",
-        valid_until=_future(),
+        valid_until=future_datetime(),
     )
     await repo.insert_alert(
         alert_uuid=uuid.uuid4(),
@@ -301,7 +250,7 @@ async def test_list_alerts_for_source_reports(session: AsyncSession) -> None:
         intent="buy_review",
         action_mode="notify_only",
         rationale="r",
-        valid_until=_future(),
+        valid_until=future_datetime(),
     )
     only_report1 = await repo.list_alerts_for_source_reports([report1.report_uuid])
     assert len(only_report1) == 1

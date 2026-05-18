@@ -73,8 +73,15 @@ class WatchConditionPayload(BaseModel):
 
 
 class IngestReportItem(BaseModel):
-    """One proposal item attached to an ingested report."""
+    """One proposal item attached to an ingested report.
 
+    ``client_item_key`` is a caller-supplied disambiguator used by the
+    item idempotency-key composer. It must be unique within a single
+    report bundle. Use it to disambiguate items that share natural
+    fields — multiple risk items, scoped buys on the same symbol, etc.
+    """
+
+    client_item_key: str = Field(min_length=1)
     item_kind: ItemKindLiteral
     symbol: str | None = None
     side: ItemSideLiteral | None = None
@@ -151,7 +158,14 @@ class IngestReportRequest(BaseModel):
 
 
 class RecordDecisionRequest(BaseModel):
-    """Operator decision on a single item."""
+    """Operator decision on a single item.
+
+    ``partial_approve`` requires a non-empty ``approved_payload_snapshot``
+    — the snapshot is the canonical record of what was scoped down (e.g.
+    ``{"max_notional_krw": 100_000}``). A partial approve without scope
+    is indistinguishable from a full approve and should not transition
+    the item.
+    """
 
     item_uuid: UUID
     decision: DecisionVerbLiteral
@@ -159,6 +173,14 @@ class RecordDecisionRequest(BaseModel):
     decision_note: str | None = None
     approved_payload_snapshot: dict[str, Any] | None = None
     idempotency_key: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_partial_approve_has_payload(self) -> RecordDecisionRequest:
+        if self.decision == "partial_approve" and not self.approved_payload_snapshot:
+            raise ValueError(
+                "partial_approve requires non-empty approved_payload_snapshot"
+            )
+        return self
 
 
 class ActivateWatchRequest(BaseModel):

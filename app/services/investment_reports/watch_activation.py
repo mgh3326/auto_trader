@@ -45,6 +45,16 @@ class WatchActivationService:
         # without re-validating.
         existing = await self._repo.get_alert_by_idempotency_key(idempotency_key)
         if existing is not None:
+            if existing.source_item_uuid != item.item_uuid:
+                # Caller-supplied idempotency_key collided with an alert
+                # already sourced from a different item — reject loudly
+                # rather than silently aliasing.
+                raise ValueError(
+                    f"idempotency_key {idempotency_key!r} already used for a "
+                    f"different watch item (existing source_item_uuid="
+                    f"{existing.source_item_uuid}, requested source_item_uuid="
+                    f"{item.item_uuid})"
+                )
             return existing
 
         if item.item_kind != "watch":

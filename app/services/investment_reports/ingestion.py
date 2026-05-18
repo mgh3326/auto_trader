@@ -38,6 +38,8 @@ class InvestmentReportIngestionService:
             report_type=request.report_type,
             market=request.market,
             market_session=request.market_session,
+            account_scope=request.account_scope,
+            execution_mode=request.execution_mode,
             kst_date=request.kst_date,
             generator_version=request.generator_version,
         )
@@ -84,6 +86,7 @@ class InvestmentReportIngestionService:
         )
         idempotency_key = item_key(
             report_uuid=str(report.report_uuid),
+            client_item_key=item_req.client_item_key,
             item_kind=item_req.item_kind,
             symbol=item_req.symbol,
             side=item_req.side,

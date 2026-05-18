@@ -5,23 +5,9 @@ from __future__ import annotations
 import uuid
 
 import pytest
-import pytest_asyncio
-import sqlalchemy as sa
-from sqlalchemy.ext.asyncio import (
-    AsyncSession,
-    async_sessionmaker,
-    create_async_engine,
-)
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
-from app.models.base import Base
-from app.models.investment_reports import (
-    InvestmentReport,
-    InvestmentReportItem,
-    InvestmentReportItemDecision,
-    InvestmentWatchAlert,
-    InvestmentWatchEvent,
-)
+from app.models.investment_reports import InvestmentReportItem
 from app.schemas.investment_reports import (
     IngestReportItem,
     IngestReportRequest,
@@ -35,43 +21,13 @@ from app.services.investment_reports.ingestion import (
 )
 from app.services.investment_reports.repository import InvestmentReportsRepository
 
-_ALL_TABLES = [
-    InvestmentReport.__table__,
-    InvestmentReportItem.__table__,
-    InvestmentReportItemDecision.__table__,
-    InvestmentWatchAlert.__table__,
-    InvestmentWatchEvent.__table__,
-]
-
-
-@pytest_asyncio.fixture
-async def session() -> AsyncSession:
-    engine = create_async_engine(settings.DATABASE_URL, future=True)
-    async with engine.begin() as conn:
-        await conn.run_sync(
-            Base.metadata.create_all, tables=_ALL_TABLES, checkfirst=True
-        )
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-    try:
-        async with factory() as sess:
-            try:
-                yield sess
-            finally:
-                await sess.rollback()
-        async with factory() as cleanup:
-            for table in reversed(_ALL_TABLES):
-                await cleanup.execute(
-                    sa.text(
-                        f'TRUNCATE TABLE review."{table.name}" RESTART IDENTITY CASCADE'
-                    )
-                )
-            await cleanup.commit()
-    finally:
-        await engine.dispose()
-
 
 async def _seed_report_with_one_action_item(
-    session: AsyncSession, *, kst_date: str = "2026-05-18"
+    session: AsyncSession,
+    *,
+    kst_date: str = "2026-05-18",
+    client_item_key: str = "action-1",
+    symbol: str = "005930",
 ) -> InvestmentReportItem:
     ingest = InvestmentReportIngestionService(session)
     report = await ingest.ingest(
@@ -87,8 +43,9 @@ async def _seed_report_with_one_action_item(
             kst_date=kst_date,
             items=[
                 IngestReportItem(
+                    client_item_key=client_item_key,
                     item_kind="action",
-                    symbol="005930",
+                    symbol=symbol,
                     side="buy",
                     intent="buy_review",
                     rationale="r",
@@ -107,7 +64,6 @@ async def test_approve_records_decision_and_transitions_item(
 ) -> None:
     item = await _seed_report_with_one_action_item(session)
     service = InvestmentReportDecisionService(session)
-
     decision = await service.record(
         RecordDecisionRequest(
             item_uuid=item.item_uuid, decision="approve", actor="operator-test"
@@ -123,8 +79,7 @@ async def test_approve_records_decision_and_transitions_item(
 @pytest.mark.asyncio
 async def test_deny_transitions_item_to_denied(session: AsyncSession) -> None:
     item = await _seed_report_with_one_action_item(session)
-    service = InvestmentReportDecisionService(session)
-    await service.record(
+    await InvestmentReportDecisionService(session).record(
         RecordDecisionRequest(
             item_uuid=item.item_uuid, decision="deny", actor="operator-test"
         )
@@ -137,8 +92,7 @@ async def test_deny_transitions_item_to_denied(session: AsyncSession) -> None:
 @pytest.mark.asyncio
 async def test_defer_transitions_item_to_deferred(session: AsyncSession) -> None:
     item = await _seed_report_with_one_action_item(session)
-    service = InvestmentReportDecisionService(session)
-    await service.record(
+    await InvestmentReportDecisionService(session).record(
         RecordDecisionRequest(
             item_uuid=item.item_uuid, decision="defer", actor="operator-test"
         )
@@ -151,15 +105,13 @@ async def test_defer_transitions_item_to_deferred(session: AsyncSession) -> None
 @pytest.mark.asyncio
 async def test_skip_leaves_item_status_unchanged(session: AsyncSession) -> None:
     item = await _seed_report_with_one_action_item(session)
-    service = InvestmentReportDecisionService(session)
-    await service.record(
+    await InvestmentReportDecisionService(session).record(
         RecordDecisionRequest(
             item_uuid=item.item_uuid, decision="skip", actor="operator-test"
         )
     )
     repo = InvestmentReportsRepository(session)
     refreshed = await repo.get_item_by_uuid(item.item_uuid)
-    # skip is audit-only — item stays proposed.
     assert refreshed.status == "proposed"
 
 
@@ -168,8 +120,7 @@ async def test_partial_approve_transitions_to_approved_with_snapshot(
     session: AsyncSession,
 ) -> None:
     item = await _seed_report_with_one_action_item(session)
-    service = InvestmentReportDecisionService(session)
-    await service.record(
+    await InvestmentReportDecisionService(session).record(
         RecordDecisionRequest(
             item_uuid=item.item_uuid,
             decision="partial_approve",
@@ -232,8 +183,44 @@ async def test_unknown_item_uuid_raises(session: AsyncSession) -> None:
     with pytest.raises(ValueError):
         await service.record(
             RecordDecisionRequest(
-                item_uuid=uuid.uuid4(),  # not seeded
+                item_uuid=uuid.uuid4(),
                 decision="approve",
                 actor="operator-test",
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_caller_supplied_idempotency_key_cross_item_collision_rejected(
+    session: AsyncSession,
+) -> None:
+    """Plan 2 hardening #1: a caller-supplied idempotency_key that collides
+    with an existing decision on a DIFFERENT item must raise, not silently
+    return the wrong row.
+    """
+    item_a = await _seed_report_with_one_action_item(
+        session, client_item_key="a-1", symbol="005930"
+    )
+    item_b = await _seed_report_with_one_action_item(
+        session, kst_date="2026-05-19", client_item_key="b-1", symbol="000660"
+    )
+    shared_key = f"shared-key-{uuid.uuid4()}"
+    service = InvestmentReportDecisionService(session)
+
+    await service.record(
+        RecordDecisionRequest(
+            item_uuid=item_a.item_uuid,
+            decision="approve",
+            actor="operator",
+            idempotency_key=shared_key,
+        )
+    )
+    with pytest.raises(ValueError, match="already used for a different item"):
+        await service.record(
+            RecordDecisionRequest(
+                item_uuid=item_b.item_uuid,
+                decision="approve",
+                actor="operator",
+                idempotency_key=shared_key,
             )
         )

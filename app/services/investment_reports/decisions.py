@@ -54,6 +54,15 @@ class InvestmentReportDecisionService:
 
         existing = await self._repo.get_decision_by_idempotency_key(idempotency_key)
         if existing is not None:
+            if existing.item_id != item.id:
+                # Caller-supplied idempotency_key collided with a decision
+                # on a different item. Returning ``existing`` would silently
+                # bind a fresh request to the wrong item — reject loudly.
+                raise ValueError(
+                    f"idempotency_key {idempotency_key!r} already used for a "
+                    f"different item (existing item_id={existing.item_id}, "
+                    f"requested item_id={item.id})"
+                )
             return existing
 
         decision = await self._repo.insert_decision(
