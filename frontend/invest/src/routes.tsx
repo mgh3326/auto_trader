@@ -35,7 +35,10 @@ import { DesktopMarketPage } from "./pages/desktop/DesktopMarketPage";
 import { DesktopInsightsPage } from "./pages/desktop/DesktopInsightsPage";
 import { FxMacroRoute } from "./pages/desktop/FxMacroPage";
 import { DesktopCryptoPage } from "./pages/desktop/DesktopCryptoPage";
-import { ActionCenterRoute } from "./pages/desktop/DesktopActionCenterPage";
+import {
+  InvestmentReportBundleRoute,
+  InvestmentReportsRoute,
+} from "./pages/desktop/DesktopInvestmentReportsPage";
 import { StockDetailPage } from "./pages/stock-detail/StockDetailPage";
 
 // Static legacy /app/* redirect that preserves any ?search and #hash
@@ -83,7 +86,8 @@ export const router = createBrowserRouter(
     { path: "/crypto", element: <DesktopCryptoPage /> },
     { path: "/crypto/:pair", element: <CryptoPairRedirect /> },
     { path: "/screener", element: <DesktopScreenerPage /> },
-    { path: "/action-center", element: <ActionCenterRoute /> },
+    { path: "/reports", element: <InvestmentReportsRoute /> },
+    { path: "/reports/:reportUuid", element: <InvestmentReportBundleRoute /> },
     { path: "/stocks/:market/:symbol", element: <StockDetailPage /> },
 
     // Legacy /invest/app/* URLs redirect to their canonical /invest/*
