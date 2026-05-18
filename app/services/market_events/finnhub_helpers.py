@@ -12,6 +12,18 @@ import datetime
 from typing import Any
 
 
+class FinnhubQuotaExceededError(Exception):
+    """Raised when Finnhub returns HTTP 429 (daily/per-minute quota exhausted).
+
+    Callers should treat this as fail-closed: do not retry within the same run,
+    and do not continue iterating remaining partitions.
+    """
+
+    def __init__(self, message: str, *, status_code: int = 429) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
 def _get_finnhub_client() -> Any:
     try:
         import finnhub
@@ -33,7 +45,11 @@ async def fetch_earnings_calendar_finnhub(
     from_date: str | None = None,
     to_date: str | None = None,
 ) -> dict[str, Any]:
-    """Fetch and normalize Finnhub earningsCalendar rows for ingestion."""
+    """Fetch and normalize Finnhub earningsCalendar rows for ingestion.
+
+    Raises FinnhubQuotaExceededError on HTTP 429; all other SDK exceptions
+    propagate unchanged.
+    """
     client = _get_finnhub_client()
 
     if not from_date:
@@ -48,7 +64,13 @@ async def fetch_earnings_calendar_finnhub(
             to=to_date,
         )
 
-    result = await asyncio.to_thread(fetch_sync)
+    try:
+        result = await asyncio.to_thread(fetch_sync)
+    except Exception as exc:
+        status_code = getattr(exc, "status_code", None)
+        if status_code == 429:
+            raise FinnhubQuotaExceededError(str(exc), status_code=429) from exc
+        raise
 
     if not result or not result.get("earningsCalendar"):
         return {
