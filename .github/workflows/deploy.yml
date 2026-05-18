@@ -1,9 +1,9 @@
-name: Deploy to GHCR
+name: Build GHCR images (legacy Docker deploy disabled)
 
 on:
   workflow_dispatch:
   release:
-    types: [ published ]
+    types: [published]
 
 env:
   REGISTRY: ghcr.io
@@ -16,7 +16,7 @@ jobs:
       contents: read
       packages: write
     strategy:
-      fail-fast: false  # 하나 실패해도 다른 것은 계속 진행
+      fail-fast: false
       matrix:
         include:
           - image: api
@@ -64,7 +64,7 @@ jobs:
 
       - name: Build and push ${{ matrix.image }} Docker image
         id: build
-        timeout-minutes: 30  # 30분 타임아웃 설정
+        timeout-minutes: 30
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -78,89 +78,35 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
           platforms: linux/amd64,linux/arm64
-          provenance: false  # Provenance 비활성화로 빌드 속도 향상
+          provenance: false
 
-# Attestation 단계 제거 - OIDC 권한 이슈로 인해 주석 처리
-      # - name: Generate artifact attestation for ${{ matrix.image }}
-      #   if: success()
-      #   uses: actions/attest-build-provenance@v1
-      #   with:
-      #     subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME}}${{ matrix.suffix }}
-      #     subject-digest: ${{ steps.build.outputs.digest }}
-      #     push-to-registry: true
-      #   continue-on-error: true
+      - name: Legacy deploy disabled notice
+        run: |
+          cat <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          ## Legacy Docker deploy disabled
+
+          This workflow only builds/pushes GHCR images. ROB-263 retired the
+          Raspberry Pi Docker production deploy path that used the old Pi SSH
+          deployment secret and `scripts/deploy.sh`.
+
+          Production deployment is handled by:
+          - `.github/workflows/deploy-macos-native.yml`
+          - `scripts/deploy-native.sh`
+          EOF
 
       - name: Build Summary
         if: always()
         run: |
-          echo "## Build Summary for ${{ matrix.image }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Image**: ${{ matrix.image }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Dockerfile**: ${{ matrix.dockerfile }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status**: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ steps.build.outcome }}" == "success" ]; then
-            echo "- **Image pushed**: ✅" >> $GITHUB_STEP_SUMMARY
-            echo "- **Tags**: ${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+          echo "## Build Summary for ${{ matrix.image }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Image**: ${{ matrix.image }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Dockerfile**: ${{ matrix.dockerfile }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Status**: ${{ job.status }}" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.build.outcome }}" = "success" ]; then
+            echo "- **Image pushed**: ✅" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Tags**: ${{ steps.meta.outputs.tags }}" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "- **Image pushed**: ❌" >> $GITHUB_STEP_SUMMARY
+            echo "- **Image pushed**: ❌" >> "$GITHUB_STEP_SUMMARY"
           fi
-
-  deploy:
-    needs: build-and-push
-    if: needs.build-and-push.result == 'success'
-    runs-on: ubuntu-latest
-    concurrency:
-      group: production-deploy
-      cancel-in-progress: false
-    steps:
-      - name: Setup Tailscale
-        uses: tailscale/github-action@v3
-        with:
-          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
-
-      - name: Deploy via SSH
-        timeout-minutes: 20
-        shell: bash
-        run: |
-          set -eo pipefail
-          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 \
-            ${{ secrets.DEPLOY_SSH_HOST }} \
-            "cd /home/mgh3326/auto_trader && ./scripts/deploy.sh" 2>&1 | tee /tmp/deploy-output.txt
-
-      - name: Discord notification (success)
-        if: success()
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_DEPLOY_WEBHOOK_URL }}
-        run: |
-          curl -s -H "Content-Type: application/json" \
-            -d "{
-              \"embeds\": [{
-                \"title\": \"✅ Auto Trader 배포 완료\",
-                \"description\": \"**Branch:** \`${{ github.ref_name }}\`\n**Commit:** [\`${GITHUB_SHA::7}\`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})\n**Author:** ${{ github.actor }}\n**Run:** [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})\",
-                \"color\": 5763719,
-                \"footer\": {\"text\": \"auto_trader production\"},
-                \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
-              }]
-            }" \
-            "$DISCORD_WEBHOOK"
-
-      - name: Discord notification (failure)
-        if: failure()
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_DEPLOY_WEBHOOK_URL }}
-        run: |
-          DEPLOY_LOG=$(tail -15 /tmp/deploy-output.txt 2>/dev/null | head -c 1000 || echo "No log available")
-
-          curl -s -H "Content-Type: application/json" \
-            -d "{
-              \"embeds\": [{
-                \"title\": \"❌ Auto Trader 배포 실패\",
-                \"description\": \"**Branch:** \`${{ github.ref_name }}\`\n**Commit:** [\`${GITHUB_SHA::7}\`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})\n**Author:** ${{ github.actor }}\n**Run:** [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})\n\n**Log:**\n\`\`\`\n${DEPLOY_LOG}\n\`\`\`\",
-                \"color\": 15548997,
-                \"footer\": {\"text\": \"auto_trader production\"},
-                \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
-              }]
-            }" \
-            "$DISCORD_WEBHOOK"
 
   notify:
     if: failure()
@@ -174,7 +120,7 @@ jobs:
           curl -s -H "Content-Type: application/json" \
             -d "{
               \"embeds\": [{
-                \"title\": \"❌ Deploy 실패\",
+                \"title\": \"❌ GHCR 이미지 빌드 실패\",
                 \"description\": \"**Branch:** \`${{ github.ref_name }}\`\n**Commit:** \`${GITHUB_SHA::7}\`\n**Author:** ${{ github.actor }}\n**Image:** GHCR push failed\",
                 \"url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\",
                 \"color\": 16711680,
