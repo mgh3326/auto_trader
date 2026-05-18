@@ -50,9 +50,7 @@ class InvestmentReportDecisionService:
         if item is None:
             raise ValueError(f"item not found: {request.item_uuid}")
 
-        idempotency_key = (
-            request.idempotency_key or self._auto_idempotency_key(request)
-        )
+        idempotency_key = request.idempotency_key or self._auto_idempotency_key(request)
 
         existing = await self._repo.get_decision_by_idempotency_key(idempotency_key)
         if existing is not None:

@@ -49,9 +49,7 @@ class InvestmentReportsRepository:
             sa.select(InvestmentReport).where(InvestmentReport.id == report_id)
         )
 
-    async def get_report_by_uuid(
-        self, report_uuid: UUID
-    ) -> InvestmentReport | None:
+    async def get_report_by_uuid(self, report_uuid: UUID) -> InvestmentReport | None:
         return await self._session.scalar(
             sa.select(InvestmentReport).where(
                 InvestmentReport.report_uuid == report_uuid
@@ -146,18 +144,14 @@ class InvestmentReportsRepository:
         await self._session.refresh(row)
         return row
 
-    async def get_item_by_uuid(
-        self, item_uuid: UUID
-    ) -> InvestmentReportItem | None:
+    async def get_item_by_uuid(self, item_uuid: UUID) -> InvestmentReportItem | None:
         return await self._session.scalar(
             sa.select(InvestmentReportItem).where(
                 InvestmentReportItem.item_uuid == item_uuid
             )
         )
 
-    async def list_items_for_report(
-        self, report_id: int
-    ) -> list[InvestmentReportItem]:
+    async def list_items_for_report(self, report_id: int) -> list[InvestmentReportItem]:
         result = await self._session.scalars(
             sa.select(InvestmentReportItem)
             .where(InvestmentReportItem.report_id == report_id)

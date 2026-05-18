@@ -207,9 +207,7 @@ async def test_activate_rejects_non_watch_item(session: AsyncSession) -> None:
     service = WatchActivationService(session)
     with pytest.raises(ValueError, match="only watch items"):
         await service.activate(
-            ActivateWatchRequest(
-                item_uuid=action_item.item_uuid, actor="operator-test"
-            )
+            ActivateWatchRequest(item_uuid=action_item.item_uuid, actor="operator-test")
         )
 
 
@@ -247,9 +245,7 @@ async def test_activate_rejects_unapproved_watch(session: AsyncSession) -> None:
     service = WatchActivationService(session)
     with pytest.raises(ValueError, match="only approved items"):
         await service.activate(
-            ActivateWatchRequest(
-                item_uuid=watch_item.item_uuid, actor="operator-test"
-            )
+            ActivateWatchRequest(item_uuid=watch_item.item_uuid, actor="operator-test")
         )
 
 

@@ -85,9 +85,7 @@ class InvestmentReportQueryService:
         item_ids = [it.id for it in items]
         decisions = await self._repo.list_decisions_for_items(item_ids)
         alerts = await self._repo.list_alerts_for_source_reports([report.report_uuid])
-        events = await self._repo.list_events_for_source_reports(
-            [report.report_uuid]
-        )
+        events = await self._repo.list_events_for_source_reports([report.report_uuid])
 
         decisions_by_item: dict[int, list[InvestmentReportItemDecision]] = {
             it.id: [] for it in items
@@ -145,17 +143,17 @@ class InvestmentReportQueryService:
             )
 
         # Active watches sourced from those reports.
-        active_watches: list[InvestmentWatchAlert] = (
-            await self._repo.list_alerts_for_source_reports(
-                prior_report_uuids, status="active"
-            )
+        active_watches: list[
+            InvestmentWatchAlert
+        ] = await self._repo.list_alerts_for_source_reports(
+            prior_report_uuids, status="active"
         )
 
         # Recent triggered events linked to those source reports.
-        triggered_events: list[InvestmentWatchEvent] = (
-            await self._repo.list_events_for_source_reports(
-                prior_report_uuids, since=events_since
-            )
+        triggered_events: list[
+            InvestmentWatchEvent
+        ] = await self._repo.list_events_for_source_reports(
+            prior_report_uuids, since=events_since
         )
 
         # Recent decisions on items in those reports.
@@ -163,9 +161,9 @@ class InvestmentReportQueryService:
         for r in prior_reports:
             r_items = await self._repo.list_items_for_report(r.id)
             all_item_ids.extend(it.id for it in r_items)
-        recent_decisions: list[InvestmentReportItemDecision] = (
-            await self._repo.list_decisions_for_items(all_item_ids)
-        )
+        recent_decisions: list[
+            InvestmentReportItemDecision
+        ] = await self._repo.list_decisions_for_items(all_item_ids)
 
         # `prior_report_ids` is consumed indirectly above; keep it in the
         # return shape for callers that want the integer IDs.

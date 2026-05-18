@@ -303,8 +303,6 @@ async def test_list_alerts_for_source_reports(session: AsyncSession) -> None:
         rationale="r",
         valid_until=_future(),
     )
-    only_report1 = await repo.list_alerts_for_source_reports(
-        [report1.report_uuid]
-    )
+    only_report1 = await repo.list_alerts_for_source_reports([report1.report_uuid])
     assert len(only_report1) == 1
     assert only_report1[0].symbol == "005930"
