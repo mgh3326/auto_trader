@@ -114,6 +114,7 @@ from app.services.invest_view_model.stock_detail_symbol_resolver import (
 )
 from app.services.invest_view_model.weekly_summary_service import build_weekly_summary
 
+
 def _parse_paper_sources(value: str | None) -> frozenset[str] | None:
     """Parse comma-separated paper source identifiers into a frozenset.
 
