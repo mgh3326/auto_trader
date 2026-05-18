@@ -262,6 +262,39 @@ class InvestmentReportsRepository:
         await self._session.refresh(row)
         return row
 
+    async def get_event_by_idempotency_key(
+        self, idempotency_key: str
+    ) -> InvestmentWatchEvent | None:
+        return await self._session.scalar(
+            sa.select(InvestmentWatchEvent).where(
+                InvestmentWatchEvent.idempotency_key == idempotency_key
+            )
+        )
+
+    async def update_event_delivery(
+        self,
+        event_id: int,
+        *,
+        delivery_status: str,
+        delivery_reason: str | None = None,
+        delivered_at: datetime | None = None,
+    ) -> None:
+        """Record the outcome of a Hermes delivery attempt.
+
+        Increments ``delivery_attempts`` atomically so concurrent scanner
+        runs cannot lose count.
+        """
+        await self._session.execute(
+            sa.update(InvestmentWatchEvent)
+            .where(InvestmentWatchEvent.id == event_id)
+            .values(
+                delivery_status=delivery_status,
+                delivery_reason=delivery_reason,
+                delivered_at=delivered_at,
+                delivery_attempts=InvestmentWatchEvent.delivery_attempts + 1,
+            )
+        )
+
     async def list_events_for_alert(
         self, alert_id: int, *, limit: int = 50
     ) -> list[InvestmentWatchEvent]:

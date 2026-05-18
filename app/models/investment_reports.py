@@ -510,6 +510,14 @@ class InvestmentWatchEvent(Base):
             "action_mode IN ('notify_only','preview_only','approval_required')",
             name="ck_investment_watch_events_action_mode",
         ),
+        # Plan 4 hardening — Hermes delivery is auditable and the alert
+        # is only transitioned to ``triggered`` once delivery_status is
+        # ``delivered``. ``pending``/``skipped``/``failed`` rows are
+        # legitimate audit history that the next scan loop can re-attempt.
+        CheckConstraint(
+            "delivery_status IN ('pending','delivered','skipped','failed')",
+            name="ck_investment_watch_events_delivery_status",
+        ),
         Index(
             "ix_investment_watch_events_alert_created",
             "alert_id",
@@ -526,6 +534,11 @@ class InvestmentWatchEvent(Base):
         Index(
             "ix_investment_watch_events_outcome_created",
             "outcome",
+            "created_at",
+        ),
+        Index(
+            "ix_investment_watch_events_delivery_status_created",
+            "delivery_status",
             "created_at",
         ),
         {"schema": "review"},
@@ -571,6 +584,20 @@ class InvestmentWatchEvent(Base):
 
     correlation_id: Mapped[str] = mapped_column(Text, nullable=False)
     kst_date: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # Plan 4 hardening — Hermes delivery tracking. ``delivery_status``
+    # starts at ``pending``; the scanner updates it after the delivery
+    # attempt. The alert.status transition to ``triggered`` is gated on
+    # ``delivered`` so a skipped/failed delivery does not silently
+    # consume the watch.
+    delivery_status: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'pending'")
+    )
+    delivery_reason: Mapped[str | None] = mapped_column(Text)
+    delivered_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    delivery_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
