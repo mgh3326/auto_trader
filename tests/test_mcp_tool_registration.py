@@ -3,6 +3,7 @@ Tests for MCP tool registration and removal verification.
 
 This module tests:
 - DCA tools have been removed from build_tools
+- retired Paperclip / weekend crypto MCP tools are not registered
 - DCA models no longer exported from models package
 - DCA helper functions removed from market_data_indicators
 - recommend_stocks tool is properly registered
@@ -21,6 +22,15 @@ async def test_dca_tools_removed_from_build_tools() -> None:
 
     assert "create_dca_plan" not in tools
     assert "get_dca_status" not in tools
+
+
+@pytest.mark.asyncio
+async def test_retired_mcp_tools_removed_from_build_tools() -> None:
+    """Verify retired Paperclip and weekend crypto tools are not registered."""
+    tools = build_tools()
+
+    assert "post_paperclip_comment" not in tools
+    assert "weekend_crypto_paper_cycle_run" not in tools
 
 
 def test_models_package_no_longer_exports_dca() -> None:

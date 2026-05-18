@@ -74,11 +74,10 @@ MCP 서버 (auto_trader-mcp)
 │   ├── update_manual_holdings - 수동 잔고 업데이트
 │   └── simulate_avg_cost - 평단가 시뮬레이션
 │
-├── 매매 실행 (4개)
+├── 매매 실행 (3개)
 │   ├── place_order     - 매수/매도 주문
 │   ├── get_open_orders - 미체결 주문 조회
-│   ├── cancel_order    - 주문 취소
-│   └── create_dca_plan - DCA 분할매수 계획
+│   └── cancel_order    - 주문 취소
 │
 ├── 기술적 분석 (4개)
 │   ├── get_indicators         - 기술 지표 (RSI, MACD, 볼린저 등)
@@ -112,7 +111,7 @@ MCP 서버 (auto_trader-mcp)
     └── analyze_stock       - AI 종합 분석
 ```
 
-**총 35개 도구**, 7개 외부 데이터 소스를 통합한 MCP 서버입니다.
+**총 34개 도구**, 7개 외부 데이터 소스를 통합한 MCP 서버입니다.
 
 ## 시스템 아키텍처
 
@@ -136,7 +135,7 @@ mcp = FastMCP(
     version="0.1.0",
 )
 
-register_tools(mcp)  # 35개 도구 등록
+register_tools(mcp)  # 34개 도구 등록
 ```
 
 FastMCP는 Python의 MCP 서버 구현체로, `@mcp.tool()` 데코레이터로 간편하게 도구를 등록할 수 있습니다.
@@ -480,29 +479,6 @@ async def place_order(
 - 1회 최대 100만원 제한
 - 일일 최대 20건 주문 제한 (Redis 카운터)
 - 매도 시 보유 수량 초과 검증
-
-### DCA 분할매수 계획
-
-```python
-@mcp.tool(name="create_dca_plan", description="...")
-async def create_dca_plan(
-    symbol: str,
-    total_amount: float,        # 총 투자 금액
-    num_splits: int,            # 분할 횟수
-    strategy: str = "equal",    # equal/aggressive/rsi_weighted
-    interval_days: int | None = None,
-    market: str | None = None,
-    dry_run: bool = True,
-) -> dict[str, Any]:
-```
-
-**3가지 분할 전략:**
-
-| 전략 | 설명 | 예시 (100만원, 4분할) |
-|------|------|---------------------|
-| `equal` | 균등 분할 | 25만원 × 4회 |
-| `aggressive` | 초반 집중 | 40/30/20/10만원 |
-| `rsi_weighted` | RSI 기반 가중치 | RSI 낮을수록 더 많이 매수 |
 
 ## 시장 분석 도구
 
