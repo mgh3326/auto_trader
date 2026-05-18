@@ -5,6 +5,7 @@ import { useRightRailCollapsed } from "./useRightRailCollapsed";
 
 const RAIL_WIDTH_EXPANDED = "320px";
 const RAIL_WIDTH_COLLAPSED = "56px";
+const HEADER_HEIGHT = 56;
 
 export function DesktopShell({
   left,
@@ -33,24 +34,39 @@ export function DesktopShell({
           gridTemplateColumns: left
             ? `${resolvedLeftColumnWidth} minmax(0,1fr) ${railWidth}`
             : `minmax(0,1fr) ${railWidth}`,
-          gap: 24,
-          padding: "24px 28px 64px",
-          maxWidth: 1440,
-          margin: "0 auto",
-          transition: "grid-template-columns var(--dur-slow, 240ms) var(--ease-emph, cubic-bezier(0.2, 0.8, 0.2, 1.0))",
+          gap: 0,
+          transition:
+            "grid-template-columns var(--dur-slow, 240ms) var(--ease-emph, cubic-bezier(0.2, 0.8, 0.2, 1.0))",
         }}
       >
-        {left ? <aside style={{ minWidth: 0 }}>{left}</aside> : null}
-        <main style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 16 }}>{center}</main>
+        {left ? (
+          <aside style={{ minWidth: 0, padding: "16px 12px 64px 20px" }}>{left}</aside>
+        ) : null}
+        <main
+          style={{
+            minWidth: 0,
+            display: "flex",
+            flexDirection: "column",
+            gap: 16,
+            padding: "24px 28px 64px",
+            maxWidth: 1100,
+            width: "100%",
+            margin: "0 auto",
+          }}
+        >
+          {center}
+        </main>
         <aside
           data-testid="desktop-shell-rail"
           style={{
             position: "sticky",
-            top: 80,
+            top: HEADER_HEIGHT,
             alignSelf: "start",
-            maxHeight: "calc(100vh - 96px)",
+            height: `calc(100vh - ${HEADER_HEIGHT}px)`,
             overflowY: "auto",
             minWidth: 0,
+            borderLeft: "1px solid var(--divider)",
+            background: "var(--bg)",
           }}
         >
           <RightRemotePanel collapsed={collapsed} onCollapseChange={setCollapsed} />

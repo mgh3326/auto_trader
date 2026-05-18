@@ -1,5 +1,4 @@
 import type { ReactNode } from "react";
-import { Link } from "react-router-dom";
 import { AnalystReportCard } from "./AnalystReportCard";
 import { CandidateCard } from "./CandidateCard";
 import { Card } from "../../ds";
@@ -169,15 +168,3 @@ export function ActionCenterContent({ compact = false }: { compact?: boolean }) 
   );
 }
 
-export function ActionCenterRelatedLinks() {
-  return (
-    <Card>
-      <div style={{ fontWeight: 900, marginBottom: 8 }}>관련 화면</div>
-      <div style={{ display: "grid", gap: 8, fontSize: 13 }}>
-        <Link to="/" style={{ color: "var(--fg-1)", textDecoration: "none" }}>홈</Link>
-        <Link to="/insights" style={{ color: "var(--fg-1)", textDecoration: "none" }}>인사이트</Link>
-        <Link to="/my?tab=signals" style={{ color: "var(--fg-1)", textDecoration: "none" }}>시그널</Link>
-      </div>
-    </Card>
-  );
-}
