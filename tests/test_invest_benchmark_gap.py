@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import datetime as dt
+from types import SimpleNamespace
 
 import pytest
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
 
+from app.core.db import get_db
+from app.routers.dependencies import get_authenticated_user
+from app.routers.invest_api import router as invest_api_router
 from app.schemas.invest_benchmark_gap import (
     BenchmarkGapMatrixResponse,
     BenchmarkGapMatrixSummary,
@@ -192,17 +198,6 @@ def test_build_matrix_emits_next_candidates_in_priority_order():
     assert all(c.currentStatus != "covered" for c in matrix.nextCandidates)
     # source policy is non-empty
     assert matrix.sourcePolicy
-
-
-from types import SimpleNamespace
-
-import pytest
-from fastapi import FastAPI
-from httpx import ASGITransport, AsyncClient
-
-from app.core.db import get_db
-from app.routers.dependencies import get_authenticated_user
-from app.routers.invest_api import router as invest_api_router
 
 
 @pytest.fixture
