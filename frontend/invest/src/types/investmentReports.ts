@@ -83,6 +83,43 @@ export interface InvestmentReport {
   updatedAt: string;
   publishedAt?: string | null;
   validUntil?: string | null;
+  // ROB-269 Phase 3 — bundle linkage + 3-layer stale gate inputs. All
+  // optional; legacy reports (pre-Phase-3) serialise these as ``null``.
+  snapshotBundleUuid?: string | null;
+  snapshotPolicyVersion?: string | null;
+  snapshotCoverageSummary?: Record<string, unknown> | null;
+  snapshotFreshnessSummary?: SnapshotFreshnessSummary | null;
+  sourceConflicts?: Record<string, unknown> | null;
+  unavailableSources?: Record<string, unknown> | null;
+}
+
+// ROB-269 Phase 4 — typed shape of the snapshot freshness summary on the
+// report response. ``overall`` is the bundle-level signal the Phase 3 DB
+// CHECK consults; per-kind entries (portfolio / journal / watch_context /
+// market / news / naver_remote_debug / toss_remote_debug / etc.) carry
+// their own ``status`` and optional ``asOf``.
+export type SnapshotFreshnessStatus =
+  | "fresh"
+  | "soft_stale"
+  | "partial"
+  | "hard_stale"
+  | "failed"
+  | "unavailable";
+
+export interface SnapshotKindFreshness {
+  status: SnapshotFreshnessStatus;
+  asOf?: string | null;
+  resultCount?: string | null;
+}
+
+export interface SnapshotFreshnessSummary {
+  overall?: SnapshotFreshnessStatus | null;
+  // Per-kind entries are keyed by snapshot_kind (e.g. ``portfolio``).
+  [snapshotKind: string]:
+    | SnapshotKindFreshness
+    | SnapshotFreshnessStatus
+    | null
+    | undefined;
 }
 
 export interface InvestmentReportItem {
