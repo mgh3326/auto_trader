@@ -18,7 +18,11 @@ JSON-null cases to FALSE (reject), no UNKNOWN.
 Drop + recreate is idempotent. Production may already have applied the
 Phase 3 revision while missing this check constraint because earlier deploy
 attempts or test fixtures managed the table shape independently; the follow-up
-must therefore tolerate the old constraint being absent.
+must therefore tolerate the old constraint being absent. The original Phase 3
+``op.create_check_constraint`` also passed a name that already included the
+``ck_investment_reports`` prefix, so SQLAlchemy's naming convention expanded
+and truncated it to a generated PostgreSQL name; this migration must drop that
+name too before recreating the final constraint with ``op.f``.
 """
 
 from __future__ import annotations
@@ -34,6 +38,12 @@ depends_on: str | Sequence[str] | None = None
 
 
 _CHECK_NAME = "ck_investment_reports_no_published_on_hard_stale"
+
+# Phase 3 used ``op.create_check_constraint`` with ``_CHECK_NAME`` under the
+# global ``ck_%(table_name)s_%(constraint_name)s`` naming convention. Alembic
+# therefore emitted this truncated/hash-suffixed PostgreSQL identifier.
+_GENERATED_CHECK_NAME = "ck_investment_reports_ck_investment_reports_no_publishe_b266"
+_CHECK_NAMES = (_CHECK_NAME, _GENERATED_CHECK_NAME)
 
 # Old (Phase 3 initial) predicate — kept as the downgrade target.
 _OLD_PREDICATE = (
@@ -65,20 +75,21 @@ def _drop_check_if_exists() -> None:
     safe for both states.
     """
 
-    op.execute(
-        f"ALTER TABLE review.investment_reports DROP CONSTRAINT IF EXISTS {_CHECK_NAME}"
-    )
+    for check_name in _CHECK_NAMES:
+        op.execute(
+            f'ALTER TABLE review.investment_reports DROP CONSTRAINT IF EXISTS "{check_name}"'
+        )
 
 
 def upgrade() -> None:
     _drop_check_if_exists()
     op.create_check_constraint(
-        _CHECK_NAME, "investment_reports", _NEW_PREDICATE, schema="review"
+        op.f(_CHECK_NAME), "investment_reports", _NEW_PREDICATE, schema="review"
     )
 
 
 def downgrade() -> None:
     _drop_check_if_exists()
     op.create_check_constraint(
-        _CHECK_NAME, "investment_reports", _OLD_PREDICATE, schema="review"
+        op.f(_CHECK_NAME), "investment_reports", _OLD_PREDICATE, schema="review"
     )
