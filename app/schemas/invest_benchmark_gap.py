@@ -12,6 +12,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.invest_coverage import CoverageMarket
+
 BenchmarkProvider = Literal[
     "toss",
     "naver",
@@ -94,10 +96,10 @@ class NextSourcingCandidate(BaseModel):
     featureArea: str
     benchmarkProvider: BenchmarkProvider
     gap: str
-    currentAutoTrader: str | None = None
     whyItMatters: str
     currentStatus: CoverageProductStatus
     nextAction: str
+    currentAutoTrader: str | None = None
     relatedLinearIssue: str | None = None
     newIssueCandidate: bool = False
 
@@ -114,7 +116,7 @@ class BenchmarkGapMatrixSummary(BaseModel):
 class BenchmarkGapMatrixResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    market: Literal["kr", "us", "crypto", "all"]
+    market: CoverageMarket
     asOf: datetime
     rows: list[BenchmarkGapRow]
     nextCandidates: list[NextSourcingCandidate]
