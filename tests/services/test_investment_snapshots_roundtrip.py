@@ -115,12 +115,16 @@ async def test_full_bundle_round_trip(db_session):
 
     # Read back: 3 items linked to this bundle.
     rows = (
-        await db_session.execute(
-            sa.select(InvestmentSnapshotBundleItem).where(
-                InvestmentSnapshotBundleItem.bundle_id == bundle.id
+        (
+            await db_session.execute(
+                sa.select(InvestmentSnapshotBundleItem).where(
+                    InvestmentSnapshotBundleItem.bundle_id == bundle.id
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert len(rows) == 3
     assert {r.role for r in rows} == {"required", "optional"}
 

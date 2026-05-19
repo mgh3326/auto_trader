@@ -1,8 +1,6 @@
 # tests/services/action_report/common/test_canonicalize.py
 import datetime as dt
 
-import pytest
-
 from app.services.action_report.common.canonicalize import canonical_payload_hash
 
 

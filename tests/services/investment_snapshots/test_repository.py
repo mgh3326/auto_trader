@@ -32,7 +32,9 @@ def _run_payload() -> SnapshotRunCreate:
     )
 
 
-def _snapshot_payload(run_uuid: uuid.UUID, *, symbol: str = "035420", price: float = 195000.0) -> SnapshotCreate:
+def _snapshot_payload(
+    run_uuid: uuid.UUID, *, symbol: str = "035420", price: float = 195000.0
+) -> SnapshotCreate:
     payload = {"symbol": symbol, "price": price}
     return SnapshotCreate(
         run_uuid=run_uuid,
@@ -101,7 +103,9 @@ async def test_insert_bundle_and_link_items(db_session):
             as_of=_now(),
             status="complete",
             coverage_summary={"required": {symbol: "fresh"}},
-            freshness_summary={symbol: {"as_of": _now().isoformat(), "status": "fresh"}},
+            freshness_summary={
+                symbol: {"as_of": _now().isoformat(), "status": "fresh"}
+            },
         )
     )
     item = await repo.link_bundle_item(

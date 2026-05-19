@@ -20,9 +20,7 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-_ISO_SUBSECOND_RE = re.compile(
-    r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.\d+(.*)$"
-)
+_ISO_SUBSECOND_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.\d+(.*)$")
 
 
 def _truncate_iso_subsecond(value: str) -> str:

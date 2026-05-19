@@ -33,7 +33,6 @@ from sqlalchemy.sql import func, text
 
 from app.models.base import Base
 
-
 _ACCOUNT_SCOPE_CHECK = (
     "account_scope IS NULL OR account_scope IN "
     "('kis_live','kis_mock','alpaca_paper','upbit_live')"
@@ -116,9 +115,7 @@ class InvestmentSnapshotRun(Base):
 class InvestmentSnapshot(Base):
     __tablename__ = "investment_snapshots"
     __table_args__ = (
-        UniqueConstraint(
-            "snapshot_uuid", name="uq_investment_snapshots_snapshot_uuid"
-        ),
+        UniqueConstraint("snapshot_uuid", name="uq_investment_snapshots_snapshot_uuid"),
         UniqueConstraint(
             "idempotency_key", name="uq_investment_snapshots_idempotency_key"
         ),
@@ -301,15 +298,11 @@ class InvestmentSnapshotBundleItem(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     bundle_id: Mapped[int] = mapped_column(
-        ForeignKey(
-            "review.investment_snapshot_bundles.id", ondelete="CASCADE"
-        ),
+        ForeignKey("review.investment_snapshot_bundles.id", ondelete="CASCADE"),
         nullable=False,
     )
     snapshot_id: Mapped[int] = mapped_column(
-        ForeignKey(
-            "review.investment_snapshots.id", ondelete="RESTRICT"
-        ),
+        ForeignKey("review.investment_snapshots.id", ondelete="RESTRICT"),
         nullable=False,
     )
     role: Mapped[str] = mapped_column(Text, nullable=False)

@@ -61,9 +61,7 @@ class InvestmentSnapshotsRepository:
     # ------------------------------------------------------------------
     # Snapshots
     # ------------------------------------------------------------------
-    async def insert_snapshot(
-        self, payload: SnapshotCreate
-    ) -> InvestmentSnapshot:
+    async def insert_snapshot(self, payload: SnapshotCreate) -> InvestmentSnapshot:
         # 1. Resolve run.
         run = await self.get_run_by_uuid(payload.run_uuid)
         if run is None:
@@ -114,9 +112,7 @@ class InvestmentSnapshotsRepository:
     # ------------------------------------------------------------------
     # Bundles
     # ------------------------------------------------------------------
-    async def insert_bundle(
-        self, payload: BundleCreate
-    ) -> InvestmentSnapshotBundle:
+    async def insert_bundle(self, payload: BundleCreate) -> InvestmentSnapshotBundle:
         # Bundle idempotency_key default: deterministic over identity tuple.
         idempotency_key = (
             f"bundle:{payload.purpose}:{payload.market}:"

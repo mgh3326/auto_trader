@@ -3,7 +3,6 @@ import inspect
 
 from app.services.investment_snapshots import repository as repo_mod
 
-
 _FORBIDDEN_PREFIXES = ("update_", "delete_", "remove_", "mutate_", "patch_")
 
 
@@ -14,9 +13,7 @@ def test_repository_surface_has_no_mutation_methods():
         for name, _ in inspect.getmembers(cls, predicate=inspect.isfunction)
         if not name.startswith("_")
     ]
-    forbidden = [
-        m for m in public_methods if m.startswith(_FORBIDDEN_PREFIXES)
-    ]
+    forbidden = [m for m in public_methods if m.startswith(_FORBIDDEN_PREFIXES)]
     assert forbidden == [], (
         f"Append-only invariant violated: {forbidden}. "
         "Snapshot artifacts must be immutable; status transitions live on "

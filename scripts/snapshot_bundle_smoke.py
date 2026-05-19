@@ -19,7 +19,6 @@ import argparse
 import asyncio
 import datetime as dt
 import sys
-import uuid
 
 from app.core.db import AsyncSessionLocal
 from app.schemas.investment_snapshots import (
@@ -40,7 +39,7 @@ def _now() -> dt.datetime:
 async def _run(commit: bool) -> int:
     async with AsyncSessionLocal() as session:
         repo = InvestmentSnapshotsRepository(session)
-        
+
         print("--- Creating Run ---")
         run = await repo.insert_run(
             SnapshotRunCreate(
@@ -95,22 +94,27 @@ async def _run(commit: bool) -> int:
                 policy_version="intraday_action_report_v1_smoke",
                 as_of=_now(),
                 status="complete",
-                coverage_summary={"required": {"portfolio": "fresh", "market": "fresh"}},
-                freshness_summary={"portfolio": {"status": "fresh"}, "market": {"status": "fresh"}},
+                coverage_summary={
+                    "required": {"portfolio": "fresh", "market": "fresh"}
+                },
+                freshness_summary={
+                    "portfolio": {"status": "fresh"},
+                    "market": {"status": "fresh"},
+                },
             )
         )
         print(f"Bundle created: {bundle.bundle_uuid}")
 
         print("--- Linking Items ---")
-        item1 = await repo.link_bundle_item(
+        await repo.link_bundle_item(
             bundle_uuid=bundle.bundle_uuid,
             item=BundleItemCreate(snapshot_uuid=snap1.snapshot_uuid, role="required"),
         )
-        item2 = await repo.link_bundle_item(
+        await repo.link_bundle_item(
             bundle_uuid=bundle.bundle_uuid,
             item=BundleItemCreate(snapshot_uuid=snap2.snapshot_uuid, role="required"),
         )
-        print(f"Linked 2 items to bundle.")
+        print("Linked 2 items to bundle.")
 
         if commit:
             print("Committing transaction...")
@@ -120,7 +124,7 @@ async def _run(commit: bool) -> int:
             print("Dry-run: rolling back transaction.")
             await session.rollback()
             print("Done.")
-        
+
     return 0
 
 
@@ -129,12 +133,12 @@ def main() -> None:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--dry-run", action="store_true", help="Roll back at the end")
     group.add_argument("--commit", action="store_true", help="Commit at the end")
-    
+
     args = parser.parse_args()
-    
+
     # Load environment variables if needed, though they should be in .env
     # For this script, we assume the environment is already set up.
-    
+
     sys.exit(asyncio.run(_run(args.commit)))
 
 

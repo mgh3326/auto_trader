@@ -36,7 +36,9 @@ def classify_freshness(
     if as_of.tzinfo is None or now.tzinfo is None:
         raise ValueError("classify_freshness requires tz-aware datetimes")
     if as_of > now + _CLOCK_SKEW:
-        raise ValueError(f"as_of {as_of.isoformat()} is in the future of now {now.isoformat()}")
+        raise ValueError(
+            f"as_of {as_of.isoformat()} is in the future of now {now.isoformat()}"
+        )
     age = max(now - as_of, dt.timedelta(0))
     if age <= policy.soft_ttl:
         return "fresh"

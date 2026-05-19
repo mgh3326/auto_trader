@@ -41,9 +41,7 @@ SourceKind = Literal[
     "manual",
     "domain_ref",
 ]
-FreshnessStatus = Literal[
-    "fresh", "soft_stale", "hard_stale", "partial", "unavailable"
-]
+FreshnessStatus = Literal["fresh", "soft_stale", "hard_stale", "partial", "unavailable"]
 BundleStatus = Literal["complete", "partial", "stale_fallback", "failed"]
 BundleItemRole = Literal["required", "optional", "fallback", "conflict_evidence"]
 
@@ -82,7 +80,7 @@ class SnapshotCreate(BaseModel):
     freshness_status: FreshnessStatus
 
     @model_validator(mode="after")
-    def _source_ref_triple_consistent(self) -> "SnapshotCreate":
+    def _source_ref_triple_consistent(self) -> SnapshotCreate:
         triple = (self.source_table, self.source_id, self.source_uri)
         nulls = sum(1 for v in triple if v is None)
         if nulls not in (0, 3):
@@ -92,7 +90,7 @@ class SnapshotCreate(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _domain_ref_requires_source_triple(self) -> "SnapshotCreate":
+    def _domain_ref_requires_source_triple(self) -> SnapshotCreate:
         if self.source_kind == "domain_ref" and self.source_table is None:
             raise ValueError(
                 "source_kind='domain_ref' requires the source_table/source_id/source_uri triple"

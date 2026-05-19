@@ -173,7 +173,9 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.UniqueConstraint("snapshot_uuid", name="uq_investment_snapshots_snapshot_uuid"),
+        sa.UniqueConstraint(
+            "snapshot_uuid", name="uq_investment_snapshots_snapshot_uuid"
+        ),
         sa.UniqueConstraint(
             "idempotency_key", name="uq_investment_snapshots_idempotency_key"
         ),
@@ -312,17 +314,13 @@ def upgrade() -> None:
         sa.Column(
             "bundle_id",
             sa.BigInteger(),
-            sa.ForeignKey(
-                "review.investment_snapshot_bundles.id", ondelete="CASCADE"
-            ),
+            sa.ForeignKey("review.investment_snapshot_bundles.id", ondelete="CASCADE"),
             nullable=False,
         ),
         sa.Column(
             "snapshot_id",
             sa.BigInteger(),
-            sa.ForeignKey(
-                "review.investment_snapshots.id", ondelete="RESTRICT"
-            ),
+            sa.ForeignKey("review.investment_snapshots.id", ondelete="RESTRICT"),
             nullable=False,
         ),
         sa.Column("role", sa.Text(), nullable=False),
