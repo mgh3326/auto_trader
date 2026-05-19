@@ -37,9 +37,7 @@ class WatchContextSnapshotCollector:
         self._session = session
         self._repo = repository or InvestmentReportsRepository(session)
 
-    async def collect(
-        self, request: CollectorRequest
-    ) -> list[SnapshotCollectResult]:
+    async def collect(self, request: CollectorRequest) -> list[SnapshotCollectResult]:
         now = utcnow()
         alerts = await self._repo.list_active_alerts(
             market=request.market, valid_at=now

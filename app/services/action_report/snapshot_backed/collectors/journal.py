@@ -32,13 +32,13 @@ class JournalSnapshotCollector:
 
     snapshot_kind: str = "journal"
 
-    def __init__(self, session: AsyncSession, *, recent_limit: int | None = None) -> None:
+    def __init__(
+        self, session: AsyncSession, *, recent_limit: int | None = None
+    ) -> None:
         self._session = session
         self._recent_limit = recent_limit or _DEFAULT_RECENT_LIMIT
 
-    async def collect(
-        self, request: CollectorRequest
-    ) -> list[SnapshotCollectResult]:
+    async def collect(self, request: CollectorRequest) -> list[SnapshotCollectResult]:
         now = utcnow()
 
         active_stmt = (

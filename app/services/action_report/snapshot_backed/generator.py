@@ -117,8 +117,8 @@ class SnapshotBackedReportGenerator:
         self._ensure_service = ensure_service or SnapshotBundleEnsureService(
             session, collectors=registry
         )
-        self._ingestion_service = (
-            ingestion_service or InvestmentReportIngestionService(session)
+        self._ingestion_service = ingestion_service or InvestmentReportIngestionService(
+            session
         )
 
     async def generate(

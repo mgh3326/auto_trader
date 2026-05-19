@@ -37,9 +37,7 @@ class _FailOpenStubBase:
     origin: str
     unavailable_reason: str
 
-    async def collect(
-        self, request: CollectorRequest
-    ) -> list[SnapshotCollectResult]:
+    async def collect(self, request: CollectorRequest) -> list[SnapshotCollectResult]:
         return [
             unavailable_result(
                 snapshot_kind=self.snapshot_kind,

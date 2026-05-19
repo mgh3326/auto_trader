@@ -69,7 +69,15 @@ def _ensure_response(
         status=status,  # type: ignore[arg-type]
         created=created,
         coverage_summary=coverage_summary
-        or {"required": {"portfolio": "fresh", "journal": "fresh", "watch_context": "fresh", "market": "fresh"}, "optional": {}},
+        or {
+            "required": {
+                "portfolio": "fresh",
+                "journal": "fresh",
+                "watch_context": "fresh",
+                "market": "fresh",
+            },
+            "optional": {},
+        },
         freshness_summary=freshness_summary
         or {
             "overall": "fresh",

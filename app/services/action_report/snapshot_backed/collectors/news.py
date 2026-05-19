@@ -42,9 +42,7 @@ class NewsSnapshotCollector:
         self._lookback_hours = max(1, lookback_hours)
         self._limit = max(1, limit)
 
-    async def collect(
-        self, request: CollectorRequest
-    ) -> list[SnapshotCollectResult]:
+    async def collect(self, request: CollectorRequest) -> list[SnapshotCollectResult]:
         now = utcnow()
         since = now - dt.timedelta(hours=self._lookback_hours)
 

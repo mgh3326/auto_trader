@@ -49,9 +49,7 @@ class PortfolioSnapshotCollector:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def collect(
-        self, request: CollectorRequest
-    ) -> list[SnapshotCollectResult]:
+    async def collect(self, request: CollectorRequest) -> list[SnapshotCollectResult]:
         market_types = _MARKET_TO_TYPES.get(request.market)
         now = utcnow()
         if not market_types:
@@ -66,9 +64,7 @@ class PortfolioSnapshotCollector:
                 )
             ]
 
-        stmt = select(ManualHolding).where(
-            ManualHolding.market_type.in_(market_types)
-        )
+        stmt = select(ManualHolding).where(ManualHolding.market_type.in_(market_types))
         rows = (await self._session.execute(stmt)).scalars().all()
 
         holdings: list[dict[str, Any]] = [

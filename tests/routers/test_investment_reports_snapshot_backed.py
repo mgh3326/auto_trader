@@ -61,7 +61,9 @@ async def test_flag_off_returns_503(monkeypatch: pytest.MonkeyPatch) -> None:
         settings, "SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED", False, raising=False
     )
     app = _build_app()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
         resp = await client.post(
             "/trading/api/investment-reports/snapshot-backed",
             json=_REQUEST_PAYLOAD,

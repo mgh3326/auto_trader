@@ -71,6 +71,4 @@ def _atom(value: Any) -> Any:
         # Pydantic v2 model — defer to its own JSON-mode dump for parity
         # with how IngestReportRequest serialises nested watch conditions.
         return to_jsonable(value.model_dump(mode="json"))
-    raise TypeError(
-        f"to_jsonable: unsupported type {type(value).__name__!r}"
-    )
+    raise TypeError(f"to_jsonable: unsupported type {type(value).__name__!r}")

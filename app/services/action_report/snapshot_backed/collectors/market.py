@@ -52,9 +52,7 @@ class MarketEventsSnapshotCollector:
         self._lookback = max(0, lookback_days)
         self._lookahead = max(0, lookahead_days)
 
-    async def collect(
-        self, request: CollectorRequest
-    ) -> list[SnapshotCollectResult]:
+    async def collect(self, request: CollectorRequest) -> list[SnapshotCollectResult]:
         now = utcnow()
         market_key = _MARKET_TO_QUERY.get(request.market)
 

@@ -55,8 +55,14 @@ def test_nested_recursive_normalisation():
         "threshold": Decimal("100.5"),
         "as_of": dt.datetime(2026, 5, 19, tzinfo=dt.UTC),
         "items": [
-            {"id": uuid.UUID("4b8a5e4e-1234-5678-9abc-def012345678"), "price": Decimal("1.1")},
-            {"id": uuid.UUID("aaaaaaaa-1234-5678-9abc-def012345678"), "price": Decimal("2.2")},
+            {
+                "id": uuid.UUID("4b8a5e4e-1234-5678-9abc-def012345678"),
+                "price": Decimal("1.1"),
+            },
+            {
+                "id": uuid.UUID("aaaaaaaa-1234-5678-9abc-def012345678"),
+                "price": Decimal("2.2"),
+            },
         ],
         "set_field": {Decimal("1"), Decimal("2")},
     }
