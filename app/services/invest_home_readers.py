@@ -7,6 +7,7 @@ DB write / backfill 금지 — read-only 조회만 사용.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Protocol
 
@@ -732,12 +733,59 @@ class KISMockHomeReader:
         try:
             client = SafeKISMockClient()
             # ROB-268: single inquire-balance snapshot supplies both holdings
-            # (output1) and cash (output2). Previously this reader issued
-            # fetch_my_stocks + inquire_domestic_cash_balance — two duplicate
-            # round trips to the same KIS VTS endpoint.
-            snapshot = await client.account.fetch_domestic_balance_snapshot(
-                is_mock=True
-            )
+            # (output1) and cash (output2).
+            # ROB-270: mock VTS is slow near the 5s boundary; use a single
+            # longer attempt (10s) with no ReadTimeout retry and a reduced
+            # pagination cap. The whole call is also bounded at 12s wall time
+            # by the surrounding asyncio.wait_for so /invest/api/account-panel
+            # cannot spend more than ~12s in the mock branch.
+            mock_timeout_sec = 10.0
+            mock_total_timeout_sec = 12.0
+            mock_max_pages = 3
+            mock_retry_request_errors = False
+
+            async def _fetch_snapshot() -> dict[str, Any]:
+                return await client.account.fetch_domestic_balance_snapshot(
+                    is_mock=True,
+                    timeout=mock_timeout_sec,
+                    retry_request_errors=mock_retry_request_errors,
+                    max_pages=mock_max_pages,
+                )
+
+            try:
+                snapshot = await asyncio.wait_for(
+                    _fetch_snapshot(), timeout=mock_total_timeout_sec
+                )
+                timed_out = False
+            except asyncio.TimeoutError:
+                timed_out = True
+                # Surface the bound on Sentry, then degrade via the outer
+                # exception handler.
+                span = sentry_sdk.get_current_span()
+                if span is not None:
+                    span.set_tag("kis_mock.timed_out", True)
+                    span.set_data("kis_mock.timeout_sec", mock_timeout_sec)
+                    span.set_data(
+                        "kis_mock.total_timeout_sec", mock_total_timeout_sec
+                    )
+                    span.set_data("kis_mock.max_pages", mock_max_pages)
+                    span.set_tag(
+                        "kis_mock.retry_request_errors",
+                        mock_retry_request_errors,
+                    )
+                logger.warning(
+                    "KIS mock fetch wall-time bound exceeded: %.1fs",
+                    mock_total_timeout_sec,
+                )
+                return _SourceFetchResult(
+                    accounts=[],
+                    holdings=[],
+                    warning=InvestHomeWarning(
+                        source="kis_mock",
+                        message="KIS 모의투자 조회 시간 초과",
+                    ),
+                )
+
             stocks_kr = snapshot.get("holdings") or []
             cash_payload = snapshot.get("cash") or {}
 
@@ -814,6 +862,7 @@ class KISMockHomeReader:
             # ROB-268: surface snapshot observability on the enclosing
             # `invest.home.kis_mock` span so deploy-time Sentry verification can
             # confirm the duplicate-call regression has been eliminated.
+            # ROB-270: also surface the new mock-specific timeout policy.
             # Best-effort: no-op when Sentry has no active span.
             span = sentry_sdk.get_current_span()
             if span is not None:
@@ -826,6 +875,17 @@ class KISMockHomeReader:
                     span.set_tag("kis_mock.pagination_stop_reason", stop_reason)
                 span.set_data("kis_mock.balance_page_count", page_count)
                 span.set_data("kis_mock.balance_call_count", page_count)
+                # ROB-270 observability
+                span.set_data("kis_mock.timeout_sec", mock_timeout_sec)
+                span.set_data(
+                    "kis_mock.total_timeout_sec", mock_total_timeout_sec
+                )
+                span.set_data("kis_mock.max_pages", mock_max_pages)
+                span.set_tag(
+                    "kis_mock.retry_request_errors", mock_retry_request_errors
+                )
+                span.set_tag("kis_mock.timed_out", timed_out)
+                span.set_data("kis_mock.attempt_count", 1)
 
             account = Account(
                 accountId="kis_mock_account",
