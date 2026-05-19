@@ -9,6 +9,8 @@ from app.schemas.invest_benchmark_gap import (
     NextSourcingCandidate,
 )
 from app.services.invest_benchmark_gap_service import (
+    build_benchmark_gap_summary,
+    build_mvp_benchmark_rows,
     coverage_state_to_product_status,
 )
 
@@ -99,3 +101,38 @@ def test_coverage_state_to_product_status_mapping(legacy, expected):
 def test_coverage_state_to_product_status_unknown_raises():
     with pytest.raises(ValueError):
         coverage_state_to_product_status("invalid_state")  # type: ignore[arg-type]
+
+
+def test_build_mvp_benchmark_rows_returns_at_least_minimum_set():
+    rows = build_mvp_benchmark_rows()
+    ids = {row.id for row in rows}
+    # MVP minimum: Toss 5, Naver 5, Internal 5
+    assert {
+        "toss.screener",
+        "toss.stock_detail.chart",
+        "toss.stock_detail.orderbook",
+        "toss.account.holdings",
+        "toss.account.pending_orders",
+        "naver.market.kr",
+        "naver.market.major_indices",
+        "naver.stock_detail.price",
+        "naver.stock_detail.finance_overview",
+        "naver.stock_detail.investment_info",
+        "internal.kis_live_holdings",
+        "internal.kis_live_cash_orderable",
+        "internal.kis_live_open_orders",
+        "internal.kis_live_sellable_quantity",
+        "internal.kr_action_readiness_summary",
+    } <= ids
+    # MVP non-goal: every row must use one of the documented sourceRoles and statuses
+    providers = {row.benchmarkProvider for row in rows}
+    assert providers <= {"toss", "naver", "internal", "kis"}
+
+
+def test_build_benchmark_gap_summary_counts_correctly():
+    rows = build_mvp_benchmark_rows()
+    summary = build_benchmark_gap_summary(rows)
+    assert summary.totalRows == len(rows)
+    assert sum(summary.byProvider.values()) == len(rows)
+    assert sum(summary.byPriority.values()) == len(rows)
+    assert sum(summary.byStatus.values()) == len(rows)
