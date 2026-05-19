@@ -12,6 +12,7 @@ dedup UNIQUE constraint can rely on a deterministic input.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Any
 
 import sqlalchemy as sa
@@ -180,3 +181,117 @@ class InvestmentSnapshotsRepository:
         await self._session.flush()
         await self._session.refresh(row)
         return row
+
+    # ------------------------------------------------------------------
+    # Phase 2 — SELECT-only read methods
+    # ------------------------------------------------------------------
+    # These are pure reads; they do NOT widen the append-only contract.
+    # The ``test_append_only.py`` surface lock includes them so a future PR
+    # cannot quietly add a mutation method by mixing it with a read change.
+
+    async def find_latest_bundle(
+        self,
+        *,
+        purpose: str,
+        market: str,
+        account_scope: str | None,
+        policy_version: str,
+    ) -> InvestmentSnapshotBundle | None:
+        """Return the most recent bundle for the identity tuple, or None."""
+        stmt = (
+            sa.select(InvestmentSnapshotBundle)
+            .where(
+                InvestmentSnapshotBundle.purpose == purpose,
+                InvestmentSnapshotBundle.market == market,
+                InvestmentSnapshotBundle.policy_version == policy_version,
+            )
+            .order_by(InvestmentSnapshotBundle.as_of.desc())
+            .limit(1)
+        )
+        if account_scope is None:
+            stmt = stmt.where(InvestmentSnapshotBundle.account_scope.is_(None))
+        else:
+            stmt = stmt.where(InvestmentSnapshotBundle.account_scope == account_scope)
+        return await self._session.scalar(stmt)
+
+    async def get_bundle_by_uuid(
+        self, bundle_uuid: uuid.UUID
+    ) -> InvestmentSnapshotBundle | None:
+        return await self._session.scalar(
+            sa.select(InvestmentSnapshotBundle).where(
+                InvestmentSnapshotBundle.bundle_uuid == bundle_uuid
+            )
+        )
+
+    async def list_bundle_items_with_snapshots(
+        self, bundle_id: int
+    ) -> list[tuple[InvestmentSnapshotBundleItem, InvestmentSnapshot]]:
+        """Return (item, snapshot) pairs for the given bundle, ordered by item id.
+
+        One query — joined eagerly so the caller does not issue per-item lookups.
+        """
+        stmt = (
+            sa.select(InvestmentSnapshotBundleItem, InvestmentSnapshot)
+            .join(
+                InvestmentSnapshot,
+                InvestmentSnapshot.id == InvestmentSnapshotBundleItem.snapshot_id,
+            )
+            .where(InvestmentSnapshotBundleItem.bundle_id == bundle_id)
+            .order_by(InvestmentSnapshotBundleItem.id.asc())
+        )
+        result = await self._session.execute(stmt)
+        return [(item, snap) for item, snap in result.all()]
+
+    async def list_bundles(
+        self,
+        *,
+        purpose: str | None = None,
+        market: str | None = None,
+        account_scope: str | None = None,
+        status: str | None = None,
+        limit: int = 20,
+    ) -> list[InvestmentSnapshotBundle]:
+        stmt = sa.select(InvestmentSnapshotBundle).order_by(
+            InvestmentSnapshotBundle.as_of.desc(), InvestmentSnapshotBundle.id.desc()
+        )
+        if purpose is not None:
+            stmt = stmt.where(InvestmentSnapshotBundle.purpose == purpose)
+        if market is not None:
+            stmt = stmt.where(InvestmentSnapshotBundle.market == market)
+        if account_scope is not None:
+            stmt = stmt.where(InvestmentSnapshotBundle.account_scope == account_scope)
+        if status is not None:
+            stmt = stmt.where(InvestmentSnapshotBundle.status == status)
+        stmt = stmt.limit(min(max(limit, 1), 100))
+        result = await self._session.scalars(stmt)
+        return list(result.all())
+
+    async def list_snapshots(
+        self,
+        *,
+        market: str | None = None,
+        symbol: str | None = None,
+        snapshot_kind: str | None = None,
+        source_kind: str | None = None,
+        freshness_status: str | None = None,
+        since: datetime | None = None,
+        limit: int = 20,
+    ) -> list[InvestmentSnapshot]:
+        stmt = sa.select(InvestmentSnapshot).order_by(
+            InvestmentSnapshot.as_of.desc(), InvestmentSnapshot.id.desc()
+        )
+        if market is not None:
+            stmt = stmt.where(InvestmentSnapshot.market == market)
+        if symbol is not None:
+            stmt = stmt.where(InvestmentSnapshot.symbol == symbol)
+        if snapshot_kind is not None:
+            stmt = stmt.where(InvestmentSnapshot.snapshot_kind == snapshot_kind)
+        if source_kind is not None:
+            stmt = stmt.where(InvestmentSnapshot.source_kind == source_kind)
+        if freshness_status is not None:
+            stmt = stmt.where(InvestmentSnapshot.freshness_status == freshness_status)
+        if since is not None:
+            stmt = stmt.where(InvestmentSnapshot.as_of >= since)
+        stmt = stmt.limit(min(max(limit, 1), 100))
+        result = await self._session.scalars(stmt)
+        return list(result.all())

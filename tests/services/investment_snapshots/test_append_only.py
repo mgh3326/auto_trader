@@ -31,11 +31,19 @@ def test_repository_surface_only_inserts_and_links_and_reads():
     )
     # Lock the surface — adding a new method requires this test to be updated
     # which forces reviewer awareness.
+    # Phase 2 (rob-269-phase2-mcp-api) added 5 SELECT-only read methods to
+    # support the MCP/API surface. None of them mutate; the mutation prefix
+    # guard above still rejects update_/delete_/etc.
     assert public_methods == [
+        "find_latest_bundle",
+        "get_bundle_by_uuid",
         "get_run_by_uuid",
         "get_snapshot_by_uuid",
         "insert_bundle",
         "insert_run",
         "insert_snapshot",
         "link_bundle_item",
+        "list_bundle_items_with_snapshots",
+        "list_bundles",
+        "list_snapshots",
     ]

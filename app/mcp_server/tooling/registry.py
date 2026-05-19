@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from app.core.config import settings
 from app.mcp_server.profiles import McpProfile
 from app.mcp_server.tooling import orders_kiwoom_variants
 from app.mcp_server.tooling.alpaca_paper import register_alpaca_paper_tools
@@ -39,6 +40,9 @@ from app.mcp_server.tooling.execution_comment_registration import (
 from app.mcp_server.tooling.fundamentals_registration import register_fundamentals_tools
 from app.mcp_server.tooling.investment_reports_handlers import (
     register_investment_report_tools,
+)
+from app.mcp_server.tooling.investment_snapshots_registration import (
+    register_investment_snapshots_tools,
 )
 from app.mcp_server.tooling.market_brief_registration import (
     register_market_brief_tools,
@@ -107,6 +111,12 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     register_paper_account_tools(mcp)
     register_paper_analytics_tools(mcp)
     register_paper_journal_tools(mcp)
+
+    # ROB-269 Phase 2 — investment-snapshot MCP surface. Gated by
+    # ``settings.INVESTMENT_SNAPSHOTS_MCP_ENABLED`` so the 4 tools are
+    # physically absent unless the flag is flipped post-PR-merge.
+    if settings.INVESTMENT_SNAPSHOTS_MCP_ENABLED:
+        register_investment_snapshots_tools(mcp)
 
     # Profile-gated: side-effect order surfaces
     if profile is McpProfile.DEFAULT:
