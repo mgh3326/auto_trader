@@ -66,15 +66,18 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-test("requests the full month grid range (Sun-aligned 6 weeks) on mount, NOT a single week", async () => {
+test("ROB-272 Phase 2: initial fetch is selectedDate ±3 (7 days), not the 6-week grid", async () => {
   render(wrap(<MobileCalendarPage />));
   await waitFor(() => {
     expect(calApi.fetchCalendar).toHaveBeenCalledWith({
-      fromDate: "2026-04-26",
-      toDate: "2026-06-06",
+      fromDate: "2026-05-08",
+      toDate: "2026-05-14",
       tab: "all",
     });
   });
+  expect(calApi.fetchCalendar).not.toHaveBeenCalledWith(
+    expect.objectContaining({ fromDate: "2026-04-26", toDate: "2026-06-06" }),
+  );
 });
 
 test("renders CalendarMonthHeader with the current month title and the monthly timeline", async () => {
@@ -92,16 +95,18 @@ test("WeekDateStrip is still rendered for the week containing today", async () =
   expect(await screen.findByTestId("week-date-strip")).toBeInTheDocument();
 });
 
-test("prev/next month re-fetches the new Sun-aligned grid range", async () => {
+test("ROB-272 Phase 2: prev/next month re-fetches the new selectedDate ±3 window", async () => {
   const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
   render(wrap(<MobileCalendarPage />));
   await waitFor(() => expect(calApi.fetchCalendar).toHaveBeenCalledTimes(1));
 
+  // June 2026: today (2026-05-11) is not in the month → selectedDate becomes
+  // 2026-06-01 → ±3 = 5/29..6/4.
   await user.click(screen.getByTestId("calendar-next-month"));
   await waitFor(() =>
     expect(calApi.fetchCalendar).toHaveBeenLastCalledWith({
-      fromDate: "2026-05-31",
-      toDate: "2026-07-11",
+      fromDate: "2026-05-29",
+      toDate: "2026-06-04",
       tab: "all",
     }),
   );
